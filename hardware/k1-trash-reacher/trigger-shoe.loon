@@ -1,0 +1,43 @@
+; trigger-shoe — the pushrod's contact on the reacher trigger.
+;
+; A U-channel that sits on the trigger's FRONT face (the face a finger
+; pulls), open to the back so it slips on without opening the trigger
+; guard, held by one zip tie through both legs behind the blade. The
+; forward boss carries an M3 pilot for the rod-end ball link, its axis along
+; X, sitting in the servo horn's sweep plane (x = +13) so the rod runs
+; straight.
+;
+; Local frame: origin at the center of the trigger's front face at the
+; finger point. Trigger blade occupies z < 0, runs along Y. +Z is distal
+; (toward the servo), matching the shaft frame.
+;
+; PRINT: boss face down (-Z up). The exported STL is already flipped: +Z up
+; leaves a 227 mm2 floating floor under the boss, -Z up has none.
+
+[use params [trigger-w trigger-t m3-tap]]
+
+[let petg [material "petg" 0.15 0.55 0.75 0.0 0.45]]
+[let bx [fn [sx sy sz px py pz] [translate px py pz [cube sx sy sz]]]]
+
+[let cw [+ [/ trigger-w 2.0] 0.2]]   ; half channel width
+[let ct [+ trigger-t 0.4]]           ; channel depth
+[let leg 3.0]
+[let back [- 0.0 [+ ct 6.0]]]        ; legs run 6 past the blade's back face
+[let pin-x 13.0]                     ; horn sweep plane
+
+[let shell [bx [* 2.0 [+ cw leg]] 14.0 [- 3.0 back] [- 0.0 [+ cw leg]] -7.0 back]]
+[let boss  [bx [+ pin-x cw leg] 14.0 8.0 [- 0.0 [+ cw leg]] -7.0 3.0]]
+[let channel [bx [* 2.0 cw] 16.0 [- 0.0 [- back 1.0]] [- 0.0 cw] -8.0 [- back 1.0]]]
+; zip-tie slot, 4.0 x 2.0, through both legs behind the blade
+[let tie [bx 40.0 4.0 2.0 -20.0 -2.0 [- 0.0 [+ ct 3.5]]]]
+; ball-link pilot, 10 deep from the boss's +X face at (y 0, z 7)
+[let pin [translate [- pin-x 10.0] 0.0 7.0
+  [rotate 0.0 90.0 0.0 [cylinder m3-tap 10.5]]]]
+
+[let shoe
+  [pipe [union shell boss]
+    [difference channel]
+    [difference tie]
+    [difference pin]]]
+
+[root [translate 0.0 0.0 11.0 [rotate 0.0 180.0 0.0 shoe]] "petg"]

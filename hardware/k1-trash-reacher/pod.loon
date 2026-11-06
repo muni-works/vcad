@@ -1,0 +1,89 @@
+; pod — MCU + battery enclosure, clamps on top of the reacher shaft (+Y).
+;
+; Contents (see README BOM):
+;   2S 18650 holder (2 cells side by side, ~77 x 41 x 20), protected 2S BMS
+;   Pololu-class 6 V / 5 A step-down for the servo (DS3225 stalls ~3 A)
+;   RP2040-Zero or ESP32-C3 SuperMini, USB-C through the +Z end wall —
+;     that cable is the serial link to the robot AND powers the MCU, so the
+;     battery feeds only the servo and the MCU never browns out with it
+;   KCD11 rocker on the battery positive, JST-XH balance lead slot
+;
+; Interior 42 x 22 x 141: z 9.5..88.5 holder, z 90..136 electronics, the
+; 7 x 7 lid-screw bosses live in the end bays (z < 9.5, z > 136.5).
+;
+; Shaft grip: two split collars under the back wall, slits facing -Y with
+; one M4 each. The pod's own weight is the only load.
+;
+; PRINT: as modeled, -Z end on the plate (shaft axis vertical, 146 tall).
+; vcad's floating_floor check: +Z up is support-free (open face up is NOT —
+; the back wall would float over the collars). Wall openings bridge <= 15 mm.
+
+[use params [shaft-r bore-r slit m3-tap m4-clear]]
+
+[let petg [material "petg" 0.15 0.55 0.75 0.0 0.45]]
+[let bx [fn [sx sy sz px py pz] [translate px py pz [cube sx sy sz]]]]
+
+[let wall 2.5]
+[let iw 42.0]          ; interior X
+[let ih 22.0]          ; interior Y (depth)
+[let il 141.0]         ; interior Z
+[let ow [+ iw [* 2.0 wall]]]
+[let ol [+ il [* 2.0 wall]]]
+[let ro [+ shaft-r 5.0]]
+[let y0 [- ro 2.0]]                    ; back wall outer face
+[let yi [+ y0 wall]]                   ; floor of the interior
+[let ytop [+ yi ih]]                   ; open face (lid seats here)
+[let cl 14.0]                          ; collar length
+
+[let box [bx ow [- ytop y0] ol [- 0.0 [/ ow 2.0]] y0 0.0]]
+[let saddle [fn [pz] [bx 20.0 y0 cl -10.0 0.0 pz]]]
+[let ears [fn [pz] [bx 16.0 14.0 cl -8.0 [- 0.0 [+ ro 10.0]] pz]]]
+[let collar [fn [pz] [translate 0.0 0.0 pz [cylinder ro cl]]]]
+
+; ORDER: boxes union first, cylinders join last.
+[let blocks
+  [pipe box
+    [union [saddle 0.0]] [union [saddle [- ol cl]]]
+    [union [ears 0.0]] [union [ears [- ol cl]]]]]
+[let body [union [collar 0.0] [union [collar [- ol cl]] blocks]]]
+
+[let bore [translate 0.0 0.0 -1.0 [cylinder bore-r [+ ol 2.0]]]]
+[let slit-cut [bx slit 30.0 [+ ol 2.0] [- 0.0 [/ slit 2.0]] -30.0 -1.0]]
+[let m4 [fn [pz]
+  [translate -10.0 [- 0.0 [+ ro 5.0]] pz [rotate 0.0 90.0 0.0 [cylinder m4-clear 20.0]]]]]
+
+[let cavity [bx iw [+ ih 1.0] il [- 0.0 [/ iw 2.0]] yi wall]]
+
+; lid-screw bosses in the four interior end-bay corners, M3 pilots 12 deep
+[let bpos [- [/ iw 2.0] 3.5]]
+[let boss [fn [px pz] [bx 7.0 ih 7.0 [- px 3.5] yi [- pz 3.5]]]]
+[let pilot [fn [px pz] [translate px [- ytop 12.0] pz
+  [rotate -90.0 0.0 0.0 [cylinder m3-tap 12.5]]]]]
+[let bz0 [+ wall 3.5]]
+[let bz1 [- ol [+ wall 3.5]]]
+
+; openings
+[let usb    [bx 10.0 4.5 [+ wall 2.0] -5.0 [+ yi 6.5] [- ol [+ wall 1.0]]]]  ; USB-C, +Z end
+[let lead   [translate 10.0 [+ yi 8.0] -1.0 [cylinder 3.0 [+ wall 2.0]]]]   ; servo lead, -Z end
+; KCD11 mini rocker (6 A), 10 x 15 cutout — an SS12 slide is rated 0.5 A and
+; the servo stalls at ~3 A
+[let switch [bx [+ wall 2.0] 10.2 15.2 [- [/ ow 2.0] [+ wall 1.0]] [+ yi 5.9] 112.0]] ; +X wall
+[let bal    [bx [+ wall 2.0] 4.0 8.0 [- 0.0 [+ [/ ow 2.0] 1.0]] [+ yi 11.0] 96.0]] ; XH balance, -X wall
+
+[let pod
+  [pipe body
+    [difference cavity]
+    [union [boss bpos bz0]] [union [boss [- 0.0 bpos] bz0]]
+    [union [boss bpos bz1]] [union [boss [- 0.0 bpos] bz1]]
+    [difference [pilot bpos bz0]] [difference [pilot [- 0.0 bpos] bz0]]
+    [difference [pilot bpos bz1]] [difference [pilot [- 0.0 bpos] bz1]]
+    [difference bore]
+    [difference slit-cut]
+    [difference [m4 [/ cl 2.0]]]
+    [difference [m4 [- ol [/ cl 2.0]]]]
+    [difference usb]
+    [difference lead]
+    [difference switch]
+    [difference bal]]]
+
+[root pod "petg"]

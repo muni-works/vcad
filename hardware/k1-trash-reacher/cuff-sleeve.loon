@@ -1,0 +1,61 @@
+; cuff-sleeve — joins the reacher shaft to the K1 tool cuff (k1-ball-cuff).
+;
+; The cuff's boss already has a TOOL SOCKET: a 25.8 square tunnel, 52 long,
+; made for a 1-inch square handle. This part ADAPTS to it rather than
+; replacing it, so the print-validated cuff stays untouched: a square
+; sleeve (25.3 outside, shaft bore inside) that the shaft passes through.
+;
+;   ROD-AXIS ANTI-ROTATION, reacher in cuff: square in square — a positive
+;   key, no friction involved. Four clockings at 90 degrees; pick the one
+;   that puts the jaws where the task wants them.
+;
+;   AXIAL: the integral flange (z 0..14) is one stop, cuff-collar (a second
+;   print, pinched on the sleeve's square tail) is the other. Two radial
+;   M3 set screws in the flange fix the sleeve to the shaft.
+;
+;   NOT FIXED HERE, AND CANNOT BE: the cuff turning on the K1 hand ball
+;   about the FOREARM axis. Ball and bump-stop rod are both surfaces of
+;   revolution about that axis, so that torque is friction-only (see
+;   k1-ball-cuff/tool-coupling-first-principles.md). This kit's answer is to
+;   not ask for it: put the sleeve at the loaded reacher's balance point so
+;   gravity makes ~no moment about the forearm, and run the BOLTED cuff
+;   (rev E.1.1, 2 x M4 at 0.15 N·m, ~14 N·m of friction) rather than the
+;   E.2 ratchet (~50 N preload, ~0.4 N·m). README has the numbers.
+;
+; Frame: shaft axis Z. Flange z 0..14, tunnel span z 14..66, tail z 66..79.5.
+; PRINT: flange down, axis vertical. No supports.
+
+[use params [bore-r tunnel-len sleeve-sq]]
+
+[let petg [material "petg" 0.15 0.55 0.75 0.0 0.45]]
+[let bx [fn [sx sy sz px py pz] [translate px py pz [cube sx sy sz]]]]
+
+[let fl 14.0]                           ; flange length
+[let fs 40.0]                           ; flange square
+[let tail 13.5]                         ; past the tunnel: 0.5 gap + 12 collar + 1
+[let len [+ fl [+ tunnel-len tail]]]
+[let h [/ sleeve-sq 2.0]]
+
+[let tube   [bx sleeve-sq sleeve-sq len [- 0.0 h] [- 0.0 h] 0.0]]
+[let flange [bx fs fs fl [- 0.0 [/ fs 2.0]] [- 0.0 [/ fs 2.0]] 0.0]]
+
+[let bore [translate 0.0 0.0 -1.0 [cylinder bore-r [+ len 2.0]]]]
+; SHAFT GRIP: two M3 set screws in heat-set inserts, radial, through the
+; flange at 90 degrees (+Y and -X), wedging the shaft into the opposite
+; quadrant of the bore. The first draft slit the sleeve along its length and
+; pinched it, but a slit through the 1.4 mm wall left between bore and flat
+; exports non-manifold with the wrong volume in vcad today (kernel bug,
+; repro filed; README). Set screws avoid the cut entirely, and the sleeve
+; stays solid, which is better for the square key anyway.
+[let insert-r 2.05]                     ; M3 x 5.7 heat-set, 4.1 hole
+[let insert [fn [rx rz]
+  [translate 0.0 0.0 [/ fl 2.0]
+    [rotate rx 0.0 rz [rotate -90.0 0.0 0.0 [cylinder insert-r 25.0]]]]]]
+
+[let sleeve
+  [pipe [union tube flange]
+    [difference bore]
+    [difference [insert 0.0 0.0]]
+    [difference [insert 0.0 90.0]]]]
+
+[root sleeve "petg"]

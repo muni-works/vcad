@@ -1,0 +1,91 @@
+; servo-mount — DS3225 cradle that clamps on the reacher shaft just distal of
+; the handle housing, butting the housing's front face (z = 0).
+;
+; LINKAGE: horn-to-trigger PUSHROD, not a cable. The mount sits distal of
+; the trigger, and a finger closes a trigger by pushing its front face
+; proximally — so a rod from a servo horn pushing that same face does the
+; finger's job directly, in compression, with no pulley or redirect. Stock
+; 25T metal arm horn, ball link in the r = 15 hole, M3 threaded rod, ball
+; link into the printed trigger-shoe. Rod length is set on the threads.
+;
+; TRAVEL: a 120-degree sweep, symmetric about the rod line, moves the horn
+; pin 2 x 15 x sin(60) = 26.0 mm along the rod — the 25 mm trigger stroke
+; with 1 mm to spare.
+;
+; TORQUE: worst case is mid-sweep, where the whole 15 mm arm is effective:
+; 20 N x 15 mm = 0.30 N·m = 3.06 kg·cm. Toward the end of the stroke, where
+; the trigger stiffens into the firm close, the effective arm shrinks to
+; 15 x cos(60) = 7.5 mm and the servo needs half that. DS3225 stall is
+; 21.5 kg·cm at 6.0 V (25 at 6.8 V): margin 7.0x at the 6 V buck setting.
+;
+; Orientation: servo long axis along Z, output spline on +X, case below the
+; shaft (-Y), ears down on the cradle's +X face. The horn then sweeps in the
+; YZ plane ~13 mm right of the trigger centerplane; the trigger-shoe's pin
+; boss reaches over to the same plane.
+;
+; Shaft grip: one-piece split collar, 2 x M4 across a +Y slit. The pushrod
+; reaction about the shaft axis is ~20 N x 30 mm = 0.6 N·m; the collar's
+; proximal face also bears on the handle housing, so axial rod thrust is
+; carried by contact, not friction.
+;
+; PRINT: as modeled, z = 0 face (the handle-butting face) on the plate.
+; vcad's floating_floor check: +Z up is support-free; cradle-down (-X up)
+; would float 1686 mm2 of collar. The servo pocket ceiling is a 20.4 mm
+; bridge. 4 walls, 40% gyroid, PETG.
+
+[use params [shaft-r bore-r slit m3-tap m4-clear
+             srv-l srv-w srv-h srv-ear-z srv-hole-l srv-hole-w srv-spline-off]]
+
+[let petg [material "petg" 0.15 0.55 0.75 0.0 0.45]]
+[let bx [fn [sx sy sz px py pz] [translate px py pz [cube sx sy sz]]]]
+
+[let len 64.0]                     ; collar / cradle length along Z
+[let ro [+ shaft-r 5.0]]           ; collar outer radius
+[let zc [/ len 2.0]]
+
+; servo placement: case center (y, z); top (spline face) at x = srv-top
+[let sy -28.0]
+[let srv-top 8.0]
+[let ear-x [- srv-top [- srv-h srv-ear-z]]]   ; ear underside plane, x
+[let cradle-t 20.0]
+
+[let collar [cylinder ro len]]
+[let ears [bx 16.0 [- [+ ro 10.0] 12.0] len -8.0 12.0 0.0]]
+[let cradle [bx cradle-t [- 0.0 [- sy 15.0]] len [- ear-x cradle-t] [- sy 15.0] 0.0]]
+
+; ORDER: boxes union first, the cylinder joins last (cuff handoff note).
+[let body [union collar [union ears cradle]]]
+
+[let bore [translate 0.0 0.0 -1.0 [cylinder bore-r [+ len 2.0]]]]
+[let slit-cut [bx slit 30.0 [+ len 2.0] [- 0.0 [/ slit 2.0]] 0.0 -1.0]]
+[let m4 [fn [pz]
+  [translate -10.0 [+ ro 5.0] pz [rotate 0.0 90.0 0.0 [cylinder m4-clear 20.0]]]]]
+
+; servo pocket: 0.2 per side around the case, through the cradle along X
+[let pocket [bx [+ cradle-t 2.0] [+ srv-w 0.4] [+ srv-l 0.4]
+                [- ear-x [+ cradle-t 1.0]] [- sy [/ [+ srv-w 0.4] 2.0]]
+                [- zc [/ [+ srv-l 0.4] 2.0]]]]
+; ear screw pilots, 12 deep into the cradle from its +X face
+[let ear-hole [fn [dy dz]
+  [translate [- ear-x 12.0] [+ sy dy] [+ zc dz]
+    [rotate 0.0 90.0 0.0 [cylinder m3-tap 12.5]]]]]
+[let hl [/ srv-hole-l 2.0]]
+[let hw [/ srv-hole-w 2.0]]
+
+[let mount
+  [pipe body
+    [difference bore]
+    [difference slit-cut]
+    [difference [m4 12.0]]
+    [difference [m4 [- len 12.0]]]
+    [difference pocket]
+    [difference [ear-hole hw hl]]
+    [difference [ear-hole [- 0.0 hw] hl]]
+    [difference [ear-hole hw [- 0.0 hl]]]
+    [difference [ear-hole [- 0.0 hw] [- 0.0 hl]]]]]
+
+; Servo spline axis, for the assembly: (srv-top, sy, zc - srv-l/2 + off),
+; i.e. the proximal end, nearest the trigger.
+[let spline-z [+ [- zc [/ srv-l 2.0]] srv-spline-off]]
+
+[root mount "petg"]

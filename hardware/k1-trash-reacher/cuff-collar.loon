@@ -1,0 +1,27 @@
+; cuff-collar — the second axial stop for cuff-sleeve. Slides over the
+; sleeve's square tail after the sleeve is through the cuff tunnel; one M3
+; across its +Y slit pinches it onto the square.
+;
+; Frame: same as cuff-sleeve, placed at z 66.5..78.5 in the assembly.
+; PRINT: flat face down. No supports.
+
+[use params [sleeve-sq m3-clear]]
+
+[let petg [material "petg" 0.15 0.55 0.75 0.0 0.45]]
+[let bx [fn [sx sy sz px py pz] [translate px py pz [cube sx sy sz]]]]
+
+[let s 40.0]
+[let l 12.0]
+[let sq [+ sleeve-sq 0.3]]              ; 0.15 per side on the printed sleeve
+[let body [bx s s l [- 0.0 [/ s 2.0]] [- 0.0 [/ s 2.0]] 0.0]]
+[let hole [bx sq sq [+ l 2.0] [- 0.0 [/ sq 2.0]] [- 0.0 [/ sq 2.0]] -1.0]]
+[let slit-cut [bx 2.0 12.0 [+ l 2.0] -1.0 10.0 -1.0]]
+[let m3 [translate -21.0 16.2 [/ l 2.0] [rotate 0.0 90.0 0.0 [cylinder m3-clear 42.0]]]]
+
+[let collar
+  [pipe body
+    [difference hole]
+    [difference slit-cut]
+    [difference m3]]]
+
+[root collar "petg"]

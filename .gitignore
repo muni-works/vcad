@@ -74,3 +74,6 @@ examples/fields/**/*.f32
 examples/fields/bracket/transient/
 # generated streams (regenerate with tang-compress `corpus`; manifests keep the hashes)
 examples/fields/**/tc/*.tc
+
+# k1-trash-reacher ships its print-ready meshes
+!hardware/k1-trash-reacher/stl/*.stl

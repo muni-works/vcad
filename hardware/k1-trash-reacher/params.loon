@@ -1,0 +1,65 @@
+; params — shared dimensions for the K1 trash-reacher kit (a loon module).
+;
+; Every top-level `let` is an export; the part files say
+;   [use params [...]]
+;
+; PLACEHOLDERS. Everything tagged [CONFIRM] is a typical 32-inch reacher
+; figure, not a measurement of Cam's reacher. Change it here and re-export;
+; every part follows. README.md lists them as a checklist.
+;
+; Frame for every shaft-mounted part: reacher shaft axis = Z, shaft center
+; at the origin, +Z distal (toward the jaws), -Z proximal (toward the
+; handle). -Y is the trigger side (the pistol grip hangs below the shaft),
+; +X is to the right looking distally.
+;
+; vcad conventions: mm, degrees, cube corner at origin, cylinder axis +Z
+; base at z = 0, subject-last [difference tool subject].
+
+; --- the reacher -------------------------------------------------------------
+[let shaft-d 22.0]          ; [CONFIRM] aluminum shaft OD, typical 19-22
+[let shaft-r [/ shaft-d 2.0]]
+[let reacher-len 810.0]     ; [CONFIRM] overall length, handle butt to jaw tips
+[let handle-len 170.0]      ; [CONFIRM] handle housing length along the shaft
+[let trigger-drop 45.0]     ; [CONFIRM] shaft axis to trigger finger point
+[let trigger-travel 25.0]   ; [CONFIRM] finger-point travel, open -> firm close
+[let trigger-force 20.0]    ; [CONFIRM] N at the finger point for a firm close
+[let trigger-w 12.0]        ; [CONFIRM] trigger blade width (X)
+[let trigger-t 6.0]         ; [CONFIRM] trigger blade thickness (Z, at finger)
+[let reacher-mass 0.30]     ; [CONFIRM] kg, bare reacher
+
+; --- print fit ---------------------------------------------------------------
+; Radial clearance on printed bores that slide over aluminum. The cuff's
+; 0.25 mm fit-comp was measured for a sphere cavity on the P1S; a split
+; clamp bore needs a little clearance on top so the slit, not the bore,
+; sets the grip.
+[let fit 0.25]
+[let bore-r [+ shaft-r fit]]
+[let slit 2.0]              ; clamp slit width; bolts close it on the shaft
+
+; --- hardware ----------------------------------------------------------------
+[let m3-clear 1.7]          ; radius, M3 clearance
+[let m3-tap 1.25]           ; radius, M3 self-tap / heat-set pilot in PETG
+[let m4-clear 2.2]          ; radius, M4 clearance
+[let m4-nut-af 7.0]         ; M4 nut across flats
+
+; --- servo: DS3225 (25 kg·cm class, metal gear, 25T spline) --------------
+; Envelope from the common DS3225 drawing: body 40.0 x 20.0 x 40.5, ears
+; 54.5 overall x 2.5 thick, ear underside 28.0 above the case bottom, ear
+; holes 49.5 x 10.0, output spline 10.0 from one end on the centerline.
+[let srv-l 40.0]
+[let srv-w 20.0]
+[let srv-h 40.5]
+[let srv-ear-l 54.5]
+[let srv-ear-z 28.0]
+[let srv-hole-l 49.5]
+[let srv-hole-w 10.0]
+[let srv-spline-off 10.0]   ; spline axis from the near end of the case
+[let horn-r 15.0]           ; stock 25T metal arm horn, hole at r = 15
+
+; --- cuff interface (from hardware/k1-ball-cuff, rev E.1.1 / E.2) ----------
+; The cuff boss carries a 25.8 square tunnel along its X, 52 long, for a
+; 1-inch square handle. The reacher shaft passes straight through it in a
+; square sleeve: square-in-square is the rod-axis anti-rotation.
+[let tunnel 25.8]
+[let tunnel-len 52.0]
+[let sleeve-sq 25.3]        ; 0.25 per side in the printed tunnel
