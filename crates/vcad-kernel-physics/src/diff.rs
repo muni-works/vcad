@@ -70,6 +70,8 @@
 //!   pure function of its mass-property input (fixed initial state, fixed
 //!   control law, fixed step count). Keep it so.
 
+use std::sync::Arc;
+
 use phyz::math::{Mat3, Vec3 as PVec3};
 use phyz::SpatialInertia;
 use vcad_kernel_diff::{
@@ -748,6 +750,8 @@ pub fn rollout_gradient_via_density(
 /// ([`rollout_gradient_adjoint`], [`contact_rollout_gradient`]) are the
 /// supported surface.
 pub mod interop {
+    use std::sync::Arc;
+
     use super::BodyMassProps;
 
     /// A structured, adjoint-differentiable rollout description.
@@ -775,11 +779,11 @@ pub mod interop {
     ///   test rollouts hand-roll, so the FD path and the adjoint path price the
     ///   same trajectory.
     #[allow(clippy::type_complexity)]
-    pub struct AdjointRolloutSpec<'a> {
+    pub struct AdjointRolloutSpec {
         /// Build the (contact-free unless used via
         /// [`super::contact_rollout_gradient`]) phyz model at the given mass
         /// properties. See the type-level contract.
-        pub build_model: Box<dyn Fn(&[BodyMassProps]) -> phyz::Model + 'a>,
+        pub build_model: Arc<dyn Fn(&[BodyMassProps]) -> phyz::Model + Send + Sync>,
         /// Initial joint positions (length `nq`).
         pub q0: Vec<f64>,
         /// Initial joint velocities (length `nv`).
@@ -787,11 +791,11 @@ pub mod interop {
         /// Number of integration steps.
         pub steps: usize,
         /// Open-loop control at step `t` (length `nv`).
-        pub ctrl: Box<dyn Fn(usize) -> phyz::math::DVec + 'a>,
+        pub ctrl: Arc<dyn Fn(usize) -> phyz::math::DVec + Send + Sync>,
         /// Final-state objective `J = g(q_T, v_T)`.
-        pub objective_value: Box<dyn Fn(&[f64], &[f64]) -> f64 + 'a>,
+        pub objective_value: Arc<dyn Fn(&[f64], &[f64]) -> f64 + Send + Sync>,
         /// Analytic objective gradient `(∂g/∂q_T, ∂g/∂v_T)`.
-        pub objective_gradient: Box<dyn Fn(&[f64], &[f64]) -> (Vec<f64>, Vec<f64>) + 'a>,
+        pub objective_gradient: Arc<dyn Fn(&[f64], &[f64]) -> (Vec<f64>, Vec<f64>) + Send + Sync>,
     }
 }
 
@@ -828,116 +832,473 @@ fn assert_model_matches_props(model: &phyz::Model, props: &[BodyMassProps]) {
     }
 }
 
-/// Shared core of the adjoint-backed gradients: nominal seam pass per body,
-/// model build + contract check, one phyz adjoint pass, then the exact
-/// `∂J/∂p · dp/dθ` contraction (plus the surface-channel contraction when
-/// collision skins are present).
+/// Shared core of the adjoint-backed gradients: a three-node tang graph
+///
+/// ```text
+/// θ ─┬─ MassProps ──────┐
+///    └─ SeamEval (skin) ─┴─ Rollout ── J
+/// ```
+///
+/// whose reverse pass `TensorGraph::backward` derives. Each node is an
+/// operator with an exact adjoint: `MassProps` pulls `∂J/∂p` back through
+/// the seam's dual-number `dp/dθ`, `SeamEval` pulls the vertex cotangent
+/// back through the frozen-plan pullback, and `Rollout` is the phyz
+/// trajectory adjoint. The two θ channels sum where the graph joins them;
+/// nothing here is a hand chain rule. `SeamEval` appears only with contact
+/// skins.
 fn adjoint_gradient_core(
     bodies: &[DiffBody],
     spec: &AdjointRolloutSpec,
     contact: Option<(&ContactConfig, &[usize])>,
     theta: &[f64],
 ) -> Result<(f64, Vec<f64>), DiffError> {
+    use tang_compile::tensor::TensorGraph;
+
+    let seam = Arc::new(nodes::FrozenSeam::capture(
+        bodies,
+        theta,
+        contact.map_or(&[][..], |(_, s)| s),
+    )?);
+    let nb = bodies.len();
     let n = theta.len();
 
-    // 1. Nominal seam pass per body; keep B-reps/plans/positions.
-    let mut breps = Vec::with_capacity(bodies.len());
-    let mut plans = Vec::with_capacity(bodies.len());
-    let mut positions = Vec::with_capacity(bodies.len());
-    let mut nominal = Vec::with_capacity(bodies.len());
-    for body in bodies {
-        let brep = (body.build)(theta);
-        let plan = capture_plan(&brep, &body.tess)?;
-        let seam0 = evaluate_with_sensitivity(&brep, &plan, &ParamSeeding::new())?;
-        let props = mass_properties(&seam0.positions, &seam0.triangles, body.seam_density());
-        nominal.push(BodyMassProps::from_seam(&props));
-        positions.push(seam0.positions);
-        breps.push(brep);
-        plans.push(plan);
+    let mut g = TensorGraph::new();
+    let th = g.input(&[n]);
+    let props = g.operator(Arc::new(nodes::MassProps(seam.clone())), &[th], &[10 * nb]);
+    let mut rollout_in = vec![props];
+    if contact.is_some() {
+        let skin = g.operator(
+            Arc::new(nodes::SeamEval(seam.clone())),
+            &[th],
+            &[3 * seam.skin_len()],
+        );
+        rollout_in.push(skin);
+    }
+    let rollout = Arc::new(nodes::Rollout::new(
+        spec,
+        contact.map(|(c, _)| *c),
+        seam.clone(),
+    ));
+    let j = g.operator(rollout, &rollout_in, &[1]);
+    let dth = g
+        .backward(j, &[th])
+        .expect("adjoint graph shapes")
+        .remove(0);
+    let mut out = g.eval(&[theta.to_vec()], &[j, dth]);
+    if let Some(e) = seam.take_error() {
+        return Err(e);
+    }
+    let gradient = out.pop().expect("gradient");
+    Ok((out[0][0], gradient))
+}
+
+/// The operator nodes of [`adjoint_gradient_core`]'s graph.
+///
+/// `SeamEval` and `MassProps` are nodes of the **frozen plan** captured at
+/// θ: their forward evaluates that plan, and they refuse any other θ (a
+/// different θ needs a new plan — kernel-diff's contract). Fallible seam
+/// work inside a node parks its error in the shared [`FrozenSeam`] and
+/// returns NaN; the core surfaces it after evaluation.
+mod nodes {
+    use std::sync::{Arc, Mutex};
+
+    use tang_compile::tensor::{Operator, ShapeError, TensorGraph, TensorId};
+    use vcad_kernel_diff::{
+        evaluate_with_pullback, evaluate_with_sensitivity, mass_properties,
+        mass_properties_with_derivative, DiffError, ParamSeeding,
+    };
+    use vcad_kernel_math::{Point3 as CadPoint3, Vec3 as CadVec3};
+    use vcad_kernel_primitives::BRepSolid;
+    use vcad_kernel_tessellate::frozen::{capture_plan, FrozenPlan};
+
+    use super::interop::AdjointRolloutSpec;
+    use super::{assert_model_matches_props, BodyMassProps, ContactConfig, DiffBody, MM_TO_M};
+
+    /// Every body's B-rep, frozen plan, seam and parameter seedings at θ.
+    pub(super) struct FrozenSeam {
+        theta: Vec<f64>,
+        breps: Vec<BRepSolid>,
+        plans: Vec<FrozenPlan>,
+        /// `seedings[body][k]` for parameter `k`.
+        seedings: Vec<Vec<ParamSeeding>>,
+        densities: Vec<f64>,
+        positions: Vec<Vec<CadPoint3>>,
+        nominal: Vec<BodyMassProps>,
+        /// Bodies with a collision skin, in skin order.
+        skinned: Vec<usize>,
+        error: Mutex<Option<DiffError>>,
     }
 
-    // 2. Build the model and hold it to the body-frame contract.
-    let model = (spec.build_model)(&nominal);
-    assert_model_matches_props(&model, &nominal);
+    // The graph's operators must be `RefUnwindSafe`. B-reps hold
+    // `dyn Surface` / `dyn Curve` (no interior mutability in practice) and
+    // the rollout holds the caller's closures; a panic inside a node
+    // abandons the whole graph, so no broken invariant is ever observed.
+    impl std::panic::RefUnwindSafe for FrozenSeam {}
+    impl std::panic::RefUnwindSafe for Rollout {}
 
-    // 3. Collision skins: the body's frozen-plan nodes, mm → m. The skin is
-    //    *exactly* the seam mesh, so the vertex cotangent that comes back is
-    //    already indexed by plan node.
-    let meshes: Vec<phyz::diff::CollisionMesh> = match contact {
-        Some((_, skinned)) => skinned
-            .iter()
-            .map(|&i| phyz::diff::CollisionMesh {
-                body: i,
-                vertices: positions[i]
-                    .iter()
-                    .map(|p| phyz::math::Vec3::new(p.x * MM_TO_M, p.y * MM_TO_M, p.z * MM_TO_M))
-                    .collect(),
-            })
-            .collect(),
-        None => Vec::new(),
-    };
-    let ground = contact.map(|(cfg, _)| phyz::diff::GroundContact {
-        height: cfg.ground_height_m,
-        stiffness: cfg.stiffness,
-        damping: cfg.damping,
-    });
+    impl FrozenSeam {
+        pub(super) fn capture(
+            bodies: &[DiffBody],
+            theta: &[f64],
+            skinned: &[usize],
+        ) -> Result<Self, DiffError> {
+            let mut s = Self {
+                theta: theta.to_vec(),
+                breps: Vec::with_capacity(bodies.len()),
+                plans: Vec::with_capacity(bodies.len()),
+                seedings: Vec::with_capacity(bodies.len()),
+                densities: Vec::with_capacity(bodies.len()),
+                positions: Vec::with_capacity(bodies.len()),
+                nominal: Vec::with_capacity(bodies.len()),
+                skinned: skinned.to_vec(),
+                error: Mutex::new(None),
+            };
+            for body in bodies {
+                let brep = (body.build)(theta);
+                let plan = capture_plan(&brep, &body.tess)?;
+                let seam0 = evaluate_with_sensitivity(&brep, &plan, &ParamSeeding::new())?;
+                let props =
+                    mass_properties(&seam0.positions, &seam0.triangles, body.seam_density());
+                let seedings = (0..theta.len())
+                    .map(|k| (body.seeding_for)(&brep, theta, k))
+                    .collect::<Result<Vec<_>, _>>()?;
+                s.nominal.push(BodyMassProps::from_seam(&props));
+                s.positions.push(seam0.positions);
+                s.densities.push(body.seam_density());
+                s.seedings.push(seedings);
+                s.breps.push(brep);
+                s.plans.push(plan);
+            }
+            Ok(s)
+        }
 
-    // 4. One adjoint pass: J, exact ∂J/∂p per body, and (with contact) the
-    //    exact vertex cotangent ∂J/∂x per skinned body.
-    let objective = phyz::diff::FinalStateObjective {
-        value: &*spec.objective_value,
-        gradient: &*spec.objective_gradient,
-    };
-    let ctrl = &*spec.ctrl;
-    let rollout = phyz::diff::AdjointRollout {
-        model: &model,
-        contact: ground.map(|g| phyz::diff::ContactSetup {
-            ground: g,
-            meshes: &meshes,
-        }),
-        q0: spec.q0.clone(),
-        v0: spec.v0.clone(),
-        steps: spec.steps,
-        ctrl,
-    };
-    let adj = phyz::diff::adjoint_rollout_gradient(&rollout, &objective);
+        /// Total skin vertex count.
+        pub(super) fn skin_len(&self) -> usize {
+            self.skinned.iter().map(|&i| self.positions[i].len()).sum()
+        }
 
-    // 5. Mass-property channel: exact ∂J/∂p (adjoint) · exact dp/dθ (seam).
-    let mut gradient = vec![0.0f64; n];
-    for (i, body) in bodies.iter().enumerate() {
-        for (k, g) in gradient.iter_mut().enumerate() {
-            let seeding = (body.seeding_for)(&breps[i], theta, k)?;
-            let seam_k = evaluate_with_sensitivity(&breps[i], &plans[i], &seeding)?;
-            let (_props, dprops) = mass_properties_with_derivative(&seam_k, body.seam_density());
-            let dp = BodyMassProps::deriv_scalars(&dprops);
-            let acc: f64 = adj.d_inertia[i]
-                .iter()
-                .zip(&dp)
-                .map(|(djdp, dpj)| djdp * dpj)
-                .sum();
-            *g += acc;
+        pub(super) fn take_error(&self) -> Option<DiffError> {
+            self.error.lock().expect("seam error lock").take()
+        }
+
+        fn fail(&self, e: DiffError, len: usize) -> Vec<f64> {
+            self.error.lock().expect("seam error lock").get_or_insert(e);
+            vec![f64::NAN; len]
+        }
+
+        fn check_theta(&self, theta: &[f64]) {
+            assert!(
+                theta == self.theta.as_slice(),
+                "frozen-plan node evaluated away from the θ its plan was captured at"
+            );
         }
     }
 
-    // 6. Surface channel: the adjoint's ∂J/∂x (per metre, body frame) turns
-    //    into a per-mm cotangent on the frozen-plan nodes and goes through
-    //    one M5 pullback per skinned body — the exact seam the M8 note
-    //    promised the contact adjoint would drop into.
-    if let Some((_, skinned)) = contact {
-        for (mi, &i) in skinned.iter().enumerate() {
-            let djdx_mm: Vec<CadVec3> = adj.d_vertices[mi]
+    /// θ → per-body SI mass properties `[m, c, I]` (10 per body).
+    pub(super) struct MassProps(pub(super) Arc<FrozenSeam>);
+
+    impl Operator for MassProps {
+        fn name(&self) -> &str {
+            "MassProps"
+        }
+
+        fn forward(&self, inputs: &[&[f64]]) -> Vec<f64> {
+            self.0.check_theta(inputs[0]);
+            self.0.nominal.iter().flat_map(|p| p.scalars()).collect()
+        }
+
+        fn backward(
+            &self,
+            g: &mut TensorGraph,
+            inputs: &[TensorId],
+            _output: TensorId,
+            cot: TensorId,
+        ) -> Result<Vec<Option<TensorId>>, ShapeError> {
+            let n = g.shape(inputs[0])[0];
+            let op = Arc::new(MassPropsVjp(self.0.clone()));
+            Ok(vec![Some(g.operator(op, &[cot], &[n]))])
+        }
+    }
+
+    /// `cot_p ↦ Σ_body cot_p · dp/dθ_k`, with `dp/dθ_k` from dual numbers
+    /// through the seam (exact).
+    struct MassPropsVjp(Arc<FrozenSeam>);
+
+    impl Operator for MassPropsVjp {
+        fn name(&self) -> &str {
+            "MassPropsVjp"
+        }
+
+        fn forward(&self, inputs: &[&[f64]]) -> Vec<f64> {
+            let s = &self.0;
+            let cot = inputs[0];
+            let n = s.theta.len();
+            let mut gradient = vec![0.0f64; n];
+            for i in 0..s.breps.len() {
+                for (k, g) in gradient.iter_mut().enumerate() {
+                    let seam_k = match evaluate_with_sensitivity(
+                        &s.breps[i],
+                        &s.plans[i],
+                        &s.seedings[i][k],
+                    ) {
+                        Ok(m) => m,
+                        Err(e) => return s.fail(e, n),
+                    };
+                    let (_props, dprops) = mass_properties_with_derivative(&seam_k, s.densities[i]);
+                    let dp = BodyMassProps::deriv_scalars(&dprops);
+                    let acc: f64 = cot[10 * i..10 * i + 10]
+                        .iter()
+                        .zip(&dp)
+                        .map(|(djdp, dpj)| djdp * dpj)
+                        .sum();
+                    *g += acc;
+                }
+            }
+            gradient
+        }
+
+        fn backward(
+            &self,
+            _g: &mut TensorGraph,
+            _inputs: &[TensorId],
+            _output: TensorId,
+            _cot: TensorId,
+        ) -> Result<Vec<Option<TensorId>>, ShapeError> {
+            Ok(vec![None]) // first-order only
+        }
+    }
+
+    /// θ → the skinned bodies' frozen-plan node positions (mm), flattened.
+    pub(super) struct SeamEval(pub(super) Arc<FrozenSeam>);
+
+    impl Operator for SeamEval {
+        fn name(&self) -> &str {
+            "SeamEval"
+        }
+
+        fn forward(&self, inputs: &[&[f64]]) -> Vec<f64> {
+            self.0.check_theta(inputs[0]);
+            self.0
+                .skinned
                 .iter()
-                .map(|g| CadVec3::new(g.x * MM_TO_M, g.y * MM_TO_M, g.z * MM_TO_M))
-                .collect();
-            let cots = evaluate_with_pullback(&breps[i], &plans[i], &djdx_mm)?;
-            for (k, g) in gradient.iter_mut().enumerate() {
-                let seeding = (bodies[i].seeding_for)(&breps[i], theta, k)?;
-                *g += cots.contract(&seeding);
+                .flat_map(|&i| self.0.positions[i].iter().flat_map(|p| [p.x, p.y, p.z]))
+                .collect()
+        }
+
+        fn backward(
+            &self,
+            g: &mut TensorGraph,
+            inputs: &[TensorId],
+            _output: TensorId,
+            cot: TensorId,
+        ) -> Result<Vec<Option<TensorId>>, ShapeError> {
+            let n = g.shape(inputs[0])[0];
+            let op = Arc::new(SeamPullback(self.0.clone()));
+            Ok(vec![Some(g.operator(op, &[cot], &[n]))])
+        }
+    }
+
+    /// Per-mm vertex cotangent ↦ `dθ` through one frozen-plan pullback per
+    /// skinned body.
+    struct SeamPullback(Arc<FrozenSeam>);
+
+    impl Operator for SeamPullback {
+        fn name(&self) -> &str {
+            "SeamPullback"
+        }
+
+        fn forward(&self, inputs: &[&[f64]]) -> Vec<f64> {
+            let s = &self.0;
+            let n = s.theta.len();
+            let mut gradient = vec![0.0f64; n];
+            let mut at = 0;
+            for &i in &s.skinned {
+                let nv = s.positions[i].len();
+                let djdx_mm: Vec<CadVec3> = inputs[0][3 * at..3 * (at + nv)]
+                    .chunks(3)
+                    .map(|c| CadVec3::new(c[0], c[1], c[2]))
+                    .collect();
+                at += nv;
+                let cots = match evaluate_with_pullback(&s.breps[i], &s.plans[i], &djdx_mm) {
+                    Ok(c) => c,
+                    Err(e) => return s.fail(e, n),
+                };
+                for (k, g) in gradient.iter_mut().enumerate() {
+                    *g += cots.contract(&s.seedings[i][k]);
+                }
+            }
+            gradient
+        }
+
+        fn backward(
+            &self,
+            _g: &mut TensorGraph,
+            _inputs: &[TensorId],
+            _output: TensorId,
+            _cot: TensorId,
+        ) -> Result<Vec<Option<TensorId>>, ShapeError> {
+            Ok(vec![None])
+        }
+    }
+
+    /// The phyz rollout `(props[, skin mm]) → J`. Its forward runs phyz's
+    /// trajectory adjoint (one forward + one backward sweep) and keeps
+    /// `∂J/∂p` and `∂J/∂x` for the backward nodes.
+    #[allow(clippy::type_complexity)]
+    pub(super) struct Rollout {
+        build_model: Arc<dyn Fn(&[BodyMassProps]) -> phyz::Model + Send + Sync>,
+        ctrl: Arc<dyn Fn(usize) -> phyz::math::DVec + Send + Sync>,
+        objective_value: Arc<dyn Fn(&[f64], &[f64]) -> f64 + Send + Sync>,
+        objective_gradient: Arc<dyn Fn(&[f64], &[f64]) -> (Vec<f64>, Vec<f64>) + Send + Sync>,
+        q0: Vec<f64>,
+        v0: Vec<f64>,
+        steps: usize,
+        contact: Option<ContactConfig>,
+        seam: Arc<FrozenSeam>,
+        /// `[∂J/∂p flat, ∂J/∂x per mm flat]` from the last forward.
+        grads: Arc<Mutex<[Vec<f64>; 2]>>,
+    }
+
+    impl Rollout {
+        pub(super) fn new(
+            spec: &AdjointRolloutSpec,
+            contact: Option<ContactConfig>,
+            seam: Arc<FrozenSeam>,
+        ) -> Self {
+            Self {
+                build_model: spec.build_model.clone(),
+                ctrl: spec.ctrl.clone(),
+                objective_value: spec.objective_value.clone(),
+                objective_gradient: spec.objective_gradient.clone(),
+                q0: spec.q0.clone(),
+                v0: spec.v0.clone(),
+                steps: spec.steps,
+                contact,
+                seam,
+                grads: Arc::new(Mutex::new([Vec::new(), Vec::new()])),
             }
         }
     }
 
-    Ok((adj.objective, gradient))
+    impl Operator for Rollout {
+        fn name(&self) -> &str {
+            "Rollout"
+        }
+
+        fn forward(&self, inputs: &[&[f64]]) -> Vec<f64> {
+            // Build the model and hold it to the body-frame contract.
+            let props: Vec<BodyMassProps> = inputs[0]
+                .chunks(10)
+                .map(|c| BodyMassProps::from_scalars(c.try_into().expect("10 scalars")))
+                .collect();
+            let model = (self.build_model)(&props);
+            assert_model_matches_props(&model, &props);
+
+            // Collision skins: frozen-plan nodes, mm → m.
+            let mut meshes = Vec::new();
+            if let Some(skin) = inputs.get(1) {
+                let mut at = 0;
+                for &i in &self.seam.skinned {
+                    let nv = self.seam.positions[i].len();
+                    meshes.push(phyz::diff::CollisionMesh {
+                        body: i,
+                        vertices: skin[3 * at..3 * (at + nv)]
+                            .chunks(3)
+                            .map(|p| {
+                                phyz::math::Vec3::new(
+                                    p[0] * MM_TO_M,
+                                    p[1] * MM_TO_M,
+                                    p[2] * MM_TO_M,
+                                )
+                            })
+                            .collect(),
+                    });
+                    at += nv;
+                }
+            }
+            let ground = self.contact.map(|cfg| phyz::diff::GroundContact {
+                height: cfg.ground_height_m,
+                stiffness: cfg.stiffness,
+                damping: cfg.damping,
+            });
+            let objective = phyz::diff::FinalStateObjective {
+                value: &*self.objective_value,
+                gradient: &*self.objective_gradient,
+            };
+            let rollout = phyz::diff::AdjointRollout {
+                model: &model,
+                contact: ground.map(|g| phyz::diff::ContactSetup {
+                    ground: g,
+                    meshes: &meshes,
+                }),
+                q0: self.q0.clone(),
+                v0: self.v0.clone(),
+                steps: self.steps,
+                ctrl: &*self.ctrl,
+            };
+            let adj = phyz::diff::adjoint_rollout_gradient(&rollout, &objective);
+            // ∂J/∂x per metre (body frame) → per mm
+            let dx: Vec<f64> = adj
+                .d_vertices
+                .iter()
+                .flatten()
+                .flat_map(|g| [g.x * MM_TO_M, g.y * MM_TO_M, g.z * MM_TO_M])
+                .collect();
+            let dp: Vec<f64> = adj.d_inertia.iter().flatten().copied().collect();
+            *self.grads.lock().expect("rollout cache") = [dp, dx];
+            vec![adj.objective]
+        }
+
+        fn backward(
+            &self,
+            g: &mut TensorGraph,
+            inputs: &[TensorId],
+            output: TensorId,
+            cot: TensorId,
+        ) -> Result<Vec<Option<TensorId>>, ShapeError> {
+            // `output` is an input of the gradient nodes so they evaluate
+            // after this node's forward has filled the cache.
+            let mut out = Vec::with_capacity(inputs.len());
+            for (which, &x) in inputs.iter().enumerate() {
+                let shape = g.shape(x).to_vec();
+                let op = Arc::new(RolloutGrad {
+                    which,
+                    grads: self.grads.clone(),
+                });
+                out.push(Some(g.operator(op, &[output, cot], &shape)));
+            }
+            Ok(out)
+        }
+    }
+
+    /// `(J, cot_J) ↦ cot_J · ∂J/∂(input which)`, read from the rollout's
+    /// cache.
+    struct RolloutGrad {
+        which: usize,
+        grads: Arc<Mutex<[Vec<f64>; 2]>>,
+    }
+
+    impl Operator for RolloutGrad {
+        fn name(&self) -> &str {
+            "RolloutGrad"
+        }
+
+        fn forward(&self, inputs: &[&[f64]]) -> Vec<f64> {
+            let c = inputs[1][0];
+            let grads = self.grads.lock().expect("rollout cache");
+            grads[self.which].iter().map(|&d| c * d).collect()
+        }
+
+        fn backward(
+            &self,
+            _g: &mut TensorGraph,
+            _inputs: &[TensorId],
+            _output: TensorId,
+            _cot: TensorId,
+        ) -> Result<Vec<Option<TensorId>>, ShapeError> {
+            Ok(vec![None, None])
+        }
+    }
 }
 
 /// [`rollout_gradient`] with the finite-difference `∂J/∂p` factor replaced

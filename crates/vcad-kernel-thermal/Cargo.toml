@@ -13,6 +13,10 @@ repository.workspace = true
 [dependencies]
 serde = { workspace = true }
 vcad-receipt = { workspace = true }
+tang-sparse = { workspace = true }
+tang-compile = { workspace = true }
+tang = { workspace = true }
+tang-expr = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

@@ -12,6 +12,7 @@ repository.workspace = true
 
 [dependencies]
 tang = { workspace = true }
+tang-optim = { workspace = true }
 vcad-kernel-math = { workspace = true }
 vcad-kernel-geom = { workspace = true }
 vcad-kernel-nurbs = { workspace = true }
