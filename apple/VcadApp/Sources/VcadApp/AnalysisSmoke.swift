@@ -48,16 +48,25 @@ func analysisSmoke() async {
     // FEA
     if load(m, "[pub let bracket [cube 100 10 10]]", "Bracket") {
         store.feaPart = 0
+        store.feaMaterial = "aluminum_6061"
+        store.feaResolution = 20
+        var l = FeaLoadSetup(); l.force = [0, 0, -100]
+        let s = FeaSupportSetup()
+        store.feaLoads = [l]; store.feaSupports = [s]
+        // Viewport picks: kernel rays through the real picker, as a click would.
+        store.setPickTarget(.support(s.id), m)
+        let fixedHit = m.pickTopology(part: 0, origin: [-50, 5, 5], dir: [1, 0, 0])
+        m.picking.select(fixedHit?.ref, additive: false)
+        store.setPickTarget(.load(l.id), m)
+        let tipHit = m.pickTopology(part: 0, origin: [150, 5, 5], dir: [-1, 0, 0])
+        m.picking.select(tipHit?.ref, additive: false)
+        store.setPickTarget(nil, m)
+        let sup = store.feaSupports[0].faces, ld = store.feaLoads[0].faces
         let faces = store.faces(m)
-        let fixed = faces.first { $0.isPlanar && $0.normal.count == 3 && $0.normal[0] < -0.99 }
-        let tip = faces.first { $0.isPlanar && $0.normal.count == 3 && $0.normal[0] > 0.99 }
-        check(fixed != nil && tip != nil, "fea faces picked: support \(fixed?.label ?? "-"), load \(tip?.label ?? "-")")
-        if let fixed, let tip {
-            store.feaMaterial = "aluminum_6061"
-            store.feaResolution = 20
-            var l = FeaLoadSetup(); l.faces = [tip.id]; l.force = [0, 0, -100]
-            var s = FeaSupportSetup(); s.faces = [fixed.id]
-            store.feaLoads = [l]; store.feaSupports = [s]
+        let label = { (ids: [UInt32]) in ids.compactMap { id in faces.first { $0.id == id }?.label }.joined(separator: ", ") }
+        check(sup.count == 1 && ld.count == 1 && sup != ld && m.picking.filter == .body,
+              "fea faces picked in viewport: support [\(label(sup))], load [\(label(ld))]")
+        if sup.count == 1, ld.count == 1 {
             let t0 = Date()
             await store.runFea(m)
             if let r = store.feaResult {
