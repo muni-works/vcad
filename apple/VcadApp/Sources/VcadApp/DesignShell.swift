@@ -69,6 +69,8 @@ struct DesignModelingTools: View {
             .disabled(model.cnc.machine.active)
             .onChange(of: model.source) { _, _ in if !model.availableTabs.contains(model.toolTab) { model.toolTab = .create } }
             .sheet(item: $model.activeFeatureOp) { op in FeatureOpSheet(model: model, op: op) }
+            .sheet(isPresented: $model.showsCommandPalette) { CommandPaletteSheet(model: model) }
+            .sheet(isPresented: $model.showsParameterTable) { ParameterTableSheet(model: model) }
             .background {
                 Button("") { model.disarm() }.keyboardShortcut(.cancelAction)
                     .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)

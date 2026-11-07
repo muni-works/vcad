@@ -279,6 +279,29 @@ struct DocumentCommands: Commands {
             }
             .keyboardShortcut("d", modifiers: [.command, .shift])
         }
+        CommandMenu("Tools") {
+            Button("Command Palette…") { model.showsCommandPalette = true }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+            Button("Parameters…") { model.showsParameterTable = true }
+                .keyboardShortcut("p", modifiers: [.command, .option])
+                .disabled(!model.usesDocumentTree)
+            Divider()
+            Toggle("Measure", isOn: $model.measuring)
+                .keyboardShortcut("m", modifiers: [.control])
+                .disabled(!model.usesDocumentTree)
+            Toggle("Section View", isOn: Binding(get: { model.section != nil },
+                                                 set: { model.section = $0 ? SectionPlane() : nil }))
+                .keyboardShortcut("x", modifiers: [.command, .option])
+            Divider()
+            Button("New Sketch") { model.enterSketch() }
+                .keyboardShortcut("s", modifiers: [.control])
+                .disabled(!model.usesDocumentTree || model.sketching)
+            Menu("Feature") {
+                ForEach(FeatureOp.allCases) { op in
+                    Button(op.label + "…") { model.activeFeatureOp = op }
+                }
+            }.disabled(!model.usesDocumentTree)
+        }
         CommandMenu("Select") {
             ForEach(PickFilter.allCases) { f in
                 Toggle(f.label, isOn: Binding(
@@ -345,7 +368,7 @@ extension UTType {
 
 @MainActor func openPanel(_ model: EditorModel) {
     let panel = NSOpenPanel()
-    panel.allowedContentTypes = [.vcadDocument, .loonSource, .folder]
+    panel.allowedContentTypes = [.vcadDocument, .loonSource, .folder] + ["step", "stp", "urdf"].compactMap { UTType(filenameExtension: $0) }
     // Several documents at once are several instances, so a multiple selection
     // is a perfectly good thing to ask for.
     panel.allowsMultipleSelection = true
@@ -600,6 +623,15 @@ struct FeatureRowView: View {
             }
         }
         Button { model.renamingFeatureID = node.id } label: { Label("Rename", systemImage: "pencil") }
+        if let pi = node.partIndex, depth == 0 {
+            Button { model.reorderPart(pi, to: pi - 1) } label: { Label("Move Up", systemImage: "arrow.up") }
+                .disabled(pi == 0)
+            Button { model.reorderPart(pi, to: pi + 1) } label: { Label("Move Down", systemImage: "arrow.down") }
+                .disabled(pi >= model.featureNodes.count - 1)
+            Button { model.toggleSuppressed(part: pi) } label: {
+                Label(model.isSuppressed(part: pi) ? "Unsuppress" : "Suppress", systemImage: "nosign")
+            }
+        }
         Button {
             #if os(macOS)
             NSPasteboard.general.clearContents()
