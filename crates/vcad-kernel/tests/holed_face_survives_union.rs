@@ -19,7 +19,10 @@ fn area_in_plane_z(verts: &[f32], idx: &[u32], z: f32) -> f64 {
             [verts[k] as f64, verts[k + 1] as f64, verts[k + 2] as f64]
         };
         let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
-        if [a[2], b[2], c[2]].iter().all(|v| (*v - z as f64).abs() < 1e-6) {
+        if [a[2], b[2], c[2]]
+            .iter()
+            .all(|v| (*v - z as f64).abs() < 1e-6)
+        {
             area += ((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])).abs() / 2.0;
         }
     }
@@ -34,10 +37,14 @@ fn bottom_area(s: &Solid) -> f64 {
 #[test]
 fn round_holed_bottom_face_survives_union_with_disjoint_upright() {
     let (w, d, t) = (90.0, 50.0, 6.0);
-    let plate = Solid::cube(w, d, t).difference(&Solid::cylinder(3.0, 18.0, 48).translate(22.0, 21.0, -6.0));
+    let plate = Solid::cube(w, d, t)
+        .difference(&Solid::cylinder(3.0, 18.0, 48).translate(22.0, 21.0, -6.0));
     let expected = w * d - std::f64::consts::PI * 9.0;
     let before = bottom_area(&plate);
-    assert!((before - expected).abs() < 2.0, "plate alone: bottom area {before:.1}, expected ≈{expected:.1}");
+    assert!(
+        (before - expected).abs() < 2.0,
+        "plate alone: bottom area {before:.1}, expected ≈{expected:.1}"
+    );
 
     // The upright starts 0.5 mm above the bottom: it never touches that face.
     let upright = Solid::cube(w, t, 50.0).translate(0.0, d - t, 0.5);
@@ -56,13 +63,22 @@ fn launch_bracket_keeps_its_drilled_bottom() {
     let pitch = w / (n as f64 + 1.0);
     let mut plate = Solid::cube(w, d, t);
     for i in 0..n {
-        plate = plate.difference(&Solid::cylinder(hole / 2.0, t * 3.0, 48).translate(pitch * (i as f64 + 1.0), d * 0.42, -t));
+        plate = plate.difference(&Solid::cylinder(hole / 2.0, t * 3.0, 48).translate(
+            pitch * (i as f64 + 1.0),
+            d * 0.42,
+            -t,
+        ));
     }
     let wall = Solid::cube(w, t, h).difference(
-        &Solid::cylinder(bore / 2.0, t * 3.0, 48).rotate(90.0, 0.0, 0.0).translate(w / 2.0, t * 2.0, h * 0.58),
+        &Solid::cylinder(bore / 2.0, t * 3.0, 48)
+            .rotate(90.0, 0.0, 0.0)
+            .translate(w / 2.0, t * 2.0, h * 0.58),
     );
     let part = plate.union(&wall.translate(0.0, d - t, 0.0));
     let expected = w * d - n as f64 * std::f64::consts::PI * (hole / 2.0) * (hole / 2.0);
     let got = bottom_area(&part);
-    assert!((got - expected).abs() < 3.0, "bracket bottom area {got:.1}, expected ≈{expected:.1}");
+    assert!(
+        (got - expected).abs() < 3.0,
+        "bracket bottom area {got:.1}, expected ≈{expected:.1}"
+    );
 }
