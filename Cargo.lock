@@ -4882,6 +4882,9 @@ version = "0.11.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tang",
+ "tang-compile",
+ "tang-expr 0.2.0",
  "tang-sparse",
  "vcad-kernel-tessellate",
  "vcad-receipt",
@@ -5045,6 +5048,7 @@ dependencies = [
  "serde",
  "serde_json",
  "stl_io",
+ "tang-compile",
  "thiserror 2.0.18",
  "vcad-eval",
  "vcad-ir",
