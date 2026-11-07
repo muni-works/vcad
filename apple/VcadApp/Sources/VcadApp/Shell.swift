@@ -279,6 +279,17 @@ struct DocumentCommands: Commands {
             }
             .keyboardShortcut("d", modifiers: [.command, .shift])
         }
+        CommandMenu("Select") {
+            ForEach(PickFilter.allCases) { f in
+                Toggle(f.label, isOn: Binding(
+                    get: { model.picking.filter == f },
+                    set: { if $0 { model.picking.filter = f } }))
+                    .keyboardShortcut(f.shortcut, modifiers: [.control])
+            }
+            Divider()
+            Button("Clear Face/Edge Selection") { model.picking.clear() }
+                .disabled(model.picking.selection.isEmpty)
+        }
         CommandMenu("Camera") {
             Button("Isometric") { model.animateCamera(to: .isometric) }.keyboardShortcut("1")
             Button("Front") { model.animateCamera(to: .front) }.keyboardShortcut("2")

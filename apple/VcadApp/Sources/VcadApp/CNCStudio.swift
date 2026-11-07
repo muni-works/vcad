@@ -56,6 +56,8 @@ struct WorkspaceHeader: View {
                                 Toggle("Inspector", isOn: $model.showsInspector)
                             case .electronics:
                                 Text("Electronics panels are always shown")
+                            case .drawing:
+                                Text("Drawing panels are always shown")
                             }
                             Divider()
                             Button(model.isWindowed ? "Release to Desktop" : "Open in Window") {
