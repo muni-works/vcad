@@ -695,10 +695,16 @@ final class SketchSession {
         for i in 0..<(p.count - 1) {
             let p0 = p[max(i - 1, 0)], p1 = p[i], p2 = p[i + 1], p3 = p[min(i + 2, p.count - 1)]
             for k in 1...n {
-                let t = Double(k) / Double(n), t2 = t * t, t3 = t2 * t
-                let q = 0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t2
-                               + (-p0 + 3 * p1 - 3 * p2 + p3) * t3)
-                out.append(q)
+                let t: Double = Double(k) / Double(n)
+                let t2: Double = t * t
+                let t3: Double = t2 * t
+                let a: SIMD2<Double> = 2 * p1
+                let b: SIMD2<Double> = (p2 - p0) * t
+                let c2: SIMD2<Double> = 2 * p0 - 5 * p1
+                let c: SIMD2<Double> = (c2 + 4 * p2 - p3) * t2
+                let d2: SIMD2<Double> = 3 * p1 - 3 * p2
+                let d: SIMD2<Double> = (d2 - p0 + p3) * t3
+                out.append(0.5 * (a + b + c + d))
             }
         }
         return out
