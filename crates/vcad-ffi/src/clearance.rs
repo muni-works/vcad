@@ -198,7 +198,7 @@ mod tests {
     fn interfering_boxes_report_overlap_volume() {
         // Two 10 mm cubes overlapping by 4 × 10 × 10 = 400 mm³.
         let d = doc(
-            "[pub let a [cube 10 10 10]]\n[pub let b [translate 6 0 0 [cube 10 10 10]]]",
+            "[root [cube 10 10 10] \"steel\"]\n[root [translate 6 0 0 [cube 10 10 10]] \"steel\"]",
         );
         let r = check(&d, &json!({})).unwrap();
         assert_eq!(r.pairs.len(), 1, "{r:#?}");
@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn separated_boxes_report_clearance() {
         let d = doc(
-            "[pub let a [cube 10 10 10]]\n[pub let b [translate 13 0 0 [cube 10 10 10]]]",
+            "[root [cube 10 10 10] \"steel\"]\n[root [translate 13 0 0 [cube 10 10 10]] \"steel\"]",
         );
         let r = check(&d, &json!({})).unwrap();
         let p = &r.pairs[0];
@@ -226,7 +226,7 @@ mod tests {
     #[test]
     fn c_abi_round_trip() {
         let d = doc(
-            "[pub let a [cube 10 10 10]]\n[pub let b [translate 6 0 0 [cube 10 10 10]]]",
+            "[root [cube 10 10 10] \"steel\"]\n[root [translate 6 0 0 [cube 10 10 10]] \"steel\"]",
         );
         let dj = CString::new(serde_json::to_string(&d).unwrap()).unwrap();
         let out: Value =

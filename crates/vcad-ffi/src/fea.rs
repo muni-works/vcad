@@ -159,7 +159,7 @@ pub struct SolveReq {
 }
 
 fn default_resolution() -> usize {
-    16
+    24
 }
 fn default_levels() -> usize {
     2
