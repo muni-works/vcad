@@ -23,6 +23,7 @@
 
 use phyz::math::{DVec, SpatialTransform, Vec3};
 use phyz::{Joint, JointType, Model, ModelBuilder};
+use std::sync::Arc;
 use vcad_kernel_diff::{ParamSeeding, SurfaceSeed};
 use vcad_kernel_geom::CylinderSurface;
 use vcad_kernel_physics::diff::interop::AdjointRolloutSpec;
@@ -87,15 +88,15 @@ fn flywheel_model(props: &[BodyMassProps]) -> Model {
         .build()
 }
 
-fn flywheel_spec<'a>() -> AdjointRolloutSpec<'a> {
+fn flywheel_spec() -> AdjointRolloutSpec {
     AdjointRolloutSpec {
-        build_model: Box::new(|p: &[BodyMassProps]| flywheel_model(p)),
+        build_model: Arc::new(|p: &[BodyMassProps]| flywheel_model(p)),
         q0: vec![0.0],
         v0: vec![0.0],
         steps: FLY_STEPS,
-        ctrl: Box::new(|_t| DVec::from_slice(&[TORQUE])),
-        objective_value: Box::new(|_q, v| v[0]),
-        objective_gradient: Box::new(|q, v| {
+        ctrl: Arc::new(|_t| DVec::from_slice(&[TORQUE])),
+        objective_value: Arc::new(|_q, v| v[0]),
+        objective_gradient: Arc::new(|q, v| {
             let mut gv = vec![0.0; v.len()];
             gv[0] = 1.0;
             (vec![0.0; q.len()], gv)
@@ -144,15 +145,15 @@ fn pendulum_model(props: &[BodyMassProps]) -> Model {
         .build()
 }
 
-fn pendulum_spec<'a>() -> AdjointRolloutSpec<'a> {
+fn pendulum_spec() -> AdjointRolloutSpec {
     AdjointRolloutSpec {
-        build_model: Box::new(|p: &[BodyMassProps]| pendulum_model(p)),
+        build_model: Arc::new(|p: &[BodyMassProps]| pendulum_model(p)),
         q0: vec![Q0],
         v0: vec![0.0],
         steps: PEND_STEPS,
-        ctrl: Box::new(|_t| DVec::from_slice(&[0.0])),
-        objective_value: Box::new(|q, _v| q[0]),
-        objective_gradient: Box::new(|q, v| {
+        ctrl: Arc::new(|_t| DVec::from_slice(&[0.0])),
+        objective_value: Arc::new(|q, _v| q[0]),
+        objective_gradient: Arc::new(|q, v| {
             let mut gq = vec![0.0; q.len()];
             gq[0] = 1.0;
             (gq, vec![0.0; v.len()])
