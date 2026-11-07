@@ -54,6 +54,8 @@ use vcad_kernel_raytrace::{BrepBvh, Bvh, Ray};
 use vcad_kernel_tessellate::TriangleMesh;
 
 mod analysis;
+pub mod animation;
+pub mod assembly;
 mod cam;
 pub mod clearance;
 pub mod dfm;

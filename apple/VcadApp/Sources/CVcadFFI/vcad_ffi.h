@@ -669,6 +669,16 @@ char *vcad_fea_materials(void);
  * {pairs:[{a,b,distance_mm,intersecting,overlap_volume_mm3,status,clash?}], ...} */
 char *vcad_clearance(const char *doc_json, const char *request_json);
 
+/* --- Assembly + animation authoring (assembly.rs, animation.rs) ---
+ * Owned JSON freed ONLY with vcad_string_free; null + vcad_last_error on
+ * failure. Additive, no ABI bump. */
+/* .vcad JSON -> [{id,kind,instances:[a,b],pass,measured,expected,tolerance,
+ * unit,detail,error|null}] — mates re-verified against the FK-posed assembly. */
+char *vcad_assembly_check_mates(const char *doc_json);
+/* Timeline JSON -> canonical Timeline JSON (keys sorted + clamped to
+ * [0,durationS], coincident keys collapsed last-wins, empty tracks dropped). */
+char *vcad_timeline_normalize(const char *timeline_json);
+
 #ifdef __cplusplus
 }
 #endif

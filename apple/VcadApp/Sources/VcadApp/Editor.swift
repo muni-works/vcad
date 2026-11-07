@@ -517,6 +517,8 @@ final class EditorModel {
 
     /// The physics simulation model. Inert until `enableSimulation()`.
     let sim = SimController()
+    /// Assembly / joint / keyframe authoring UI state (AssemblyModel.swift).
+    let assembly = AssemblyUIState()
 
     /// Whether the current document can be simulated: an assembly with bodies.
     var canSimulate: Bool { assemblyInstanceCount > 0 && documentJSON != nil }
@@ -1306,6 +1308,14 @@ final class EditorModel {
     /// materialized IR and reload it into the engine. Always snapshot-undone,
     /// since a reload starts the engine's history over.
     @discardableResult
+    /// Assembly / keyframe authoring (AssemblyModel.swift): an IR edit, one
+    /// undo step. `rebuild` re-evaluates the scene (instances, joints, ground);
+    /// timeline-only edits leave the resident scene and playhead alone.
+    @discardableResult
+    func assemblyEdit(_ name: String, rebuild: Bool, _ mutate: (inout [String: Any]) -> Void) -> Bool {
+        irEdit(name, reeval: rebuild ? .rebuild : .none, mutate) != nil
+    }
+
     private func irEdit(_ name: String, gestureStart: Bool = true, reeval: Reeval,
                         base: [String: Any]? = nil,
                         _ mutate: (inout [String: Any]) -> Void) -> DocumentEngine.Result? {
