@@ -230,8 +230,11 @@ pub struct SolveResult {
     pub field: Option<CellField>,
 }
 
+/// Face ordinal → `(bbox, is_axis_aligned_plane)`.
+type FaceBoxes = HashMap<u32, (fea::spec::RegionBox, bool)>;
+
 /// `(bbox, is_axis_aligned_plane)` per face ordinal.
-fn face_boxes(solid: &vcad_kernel::Solid) -> Result<HashMap<u32, (fea::spec::RegionBox, bool)>, String> {
+fn face_boxes(solid: &vcad_kernel::Solid) -> Result<FaceBoxes, String> {
     let brep = solid
         .as_brep()
         .ok_or("part has no B-rep faces to pick (mesh-only) — use explicit regions")?;
@@ -241,7 +244,7 @@ fn face_boxes(solid: &vcad_kernel::Solid) -> Result<HashMap<u32, (fea::spec::Reg
         let Some(&o) = ord.get(&fid) else { continue };
         let mut min = [f64::INFINITY; 3];
         let mut max = [f64::NEG_INFINITY; 3];
-        for v in m.vertices.chunks_exact(3) {
+        for v in m.vertices.as_chunks::<3>().0 {
             for a in 0..3 {
                 min[a] = min[a].min(v[a] as f64);
                 max[a] = max[a].max(v[a] as f64);
@@ -257,7 +260,7 @@ fn face_boxes(solid: &vcad_kernel::Solid) -> Result<HashMap<u32, (fea::spec::Reg
 
 fn resolve_target(
     t: &Target,
-    boxes: &mut Option<Result<HashMap<u32, (fea::spec::RegionBox, bool)>, String>>,
+    boxes: &mut Option<Result<FaceBoxes, String>>,
     solid: &vcad_kernel::Solid,
     what: &str,
     notes: &mut Vec<String>,
@@ -289,7 +292,7 @@ fn resolve_target(
 /// Resample nodal fields onto the lattice cell grid.
 pub fn cell_field(f: &fea::solve::NodeFields) -> Option<CellField> {
     let h = f.h_mm;
-    if f.nodes.is_empty() || !(h > 0.0) {
+    if f.nodes.is_empty() || h.is_nan() || h <= 0.0 {
         return None;
     }
     let mut origin = [f64::INFINITY; 3];

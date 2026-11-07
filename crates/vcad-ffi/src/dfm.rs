@@ -308,7 +308,7 @@ pub fn resolve_patch(doc: &Document, root: Option<NodeId>, issue: &DfmIssue) -> 
             return field_patch(doc, *node, path, from, to);
         }
     }
-    if issue.units != "mm" || !(issue.measured > 0.0) || !(issue.limit > 0.0) {
+    if issue.units != "mm" || issue.measured.is_nan() || issue.measured <= 0.0 || issue.limit.is_nan() || issue.limit <= 0.0 {
         return Err("no automatic fix for this rule".into());
     }
     let start = issue
