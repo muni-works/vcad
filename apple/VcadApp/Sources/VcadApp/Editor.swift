@@ -1516,6 +1516,13 @@ final class EditorModel {
         return irEdit(name, reeval: .rebuild, base: doc) { _ in } != nil
     }
 
+    /// Mutate the IR document directly and reload, as ONE undo step — for
+    /// op families the feature builder lacks (sheet-metal chains).
+    @discardableResult
+    func editIR(_ name: String, _ mutate: (inout [String: Any]) -> Void) -> Bool {
+        irEdit(name, reeval: .rebuild, mutate) != nil
+    }
+
     /// Root IR node id of a viewport part.
     func rootNodeId(forPart i: Int) -> Int? {
         guard let roots = documentJSON?["roots"] as? [[String: Any]], i >= 0, i < roots.count else { return nil }

@@ -1018,7 +1018,17 @@ fn detect_bend(
         .filter(|c| c.outer_touch && !c.inner_touch)
         .map(|c| c.area)
         .fold(0.0, f64::max);
-    let radius = if inner > 0.0 {
+    // The per-panel outer/inner labels come from face area, which ties on a
+    // plain L (both wall faces equally long) — then the labels follow cluster
+    // order, i.e. the part's handedness, and can name the inner arc "outer".
+    // Two concentric arc surfaces a thickness apart settle it geometrically:
+    // the smaller radius is the inside of the bend.
+    let mut arcs: Vec<f64> = bridging.iter().map(|c| c.area / (angle * length)).collect();
+    arcs.sort_by(|a, b| b.total_cmp(a));
+    let concentric = arcs.len() >= 2 && ((arcs[0] - arcs[1]) - thickness).abs() <= 0.25 * thickness;
+    let radius = if concentric {
+        arcs[1]
+    } else if inner > 0.0 {
         inner / (angle * length)
     } else if outer > 0.0 {
         (outer / (angle * length) - thickness).max(0.0)
@@ -1410,6 +1420,40 @@ mod tests {
         p.push([cy, t]);
         p.push([0.0, t]);
         p
+    }
+
+    /// The mirror image of [`l_bracket_recovers_one_bend`] must flatten
+    /// identically — inner/outer used to follow cluster order (handedness).
+    #[test]
+    fn mirrored_l_bracket_recovers_the_inner_radius() {
+        let (a, b, t, r, w) = (30.0, 20.0, 2.0, 2.0, 40.0);
+        let (mut pos, mut idx) = extrude_yz(&l_section(a, b, t, r, 24), w);
+        for c in pos.chunks_exact_mut(3) {
+            c[0] = -c[0];
+        }
+        for tri in idx.chunks_exact_mut(3) {
+            tri.swap(1, 2);
+        }
+        let rec = flatten_solid(
+            MeshView {
+                positions: &pos,
+                indices: &idx,
+            },
+            &BendTable::builtin(),
+            &FlattenOptions::default(),
+        )
+        .expect("mirrored L-bracket should flatten");
+        assert_eq!(rec.bends.len(), 1);
+        assert!(
+            (rec.bends[0].radius - r).abs() < 0.05,
+            "radius = {}",
+            rec.bends[0].radius
+        );
+        assert!(
+            rec.volume_error_frac() < 0.005,
+            "{:?}",
+            rec.volume_error_frac()
+        );
     }
 
     #[test]

@@ -853,6 +853,11 @@ struct ReleasedOverlayView: View {
                             .modifier(ChromeRegion(key: "inspector"))
                     }
                 }
+                // Sheet metal / 3D print / CAM job (FabricatePanel.swift).
+                if FabStore.shared.shown && !model.source.isGripper {
+                    FabricatePanel(model: model)
+                        .modifier(ChromeRegion(key: "fabricate"))
+                }
             }
             .padding(Theme.Space.l)
             .animation(Motion.panel, value: model.showsInspector)

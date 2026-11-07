@@ -85,6 +85,7 @@ struct VcadApp: App {
             DocumentCommands(model: model, intent: intent)
             FieldCommands()
             AnalysisCommands()
+            FabricateCommands()
             UpdateCommands()
         }
 

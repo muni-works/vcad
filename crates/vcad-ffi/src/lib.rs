@@ -55,6 +55,7 @@ use vcad_kernel_tessellate::TriangleMesh;
 
 mod analysis;
 mod cam;
+pub mod cam_job;
 pub mod clearance;
 pub mod dfm;
 pub mod engine;
@@ -65,8 +66,10 @@ pub mod features;
 pub mod gym;
 pub mod import;
 mod json;
+pub mod print;
 pub mod sensitivity;
 pub mod session;
+pub mod sheet_metal;
 pub mod sketch;
 pub mod topology;
 pub mod train;
