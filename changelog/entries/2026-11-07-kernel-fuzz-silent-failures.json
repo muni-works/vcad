@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-07-kernel-fuzz-silent-failures",
+  "version": "undefined",
+  "date": "2026-11-07",
+  "category": "fix",
+  "title": "Overlarge shell/fillet and empty results now say so",
+  "summary": "A shell thicker than the solid is refused instead of growing it, an impossible fillet/chamfer reports the kernel's reason to the agent, and empty results say \"empty (no volume)\".",
+  "features": ["shell", "fillet", "chamfer", "booleans", "agent"],
+  "mcpTools": ["create_cad_loon", "inspect_cad", "describe_scene"]
+}
