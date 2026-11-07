@@ -1,0 +1,185 @@
+<!doctype html>
+<!--
+  DRAFT launch landing page for vcad 1.0 (vcad.io). Served at /launch/ only;
+  the site root is untouched until launch day. Not deployed by this PR.
+  Before going live: point the paper link at the arXiv id, confirm the DMG
+  is published (desktop-v* release), and swap the hero still for the video.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>vcad — free, open CAD for Mac</title>
+  <meta name="description" content="vcad is a free, open-source parametric CAD app for Mac with its own BRep kernel, electronics co-design, DFM and FEA, and an agent that works in your viewport over local MCP.">
+  <meta property="og:title" content="vcad — free, open CAD for Mac">
+  <meta property="og:description" content="Parametric CAD with a kernel written from scratch in Rust. No account, no cloud, no subscription.">
+  <meta property="og:image" content="https://vcad.io/launch/gallery/stirling-engine.jpg">
+  <link rel="icon" href="/favicon.ico">
+  <style>
+    @font-face { font-family: Inter; src: url(/fonts/InterVariable.woff2) format("woff2"); font-weight: 100 900; font-display: swap; }
+    @font-face { font-family: Berkeley; src: url(/fonts/BerkeleyMono-Regular.otf) format("opentype"); font-display: swap; }
+    :root {
+      --bg: #f5f3f1; --fg: #15171a; --muted: #5d636b; --line: #dedad5; --card: #ffffff;
+      --accent: #1f5fd1; --accent-fg: #fff; --tile: #f4f2ef;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme="light"]) { --bg: #101113; --fg: #eceae7; --muted: #9aa0a8; --line: #26282c; --card: #17191c; --accent: #6b9bff; --accent-fg: #0b0c0e; }
+    }
+    * { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font: 17px/1.55 Inter, -apple-system, system-ui, sans-serif; }
+    a { color: inherit; }
+    .wrap { max-width: 1120px; margin: 0 auto; padding: 0 16px; }
+    nav { display: flex; align-items: center; justify-content: space-between; padding: 20px 0; }
+    nav .brand { font-weight: 650; letter-spacing: -.01em; font-size: 20px; text-decoration: none; }
+    nav .links a { margin-left: 22px; color: var(--muted); text-decoration: none; font-size: 15px; }
+    nav .links a:hover { color: var(--fg); }
+    header.hero { padding: 64px 0 40px; display: grid; gap: 40px; grid-template-columns: 1.05fr 1fr; align-items: center; }
+    h1 { font-size: clamp(38px, 6vw, 64px); line-height: 1.02; letter-spacing: -.035em; margin: 0 0 18px; font-weight: 700; }
+    .lede { font-size: 20px; color: var(--muted); margin: 0 0 28px; max-width: 32ch; }
+    .cta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+    .btn { display: inline-flex; align-items: center; gap: 10px; padding: 13px 20px; border-radius: 10px; text-decoration: none; font-weight: 600; font-size: 16px; }
+    .btn.primary { background: var(--fg); color: var(--bg); }
+    .btn.ghost { border: 1px solid var(--line); }
+    .fine { font-size: 14px; color: var(--muted); margin-top: 14px; }
+    .hero-media { aspect-ratio: 4 / 3; border-radius: 16px; overflow: hidden; background: var(--tile); border: 1px solid var(--line); }
+    .hero-media img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .pillars { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; padding: 24px 0 56px; }
+    .pillar { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 22px; }
+    .pillar h3 { margin: 0 0 6px; font-size: 18px; letter-spacing: -.01em; }
+    .pillar p { margin: 0; color: var(--muted); font-size: 15px; }
+    h2 { font-size: 32px; letter-spacing: -.025em; margin: 0 0 8px; }
+    .sub { color: var(--muted); margin: 0 0 24px; }
+    section { padding: 40px 0; border-top: 1px solid var(--line); }
+    .gallery { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .gallery figure { margin: 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+    .gallery img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; background: var(--tile); }
+    .gallery figcaption { padding: 10px 12px 12px; font-size: 14px; }
+    .gallery figcaption b { display: block; font-weight: 600; }
+    .gallery figcaption span { color: var(--muted); font-size: 13px; }
+    .numbers { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .num { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
+    .num b { display: block; font-size: 30px; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+    .num span { color: var(--muted); font-size: 14px; }
+    .agent { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; align-items: start; }
+    pre { margin: 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; overflow-x: auto; font: 14px/1.6 Berkeley, ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .paper { display: grid; grid-template-columns: 1.2fr 1fr; gap: 28px; align-items: center; }
+    .paper ul { margin: 0; padding-left: 18px; color: var(--muted); }
+    footer { padding: 40px 0 56px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 18px; justify-content: space-between; }
+    footer a { color: var(--muted); }
+    @media (max-width: 860px) {
+      header.hero, .agent, .paper { grid-template-columns: 1fr; }
+      .pillars { grid-template-columns: 1fr; }
+      .gallery { grid-template-columns: repeat(2, 1fr); }
+      .numbers { grid-template-columns: repeat(2, 1fr); }
+      nav .links a:not(.keep) { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <nav>
+      <a class="brand" href="/">vcad</a>
+      <div class="links">
+        <a href="#gallery">Gallery</a>
+        <a href="#agent">Agent</a>
+        <a href="#paper">Paper</a>
+        <a href="/docs">Docs</a>
+        <a class="keep" href="https://github.com/ecto/vcad">GitHub</a>
+      </div>
+    </nav>
+
+    <header class="hero">
+      <div>
+        <h1>Free, open CAD for Mac.</h1>
+        <p class="lede">Parametric modeling on a kernel written from scratch in Rust, with electronics, DFM and FEA built in, and an agent that works in your viewport.</p>
+        <div class="cta">
+          <a class="btn primary" href="/desktop/">Download for Mac</a>
+          <a class="btn ghost" href="https://github.com/ecto/vcad">Source on GitHub</a>
+        </div>
+        <p class="fine">macOS 15 or later · Apple silicon · Signed, notarized, updates itself · No account</p>
+      </div>
+      <div class="hero-media">
+        <!-- Swap for the hero video (docs/launch/hero-demo.md) on launch day. -->
+        <img src="/launch/gallery/stirling-engine.jpg" alt="A ten-part Stirling engine modeled in vcad" width="1200" height="900">
+      </div>
+    </header>
+
+    <div class="pillars">
+      <div class="pillar"><h3>Local, and yours</h3><p>No cloud, no subscription. Documents are plain-text <code>.vcad</code> files you can diff, review and keep in git.</p></div>
+      <div class="pillar"><h3>Mechanical meets electrical</h3><p>Boards and enclosures in one document: clearance between copper and housing is a check, not a meeting.</p></div>
+      <div class="pillar"><h3>Checked before you make it</h3><p>DFM flags thin walls and undercuts with a fix; FEA shows where the part bends, on the part you're editing.</p></div>
+    </div>
+
+    <section id="gallery">
+      <h2>Open a sample</h2>
+      <p class="sub">Every one ships inside the app. Rendered here by <code>vcad-render</code>, the kernel's own line-art renderer.</p>
+      <div class="gallery">
+        <figure><img loading="lazy" src="/launch/gallery/stirling-engine.jpg" alt=""><figcaption><b>Stirling engine</b><span>Ten parts, four materials, a flywheel on a joint</span></figcaption></figure>
+        <figure><img loading="lazy" src="/launch/gallery/k1-humanoid.jpg" alt=""><figcaption><b>K1 humanoid</b><span>22 DOF, simulated standing in physics</span></figcaption></figure>
+        <figure><img loading="lazy" src="/launch/gallery/pcb-motor.jpg" alt=""><figcaption><b>PCB axial-flux motor</b><span>Printed-coil stator between two rotors</span></figcaption></figure>
+        <figure><img loading="lazy" src="/launch/gallery/pcb-stator.jpg" alt=""><figcaption><b>PCB stator</b><span>The coil board: schematic, copper, solid</span></figcaption></figure>
+        <figure><img loading="lazy" src="/launch/gallery/fpga-board.jpg" alt=""><figcaption><b>FPGA dev board</b><span>Designed end to end by an agent, DRC-clean</span></figcaption></figure>
+        <figure><img loading="lazy" src="/launch/gallery/l-bracket.jpg" alt=""><figcaption><b>L bracket</b><span>Fix the base, load the flange, read the stress</span></figcaption></figure>
+        <figure><img loading="lazy" src="/launch/gallery/motor-flange.jpg" alt=""><figcaption><b>Motor flange</b><span>A 2.5D part ready for toolpaths</span></figcaption></figure>
+        <figure><img loading="lazy" src="/launch/gallery/snap-cap.jpg" alt=""><figcaption><b>Snap-fit cap</b><span>A fit checked as clearance</span></figcaption></figure>
+        <figure><img loading="lazy" src="/launch/gallery/robot-arm.jpg" alt=""><figcaption><b>Two-axis robot arm</b><span>Pose it, or simulate it</span></figcaption></figure>
+        <figure><img loading="lazy" src="/launch/gallery/ribbed-plate.jpg" alt=""><figcaption><b>Ribbed plate</b><span>A first DFM check for thin ribs</span></figcaption></figure>
+        <figure><img loading="lazy" src="/launch/gallery/sensor-mast.jpg" alt=""><figcaption><b>Sensor mast</b><span>Pocketed base, mast, housings</span></figcaption></figure>
+        <figure><img loading="lazy" src="/launch/gallery/pulley.jpg" alt=""><figcaption><b>Pulley</b><span>Booleans in the feature tree</span></figcaption></figure>
+      </div>
+    </section>
+
+    <section id="speed">
+      <h2>Fast where it counts</h2>
+      <p class="sub">Measured on an Apple silicon Mac, fresh process every run. Method and raw numbers: <a href="https://github.com/ecto/vcad/blob/main/docs/launch/speed-pass.md">speed pass</a>.</p>
+      <div class="numbers">
+        <div class="num"><b>0.7 s</b><span>click to window</span></div>
+        <div class="num"><b>120 fps</b><span>orbiting a 237k-triangle humanoid</span></div>
+        <div class="num"><b>0.06 s</b><span>to open the PCB motor sample</span></div>
+        <div class="num"><b>500k</b><span>triangle board, still 120 fps</span></div>
+      </div>
+    </section>
+
+    <section id="agent">
+      <div class="agent">
+        <div>
+          <h2>Bring your agent</h2>
+          <p class="sub">vcad serves MCP on your machine. Help ▸ Connect Claude writes the config; then the agent models, runs DFM and FEA, and frames the camera in the window you're looking at. Every change is a named undo step.</p>
+          <p class="sub">Headless too: <code>npx -y @vcad/mcp</code> gives any MCP client the kernel, with no app at all.</p>
+        </div>
+        <pre><code>{
+  "mcpServers": {
+    "vcad-app": {
+      "command": "node",
+      "args": ["/Applications/vcad.app/Contents/Resources/vcad-app-mcp.mjs"]
+    }
+  }
+}</code></pre>
+      </div>
+    </section>
+
+    <section id="paper">
+      <div class="paper">
+        <div>
+          <h2>A differentiable BRep kernel</h2>
+          <p class="sub">The kernel gives exact parameter gradients through tessellation, mass properties, fillet radius and contact rollouts — so an optimizer can move a real CAD parameter, not a mesh.</p>
+          <!-- TODO(launch day): replace with the arXiv abs URL. -->
+          <a class="btn ghost" href="https://github.com/ecto/vcad/tree/main/crates/vcad-kernel-diff">Read the paper (preprint on launch day)</a>
+        </div>
+        <ul>
+          <li>Finite-difference validated gradients, first and second order</li>
+          <li>Reverse-mode adjoint, L-BFGS on real parts</li>
+          <li>Gradients of named <code>.vcad</code> parameters</li>
+          <li>Limits stated: frozen tessellations, penalty contact</li>
+        </ul>
+      </div>
+    </section>
+
+    <footer>
+      <span>vcad is open source. Kernel on <a href="https://crates.io/crates/vcad">crates.io</a>, MCP server on <a href="https://www.npmjs.com/package/@vcad/mcp">npm</a>.</span>
+      <span><a href="/docs">Docs</a> · <a href="https://github.com/ecto/vcad">GitHub</a> · <a href="/desktop/appcast.xml">Update feed</a></span>
+    </footer>
+  </div>
+</body>
+</html>
