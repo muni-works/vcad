@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 use tang::Scalar;
 use tang_compile::tensor::sparse::{
-    IndexedGather, LinearSolve, Pattern, Precond, SolveRecord, SparseMatVec,
+    spmv, IndexedGather, LinearSolve, Pattern, Precond, SolveRecord, SparseMatVec,
 };
 use tang_compile::tensor::{Monoid, TensorGraph, TensorId};
 use tang_expr::ExprId;
@@ -80,6 +80,22 @@ impl GraphTiming {
 struct Inputs {
     g: TensorGraph,
     data: Vec<Vec<f64>>,
+    lowering: Lowering,
+}
+
+/// How the assembly's gathers and incidence products are expressed.
+///
+/// Both lowerings build the same values in the same summation order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lowering {
+    /// `IndexedGather` / `SparseMatVec` operator nodes: native forward,
+    /// linear-time adjoints (scatter-add, `Sᵀ·ȳ`). The gradient path.
+    Operator,
+    /// Gather-view comprehensions (ELL `spmv`: a gather view feeding a sum
+    /// monoid). Lowers to every tensor backend, so the assembly runs on
+    /// the GPU; its adjoint through the gather is a dense gated sum, so
+    /// it is the forward/device path only.
+    Comprehension,
 }
 
 impl Inputs {
@@ -89,10 +105,64 @@ impl Inputs {
         self.g.input(shape)
     }
 
-    /// `IndexedGather(src, index)` with `index` shaped `shape` (−1 reads 0).
-    fn gather(&mut self, src: TensorId, index: &[i64], shape: &[usize]) -> TensorId {
-        let ix = self.add(shape, index.iter().map(|&i| i as f64).collect());
-        IndexedGather::apply(&mut self.g, src, ix).expect("gather shapes")
+    /// `src[index]` over a flat `index` (−1 reads 0).
+    fn gather(&mut self, src: TensorId, index: &[i64]) -> TensorId {
+        let m = index.len();
+        match self.lowering {
+            Lowering::Operator => {
+                let ix = self.add(&[m], index.iter().map(|&i| i as f64).collect());
+                IndexedGather::apply(&mut self.g, src, ix).expect("gather shapes")
+            }
+            Lowering::Comprehension => {
+                // one-wide ELL: weight 0 (and a harmless index 0) for −1
+                let w = self.add(
+                    &[m, 1],
+                    index.iter().map(|&i| (i >= 0) as u8 as f64).collect(),
+                );
+                let ix = self.add(&[m, 1], index.iter().map(|&i| i.max(0) as f64).collect());
+                spmv(&mut self.g, w, ix, src).expect("gather shapes")
+            }
+        }
+    }
+
+    /// `S·x` for the `n × m` matrix `S` given as `(row, col, value)`
+    /// entries (summed in entry order within a row).
+    fn incidence(
+        &mut self,
+        n: usize,
+        m: usize,
+        entries: &mut dyn Iterator<Item = (usize, usize, f64)>,
+        x: TensorId,
+    ) -> TensorId {
+        match self.lowering {
+            Lowering::Operator => {
+                let mut c = CooMatrix::new(n, m);
+                for (r, k, v) in entries {
+                    c.push(r, k, v);
+                }
+                SparseMatVec::new(c.to_csr())
+                    .apply(&mut self.g, x)
+                    .expect("incidence shapes")
+            }
+            Lowering::Comprehension => {
+                let mut rows: Vec<Vec<(usize, f64)>> = vec![Vec::new(); n];
+                for (r, k, v) in entries {
+                    rows[r].push((k, v));
+                }
+                let width = rows.iter().map(Vec::len).max().unwrap_or(0).max(1);
+                let mut w = vec![0.0; n * width];
+                let mut ix = vec![0.0; n * width];
+                for (r, row) in rows.iter().enumerate() {
+                    for (c, &(k, v)) in row.iter().enumerate() {
+                        w[r * width + c] = v;
+                        ix[r * width + c] = k as f64;
+                    }
+                }
+                let w = self.add(&[n, width], w);
+                let ix = self.add(&[n, width], ix);
+                spmv(&mut self.g, w, ix, x).expect("incidence shapes")
+            }
+        }
     }
 }
 
@@ -142,14 +212,8 @@ fn conv_slots(model: &ThermalModel) -> [Option<(f64, f64)>; 7] {
     out
 }
 
-/// Build the graph. With `objective = Some((reference_c, p))` it also
-/// carries J and its gradient with respect to the four parameter vectors.
-pub(crate) fn build_graph(
-    model: &ThermalModel,
-    sys: &System,
-    opts: &SolveOptions,
-    objective: Option<(f64, f64)>,
-) -> SteadyGraph {
+/// Links, parameters and the Assemble stage.
+fn assemble(model: &ThermalModel, sys: &System, lowering: Lowering) -> Assembled {
     let [nx, ny, nz] = sys.n;
     let nvox = nx * ny * nz;
     let idx = |i: usize, j: usize, k: usize| (k * ny + j) * nx + i;
@@ -231,6 +295,7 @@ pub(crate) fn build_graph(
     let mut ins = Inputs {
         g: TensorGraph::new(),
         data: Vec::new(),
+        lowering,
     };
     let ns = model.sources.len();
     let nk = 3 * model.materials.len();
@@ -247,11 +312,11 @@ pub(crate) fn build_graph(
     let ta_in = ins.add(&[7], slots.iter().map(|s| s.map_or(0.0, |s| s.1)).collect());
 
     // -- Assemble: link conductances ----------------------------------------
-    let ka = ins.gather(k_in, &links.iter().map(|l| l.ka).collect::<Vec<_>>(), &[ne]);
-    let kb = ins.gather(k_in, &links.iter().map(|l| l.kb).collect::<Vec<_>>(), &[ne]);
+    let ka = ins.gather(k_in, &links.iter().map(|l| l.ka).collect::<Vec<_>>());
+    let kb = ins.gather(k_in, &links.iter().map(|l| l.kb).collect::<Vec<_>>());
     let sl: Vec<i64> = links.iter().map(|l| l.slot).collect();
-    let hh = ins.gather(h_in, &sl, &[ne]);
-    let ta = ins.gather(ta_in, &sl, &[ne]);
+    let hh = ins.gather(h_in, &sl);
+    let ta = ins.gather(ta_in, &sl);
     let half = ins.add(&[ne], links.iter().map(|l| l.half).collect());
     let has_b = ins.add(
         &[ne],
@@ -326,14 +391,7 @@ pub(crate) fn build_graph(
     }
     let nnz = cols.len();
     // values = S·G, S the (nnz × links) incidence with ±1 entries
-    let incidence = |n: usize, m: usize, entries: &mut dyn Iterator<Item = (usize, usize, f64)>| {
-        let mut c = CooMatrix::new(n, m);
-        for (r, k, v) in entries {
-            c.push(r, k, v);
-        }
-        SparseMatVec::new(c.to_csr())
-    };
-    let s_vals = incidence(
+    let vals = ins.incidence(
         nnz,
         ne,
         &mut rows
@@ -341,38 +399,88 @@ pub(crate) fn build_graph(
             .flatten()
             .enumerate()
             .flat_map(|(s, (_, l))| l.iter().map(move |&(e, c)| (s, e, c))),
+        g_link,
     );
-    let vals = s_vals.apply(&mut ins.g, g_link).expect("values");
 
     // -- Assemble: right-hand side ------------------------------------------
     // b = Σ_links-into-a-reference G·T_ref + Σ_sources P/N over covered voxels
-    let s_ref = incidence(
+    let b_ref = ins.incidence(
         nf,
         ne,
         &mut b_links
             .iter()
             .enumerate()
             .flat_map(|(f, l)| l.iter().map(move |&e| (f, e, 1.0))),
+        q_link,
     );
-    let b_ref = s_ref.apply(&mut ins.g, q_link).expect("reference rhs");
     let cref = &compact;
-    let s_src = incidence(
+    let b_src = ins.incidence(
         nf,
         ns.max(1),
         &mut sys.sources.iter().enumerate().flat_map(|(s, (_, _, ids))| {
             let share = 1.0 / ids.len() as f64;
             ids.iter().map(move |&p| (cref[p], s, share))
         }),
+        p_in,
     );
-    let b_src = s_src.apply(&mut ins.g, p_in).expect("source rhs");
     let b = ins.g.map(&[b_src, b_ref], |v| v[0] + v[1]).expect("rhs");
 
+    Assembled {
+        ins,
+        free_voxels,
+        pattern: Pattern {
+            n: nf,
+            row_ptrs,
+            cols,
+        },
+        vals,
+        b,
+        params: [p_in, k_in, h_in, ta_in],
+    }
+}
+
+/// The Assemble stage: CSR values and right-hand side as graph nodes over
+/// the parameter inputs.
+struct Assembled {
+    ins: Inputs,
+    free_voxels: Vec<usize>,
+    pattern: Pattern,
+    vals: TensorId,
+    b: TensorId,
+    /// Power, conductivity, film and ambient inputs.
+    params: [TensorId; 4],
+}
+
+/// Build the graph. With `objective = Some((reference_c, p))` it also
+/// carries J and its gradient with respect to the four parameter vectors.
+pub(crate) fn build_graph(
+    model: &ThermalModel,
+    sys: &System,
+    opts: &SolveOptions,
+    objective: Option<(f64, f64)>,
+) -> SteadyGraph {
+    build_graph_with(model, sys, opts, objective, Lowering::Operator)
+}
+
+pub(crate) fn build_graph_with(
+    model: &ThermalModel,
+    sys: &System,
+    opts: &SolveOptions,
+    objective: Option<(f64, f64)>,
+    lowering: Lowering,
+) -> SteadyGraph {
+    let Assembled {
+        mut ins,
+        free_voxels,
+        pattern,
+        vals,
+        b,
+        params: [p_in, k_in, h_in, ta_in],
+    } = assemble(model, sys, lowering);
+    let nnz = pattern.cols.len();
+
     // -- LinearSolve ---------------------------------------------------------
-    let pattern = Arc::new(Pattern {
-        n: nf,
-        row_ptrs,
-        cols,
-    });
+    let pattern = Arc::new(pattern);
     let rows_in = ins.add(&[nnz], pattern.rows().iter().map(|&r| r as f64).collect());
     let cols_in = ins.add(&[nnz], pattern.cols.iter().map(|&c| c as f64).collect());
     let solve = Arc::new(LinearSolve::new(
@@ -493,6 +601,84 @@ impl SteadyGraph {
             .expect("a forward solve");
         (f.iterations, f.residual_rel)
     }
+}
+
+/// The Assemble stage alone, as gather-view comprehensions: a forward
+/// graph that lowers to every tang tensor backend (CUDA, Metal, WGSL), so
+/// the assembly can run on a GPU while the solve stays on the CPU in f64.
+pub struct DeviceAssembly {
+    /// Parameters → (CSR values, right-hand side). No operator nodes.
+    pub graph: TensorGraph,
+    /// One buffer per graph input, in input order.
+    pub inputs: Vec<Vec<f64>>,
+    /// `[values (nnz), rhs (free voxels)]`.
+    pub outputs: [TensorId; 2],
+    /// Free-voxel CSR row pointers (`n + 1`).
+    pub row_ptrs: Vec<usize>,
+    /// Free-voxel CSR columns (`nnz`).
+    pub cols: Vec<usize>,
+    /// Compact free index → voxel.
+    pub free_voxels: Vec<usize>,
+}
+
+impl DeviceAssembly {
+    /// Evaluate on the reference interpreter (f64).
+    pub fn eval_cpu(&self) -> (Vec<f64>, Vec<f64>) {
+        let mut o = self.graph.eval(&self.inputs, &self.outputs);
+        let b = o.pop().unwrap();
+        (o.pop().unwrap(), b)
+    }
+
+    /// Jacobi-PCG on assembled values, as the steady solver runs it:
+    /// temperature per free voxel (compact order).
+    pub fn solve(
+        &self,
+        vals: &[f64],
+        b: &[f64],
+        opts: &SolveOptions,
+    ) -> Result<Vec<f64>, SolveError> {
+        let n = self.free_voxels.len();
+        let row = |r: usize| self.row_ptrs[r]..self.row_ptrs[r + 1];
+        let csr = |x: &[f64], y: &mut [f64]| {
+            for (r, yr) in y.iter_mut().enumerate() {
+                *yr = row(r).map(|k| vals[k] * x[self.cols[k]]).sum();
+            }
+        };
+        let diag: Vec<f64> = (0..n)
+            .map(|r| row(r).find(|&k| self.cols[k] == r).map_or(1.0, |k| vals[k]))
+            .collect();
+        let sol = tang_sparse::pcg(
+            csr,
+            &tang_sparse::Jacobi::new(diag),
+            b,
+            &vec![0.0; n],
+            &PcgOptions {
+                tol: opts.tol,
+                max_iters: opts.max_iters,
+            },
+        );
+        if sol.status != PcgStatus::Converged {
+            return Err(SolveError::NotConverged {
+                residual_rel: sol.residual_rel,
+                iterations: sol.iterations,
+            });
+        }
+        Ok(sol.x)
+    }
+}
+
+/// Build the device assembly graph for a model.
+pub fn device_assembly(model: &ThermalModel) -> Result<DeviceAssembly, SolveError> {
+    let sys = crate::solve::build(model)?;
+    let a = assemble(model, &sys, Lowering::Comprehension);
+    Ok(DeviceAssembly {
+        graph: a.ins.g,
+        inputs: a.ins.data,
+        outputs: [a.vals, a.b],
+        row_ptrs: a.pattern.row_ptrs,
+        cols: a.pattern.cols,
+        free_voxels: a.free_voxels,
+    })
 }
 
 /// The smoothed-peak gradient derived by the graph, plus where the time
@@ -664,6 +850,42 @@ mod tests {
         let zeros = vec![0.0; sys.b.len()];
         let (t, _, _) = crate::solve::pcg(&sys, &sys.diag, &sys.b, &zeros, &tight()).unwrap();
         let hand: Vec<f64> = g.free_voxels.iter().map(|&p| t[p]).collect();
+        assert!(
+            rel(&e.t_free, &hand) < 1e-12,
+            "{:.3e}",
+            rel(&e.t_free, &hand)
+        );
+    }
+
+    /// T2: the comprehension lowering (what runs on a GPU) assembles the
+    /// same system as the operator lowering, and solving it gives the
+    /// steady solver's field.
+    #[test]
+    fn comprehension_assembly_matches_operator_assembly() {
+        let m = board([16, 16, 2]);
+        let sys = crate::solve::build(&m).unwrap();
+        let op = assemble(&m, &sys, Lowering::Operator);
+        let mut o = op.ins.g.eval(&op.ins.data, &[op.vals, op.b]);
+        let (op_b, op_vals) = (o.pop().unwrap(), o.pop().unwrap());
+        let dev = device_assembly(&m).unwrap();
+        let (vals, b) = dev.eval_cpu();
+        assert_eq!(dev.cols, op.pattern.cols);
+        assert!(
+            rel(&vals, &op_vals) <= 1e-15,
+            "{:.3e}",
+            rel(&vals, &op_vals)
+        );
+        assert!(rel(&b, &op_b) <= 1e-15, "{:.3e}", rel(&b, &op_b));
+
+        let t = dev.solve(&vals, &b, &tight()).unwrap();
+        let zeros = vec![0.0; sys.b.len()];
+        let (hand, _, _) = crate::solve::pcg(&sys, &sys.diag, &sys.b, &zeros, &tight()).unwrap();
+        let hand: Vec<f64> = dev.free_voxels.iter().map(|&p| hand[p]).collect();
+        assert!(rel(&t, &hand) < 1e-12, "{:.3e}", rel(&t, &hand));
+
+        // and the whole forward graph under the comprehension lowering
+        let g = build_graph_with(&m, &sys, &tight(), None, Lowering::Comprehension);
+        let e = g.eval().unwrap();
         assert!(
             rel(&e.t_free, &hand) < 1e-12,
             "{:.3e}",

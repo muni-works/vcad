@@ -147,7 +147,8 @@ final class AgentBridge {
             case "ping":
                 body = Self.rpcResult(id, [:])
             case "tools/list":
-                body = Self.rpcResult(id, ["tools": AgentTools.definitions + AgentEdits.definitions])
+                body = Self.rpcResult(id, ["tools": AgentTools.definitions + AgentEdits.definitions
+                                                       + AnalysisAgentTools.definitions])
             case "tools/call":
                 let name = params["name"] as? String ?? ""
                 let args = params["arguments"] as? [String: Any] ?? [:]
@@ -370,6 +371,8 @@ enum AgentTools {
             return ["content": content]
         case _ where AgentEdits.toolNames.contains(name):
             return try AgentEdits.call(name, a, model: m)
+        case _ where AnalysisAgentTools.toolNames.contains(name):
+            return try await AnalysisAgentTools.call(name, a, model: m)
         default:
             throw Failure(message: "unknown tool \(name)")
         }

@@ -664,6 +664,27 @@ char *vcad_drawing_sheet_json(const char *doc_json, const char *request_json);
  * atomically. Returns DXF entity count / PDF bytes, or -1 + vcad_last_error. */
 int64_t vcad_drawing_export(const char *doc_json, const char *request_json,
                             const char *out_path, uint32_t format);
+/* --- Analysis: DFM / FEA / clearance (dfm.rs, fea.rs, clearance.rs) ---
+ * All take NUL-terminated IR JSON, return owned JSON freed ONLY with
+ * vcad_string_free; null + vcad_last_error on failure (fail-closed). */
+/* request {"process":"fdm"|"cnc_3axis"|..., "rule_pack_toml"?, "ruleset"?} ->
+ * {issues:[{...kernel issue, part_index, face_ids, patch|null, patch_note}], counts, score, ...} */
+char *vcad_dfm_check(const char *doc_json, const char *request_json);
+/* patch = an issue's "patch" object -> patched IR document JSON. */
+char *vcad_dfm_apply_patch(const char *doc_json, const char *patch_json);
+/* {"processes":[...], "rulesets":[...]} */
+char *vcad_dfm_processes(void);
+/* request {"part_index","material"?,"elastic"?,"resolution"?,"levels"?,
+ * "loads":[{"faces":[ids]|"region":{min,max},"force":[N,N,N]}],
+ * "supports":[{"faces"|"region","fix"?:[b,b,b]}],"fields"?} ->
+ * {max_von_mises_mpa, max_displacement_mm, safety_factor, converged, study,
+ *  field:{dims_zyx, origin_mm, voxel_mm, von_mises_mpa, displacement_mm, mask, ...}} */
+char *vcad_fea_solve(const char *doc_json, const char *request_json);
+/* [{id,label,youngs_modulus_mpa,poisson,yield_strength_mpa}] */
+char *vcad_fea_materials(void);
+/* request (nullable) {"pairs"?:[[a,b]], "include_mesh"?} ->
+ * {pairs:[{a,b,distance_mm,intersecting,overlap_volume_mm3,status,clash?}], ...} */
+char *vcad_clearance(const char *doc_json, const char *request_json);
 
 #ifdef __cplusplus
 }
