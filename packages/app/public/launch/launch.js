@@ -525,7 +525,15 @@ function hero() {
   const fmt = (x, d = 0) => x.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d });
 
   const inputs = [...document.querySelectorAll("[data-param]")];
-  const params = () => Object.fromEntries(inputs.map((i) => [i.dataset.param, parseFloat(i.value)]));
+  // Keep holes from touching: diameter at most 80% of the pitch. Tangent
+  // holes are a degenerate boolean, not a part anyone would make.
+  const clampHoles = () => {
+    const get = (k) => inputs.find((i) => i.dataset.param === k);
+    const w = parseFloat(get("w").value), n = parseFloat(get("n").value), hole = get("hole");
+    const max = Math.floor((0.8 * w / (n + 1)) * 2) / 2;
+    if (parseFloat(hole.value) > max) hole.value = String(max);
+  };
+  const params = () => { clampHoles(); return Object.fromEntries(inputs.map((i) => [i.dataset.param, parseFloat(i.value)])); };
   const showValues = () => inputs.forEach((i) => { const o = document.getElementById("v-" + i.dataset.param); if (o) o.textContent = i.value + (i.dataset.unit || ""); });
 
   // 6061 aluminum, bead-blasted; the cylindrical faces in the page's flame.
@@ -585,7 +593,14 @@ function hero() {
     edges = edgeLines(geo, 30);
     f.root.add(part, edges);
     f.root.updateMatrixWorld(true);
-    if (!framed) { frame(f, new THREE.Box3().setFromObject(f.root), [1.1, 0.7, 1.25]); framed = true; }
+    if (!framed) {
+      // #hero-view=x,y,z picks the starting camera direction (handy for
+      // checking the underside); otherwise a three-quarter view from above.
+      const hv = /hero-view=([-\d.,]+)/.exec(location.hash);
+      frame(f, new THREE.Box3().setFromObject(f.root), hv ? hv[1].split(",").map(Number) : [1.1, 0.7, 1.25]);
+      if (hv) f.controls.autoRotate = false;
+      framed = true;
+    }
     ro("r-vol", fmt(m.volume / 1000, 1) + " cm³");
     ro("r-mass", fmt(m.volume * 2.70e-3, 0) + " g");
     ro("r-area", fmt(m.area / 100, 1) + " cm²");
