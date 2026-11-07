@@ -219,7 +219,7 @@ kosm-render = "0.2"
 tang = { version = "0.2.1" }
 tang-la = { version = "0.1.1" }
 tang-expr = { version = "0.2" }
-tang-optim = { version = "0.1.2" }
+tang-optim = { version = "0.2.0" }
 tang-sparse = { version = "0.1.1" }
 tang-compile = { version = "0.1.1" }
 # phyz comes from crates.io (0.4.0, tag v0.4.0) so every vcad crate that
