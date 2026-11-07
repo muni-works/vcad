@@ -2791,6 +2791,7 @@ final class EditorModel {
     }
 
     func openDocument(_ url: URL) {
+        LaunchPerf.once("open", " (\(url.lastPathComponent))")
         let label = url.deletingPathExtension().lastPathComponent
         // A DXF is an outline to machine, not a document: it lands in
         // Manufacture as contour operations on the current part.
@@ -3332,7 +3333,10 @@ final class EditorModel {
                     }
                     landed += 1
                 }
+                if newParts { LaunchPerf.once("first part landed") }
                 if finished {
+                    LaunchPerf.once("solved", String(format: " (solve %.0f ms, %d parts)",
+                                                     Date().timeIntervalSince(started) * 1000, total))
                     self.evalJob = nil
                     let handle = vcad_eval_finish(job)
                     self.evaluating = nil

@@ -4,7 +4,12 @@
     {
       "name": "landing",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--prefix", "www"],
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--prefix",
+        "www"
+      ],
       "port": 4173
     },
     {
@@ -20,7 +25,10 @@
     {
       "name": "vcad-docs",
       "runtimeExecutable": "bash",
-      "runtimeArgs": ["-c", "cd packages/docs && npx next start -p 3001"],
+      "runtimeArgs": [
+        "-c",
+        "cd packages/docs && npx next start -p 3001"
+      ],
       "port": 3001
     },
     {
@@ -36,7 +44,9 @@
     {
       "name": "mecheval-leaderboard",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["mecheval/leaderboard/dist/serve.js"],
+      "runtimeArgs": [
+        "mecheval/leaderboard/dist/serve.js"
+      ],
       "port": 5174
     },
     {
@@ -48,6 +58,15 @@
       ],
       "port": 5191,
       "autoPort": true
+    },
+    {
+      "name": "launch-page",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-c",
+        "import http.server,functools\nclass H(http.server.SimpleHTTPRequestHandler):\n  def end_headers(self):\n    self.send_header('Cache-Control','no-store'); super().end_headers()\nhttp.server.ThreadingHTTPServer(('',4180),functools.partial(H,directory='packages/app/public')).serve_forever()"
+      ],
+      "port": 4180
     }
   ]
 }
