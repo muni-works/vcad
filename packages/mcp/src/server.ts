@@ -509,6 +509,7 @@ const LIST_TOOL_ORDER: readonly string[] = [
   "import_altium",
   "import_altium_library",
   "import_eagle",
+  "open_in_app",
   "open_in_browser",
   // ── Physics gym ────────────────────────────────────────────
   "create_robot_env",
@@ -627,7 +628,7 @@ function buildInstructions(kernelPrompt: string | null): string {
     "Workflow: `open_document` → author → see → measure → ship.",
     "- Author whole parts with `create_cad_loon` (the full modeling vocabulary in one call); make surgical edits with `create`/`update`/`delete` (one node per call — mutation results report a compact `changed` diff of affected parts).",
     "- See your work with `render_view` (isometric PNG); measure with `inspect_cad` (whole-document volume, area, bbox, center of mass), `inspect_part` / `describe_scene` (per-part bbox, size, center, material), and `measure` (min distance/overlap between two parts, or one part's bbox+volume+center of mass).",
-    "- Ship with `export_cad` (STL/GLB/STEP) or `open_in_browser` (vcad.io deep link).",
+    "- Ship with `export_cad` (STL/GLB/STEP) or `open_in_app` (vcad:// deep link into the native app).",
     "- Fix in place: when geometry is wrong, prefer `update` on the offending node over deleting parts and starting over.",
     "- Cut sheet parts you already modelled: `flat_pattern_from_solid` turns any constant-thickness solid — extruded sketch, boolean, imported STEP — into a fab-ready DXF plus a bend table, no sheet-metal re-authoring. Called without `part_id` it does the whole document and groups identical parts into one pattern × quantity; hand its `nest_input` to `sheet_metal_nest`, then `sheet_metal_cost`, for a quote. It fails closed: the emitted profile re-extruded by the detected thickness must reproduce the solid's volume.",
     "- Deliver the project bill of materials with `bom_create` → `bom_export` (markdown/CSV/JSON with landed-cost totals): link quote_manufacturing quotes on manufactured lines, and source COTS hardware (bearings, shafts, standoffs, screws, ferrite magnets) with `search_mechanical_parts`. Check electronic lines against live LCSC/JLCPCB stock and price with `bom_check_stock` (or one part with `check_part_stock`). All BOM prices are estimates and flagged as such.",

@@ -7617,9 +7617,34 @@
     }
   },
   {
+    "name": "open_in_app",
+    "title": "Open in vcad",
+    "description": "Open a CAD document in the native vcad app via a `vcad://` deep link. Pass a live session's `document_id` (the usual ship path), or an inline IR `document` (JSON or VCode format). Local sessions travel by id; otherwise the document is embedded (gzip + base64url). The result also carries the vcad download page as the fallback for users without the app.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "description": "Live session id (from open_document / create_cad_loon) to share — the session-first path. Either this or `document` is required."
+        },
+        "document": {
+          "type": "string",
+          "description": "Inline IR document (JSON or VCode format) — the stateless alternative to document_id."
+        },
+        "name": {
+          "type": "string",
+          "description": "Optional document name"
+        }
+      }
+    },
+    "annotations": {
+      "readOnlyHint": false
+    }
+  },
+  {
     "name": "open_in_browser",
-    "title": "Open in Browser",
-    "description": "Generate a shareable URL to open a CAD document in vcad.io. Pass a live session's `document_id` (the usual ship path), or an inline IR `document` (JSON or VCode format). Documents are compressed (gzip + base64url) for URL embedding. Note: Very large documents may exceed URL length limits (~2KB).",
+    "title": "Open in vcad (legacy name)",
+    "description": "Legacy alias of `open_in_app` (the vcad.io web editor is retiring). Open a CAD document in the native vcad app via a `vcad://` deep link. Pass a live session's `document_id` (the usual ship path), or an inline IR `document` (JSON or VCode format). Local sessions travel by id; otherwise the document is embedded (gzip + base64url). The result also carries the vcad download page as the fallback for users without the app.",
     "inputSchema": {
       "type": "object",
       "properties": {

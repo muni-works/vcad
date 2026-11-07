@@ -4813,7 +4813,7 @@ describe("ecad pipeline behaviors (session flow)", () => {
     }
   });
 
-  it("open_in_browser produces a URL for PCB documents", async () => {
+  it("open_in_browser produces a vcad:// link for PCB documents", async () => {
     const created = out(
       await createSchematic({ components: [resistor("R1", 0, ["A", "B"])] }),
     );
@@ -4824,8 +4824,8 @@ describe("ecad pipeline behaviors (session flow)", () => {
       document: JSON.stringify(getSession(id)),
       name: "pcb-test",
     });
-    expect(res.content[0].text).toContain("https://vcad.io/#/new?doc=");
-    expect(res.content[0].text).toContain("Payload (json)");
+    // PCB documents travel inline as JSON — the native app loads them as-is.
+    expect(res.content[0].text).toContain("vcad://open?doc=");
   });
 
   it("keeps all footprints inside the board outline", async () => {

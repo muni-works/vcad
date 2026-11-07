@@ -394,6 +394,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// path that would otherwise replace the document you are looking at.
     func application(_ application: NSApplication, open urls: [URL]) {
         MainActor.assumeIsolated {
+            // `vcad://` deep links (MCP `open_in_app`, retired vcad.io links)
+            // resolve to a file first, then open like any other document.
+            let urls = urls.compactMap { $0.scheme?.lowercased() == "vcad" ? AppInstance.resolveDeepLink($0) : $0 }
+            guard !urls.isEmpty else { return }
             guard let model = AppInstance.currentModel else {
                 // The view has not come up yet (we were launched for these
                 // files): it opens them the moment it attaches.
