@@ -16,12 +16,11 @@ use serde::{Deserialize, Serialize};
 use vcad_eval::EvaluatedMesh;
 use vcad_ir::{Document, DrawingSectionLine, DrawingSettings, DrawingTitleBlock};
 use vcad_kernel_drafting::{
-    compose_sheet, create_detail_view, offset_section_mesh, project_mesh,
-    projected_view_to_dxf, sheet_to_pdf, AnnotationLayer, BomRow, BoundingBox2D,
-    DetailViewParams, DrawingSheet, HatchPattern, OffsetSectionPlane, OffsetSectionStep,
-    PlacedDetailView, PlacedProjectedView, PlacedSectionView, Point2D, ProjectedView,
-    RenderedDimension, RenderedText, SectionPlane, SheetSize, SheetSpec, TextAlignment,
-    TitleBlockFields, ViewDirection, Visibility,
+    compose_sheet, create_detail_view, offset_section_mesh, project_mesh, projected_view_to_dxf,
+    sheet_to_pdf, AnnotationLayer, BomRow, BoundingBox2D, DetailViewParams, DrawingSheet,
+    HatchPattern, OffsetSectionPlane, OffsetSectionStep, PlacedDetailView, PlacedProjectedView,
+    PlacedSectionView, Point2D, ProjectedView, RenderedDimension, RenderedText, SectionPlane,
+    SheetSize, SheetSpec, TextAlignment, TitleBlockFields, ViewDirection, Visibility,
 };
 use vcad_kernel_tessellate::TriangleMesh;
 
@@ -227,7 +226,13 @@ fn nice_scale(s: f64) -> (f64, String) {
 }
 
 fn kernel_title_block(tb: &DrawingTitleBlock, scale_note: &str) -> TitleBlockFields {
-    let or = |s: &str, d: &str| if s.is_empty() { d.to_string() } else { s.to_string() };
+    let or = |s: &str, d: &str| {
+        if s.is_empty() {
+            d.to_string()
+        } else {
+            s.to_string()
+        }
+    };
     TitleBlockFields {
         part_name: or(&tb.part_name, "UNTITLED"),
         material: tb.material.clone(),
@@ -273,7 +278,11 @@ impl ViewPlacement {
 
 /// Cut-line annotation (polyline + end labels), view coordinates.
 fn cut_line(section: &DrawingSectionLine) -> RenderedDimension {
-    let pts: Vec<Point2D> = section.points.iter().map(|p| Point2D::new(p[0], p[1])).collect();
+    let pts: Vec<Point2D> = section
+        .points
+        .iter()
+        .map(|p| Point2D::new(p[0], p[1]))
+        .collect();
     let mut rd = RenderedDimension::new();
     for w in pts.windows(2) {
         rd.lines.push((w[0], w[1]));
@@ -347,16 +356,26 @@ pub struct Composed {
 /// Compose the drawing for `doc` (layout = `buildDrawingSheetSpec`, plus
 /// detail views and GD&T, which the web sheet does not place yet).
 pub fn compose(doc_text: &str, doc: &Document, req: &DrawingRequest) -> Result<Composed, String> {
-    let meshes: Vec<EvaluatedMesh> =
-        cached_meshes(doc_text, doc)?.into_iter().map(|(_, m)| m).collect();
+    let meshes: Vec<EvaluatedMesh> = cached_meshes(doc_text, doc)?
+        .into_iter()
+        .map(|(_, m)| m)
+        .collect();
     let mesh = combine(&meshes);
-    let dir_name = req.view.clone().unwrap_or_else(|| "front".into()).to_lowercase();
+    let dir_name = req
+        .view
+        .clone()
+        .unwrap_or_else(|| "front".into())
+        .to_lowercase();
     let view = project_mesh(&mesh, view_direction(&dir_name));
     if !view.bounds.is_valid() {
         return Err("nothing to draw: the projection is empty".into());
     }
 
-    let drawing = req.drawing.clone().or_else(|| doc.drawing.clone()).unwrap_or_default();
+    let drawing = req
+        .drawing
+        .clone()
+        .or_else(|| doc.drawing.clone())
+        .unwrap_or_default();
     let sections: Vec<&DrawingSectionLine> = drawing
         .sections
         .iter()
@@ -367,7 +386,11 @@ pub fn compose(doc_text: &str, doc: &Document, req: &DrawingRequest) -> Result<C
 
     // A4 landscape; reserve a right strip for sections/details.
     let (box_w, box_h) = (if has_side { 140.0 } else { 200.0 }, 130.0);
-    let sheet_center = if has_side { [85.0, 120.0] } else { [120.0, 120.0] };
+    let sheet_center = if has_side {
+        [85.0, 120.0]
+    } else {
+        [120.0, 120.0]
+    };
     let b = view.bounds;
     let vw = if b.width() > 0.0 { b.width() } else { 1.0 };
     let vh = if b.height() > 0.0 { b.height() } else { 1.0 };
@@ -433,13 +456,11 @@ pub fn compose(doc_text: &str, doc: &Document, req: &DrawingRequest) -> Result<C
             view: sv,
             center: [side_x, side_y],
             scale: s,
-            label: Some(format!(
-                "SECTION {0}-{0}  ({scale_note})",
-                section.label
-            )),
+            label: Some(format!("SECTION {0}-{0}  ({scale_note})", section.label)),
         });
         side_y -= 65.0;
-        spec.annotations.push(dimension_to_sheet(&cut_line(section), &main));
+        spec.annotations
+            .push(dimension_to_sheet(&cut_line(section), &main));
     }
 
     for d in &req.details {
@@ -546,7 +567,10 @@ pub fn compose(doc_text: &str, doc: &Document, req: &DrawingRequest) -> Result<C
     })
 }
 
-fn parse(doc_json: *const c_char, req_json: *const c_char) -> Option<(String, Document, DrawingRequest)> {
+fn parse(
+    doc_json: *const c_char,
+    req_json: *const c_char,
+) -> Option<(String, Document, DrawingRequest)> {
     let text = borrow_str("document", doc_json)?.to_string();
     let mut doc = err::ctx("parse document", || Document::from_json(&text))?;
     let req: DrawingRequest = if req_json.is_null() {
@@ -626,7 +650,9 @@ pub extern "C" fn vcad_drawing_export(
                 return None;
             }
         };
-        err::ctx("write", || crate::export::write_atomic(std::path::Path::new(&path), &bytes))?;
+        err::ctx("write", || {
+            crate::export::write_atomic(std::path::Path::new(&path), &bytes)
+        })?;
         Some(n)
     };
     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
@@ -672,7 +698,10 @@ mod tests {
         let v = call(r#"{"view":"front"}"#);
         assert_eq!(v["width"], 297.0);
         assert!(v["visible_edges"].as_u64().unwrap() > 0);
-        assert!(v["hidden_edges"].as_u64().unwrap() > 0, "through-hole is hidden from the front");
+        assert!(
+            v["hidden_edges"].as_u64().unwrap() > 0,
+            "through-hole is hidden from the front"
+        );
         let texts: Vec<String> = v["sheet"]["texts"]
             .as_array()
             .unwrap()
@@ -680,8 +709,16 @@ mod tests {
             .map(|t| t["text"].as_str().unwrap().to_string())
             .collect();
         assert!(texts.iter().any(|t| t.contains("FRONT VIEW")), "{texts:?}");
-        assert!(texts.iter().any(|t| t.contains("40")), "width dimension: {texts:?}");
-        assert!(texts.iter().any(|t| t.contains("Bracket") || t.contains("BRACKET")), "{texts:?}");
+        assert!(
+            texts.iter().any(|t| t.contains("40")),
+            "width dimension: {texts:?}"
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("Bracket") || t.contains("BRACKET")),
+            "{texts:?}"
+        );
     }
 
     #[test]
@@ -700,7 +737,10 @@ mod tests {
             .collect();
         assert!(texts.iter().any(|t| t.contains("SECTION A-A")), "{texts:?}");
         assert!(texts.iter().any(|t| t.contains("DETAIL B")), "{texts:?}");
-        assert!(texts.iter().any(|t| t.contains("0.05")), "flatness value: {texts:?}");
+        assert!(
+            texts.iter().any(|t| t.contains("0.05")),
+            "flatness value: {texts:?}"
+        );
         let hatch = v["sheet"]["lines"]
             .as_array()
             .unwrap()
@@ -739,11 +779,18 @@ mod tests {
         // Same entities as the web path: projectMesh(mesh) → exportProjectedViewToDxf.
         // (Edge order follows a HashMap, so compare the sorted LINE records.)
         let doc = Document::from_json(&cube_doc()).unwrap();
-        let meshes: Vec<EvaluatedMesh> =
-            crate::export::named_meshes(&doc).unwrap().into_iter().map(|(_, m)| m).collect();
+        let meshes: Vec<EvaluatedMesh> = crate::export::named_meshes(&doc)
+            .unwrap()
+            .into_iter()
+            .map(|(_, m)| m)
+            .collect();
         let web = projected_view_to_dxf(&project_mesh(&combine(&meshes), ViewDirection::Front));
         let lines = |t: &str| {
-            let mut v: Vec<String> = t.split("\n0\nLINE\n").skip(1).map(|r| r.split("\n0\n").next().unwrap().to_string()).collect();
+            let mut v: Vec<String> = t
+                .split("\n0\nLINE\n")
+                .skip(1)
+                .map(|r| r.split("\n0\n").next().unwrap().to_string())
+                .collect();
             v.sort();
             v
         };

@@ -8,7 +8,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::dimension::RenderedText;
-use crate::sheet::{BomRow, BomTable, DrawingSheet, LineClass, SheetSize, TitleBlock, TitleBlockFields};
+use crate::sheet::{
+    BomRow, BomTable, DrawingSheet, LineClass, SheetSize, TitleBlock, TitleBlockFields,
+};
 use crate::types::{DetailView, Point2D, ProjectedView, SectionView};
 use crate::RenderedDimension;
 
@@ -103,7 +105,12 @@ pub fn compose_sheet(spec: &SheetSpec) -> DrawingSheet {
         let center = Point2D::new(placed.center[0], placed.center[1]);
         sheet.add_section_view(&placed.view, center, placed.scale);
         let b = &placed.view.bounds;
-        caption(&mut sheet, center, (b.max_y - b.min_y) / 2.0 * placed.scale, &placed.label);
+        caption(
+            &mut sheet,
+            center,
+            (b.max_y - b.min_y) / 2.0 * placed.scale,
+            &placed.label,
+        );
     }
 
     for placed in &spec.details {
