@@ -5,6 +5,30 @@ web editor retires, and with it cloud sync, accounts, collaboration and
 billing. This doc maps every vcad.io route to its post-retirement behavior and
 says what is built and what is still a switch to flip.
 
+## Release-blocking: the update feed stays up
+
+Every installed copy of the Mac app checks
+**`https://vcad.io/desktop/appcast.xml`** for updates (`SUFeedURL` in
+`apple/VcadApp/bundle.sh`). The file is
+`packages/app/public/desktop/appcast.xml`, and
+`.github/workflows/desktop-release.yml` updates it by opening an appcast PR.
+The DMGs it points to are GitHub release assets.
+
+After vcad.io stops serving the web app:
+
+- `/desktop/appcast.xml`, the `/desktop/` download page, and everything else
+  under `/desktop/` keep serving **unchanged**. They are static files, so
+  Vercel serves them before any SPA rewrite.
+- `isProtectedPath` in `src/lib/retirement.ts` is the first check in the
+  planner, and `main.tsx` checks it again. No redirect flag can catch
+  `/desktop/*`. Tests in `src/test/retirement.test.ts` pin this.
+- The vcad.io domain, its Vercel project (or some static host for
+  `/desktop/`), and the `desktop-release.yml` appcast PR flow must all
+  outlive the web app. Don't delete `packages/app/public/desktop/` when the
+  editor code is removed. Move it, keep the URL, and keep the GitHub releases.
+- Moving the feed URL requires an app update that ships the new
+  `SUFeedURL` first, while the old feed still serves that update.
+
 ## What exists now (nothing flipped)
 
 | Piece | Where | State |
@@ -40,6 +64,7 @@ cloud if sync was off. Dev preview without Supabase: `/export?mock=1`.
 | `/cli-auth` (`vcad login`) | Device-code sign-in | Notice: CLI runs locally, no sign-in |
 | `/authorize/<id>` (MCP `authorize_spend`) | Spend approval | Notice: billing retired |
 | `/privacy`, `/terms`, `/security` | Legal pages | Unchanged |
+| `/desktop/appcast.xml`, `/desktop/*` | Sparkle feed + download page | **Unchanged, permanently** (see above) |
 | Embed | No embed route exists in `packages/app`; inline previews are the MCP viewer served by the MCP server (`packages/mcp/src/viewer.ts`) | Unaffected by this flag |
 
 ## Cut-over checklist
@@ -49,6 +74,8 @@ cloud if sync was off. Dev preview without Supabase: `/export?mock=1`.
 2. Ship the Mac app build with the `vcad://` handler; make sure
    `https://vcad.io/download` serves it.
 3. Set `VITE_VCAD_RETIREMENT_REDIRECTS=1` in the Vercel env and redeploy.
-4. After the shutdown date: retire `/api/*` (cli-auth, billing, chat, usage),
+4. Before and after every step, check that `https://vcad.io/desktop/appcast.xml`
+   still returns the feed (`curl -fsS … | head`).
+5. After the shutdown date: retire `/api/*` (cli-auth, billing, chat, usage),
    then Supabase. Shares then fall to "This share has ended"; `/export` stops
    working, so keep it up until the announced date.

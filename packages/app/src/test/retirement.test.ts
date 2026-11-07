@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { gunzipSync, gzipSync, strFromU8, strToU8 } from "fflate";
 import {
   appLinkForDocumentText,
+  isProtectedPath,
   planRetirementRoute,
   retirementRedirectsEnabled,
   shutdownLabel,
@@ -27,7 +28,22 @@ describe("retirement flag", () => {
   });
 });
 
+describe("isProtectedPath", () => {
+  it("covers /desktop and below only", () => {
+    expect(isProtectedPath("/desktop/appcast.xml")).toBe(true);
+    expect(isProtectedPath("/desktopx")).toBe(false);
+  });
+});
+
 describe("planRetirementRoute", () => {
+  it("never touches the Sparkle appcast or /desktop", () => {
+    for (const p of ["/desktop/appcast.xml", "/desktop/", "/desktop", "/desktop/index.html", "/Desktop/appcast.xml"]) {
+      expect(planRetirementRoute(loc(p))).toEqual({ kind: "keep" });
+      expect(planRetirementRoute(loc(p, "?ir=x", "#/new?doc=x"))).toEqual({ kind: "keep" });
+    }
+    expect(planRetirementRoute(loc("/desktopx"))).not.toEqual({ kind: "keep" });
+  });
+
   it("keeps legal pages and the export page", () => {
     expect(planRetirementRoute(loc("/privacy"))).toEqual({ kind: "keep" });
     expect(planRetirementRoute(loc("/export/"))).toEqual({ kind: "export" });

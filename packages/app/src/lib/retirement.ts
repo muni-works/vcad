@@ -98,6 +98,14 @@ function inlineHandoff(loc: { search: string; hash: string }): RetirementRoute |
   return null;
 }
 
+/**
+ * Paths retirement must never touch: `/desktop` and everything under it
+ * (Sparkle appcast, desktop download page). Exported so the guard is testable.
+ */
+export function isProtectedPath(pathname: string): boolean {
+  return /^\/desktop(\/|$)/i.test(pathname);
+}
+
 /** Map an old vcad.io location to its post-retirement behavior. */
 export function planRetirementRoute(loc: {
   pathname: string;
@@ -105,6 +113,13 @@ export function planRetirementRoute(loc: {
   hash: string;
 }): RetirementRoute {
   const path = loc.pathname.replace(/\/+$/, "") || "/";
+
+  // RELEASE-BLOCKING: the Sparkle update feed (SUFeedURL =
+  // https://vcad.io/desktop/appcast.xml, apple/VcadApp/bundle.sh) and the
+  // /desktop/ download page must keep serving unchanged forever — every
+  // installed copy of the Mac app checks it for updates. Checked first so no
+  // later rule (or flag) can ever catch it.
+  if (isProtectedPath(path)) return { kind: "keep" };
 
   if (/^\/(privacy|terms|security)$/.test(path)) return { kind: "keep" };
   if (path === EXPORT_PATH) return { kind: "export" };

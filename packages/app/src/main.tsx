@@ -30,6 +30,7 @@ import { ExportAllPage } from "./components/ExportAllPage";
 import { RetirementPage } from "./components/RetirementPage";
 import {
   EXPORT_PATH,
+  isProtectedPath,
   planRetirementRoute,
   retirementRedirectsEnabled,
   type RetirementRoute,
@@ -162,6 +163,8 @@ const isExport = window.location.pathname.replace(/\/+$/, "") === EXPORT_PATH;
 // build sets VITE_VCAD_RETIREMENT_REDIRECTS=1; when off this is always null.
 const retirementRoute: Exclude<RetirementRoute, { kind: "keep" | "export" }> | null = (() => {
   if (!retirementRedirectsEnabled()) return null;
+  // Belt and braces: /desktop/* (Sparkle appcast) is static and never redirected.
+  if (isProtectedPath(window.location.pathname)) return null;
   const route = planRetirementRoute(window.location);
   return route.kind === "keep" || route.kind === "export" ? null : route;
 })();
