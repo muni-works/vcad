@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-07-native-electronics-codesign",
+  "version": "undefined",
+  "date": "2026-11-07",
+  "category": "feat",
+  "title": "Electronics co-design in the Mac app",
+  "summary": "Import KiCad/Eagle boards, autoroute, DRC + Fix DRC, length tuning, layer stack, gated Gerber export, enclosure fit checks and circuit simulation in the native app.",
+  "features": ["electronics", "pcb", "native-app", "enclosure", "simulation"]
+}

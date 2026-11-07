@@ -39,7 +39,7 @@ vcad-ecad-pcb = { workspace = true }
 vcad-ecad-symbols = { workspace = true }
 vcad-ecad-schematic = { workspace = true }
 vcad-ecad-export = { workspace = true }
-vcad-ecad-fabprep = { workspace = true, default-features = false }
+vcad-ecad-fabprep = { workspace = true }
 vcad-ecad-sim = { workspace = true }
 vcad-kernel-enclosure = { workspace = true }
 vcad-kernel-export = { workspace = true }

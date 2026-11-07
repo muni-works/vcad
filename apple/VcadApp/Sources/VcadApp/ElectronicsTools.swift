@@ -184,8 +184,8 @@ final class ElectronicsTools {
 
     func fitCheck(_ ec: ElectronicsWorkspace, _ model: EditorModel) {
         guard let b = boardBox(ec, model), let d = docBox(model) else { return }
-        let part = enclosurePart, place = placement.map(ECBox.init)
-        run("Fit check") { ECBox(value: try PcbFFI.enclosureFit(doc: d.value, pcb: b.value, part: part, placement: place?.value)) } then: { [self] r in
+        let part = enclosurePart
+        run("Fit check") { ECBox(value: try PcbFFI.enclosureFit(doc: d.value, pcb: b.value, part: part, placement: nil)) } then: { [self] r in
             fit = r["report"] as? ECObject
             status = fit?["summary"] as? String
             sheet = .enclosure
