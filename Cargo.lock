@@ -98,7 +98,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -109,7 +109,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -921,7 +921,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1741,7 +1741,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2243,7 +2243,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2513,8 +2513,9 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "phyz"
-version = "0.4.0"
-source = "git+https://github.com/ecto/phyz.git?tag=v0.4.0#fbba8abe2d02799f5fee6a7b28b6e619083f0caf"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a0ae4dac617d49137a0fda70b48c0067933f3fadc314dc74daa9f1b37e67e26"
 dependencies = [
  "phyz-collision",
  "phyz-contact",
@@ -2526,8 +2527,9 @@ dependencies = [
 
 [[package]]
 name = "phyz-collision"
-version = "0.4.0"
-source = "git+https://github.com/ecto/phyz.git?tag=v0.4.0#fbba8abe2d02799f5fee6a7b28b6e619083f0caf"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "71de7bc60be9c51d086d855537884e7f1c177344654ac4683b94f3dfa2183b7f"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -2535,8 +2537,9 @@ dependencies = [
 
 [[package]]
 name = "phyz-contact"
-version = "0.4.0"
-source = "git+https://github.com/ecto/phyz.git?tag=v0.4.0#fbba8abe2d02799f5fee6a7b28b6e619083f0caf"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b43e0770d18f46dcc2681ec3a0845af6def516c1489134d6077b8f943eb9e2a"
 dependencies = [
  "phyz-collision",
  "phyz-math",
@@ -2546,8 +2549,9 @@ dependencies = [
 
 [[package]]
 name = "phyz-diff"
-version = "0.4.0"
-source = "git+https://github.com/ecto/phyz.git?tag=v0.4.0#fbba8abe2d02799f5fee6a7b28b6e619083f0caf"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cee7a742c38c7263023649cc3ee9bad1b16d3e13db14be11d3bb10a6768fc9ec"
 dependencies = [
  "phyz-collision",
  "phyz-contact",
@@ -2555,14 +2559,15 @@ dependencies = [
  "phyz-model",
  "phyz-rigid",
  "tang",
- "tang-expr 0.1.1",
+ "tang-expr",
  "tang-la",
 ]
 
 [[package]]
 name = "phyz-gpu"
-version = "0.4.0"
-source = "git+https://github.com/ecto/phyz.git?tag=v0.4.0#fbba8abe2d02799f5fee6a7b28b6e619083f0caf"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5bf391d3c463b34ebc59584ecde183258e6d715c751dca070c11dd69e3d785ce"
 dependencies = [
  "bytemuck",
  "futures-intrusive",
@@ -2575,8 +2580,9 @@ dependencies = [
 
 [[package]]
 name = "phyz-math"
-version = "0.4.0"
-source = "git+https://github.com/ecto/phyz.git?tag=v0.4.0#fbba8abe2d02799f5fee6a7b28b6e619083f0caf"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e67239e6833fe253f363461419fb87aeb5ec78015b26bc53e7246c5d658bd4a2"
 dependencies = [
  "libm",
  "tang",
@@ -2585,8 +2591,9 @@ dependencies = [
 
 [[package]]
 name = "phyz-md"
-version = "0.4.0"
-source = "git+https://github.com/ecto/phyz.git?tag=v0.4.0#fbba8abe2d02799f5fee6a7b28b6e619083f0caf"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e86fbb1cc2909b6d18bbe40b5680b8fdc095940938a766fbeb1da4777b48e9cf"
 dependencies = [
  "phyz-math",
  "rand 0.8.5",
@@ -2597,16 +2604,18 @@ dependencies = [
 
 [[package]]
 name = "phyz-model"
-version = "0.4.0"
-source = "git+https://github.com/ecto/phyz.git?tag=v0.4.0#fbba8abe2d02799f5fee6a7b28b6e619083f0caf"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c754dc38b05f5bde2dfe678c39f2ae9b2239a5b2a04cc33daaeb8434a3448a09"
 dependencies = [
  "phyz-math",
 ]
 
 [[package]]
 name = "phyz-rigid"
-version = "0.4.0"
-source = "git+https://github.com/ecto/phyz.git?tag=v0.4.0#fbba8abe2d02799f5fee6a7b28b6e619083f0caf"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38b7bef25d5218f7795303a15613805a41634a221ea08e0f055b5c2752907307"
 dependencies = [
  "phyz-math",
  "phyz-model",
@@ -3201,7 +3210,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3741,17 +3750,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0380a727caaf1cc36929b3b67ee282e74e09137a260bf972b0c47a7ef52c595f"
 dependencies = [
  "tang",
- "tang-expr 0.2.0",
+ "tang-expr",
  "tang-sparse",
-]
-
-[[package]]
-name = "tang-expr"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f1fdb85a4a0335eb38eac4635d080d54f2cb093e66ef54ce0c5460d35457e90"
-dependencies = [
- "tang",
 ]
 
 [[package]]
@@ -3803,7 +3803,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.3",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4402,7 +4402,7 @@ name = "vcad-ecad-diff"
 version = "0.11.0"
 dependencies = [
  "tang",
- "tang-expr 0.2.0",
+ "tang-expr",
  "tang-la",
  "vcad-ecad-sim",
  "vcad-kernel-constraints",
@@ -4469,7 +4469,7 @@ dependencies = [
  "serde",
  "serde_json",
  "spade",
- "tang-expr 0.2.0",
+ "tang-expr",
  "thiserror 2.0.18",
  "toml",
  "tracing",
@@ -4500,7 +4500,7 @@ version = "0.11.0"
 dependencies = [
  "serde",
  "tang",
- "tang-expr 0.2.0",
+ "tang-expr",
  "thiserror 2.0.18",
  "vcad-ecad-schematic",
  "vcad-ir",
@@ -4788,7 +4788,7 @@ dependencies = [
  "pollster",
  "slotmap",
  "tang",
- "tang-expr 0.2.0",
+ "tang-expr",
  "tang-la",
  "tang-optim",
  "thiserror 2.0.18",
@@ -4884,7 +4884,7 @@ dependencies = [
  "serde_json",
  "tang",
  "tang-compile",
- "tang-expr 0.2.0",
+ "tang-expr",
  "tang-sparse",
  "vcad-kernel-tessellate",
  "vcad-receipt",
@@ -4946,7 +4946,7 @@ dependencies = [
  "bytemuck",
  "kosm-render",
  "pollster",
- "tang-expr 0.2.0",
+ "tang-expr",
  "thiserror 2.0.18",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -5213,7 +5213,7 @@ dependencies = [
  "serde_json",
  "tang",
  "tang-compile",
- "tang-expr 0.2.0",
+ "tang-expr",
  "tang-sparse",
  "vcad-receipt",
 ]
@@ -6069,7 +6069,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
