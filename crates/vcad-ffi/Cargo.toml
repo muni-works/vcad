@@ -23,6 +23,7 @@ vcad-slicer = { workspace = true }
 vcad-slicer-gcode = { workspace = true }
 vcad-slicer-bambu = { workspace = true }
 vcad-kernel = { workspace = true }
+vcad-kernel-drafting = { workspace = true }
 vcad-kernel-naming = { workspace = true }
 vcad-kernel-urdf = { workspace = true }
 vcad-kernel-assembly = { workspace = true }

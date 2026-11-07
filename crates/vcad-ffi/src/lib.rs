@@ -60,6 +60,7 @@ mod cam;
 pub mod cam_job;
 pub mod clearance;
 pub mod dfm;
+pub mod drafting;
 pub mod engine;
 mod err;
 pub mod export;
