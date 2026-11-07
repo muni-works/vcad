@@ -813,6 +813,9 @@ struct ReleasedOverlayView: View {
                     DesignModelNavigator(model: model)
                         .modifier(ChromeRegion(key: "tree"))
                 }
+                if model.assembly.showsPanel {
+                    AssemblyPanel(model: model).modifier(ChromeRegion(key: "assembly"))
+                }
                 // Dynamics, as its own panel: one panel per concern.
                 // Posing first: on a jointed assembly it's the main job, and
                 // the column runs out of height before the dojo panel matters.
@@ -938,7 +941,10 @@ struct ReleasedOverlayView: View {
                                 .keyboardShortcut(.return, modifiers: []).opacity(0).frame(width: 0, height: 0)
                         }
                 } else {
-                    if model.timeline != nil {
+                    if model.assembly.showsTimeline && model.assemblyInstanceCount > 0 {
+                        TimelineEditor(model: model)
+                            .modifier(ChromeRegion(key: "timelineEditor"))
+                    } else if model.timeline != nil {
                         PlaybackBar(model: model)
                             .modifier(ChromeRegion(key: "playback"))
                     }
