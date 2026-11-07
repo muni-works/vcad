@@ -13,8 +13,10 @@ import SwiftUI
 // camera, lights parts and pins labels the user sees, and takes snapshots of
 // exactly what is on screen.
 //
-// Read/drive only: nothing here edits the document. A generated `.loon` stays
-// owned by its generator; regenerates arrive through the file watch.
+// The viewport tools here are read/drive only. Document edits live in
+// AgentEdits.swift: each is one named undo step, applied live. A generated
+// `.loon` stays owned by its generator (view-only); regenerates arrive
+// through the file watch.
 //
 // Transport: MCP streamable HTTP, JSON responses only (no SSE), at
 // http://127.0.0.1:<port>/mcp. The port and pid land in ~/.vcad/app.json for
@@ -139,13 +141,13 @@ final class AgentBridge {
                 body = Self.rpcResult(id, [
                     "protocolVersion": (params["protocolVersion"] as? String) ?? "2025-06-18",
                     "capabilities": ["tools": ["listChanged": false]],
-                    "serverInfo": ["name": "vcad-app", "version": "0.1"],
+                    "serverInfo": ["name": "vcad-app", "version": "0.2"],
                     "instructions": Self.instructions,
                 ])
             case "ping":
                 body = Self.rpcResult(id, [:])
             case "tools/list":
-                body = Self.rpcResult(id, ["tools": AgentTools.definitions])
+                body = Self.rpcResult(id, ["tools": AgentTools.definitions + AgentEdits.definitions])
             case "tools/call":
                 let name = params["name"] as? String ?? ""
                 let args = params["arguments"] as? [String: Any] ?? [:]
@@ -163,7 +165,12 @@ final class AgentBridge {
     open, the joint pose, explode, camera, and what the user has selected or is hovering — when \
     the user says "this part", that is it. Everything you change (pose, explode, camera, \
     highlights, labels) is visible to the user immediately. Use snapshot to see the view. \
-    The document itself is read-only here.
+    You can also author the open document: create / update / delete / set_material, booleans \
+    (union, difference, intersection), transforms, patterns, fillet/chamfer/shell via create, \
+    set_parameters, and create_cad_loon for a whole program. Build in small steps — each call \
+    is one named undo step the user watches land and can ⌘Z one at a time. Read with \
+    describe_scene, inspect_cad, list_parameters and get_document. Units are mm, Z is up. \
+    Generated .loon documents and electronics are view-only.
     """
 
     static func rpcResult(_ id: Any, _ result: [String: Any]) -> Data {
@@ -361,6 +368,8 @@ enum AgentTools {
                 content.insert(["type": "image", "data": png.base64EncodedString(), "mimeType": "image/png"], at: 0)
             }
             return ["content": content]
+        case _ where AgentEdits.toolNames.contains(name):
+            return try AgentEdits.call(name, a, model: m)
         default:
             throw Failure(message: "unknown tool \(name)")
         }

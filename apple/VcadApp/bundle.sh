@@ -63,6 +63,9 @@ fi
 mkdir -p "$app/Contents/Frameworks"
 ditto "$bin_dir/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
 
+# The agent bridge's stdio MCP shim ("Connect Claude…" points clients here).
+cp "$here/scripts/vcad-app-mcp.mjs" "$app/Contents/Resources/"
+
 # Sample projects for the welcome window (symlinks in the checkout are
 # copied as the files they point at).
 if [ -f "$here/Samples/samples.json" ]; then
