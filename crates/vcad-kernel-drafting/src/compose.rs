@@ -80,10 +80,11 @@ pub struct PlacedDetailView {
     pub label: Option<String>,
 }
 
+/// Caption 18 mm below the view: clear of the overall dimension at 10 mm.
 fn caption(sheet: &mut DrawingSheet, center: Point2D, half_h: f64, label: &Option<String>) {
     if let Some(label) = label {
         sheet.texts.push(RenderedText::new(
-            Point2D::new(center.x, center.y - half_h - 8.0),
+            Point2D::new(center.x, center.y - half_h - 18.0),
             label,
             3.5,
         ));

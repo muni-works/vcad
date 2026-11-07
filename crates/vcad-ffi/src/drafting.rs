@@ -316,7 +316,8 @@ fn combine(meshes: &[EvaluatedMesh]) -> TriangleMesh {
 
 /// Evaluated root/instance meshes, cached on the document text: typing in
 /// the title block must not re-evaluate a part that takes seconds to solve.
-static MESH_CACHE: Mutex<Option<(u64, Vec<(String, EvaluatedMesh)>)>> = Mutex::new(None);
+type NamedMeshes = Vec<(String, EvaluatedMesh)>;
+static MESH_CACHE: Mutex<Option<(u64, NamedMeshes)>> = Mutex::new(None);
 
 fn cached_meshes(doc_text: &str, doc: &Document) -> Result<Vec<(String, EvaluatedMesh)>, String> {
     use std::hash::{Hash, Hasher};
@@ -385,11 +386,14 @@ pub fn compose(doc_text: &str, doc: &Document, req: &DrawingRequest) -> Result<C
     let has_side = !sections.is_empty() || !req.details.is_empty();
 
     // A4 landscape; reserve a right strip for sections/details.
-    let (box_w, box_h) = (if has_side { 140.0 } else { 200.0 }, 130.0);
-    let sheet_center = if has_side {
-        [85.0, 120.0]
-    } else {
-        [120.0, 120.0]
+    // With a title block or BOM in the bottom-right corner, a full-width main
+    // view is lifted and shortened so its caption clears them (the web
+    // layout let them collide).
+    let corner = drawing.title_block.is_some() || drawing.show_bom == Some(true);
+    let (box_w, box_h, sheet_center) = match (has_side, corner) {
+        (true, _) => (140.0, 130.0, [85.0, 120.0]),
+        (false, true) => (200.0, 85.0, [120.0, 148.0]),
+        (false, false) => (200.0, 130.0, [120.0, 120.0]),
     };
     let b = view.bounds;
     let vw = if b.width() > 0.0 { b.width() } else { 1.0 };
@@ -436,8 +440,24 @@ pub fn compose(doc_text: &str, doc: &Document, req: &DrawingRequest) -> Result<C
     }
 
     // Right strip: sections first, then details, stacked downward.
-    let side_x = 225.0;
-    let mut side_y = 160.0;
+    // Stack top-down from just under the border, each item sized by its own
+    // height plus room for its caption (the web's fixed 160/65 mm pitch let a
+    // tall section run off the sheet).
+    // The title block + BOM own the bottom-right corner; anything that won't
+    // fit above them flows into the free strip under the main view.
+    let floor = if corner { 92.0 } else { 20.0 };
+    let mut side_top = 195.0;
+    let mut low_x = 30.0;
+    let mut place = |w: f64, h: f64| -> [f64; 2] {
+        if side_top - h - 14.0 >= floor {
+            let c = [225.0, side_top - h / 2.0];
+            side_top -= h + 26.0;
+            return c;
+        }
+        let c = [low_x + w / 2.0, 50.0];
+        low_x += w + 14.0;
+        c
+    };
     let mut resolved = 0;
     for section in &sections {
         let Some(plane) = section_plane_from_line(&dir_name, &section.points) else {
@@ -452,13 +472,16 @@ pub fn compose(doc_text: &str, doc: &Document, req: &DrawingRequest) -> Result<C
             continue;
         }
         resolved += 1;
+        let at = place(
+            (sv.bounds.max_x - sv.bounds.min_x) * s,
+            (sv.bounds.max_y - sv.bounds.min_y) * s,
+        );
         spec.sections.push(PlacedSectionView {
             view: sv,
-            center: [side_x, side_y],
+            center: at,
             scale: s,
             label: Some(format!("SECTION {0}-{0}  ({scale_note})", section.label)),
         });
-        side_y -= 65.0;
         spec.annotations
             .push(dimension_to_sheet(&cut_line(section), &main));
     }
@@ -494,12 +517,15 @@ pub fn compose(doc_text: &str, doc: &Document, req: &DrawingRequest) -> Result<C
         } else {
             format!("1:{}", (1.0 / ratio).round())
         };
+        let at = place(
+            dv.bounds.max_x - dv.bounds.min_x,
+            dv.bounds.max_y - dv.bounds.min_y,
+        );
         spec.details.push(PlacedDetailView {
             view: dv,
-            center: [side_x, side_y],
+            center: at,
             label: Some(format!("DETAIL {}  ({note})", d.label)),
         });
-        side_y -= 65.0;
     }
 
     // GD&T: placed directly at the anchor's sheet position so frame boxes
@@ -813,5 +839,60 @@ mod tests {
         assert!(section_plane_from_line("isometric", &[[0.0, 0.0], [0.0, 1.0]]).is_none());
         assert_eq!(nice_scale(3.7), (2.0, "2:1".into()));
         assert_eq!(nice_scale(0.3), (0.2, "1:5".into()));
+    }
+
+    /// Gate: every sample the app ships draws in every orthographic view, and
+    /// its DXF holds exactly the LINE records the web export writes for the
+    /// same mesh (`projectMesh` → `exportProjectedViewToDxf`).
+    #[test]
+    fn shipped_samples_draw_and_match_web_dxf() {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../apple/VcadApp/Samples");
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("vcad") {
+                continue;
+            }
+            // Through the app's own loader: samples may be JSON or compact text.
+            let doc = crate::load_document_file(&path).unwrap();
+            let text = serde_json::to_string(&doc).unwrap();
+            let meshes: Vec<EvaluatedMesh> = crate::export::named_meshes(&doc)
+                .unwrap()
+                .into_iter()
+                .map(|(_, m)| m)
+                .collect();
+            let mesh = combine(&meshes);
+            for view in ["front", "isometric"] {
+                let req = DrawingRequest {
+                    view: Some(view.into()),
+                    ..Default::default()
+                };
+                let c =
+                    compose(&text, &doc, &req).unwrap_or_else(|e| panic!("{path:?} {view}: {e}"));
+                let sheet = compose_sheet(&c.spec);
+                assert!(sheet.lines.len() > 4, "{path:?} {view}: empty sheet");
+                let ours = String::from_utf8(projected_view_to_dxf(&c.view)).unwrap();
+                let web = String::from_utf8(projected_view_to_dxf(&project_mesh(
+                    &mesh,
+                    view_direction(view),
+                )))
+                .unwrap();
+                let lines = |t: &str| {
+                    let mut v: Vec<&str> = t.split("\n0\nLINE\n").skip(1).collect();
+                    v.iter_mut()
+                        .for_each(|r| *r = r.split("\n0\n").next().unwrap());
+                    v.sort_unstable();
+                    v.into_iter().map(str::to_owned).collect::<Vec<_>>()
+                };
+                assert_eq!(
+                    lines(&ours),
+                    lines(&web),
+                    "{path:?} {view}: DXF differs from the web export"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked >= 8, "only {checked} sample views checked");
     }
 }

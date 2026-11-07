@@ -4559,6 +4559,7 @@ dependencies = [
  "vcad-ir",
  "vcad-kernel",
  "vcad-kernel-cam",
+ "vcad-kernel-drafting",
  "vcad-kernel-export",
  "vcad-kernel-gpu",
  "vcad-kernel-math",

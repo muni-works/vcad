@@ -48,7 +48,9 @@ pub mod sheet;
 pub mod types;
 
 // Re-export main types and functions for convenience
-pub use compose::{compose_sheet, PlacedDetailView, PlacedProjectedView, PlacedSectionView, SheetSpec};
+pub use compose::{
+    compose_sheet, PlacedDetailView, PlacedProjectedView, PlacedSectionView, SheetSpec,
+};
 pub use detail::{create_detail_view, detail_callout, detail_caption, format_scale};
 pub use dimension::{
     AngleDefinition, AngularDimension, AnnotationLayer, ArrowType, DatumFeatureSymbol, DatumRef,
