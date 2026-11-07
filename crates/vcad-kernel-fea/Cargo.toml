@@ -14,6 +14,9 @@ repository.workspace = true
 serde = { workspace = true }
 vcad-kernel-tessellate = { workspace = true }
 vcad-receipt = { workspace = true }
+tang = { workspace = true }
+tang-compile = { workspace = true }
+tang-expr = { workspace = true }
 tang-sparse = { workspace = true }
 
 [dev-dependencies]

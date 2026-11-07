@@ -38,6 +38,7 @@
 
 use phyz::math::{DVec, Mat3, SpatialTransform, Vec3};
 use phyz::{Joint, JointType, Model, ModelBuilder};
+use std::sync::Arc;
 use vcad_kernel_diff::{ParamSeeding, SurfaceSeed};
 use vcad_kernel_geom::CylinderSurface;
 use vcad_kernel_physics::diff::interop::AdjointRolloutSpec;
@@ -109,15 +110,15 @@ fn lying_cylinder_model(props: &[BodyMassProps]) -> Model {
         .build()
 }
 
-fn spec<'a>() -> AdjointRolloutSpec<'a> {
+fn spec() -> AdjointRolloutSpec {
     AdjointRolloutSpec {
-        build_model: Box::new(|p: &[BodyMassProps]| lying_cylinder_model(p)),
+        build_model: Arc::new(|p: &[BodyMassProps]| lying_cylinder_model(p)),
         q0: vec![0.0], // lowest surface line exactly touching the ground
         v0: vec![0.0],
         steps: STEPS,
-        ctrl: Box::new(|_t| DVec::from_slice(&[0.0])),
-        objective_value: Box::new(|q, _v| q[0]),
-        objective_gradient: Box::new(|q, v| {
+        ctrl: Arc::new(|_t| DVec::from_slice(&[0.0])),
+        objective_value: Arc::new(|q, _v| q[0]),
+        objective_gradient: Arc::new(|q, v| {
             let mut gq = vec![0.0; q.len()];
             gq[0] = 1.0;
             (gq, vec![0.0; v.len()])
