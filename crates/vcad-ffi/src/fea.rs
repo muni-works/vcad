@@ -650,6 +650,24 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "resolution probe; run by hand"]
+    fn resolution_probe() {
+        let doc = bracket();
+        for res in [12, 16, 24, 32, 48] {
+            let mut req = cantilever_req(&doc);
+            req.resolution = res;
+            req.fields = false;
+            let t = std::time::Instant::now();
+            let r = solve(&doc, &req).unwrap();
+            eprintln!(
+                "res {res}: σ {:.2} δ {:.4} Δσ {:.3} Δδ {:.3} conv {} {:?} ({:.2}s)",
+                r.max_von_mises_mpa, r.max_displacement_mm, r.study.stress_change_rel,
+                r.study.displacement_change_rel, r.converged, r.reasons, t.elapsed().as_secs_f64()
+            );
+        }
+    }
+
+    #[test]
     fn empty_picks_fail_closed() {
         let doc = bracket();
         let mut req = cantilever_req(&doc);

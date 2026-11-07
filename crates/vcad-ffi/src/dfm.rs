@@ -263,19 +263,38 @@ fn field_patch(doc: &Document, node: NodeId, path: &str, from: f64, to: f64) -> 
             to,
         }),
         Some(Expr::Formula(f)) => {
-            let name = f.trim();
+            let refuse = || format!("{path} on node {node} is driven by the formula `{f}` — edit it by hand");
+            let (name, a, b) = affine(f).ok_or_else(refuse)?;
             match doc.parameters.get(name) {
-                Some(p) if p.value.as_number().is_some() => Ok(DfmPatch::SetParameter {
+                Some(p) if p.value.as_number().is_some() && b != 0.0 => Ok(DfmPatch::SetParameter {
                     name: name.to_string(),
                     from: p.value.as_number().unwrap_or(from),
-                    to,
+                    // field = a + b·param  ⇒  param = (field − a) / b
+                    to: (to - a) / b,
                 }),
-                _ => Err(format!(
-                    "{path} on node {node} is driven by the formula `{f}` — edit it by hand"
-                )),
+                _ => Err(refuse()),
             }
         }
     }
+}
+
+/// `name`, or loon's lowered `(a) + (b) * name`, as `(name, a, b)`.
+fn affine(f: &str) -> Option<(&str, f64, f64)> {
+    let f = f.trim();
+    let ident = |s: &str| {
+        let s = s.trim();
+        (!s.is_empty()
+            && s.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
+            && s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-'))
+        .then_some(s)
+    };
+    if let Some(n) = ident(f) {
+        return Some((n, 0.0, 1.0));
+    }
+    let num = |s: &str| s.trim().trim_start_matches('(').trim_end_matches(')').trim().parse::<f64>().ok();
+    let (lhs, rhs) = f.split_once('+')?;
+    let (coef, name) = rhs.split_once('*')?;
+    Some((ident(name)?, num(lhs)?, num(coef)?))
 }
 
 /// Resolve the issue's suggested fix to an applyable patch, or say why not.
