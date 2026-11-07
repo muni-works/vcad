@@ -20,6 +20,7 @@ struct NativeElectronicsView: View {
                     Text(ec.message ?? "Create a circuit board in this document, or open a vcad document containing a PCB.")
                 } actions: {
                     Button("Create circuit board") { ec.createBoard(model) }.buttonStyle(.borderedProminent)
+                    Button("Import KiCad board…") { ec.tools.importBoard(ec, model) }
                     Button("Open document…") { open() }
                 }
             } else {
@@ -44,7 +45,7 @@ struct NativeElectronicsView: View {
                 }
                 Divider()
                 HStack {
-                    Text(ec.message ?? (ec.view == .spatial ? "3D layout preview · simplified component bodies" : ec.tool == .wire ? "Select two pins to connect their net" : ec.tool == .route ? "Click to route · Escape ends the route" : ec.tool == .place ? "Click to place \(ec.componentKind.lowercased())" : "Select a component to edit its properties"))
+                    Text(ec.tools.error ?? ec.tools.status ?? ec.message ?? (ec.view == .spatial ? "3D layout preview · simplified component bodies" : ec.tool == .wire ? "Select two pins to connect their net" : ec.tool == .route ? "Click to route · Escape ends the route" : ec.tool == .place ? "Click to place \(ec.componentKind.lowercased())" : "Select a component to edit its properties"))
                         .lineLimit(1)
                     Spacer()
                     Text("mm").foregroundStyle(.secondary)
@@ -61,6 +62,9 @@ struct NativeElectronicsView: View {
                 List(ec.issues.isEmpty ? ["No issues found by these checks."] : ec.issues, id: \.self) { Text($0) }.frame(height: 240)
                 Button("Done") { ec.checking = false }.keyboardShortcut(.defaultAction)
             }.padding(24).frame(width: 500)
+        }
+        .sheet(item: Binding(get: { ec.tools.sheet }, set: { ec.tools.sheet = $0 })) { kind in
+            ElectronicsToolSheet(model: model, kind: kind)
         }
         .alert("Document error", isPresented: Binding(get: { fileError != nil }, set: { if !$0 { fileError = nil } })) { Button("OK") { fileError = nil } } message: { Text(fileError ?? "") }
         .background {
@@ -82,6 +86,7 @@ struct NativeElectronicsView: View {
             Spacer(minLength: 0)
             Button("Undo", systemImage: "arrow.uturn.backward") { model.undo() }.labelStyle(.iconOnly).disabled(!model.canUndo)
             Button("Redo", systemImage: "arrow.uturn.forward") { model.redo() }.labelStyle(.iconOnly).disabled(!model.canRedo)
+            ElectronicsToolMenus(model: model)
             Button("Check Connectivity") { ec.check(model) }.disabled(ec.board(model).isEmpty)
         }.controlSize(.small)
     }

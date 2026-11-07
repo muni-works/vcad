@@ -698,6 +698,40 @@ char *vcad_print_call(const char *doc_json, const char *request_json);
 char *vcad_cam_job(const char *request_json);
 /* {"tools":[...]} — the kernel's default tool library. */
 char *vcad_cam_tool_library(void);
+/* --- Electronics co-design (pcb.rs, schematic.rs) ---
+ * Board = IR Pcb JSON (camelCase, as stored under doc.pcb / a PcbBoard node);
+ * sheet = IR SchematicSheet JSON. All return owned JSON freed ONLY with
+ * vcad_string_free; null + vcad_last_error on failure (fail-closed).
+ * DRC reports carry {total, baseline_total, route_attributable, route_fixable,
+ * unrouted, clean, findings[], rules[]}; "route-attributable" is measured
+ * against the same board with all routing stripped. */
+/* .kicad_pcb | .brd -> {pcb, warnings[], footprints, nets, traces, vias} */
+char *vcad_pcb_import(const char *path);
+/* request {"accept"?:[rule]} -> DRC report */
+char *vcad_pcb_drc(const char *pcb_json, const char *request_json);
+/* route unrouted connections -> {pcb, verdict, drc} */
+char *vcad_pcb_autoroute(const char *pcb_json, const char *request_json);
+/* fab-prep fix loop; request {"calibrate"?,"route"?,"max_rounds"?,"accept"?}
+ * -> {pcb, converged, headline, summary, report, drc} */
+char *vcad_pcb_fix_drc(const char *pcb_json, const char *request_json);
+/* request {"dir", "accept"?} -> {dir, files[], drc}. REFUSES (null) unless
+ * route_attributable == 0; nothing is written on refusal. */
+char *vcad_pcb_export_gerbers(const char *pcb_json, const char *request_json);
+/* request {"nets":[..],"target"?,"tolerance"?,"max_amplitude"?} -> {pcb, result, drc};
+ * without "nets" -> {"lengths":[[net, mm]]} */
+char *vcad_pcb_length_match(const char *pcb_json, const char *request_json);
+/* request {"part","clearance"?,"placement"?} -> {report: EnclosureFitReport, features} */
+char *vcad_pcb_enclosure_fit(const char *doc_json, const char *pcb_json, const char *request_json);
+/* request {"part","clearance"?,"thickness"?,"hole_diameter"?} -> {pcb, placement, derived} */
+char *vcad_pcb_board_from_solid(const char *doc_json, const char *request_json);
+/* request {"name"?,"x"?,"y"?,"z"?} -> updated document JSON (board as a solid part) */
+char *vcad_pcb_solid_from_board(const char *doc_json, const char *pcb_json, const char *request_json);
+/* request {"clearance"?,"wall"?,"floor"?,"depth"?,"name"?} -> {document, placement, part} */
+char *vcad_pcb_enclosure_for_board(const char *doc_json, const char *pcb_json, const char *request_json);
+/* request {"ground"?,"tstop"?,"dt"?,"probes"?} -> {dc:{net:V}, currents:{ref:A}, transient?, stubbed[]} */
+char *vcad_schematic_simulate(const char *schematic_json, const char *request_json);
+/* -> {count, violations[]} */
+char *vcad_schematic_erc(const char *schematic_json);
 
 #ifdef __cplusplus
 }
