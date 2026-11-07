@@ -674,6 +674,8 @@ struct ReleasedOverlayView: View {
                     .padding(.horizontal, 18).padding(.vertical, Theme.Space.s).background(.bar)
                     .modifier(ChromeRegion(key: "designCommands"))
                 viewport.frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .drawing:
+                viewport.frame(maxWidth: .infinity, maxHeight: .infinity)
             case .manufacture:
                 viewport.frame(maxWidth: .infinity, maxHeight: .infinity)
                     .overlay {
@@ -755,6 +757,14 @@ struct ReleasedOverlayView: View {
                 // is transparent to the mouse and the click goes to the desktop.
                 .contextMenu { partContextMenu }
                 .onContinuousHover(coordinateSpace: .local) { phase in
+                    if !model.sketching, model.picking.filter.picksTopology {
+                        switch phase {
+                        case .active(let p): model.picking.setHovered(topologyHit(at: p)?.ref)
+                        case .ended: model.picking.setHovered(nil)
+                        }
+                        refreshTopologyOverlay()
+                        return
+                    }
                     guard model.sketching else { return }
                     switch phase {
                     case .active(let p):
@@ -996,6 +1006,39 @@ struct ReleasedOverlayView: View {
         model.sketchDirty = false
     }
 
+    /// The face/edge under a screen point: the nearest part the ray hits,
+    /// picked against its B-rep under the current filter.
+    private func topologyHit(at p: CGPoint) -> TopoHit? {
+        guard let ray = kernelRay(at: p) else { return nil }
+        let parts = ReleaseWindowController.shared.hits(atViewPoint: p).compactMap { hit -> Int? in
+            guard hit.entity.name.hasPrefix("part") else { return nil }
+            return Int(hit.entity.name.dropFirst(4))
+        }
+        for part in parts {
+            if let h = model.pickTopology(part: part, origin: ray.o, dir: ray.d) { return h }
+        }
+        return nil
+    }
+
+    /// Redraw the face/edge highlight ribbons (selection orange, hover white)
+    /// under the kernel frame. Imperative, like the sketch ink.
+    private func refreshTopologyOverlay() {
+        guard let centering = ReleaseWindowController.shared.centeringEntity else { return }
+        centering.findEntity(named: "topoOverlay")?.removeFromParent()
+        guard model.picking.filter.picksTopology else { return }
+        let (sel, hov) = model.topologyHighlight()
+        let root = Entity(); root.name = "topoOverlay"
+        let w = max(model.displayedSceneSize, 1) * 0.006
+        if let m = EdgeOverlay.ribbonResource(segments: sel, width: w * 1.4, name: "topoSel") {
+            root.addChild(ModelEntity(mesh: m, materials: [UnlitMaterial(
+                color: NSColor(red: 1.0, green: 0.62, blue: 0.12, alpha: 1))]))
+        }
+        if let m = EdgeOverlay.ribbonResource(segments: hov, width: w, name: "topoHover") {
+            root.addChild(ModelEntity(mesh: m, materials: [UnlitMaterial(color: .white)]))
+        }
+        centering.addChild(root)
+    }
+
     /// The entity name of the body under a screen point — a root part or an
     /// assembly instance.
     private func bodyName(at p: CGPoint) -> String? {
@@ -1082,6 +1125,13 @@ struct ReleasedOverlayView: View {
         }
         guard model.usesDocumentTree,
               let ar = ReleaseWindowController.shared.arView else { return }
+
+        // Face/edge picking: the click chooses topology, not a body.
+        if model.picking.filter.picksTopology, model.armedShape == nil {
+            model.picking.select(topologyHit(at: p)?.ref, additive: additive)
+            refreshTopologyOverlay()
+            return
+        }
 
         // An armed palette tool consumes the click: this is a placement, not a
         // selection (BCB: pick the component, then click where it goes).
