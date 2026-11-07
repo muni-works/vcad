@@ -275,6 +275,8 @@ final class EditorModel {
     /// Face/edge selection + hover (Picking.swift) — shared with the
     /// modeling ops and the analysis lanes.
     let picking = PickingState()
+    /// The feature dialog on screen (FeatureOps.swift), if any.
+    var activeFeatureOp: FeatureOp?
     var isWindowed = false { didSet { saveLayout() } }
     init() {
         bridgeSimulationToRenderer()
@@ -1464,6 +1466,59 @@ final class EditorModel {
         multiSelectedParts = []
         hiddenParts.removeAll(); isolatedPart = nil       // indices collapsed
         selectedFeatureID = featureNodes.last?.id          // the new combined part
+    }
+
+    // MARK: feature ops (FeatureOps.swift drives these)
+
+    /// Add any engine feature as one undo step; the new part takes
+    /// `materialFrom`'s material (or the default). Selects the result.
+    @discardableResult
+    func addOp(_ feature: FeatureInput, name: String, materialFrom partId: String? = nil,
+               offset: [Double]? = nil) -> Bool {
+        let mat = partId.flatMap { engineState?.material(ofPart: $0) } ?? engineState?.defaultMaterial
+        guard addFeature(.addFeature(feature: feature, name: name), name: name,
+                         material: mat, offset: offset) != nil else { return false }
+        selectedFeatureID = featureNodes.last?.id
+        return true
+    }
+
+    /// Run a raw engine command (scale, reorder, rename…) as one undo step.
+    @discardableResult
+    func runCommand(_ command: DocCommand, name: String) -> Bool {
+        send(command, name: name, reeval: .rebuild) != nil
+    }
+
+    /// Append IR through `vcad_feature_append` (ops the engine vocabulary
+    /// lacks: per-edge blends, extrude-to-face) and reload, as ONE undo step.
+    /// A feature whose `child` is -1 chains onto the previous one's result.
+    @discardableResult
+    func appendIRFeatures(_ features: [[String: Any]], name: String) -> Bool {
+        guard var doc = documentJSON, !features.isEmpty else { return false }
+        var prev: Int?
+        for var f in features {
+            if (f["child"] as? Int) == -1 { guard let prev else { return false }; f["child"] = prev }
+            guard let docData = try? JSONSerialization.data(withJSONObject: doc),
+                  let fData = try? JSONSerialization.data(withJSONObject: f),
+                  let docStr = String(data: docData, encoding: .utf8),
+                  let fStr = String(data: fData, encoding: .utf8) else { return false }
+            guard let raw = vcad_feature_append(docStr, fStr) else {
+                engineError = SimError.pending() ?? "\(name) failed"
+                return false
+            }
+            let text = String(cString: raw)
+            vcad_string_free(raw)
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
+                  let next = obj["document"] as? [String: Any] else { return false }
+            doc = next
+            prev = (obj["node_id"] as? NSNumber)?.intValue
+        }
+        return irEdit(name, reeval: .rebuild, base: doc) { _ in } != nil
+    }
+
+    /// Root IR node id of a viewport part.
+    func rootNodeId(forPart i: Int) -> Int? {
+        guard let roots = documentJSON?["roots"] as? [[String: Any]], i >= 0, i < roots.count else { return nil }
+        return (roots[i]["root"] as? NSNumber)?.intValue
     }
 
     /// Tabs available in the tool palette — Combine only applies to documents.
@@ -2793,9 +2848,21 @@ final class EditorModel {
             if docMode {
                 out.append(Tool(id: "sketch", label: "Sketch", symbol: "scribble.variable",
                                 isActive: false) { [weak self] in self?.enterSketch() })
+                out += FeatureOp.createOps.map { op in
+                    Tool(id: "op.\(op.rawValue)", label: op.label, symbol: op.symbol,
+                         isActive: false) { [weak self] in self?.activeFeatureOp = op }
+                }
             }
             return out
         case .modify:
+            if docMode {
+                let ok = selectedPartIndex != nil || picking.selectionPart != nil
+                return FeatureOp.modifyOps.map { op in
+                    Tool(id: "op.\(op.rawValue)", label: op.label, symbol: op.symbol,
+                         isActive: activeFeatureOp == op, enabled: ok,
+                         hint: ok ? "" : "Select a part first") { [weak self] in self?.activeFeatureOp = op }
+                }
+            }
             return Modifier.allCases.compactMap { mod in
                 if docMode {
                     guard mod != .none else { return nil }     // no "None" tool when authoring

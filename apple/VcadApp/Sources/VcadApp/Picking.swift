@@ -324,7 +324,7 @@ extension EditorModel {
     /// scales with the scene so an edge is grabbable at any zoom.
     func pickTopology(part: Int, origin: SIMD3<Float>, dir: SIMD3<Float>) -> TopoHit? {
         guard let data = pickingDocumentData else { return nil }
-        let tol = Double(max(displayedSceneSize, 1)) * 0.012
+        let tol = max(Double(displayedSceneSize) * 0.02, 0.05)
         return picking.pick(part: part, document: data, origin: origin, dir: dir, edgeTol: tol)
     }
 

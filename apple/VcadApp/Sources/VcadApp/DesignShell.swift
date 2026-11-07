@@ -68,6 +68,7 @@ struct DesignModelingTools: View {
         }.buttonStyle(.borderless).controlSize(.small)
             .disabled(model.cnc.machine.active)
             .onChange(of: model.source) { _, _ in if !model.availableTabs.contains(model.toolTab) { model.toolTab = .create } }
+            .sheet(item: $model.activeFeatureOp) { op in FeatureOpSheet(model: model, op: op) }
             .background {
                 Button("") { model.disarm() }.keyboardShortcut(.cancelAction)
                     .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
