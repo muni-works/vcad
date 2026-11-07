@@ -141,6 +141,44 @@ final class AnalysisStore {
         overlayRevision += 1
     }
 
+    // MARK: Viewport picking (Picking.swift, model.picking)
+
+    @ObservationIgnored private var pickHandler: UUID?
+
+    /// Arm (or disarm, with nil) viewport face picking for a setup row. While
+    /// armed, the viewport picks faces and the row mirrors the selection on
+    /// the analysed part; the face list stays as a precise alternative.
+    func setPickTarget(_ t: PickTarget?, _ m: EditorModel) {
+        if let h = pickHandler { m.picking.removeHandler(h); pickHandler = nil }
+        pickTarget = t
+        guard let t else { m.picking.filter = .body; overlayRevision += 1; return }
+        m.picking.filter = .face
+        m.picking.setSelection(faces(of: t).map { .face($0, part: feaPart) })
+        pickHandler = m.picking.onSelectionChange { [weak self] refs in
+            MainActor.assumeIsolated {
+                guard let self, self.pickTarget == t else { return }
+                if let part = refs.last?.part, part != self.feaPart { self.feaPart = part }
+                self.setFaces(refs.compactMap { $0.kind == .face && $0.part == self.feaPart ? $0.id : nil }, for: t)
+            }
+        }
+        overlayRevision += 1
+    }
+
+    private func faces(of t: PickTarget) -> [UInt32] {
+        switch t {
+        case .load(let id): feaLoads.first { $0.id == id }?.faces ?? []
+        case .support(let id): feaSupports.first { $0.id == id }?.faces ?? []
+        }
+    }
+
+    func setFaces(_ f: [UInt32], for t: PickTarget) {
+        switch t {
+        case .load(let id): if let i = feaLoads.firstIndex(where: { $0.id == id }) { feaLoads[i].faces = f }
+        case .support(let id): if let i = feaSupports.firstIndex(where: { $0.id == id }) { feaSupports[i].faces = f }
+        }
+        overlayRevision += 1
+    }
+
     func request() -> FeaRequest {
         FeaRequest(
             part_index: feaPart, material: feaMaterial, resolution: feaResolution, levels: 2,
