@@ -1,6 +1,6 @@
 {
   "id": "2026-11-06-export-all-documents",
-  "version": "undefined",
+  "version": "0.11.0",
   "date": "2026-11-06",
   "category": "feat",
   "title": "Export all your documents as a zip",
