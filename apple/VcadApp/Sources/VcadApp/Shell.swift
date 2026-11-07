@@ -291,6 +291,7 @@ struct DocumentCommands: Commands {
         }
         CommandGroup(replacing: .help) {
             Button("Welcome to vcad") { WelcomeWindowController.shared.show(model: model) }
+            Button("Connect Claude…") { ConnectClaude.run() }
             Divider()
             Button("vcad Help") { NSWorkspace.shared.open(URL(string: "https://vcad.io/docs")!) }
             Button("Keyboard Shortcuts") { NSWorkspace.shared.open(URL(string: "https://vcad.io/docs/native/shortcuts")!) }

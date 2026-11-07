@@ -1,0 +1,20 @@
+import { spawn } from "node:child_process"; import { writeFileSync } from "node:fs";
+const [shim, out] = process.argv.slice(2);
+const p = spawn(process.execPath, [shim]); let buf = "", id = 0; const waiters = {};
+p.stdout.on("data", d => { buf += d; let i; while ((i = buf.indexOf("\n")) >= 0) { const m = JSON.parse(buf.slice(0, i)); buf = buf.slice(i + 1); waiters[m.id]?.(m); } });
+const rpc = (method, params) => new Promise(r => { const n = ++id; waiters[n] = r; p.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: n, method, params }) + "\n"); });
+const tool = async (name, args = {}) => { const r = await rpc("tools/call", { name, arguments: args }); const c = r.result.content; const t = c.find(x => x.type === "text")?.text ?? ""; console.log(`${name}${r.result.isError ? " ERROR" : ""}: ${t.slice(0, 160)}`); return { t, c }; };
+const snap = async label => { await new Promise(r => setTimeout(r, 900)); const { c } = await tool("snapshot"); const img = c.find(x => x.type === "image"); if (img) writeFileSync(`${out}/${label}.png`, Buffer.from(img.data, "base64")); };
+const idOf = t => t.match(/created part ([^;. ]+)/)[1];
+const init = await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "gate", version: "1" } });
+console.log("server:", init.result.serverInfo.name, "tools:", (await rpc("tools/list", {})).result.tools.length);
+await tool("set_camera", { azimuth: 35, elevation: 30 });
+const plate = idOf((await tool("create", { type: "cube", name: "Bracket", params: { size: { x: 60, y: 30, z: 8 } } })).t); await snap("1-plate");
+const fil = idOf((await tool("create", { type: "fillet", name: "Edges", parent_part_id: plate, params: { radius: 2 } })).t); await snap("2-fillet");
+const hole = idOf((await tool("create", { type: "cylinder", name: "Hole", params: { radius: 4, height: 20 } })).t); await snap("3-hole");
+await tool("translate", { child: hole, offset: { x: 45, y: 15, z: -5 } }); await snap("4-move-hole");
+const cut = idOf((await tool("difference", { left: fil, right: hole, name: "Drilled" })).t); await snap("5-difference");
+await tool("set_material", { part_id: cut, material: "aluminum" }); await snap("6-aluminum");
+await tool("inspect_cad", { part_id: cut });
+for (let k = 1; k <= 6; k++) { await tool("undo"); await snap(`undo-${k}`); }
+p.kill(); process.exit(0);
