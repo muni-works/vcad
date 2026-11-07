@@ -96,7 +96,7 @@ struct AssemblyPanel: View {
                 var s = JointSpec()
                 let ids = model.asmInstances.compactMap { $0["id"] as? String }
                 // Web convention: first selected = parent, second = child.
-                s.childInstanceId = ui.selectedInstanceId ?? ids.last ?? ""
+                s.childInstanceId = model.selectedInstanceId ?? ids.last ?? ""
                 s.parentInstanceId = ids.first { $0 != s.childInstanceId }
                 newJoint = s
             } label: { Label("Add Joint", systemImage: "link.badge.plus") }
@@ -164,7 +164,7 @@ private struct InstanceRow: View {
     var body: some View {
         let id = inst["id"] as? String ?? ""
         let isGround = AsmEdit.groundInstanceId(model.asmJSON) == id
-        let selected = model.assembly.selectedInstanceId == id
+        let selected = model.selectedInstanceId == id
         HStack(spacing: 6) {
             Image(systemName: isGround ? "pin.fill" : "cube").foregroundStyle(isGround ? .orange : .secondary)
             InlineNameField(initial: inst["name"] as? String ?? id) { model.renameInstance(id, $0) }
@@ -173,7 +173,7 @@ private struct InstanceRow: View {
         .padding(.vertical, 2).padding(.horizontal, 4)
         .background(selected ? Color.accentColor.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: Theme.Radius.row))
         .contentShape(Rectangle())
-        .onTapGesture { model.assembly.selectedInstanceId = id }
+        .onTapGesture { model.assembly.selectedInstanceName = inst["name"] as? String ?? id }
         .contextMenu {
             Button(isGround ? "Unset Ground" : "Set as Ground") { model.setGroundInstance(isGround ? nil : id) }
             Button("Delete", role: .destructive) { model.deleteInstance(id) }

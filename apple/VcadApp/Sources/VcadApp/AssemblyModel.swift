@@ -15,7 +15,9 @@ final class AssemblyUIState {
     var showsPanel = false
     var showsTimeline = false
     var selectedJointId: String?
-    var selectedInstanceId: String?
+    /// Selected instance, held by NAME: the engine re-keys instance ids on
+    /// every reload, so an id doesn't survive the next edit.
+    var selectedInstanceName: String?
     /// Keyframe selection in the timeline editor.
     var selectedKey: (jointId: String, t: Double)? {
         didSet { if let k = selectedKey { selectedJointId = k.jointId } }
@@ -50,16 +52,23 @@ extension EditorModel {
 
     // MARK: instances
 
+    /// Current id of the instance named `name` (ids don't survive an edit).
+    func instanceId(named name: String) -> String? {
+        asmInstances.first { $0["name"] as? String == name }?["id"] as? String
+    }
+    var selectedInstanceId: String? { assembly.selectedInstanceName.flatMap(instanceId(named:)) }
+
     /// Insert an instance of `partDefId` (offset so it doesn't land exactly on
     /// the last one). Selects it.
     @discardableResult
     func insertInstance(partDefId: String) -> String? {
-        var id: String?
         let n = Double(asmInstances.count)
-        guard assemblyEdit("Insert Instance", rebuild: true, {
-            id = AsmEdit.insertInstance(&$0, partDefId: partDefId, translation: SIMD3(n * 20, 0, 0))
-        }) else { return nil }
-        assembly.selectedInstanceId = id
+        let id = newInstanceId {
+            assemblyEdit("Insert Instance", rebuild: true) {
+                AsmEdit.insertInstance(&$0, partDefId: partDefId, translation: SIMD3(n * 20, 0, 0))
+            }
+        }
+        assembly.selectedInstanceName = id.map { AsmEdit.instanceName(asmJSON, $0) }
         return id
     }
 
@@ -69,19 +78,30 @@ extension EditorModel {
     func insertInstance(ofPart partIndex: Int) -> String? {
         guard let g = documentGraph, partIndex >= 0, partIndex < g.visibleRoots.count else { return nil }
         let root = g.visibleRoots[partIndex].nodeId
-        var id: String?
         let n = Double(asmInstances.count)
-        guard assemblyEdit("Insert Instance", rebuild: true, {
-            let def = AsmEdit.ensurePartDef(&$0, rootNodeId: root, name: g.nodes[root]?.name)
-            id = AsmEdit.insertInstance(&$0, partDefId: def, translation: SIMD3(n * 20, 0, 0))
-        }) else { return nil }
-        assembly.selectedInstanceId = id
+        let id = newInstanceId {
+            assemblyEdit("Insert Instance", rebuild: true) {
+                let def = AsmEdit.ensurePartDef(&$0, rootNodeId: root,
+                                                 name: AsmEdit.partName($0, rootNodeId: root) ?? "Part \(partIndex + 1)")
+                AsmEdit.insertInstance(&$0, partDefId: def, translation: SIMD3(n * 20, 0, 0))
+            }
+        }
+        assembly.selectedInstanceName = id.map { AsmEdit.instanceName(asmJSON, $0) }
         return id
     }
 
+    /// The engine re-keys instances (and part defs) when it reloads the IR,
+    /// so the id an edit wrote is not the id it ends up with: the new
+    /// instance is the one id that wasn't there before.
+    private func newInstanceId(_ edit: () -> Bool) -> String? {
+        let before = Set(asmInstances.compactMap { $0["id"] as? String })
+        guard edit() else { return nil }
+        return asmInstances.compactMap { $0["id"] as? String }.first { !before.contains($0) }
+    }
+
     func deleteInstance(_ id: String) {
+        if assembly.selectedInstanceName == AsmEdit.instanceName(asmJSON, id) { assembly.selectedInstanceName = nil }
         assemblyEdit("Delete Instance", rebuild: true) { AsmEdit.deleteInstance(&$0, id: id) }
-        if assembly.selectedInstanceId == id { assembly.selectedInstanceId = nil }
     }
 
     func renameInstance(_ id: String, _ name: String) {
@@ -104,11 +124,13 @@ extension EditorModel {
     @discardableResult
     func addJoint(_ spec: JointSpec) -> String? {
         if let why = AsmEdit.validate(asmJSON, spec) { assembly.message = why; return nil }
-        var id: String?
-        guard assemblyEdit("Add Joint", rebuild: true, { id = AsmEdit.addJoint(&$0, spec) }) else {
+        var name: String?
+        guard assemblyEdit("Add Joint", rebuild: true, { name = AsmEdit.addJoint(&$0, spec) }) else {
             assembly.message = engineError
             return nil
         }
+        // Resolve by name: that is the handle the engine keeps.
+        let id = asmJoints.first { $0["name"] as? String == name }?["id"] as? String
         assembly.message = nil
         assembly.selectedJointId = id
         return id

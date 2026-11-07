@@ -115,7 +115,12 @@ final class AssemblyAuthoringTests: XCTestCase {
         r.openDocument(out)
         XCTAssertTrue(r.canEditDocument, r.engineError ?? "reopen failed")
         let back = try XCTUnwrap(r.documentJSON)
-        for k in ["instances", "joints", "partDefs", "timeline", "groundInstanceId"] {
+        // The engine re-keys part defs and instances on load; match them by
+        // name (the M1 round-trip canonical form). Joint ids and the timeline
+        // are stable and compared raw.
+        XCTAssertEqual(WebRoundTripTests.canonical(back), WebRoundTripTests.canonical(saved),
+                       "assembly must survive save → reopen")
+        for k in ["joints", "timeline"] {
             XCTAssertEqual(canonical(back[k]), canonical(saved[k]), "\(k) must survive save → reopen")
         }
         XCTAssertEqual(r.keys(forJoint: jointId).map(\.value), [0, target, third])
@@ -151,23 +156,26 @@ final class AssemblyAuthoringTests: XCTestCase {
         m.openDocument(try partDoc())
         XCTAssertTrue(m.canEditDocument, m.engineError ?? "no engine")
 
-        let base = try XCTUnwrap(m.insertInstance(ofPart: 0))
-        let arm = try XCTUnwrap(m.insertInstance(ofPart: 1))
+        // Instance ids are re-keyed by every engine reload; hold them by name.
+        func I(_ name: String) -> String { m.instanceId(named: name) ?? "missing:\(name)" }
+        XCTAssertNotNil(m.insertInstance(ofPart: 0))
+        XCTAssertNotNil(m.insertInstance(ofPart: 1))
         XCTAssertEqual(AsmEdit.partDefs(m.asmJSON).count, 2, "each part gets a definition on first insert")
-        let arm2 = try XCTUnwrap(m.insertInstance(ofPart: 1))
+        XCTAssertNotNil(m.insertInstance(ofPart: 1))
+        XCTAssertEqual(Set(m.asmInstances.compactMap { $0["name"] as? String }), ["Base 1", "Arm 1", "Arm 2"])
         XCTAssertEqual(AsmEdit.partDefs(m.asmJSON).count, 2, "a second insert reuses the definition")
         XCTAssertEqual(m.asmInstances.count, 3)
         _ = m.buildScene()
         XCTAssertEqual(m.assemblyInstanceCount, 3)
 
-        m.setGroundInstance(base)
-        XCTAssertEqual(AsmEdit.groundInstanceId(m.asmJSON), base)
+        m.setGroundInstance(I("Base 1"))
+        XCTAssertEqual(AsmEdit.groundInstanceId(m.asmJSON), I("Base 1"))
 
         // All five kinds, with anchors.
         var spec = JointSpec()
         spec.kind = .revolute
-        spec.parentInstanceId = base
-        spec.childInstanceId = arm
+        spec.parentInstanceId = I("Base 1")
+        spec.childInstanceId = I("Arm 1")
         spec.parentAnchor = SIMD3(20, 20, 10)
         spec.childAnchor = SIMD3(5, 5, 0)
         spec.axis = SIMD3(1, 0, 0)
@@ -180,7 +188,7 @@ final class AssemblyAuthoringTests: XCTestCase {
 
         // FK: rotating 90° about X swings the arm's +Z into −Y (anchored at the pivot, not the world origin).
         _ = m.buildScene()
-        let armIndex = try XCTUnwrap(m.assemblyInstanceIDs.firstIndex(of: arm))
+        let armIndex = try XCTUnwrap(m.assemblyInstanceIDs.firstIndex(of: I("Arm 1")))
         m.dragJoint(j, to: 90)
         let w = m.instanceTransforms[armIndex]
         let up = SIMD3(w.columns.2.x, w.columns.2.y, w.columns.2.z)
@@ -193,11 +201,11 @@ final class AssemblyAuthoringTests: XCTestCase {
         m.assembly.dragValues = [:]
 
         // Validation: a second joint placing the same child, a loop, self-joint.
-        var dup = spec; dup.parentInstanceId = arm2
+        var dup = spec; dup.parentInstanceId = I("Arm 2"); dup.childInstanceId = I("Arm 1")
         XCTAssertNil(m.addJoint(dup)); XCTAssertNotNil(m.assembly.message)
-        var loop = JointSpec(); loop.kind = .fixed; loop.parentInstanceId = arm; loop.childInstanceId = base
+        var loop = JointSpec(); loop.kind = .fixed; loop.parentInstanceId = I("Arm 1"); loop.childInstanceId = I("Base 1")
         XCTAssertNil(m.addJoint(loop), "a kinematic loop is refused")
-        var back = JointSpec(); back.kind = .ball; back.parentInstanceId = arm2; back.childInstanceId = arm2
+        var back = JointSpec(); back.kind = .ball; back.parentInstanceId = I("Arm 2"); back.childInstanceId = I("Arm 2")
         XCTAssertNil(m.addJoint(back))
 
         // Every kind serializes as the kernel's JointKind and edits keep the id.
@@ -212,13 +220,13 @@ final class AssemblyAuthoringTests: XCTestCase {
         // Mates: planar offset measured from the pose.
         var mate = MateSpec()
         mate.kind = .planarOffset
-        mate.instanceA = base; mate.instanceB = arm2
+        mate.instanceA = I("Base 1"); mate.instanceB = I("Arm 2")
         mate.axis = SIMD3(1, 0, 0)
-        mate.offset = 40                          // arm2 was inserted at x = 2 · 20
+        mate.offset = 40                          // Arm 2 was inserted at x = 2 · 20
         let mid = try XCTUnwrap(m.addMate(mate))
         XCTAssertEqual(m.assembly.mateVerdicts.first { $0.id == mid }?.pass, true,
                        m.assembly.mateVerdicts.first?.detail ?? m.assembly.mateError ?? "")
-        m.setInstanceTranslation(arm2, SIMD3(55, 0, 0))
+        m.setInstanceTranslation(I("Arm 2"), SIMD3(55, 0, 0))
         m.checkMates()
         let v = try XCTUnwrap(m.assembly.mateVerdicts.first { $0.id == mid })
         XCTAssertFalse(v.pass)
@@ -227,10 +235,11 @@ final class AssemblyAuthoringTests: XCTestCase {
         // Cascade delete: joints, mates and joint tracks naming the instance go too.
         m.keyJoint(j, at: 0.5)
         XCTAssertNotNil(m.timeline)
-        m.deleteInstance(arm)
-        XCTAssertTrue(m.asmJoints.allSatisfy { ($0["childInstanceId"] as? String) != arm })
+        XCTAssertEqual(m.asmJoints.count, 1)
+        m.deleteInstance(I("Arm 1"))
+        XCTAssertTrue(m.asmJoints.isEmpty, "the joint placing the deleted instance goes with it")
         XCTAssertNil(m.timeline, "the only track went with its joint")
-        m.deleteInstance(base)
+        m.deleteInstance(I("Base 1"))
         XCTAssertNil(AsmEdit.groundInstanceId(m.asmJSON))
         XCTAssertTrue(m.asmMates.isEmpty)
         m.undo(); m.undo()

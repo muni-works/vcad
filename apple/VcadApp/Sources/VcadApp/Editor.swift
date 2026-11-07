@@ -1307,7 +1307,6 @@ final class EditorModel {
     /// rotate-about-center, document parameters, raw node fields): edit the
     /// materialized IR and reload it into the engine. Always snapshot-undone,
     /// since a reload starts the engine's history over.
-    @discardableResult
     /// Assembly / keyframe authoring (AssemblyModel.swift): an IR edit, one
     /// undo step. `rebuild` re-evaluates the scene (instances, joints, ground);
     /// timeline-only edits leave the resident scene and playhead alone.
@@ -1316,6 +1315,7 @@ final class EditorModel {
         irEdit(name, reeval: rebuild ? .rebuild : .none, mutate) != nil
     }
 
+    @discardableResult
     private func irEdit(_ name: String, gestureStart: Bool = true, reeval: Reeval,
                         base: [String: Any]? = nil,
                         _ mutate: (inout [String: Any]) -> Void) -> DocumentEngine.Result? {

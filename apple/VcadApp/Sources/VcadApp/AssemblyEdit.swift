@@ -114,6 +114,22 @@ enum AsmEdit {
 
     // MARK: part defs + instances
 
+    /// Display name of the part rooted at `rootNodeId`: the first named node
+    /// down the transform chain the engine wraps every feature in.
+    static func partName(_ json: [String: Any], rootNodeId: Int) -> String? {
+        let nodes = json["nodes"] as? [String: Any] ?? [:]
+        var id: Int? = rootNodeId, hops = 0
+        while let cur = id, hops < 64 {
+            guard let node = nodes[String(cur)] as? [String: Any] else { return nil }
+            if let n = node["name"] as? String, !n.isEmpty { return n }
+            let op = node["op"] as? [String: Any] ?? [:]
+            guard ["Translate", "Rotate", "Scale"].contains(op["type"] as? String ?? "") else { return nil }
+            id = (op["child"] as? NSNumber)?.intValue
+            hops += 1
+        }
+        return nil
+    }
+
     /// The part def whose root is `rootNodeId`, creating one when the root has
     /// none (the web's "Create Part Definition"). Returns its id.
     @discardableResult
@@ -137,9 +153,13 @@ enum AsmEdit {
                                    "transform": ["translation": v3(translation),
                                                  "rotation": v3(.zero),
                                                  "scale": v3(SIMD3(1, 1, 1))]]
-        let defName = partDefs(json).first { $0.id == partDefId }?.name ?? partDefId
-        let count = instances(json).filter { $0["partDefId"] as? String == partDefId }.count
-        inst["name"] = name ?? "\(defName) \(count + 1)"
+        let defName = partDefs(json).first { $0.id == partDefId }?.name ?? "Part"
+        // Names must be unique: the engine re-keys instance ids on every
+        // reload, so the name is the handle that survives an edit.
+        let taken = Set(instances(json).compactMap { $0["name"] as? String })
+        var n = 1
+        while taken.contains("\(defName) \(n)") { n += 1 }
+        inst["name"] = name.flatMap { taken.contains($0) ? nil : $0 } ?? "\(defName) \(n)"
         json["instances"] = instances(json) + [inst]
         return id
     }
@@ -252,9 +272,18 @@ enum AsmEdit {
 
     @discardableResult
     static func addJoint(_ json: inout [String: Any], _ s: JointSpec) -> String {
-        let id = freshId(json, prefix: "joint")
-        json["joints"] = joints(json) + [jointJSON(id: id, s)]
-        return id
+        var spec = s
+        // The engine keys a joint by its name across reloads (an unnamed one
+        // is re-keyed every edit, orphaning its timeline tracks), so every
+        // joint gets a unique name.
+        let names = Set(joints(json).compactMap { $0["name"] as? String })
+        if spec.name?.isEmpty ?? true || names.contains(spec.name!) {
+            var n = joints(json).count + 1
+            while names.contains("joint-\(n)") { n += 1 }
+            spec.name = "joint-\(n)"
+        }
+        json["joints"] = joints(json) + [jointJSON(id: spec.name!, spec)]
+        return spec.name!
     }
 
     /// Replace a joint's fields, keeping its id (and so its timeline tracks).
