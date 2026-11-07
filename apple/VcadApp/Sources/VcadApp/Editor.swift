@@ -272,6 +272,9 @@ struct GenStats {
 @Observable
 final class EditorModel {
     let cnc = CNCWorkspace()
+    /// Face/edge selection + hover (Picking.swift) — shared with the
+    /// modeling ops and the analysis lanes.
+    let picking = PickingState()
     var isWindowed = false { didSet { saveLayout() } }
     init() {
         bridgeSimulationToRenderer()
@@ -949,6 +952,7 @@ final class EditorModel {
     }
     /// Clear all selection — empty-space click or Escape (documents only).
     func deselectAll() {
+        picking.clear()
         multiSelectedParts = []
         selectedInstanceIndex = nil
         selectedFeatureID = nil
