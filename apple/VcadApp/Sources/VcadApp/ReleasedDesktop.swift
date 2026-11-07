@@ -675,7 +675,8 @@ struct ReleasedOverlayView: View {
                     .modifier(ChromeRegion(key: "designCommands"))
                 viewport.frame(maxWidth: .infinity, maxHeight: .infinity)
             case .drawing:
-                viewport.frame(maxWidth: .infinity, maxHeight: .infinity)
+                DrawingWorkspaceView(model: model)
+                    .modifier(ChromeRegion(key: "drawingWorkspace"))
             case .manufacture:
                 viewport.frame(maxWidth: .infinity, maxHeight: .infinity)
                     .overlay {

@@ -2903,50 +2903,6 @@ pub fn render_bom_table_wasm(rows_json: &str) -> JsValue {
     serde_wasm_bindgen::to_value(&out).unwrap_or(JsValue::NULL)
 }
 
-/// Specification for composing a drawing sheet (see [`drawing_sheet_to_pdf`]).
-#[derive(serde::Deserialize)]
-struct SheetSpec {
-    /// Sheet size ("a4", "a3", "letter", or {"custom": {...}}). Default A4.
-    #[serde(default)]
-    size: Option<vcad_kernel_drafting::SheetSize>,
-    /// Projected views placed on the sheet.
-    #[serde(default)]
-    views: Vec<PlacedProjectedView>,
-    /// Section views placed on the sheet.
-    #[serde(default)]
-    sections: Vec<PlacedSectionView>,
-    /// Pre-rendered annotations (dimensions, cut lines) in sheet coordinates.
-    #[serde(default)]
-    annotations: Vec<vcad_kernel_drafting::RenderedDimension>,
-    /// Title block fields; omitted → no title block.
-    #[serde(default)]
-    title_block: Option<vcad_kernel_drafting::TitleBlockFields>,
-    /// BOM rows; omitted or empty → no BOM table.
-    #[serde(default)]
-    bom: Option<Vec<vcad_kernel_drafting::BomRow>>,
-}
-
-/// A projected view with sheet placement.
-#[derive(serde::Deserialize)]
-struct PlacedProjectedView {
-    view: vcad_kernel_drafting::ProjectedView,
-    /// Sheet position of the view's bounds center, mm from bottom-left.
-    center: [f64; 2],
-    scale: f64,
-    #[serde(default)]
-    label: Option<String>,
-}
-
-/// A section view with sheet placement.
-#[derive(serde::Deserialize)]
-struct PlacedSectionView {
-    view: vcad_kernel_drafting::SectionView,
-    center: [f64; 2],
-    scale: f64,
-    #[serde(default)]
-    label: Option<String>,
-}
-
 /// Compose a drawing sheet from projected views, sections, annotations,
 /// title block, and BOM table, and export it as a PDF.
 ///
@@ -2958,63 +2914,10 @@ struct PlacedSectionView {
 #[module("drafting")]
 #[wasm_bindgen(js_name = drawingSheetToPdf)]
 pub fn drawing_sheet_to_pdf(spec_json: &str) -> Result<Vec<u8>, JsError> {
-    use vcad_kernel_drafting::{
-        sheet_to_pdf, BomTable, DrawingSheet, LineClass, Point2D, RenderedText, SheetSize,
-        TitleBlock,
-    };
-
-    let spec: SheetSpec =
+    let spec: vcad_kernel_drafting::SheetSpec =
         serde_json::from_str(spec_json).map_err(|e| JsError::new(&e.to_string()))?;
-
-    let mut sheet = DrawingSheet::new(spec.size.unwrap_or(SheetSize::A4));
-
-    for placed in &spec.views {
-        let center = Point2D::new(placed.center[0], placed.center[1]);
-        sheet.add_projected_view(&placed.view, center, placed.scale);
-        if let Some(label) = &placed.label {
-            let half_h = (placed.view.bounds.max_y - placed.view.bounds.min_y) / 2.0 * placed.scale;
-            sheet.texts.push(RenderedText::new(
-                Point2D::new(center.x, center.y - half_h - 8.0),
-                label,
-                3.5,
-            ));
-        }
-    }
-
-    for placed in &spec.sections {
-        let center = Point2D::new(placed.center[0], placed.center[1]);
-        sheet.add_section_view(&placed.view, center, placed.scale);
-        if let Some(label) = &placed.label {
-            let bounds = &placed.view.bounds;
-            let half_h = (bounds.max_y - bounds.min_y) / 2.0 * placed.scale;
-            sheet.texts.push(RenderedText::new(
-                Point2D::new(center.x, center.y - half_h - 8.0),
-                label,
-                3.5,
-            ));
-        }
-    }
-
-    for rd in &spec.annotations {
-        sheet.add_annotation(rd, LineClass::Dimension, Point2D::new(0.0, 0.0));
-    }
-
-    let title_block_height = if let Some(fields) = spec.title_block {
-        let block = TitleBlock::new(fields);
-        sheet.add_title_block(&block);
-        block.height
-    } else {
-        0.0
-    };
-
-    if let Some(rows) = spec.bom {
-        if !rows.is_empty() {
-            let table = BomTable { rows };
-            sheet.add_bom_table(&table, title_block_height);
-        }
-    }
-
-    Ok(sheet_to_pdf(&sheet))
+    let sheet = vcad_kernel_drafting::compose_sheet(&spec);
+    Ok(vcad_kernel_drafting::sheet_to_pdf(&sheet))
 }
 
 // =========================================================================
@@ -3033,156 +2936,9 @@ pub fn drawing_sheet_to_pdf(spec_json: &str) -> Result<Vec<u8>, JsError> {
 #[module("drafting")]
 #[wasm_bindgen(js_name = exportProjectedViewToDxf)]
 pub fn export_projected_view_to_dxf(view_json: &str) -> Result<Vec<u8>, JsError> {
-    use std::io::Write;
-    use vcad_kernel_drafting::{ProjectedView, Visibility};
-
-    let view: ProjectedView =
+    let view: vcad_kernel_drafting::ProjectedView =
         serde_json::from_str(view_json).map_err(|e| JsError::new(&e.to_string()))?;
-
-    // Build DXF content
-    let mut buffer = Vec::new();
-
-    // Header
-    writeln!(buffer, "0").unwrap();
-    writeln!(buffer, "SECTION").unwrap();
-    writeln!(buffer, "2").unwrap();
-    writeln!(buffer, "HEADER").unwrap();
-    writeln!(buffer, "9").unwrap();
-    writeln!(buffer, "$ACADVER").unwrap();
-    writeln!(buffer, "1").unwrap();
-    writeln!(buffer, "AC1009").unwrap();
-    writeln!(buffer, "9").unwrap();
-    writeln!(buffer, "$INSUNITS").unwrap();
-    writeln!(buffer, "70").unwrap();
-    writeln!(buffer, "4").unwrap();
-    writeln!(buffer, "0").unwrap();
-    writeln!(buffer, "ENDSEC").unwrap();
-
-    // Tables
-    writeln!(buffer, "0").unwrap();
-    writeln!(buffer, "SECTION").unwrap();
-    writeln!(buffer, "2").unwrap();
-    writeln!(buffer, "TABLES").unwrap();
-
-    // Linetypes
-    writeln!(buffer, "0").unwrap();
-    writeln!(buffer, "TABLE").unwrap();
-    writeln!(buffer, "2").unwrap();
-    writeln!(buffer, "LTYPE").unwrap();
-    writeln!(buffer, "70").unwrap();
-    writeln!(buffer, "2").unwrap();
-
-    // Continuous
-    writeln!(buffer, "0").unwrap();
-    writeln!(buffer, "LTYPE").unwrap();
-    writeln!(buffer, "2").unwrap();
-    writeln!(buffer, "CONTINUOUS").unwrap();
-    writeln!(buffer, "70").unwrap();
-    writeln!(buffer, "0").unwrap();
-    writeln!(buffer, "3").unwrap();
-    writeln!(buffer, "Solid line").unwrap();
-    writeln!(buffer, "72").unwrap();
-    writeln!(buffer, "65").unwrap();
-    writeln!(buffer, "73").unwrap();
-    writeln!(buffer, "0").unwrap();
-    writeln!(buffer, "40").unwrap();
-    writeln!(buffer, "0.0").unwrap();
-
-    // Hidden
-    writeln!(buffer, "0").unwrap();
-    writeln!(buffer, "LTYPE").unwrap();
-    writeln!(buffer, "2").unwrap();
-    writeln!(buffer, "HIDDEN").unwrap();
-    writeln!(buffer, "70").unwrap();
-    writeln!(buffer, "0").unwrap();
-    writeln!(buffer, "3").unwrap();
-    writeln!(buffer, "Hidden line").unwrap();
-    writeln!(buffer, "72").unwrap();
-    writeln!(buffer, "65").unwrap();
-    writeln!(buffer, "73").unwrap();
-    writeln!(buffer, "2").unwrap();
-    writeln!(buffer, "40").unwrap();
-    writeln!(buffer, "9.525").unwrap();
-    writeln!(buffer, "49").unwrap();
-    writeln!(buffer, "6.35").unwrap();
-    writeln!(buffer, "49").unwrap();
-    writeln!(buffer, "-3.175").unwrap();
-    writeln!(buffer, "0").unwrap();
-    writeln!(buffer, "ENDTAB").unwrap();
-
-    // Layers
-    writeln!(buffer, "0").unwrap();
-    writeln!(buffer, "TABLE").unwrap();
-    writeln!(buffer, "2").unwrap();
-    writeln!(buffer, "LAYER").unwrap();
-    writeln!(buffer, "70").unwrap();
-    writeln!(buffer, "2").unwrap();
-
-    // VISIBLE layer
-    writeln!(buffer, "0").unwrap();
-    writeln!(buffer, "LAYER").unwrap();
-    writeln!(buffer, "2").unwrap();
-    writeln!(buffer, "VISIBLE").unwrap();
-    writeln!(buffer, "70").unwrap();
-    writeln!(buffer, "0").unwrap();
-    writeln!(buffer, "62").unwrap();
-    writeln!(buffer, "7").unwrap();
-    writeln!(buffer, "6").unwrap();
-    writeln!(buffer, "CONTINUOUS").unwrap();
-
-    // HIDDEN layer
-    writeln!(buffer, "0").unwrap();
-    writeln!(buffer, "LAYER").unwrap();
-    writeln!(buffer, "2").unwrap();
-    writeln!(buffer, "HIDDEN").unwrap();
-    writeln!(buffer, "70").unwrap();
-    writeln!(buffer, "0").unwrap();
-    writeln!(buffer, "62").unwrap();
-    writeln!(buffer, "8").unwrap();
-    writeln!(buffer, "6").unwrap();
-    writeln!(buffer, "HIDDEN").unwrap();
-    writeln!(buffer, "0").unwrap();
-    writeln!(buffer, "ENDTAB").unwrap();
-
-    writeln!(buffer, "0").unwrap();
-    writeln!(buffer, "ENDSEC").unwrap();
-
-    // Entities
-    writeln!(buffer, "0").unwrap();
-    writeln!(buffer, "SECTION").unwrap();
-    writeln!(buffer, "2").unwrap();
-    writeln!(buffer, "ENTITIES").unwrap();
-
-    for edge in &view.edges {
-        let (layer, linetype) = match edge.visibility {
-            Visibility::Visible => ("VISIBLE", "CONTINUOUS"),
-            Visibility::Hidden => ("HIDDEN", "HIDDEN"),
-        };
-
-        writeln!(buffer, "0").unwrap();
-        writeln!(buffer, "LINE").unwrap();
-        writeln!(buffer, "8").unwrap();
-        writeln!(buffer, "{}", layer).unwrap();
-        writeln!(buffer, "6").unwrap();
-        writeln!(buffer, "{}", linetype).unwrap();
-        writeln!(buffer, "10").unwrap();
-        writeln!(buffer, "{:.6}", edge.start.x).unwrap();
-        writeln!(buffer, "20").unwrap();
-        writeln!(buffer, "{:.6}", edge.start.y).unwrap();
-        writeln!(buffer, "11").unwrap();
-        writeln!(buffer, "{:.6}", edge.end.x).unwrap();
-        writeln!(buffer, "21").unwrap();
-        writeln!(buffer, "{:.6}", edge.end.y).unwrap();
-    }
-
-    writeln!(buffer, "0").unwrap();
-    writeln!(buffer, "ENDSEC").unwrap();
-
-    // EOF
-    writeln!(buffer, "0").unwrap();
-    writeln!(buffer, "EOF").unwrap();
-
-    Ok(buffer)
+    Ok(vcad_kernel_drafting::projected_view_to_dxf(&view))
 }
 
 // =========================================================================
