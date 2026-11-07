@@ -37,14 +37,15 @@ function run() {
     const positions = new Float32Array(mesh.positions);
     const indices = new Uint32Array(mesh.indices);
     const kinds = new Uint8Array(mesh.faceKinds || []);
+    const normals = new Float32Array(mesh.normals || []);
     const msg = {
-      type: "mesh", id, positions, indices, kinds,
+      type: "mesh", id, positions, indices, kinds, normals,
       volume: solid.volume(), area: solid.surfaceArea(),
       solveMs: t1 - t0, meshMs: t2 - t1,
     };
     last?.free?.();
     last = solid;
-    postMessage(msg, [positions.buffer, indices.buffer, kinds.buffer]);
+    postMessage(msg, [positions.buffer, indices.buffer, kinds.buffer, normals.buffer]);
   } catch (e) {
     postMessage({ type: "error", id, message: String(e?.message || e) });
   }

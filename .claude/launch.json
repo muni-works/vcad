@@ -63,11 +63,8 @@
       "name": "launch-page",
       "runtimeExecutable": "python3",
       "runtimeArgs": [
-        "-m",
-        "http.server",
-        "4180",
-        "-d",
-        "packages/app/public"
+        "-c",
+        "import http.server,functools\nclass H(http.server.SimpleHTTPRequestHandler):\n  def end_headers(self):\n    self.send_header('Cache-Control','no-store'); super().end_headers()\nhttp.server.ThreadingHTTPServer(('',4180),functools.partial(H,directory='packages/app/public')).serve_forever()"
       ],
       "port": 4180
     }
