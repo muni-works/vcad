@@ -207,18 +207,6 @@ enum BooleanOp: String, CaseIterable, Identifiable {
 }
 
 /// A 2D sketch drawing tool (mirrors the web app's line/rectangle/circle tools).
-enum SketchTool: String, CaseIterable, Identifiable {
-    case line, rectangle, circle
-    var id: String { rawValue }
-    var label: String { rawValue.capitalized }
-    var symbol: String {
-        switch self {
-        case .line: return "line.diagonal"
-        case .rectangle: return "rectangle"
-        case .circle: return "circle"
-        }
-    }
-}
 
 /// An axis-aligned sketch plane (origin at world 0). Basis vectors place 2D
 /// sketch coords in 3D; `normal` is the extrude direction.
@@ -1536,138 +1524,160 @@ final class EditorModel {
         if let pi = selBefore, pi < featureNodes.count { selectedFeatureID = featureNodes[pi].id }
     }
 
-    // MARK: sketch mode (draw a profile → extrude), a port of the web sketcher
+    // MARK: sketch mode — constraint sketcher (SketchSession.swift) → feature
 
     var sketching = false
     var sketchPlane: SketchPlane = .xy
-    var sketchTool: SketchTool = .rectangle
-    /// The profile polygon, in plane (2D mm) coords. Closed when `sketchClosed`.
-    var sketchVerts: [SIMD2<Float>] = []
-    /// First click for the rectangle/circle two-click tools.
-    var sketchAnchor: SIMD2<Float>?
-    /// True once a closed profile exists (ready to extrude).
-    var sketchClosed = false
-    /// Live cursor on the plane, for rubber-band preview.
-    var sketchCursor: SIMD2<Float>?
+    /// The live constraint sketch, while sketching.
+    var sketch: SketchSession?
+    /// What Finish does with the closed profile.
+    var sketchFinish: SketchFinish = .extrude
     var sketchExtrudeDepth: Double = 10
-    /// Viewport needs to rebuild the sketch preview overlay.
+    var sketchRevolveAngle: Double = 360
+    /// Sweep path along the sketch normal: helix when `sweepTurns > 0`.
+    var sweepHelixRadius: Double = 20
+    var sweepPitch: Double = 10
+    var sweepTurns: Double = 0
+    /// Profiles collected for a loft, in order.
+    var loftProfiles: [[String: Any]] = []
+    /// The planar face a sketch-on-face started from (extrude-to-face target too).
+    var sketchFace: (part: Int, point: SIMD3<Double>, normal: SIMD3<Double>)?
+    /// Viewport needs to rebuild the sketch ink.
     var sketchDirty = false
-    private let sketchCircleSegments = 48
-    /// Click-to-close radius for the line tool (plane mm). Also drives the
-    /// snap-to-close indicator in the preview, so it's not private.
-    let sketchCloseDist: Float = 2.5
+    var sketchOffsetPrompt = false
+    var sketchOffsetDistance: Double = 2
 
-    /// True when the cursor is within snap range of the line tool's first vertex
-    /// (so the preview can flag that clicking will close the loop).
-    var sketchSnapToStart: Bool {
-        guard sketchTool == .line, !sketchClosed, sketchVerts.count >= 3,
-              let f = sketchVerts.first, let c = sketchCursor else { return false }
-        return simd_distance(f, c) < sketchCloseDist
+    var sketchCursor: SIMD2<Float>? {
+        get { sketch?.cursor.map { SIMD2(Float($0.x), Float($0.y)) } }
+        set { sketch?.cursor = newValue.map { SIMD2(Double($0.x), Double($0.y)) }; sketchDirty = true }
+    }
+    var canFinishSketch: Bool {
+        guard let sketch else { return false }
+        return sketchFinish == .loft ? (loftProfiles.count >= 2 || sketch.canFinish) : sketch.canFinish
     }
 
-    var canFinishSketch: Bool { sketchClosed && sketchVerts.count >= 3 }
-
+    /// Start a sketch: on the picked planar face when exactly one is picked,
+    /// else on `sketchPlane`.
     func enterSketch() {
         guard usesDocumentTree else { return }
+        var frame = SketchFrame.principal(sketchPlane)
+        sketchFace = nil
+        if picking.selectedFaces.count == 1, let f = picking.selectedFaces.first,
+           let face = partTopology(f.part)?.face(f.id), face.isPlanar {
+            let c = SIMD3(face.center[0], face.center[1], face.center[2])
+            let n = SIMD3(face.normal[0], face.normal[1], face.normal[2])
+            frame = .onFace(center: c, normal: n)
+            sketchFace = (f.part, c, n)
+        }
+        guard let s = SketchSession(frame: frame) else { engineError = "Sketch solver unavailable"; return }
+        sketch = s
         sketching = true
         hoveredPartIndex = nil; hoverDirty = true
-        resetSketchShape()
-        // Frame the plane head-on so drawing maps 1:1 to the screen.
-        switch sketchPlane {
-        case .xy: azimuth = 0; elevation = 1.45
-        case .xz: azimuth = 0; elevation = 0
-        case .yz: azimuth = .pi / 2; elevation = 0
-        }
+        aimCamera(at: frame)
         sketchDirty = true
     }
     func exitSketch() {
         sketching = false
-        resetSketchShape()
-        sketchDirty = true
-    }
-    func setSketchTool(_ t: SketchTool) {
-        sketchTool = t
-        resetSketchShape()
+        sketch = nil
+        sketchFace = nil
         sketchDirty = true
     }
     func setSketchPlane(_ p: SketchPlane) {
         sketchPlane = p
-        resetSketchShape()
-        switch p {
-        case .xy: azimuth = 0; elevation = 1.45
-        case .xz: azimuth = 0; elevation = 0
-        case .yz: azimuth = .pi / 2; elevation = 0
-        }
+        guard sketching, sketchFace == nil else { return }
+        sketch = SketchSession(frame: .principal(p))
+        aimCamera(at: .principal(p))
         sketchDirty = true
     }
-    private func resetSketchShape() {
-        sketchVerts = []; sketchAnchor = nil; sketchClosed = false; sketchCursor = nil
+    /// Look at the sketch plane head-on.
+    private func aimCamera(at f: SketchFrame) {
+        let n = f.normal
+        elevation = Float(asin(max(-1, min(1, n.z)))).clamped(to: -1.45...1.45)
+        azimuth = abs(n.z) > 0.99 ? 0 : Float(atan2(n.x, -n.y))
     }
+
+    func setSketchTool(_ t: SketchToolKind) { sketch?.tool = t; sketchDirty = true }
 
     /// A tap on the sketch plane (2D plane coords) — drives the active tool.
-    func sketchTap(_ p: SIMD2<Float>) {
-        switch sketchTool {
-        case .line:
-            if sketchClosed { break }
-            if sketchVerts.count >= 3, let f = sketchVerts.first, simd_distance(f, p) < sketchCloseDist {
-                sketchClosed = true
-            } else {
-                sketchVerts.append(p)
-            }
-        case .rectangle:
-            if let a = sketchAnchor {
-                sketchVerts = [a, SIMD2(p.x, a.y), p, SIMD2(a.x, p.y)]
-                sketchClosed = true; sketchAnchor = nil
-            } else {
-                sketchAnchor = p; sketchVerts = []
-            }
-        case .circle:
-            if let c = sketchAnchor {
-                sketchVerts = circlePoints(center: c, radius: simd_distance(c, p))
-                sketchClosed = true; sketchAnchor = nil
-            } else {
-                sketchAnchor = p; sketchVerts = []
-            }
-        }
+    func sketchTap(_ p: SIMD2<Float>, additive: Bool = false) {
+        sketch?.tap(SIMD2(Double(p.x), Double(p.y)), additive: additive)
         sketchDirty = true
-    }
-
-    private func circlePoints(center c: SIMD2<Float>, radius r: Float) -> [SIMD2<Float>] {
-        (0..<sketchCircleSegments).map { i in
-            let a = 2 * Float.pi * Float(i) / Float(sketchCircleSegments)
-            return SIMD2(c.x + r * cos(a), c.y + r * sin(a))
-        }
     }
 
     /// Project a kernel-space ray onto the sketch plane → 2D plane coords.
     func sketchPlanePoint(originKernel o: SIMD3<Float>, dirKernel d: SIMD3<Float>) -> SIMD2<Float>? {
-        let n = sketchPlane.normalF
-        let denom = simd_dot(d, n)
-        guard abs(denom) > 1e-6 else { return nil }
-        let t = -simd_dot(o, n) / denom        // plane passes through origin
-        guard t > 0 else { return nil }
-        let pt = o + t * d
-        return SIMD2(simd_dot(pt, sketchPlane.xDirF), simd_dot(pt, sketchPlane.yDirF))
+        let frame = sketch?.frame ?? .principal(sketchPlane)
+        guard let p = frame.intersect(origin: SIMD3<Double>(o), dir: SIMD3<Double>(d)) else { return nil }
+        return SIMD2(Float(p.x), Float(p.y))
     }
 
-    /// 2D plane coords → 3D kernel coords (for drawing the preview).
+    /// 2D plane coords → 3D kernel coords (for drawing the ink).
     func sketchWorld(_ v: SIMD2<Float>) -> SIMD3<Float> {
-        v.x * sketchPlane.xDirF + v.y * sketchPlane.yDirF
+        let frame = sketch?.frame ?? .principal(sketchPlane)
+        return SIMD3<Float>(frame.world(SIMD2(Double(v.x), Double(v.y))))
     }
 
-    /// Realize the closed profile as a Sketch2D + Extrude, then leave sketch mode.
-    func finishSketch() {
-        guard canFinishSketch, canEditDocument else { return }
-        let verts = sketchVerts.map { (Double($0.x), Double($0.y)) }
-        let n = sketchPlane.normal
-        let dir = (n.0 * sketchExtrudeDepth, n.1 * sketchExtrudeDepth, n.2 * sketchExtrudeDepth)
-        let plane = sketchPlane
-        irEdit("Extrude Sketch", reeval: .rebuild) {
-            DocEdit.addExtrudedProfile(&$0, verts: verts, origin: (0, 0, 0),
-                                       xDir: plane.xDir, yDir: plane.yDir, direction: dir)
+    /// Realize the profile as the chosen feature, then leave sketch mode
+    /// (a loft section stays in sketch mode for the next profile).
+    @discardableResult
+    func finishSketch() -> Bool {
+        guard let sketch, canEditDocument else { return false }
+        let n = sketch.frame.normal
+        func vec(_ v: SIMD3<Double>) -> [String: Double] { ["x": v.x, "y": v.y, "z": v.z] }
+        let dir = vec(n * sketchExtrudeDepth)
+        var feature: [String: Any]
+        switch sketchFinish {
+        case .loft:
+            if sketch.canFinish, let p = sketch.profileJSON() { loftProfiles.append(p) }
+            guard loftProfiles.count >= 2 else {
+                // Next section: a fresh sketch offset along the normal.
+                var f = sketch.frame; f.origin += n * sketchExtrudeDepth
+                self.sketch = SketchSession(frame: f); sketchDirty = true
+                return true
+            }
+            feature = ["kind": "loft", "profiles": loftProfiles, "name": "Loft"]
+        default:
+            guard let profile = sketch.profileJSON() else { engineError = sketch.lastError; return false }
+            switch sketchFinish {
+            case .extrude:
+                feature = ["kind": "extrude", "profile": profile, "direction": dir, "name": "Extrude"]
+            case .cut:
+                guard let target = sketchFace.flatMap({ rootNodeId(forPart: $0.part) })
+                        ?? selectedPartIndex.flatMap({ rootNodeId(forPart: $0) }) else {
+                    engineError = "Select the part to cut"; return false
+                }
+                feature = ["kind": "cut_extrude", "target": target, "profile": profile,
+                           "direction": vec(-n * sketchExtrudeDepth), "name": "Cut"]
+            case .extrudeToFace:
+                guard picking.selectedFaces.count == 1, let f = picking.selectedFaces.first,
+                      let face = partTopology(f.part)?.face(f.id) else {
+                    engineError = "Pick the face to extrude up to"; return false
+                }
+                let fp = SIMD3(face.center[0], face.center[1], face.center[2])
+                let fn = SIMD3(face.normal[0], face.normal[1], face.normal[2])
+                let towards = simd_dot(fp - sketch.frame.origin, n) >= 0 ? n : -n
+                feature = ["kind": "extrude_to_face", "profile": profile, "direction": vec(towards),
+                           "face_point": vec(fp), "face_normal": vec(fn), "name": "Extrude to Face"]
+                if let t = rootNodeId(forPart: f.part) { feature["target"] = t }
+            case .revolve:
+                // Axis: the sketch's own Y axis through its origin.
+                feature = ["kind": "revolve", "profile": profile, "axis_origin": vec(sketch.frame.origin),
+                           "axis_dir": vec(sketch.frame.yDir), "angle_deg": sketchRevolveAngle, "name": "Revolve"]
+            case .sweep:
+                let path: [String: Any] = sweepTurns > 0
+                    ? ["type": "Helix", "radius": sweepHelixRadius, "pitch": sweepPitch,
+                       "height": sweepPitch * sweepTurns, "turns": sweepTurns]
+                    : ["type": "Line", "start": vec(.zero), "end": vec(n * sketchExtrudeDepth)]
+                feature = ["kind": "sweep", "profile": profile, "path": path, "name": "Sweep"]
+            case .loft:
+                return false
+            }
         }
+        guard appendIRFeatures([feature], name: sketchFinish.label) else { return false }
+        loftProfiles = []
         selectedFeatureID = featureNodes.last?.id
         exitSketch()
+        return true
     }
 
     // MARK: transform gizmo (drag a part to translate it — axis + plane handles)
