@@ -1,0 +1,425 @@
+{
+ "version": "0.1",
+ "nodes": {
+  "1": {
+   "id": 1,
+   "name": "Wine Glass Profile",
+   "op": {
+    "type": "Sketch2D",
+    "origin": {
+     "x": 0,
+     "y": 0,
+     "z": 0
+    },
+    "x_dir": {
+     "x": 1,
+     "y": 0,
+     "z": 0
+    },
+    "y_dir": {
+     "x": 0,
+     "y": 0,
+     "z": 1
+    },
+    "segments": [
+     {
+      "type": "Line",
+      "start": {
+       "x": 0.1,
+       "y": 0
+      },
+      "end": {
+       "x": 35,
+       "y": 0
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 35,
+       "y": 0
+      },
+      "end": {
+       "x": 35,
+       "y": 3
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 35,
+       "y": 3
+      },
+      "end": {
+       "x": 21,
+       "y": 5
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 21,
+       "y": 5
+      },
+      "end": {
+       "x": 5,
+       "y": 8
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 5,
+       "y": 8
+      },
+      "end": {
+       "x": 3,
+       "y": 11
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 3,
+       "y": 11
+      },
+      "end": {
+       "x": 3,
+       "y": 63
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 3,
+       "y": 63
+      },
+      "end": {
+       "x": 8,
+       "y": 68
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 8,
+       "y": 68
+      },
+      "end": {
+       "x": 24,
+       "y": 76.125
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 24,
+       "y": 76.125
+      },
+      "end": {
+       "x": 30.627416997969522,
+       "y": 84.25
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 30.627416997969522,
+       "y": 84.25
+      },
+      "end": {
+       "x": 35.712812921102035,
+       "y": 92.375
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 35.712812921102035,
+       "y": 92.375
+      },
+      "end": {
+       "x": 40,
+       "y": 100.5
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 40,
+       "y": 100.5
+      },
+      "end": {
+       "x": 39.375,
+       "y": 108.625
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 39.375,
+       "y": 108.625
+      },
+      "end": {
+       "x": 37.5,
+       "y": 116.75
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 37.5,
+       "y": 116.75
+      },
+      "end": {
+       "x": 34.375,
+       "y": 124.875
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 34.375,
+       "y": 124.875
+      },
+      "end": {
+       "x": 30,
+       "y": 133
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 30,
+       "y": 133
+      },
+      "end": {
+       "x": 28,
+       "y": 133
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 28,
+       "y": 133
+      },
+      "end": {
+       "x": 32.375,
+       "y": 124.875
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 32.375,
+       "y": 124.875
+      },
+      "end": {
+       "x": 35.5,
+       "y": 116.75
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 35.5,
+       "y": 116.75
+      },
+      "end": {
+       "x": 37.375,
+       "y": 108.625
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 37.375,
+       "y": 108.625
+      },
+      "end": {
+       "x": 38,
+       "y": 100.5
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 38,
+       "y": 100.5
+      },
+      "end": {
+       "x": 33.846787517317594,
+       "y": 92.375
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 33.846787517317594,
+       "y": 92.375
+      },
+      "end": {
+       "x": 28.920310216782976,
+       "y": 84.25
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 28.920310216782976,
+       "y": 84.25
+      },
+      "end": {
+       "x": 22.5,
+       "y": 76.125
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 22.5,
+       "y": 76.125
+      },
+      "end": {
+       "x": 5,
+       "y": 68
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 5,
+       "y": 68
+      },
+      "end": {
+       "x": 0.1,
+       "y": 68
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 0.1,
+       "y": 68
+      },
+      "end": {
+       "x": 0.1,
+       "y": 0
+      }
+     }
+    ]
+   }
+  },
+  "2": {
+   "id": 2,
+   "name": "Revolve 360° around Z",
+   "op": {
+    "type": "Revolve",
+    "sketch": 1,
+    "axis_origin": {
+     "x": 0,
+     "y": 0,
+     "z": 0
+    },
+    "axis_dir": {
+     "x": 0,
+     "y": 0,
+     "z": 1
+    },
+    "angle_deg": 360
+   }
+  },
+  "3": {
+   "id": 3,
+   "name": "Scale",
+   "op": {
+    "type": "Scale",
+    "child": 2,
+    "factor": {
+     "x": 1,
+     "y": 1,
+     "z": 1
+    }
+   }
+  },
+  "4": {
+   "id": 4,
+   "name": "Rotate",
+   "op": {
+    "type": "Rotate",
+    "child": 3,
+    "angles": {
+     "x": 0,
+     "y": 0,
+     "z": 0
+    }
+   }
+  },
+  "5": {
+   "id": 5,
+   "name": "Wine Glass",
+   "op": {
+    "type": "Translate",
+    "child": 4,
+    "offset": {
+     "x": 0,
+     "y": 0,
+     "z": 0
+    }
+   }
+  }
+ },
+ "materials": {
+  "glass": {
+   "name": "Glass",
+   "color": [
+    0.9,
+    0.95,
+    1
+   ],
+   "metallic": 0.1,
+   "roughness": 0.05
+  }
+ },
+ "part_materials": {},
+ "roots": [
+  {
+   "root": 5,
+   "material": "glass"
+  }
+ ],
+ "partDefs": {
+  "wineglass": {
+   "id": "wineglass",
+   "name": "Wine Glass",
+   "root": 5,
+   "defaultMaterial": "glass"
+  }
+ },
+ "instances": [
+  {
+   "id": "wineglass-1",
+   "partDefId": "wineglass",
+   "name": "Wine Glass",
+   "transform": {
+    "translation": {
+     "x": 0,
+     "y": 0,
+     "z": 0
+    },
+    "rotation": {
+     "x": 0,
+     "y": 0,
+     "z": 0
+    },
+    "scale": {
+     "x": 1,
+     "y": 1,
+     "z": 1
+    }
+   }
+  }
+ ],
+ "groundInstanceId": "wineglass-1"
+}

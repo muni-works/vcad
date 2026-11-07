@@ -1206,8 +1206,12 @@ final class EditorModel {
         }
         guard dict["schematic"] == nil, dict["pcb"] == nil, !hasBoard else { return nil }
         let engine = DocumentEngine()
+        // An assembly written by the web stores no roots (its parts are the
+        // part defs); the engine materializes one root per def, which is the
+        // same document, not a lossy one.
+        let derivedRoots = count(dict, "roots") == 0 && !(dict["partDefs"] as? [String: Any] ?? [:]).isEmpty
         guard let state = try? engine.loadIR(dict), state.warnings.isEmpty,
-              count(state.document, "roots") == count(dict, "roots"),
+              derivedRoots || count(state.document, "roots") == count(dict, "roots"),
               count(state.document, "instances") == count(dict, "instances"),
               count(state.document, "joints") == count(dict, "joints")
         else { return nil }
