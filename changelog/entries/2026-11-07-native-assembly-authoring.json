@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-07-native-assembly-authoring",
+  "version": "0.11.0",
+  "date": "2026-11-07",
+  "category": "feat",
+  "title": "Mac app: assembly, joint, mate and keyframe authoring",
+  "summary": "Insert instances, add and edit all five joint kinds with picked anchors, check mates, drag joints via FK, and author keyframes with a timeline that exports video.",
+  "features": ["assembly", "joints", "mates", "animation", "native-app"]
+}
