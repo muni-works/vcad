@@ -1,6 +1,6 @@
 {
   "id": "2026-11-07-kernel-fuzz-silent-failures",
-  "version": "undefined",
+  "version": "0.11.0",
   "date": "2026-11-07",
   "category": "fix",
   "title": "Overlarge shell/fillet and empty results now say so",
