@@ -15,6 +15,7 @@ vcad-kernel-primitives = { workspace = true }
 vcad-eval = { workspace = true }
 vcad-kernel-math = { workspace = true }
 phyz = { workspace = true }
+tang-compile = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 # std_rng only, no getrandom: every RNG is explicitly seeded (WASM-safe).
