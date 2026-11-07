@@ -90,7 +90,10 @@ pub fn check(doc: &vcad_ir::Document, req: &Value) -> Result<ClearanceReport, St
                 let a = p[0].as_u64().ok_or("pairs: [[a, b], …]")? as usize;
                 let b = p[1].as_u64().ok_or("pairs: [[a, b], …]")? as usize;
                 if a >= names.len() || b >= names.len() || a == b {
-                    return Err(format!("pair [{a}, {b}] out of range ({} parts)", names.len()));
+                    return Err(format!(
+                        "pair [{a}, {b}] out of range ({} parts)",
+                        names.len()
+                    ));
                 }
                 Ok((a, b))
             })
@@ -108,7 +111,8 @@ pub fn check(doc: &vcad_ir::Document, req: &Value) -> Result<ClearanceReport, St
         .collect();
     let mut out = Vec::new();
     for (a, b) in pairs {
-        let (Some(sa), Some(sb)) = (scene.parts[a].solid.as_ref(), scene.parts[b].solid.as_ref()) else {
+        let (Some(sa), Some(sb)) = (scene.parts[a].solid.as_ref(), scene.parts[b].solid.as_ref())
+        else {
             continue;
         };
         let Some(c) = sa.clearance(sb) else { continue };
@@ -117,7 +121,10 @@ pub fn check(doc: &vcad_ir::Document, req: &Value) -> Result<ClearanceReport, St
             let v = x.volume().max(0.0);
             let mesh = (with_mesh && v > CONTACT_VOLUME_MM3).then(|| {
                 let m = x.to_mesh(32);
-                ClashMesh { positions: m.vertices, indices: m.indices }
+                ClashMesh {
+                    positions: m.vertices,
+                    indices: m.indices,
+                }
             });
             (v, mesh)
         } else {
@@ -166,7 +173,10 @@ pub fn check(doc: &vcad_ir::Document, req: &Value) -> Result<ClearanceReport, St
 /// (nullable): `{"pairs"?: [[a, b], …], "include_mesh"?: bool}`. Returns
 /// report JSON (free with `vcad_string_free`) or null with `vcad_last_error`.
 #[no_mangle]
-pub extern "C" fn vcad_clearance(doc_json: *const c_char, request_json: *const c_char) -> *mut c_char {
+pub extern "C" fn vcad_clearance(
+    doc_json: *const c_char,
+    request_json: *const c_char,
+) -> *mut c_char {
     err::clear_error();
     guard_ptr("vcad_clearance", || {
         let run = || -> Result<ClearanceReport, String> {
@@ -204,7 +214,11 @@ mod tests {
         assert_eq!(r.pairs.len(), 1, "{r:#?}");
         let p = &r.pairs[0];
         assert_eq!(p.status, "interference");
-        assert!((p.overlap_volume_mm3 - 400.0).abs() < 1.0, "{}", p.overlap_volume_mm3);
+        assert!(
+            (p.overlap_volume_mm3 - 400.0).abs() < 1.0,
+            "{}",
+            p.overlap_volume_mm3
+        );
         // Coplanar side faces touch, so the kernel may report 0 depth here.
         assert!(p.distance_mm <= 0.0, "{}", p.distance_mm);
         assert!(p.clash.as_ref().is_some_and(|m| !m.indices.is_empty()));
@@ -221,7 +235,10 @@ mod tests {
         assert_eq!(p.status, "clear");
         assert!((p.distance_mm - 3.0).abs() < 1e-3, "{}", p.distance_mm);
         assert_eq!(p.overlap_volume_mm3, 0.0);
-        assert_eq!(r.min_clearance_mm.map(|v| (v * 1000.0).round()), Some(3000.0));
+        assert_eq!(
+            r.min_clearance_mm.map(|v| (v * 1000.0).round()),
+            Some(3000.0)
+        );
     }
 
     #[test]

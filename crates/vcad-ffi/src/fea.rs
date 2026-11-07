@@ -48,15 +48,69 @@ pub struct MaterialPreset {
 
 /// Built-in presets (room-temperature handbook values).
 pub const MATERIALS: &[MaterialPreset] = &[
-    MaterialPreset { id: "aluminum_6061", label: "Aluminum 6061-T6", youngs_modulus_mpa: 69_000.0, poisson: 0.33, yield_strength_mpa: 276.0 },
-    MaterialPreset { id: "steel", label: "Steel (1018)", youngs_modulus_mpa: 205_000.0, poisson: 0.29, yield_strength_mpa: 370.0 },
-    MaterialPreset { id: "stainless_304", label: "Stainless 304", youngs_modulus_mpa: 193_000.0, poisson: 0.29, yield_strength_mpa: 215.0 },
-    MaterialPreset { id: "titanium", label: "Titanium Ti-6Al-4V", youngs_modulus_mpa: 114_000.0, poisson: 0.34, yield_strength_mpa: 880.0 },
-    MaterialPreset { id: "brass", label: "Brass C360", youngs_modulus_mpa: 97_000.0, poisson: 0.31, yield_strength_mpa: 310.0 },
-    MaterialPreset { id: "pla", label: "PLA", youngs_modulus_mpa: 3_500.0, poisson: 0.36, yield_strength_mpa: 50.0 },
-    MaterialPreset { id: "petg", label: "PETG", youngs_modulus_mpa: 2_100.0, poisson: 0.38, yield_strength_mpa: 50.0 },
-    MaterialPreset { id: "abs", label: "ABS", youngs_modulus_mpa: 2_200.0, poisson: 0.35, yield_strength_mpa: 40.0 },
-    MaterialPreset { id: "nylon", label: "Nylon PA12", youngs_modulus_mpa: 1_700.0, poisson: 0.39, yield_strength_mpa: 48.0 },
+    MaterialPreset {
+        id: "aluminum_6061",
+        label: "Aluminum 6061-T6",
+        youngs_modulus_mpa: 69_000.0,
+        poisson: 0.33,
+        yield_strength_mpa: 276.0,
+    },
+    MaterialPreset {
+        id: "steel",
+        label: "Steel (1018)",
+        youngs_modulus_mpa: 205_000.0,
+        poisson: 0.29,
+        yield_strength_mpa: 370.0,
+    },
+    MaterialPreset {
+        id: "stainless_304",
+        label: "Stainless 304",
+        youngs_modulus_mpa: 193_000.0,
+        poisson: 0.29,
+        yield_strength_mpa: 215.0,
+    },
+    MaterialPreset {
+        id: "titanium",
+        label: "Titanium Ti-6Al-4V",
+        youngs_modulus_mpa: 114_000.0,
+        poisson: 0.34,
+        yield_strength_mpa: 880.0,
+    },
+    MaterialPreset {
+        id: "brass",
+        label: "Brass C360",
+        youngs_modulus_mpa: 97_000.0,
+        poisson: 0.31,
+        yield_strength_mpa: 310.0,
+    },
+    MaterialPreset {
+        id: "pla",
+        label: "PLA",
+        youngs_modulus_mpa: 3_500.0,
+        poisson: 0.36,
+        yield_strength_mpa: 50.0,
+    },
+    MaterialPreset {
+        id: "petg",
+        label: "PETG",
+        youngs_modulus_mpa: 2_100.0,
+        poisson: 0.38,
+        yield_strength_mpa: 50.0,
+    },
+    MaterialPreset {
+        id: "abs",
+        label: "ABS",
+        youngs_modulus_mpa: 2_200.0,
+        poisson: 0.35,
+        yield_strength_mpa: 40.0,
+    },
+    MaterialPreset {
+        id: "nylon",
+        label: "Nylon PA12",
+        youngs_modulus_mpa: 1_700.0,
+        poisson: 0.39,
+        yield_strength_mpa: 48.0,
+    },
 ];
 
 /// Best preset for a document material key (`"aluminum"`, `"pla_red"`, …).
@@ -309,7 +363,11 @@ pub fn cell_field(f: &fea::solve::NodeFields) -> Option<CellField> {
             nn[a] = nn[a].max(i[a] + 1);
         }
     }
-    let (nx, ny, nz) = (nn[0].saturating_sub(1).max(1), nn[1].saturating_sub(1).max(1), nn[2].saturating_sub(1).max(1));
+    let (nx, ny, nz) = (
+        nn[0].saturating_sub(1).max(1),
+        nn[1].saturating_sub(1).max(1),
+        nn[2].saturating_sub(1).max(1),
+    );
     let mut node_at = vec![u32::MAX; nn[0] * nn[1] * nn[2]];
     for (k, n) in f.nodes.iter().enumerate() {
         let i = idx(n);
@@ -319,7 +377,10 @@ pub fn cell_field(f: &fea::solve::NodeFields) -> Option<CellField> {
     let mut vm = vec![0f32; cells];
     let mut disp = vec![0f32; cells];
     let mut mask = vec![0u8; cells];
-    let (mut vr, mut dr) = ([f64::INFINITY, f64::NEG_INFINITY], [f64::INFINITY, f64::NEG_INFINITY]);
+    let (mut vr, mut dr) = (
+        [f64::INFINITY, f64::NEG_INFINITY],
+        [f64::INFINITY, f64::NEG_INFINITY],
+    );
     for k in 0..nz {
         for j in 0..ny {
             for i in 0..nx {
@@ -377,23 +438,41 @@ pub fn prepare(
 ) -> Result<(fea::spec::FeaSpec, TriangleMesh, SolveResultHead), String> {
     let scene = evaluate(doc)?;
     let roots = part_roots(doc, &scene);
-    let part = scene
-        .parts
-        .get(req.part_index)
-        .ok_or_else(|| format!("part_index {} out of range ({} parts)", req.part_index, scene.parts.len()))?;
+    let part = scene.parts.get(req.part_index).ok_or_else(|| {
+        format!(
+            "part_index {} out of range ({} parts)",
+            req.part_index,
+            scene.parts.len()
+        )
+    })?;
     let pname = part_name(doc, roots[req.part_index], req.part_index);
     let (label, e, nu, ys) = match (&req.elastic, &req.material) {
-        (Some(m), _) => ("custom".to_string(), m.youngs_modulus_mpa, m.poisson, m.yield_strength_mpa),
+        (Some(m), _) => (
+            "custom".to_string(),
+            m.youngs_modulus_mpa,
+            m.poisson,
+            m.yield_strength_mpa,
+        ),
         (None, Some(id)) => {
             let p = MATERIALS
                 .iter()
                 .find(|p| p.id == id)
                 .ok_or_else(|| format!("unknown material preset `{id}`"))?;
-            (p.label.to_string(), p.youngs_modulus_mpa, p.poisson, Some(p.yield_strength_mpa))
+            (
+                p.label.to_string(),
+                p.youngs_modulus_mpa,
+                p.poisson,
+                Some(p.yield_strength_mpa),
+            )
         }
         (None, None) => {
             let p = preset_for(&part.material);
-            (p.label.to_string(), p.youngs_modulus_mpa, p.poisson, Some(p.yield_strength_mpa))
+            (
+                p.label.to_string(),
+                p.youngs_modulus_mpa,
+                p.poisson,
+                Some(p.yield_strength_mpa),
+            )
         }
     };
     let finest = req
@@ -415,7 +494,13 @@ pub fn prepare(
         let regions = if l.target.faces.is_empty() {
             l.target.region.into_iter().collect::<Vec<_>>()
         } else {
-            resolve_target(&l.target, &mut boxes, need_solid()?, &format!("load {}", n + 1), &mut notes)?
+            resolve_target(
+                &l.target,
+                &mut boxes,
+                need_solid()?,
+                &format!("load {}", n + 1),
+                &mut notes,
+            )?
         };
         if regions.is_empty() {
             return Err(format!("load {}: pick at least one face", n + 1));
@@ -423,7 +508,10 @@ pub fn prepare(
         // The force is the total over the load, split across its regions.
         let share = 1.0 / regions.len() as f64;
         for r in regions {
-            loads.push(fea::spec::Load { region: r, force: l.force.map(|c| c * share) });
+            loads.push(fea::spec::Load {
+                region: r,
+                force: l.force.map(|c| c * share),
+            });
             load_regions.push(r);
         }
     }
@@ -433,13 +521,22 @@ pub fn prepare(
         let regions = if s.target.faces.is_empty() {
             s.target.region.into_iter().collect::<Vec<_>>()
         } else {
-            resolve_target(&s.target, &mut boxes, need_solid()?, &format!("support {}", n + 1), &mut notes)?
+            resolve_target(
+                &s.target,
+                &mut boxes,
+                need_solid()?,
+                &format!("support {}", n + 1),
+                &mut notes,
+            )?
         };
         if regions.is_empty() {
             return Err(format!("support {}: pick at least one face", n + 1));
         }
         for r in regions {
-            supports.push(fea::spec::Support { region: r, fix: s.fix });
+            supports.push(fea::spec::Support {
+                region: r,
+                fix: s.fix,
+            });
             support_regions.push(r);
         }
     }
@@ -466,7 +563,13 @@ pub fn prepare(
     Ok((
         spec,
         mesh,
-        SolveResultHead { part_name: pname, material: label, load_regions, support_regions, notes },
+        SolveResultHead {
+            part_name: pname,
+            material: label,
+            load_regions,
+            support_regions,
+            notes,
+        },
     ))
 }
 
@@ -520,7 +623,11 @@ pub fn solve(doc: &vcad_ir::Document, req: &SolveReq) -> Result<SolveResult, Str
         load_regions: head.load_regions,
         support_regions: head.support_regions,
         notes: head.notes,
-        field: if req.fields { cell_field(&fields) } else { None },
+        field: if req.fields {
+            cell_field(&fields)
+        } else {
+            None
+        },
         study,
     })
 }
@@ -536,7 +643,10 @@ pub fn solve(doc: &vcad_ir::Document, req: &SolveReq) -> Result<SolveResult, Str
 /// `vcad_last_error` (fail-closed: an empty pick, a thin wall the lattice
 /// can't resolve, a solver that didn't converge).
 #[no_mangle]
-pub extern "C" fn vcad_fea_solve(doc_json: *const c_char, request_json: *const c_char) -> *mut c_char {
+pub extern "C" fn vcad_fea_solve(
+    doc_json: *const c_char,
+    request_json: *const c_char,
+) -> *mut c_char {
     err::clear_error();
     guard_ptr("vcad_fea_solve", || {
         let run = || -> Result<SolveResult, String> {
@@ -580,7 +690,9 @@ mod tests {
         let boxes = face_boxes(scene.parts[0].solid.as_ref().unwrap()).unwrap();
         *boxes
             .iter()
-            .find(|(_, (b, _))| (b.min[axis] - value).abs() < 1e-6 && (b.max[axis] - value).abs() < 1e-6)
+            .find(|(_, (b, _))| {
+                (b.min[axis] - value).abs() < 1e-6 && (b.max[axis] - value).abs() < 1e-6
+            })
             .expect("face")
             .0
     }
@@ -616,11 +728,17 @@ mod tests {
             poisson: 0.33,
             yield_strength_mpa: Some(276.0),
             loads: vec![fea::spec::Load {
-                region: fea::spec::RegionBox { min: [100.0, 0.0, 0.0], max: [100.0, 10.0, 10.0] },
+                region: fea::spec::RegionBox {
+                    min: [100.0, 0.0, 0.0],
+                    max: [100.0, 10.0, 10.0],
+                },
                 force: [0.0, 0.0, -100.0],
             }],
             supports: vec![fea::spec::Support {
-                region: fea::spec::RegionBox { min: [0.0, 0.0, 0.0], max: [0.0, 10.0, 10.0] },
+                region: fea::spec::RegionBox {
+                    min: [0.0, 0.0, 0.0],
+                    max: [0.0, 10.0, 10.0],
+                },
                 fix: [true; 3],
             }],
         };
@@ -633,7 +751,12 @@ mod tests {
         .unwrap();
         let rel = |a: f64, b: f64| (a - b).abs() / b.abs();
         assert!(rel(app.max_von_mises_mpa, reference.finest().max_von_mises_mpa) < 1e-9);
-        assert!(rel(app.max_displacement_mm, reference.finest().max_displacement_mm) < 1e-9);
+        assert!(
+            rel(
+                app.max_displacement_mm,
+                reference.finest().max_displacement_mm
+            ) < 1e-9
+        );
         // And physically sane against Euler–Bernoulli: σ = F·L·c / I = 60 MPa,
         // δ = F·L³ / (3·E·I) ≈ 0.580 mm. Linear tets on a lattice are stiff and
         // smear the root concentration, so the band is generous.
@@ -649,7 +772,9 @@ mod tests {
         let [nz, ny, nx] = f.dims_zyx;
         assert_eq!(f.mask.len(), nx * ny * nz);
         assert!(f.mask.iter().filter(|&&m| m == 1).count() > nx * ny * nz / 2);
-        assert!(f.von_mises_range[1] > 0.0 && f.von_mises_range[1] <= app.max_von_mises_mpa * 1.0001);
+        assert!(
+            f.von_mises_range[1] > 0.0 && f.von_mises_range[1] <= app.max_von_mises_mpa * 1.0001
+        );
     }
 
     #[test]
@@ -664,8 +789,13 @@ mod tests {
             let r = solve(&doc, &req).unwrap();
             eprintln!(
                 "res {res}: σ {:.2} δ {:.4} Δσ {:.3} Δδ {:.3} conv {} {:?} ({:.2}s)",
-                r.max_von_mises_mpa, r.max_displacement_mm, r.study.stress_change_rel,
-                r.study.displacement_change_rel, r.converged, r.reasons, t.elapsed().as_secs_f64()
+                r.max_von_mises_mpa,
+                r.max_displacement_mm,
+                r.study.stress_change_rel,
+                r.study.displacement_change_rel,
+                r.converged,
+                r.reasons,
+                t.elapsed().as_secs_f64()
             );
         }
     }
@@ -691,7 +821,8 @@ mod tests {
         });
         let dj = CString::new(serde_json::to_string(&doc).unwrap()).unwrap();
         let rj = CString::new(req.to_string()).unwrap();
-        let out: Value = serde_json::from_str(&take(vcad_fea_solve(dj.as_ptr(), rj.as_ptr()))).unwrap();
+        let out: Value =
+            serde_json::from_str(&take(vcad_fea_solve(dj.as_ptr(), rj.as_ptr()))).unwrap();
         assert!(out["max_von_mises_mpa"].as_f64().unwrap() > 0.0);
         assert_eq!(out["material"], "Aluminum 6061-T6");
         let mats: Value = serde_json::from_str(&take(vcad_fea_materials())).unwrap();

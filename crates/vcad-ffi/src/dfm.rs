@@ -116,16 +116,20 @@ fn score(c: Counts) -> u32 {
 /// Resolve the rule pack: explicit TOML > named ruleset > process default.
 fn pack_for(req: &Value) -> Result<(Process, RulePack), String> {
     let process_name = req["process"].as_str().unwrap_or("fdm");
-    let process =
-        Process::from_str(process_name).ok_or_else(|| format!("unknown process: {process_name}"))?;
-    if let Some(toml) = req["rule_pack_toml"].as_str().filter(|s| !s.trim().is_empty()) {
+    let process = Process::from_str(process_name)
+        .ok_or_else(|| format!("unknown process: {process_name}"))?;
+    if let Some(toml) = req["rule_pack_toml"]
+        .as_str()
+        .filter(|s| !s.trim().is_empty())
+    {
         return Ok((
             process,
             RulePack::from_toml(toml).map_err(|e| format!("rule pack: {e}"))?,
         ));
     }
     if let Some(name) = req["ruleset"].as_str().filter(|s| !s.is_empty()) {
-        let toml = dfm::DefaultPacks::by_name(name).ok_or_else(|| format!("unknown ruleset: {name}"))?;
+        let toml =
+            dfm::DefaultPacks::by_name(name).ok_or_else(|| format!("unknown ruleset: {name}"))?;
         return Ok((
             process,
             RulePack::from_toml(toml).map_err(|e| format!("ruleset {name}: {e}"))?,
@@ -254,7 +258,13 @@ fn length_fields(doc: &Document, start: NodeId) -> Vec<(NodeId, String, f64, f64
 
 /// Turn a field target into a patch, routing through a named parameter when
 /// the field is bound to one.
-fn field_patch(doc: &Document, node: NodeId, path: &str, from: f64, to: f64) -> Result<DfmPatch, String> {
+fn field_patch(
+    doc: &Document,
+    node: NodeId,
+    path: &str,
+    from: f64,
+    to: f64,
+) -> Result<DfmPatch, String> {
     match doc.bindings.0.get(&BindingKey::new(node, path)) {
         None | Some(Expr::Number(_)) => Ok(DfmPatch::SetField {
             node,
@@ -263,15 +273,19 @@ fn field_patch(doc: &Document, node: NodeId, path: &str, from: f64, to: f64) -> 
             to,
         }),
         Some(Expr::Formula(f)) => {
-            let refuse = || format!("{path} on node {node} is driven by the formula `{f}` — edit it by hand");
+            let refuse = || {
+                format!("{path} on node {node} is driven by the formula `{f}` — edit it by hand")
+            };
             let (name, a, b) = affine(f).ok_or_else(refuse)?;
             match doc.parameters.get(name) {
-                Some(p) if p.value.as_number().is_some() && b != 0.0 => Ok(DfmPatch::SetParameter {
-                    name: name.to_string(),
-                    from: p.value.as_number().unwrap_or(from),
-                    // field = a + b·param  ⇒  param = (field − a) / b
-                    to: (to - a) / b,
-                }),
+                Some(p) if p.value.as_number().is_some() && b != 0.0 => {
+                    Ok(DfmPatch::SetParameter {
+                        name: name.to_string(),
+                        from: p.value.as_number().unwrap_or(from),
+                        // field = a + b·param  ⇒  param = (field − a) / b
+                        to: (to - a) / b,
+                    })
+                }
                 _ => Err(refuse()),
             }
         }
@@ -283,22 +297,36 @@ fn affine(f: &str) -> Option<(&str, f64, f64)> {
     fn ident(s: &str) -> Option<&str> {
         let s = s.trim();
         (!s.is_empty()
-            && s.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
-            && s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-'))
+            && s.chars()
+                .next()
+                .is_some_and(|c| c.is_alphabetic() || c == '_')
+            && s.chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '-'))
         .then_some(s)
     }
     let f = f.trim();
     if let Some(n) = ident(f) {
         return Some((n, 0.0, 1.0));
     }
-    let num = |s: &str| s.trim().trim_start_matches('(').trim_end_matches(')').trim().parse::<f64>().ok();
+    let num = |s: &str| {
+        s.trim()
+            .trim_start_matches('(')
+            .trim_end_matches(')')
+            .trim()
+            .parse::<f64>()
+            .ok()
+    };
     let (lhs, rhs) = f.split_once('+')?;
     let (coef, name) = rhs.split_once('*')?;
     Some((ident(name)?, num(lhs)?, num(coef)?))
 }
 
 /// Resolve the issue's suggested fix to an applyable patch, or say why not.
-pub fn resolve_patch(doc: &Document, root: Option<NodeId>, issue: &DfmIssue) -> Result<DfmPatch, String> {
+pub fn resolve_patch(
+    doc: &Document,
+    root: Option<NodeId>,
+    issue: &DfmIssue,
+) -> Result<DfmPatch, String> {
     // A kernel set_param fix: honour it when the field really is numeric.
     if let Some(DfmFix::SetParam { node, path, value }) = &issue.suggested_fix {
         if let (Some(to), Some(from)) = (
@@ -308,7 +336,12 @@ pub fn resolve_patch(doc: &Document, root: Option<NodeId>, issue: &DfmIssue) -> 
             return field_patch(doc, *node, path, from, to);
         }
     }
-    if issue.units != "mm" || issue.measured.is_nan() || issue.measured <= 0.0 || issue.limit.is_nan() || issue.limit <= 0.0 {
+    if issue.units != "mm"
+        || issue.measured.is_nan()
+        || issue.measured <= 0.0
+        || issue.limit.is_nan()
+        || issue.limit <= 0.0
+    {
         return Err("no automatic fix for this rule".into());
     }
     let start = issue
@@ -381,7 +414,10 @@ pub fn apply_patch(doc: &Document, patch: &DfmPatch) -> Result<Document, String>
 /// Returns the report JSON (free with `vcad_string_free`), or null with
 /// `vcad_last_error` set.
 #[no_mangle]
-pub extern "C" fn vcad_dfm_check(doc_json: *const c_char, request_json: *const c_char) -> *mut c_char {
+pub extern "C" fn vcad_dfm_check(
+    doc_json: *const c_char,
+    request_json: *const c_char,
+) -> *mut c_char {
     err::clear_error();
     guard_ptr("vcad_dfm_check", || {
         let run = || -> Result<AppReport, String> {
@@ -401,7 +437,10 @@ pub extern "C" fn vcad_dfm_check(doc_json: *const c_char, request_json: *const c
 /// Apply a resolved patch (`issue.patch` from [`vcad_dfm_check`]) to a
 /// document. Returns the patched IR JSON, or null with `vcad_last_error`.
 #[no_mangle]
-pub extern "C" fn vcad_dfm_apply_patch(doc_json: *const c_char, patch_json: *const c_char) -> *mut c_char {
+pub extern "C" fn vcad_dfm_apply_patch(
+    doc_json: *const c_char,
+    patch_json: *const c_char,
+) -> *mut c_char {
     err::clear_error();
     guard_ptr("vcad_dfm_apply_patch", || {
         let run = || -> Result<String, String> {
@@ -460,7 +499,10 @@ mod tests {
             .collect();
         assert!(!thin.is_empty(), "plate should be flagged: {before:#?}");
         assert!(!thin[0].face_ids.is_empty());
-        let patch = thin[0].patch.clone().expect("thin wall resolves to a patch");
+        let patch = thin[0]
+            .patch
+            .clone()
+            .expect("thin wall resolves to a patch");
         assert!(
             matches!(&patch, DfmPatch::SetField { path, to, .. } if path == "size.z" && (*to - 0.8).abs() < 1e-9),
             "{patch:?}"
@@ -504,7 +546,8 @@ mod tests {
         let d = doc("[root [cube 40 30 0.5] \"pla\"]");
         let dj = CString::new(serde_json::to_string(&d).unwrap()).unwrap();
         let rq = CString::new(r#"{"process":"fdm"}"#).unwrap();
-        let report: Value = serde_json::from_str(&take(vcad_dfm_check(dj.as_ptr(), rq.as_ptr()))).unwrap();
+        let report: Value =
+            serde_json::from_str(&take(vcad_dfm_check(dj.as_ptr(), rq.as_ptr()))).unwrap();
         let patch = report["issues"]
             .as_array()
             .unwrap()
@@ -515,7 +558,11 @@ mod tests {
         let pj = CString::new(patch).unwrap();
         let fixed = take(vcad_dfm_apply_patch(dj.as_ptr(), pj.as_ptr()));
         assert!(Document::from_json(&fixed).is_ok());
-        assert!(vcad_dfm_check(dj.as_ptr(), CString::new(r#"{"process":"nope"}"#).unwrap().as_ptr()).is_null());
+        assert!(vcad_dfm_check(
+            dj.as_ptr(),
+            CString::new(r#"{"process":"nope"}"#).unwrap().as_ptr()
+        )
+        .is_null());
         let procs: Value = serde_json::from_str(&take(vcad_dfm_processes())).unwrap();
         assert!(procs["processes"].as_array().unwrap().len() >= 7);
     }
