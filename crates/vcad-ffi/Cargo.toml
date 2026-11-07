@@ -20,6 +20,7 @@ no-builtin-font = ["vcad-kernel/no-builtin-font"]
 [dependencies]
 vcad-kernel-cam = { workspace = true }
 vcad-kernel = { workspace = true }
+vcad-kernel-drafting = { workspace = true }
 vcad-kernel-naming = { workspace = true }
 vcad-kernel-urdf = { workspace = true }
 vcad-kernel-physics = { workspace = true }

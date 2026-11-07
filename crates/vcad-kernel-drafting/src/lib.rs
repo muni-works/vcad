@@ -35,8 +35,10 @@
 //! }
 //! ```
 
+pub mod compose;
 pub mod detail;
 pub mod dimension;
+pub mod dxf;
 pub mod edge_extract;
 pub mod hidden_line;
 pub mod pdf;
@@ -46,6 +48,7 @@ pub mod sheet;
 pub mod types;
 
 // Re-export main types and functions for convenience
+pub use compose::{compose_sheet, PlacedDetailView, PlacedProjectedView, PlacedSectionView, SheetSpec};
 pub use detail::{create_detail_view, detail_callout, detail_caption, format_scale};
 pub use dimension::{
     AngleDefinition, AngularDimension, AnnotationLayer, ArrowType, DatumFeatureSymbol, DatumRef,
@@ -53,6 +56,7 @@ pub use dimension::{
     LinearDimensionType, MaterialCondition, OrdinateDimension, RadialDimension, RenderedArc,
     RenderedArrow, RenderedDimension, RenderedText, TextAlignment, TextPlacement, ToleranceMode,
 };
+pub use dxf::{dxf_entity_count, projected_view_to_dxf};
 pub use edge_extract::{
     extract_drawing_edges, extract_edges, extract_sharp_edges, extract_silhouette_edges,
     DEFAULT_SHARP_ANGLE,

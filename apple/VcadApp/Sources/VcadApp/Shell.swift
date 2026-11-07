@@ -207,6 +207,11 @@ struct DocumentCommands: Commands {
                 Button("USDZ…") { exportUSDZPanel(model) }
                     .keyboardShortcut("e", modifiers: [.command, .shift]).disabled(!model.canExport)
             }
+            Menu("Export Drawing") {
+                Button("DXF…") { DrawingStore.shared.model = model; DrawingStore.shared.export(.dxf) }
+                Button("PDF…") { DrawingStore.shared.model = model; DrawingStore.shared.export(.pdf) }
+                    .keyboardShortcut("p", modifiers: [.command, .option, .shift])
+            }.disabled(!model.canExportDocument)
             Button("Render Photoreal…") { PhotorealRenderController.shared.show(for: model) }
                 .keyboardShortcut("r", modifiers: [.command, .option, .shift])
                 .disabled(!model.canExportDocument)

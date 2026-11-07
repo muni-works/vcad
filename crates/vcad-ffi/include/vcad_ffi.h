@@ -645,6 +645,26 @@ char *vcad_import_step(const char *path);
 /* IR assembly document JSON. */
 char *vcad_import_urdf(const char *path);
 
+/* --- Drawings (drafting.rs): 2D shop drawings on vcad-kernel-drafting.
+ * request_json (NULL/"" = defaults): {"view": front|back|top|bottom|left|
+ * right|isometric, "show_hidden": bool, "show_dimensions": bool,
+ * "details": [{"label","center":[x,y],"scale","width","height"}],
+ * "gdt": [{"kind": flatness|position|perpendicularity|datum, "tolerance",
+ * "datum", "at":[x,y]}], "drawing": <IR DrawingSettings override>,
+ * "base_dir": str}. Section lines, title block and BOM come from the
+ * document's `drawing` settings. */
+#define VCAD_DRAWING_DXF 0
+#define VCAD_DRAWING_PDF 1
+/* Composed A4 sheet: {"width","height","sheet":{lines,arcs,polygons,texts},
+ * "main":{sheet_center,view_center,scale,scale_note,bounds},
+ * "visible_edges","hidden_edges","dxf_entities","sections"}. Free with
+ * vcad_string_free; NULL + vcad_last_error on failure. */
+char *vcad_drawing_sheet_json(const char *doc_json, const char *request_json);
+/* DXF (active view, same writer as the web export) or PDF (the sheet), written
+ * atomically. Returns DXF entity count / PDF bytes, or -1 + vcad_last_error. */
+int64_t vcad_drawing_export(const char *doc_json, const char *request_json,
+                            const char *out_path, uint32_t format);
+
 #ifdef __cplusplus
 }
 #endif

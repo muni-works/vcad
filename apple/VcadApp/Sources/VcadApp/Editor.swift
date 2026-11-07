@@ -24,13 +24,14 @@ enum Motion {
 /// The app's workspaces — one exclusive mode at a time, each with its own
 /// panels and its own remembered camera.
 enum Workspace: String, CaseIterable, Identifiable, Codable {
-    case design, electronics, manufacture
+    case design, electronics, manufacture, drawing
     var id: String { rawValue }
     var label: String {
         switch self {
         case .design: return "Design"
         case .electronics: return "Electronics"
         case .manufacture: return "Manufacture"
+        case .drawing: return "Drawing"
         }
     }
     var symbol: String {
@@ -38,15 +39,17 @@ enum Workspace: String, CaseIterable, Identifiable, Codable {
         case .design: return "cube"
         case .electronics: return "cpu"
         case .manufacture: return "wrench.and.screwdriver"
+        case .drawing: return "ruler"
         }
     }
     /// Workspaces the UI offers: Design, plus the Labs ones when enabled.
-    static var available: [Workspace] { Prefs.labs ? allCases : [.design] }
+    static var available: [Workspace] { Prefs.labs ? allCases : [.design, .drawing] }
     var keyEquivalent: KeyEquivalent {
         switch self {
         case .design: return "1"
         case .electronics: return "2"
         case .manufacture: return "3"
+        case .drawing: return "4"
         }
     }
 }
