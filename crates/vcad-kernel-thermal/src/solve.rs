@@ -710,12 +710,15 @@ fn check_grounding(
     Ok(())
 }
 
-/// Jacobi-preconditioned conjugate gradients, matrix-free, warm-startable.
+/// Jacobi-preconditioned conjugate gradients, matrix-free, warm-startable
+/// (`tang_sparse::pcg` over [`System::apply`]).
 ///
 /// `diag` and `b` are passed explicitly so the transient solver can reuse
 /// the assembled links with a C/Δt time term folded into the diagonal and
 /// a per-step right-hand side; `x0` seeds the iteration (the previous time
-/// step in transient runs — steady solves start from zero).
+/// step in transient runs — steady solves start from zero). Vectors are
+/// full-grid; non-free entries are masked out of the operator and the
+/// preconditioner, so they never enter the iteration.
 pub(crate) fn pcg(
     sys: &System,
     diag: &[f64],
@@ -723,81 +726,30 @@ pub(crate) fn pcg(
     x0: &[f64],
     opts: &SolveOptions,
 ) -> Result<(Vec<f64>, usize, f64), SolveError> {
-    let nvox = b.len();
-    let b_norm = norm(b, &sys.free);
-    if b_norm == 0.0 {
-        return Ok((vec![0.0_f64; nvox], 0, 0.0));
+    let masked = |v: &[f64]| -> Vec<f64> {
+        v.iter()
+            .zip(&sys.free)
+            .map(|(&x, &f)| if f { x } else { 0.0 })
+            .collect()
+    };
+    let sol = tang_sparse::pcg(
+        |x, y| sys.apply(diag, x, y),
+        &tang_sparse::Jacobi::new(masked(diag)),
+        &masked(b),
+        x0,
+        &tang_sparse::PcgOptions {
+            tol: opts.tol,
+            max_iters: opts.max_iters,
+        },
+    );
+    match sol.status {
+        tang_sparse::PcgStatus::Converged => Ok((sol.x, sol.iterations, sol.residual_rel)),
+        // A broken-down direction (SPD violation) or the iteration cap.
+        _ => Err(SolveError::NotConverged {
+            residual_rel: sol.residual_rel,
+            iterations: sol.iterations,
+        }),
     }
-    let mut x = x0.to_vec();
-    let mut r = vec![0.0_f64; nvox];
-    sys.apply(diag, &x, &mut r);
-    for p in 0..nvox {
-        r[p] = if sys.free[p] { b[p] - r[p] } else { 0.0 };
-    }
-    let mut residual_rel = norm(&r, &sys.free) / b_norm;
-    if residual_rel <= opts.tol {
-        return Ok((x, 0, residual_rel));
-    }
-    let mut z = vec![0.0_f64; nvox];
-    precondition(&sys.free, diag, &r, &mut z);
-    let mut d = z.clone();
-    let mut rz = dot(&r, &z, &sys.free);
-    let mut ad = vec![0.0_f64; nvox];
-    for iter in 1..=opts.max_iters {
-        sys.apply(diag, &d, &mut ad);
-        let dad = dot(&d, &ad, &sys.free);
-        if dad <= 0.0 {
-            // SPD violation: numerically broken-down search direction.
-            return Err(SolveError::NotConverged {
-                residual_rel,
-                iterations: iter,
-            });
-        }
-        let alpha = rz / dad;
-        for p in 0..nvox {
-            if sys.free[p] {
-                x[p] += alpha * d[p];
-                r[p] -= alpha * ad[p];
-            }
-        }
-        residual_rel = norm(&r, &sys.free) / b_norm;
-        if residual_rel <= opts.tol {
-            return Ok((x, iter, residual_rel));
-        }
-        precondition(&sys.free, diag, &r, &mut z);
-        let rz_new = dot(&r, &z, &sys.free);
-        let beta = rz_new / rz;
-        rz = rz_new;
-        for p in 0..nvox {
-            if sys.free[p] {
-                d[p] = z[p] + beta * d[p];
-            }
-        }
-    }
-    Err(SolveError::NotConverged {
-        residual_rel,
-        iterations: opts.max_iters,
-    })
-}
-
-fn precondition(free: &[bool], diag: &[f64], r: &[f64], z: &mut [f64]) {
-    for (p, zz) in z.iter_mut().enumerate() {
-        *zz = if free[p] { r[p] / diag[p] } else { 0.0 };
-    }
-}
-
-fn dot(a: &[f64], b: &[f64], free: &[bool]) -> f64 {
-    let mut s = 0.0;
-    for p in 0..a.len() {
-        if free[p] {
-            s += a[p] * b[p];
-        }
-    }
-    s
-}
-
-fn norm(a: &[f64], free: &[bool]) -> f64 {
-    dot(a, a, free).sqrt()
 }
 
 /// Resolve the θ reference: an explicit `reference_c` wins; otherwise the
@@ -832,8 +784,7 @@ pub(crate) fn resolve_reference(
 pub fn solve_steady(model: &ThermalModel, opts: &SolveOptions) -> Result<Solution, SolveError> {
     let sys = build(model)?;
     let reference_c = resolve_reference(&sys, model)?;
-    let x0 = vec![0.0_f64; sys.b.len()];
-    let (x, iterations, residual_rel) = pcg(&sys, &sys.diag, &sys.b, &x0, opts)?;
+    let (x, iterations, residual_rel) = steady_field(model, &sys, opts)?;
     Ok(assemble_solution(
         &sys,
         model,
@@ -842,6 +793,36 @@ pub fn solve_steady(model: &ThermalModel, opts: &SolveOptions) -> Result<Solutio
         residual_rel,
         reference_c,
     ))
+}
+
+/// Solve the free-node field. Native targets run Assemble → LinearSolve as
+/// a tang tensor graph (see `crate::graph`); wasm32 has no clock for the
+/// graph's solve timing (`Instant::now` panics there), so it runs the same
+/// PCG directly.
+#[cfg(not(target_arch = "wasm32"))]
+fn steady_field(
+    model: &ThermalModel,
+    sys: &System,
+    opts: &SolveOptions,
+) -> Result<(Vec<f64>, usize, f64), SolveError> {
+    let g = crate::graph::build_graph(model, sys, opts, None);
+    let t_free = g.eval()?.t_free;
+    let (iterations, residual_rel) = g.last_forward();
+    let mut x = vec![0.0_f64; sys.b.len()];
+    for (&p, &t) in g.free_voxels.iter().zip(&t_free) {
+        x[p] = t;
+    }
+    Ok((x, iterations, residual_rel))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn steady_field(
+    _model: &ThermalModel,
+    sys: &System,
+    opts: &SolveOptions,
+) -> Result<(Vec<f64>, usize, f64), SolveError> {
+    let x0 = vec![0.0_f64; sys.b.len()];
+    pcg(sys, &sys.diag, &sys.b, &x0, opts)
 }
 
 /// Assemble the public [`Solution`] (field, T_max, per-source θ,

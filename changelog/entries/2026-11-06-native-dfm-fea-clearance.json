@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-06-native-dfm-fea-clearance",
+  "version": "0.11.0",
+  "date": "2026-11-06",
+  "category": "feat",
+  "title": "DFM, stress and clearance in the Mac app",
+  "summary": "New Analyze panel in the native app: DFM with one-click undoable fixes, in-process FEA on picked faces with stress overlays, and part interference volumes — also exposed to agents over the app's MCP server.",
+  "features": ["dfm", "fea", "clearance", "native-app", "vcad-2"],
+  "mcpTools": ["dfm_check", "dfm_apply_fix", "analyze_structure", "check_interference", "inspect_faces"]
+}

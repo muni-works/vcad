@@ -344,7 +344,7 @@ pub(crate) fn matvec(elems: &[Elem], lam: f64, mu: f64, fixed: &[bool], u: &[f64
     }
 }
 
-/// Jacobi-PCG for `K·u = rhs` at unit E.
+/// Jacobi-PCG for `K·u = rhs` at unit E (`tang_sparse::pcg`, matrix-free).
 ///
 /// A zero right-hand side returns a zero solution in zero iterations
 /// rather than an error — an adjoint objective that happens not to
@@ -360,59 +360,32 @@ pub(crate) fn pcg(
 ) -> Result<(Vec<f64>, usize, f64), SolveError> {
     let ndof = rhs.len();
     let diag = jacobi_diag(elems, lam, mu, fixed, ndof);
-
-    let mut u = vec![0.0f64; ndof];
     let mut r = rhs.to_vec();
     for (d, v) in fixed.iter().zip(r.iter_mut()) {
         if *d {
             *v = 0.0;
         }
     }
-    let fnorm = norm(&r);
-    if fnorm == 0.0 {
-        return Ok((u, 0, 0.0));
-    }
-
-    let mut z: Vec<f64> = r.iter().zip(&diag).map(|(r, d)| r / d).collect();
-    let mut p = z.clone();
-    let mut ap = vec![0.0f64; ndof];
-    let mut rz = dot(&r, &z);
-    let mut iterations = 0;
-    let mut residual_rel = 1.0;
-    for it in 0..opts.max_iters {
-        matvec(elems, lam, mu, fixed, &p, &mut ap);
-        let pap = dot(&p, &ap);
-        if pap <= 0.0 {
-            break; // Numerical breakdown; report the residual we reached.
-        }
-        let alpha = rz / pap;
-        for i in 0..ndof {
-            u[i] += alpha * p[i];
-            r[i] -= alpha * ap[i];
-        }
-        residual_rel = norm(&r) / fnorm;
-        iterations = it + 1;
-        if residual_rel < opts.tol {
-            break;
-        }
-        for i in 0..ndof {
-            z[i] = r[i] / diag[i];
-        }
-        let rz_new = dot(&r, &z);
-        let beta = rz_new / rz;
-        rz = rz_new;
-        for i in 0..ndof {
-            p[i] = z[i] + beta * p[i];
-        }
-    }
-    // Fail-closed: anything worse than 1e-6 relative is not a solution.
-    if residual_rel >= opts.tol.max(1e-6) {
+    let sol = tang_sparse::pcg(
+        |u, y| matvec(elems, lam, mu, fixed, u, y),
+        &tang_sparse::Jacobi::new(diag),
+        &r,
+        &vec![0.0; ndof],
+        &tang_sparse::PcgOptions {
+            tol: opts.tol,
+            max_iters: opts.max_iters,
+        },
+    );
+    // Fail-closed: a breakdown or the iteration cap is fine only if the
+    // residual reached is within 1e-6 relative; anything worse is not a
+    // solution.
+    if sol.residual_rel > opts.tol.max(1e-6) {
         return Err(SolveError::NotConverged {
-            residual_rel,
-            iterations,
+            residual_rel: sol.residual_rel,
+            iterations: sol.iterations,
         });
     }
-    Ok((u, iterations, residual_rel))
+    Ok((sol.x, sol.iterations, sol.residual_rel))
 }
 
 /// Solve one static case on a prepared tet mesh (summary only).

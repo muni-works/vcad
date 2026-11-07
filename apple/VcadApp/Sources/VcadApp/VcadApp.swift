@@ -27,6 +27,10 @@ struct VcadApp: App {
             dumpFeatureTree(path: path)
             exit(0)
         }
+        if ProcessInfo.processInfo.environment["VCAD_ANALYSIS_SMOKE"] != nil {
+            // Runs once the main run loop starts; exits the process itself.
+            Task { @MainActor in await analysisSmoke() }
+        }
         if let path = ProcessInfo.processInfo.environment["VCAD_EDIT_SMOKE"] {
             MainActor.assumeIsolated { editSmoke(path: path) }
             exit(0)
@@ -80,6 +84,7 @@ struct VcadApp: App {
         .commands {
             DocumentCommands(model: model, intent: intent)
             FieldCommands()
+            AnalysisCommands()
             UpdateCommands()
         }
 

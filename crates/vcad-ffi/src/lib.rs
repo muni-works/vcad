@@ -53,10 +53,14 @@ use vcad_kernel_math::{Point3, Vec3};
 use vcad_kernel_raytrace::{BrepBvh, Bvh, Ray};
 use vcad_kernel_tessellate::TriangleMesh;
 
+mod analysis;
 mod cam;
+pub mod clearance;
+pub mod dfm;
 pub mod engine;
 mod err;
 pub mod export;
+pub mod fea;
 pub mod features;
 pub mod gym;
 pub mod import;
