@@ -18,6 +18,7 @@ gpu = ["wgpu", "bytemuck", "pollster"]
 vcad-kernel-math = { workspace = true }
 vcad-kernel-sketch = { workspace = true }
 tang = { workspace = true }
+tang-optim = { workspace = true }
 tang-la = { workspace = true }
 tang-expr = { workspace = true }
 slotmap = { workspace = true }

@@ -2555,7 +2555,7 @@ dependencies = [
  "phyz-model",
  "phyz-rigid",
  "tang",
- "tang-expr",
+ "tang-expr 0.1.1",
  "tang-la",
 ]
 
@@ -3725,10 +3725,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "tang-ad"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b67759a0059717e6704887054248a7aa765fb9ba12ab803233be8cb3b3dfbcce"
+dependencies = [
+ "tang",
+ "tang-la",
+]
+
+[[package]]
+name = "tang-compile"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0380a727caaf1cc36929b3b67ee282e74e09137a260bf972b0c47a7ef52c595f"
+dependencies = [
+ "tang",
+ "tang-expr 0.2.0",
+ "tang-sparse",
+]
+
+[[package]]
 name = "tang-expr"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6f1fdb85a4a0335eb38eac4635d080d54f2cb093e66ef54ce0c5460d35457e90"
+dependencies = [
+ "tang",
+]
+
+[[package]]
+name = "tang-expr"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df8225e37bd9287d3d4a32423bbce42cc2de20ff6e12a199072f8b105c717e71"
 dependencies = [
  "tang",
 ]
@@ -3740,6 +3770,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a1cf961cd2968a09fb079624db1eae07390acbe238fe61f075555b5302009d"
 dependencies = [
  "tang",
+]
+
+[[package]]
+name = "tang-optim"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "104ded0269929fb17c6f3aa061c123e2ea60ff93553eac091e18b1a4d6cc1ed8"
+dependencies = [
+ "tang",
+ "tang-ad",
+ "tang-la",
+]
+
+[[package]]
+name = "tang-sparse"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4321a046999856f3f6c1d4b29446126c1358f40e5cc330a5fe0224c5ae81e916"
+dependencies = [
+ "tang",
+ "tang-la",
 ]
 
 [[package]]
@@ -4351,7 +4402,7 @@ name = "vcad-ecad-diff"
 version = "0.11.0"
 dependencies = [
  "tang",
- "tang-expr",
+ "tang-expr 0.2.0",
  "tang-la",
  "vcad-ecad-sim",
  "vcad-kernel-constraints",
@@ -4418,7 +4469,7 @@ dependencies = [
  "serde",
  "serde_json",
  "spade",
- "tang-expr",
+ "tang-expr 0.2.0",
  "thiserror 2.0.18",
  "toml",
  "tracing",
@@ -4449,7 +4500,7 @@ version = "0.11.0"
 dependencies = [
  "serde",
  "tang",
- "tang-expr",
+ "tang-expr 0.2.0",
  "thiserror 2.0.18",
  "vcad-ecad-schematic",
  "vcad-ir",
@@ -4738,8 +4789,9 @@ dependencies = [
  "pollster",
  "slotmap",
  "tang",
- "tang-expr",
+ "tang-expr 0.2.0",
  "tang-la",
+ "tang-optim",
  "thiserror 2.0.18",
  "vcad-kernel-math",
  "vcad-kernel-sketch",
@@ -4777,6 +4829,7 @@ name = "vcad-kernel-diff"
 version = "0.11.0"
 dependencies = [
  "tang",
+ "tang-optim",
  "vcad-kernel",
  "vcad-kernel-fillet",
  "vcad-kernel-geom",
@@ -4830,6 +4883,7 @@ version = "0.11.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tang-sparse",
  "vcad-kernel-tessellate",
  "vcad-receipt",
 ]
@@ -4890,7 +4944,7 @@ dependencies = [
  "bytemuck",
  "kosm-render",
  "pollster",
- "tang-expr",
+ "tang-expr 0.2.0",
  "thiserror 2.0.18",
  "wasm-bindgen",
  "wasm-bindgen-futures",
@@ -5154,6 +5208,10 @@ version = "0.11.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tang",
+ "tang-compile",
+ "tang-expr 0.2.0",
+ "tang-sparse",
  "vcad-receipt",
 ]
 

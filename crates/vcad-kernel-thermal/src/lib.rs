@@ -52,6 +52,9 @@
 //! temperature unit works — the solver never converts.
 
 pub mod adjoint;
+// wasm32 solves without the graph (no clock for its solve timing).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub mod graph;
 pub mod model;
 pub mod receipt;
 pub mod solve;
