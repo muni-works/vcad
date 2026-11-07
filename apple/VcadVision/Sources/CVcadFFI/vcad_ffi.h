@@ -679,6 +679,25 @@ char *vcad_assembly_check_mates(const char *doc_json);
  * [0,durationS], coincident keys collapsed last-wins, empty tracks dropped). */
 char *vcad_timeline_normalize(const char *timeline_json);
 
+/* ── Fabrication: sheet metal, 3D print, multi-tool CAM ──────────────────
+ * All return owned JSON (free with vcad_string_free) or null +
+ * vcad_last_error. */
+/* Chain API {"op":"evaluate"|"check"|"cost"|"nest"|"nested_dxf"|"sequence"|
+ * "folded_step"|"materials"|"bend_table"|"shop_catalog", "chain"?, ...}. */
+char *vcad_sheet_metal_call(const char *request_json);
+/* Flat pattern from a solid. request (nullable) {"part"?,"material"?,
+ * "shopProfile"?,"kernelVolumeTol"?} -> {flat_pattern, model, dxf, bends,
+ * kernelVolumeCheck:{pass,...}, error?}. Fails closed (empty dxf). */
+char *vcad_sheet_metal_flatten(const char *doc_json, const char *request_json);
+/* {"op":"profiles"|"analyze"|"slice"|"export_3mf", "settings"?, ...};
+ * doc_json may be null for "profiles". slice writes "gcodePath" /
+ * "threeMfPath" when given. */
+char *vcad_print_call(const char *doc_json, const char *request_json);
+/* Multi-tool job {"stock","tools","operations","post"?,"target"?,...} ->
+ * {gcode, programs[], toolChanges, moves[], operations[], verification}. */
+char *vcad_cam_job(const char *request_json);
+/* {"tools":[...]} — the kernel's default tool library. */
+char *vcad_cam_tool_library(void);
 /* --- Electronics co-design (pcb.rs, schematic.rs) ---
  * Board = IR Pcb JSON (camelCase, as stored under doc.pcb / a PcbBoard node);
  * sheet = IR SchematicSheet JSON. All return owned JSON freed ONLY with

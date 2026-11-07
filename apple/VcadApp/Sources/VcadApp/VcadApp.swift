@@ -86,6 +86,7 @@ struct VcadApp: App {
             FieldCommands()
             AnalysisCommands()
             AssemblyCommands(model: model)
+            FabricateCommands()
             UpdateCommands()
         }
 
