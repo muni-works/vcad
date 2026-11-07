@@ -7,7 +7,7 @@ name: WASM refresh
 # even when their Rust changes don't overlap. Feature branches therefore
 # never commit those files (ci.yml's wasm-artifact-guard enforces it);
 # instead this workflow rebuilds them on main after any kernel-source
-# merge and commits the refresh itself.
+# merge and lands the refresh itself, once CI has verified it.
 #
 # The refresh commit only touches packages/kernel-wasm/**, which does not
 # match the paths filter below — so it can never re-trigger itself.
@@ -26,6 +26,8 @@ on:
 
 permissions:
   contents: write
+  # dispatch + watch the CI run that gates the refresh commit
+  actions: write
 
 concurrency:
   group: wasm-refresh-main
@@ -35,6 +37,8 @@ concurrency:
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    # mac CI on the refresh commit can take ~90 min
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v6
       - name: Clone sibling repos
@@ -65,6 +69,7 @@ jobs:
       - name: Rebuild kernel WASM artifacts
         run: node packages/kernel-wasm/scripts/build.mjs
       - name: Commit refreshed artifacts
+        id: commit
         run: |
           git add packages/kernel-wasm/vcad_kernel_wasm.js \
                   packages/kernel-wasm/vcad_kernel_wasm.d.ts \
@@ -72,6 +77,7 @@ jobs:
                   packages/kernel-wasm/vcad_kernel_wasm_bg.wasm.d.ts
           if git diff --cached --quiet; then
             echo "artifacts unchanged — nothing to refresh"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           git config user.name  "vcad-agent[bot]"
@@ -79,19 +85,51 @@ jobs:
           git commit -m "chore(wasm): refresh kernel artifacts for ${GITHUB_SHA:0:7}"
           # The build can dirty tracked files this job doesn't own — most
           # commonly Cargo.lock, when a PR pinned a sibling-repo version from
-          # a stale local checkout and cargo re-resolves against the fresh
-          # clones above. Single-writer policy: this job only ever commits the
-          # kernel-wasm artifacts, so surface the drift as a warning and
-          # discard it — a dirty tree here otherwise wedges `pull --rebase`
-          # and silently freezes the published artifacts (see #469→#473,
-          # where a phyz 0.3.1→0.3.0 lockfile regression did exactly that).
+          # a stale local checkout. Single-writer policy: this job only ever
+          # commits the kernel-wasm artifacts, so surface the drift as a
+          # warning and discard it (see #469→#473).
           if ! git diff --quiet; then
             echo "::warning::discarding non-artifact build dirt (stale sibling pin in a merged PR?):"
             git --no-pager diff --stat
             git checkout -- .
           fi
-          # Cheap insurance against a non-artifact merge racing us; a binary
-          # conflict here means a policy violation upstream and should fail
-          # loudly (re-run via workflow_dispatch after fixing).
-          git pull --rebase origin main
-          git push origin HEAD:main
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      # main's branch protection requires Rust (stable), TypeScript and
+      # Swift (macOS) to pass on a commit before it can land, so a bare
+      # `git push origin HEAD:main` is rejected (GH006 — every run failed
+      # from 2026-11-07 until this change). Instead: park the commit on a
+      # bot branch, run the full CI workflow against it (workflow_dispatch
+      # runs report the same required check names), and only fast-forward
+      # main to that exact SHA once CI is green. No protection bypass, and
+      # no PR needed (Actions may not create PRs in this repo).
+      - name: Verify refresh with CI, then fast-forward main
+        if: steps.commit.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.commit.outputs.sha }}
+        run: |
+          git push --force origin "$SHA:refs/heads/bot/wasm-refresh"
+          gh workflow run ci.yml --ref bot/wasm-refresh
+          run_id=""
+          for _ in $(seq 1 30); do
+            run_id=$(gh run list --workflow ci.yml --branch bot/wasm-refresh \
+                       --event workflow_dispatch --json databaseId,headSha \
+                       --jq "map(select(.headSha == \"$SHA\")) | .[0].databaseId // empty")
+            [ -n "$run_id" ] && break
+            sleep 10
+          done
+          if [ -z "$run_id" ]; then
+            echo "::error::CI run for $SHA never appeared"; exit 1
+          fi
+          echo "verifying via CI run $run_id"
+          gh run watch "$run_id" --exit-status --interval 60 > /dev/null
+          # Fast-forward only. If a merge landed on main meanwhile, this
+          # rebuild is stale anyway — that merge's own push event re-fires
+          # this workflow if it touched kernel sources; otherwise re-dispatch.
+          if ! git push origin "$SHA:refs/heads/main"; then
+            echo "::warning::main moved during verification — re-dispatching a fresh refresh"
+            gh workflow run wasm-refresh.yml --ref main
+            exit 0
+          fi
+          git push origin --delete bot/wasm-refresh || true
