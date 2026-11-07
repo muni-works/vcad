@@ -12,7 +12,7 @@ struct AnalysisPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
             PanelHeader(title: "Analysis", systemImage: "gauge.with.dots.needle.33percent",
-                        onClose: { store.shown = false; store.overlayRevision += 1 })
+                        onClose: { store.setPickTarget(nil, model); store.shown = false; store.overlayRevision += 1 })
             Picker("", selection: $store.tab) {
                 ForEach(AnalysisTab.allCases) { Text($0.rawValue).tag($0) }
             }
@@ -158,13 +158,13 @@ private struct FeaSection: View {
         Eyebrow("Supports")
         ForEach($store.feaSupports) { $s in
             SetupRow(title: "Fixed", faces: s.faces, picking: store.pickTarget == .support(s.id)) {
-                store.pickTarget = store.pickTarget == .support(s.id) ? nil : .support(s.id)
+                store.setPickTarget(store.pickTarget == .support(s.id) ? nil : .support(s.id), model)
             }
         }
         Eyebrow("Loads")
         ForEach($store.feaLoads) { $l in
             SetupRow(title: "Force", faces: l.faces, picking: store.pickTarget == .load(l.id)) {
-                store.pickTarget = store.pickTarget == .load(l.id) ? nil : .load(l.id)
+                store.setPickTarget(store.pickTarget == .load(l.id) ? nil : .load(l.id), model)
             }
             HStack(spacing: 4) {
                 ForEach(0..<3, id: \.self) { a in

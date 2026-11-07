@@ -1,15 +1,13 @@
 import Foundation
 import CVcadFFI
 
-// Face picking for the analysis panel (FEA loads / supports).
+// Face table for the analysis panel (FEA loads / supports).
 //
-// The viewport face picker is the M1 lane's public picking API; until it is
-// on main, analysis reads faces through this protocol. The default source is
-// a face table straight from the kernel (`vcad_topology_json`): every face of
-// the part with its surface kind, centre, normal and area, so a load can be
-// put on "the +X planar face at x = 100" precisely. When the viewport picker
-// lands, an adapter conforming to `AnalysisFacePicker` feeds the same ids —
-// face id = shell ordinal everywhere — and nothing else here changes.
+// Viewport picking is M1's PickingState (Picking.swift): arming a load or
+// support row (`AnalysisStore.setPickTarget`) switches `model.picking` to
+// faces and mirrors its selection into the row. This kernel face table
+// (`vcad_topology_json`) is the precise alternative listed under the row —
+// "the +X face at x = 100" — with the same ids (shell ordinals).
 
 /// One face of a part, as the analysis panel lists it.
 struct AnalysisFace: Decodable, Identifiable, Hashable {
