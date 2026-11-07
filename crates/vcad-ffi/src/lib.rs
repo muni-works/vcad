@@ -65,6 +65,8 @@ pub mod features;
 pub mod gym;
 pub mod import;
 mod json;
+pub mod pcb;
+pub mod schematic;
 pub mod sensitivity;
 pub mod session;
 pub mod sketch;
