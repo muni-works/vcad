@@ -16,7 +16,7 @@ final class LabsTests: XCTestCase {
     func testLabsOffByDefaultOffersOnlyDesign() {
         UserDefaults.standard.removeObject(forKey: Prefs.labsKey)
         XCTAssertFalse(Prefs.labs)
-        XCTAssertEqual(Workspace.available, [.design])
+        XCTAssertEqual(Workspace.available, [.design, .drawing])
     }
 
     func testLabsOnOffersEveryWorkspace() {
