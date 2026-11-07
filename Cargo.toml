@@ -216,9 +216,12 @@ thiserror = "2"
 # onto its in-repo crate, and a consumer that wants a development kosm-render
 # does the same in an untracked .cargo/config.toml.
 kosm-render = "0.2"
-tang = { version = "0.2" }
-tang-la = { version = "0.1" }
-tang-expr = { version = "0.1" }
+tang = { version = "0.2.1" }
+tang-la = { version = "0.1.1" }
+tang-expr = { version = "0.2" }
+tang-optim = { version = "0.2.0" }
+tang-sparse = { version = "0.1.1" }
+tang-compile = { version = "0.1.1" }
 # phyz comes from crates.io (0.4.0, tag v0.4.0) so every vcad crate that
 # depends on it is publishable. phyz-gpu and phyz-md have no 0.4 release yet;
 # only unpublished crates (vcad-sim, vcad-kernel-atoms) use them, so they stay
