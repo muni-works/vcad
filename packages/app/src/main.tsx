@@ -26,6 +26,15 @@ import { App } from "./App";
 import { CliAuth } from "./components/CliAuth";
 import { AuthorizePage } from "./components/AuthorizePage";
 import { getAuthorizeRouteId } from "./lib/authorize-route";
+import { ExportAllPage } from "./components/ExportAllPage";
+import { RetirementPage } from "./components/RetirementPage";
+import {
+  EXPORT_PATH,
+  isProtectedPath,
+  planRetirementRoute,
+  retirementRedirectsEnabled,
+  type RetirementRoute,
+} from "./lib/retirement";
 import "./index.css";
 import {
   getAllDocuments,
@@ -146,10 +155,28 @@ const isCliAuth = window.location.pathname === "/cli-auth";
 // /cli-auth — App never runs in this branch.
 const authorizeId = getAuthorizeRouteId();
 
+// Route: `/export` — download every document ahead of the vcad.io shutdown.
+// Live regardless of the retirement flag so users can leave before the switch.
+const isExport = window.location.pathname.replace(/\/+$/, "") === EXPORT_PATH;
+
+// vcad.io retirement redirects (docs/launch/web-retirement.md). OFF unless the
+// build sets VITE_VCAD_RETIREMENT_REDIRECTS=1; when off this is always null.
+const retirementRoute: Exclude<RetirementRoute, { kind: "keep" | "export" }> | null = (() => {
+  if (!retirementRedirectsEnabled()) return null;
+  // Belt and braces: /desktop/* (Sparkle appcast) is static and never redirected.
+  if (isProtectedPath(window.location.pathname)) return null;
+  const route = planRetirementRoute(window.location);
+  return route.kind === "keep" || route.kind === "export" ? null : route;
+})();
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <AuthProvider onSignIn={onSignInGated}>
-      {isCliAuth ? (
+      {isExport ? (
+        <ExportAllPage />
+      ) : retirementRoute ? (
+        <RetirementPage route={retirementRoute} />
+      ) : isCliAuth ? (
         <CliAuth />
       ) : authorizeId ? (
         <AuthorizePage authorizationId={authorizeId} />
