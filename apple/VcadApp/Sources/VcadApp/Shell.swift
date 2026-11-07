@@ -243,8 +243,10 @@ struct DocumentCommands: Commands {
             Button("Show All Parts") { model.showAllParts() }
                 .keyboardShortcut("h", modifiers: [.command, .shift, .option]).disabled(!model.hasHiddenParts)
             Divider()
-            Button("Describe a Part…") { intent.focusRequested = true }
-                .keyboardShortcut("k")
+            if IntentEngine.isAvailable {
+                Button("Describe a Part…") { intent.focusRequested = true }
+                    .keyboardShortcut("k")
+            }
             Button(AgentSession.shared.isOpen ? "Hide Agent" : "Show Agent") { AgentSession.shared.toggle() }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
         }

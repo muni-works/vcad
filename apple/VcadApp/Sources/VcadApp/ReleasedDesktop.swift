@@ -957,8 +957,10 @@ struct ReleasedOverlayView: View {
                         AgentPanel(session: AgentSession.shared, model: model)
                             .modifier(ChromeRegion(key: "agentPanel"))
                     }
-                    CommandBar(engine: intent, model: model)
-                        .modifier(ChromeRegion(key: "composer"))
+                    if IntentEngine.isAvailable {
+                        CommandBar(engine: intent, model: model)
+                            .modifier(ChromeRegion(key: "composer"))
+                    }
                 }
             }
             .padding(.bottom, Theme.Space.l)

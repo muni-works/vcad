@@ -246,7 +246,7 @@ enum AgentTools {
          "description": "What the user is looking at: open document, every driveable joint (value + limits), explode, camera, the user's selection and hover, and your current highlights/labels. Call this first, and again when the user says \"this\".",
          "inputSchema": schema([:])],
         ["name": "list_parts",
-         "description": "All instance ids in the open assembly, with their material.",
+         "description": "Part ids in the open document: assembly instances when it is an assembly, otherwise the document's parts (usable as part_id / child in edit tools).",
          "inputSchema": schema([:])],
         ["name": "open_document",
          "description": "Open a .vcad or .loon file in the shared view (read-only; .loon files hot-reload when regenerated).",
@@ -286,8 +286,16 @@ enum AgentTools {
         switch name {
         case "app_state": return json(state(m))
         case "list_parts":
-            return json(m.assemblyInstanceIDs.enumerated().map { i, id in
-                ["id": id, "index": i, "highlighted": m.agentHighlights.contains(i)] as [String: Any]
+            // An assembly lists its instances; a part document (no instances)
+            // lists the engine's parts, so the ids work in inspect/translate/…
+            // instead of coming back empty.
+            if !m.assemblyInstanceIDs.isEmpty {
+                return json(m.assemblyInstanceIDs.enumerated().map { i, id in
+                    ["id": id, "index": i, "kind": "instance", "highlighted": m.agentHighlights.contains(i)] as [String: Any]
+                })
+            }
+            return json((m.engineState?.parts ?? []).enumerated().map { i, p in
+                ["id": p.id, "index": i, "kind": "part"] as [String: Any]
             })
         case "open_document":
             guard let path = a["path"] as? String else { throw Failure(message: "path is required") }
