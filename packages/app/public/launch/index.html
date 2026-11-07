@@ -23,6 +23,7 @@
 <link rel="icon" href="/favicon.ico">
 <script src="theme.js"></script>
 <script src="kernel.js"></script>
+<script type="module" src="launch.js"></script>
 <style>
 @font-face { font-family: "IBM Plex Sans"; font-weight: 400; font-display: swap; src: url(fonts/ibm-plex-sans-latin-400-normal.woff2) format("woff2"); }
 @font-face { font-family: "IBM Plex Sans"; font-weight: 500; font-display: swap; src: url(fonts/ibm-plex-sans-latin-500-normal.woff2) format("woff2"); }
@@ -53,7 +54,6 @@
   --blue: color-mix(in oklab, #3d8bff 72%, #000);
   --orange: color-mix(in oklab, #ff5f00 80%, #000);
   --purple: oklch(0.58 0.22 300);
-  --render-filter: none;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -61,7 +61,6 @@
     --surface: #15110d; --raised: #1e1813; --border: #4a3a2a; --border-muted: #2a2119;
     --flame-ink: #ff2052; --flame-50: color-mix(in oklab, #ff2052 14%, #0b0907);
     --cyan: #00f0ff; --amber: #ffd400; --blue: #3d8bff; --orange: #ff5f00; --purple: oklch(0.72 0.20 300);
-    --render-filter: invert(1) hue-rotate(180deg) brightness(.92) sepia(.08);
   }
 }
 :root[data-theme="dark"] {
@@ -69,7 +68,6 @@
   --surface: #15110d; --raised: #1e1813; --border: #4a3a2a; --border-muted: #2a2119;
   --flame-ink: #ff2052; --flame-50: color-mix(in oklab, #ff2052 14%, #0b0907);
   --cyan: #00f0ff; --amber: #ffd400; --blue: #3d8bff; --orange: #ff5f00; --purple: oklch(0.72 0.20 300);
-  --render-filter: invert(1) hue-rotate(180deg) brightness(.92) sepia(.08);
 }
 
 html { -webkit-font-smoothing: antialiased; scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
@@ -127,7 +125,20 @@ a.hero-btn.primary:hover { background: var(--fg); color: var(--bg); }
 
 /* hero figure */
 .hero-fig { margin-top: 3.5rem; }
-.hero-fig img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; background: var(--surface); filter: var(--render-filter); }
+@media (min-width: 1000px) { .hero-fig.wide { margin-left: -140px; margin-right: -140px; } }
+.hero-live { display: grid; grid-template-columns: minmax(0, 1fr) 260px; background: var(--surface); }
+.hero-live canvas { width: 100%; aspect-ratio: 4 / 3; display: block; cursor: grab; touch-action: none; }
+.hero-live canvas:active { cursor: grabbing; }
+.hero-panel { padding: 16px 16px 14px; border-left: 0.5px solid var(--border-muted); display: flex; flex-direction: column; gap: 8px; }
+.hero-panel label { display: grid; grid-template-columns: 74px minmax(0,1fr) 52px; align-items: center; gap: 8px; font-family: var(--mono); font-size: var(--s-xs); color: var(--muted); }
+.hero-panel input { width: 100%; accent-color: var(--flame); }
+.hero-panel output { color: var(--fg); text-align: right; font-variant-numeric: tabular-nums; }
+.hero-ro { grid-template-columns: 1fr 1fr !important; margin: 6px 0 4px; }
+.step-btn { height: 36px; border: 0; cursor: pointer; justify-content: center; font-family: var(--sans); background: var(--bg); color: var(--fg); opacity: .45; pointer-events: none; }
+.kernel-ready .step-btn { opacity: 1; pointer-events: auto; }
+.step-btn:hover { background: var(--flame-ink); color: #fff; }
+.hero-status { font-family: var(--mono); font-size: var(--s-xs); color: var(--muted); min-height: 1.4em; }
+@media (max-width: 900px) { .hero-live { grid-template-columns: 1fr; } .hero-panel { border-left: 0; border-top: 0.5px solid var(--border-muted); } }
 
 /* sections */
 section { padding: clamp(4.5rem, 10vw, 8rem) 0; }
@@ -153,7 +164,8 @@ h2 { font-size: var(--s-lg); line-height: 1.3; font-weight: 600; letter-spacing:
 /* gallery */
 .gallery { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 40px 24px; }
 .ex { margin: 0; display: flex; flex-direction: column; }
-.ex img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; background: var(--surface); filter: var(--render-filter); }
+.ex canvas { width: 100%; aspect-ratio: 4 / 3; display: block; background: var(--surface); cursor: grab; touch-action: none; }
+.ex canvas:active { cursor: grabbing; }
 .ex-meta { padding-top: 12px; }
 .ex .pill { margin-bottom: 6px; }
 .ex-name { display: block; font-family: var(--mono); font-size: var(--s-sm); font-weight: 500; color: var(--fg); }
@@ -313,27 +325,33 @@ pre .num { color: var(--flame-ink); }
       <span class="pill" style="--pill:#ffd400">DFM + FEA</span>
       <span class="pill" style="--pill:#00f0ff">STEP · STL · DXF</span>
     </div>
-    <figure class="hero-fig">
-      <!-- Swap for the hero video (docs/launch/hero-demo.md) on launch day. -->
-      <img src="gallery/stirling-engine.jpg" alt="A ten-part Stirling engine modeled in vcad" width="1200" height="900">
+    <figure class="hero-fig wide">
+      <div class="hero-live">
+        <canvas id="hero-canvas" aria-label="A wall bracket built live by the vcad kernel. Drag to orbit."></canvas>
+        <div class="hero-panel">
+          <p class="label-caps">Parameters</p>
+          <label><span>width</span><input data-param="w" data-unit=" mm" type="range" min="50" max="140" step="1" value="90"><output id="v-w"></output></label>
+          <label><span>depth</span><input data-param="d" data-unit=" mm" type="range" min="30" max="80" step="1" value="50"><output id="v-d"></output></label>
+          <label><span>wall height</span><input data-param="h" data-unit=" mm" type="range" min="25" max="90" step="1" value="50"><output id="v-h"></output></label>
+          <label><span>thickness</span><input data-param="t" data-unit=" mm" type="range" min="3" max="12" step="0.5" value="6"><output id="v-t"></output></label>
+          <label><span>holes</span><input data-param="n" type="range" min="1" max="6" step="1" value="3"><output id="v-n"></output></label>
+          <label><span>hole Ø</span><input data-param="hole" data-unit=" mm" type="range" min="3" max="10" step="0.5" value="6"><output id="v-hole"></output></label>
+          <label><span>bore Ø</span><input data-param="bore" data-unit=" mm" type="range" min="6" max="30" step="1" value="18"><output id="v-bore"></output></label>
+          <dl class="ro hero-ro">
+            <div><dt>volume</dt><dd id="r-vol">…</dd></div>
+            <div><dt>mass, 6061</dt><dd id="r-mass">…</dd></div>
+            <div><dt>area</dt><dd id="r-area">…</dd></div>
+            <div><dt>triangles</dt><dd id="r-tris">…</dd></div>
+            <div class="hot"><dt>rebuild</dt><dd id="r-ms">…</dd></div>
+          </dl>
+          <button id="hero-step" class="hero-btn step-btn" type="button">Download this part as STEP ↓</button>
+          <p id="hero-status" class="hero-status"></p>
+        </div>
+      </div>
+      <figcaption class="fig-cap"><span class="fig-n">Fig 1</span><span class="fig-lead">The kernel, in this tab.</span> This is vcad's BRep kernel compiled to WebAssembly, running in a worker. Each slider change rebuilds the bracket from booleans on exact surfaces, retessellates it, and recomputes its mass properties. The cylindrical faces it reports are in coral. Drag the model to orbit it, and the STEP file you download is the solid itself, not this mesh.</figcaption>
     </figure>
   </div>
 </header>
-
-<!-- Proof -->
-<section style="padding-top:0">
-  <div class="container">
-    <p class="label-caps kicker">Measured, not claimed</p>
-    <div class="proof">
-      <div class="proof-item"><div class="proof-val">0.7<small>&nbsp;s</small></div><div class="proof-label">Click to window, from process start</div></div>
-      <div class="proof-item"><div class="proof-val">120<small>&nbsp;fps</small></div><div class="proof-label">Orbiting a 237k-triangle humanoid</div></div>
-      <div class="proof-item"><div class="proof-val">0.06<small>&nbsp;s</small></div><div class="proof-label">To open the PCB motor sample</div></div>
-      <div class="proof-item"><div class="proof-val">504k<small>&nbsp;tris</small></div><div class="proof-label">Coil board, still at the display's 120 Hz</div></div>
-    </div>
-    <p class="proof-src">Apple silicon Mac, a fresh process every run. Method and raw numbers in the <a href="https://github.com/ecto/vcad/blob/main/docs/launch/speed-pass.md">speed pass</a>.</p>
-  </div>
-</section>
-
 
 <!-- How it works -->
 <section id="how" style="padding-top:0">
@@ -381,7 +399,7 @@ pre .num { color: var(--flame-ink); }
         <div class="pipe-foot">Files for the machine, and gradients for the optimizer.</div>
       </div>
     </div>
-    <p class="fig-cap"><span class="fig-n">Fig 1</span><span class="fig-lead">One document, start to finish.</span> The same <code>.vcad</code> file drives the viewport, the exporters and the MCP tools, so what an agent edits is what you see.</p>
+    <p class="fig-cap"><span class="fig-n">Fig 2</span><span class="fig-lead">One document, start to finish.</span> The same <code>.vcad</code> file drives the viewport, the exporters and the MCP tools, so what an agent edits is what you see.</p>
   </div>
 </section>
 
@@ -409,7 +427,7 @@ pre .num { color: var(--flame-ink); }
           <div class="stage"><b>3 · Classify</b><span>Each split face is inside or outside the other solid. A ray cast with a winding-number vote decides.</span></div>
           <div class="stage"><b>4 · Sew</b><span>Kept faces are trimmed to the new edges and stitched into one closed shell.</span></div>
         </div>
-        <p class="fig-cap"><span class="fig-n">Fig 2</span><span class="fig-lead">Plate minus cylinder.</span> The top and bottom faces gain a circular inner loop, the cylinder's side becomes the bore, and its caps fall outside the plate and are dropped.</p>
+        <p class="fig-cap"><span class="fig-n">Fig 3</span><span class="fig-lead">Plate minus cylinder.</span> The top and bottom faces gain a circular inner loop, the cylinder's side becomes the bore, and its caps fall outside the plate and are dropped.</p>
       </figure>
     </article>
 
@@ -441,7 +459,7 @@ pre .num { color: var(--flame-ink); }
           <div><dt>relative error</dt><dd id="g-err"></dd></div>
           <div><dt>smooth −2πrt</dt><dd id="g-smooth"></dd></div>
         </dl>
-        <p class="fig-cap"><span class="fig-n">Fig 3</span><span class="fig-lead">The gradient of what was meshed.</span> Drag <i>r</i>. The kernel's gradient matches a central difference on the same 64-segment mesh to rounding error, and sits 0.16% from the smooth formula (3). That gap is the mesh, not the method.</p>
+        <p class="fig-cap"><span class="fig-n">Fig 4</span><span class="fig-lead">The gradient of what was meshed.</span> Drag <i>r</i>. The kernel's gradient matches a central difference on the same 64-segment mesh to rounding error, and sits 0.16% from the smooth formula (3). That gap is the mesh, not the method.</p>
       </figure>
       <p>The method has limits. Gradients come from a frozen tessellation, so a change in topology, like a hole that breaks through an edge, is an error rather than a derivative. Contact gradients use phyz's penalty model, not the production collision pipeline. The paper lists both.</p>
     </article>
@@ -483,21 +501,21 @@ pre .num { color: var(--flame-ink); }
   <div class="container-wide">
     <div class="container" style="padding:0; margin:0 0 2.5rem">
       <h2>Open a sample</h2>
-      <p class="lead muted" style="margin-bottom:0">Thirteen samples ship in the app under File ▸ Open Sample. <code>vcad-render</code> drew every image below straight from the sample file.</p>
+      <p class="lead muted" style="margin-bottom:0">Thirteen samples ship in the app under File ▸ Open Sample. Each one below is the sample's own mesh, exported by the kernel. Drag any of them to orbit.</p>
     </div>
     <div class="gallery">
-      <figure class="ex"><img loading="lazy" src="gallery/stirling-engine.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#ff2052">mechanical</span><span class="ex-name">stirling-engine</span><span class="ex-desc">Ten parts, four materials, a flywheel on a joint</span></figcaption></figure>
-      <figure class="ex"><img loading="lazy" src="gallery/k1-humanoid.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#3d8bff">robotics</span><span class="ex-name">k1-humanoid</span><span class="ex-desc">22 DOF, simulated standing in physics</span></figcaption></figure>
-      <figure class="ex"><img loading="lazy" src="gallery/pcb-motor.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#39ff14">electronics</span><span class="ex-name">pcb-motor</span><span class="ex-desc">Printed-coil stator between two rotors</span></figcaption></figure>
-      <figure class="ex"><img loading="lazy" src="gallery/pcb-stator.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#39ff14">electronics</span><span class="ex-name">pcb-stator</span><span class="ex-desc">The coil board: schematic, copper, solid</span></figcaption></figure>
-      <figure class="ex"><img loading="lazy" src="gallery/fpga-board.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#39ff14">electronics</span><span class="ex-name">fpga-board</span><span class="ex-desc">Designed end to end by an agent, DRC-clean</span></figcaption></figure>
-      <figure class="ex"><img loading="lazy" src="gallery/l-bracket.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#ffd400">analysis</span><span class="ex-name">l-bracket</span><span class="ex-desc">Fix the base, load the flange, read the stress</span></figcaption></figure>
-      <figure class="ex"><img loading="lazy" src="gallery/motor-flange.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#00f0ff">manufacture</span><span class="ex-name">motor-flange</span><span class="ex-desc">A 2.5D part ready for toolpaths</span></figcaption></figure>
-      <figure class="ex"><img loading="lazy" src="gallery/snap-cap.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#ff2052">mechanical</span><span class="ex-name">snap-cap</span><span class="ex-desc">A snap fit, checked as clearance</span></figcaption></figure>
-      <figure class="ex"><img loading="lazy" src="gallery/robot-arm.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#3d8bff">robotics</span><span class="ex-name">robot-arm</span><span class="ex-desc">Two revolute joints. Pose it or simulate it</span></figcaption></figure>
-      <figure class="ex"><img loading="lazy" src="gallery/ribbed-plate.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#ffd400">analysis</span><span class="ex-name">ribbed-plate</span><span class="ex-desc">A first DFM check for thin ribs</span></figcaption></figure>
-      <figure class="ex"><img loading="lazy" src="gallery/sensor-mast.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#ff2052">mechanical</span><span class="ex-name">sensor-mast</span><span class="ex-desc">Pocketed base, mast, sensor housings</span></figcaption></figure>
-      <figure class="ex"><img loading="lazy" src="gallery/pulley.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#ff2052">mechanical</span><span class="ex-name">pulley</span><span class="ex-desc">Flanges, groove and bore from booleans</span></figcaption></figure>
+      <figure class="ex"><canvas data-model="models/stirling-engine.glb" aria-label="stirling-engine, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#ff2052">mechanical</span><span class="ex-name">stirling-engine</span><span class="ex-desc">Ten parts, four materials, a flywheel on a joint</span></figcaption></figure>
+      <figure class="ex"><canvas data-model="models/k1-humanoid.glb" aria-label="k1-humanoid, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#3d8bff">robotics</span><span class="ex-name">k1-humanoid</span><span class="ex-desc">22 DOF, simulated standing in physics</span></figcaption></figure>
+      <figure class="ex"><canvas data-model="models/pcb-motor.glb" aria-label="pcb-motor, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#39ff14">electronics</span><span class="ex-name">pcb-motor</span><span class="ex-desc">Printed-coil stator between two rotors</span></figcaption></figure>
+      <figure class="ex"><canvas data-model="models/pcb-stator.glb" aria-label="pcb-stator, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#39ff14">electronics</span><span class="ex-name">pcb-stator</span><span class="ex-desc">The coil board: schematic, copper, solid</span></figcaption></figure>
+      <figure class="ex"><canvas data-model="models/fpga-board.glb" aria-label="fpga-board, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#39ff14">electronics</span><span class="ex-name">fpga-board</span><span class="ex-desc">Designed end to end by an agent, DRC-clean</span></figcaption></figure>
+      <figure class="ex"><canvas data-model="models/l-bracket.glb" aria-label="l-bracket, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#ffd400">analysis</span><span class="ex-name">l-bracket</span><span class="ex-desc">Fix the base, load the flange, read the stress</span></figcaption></figure>
+      <figure class="ex"><canvas data-model="models/motor-flange.glb" aria-label="motor-flange, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#00f0ff">manufacture</span><span class="ex-name">motor-flange</span><span class="ex-desc">A 2.5D part ready for toolpaths</span></figcaption></figure>
+      <figure class="ex"><canvas data-model="models/snap-cap.glb" aria-label="snap-cap, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#ff2052">mechanical</span><span class="ex-name">snap-cap</span><span class="ex-desc">A snap fit, checked as clearance</span></figcaption></figure>
+      <figure class="ex"><canvas data-model="models/robot-arm.glb" aria-label="robot-arm, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#3d8bff">robotics</span><span class="ex-name">robot-arm</span><span class="ex-desc">Two revolute joints. Pose it or simulate it</span></figcaption></figure>
+      <figure class="ex"><canvas data-model="models/ribbed-plate.glb" aria-label="ribbed-plate, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#ffd400">analysis</span><span class="ex-name">ribbed-plate</span><span class="ex-desc">A first DFM check for thin ribs</span></figcaption></figure>
+      <figure class="ex"><canvas data-model="models/sensor-mast.glb" aria-label="sensor-mast, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#ff2052">mechanical</span><span class="ex-name">sensor-mast</span><span class="ex-desc">Pocketed base, mast, sensor housings</span></figcaption></figure>
+      <figure class="ex"><canvas data-model="models/pulley.glb" aria-label="pulley, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#ff2052">mechanical</span><span class="ex-name">pulley</span><span class="ex-desc">Flanges, groove and bore from booleans</span></figcaption></figure>
     </div>
   </div>
 </section>
@@ -521,7 +539,7 @@ pre .num { color: var(--flame-ink); }
     }
   }
 }</code></pre>
-        <figcaption class="fig-cap"><span class="fig-n">Fig 4</span>The config that Connect Claude writes for you.</figcaption>
+        <figcaption class="fig-cap"><span class="fig-n">Fig 5</span>The config that Connect Claude writes for you.</figcaption>
       </figure>
     </div>
   </div>
