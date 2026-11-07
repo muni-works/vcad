@@ -52,6 +52,7 @@
 //! temperature unit works — the solver never converts.
 
 pub mod adjoint;
+pub mod graph;
 pub mod model;
 pub mod receipt;
 pub mod solve;

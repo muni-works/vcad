@@ -83,7 +83,8 @@ pub fn minimize_lbfgs(
         bounds: options.bounds.clone(),
         ..LbfgsOptions::default()
     };
-    let f = |theta: &[f64]| objective_gradient_reverse(build, seeding_for, objective, theta, params);
+    let f =
+        |theta: &[f64]| objective_gradient_reverse(build, seeding_for, objective, theta, params);
     let r = tang_optim::minimize_lbfgs(f, theta0, &opts)?;
     Ok(OptimizeResult {
         theta: r.x,
