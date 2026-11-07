@@ -4,7 +4,12 @@
     {
       "name": "landing",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--prefix", "www"],
+      "runtimeArgs": [
+        "run",
+        "dev",
+        "--prefix",
+        "www"
+      ],
       "port": 4173
     },
     {
@@ -20,7 +25,10 @@
     {
       "name": "vcad-docs",
       "runtimeExecutable": "bash",
-      "runtimeArgs": ["-c", "cd packages/docs && npx next start -p 3001"],
+      "runtimeArgs": [
+        "-c",
+        "cd packages/docs && npx next start -p 3001"
+      ],
       "port": 3001
     },
     {
@@ -36,7 +44,9 @@
     {
       "name": "mecheval-leaderboard",
       "runtimeExecutable": "node",
-      "runtimeArgs": ["mecheval/leaderboard/dist/serve.js"],
+      "runtimeArgs": [
+        "mecheval/leaderboard/dist/serve.js"
+      ],
       "port": 5174
     },
     {
@@ -48,6 +58,18 @@
       ],
       "port": 5191,
       "autoPort": true
+    },
+    {
+      "name": "launch-page",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": [
+        "-m",
+        "http.server",
+        "4180",
+        "-d",
+        "packages/app/public"
+      ],
+      "port": 4180
     }
   ]
 }

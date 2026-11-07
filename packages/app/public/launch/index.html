@@ -4,182 +4,340 @@
   the site root is untouched until launch day. Not deployed by this PR.
   Before going live: point the paper link at the arXiv id, confirm the DMG
   is published (desktop-v* release), and swap the hero still for the video.
+
+  Design: muni "Pilot Light" treatment, as on tang.toys and phyz.dev — warm
+  paper by day, warm black by night, one flame per page. tang's flame is
+  safety orange, phyz's electric blue; vcad's is coral (#ff2052), its colour
+  on muni.works. Fonts are self-hosted and the toggle is an external script
+  because vcad.io's CSP allows neither Google Fonts nor inline scripts.
 -->
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>vcad — free, open CAD for Mac</title>
-  <meta name="description" content="vcad is a free, open-source parametric CAD app for Mac with its own BRep kernel, electronics co-design, DFM and FEA, and an agent that works in your viewport over local MCP.">
-  <meta property="og:title" content="vcad — free, open CAD for Mac">
-  <meta property="og:description" content="Parametric CAD with a kernel written from scratch in Rust. No account, no cloud, no subscription.">
-  <meta property="og:image" content="https://vcad.io/launch/gallery/stirling-engine.jpg">
-  <link rel="icon" href="/favicon.ico">
-  <style>
-    @font-face { font-family: Inter; src: url(/fonts/InterVariable.woff2) format("woff2"); font-weight: 100 900; font-display: swap; }
-    @font-face { font-family: Berkeley; src: url(/fonts/BerkeleyMono-Regular.otf) format("opentype"); font-display: swap; }
-    :root {
-      --bg: #f5f3f1; --fg: #15171a; --muted: #5d636b; --line: #dedad5; --card: #ffffff;
-      --accent: #1f5fd1; --accent-fg: #fff; --tile: #f4f2ef;
-    }
-    @media (prefers-color-scheme: dark) {
-      :root:not([data-theme="light"]) { --bg: #101113; --fg: #eceae7; --muted: #9aa0a8; --line: #26282c; --card: #17191c; --accent: #6b9bff; --accent-fg: #0b0c0e; }
-    }
-    * { box-sizing: border-box; }
-    html { -webkit-text-size-adjust: 100%; }
-    body { margin: 0; background: var(--bg); color: var(--fg); font: 17px/1.55 Inter, -apple-system, system-ui, sans-serif; }
-    a { color: inherit; }
-    .wrap { max-width: 1120px; margin: 0 auto; padding: 0 16px; }
-    nav { display: flex; align-items: center; justify-content: space-between; padding: 20px 0; }
-    nav .brand { font-weight: 650; letter-spacing: -.01em; font-size: 20px; text-decoration: none; }
-    nav .links a { margin-left: 22px; color: var(--muted); text-decoration: none; font-size: 15px; }
-    nav .links a:hover { color: var(--fg); }
-    header.hero { padding: 64px 0 40px; display: grid; gap: 40px; grid-template-columns: 1.05fr 1fr; align-items: center; }
-    h1 { font-size: clamp(38px, 6vw, 64px); line-height: 1.02; letter-spacing: -.035em; margin: 0 0 18px; font-weight: 700; }
-    .lede { font-size: 20px; color: var(--muted); margin: 0 0 28px; max-width: 32ch; }
-    .cta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
-    .btn { display: inline-flex; align-items: center; gap: 10px; padding: 13px 20px; border-radius: 10px; text-decoration: none; font-weight: 600; font-size: 16px; }
-    .btn.primary { background: var(--fg); color: var(--bg); }
-    .btn.ghost { border: 1px solid var(--line); }
-    .fine { font-size: 14px; color: var(--muted); margin-top: 14px; }
-    .hero-media { aspect-ratio: 4 / 3; border-radius: 16px; overflow: hidden; background: var(--tile); border: 1px solid var(--line); }
-    .hero-media img { width: 100%; height: 100%; object-fit: cover; display: block; }
-    .pillars { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; padding: 24px 0 56px; }
-    .pillar { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 22px; }
-    .pillar h3 { margin: 0 0 6px; font-size: 18px; letter-spacing: -.01em; }
-    .pillar p { margin: 0; color: var(--muted); font-size: 15px; }
-    h2 { font-size: 32px; letter-spacing: -.025em; margin: 0 0 8px; }
-    .sub { color: var(--muted); margin: 0 0 24px; }
-    section { padding: 40px 0; border-top: 1px solid var(--line); }
-    .gallery { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
-    .gallery figure { margin: 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
-    .gallery img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; background: var(--tile); }
-    .gallery figcaption { padding: 10px 12px 12px; font-size: 14px; }
-    .gallery figcaption b { display: block; font-weight: 600; }
-    .gallery figcaption span { color: var(--muted); font-size: 13px; }
-    .numbers { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
-    .num { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
-    .num b { display: block; font-size: 30px; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
-    .num span { color: var(--muted); font-size: 14px; }
-    .agent { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; align-items: start; }
-    pre { margin: 0; background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; overflow-x: auto; font: 14px/1.6 Berkeley, ui-monospace, SFMono-Regular, Menlo, monospace; }
-    .paper { display: grid; grid-template-columns: 1.2fr 1fr; gap: 28px; align-items: center; }
-    .paper ul { margin: 0; padding-left: 18px; color: var(--muted); }
-    footer { padding: 40px 0 56px; color: var(--muted); font-size: 14px; border-top: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 18px; justify-content: space-between; }
-    footer a { color: var(--muted); }
-    @media (max-width: 860px) {
-      header.hero, .agent, .paper { grid-template-columns: 1fr; }
-      .pillars { grid-template-columns: 1fr; }
-      .gallery { grid-template-columns: repeat(2, 1fr); }
-      .numbers { grid-template-columns: repeat(2, 1fr); }
-      nav .links a:not(.keep) { display: none; }
-    }
-  </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vcad — CAD you can take the derivative of</title>
+<meta name="description" content="vcad is free, open-source parametric CAD for Mac on a BRep kernel written from scratch in Rust: electronics co-design, DFM and FEA built in, and an agent that works in your viewport over local MCP.">
+<meta property="og:title" content="vcad — CAD you can take the derivative of">
+<meta property="og:description" content="Free, open CAD for Mac. No account, no cloud, no subscription.">
+<meta property="og:image" content="https://vcad.io/launch/gallery/stirling-engine.jpg">
+<link rel="icon" href="/favicon.ico">
+<script src="theme.js"></script>
+<style>
+@font-face { font-family: "IBM Plex Sans"; font-weight: 400; font-display: swap; src: url(fonts/ibm-plex-sans-latin-400-normal.woff2) format("woff2"); }
+@font-face { font-family: "IBM Plex Sans"; font-weight: 500; font-display: swap; src: url(fonts/ibm-plex-sans-latin-500-normal.woff2) format("woff2"); }
+@font-face { font-family: "IBM Plex Sans"; font-weight: 600; font-display: swap; src: url(fonts/ibm-plex-sans-latin-600-normal.woff2) format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 400; font-display: swap; src: url(fonts/ibm-plex-mono-latin-400-normal.woff2) format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 500; font-display: swap; src: url(fonts/ibm-plex-mono-latin-500-normal.woff2) format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 600; font-display: swap; src: url(fonts/ibm-plex-mono-latin-600-normal.woff2) format("woff2"); }
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  color-scheme: light dark;
+  --track: 0.12em;
+  --s-xs: 10.5px; --s-sm: 12.5px; --s-body: 15px; --s-md: 17px; --s-lg: 21px; --s-xl: 26px; --s-display: 72px;
+  --sans: "IBM Plex Sans", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+
+  --bg: #ffffff; --fg: #1c1917; --muted: #8a7658;
+  --surface: #faf7f1; --raised: #ffffff; --border: #cfc4b2; --border-muted: #e6dfd3;
+
+  /* the one flame: vcad coral */
+  --flame: #ff2052;
+  --flame-ink: color-mix(in oklab, #ff2052 78%, #000);
+  --flame-50: color-mix(in oklab, #ff2052 10%, #fff);
+
+  --cyan: color-mix(in oklab, #00f0ff 55%, #000);
+  --amber: color-mix(in oklab, #ffd400 60%, #000);
+  --blue: color-mix(in oklab, #3d8bff 72%, #000);
+  --orange: color-mix(in oklab, #ff5f00 80%, #000);
+  --purple: oklch(0.58 0.22 300);
+  --render-filter: none;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b0907; --fg: #e8e1d2; --muted: #a08d70;
+    --surface: #15110d; --raised: #1e1813; --border: #4a3a2a; --border-muted: #2a2119;
+    --flame-ink: #ff2052; --flame-50: color-mix(in oklab, #ff2052 14%, #0b0907);
+    --cyan: #00f0ff; --amber: #ffd400; --blue: #3d8bff; --orange: #ff5f00; --purple: oklch(0.72 0.20 300);
+    --render-filter: invert(1) hue-rotate(180deg) brightness(.92) sepia(.08);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0b0907; --fg: #e8e1d2; --muted: #a08d70;
+  --surface: #15110d; --raised: #1e1813; --border: #4a3a2a; --border-muted: #2a2119;
+  --flame-ink: #ff2052; --flame-50: color-mix(in oklab, #ff2052 14%, #0b0907);
+  --cyan: #00f0ff; --amber: #ffd400; --blue: #3d8bff; --orange: #ff5f00; --purple: oklch(0.72 0.20 300);
+  --render-filter: invert(1) hue-rotate(180deg) brightness(.92) sepia(.08);
+}
+
+html { -webkit-font-smoothing: antialiased; scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+body { background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: var(--s-body); line-height: 1.62; font-variant-numeric: tabular-nums; }
+::selection { background: var(--flame-ink); color: #fff; }
+code, pre, kbd { font-family: var(--mono); }
+
+.container { max-width: 720px; margin: 0 auto; padding: 0 24px; }
+.container-wide { max-width: 1120px; margin: 0 auto; padding: 0 40px; }
+
+/* links: no underline; hover fills with the flame */
+a, a:visited { color: var(--flame-ink); text-decoration: none; padding: 0 2px; margin: 0 -2px; transition: background .12s, color .12s; }
+a:hover { background: var(--flame-ink); color: #fff; }
+
+.label-caps { font-family: var(--mono); font-size: var(--s-xs); font-weight: 500; letter-spacing: var(--track); text-transform: uppercase; color: var(--muted); }
+
+/* theme toggle */
+#theme-toggle { position: fixed; top: 16px; right: 16px; z-index: 50; width: 36px; height: 36px; display: grid; place-items: center; border: 0.5px solid var(--border-muted); background: var(--bg); color: var(--fg); cursor: pointer; }
+#theme-toggle:hover { color: var(--flame-ink); }
+
+/* top nav: caps labels, quiet */
+.topnav { position: absolute; top: 22px; left: 0; right: 0; }
+.topnav .container { display: flex; gap: 22px; justify-content: flex-end; padding-right: 72px; }
+.topnav a { font-family: var(--mono); font-size: var(--s-xs); font-weight: 500; letter-spacing: var(--track); text-transform: uppercase; color: var(--muted); }
+.topnav a:hover { color: #fff; }
+
+/* hero */
+.hero { position: relative; padding: clamp(7rem, 14vw, 11rem) 0 clamp(4rem, 7vw, 6rem); }
+.hero-brand { display: flex; align-items: center; gap: 18px; margin-bottom: 2rem; }
+.hero-mark { width: 128px; height: 64px; color: var(--flame-ink); overflow: visible; }
+.hero-mark .wire { stroke: var(--fg); opacity: .55; }
+.hero-mark .grad { transform-box: fill-box; transform-origin: 0% 50%; animation: vcad-nudge 2.4s ease-in-out infinite; }
+.hero-mark .face { animation: vcad-face 2.4s ease-in-out infinite; }
+@keyframes vcad-nudge { 0%, 100% { transform: scaleX(.55); } 50% { transform: scaleX(1); } }
+@keyframes vcad-face { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(3px); } }
+@media (prefers-reduced-motion: reduce) { .hero-mark .grad, .hero-mark .face { animation: none; } }
+.hero h1 { font-size: var(--s-display); line-height: 1; font-weight: 600; letter-spacing: -0.035em; }
+.hero h1 .dot { color: var(--flame-ink); }
+.hero-claim { font-size: var(--s-xl); font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; margin-bottom: 1.1rem; max-width: 26ch; }
+.hero-claim .hero-sub { color: var(--muted); font-weight: 500; }
+.flame-rule { width: 22%; height: 2px; background: var(--flame-ink); margin: 0 0 1.1rem; }
+.hero-note { color: var(--muted); margin-bottom: 2rem; max-width: 54ch; }
+.hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 1rem; }
+a.hero-btn { display: inline-flex; align-items: center; gap: 10px; height: 40px; padding: 0 14px; margin: 0; background: var(--surface); color: var(--fg); font-size: var(--s-sm); transition: background .15s, color .15s; }
+a.hero-btn.primary { background: var(--flame-ink); color: #fff; font-weight: 500; }
+a.hero-btn:hover { background: var(--flame-ink); color: #fff; }
+a.hero-btn.primary:hover { background: var(--fg); color: var(--bg); }
+.hero-fine { font-family: var(--mono); font-size: var(--s-xs); color: var(--muted); margin-bottom: 1.25rem; }
+.hero-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* pills: master-plan neon, tinted fill, no rule */
+.pill { --ink: color-mix(in oklab, var(--pill) 55%, #000); display: inline-block; padding: 3px 9px; font-family: var(--mono); font-size: var(--s-xs); font-weight: 500; color: var(--ink); background: color-mix(in oklab, var(--pill) 16%, transparent); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .pill { --ink: var(--pill); background: color-mix(in oklab, var(--pill) 12%, transparent); } }
+:root[data-theme="dark"] .pill { --ink: var(--pill); background: color-mix(in oklab, var(--pill) 12%, transparent); }
+
+/* hero figure */
+.hero-fig { margin-top: 3.5rem; }
+.hero-fig img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; background: var(--surface); filter: var(--render-filter); }
+
+/* sections */
+section { padding: clamp(4.5rem, 10vw, 8rem) 0; }
+h2 { font-size: var(--s-lg); line-height: 1.3; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 1rem; }
+.lead { max-width: 60ch; margin: 0 0 3rem; }
+.lead.muted { color: var(--muted); }
+.kicker { margin-bottom: .9rem; }
+
+/* proof strip */
+.proof { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0 1.25rem; }
+.proof-item { display: flex; flex-direction: column; gap: 6px; }
+.proof-val { font-family: var(--mono); font-size: var(--s-xl); font-weight: 500; line-height: 1.1; }
+.proof-val small { font-size: var(--s-sm); color: var(--muted); }
+.proof-label { font-size: var(--s-sm); color: var(--muted); line-height: 1.5; }
+.proof-src { margin-top: 1.5rem; font-size: var(--s-sm); color: var(--muted); }
+
+/* pitch */
+.pitch p { max-width: 62ch; margin-bottom: 1rem; }
+.pitch-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 2rem; }
+.pitch-grid h3 { font-size: var(--s-md); font-weight: 600; margin-bottom: .4rem; }
+.pitch-grid p { font-size: var(--s-sm); color: var(--muted); }
+
+/* gallery */
+.gallery { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 40px 24px; }
+.ex { margin: 0; display: flex; flex-direction: column; }
+.ex img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; background: var(--surface); filter: var(--render-filter); }
+.ex-meta { padding-top: 12px; }
+.ex .pill { margin-bottom: 6px; }
+.ex-name { display: block; font-family: var(--mono); font-size: var(--s-sm); font-weight: 500; color: var(--fg); }
+.ex-desc { font-size: var(--s-sm); color: var(--muted); line-height: 1.5; }
+
+/* code */
+pre { font-size: 12.5px; line-height: 1.7; background: var(--surface); color: var(--fg); padding: 18px 20px; overflow-x: auto; }
+pre .str { color: var(--amber); }
+pre .key { color: var(--flame-ink); }
+pre .cm { color: var(--muted); }
+.fig-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 32px; align-items: start; }
+.fig-cap { font-size: var(--s-sm); color: var(--muted); margin-top: .85rem; line-height: 1.6; }
+.fig-n { font-weight: 600; font-size: var(--s-xs); color: var(--fg); margin-right: .7em; }
+
+/* paper */
+.claims { list-style: none; border-top: 0.5px solid var(--border-muted); }
+.claims li { display: grid; grid-template-columns: 9rem minmax(0, 1fr); gap: 1rem; padding: .7rem 0; border-bottom: 0.5px solid var(--border-muted); font-size: var(--s-sm); }
+.claims li b { font-family: var(--mono); font-size: var(--s-xs); font-weight: 500; letter-spacing: var(--track); text-transform: uppercase; color: var(--muted); }
+.claims li.limit b { color: var(--flame-ink); }
+
+/* footer */
+.site-foot { text-align: center; padding: clamp(5rem, 11vw, 9rem) 1rem 4rem; color: var(--muted); font-size: var(--s-sm); }
+.foot-logo { display: inline-block; color: var(--orange); margin-bottom: 1.25rem; padding: 0; margin-left: 0; margin-right: 0; transition: opacity .2s; }
+.foot-logo:hover { background: none; color: var(--orange); opacity: .8; }
+.foot-logo svg { width: 96px; height: auto; display: block; }
+.site-foot p { margin: 0 auto .6rem; max-width: 52ch; }
+.foot-links { display: flex; flex-wrap: wrap; justify-content: center; gap: .6rem; }
+
+@media (max-width: 900px) {
+  .gallery { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .fig-split, .pitch-grid { grid-template-columns: 1fr; gap: 1.5rem; }
+  .proof { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.5rem 1.25rem; }
+}
+@media (max-width: 640px) {
+  .container-wide { padding: 0 16px; }
+  .container { padding: 0 16px; }
+  .hero h1 { font-size: 52px; }
+  .hero-mark { width: 96px; height: 48px; }
+  .topnav a:not(.keep) { display: none; }
+  .claims li { grid-template-columns: 1fr; gap: 2px; }
+}
+</style>
 </head>
 <body>
-  <div class="wrap">
-    <nav>
-      <a class="brand" href="/">vcad</a>
-      <div class="links">
-        <a href="#gallery">Gallery</a>
-        <a href="#agent">Agent</a>
-        <a href="#paper">Paper</a>
-        <a href="/docs">Docs</a>
-        <a class="keep" href="https://github.com/ecto/vcad">GitHub</a>
-      </div>
-    </nav>
+<button id="theme-toggle" aria-label="Toggle dark mode"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/></svg></button>
 
-    <header class="hero">
-      <div>
-        <h1>Free, open CAD for Mac.</h1>
-        <p class="lede">Parametric modeling on a kernel written from scratch in Rust, with electronics, DFM and FEA built in, and an agent that works in your viewport.</p>
-        <div class="cta">
-          <a class="btn primary" href="/desktop/">Download for Mac</a>
-          <a class="btn ghost" href="https://github.com/ecto/vcad">Source on GitHub</a>
-        </div>
-        <p class="fine">macOS 15 or later · Apple silicon · Signed, notarized, updates itself · No account</p>
-      </div>
-      <div class="hero-media">
-        <!-- Swap for the hero video (docs/launch/hero-demo.md) on launch day. -->
-        <img src="/launch/gallery/stirling-engine.jpg" alt="A ten-part Stirling engine modeled in vcad" width="1200" height="900">
-      </div>
-    </header>
+<nav class="topnav"><div class="container">
+  <a href="#gallery">Gallery</a>
+  <a href="#agent">Agent</a>
+  <a href="#paper">Paper</a>
+  <a href="/docs">Docs</a>
+  <a class="keep" href="https://github.com/ecto/vcad">GitHub</a>
+</div></nav>
 
-    <div class="pillars">
-      <div class="pillar"><h3>Local, and yours</h3><p>No cloud, no subscription. Documents are plain-text <code>.vcad</code> files you can diff, review and keep in git.</p></div>
-      <div class="pillar"><h3>Mechanical meets electrical</h3><p>Boards and enclosures in one document: clearance between copper and housing is a check, not a meeting.</p></div>
-      <div class="pillar"><h3>Checked before you make it</h3><p>DFM flags thin walls and undercuts with a fix; FEA shows where the part bends, on the part you're editing.</p></div>
+<header class="hero">
+  <div class="container">
+    <div class="hero-brand">
+      <!-- the vcad glyph: a wireframe block whose face is pushed by its gradient -->
+      <svg class="hero-mark" viewBox="0 0 64 32" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" aria-hidden="true">
+        <path class="wire" d="M8 12 L20 6 L36 6 L24 12 Z M8 12 L8 26 L24 26 L24 12 M24 26 L36 20 L36 6"/>
+        <g class="face"><path d="M24 12 L36 6 L36 20 L24 26 Z" fill="currentColor" fill-opacity=".14"/></g>
+        <g class="grad"><line x1="40" y1="16" x2="58" y2="16"/><path d="M54 12.5 L58 16 L54 19.5" /></g>
+      </svg>
+      <h1>vcad<span class="dot">.</span></h1>
     </div>
+    <p class="hero-claim">Free, open CAD for Mac.<br><span class="hero-sub">You can take the derivative of it.</span></p>
+    <div class="flame-rule"></div>
+    <p class="hero-note">Parametric modeling on a BRep kernel written from scratch in Rust. Electronics, DFM and FEA are built in, and an agent can work in the same viewport you're looking at. No account, no cloud, no subscription.</p>
+    <div class="hero-actions">
+      <a class="hero-btn primary" href="/desktop/">Download for Mac ↓</a>
+      <a class="hero-btn" href="https://github.com/ecto/vcad">GitHub →</a>
+      <a class="hero-btn" href="/docs">Docs →</a>
+    </div>
+    <p class="hero-fine">macOS 15+ · Apple silicon · signed, notarized, updates itself</p>
+    <div class="hero-pills">
+      <span class="pill" style="--pill:#ff2052">BRep kernel</span>
+      <span class="pill" style="--pill:#3d8bff">local MCP</span>
+      <span class="pill" style="--pill:#39ff14">PCB co-design</span>
+      <span class="pill" style="--pill:#ffd400">DFM + FEA</span>
+      <span class="pill" style="--pill:#00f0ff">STEP · STL · DXF</span>
+    </div>
+    <figure class="hero-fig">
+      <!-- Swap for the hero video (docs/launch/hero-demo.md) on launch day. -->
+      <img src="gallery/stirling-engine.jpg" alt="A ten-part Stirling engine modeled in vcad" width="1200" height="900">
+    </figure>
+  </div>
+</header>
 
-    <section id="gallery">
+<!-- Proof -->
+<section style="padding-top:0">
+  <div class="container">
+    <p class="label-caps kicker">Measured, not claimed</p>
+    <div class="proof">
+      <div class="proof-item"><div class="proof-val">0.7<small>&nbsp;s</small></div><div class="proof-label">Click to window, from process start</div></div>
+      <div class="proof-item"><div class="proof-val">120<small>&nbsp;fps</small></div><div class="proof-label">Orbiting a 237k-triangle humanoid</div></div>
+      <div class="proof-item"><div class="proof-val">0.06<small>&nbsp;s</small></div><div class="proof-label">To open the PCB motor sample</div></div>
+      <div class="proof-item"><div class="proof-val">504k<small>&nbsp;tris</small></div><div class="proof-label">Coil board, still at the display's 120 Hz</div></div>
+    </div>
+    <p class="proof-src">Apple silicon Mac, a fresh process every run. Method and raw numbers in the <a href="https://github.com/ecto/vcad/blob/main/docs/launch/speed-pass.md">speed pass</a>.</p>
+  </div>
+</section>
+
+<!-- Pitch -->
+<section class="pitch" style="padding-top:0">
+  <div class="container">
+    <div class="pitch-grid">
+      <div><h3>Local, and yours</h3><p>Documents are plain-text <code>.vcad</code> files you can diff, review and keep in git. Nothing leaves your Mac unless you send it.</p></div>
+      <div><h3>Board meets box</h3><p>The board and its enclosure live in one document, so clearance between copper and housing is a check you run.</p></div>
+      <div><h3>Checked before it's made</h3><p>DFM flags thin walls and offers a fix. FEA shows where the part bends, on the part you're editing.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- Gallery -->
+<section id="gallery" style="padding-top:0">
+  <div class="container-wide">
+    <div class="container" style="padding:0; margin:0 0 2.5rem">
       <h2>Open a sample</h2>
-      <p class="sub">Every one ships inside the app. Rendered here by <code>vcad-render</code>, the kernel's own line-art renderer.</p>
-      <div class="gallery">
-        <figure><img loading="lazy" src="/launch/gallery/stirling-engine.jpg" alt=""><figcaption><b>Stirling engine</b><span>Ten parts, four materials, a flywheel on a joint</span></figcaption></figure>
-        <figure><img loading="lazy" src="/launch/gallery/k1-humanoid.jpg" alt=""><figcaption><b>K1 humanoid</b><span>22 DOF, simulated standing in physics</span></figcaption></figure>
-        <figure><img loading="lazy" src="/launch/gallery/pcb-motor.jpg" alt=""><figcaption><b>PCB axial-flux motor</b><span>Printed-coil stator between two rotors</span></figcaption></figure>
-        <figure><img loading="lazy" src="/launch/gallery/pcb-stator.jpg" alt=""><figcaption><b>PCB stator</b><span>The coil board: schematic, copper, solid</span></figcaption></figure>
-        <figure><img loading="lazy" src="/launch/gallery/fpga-board.jpg" alt=""><figcaption><b>FPGA dev board</b><span>Designed end to end by an agent, DRC-clean</span></figcaption></figure>
-        <figure><img loading="lazy" src="/launch/gallery/l-bracket.jpg" alt=""><figcaption><b>L bracket</b><span>Fix the base, load the flange, read the stress</span></figcaption></figure>
-        <figure><img loading="lazy" src="/launch/gallery/motor-flange.jpg" alt=""><figcaption><b>Motor flange</b><span>A 2.5D part ready for toolpaths</span></figcaption></figure>
-        <figure><img loading="lazy" src="/launch/gallery/snap-cap.jpg" alt=""><figcaption><b>Snap-fit cap</b><span>A fit checked as clearance</span></figcaption></figure>
-        <figure><img loading="lazy" src="/launch/gallery/robot-arm.jpg" alt=""><figcaption><b>Two-axis robot arm</b><span>Pose it, or simulate it</span></figcaption></figure>
-        <figure><img loading="lazy" src="/launch/gallery/ribbed-plate.jpg" alt=""><figcaption><b>Ribbed plate</b><span>A first DFM check for thin ribs</span></figcaption></figure>
-        <figure><img loading="lazy" src="/launch/gallery/sensor-mast.jpg" alt=""><figcaption><b>Sensor mast</b><span>Pocketed base, mast, housings</span></figcaption></figure>
-        <figure><img loading="lazy" src="/launch/gallery/pulley.jpg" alt=""><figcaption><b>Pulley</b><span>Booleans in the feature tree</span></figcaption></figure>
-      </div>
-    </section>
+      <p class="lead muted" style="margin-bottom:0">All thirteen ship inside the app (File ▸ Open Sample). The renders here come from <code>vcad-render</code>, the kernel's own line-art renderer.</p>
+    </div>
+    <div class="gallery">
+      <figure class="ex"><img loading="lazy" src="gallery/stirling-engine.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#ff2052">mechanical</span><span class="ex-name">stirling-engine</span><span class="ex-desc">Ten parts, four materials, a flywheel on a joint</span></figcaption></figure>
+      <figure class="ex"><img loading="lazy" src="gallery/k1-humanoid.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#3d8bff">robotics</span><span class="ex-name">k1-humanoid</span><span class="ex-desc">22 DOF, simulated standing in physics</span></figcaption></figure>
+      <figure class="ex"><img loading="lazy" src="gallery/pcb-motor.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#39ff14">electronics</span><span class="ex-name">pcb-motor</span><span class="ex-desc">Printed-coil stator between two rotors</span></figcaption></figure>
+      <figure class="ex"><img loading="lazy" src="gallery/pcb-stator.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#39ff14">electronics</span><span class="ex-name">pcb-stator</span><span class="ex-desc">The coil board: schematic, copper, solid</span></figcaption></figure>
+      <figure class="ex"><img loading="lazy" src="gallery/fpga-board.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#39ff14">electronics</span><span class="ex-name">fpga-board</span><span class="ex-desc">Designed end to end by an agent, DRC-clean</span></figcaption></figure>
+      <figure class="ex"><img loading="lazy" src="gallery/l-bracket.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#ffd400">analysis</span><span class="ex-name">l-bracket</span><span class="ex-desc">Fix the base, load the flange, read the stress</span></figcaption></figure>
+      <figure class="ex"><img loading="lazy" src="gallery/motor-flange.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#00f0ff">manufacture</span><span class="ex-name">motor-flange</span><span class="ex-desc">A 2.5D part ready for toolpaths</span></figcaption></figure>
+      <figure class="ex"><img loading="lazy" src="gallery/snap-cap.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#ff2052">mechanical</span><span class="ex-name">snap-cap</span><span class="ex-desc">A snap fit, checked as clearance</span></figcaption></figure>
+      <figure class="ex"><img loading="lazy" src="gallery/robot-arm.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#3d8bff">robotics</span><span class="ex-name">robot-arm</span><span class="ex-desc">Two revolute joints. Pose it or simulate it</span></figcaption></figure>
+      <figure class="ex"><img loading="lazy" src="gallery/ribbed-plate.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#ffd400">analysis</span><span class="ex-name">ribbed-plate</span><span class="ex-desc">A first DFM check for thin ribs</span></figcaption></figure>
+      <figure class="ex"><img loading="lazy" src="gallery/sensor-mast.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#ff2052">mechanical</span><span class="ex-name">sensor-mast</span><span class="ex-desc">Pocketed base, mast, sensor housings</span></figcaption></figure>
+      <figure class="ex"><img loading="lazy" src="gallery/pulley.jpg" alt=""><figcaption class="ex-meta"><span class="pill" style="--pill:#ff2052">mechanical</span><span class="ex-name">pulley</span><span class="ex-desc">Flanges, groove and bore from booleans</span></figcaption></figure>
+    </div>
+  </div>
+</section>
 
-    <section id="speed">
-      <h2>Fast where it counts</h2>
-      <p class="sub">Measured on an Apple silicon Mac, fresh process every run. Method and raw numbers: <a href="https://github.com/ecto/vcad/blob/main/docs/launch/speed-pass.md">speed pass</a>.</p>
-      <div class="numbers">
-        <div class="num"><b>0.7 s</b><span>click to window</span></div>
-        <div class="num"><b>120 fps</b><span>orbiting a 237k-triangle humanoid</span></div>
-        <div class="num"><b>0.06 s</b><span>to open the PCB motor sample</span></div>
-        <div class="num"><b>500k</b><span>triangle board, still 120 fps</span></div>
+<!-- Agent -->
+<section id="agent" style="padding-top:0">
+  <div class="container-wide">
+    <div class="fig-split">
+      <div>
+        <p class="label-caps kicker">Bring your agent</p>
+        <h2>It works in your viewport, not a chat window.</h2>
+        <p class="lead" style="margin-bottom:1rem">vcad serves MCP on your machine. Help ▸ Connect Claude writes the config, and then the agent models, runs DFM and FEA, and frames the camera in the window you're looking at. Every change is a named undo step.</p>
+        <p class="lead muted" style="margin-bottom:0">Headless too: <code>npx -y @vcad/mcp</code> gives any MCP client the kernel, with no app at all.</p>
       </div>
-    </section>
-
-    <section id="agent">
-      <div class="agent">
-        <div>
-          <h2>Bring your agent</h2>
-          <p class="sub">vcad serves MCP on your machine. Help ▸ Connect Claude writes the config; then the agent models, runs DFM and FEA, and frames the camera in the window you're looking at. Every change is a named undo step.</p>
-          <p class="sub">Headless too: <code>npx -y @vcad/mcp</code> gives any MCP client the kernel, with no app at all.</p>
-        </div>
-        <pre><code>{
-  "mcpServers": {
-    "vcad-app": {
-      "command": "node",
-      "args": ["/Applications/vcad.app/Contents/Resources/vcad-app-mcp.mjs"]
+      <figure class="fig">
+<pre><code>{
+  <span class="key">"mcpServers"</span>: {
+    <span class="key">"vcad-app"</span>: {
+      <span class="key">"command"</span>: <span class="str">"node"</span>,
+      <span class="key">"args"</span>: [<span class="str">"/Applications/vcad.app/Contents/Resources/vcad-app-mcp.mjs"</span>]
     }
   }
 }</code></pre>
-      </div>
-    </section>
-
-    <section id="paper">
-      <div class="paper">
-        <div>
-          <h2>A differentiable BRep kernel</h2>
-          <p class="sub">The kernel gives exact parameter gradients through tessellation, mass properties, fillet radius and contact rollouts — so an optimizer can move a real CAD parameter, not a mesh.</p>
-          <!-- TODO(launch day): replace with the arXiv abs URL. -->
-          <a class="btn ghost" href="https://github.com/ecto/vcad/tree/main/crates/vcad-kernel-diff">Read the paper (preprint on launch day)</a>
-        </div>
-        <ul>
-          <li>Finite-difference validated gradients, first and second order</li>
-          <li>Reverse-mode adjoint, L-BFGS on real parts</li>
-          <li>Gradients of named <code>.vcad</code> parameters</li>
-          <li>Limits stated: frozen tessellations, penalty contact</li>
-        </ul>
-      </div>
-    </section>
-
-    <footer>
-      <span>vcad is open source. Kernel on <a href="https://crates.io/crates/vcad">crates.io</a>, MCP server on <a href="https://www.npmjs.com/package/@vcad/mcp">npm</a>.</span>
-      <span><a href="/docs">Docs</a> · <a href="https://github.com/ecto/vcad">GitHub</a> · <a href="/desktop/appcast.xml">Update feed</a></span>
-    </footer>
+        <figcaption class="fig-cap"><span class="fig-n">Fig 1</span>What Connect Claude writes. You never have to type it.</figcaption>
+      </figure>
+    </div>
   </div>
+</section>
+
+<!-- Paper -->
+<section id="paper" style="padding-top:0">
+  <div class="container">
+    <p class="label-caps kicker">The paper</p>
+    <h2>A differentiable BRep kernel</h2>
+    <p class="lead">The kernel gives exact parameter gradients through tessellation, mass properties, fillet radius and rigid-body contact rollouts, so an optimizer can move a real CAD parameter instead of a mesh.</p>
+    <ul class="claims">
+      <li><b>validated</b><span>Finite-difference checked gradients, first and second order</span></li>
+      <li><b>reverse mode</b><span>An adjoint through the whole seam, with L-BFGS on real parts</span></li>
+      <li><b>parameters</b><span>Gradients of named <code>.vcad</code> parameters, end to end</span></li>
+      <li class="limit"><b>limits</b><span>Gradients are of frozen tessellations (no topology changes); contact uses phyz's penalty model</span></li>
+    </ul>
+    <div class="hero-actions" style="margin-top:2rem">
+      <!-- TODO(launch day): replace with the arXiv abs URL. -->
+      <a class="hero-btn" href="https://github.com/ecto/vcad/tree/main/crates/vcad-kernel-diff">Read the paper · preprint on launch day →</a>
+    </div>
+  </div>
+</section>
+
+<footer class="site-foot">
+  <a href="https://muni.works" class="foot-logo" aria-label="Municipal Robotics"><svg viewBox="-60 -60 880 400" fill="none"><g stroke="currentColor" stroke-width="40" stroke-linecap="round" stroke-linejoin="round" fill="none"> <path d="M 20 240 L 20 100 C 20 50, 80 50, 100 50 C 140 50, 160 70, 160 100"/> <path d="M 160 240 L 160 100"/> <path d="M 160 100 C 160 50, 220 50, 240 50 C 280 50, 300 70, 300 100 L 300 240 C 300 270, 330 280, 370 280 C 410 280, 440 270, 440 240 L 440 100"/> <path d="M 440 100 C 440 50, 500 50, 520 50 C 560 50, 600 70, 600 100 L 600 240 C 600 270, 630 280, 670 280 C 710 280, 740 270, 740 240 L 740 100"/> </g></svg></a>
+  <p>vcad is built by <a href="https://muni.works">Municipal Robotics</a> alongside <a href="https://tang.toys">tang</a>, <a href="https://phyz.dev">phyz</a>, <a href="https://frog.toys">frog</a> and <a href="https://ribt.dev">ribt</a>. Usable by everyone.</p>
+  <p class="foot-links"><a href="https://github.com/ecto/vcad">GitHub</a><span>·</span><a href="https://crates.io/crates/vcad">crates.io</a><span>·</span><a href="https://www.npmjs.com/package/@vcad/mcp">npm</a><span>·</span><a href="/desktop/appcast.xml">update feed</a><span>·</span><a href="https://muni.works">muni.works</a></p>
+</footer>
 </body>
 </html>
