@@ -737,7 +737,11 @@ struct ReleasedOverlayView: View {
                 .gesture(marqueeOrOrbitGesture)
                 .simultaneousGesture(zoomGesture)
                 .gesture(SpatialTapGesture(coordinateSpace: .local).modifiers(.command)
-                    .onEnded { value in tapSelect(at: value.location, additive: true) })
+                    .onEnded { value in
+                        if model.sketching, let pt = sketchPlanePoint(at: value.location) {
+                            model.sketchTap(pt, additive: true); refreshSketchInk()
+                        } else { tapSelect(at: value.location, additive: true) }
+                    })
                 .gesture(SpatialTapGesture(coordinateSpace: .local)
                     .onEnded { value in
                         if model.sketching { sketchTap(at: value.location) }
@@ -789,6 +793,10 @@ struct ReleasedOverlayView: View {
             // NSPanels break SwiftUI hit testing after auto-resize).
             if !studio {
             VStack(alignment: .leading, spacing: Theme.Space.m) {
+                if model.sketching {
+                    SketchConstraintPanel(model: model)
+                        .modifier(ChromeRegion(key: "sketchConstraints"))
+                }
                 if model.showsTree {
                     DesignModelNavigator(model: model)
                         .modifier(ChromeRegion(key: "tree"))
@@ -907,6 +915,11 @@ struct ReleasedOverlayView: View {
                         .modifier(ChromeRegion(key: "sketchHint"))
                     SketchPaletteView(model: model)
                         .modifier(ChromeRegion(key: "sketchPalette"))
+                        .background {
+                            // Return finishes a multi-click tool (spline).
+                            Button("") { model.sketch?.commitPending(); model.sketchDirty = true; refreshSketchInk(force: true) }
+                                .keyboardShortcut(.return, modifiers: []).opacity(0).frame(width: 0, height: 0)
+                        }
                 } else {
                     if model.timeline != nil {
                         PlaybackBar(model: model)
