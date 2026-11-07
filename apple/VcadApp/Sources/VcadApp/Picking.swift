@@ -164,6 +164,8 @@ final class PickingState {
     private(set) var selection: [TopoRef] = []
     /// The face/edge under the pointer.
     private(set) var hovered: TopoRef?
+    /// Where each selected ref was clicked (measure reads these).
+    private(set) var hits: [TopoRef: TopoHit] = [:]
     /// Bumped on every selection or hover change: the viewport redraws its
     /// highlight overlay when this moves.
     private(set) var revision = 0
@@ -210,9 +212,15 @@ final class PickingState {
         }
         setSelection(next)
     }
+    /// Select from a viewport hit, remembering where it was clicked.
+    func select(hit: TopoHit?, additive: Bool) {
+        if let hit { hits[hit.ref] = hit }
+        select(hit?.ref, additive: additive)
+    }
     func setSelection(_ refs: [TopoRef]) {
         guard refs != selection else { return }
         selection = refs
+        hits = hits.filter { refs.contains($0.key) }
         revision &+= 1
         for h in selectionHandlers.values { h(refs) }
     }

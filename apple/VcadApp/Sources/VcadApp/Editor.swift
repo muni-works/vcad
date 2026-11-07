@@ -265,6 +265,15 @@ final class EditorModel {
     let picking = PickingState()
     /// The feature dialog on screen (FeatureOps.swift), if any.
     var activeFeatureOp: FeatureOp?
+    /// Measure tool on (Measure.swift): clicks pick points/edges/faces.
+    var measuring = false {
+        didSet { if measuring { picking.filter = .faceOrEdge; picking.clear() } }
+    }
+    /// Section plane (Section.swift); nil = off.
+    var section: SectionPlane?
+    /// Command palette / parameter table sheets.
+    var showsCommandPalette = false
+    var showsParameterTable = false
     var isWindowed = false { didSet { saveLayout() } }
     init() {
         bridgeSimulationToRenderer()
@@ -2802,9 +2811,87 @@ final class EditorModel {
             rememberRecent(url)
             return
         }
+        // STEP / URDF: convert through the kernel into a .vcad beside the
+        // app's import cache, then open that as an ordinary document.
+        if ["step", "stp", "urdf"].contains(url.pathExtension.lowercased()) {
+            guard let converted = importForeign(url) else { return }
+            source = .document(path: converted.path, label: label)
+            rememberRecent(url)
+            return
+        }
         importMeshBundle(for: url)          // instant open when the file shipped with its meshes
         source = .document(path: url.path, label: label)
         rememberRecent(url)
+    }
+
+    /// Convert a STEP or URDF file to a .vcad document in
+    /// ~/Library/Caches/vcad/imports and return its URL (nil + loadError on
+    /// failure). The user saves it wherever they like with Save As.
+    func importForeign(_ url: URL) -> URL? {
+        let ext = url.pathExtension.lowercased()
+        let raw = url.path.withCString { ext == "urdf" ? vcad_import_urdf($0) : vcad_import_step($0) }
+        guard let raw else {
+            loadError = "Couldn't import \(url.lastPathComponent): \(SimError.pending() ?? "unknown error")"
+            return nil
+        }
+        defer { vcad_string_free(raw) }
+        var data = Data(String(cString: raw).utf8)
+        // STEP comes wrapped: {"document": …, "solids": N}.
+        if ext != "urdf",
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let doc = obj["document"],
+           let d = try? JSONSerialization.data(withJSONObject: doc) { data = d }
+        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("vcad/imports", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let out = dir.appendingPathComponent(url.deletingPathExtension().lastPathComponent + ".vcad")
+        do { try data.write(to: out, options: .atomic) } catch {
+            loadError = "Couldn't write the imported document: \(error.localizedDescription)"
+            return nil
+        }
+        return out
+    }
+
+    // MARK: feature tree edits (FeatureTree.swift)
+
+    /// Move a part to `index` in the tree (engine `reorder`).
+    func reorderPart(_ partIndex: Int, to index: Int) {
+        guard let id = partId(forPart: partIndex), index >= 0, index < featureNodes.count else { return }
+        runCommand(.reorder(id: id, index: index), name: "Reorder")
+    }
+
+    /// Suppressed parts are kept in the document but not built or drawn
+    /// (IR `roots[i].visible = false`, the web's hidden flag).
+    func isSuppressed(part i: Int) -> Bool {
+        guard let roots = documentJSON?["roots"] as? [[String: Any]], i < roots.count else { return false }
+        return (roots[i]["visible"] as? Bool) == false
+    }
+    func toggleSuppressed(part i: Int) {
+        guard let id = partId(forPart: i) else { return }
+        let suppressed = isSuppressed(part: i)
+        runCommand(.setVisible(id: id, visible: suppressed), name: suppressed ? "Unsuppress" : "Suppress")
+    }
+
+    /// Parameter table: add / change / remove named parameters. `value` is a
+    /// number or a formula string (IR `Expr`).
+    func setDocParameter(_ name: String, value: Any, unit: String? = "mm") {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        irEdit("Set \(trimmed)", reeval: .rebuild) { json in
+            var params = json["parameters"] as? [String: Any] ?? [:]
+            var p = params[trimmed] as? [String: Any] ?? [:]
+            p["value"] = value
+            if let unit { p["unit"] = unit }
+            params[trimmed] = p
+            json["parameters"] = params
+        }
+    }
+    func removeDocParameter(_ name: String) {
+        irEdit("Remove \(name)", reeval: .rebuild) { json in
+            var params = json["parameters"] as? [String: Any] ?? [:]
+            params[name] = nil
+            json["parameters"] = params
+        }
     }
 
     /// Add `url` to the recents list.

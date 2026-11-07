@@ -760,6 +760,12 @@ struct ReleasedOverlayView: View {
                 // ever fire over geometry or chrome: everywhere else the window
                 // is transparent to the mouse and the click goes to the desktop.
                 .contextMenu { partContextMenu }
+                // Drag a .vcad / STEP / URDF / loon file onto the viewport to open it.
+                .dropDestination(for: URL.self) { urls, _ in
+                    guard let url = urls.first else { return false }
+                    AppInstance.opening(url, from: model)
+                    return true
+                }
                 .onContinuousHover(coordinateSpace: .local) { phase in
                     if !model.sketching, model.picking.filter.picksTopology {
                         switch phase {
@@ -796,6 +802,12 @@ struct ReleasedOverlayView: View {
                 if model.sketching {
                     SketchConstraintPanel(model: model)
                         .modifier(ChromeRegion(key: "sketchConstraints"))
+                }
+                if model.measuring {
+                    MeasurePanel(model: model).modifier(ChromeRegion(key: "measure"))
+                }
+                if model.section != nil {
+                    SectionPanel(model: model).modifier(ChromeRegion(key: "section"))
                 }
                 if model.showsTree {
                     DesignModelNavigator(model: model)
@@ -967,6 +979,9 @@ struct ReleasedOverlayView: View {
             ReleaseWindowController.shared.sketchModal = shape != nil || model.sketching
             if shape == nil { NSCursor.arrow.set() }
         }
+        .onChange(of: model.section) { _, _ in applySectionView(model: model) }
+        .onChange(of: model.picking.revision) { _, _ in refreshTopologyOverlay() }
+        .onChange(of: model.measuring) { _, on in if !on { model.picking.filter = .body }; refreshTopologyOverlay() }
         .onChange(of: model.sketching) { _, on in
             // Sketch is modal over the desktop: own the mouse everywhere while
             // drawing, hand non-chrome/non-part mouse back when done.
@@ -1048,6 +1063,10 @@ struct ReleasedOverlayView: View {
         }
         if let m = EdgeOverlay.ribbonResource(segments: hov, width: w, name: "topoHover") {
             root.addChild(ModelEntity(mesh: m, materials: [UnlitMaterial(color: .white)]))
+        }
+        if model.measuring, let span = model.measurement?.span,
+           let m = EdgeOverlay.ribbonResource(segments: [span.0, span.1], width: w, name: "measureSpan") {
+            root.addChild(ModelEntity(mesh: m, materials: [UnlitMaterial(color: .systemTeal)]))
         }
         centering.addChild(root)
     }
@@ -1141,7 +1160,7 @@ struct ReleasedOverlayView: View {
 
         // Face/edge picking: the click chooses topology, not a body.
         if model.picking.filter.picksTopology, model.armedShape == nil {
-            model.picking.select(topologyHit(at: p)?.ref, additive: additive)
+            model.picking.select(hit: topologyHit(at: p), additive: additive || model.measuring)
             refreshTopologyOverlay()
             return
         }
@@ -1559,6 +1578,7 @@ struct ReleasedARView: NSViewRepresentable {
         ReleaseWindowController.shared.centeringEntity = centering
         // Keep the in-progress sketch ink alive across geometry rebuilds.
         if model.sketching { centering.addChild(buildSketchRoot(model: model)) }
+        applySectionView(model: model)
         // Transform gizmo on the selected part — same shared builder as the
         // studio; its handle proxies carry collision shapes, so the ARView
         // hitTest (drag start + pass-through) sees them like parts.
@@ -2112,4 +2132,47 @@ final class DockIcon {
                       height: CGFloat(bottom - top + 3) * sy)
             .intersection(CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
     }
+}
+
+
+/// Swap every part's mesh for a copy clipped by the section plane (or put the
+/// originals back), and draw the cut outline. Display-only.
+@MainActor
+func applySectionView(model: EditorModel) {
+    guard let centering = ReleaseWindowController.shared.centeringEntity else { return }
+    centering.findEntity(named: "sectionRoot")?.removeFromParent()
+    func parts(_ e: Entity) -> [ModelEntity] {
+        e.children.flatMap { c -> [ModelEntity] in
+            var out = parts(c)
+            if let m = c as? ModelEntity, c.name.hasPrefix("part") || c.name.hasPrefix("inst") { out.append(m) }
+            return out
+        }
+    }
+    let bodies = parts(centering)
+    guard let sec = model.section else {
+        for b in bodies { b.isEnabled = true }
+        return
+    }
+    let root = Entity(); root.name = "sectionRoot"
+    var outline: [SIMD3<Float>] = []
+    for b in bodies {
+        guard let mesh = b.model?.mesh else { continue }
+        b.isEnabled = false
+        let g = SectionPlane.geometry(of: mesh)
+        // Clip in the kernel frame: transform through the body's pose.
+        let m = b.transformMatrix(relativeTo: centering)
+        let world = g.positions.map { p -> SIMD3<Float> in
+            let v = m * SIMD4(p, 1); return SIMD3(v.x, v.y, v.z)
+        }
+        let (tris, cut) = sec.clip(positions: world, indices: g.indices)
+        outline += cut
+        if let r = SectionPlane.resource(tris, name: b.name + "-section") {
+            root.addChild(ModelEntity(mesh: r, materials: b.model?.materials ?? []))
+        }
+    }
+    let w = max(model.displayedSceneSize, 10) * 0.004
+    if let r = EdgeOverlay.ribbonResource(segments: outline, width: w, name: "sectionOutline") {
+        root.addChild(ModelEntity(mesh: r, materials: [UnlitMaterial(color: NSColor(red: 1, green: 0.62, blue: 0.12, alpha: 1))]))
+    }
+    centering.addChild(root)
 }
