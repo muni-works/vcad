@@ -532,6 +532,119 @@ VcadBytes *vcad_render_photoreal_png(const uint8_t *json, size_t json_len,
                                      const VcadPhotorealParams *params,
                                      VcadRenderProgress progress, void *ctx);
 
+/* ===================== Modeling surface (ABI 7) =====================
+ * Owned strings from vcad_sketch_* / vcad_topology_* / vcad_feature_* /
+ * vcad_import_* are freed ONLY with vcad_string_free. Failures return
+ * NULL / 0 / -1 and record vcad_last_error (same thread). */
+void vcad_string_free(char *s);
+
+/* --- Sketch constraint solver (crates/vcad-ffi/src/sketch.rs) ---
+ * Entity handles are 1-based uint32 (0 = error). Point selectors: */
+#define VCAD_SKETCH_REF_SELF 0u
+#define VCAD_SKETCH_REF_START 1u
+#define VCAD_SKETCH_REF_END 2u
+#define VCAD_SKETCH_REF_CENTER 3u
+/* Constraint kinds (field usage documented on sketch::kind). */
+#define VCAD_SC_COINCIDENT 0u
+#define VCAD_SC_HORIZONTAL 1u
+#define VCAD_SC_VERTICAL 2u
+#define VCAD_SC_PARALLEL 3u
+#define VCAD_SC_PERPENDICULAR 4u
+#define VCAD_SC_TANGENT 5u
+#define VCAD_SC_DISTANCE 6u
+#define VCAD_SC_LENGTH 7u
+#define VCAD_SC_RADIUS 8u
+#define VCAD_SC_ANGLE 9u /* degrees */
+#define VCAD_SC_EQUAL_LENGTH 10u
+#define VCAD_SC_EQUAL_RADIUS 11u
+#define VCAD_SC_FIXED 12u /* value = x, value2 = y */
+#define VCAD_SC_POINT_ON_LINE 13u
+#define VCAD_SC_CONCENTRIC 14u
+#define VCAD_SC_POINT_ON_CIRCLE 15u
+#define VCAD_SC_MIDPOINT 16u
+#define VCAD_SC_HORIZONTAL_DISTANCE 17u
+#define VCAD_SC_VERTICAL_DISTANCE 18u
+#define VCAD_SC_DIAMETER 19u
+#define VCAD_SC_POINT_LINE_DISTANCE 20u
+#define VCAD_SC_SYMMETRIC 21u
+typedef struct VcadSketch VcadSketch;
+typedef struct VcadSketchConstraint {
+    uint32_t kind;
+    uint32_t e0;
+    uint32_t r0;
+    uint32_t e1;
+    uint32_t r1;
+    uint32_t e2;
+    uint32_t r2;
+    double value;
+    double value2;
+} VcadSketchConstraint;
+#define VCAD_SKETCH_UNDER 0
+#define VCAD_SKETCH_FULL 1
+#define VCAD_SKETCH_OVER 2
+typedef struct VcadSketchSolve {
+    uint8_t converged;
+    uint8_t state;  /* VCAD_SKETCH_UNDER / _FULL / _OVER */
+    uint8_t status; /* 0 converged,1 max iter,2 lambda overflow,3 no constraints,4 no params,5 singular,255 bad handle */
+    int32_t dof;
+    uint32_t iterations;
+    double residual;
+} VcadSketchSolve;
+VcadSketch *vcad_sketch_new(void);
+VcadSketch *vcad_sketch_new_on_plane(const double *origin, const double *x_dir, const double *y_dir);
+void vcad_sketch_free(VcadSketch *s);
+uint32_t vcad_sketch_add_point(VcadSketch *s, double x, double y);
+uint32_t vcad_sketch_add_line(VcadSketch *s, uint32_t start, uint32_t end);
+uint32_t vcad_sketch_add_arc(VcadSketch *s, uint32_t start, uint32_t end, uint32_t center, bool ccw);
+uint32_t vcad_sketch_add_circle(VcadSketch *s, uint32_t center, double radius);
+/* Returns the constraint index (>= 0) or -1. */
+int32_t vcad_sketch_add_constraint(VcadSketch *s, const VcadSketchConstraint *c);
+/* Edit a driving dimension in place (ANGLE in degrees), then re-solve. */
+bool vcad_sketch_set_dimension(VcadSketch *s, uint32_t index, double value, double value2);
+bool vcad_sketch_pop_constraint(VcadSketch *s);
+int32_t vcad_sketch_dof(const VcadSketch *s);
+VcadSketchSolve vcad_sketch_solve(VcadSketch *s);
+/* Solved 2D position of a point / line|arc start|end / center. */
+bool vcad_sketch_point(const VcadSketch *s, uint32_t handle, uint32_t which, double *out_xy);
+double vcad_sketch_radius(const VcadSketch *s, uint32_t handle);
+/* Closed profile as JSON {origin,x_dir,y_dir,segments:[IR SketchSegment2D]}. */
+char *vcad_sketch_profile_json(const VcadSketch *s);
+
+/* --- Topology picking + selection modifiers (topology.rs) ---
+ * Face id = ordinal in the outer shell (matches vcad_scene_part_face_ids);
+ * edge id = ordinal from vcad_topology_json. Session handles, not durable. */
+#define VCAD_TOPO_NONE 0xFFFFFFFFu
+VcadSolid *vcad_scene_part_solid(const VcadScene *scene, size_t index);
+/* {"faces":[{id,surface,center,normal,area}],
+ *  "edges":[{id,faces:[a,b],a,b,segments:[f32 x6..],planar,selector}]} */
+char *vcad_topology_json(const VcadSolid *solid);
+typedef struct VcadPick {
+    uint8_t hit;
+    uint32_t face;
+    uint32_t edge;
+    double point[3];
+    double normal[3];
+    double t;
+    double edge_distance;
+} VcadPick;
+VcadPick vcad_solid_pick(const VcadSolid *solid, const double *origin, const double *dir, double edge_tol);
+VcadSolid *vcad_solid_fillet_edges(const VcadSolid *solid, const uint32_t *edge_ids, size_t count, double radius);
+VcadSolid *vcad_solid_chamfer_edges(const VcadSolid *solid, const uint32_t *edge_ids, size_t count, double distance);
+VcadSolid *vcad_solid_shell_open(const VcadSolid *solid, double thickness, const uint32_t *face_ids, size_t count);
+
+/* --- Feature builders (features.rs): append IR nodes to a .vcad document.
+ * feature_json {"kind": extrude|cut_extrude|extrude_to_face|revolve|sweep|
+ * loft|linear_pattern|circular_pattern|mirror|scale|text|cone|edge_blend|
+ * shell|boolean, ...}. doc_json NULL/"" = new document. Returns
+ * {"document":..., "node_id":N, "added":[..]}. */
+char *vcad_feature_append(const char *doc_json, const char *feature_json);
+
+/* --- Import (import.rs) --- */
+/* {"document": <StepImport nodes, one root per solid>, "solids": N} */
+char *vcad_import_step(const char *path);
+/* IR assembly document JSON. */
+char *vcad_import_urdf(const char *path);
+
 #ifdef __cplusplus
 }
 #endif

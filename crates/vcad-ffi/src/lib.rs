@@ -57,9 +57,14 @@ mod cam;
 pub mod engine;
 mod err;
 pub mod export;
+pub mod features;
 pub mod gym;
+pub mod import;
+mod json;
 pub mod sensitivity;
 pub mod session;
+pub mod sketch;
+pub mod topology;
 pub mod train;
 
 pub use err::vcad_last_error;
@@ -128,10 +133,14 @@ impl VcadEdgesView {
 /// Swift side assert it linked a compatible static lib.
 #[no_mangle]
 pub extern "C" fn vcad_ffi_abi_version() -> u32 {
+    // 7: added the modeling surface — `vcad_sketch_*` (constraint solver),
+    //    `vcad_topology_json` / `vcad_solid_pick` / per-edge blends / open
+    //    shells, `vcad_feature_append` (IR builders), `vcad_import_*`,
+    //    `vcad_scene_part_solid` and `vcad_string_free`.
     // 6: added the simulation surface — `vcad_gym_*` (physics envs, the
     //    render seam, policy inference), `vcad_train_*` (in-process ARS), and
     //    the shared `vcad_last_error` diagnostic channel.
-    6
+    7
 }
 
 /// Create a box (corner at origin, extends to `(sx, sy, sz)`). Returns null on panic.
@@ -2500,7 +2509,10 @@ mod tests {
             view.vertices_len, view.normals_len,
             "one normal per position"
         );
-        assert!(view.indices_len % 3 == 0, "indices form whole triangles");
+        assert!(
+            view.indices_len.is_multiple_of(3),
+            "indices form whole triangles"
+        );
         vcad_mesh_free(mesh);
         vcad_solid_free(solid);
     }
@@ -2546,7 +2558,10 @@ mod tests {
         assert!(n > 0, "expected >= 1 evaluated part, got {n}");
         let view = vcad_scene_part_mesh(scene, 0);
         assert!(view.vertices_len > 0, "part 0 should have geometry");
-        assert!(view.indices_len % 3 == 0, "indices form whole triangles");
+        assert!(
+            view.indices_len.is_multiple_of(3),
+            "indices form whole triangles"
+        );
         vcad_scene_free(scene);
     }
 
@@ -2565,7 +2580,10 @@ mod tests {
         assert!(n > 0, "expected >= 1 part, got {n}");
         let view = vcad_scene_part_mesh(scene, 0);
         assert!(view.vertices_len > 0, "part 0 should have geometry");
-        assert!(view.indices_len % 3 == 0, "indices form whole triangles");
+        assert!(
+            view.indices_len.is_multiple_of(3),
+            "indices form whole triangles"
+        );
         vcad_scene_free(scene);
     }
 
@@ -3184,7 +3202,7 @@ mod tests {
         assert!(!edges.is_null());
         let view = vcad_edges_view(edges);
         assert!(
-            view.floats_len > 0 && view.floats_len % 6 == 0,
+            view.floats_len > 0 && view.floats_len.is_multiple_of(6),
             "edges must be 6 floats per segment, got {}",
             view.floats_len
         );
