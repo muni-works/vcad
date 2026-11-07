@@ -280,14 +280,14 @@ fn field_patch(doc: &Document, node: NodeId, path: &str, from: f64, to: f64) -> 
 
 /// `name`, or loon's lowered `(a) + (b) * name`, as `(name, a, b)`.
 fn affine(f: &str) -> Option<(&str, f64, f64)> {
-    let f = f.trim();
-    let ident = |s: &str| {
+    fn ident(s: &str) -> Option<&str> {
         let s = s.trim();
         (!s.is_empty()
             && s.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
             && s.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-'))
         .then_some(s)
-    };
+    }
+    let f = f.trim();
     if let Some(n) = ident(f) {
         return Some((n, 0.0, 1.0));
     }
