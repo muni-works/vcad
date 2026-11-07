@@ -4622,6 +4622,9 @@ dependencies = [
  "vcad-loon",
  "vcad-render",
  "vcad-sim",
+ "vcad-slicer",
+ "vcad-slicer-bambu",
+ "vcad-slicer-gcode",
 ]
 
 [[package]]

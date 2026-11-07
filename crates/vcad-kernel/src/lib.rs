@@ -74,6 +74,7 @@ pub mod cam_verify;
 pub use cam_verify::verify_toolpaths;
 
 pub mod sheet_fold;
+pub mod sheet_json;
 pub use sheet_fold::folded_sheet_solid;
 
 mod sweep_rotate;
