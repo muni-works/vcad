@@ -823,6 +823,11 @@ struct ReleasedOverlayView: View {
                             .modifier(ChromeRegion(key: "inspector"))
                     }
                 }
+                // DFM / stress / clearance (AnalysisPanel.swift).
+                if AnalysisStore.shared.shown && !model.source.isGripper {
+                    AnalysisPanel(model: model)
+                        .modifier(ChromeRegion(key: "analysis"))
+                }
             }
             .padding(Theme.Space.l)
             .animation(Motion.panel, value: model.showsInspector)
@@ -1401,6 +1406,7 @@ struct ReleasedARView: NSViewRepresentable {
         if let parent = ReleaseWindowController.shared.centeringEntity {
             syncCNCOverlay(model.cnc, in: parent, model: model)
             syncFieldOverlay(FieldOverlayStore.shared, in: parent)
+            syncAnalysisOverlay(AnalysisStore.shared, model: model, in: parent)
             if model.workspace == .manufacture && model.cnc.autoFit && !model.cnc.followSpindle && context.coordinator.framedCNCRevision != cncRevision {
                 context.coordinator.framedCNCRevision = cncRevision
                 Task { @MainActor in
@@ -1885,7 +1891,8 @@ struct ReleasedScene: View {
                        cncRevision: model.cnc.revision,
                        cncOrigin: model.cnc.origin,
                        cncOverlay: model.cnc.overlay,
-                       fieldRevision: FieldOverlayStore.shared.revision,
+                       // Field + analysis overlays both redraw on this input.
+                       fieldRevision: FieldOverlayStore.shared.revision &* 1_000_003 &+ AnalysisStore.shared.overlayRevision,
                        cncStock: model.cnc.stockThickness,
                        poseTick: model.poseTick,
                        geometryDirty: model.geometryDirty,
