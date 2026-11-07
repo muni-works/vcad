@@ -1,0 +1,240 @@
+{
+ "version": "0.1",
+ "nodes": {
+  "1": {
+   "id": 1,
+   "name": "Base",
+   "op": {
+    "type": "Cylinder",
+    "radius": 40,
+    "height": 30,
+    "segments": 32
+   }
+  },
+  "2": {
+   "id": 2,
+   "name": "Upper Arm",
+   "op": {
+    "type": "Cube",
+    "size": {
+     "x": 80,
+     "y": 20,
+     "z": 20
+    }
+   }
+  },
+  "3": {
+   "id": 3,
+   "name": "Lower Arm",
+   "op": {
+    "type": "Cube",
+    "size": {
+     "x": 60,
+     "y": 16,
+     "z": 16
+    }
+   }
+  },
+  "4": {
+   "id": 4,
+   "name": "Gripper",
+   "op": {
+    "type": "Cylinder",
+    "radius": 8,
+    "height": 25,
+    "segments": 32
+   }
+  }
+ },
+ "materials": {
+  "steel": {
+   "name": "Steel",
+   "color": [
+    0.45,
+    0.45,
+    0.5
+   ],
+   "metallic": 1,
+   "roughness": 0.3,
+   "density": 7850,
+   "friction": 0.5
+  },
+  "aluminum": {
+   "name": "Aluminum",
+   "color": [
+    0.85,
+    0.87,
+    0.9
+   ],
+   "metallic": 1,
+   "roughness": 0.4,
+   "density": 2700,
+   "friction": 0.6
+  },
+  "orange": {
+   "name": "Orange Plastic",
+   "color": [
+    1,
+    0.5,
+    0.1
+   ],
+   "metallic": 0,
+   "roughness": 0.5,
+   "density": 1200,
+   "friction": 0.4
+  }
+ },
+ "part_materials": {
+  "base": "steel",
+  "upper_arm": "aluminum",
+  "lower_arm": "aluminum",
+  "gripper": "orange"
+ },
+ "partDefs": {
+  "base": {
+   "id": "base",
+   "name": "Base",
+   "root": 1,
+   "defaultMaterial": "steel"
+  },
+  "upper_arm": {
+   "id": "upper_arm",
+   "name": "Upper Arm",
+   "root": 2,
+   "defaultMaterial": "aluminum"
+  },
+  "lower_arm": {
+   "id": "lower_arm",
+   "name": "Lower Arm",
+   "root": 3,
+   "defaultMaterial": "aluminum"
+  },
+  "gripper": {
+   "id": "gripper",
+   "name": "Gripper",
+   "root": 4,
+   "defaultMaterial": "orange"
+  }
+ },
+ "instances": [
+  {
+   "id": "base_inst",
+   "partDefId": "base",
+   "name": "Base",
+   "transform": {
+    "translation": {
+     "x": -40,
+     "y": -40,
+     "z": 0
+    },
+    "rotation": {
+     "x": 0,
+     "y": 0,
+     "z": 0
+    },
+    "scale": {
+     "x": 1,
+     "y": 1,
+     "z": 1
+    }
+   }
+  },
+  {
+   "id": "upper_arm_inst",
+   "partDefId": "upper_arm",
+   "name": "Upper Arm"
+  },
+  {
+   "id": "lower_arm_inst",
+   "partDefId": "lower_arm",
+   "name": "Lower Arm"
+  },
+  {
+   "id": "gripper_inst",
+   "partDefId": "gripper",
+   "name": "Gripper"
+  }
+ ],
+ "joints": [
+  {
+   "id": "shoulder",
+   "name": "Shoulder Joint",
+   "parentInstanceId": "base_inst",
+   "childInstanceId": "upper_arm_inst",
+   "parentAnchor": {
+    "x": 40,
+    "y": 40,
+    "z": 30
+   },
+   "childAnchor": {
+    "x": 0,
+    "y": 10,
+    "z": 10
+   },
+   "kind": {
+    "type": "Revolute",
+    "axis": {
+     "x": 0,
+     "y": 1,
+     "z": 0
+    },
+    "limits": [
+     -120,
+     120
+    ]
+   },
+   "state": 0
+  },
+  {
+   "id": "elbow",
+   "name": "Elbow Joint",
+   "parentInstanceId": "upper_arm_inst",
+   "childInstanceId": "lower_arm_inst",
+   "parentAnchor": {
+    "x": 80,
+    "y": 10,
+    "z": 10
+   },
+   "childAnchor": {
+    "x": 0,
+    "y": 8,
+    "z": 8
+   },
+   "kind": {
+    "type": "Revolute",
+    "axis": {
+     "x": 0,
+     "y": 1,
+     "z": 0
+    },
+    "limits": [
+     -135,
+     135
+    ]
+   },
+   "state": 0
+  },
+  {
+   "id": "wrist",
+   "name": "Wrist Joint",
+   "parentInstanceId": "lower_arm_inst",
+   "childInstanceId": "gripper_inst",
+   "parentAnchor": {
+    "x": 60,
+    "y": 8,
+    "z": 8
+   },
+   "childAnchor": {
+    "x": 8,
+    "y": 8,
+    "z": 25
+   },
+   "kind": {
+    "type": "Fixed"
+   },
+   "state": 0
+  }
+ ],
+ "groundInstanceId": "base_inst",
+ "roots": []
+}

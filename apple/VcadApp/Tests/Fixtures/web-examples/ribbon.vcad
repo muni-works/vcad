@@ -1,0 +1,188 @@
+{
+ "version": "0.1",
+ "nodes": {
+  "1": {
+   "id": 1,
+   "name": "Ribbon Profile (10x2mm)",
+   "op": {
+    "type": "Sketch2D",
+    "origin": {
+     "x": 0,
+     "y": 0,
+     "z": 0
+    },
+    "x_dir": {
+     "x": 1,
+     "y": 0,
+     "z": 0
+    },
+    "y_dir": {
+     "x": 0,
+     "y": 1,
+     "z": 0
+    },
+    "segments": [
+     {
+      "type": "Line",
+      "start": {
+       "x": -5,
+       "y": -1
+      },
+      "end": {
+       "x": 5,
+       "y": -1
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 5,
+       "y": -1
+      },
+      "end": {
+       "x": 5,
+       "y": 1
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": 5,
+       "y": 1
+      },
+      "end": {
+       "x": -5,
+       "y": 1
+      }
+     },
+     {
+      "type": "Line",
+      "start": {
+       "x": -5,
+       "y": 1
+      },
+      "end": {
+       "x": -5,
+       "y": -1
+      }
+     }
+    ]
+   }
+  },
+  "2": {
+   "id": 2,
+   "name": "Twisted Line Sweep",
+   "op": {
+    "type": "Sweep",
+    "sketch": 1,
+    "path": {
+     "type": "Line",
+     "start": {
+      "x": 0,
+      "y": 0,
+      "z": 0
+     },
+     "end": {
+      "x": 0,
+      "y": 0,
+      "z": 80
+     }
+    },
+    "twist_angle": 12.566370614359172,
+    "scale_start": 1,
+    "scale_end": 1
+   }
+  },
+  "3": {
+   "id": 3,
+   "name": "Scale",
+   "op": {
+    "type": "Scale",
+    "child": 2,
+    "factor": {
+     "x": 1,
+     "y": 1,
+     "z": 1
+    }
+   }
+  },
+  "4": {
+   "id": 4,
+   "name": "Rotate",
+   "op": {
+    "type": "Rotate",
+    "child": 3,
+    "angles": {
+     "x": 0,
+     "y": 0,
+     "z": 0
+    }
+   }
+  },
+  "5": {
+   "id": 5,
+   "name": "Twisted Ribbon",
+   "op": {
+    "type": "Translate",
+    "child": 4,
+    "offset": {
+     "x": 0,
+     "y": 0,
+     "z": -40
+    }
+   }
+  }
+ },
+ "materials": {
+  "copper": {
+   "name": "Copper",
+   "color": [
+    0.95,
+    0.64,
+    0.54
+   ],
+   "metallic": 0.9,
+   "roughness": 0.25
+  }
+ },
+ "part_materials": {},
+ "roots": [
+  {
+   "root": 5,
+   "material": "copper"
+  }
+ ],
+ "partDefs": {
+  "ribbon": {
+   "id": "ribbon",
+   "name": "Twisted Ribbon",
+   "root": 5,
+   "defaultMaterial": "copper"
+  }
+ },
+ "instances": [
+  {
+   "id": "ribbon-1",
+   "partDefId": "ribbon",
+   "name": "Twisted Ribbon",
+   "transform": {
+    "translation": {
+     "x": 0,
+     "y": 0,
+     "z": 0
+    },
+    "rotation": {
+     "x": 0,
+     "y": 0,
+     "z": 0
+    },
+    "scale": {
+     "x": 1,
+     "y": 1,
+     "z": 1
+    }
+   }
+  }
+ ],
+ "groundInstanceId": "ribbon-1"
+}
