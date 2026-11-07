@@ -784,14 +784,7 @@ pub(crate) fn resolve_reference(
 pub fn solve_steady(model: &ThermalModel, opts: &SolveOptions) -> Result<Solution, SolveError> {
     let sys = build(model)?;
     let reference_c = resolve_reference(&sys, model)?;
-    // Assemble → LinearSolve as a tang tensor graph (see `crate::graph`).
-    let g = crate::graph::build_graph(model, &sys, opts, None);
-    let t_free = g.eval()?.t_free;
-    let (iterations, residual_rel) = g.last_forward();
-    let mut x = vec![0.0_f64; sys.b.len()];
-    for (&p, &t) in g.free_voxels.iter().zip(&t_free) {
-        x[p] = t;
-    }
+    let (x, iterations, residual_rel) = steady_field(model, &sys, opts)?;
     Ok(assemble_solution(
         &sys,
         model,
@@ -800,6 +793,36 @@ pub fn solve_steady(model: &ThermalModel, opts: &SolveOptions) -> Result<Solutio
         residual_rel,
         reference_c,
     ))
+}
+
+/// Solve the free-node field. Native targets run Assemble → LinearSolve as
+/// a tang tensor graph (see `crate::graph`); wasm32 has no clock for the
+/// graph's solve timing (`Instant::now` panics there), so it runs the same
+/// PCG directly.
+#[cfg(not(target_arch = "wasm32"))]
+fn steady_field(
+    model: &ThermalModel,
+    sys: &System,
+    opts: &SolveOptions,
+) -> Result<(Vec<f64>, usize, f64), SolveError> {
+    let g = crate::graph::build_graph(model, sys, opts, None);
+    let t_free = g.eval()?.t_free;
+    let (iterations, residual_rel) = g.last_forward();
+    let mut x = vec![0.0_f64; sys.b.len()];
+    for (&p, &t) in g.free_voxels.iter().zip(&t_free) {
+        x[p] = t;
+    }
+    Ok((x, iterations, residual_rel))
+}
+
+#[cfg(target_arch = "wasm32")]
+fn steady_field(
+    _model: &ThermalModel,
+    sys: &System,
+    opts: &SolveOptions,
+) -> Result<(Vec<f64>, usize, f64), SolveError> {
+    let x0 = vec![0.0_f64; sys.b.len()];
+    pcg(sys, &sys.diag, &sys.b, &x0, opts)
 }
 
 /// Assemble the public [`Solution`] (field, T_max, per-source θ,
