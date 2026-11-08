@@ -1,0 +1,12 @@
+{
+  "id": "2026-11-08-mixed-outline-cuts",
+  "version": "0.11.0",
+  "date": "2026-11-08",
+  "category": "fix",
+  "title": "Slot-shaped cuts remove their full outline",
+  "summary": "Cuts whose walls mix straight and curved faces, like slots, now cut their real outline instead of leaving skins across the middle or the wrong volume.",
+  "features": [
+    "booleans",
+    "sketch"
+  ]
+}
