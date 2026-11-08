@@ -1039,6 +1039,8 @@ struct RouteQuery {
 #[derive(serde::Deserialize)]
 struct RouteCommit {
     net: String,
+    #[serde(default)]
+    moved: Vec<vcad_ecad_fabprep::verdict::TraceMove>,
     path: Vec<(vcad_ir::Vec2, vcad_ir::Vec2, vcad_ir::ecad::PcbLayer)>,
 }
 
@@ -1080,7 +1082,7 @@ pub extern "C" fn vcad_pcb_router_commit(
             .0
             .lock()
             .map_err(|_| "router poisoned")?;
-        let (traces, vias) = r.commit(&q.net, &q.path)?;
-        Ok(json!({ "traces": traces, "vias": vias }))
+        let (traces, vias) = r.commit(&q.net, &q.path, &q.moved)?;
+        Ok(json!({ "traces": traces, "vias": vias, "moved": q.moved }))
     })
 }

@@ -110,12 +110,18 @@ final class ElectronicsWorkspace {
             message = (routePreview?["reason"] as? String).map { "No legal path: \($0)" } ?? "No legal path to there."
             return
         }
-        guard let added = try? router.commit(["net": activeNet, "path": path]) else {
+        guard let added = try? router.commit(["net": activeNet, "path": path, "moved": preview["moved"] ?? [Any]()]) else {
             message = "That path is no longer legal."; return
         }
         let end = ecPoint(last[1]), finished = routeEndsOnCopper
         mutateBoard(model) { b in
-            b["traces"] = ecRows(b["traces"]) + ecRows(added["traces"])
+            var existing = ecRows(b["traces"])
+            for m in ecRows(added["moved"]) {
+                let i = Int(ecNumber(m["index"], -1))
+                guard existing.indices.contains(i) else { continue }
+                existing[i]["start"] = m["start"]; existing[i]["end"] = m["end"]
+            }
+            b["traces"] = existing + ecRows(added["traces"])
             b["vias"] = ecRows(b["vias"]) + ecRows(added["vias"])
         }
         // The session already holds this copper; keep it rather than re-index.

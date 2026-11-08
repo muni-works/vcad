@@ -166,6 +166,14 @@ struct Airwire { let a: CGPoint, b: CGPoint, net: String }
                 context.stroke(p, with: .color(BoardLayers.color(seg[2] as? String ?? "").mix(with: .white, by: 0.3)),
                                style: StrokeStyle(lineWidth: w, lineCap: .round))
             }
+            // Copper this route pushes aside: where it will land.
+            let traces = ecRows(board["traces"])
+            for m in ecRows(preview?["moved"]) {
+                let i = Int(ecNumber(m["index"], -1))
+                guard traces.indices.contains(i) else { continue }
+                var p = Path(); p.move(to: screen(ecPoint(m["start"]))); p.addLine(to: screen(ecPoint(m["end"])))
+                context.stroke(p, with: .color(.white.opacity(0.85)), style: StrokeStyle(lineWidth: max(1, ecNumber(traces[i]["width"], 0.25) * scale), lineCap: .round, dash: [4, 3]))
+            }
             for via in preview?["vias"] as? [Any] ?? [] {
                 let c = screen(ecPoint(via)), r = max(3, 0.3 * scale)
                 context.stroke(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)), with: .color(.white), lineWidth: 1.5)

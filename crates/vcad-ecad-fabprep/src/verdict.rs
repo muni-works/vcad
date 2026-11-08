@@ -539,7 +539,29 @@ pub struct InteractiveRoute {
     pub vias: Vec<Vec2>,
     /// Trace width the path commits at.
     pub width: f64,
+    /// Existing copper this path pushes aside to fit.
+    #[serde(default)]
+    pub moved: Vec<TraceMove>,
 }
+
+/// New endpoints for an existing trace, by its index in the board's traces.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct TraceMove {
+    /// Index into `Pcb::traces`.
+    pub index: usize,
+    /// New start.
+    pub start: Vec2,
+    /// New end.
+    pub end: Vec2,
+}
+
+/// Shove displacement step and cap (mm); smallest workable move wins.
+const SHOVE_STEP_MM: f64 = 0.2;
+const SHOVE_MAX_MM: f64 = 1.2;
+/// Traces further than this from the corridor are left alone.
+const SHOVE_REACH_MM: f64 = 1.5;
+/// At most this many segments move for one route.
+const SHOVE_MAX_VICTIMS: usize = 6;
 
 /// A board held open for hand routing: an indexed session answering "route
 /// this net from here to the cursor" fast enough to follow the mouse, with
@@ -584,9 +606,9 @@ impl InteractiveRouter {
             .unwrap_or(self.pcb.rules.default_rules.trace_width)
     }
 
-    /// Search for a legal path from `from` to `to` on `net`, staying on
-    /// `preferred` when one layer will do and changing layers only when it
-    /// must. Grows the search window once before giving up.
+    /// Search for a legal path from `from` to `to` on `net`: on `preferred`
+    /// if one layer will do, then on `preferred` pushing neighbouring traces
+    /// aside, and only then changing layers.
     pub fn route(
         &self,
         net: &str,
@@ -595,64 +617,88 @@ impl InteractiveRouter {
         preferred: Option<PcbLayer>,
         budget: usize,
     ) -> InteractiveRoute {
-        let mut stacks: Vec<Vec<PcbLayer>> = Vec::new();
-        if let Some(p) = preferred.filter(|p| self.layers.contains(p)) {
-            let mut stack = vec![p];
+        if let Some(layer) = preferred.filter(|p| self.layers.contains(p)) {
+            let mut stack = vec![layer];
             for l in live_layers(&self.pcb, &self.layers, net, from) {
                 if !stack.contains(&l) {
                     stack.push(l);
                 }
             }
-            stacks.push(stack);
+            let plain = self.search(net, from, to, &stack, budget);
+            if plain.status == "routed" {
+                return plain;
+            }
+            if let Some(shoved) = self.shove(net, from, to, layer, &stack, budget) {
+                return shoved;
+            }
         }
-        stacks.push(self.layers.clone());
+        self.search(net, from, to, &self.layers, budget)
+    }
+
+    fn search(
+        &self,
+        net: &str,
+        from: Vec2,
+        to: Vec2,
+        stack: &[PcbLayer],
+        budget: usize,
+    ) -> InteractiveRoute {
         let width = self.width_for(net);
         let conns = [(net.to_string(), from, to)];
-        let sz = self.session.via_sizing();
-        let (via_d, via_drill) = sz.drilled_size(net);
+        let (via_d, via_drill) = self.session.via_sizing().drilled_size(net);
+        let (mut lo_x, mut lo_y, mut hi_x, mut hi_y) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for v in &self.pcb.outline.vertices {
+            (lo_x, lo_y, hi_x, hi_y) = (lo_x.min(v.x), lo_y.min(v.y), hi_x.max(v.x), hi_y.max(v.y));
+        }
         let mut last = ("no path".to_string(), "blocked");
         for margin in [1.5, 6.0] {
+            // The router does not consult the outline: the window must.
             let window = (
-                Vec2::new(from.x.min(to.x) - margin, from.y.min(to.y) - margin),
-                Vec2::new(from.x.max(to.x) + margin, from.y.max(to.y) + margin),
+                Vec2::new(
+                    (from.x.min(to.x) - margin).max(lo_x),
+                    (from.y.min(to.y) - margin).max(lo_y),
+                ),
+                Vec2::new(
+                    (from.x.max(to.x) + margin).min(hi_x),
+                    (from.y.max(to.y) + margin).min(hi_y),
+                ),
             );
-            for stack in &stacks {
-                let pins = TerminalLayers::for_connection(&self.pcb, stack, net, from, to);
-                match route_window_complete_pinned(
-                    &self.session,
-                    window,
-                    stack,
-                    &conns,
-                    &[pins],
-                    width,
-                    Some(ViaClass {
-                        pad_diameter: via_d,
-                        drill: via_drill,
-                    }),
-                    WindowBudget::new(budget),
-                ) {
-                    CompleteOutcome::Routed(mut paths) => {
-                        let Some(path) = paths.pop() else { continue };
-                        if !self.legal(net, width, &path) {
-                            last = ("the path breaks a clearance rule".into(), "blocked");
-                            continue;
-                        }
-                        let vias = barrels(&path, self.through)
-                            .into_iter()
-                            .map(|b| b.0)
-                            .collect();
-                        return InteractiveRoute {
-                            status: "routed".into(),
-                            reason: None,
-                            path,
-                            vias,
-                            width,
-                        };
+            let pins = TerminalLayers::for_connection(&self.pcb, stack, net, from, to);
+            match route_window_complete_pinned(
+                &self.session,
+                window,
+                stack,
+                &conns,
+                &[pins],
+                width,
+                Some(ViaClass {
+                    pad_diameter: via_d,
+                    drill: via_drill,
+                }),
+                WindowBudget::new(budget),
+            ) {
+                CompleteOutcome::Routed(mut paths) => {
+                    let Some(path) = paths.pop() else { continue };
+                    if !self.legal(net, width, &path) {
+                        last = ("the path breaks a clearance rule".into(), "blocked");
+                        continue;
                     }
-                    CompleteOutcome::ProvedInfeasible { reason } => last = (reason, "blocked"),
-                    CompleteOutcome::BudgetExhausted => {
-                        last = ("search budget ran out".into(), "unknown")
-                    }
+                    let vias = barrels(&path, self.through)
+                        .into_iter()
+                        .map(|b| b.0)
+                        .collect();
+                    return InteractiveRoute {
+                        status: "routed".into(),
+                        reason: None,
+                        path,
+                        vias,
+                        width,
+                        moved: Vec::new(),
+                    };
+                }
+                CompleteOutcome::ProvedInfeasible { reason } => last = (reason, "blocked"),
+                CompleteOutcome::BudgetExhausted => {
+                    last = ("search budget ran out".into(), "unknown")
                 }
             }
         }
@@ -662,7 +708,174 @@ impl InteractiveRouter {
             path: Vec::new(),
             vias: Vec::new(),
             width,
+            moved: Vec::new(),
         }
+    }
+
+    /// True when `p` is an end of a pad or via: a joint that cannot move.
+    fn anchored(&self, net: &str, p: Vec2) -> bool {
+        let near = |q: Vec2| (q.x - p.x).abs() < 0.05 && (q.y - p.y).abs() < 0.05;
+        self.pcb
+            .vias
+            .iter()
+            .any(|v| v.net == net && near(v.position))
+            || self.pcb.footprints.iter().any(|f| {
+                f.pads.iter().any(|pad| {
+                    pad.net.as_deref() == Some(net)
+                        && near(vcad_ecad_pcb::geometry::pad_world_position(f, pad))
+                })
+            })
+    }
+
+    /// Traces of other nets on `layer` that sit beside the corridor and can
+    /// move: middle segments, both ends joined only to more trace. Each with
+    /// its outward unit normal. Pads, vias and end stubs stay put.
+    fn shove_victims(
+        &self,
+        net: &str,
+        from: Vec2,
+        to: Vec2,
+        layer: PcbLayer,
+    ) -> Vec<(usize, Vec2)> {
+        let (cx, cy) = (to.x - from.x, to.y - from.y);
+        let len = (cx * cx + cy * cy).sqrt().max(1e-9);
+        let same = |a: Vec2, b: Vec2| (a.x - b.x).abs() < 1e-6 && (a.y - b.y).abs() < 1e-6;
+        let mut found: Vec<(f64, usize, Vec2)> = Vec::new();
+        for (i, t) in self.pcb.traces.iter().enumerate() {
+            if t.layer != layer || t.net == net {
+                continue;
+            }
+            let joined = |p: Vec2| {
+                !self.anchored(&t.net, p)
+                    && self.pcb.traces.iter().enumerate().any(|(j, o)| {
+                        j != i
+                            && o.net == t.net
+                            && o.layer == layer
+                            && (same(o.start, p) || same(o.end, p))
+                    })
+            };
+            if !joined(t.start) || !joined(t.end) {
+                continue;
+            }
+            let mid = Vec2::new((t.start.x + t.end.x) / 2.0, (t.start.y + t.end.y) / 2.0);
+            let u = (((mid.x - from.x) * cx + (mid.y - from.y) * cy) / (len * len)).clamp(0.0, 1.0);
+            let (px, py) = (from.x + u * cx, from.y + u * cy);
+            let d = ((mid.x - px).powi(2) + (mid.y - py).powi(2)).sqrt();
+            if d > SHOVE_REACH_MM {
+                continue;
+            }
+            let (dx, dy) = (t.end.x - t.start.x, t.end.y - t.start.y);
+            let seg = (dx * dx + dy * dy).sqrt().max(1e-9);
+            // Only traces running along the corridor: one that crosses it
+            // can't be pushed clear, however far it moves.
+            if ((dx * cx + dy * cy) / (seg * len)).abs() < 0.8 {
+                continue;
+            }
+            let (mut nx, mut ny) = (-dy / seg, dx / seg);
+            if nx * (mid.x - px) + ny * (mid.y - py) < 0.0 {
+                (nx, ny) = (-nx, -ny);
+            }
+            found.push((d, i, Vec2::new(nx, ny)));
+        }
+        found.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        found.truncate(SHOVE_MAX_VICTIMS);
+        found.into_iter().map(|(_, i, n)| (i, n)).collect()
+    }
+
+    /// The moves that push `victims` out by `delta`: each segment and the
+    /// joint end of every neighbour that shares it.
+    fn shove_moves(&self, victims: &[(usize, Vec2)], delta: f64) -> Vec<TraceMove> {
+        let same = |a: Vec2, b: Vec2| (a.x - b.x).abs() < 1e-6 && (a.y - b.y).abs() < 1e-6;
+        let mut moved: HashMap<usize, (Vec2, Vec2)> = HashMap::new();
+        for &(i, n) in victims {
+            let t = &self.pcb.traces[i];
+            let shift = |p: Vec2| Vec2::new(p.x + n.x * delta, p.y + n.y * delta);
+            for (j, o) in self.pcb.traces.iter().enumerate() {
+                if o.net != t.net || o.layer != t.layer {
+                    continue;
+                }
+                let entry = moved.entry(j).or_insert((o.start, o.end));
+                for corner in [t.start, t.end] {
+                    if same(o.start, corner) {
+                        entry.0 = shift(corner);
+                    }
+                    if same(o.end, corner) {
+                        entry.1 = shift(corner);
+                    }
+                }
+            }
+        }
+        let mut out: Vec<TraceMove> = moved
+            .into_iter()
+            .filter(|(j, (a, b))| {
+                let o = &self.pcb.traces[*j];
+                !same(*a, o.start) || !same(*b, o.end)
+            })
+            .map(|(index, (start, end))| TraceMove { index, start, end })
+            .collect();
+        out.sort_by_key(|m| m.index);
+        out
+    }
+
+    /// Every moved trace clears everything else on the board with `moves` applied.
+    fn moves_legal(session: &RouteSession, pcb: &Pcb, moves: &[TraceMove]) -> bool {
+        moves.iter().all(|m| {
+            let t = &pcb.traces[m.index];
+            let g = CopperGeom::Segment {
+                a: m.start,
+                b: m.end,
+                half_w: t.width / 2.0,
+            };
+            session
+                .probe(&g, t.layer, &t.net, session.clearance_for(&t.net))
+                .legal
+        })
+    }
+
+    fn with_moves(&self, moves: &[TraceMove]) -> InteractiveRouter {
+        let mut pcb = self.pcb.clone();
+        for m in moves {
+            pcb.traces[m.index].start = m.start;
+            pcb.traces[m.index].end = m.end;
+        }
+        InteractiveRouter::new(pcb)
+    }
+
+    /// Push neighbouring traces aside, smallest move first, until the route
+    /// fits. Depth one: moved copper must be legal where it lands and never
+    /// pushes anything else. `None` when no move helps.
+    fn shove(
+        &self,
+        net: &str,
+        from: Vec2,
+        to: Vec2,
+        layer: PcbLayer,
+        stack: &[PcbLayer],
+        budget: usize,
+    ) -> Option<InteractiveRoute> {
+        let victims = self.shove_victims(net, from, to, layer);
+        if victims.is_empty() {
+            return None;
+        }
+        let steps = (SHOVE_MAX_MM / SHOVE_STEP_MM).round() as usize;
+        for k in 1..=steps {
+            // Away from the corridor first, then across it: the free side
+            // of a tight channel can be either.
+            for sign in [1.0, -1.0] {
+                let delta = sign * k as f64 * SHOVE_STEP_MM;
+                let moves = self.shove_moves(&victims, delta);
+                let trial = self.with_moves(&moves);
+                if !Self::moves_legal(&trial.session, &trial.pcb, &moves) {
+                    continue;
+                }
+                let mut attempt = trial.search(net, from, to, stack, budget);
+                if attempt.status == "routed" {
+                    attempt.moved = moves;
+                    return Some(attempt);
+                }
+            }
+        }
+        None
     }
 
     fn legal(&self, net: &str, w: f64, path: &[(Vec2, Vec2, PcbLayer)]) -> bool {
@@ -678,13 +891,24 @@ impl InteractiveRouter {
         }) && vias_legal(&self.pcb, &self.session, net, path, self.through)
     }
 
-    /// Re-check `path` and commit it, returning the new traces and vias.
-    /// `Err` (and no change) when it is no longer legal.
+    /// Apply `moves`, re-check `path`, and commit it, returning the new traces
+    /// and vias. `Err` (and no change) when anything is no longer legal.
     pub fn commit(
         &mut self,
         net: &str,
         path: &[(Vec2, Vec2, PcbLayer)],
+        moves: &[TraceMove],
     ) -> Result<(Vec<Trace>, Vec<vcad_ir::ecad::Via>), String> {
+        if !moves.is_empty() {
+            if moves.iter().any(|m| m.index >= self.pcb.traces.len()) {
+                return Err("the board changed under that shove".into());
+            }
+            let trial = self.with_moves(moves);
+            if !Self::moves_legal(&trial.session, &trial.pcb, moves) {
+                return Err("that shove is no longer legal".into());
+            }
+            *self = trial;
+        }
         let w = self.width_for(net);
         if !self.legal(net, w, path) {
             return Err("that path is no longer legal".into());
@@ -904,9 +1128,53 @@ mod tests {
             attempt.path.iter().all(|s| s.2 == PcbLayer::FCu),
             "stays on the preferred layer"
         );
-        let (traces, vias) = r.commit("X", &attempt.path).expect("commits");
+        let (traces, vias) = r.commit("X", &attempt.path, &[]).expect("commits");
         assert!(!traces.is_empty() && vias.is_empty());
         // Copper now occupies that path: another net can't take it.
-        assert!(r.commit("Y", &attempt.path).is_err());
+        assert!(r.commit("Y", &attempt.path, &[]).is_err());
+    }
+
+    #[test]
+    fn interactive_router_shoves_a_neighbour_rather_than_failing() {
+        use crate::test_support::{test_board, with_smd_pad, with_trace};
+        let mut pcb = test_board();
+        with_smd_pad(&mut pcb, "R1", "1", 1.0, 5.0, "X");
+        with_smd_pad(&mut pcb, "R2", "1", 9.0, 5.0, "X");
+        // A hump of net Y with its middle run 0.6 mm under a fixed wall:
+        // too narrow for X until the run moves down.
+        with_smd_pad(&mut pcb, "Y1", "1", 3.0, 1.5, "Y");
+        with_smd_pad(&mut pcb, "Y2", "1", 7.0, 1.5, "Y");
+        with_trace(&mut pcb, "Y", 3.0, 1.5, 3.0, 5.4);
+        with_trace(&mut pcb, "Y", 3.0, 5.4, 7.0, 5.4);
+        with_trace(&mut pcb, "Y", 7.0, 5.4, 7.0, 1.5);
+        with_trace(&mut pcb, "Z", 0.3, 6.0, 9.7, 6.0);
+        with_trace(&mut pcb, "W", 0.3, 1.0, 9.7, 1.0);
+        let (a, b) = (Vec2::new(1.0, 5.0), Vec2::new(9.0, 5.0));
+        let mut r = InteractiveRouter::new(pcb);
+        assert_ne!(
+            r.search("X", a, b, &[PcbLayer::FCu], 150_000).status,
+            "routed",
+            "the fixture must be blocked without a shove"
+        );
+        let attempt = r.route("X", a, b, Some(PcbLayer::FCu), 150_000);
+        assert_eq!(attempt.status, "routed", "{:?}", attempt.reason);
+        assert!(!attempt.moved.is_empty(), "it should have pushed Y aside");
+        assert!(
+            attempt.path.iter().all(|s| s.2 == PcbLayer::FCu),
+            "shove before vias"
+        );
+        let clearance = |p: &Pcb| {
+            vcad_ecad_pcb::drc::check_drc(p)
+                .iter()
+                .filter(|v| format!("{:?}", v.rule).contains("Clearance"))
+                .map(|v| v.message.clone())
+                .collect::<BTreeSet<_>>()
+        };
+        let before = clearance(&r.pcb);
+        r.commit("X", &attempt.path, &attempt.moved)
+            .expect("commits");
+        assert!(r.pcb.traces[1].start.y < 5.4, "the run moved down");
+        let added: Vec<_> = clearance(&r.pcb).difference(&before).cloned().collect();
+        assert!(added.is_empty(), "the shove added violations: {added:?}");
     }
 }
