@@ -433,6 +433,12 @@ pub fn route_window_complete_pinned(
     /// the pad's own layer.
     type Escape = (Option<PcbLayer>, Option<PcbLayer>);
     let mut escapes: Vec<Escape> = Vec::with_capacity(conns.len());
+    // Nodes already taken as another connection's terminal. Two neighbouring
+    // pads of different nets (an 0603's two ends, 1.6 mm apart) both reach
+    // for the free cell between them once each is pinned to its own layer;
+    // without this the second one lands on the first's node and the window
+    // is "proved" infeasible by a collision the attachment step invented.
+    let mut claimed: HashSet<usize> = HashSet::new();
     for (ci, (net, from, to)) in conns.iter().enumerate() {
         let clr = clearances[ci];
         let pinned = terminals.get(ci);
@@ -446,7 +452,10 @@ pub fn route_window_complete_pinned(
         // Reach measured in millimetres, not cells: a dog-bone escape lands
         // within about a millimetre of its pad whatever the pitch happens to be.
         let attach_ring = ((1.0 / grid.pitch).ceil() as i64).clamp(2, 4);
-        let attach = |p: Vec2, allowed: &[PcbLayer]| -> Option<(usize, Option<PcbLayer>)> {
+        let attach = |p: Vec2,
+                      allowed: &[PcbLayer],
+                      claimed: &HashSet<usize>|
+         -> Option<(usize, Option<PcbLayer>)> {
             let base = grid.snap(p);
             let (bx, by) = ((base % grid.nx) as i64, (base / grid.nx) as i64);
             let mut cands: Vec<(i64, usize)> = Vec::new();
@@ -472,7 +481,9 @@ pub fn route_window_complete_pinned(
                 (0..nl)
                     .filter(|&li| allowed.is_empty() || allowed.contains(&layers[li]))
                     .find_map(|li| {
-                        (free[li * plane + cell] && stub_ok(p, c, layers[li]))
+                        (free[li * plane + cell]
+                            && !claimed.contains(&(li * plane + cell))
+                            && stub_ok(p, c, layers[li]))
                             .then_some((li * plane + cell, None))
                     })
             });
@@ -496,7 +507,10 @@ pub fn route_window_complete_pinned(
                     return None;
                 }
                 (0..nl).find_map(|li| {
-                    if li == pad_li || !free[li * plane + cell] {
+                    if li == pad_li
+                        || !free[li * plane + cell]
+                        || claimed.contains(&(li * plane + cell))
+                    {
                         return None;
                     }
                     let span = if li < pad_li {
@@ -517,8 +531,12 @@ pub fn route_window_complete_pinned(
         let (from_pins, to_pins) = pinned
             .map(|t| (t.from.as_slice(), t.to.as_slice()))
             .unwrap_or((&[], &[]));
-        match (attach(*from, from_pins), attach(*to, to_pins)) {
+        let src = attach(*from, from_pins, &claimed);
+        let dst = attach(*to, to_pins, &claimed);
+        match (src, dst) {
             (Some((s, se)), Some((t, te))) => {
+                claimed.insert(s);
+                claimed.insert(t);
                 terms.push((s, t));
                 escapes.push((se, te));
             }
