@@ -1036,7 +1036,13 @@ mod tests {
         let mut pcb = crate::test_support::three_resistor_board();
         let out = run_fab_prep(&mut pcb, &FabPrepOptions::default());
         let r = &out.report;
-        assert!(r.converged, "{:?}\n{}", r.blocker, render::summary(r));
+        assert!(
+            r.converged,
+            "{:?}\n{:?}\n{}",
+            r.blocker,
+            r.initial_verdict,
+            render::summary(r)
+        );
         assert!(r.connectivity.complete(), "{:?}", r.connectivity);
         assert_eq!(r.delta.final_total, 0, "{:#?}", out.violations);
         assert_eq!(r.pruned_traces, 0, "nothing routed may be floating");
