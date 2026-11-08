@@ -65,6 +65,10 @@ struct FaceEntry {
     /// Mean outward normal (exact for planes).
     normal: [f64; 3],
     area: f64,
+    /// IR `FaceRef` that re-finds this face after regeneration: the
+    /// persistent name when the solid carries one, plus a point on the
+    /// face and its outward normal as the geometric fallback.
+    selector: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -128,6 +132,9 @@ fn analyze(solid: &Solid) -> Result<(Topo, &BRepSolid), String> {
         let mut area = 0.0;
         let mut c = Vec3::zeros();
         let mut n = Vec3::zeros();
+        // A point guaranteed ON the face (the centroid of an annulus is
+        // in its hole): the centre of its largest triangle.
+        let (mut big, mut on_face) = (-1.0, Vec3::zeros());
         let mut counts: HashMap<(QKey, QKey), (u32, [f32; 6])> = HashMap::new();
         for tri in m.indices.as_chunks::<3>().0 {
             let p = [tri[0], tri[1], tri[2]].map(vert);
@@ -136,6 +143,10 @@ fn analyze(solid: &Solid) -> Result<(Topo, &BRepSolid), String> {
             let a = 0.5 * cross.norm();
             area += a;
             c += (v[0] + v[1] + v[2]) * (a / 3.0);
+            if a > big {
+                big = a;
+                on_face = (v[0] + v[1] + v[2]) / 3.0;
+            }
             n += cross * 0.5;
             for (i, j) in [(0, 1), (1, 2), (2, 0)] {
                 let k = seg_key(q(p[i]), q(p[j]));
@@ -154,12 +165,20 @@ fn analyze(solid: &Solid) -> Result<(Topo, &BRepSolid), String> {
         boundaries.insert(ord, rim);
         let c = if area > 0.0 { c / area } else { c };
         let n = if n.norm() > 0.0 { n.normalize() } else { n };
+        let mut selector = serde_json::json!({
+            "point": {"x": on_face.x, "y": on_face.y, "z": on_face.z},
+            "normal": {"x": n.x, "y": n.y, "z": n.z},
+        });
+        if let Some(name) = solid.names().and_then(|m| m.faces.get(fid)) {
+            selector["name"] = serde_json::Value::String(name.to_string());
+        }
         faces.push(FaceEntry {
             id: ord,
             surface: format!("{kind:?}"),
             center: [c.x, c.y, c.z],
             normal: [n.x, n.y, n.z],
             area,
+            selector,
         });
     }
     faces.sort_by_key(|f| f.id);
@@ -275,7 +294,7 @@ pub extern "C" fn vcad_scene_part_solid(scene: *const VcadScene, index: usize) -
 }
 
 /// Faces and edges of a solid as JSON:
-/// `{"faces":[{id,surface,center,normal,area}],
+/// `{"faces":[{id,surface,center,normal,area,selector}],
 ///   "edges":[{id,faces:[a,b],a,b,segments:[f32×6…],planar,selector}]}`.
 /// Null for a mesh-only solid. Free with `vcad_string_free`.
 #[no_mangle]

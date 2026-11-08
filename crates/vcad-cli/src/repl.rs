@@ -309,6 +309,7 @@ impl Repl {
                     CsgOp::Shell {
                         child: target,
                         thickness: t,
+                        open_faces: Vec::new(),
                     },
                     None,
                 );

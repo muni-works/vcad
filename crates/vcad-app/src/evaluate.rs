@@ -198,9 +198,14 @@ fn evaluate_node(doc: &Document, node_id: NodeId) -> Result<Option<Solid>> {
         // Blends are fail-closed: the kernel would hand back the
         // *unmodified* solid, so a document asking for radii would
         // silently evaluate to square edges. Surface it instead.
-        CsgOp::Shell { child, thickness } => {
+        CsgOp::Shell {
+            child,
+            thickness,
+            open_faces,
+        } => {
             let c = evaluate_node(doc, *child)?;
-            c.map(|s| s.shell(*thickness))
+            let refs = vcad_eval::convert::to_face_refs(open_faces);
+            c.map(|s| s.shell_open_refs(*thickness, &refs))
                 .transpose()
                 .map_err(|e| anyhow::anyhow!("shell of node {child} did not apply: {e}"))?
         }

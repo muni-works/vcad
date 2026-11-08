@@ -1529,7 +1529,8 @@ public enum FeatureInput: Codable, Equatable, Sendable {
     case chamfer(input: String, distance: Double)
     /// - input: Source feature ID.
     /// - thickness: Wall thickness.
-    case shell(input: String, thickness: Double)
+    /// - openFacesJson: Faces to remove, leaving an opening, as a JSON array of IR `FaceRef`s (`{name}` and/or `{point, normal}`). Absent = closed shell.
+    case shell(input: String, thickness: Double, openFacesJson: String? = nil)
     /// - input: Source feature ID.
     /// - direction: Pattern direction vector.
     /// - count: Number of copies.
@@ -1713,7 +1714,8 @@ public enum FeatureInput: Codable, Equatable, Sendable {
         case "Shell":
             self = .shell(
                 input: try c.decode(String.self, forKey: "input"),
-                thickness: try c.decode(Double.self, forKey: "thickness")
+                thickness: try c.decode(Double.self, forKey: "thickness"),
+                openFacesJson: try c.decodeIfPresent(String.self, forKey: "open_faces_json")
             )
         case "LinearPattern":
             self = .linearPattern(
@@ -1888,10 +1890,11 @@ public enum FeatureInput: Codable, Equatable, Sendable {
             try c.encode("Chamfer", forKey: "type")
             try c.encode(input, forKey: "input")
             try c.encode(distance, forKey: "distance")
-        case .shell(let input, let thickness):
+        case .shell(let input, let thickness, let openFacesJson):
             try c.encode("Shell", forKey: "type")
             try c.encode(input, forKey: "input")
             try c.encode(thickness, forKey: "thickness")
+            try c.encodeIfPresent(openFacesJson, forKey: "open_faces_json")
         case .linearPattern(let input, let direction, let count, let spacing):
             try c.encode("LinearPattern", forKey: "type")
             try c.encode(input, forKey: "input")
