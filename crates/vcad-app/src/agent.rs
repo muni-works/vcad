@@ -310,6 +310,7 @@ pub fn manifest_pretty() -> String {
 pub fn read_tool(tool: &str, args: &Value, doc: &DocumentApi) -> Result<String, CommandError> {
     match tool {
         "describe_scene" => Ok(describe_scene(doc)),
+        "evaluation_errors" => Ok(evaluation_errors(doc)),
         "inspect" => {
             let id = args
                 .get("part_id")
@@ -359,6 +360,25 @@ fn part_field(doc: &DocumentApi, id: &str, key: &str) -> Option<String> {
 
 fn fmt3(v: [f64; 3]) -> String {
     format!("({:.2}, {:.2}, {:.2})", v[0], v[1], v[2])
+}
+
+/// Parts that evaluate to no geometry, one per line; empty when every part
+/// built. A feature the kernel can't build (a blend whose edge reference
+/// resolves to the wrong edge, an over-size radius) often yields an empty
+/// solid rather than an error — the app uses this to refuse such an edit.
+pub fn evaluation_errors(doc: &DocumentApi) -> String {
+    doc.get_state()
+        .parts
+        .iter()
+        .filter(|p| doc.part_world_bbox(p.id()).is_none())
+        .map(|p| {
+            let name = serde_json::to_value(p)
+                .ok()
+                .and_then(|v| v.get("name").and_then(Value::as_str).map(str::to_owned))
+                .unwrap_or_default();
+            format!("- {} \"{name}\": produced no geometry\n", p.id())
+        })
+        .collect()
 }
 
 /// One line per part: id, name, kind, material, bbox.
