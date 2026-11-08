@@ -107,7 +107,7 @@ struct NativeElectronicsView: View {
     private var statusPill: some View {
         HStack(spacing: 8) {
             if let busy = ec.tools.busy { ProgressView().controlSize(.mini); Text("\(busy)…") }
-            Text(ec.tools.error ?? ec.tools.status ?? ec.message ?? (ec.view == .spatial ? "3D layout preview" : ec.tool == .wire ? (ec.view == .schematic ? "Click to draw a wire" : "Select two pins to connect their net") : ec.tool == .label ? "Click a pin or wire to name its net" : ec.tool == .route ? "Click to route · Esc ends the route" : ec.tool == .place ? "Click to place \(ec.componentKind.lowercased())" : ec.selectedRef ?? "Select a component"))
+            Text(ec.tools.error ?? ec.tools.status ?? ec.message ?? (ec.view == .spatial ? "3D layout preview" : ec.tool == .wire ? (ec.view == .schematic ? "Click to draw a wire" : "Select two pins to connect their net") : ec.tool == .label ? "Click a pin or wire to name its net" : ec.tool == .zone ? "Click corners · Return closes the zone" : ec.tool == .route ? "Click to route · Esc ends the route" : ec.tool == .place ? "Click to place \(ec.componentKind.lowercased())" : ec.selectedRef ?? "Select a component"))
                 .lineLimit(1)
             Text("·").foregroundStyle(.secondary)
             if ec.view == .board {
@@ -232,6 +232,7 @@ struct NativeElectronicsView: View {
                 PanelHeader(title: ec.tool == .route ? "Route" : ec.tool == .place ? "Place component"
                             : ec.tool == .wire ? (ec.view == .schematic ? "Wire" : "Connect pins")
                             : ec.tool == .label ? "Net label"
+                            : ec.tool == .zone ? "Copper zone"
                             : ec.selectedRef ?? (ec.view == .schematic ? "Schematic" : "Circuit board"))
                 if ec.tool == .select, let ref = ec.selectedRef,
                    let component = ecRows((ec.view == .schematic ? ec.schematic(model)["components"] : ec.board(model)["footprints"])).first(where: { $0["ref"] as? String == ref }) {
@@ -258,6 +259,18 @@ struct NativeElectronicsView: View {
                     Text("Move coordinates independently in Schematic and Board views.").font(.caption).foregroundStyle(.secondary)
                     Divider()
                 }
+                if ec.multiRefs.count >= 2, ec.tool == .select {
+                    Eyebrow("\(ec.multiRefs.count) selected")
+                    HStack(spacing: 6) {
+                        Button { ec.align(model, .left) } label: { Image(systemName: "align.horizontal.left") }.help("Align left")
+                        Button { ec.align(model, .right) } label: { Image(systemName: "align.horizontal.right") }.help("Align right")
+                        Button { ec.align(model, .top) } label: { Image(systemName: "align.vertical.top") }.help("Align top")
+                        Button { ec.align(model, .bottom) } label: { Image(systemName: "align.vertical.bottom") }.help("Align bottom")
+                        Button { ec.align(model, .spreadX) } label: { Image(systemName: "distribute.horizontal.center") }.help("Distribute horizontally")
+                        Button { ec.align(model, .spreadY) } label: { Image(systemName: "distribute.vertical.center") }.help("Distribute vertically")
+                    }
+                    Divider()
+                }
                 if ec.tool == .label {
                     TextField("Net name", text: $ec.labelText).textFieldStyle(.roundedBorder)
                     Text("Click a pin or wire. Names like GND and +3V3 draw as power symbols.")
@@ -268,10 +281,25 @@ struct NativeElectronicsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if ec.tool == .place {
+                if ec.view == .board {
+                    TextField("Search KiCad footprints", text: $ec.librarySearch).textFieldStyle(.roundedBorder)
+                        .onAppear { ec.loadLibrary() }
+                    ForEach(ec.libraryMatches(), id: \.self) { id in
+                        Button { ec.libraryChoice = id } label: {
+                            Text(id).font(.caption).lineLimit(1).truncationMode(.middle).frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(Theme.Space.xs).selectableRow(selected: ec.libraryChoice == id)
+                        }.buttonStyle(.plain)
+                    }
+                    if let id = ec.libraryChoice {
+                        Text("Click the board to place \(id).").font(.caption).foregroundStyle(.secondary)
+                        Button("Use a starter part instead") { ec.libraryChoice = nil }.controlSize(.small)
+                    }
+                    Divider()
+                }
                 Picker("Component", selection: $ec.componentKind) { ForEach(ec.kinds, id: \.self) { Text($0) } }
                 Text("Native starter parts use explicit two-pad SMD geometry; verify the footprint against your part before fabrication.").font(.caption).foregroundStyle(.secondary)
                 }
-                if ec.view == .board && (ec.tool == .route || ec.tool == .via) {
+                if ec.view == .board && (ec.tool == .route || ec.tool == .via || ec.tool == .zone) {
                 Picker("Net", selection: $ec.activeNet) {
                     Text("Choose net").tag("")
                     ForEach(ecRows(ec.board(model)["nets"]), id: \.ecID) { row in Text(row["name"] as? String ?? row.ecID).tag(row.ecID) }
@@ -450,7 +478,8 @@ struct ElectronicsCanvas: View {
                 guard ec.view != .spatial else { return }
                 let p = CGPoint(x: (event.location.x - offset.x) / scale, y: (event.location.y - offset.y) / scale)
                 switch ec.tool {
-                case .place: ec.place(model, at: p)
+                case .place:
+                    if let id = ec.libraryChoice, ec.view == .board { ec.placeLibrary(model, id: id, at: p) } else { ec.place(model, at: p) }
                 case .route:
                     if ec.routeStart != nil {
                         let hit = copperAt(p, tolerance: 10 / scale, net: ec.activeNet)
@@ -464,12 +493,22 @@ struct ElectronicsCanvas: View {
                     if let l = hit.layer { ec.activeLayer = l }
                 case .via: ec.addVia(model, at: p)
                 case .label: ec.placeLabel(model, at: p, tolerance: 10 / scale)
+                case .zone: ec.zoneClick(model, at: p, tolerance: 10 / scale)
                 case .wire where ec.view == .schematic:
                     ec.wireClick(model, at: p, tolerance: 10 / scale)
                 case .wire:
                     if let pin = nearestPin(p, distance: 8 / scale) { ec.connect(model, pin: pin) }
                     else { ec.message = "Choose a component pin." }
-                case .select: select(p, tolerance: 8 / scale)
+                case .select:
+                    if NSApp.currentEvent?.modifierFlags.contains(.shift) == true, let ref = partAt(p, tolerance: 8 / scale) {
+                        if ec.multiRefs.isEmpty, let first = ec.selectedRef { ec.multiRefs.insert(first) }
+                        if ec.multiRefs.contains(ref) { ec.multiRefs.remove(ref) } else { ec.multiRefs.insert(ref) }
+                        ec.selectedRef = ref
+                    } else {
+                        ec.multiRefs = []; ec.selectedZone = nil
+                        select(p, tolerance: 8 / scale)
+                        if ec.view == .board, ec.selectedRef == nil, ec.selectedTrace == nil, ec.selectedVia == nil { ec.selectZone(model, at: p) }
+                    }
                 }
             })
             .simultaneousGesture(DragGesture(minimumDistance: 4).onChanged { event in
@@ -716,6 +755,11 @@ struct ElectronicsCanvas: View {
             if event.type == .keyDown {
                 if NSApp.keyWindow?.firstResponder is NSTextView { return event }
                 if event.keyCode == 53, ec.routeStart != nil { ec.cancelRoute(); return nil }
+                if !ec.zonePoints.isEmpty {
+                    if event.keyCode == 53 { ec.zonePoints = []; return nil }
+                    if event.keyCode == 36 { ec.finishZone(model); return nil }
+                }
+                if event.keyCode == 51 || event.keyCode == 117, ec.selectedZone != nil { ec.deleteSelectedZone(model); return nil }
                 if !ec.wirePoints.isEmpty {
                     if event.keyCode == 53 { ec.wirePoints = []; return nil }
                     if event.keyCode == 36 { ec.finishWire(model); return nil }

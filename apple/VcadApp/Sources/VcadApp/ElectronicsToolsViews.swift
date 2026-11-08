@@ -298,6 +298,5 @@ struct ErcPanel: View {
                 Text(f["message"] as? String ?? "").font(.caption).lineLimit(3)
             }
         }.frame(height: 280)
-        HStack { Spacer(); Button("Done") { GlassUI.shared.closePanel() }.keyboardShortcut(.defaultAction) }
     }
 }

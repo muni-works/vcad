@@ -48,12 +48,29 @@ struct Airwire { let a: CGPoint, b: CGPoint, net: String }
         let hidden = ec.hiddenLayers
         // Bottom-up, with the active layer last so it reads on top.
         let order = BoardLayers.copper.reversed().filter { $0 != ec.activeLayer } + [ec.activeLayer]
-        for z in ecRows(board["zones"]) where !hidden.contains(z["layer"] as? String ?? "") {
-            let pts = ecRows(z["outline"]).map { screen(ecPoint($0)) }
-            guard pts.count > 2 else { continue }
-            var path = Path(); path.addLines(pts); path.closeSubpath()
-            let color = BoardLayers.color(z["layer"] as? String ?? "")
-            context.fill(path, with: .color(color.opacity(0.10 * dim(z["net"] as? String))))
+        if ec.zoneFills.isEmpty {
+            for z in ecRows(board["zones"]) where !hidden.contains(z["layer"] as? String ?? "") {
+                let pts = ecRows(z["outline"]).map { screen(ecPoint($0)) }
+                guard pts.count > 2 else { continue }
+                var path = Path(); path.addLines(pts); path.closeSubpath()
+                context.fill(path, with: .color(BoardLayers.color(z["layer"] as? String ?? "").opacity(0.10 * dim(z["net"] as? String))))
+            }
+        } else {
+            for fill in ec.zoneFills where !hidden.contains(fill["layer"] as? String ?? "") {
+                var path = Path()
+                for ring in fill["polygons"] as? [[Any]] ?? [] {
+                    let pts = ring.map { screen(ecPoint($0)) }
+                    guard pts.count > 2 else { continue }
+                    path.addLines(pts); path.closeSubpath()
+                }
+                let color = BoardLayers.color(fill["layer"] as? String ?? "")
+                let alpha = (fill["layer"] as? String) == ec.activeLayer ? 0.42 : 0.16
+                context.fill(path, with: .color(color.opacity(alpha * dim(fill["net"] as? String))), style: FillStyle(eoFill: true))
+            }
+        }
+        for (i, z) in ecRows(board["zones"]).enumerated() where i == ec.selectedZone {
+            var path = Path(); path.addLines(ecRows(z["outline"]).map { screen(ecPoint($0)) }); path.closeSubpath()
+            context.stroke(path, with: .color(.white), style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
         }
         let traces = ecRows(board["traces"])
         for layer in order where !hidden.contains(layer) {
@@ -79,6 +96,18 @@ struct Airwire { let a: CGPoint, b: CGPoint, net: String }
         if ec.showRatsnest { drawRatsnest() }
         drawMarkers()
         drawRoutePreview()
+        drawZonePreview()
+    }
+
+    private func drawZonePreview() {
+        guard !ec.zonePoints.isEmpty else { return }
+        var pts = ec.zonePoints.map(screen)
+        if let c = ec.cursor { pts.append(screen(ec.snapped(c))) }
+        var p = Path(); p.addLines(pts)
+        context.stroke(p, with: .color(BoardLayers.color(ec.activeLayer)), style: StrokeStyle(lineWidth: 2, dash: [5, 3]))
+        for q in ec.zonePoints.map(screen) {
+            context.fill(Path(ellipseIn: CGRect(x: q.x - 3, y: q.y - 3, width: 6, height: 6)), with: .color(.white))
+        }
     }
 
     private func drawRoutePreview() {
@@ -122,7 +151,7 @@ struct Airwire { let a: CGPoint, b: CGPoint, net: String }
     }
 
     private func drawArt(_ f: ECObject) {
-        let selected = f["ref"] as? String == ec.selectedRef
+        let selected = f["ref"] as? String == ec.selectedRef || ec.multiRefs.contains(f["ref"] as? String ?? "")
         for g in ecRows(f["graphics"]) {
             let layer = g["layer"] as? String ?? ""
             guard selected || artVisible(layer) else { continue }
@@ -146,7 +175,7 @@ struct Airwire { let a: CGPoint, b: CGPoint, net: String }
     }
 
     private func drawPads(_ f: ECObject) {
-        let comp = ecNumber(f["rotation"]), selected = f["ref"] as? String == ec.selectedRef
+        let comp = ecNumber(f["rotation"]), selected = f["ref"] as? String == ec.selectedRef || ec.multiRefs.contains(f["ref"] as? String ?? "")
         for pad in ecRows(f["pads"]) {
             let layers = (pad["layers"] as? [String] ?? []).filter { BoardLayers.copper.contains($0) }
             guard !layers.isEmpty, layers.contains(where: { !ec.hiddenLayers.contains($0) }) else { continue }

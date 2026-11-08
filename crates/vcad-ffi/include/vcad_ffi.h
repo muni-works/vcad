@@ -733,6 +733,8 @@ char *vcad_pcb_autoroute(const char *pcb_json, const char *request_json);
 typedef struct VcadPcbRouter VcadPcbRouter;
 /** Airwires {wires:[{net,from,to}]}: the DRC's own connectivity. */
 char *vcad_pcb_ratsnest(const char *pcb_json);
+char *vcad_pcb_fill_zones(const char *pcb_json);
+char *vcad_pcb_library_footprint(const char *request_json);
 VcadPcbRouter *vcad_pcb_router_open(const char *pcb_json);
 void vcad_pcb_router_free(VcadPcbRouter *router);
 /** Route {net,from,to,layer?,budget?} -> {status,reason,path,vias,width}. */

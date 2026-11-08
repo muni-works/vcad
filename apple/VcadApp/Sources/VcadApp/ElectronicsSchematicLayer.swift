@@ -202,7 +202,7 @@ private let bodyColor = Color(white: 0.88)
 
     private func drawSymbol(_ c: ECObject) {
         let ref = c["ref"] as? String ?? "?", value = c["value"] as? String ?? ""
-        let selected = ref == ec.selectedRef
+        let selected = ref == ec.selectedRef || ec.multiRefs.contains(ref)
         let color: Color = selected ? .accentColor : bodyColor.opacity(ec.highlightNet == nil ? 1 : 0.4)
         let pins = ElectronicsCanvas.symbolPins(c)
         if Self.kind(c) == .box {

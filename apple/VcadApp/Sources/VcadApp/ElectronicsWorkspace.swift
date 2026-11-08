@@ -12,7 +12,7 @@ func ecPoint(_ value: Any?) -> CGPoint {
 func ecJSON(_ point: CGPoint) -> ECObject { ["x": point.x, "y": point.y] }
 
 enum ElectronicsView: String, CaseIterable { case schematic = "Schematic", board = "Board", spatial = "3D" }
-enum ElectronicsTool: String, CaseIterable { case select = "Select", place = "Place", wire = "Connect", label = "Label", route = "Route", via = "Via" }
+enum ElectronicsTool: String, CaseIterable { case select = "Select", place = "Place", wire = "Connect", label = "Label", zone = "Zone", route = "Route", via = "Via" }
 
 @MainActor @Observable
 final class ElectronicsWorkspace {
@@ -30,6 +30,17 @@ final class ElectronicsWorkspace {
     var snap = true
     var zoom = 1.0
     var pan = CGSize.zero
+    /// Corners of the zone being drawn.
+    var zonePoints: [CGPoint] = []
+    var selectedZone: Int?
+    /// Poured copper per zone, as the fab will see it.
+    var zoneFills: [ECObject] = []
+    /// Parts selected together (shift-click), for align and distribute.
+    var multiRefs = Set<String>()
+    /// KiCad library footprints as "Library:Name".
+    var libraryItems: [String] = []
+    var librarySearch = ""
+    var libraryChoice: String?
     var selectedWire: Int?
     var selectedLabel: Int?
     /// Corners of the schematic wire being drawn.
@@ -234,13 +245,16 @@ final class ElectronicsWorkspace {
         guard let (box, key) = ratsQueued else { ratsBusy = false; return }
         ratsQueued = nil; ratsBusy = true
         Self.ratsQueue.async { [weak self] in
-            let result = ECBox(value: (try? PcbFFI.ratsnest(box.value)) ?? [:])
+            var out = (try? PcbFFI.ratsnest(box.value)) ?? [:]
+            if let fill = try? PcbFFI.fillZones(box.value) { out["zones"] = fill["zones"] }
+            let result = ECBox(value: out)
             DispatchQueue.main.async {
                 guard let self else { return }
                 let wires = ecRows(result.value["wires"]).map {
                     Airwire(a: ecPoint($0["from"]), b: ecPoint($0["to"]), net: $0["net"] as? String ?? "")
                 }
                 self.airwireCache = (key, wires)
+                if let zones = result.value["zones"] { self.zoneFills = ecRows(zones) }
                 self.ratsnestVersion += 1
                 self.runRatsnest()
             }
@@ -427,5 +441,137 @@ final class ElectronicsWorkspace {
             if ecNumber(trace["width"]) < 0.1 { issues.append("Trace \(i + 1) is narrower than 0.1 mm") }
         }
         checking = true
+    }
+}
+
+
+extension ElectronicsWorkspace {
+    // MARK: zones
+
+    func zoneClick(_ model: EditorModel, at p: CGPoint, tolerance: CGFloat) {
+        if zonePoints.count >= 3, hypot(zonePoints[0].x - p.x, zonePoints[0].y - p.y) < tolerance { finishZone(model); return }
+        zonePoints.append(snapped(p))
+    }
+    func finishZone(_ model: EditorModel) {
+        guard zonePoints.count >= 3 else { zonePoints = []; return }
+        guard !activeNet.isEmpty else { message = "Choose a net for the zone first."; return }
+        let zone: ECObject = ["outline": zonePoints.map(ecJSON), "holes": [Any](), "net": activeNet, "layer": activeLayer,
+                              "clearance": 0.2, "minArea": 0.5, "fillType": "Solid", "thermalRelief": "Relief",
+                              "thermalGap": 0.3, "thermalSpokeWidth": 0.4, "priority": 0]
+        zonePoints = []
+        mutateBoard(model) { b in b["zones"] = ecRows(b["zones"]) + [zone] }
+    }
+    func selectZone(_ model: EditorModel, at p: CGPoint) {
+        for (i, z) in ecRows(board(model)["zones"]).enumerated().reversed() where !hiddenLayers.contains(z["layer"] as? String ?? "") {
+            let ring = ecRows(z["outline"]).map { ecPoint($0) }
+            var inside = false, j = ring.count - 1
+            for k in ring.indices {
+                if (ring[k].y > p.y) != (ring[j].y > p.y), p.x < (ring[j].x - ring[k].x) * (p.y - ring[k].y) / (ring[j].y - ring[k].y) + ring[k].x { inside.toggle() }
+                j = k
+            }
+            if inside { selectedZone = i; highlightNet = z["net"] as? String; return }
+        }
+    }
+    func deleteSelectedZone(_ model: EditorModel) {
+        guard let i = selectedZone else { return }
+        mutateBoard(model) { b in var rows = ecRows(b["zones"]); if rows.indices.contains(i) { rows.remove(at: i) }; b["zones"] = rows }
+        selectedZone = nil
+    }
+
+    // MARK: align
+
+    enum Align { case left, right, top, bottom, spreadX, spreadY }
+    func align(_ model: EditorModel, _ how: Align) {
+        let onSheet = view == .schematic
+        func apply(_ rows: [ECObject]) -> [ECObject] {
+            let picked = rows.indices.filter { multiRefs.contains(rows[$0]["ref"] as? String ?? "") }
+            let pts = picked.map { ecPoint(rows[$0]["position"]) }
+            guard let x0 = pts.map(\.x).min(), let x1 = pts.map(\.x).max(), let y0 = pts.map(\.y).min(), let y1 = pts.map(\.y).max() else { return rows }
+            var out = rows
+            let order = picked.sorted { how == .spreadX ? ecPoint(rows[$0]["position"]).x < ecPoint(rows[$1]["position"]).x : ecPoint(rows[$0]["position"]).y < ecPoint(rows[$1]["position"]).y }
+            for (n, i) in order.enumerated() {
+                var p = ecPoint(rows[i]["position"])
+                let t = CGFloat(n) / CGFloat(max(1, order.count - 1))
+                switch how {
+                case .left: p.x = x0
+                case .right: p.x = x1
+                case .top: p.y = y0
+                case .bottom: p.y = y1
+                case .spreadX: p.x = x0 + (x1 - x0) * t
+                case .spreadY: p.y = y0 + (y1 - y0) * t
+                }
+                out[i]["position"] = ecJSON(p)
+            }
+            return out
+        }
+        if onSheet {
+            model.editElectronics(name: "Align") { doc in
+                var s = doc["schematic"] as? ECObject ?? [:]; s["components"] = apply(ecRows(s["components"])); doc["schematic"] = s
+            }
+        } else {
+            mutateBoard(model) { b in b["footprints"] = apply(ecRows(b["footprints"])) }
+        }
+    }
+
+    // MARK: footprint library
+
+    /// Index the KiCad footprint folders once, off the main thread.
+    func loadLibrary() {
+        guard libraryItems.isEmpty else { return }
+        Task {
+            let items = await Task.detached { () -> [String] in
+                var out: [String] = []
+                let fm = FileManager.default
+                let roots = ["/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints", "/usr/share/kicad/footprints", "/usr/local/share/kicad/footprints"]
+                for root in roots {
+                    for lib in (try? fm.contentsOfDirectory(atPath: root)) ?? [] where lib.hasSuffix(".pretty") {
+                        let name = String(lib.dropLast(7))
+                        for f in (try? fm.contentsOfDirectory(atPath: root + "/" + lib)) ?? [] where f.hasSuffix(".kicad_mod") {
+                            out.append("\(name):\(f.dropLast(10))")
+                        }
+                    }
+                }
+                return out.sorted()
+            }.value
+            libraryItems = items
+        }
+    }
+    func libraryMatches() -> [String] {
+        let terms = librarySearch.lowercased().split(separator: " ")
+        guard !terms.isEmpty else { return [] }
+        return Array(libraryItems.lazy.filter { id in let l = id.lowercased(); return terms.allSatisfy { l.contains($0) } }.prefix(60))
+    }
+    /// Place the chosen library footprint, with a matching schematic symbol.
+    func placeLibrary(_ model: EditorModel, id: String, at point: CGPoint) {
+        let lib = id.split(separator: ":").first.map(String.init) ?? ""
+        let prefix: String
+        switch true {
+        case lib.hasPrefix("Resistor"): prefix = "R"
+        case lib.hasPrefix("Capacitor"): prefix = "C"
+        case lib.hasPrefix("Inductor"): prefix = "L"
+        case lib.hasPrefix("Diode"), lib.hasPrefix("LED"): prefix = "D"
+        case lib.hasPrefix("Connector"): prefix = "J"
+        case lib.hasPrefix("Crystal"): prefix = "Y"
+        default: prefix = "U"
+        }
+        let existing = ecRows(board(model)["footprints"]).compactMap { $0["ref"] as? String } + ecRows(schematic(model)["components"]).compactMap { $0["ref"] as? String }
+        var n = 1; while existing.contains("\(prefix)\(n)") { n += 1 }
+        let ref = "\(prefix)\(n)", at = snapped(point)
+        let copper = ecRows(board(model)["stackup"].flatMap { ($0 as? ECObject)?["layers"] }).compactMap { $0["layer"] as? String }
+        guard let r = try? PcbFFI.libraryFootprint(["id": id, "ref": ref, "position": ecJSON(at), "copper": copper.isEmpty ? ["FCu", "BCu"] : copper]),
+              var fp = r["footprint"] as? ECObject else { message = "Couldn't load \(id)."; return }
+        fp["value"] = String(id.split(separator: ":").last ?? "")
+        let numbers = Array(Set(ecRows(fp["pads"]).compactMap { $0["number"] as? String }.filter { !$0.isEmpty })).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+        let pins: [ECObject] = numbers.map { ["number": $0, "name": $0, "pin_type": "Passive", "position": ["x": 0, "y": 0]] }
+        let undoBefore = model.undoStack
+        let before = model.documentJSON.flatMap { DocEdit.serialize($0) }
+        mutateBoard(model) { b in b["footprints"] = ecRows(b["footprints"]) + [fp] }
+        model.editElectronics(name: "Place") { doc in
+            var s = doc["schematic"] as? ECObject ?? [:]
+            let c: ECObject = ["ref": ref, "value": fp["value"] ?? "", "footprintId": id, "position": ecJSON(at), "rotation": 0, "mirror": false, "pins": pins]
+            s["components"] = ecRows(s["components"]) + [c]; doc["schematic"] = s
+        }
+        if let before { model.undoStack = Array((undoBefore + [UndoEntry(data: before, name: "Place \(ref)")]).suffix(64)) }
+        selectedRef = ref
     }
 }

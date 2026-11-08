@@ -515,6 +515,7 @@ enum DockTools {
             mode(.place, "Place Component", "square.on.square.dashed"),
             mode(.route, "Route", "point.topleft.down.to.point.bottomright.curvepath", boardOnly: true),
             mode(.via, "Via", "smallcircle.filled.circle", boardOnly: true),
+            mode(.zone, "Zone", "square.dashed.inset.filled", boardOnly: true),
             Tool(id: "ec.autoroute", label: "Autoroute", symbol: "wand.and.stars", isActive: t.busy == "Autoroute",
                  enabled: t.busy == nil, hint: "Busy") { t.autoroute(ec, m) },
             Tool(id: "ec.drc", label: "DRC", symbol: "checklist", isActive: t.sheet == .drc,

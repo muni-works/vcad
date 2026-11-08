@@ -28,6 +28,14 @@ enum PcbFFI {
         String(decoding: try JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]), as: UTF8.self)
     }
 
+    static func fillZones(_ pcb: Obj) throws -> Obj {
+        let json = try text(pcb)
+        return try finish(json.withCString { vcad_pcb_fill_zones($0) }, "fill zones")
+    }
+    static func libraryFootprint(_ req: Obj) throws -> Obj {
+        let json = try text(req)
+        return try finish(json.withCString { vcad_pcb_library_footprint($0) }, "footprint")
+    }
     static func ratsnest(_ pcb: Obj) throws -> Obj {
         let json = try text(pcb)
         return try finish(json.withCString { vcad_pcb_ratsnest($0) }, "ratsnest")
