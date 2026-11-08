@@ -1072,6 +1072,82 @@ mod tests {
         assert_eq!(report.pruned_traces, 0);
     }
 
+    // ---- island terminals -------------------------------------------------
+
+    /// SIG's copper islands after a run.
+    fn islands_of(pcb: &Pcb, net: &str) -> usize {
+        vcad_ecad_pcb::drc::net_copper_islands(pcb, net)
+            .iter()
+            .filter(|i| !i.pads.is_empty())
+            .count()
+    }
+
+    /// A pad walled in on its own layer, with a fixed fan-out stub to a free
+    /// via, routes FROM THE FAN-OUT: the connection's source is the pad's
+    /// whole copper island, not the buried pad. Starting only at the pad, the
+    /// router proves it walled in.
+    #[test]
+    fn a_walled_pad_with_fanout_routes_from_its_via() {
+        let mut pcb = crate::test_support::fanout_board();
+        let before_traces = pcb.traces.len();
+        let v = verdict::route_remaining(&mut pcb, VerdictOptions::default());
+        assert_eq!(v.connections, 1, "{v:?}");
+        assert_eq!(v.routed, 1, "{v:?}");
+        assert_eq!(islands_of(&pcb, "SIG"), 1, "SIG must end as one island");
+        // Nothing new lands inside the wall: the route left from the fan-out.
+        let pad = vcad_ir::Vec2::new(5.0, 10.0);
+        for t in &pcb.traces[before_traces..] {
+            for p in [t.start, t.end] {
+                assert!(
+                    (p.x - pad.x).hypot(p.y - pad.y) > 0.6,
+                    "new copper at ({:.2}, {:.2}) inside the wall",
+                    p.x,
+                    p.y
+                );
+            }
+        }
+        let report = run_fab_prep(&mut pcb, &FabPrepOptions::default()).report;
+        assert!(report.connectivity.complete(), "{:?}", report.connectivity);
+    }
+
+    /// A net already split into two islands by existing copper is joined by
+    /// ONE island-to-island connection, not one per pad pair.
+    #[test]
+    fn a_split_net_routes_island_to_island_once() {
+        let pcb = crate::test_support::split_island_board();
+        let layers: Vec<vcad_ir::ecad::PcbLayer> =
+            pcb.stackup.layers.iter().map(|l| l.layer).collect();
+        let conns =
+            vcad_ecad_pcb::router::islands::island_connections(&pcb, &layers, &Default::default());
+        assert_eq!(conns.len(), 1, "{conns:?}");
+        assert_eq!(conns[0].terminals.from.len(), 3, "2 pads + 1 trace");
+        assert_eq!(conns[0].terminals.to.len(), 3, "2 pads + 1 trace");
+        let mut pcb = pcb;
+        let v = verdict::route_remaining(&mut pcb, VerdictOptions::default());
+        assert_eq!((v.connections, v.routed), (1, 1), "{v:?}");
+        assert_eq!(islands_of(&pcb, "N"), 1);
+    }
+
+    /// Same board in, same copper and the same summary out.
+    #[test]
+    fn island_routing_is_deterministic() {
+        let run = |mut pcb: Pcb| {
+            let v = verdict::route_remaining(&mut pcb, VerdictOptions::default());
+            (
+                serde_json::to_string(&pcb.traces).unwrap(),
+                serde_json::to_string(&pcb.vias).unwrap(),
+                v,
+            )
+        };
+        for board in [
+            crate::test_support::fanout_board(),
+            crate::test_support::split_island_board(),
+            crate::test_support::three_resistor_board(),
+        ] {
+            assert_eq!(run(board.clone()), run(board));
+        }
+    }
+
     // ---- bug 3: through vias by default ----------------------------------
 
     /// A default four-layer board routes with through vias only — JLC's

@@ -251,3 +251,58 @@ pub fn floating_pad_attachments(pcb: &Pcb) -> Vec<(String, PcbLayer, f64, f64)> 
     }
     bad
 }
+
+/// A fine-pitch pad (`SIG`, U1.1 on F.Cu) walled in on its own layer by a
+/// closed ring of foreign copper (`WALL`) — except for a diagonal slot exactly
+/// as wide as one trace plus clearance, through which a hand-placed fan-out
+/// runs: a fixed F.Cu stub from the pad to a through via in open space. The
+/// other end of `SIG` (R2.1) is a free pad across the board.
+///
+/// The slot is legal for the fixed stub but far too tight for the router's
+/// axis-aligned grid, so a router that starts only at the pad proves it
+/// walled in; a router that starts anywhere on the pad's copper island starts
+/// at the via and routes.
+pub fn fanout_board() -> Pcb {
+    let mut pcb = four_layer_board(20.0, 20.0);
+    let (cx, cy, h) = (5.0, 10.0, 0.55);
+    with_smd_pad(&mut pcb, "U1", "1", cx, cy, "SIG");
+    with_smd_pad(&mut pcb, "R2", "1", 15.0, cy, "SIG");
+    // The wall: left, bottom, and the top/right sides stopping short of the
+    // top-right corner where the fan-out leaves on the diagonal.
+    let gap = 0.03;
+    for (x0, y0, x1, y1) in [
+        (cx - h, cy - h, cx - h, cy + h),
+        (cx - h, cy - h, cx + h, cy - h),
+        (cx - h, cy + h, cx - gap, cy + h),
+        (cx + h, cy - h, cx + h, cy - gap),
+    ] {
+        with_trace(&mut pcb, "WALL", x0, y0, x1, y1);
+    }
+    // The fan-out: stub on the diagonal, through via in open space.
+    let (vx, vy) = (cx + 1.5, cy + 1.5);
+    with_trace(&mut pcb, "SIG", cx, cy, vx, vy);
+    pcb.vias.push(vcad_ir::ecad::Via {
+        position: Vec2::new(vx, vy),
+        diameter: 0.6,
+        drill: 0.3,
+        start_layer: PcbLayer::FCu,
+        end_layer: PcbLayer::BCu,
+        net: "SIG".into(),
+        source: None,
+        via_type: None,
+    });
+    pcb
+}
+
+/// One net (`N`) already split into two islands by existing copper: A1–A2
+/// joined by a trace on the left, B1–B2 joined by a trace on the right.
+pub fn split_island_board() -> Pcb {
+    let mut pcb = four_layer_board(20.0, 20.0);
+    with_smd_pad(&mut pcb, "A1", "1", 3.0, 6.0, "N");
+    with_smd_pad(&mut pcb, "A2", "1", 3.0, 12.0, "N");
+    with_smd_pad(&mut pcb, "B1", "1", 15.0, 6.0, "N");
+    with_smd_pad(&mut pcb, "B2", "1", 15.0, 12.0, "N");
+    with_trace(&mut pcb, "N", 3.0, 6.0, 3.0, 12.0);
+    with_trace(&mut pcb, "N", 15.0, 6.0, 15.0, 12.0);
+    pcb
+}

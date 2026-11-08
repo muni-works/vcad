@@ -7,13 +7,13 @@
 //! pipeline and the example driver run the same code rather than two copies
 //! that drift.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap};
 
-use vcad_ecad_pcb::ratsnest::{compute_ratsnest, NetConnection, Netlist, NetlistNet};
 use vcad_ecad_pcb::router::complete::{
-    path_vias, route_window_complete_pinned, CompleteOutcome, TerminalLayers, ViaClass,
+    path_vias, route_window_complete_islands, CompleteOutcome, IslandTerminals, ViaClass,
     WindowBudget,
 };
+use vcad_ecad_pcb::router::islands::{island_connections, IslandConnection};
 use vcad_ecad_pcb::session::RouteSession;
 use vcad_ecad_pcb::spatial::{CopperElement, CopperGeom};
 use vcad_ir::ecad::{Pcb, PcbLayer, Trace, Via, ViaType};
@@ -100,7 +100,8 @@ pub struct VerdictSummary {
 /// How many certificates a summary carries before it stops collecting.
 const MAX_CERTIFICATES: usize = 64;
 
-type Cluster = (Vec2, Vec2, Vec<(String, Vec2, Vec2)>);
+/// A joint search window: its bounds and the indices of its connections.
+type Cluster = (Vec2, Vec2, Vec<usize>);
 
 /// Merged windows wider than this coarsen the router's grid pitch until
 /// unrelated terminals artificially collide.
@@ -109,27 +110,6 @@ const MAX_WINDOW_MM: f64 = 20.0;
 /// Route every still-unrouted connection on `pcb`, committing only copper that
 /// survives the session oracle. Mutates `pcb` in place.
 pub fn route_remaining(pcb: &mut Pcb, opts: VerdictOptions) -> VerdictSummary {
-    // Unrouted connections = ratsnest over the board as it stands.
-    let mut map: BTreeMap<String, Vec<NetConnection>> = BTreeMap::new();
-    for fp in &pcb.footprints {
-        for pad in &fp.pads {
-            if let Some(net) = &pad.net {
-                if !net.is_empty() {
-                    map.entry(net.clone()).or_default().push(NetConnection {
-                        component_ref: fp.reference.clone(),
-                        pin_number: pad.number.clone(),
-                    });
-                }
-            }
-        }
-    }
-    let netlist = Netlist {
-        nets: map
-            .into_iter()
-            .map(|(name, connections)| NetlistNet { name, connections })
-            .collect(),
-    };
-    let mut rats = compute_ratsnest(pcb, &netlist);
     // Nets that own a filled zone are connected THROUGH the plane, not by
     // pad-to-pad traces — the router intentionally stitches them with vias.
     // Their air-wires are not unrouted work and must not enter the verdict.
@@ -139,9 +119,12 @@ pub fn route_remaining(pcb: &mut Pcb, opts: VerdictOptions) -> VerdictSummary {
         .filter(|z| !z.net.is_empty())
         .map(|z| z.net.as_str())
         .collect();
-    rats.retain(|l| !plane_nets.contains(l.net.as_str()));
-
     let layers = copper_layers(pcb);
+    // Unrouted connections = a spanning set over each net's copper ISLANDS as
+    // the board stands (the DRC's own connectivity): a connection may start on
+    // any copper already joined to its pad — a fan-out stub, a via, an
+    // earlier trace — not only on the pad itself.
+    let rats: Vec<IslandConnection> = island_connections(pcb, &layers, &plane_nets);
     // Via policy: through vias only, unless the board declares a blind/buried
     // process or the caller opted in. `through` is the span every barrel is
     // widened to.
@@ -182,7 +165,7 @@ pub fn route_remaining(pcb: &mut Pcb, opts: VerdictOptions) -> VerdictSummary {
     // same net (per-connection node-disjointness can't model same-net cell
     // sharing), and the merged window is capped.
     let mut clusters: Vec<Cluster> = Vec::new();
-    'c: for l in &rats {
+    'c: for (li, l) in rats.iter().enumerate() {
         let (lo, hi) = (
             Vec2::new(l.from.x.min(l.to.x) - 2.0, l.from.y.min(l.to.y) - 2.0),
             Vec2::new(l.from.x.max(l.to.x) + 2.0, l.from.y.max(l.to.y) + 2.0),
@@ -197,21 +180,32 @@ pub fn route_remaining(pcb: &mut Pcb, opts: VerdictOptions) -> VerdictSummary {
                 && cc.len() < opts.max_cluster
                 && merged_w <= MAX_WINDOW_MM
                 && merged_h <= MAX_WINDOW_MM
-                && cc.iter().all(|(n, _, _)| n != &l.net)
+                && cc.iter().all(|&j| rats[j].net != l.net)
             {
                 clo.x = clo.x.min(lo.x);
                 clo.y = clo.y.min(lo.y);
                 chi.x = chi.x.max(hi.x);
                 chi.y = chi.y.max(hi.y);
-                cc.push((l.net.clone(), l.from, l.to));
+                cc.push(li);
                 continue 'c;
             }
         }
-        clusters.push((lo, hi, vec![(l.net.clone(), l.from, l.to)]));
+        clusters.push((lo, hi, vec![li]));
     }
     summary.clusters = clusters.len();
 
-    for (lo, hi, conns) in &clusters {
+    for (lo, hi, members) in &clusters {
+        let conns: Vec<(String, Vec2, Vec2)> = members
+            .iter()
+            .map(|&j| (rats[j].net.clone(), rats[j].from, rats[j].to))
+            .collect();
+        let conns = &conns;
+        // Each terminal is the whole copper island on that end — pads on
+        // their own layers (an unpinned F.Cu SMD pad would otherwise start
+        // its trace on an inner layer with no via back to the pad), vias on
+        // every layer they span, traces along their length.
+        let islands: Vec<IslandTerminals> =
+            members.iter().map(|&j| rats[j].terminals.clone()).collect();
         // Search at the widest class width in the cluster (conservative:
         // guarantees the found corridors fit every member's committed width).
         let cluster_width = conns
@@ -241,21 +235,12 @@ pub fn route_remaining(pcb: &mut Pcb, opts: VerdictOptions) -> VerdictSummary {
             .fold((0.0_f64, 0.0_f64), |(ad, adr), (d, dr)| {
                 (ad.max(d), adr.max(dr))
             });
-        // Pin each terminal to the layers electrically live there (a pad's own
-        // copper, or existing copper of the net). Unpinned, the search attaches
-        // an F.Cu SMD pad on whatever layer happens to be free and commits a
-        // stub on In1/In2/B.Cu with no via back to the pad — which the prune
-        // then deletes as floating copper.
-        let pins: Vec<TerminalLayers> = conns
-            .iter()
-            .map(|(n, f, t)| TerminalLayers::for_connection(pcb, &layers, n, *f, *t))
-            .collect();
-        match route_window_complete_pinned(
+        match route_window_complete_islands(
             &session,
             (*lo, *hi),
             &layers,
             conns,
-            &pins,
+            &islands,
             cluster_width,
             Some(ViaClass {
                 pad_diameter: via_class.0,
@@ -295,7 +280,15 @@ pub fn route_remaining(pcb: &mut Pcb, opts: VerdictOptions) -> VerdictSummary {
             CompleteOutcome::ProvedInfeasible { reason } => {
                 summary.proved_infeasible += conns.len();
                 if summary.certificates.len() < MAX_CERTIFICATES {
-                    let names: Vec<&str> = conns.iter().map(|c| c.0.as_str()).collect();
+                    // Name the islands, not just the nets: "which copper of
+                    // net X could not be joined to which".
+                    let names: Vec<String> = members
+                        .iter()
+                        .map(|&j| {
+                            let t = &rats[j].terminals;
+                            format!("{} [{} -> {}]", rats[j].net, t.from_label, t.to_label)
+                        })
+                        .collect();
                     summary
                         .certificates
                         .push(format!("{}: {reason}", names.join(", ")));
