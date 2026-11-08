@@ -1863,6 +1863,22 @@ struct ObjectInspectorWindow: View {
             } else if let d = node.detail {
                 KeyValueRow("Value", d)
             }
+            // A placed shape: its row edits the position, so its own size
+            // (a cylinder's radius and height) was unreachable from the UI.
+            if let hid = node.heldNodeId, let hop = node.heldOpType,
+               FeatureParamEditors.editableOps.contains(hop) {
+                Divider()
+                Eyebrow(DocumentGraph.label(hop))
+                VStack(alignment: .leading, spacing: 7) {
+                    FeatureParamEditors(model: model,
+                                        node: FeatureNode(id: "held\(hid)", nodeId: hid, name: node.name,
+                                                          opType: hop, symbol: node.symbol, detail: nil,
+                                                          partIndex: node.partIndex, children: [])) { snapshot in
+                        ReleaseWindowController.shared.refreshGeometry(model: model,
+                                                                       collisions: snapshot)
+                    }
+                }
+            }
         } else {
             EmptyPanelState(title: "Nothing selected", systemImage: "cursorarrow.click.2",
                             detail: "Select a feature in the navigator or a part in the viewport.")

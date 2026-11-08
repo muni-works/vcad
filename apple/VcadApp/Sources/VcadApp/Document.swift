@@ -349,7 +349,9 @@ struct DocumentGraph {
             symbol: Self.symbol(held?.opType ?? node.opType),
             detail: Self.paramSummary(node),
             partIndex: partIndex,
-            children: kids)
+            children: kids,
+            heldNodeId: held?.id,
+            heldOpType: held?.opType)
     }
 
     /// Child node ids an op references, in reading order (operands, then the
@@ -769,5 +771,9 @@ struct FeatureNode: Identifiable {
     let detail: String?
     let partIndex: Int?
     let children: [FeatureNode]
+    /// For a placed part (a transform chain over a shape): the shape's node,
+    /// so the inspector can edit its size as well as its position.
+    var heldNodeId: Int? = nil
+    var heldOpType: String? = nil
     var hasChildren: Bool { !children.isEmpty }
 }
