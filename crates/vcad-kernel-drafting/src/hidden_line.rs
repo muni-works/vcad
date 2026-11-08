@@ -553,7 +553,10 @@ mod tests {
 
     #[test]
     fn cylinder_front_view_is_two_silhouettes_plus_caps() {
-        for mesh in [make_cylinder_mesh(1.0, 2.0, 32), soup(&make_cylinder_mesh(1.0, 2.0, 32))] {
+        for mesh in [
+            make_cylinder_mesh(1.0, 2.0, 32),
+            soup(&make_cylinder_mesh(1.0, 2.0, 32)),
+        ] {
             let view = project_mesh(&mesh, ViewDirection::Front);
             assert_eq!(view.num_hidden(), 0, "{:?}", view.edges);
             assert_eq!(view.num_visible(), 4, "{:?}", view.edges);
