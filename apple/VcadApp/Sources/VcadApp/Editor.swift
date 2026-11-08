@@ -236,6 +236,9 @@ struct Tool: Identifiable {
     let isActive: Bool
     var enabled: Bool = true
     var hint: String = ""
+    /// A bare-letter key (Fusion/KiCad style) — fires only when nothing else
+    /// handles the key, so it can never steal typing from a field.
+    var shortcut: Character? = nil
     let action: () -> Void
 }
 
@@ -2077,11 +2080,13 @@ final class EditorModel {
         guard let entry = undoStack.popLast() else { undoGeneration(); return }
         guard let back = step(entry, forward: false) else { return }
         redoStack.append(back)
+        GlassUI.shared.flash("Undo \(entry.name)", symbol: "arrow.uturn.backward")
     }
     func redo() {
         guard let entry = redoStack.popLast() else { return }
         guard let back = step(entry, forward: true) else { return }
         undoStack.append(back)
+        GlassUI.shared.flash("Redo \(entry.name)", symbol: "arrow.uturn.forward")
     }
 
     /// Apply one history entry; returns the entry that reverses it.
@@ -2455,6 +2460,10 @@ final class EditorModel {
                 if event.keyCode == 53 {                       // Escape
                     if self.sketching {
                         self.exitSketch()
+                    } else if GlassUI.shared.shortcutsShown {
+                        GlassUI.shared.shortcutsShown = false
+                    } else if self.activeFeatureOp != nil || self.showsCommandPalette {
+                        // Their own Cancel handles Esc; keep the selection.
                     } else if self.usesDocumentTree, self.renamingFeatureID == nil, self.hasSelection {
                         self.deselectAll()
                     }

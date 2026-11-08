@@ -53,6 +53,15 @@ final class KeyableWindow: NSWindow, NSWindowDelegate {
         if event.keyCode == 51 || event.keyCode == 117, event.modifierFlags.intersection([.command, .option, .control]).isEmpty {
             delete(nil); return
         }
+        // A bare letter nothing else wanted: the workspace's tool shortcut.
+        if event.modifierFlags.intersection([.command, .option, .control]).isEmpty,
+           let ch = event.charactersIgnoringModifiers?.first, ch.isLetter || ch == "?" || event.characters == "?" {
+            let key: Character = event.characters == "?" ? "?" : ch
+            let handled = MainActor.assumeIsolated {
+                ReleaseWindowController.shared.editorModel.map { GlassUI.shared.handleKey(key, model: $0) } ?? false
+            }
+            if handled { return }
+        }
         super.keyDown(with: event)
     }
     /// Standard Edit items grey out when there is nothing to act on.
@@ -724,6 +733,24 @@ struct ReleasedOverlayView: View {
             toolbar
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .overlay(alignment: .top) {
+            // Command panel, palette and toasts hang beneath the dock.
+            VStack(spacing: Theme.Space.s) {
+                ToastHost()
+                CommandPanelHost(model: model)
+                PaletteHost(model: model)
+            }
+            .padding(.top, chromeTop)
+            .animation(Motion.smooth, value: model.activeFeatureOp)
+            .animation(Motion.smooth, value: model.showsCommandPalette)
+            .animation(Motion.smooth, value: GlassUI.shared.toast?.text)
+        }
+        .overlay {
+            if GlassUI.shared.shortcutsShown {
+                ShortcutSheet(model: model).transition(.scale(scale: 0.97).combined(with: .opacity))
+            }
+        }
+        .animation(Motion.smooth, value: GlassUI.shared.shortcutsShown)
         .overlay(alignment: .top) {
             // History drops down from the dock, in every workspace.
             if GlassUI.shared.historyOpen && model.usesDocumentTree && model.workspace != .manufacture {
