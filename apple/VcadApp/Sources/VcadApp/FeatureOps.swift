@@ -99,7 +99,8 @@ extension EditorModel {
 struct FeatureOpSheet: View {
     @Bindable var model: EditorModel
     let op: FeatureOp
-    @Environment(\.dismiss) private var dismiss
+    /// Hosted as a non-modal command panel: closing clears the active op.
+    private func dismiss() { model.activeFeatureOp = nil }
 
     @State private var size: Double = 2
     @State private var thickness: Double = 1
@@ -125,7 +126,7 @@ struct FeatureOpSheet: View {
             if !op.createsPart, model.selectedPartFeatureId == nil, model.picking.selectionPart == nil {
                 Text("Select a part first.").foregroundStyle(.secondary)
             }
-            Form { fields }.formStyle(.grouped).frame(minHeight: 120)
+            Form { fields }.formStyle(.columns)
             if let error { Text(error).font(.caption).foregroundStyle(.red) }
             HStack {
                 Spacer()

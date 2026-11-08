@@ -336,11 +336,13 @@ struct DocumentCommands: Commands {
                 .keyboardShortcut("0", modifiers: [.command, .option]).disabled(!model.hasSelection)
         }
         CommandGroup(replacing: .help) {
+            Button("Keyboard Shortcuts") { GlassUI.shared.shortcutsShown.toggle() }
+                .keyboardShortcut("/", modifiers: .command)
+            Divider()
             Button("Welcome to vcad") { WelcomeWindowController.shared.show(model: model) }
             Button("Connect Claude…") { ConnectClaude.run() }
             Divider()
             Button("vcad Help") { NSWorkspace.shared.open(URL(string: "https://vcad.io/docs")!) }
-            Button("Keyboard Shortcuts") { NSWorkspace.shared.open(URL(string: "https://vcad.io/docs/native/shortcuts")!) }
             Divider()
             Button("Report an Issue…") { NSWorkspace.shared.open(URL(string: "https://github.com/ecto/vcad/issues/new")!) }
         }

@@ -75,6 +75,47 @@ final class GlassUI {
     /// Wall time of the last history seek until its rebuild landed, ms.
     var lastSeekMillis: Double?
     @ObservationIgnored var shimmerTask: Task<Void, Never>?
+    /// The one floating panel (joint/mate editors, parameters, electronics
+    /// tools) — a non-modal glass card under the dock, never a sheet.
+    var panel: PanelRequest?
+
+    func present(_ title: String, symbol: String, width: CGFloat = 400,
+                 onClose: @escaping () -> Void = {}, @ViewBuilder content: @escaping () -> some View) {
+        panel = PanelRequest(title: title, symbol: symbol, width: width, onClose: onClose) { AnyView(content()) }
+    }
+    func closePanel() {
+        let p = panel
+        panel = nil
+        p?.onClose()
+    }
+
+    /// The keyboard cheat sheet (?).
+    var shortcutsShown = false
+    /// A transient confirmation ("Undo Fillet"), auto-hidden.
+    var toast: (text: String, symbol: String)?
+    @ObservationIgnored private var toastTask: Task<Void, Never>?
+
+    func flash(_ text: String, symbol: String) {
+        toast = (text.replacingOccurrences(of: "Claude: ", with: ""), symbol)
+        toastTask?.cancel()
+        toastTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(1400))
+            guard !Task.isCancelled else { return }
+            GlassUI.shared.toast = nil
+        }
+    }
+
+    /// A bare-letter key from the window: run the current workspace's tool
+    /// bound to it. Returns false when nothing is bound (the key beeps on).
+    func handleKey(_ ch: Character, model: EditorModel) -> Bool {
+        if ch == "?" { shortcutsShown.toggle(); return true }
+        guard !model.sketching, model.activeFeatureOp == nil, !model.showsCommandPalette else { return false }
+        let key = Character(ch.lowercased())
+        guard let t = DockTools.tools(space, model: model).first(where: { $0.shortcut == key }) else { return false }
+        guard t.enabled else { flash("\(t.label) — \(t.hint)", symbol: "exclamationmark.circle"); return true }
+        t.action()
+        return true
+    }
     /// Viewport thumbnails per history frame (frame index → image).
     var thumbnails: [Int: NSImage] = [:]
 
@@ -384,12 +425,19 @@ enum DockTools {
         out.append(Tool(id: "measure", label: "Measure", symbol: "ruler", isActive: m.measuring, enabled: doc) {
             m.measuring.toggle()
         })
-        return out
+        return keyed(out, ["sketch": "s", "shape.cube": "b", "shape.cylinder": "y", "op.fillet": "f",
+                           "op.chamfer": "c", "op.shell": "k", "op.circularPattern": "p",
+                           "bool.difference": "x", "measure": "i"])
+    }
+
+    /// Attach bare-letter shortcuts by tool id.
+    private static func keyed(_ tools: [Tool], _ keys: [String: Character]) -> [Tool] {
+        tools.map { t in var t = t; t.shortcut = keys[t.id]; return t }
     }
 
     private static func assembly(_ m: EditorModel) -> [Tool] {
         let has = m.assemblyInstanceCount > 0
-        return [
+        return keyed([
             Tool(id: "asm.insert", label: "Insert Part", symbol: "plus.square.on.square",
                  isActive: false, enabled: m.selectedPartIndex != nil, hint: "Select a part to instance") {
                 if let pi = m.selectedPartIndex { _ = m.insertInstance(ofPart: pi) }
@@ -409,14 +457,14 @@ enum DockTools {
                  isActive: m.assembly.showsTimeline, enabled: has) {
                 m.assembly.showsTimeline.toggle()
             },
-        ]
+        ], ["asm.insert": "n", "asm.panel": "j", "asm.check": "k", "asm.explode": "e", "asm.timeline": "t"])
     }
 
     /// Drawing: exclusive modes only. On/off display toggles live in the
     /// inspector and the View menu, so the dock never shows three "active".
     private static func drawing(_ m: EditorModel) -> [Tool] {
         let s = DrawingStore.shared
-        return [
+        return keyed([
             Tool(id: "dwg.select", label: "Select", symbol: "cursorarrow", isActive: s.tool == .select) { s.tool = .select },
             Tool(id: "dwg.section", label: "Section", symbol: "rectangle.split.2x1", isActive: s.tool == .section,
                  enabled: s.view.canSection, hint: "Not in the isometric view") { s.tool = .section },
@@ -424,7 +472,7 @@ enum DockTools {
             Tool(id: "dwg.datum", label: "Datum", symbol: "a.square", isActive: s.tool == .gdt(.datum)) { s.tool = .gdt(.datum) },
             Tool(id: "dwg.frame", label: "Feature Control Frame", symbol: "square.grid.3x1.below.line.grid.1x2",
                  isActive: { if case .gdt(let k) = s.tool { return k != .datum }; return false }()) { s.tool = .gdt(.position) },
-        ]
+        ], ["dwg.select": "v", "dwg.section": "t", "dwg.detail": "d", "dwg.datum": "a", "dwg.frame": "g"])
     }
 
     /// Electronics: the editing modes plus the two board-wide verbs. An empty
@@ -447,7 +495,7 @@ enum DockTools {
         // Schematic gets schematic verbs; Via / Autoroute / DRC are board work.
         if ec.view == .schematic {
             let empty = ecRows(ec.schematic(m)["components"]).isEmpty
-            return [
+            return keyed([
                 mode(.select, "Select", "cursorarrow"),
                 mode(.place, "Place Component", "square.on.square.dashed"),
                 mode(.wire, "Connect Pins", "point.3.connected.trianglepath.dotted"),
@@ -457,9 +505,9 @@ enum DockTools {
                     : Tool(id: "ec.check", label: "Check Connectivity", symbol: "checkmark.seal", isActive: ec.checking) { ec.check(m) },
                 Tool(id: "ec.simulate", label: "Simulate", symbol: "waveform", isActive: t.sheet == .simulate,
                      enabled: !empty, hint: "Build or draw a schematic first") { t.sheet = .simulate },
-            ]
+            ], ["ec.select": "e", "ec.place": "p", "ec.wire": "w", "ec.check": "c", "ec.simulate": "s"])
         }
-        return [
+        return keyed([
             mode(.select, "Select", "cursorarrow"),
             mode(.place, "Place Component", "square.on.square.dashed"),
             mode(.route, "Route", "point.topleft.down.to.point.bottomright.curvepath", boardOnly: true),
@@ -468,7 +516,8 @@ enum DockTools {
                  enabled: t.busy == nil, hint: "Busy") { t.autoroute(ec, m) },
             Tool(id: "ec.drc", label: "DRC", symbol: "checklist", isActive: t.sheet == .drc,
                  enabled: t.busy == nil, hint: "Busy") { t.runDrc(ec, m) },
-        ]
+        ], ["ec.select": "e", "ec.place": "p", "ec.route": "x", "ec.wire": "w", "ec.via": "v",
+            "ec.autoroute": "a", "ec.drc": "d"])
     }
 
     /// The rest of a workspace's verbs, for the ··· palette only.
@@ -504,7 +553,7 @@ enum DockTools {
     private static func fab(_ m: EditorModel) -> [Tool] {
         let f = FabStore.shared
         let a = AnalysisStore.shared
-        return [
+        return keyed([
             Tool(id: "fab.sheet", label: "Sheet Metal", symbol: "square.3.layers.3d.down.right",
                  isActive: f.shown && f.tab == .sheet) { f.shown = true; f.tab = .sheet },
             Tool(id: "fab.print", label: "3D Print", symbol: "printer", isActive: f.shown && f.tab == .print) {
@@ -517,7 +566,7 @@ enum DockTools {
                  enabled: m.usesDocumentTree) { a.shown = true; a.tab = .dfm },
             Tool(id: "fab.fea", label: "Stress", symbol: "waveform.path.ecg", isActive: a.shown && a.tab == .fea,
                  enabled: m.usesDocumentTree) { a.shown = true; a.tab = .fea },
-        ]
+        ], ["fab.sheet": "m", "fab.print": "p", "fab.cam": "n", "fab.dfm": "d", "fab.fea": "r"])
     }
 }
 
@@ -555,9 +604,11 @@ struct GlassDock: View {
         .animation(glassSpring(reduceMotion), value: ui.space)
         .fixedSize()
         .disabled(model.cnc.machine.active)
-        .sheet(item: $model.activeFeatureOp) { op in FeatureOpSheet(model: model, op: op) }
-        .sheet(isPresented: $model.showsCommandPalette) { CommandPaletteSheet(model: model) }
-        .sheet(isPresented: $model.showsParameterTable) { ParameterTableSheet(model: model) }
+        .onChange(of: model.showsParameterTable) { _, on in
+            guard on else { if ui.panel?.title == "Parameters" { ui.panel = nil }; return }
+            ui.present("Parameters", symbol: "slider.horizontal.3", width: 420,
+                       onClose: { model.showsParameterTable = false }) { ParameterTableSheet(model: model) }
+        }
         .background {
             Button("") { model.disarm() }.keyboardShortcut(.cancelAction)
                 .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
@@ -567,6 +618,12 @@ struct GlassDock: View {
     }
 
     private var divider: some View { Divider().frame(height: 22).padding(.horizontal, 4) }
+
+    /// "Fillet  F" — or why it is unavailable.
+    static func tooltip(_ t: Tool) -> String {
+        let key = t.shortcut.map { "  \(String($0).uppercased())" } ?? ""
+        return t.enabled || t.hint.isEmpty ? t.label + key : "\(t.label)\(key) — \(t.hint)"
+    }
 
     private var workspaceMenu: some View {
         Menu {
@@ -601,7 +658,7 @@ struct GlassDock: View {
         }
         .opacity(tool.enabled ? 1 : 0.35)
         .disabled(!tool.enabled)
-        .help(tool.enabled || tool.hint.isEmpty ? tool.label : "\(tool.label) — \(tool.hint)")
+        .help(Self.tooltip(tool))
         .accessibilityLabel(tool.label)
         .accessibilityAddTraits(tool.isActive ? .isSelected : [])
     }
@@ -1250,6 +1307,146 @@ struct DockContextMenu: View {
     var body: some View {
         ForEach(DockTools.tools(GlassUI.shared.space, model: model)) { t in
             Button { t.action() } label: { Label(t.label, systemImage: t.symbol) }.disabled(!t.enabled)
+        }
+    }
+}
+
+
+// MARK: - Non-modal command panel, toast, cheat sheet
+
+/// A feature command (fillet, shell, pattern…) as a floating glass panel
+/// beneath the dock — not a sheet, so the viewport stays live: orbit, pick
+/// edges, change the selection while it is open. Return applies, Esc cancels.
+struct CommandPanelHost: View {
+    @Bindable var model: EditorModel
+    var body: some View {
+        if let op = model.activeFeatureOp {
+            FeatureOpSheet(model: model, op: op)
+                .fixedSize(horizontal: false, vertical: true)
+                .glassPanel()
+                .id(op)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .modifier(ChromeRegion(key: "commandPanel"))
+        }
+    }
+}
+
+/// The command palette as a Spotlight-style floating field, not a sheet.
+struct PaletteHost: View {
+    @Bindable var model: EditorModel
+    var body: some View {
+        if model.showsCommandPalette {
+            CommandPaletteSheet(model: model)
+                .glassPanel()
+                .transition(.scale(scale: 0.97).combined(with: .opacity))
+                .modifier(ChromeRegion(key: "palette"))
+        }
+    }
+}
+
+/// "Undo Fillet" and friends: a quiet pill that fades on its own.
+struct ToastHost: View {
+    @Bindable var ui = GlassUI.shared
+    var body: some View {
+        if let t = ui.toast {
+            Label(t.text, systemImage: t.symbol)
+                .font(.callout)
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .glassCapsule()
+                .transition(.opacity.combined(with: .move(edge: .top)))
+                .accessibilityAddTraits(.updatesFrequently)
+                .allowsHitTesting(false)
+                .id(t.text)
+        }
+    }
+}
+
+/// Every shortcut for the current workspace, on one glass card (? toggles).
+struct ShortcutSheet: View {
+    @Bindable var model: EditorModel
+    @Bindable var ui = GlassUI.shared
+
+    private static let global: [(String, String)] = [
+        ("⌘Z / ⇧⌘Z", "Undo / Redo"), ("⌘F  ⌘K", "Search"), ("⇧⌘P", "Command palette"),
+        ("⌃⌘1–5", "Switch workspace"), ("⌥⌘1 / ⌥⌘2", "Navigator / Inspector"),
+        ("⌘1–4", "Iso / Front / Right / Top view"), ("⌘0", "Frame all"),
+        ("⌃M", "Measure"), ("⌥⌘X", "Section view"), ("⌫", "Delete selection"),
+        ("Esc", "Cancel / deselect"), ("?", "This sheet"),
+    ]
+
+    var body: some View {
+        let tools = DockTools.tools(ui.space, model: model).filter { $0.shortcut != nil }
+        VStack(alignment: .leading, spacing: Theme.Space.m) {
+            HStack {
+                Text("Keyboard Shortcuts").font(.headline)
+                Spacer()
+                Button { ui.shortcutsShown = false } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }
+                    .buttonStyle(.borderless).help("Close").accessibilityLabel("Close shortcuts")
+            }
+            HStack(alignment: .top, spacing: 28) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Eyebrow(ui.space.label)
+                    ForEach(tools) { t in row(String(t.shortcut!).uppercased(), t.label, symbol: t.symbol) }
+                }
+                VStack(alignment: .leading, spacing: 6) {
+                    Eyebrow("Everywhere")
+                    ForEach(Self.global, id: \.0) { row($0.0, $0.1) }
+                }
+            }
+        }
+        .padding(18)
+        .frame(width: 520)
+        .glassPanel()
+        .modifier(ChromeRegion(key: "shortcuts"))
+    }
+
+    private func row(_ key: String, _ label: String, symbol: String? = nil) -> some View {
+        HStack(spacing: 8) {
+            Text(key).font(.callout.monospaced()).padding(.horizontal, 6).padding(.vertical, 1)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .frame(minWidth: 64, alignment: .leading)
+            if let symbol { Image(systemName: symbol).frame(width: 16).foregroundStyle(.secondary) }
+            Text(label).font(.callout)
+        }
+    }
+}
+
+
+/// A request for the floating panel.
+struct PanelRequest: Identifiable {
+    let id = UUID()
+    let title: String
+    let symbol: String
+    let width: CGFloat
+    let onClose: () -> Void
+    let content: () -> AnyView
+}
+
+/// Hosts `GlassUI.panel` beneath the dock: title, close (Esc), content.
+struct FloatingPanelHost: View {
+    @Bindable var ui = GlassUI.shared
+    var body: some View {
+        if let p = ui.panel {
+            VStack(alignment: .leading, spacing: Theme.Space.m) {
+                HStack(spacing: Theme.Space.s) {
+                    Image(systemName: p.symbol).foregroundStyle(.secondary)
+                    Text(p.title).font(.headline)
+                    Spacer()
+                    Button { ui.closePanel() } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }
+                        .buttonStyle(.borderless)
+                        .keyboardShortcut(.cancelAction)
+                        .help("Close (Esc)").accessibilityLabel("Close \(p.title)")
+                }
+                ScrollView { p.content().frame(maxWidth: .infinity, alignment: .leading) }
+                    .frame(maxHeight: 560)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(16)
+            .frame(width: p.width)
+            .glassPanel()
+            .id(p.id)
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .modifier(ChromeRegion(key: "floatingPanel"))
         }
     }
 }
