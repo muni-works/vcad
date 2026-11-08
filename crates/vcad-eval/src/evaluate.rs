@@ -1115,11 +1115,16 @@ fn evaluate_op_timed(
             profile,
         } => {
             let c = eval_child(*child, cache)?;
-            if let vcad_ir::EdgeQuery::Named { face_a, face_b } = edges {
+            if let vcad_ir::EdgeQuery::Named {
+                face_a,
+                face_b,
+                hint,
+            } = edges
+            {
                 let keys = kernel_blend_keys(profile);
                 return match c {
                     Some(s) => s
-                        .edge_blend_named(face_a, face_b, &keys)
+                        .edge_blend_named_hinted(face_a, face_b, kernel_edge_hint(hint), &keys)
                         .map(Some)
                         .map_err(|e| EvalError::NamedEdge {
                             face_a: face_a.clone(),
@@ -2914,6 +2919,26 @@ fn attribute_losses(node_id: NodeId, result: &mut Option<Solid>) {
     }
 }
 
+/// IR pick-time edge snapshot → the kernel's naming hint.
+fn kernel_edge_hint(
+    h: &Option<vcad_ir::NamedEdgeHint>,
+) -> Option<vcad_kernel::vcad_kernel_naming::EdgeHint> {
+    h.as_ref()
+        .map(|h| vcad_kernel::vcad_kernel_naming::EdgeHint {
+            midpoint: vcad_kernel::vcad_kernel_math::Point3::new(
+                h.midpoint.x,
+                h.midpoint.y,
+                h.midpoint.z,
+            ),
+            direction: vcad_kernel::vcad_kernel_math::Vec3::new(
+                h.direction.x,
+                h.direction.y,
+                h.direction.z,
+            ),
+            length: h.length,
+        })
+}
+
 fn scope_primitive_names(node_id: NodeId, op: &CsgOp, result: &mut Option<Solid>) {
     let is_primitive = matches!(
         op,
@@ -4005,6 +4030,7 @@ mod tests {
                         edges: vcad_ir::EdgeQuery::Named {
                             face_a: "n0:top".to_string(),
                             face_b: "n0:right".to_string(),
+                            hint: None,
                         },
                         profile: vcad_ir::BlendProfile::Constant {
                             size: 2.0,
@@ -4074,6 +4100,7 @@ mod tests {
                     edges: vcad_ir::EdgeQuery::Named {
                         face_a: "n0:top".to_string(),
                         face_b: "n0:no_such_face".to_string(),
+                        hint: None,
                     },
                     profile: vcad_ir::BlendProfile::Constant {
                         size: 2.0,

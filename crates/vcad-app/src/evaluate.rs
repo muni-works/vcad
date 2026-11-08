@@ -227,14 +227,22 @@ fn evaluate_node(doc: &Document, node_id: NodeId) -> Result<Option<Solid>> {
             profile,
         } => {
             let c = evaluate_node(doc, *child)?;
-            if let vcad_ir::EdgeQuery::Named { face_a, face_b } = edges {
+            if let vcad_ir::EdgeQuery::Named {
+                face_a,
+                face_b,
+                hint,
+            } = edges
+            {
                 let keys = kernel_blend_keys(profile);
                 match c {
                     // Fail-closed: an unresolvable named edge is an error,
                     // never a nearest-edge guess.
-                    Some(s) => Some(s.edge_blend_named(face_a, face_b, &keys).map_err(|e| {
-                        anyhow::anyhow!("named edge ('{face_a}' / '{face_b}'): {e}")
-                    })?),
+                    Some(s) => Some(
+                        s.edge_blend_named_hinted(face_a, face_b, kernel_edge_hint(hint), &keys)
+                            .map_err(|e| {
+                                anyhow::anyhow!("named edge ('{face_a}' / '{face_b}'): {e}")
+                            })?,
+                    ),
                     None => None,
                 }
             } else {
@@ -291,6 +299,26 @@ fn evaluate_node(doc: &Document, node_id: NodeId) -> Result<Option<Solid>> {
     };
 
     Ok(solid)
+}
+
+/// IR pick-time edge snapshot → the kernel's naming hint.
+fn kernel_edge_hint(
+    h: &Option<vcad_ir::NamedEdgeHint>,
+) -> Option<vcad_kernel::vcad_kernel_naming::EdgeHint> {
+    h.as_ref()
+        .map(|h| vcad_kernel::vcad_kernel_naming::EdgeHint {
+            midpoint: vcad_kernel::vcad_kernel_math::Point3::new(
+                h.midpoint.x,
+                h.midpoint.y,
+                h.midpoint.z,
+            ),
+            direction: vcad_kernel::vcad_kernel_math::Vec3::new(
+                h.direction.x,
+                h.direction.y,
+                h.direction.z,
+            ),
+            length: h.length,
+        })
 }
 
 /// Convert IR edge-blend arguments to their kernel equivalents.

@@ -290,6 +290,7 @@ fn materialize_subgraph(
                 *child = n;
             }
         }
+        rescope_named_edges(&mut node.op, &fresh);
         doc.nodes.insert(node.id, node);
     }
     let root = *fresh.get(&blob.root)?;
@@ -310,6 +311,37 @@ fn materialize_subgraph(
         },
         translate_id,
     ))
+}
+
+/// Follow a node renumbering inside persistent face names.
+///
+/// Face names are scoped by the generating primitive's node id
+/// (`n<id>:front`), so an `EdgeQuery::Named` inside a re-emitted subgraph
+/// still names the *old* ids once the subgraph gets fresh ones — and the
+/// edge it picked can no longer be found ("no edge between faces
+/// 'n1456898048:front' and 'n1456898048:right'"). Rewrite each scope that
+/// names a renumbered node; scopes outside the map are left alone.
+fn rescope_named_edges(op: &mut CsgOp, fresh: &HashMap<NodeId, NodeId>) {
+    let CsgOp::EdgeBlend {
+        edges: vcad_ir::EdgeQuery::Named { face_a, face_b, .. },
+        ..
+    } = op
+    else {
+        return;
+    };
+    for name in [face_a, face_b] {
+        let Some((scope, rest)) = name.split_once(':') else {
+            continue;
+        };
+        let Some(new) = scope
+            .strip_prefix('n')
+            .and_then(|id| id.parse::<NodeId>().ok())
+            .and_then(|old| fresh.get(&old))
+        else {
+            continue;
+        };
+        *name = format!("n{new}:{rest}");
+    }
 }
 
 fn materialize_doc_extras(doc: &mut Document, feature: &FeatureState) {
