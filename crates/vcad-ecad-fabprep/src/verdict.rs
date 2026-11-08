@@ -645,8 +645,9 @@ impl InteractiveRouter {
             if stack.len() < 2 {
                 continue;
             }
-            for margin in [8.0, 30.0] {
-                let Some(path) = self.shortest_path(net, width, from, to, &stack, margin) else {
+            for (margin, pitch) in [(8.0, 0.25), (30.0, 0.25), (6.0, 0.125)] {
+                let Some(path) = self.shortest_path(net, width, from, to, &stack, margin, pitch)
+                else {
                     continue;
                 };
                 let path = self.tighten(net, width, path);
@@ -669,6 +670,25 @@ impl InteractiveRouter {
         self.search(net, from, to, &self.layers, budget)
     }
 
+    /// The layers a route may end on at `p`: [`live_layers`], and if `p` is
+    /// anywhere on a pad of the net (not just its centre) that pad's layers.
+    /// Treating a point just off a front-only pad as any-layer let a route
+    /// end on the back, under the pad, connected to nothing.
+    fn terminal_layers(&self, net: &str, p: Vec2) -> Vec<PcbLayer> {
+        let mut out = live_layers(&self.pcb, &self.layers, net, p);
+        for fp in &self.pcb.footprints {
+            for pad in fp.pads.iter().filter(|pad| pad.net.as_deref() == Some(net)) {
+                let c = vcad_ecad_pcb::geometry::pad_world_position(fp, pad);
+                if ((c.x - p.x).powi(2) + (c.y - p.y).powi(2)).sqrt() < 0.6 {
+                    out.extend(pad.layers.iter().filter(|l| self.layers.contains(l)));
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// The shortest single-layer path if there is one on the search grid,
     /// else the complete search.
     fn best(
@@ -682,13 +702,15 @@ impl InteractiveRouter {
     ) -> InteractiveRoute {
         let width = self.width_for(net);
         let attaches = |p: Vec2| {
-            let live = live_layers(&self.pcb, &self.layers, net, p);
+            let live = self.terminal_layers(net, p);
             live.is_empty() || live.contains(&layer)
         };
         if attaches(from) && attaches(to) {
-            if let Some(path) = [8.0, 30.0]
+            if let Some(path) = [(8.0, 0.25), (30.0, 0.25), (6.0, 0.125)]
                 .into_iter()
-                .find_map(|margin| self.shortest_path(net, width, from, to, &[layer], margin))
+                .find_map(|(margin, pitch)| {
+                    self.shortest_path(net, width, from, to, &[layer], margin, pitch)
+                })
             {
                 let path = self.tighten(net, width, path);
                 if self.legal(net, width, &path) {
@@ -729,10 +751,10 @@ impl InteractiveRouter {
         to: Vec2,
         layers: &[PcbLayer],
         margin: f64,
+        pitch: f64,
     ) -> Option<Vec<(Vec2, Vec2, PcbLayer)>> {
         use std::cmp::Reverse;
         use std::collections::BinaryHeap;
-        const PITCH: f64 = 0.25;
         const MAX_EXPANSIONS: usize = 400_000;
         const BEND_COST: f64 = 0.15;
         const VIA_COST: f64 = 2.5;
@@ -750,45 +772,61 @@ impl InteractiveRouter {
         for v in &self.pcb.outline.vertices {
             (lo_x, lo_y, hi_x, hi_y) = (lo_x.min(v.x), lo_y.min(v.y), hi_x.max(v.x), hi_y.max(v.y));
         }
+        // Grid lines through the start pad, so a straight escape from a
+        // fine-pitch pin lands on them instead of between them.
+        let snap = |v: f64, o: f64| o - ((o - v) / pitch).ceil() * pitch;
         let (x0, y0) = (
-            (from.x.min(to.x) - margin).max(lo_x),
-            (from.y.min(to.y) - margin).max(lo_y),
+            snap((from.x.min(to.x) - margin).max(lo_x), from.x),
+            snap((from.y.min(to.y) - margin).max(lo_y), from.y),
         );
         let (x1, y1) = (
             (from.x.max(to.x) + margin).min(hi_x),
             (from.y.max(to.y) + margin).min(hi_y),
         );
-        let nx = ((x1 - x0) / PITCH).ceil() as i32 + 1;
-        let ny = ((y1 - y0) / PITCH).ceil() as i32 + 1;
+        let nx = ((x1 - x0) / pitch).ceil() as i32 + 1;
+        let ny = ((y1 - y0) / pitch).ceil() as i32 + 1;
         let at =
-            |c: (i32, i32)| Vec2::new(x0 + f64::from(c.0) * PITCH, y0 + f64::from(c.1) * PITCH);
+            |c: (i32, i32)| Vec2::new(x0 + f64::from(c.0) * pitch, y0 + f64::from(c.1) * pitch);
         let cell = |p: Vec2| {
             (
-                ((p.x - x0) / PITCH).round() as i32,
-                ((p.y - y0) / PITCH).round() as i32,
+                ((p.x - x0) / pitch).round() as i32,
+                ((p.y - y0) / pitch).round() as i32,
             )
         };
         let inside = |c: (i32, i32)| c.0 >= 0 && c.1 >= 0 && c.0 < nx && c.1 < ny;
         let octile = |a: (i32, i32), b: (i32, i32)| {
             let (dx, dy) = (f64::from((a.0 - b.0).abs()), f64::from((a.1 - b.1).abs()));
-            PITCH * (dx.max(dy) + (std::f64::consts::SQRT_2 - 1.0) * dx.min(dy))
+            pitch * (dx.max(dy) + (std::f64::consts::SQRT_2 - 1.0) * dx.min(dy))
         };
         // Terminals are off-grid: hook them to the nearby grid nodes they can
         // reach, on the layers their copper is actually on.
         let attach = |p: Vec2| -> Vec<(i32, i32, u8)> {
-            let live = live_layers(&self.pcb, &self.layers, net, p);
+            let live = self.terminal_layers(net, p);
             let c = cell(p);
             let mut out = Vec::new();
             for (li, &layer) in layers.iter().enumerate() {
                 if !live.is_empty() && !live.contains(&layer) {
                     continue;
                 }
+                // Near cells, plus a long reach straight along each axis: the
+                // only way out of a fine-pitch pad is often straight ahead.
+                let mut cells: Vec<(i32, i32)> = Vec::new();
                 for dx in -2..=2 {
                     for dy in -2..=2 {
-                        let q = (c.0 + dx, c.1 + dy);
-                        if inside(q) && self.segment_clear(net, w, p, at(q), layer) {
-                            out.push((q.0, q.1, li as u8));
-                        }
+                        cells.push((c.0 + dx, c.1 + dy));
+                    }
+                }
+                for k in 3..=12 {
+                    cells.extend([
+                        (c.0 + k, c.1),
+                        (c.0 - k, c.1),
+                        (c.0, c.1 + k),
+                        (c.0, c.1 - k),
+                    ]);
+                }
+                for q in cells {
+                    if inside(q) && self.segment_clear(net, w, p, at(q), layer) {
+                        out.push((q.0, q.1, li as u8));
                     }
                 }
             }
@@ -869,7 +907,7 @@ impl InteractiveRouter {
                 if !clear {
                     continue;
                 }
-                let step = PITCH
+                let step = pitch
                     * if dx != 0 && dy != 0 {
                         std::f64::consts::SQRT_2
                     } else {
@@ -1296,7 +1334,14 @@ impl InteractiveRouter {
     }
 
     fn legal(&self, net: &str, w: f64, path: &[(Vec2, Vec2, PcbLayer)]) -> bool {
-        !self.brushes_own_net(net, w, path)
+        // Each end must land on a layer its terminal has copper on.
+        let lands = |p: Vec2, l: PcbLayer| {
+            let t = self.terminal_layers(net, p);
+            t.is_empty() || t.contains(&l)
+        };
+        path.first().is_none_or(|s| lands(s.0, s.2))
+            && path.last().is_none_or(|s| lands(s.1, s.2))
+            && !self.brushes_own_net(net, w, path)
             && path.iter().all(|&(a, b, l)| {
                 let g = CopperGeom::Segment {
                     a,

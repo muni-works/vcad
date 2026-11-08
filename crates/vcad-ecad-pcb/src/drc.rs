@@ -1380,6 +1380,19 @@ fn check_keepout(pcb: &Pcb, region: Option<&DrcRegion>, violations: &mut Vec<Drc
                 }) {
                     continue;
                 }
+                // A keepout lying wholly inside this part's own courtyard is the
+                // part's own (a Tag-Connect's leg area): it bars other parts.
+                let (own_min, own_max) = courtyard_bounds(fp);
+                if !keepout.outline.is_empty()
+                    && keepout.outline.iter().all(|v| {
+                        v.x >= own_min.x - 0.01
+                            && v.x <= own_max.x + 0.01
+                            && v.y >= own_min.y - 0.01
+                            && v.y <= own_max.y + 0.01
+                    })
+                {
+                    continue;
+                }
                 let mut hit = false;
                 let mut hit_pos = fp.position;
                 for pad in &fp.pads {
