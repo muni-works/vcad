@@ -1449,6 +1449,17 @@ fn route_open(
     closed
 }
 
+/// Route the open connections of just these nets, around what's there.
+/// Returns whether none of them is left open.
+pub fn route_nets(pcb: &mut Pcb, nets: &[String], budget: usize) -> bool {
+    let layers = copper_layers(pcb);
+    let only: BTreeSet<String> = nets.iter().cloned().collect();
+    route_open(pcb, &layers, Some(&only), budget);
+    open_connections(pcb, &layers)
+        .iter()
+        .all(|(n, _, _)| !only.contains(n))
+}
+
 /// Up to this many neighbouring nets are tried for each stuck connection.
 const RIP_UP_CANDIDATES: usize = 8;
 /// A neighbour's copper must come this close to a terminal to be a candidate.
@@ -1758,6 +1769,30 @@ mod tests {
         assert!(r.pcb.traces[1].start.y < 5.4, "the run moved down");
         let added: Vec<_> = clearance(&r.pcb).difference(&before).cloned().collect();
         assert!(added.is_empty(), "the shove added violations: {added:?}");
+    }
+
+    #[test]
+    fn route_nets_takes_a_pair_around_a_wall() {
+        use crate::test_support::{test_board, with_smd_pad, with_trace};
+        let mut pcb = test_board();
+        with_smd_pad(&mut pcb, "P1", "1", 1.0, 4.5, "D_P");
+        with_smd_pad(&mut pcb, "P2", "1", 9.0, 4.5, "D_P");
+        with_smd_pad(&mut pcb, "N1", "1", 1.0, 5.5, "D_N");
+        with_smd_pad(&mut pcb, "N2", "1", 9.0, 5.5, "D_N");
+        // Foreign copper square across the straight run.
+        with_trace(&mut pcb, "Z", 5.0, 3.0, 5.0, 7.0);
+        let clearance = |p: &Pcb| {
+            vcad_ecad_pcb::drc::check_drc(p)
+                .iter()
+                .filter(|v| format!("{:?}", v.rule).contains("Clearance"))
+                .count()
+        };
+        let before = clearance(&pcb);
+        let nets = ["D_P".to_string(), "D_N".to_string()];
+        assert!(route_nets(&mut pcb, &nets, 150_000));
+        assert!(pcb.traces.iter().any(|t| t.net == "D_P"));
+        assert!(pcb.traces.iter().any(|t| t.net == "D_N"));
+        assert_eq!(clearance(&pcb), before, "the detour must stay clear");
     }
 
     #[test]

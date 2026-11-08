@@ -736,6 +736,7 @@ char *vcad_pcb_ratsnest(const char *pcb_json);
 char *vcad_pcb_fill_zones(const char *pcb_json);
 char *vcad_pcb_library_footprint(const char *request_json);
 char *vcad_pcb_route_diff_pair(const char *pcb_json, const char *request_json);
+char *vcad_pcb_library_symbol(const char *request_json);
 VcadPcbRouter *vcad_pcb_router_open(const char *pcb_json);
 void vcad_pcb_router_free(VcadPcbRouter *router);
 /** Route {net,from,to,layer?,budget?} -> {status,reason,path,vias,width}. */

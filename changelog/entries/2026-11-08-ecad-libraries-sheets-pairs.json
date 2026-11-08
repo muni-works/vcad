@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-08-ecad-libraries-sheets-pairs",
+  "version": "undefined",
+  "date": "2026-11-08",
+  "category": "feat",
+  "title": "Symbol browser, footprint save, sheet symbols",
+  "summary": "Place KiCad symbols from the schematic, save edited footprints to a user library, open child sheets from drawn boxes, and route pairs around obstacles.",
+  "features": ["electronics", "native-app"]
+}

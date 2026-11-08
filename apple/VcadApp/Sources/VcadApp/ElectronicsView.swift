@@ -110,7 +110,7 @@ struct NativeElectronicsView: View {
     private var statusPill: some View {
         HStack(spacing: 8) {
             if let busy = ec.tools.busy { ProgressView().controlSize(.mini); Text("\(busy)…") }
-            Text(ec.tools.error ?? ec.tools.status ?? ec.message ?? (ec.view == .spatial ? "3D layout preview" : ec.tool == .wire ? (ec.view == .schematic ? "Click to draw a wire" : "Select two pins to connect their net") : ec.tool == .label ? "Click a pin or wire to name its net" : ec.tool == .zone ? "Click corners · Return closes the zone" : ec.tool == .route ? "Click to route · Esc ends the route" : ec.tool == .place ? "Click to place \(ec.componentKind.lowercased())" : ec.selectedRef ?? "Select a component"))
+            Text(ec.tools.error ?? ec.tools.status ?? ec.message ?? (ec.view == .spatial ? "3D layout preview" : ec.tool == .wire ? (ec.view == .schematic ? "Click to draw a wire" : "Select two pins to connect their net") : ec.tool == .label ? "Click a pin or wire to name its net" : ec.tool == .zone ? "Click corners · Return closes the zone" : ec.tool == .route ? "Click to route · Esc ends the route" : ec.tool == .place ? "Click to place \((ec.view == .schematic ? ec.symbolChoice : ec.libraryChoice) ?? ec.componentKind.lowercased())" : ec.selectedRef ?? "Select a component"))
                 .lineLimit(1)
             Text("·").foregroundStyle(.secondary)
             if ec.view == .board {
@@ -297,7 +297,7 @@ struct NativeElectronicsView: View {
                         Button { ec.align(model, .bottom) } label: { Image(systemName: "align.vertical.bottom") }.help("Align bottom")
                         Button { ec.align(model, .spreadX) } label: { Image(systemName: "distribute.horizontal.center") }.help("Distribute horizontally")
                         Button { ec.align(model, .spreadY) } label: { Image(systemName: "distribute.vertical.center") }.help("Distribute vertically")
-                    }
+                    }.buttonStyle(.borderless).frame(maxWidth: .infinity, alignment: .leading)
                     Divider()
                 }
                 if ec.tool == .label {
@@ -322,6 +322,21 @@ struct NativeElectronicsView: View {
                     if let id = ec.libraryChoice {
                         Text("Click the board to place \(id).").font(.caption).foregroundStyle(.secondary)
                         Button("Use a starter part instead") { ec.libraryChoice = nil }.controlSize(.small)
+                    }
+                    Divider()
+                }
+                if ec.view == .schematic {
+                    TextField("Search KiCad symbols", text: $ec.symbolSearch).textFieldStyle(.roundedBorder)
+                        .onAppear { ec.loadSymbols() }
+                    ForEach(ec.symbolMatches(), id: \.self) { id in
+                        Button { ec.symbolChoice = id } label: {
+                            Text(id).font(.caption).lineLimit(1).truncationMode(.middle).frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(Theme.Space.xs).selectableRow(selected: ec.symbolChoice == id)
+                        }.buttonStyle(.plain)
+                    }
+                    if let id = ec.symbolChoice {
+                        Text("Click the sheet to place \(id).").font(.caption).foregroundStyle(.secondary)
+                        Button("Use a starter part instead") { ec.symbolChoice = nil }.controlSize(.small)
                     }
                     Divider()
                 }
@@ -430,7 +445,7 @@ struct ElectronicsCanvas: View {
             vertices = ecRows(ec.schematic(model)["components"]).flatMap { c -> [CGPoint] in
                 let b = Self.symbolBody(c).insetBy(dx: -6, dy: -6)
                 return [CGPoint(x: b.minX, y: b.minY), CGPoint(x: b.maxX, y: b.maxY)].map { Self.world(local: $0, in: c) }
-            }
+            } + (ec.activeSheet == nil ? ec.sheetSymbols(ec.schematic(model)).flatMap { [$0.rect.origin, CGPoint(x: $0.rect.maxX + 6, y: $0.rect.maxY + 6)] } : [])
             let minX = vertices.map(\.x).min() ?? 0, maxX = vertices.map(\.x).max() ?? 80
             let minY = vertices.map(\.y).min() ?? 0, maxY = vertices.map(\.y).max() ?? 50
             let usable = CGSize(width: max(120, size.width - 2 * (Theme.Width.inspector + 2 * Glass.inset) - 40), height: max(120, size.height - Glass.toolbarHeight - 90))
@@ -508,7 +523,9 @@ struct ElectronicsCanvas: View {
                 let p = CGPoint(x: (event.location.x - offset.x) / scale, y: (event.location.y - offset.y) / scale)
                 switch ec.tool {
                 case .place:
-                    if let id = ec.libraryChoice, ec.view == .board { ec.placeLibrary(model, id: id, at: p) } else { ec.place(model, at: p) }
+                    if let id = ec.libraryChoice, ec.view == .board { ec.placeLibrary(model, id: id, at: p) }
+                    else if let id = ec.symbolChoice, ec.view == .schematic { ec.placeSymbol(model, id: id, at: p) }
+                    else { ec.place(model, at: p) }
                 case .route:
                     if ec.routeStart != nil {
                         let hit = copperAt(p, tolerance: 10 / scale, net: ec.activeNet)
@@ -528,6 +545,9 @@ struct ElectronicsCanvas: View {
                 case .wire:
                     if let pin = nearestPin(p, distance: 8 / scale) { ec.connect(model, pin: pin) }
                     else { ec.message = "Choose a component pin." }
+                case .select where ec.view == .schematic && ec.activeSheet == nil && ec.sheetSymbols(ec.schematic(model)).contains { $0.rect.contains(p) }:
+                    ec.activeSheet = ec.sheetSymbols(ec.schematic(model)).first { $0.rect.contains(p) }?.name
+                    ec.zoom = 1; ec.pan = .zero
                 case .select:
                     if NSApp.currentEvent?.modifierFlags.contains(.shift) == true, let ref = partAt(p, tolerance: 8 / scale) {
                         if ec.multiRefs.isEmpty, let first = ec.selectedRef { ec.multiRefs.insert(first) }

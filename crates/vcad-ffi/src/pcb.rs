@@ -1171,31 +1171,77 @@ pub extern "C" fn vcad_pcb_route_diff_pair(
         let (p, n) = (net("p")?, net("n")?);
         let accepted = accepted_rules(&req);
         let before = drc_report(&pcb, &accepted).route_attributable;
-        let Some((rp, rn)) = vcad_ecad_pcb::router::diff_pair::route_diff_pair(&pcb, &p, &n) else {
-            return Ok(
-                json!({ "pcb": pcb, "routed": false, "reason": "Declare this pair in a net class, with two pads on each net." }),
-            );
-        };
+        // Coupled and straight when the channel is clear; otherwise each leg
+        // finds its own legal way around what's there.
         let mut out = pcb.clone();
-        let layer = vcad_ir::ecad::PcbLayer::FCu;
-        let width = out.rules.default_rules.trace_width;
-        for r in [&rp, &rn] {
-            for (a, b) in &r.segments {
-                out.traces.push(vcad_ir::ecad::Trace {
-                    start: *a,
-                    end: *b,
-                    width,
-                    layer,
-                    net: r.net.clone(),
-                    source: None,
-                });
+        let mut coupled = false;
+        if let Some((rp, rn)) = vcad_ecad_pcb::router::diff_pair::route_diff_pair(&pcb, &p, &n) {
+            let layer = vcad_ir::ecad::PcbLayer::FCu;
+            let width = out.rules.default_rules.trace_width;
+            for r in [&rp, &rn] {
+                for (a, b) in &r.segments {
+                    out.traces.push(vcad_ir::ecad::Trace {
+                        start: *a,
+                        end: *b,
+                        width,
+                        layer,
+                        net: r.net.clone(),
+                        source: None,
+                    });
+                }
+            }
+            coupled = drc_report(&out, &accepted).route_attributable <= before;
+        }
+        if !coupled {
+            out = pcb.clone();
+            if !vcad_ecad_fabprep::verdict::route_nets(&mut out, &[p.clone(), n.clone()], 150_000)
+                || drc_report(&out, &accepted).route_attributable > before
+            {
+                return Ok(
+                    json!({ "pcb": pcb, "routed": false, "reason": "No legal route for this pair." }),
+                );
             }
         }
-        if drc_report(&out, &accepted).route_attributable > before {
-            return Ok(
-                json!({ "pcb": pcb, "routed": false, "reason": "A straight coupled route would break a design rule here." }),
-            );
-        }
-        Ok(json!({ "pcb": out, "routed": true, "reason": null }))
+        Ok(json!({ "pcb": out, "routed": true, "coupled": coupled, "reason": null }))
+    })
+}
+
+/// A KiCad library symbol's pins and default footprint:
+/// `{pins, footprint}` for `{id: "Library:Symbol"}`.
+#[no_mangle]
+pub extern "C" fn vcad_pcb_library_symbol(request_json: *const c_char) -> *mut c_char {
+    run("vcad_pcb_library_symbol", || {
+        let req: Value =
+            serde_json::from_str(borrow_str("request", request_json).ok_or("bad request")?)
+                .map_err(|e| e.to_string())?;
+        let id = req.get("id").and_then(Value::as_str).ok_or("missing id")?;
+        let (lib, name) = id.split_once(':').ok_or("id must be Library:Symbol")?;
+        let dirs = [
+            "/Applications/KiCad/KiCad.app/Contents/SharedSupport/symbols",
+            "/usr/share/kicad/symbols",
+            "/usr/local/share/kicad/symbols",
+        ];
+        let path = dirs
+            .iter()
+            .map(|d| Path::new(d).join(format!("{lib}.kicad_sym")))
+            .find(|p| p.exists())
+            .ok_or_else(|| format!("symbol library {lib} not found"))?;
+        let parsed = vcad_ecad_symbols::kicad_sym::parse_symbol_lib_file(&path.to_string_lossy())
+            .map_err(|e| e.to_string())?;
+        let sym = parsed
+            .get(name)
+            .ok_or_else(|| format!("{name} not in {lib}"))?;
+        let footprint = sym
+            .properties
+            .iter()
+            .find(|p| p.key == "Footprint")
+            .map(|p| p.value.clone())
+            .unwrap_or_default();
+        let pins: Vec<Value> = sym
+            .pins
+            .iter()
+            .map(|p| json!({ "number": p.number, "name": p.name, "pin_type": p.pin_type, "position": { "x": p.position.0, "y": -p.position.1 } }))
+            .collect();
+        Ok(json!({ "pins": pins, "footprint": footprint }))
     })
 }

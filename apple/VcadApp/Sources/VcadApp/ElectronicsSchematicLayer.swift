@@ -93,6 +93,21 @@ private let bodyColor = Color(white: 0.88)
             }
         }
         for c in ecRows(sheet["components"]) { drawSymbol(c) }
+        if ec.activeSheet == nil {
+            for symbol in ec.sheetSymbols(sheet) {
+                let tl = screen(symbol.rect.origin)
+                let r = CGRect(x: tl.x, y: tl.y, width: symbol.rect.width * scale, height: symbol.rect.height * scale)
+                context.fill(Path(r), with: .color(Color.accentColor.opacity(0.14)))
+                context.stroke(Path(r), with: .color(.accentColor), lineWidth: 1.5)
+                context.draw(Text(symbol.name).font(.system(size: max(10, textSize), weight: .semibold)), at: CGPoint(x: r.midX, y: r.minY + 2.5 * scale))
+                for (i, port) in symbol.ports.enumerated() {
+                    let py = r.minY + CGFloat(i + 2) * 5 * scale
+                    var stub = Path(); stub.move(to: CGPoint(x: r.minX - 4 * scale, y: py)); stub.addLine(to: CGPoint(x: r.minX, y: py))
+                    context.stroke(stub, with: .color(.accentColor), lineWidth: 1)
+                    context.draw(Text(port).font(.system(size: max(8, textSize * 0.8))), at: CGPoint(x: r.minX + 2 * scale, y: py), anchor: .leading)
+                }
+            }
+        }
         drawWirePreview()
         for f in ec.tools.ercFindings where f["position"] is ECObject {
             let p = screen(ecPoint(f["position"]))

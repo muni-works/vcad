@@ -617,7 +617,7 @@ char *vcad_sketch_profile_json(const VcadSketch *s);
  * edge id = ordinal from vcad_topology_json. Session handles, not durable. */
 #define VCAD_TOPO_NONE 0xFFFFFFFFu
 VcadSolid *vcad_scene_part_solid(const VcadScene *scene, size_t index);
-/* {"faces":[{id,surface,center,normal,area}],
+/* {"faces":[{id,surface,center,normal,area,selector}],
  *  "edges":[{id,faces:[a,b],a,b,segments:[f32 x6..],planar,selector}]} */
 char *vcad_topology_json(const VcadSolid *solid);
 typedef struct VcadPick {
@@ -730,6 +730,21 @@ char *vcad_pcb_import(const char *path);
 char *vcad_pcb_drc(const char *pcb_json, const char *request_json);
 /* route unrouted connections -> {pcb, verdict, drc} */
 char *vcad_pcb_autoroute(const char *pcb_json, const char *request_json);
+
+/** Board held open for interactive routing. */
+typedef struct VcadPcbRouter VcadPcbRouter;
+/** Airwires {wires:[{net,from,to}]}: the DRC's own connectivity. */
+char *vcad_pcb_ratsnest(const char *pcb_json);
+char *vcad_pcb_fill_zones(const char *pcb_json);
+char *vcad_pcb_library_footprint(const char *request_json);
+char *vcad_pcb_route_diff_pair(const char *pcb_json, const char *request_json);
+char *vcad_pcb_library_symbol(const char *request_json);
+VcadPcbRouter *vcad_pcb_router_open(const char *pcb_json);
+void vcad_pcb_router_free(VcadPcbRouter *router);
+/** Route {net,from,to,layer?,budget?} -> {status,reason,path,vias,width}. */
+char *vcad_pcb_router_route(const VcadPcbRouter *router, const char *request_json);
+/** Commit {net,path} -> {traces,vias} to append to the board. */
+char *vcad_pcb_router_commit(const VcadPcbRouter *router, const char *request_json);
 /* fab-prep fix loop; request {"calibrate"?,"route"?,"max_rounds"?,"accept"?}
  * -> {pcb, converged, headline, summary, report, drc} */
 char *vcad_pcb_fix_drc(const char *pcb_json, const char *request_json);

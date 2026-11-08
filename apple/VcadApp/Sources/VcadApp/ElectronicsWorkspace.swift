@@ -30,6 +30,9 @@ final class ElectronicsWorkspace {
     var snap = true
     var zoom = 1.0
     var pan = CGSize.zero
+    var symbolItems: [String] = []
+    var symbolSearch = ""
+    var symbolChoice: String?
     /// Open child sheet by name; nil is the root.
     var activeSheet: String?
     /// Corners of the zone being drawn.
@@ -533,7 +536,7 @@ extension ElectronicsWorkspace {
             let items = await Task.detached { () -> [String] in
                 var out: [String] = []
                 let fm = FileManager.default
-                let roots = ["/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints", "/usr/share/kicad/footprints", "/usr/local/share/kicad/footprints"]
+                let roots = [ElectronicsWorkspace.userFootprintRoot, "/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints", "/usr/share/kicad/footprints", "/usr/local/share/kicad/footprints"]
                 for root in roots {
                     for lib in (try? fm.contentsOfDirectory(atPath: root)) ?? [] where lib.hasSuffix(".pretty") {
                         let name = String(lib.dropLast(7))
@@ -569,6 +572,7 @@ extension ElectronicsWorkspace {
         var n = 1; while existing.contains("\(prefix)\(n)") { n += 1 }
         let ref = "\(prefix)\(n)", at = snapped(point)
         let copper = ecRows(board(model)["stackup"].flatMap { ($0 as? ECObject)?["layers"] }).compactMap { $0["layer"] as? String }
+        setenv("VCAD_KICAD_FOOTPRINTS", Self.userFootprintRoot, 1)
         guard let r = try? PcbFFI.libraryFootprint(["id": id, "ref": ref, "position": ecJSON(at), "copper": copper.isEmpty ? ["FCu", "BCu"] : copper]),
               var fp = r["footprint"] as? ECObject else { message = "Couldn't load \(id)."; return }
         fp["value"] = String(id.split(separator: ":").last ?? "")
@@ -676,6 +680,118 @@ extension ElectronicsWorkspace {
         ecRows(board["traces"]).filter { $0["net"] as? String == net }.reduce(0) { sum, t in
             let a = ecPoint(t["start"]), b = ecPoint(t["end"])
             return sum + Double(hypot(a.x - b.x, a.y - b.y))
+        }
+    }
+}
+
+
+extension ElectronicsWorkspace {
+    nonisolated static var userFootprintRoot: String { NSHomeDirectory() + "/Documents/vcad/footprints" }
+
+    /// Write the selected footprint as a KiCad .kicad_mod in the user library,
+    /// where search and placement (and KiCad itself) can find it.
+    func saveFootprintToLibrary(_ model: EditorModel, name: String) {
+        guard let fp = ecRows(board(model)["footprints"]).first(where: { $0["ref"] as? String == selectedRef }) else { return }
+        let safe = name.replacingOccurrences(of: "[^A-Za-z0-9_.-]", with: "_", options: .regularExpression)
+        guard !safe.isEmpty else { message = "Name the footprint first."; return }
+        func kicadLayer(_ l: String) -> String {
+            if l.count > 1, l.first == "F" || l.first == "B" { return "\(l.first!).\(l.dropFirst())" }
+            return l.replacingOccurrences(of: "Cu", with: ".Cu")
+        }
+        var out = "(footprint \"\(safe)\"\n\t(version 20241229)\n\t(generator \"vcad\")\n\t(layer \"F.Cu\")\n"
+        for g in ecRows(fp["graphics"]) where g["type"] as? String == "Line" {
+            let a = ecPoint(g["start"]), b = ecPoint(g["end"])
+            out += "\t(fp_line (start \(a.x) \(a.y)) (end \(b.x) \(b.y)) (stroke (width \(ecNumber(g["width"], 0.12))) (type solid)) (layer \"\(kicadLayer(g["layer"] as? String ?? "F.SilkS"))\"))\n"
+        }
+        for pad in ecRows(fp["pads"]) {
+            let at = ecPoint(pad["position"]), s = pad["shape"] as? ECObject ?? [:], d = ecNumber(s["diameter"], 0.6)
+            let kind: String = switch s["type"] as? String { case "Circle": "circle"; case "Oval": "oval"; case "RoundRect": "roundrect"; default: "rect" }
+            let through = (pad["padType"] as? String ?? "") == "THT" || pad["drill"] != nil
+            let layers = (pad["layers"] as? [String] ?? ["FCu"]).map { "\"\(kicadLayer($0))\"" }.joined(separator: " ")
+            var line = "\t(pad \"\(pad["number"] as? String ?? "")\" \(through ? "thru_hole" : "smd") \(kind) (at \(at.x) \(at.y) \(ecNumber(pad["rotation"]))) (size \(ecNumber(s["width"], d)) \(ecNumber(s["height"], d)))"
+            if through { line += " (drill \(ecNumber((pad["drill"] as? ECObject)?["diameter"], ecNumber(pad["drill"], 0.8))))" }
+            line += " (layers \(layers))"
+            if kind == "roundrect" { line += " (roundrect_rratio \(ecNumber(s["cornerRatio"], 0.25)))" }
+            out += line + ")\n"
+        }
+        out += ")\n"
+        let dir = Self.userFootprintRoot + "/User.pretty"
+        do {
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            try out.write(toFile: dir + "/\(safe).kicad_mod", atomically: true, encoding: .utf8)
+            libraryItems = []
+            loadLibrary()
+            message = "Saved User:\(safe)"
+        } catch { message = "Couldn't save: \(error.localizedDescription)" }
+    }
+
+    // MARK: symbol library
+
+    func loadSymbols() {
+        guard symbolItems.isEmpty else { return }
+        Task {
+            let items = await Task.detached { () -> [String] in
+                let fm = FileManager.default, root = "/Applications/KiCad/KiCad.app/Contents/SharedSupport/symbols"
+                var out: [String] = []
+                for f in (try? fm.contentsOfDirectory(atPath: root)) ?? [] where f.hasSuffix(".kicad_sym") {
+                    guard let text = try? String(contentsOfFile: root + "/" + f, encoding: .utf8) else { continue }
+                    let lib = String(f.dropLast(10))
+                    for line in text.split(separator: "\n") where line.hasPrefix("\t(symbol \"") {
+                        let name = line.dropFirst(10).prefix { $0 != "\"" }
+                        out.append("\(lib):\(name)")
+                    }
+                }
+                return out.sorted()
+            }.value
+            symbolItems = items
+        }
+    }
+    func symbolMatches() -> [String] {
+        let terms = symbolSearch.lowercased().split(separator: " ")
+        guard !terms.isEmpty else { return [] }
+        return Array(symbolItems.lazy.filter { id in let l = id.lowercased(); return terms.allSatisfy { l.contains($0) } }.prefix(60))
+    }
+    func placeSymbol(_ model: EditorModel, id: String, at point: CGPoint) {
+        guard let r = try? PcbFFI.librarySymbol(id) else { message = "Couldn't load \(id)."; return }
+        let name = String(id.split(separator: ":").last ?? "U")
+        let prefix: String
+        switch true {
+        case name == "R" || name.hasPrefix("R_"): prefix = "R"
+        case name == "C" || name.hasPrefix("C_"): prefix = "C"
+        case name == "L" || name.hasPrefix("L_"): prefix = "L"
+        case id.hasPrefix("Connector"): prefix = "J"
+        case name.hasPrefix("D") && id.hasPrefix("Device"): prefix = "D"
+        default: prefix = "U"
+        }
+        let existing = ecRows(schematic(model)["components"]).compactMap { $0["ref"] as? String }
+        var n = 1; while existing.contains("\(prefix)\(n)") { n += 1 }
+        let ref = "\(prefix)\(n)", at = snapped(point)
+        let c: ECObject = ["ref": ref, "value": name, "footprintId": r["footprint"] ?? "", "position": ecJSON(at), "rotation": 0, "mirror": false, "pins": ecRows(r["pins"])]
+        model.editElectronics(name: "Place \(ref)") { doc in
+            var s = sheetData(doc)
+            s["components"] = ecRows(s["components"]) + [c]
+            if s["nets"] == nil { s["nets"] = [String: [String]]() }
+            setSheet(&doc, s)
+        }
+        selectedRef = ref
+    }
+
+    // MARK: sheet symbols
+
+    /// Where each child sheet's box sits on the root: a column right of the parts.
+    func sheetSymbols(_ sheet: ECObject) -> [(name: String, rect: CGRect, ports: [String])] {
+        let right = ecRows(sheet["components"]).map { ecPoint($0["position"]).x }.max() ?? 0
+        var y = ecRows(sheet["components"]).map { ecPoint($0["position"]).y }.min() ?? 0
+        let hierarchy = sheet["hierarchy"] as? ECObject ?? [:]
+        let bodies = ecRows(hierarchy["sheets"])
+        let global = Set(hierarchy["global_nets"] as? [String] ?? [])
+        return ecRows(hierarchy["instances"]).map { inst in
+            let body = bodies.first { $0["name"] as? String == inst["sheet"] as? String }?["body"] as? ECObject
+            let wired = Set((inst["connections"] as? [String: String] ?? [:]).keys)
+            let ports = (body?["nets"] as? [String: [String]] ?? [:]).keys.filter { global.contains($0) || wired.contains($0) }.sorted()
+            let rect = CGRect(x: right + 40, y: y, width: 44, height: max(30, CGFloat(ports.count + 2) * 5))
+            y = rect.maxY + 10
+            return (inst["name"] as? String ?? "sheet", rect, ports)
         }
     }
 }

@@ -309,6 +309,7 @@ struct FootprintEditorPanel: View {
     @Bindable var model: EditorModel
     private var ec: ElectronicsWorkspace { model.electronics }
     @State private var rowCount = 4
+    @State private var libraryName = ""
     @State private var pitch = 1.27
     private var fp: ECObject { ecRows(ec.board(model)["footprints"]).first { $0["ref"] as? String == ec.selectedRef } ?? [:] }
     private func set(_ i: Int, _ change: @escaping (inout ECObject) -> Void) {
@@ -333,6 +334,10 @@ struct FootprintEditorPanel: View {
                 ctx.draw(Text(pad["number"] as? String ?? "").font(.system(size: 9)).foregroundStyle(.white), at: c)
             }
         }.frame(height: 150).background(Color.black.opacity(0.25))
+        HStack {
+            TextField("Library name", text: $libraryName).textFieldStyle(.roundedBorder)
+            Button("Save to User Library") { ec.saveFootprintToLibrary(model, name: libraryName) }.disabled(libraryName.isEmpty)
+        }
         List(pads.indices, id: \.self) { i in
             let pad = pads[i], shape = pad["shape"] as? ECObject ?? [:], at = ecPoint(pad["position"]), d = ecNumber(shape["diameter"], 0.6)
             HStack(spacing: 4) {

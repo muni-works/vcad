@@ -236,7 +236,7 @@ final class ElectronicsTools {
         guard let b = boardBox(ec, model) else { return }
         run("Route pair") { ECBox(value: try PcbFFI.routeDiffPair(b.value, p: p, n: n)) } then: { [self] r in
             adopt(board: r["pcb"], ec, model)
-            status = (r["routed"] as? Bool) == true ? "Routed pair \(p) / \(n)" : (r["reason"] as? String ?? "Pair not routed")
+            status = (r["routed"] as? Bool) == true ? "Routed pair \(p) / \(n)\((r["coupled"] as? Bool) == true ? " coupled" : ", each leg separately")" : (r["reason"] as? String ?? "Pair not routed")
         }
     }
 
