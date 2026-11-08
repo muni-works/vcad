@@ -71,7 +71,10 @@ impl fmt::Display for ShellError {
                 write!(f, "Unsupported surface type for offset: {:?}", kind)
             }
             ShellError::InvalidThickness(t) => {
-                write!(f, "shell thickness must be a positive finite number, got {t}")
+                write!(
+                    f,
+                    "shell thickness must be a positive finite number, got {t}"
+                )
             }
             ShellError::ThicknessConsumesSolid { thickness, limit } => write!(
                 f,
@@ -220,8 +223,14 @@ pub fn shell_brep_analytical(
         let tol = 1e-9 * span.max(1.0);
         // An open face's inner vertices sit on the (un-offset) open plane,
         // so with openings only plain containment is required.
+        //
+        // The inset carries 10 % slack: compute_offset_vertex is not exact
+        // at corners where more than three planes meet (a chamfered box's
+        // corner lands ~2 % shy of the true offset), and the gross failure
+        // this guards against overshoots by whole thicknesses. The edge
+        // direction check below covers the near-limit cases.
         let inset = if open_face_ids.is_empty() {
-            thickness
+            0.9 * thickness
         } else {
             0.0
         };
@@ -231,6 +240,28 @@ pub fn shell_brep_analytical(
             for i in 0..3 {
                 if p[i] < outer_min[i] + inset - tol || p[i] > outer_max[i] - inset + tol {
                     return Err(consumed);
+                }
+            }
+        }
+        // Every inner edge must keep its outer edge's direction: an inward
+        // offset shrinks edges, and one that reaches zero length or flips
+        // means opposing walls met (a 10 mm cube shelled by >= 5 mm inverts
+        // its inner box uniformly, which the area check alone can't see).
+        for &face_id in &shell.faces {
+            if open_face_ids.contains(&face_id) {
+                continue;
+            }
+            let verts = topo.loop_vertices(topo.faces[face_id].outer_loop);
+            for k in 0..verts.len() {
+                let (a, b) = (verts[k], verts[(k + 1) % verts.len()]);
+                let outer_e = topo.vertices[b].point - topo.vertices[a].point;
+                if outer_e.norm() <= tol {
+                    continue;
+                }
+                let inner_e = new_topo.vertices[inner_vertex_map[&b]].point
+                    - new_topo.vertices[inner_vertex_map[&a]].point;
+                if inner_e.dot(outer_e) <= tol * outer_e.norm() {
+                    return Err(ShellError::ThicknessConsumesSolid { thickness, limit });
                 }
             }
         }
@@ -872,7 +903,10 @@ mod tests {
         }
         for t in [0.0, -1.0, f64::NAN, f64::INFINITY] {
             let err = shell_brep_analytical(&cube, t, &[]).unwrap_err();
-            assert!(matches!(err, ShellError::InvalidThickness(_)), "t={t}: {err}");
+            assert!(
+                matches!(err, ShellError::InvalidThickness(_)),
+                "t={t}: {err}"
+            );
         }
         // Just under the limit is a real (very thin-cavity) shell.
         let ok = shell_brep_analytical(&cube, 4.9, &[]).unwrap();

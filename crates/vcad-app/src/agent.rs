@@ -509,11 +509,18 @@ mod tests {
     fn overfillet_reports_the_kernel_reason() {
         let api = ir_doc(&[
             (1, "cube", cube_op(10.0)),
-            (2, "fillet", json!({"type": "Fillet", "child": 1, "radius": 20.0})),
+            (
+                2,
+                "fillet",
+                json!({"type": "Fillet", "child": 1, "radius": 20.0}),
+            ),
         ]);
         let errors = api.evaluation_errors();
         assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(errors[0].contains("fillet") && errors[0].contains("radius"), "{errors:?}");
+        assert!(
+            errors[0].contains("fillet") && errors[0].contains("radius"),
+            "{errors:?}"
+        );
         let scene = read_tool("describe_scene", &json!({}), &api).unwrap();
         assert!(scene.contains("evaluation failed"), "{scene}");
         assert!(!scene.contains("no geometry"), "{scene}");
@@ -528,13 +535,24 @@ mod tests {
     fn overshell_reports_an_error_not_a_bigger_part() {
         let api = ir_doc(&[
             (1, "cube", cube_op(10.0)),
-            (2, "shell", json!({"type": "Shell", "child": 1, "thickness": 20.0})),
+            (
+                2,
+                "shell",
+                json!({"type": "Shell", "child": 1, "thickness": 20.0}),
+            ),
         ]);
         let errors = api.evaluation_errors();
-        assert!(errors.iter().any(|e| e.contains("consumes the solid")), "{errors:?}");
+        assert!(
+            errors.iter().any(|e| e.contains("consumes the solid")),
+            "{errors:?}"
+        );
         let ok = ir_doc(&[
             (1, "cube", cube_op(10.0)),
-            (2, "shell", json!({"type": "Shell", "child": 1, "thickness": 1.0})),
+            (
+                2,
+                "shell",
+                json!({"type": "Shell", "child": 1, "thickness": 1.0}),
+            ),
         ]);
         assert!(ok.evaluation_errors().is_empty());
         let id = part_named(&ok, "shell");
@@ -549,15 +567,25 @@ mod tests {
         let api = ir_doc(&[
             (1, "a", cube_op(10.0)),
             (2, "b", cube_op(5.0)),
-            (3, "difference", json!({"type": "Difference", "left": 2, "right": 1})),
+            (
+                3,
+                "difference",
+                json!({"type": "Difference", "left": 2, "right": 1}),
+            ),
         ]);
         let scene = read_tool("describe_scene", &json!({}), &api).unwrap();
         assert!(scene.contains("empty (no volume)"), "{scene}");
         assert!(!scene.contains("e308"), "{scene}");
-        assert!(scene.contains("\"difference\" [boolean] material=default empty (no volume)"), "{scene}");
+        assert!(
+            scene.contains("\"difference\" [boolean] material=default empty (no volume)"),
+            "{scene}"
+        );
         let id = part_named(&api, "difference");
         let text = read_tool("inspect", &json!({"part_id": id}), &api).unwrap();
-        assert!(text.contains("empty (no volume)") && !text.contains("e308"), "{text}");
+        assert!(
+            text.contains("empty (no volume)") && !text.contains("e308"),
+            "{text}"
+        );
         assert_eq!(api.part_world_bbox(&id), None);
     }
 

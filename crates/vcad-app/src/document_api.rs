@@ -427,9 +427,7 @@ impl DocumentApi {
     /// whose solid is empty (no sentinel `±f64::MAX` box ever escapes).
     /// Use [`DocumentApi::part_evaluation`] to tell those apart.
     pub fn part_world_bbox(&self, stable_id: &str) -> Option<([f64; 3], [f64; 3])> {
-        self.part_evaluation(stable_id)?
-            .ok()??
-            .try_bounding_box()
+        self.part_evaluation(stable_id)?.ok()??.try_bounding_box()
     }
 
     /// Evaluate one part's root. `None` for an unknown id; `Some(Err)` with
