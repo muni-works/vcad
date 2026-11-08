@@ -1625,7 +1625,8 @@ impl Solid {
     pub fn to_mesh_with_chord(&self, segments: u32, chord_tol: f64) -> TriangleMesh {
         match &self.repr {
             SolidRepr::BRep(brep) => {
-                let mut params = vcad_kernel_tessellate::TessellationParams::from_segments(segments);
+                let mut params =
+                    vcad_kernel_tessellate::TessellationParams::from_segments(segments);
                 params.chord_tolerance = Some(chord_tol);
                 let mut mesh = vcad_kernel_tessellate::tessellate_brep_with(brep.as_ref(), params);
                 vcad_kernel_booleans::repair_export_mesh(brep.as_ref(), &mut mesh);

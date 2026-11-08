@@ -613,7 +613,7 @@ mod tests {
             &FingerprintSettings {
                 segments: 16,
                 fold_sheet_metal: false,
-            chord_tol_mm: 0.0,
+                chord_tol_mm: 0.0,
             },
         );
         let kfold = root_fingerprint(
@@ -622,7 +622,7 @@ mod tests {
             &FingerprintSettings {
                 segments: 32,
                 fold_sheet_metal: true,
-            chord_tol_mm: 0.0,
+                chord_tol_mm: 0.0,
             },
         );
         assert_ne!(k32, k16);
