@@ -3686,6 +3686,50 @@ extension EditorModel {
     /// can be given one.
     var agentCanEdit: Bool { engine != nil || (source.isSandbox && documentJSON == nil) }
 
+    /// Turn the Untitled sandbox (a primitive + one modifier, not a document)
+    /// into a real engine document holding the same shape, so the modeling
+    /// tools work. Without this every Design tool sat disabled behind an
+    /// "Open a document" hover hint, and a fresh install could not model
+    /// anything. One undo step back to the sandbox. Returns whether the
+    /// window now has an editable document.
+    @discardableResult
+    func promoteSandboxToDocument() -> Bool {
+        if usesDocumentTree, engine != nil { return true }
+        guard source.isSandbox, engine == nil, documentJSON == nil else { return usesDocumentTree }
+        let applies = modifierApplies && modifierEffective
+        let (shape, mod, amount) = (baseShape, modifier, modifierValue)
+        guard let e = agentEnsureEngine() else { return false }
+        let before = e.save()
+        func call(_ tool: String, _ args: [String: Any]) throws -> DocumentEngine.Result {
+            let typed = try JSONDecoder().decode([String: EngineJSON].self,
+                                                 from: JSONSerialization.data(withJSONObject: args))
+            return try e.applyTool(ToolCall(tool: tool, args: typed))
+        }
+        do {
+            let primitive: [String: Any] = switch shape {
+            case .cube: ["type": "cube", "name": "Cube", "params": ["size": ["x": 30, "y": 30, "z": 30]]]
+            case .cylinder: ["type": "cylinder", "name": "Cylinder", "params": ["radius": 15, "height": 30]]
+            case .sphere: ["type": "sphere", "name": "Sphere", "params": ["radius": 15]]
+            }
+            var r = try call("create", primitive)
+            if applies, let base = r.createdFeatureId {
+                switch mod {
+                case .fillet: r = try call("create", ["type": "fillet", "name": "Fillet", "parent_part_id": base, "params": ["radius": amount]])
+                case .chamfer: r = try call("create", ["type": "chamfer", "name": "Chamfer", "parent_part_id": base, "params": ["distance": amount]])
+                case .none: break
+                }
+            }
+            adopt(r, reeval: .rebuild)
+            pushUndo(.snapshot(before), name: "Start Document")
+            if let first = featureNodes.first { selectFeature(first.id) }
+            return usesDocumentTree
+        } catch {
+            _ = try? e.restore(before)
+            engineError = "Couldn't start a document from the sketch pad: \(error)"
+            return false
+        }
+    }
+
     /// The engine the agent edits. A blank canvas (Untitled, nothing in it)
     /// gets an empty engine document on first use; Save then goes to Save As
     /// like any untitled document. Nil for view-only documents.

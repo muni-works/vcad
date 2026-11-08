@@ -355,16 +355,23 @@ enum DockTools {
     }
 
     private static func design(_ m: EditorModel) -> [Tool] {
+        // The Untitled sandbox isn't a document yet; the first modeling action
+        // promotes it (same shape, real features) instead of disabling the tools.
+        let sandbox = m.source.isSandbox && m.documentJSON == nil
         let doc = m.usesDocumentTree
         let selected = m.selectedPartIndex != nil || m.picking.selectionPart != nil
         var out: [Tool] = []
         out.append(Tool(id: "sketch", label: "Sketch", symbol: "scribble.variable", isActive: m.sketching,
-                        enabled: doc, hint: doc ? "" : "Open a document") { m.enterSketch() })
+                        enabled: doc || sandbox, hint: doc || sandbox ? "" : "Open a document") {
+            if m.promoteSandboxToDocument() { m.enterSketch() }
+        })
         out += m.tools(for: .create).filter { ["shape.cube", "shape.cylinder"].contains($0.id) }
         for op in FeatureOp.modifyOps where [.fillet, .chamfer, .shell, .circularPattern].contains(op) {
             out.append(Tool(id: "op.\(op.rawValue)", label: op.label, symbol: op.symbol,
-                            isActive: m.activeFeatureOp == op, enabled: doc && selected,
-                            hint: selected ? "" : "Select a part first") { m.activeFeatureOp = op })
+                            isActive: m.activeFeatureOp == op, enabled: sandbox || (doc && selected),
+                            hint: sandbox || selected ? "" : "Select a part first") {
+                if m.promoteSandboxToDocument() { m.activeFeatureOp = op }
+            })
         }
         let ready = m.multiSelectedParts.count == 2
         out.append(Tool(id: "bool.difference", label: "Subtract", symbol: BooleanOp.difference.symbol,
