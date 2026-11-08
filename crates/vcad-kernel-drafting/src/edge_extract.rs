@@ -5,7 +5,7 @@
 //! - Silhouette edges: boundary between front-facing and back-facing faces
 //! - Boundary edges: mesh boundaries (edges with only one adjacent face)
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use vcad_kernel_math::Point3;
 use vcad_kernel_tessellate::TriangleMesh;
@@ -22,7 +22,7 @@ use crate::types::{EdgeType, MeshEdge, Triangle3D, ViewDirection};
 pub const DEFAULT_SHARP_ANGLE: f64 = std::f64::consts::FRAC_PI_6; // 30 degrees
 
 /// Edge key for hash map lookup (canonical vertex pair ordering).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct EdgeKey {
     v0: u32,
     v1: u32,
@@ -56,7 +56,7 @@ const WELD_TOLERANCE: f64 = 1e-4;
 ///
 /// Keys use a canonical representative vertex index per welded position, so
 /// callers can still resolve endpoints with [`get_vertex`].
-fn build_edge_map(mesh: &TriangleMesh) -> HashMap<EdgeKey, EdgeData> {
+fn build_edge_map(mesh: &TriangleMesh) -> BTreeMap<EdgeKey, EdgeData> {
     let n_verts = mesh.vertices.len() / 3;
     let mut by_pos: HashMap<(i64, i64, i64), u32> = HashMap::with_capacity(n_verts);
     let q = |v: f32| (v as f64 / WELD_TOLERANCE).round() as i64;
@@ -71,7 +71,9 @@ fn build_edge_map(mesh: &TriangleMesh) -> HashMap<EdgeKey, EdgeData> {
         })
         .collect();
 
-    let mut edge_map: HashMap<EdgeKey, EdgeData> = HashMap::new();
+    // Ordered map: edge output order (and so the merged drawing's exact
+    // coordinates) must be deterministic run to run.
+    let mut edge_map: BTreeMap<EdgeKey, EdgeData> = BTreeMap::new();
     for (tri_idx, t) in mesh.indices.chunks(3).enumerate() {
         let tri_idx = tri_idx as u32;
         let (a, b, c) = (rep[t[0] as usize], rep[t[1] as usize], rep[t[2] as usize]);
