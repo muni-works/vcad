@@ -57,9 +57,9 @@ fn overfillet_and_overchamfer_are_errors_with_reasons() {
 fn fillet_and_chamfer_boundary_on_a_10mm_cube() {
     assert!(cube().fillet(4.9).is_ok(), "just under the max radius");
     assert!(cube().fillet(5.1).is_err(), "just over the max radius");
-    // Chamfer's own corner gate binds below 5 on a cube; just pin that a
-    // comfortable distance works and an over-limit one is refused.
-    assert!(cube().chamfer(4.0).is_ok());
+    // Chamfer's post-flight gate (output >= half the input volume) binds
+    // near d≈3.5 on a cube; pin a working distance and an over-limit one.
+    assert!(cube().chamfer(3.0).is_ok());
     assert!(cube().chamfer(5.1).is_err());
     for v in [0.0, -1.0, f64::NAN] {
         assert!(matches!(cube().fillet(v), Err(BlendError::InvalidSize(_))));
@@ -77,4 +77,3 @@ fn empty_boolean_has_no_bounding_box() {
     assert_eq!(Solid::empty().try_bounding_box(), None);
     assert!(cube().try_bounding_box().is_some());
 }
-
