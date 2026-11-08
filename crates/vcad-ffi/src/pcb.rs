@@ -1134,10 +1134,19 @@ pub extern "C" fn vcad_pcb_library_footprint(request_json: *const c_char) -> *mu
             position: vcad_ir::Vec2,
             copper: Vec<vcad_ir::ecad::PcbLayer>,
         }
-        let q: Req = serde_json::from_str(borrow_str("request", request_json).ok_or("bad request")?)
-            .map_err(|e| e.to_string())?;
+        let q: Req =
+            serde_json::from_str(borrow_str("request", request_json).ok_or("bad request")?)
+                .map_err(|e| e.to_string())?;
         let def = vcad_ecad_symbols::kicad_board::load_footprint(&q.id)?;
-        let fp = vcad_ecad_symbols::kicad_board::place_footprint(&def, &q.id, &q.reference, "", q.position, 0.0, &q.copper);
+        let fp = vcad_ecad_symbols::kicad_board::place_footprint(
+            &def,
+            &q.id,
+            &q.reference,
+            "",
+            q.position,
+            0.0,
+            &q.copper,
+        );
         Ok(json!({ "footprint": fp }))
     })
 }

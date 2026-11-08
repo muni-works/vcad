@@ -28,39 +28,84 @@ fn vol(m: &TriangleMesh) -> f64 {
 fn check(name: &str, s: &Solid, exact: f64) {
     let coarse = s.to_mesh(32);
     let fine = s.to_mesh_with_chord(32, 0.02);
-    assert!(fine.boundary_edges().is_empty(), "{name}: {} open edges", fine.boundary_edges().len());
+    assert!(
+        fine.boundary_edges().is_empty(),
+        "{name}: {} open edges",
+        fine.boundary_edges().len()
+    );
     let (ec, ef) = ((vol(&coarse) - exact).abs(), (vol(&fine) - exact).abs());
-    assert!(ef <= ec + 1e-6 * exact, "{name}: fine err {ef} > coarse err {ec}");
-    assert!(fine.indices.len() >= coarse.indices.len(), "{name}: fine mesh is coarser");
+    assert!(
+        ef <= ec + 1e-6 * exact,
+        "{name}: fine err {ef} > coarse err {ec}"
+    );
+    assert!(
+        fine.indices.len() >= coarse.indices.len(),
+        "{name}: fine mesh is coarser"
+    );
 }
 
 #[test]
 fn big_cylinder() {
-    check("cyl r86", &Solid::cylinder(86.0, 40.0, 0), PI * 86.0 * 86.0 * 40.0);
+    check(
+        "cyl r86",
+        &Solid::cylinder(86.0, 40.0, 0),
+        PI * 86.0 * 86.0 * 40.0,
+    );
 }
 
 #[test]
 fn sphere_and_cone() {
-    check("sphere r40", &Solid::sphere(40.0, 0), 4.0 / 3.0 * PI * 40f64.powi(3));
-    check("cone", &Solid::cone(30.0, 10.0, 25.0, 0), PI * 25.0 / 3.0 * (900.0 + 300.0 + 100.0));
+    check(
+        "sphere r40",
+        &Solid::sphere(40.0, 0),
+        4.0 / 3.0 * PI * 40f64.powi(3),
+    );
+    check(
+        "cone",
+        &Solid::cone(30.0, 10.0, 25.0, 0),
+        PI * 25.0 / 3.0 * (900.0 + 300.0 + 100.0),
+    );
 }
 
 #[test]
 fn cup_and_filleted_cup() {
-    let cup = Solid::cylinder(86.0, 40.0, 0).difference(&Solid::cylinder(84.0, 40.0, 0).translate(0.0, 0.0, 2.0));
+    let cup = Solid::cylinder(86.0, 40.0, 0)
+        .difference(&Solid::cylinder(84.0, 40.0, 0).translate(0.0, 0.0, 2.0));
     let exact = PI * (86.0 * 86.0 * 40.0 - 84.0 * 84.0 * 38.0);
     check("cup", &cup, exact);
-    let keys = [BlendKey { t: 0.0, section: BlendSection { size: 5.0, shape: 1.0 } }];
-    let f = cup.edge_blend(&EdgeQuery::Near { point: Point3::new(86.0, 0.0, 0.0) }, &keys).expect("rim fillet");
+    let keys = [BlendKey {
+        t: 0.0,
+        section: BlendSection {
+            size: 5.0,
+            shape: 1.0,
+        },
+    }];
+    let f = cup
+        .edge_blend(
+            &EdgeQuery::Near {
+                point: Point3::new(86.0, 0.0, 0.0),
+            },
+            &keys,
+        )
+        .expect("rim fillet");
     let mesh = f.to_mesh_with_chord(32, 0.02);
-    assert!(mesh.boundary_edges().is_empty(), "filleted cup: {} open edges", mesh.boundary_edges().len());
+    assert!(
+        mesh.boundary_edges().is_empty(),
+        "filleted cup: {} open edges",
+        mesh.boundary_edges().len()
+    );
 }
 
 #[test]
 fn plate_with_hole_and_filleted_box() {
-    let plate = Solid::cube(60.0, 40.0, 5.0).difference(&Solid::cylinder(8.0, 10.0, 0).translate(30.0, 20.0, -2.0));
+    let plate = Solid::cube(60.0, 40.0, 5.0)
+        .difference(&Solid::cylinder(8.0, 10.0, 0).translate(30.0, 20.0, -2.0));
     check("plate-hole", &plate, 60.0 * 40.0 * 5.0 - PI * 64.0 * 5.0);
     let fb = Solid::cube(30.0, 20.0, 10.0).fillet(3.0).expect("fillet");
     let m = fb.to_mesh_with_chord(32, 0.02);
-    assert!(m.boundary_edges().is_empty(), "filleted box: {} open edges", m.boundary_edges().len());
+    assert!(
+        m.boundary_edges().is_empty(),
+        "filleted box: {} open edges",
+        m.boundary_edges().len()
+    );
 }
