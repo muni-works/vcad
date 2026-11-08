@@ -28,6 +28,11 @@ enum PcbFFI {
         String(decoding: try JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]), as: UTF8.self)
     }
 
+    static func ratsnest(_ pcb: Obj) throws -> Obj {
+        let json = try text(pcb)
+        return try finish(json.withCString { vcad_pcb_ratsnest($0) }, "ratsnest")
+    }
+
     /// A board open for hand routing (`vcad_pcb_router_*`). Queries are
     /// serialised by the Rust side's lock.
     final class Router: @unchecked Sendable {

@@ -1086,3 +1086,27 @@ pub extern "C" fn vcad_pcb_router_commit(
         Ok(json!({ "traces": traces, "vias": vias, "moved": q.moved }))
     })
 }
+
+/// The ratsnest: `[{net, from, to}]`, one per connection still needed to join
+/// each net's copper islands — the DRC's own connectivity, so the airwires and
+/// the "open nets" count can never disagree.
+#[no_mangle]
+pub extern "C" fn vcad_pcb_ratsnest(pcb_json: *const c_char) -> *mut c_char {
+    run("vcad_pcb_ratsnest", || {
+        let pcb = parse_pcb(pcb_json)?;
+        let layers: Vec<_> = pcb
+            .stackup
+            .layers
+            .iter()
+            .map(|l| l.layer)
+            .filter(|l| l.is_copper())
+            .collect();
+        let rats =
+            vcad_ecad_pcb::router::islands::island_connections(&pcb, &layers, &BTreeSet::new());
+        let wires: Vec<Value> = rats
+            .iter()
+            .map(|r| json!({ "net": r.net, "from": r.from, "to": r.to }))
+            .collect();
+        Ok(json!({ "wires": wires }))
+    })
+}

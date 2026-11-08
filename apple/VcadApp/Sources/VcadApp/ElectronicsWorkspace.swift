@@ -30,6 +30,13 @@ final class ElectronicsWorkspace {
     var snap = true
     var zoom = 1.0
     var pan = CGSize.zero
+    /// Cursor in board mm, for the status readout.
+    var cursor: CGPoint?
+    /// A part being dragged, and where it is right now.
+    var dragRef: String?
+    var dragPosition: CGPoint?
+    /// Lower bound on zoom when centring on `focusPoint`.
+    var focusMinZoom = 3.0
     /// Latest live route from `routeStart` to the cursor (router JSON).
     var routePreview: ECObject?
     var routeTarget: CGPoint?
@@ -51,12 +58,17 @@ final class ElectronicsWorkspace {
     /// A DRC location to centre and ring.
     var focusPoint: CGPoint?
     @ObservationIgnored private var airwireCache: (key: Int, wires: [Airwire]) = (-1, [])
+    @ObservationIgnored private var ratsPendingKey = -1
+    @ObservationIgnored private var ratsBusy = false
+    @ObservationIgnored private var ratsQueued: (ECBox, Int)?
+    private var ratsnestVersion = 0
+    private static let ratsQueue = DispatchQueue(label: "vcad.ratsnest", qos: .userInitiated)
     private func boardKey(_ board: ECObject) -> Int {
         var h = Hasher()
         let t = ecRows(board["traces"]), v = ecRows(board["vias"])
         h.combine(t.count); h.combine(v.count)
         for x in t.suffix(8) { h.combine(ecPoint(x["end"]).x) }
-        for x in ecRows(board["footprints"]) { let p = ecPoint(x["position"]); h.combine(p.x); h.combine(p.y); h.combine(ecNumber(x["rotation"])) }
+        for x in ecRows(board["footprints"]) { let p = ecPoint(x["position"]); h.combine(p.x); h.combine(p.y); h.combine(ecNumber(x["rotation"])); h.combine(x["front"] as? Bool ?? true) }
         return h.finalize()
     }
     private func liveRouter(_ board: ECObject) -> PcbFFI.Router? {
@@ -134,15 +146,99 @@ final class ElectronicsWorkspace {
         let layers = BoardLayers.copper
         activeLayer = layers[((layers.firstIndex(of: activeLayer) ?? 0) + 1) % layers.count]
     }
+    /// The board as drawn: the committed one, with any part mid-drag moved.
+    func drawBoard(_ model: EditorModel) -> ECObject {
+        var b = board(model)
+        guard let ref = dragRef, let p = dragPosition else { return b }
+        var rows = ecRows(b["footprints"])
+        if let i = rows.firstIndex(where: { $0["ref"] as? String == ref }) {
+            rows[i]["position"] = ecJSON(p); b["footprints"] = rows
+        }
+        return b
+    }
+    func focus(on p: CGPoint, minZoom: Double = 3) {
+        focusMinZoom = minZoom
+        focusPoint = nil
+        focusPoint = p
+    }
+    /// Unrouted gaps per net, worst first.
+    func openNets(_ board: ECObject) -> [(name: String, gaps: Int, at: CGPoint)] {
+        var out: [(name: String, gaps: Int, at: CGPoint)] = []
+        for (net, wires) in Dictionary(grouping: airwires(board), by: { $0.net }) {
+            let w = wires[0]
+            out.append((net, wires.count, CGPoint(x: (w.a.x + w.b.x) / 2, y: (w.a.y + w.b.y) / 2)))
+        }
+        return out.sorted { $0.gaps != $1.gaps ? $0.gaps > $1.gaps : $0.name < $1.name }
+    }
+    /// Move the selected part to the other side of the board, mirrored about
+    /// its own vertical axis — copper, mask, paste and artwork together.
+    func flipSelected(_ model: EditorModel) {
+        guard let ref = selectedRef else { return }
+        func other(_ l: String) -> String {
+            if l.hasPrefix("F") { return "B" + l.dropFirst() }
+            if l.hasPrefix("B") { return "F" + l.dropFirst() }
+            return l
+        }
+        func mirrored(_ value: Any?) -> ECObject { let p = ecPoint(value); return ecJSON(CGPoint(x: -p.x, y: p.y)) }
+        mutateBoard(model) { b in
+            var rows = ecRows(b["footprints"])
+            guard let i = rows.firstIndex(where: { $0["ref"] as? String == ref }) else { return }
+            var f = rows[i]
+            f["front"] = !(f["front"] as? Bool ?? true)
+            f["rotation"] = 0 - ecNumber(f["rotation"])
+            f["pads"] = ecRows(f["pads"]).map { pad -> ECObject in
+                var pad = pad
+                pad["position"] = mirrored(pad["position"])
+                pad["rotation"] = 0 - ecNumber(pad["rotation"])
+                pad["layers"] = (pad["layers"] as? [String] ?? []).map(other)
+                return pad
+            }
+            f["graphics"] = ecRows(f["graphics"]).map { g -> ECObject in
+                var g = g
+                g["layer"] = other(g["layer"] as? String ?? "")
+                for key in ["start", "end", "center", "position"] where g[key] != nil { g[key] = mirrored(g[key]) }
+                if g["vertices"] != nil { g["vertices"] = ecRows(g["vertices"]).map { mirrored($0) } }
+                return g
+            }
+            rows[i] = f
+            b["footprints"] = rows
+        }
+    }
+    /// The airwires for `board`, from the kernel off the main thread: the
+    /// last answer until the new one lands, latest edit wins.
     func airwires(_ board: ECObject) -> [Airwire] {
-        var h = Hasher()
-        let t = ecRows(board["traces"]), v = ecRows(board["vias"]), f = ecRows(board["footprints"])
-        h.combine(t.count); h.combine(v.count)
-        for x in t.suffix(8) { h.combine(ecPoint(x["end"]).x) }
-        for x in f { let p = ecPoint(x["position"]); h.combine(p.x); h.combine(p.y); h.combine(ecNumber(x["rotation"])) }
-        let key = h.finalize()
-        if airwireCache.key != key { airwireCache = (key, BoardRatsnest.compute(board)) }
+        _ = ratsnestVersion
+        let key = boardKey(board)
+        if key != airwireCache.key { requestRatsnest(board, key) }
         return airwireCache.wires
+    }
+    private func requestRatsnest(_ board: ECObject, _ key: Int) {
+        guard key != ratsPendingKey else { return }
+        ratsPendingKey = key
+        // Only pads and copper matter; footprint art and source are most of the JSON.
+        var light = board
+        light["footprints"] = ecRows(board["footprints"]).map { f -> ECObject in
+            var f = f; f["graphics"] = [Any](); f["properties"] = ECObject(); return f
+        }
+        ratsQueued = (ECBox(value: light), key)
+        guard !ratsBusy else { return }
+        runRatsnest()
+    }
+    private func runRatsnest() {
+        guard let (box, key) = ratsQueued else { ratsBusy = false; return }
+        ratsQueued = nil; ratsBusy = true
+        Self.ratsQueue.async { [weak self] in
+            let result = ECBox(value: (try? PcbFFI.ratsnest(box.value)) ?? [:])
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let wires = ecRows(result.value["wires"]).map {
+                    Airwire(a: ecPoint($0["from"]), b: ecPoint($0["to"]), net: $0["net"] as? String ?? "")
+                }
+                self.airwireCache = (key, wires)
+                self.ratsnestVersion += 1
+                self.runRatsnest()
+            }
+        }
     }
     var routeStart: CGPoint?
     var pendingPin: String?

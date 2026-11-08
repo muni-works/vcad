@@ -109,6 +109,18 @@ struct NativeElectronicsView: View {
             Text(ec.tools.error ?? ec.tools.status ?? ec.message ?? (ec.view == .spatial ? "3D layout preview" : ec.tool == .wire ? "Select two pins to connect their net" : ec.tool == .route ? "Click to route · Esc ends the route" : ec.tool == .place ? "Click to place \(ec.componentKind.lowercased())" : ec.selectedRef ?? "Select a component"))
                 .lineLimit(1)
             Text("·").foregroundStyle(.secondary)
+            if ec.view == .board {
+                if let c = ec.cursor {
+                    Text(String(format: "%.2f, %.2f mm", c.x, c.y)).monospacedDigit().frame(minWidth: 96)
+                    Text("·").foregroundStyle(.secondary)
+                }
+                Circle().fill(BoardLayers.color(ec.activeLayer)).frame(width: 8, height: 8)
+                Text(BoardLayers.name(ec.activeLayer))
+                Text("·").foregroundStyle(.secondary)
+                let open = ec.openNets(ec.board(model)).count
+                Text("\(open) open").monospacedDigit().foregroundStyle(open == 0 ? Color.green : Color.orange)
+                Text("·").foregroundStyle(.secondary)
+            }
             Text("\(ecRows(ec.board(model)["nets"]).count) nets").monospacedDigit()
             if let r = ec.tools.drc {
                 let n = Int(ecNumber(r["route_attributable"]))
@@ -142,20 +154,38 @@ struct NativeElectronicsView: View {
                             let ref = row["ref"] as? String ?? "?"
                             let value = row["value"] as? String ?? ""
                             if search.isEmpty || (ref + value).localizedCaseInsensitiveContains(search) {
-                                Button { ec.selectedRef = ref; ec.selectedTrace = nil; ec.selectedVia = nil; ec.tool = .select } label: {
+                                Button {
+                                    ec.selectedRef = ref; ec.selectedTrace = nil; ec.selectedVia = nil; ec.tool = .select
+                                    if ec.view == .board { ec.focus(on: ecPoint(row["position"]), minZoom: 1) }
+                                } label: {
                                     HStack { Image(systemName: "cpu"); Text(ref); Spacer(); Text(value).foregroundStyle(.secondary) }
                                         .padding(Theme.Space.s).selectableRow(selected: ec.selectedRef == ref)
                                 }.buttonStyle(.plain).accessibilityAddTraits(ec.selectedRef == ref ? .isSelected : [])
                             }
                         }
                     } else if navigatorTab == "Nets" {
-                        ForEach(ecRows(ec.board(model)["nets"]), id: \.ecID) { row in
+                        let open = ec.openNets(ec.board(model))
+                        if !open.isEmpty { Eyebrow("Open") }
+                        ForEach(open.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) }, id: \.name) { net in
+                            Button {
+                                ec.activeNet = net.name; ec.highlightNet = net.name; ec.routeStart = nil
+                                ec.focus(on: net.at, minZoom: 2)
+                            } label: {
+                                HStack {
+                                    Circle().fill(.orange).frame(width: 7, height: 7)
+                                    Text(net.name); Spacer()
+                                    Text("\(net.gaps)").monospacedDigit().foregroundStyle(.secondary)
+                                }.padding(Theme.Space.s).selectableRow(selected: ec.highlightNet == net.name)
+                            }.buttonStyle(.plain)
+                        }
+                        if !open.isEmpty { Eyebrow("Connected") }
+                        ForEach(ecRows(ec.board(model)["nets"]).filter { row in !open.contains { $0.name == row.ecID } }, id: \.ecID) { row in
                             let name = row["name"] as? String ?? row.ecID
                             if search.isEmpty || name.localizedCaseInsensitiveContains(search) {
                                 Button { ec.activeNet = row.ecID; ec.highlightNet = row.ecID; ec.routeStart = nil } label: {
                                     HStack { Image(systemName: "point.3.connected.trianglepath.dotted"); Text(name); Spacer() }
-                                        .padding(Theme.Space.s).selectableRow(selected: ec.activeNet == row.ecID)
-                                }.buttonStyle(.plain).accessibilityAddTraits(ec.activeNet == row.ecID ? .isSelected : [])
+                                        .padding(Theme.Space.s).selectableRow(selected: ec.highlightNet == row.ecID)
+                                }.buttonStyle(.plain).accessibilityAddTraits(ec.highlightNet == row.ecID ? .isSelected : [])
                             }
                         }
                         if ecRows(ec.board(model)["nets"]).isEmpty {
@@ -360,7 +390,7 @@ struct ElectronicsCanvas: View {
                 func line(_ a: CGPoint, _ b: CGPoint, _ color: Color, _ width: CGFloat = 1) {
                     var path = Path(); path.move(to: screen(a)); path.addLine(to: screen(b)); context.stroke(path, with: .color(color), lineWidth: width)
                 }
-                let board = ec.board(model)
+                let board = ec.view == .board ? ec.drawBoard(model) : ec.board(model)
                 let spacing = max(12, ec.grid * scale)
                 for x in stride(from: offset.x.truncatingRemainder(dividingBy: spacing), to: size.width, by: spacing) {
                     for y in stride(from: offset.y.truncatingRemainder(dividingBy: spacing), to: size.height, by: spacing) {
@@ -449,11 +479,12 @@ struct ElectronicsCanvas: View {
                 switch phase {
                 case .active(let location):
                     pointerScreen = location; pointer = CGPoint(x: (location.x - offset.x) / scale, y: (location.y - offset.y) / scale)
+                    ec.cursor = pointer
                     if ec.tool == .route, ec.routeStart != nil, let p = pointer {
                         let hit = copperAt(p, tolerance: 10 / scale, net: ec.activeNet)
                         ec.updateRoute(model, to: hit?.at ?? ec.snapped(p), endsOnCopper: hit != nil)
                     }
-                case .ended: pointer = nil; pointerScreen = nil
+                case .ended: pointer = nil; pointerScreen = nil; ec.cursor = nil
                 }
             }
             .contentShape(Rectangle())
@@ -483,24 +514,29 @@ struct ElectronicsCanvas: View {
             .simultaneousGesture(DragGesture(minimumDistance: 4).onChanged { event in
                 guard ec.view != .spatial else { return }
                 let start = CGPoint(x: (event.startLocation.x - offset.x) / scale, y: (event.startLocation.y - offset.y) / scale)
-                // Empty board pans; a part moves on release.
-                if panStart == nil, ec.tool != .select || partAt(start, tolerance: 8 / scale) == nil { panStart = ec.pan }
-                if let base = panStart { ec.pan = CGSize(width: base.width + event.translation.width, height: base.height + event.translation.height) }
-            }.onEnded { event in
-                defer { panStart = nil }
-                guard panStart == nil, ec.view != .spatial, ec.tool == .select else { return }
-                let start = CGPoint(x: (event.startLocation.x - offset.x) / scale, y: (event.startLocation.y - offset.y) / scale)
-                select(start, tolerance: 8 / scale)
-                guard ec.selectedRef != nil else { return }
-                let end = ec.snapped(CGPoint(x: (event.location.x - offset.x) / scale, y: (event.location.y - offset.y) / scale))
-                ec.editComponent(model, key: "position", value: ecJSON(end))
+                // Empty board pans; a part follows the cursor, ratsnest and all.
+                if panStart == nil, ec.dragRef == nil {
+                    if ec.tool == .select, let ref = partAt(start, tolerance: 8 / scale) {
+                        ec.dragRef = ref; ec.selectedRef = ref; ec.selectedTrace = nil; ec.selectedVia = nil
+                    } else { panStart = ec.pan }
+                }
+                if let base = panStart {
+                    ec.pan = CGSize(width: base.width + event.translation.width, height: base.height + event.translation.height)
+                } else if let ref = ec.dragRef {
+                    let rows = ecRows(ec.view == .schematic ? ec.schematic(model)["components"] : ec.board(model)["footprints"])
+                    let origin = ecPoint(rows.first { $0["ref"] as? String == ref }?["position"])
+                    ec.dragPosition = ec.snapped(CGPoint(x: origin.x + event.translation.width / scale, y: origin.y + event.translation.height / scale))
+                }
+            }.onEnded { _ in
+                defer { panStart = nil; ec.dragRef = nil; ec.dragPosition = nil }
+                if ec.dragRef != nil, let p = ec.dragPosition { ec.editComponent(model, key: "position", value: ecJSON(p)) }
             })
             .onAppear { canvasSize = geo.size; installMonitor() }
             .onDisappear { if let monitor { NSEvent.removeMonitor(monitor) }; monitor = nil }
             .onChange(of: geo.size) { _, new in canvasSize = new }
             .onChange(of: ec.focusPoint) { _, p in
                 guard let p else { return }
-                ec.zoom = max(ec.zoom, 3); ec.pan = .zero
+                ec.zoom = max(ec.zoom, ec.focusMinZoom); ec.pan = .zero
                 let (s, o) = transform(geo.size)
                 ec.pan = CGSize(width: geo.size.width / 2 - (o.x + p.x * s), height: geo.size.height / 2 - (o.y + p.y * s))
             }
@@ -630,6 +666,24 @@ struct ElectronicsCanvas: View {
         }
         return nil
     }
+    /// The footprint whose courtyard (or pad extent) contains `p`; smallest wins.
+    private func bodyAt(_ p: CGPoint) -> String? {
+        var best: (String, CGFloat)?
+        for f in ecRows(ec.board(model)["footprints"]) {
+            let o = ecPoint(f["position"]), r = -ecNumber(f["rotation"]) * .pi / 180
+            let dx = p.x - o.x, dy = p.y - o.y
+            let local = CGPoint(x: dx * cos(r) - dy * sin(r), y: dx * sin(r) + dy * cos(r))
+            var pts = ecRows(f["graphics"]).filter { ($0["layer"] as? String)?.hasSuffix("CrtYd") == true }
+                .flatMap { [ecPoint($0["start"]), ecPoint($0["end"])] }
+            if pts.isEmpty { pts = ecRows(f["pads"]).map { ecPoint($0["position"]) } }
+            guard let x0 = pts.map(\.x).min(), let x1 = pts.map(\.x).max(), let y0 = pts.map(\.y).min(), let y1 = pts.map(\.y).max() else { continue }
+            if local.x >= x0, local.x <= x1, local.y >= y0, local.y <= y1 {
+                let area = (x1 - x0) * (y1 - y0)
+                if area < (best?.1 ?? .infinity) { best = (f["ref"] as? String ?? "", area) }
+            }
+        }
+        return best?.0
+    }
     /// The footprint under `p`: a pad of it, or its body.
     private func partAt(_ p: CGPoint, tolerance: CGFloat) -> String? {
         if ec.view == .schematic {
@@ -639,7 +693,8 @@ struct ElectronicsCanvas: View {
             }
             return nil
         }
-        return padAt(p, tolerance: tolerance)?.ref
+        if let hit = padAt(p, tolerance: tolerance) { return hit.ref }
+        return bodyAt(p)
     }
     private func select(_ p: CGPoint, tolerance: CGFloat) {
         ec.selectedRef = nil; ec.selectedTrace = nil; ec.selectedVia = nil; ec.highlightNet = nil
@@ -661,6 +716,7 @@ struct ElectronicsCanvas: View {
                 ec.selectedTrace = i; ec.highlightNet = trace["net"] as? String; return
             }
         }
+        ec.selectedRef = bodyAt(p)
     }
     /// Wheel/pinch zoom about the cursor, two-finger pan, and the editing keys.
     private func installMonitor() {
@@ -670,6 +726,9 @@ struct ElectronicsCanvas: View {
             if event.type == .keyDown {
                 if NSApp.keyWindow?.firstResponder is NSTextView { return event }
                 if event.keyCode == 53, ec.routeStart != nil { ec.cancelRoute(); return nil }
+                if event.keyCode == 51 || event.keyCode == 117, ec.selectedTrace != nil || ec.selectedVia != nil {
+                    ec.removeSelection(model); return nil
+                }
                 if ec.routeStart != nil, event.charactersIgnoringModifiers == "v" {
                     ec.nextRouteLayer()
                     if let t = ec.routeTarget { ec.updateRoute(model, to: t, endsOnCopper: ec.routeEndsOnCopper) }
@@ -682,6 +741,8 @@ struct ElectronicsCanvas: View {
                     let f = ecRows(ec.board(model)["footprints"]).first { $0["ref"] as? String == ec.selectedRef }
                     ec.editComponent(model, key: "rotation", value: (ecNumber(f?["rotation"]) + 90).truncatingRemainder(dividingBy: 360))
                     return nil
+                case "f" where ec.selectedRef != nil && ec.view == .board:
+                    ec.flipSelected(model); return nil
                 case "h": ec.showRatsnest.toggle(); return nil
                 case "0": ec.zoom = 1; ec.pan = .zero; ec.focusPoint = nil; return nil
                 default: return event
