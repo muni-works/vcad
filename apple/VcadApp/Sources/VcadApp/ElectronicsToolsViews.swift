@@ -84,6 +84,9 @@ struct DrcPanel: View {
             .foregroundStyle(clean ? .green : .orange)
         List(Array(ecRows(r["findings"]).prefix(300).enumerated()), id: \.offset) { _, f in
             HStack(alignment: .firstTextBaseline) {
+                Button { model.electronics.focusPoint = CGPoint(x: ecNumber(f["x"]), y: ecNumber(f["y"])); t.sheet = nil } label: {
+                    Image(systemName: "scope")
+                }.buttonStyle(.borderless).help("Show on the board")
                 Text(f["rule"] as? String ?? "").font(.caption.monospaced()).frame(width: 110, alignment: .leading)
                 Text(f["message"] as? String ?? "").font(.caption).lineLimit(2)
                 Spacer()

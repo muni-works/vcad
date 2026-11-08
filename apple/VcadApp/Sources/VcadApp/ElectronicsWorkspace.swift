@@ -29,6 +29,27 @@ final class ElectronicsWorkspace {
     var grid = 1.0
     var snap = true
     var zoom = 1.0
+    var pan = CGSize.zero
+    /// The net lit on the canvas; everything else dims.
+    var highlightNet: String?
+    var hiddenLayers = Set<String>()
+    var showRatsnest = true
+    var showSilk = true
+    var showCourtyard = false
+    var showDrcMarkers = true
+    /// A DRC location to centre and ring.
+    var focusPoint: CGPoint?
+    @ObservationIgnored private var airwireCache: (key: Int, wires: [Airwire]) = (-1, [])
+    func airwires(_ board: ECObject) -> [Airwire] {
+        var h = Hasher()
+        let t = ecRows(board["traces"]), v = ecRows(board["vias"]), f = ecRows(board["footprints"])
+        h.combine(t.count); h.combine(v.count)
+        for x in t.suffix(8) { h.combine(ecPoint(x["end"]).x) }
+        for x in f { let p = ecPoint(x["position"]); h.combine(p.x); h.combine(p.y); h.combine(ecNumber(x["rotation"])) }
+        let key = h.finalize()
+        if airwireCache.key != key { airwireCache = (key, BoardRatsnest.compute(board)) }
+        return airwireCache.wires
+    }
     var routeStart: CGPoint?
     var pendingPin: String?
     var message: String?

@@ -152,7 +152,7 @@ struct NativeElectronicsView: View {
                         ForEach(ecRows(ec.board(model)["nets"]), id: \.ecID) { row in
                             let name = row["name"] as? String ?? row.ecID
                             if search.isEmpty || name.localizedCaseInsensitiveContains(search) {
-                                Button { ec.activeNet = row.ecID; ec.routeStart = nil } label: {
+                                Button { ec.activeNet = row.ecID; ec.highlightNet = row.ecID; ec.routeStart = nil } label: {
                                     HStack { Image(systemName: "point.3.connected.trianglepath.dotted"); Text(name); Spacer() }
                                         .padding(Theme.Space.s).selectableRow(selected: ec.activeNet == row.ecID)
                                 }.buttonStyle(.plain).accessibilityAddTraits(ec.activeNet == row.ecID ? .isSelected : [])
@@ -163,9 +163,20 @@ struct NativeElectronicsView: View {
                                             detail: "Connect schematic pins to create a net.")
                         }
                     } else {
-                        Picker("Active copper", selection: $ec.activeLayer) {
-                            Text("Front copper").tag("FCu"); Text("Back copper").tag("BCu")
-                        }.pickerStyle(.radioGroup)
+                        ForEach(BoardLayers.copper, id: \.self) { layer in
+                            HStack(spacing: 6) {
+                                Button { if ec.hiddenLayers.contains(layer) { ec.hiddenLayers.remove(layer) } else { ec.hiddenLayers.insert(layer) } } label: {
+                                    Image(systemName: ec.hiddenLayers.contains(layer) ? "eye.slash" : "eye")
+                                }.buttonStyle(.plain).accessibilityLabel("Show \(BoardLayers.name(layer))")
+                                RoundedRectangle(cornerRadius: 2).fill(BoardLayers.color(layer)).frame(width: 12, height: 12)
+                                Button { ec.activeLayer = layer } label: { Text(BoardLayers.name(layer)); Spacer() }.buttonStyle(.plain)
+                            }.padding(Theme.Space.xs).selectableRow(selected: ec.activeLayer == layer)
+                        }
+                        Divider()
+                        Toggle("Ratsnest", isOn: $ec.showRatsnest)
+                        Toggle("Silkscreen", isOn: $ec.showSilk)
+                        Toggle("Courtyards", isOn: $ec.showCourtyard)
+                        Toggle("DRC markers", isOn: $ec.showDrcMarkers)
                     }
                 }.font(.callout)
             }
@@ -308,6 +319,10 @@ struct ElectronicsCanvas: View {
     @Bindable var model: EditorModel
     private var ec: ElectronicsWorkspace { model.electronics }
     @State private var pointer: CGPoint?
+    @State private var pointerScreen: CGPoint?
+    @State private var canvasSize = CGSize.zero
+    @State private var panStart: CGSize?
+    @State private var monitor: Any?
     private func transform(_ size: CGSize) -> (CGFloat, CGPoint) {
         // Fit what this view draws: the schematic's symbols, or the board outline.
         // Fitting the schematic to the board outline left real sheets (which run
@@ -321,7 +336,7 @@ struct ElectronicsCanvas: View {
             let minX = vertices.map(\.x).min() ?? 0, maxX = vertices.map(\.x).max() ?? 80
             let minY = vertices.map(\.y).min() ?? 0, maxY = vertices.map(\.y).max() ?? 50
             let scale = max(0.1, min((size.width - 60) / max(1, maxX - minX), (size.height - 160) / max(1, maxY - minY))) * ec.zoom
-            return (scale, CGPoint(x: size.width / 2 - (minX + maxX) / 2 * scale, y: size.height / 2 - (minY + maxY) / 2 * scale))
+            return (scale, CGPoint(x: size.width / 2 - (minX + maxX) / 2 * scale + ec.pan.width, y: size.height / 2 - (minY + maxY) / 2 * scale + ec.pan.height))
         }
         vertices = ecRows((ec.board(model)["outline"] as? ECObject)?["vertices"]).map { ecPoint($0) }
         let minX = min(0, vertices.map(\.x).min() ?? 0), maxX = max(80, vertices.map(\.x).max() ?? 80)
@@ -331,7 +346,7 @@ struct ElectronicsCanvas: View {
         let usableW = max(120, size.width - 2 * (Theme.Width.inspector + 2 * Glass.inset) - 40)
         let usableH = max(120, size.height - Glass.toolbarHeight - 90)
         let scale = max(0.1, min(usableW / (maxX - minX), usableH / (maxY - minY))) * ec.zoom
-        return (scale, CGPoint(x: size.width / 2 - (minX + maxX) / 2 * scale, y: size.height / 2 - (minY + maxY) / 2 * scale))
+        return (scale, CGPoint(x: size.width / 2 - (minX + maxX) / 2 * scale + ec.pan.width, y: size.height / 2 - (minY + maxY) / 2 * scale + ec.pan.height))
     }
     var body: some View {
         GeometryReader { geo in
@@ -359,16 +374,9 @@ struct ElectronicsCanvas: View {
                 if ec.view != .schematic {
                     let vertices = ecRows((board["outline"] as? ECObject)?["vertices"]).map { screen(ecPoint($0)) }
                     var path = Path(); path.addLines(vertices); path.closeSubpath()
-                    context.fill(path, with: .color(.green.opacity(0.15)))
-                    context.stroke(path, with: .color(.green), lineWidth: 2)
-                    for (i, trace) in ecRows(board["traces"]).enumerated() {
-                        let layer = trace["layer"] as? String ?? "FCu"
-                        line(ecPoint(trace["start"]), ecPoint(trace["end"]), i == ec.selectedTrace ? .yellow : layer == "FCu" ? .orange : .cyan, max(1.5, ecNumber(trace["width"], 0.25) * scale))
-                    }
-                    for (i, via) in ecRows(board["vias"]).enumerated() {
-                        let p = screen(ecPoint(via["position"])), r = max(3, ecNumber(via["diameter"], 0.6) * scale / 2)
-                        context.stroke(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)), with: .color(i == ec.selectedVia ? .yellow : .cyan), lineWidth: 2)
-                    }
+                    context.fill(path, with: .color(Color(red: 0.05, green: 0.14, blue: 0.10)))
+                    context.stroke(path, with: .color(.yellow.opacity(0.8)), lineWidth: 1.5)
+                    if !spatial { BoardPainter(context: context, ec: ec, board: board, scale: scale, screen: screen).draw() }
                 } else {
                     for wire in ecRows(ec.schematic(model)["wires"]) { line(ecPoint(wire["start"]), ecPoint(wire["end"]), .green) }
                     // Small nets: wires between nearest pins (a chain, not a star from
@@ -426,7 +434,7 @@ struct ElectronicsCanvas: View {
                         }
                     }
                 }
-                let components = ec.view == .schematic ? [] : ecRows(board["footprints"])
+                let components = ec.view == .spatial ? ecRows(board["footprints"]) : []
                 for f in components {
                     let ref = f["ref"] as? String ?? "?", p = ecPoint(f["position"]), center = screen(p)
                     let rect = CGRect(x: center.x - 3 * scale, y: center.y - 1.5 * scale, width: 6 * scale, height: 3 * scale)
@@ -443,8 +451,8 @@ struct ElectronicsCanvas: View {
             }
             .onContinuousHover { phase in
                 switch phase {
-                case .active(let location): pointer = CGPoint(x: (location.x - offset.x) / scale, y: (location.y - offset.y) / scale)
-                case .ended: pointer = nil
+                case .active(let location): pointerScreen = location; pointer = CGPoint(x: (location.x - offset.x) / scale, y: (location.y - offset.y) / scale)
+                case .ended: pointer = nil; pointerScreen = nil
                 }
             }
             .contentShape(Rectangle())
@@ -474,14 +482,30 @@ struct ElectronicsCanvas: View {
                 case .select: select(p, tolerance: 8 / scale)
                 }
             })
-            .simultaneousGesture(DragGesture(minimumDistance: 4).onEnded { event in
-                guard ec.view != .spatial, ec.tool == .select else { return }
+            .simultaneousGesture(DragGesture(minimumDistance: 4).onChanged { event in
+                guard ec.view != .spatial else { return }
+                let start = CGPoint(x: (event.startLocation.x - offset.x) / scale, y: (event.startLocation.y - offset.y) / scale)
+                // Empty board pans; a part moves on release.
+                if panStart == nil, ec.tool != .select || partAt(start, tolerance: 8 / scale) == nil { panStart = ec.pan }
+                if let base = panStart { ec.pan = CGSize(width: base.width + event.translation.width, height: base.height + event.translation.height) }
+            }.onEnded { event in
+                defer { panStart = nil }
+                guard panStart == nil, ec.view != .spatial, ec.tool == .select else { return }
                 let start = CGPoint(x: (event.startLocation.x - offset.x) / scale, y: (event.startLocation.y - offset.y) / scale)
                 select(start, tolerance: 8 / scale)
                 guard ec.selectedRef != nil else { return }
                 let end = ec.snapped(CGPoint(x: (event.location.x - offset.x) / scale, y: (event.location.y - offset.y) / scale))
                 ec.editComponent(model, key: "position", value: ecJSON(end))
             })
+            .onAppear { canvasSize = geo.size; installMonitor() }
+            .onDisappear { if let monitor { NSEvent.removeMonitor(monitor) }; monitor = nil }
+            .onChange(of: geo.size) { _, new in canvasSize = new }
+            .onChange(of: ec.focusPoint) { _, p in
+                guard let p else { return }
+                ec.zoom = max(ec.zoom, 5); ec.pan = .zero
+                let (s, o) = transform(geo.size)
+                ec.pan = CGSize(width: geo.size.width / 2 - (o.x + p.x * s), height: geo.size.height / 2 - (o.y + p.y * s))
+            }
             .accessibilityLabel(ec.view == .schematic ? "Schematic canvas" : "PCB layout canvas")
         }
     }
@@ -564,23 +588,85 @@ struct ElectronicsCanvas: View {
         }
         return nil
     }
-    private func select(_ p: CGPoint, tolerance: CGFloat) {
-        ec.selectedRef = nil; ec.selectedTrace = nil; ec.selectedVia = nil
-        for f in ecRows(ec.view == .schematic ? ec.schematic(model)["components"] : ec.board(model)["footprints"]) {
-            let q = ecPoint(f["position"])
-            if hypot(p.x - q.x, p.y - q.y) < max(4, tolerance) { ec.selectedRef = f["ref"] as? String; return }
+    /// The pad under `p`, nearest first, with its footprint.
+    private func padAt(_ p: CGPoint, tolerance: CGFloat) -> (ref: String, pad: ECObject)? {
+        var best: (String, ECObject, CGFloat)?
+        for f in ecRows(ec.board(model)["footprints"]) {
+            for pad in ecRows(f["pads"]) where (pad["layers"] as? [String] ?? []).contains(where: { BoardLayers.copper.contains($0) }) {
+                let q = Self.world(pad, in: f), shape = pad["shape"] as? ECObject ?? [:]
+                let d = ecNumber(shape["diameter"], 0.6)
+                let reach = CGFloat(max(ecNumber(shape["width"], d), ecNumber(shape["height"], d))) / 2
+                let dist = hypot(p.x - q.x, p.y - q.y)
+                if dist < max(reach, tolerance), dist < (best?.2 ?? .infinity) { best = (f["ref"] as? String ?? "", pad, dist) }
+            }
         }
-        guard ec.view == .board else { return }
-        for (i, via) in ecRows(ec.board(model)["vias"]).enumerated() { let q = ecPoint(via["position"]); if hypot(p.x - q.x, p.y - q.y) < tolerance { ec.selectedVia = i; return } }
-        for (i, t) in ecRows(ec.board(model)["traces"]).enumerated() {
-            let a = ecPoint(t["start"]), b = ecPoint(t["end"]), dx = b.x - a.x, dy = b.y - a.y
-            let u = max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / max(0.0001, dx * dx + dy * dy)))
-            if hypot(p.x - a.x - u * dx, p.y - a.y - u * dy) < tolerance { ec.selectedTrace = i; return }
+        return best.map { ($0.0, $0.1) }
+    }
+    /// The footprint under `p`: a pad of it, or its body.
+    private func partAt(_ p: CGPoint, tolerance: CGFloat) -> String? {
+        if ec.view == .schematic {
+            for f in ecRows(ec.schematic(model)["components"]) {
+                let q = ecPoint(f["position"])
+                if hypot(p.x - q.x, p.y - q.y) < max(4, tolerance) { return f["ref"] as? String }
+            }
+            return nil
+        }
+        return padAt(p, tolerance: tolerance)?.ref
+    }
+    private func select(_ p: CGPoint, tolerance: CGFloat) {
+        ec.selectedRef = nil; ec.selectedTrace = nil; ec.selectedVia = nil; ec.highlightNet = nil
+        if ec.view == .schematic { ec.selectedRef = partAt(p, tolerance: tolerance); return }
+        let board = ec.board(model)
+        if let hit = padAt(p, tolerance: tolerance) {
+            ec.selectedRef = hit.ref; ec.highlightNet = hit.pad["net"] as? String; return
+        }
+        for (i, via) in ecRows(board["vias"]).enumerated() {
+            let q = ecPoint(via["position"])
+            if hypot(p.x - q.x, p.y - q.y) < max(CGFloat(ecNumber(via["diameter"], 0.6)) / 2, tolerance) {
+                ec.selectedVia = i; ec.highlightNet = via["net"] as? String; return
+            }
+        }
+        for (i, trace) in ecRows(board["traces"]).enumerated() where !ec.hiddenLayers.contains(trace["layer"] as? String ?? "") {
+            let a = ecPoint(trace["start"]), b = ecPoint(trace["end"]), dx = b.x - a.x, dy = b.y - a.y
+            let u = max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / max(1e-9, dx * dx + dy * dy)))
+            if hypot(p.x - a.x - u * dx, p.y - a.y - u * dy) < tolerance {
+                ec.selectedTrace = i; ec.highlightNet = trace["net"] as? String; return
+            }
+        }
+    }
+    /// Wheel/pinch zoom about the cursor, two-finger pan, and the editing keys.
+    private func installMonitor() {
+        guard monitor == nil else { return }
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .magnify, .keyDown]) { event in
+            guard ec.view != .spatial, model.workspace == .electronics else { return event }
+            if event.type == .keyDown {
+                if NSApp.keyWindow?.firstResponder is NSTextView { return event }
+                if event.keyCode == 53, ec.highlightNet != nil || ec.focusPoint != nil { ec.highlightNet = nil; ec.focusPoint = nil; return nil }
+                guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return event }
+                switch event.charactersIgnoringModifiers {
+                case "r" where ec.selectedRef != nil && ec.view == .board:
+                    let f = ecRows(ec.board(model)["footprints"]).first { $0["ref"] as? String == ec.selectedRef }
+                    ec.editComponent(model, key: "rotation", value: (ecNumber(f?["rotation"]) + 90).truncatingRemainder(dividingBy: 360))
+                    return nil
+                case "h": ec.showRatsnest.toggle(); return nil
+                default: return event
+                }
+            }
+            guard let at = pointerScreen, let world = pointer else { return event }
+            if event.type == .scrollWheel, event.hasPreciseScrollingDeltas, !event.modifierFlags.contains(.command) {
+                ec.pan.width += event.scrollingDeltaX; ec.pan.height += event.scrollingDeltaY
+                return nil
+            }
+            let factor = event.type == .magnify ? 1 + event.magnification : pow(1.002, event.scrollingDeltaY * (event.hasPreciseScrollingDeltas ? 1 : 12))
+            ec.zoom = min(60, max(0.3, ec.zoom * factor))
+            ec.pan = .zero
+            let (s, o) = transform(canvasSize)
+            ec.pan = CGSize(width: at.x - (o.x + world.x * s), height: at.y - (o.y + world.y * s))
+            return nil
         }
     }
 }
 
-/// Connectivity inset uses document net membership; it does not imply physical routing.
 private struct ElectronicsNetPreview: View {
     let pins: [String]
     let net: String
