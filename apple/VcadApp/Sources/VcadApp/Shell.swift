@@ -812,7 +812,7 @@ struct ScrubField: View {
                 .onEscape { typing = nil; focused = false }
                 .onChange(of: focused) { _, now in if !now { commit() } }
             if !unit.isEmpty {
-                Text(unit).font(.callout).foregroundStyle(.secondary).frame(minWidth: 14, alignment: .leading)
+                Text(unit).font(.callout).foregroundStyle(.secondary).lineLimit(1).fixedSize().frame(minWidth: 14, alignment: .leading)
             }
             Stepper(label, value: Binding(get: { value }, set: { onChange(max(minValue, $0), true) }),
                     step: sensitivity * 10)

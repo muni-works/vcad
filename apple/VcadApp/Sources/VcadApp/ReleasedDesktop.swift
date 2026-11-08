@@ -1734,7 +1734,12 @@ struct ReleasedARView: NSViewRepresentable {
 struct ObjectInspectorWindow: View {
     @Bindable var model: EditorModel
     private var title: String {
-        model.selectedFeatureNode?.name ?? model.features.first { $0.id == model.selectedFeatureID }?.name ?? "Inspector"
+        if let n = model.selectedFeatureNode { return n.name }
+        // A document's title comes only from its tree. The sandbox feature list
+        // (Cube / Fillet) outlives promotion to a document (source stays
+        // .sandbox), which titled an empty inspector "Fillet".
+        if model.usesDocumentTree { return "Inspector" }
+        return model.features.first { $0.id == model.selectedFeatureID }?.name ?? "Inspector"
     }
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
@@ -1831,15 +1836,18 @@ struct ObjectInspectorWindow: View {
             KeyValueRow("Shape", model.baseShape.label)
             KeyValueRow("Modifier", model.modifier.label)
             if model.modifier != .none && model.modifierEffective {
-                HStack(spacing: 6) {
+                // Label on its own line, slider flexes: the one-line version
+                // (label + 90 pt slider + field) was wider than the glass
+                // inspector and clipped every row's right edge.
+                VStack(alignment: .leading, spacing: 4) {
                     Text(model.modifier.paramLabel).font(.callout).foregroundStyle(.secondary)
-                    Spacer(minLength: Theme.Space.s)
-                    Slider(value: $model.modifierValue, in: 0...12)
-                        .controlSize(.mini)
-                        .frame(width: 90)
-                        .accessibilityLabel(model.modifier.paramLabel)
-                    ScrubField(label: "", value: model.modifierValue, sensitivity: 0.05, minValue: 0) { v, _ in
-                        model.modifierValue = min(12, max(0, v))
+                    HStack(spacing: 6) {
+                        Slider(value: $model.modifierValue, in: 0...12)
+                            .controlSize(.mini)
+                            .accessibilityLabel(model.modifier.paramLabel)
+                        ScrubField(label: "", value: model.modifierValue, sensitivity: 0.05, minValue: 0) { v, _ in
+                            model.modifierValue = min(12, max(0, v))
+                        }
                     }
                 }
             } else if model.modifier != .none {

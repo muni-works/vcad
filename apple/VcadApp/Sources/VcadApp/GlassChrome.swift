@@ -896,7 +896,7 @@ struct EditBarOverlay: View {
         _ = (model.azimuth, model.elevation, model.distance, model.panOffset)
         return GeometryReader { geo in
             if let node = editableNode, let param = EditBarParam.of(node.opType), dismissedNode != node.id,
-               !model.sketching, !GlassUI.shared.historyOpen {
+               !model.sketching, !GlassUI.shared.historyOpen, model.activeFeatureOp == nil {
                 let p = anchor(node, in: geo.size)
                 SelectionEditBar(model: model, node: node, param: param) { dismissedNode = node.id }
                     .id(node.id)
