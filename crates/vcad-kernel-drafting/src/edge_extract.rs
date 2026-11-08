@@ -12,8 +12,13 @@ use vcad_kernel_tessellate::TriangleMesh;
 
 use crate::types::{EdgeType, MeshEdge, Triangle3D, ViewDirection};
 
-/// Default threshold angle (in radians) for sharp edge detection.
-/// Edges where adjacent face normals differ by more than this are considered sharp.
+/// Default crease threshold (radians) for sharp edge detection.
+///
+/// Edges whose adjacent face normals differ by more than this are drawn as
+/// feature edges. 30° sits well above the facet-to-facet step of a
+/// tessellated cylinder or fillet (a few degrees to ~12° at 32 segments), so
+/// smooth surfaces contribute only silhouettes, and well below the 90° of a
+/// machined corner.
 pub const DEFAULT_SHARP_ANGLE: f64 = std::f64::consts::FRAC_PI_6; // 30 degrees
 
 /// Edge key for hash map lookup (canonical vertex pair ordering).
@@ -39,6 +44,88 @@ struct EdgeData {
     tri1: Option<u32>,
 }
 
+/// Weld tolerance (mm) for edge adjacency. Kernel tessellations emit each
+/// B-rep face with its own vertex copies, so two triangles meeting across a
+/// face seam share *positions*, not indices. Keying adjacency by index made
+/// every seam edge (and, on triangle soups, every edge) look like a
+/// one-sided boundary edge, and boundary edges are always drawn — the
+/// "drawing shows the whole triangle mesh" bug.
+const WELD_TOLERANCE: f64 = 1e-4;
+
+/// Build edge → adjacent-triangle map, welding vertices by position.
+///
+/// Keys use a canonical representative vertex index per welded position, so
+/// callers can still resolve endpoints with [`get_vertex`].
+fn build_edge_map(mesh: &TriangleMesh) -> HashMap<EdgeKey, EdgeData> {
+    let n_verts = mesh.vertices.len() / 3;
+    let mut by_pos: HashMap<(i64, i64, i64), u32> = HashMap::with_capacity(n_verts);
+    let q = |v: f32| (v as f64 / WELD_TOLERANCE).round() as i64;
+    let rep: Vec<u32> = (0..n_verts)
+        .map(|i| {
+            let k = (
+                q(mesh.vertices[i * 3]),
+                q(mesh.vertices[i * 3 + 1]),
+                q(mesh.vertices[i * 3 + 2]),
+            );
+            *by_pos.entry(k).or_insert(i as u32)
+        })
+        .collect();
+
+    let mut edge_map: HashMap<EdgeKey, EdgeData> = HashMap::new();
+    for (tri_idx, t) in mesh.indices.chunks(3).enumerate() {
+        let tri_idx = tri_idx as u32;
+        let (a, b, c) = (rep[t[0] as usize], rep[t[1] as usize], rep[t[2] as usize]);
+        // Degenerate (collapsed) triangles carry no edges worth drawing.
+        if a == b || b == c || c == a {
+            continue;
+        }
+        for key in [EdgeKey::new(a, b), EdgeKey::new(b, c), EdgeKey::new(c, a)] {
+            edge_map
+                .entry(key)
+                .and_modify(|e| {
+                    if e.tri1.is_none() {
+                        e.tri1 = Some(tri_idx);
+                    }
+                })
+                .or_insert(EdgeData {
+                    tri0: tri_idx,
+                    tri1: None,
+                });
+        }
+    }
+    edge_map
+}
+
+/// Below this dihedral angle (radians) two triangles are treated as
+/// coplanar: the edge between them is a tessellation diagonal and is never
+/// drawn, not even as a silhouette (a flat face seen edge-on would otherwise
+/// flicker front/back on rounding noise).
+pub const COPLANAR_ANGLE: f64 = 1e-3;
+
+/// |n·v| below this counts a face as edge-on to the view.
+const EDGE_ON_TOLERANCE: f64 = 1e-6;
+
+/// -1 back-facing, 0 edge-on, 1 front-facing.
+fn facing(t: &Triangle3D, view_vec: &vcad_kernel_math::Vec3) -> i8 {
+    let d = t.normal.dot(*view_vec);
+    if d > EDGE_ON_TOLERANCE {
+        1
+    } else if d < -EDGE_ON_TOLERANCE {
+        -1
+    } else {
+        0
+    }
+}
+
+/// Silhouette test for the edge between `t0` and `t1`: the facing class
+/// changes across it (front↔back, or a turn onto an edge-on face, which is
+/// where a flat face seen side-on meets the rest of the outline) and the two
+/// triangles are not coplanar.
+fn is_silhouette(t0: &Triangle3D, t1: &Triangle3D, view_vec: &vcad_kernel_math::Vec3) -> bool {
+    let dihedral = t0.normal.dot(t1.normal).clamp(-1.0, 1.0).acos();
+    dihedral > COPLANAR_ANGLE && facing(t0, view_vec) != facing(t1, view_vec)
+}
+
 /// Extract all mesh edges with adjacency information.
 ///
 /// Returns edges with their adjacent triangles, which can be used to
@@ -55,31 +142,7 @@ pub fn extract_edges(mesh: &TriangleMesh) -> Vec<MeshEdge> {
 /// * `sharp_threshold` - Angle threshold in radians for sharp edge detection
 pub fn extract_edges_with_threshold(mesh: &TriangleMesh, sharp_threshold: f64) -> Vec<MeshEdge> {
     let triangles = build_triangles(mesh);
-    let mut edge_map: HashMap<EdgeKey, EdgeData> = HashMap::new();
-
-    // Build edge adjacency
-    for (tri_idx, tri_indices) in mesh.indices.chunks(3).enumerate() {
-        let tri_idx = tri_idx as u32;
-        let edges = [
-            EdgeKey::new(tri_indices[0], tri_indices[1]),
-            EdgeKey::new(tri_indices[1], tri_indices[2]),
-            EdgeKey::new(tri_indices[2], tri_indices[0]),
-        ];
-
-        for key in edges {
-            edge_map
-                .entry(key)
-                .and_modify(|e| {
-                    if e.tri1.is_none() {
-                        e.tri1 = Some(tri_idx);
-                    }
-                })
-                .or_insert(EdgeData {
-                    tri0: tri_idx,
-                    tri1: None,
-                });
-        }
-    }
+    let edge_map = build_edge_map(mesh);
 
     // Classify edges
     let mut result = Vec::with_capacity(edge_map.len());
@@ -124,31 +187,7 @@ fn classify_edge(
 /// Extract only sharp edges (angle > threshold) from the mesh.
 pub fn extract_sharp_edges(mesh: &TriangleMesh, sharp_threshold: f64) -> Vec<MeshEdge> {
     let triangles = build_triangles(mesh);
-    let mut edge_map: HashMap<EdgeKey, EdgeData> = HashMap::new();
-
-    // Build edge adjacency
-    for (tri_idx, tri_indices) in mesh.indices.chunks(3).enumerate() {
-        let tri_idx = tri_idx as u32;
-        let edges = [
-            EdgeKey::new(tri_indices[0], tri_indices[1]),
-            EdgeKey::new(tri_indices[1], tri_indices[2]),
-            EdgeKey::new(tri_indices[2], tri_indices[0]),
-        ];
-
-        for key in edges {
-            edge_map
-                .entry(key)
-                .and_modify(|e| {
-                    if e.tri1.is_none() {
-                        e.tri1 = Some(tri_idx);
-                    }
-                })
-                .or_insert(EdgeData {
-                    tri0: tri_idx,
-                    tri1: None,
-                });
-        }
-    }
+    let edge_map = build_edge_map(mesh);
 
     // Filter to sharp and boundary edges only
     let mut result = Vec::new();
@@ -187,31 +226,7 @@ pub fn extract_sharp_edges(mesh: &TriangleMesh, sharp_threshold: f64) -> Vec<Mes
 pub fn extract_silhouette_edges(mesh: &TriangleMesh, view_dir: ViewDirection) -> Vec<MeshEdge> {
     let view_vec = view_dir.view_vector();
     let triangles = build_triangles(mesh);
-    let mut edge_map: HashMap<EdgeKey, EdgeData> = HashMap::new();
-
-    // Build edge adjacency
-    for (tri_idx, tri_indices) in mesh.indices.chunks(3).enumerate() {
-        let tri_idx = tri_idx as u32;
-        let edges = [
-            EdgeKey::new(tri_indices[0], tri_indices[1]),
-            EdgeKey::new(tri_indices[1], tri_indices[2]),
-            EdgeKey::new(tri_indices[2], tri_indices[0]),
-        ];
-
-        for key in edges {
-            edge_map
-                .entry(key)
-                .and_modify(|e| {
-                    if e.tri1.is_none() {
-                        e.tri1 = Some(tri_idx);
-                    }
-                })
-                .or_insert(EdgeData {
-                    tri0: tri_idx,
-                    tri1: None,
-                });
-        }
-    }
+    let edge_map = build_edge_map(mesh);
 
     // Find silhouette edges
     let mut result = Vec::new();
@@ -222,9 +237,7 @@ pub fn extract_silhouette_edges(mesh: &TriangleMesh, view_dir: ViewDirection) ->
             Some(tri1_idx) => {
                 let t0 = &triangles[data.tri0 as usize];
                 let t1 = &triangles[tri1_idx as usize];
-                let front0 = t0.is_front_facing(&view_vec);
-                let front1 = t1.is_front_facing(&view_vec);
-                front0 != front1 // One front-facing, one back-facing
+                is_silhouette(t0, t1, &view_vec)
             }
         };
 
@@ -256,31 +269,7 @@ pub fn extract_drawing_edges(
 ) -> Vec<MeshEdge> {
     let view_vec = view_dir.view_vector();
     let triangles = build_triangles(mesh);
-    let mut edge_map: HashMap<EdgeKey, EdgeData> = HashMap::new();
-
-    // Build edge adjacency
-    for (tri_idx, tri_indices) in mesh.indices.chunks(3).enumerate() {
-        let tri_idx = tri_idx as u32;
-        let edges = [
-            EdgeKey::new(tri_indices[0], tri_indices[1]),
-            EdgeKey::new(tri_indices[1], tri_indices[2]),
-            EdgeKey::new(tri_indices[2], tri_indices[0]),
-        ];
-
-        for key in edges {
-            edge_map
-                .entry(key)
-                .and_modify(|e| {
-                    if e.tri1.is_none() {
-                        e.tri1 = Some(tri_idx);
-                    }
-                })
-                .or_insert(EdgeData {
-                    tri0: tri_idx,
-                    tri1: None,
-                });
-        }
-    }
+    let edge_map = build_edge_map(mesh);
 
     // Extract relevant edges
     let mut result = Vec::new();
@@ -292,10 +281,7 @@ pub fn extract_drawing_edges(
                 let t0 = &triangles[data.tri0 as usize];
                 let t1 = &triangles[tri1_idx as usize];
 
-                // Check if silhouette
-                let front0 = t0.is_front_facing(&view_vec);
-                let front1 = t1.is_front_facing(&view_vec);
-                let is_silhouette = front0 != front1;
+                let is_silhouette = is_silhouette(t0, t1, &view_vec);
 
                 // Check if sharp
                 let dot = t0.normal.dot(t1.normal).clamp(-1.0, 1.0);
