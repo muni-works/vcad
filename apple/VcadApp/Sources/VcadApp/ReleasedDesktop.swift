@@ -1057,7 +1057,7 @@ struct ReleasedOverlayView: View {
             if studio {
                 CNCStudioViewportChrome(model: model)
                     .padding(.leading, model.cnc.leftPanelShown ? Theme.Width.cncOutline + 2 * Theme.Space.m : 0)
-                    .padding(.trailing, model.cnc.rightPanelShown ? Theme.Width.inspector + 2 * Theme.Space.m + 6 : 0)
+                    .padding(.trailing, model.cnc.rightPanelShown ? Theme.Width.toolInspector + 2 * Theme.Space.m + 6 : 0)
                     .padding(.bottom, model.cnc.bottomPanelShown ? 330 : 90)
             }
         }

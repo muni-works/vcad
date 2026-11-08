@@ -139,9 +139,13 @@ struct FabField: View {
     @Binding var value: Double
     var digits = 2
     var body: some View {
-        LabeledContent(label) {
-            TextField("", value: $value, format: .number.precision(.fractionLength(0...digits)))
-                .multilineTextAlignment(.trailing).frame(width: 72)
+        // The label keeps its size and the field flexes: three fixed 72 pt
+        // fields in a row squeezed the labels to nothing (CAM showed bare numbers).
+        HStack(spacing: 3) {
+            Text(label).foregroundStyle(.secondary).fixedSize()
+            TextField(label, value: $value, format: .number.precision(.fractionLength(0...digits)))
+                .labelsHidden()
+                .multilineTextAlignment(.trailing).frame(minWidth: 36, maxWidth: 72)
         }
     }
 }
@@ -208,7 +212,7 @@ struct FabricatePanel: View {
             .frame(maxHeight: 620).fixedSize(horizontal: false, vertical: true)
         }
         .controlSize(.small)
-        .padding(Theme.Space.m).frame(width: Theme.Width.inspector).panelSurface()
+        .padding(Theme.Space.m).frame(width: Theme.Width.toolInspector).panelSurface()
         .accessibilityIdentifier("fabricate-panel")
         // A run that lands becomes a job in the navigator.
         .onChange(of: store.sheet.busy) { was, now in

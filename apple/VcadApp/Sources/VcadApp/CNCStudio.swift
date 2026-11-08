@@ -339,7 +339,7 @@ struct CNCStudioInspector: View {
                 }
             }
         }
-        .padding(Theme.Space.m).frame(width: Theme.Width.inspector)
+        .padding(Theme.Space.m).frame(width: Theme.Width.toolInspector)
     }
 
     private var title: String {

@@ -29,6 +29,10 @@ enum Theme {
         static let navigator: CGFloat = 170
         /// The right rail: object inspector, machine panel, circuit inspector.
         static let inspector: CGFloat = 170
+        /// Tool panels with real forms (Fab: sheet metal, slicer, CAM job;
+        /// analysis; the CNC machine panel). Their rows (pop-ups, tool tables,
+        /// export buttons) overflowed and clipped at 170 pt.
+        static let toolInspector: CGFloat = 280
         /// Manufacture's compact job outline.
         static let cncOutline: CGFloat = 192
     }
