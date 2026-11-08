@@ -44,7 +44,12 @@ enum PcbFFI {
         try finish(path.withCString { vcad_pcb_import($0) }, "import")
     }
     static func drc(_ pcb: Obj) throws -> Obj { try call2(vcad_pcb_drc, pcb, [:], "DRC") }
-    static func autoroute(_ pcb: Obj) throws -> Obj { try call2(vcad_pcb_autoroute, pcb, [:], "autoroute") }
+    /// One connection per search window: a joint window lets one impossible
+    /// connection report its whole cluster infeasible (FOC board: 18 of 169
+    /// routed with the default of 6, against 94 of 116 one at a time).
+    static func autoroute(_ pcb: Obj) throws -> Obj {
+        try call2(vcad_pcb_autoroute, pcb, ["max_cluster": 1, "budget": 20_000_000], "autoroute")
+    }
     static func fixDrc(_ pcb: Obj, calibrate: Bool) throws -> Obj {
         try call2(vcad_pcb_fix_drc, pcb, ["calibrate": calibrate], "fix DRC")
     }

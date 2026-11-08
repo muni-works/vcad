@@ -67,7 +67,11 @@ struct DrcPanel: View {
     @Bindable var model: EditorModel
     private var t: ElectronicsTools { model.electronics.tools }
     var body: some View {
-        let r = t.drc ?? [:], clean = r["clean"] as? Bool ?? false
+        let r = t.drc ?? [:]
+        // Geometry-clean with open nets is not a board you can fabricate;
+        // the export itself refuses it, so the panel mustn't offer it.
+        let open = Int(ecNumber(r["unrouted"]))
+        let clean = (r["clean"] as? Bool ?? false) && open == 0
         Text("Route-attributable counts only what routing introduced, measured against the same board with every trace and via removed. Gerber export requires it to be zero.")
             .font(.callout).foregroundStyle(.secondary)
         HStack(spacing: 28) {
@@ -76,7 +80,7 @@ struct DrcPanel: View {
             stat("unrouted floor", r["baseline_total"])
             stat("open nets", r["unrouted"], good: ecNumber(r["unrouted"]) == 0)
         }
-        Label(clean ? "Clean — ready for Gerber export" : "Not clean — run Fix DRC", systemImage: clean ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+        Label(clean ? "Clean — ready for Gerber export" : (r["clean"] as? Bool ?? false) ? "\(open) net\(open == 1 ? "" : "s") still open — route them before export" : "Not clean — run Fix DRC", systemImage: clean ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
             .foregroundStyle(clean ? .green : .orange)
         List(Array(ecRows(r["findings"]).prefix(300).enumerated()), id: \.offset) { _, f in
             HStack(alignment: .firstTextBaseline) {
