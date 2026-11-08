@@ -627,6 +627,10 @@ extension ReleaseWindowController {
             }
         }
         model.docParamDirty = false      // consumed here; the studio view is hidden
+        // On commit, rebuild so the scene re-normalizes (scale = 0.6 / size)
+        // and re-centres: in-place swaps kept the old size, so a cube resized
+        // 30 → 90 mm overflowed the view and Frame All couldn't fit it.
+        if collisions { model.geometryDirty = true }
     }
 }
 
