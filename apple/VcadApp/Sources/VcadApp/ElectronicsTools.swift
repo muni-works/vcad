@@ -105,7 +105,8 @@ final class ElectronicsTools {
             drc = r["drc"] as? ECObject
             let unrouted = ecNumber(drc?["unrouted"])
             let v = r["verdict"] as? ECObject
-            status = "Routed \(Int(ecNumber(v?["routed"]))) of \(Int(ecNumber(v?["connections"]))) · \(Int(ecNumber(v?["proved_infeasible"]))) infeasible · \(Int(ecNumber(v?["unknown"]))) unknown · \(Int(unrouted)) nets open · \(Int(ecNumber(drc?["route_attributable"]))) route DRC"
+            let routed = Int(ecNumber(v?["routed"])) + Int(ecNumber(r["finished"]))
+            status = "Routed \(routed) · \(Int(unrouted)) nets open · \(Int(ecNumber(drc?["route_attributable"]))) route DRC"
         }
     }
 

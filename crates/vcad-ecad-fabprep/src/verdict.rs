@@ -632,6 +632,40 @@ impl InteractiveRouter {
                 return shoved;
             }
         }
+        // Change layers, signal layers first: a solid plane is a last resort.
+        let width = self.width_for(net);
+        let planes: BTreeSet<PcbLayer> = self.pcb.zones.iter().map(|z| z.layer).collect();
+        let signal: Vec<PcbLayer> = self
+            .layers
+            .iter()
+            .copied()
+            .filter(|l| !planes.contains(l))
+            .collect();
+        for stack in [signal, self.layers.clone()] {
+            if stack.len() < 2 {
+                continue;
+            }
+            for margin in [8.0, 30.0] {
+                let Some(path) = self.shortest_path(net, width, from, to, &stack, margin) else {
+                    continue;
+                };
+                let path = self.tighten(net, width, path);
+                if self.legal(net, width, &path) {
+                    let vias = barrels(&path, self.through)
+                        .into_iter()
+                        .map(|b| b.0)
+                        .collect();
+                    return InteractiveRoute {
+                        status: "routed".into(),
+                        reason: None,
+                        path,
+                        vias,
+                        width,
+                        moved: Vec::new(),
+                    };
+                }
+            }
+        }
         self.search(net, from, to, &self.layers, budget)
     }
 
@@ -654,7 +688,7 @@ impl InteractiveRouter {
         if attaches(from) && attaches(to) {
             if let Some(path) = [8.0, 30.0]
                 .into_iter()
-                .find_map(|margin| self.shortest_on_layer(net, width, from, to, layer, margin))
+                .find_map(|margin| self.shortest_path(net, width, from, to, &[layer], margin))
             {
                 let path = self.tighten(net, width, path);
                 if self.legal(net, width, &path) {
@@ -683,23 +717,25 @@ impl InteractiveRouter {
             .legal
     }
 
-    /// Octilinear A* from `from` to `to` over a fine grid, each edge checked
-    /// against the clearance oracle. Bends cost a little, so among equal
-    /// lengths the straighter route wins. `None` when no path on this grid.
-    fn shortest_on_layer(
+    /// Octilinear A* from `from` to `to` over a fine grid on `layers`, each
+    /// edge checked against the clearance oracle. Bends cost a little and a
+    /// layer change more, so among equal lengths the straighter, single-layer
+    /// route wins. `None` when no path on this grid.
+    fn shortest_path(
         &self,
         net: &str,
         w: f64,
         from: Vec2,
         to: Vec2,
-        layer: PcbLayer,
+        layers: &[PcbLayer],
         margin: f64,
     ) -> Option<Vec<(Vec2, Vec2, PcbLayer)>> {
         use std::cmp::Reverse;
         use std::collections::BinaryHeap;
         const PITCH: f64 = 0.25;
-        const MAX_EXPANSIONS: usize = 200_000;
+        const MAX_EXPANSIONS: usize = 400_000;
         const BEND_COST: f64 = 0.15;
+        const VIA_COST: f64 = 2.5;
         const DIRS: [(i32, i32); 8] = [
             (1, 0),
             (1, 1),
@@ -737,36 +773,77 @@ impl InteractiveRouter {
             let (dx, dy) = (f64::from((a.0 - b.0).abs()), f64::from((a.1 - b.1).abs()));
             PITCH * (dx.max(dy) + (std::f64::consts::SQRT_2 - 1.0) * dx.min(dy))
         };
-        // Terminals are off-grid: hook them to the nearby grid nodes they can reach.
-        let around = |p: Vec2| -> Vec<(i32, i32)> {
+        // Terminals are off-grid: hook them to the nearby grid nodes they can
+        // reach, on the layers their copper is actually on.
+        let attach = |p: Vec2| -> Vec<(i32, i32, u8)> {
+            let live = live_layers(&self.pcb, &self.layers, net, p);
             let c = cell(p);
             let mut out = Vec::new();
-            for dx in -2..=2 {
-                for dy in -2..=2 {
-                    let q = (c.0 + dx, c.1 + dy);
-                    if inside(q) && self.segment_clear(net, w, p, at(q), layer) {
-                        out.push(q);
+            for (li, &layer) in layers.iter().enumerate() {
+                if !live.is_empty() && !live.contains(&layer) {
+                    continue;
+                }
+                for dx in -2..=2 {
+                    for dy in -2..=2 {
+                        let q = (c.0 + dx, c.1 + dy);
+                        if inside(q) && self.segment_clear(net, w, p, at(q), layer) {
+                            out.push((q.0, q.1, li as u8));
+                        }
                     }
                 }
             }
             out
         };
-        let goals: BTreeSet<(i32, i32)> = around(to).into_iter().collect();
+        // Own-net copper is an obstacle away from the two ends, or the path
+        // ends up shorting a stretch of its own net (see `brushes_own_net`).
+        let own: Vec<(Vec2, Vec2, f64, Option<PcbLayer>)> = self
+            .pcb
+            .traces
+            .iter()
+            .filter(|t| t.net == net)
+            .map(|t| (t.start, t.end, (w + t.width) / 2.0 + 0.05, Some(t.layer)))
+            .chain(
+                self.pcb
+                    .vias
+                    .iter()
+                    .filter(|v| v.net == net)
+                    .map(|v| (v.position, v.position, (w + v.diameter) / 2.0 + 0.05, None)),
+            )
+            .collect();
+        let own_near = |p: Vec2, layer: PcbLayer| {
+            let near = |q: Vec2| ((p.x - q.x).powi(2) + (p.y - q.y).powi(2)).sqrt() <= 1.0;
+            if near(from) || near(to) {
+                return false;
+            }
+            own.iter()
+                .filter(|o| o.3.is_none_or(|l| l == layer))
+                .any(|&(a, b, r, _)| {
+                    let (dx, dy) = (b.x - a.x, b.y - a.y);
+                    let u = (((p.x - a.x) * dx + (p.y - a.y) * dy)
+                        / (dx * dx + dy * dy).max(1e-12))
+                    .clamp(0.0, 1.0);
+                    ((p.x - a.x - u * dx).powi(2) + (p.y - a.y - u * dy).powi(2)).sqrt() < r
+                })
+        };
+        let goals: BTreeSet<(i32, i32, u8)> = attach(to).into_iter().collect();
         if goals.is_empty() {
             return None;
         }
         let target = cell(to);
-        type State = (i32, i32, u8);
+        // (x, y, layer index, heading; 8 = none yet)
+        type State = (i32, i32, u8, u8);
         let key = |f: f64| (f * 1000.0).round() as i64;
         let mut open: BinaryHeap<Reverse<(i64, State)>> = BinaryHeap::new();
         let mut best: HashMap<State, f64> = HashMap::new();
         let mut came: HashMap<State, State> = HashMap::new();
-        for c in around(from) {
-            let s = (c.0, c.1, 8u8);
+        for c in attach(from) {
+            let s = (c.0, c.1, c.2, 8u8);
             best.insert(s, 0.0);
-            open.push(Reverse((key(octile(c, target)), s)));
+            open.push(Reverse((key(octile((c.0, c.1), target)), s)));
         }
-        let mut edge: HashMap<(i32, i32, u8), bool> = HashMap::new();
+        let mut edge: HashMap<(i32, i32, u8, u8), bool> = HashMap::new();
+        let mut via_ok: HashMap<(i32, i32), bool> = HashMap::new();
+        let (top, bottom) = (*self.layers.first()?, *self.layers.last()?);
         let mut expansions = 0;
         let mut end = None;
         while let Some(Reverse((_, s))) = open.pop() {
@@ -774,19 +851,21 @@ impl InteractiveRouter {
             if expansions > MAX_EXPANSIONS {
                 return None;
             }
-            if goals.contains(&(s.0, s.1)) {
+            if goals.contains(&(s.0, s.1, s.2)) {
                 end = Some(s);
                 break;
             }
             let g = best[&s];
+            let layer = layers[s.2 as usize];
             for (d, &(dx, dy)) in DIRS.iter().enumerate() {
                 let n = (s.0 + dx, s.1 + dy);
                 if !inside(n) {
                     continue;
                 }
-                let clear = *edge
-                    .entry((s.0, s.1, d as u8))
-                    .or_insert_with(|| self.segment_clear(net, w, at((s.0, s.1)), at(n), layer));
+                let clear = *edge.entry((s.0, s.1, s.2, d as u8)).or_insert_with(|| {
+                    self.segment_clear(net, w, at((s.0, s.1)), at(n), layer)
+                        && !own_near(at(n), layer)
+                });
                 if !clear {
                     continue;
                 }
@@ -796,34 +875,63 @@ impl InteractiveRouter {
                     } else {
                         1.0
                     };
-                let bend = if s.2 == 8 || s.2 == d as u8 {
+                let bend = if s.3 == 8 || s.3 == d as u8 {
                     0.0
                 } else {
                     BEND_COST
                 };
                 let cost = g + step + bend;
-                let ns = (n.0, n.1, d as u8);
+                let ns = (n.0, n.1, s.2, d as u8);
                 if best.get(&ns).is_none_or(|&b| cost < b - 1e-9) {
                     best.insert(ns, cost);
                     came.insert(ns, s);
                     open.push(Reverse((key(cost + octile(n, target)), ns)));
                 }
             }
-        }
-        let mut cur = end?;
-        let mut cells = vec![(cur.0, cur.1)];
-        while let Some(&p) = came.get(&cur) {
-            cur = p;
-            if cells.last() != Some(&(cur.0, cur.1)) {
-                cells.push((cur.0, cur.1));
+            if layers.len() > 1 {
+                let legal = *via_ok.entry((s.0, s.1)).or_insert_with(|| {
+                    self.session
+                        .probe_via_span(at((s.0, s.1)), net, top, bottom)
+                        .legal
+                });
+                if legal {
+                    for li in 0..layers.len() as u8 {
+                        if li == s.2 {
+                            continue;
+                        }
+                        let ns = (s.0, s.1, li, 8u8);
+                        let cost = g + VIA_COST;
+                        if best.get(&ns).is_none_or(|&b| cost < b - 1e-9) {
+                            best.insert(ns, cost);
+                            came.insert(ns, s);
+                            open.push(Reverse((key(cost + octile((s.0, s.1), target)), ns)));
+                        }
+                    }
+                }
             }
         }
-        cells.reverse();
-        let mut pts = vec![from];
-        pts.extend(cells.into_iter().map(at));
-        pts.push(to);
-        pts.dedup_by(|a, b| (a.x - b.x).abs() < 1e-9 && (a.y - b.y).abs() < 1e-9);
-        Some(pts.windows(2).map(|w| (w[0], w[1], layer)).collect())
+        let mut cur = end?;
+        let mut nodes = vec![(cur.0, cur.1, cur.2)];
+        while let Some(&p) = came.get(&cur) {
+            cur = p;
+            if nodes.last() != Some(&(cur.0, cur.1, cur.2)) {
+                nodes.push((cur.0, cur.1, cur.2));
+            }
+        }
+        nodes.reverse();
+        let mut path: Vec<(Vec2, Vec2, PcbLayer)> = Vec::new();
+        let first = *nodes.first()?;
+        path.push((from, at((first.0, first.1)), layers[first.2 as usize]));
+        for w2 in nodes.windows(2) {
+            let (a, b) = (w2[0], w2[1]);
+            if a.2 == b.2 {
+                path.push((at((a.0, a.1)), at((b.0, b.1)), layers[a.2 as usize]));
+            }
+        }
+        let last = *nodes.last()?;
+        path.push((at((last.0, last.1)), to, layers[last.2 as usize]));
+        path.retain(|s| (s.0.x - s.1.x).abs() > 1e-9 || (s.0.y - s.1.y).abs() > 1e-9);
+        Some(path)
     }
 
     /// Between `a` and `b`, octilinear: straight when it already is, else a
@@ -1139,17 +1247,60 @@ impl InteractiveRouter {
         None
     }
 
+    /// Does `path` touch its own net's copper anywhere but at its two ends?
+    /// The clearance oracle exempts same-net copper, but a mid-route contact
+    /// shorts out everything between the two points (DRC's same-net bypass).
+    fn brushes_own_net(&self, net: &str, w: f64, path: &[(Vec2, Vec2, PcbLayer)]) -> bool {
+        let (Some(first), Some(last)) = (path.first(), path.last()) else {
+            return false;
+        };
+        let (from, to) = (first.0, last.1);
+        let keep_clear = |p: Vec2| {
+            let far = |q: Vec2| ((p.x - q.x).powi(2) + (p.y - q.y).powi(2)).sqrt() > 1.0;
+            far(from) && far(to)
+        };
+        let point_seg = |p: Vec2, a: Vec2, b: Vec2| {
+            let (dx, dy) = (b.x - a.x, b.y - a.y);
+            let u = (((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy).max(1e-12))
+                .clamp(0.0, 1.0);
+            ((p.x - a.x - u * dx).powi(2) + (p.y - a.y - u * dy).powi(2)).sqrt()
+        };
+        // Sample the route finely: contact is a local property.
+        let mut samples: Vec<(Vec2, PcbLayer)> = Vec::new();
+        for &(a, b, l) in path {
+            let len = ((b.x - a.x).powi(2) + (b.y - a.y).powi(2)).sqrt();
+            let n = (len / 0.1).ceil().max(1.0) as usize;
+            for i in 0..=n {
+                let t = i as f64 / n as f64;
+                samples.push((Vec2::new(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t), l));
+            }
+        }
+        samples.retain(|(p, _)| keep_clear(*p));
+        self.pcb.traces.iter().filter(|t| t.net == net).any(|t| {
+            samples
+                .iter()
+                .any(|(p, l)| *l == t.layer && point_seg(*p, t.start, t.end) < (w + t.width) / 2.0)
+        }) || self.pcb.vias.iter().filter(|v| v.net == net).any(|v| {
+            samples.iter().any(|(p, _)| {
+                ((p.x - v.position.x).powi(2) + (p.y - v.position.y).powi(2)).sqrt()
+                    < (w + v.diameter) / 2.0
+            })
+        })
+    }
+
     fn legal(&self, net: &str, w: f64, path: &[(Vec2, Vec2, PcbLayer)]) -> bool {
-        path.iter().all(|&(a, b, l)| {
-            let g = CopperGeom::Segment {
-                a,
-                b,
-                half_w: w / 2.0,
-            };
-            self.session
-                .probe(&g, l, net, self.session.clearance_for(net))
-                .legal
-        }) && vias_legal(&self.pcb, &self.session, net, path, self.through)
+        !self.brushes_own_net(net, w, path)
+            && path.iter().all(|&(a, b, l)| {
+                let g = CopperGeom::Segment {
+                    a,
+                    b,
+                    half_w: w / 2.0,
+                };
+                self.session
+                    .probe(&g, l, net, self.session.clearance_for(net))
+                    .legal
+            })
+            && vias_legal(&self.pcb, &self.session, net, path, self.through)
     }
 
     /// Apply `moves`, re-check `path`, and commit it, returning the new traces
@@ -1179,6 +1330,123 @@ impl InteractiveRouter {
         commit_path(&mut self.pcb, &mut self.session, net, w, path, through);
         Ok((self.pcb.traces[t0..].to_vec(), self.pcb.vias[v0..].to_vec()))
     }
+}
+
+/// Second pass after [`route_remaining`]: try every connection still open
+/// with the interactive router — shortest path on each layer, pushing
+/// neighbours aside, then vias. Commits only legal copper. Returns how many
+/// connections it closed.
+pub fn finish_remaining(pcb: &mut Pcb, budget: usize) -> usize {
+    let layers = copper_layers(pcb);
+    let start = open_connections(pcb, &layers).len();
+    for _ in 0..3 {
+        if route_open(pcb, &layers, None, budget) == 0 {
+            break;
+        }
+    }
+    // What's left is walled in by copper already placed: rip up a neighbour,
+    // route the stuck connection, re-route the neighbour, keep only gains.
+    for _ in 0..2 {
+        if !rip_up_pass(pcb, &layers, budget) {
+            break;
+        }
+    }
+    start.saturating_sub(open_connections(pcb, &layers).len())
+}
+
+fn open_connections(pcb: &Pcb, layers: &[PcbLayer]) -> Vec<(String, Vec2, Vec2)> {
+    island_connections(pcb, layers, &BTreeSet::new())
+        .into_iter()
+        .map(|r| (r.net, r.from, r.to))
+        .collect()
+}
+
+/// Try each open connection (of `only`, if given) on each layer. Returns how
+/// many it closed.
+fn route_open(
+    pcb: &mut Pcb,
+    layers: &[PcbLayer],
+    only: Option<&BTreeSet<String>>,
+    budget: usize,
+) -> usize {
+    let rats = open_connections(pcb, layers);
+    let mut router = InteractiveRouter::new(pcb.clone());
+    let mut closed = 0;
+    for (net, from, to) in &rats {
+        if only.is_some_and(|o| !o.contains(net)) {
+            continue;
+        }
+        let mut order = live_layers(&router.pcb, layers, net, *from);
+        for l in layers {
+            if !order.contains(l) {
+                order.push(*l);
+            }
+        }
+        for layer in order {
+            let attempt = router.route(net, *from, *to, Some(layer), budget);
+            if attempt.status == "routed"
+                && router.commit(net, &attempt.path, &attempt.moved).is_ok()
+            {
+                closed += 1;
+                break;
+            }
+        }
+    }
+    *pcb = router.pcb;
+    closed
+}
+
+/// Up to this many neighbouring nets are tried for each stuck connection.
+const RIP_UP_CANDIDATES: usize = 4;
+/// A neighbour's copper must come this close to a terminal to be a candidate.
+const RIP_UP_REACH_MM: f64 = 2.5;
+
+fn rip_up_pass(pcb: &mut Pcb, layers: &[PcbLayer], budget: usize) -> bool {
+    let plane_nets: BTreeSet<String> = pcb.zones.iter().map(|z| z.net.clone()).collect();
+    let mut improved = false;
+    for (net, from, to) in open_connections(pcb, layers) {
+        let open_now = open_connections(pcb, layers).len();
+        let dist = |p: Vec2, q: Vec2| ((p.x - q.x).powi(2) + (p.y - q.y).powi(2)).sqrt();
+        let mut near: HashMap<String, f64> = HashMap::new();
+        for t in &pcb.traces {
+            if t.net == net || plane_nets.contains(&t.net) {
+                continue;
+            }
+            let d = [t.start, t.end]
+                .into_iter()
+                .flat_map(|p| [dist(p, from), dist(p, to)])
+                .fold(f64::MAX, f64::min);
+            if d <= RIP_UP_REACH_MM {
+                let e = near.entry(t.net.clone()).or_insert(d);
+                *e = e.min(d);
+            }
+        }
+        let mut candidates: Vec<(String, f64)> = near.into_iter().collect();
+        candidates.sort_by(|a, b| {
+            a.1.partial_cmp(&b.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.0.cmp(&b.0))
+        });
+        candidates.truncate(RIP_UP_CANDIDATES);
+        for (victim, _) in candidates {
+            let mut trial = pcb.clone();
+            trial.traces.retain(|t| t.net != victim);
+            trial.vias.retain(|v| v.net != victim);
+            let only: BTreeSet<String> = [net.clone()].into_iter().collect();
+            if route_open(&mut trial, layers, Some(&only), budget) == 0 {
+                continue;
+            }
+            let back: BTreeSet<String> = [victim.clone()].into_iter().collect();
+            route_open(&mut trial, layers, Some(&back), budget);
+            route_open(&mut trial, layers, Some(&back), budget);
+            if open_connections(&trial, layers).len() < open_now {
+                *pcb = trial;
+                improved = true;
+                break;
+            }
+        }
+    }
+    improved
 }
 
 #[cfg(test)]
@@ -1470,5 +1738,39 @@ mod tests {
             len(&around.path)
         );
         assert!(around.path.len() <= 8, "{} segments", around.path.len());
+    }
+
+    /// Measures the finishing pass on a real board: `VCAD_FINISH_BOARD=path`.
+    #[test]
+    #[ignore]
+    fn measure_finish_remaining() {
+        let path = std::env::var("VCAD_FINISH_BOARD").expect("board path");
+        let mut pcb: Pcb = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let open = |p: &Pcb| crate::open_nets(&vcad_ecad_pcb::drc::check_drc(p));
+        let geom = |p: &Pcb| {
+            vcad_ecad_pcb::drc::check_drc(p)
+                .into_iter()
+                .filter(|v| crate::connectivity_count(std::slice::from_ref(v)) == 0)
+                .map(|v| v.message)
+                .collect::<BTreeSet<_>>()
+        };
+        let before = open(&pcb);
+        let g0 = geom(&pcb);
+        let budget = std::env::var("VCAD_FINISH_BUDGET")
+            .ok()
+            .and_then(|b| b.parse().ok())
+            .unwrap_or(150_000);
+        let t = std::time::Instant::now();
+        let closed = finish_remaining(&mut pcb, budget);
+        let after = open(&pcb);
+        let added: Vec<_> = geom(&pcb).difference(&g0).cloned().collect();
+        eprintln!(
+            "closed {closed} in {:?}; open {} -> {}: {after:?}; new violations {}: {:?}",
+            t.elapsed(),
+            before.len(),
+            after.len(),
+            added.len(),
+            &added[..added.len().min(6)]
+        );
     }
 }

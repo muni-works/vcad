@@ -253,8 +253,9 @@ fn verdict_opts(req: &Value) -> VerdictOptions {
 /// Route every unrouted connection. Returns `{pcb, verdict, drc}`.
 pub fn autoroute(mut pcb: Pcb, req: &Value) -> Value {
     let verdict = vcad_ecad_fabprep::verdict::route_remaining(&mut pcb, verdict_opts(req));
+    let finished = vcad_ecad_fabprep::verdict::finish_remaining(&mut pcb, 150_000);
     let drc = drc_report(&pcb, &accepted_rules(req));
-    json!({ "pcb": pcb, "verdict": verdict, "drc": drc })
+    json!({ "pcb": pcb, "verdict": verdict, "finished": finished, "drc": drc })
 }
 
 /// `char *vcad_pcb_autoroute(const char *pcb_json, const char *request_json)`.
