@@ -1255,8 +1255,11 @@ struct ReleasedOverlayView: View {
         guard model.usesDocumentTree,
               let ar = ReleaseWindowController.shared.arView else { return }
 
-        // Face/edge picking: the click chooses topology, not a body.
-        if model.picking.filter.picksTopology, model.armedShape == nil {
+        // Face/edge picking: the click chooses topology, not a body — unless
+        // a Subtract/Combine is waiting for its tool part. Face mode lingers
+        // after a Shell or Fillet, and it swallowed that click, so the prompt
+        // never completed.
+        if model.picking.filter.picksTopology, model.armedShape == nil, model.pendingBoolean == nil {
             model.picking.select(hit: topologyHit(at: p), additive: additive || model.measuring)
             refreshTopologyOverlay()
             return
