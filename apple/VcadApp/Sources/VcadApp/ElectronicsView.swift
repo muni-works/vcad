@@ -365,7 +365,8 @@ struct ElectronicsCanvas: View {
             }
             let minX = vertices.map(\.x).min() ?? 0, maxX = vertices.map(\.x).max() ?? 80
             let minY = vertices.map(\.y).min() ?? 0, maxY = vertices.map(\.y).max() ?? 50
-            let scale = max(0.1, min((size.width - 60) / max(1, maxX - minX), (size.height - 160) / max(1, maxY - minY))) * ec.zoom
+            let usable = CGSize(width: max(120, size.width - 2 * (Theme.Width.inspector + 2 * Glass.inset) - 40), height: max(120, size.height - Glass.toolbarHeight - 90))
+            let scale = max(0.1, min(usable.width / max(1, maxX - minX), usable.height / max(1, maxY - minY))) * ec.zoom
             return (scale, CGPoint(x: size.width / 2 - (minX + maxX) / 2 * scale + ec.pan.width, y: size.height / 2 - (minY + maxY) / 2 * scale + ec.pan.height))
         }
         vertices = ecRows((ec.board(model)["outline"] as? ECObject)?["vertices"]).map { ecPoint($0) }
@@ -404,61 +405,7 @@ struct ElectronicsCanvas: View {
                     context.stroke(path, with: .color(.yellow.opacity(0.8)), lineWidth: 1.5)
                     if !spatial { BoardPainter(context: context, ec: ec, board: board, scale: scale, screen: screen).draw() }
                 } else {
-                    for wire in ecRows(ec.schematic(model)["wires"]) { line(ecPoint(wire["start"]), ecPoint(wire["end"]), .green) }
-                    // Small nets: wires between nearest pins (a chain, not a star from
-                    // the first pin). Power and large nets: a net label at each pin,
-                    // the way a schematic draws GND/VBUS, instead of lines across the sheet.
-                    let nets = ec.schematic(model)["nets"] as? [String: [String]] ?? [:]
-                    let pins = Self.pinTable(ec.schematic(model))
-                    for (name, refs) in nets {
-                        let points = refs.compactMap { pins[$0] }
-                        let color: Color = name == ec.activeNet ? .orange : .green
-                        if points.count > 4 || Self.isPowerNet(name) {
-                            for (p, side) in points {
-                                let tip = CGPoint(x: p.x + side * 3, y: p.y)
-                                line(p, tip, color.opacity(0.8), 1)
-                                context.draw(Text(name).font(.system(size: 9, weight: .medium)).foregroundStyle(color),
-                                             at: screen(tip), anchor: side < 0 ? .trailing : .leading)
-                            }
-                        } else {
-                            var remaining = points.map(\.0)
-                            guard var cur = remaining.first else { continue }
-                            remaining.removeFirst()
-                            while !remaining.isEmpty {
-                                let i = remaining.indices.min { hypot(remaining[$0].x - cur.x, remaining[$0].y - cur.y) < hypot(remaining[$1].x - cur.x, remaining[$1].y - cur.y) }!
-                                line(cur, remaining[i], color, 1.2)
-                                cur = remaining.remove(at: i)
-                            }
-                        }
-                    }
-                }
-                if ec.view == .schematic {
-                    // Symbols: a body sized to the pins, numbered pin stubs, labels above.
-                    for f in ecRows(ec.schematic(model)["components"]) {
-                        let ref = f["ref"] as? String ?? "?", body = Self.symbolBody(f)
-                        let corners = [CGPoint(x: body.minX, y: body.minY), CGPoint(x: body.maxX, y: body.minY),
-                                       CGPoint(x: body.maxX, y: body.maxY), CGPoint(x: body.minX, y: body.maxY)]
-                            .map { screen(Self.world(local: $0, in: f)) }
-                        var outline = Path(); outline.addLines(corners); outline.closeSubpath()
-                        let selected = ref == ec.selectedRef
-                        context.fill(outline, with: .color(selected ? .accentColor.opacity(0.25) : .secondary.opacity(0.12)))
-                        context.stroke(outline, with: .color(selected ? .accentColor : .primary.opacity(0.8)), lineWidth: 1)
-                        let top = screen(Self.world(local: CGPoint(x: 0, y: body.minY), in: f))
-                        context.draw(Text(ref).font(.caption.weight(.semibold)), at: CGPoint(x: top.x, y: top.y - 14))
-                        context.draw(Text(f["value"] as? String ?? "").font(.caption2).foregroundStyle(.secondary),
-                                     at: CGPoint(x: top.x, y: top.y - 3), anchor: .bottom)
-                        for (pin, local) in Self.symbolPins(f) {
-                            let edge = CGPoint(x: local.x < 0 ? max(local.x, body.minX) : min(local.x, body.maxX), y: local.y)
-                            line(Self.world(local: edge, in: f), Self.world(local: local, in: f), .green, 1)
-                            let pp = screen(Self.world(local: local, in: f)), r = max(2, scale * 0.35)
-                            context.fill(Path(ellipseIn: CGRect(x: pp.x - r, y: pp.y - r, width: 2 * r, height: 2 * r)), with: .color(.green))
-                            if scale > 6 {
-                                context.draw(Text(pin["number"] as? String ?? "").font(.system(size: 9)).foregroundStyle(.secondary),
-                                             at: CGPoint(x: pp.x + (local.x < 0 ? 4 : -4), y: pp.y - 6),
-                                             anchor: local.x < 0 ? .leading : .trailing)
-                            }
-                        }
-                    }
+                    SchematicPainter(context: context, ec: ec, sheet: ec.drawSchematic(model), scale: scale, screen: screen).draw()
                 }
                 let components = ec.view == .spatial ? ecRows(board["footprints"]) : []
                 for f in components {
@@ -597,11 +544,17 @@ struct ElectronicsCanvas: View {
 
     /// The symbol body in component-local mm, sized to its pins.
     static func symbolBody(_ component: ECObject) -> CGRect {
-        let n = ecRows(component["pins"]).count
-        if n <= 2 { return CGRect(x: -2.54, y: -1.0, width: 5.08, height: 2.0) }
-        let rows = CGFloat((n + 1) / 2)
-        let h = rows * 2.54 + 2.54
-        return CGRect(x: -7.62, y: -h / 2, width: 15.24, height: h)
+        let pins = symbolPins(component).map(\.local)
+        if pins.count <= 2 { return CGRect(x: -2.54, y: -1.0, width: 5.08, height: 2.0) }
+        // Imported symbols carry their own pin ends: the body sits just inside.
+        let x0 = pins.map(\.x).min() ?? -7.62, x1 = pins.map(\.x).max() ?? 7.62
+        let y0 = pins.map(\.y).min() ?? -7.62, y1 = pins.map(\.y).max() ?? 7.62
+        let w = max(x1 - x0, 5.08), h = max(y1 - y0, 5.08)
+        let insetX: CGFloat = x1 > x0 ? 2.54 : 0
+        let hasTopBottom = pins.contains { ($0.y == y0 || $0.y == y1) && $0.x != x0 && $0.x != x1 }
+        return hasTopBottom
+            ? CGRect(x: x0 + insetX, y: y0 + 2.54, width: w - 2 * insetX, height: max(2.54, h - 5.08))
+            : CGRect(x: x0 + insetX, y: y0 - 1.27, width: w - 2 * insetX, height: h + 2.54)
     }
 
     private func pinPosition(_ ref: String) -> CGPoint? {
@@ -688,8 +641,11 @@ struct ElectronicsCanvas: View {
     private func partAt(_ p: CGPoint, tolerance: CGFloat) -> String? {
         if ec.view == .schematic {
             for f in ecRows(ec.schematic(model)["components"]) {
-                let q = ecPoint(f["position"])
-                if hypot(p.x - q.x, p.y - q.y) < max(4, tolerance) { return f["ref"] as? String }
+                let o = ecPoint(f["position"]), r = -ecNumber(f["rotation"]) * .pi / 180
+                let dx = p.x - o.x, dy = p.y - o.y
+                var local = CGPoint(x: dx * cos(r) - dy * sin(r), y: dx * sin(r) + dy * cos(r))
+                if f["mirror"] as? Bool == true { local.x = -local.x }
+                if Self.symbolBody(f).insetBy(dx: -1.5, dy: -1.5).contains(local) { return f["ref"] as? String }
             }
             return nil
         }
@@ -698,7 +654,14 @@ struct ElectronicsCanvas: View {
     }
     private func select(_ p: CGPoint, tolerance: CGFloat) {
         ec.selectedRef = nil; ec.selectedTrace = nil; ec.selectedVia = nil; ec.highlightNet = nil
-        if ec.view == .schematic { ec.selectedRef = partAt(p, tolerance: tolerance); return }
+        if ec.view == .schematic {
+            if let pin = nearestPin(p, distance: max(1.4, tolerance)) {
+                let nets = ec.schematic(model)["nets"] as? [String: [String]] ?? [:]
+                ec.highlightNet = nets.first { $0.value.contains(pin) }?.key
+                ec.selectedRef = String(pin.split(separator: ".")[0])
+            } else { ec.selectedRef = partAt(p, tolerance: tolerance) }
+            return
+        }
         let board = ec.board(model)
         if let hit = padAt(p, tolerance: tolerance) {
             ec.selectedRef = hit.ref; ec.highlightNet = hit.pad["net"] as? String; return
@@ -737,8 +700,9 @@ struct ElectronicsCanvas: View {
                 if event.keyCode == 53, ec.highlightNet != nil || ec.focusPoint != nil { ec.highlightNet = nil; ec.focusPoint = nil; return nil }
                 guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return event }
                 switch event.charactersIgnoringModifiers {
-                case "r" where ec.selectedRef != nil && ec.view == .board:
-                    let f = ecRows(ec.board(model)["footprints"]).first { $0["ref"] as? String == ec.selectedRef }
+                case "r" where ec.selectedRef != nil:
+                    let rows = ecRows(ec.view == .schematic ? ec.schematic(model)["components"] : ec.board(model)["footprints"])
+                    let f = rows.first { $0["ref"] as? String == ec.selectedRef }
                     ec.editComponent(model, key: "rotation", value: (ecNumber(f?["rotation"]) + 90).truncatingRemainder(dividingBy: 360))
                     return nil
                 case "f" where ec.selectedRef != nil && ec.view == .board:
