@@ -75,6 +75,20 @@ final class GlassUI {
     /// Wall time of the last history seek until its rebuild landed, ms.
     var lastSeekMillis: Double?
     @ObservationIgnored var shimmerTask: Task<Void, Never>?
+    /// The one floating panel (joint/mate editors, parameters, electronics
+    /// tools) — a non-modal glass card under the dock, never a sheet.
+    var panel: PanelRequest?
+
+    func present(_ title: String, symbol: String, width: CGFloat = 400,
+                 onClose: @escaping () -> Void = {}, @ViewBuilder content: @escaping () -> some View) {
+        panel = PanelRequest(title: title, symbol: symbol, width: width, onClose: onClose) { AnyView(content()) }
+    }
+    func closePanel() {
+        let p = panel
+        panel = nil
+        p?.onClose()
+    }
+
     /// The keyboard cheat sheet (?).
     var shortcutsShown = false
     /// A transient confirmation ("Undo Fillet"), auto-hidden.
@@ -566,7 +580,11 @@ struct GlassDock: View {
         .animation(glassSpring(reduceMotion), value: ui.space)
         .fixedSize()
         .disabled(model.cnc.machine.active)
-        .sheet(isPresented: $model.showsParameterTable) { ParameterTableSheet(model: model) }
+        .onChange(of: model.showsParameterTable) { _, on in
+            guard on else { if ui.panel?.title == "Parameters" { ui.panel = nil }; return }
+            ui.present("Parameters", symbol: "slider.horizontal.3", width: 420,
+                       onClose: { model.showsParameterTable = false }) { ParameterTableSheet(model: model) }
+        }
         .background {
             Button("") { model.disarm() }.keyboardShortcut(.cancelAction)
                 .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
@@ -1365,6 +1383,46 @@ struct ShortcutSheet: View {
                 .frame(minWidth: 64, alignment: .leading)
             if let symbol { Image(systemName: symbol).frame(width: 16).foregroundStyle(.secondary) }
             Text(label).font(.callout)
+        }
+    }
+}
+
+
+/// A request for the floating panel.
+struct PanelRequest: Identifiable {
+    let id = UUID()
+    let title: String
+    let symbol: String
+    let width: CGFloat
+    let onClose: () -> Void
+    let content: () -> AnyView
+}
+
+/// Hosts `GlassUI.panel` beneath the dock: title, close (Esc), content.
+struct FloatingPanelHost: View {
+    @Bindable var ui = GlassUI.shared
+    var body: some View {
+        if let p = ui.panel {
+            VStack(alignment: .leading, spacing: Theme.Space.m) {
+                HStack(spacing: Theme.Space.s) {
+                    Image(systemName: p.symbol).foregroundStyle(.secondary)
+                    Text(p.title).font(.headline)
+                    Spacer()
+                    Button { ui.closePanel() } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }
+                        .buttonStyle(.borderless)
+                        .keyboardShortcut(.cancelAction)
+                        .help("Close (Esc)").accessibilityLabel("Close \(p.title)")
+                }
+                ScrollView { p.content().frame(maxWidth: .infinity, alignment: .leading) }
+                    .frame(maxHeight: 560)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(16)
+            .frame(width: p.width)
+            .glassPanel()
+            .id(p.id)
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .modifier(ChromeRegion(key: "floatingPanel"))
         }
     }
 }

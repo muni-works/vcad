@@ -2462,7 +2462,7 @@ final class EditorModel {
                         self.exitSketch()
                     } else if GlassUI.shared.shortcutsShown {
                         GlassUI.shared.shortcutsShown = false
-                    } else if self.activeFeatureOp != nil || self.showsCommandPalette {
+                    } else if self.activeFeatureOp != nil || self.showsCommandPalette || GlassUI.shared.panel != nil {
                         // Their own Cancel handles Esc; keep the selection.
                     } else if self.usesDocumentTree, self.renamingFeatureID == nil, self.hasSelection {
                         self.deselectAll()

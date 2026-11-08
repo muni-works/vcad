@@ -738,11 +738,13 @@ struct ReleasedOverlayView: View {
             VStack(spacing: Theme.Space.s) {
                 ToastHost()
                 CommandPanelHost(model: model)
+                FloatingPanelHost()
                 PaletteHost(model: model)
             }
             .padding(.top, chromeTop)
             .animation(Motion.smooth, value: model.activeFeatureOp)
             .animation(Motion.smooth, value: model.showsCommandPalette)
+            .animation(Motion.smooth, value: GlassUI.shared.panel?.id)
             .animation(Motion.smooth, value: GlassUI.shared.toast?.text)
         }
         .overlay {

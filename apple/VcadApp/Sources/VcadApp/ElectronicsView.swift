@@ -59,22 +59,37 @@ struct NativeElectronicsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onChange(of: ec.boardID) { _, _ in ec.selectedRef = nil; ec.selectedTrace = nil; ec.selectedVia = nil; ec.routeStart = nil }
         .onChange(of: model.source) { _, _ in ec.selectedRef = nil; ec.selectedTrace = nil; ec.routeStart = nil; ec.pendingPin = nil }
-        .sheet(isPresented: $ec.checking) {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Connectivity Checks").font(.title2)
-                Text("Checks duplicate references, missing net assignments and trace metadata. This is not a clearance DRC or electrical simulation.").font(.callout).foregroundStyle(.secondary)
-                List(ec.issues.isEmpty ? ["No issues found by these checks."] : ec.issues, id: \.self) { Text($0) }.frame(height: 240)
-                Button("Done") { ec.checking = false }.keyboardShortcut(.defaultAction)
-            }.padding(24).frame(width: 500)
+        .onChange(of: ec.checking) { _, on in
+            guard on else { return }
+            GlassUI.shared.present("Connectivity", symbol: "link", width: 480, onClose: { ec.checking = false }) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Checks duplicate references, missing net assignments and trace metadata. This is not a clearance DRC or electrical simulation.").font(.callout).foregroundStyle(.secondary)
+                    ForEach(ec.issues.isEmpty ? ["No issues found by these checks."] : ec.issues, id: \.self) { Text($0).font(.callout) }
+                }
+            }
         }
-        .sheet(item: Binding(get: { ec.tools.sheet }, set: { ec.tools.sheet = $0 })) { kind in
-            ElectronicsToolSheet(model: model, kind: kind)
+        .onChange(of: ec.tools.sheet) { _, kind in
+            guard let kind else { if GlassUI.shared.panel?.title == Self.title(for: nil) { GlassUI.shared.panel = nil }; return }
+            GlassUI.shared.present(Self.title(for: kind), symbol: "cpu", width: 600, onClose: { ec.tools.sheet = nil }) {
+                ElectronicsToolSheet(model: model, kind: kind)
+            }
         }
         .alert("Document error", isPresented: Binding(get: { fileError != nil }, set: { if !$0 { fileError = nil } })) { Button("OK") { fileError = nil } } message: { Text(fileError ?? "") }
         .background {
             Button("") { ec.routeStart = nil; ec.pendingPin = nil; ec.tool = .select }.keyboardShortcut(.cancelAction).frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
         }
     }
+    static func title(for kind: ElectronicsTools.Sheet?) -> String {
+        switch kind {
+        case .drc: "Design Rule Check"
+        case .length: "Diff Pair / Length Tuning"
+        case .stackup: "Layer Stack"
+        case .simulate: "Simulate"
+        case .enclosure: "Enclosure Fit"
+        case nil: ""
+        }
+    }
+
     /// One glass pill: what the tool wants, then the board's counts as numbers.
     private var statusPill: some View {
         HStack(spacing: 8) {

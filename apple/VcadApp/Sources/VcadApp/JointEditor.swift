@@ -11,7 +11,7 @@ struct JointEditorSheet: View {
     @State var spec: JointSpec
     /// Returns false to keep the sheet open (validation refusal).
     let commit: (JointSpec) -> Bool
-    @Environment(\.dismiss) private var dismiss
+    private func dismiss() { GlassUI.shared.closePanel() }
     @State private var limitsOn = false
     @State private var lo = -90.0
     @State private var hi = 90.0
@@ -67,23 +67,28 @@ struct JointEditorSheet: View {
             if let m = model.assembly.message { Text(m).font(.caption).foregroundStyle(.orange) }
         }
         .formStyle(.grouped)
-        .frame(width: 400)
-        .navigationTitle(title)
+        .scrollContentBackground(.hidden)
+        .scrollDisabled(true)
+        .safeAreaInset(edge: .bottom) { buttons }
         .onAppear {
             model.assembly.message = nil
             if let l = spec.limits { limitsOn = true; lo = l.lowerBound; hi = l.upperBound }
         }
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-            ToolbarItem(placement: .confirmationAction) {
-                Button(title.hasPrefix("Add") ? "Add" : "Apply") {
-                    var s = spec
-                    s.limits = limitsOn && lo <= hi ? lo...hi : nil
-                    if commit(s) { dismiss() }
-                }
-                .disabled(spec.childInstanceId.isEmpty)
+    }
+
+    private var buttons: some View {
+        HStack {
+            Spacer()
+            Button("Cancel") { dismiss() }
+            Button(title.hasPrefix("Add") ? "Add" : "Apply") {
+                var s = spec
+                s.limits = limitsOn && lo <= hi ? lo...hi : nil
+                if commit(s) { dismiss() }
             }
+            .keyboardShortcut(.defaultAction)
+            .disabled(spec.childInstanceId.isEmpty)
         }
+        .padding(.horizontal, Theme.Space.l)
     }
 
     private func anchorRow(_ label: String, _ v: Binding<SIMD3<Double>>, instance: String?) -> some View {
