@@ -31,8 +31,6 @@ struct NativeElectronicsView: View {
                             if ec.view == .spatial { ElectronicsBoardPreview(board: ec.board(model)) }
                             else { ElectronicsCanvas(model: model) }
                         }
-                        .padding(.horizontal, Glass.panelWidth + 2 * Glass.inset)
-                        .padding(.top, Glass.toolbarHeight)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         HStack(alignment: .top, spacing: 0) {
                             if model.showsTree {
@@ -52,7 +50,7 @@ struct NativeElectronicsView: View {
                         .padding(.horizontal, Glass.inset).padding(.top, Glass.toolbarHeight)
                         VStack {
                             Spacer()
-                            statusPill.padding(.bottom, 64)
+                            statusPill.padding(.bottom, Glass.inset + 6)
                         }
                     }
                 }

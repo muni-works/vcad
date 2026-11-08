@@ -724,14 +724,16 @@ struct ReleasedOverlayView: View {
             toolbar
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .overlay(alignment: .bottom) {
-            // Workspaces with their own canvas get the same dock as Design.
-            if model.workspace == .drawing || model.workspace == .electronics {
-                GlassDock(model: model)
-                    .modifier(ChromeRegion(key: "dock"))
-                    .padding(.bottom, Glass.inset + 6)
+        .overlay(alignment: .top) {
+            // History drops down from the dock, in every workspace.
+            if GlassUI.shared.historyOpen && model.usesDocumentTree && model.workspace != .manufacture {
+                HistoryFilmstrip(model: model)
+                    .modifier(ChromeRegion(key: "history"))
+                    .padding(.top, chromeTop)
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
+        .animation(Motion.smooth, value: GlassUI.shared.historyOpen)
         .ignoresSafeArea(.container, edges: .top)
         .onAppear { ReleaseWindowController.shared.updateDocumentWindow() }
         .onChange(of: model.source) { _, _ in ReleaseWindowController.shared.updateDocumentWindow() }
@@ -992,19 +994,12 @@ struct ReleasedOverlayView: View {
                         AgentPanel(session: AgentSession.shared, model: model)
                             .modifier(ChromeRegion(key: "agentPanel"))
                     }
-                    if GlassUI.shared.historyOpen && model.usesDocumentTree {
-                        HistoryFilmstrip(model: model)
-                            .modifier(ChromeRegion(key: "history"))
-                            .transition(.move(edge: .bottom).combined(with: .opacity))
-                    }
                     if let s = GlassUI.shared.suggestion {
                         AgentSuggestionPill(model: model, suggestion: s)
                             .id(s.id)
                             .modifier(ChromeRegion(key: "suggestion"))
                             .transition(.scale(scale: 0.94).combined(with: .opacity))
                     }
-                    GlassDock(model: model)
-                        .modifier(ChromeRegion(key: "dock"))
                 }
             }
             .padding(.bottom, Glass.inset + 6)

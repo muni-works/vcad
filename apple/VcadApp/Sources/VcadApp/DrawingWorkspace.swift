@@ -381,8 +381,6 @@ struct DrawingWorkspaceView: View {
                     ProgressView("Projecting views…")
                 }
             }
-            .padding(.horizontal, model.showsTree || model.showsInspector ? Glass.panelWidth + 2 * Glass.inset : 0)
-            .padding(.top, Glass.toolbarHeight)
             HStack(alignment: .top, spacing: 0) {
                 if model.showsTree {
                     DrawingNavigator(store: store).modifier(ChromeRegion(key: "drawingNavigator"))
@@ -396,7 +394,7 @@ struct DrawingWorkspaceView: View {
             // One status pill: the active tool's hint, else the sheet's counts.
             VStack {
                 Spacer()
-                DrawingStatusPill(store: store).padding(.bottom, 64)
+                DrawingStatusPill(store: store).padding(.bottom, Glass.inset + 6)
             }
         }
         .animation(Motion.panel, value: model.showsTree)

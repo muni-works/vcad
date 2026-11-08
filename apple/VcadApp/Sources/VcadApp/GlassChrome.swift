@@ -185,6 +185,12 @@ struct GlassToolbar: View {
         .padding(.leading, model.isWindowed ? 84 : Glass.inset + 6)
         .padding(.trailing, Glass.inset + 6)
         .frame(height: Glass.toolbarHeight)
+        // The tool dock lives in the title-bar row, centred on the window.
+        .overlay {
+            if model.workspace != .manufacture {
+                GlassDock(model: model).modifier(ChromeRegion(key: "dock"))
+            }
+        }
         .background {
             // ⌘F and ⌘K both land in search.
             Group {
@@ -230,7 +236,7 @@ struct GlassToolbar: View {
                 .onEscape { query = ""; searchFocused = false }
         }
         .padding(.horizontal, 10).padding(.vertical, 6)
-        .frame(width: 200)
+        .frame(width: 150)
         .glassCapsule()
         .popover(isPresented: Binding(get: { searchFocused && !query.isEmpty }, set: { if !$0 { searchFocused = false } }),
                  arrowEdge: .bottom) {
@@ -517,10 +523,10 @@ struct GlassDock: View {
             }
             .disabled(!model.usesDocumentTree)
             dockButton("ellipsis", "All tools", active: ui.paletteOpen) { ui.paletteOpen.toggle() }
-                .popover(isPresented: $ui.paletteOpen, arrowEdge: .top) { ToolPalette(model: model) }
+                .popover(isPresented: $ui.paletteOpen, arrowEdge: .bottom) { ToolPalette(model: model) }
         }
         .buttonStyle(.plain)
-        .padding(.horizontal, 8).padding(.vertical, 6)
+        .padding(.horizontal, 6).padding(.vertical, 3)
         .glassCapsule()
         .animation(glassSpring(reduceMotion), value: ui.space)
         .fixedSize()
