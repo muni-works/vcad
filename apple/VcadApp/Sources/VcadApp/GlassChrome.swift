@@ -444,11 +444,25 @@ enum DockTools {
                 ec.tool = tool
             }
         }
+        // Schematic gets schematic verbs; Via / Autoroute / DRC are board work.
+        if ec.view == .schematic {
+            let empty = ecRows(ec.schematic(m)["components"]).isEmpty
+            return [
+                mode(.select, "Select", "cursorarrow"),
+                mode(.place, "Place Component", "square.on.square.dashed"),
+                mode(.wire, "Connect Pins", "point.3.connected.trianglepath.dotted"),
+                empty
+                    ? Tool(id: "ec.buildsch", label: "Build Schematic from Board", symbol: "arrow.triangle.branch",
+                           isActive: false) { ec.buildSchematicFromBoard(m) }
+                    : Tool(id: "ec.check", label: "Check Connectivity", symbol: "checkmark.seal", isActive: ec.checking) { ec.check(m) },
+                Tool(id: "ec.simulate", label: "Simulate", symbol: "waveform", isActive: t.sheet == .simulate,
+                     enabled: !empty, hint: "Build or draw a schematic first") { t.sheet = .simulate },
+            ]
+        }
         return [
             mode(.select, "Select", "cursorarrow"),
             mode(.place, "Place Component", "square.on.square.dashed"),
-            ec.view == .schematic ? mode(.wire, "Connect Pins", "point.3.connected.trianglepath.dotted")
-                                  : mode(.route, "Route", "point.topleft.down.to.point.bottomright.curvepath", boardOnly: true),
+            mode(.route, "Route", "point.topleft.down.to.point.bottomright.curvepath", boardOnly: true),
             mode(.via, "Via", "smallcircle.filled.circle", boardOnly: true),
             Tool(id: "ec.autoroute", label: "Autoroute", symbol: "wand.and.stars", isActive: t.busy == "Autoroute",
                  enabled: t.busy == nil, hint: "Busy") { t.autoroute(ec, m) },
