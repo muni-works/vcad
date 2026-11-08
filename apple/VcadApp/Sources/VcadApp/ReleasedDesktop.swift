@@ -967,11 +967,13 @@ struct ReleasedOverlayView: View {
                 .padding(Theme.Space.l)
                 .modifier(ChromeRegion(key: "fieldHud"))
         }
-        .overlay(alignment: .bottomLeading) {
-            // Orientation triad: which way X, Y and Z point right now.
+        .overlay(alignment: .bottomTrailing) {
+            // Orientation triad: which way X, Y and Z point right now. Bottom
+            // right: the left column's panels (Model, Assembly, Pose) can run
+            // to the bottom and the triad drew over them.
             if Prefs.showsTriad {
                 AxisTriad(azimuth: model.azimuth, elevation: model.elevation)
-                    .padding(.leading, Theme.Space.l)
+                    .padding(.trailing, Theme.Space.l)
                     .padding(.bottom, studio ? (model.cnc.bottomPanelShown ? 340 : 100) : Theme.Space.l)
                     .allowsHitTesting(false)
             }

@@ -181,6 +181,13 @@ extension EditorModel {
             v[id] = (j["state"] as? NSNumber)?.doubleValue ?? 0
         }
         if let tl = timeline { v.merge(tl.jointValues(at: playbackTime)) { $1 } }
+        // The Pose panel's values (keyed by joint name, else id) are what's on
+        // screen; without them the joint list read 0.0° while the arm sat at 77°.
+        for j in asmJoints {
+            guard let id = j["id"] as? String else { continue }
+            let key = (j["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? id
+            if let posed = jointPose[key] { v[id] = posed }
+        }
         v.merge(assembly.dragValues) { $1 }
         return v
     }
