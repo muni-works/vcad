@@ -879,7 +879,15 @@ mod tests {
 
         // Export (gated).
         let dir = std::env::temp_dir().join(format!("vcad-ffi-gerber-{}", std::process::id()));
-        let out = export_gerbers(&fixed, &dir, &json!({})).unwrap();
+        // The ice-viz fixture is geometrically clean but not fully connected
+        // under the kernel DRC (13 open nets, incl. GND/VBUS), so the default
+        // export must refuse it; the explicit opt-in still ships.
+        if after.unrouted > 0 {
+            let e = export_gerbers(&fixed, &dir, &json!({})).unwrap_err();
+            assert!(e.contains("NOT FULLY ROUTED"), "{e}");
+            assert!(!dir.exists());
+        }
+        let out = export_gerbers(&fixed, &dir, &json!({"allow_incomplete": true})).unwrap();
         let files: Vec<String> = serde_json::from_value(out["files"].clone()).unwrap();
         assert!(
             files
