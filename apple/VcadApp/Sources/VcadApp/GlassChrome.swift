@@ -498,7 +498,8 @@ enum DockTools {
             return keyed([
                 mode(.select, "Select", "cursorarrow"),
                 mode(.place, "Place Component", "square.on.square.dashed"),
-                mode(.wire, "Connect Pins", "point.3.connected.trianglepath.dotted"),
+                mode(.wire, "Wire", "point.3.connected.trianglepath.dotted"),
+                mode(.label, "Net Label", "tag"),
                 empty
                     ? Tool(id: "ec.buildsch", label: "Build Schematic from Board", symbol: "arrow.triangle.branch",
                            isActive: false) { ec.buildSchematicFromBoard(m) }
@@ -506,7 +507,7 @@ enum DockTools {
                 Tool(id: "ec.tidy", label: "Tidy Sheet", symbol: "square.grid.3x3", isActive: false) { ec.tidySchematic(m) },
                 Tool(id: "ec.simulate", label: "Simulate", symbol: "waveform", isActive: t.sheet == .simulate,
                      enabled: !empty, hint: "Build or draw a schematic first") { t.sheet = .simulate },
-            ], ["ec.select": "e", "ec.place": "p", "ec.wire": "w", "ec.check": "c", "ec.simulate": "s"])
+            ], ["ec.select": "e", "ec.place": "p", "ec.wire": "w", "ec.label": "l", "ec.check": "c", "ec.simulate": "s"])
         }
         return keyed([
             mode(.select, "Select", "cursorarrow"),

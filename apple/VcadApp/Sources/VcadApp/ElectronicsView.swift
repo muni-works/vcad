@@ -106,7 +106,7 @@ struct NativeElectronicsView: View {
     private var statusPill: some View {
         HStack(spacing: 8) {
             if let busy = ec.tools.busy { ProgressView().controlSize(.mini); Text("\(busy)…") }
-            Text(ec.tools.error ?? ec.tools.status ?? ec.message ?? (ec.view == .spatial ? "3D layout preview" : ec.tool == .wire ? "Select two pins to connect their net" : ec.tool == .route ? "Click to route · Esc ends the route" : ec.tool == .place ? "Click to place \(ec.componentKind.lowercased())" : ec.selectedRef ?? "Select a component"))
+            Text(ec.tools.error ?? ec.tools.status ?? ec.message ?? (ec.view == .spatial ? "3D layout preview" : ec.tool == .wire ? (ec.view == .schematic ? "Click to draw a wire" : "Select two pins to connect their net") : ec.tool == .label ? "Click a pin or wire to name its net" : ec.tool == .route ? "Click to route · Esc ends the route" : ec.tool == .place ? "Click to place \(ec.componentKind.lowercased())" : ec.selectedRef ?? "Select a component"))
                 .lineLimit(1)
             Text("·").foregroundStyle(.secondary)
             if ec.view == .board {
@@ -229,7 +229,8 @@ struct NativeElectronicsView: View {
         return ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 PanelHeader(title: ec.tool == .route ? "Route" : ec.tool == .place ? "Place component"
-                            : ec.tool == .wire ? "Connect pins"
+                            : ec.tool == .wire ? (ec.view == .schematic ? "Wire" : "Connect pins")
+                            : ec.tool == .label ? "Net label"
                             : ec.selectedRef ?? (ec.view == .schematic ? "Schematic" : "Circuit board"))
                 if ec.tool == .select, let ref = ec.selectedRef,
                    let component = ecRows((ec.view == .schematic ? ec.schematic(model)["components"] : ec.board(model)["footprints"])).first(where: { $0["ref"] as? String == ref }) {
@@ -255,6 +256,15 @@ struct NativeElectronicsView: View {
                     }
                     Text("Move coordinates independently in Schematic and Board views.").font(.caption).foregroundStyle(.secondary)
                     Divider()
+                }
+                if ec.tool == .label {
+                    TextField("Net name", text: $ec.labelText).textFieldStyle(.roundedBorder)
+                    Text("Click a pin or wire. Names like GND and +3V3 draw as power symbols.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                if ec.tool == .wire, ec.view == .schematic {
+                    Text("Click to start and add corners; click a pin or wire to finish. Return ends in open space, Esc cancels.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
                 if ec.tool == .place {
                 Picker("Component", selection: $ec.componentKind) { ForEach(ec.kinds, id: \.self) { Text($0) } }
@@ -452,6 +462,9 @@ struct ElectronicsCanvas: View {
                     ec.activeNet = hit.net; ec.highlightNet = hit.net; ec.routeStart = hit.at
                     if let l = hit.layer { ec.activeLayer = l }
                 case .via: ec.addVia(model, at: p)
+                case .label: ec.placeLabel(model, at: p, tolerance: 10 / scale)
+                case .wire where ec.view == .schematic:
+                    ec.wireClick(model, at: p, tolerance: 10 / scale)
                 case .wire:
                     if let pin = nearestPin(p, distance: 8 / scale) { ec.connect(model, pin: pin) }
                     else { ec.message = "Choose a component pin." }
@@ -689,6 +702,10 @@ struct ElectronicsCanvas: View {
             if event.type == .keyDown {
                 if NSApp.keyWindow?.firstResponder is NSTextView { return event }
                 if event.keyCode == 53, ec.routeStart != nil { ec.cancelRoute(); return nil }
+                if !ec.wirePoints.isEmpty {
+                    if event.keyCode == 53 { ec.wirePoints = []; return nil }
+                    if event.keyCode == 36 { ec.finishWire(model); return nil }
+                }
                 if event.keyCode == 51 || event.keyCode == 117, ec.selectedTrace != nil || ec.selectedVia != nil {
                     ec.removeSelection(model); return nil
                 }

@@ -12,7 +12,7 @@ func ecPoint(_ value: Any?) -> CGPoint {
 func ecJSON(_ point: CGPoint) -> ECObject { ["x": point.x, "y": point.y] }
 
 enum ElectronicsView: String, CaseIterable { case schematic = "Schematic", board = "Board", spatial = "3D" }
-enum ElectronicsTool: String, CaseIterable { case select = "Select", place = "Place", wire = "Connect", route = "Route", via = "Via" }
+enum ElectronicsTool: String, CaseIterable { case select = "Select", place = "Place", wire = "Connect", label = "Label", route = "Route", via = "Via" }
 
 @MainActor @Observable
 final class ElectronicsWorkspace {
@@ -30,6 +30,10 @@ final class ElectronicsWorkspace {
     var snap = true
     var zoom = 1.0
     var pan = CGSize.zero
+    /// Corners of the schematic wire being drawn.
+    var wirePoints: [CGPoint] = []
+    /// Text the Net Label tool places.
+    var labelText = ""
     /// Cursor in board mm, for the status readout.
     var cursor: CGPoint?
     /// A part being dragged, and where it is right now.
@@ -381,7 +385,7 @@ final class ElectronicsWorkspace {
         if let before { model.undoStack = Array((undoBefore + [UndoEntry(data: before, name: "Connect Pins")]).suffix(64)) }
         pendingPin = nil; activeNet = name
     }
-    private func syncBoardNets(_ model: EditorModel, nets: [String: [String]], merged: [String], target: String) {
+    func syncBoardNets(_ model: EditorModel, nets: [String: [String]], merged: [String], target: String) {
         mutateBoard(model) { b in
             var rows = ecRows(b["nets"]).filter { !merged.contains($0["id"] as? String ?? "") && $0["id"] as? String != target }
             rows.append(["id": target, "name": target]); b["nets"] = rows

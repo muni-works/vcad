@@ -73,12 +73,63 @@ private let bodyColor = Color(white: 0.88)
     func draw() {
         let nets = sheet["nets"] as? [String: [String]] ?? [:]
         let pins = pinsByKey()
+        let wires = ecRows(sheet["wires"]).map { (ecPoint($0["start"]), ecPoint($0["end"])) }
+        // Pins with a drawn wire or label need no generated stub.
+        let labels = ecRows(sheet["labels"])
+        func attached(_ p: CGPoint) -> Bool {
+            wires.contains { SchematicEdit.on(p, $0.0, $0.1) } || labels.contains { hypot(ecPoint($0["position"]).x - p.x, ecPoint($0["position"]).y - p.y) < 0.05 }
+        }
         for (name, refs) in nets {
-            let points = refs.compactMap { pins[$0] }
+            let points = refs.compactMap { pins[$0] }.filter { !attached($0.at) }
             guard !points.isEmpty else { continue }
             drawNet(name, points)
         }
+        drawWires(wires, nets, pins)
+        for l in labels { drawLabel(l) }
         for c in ecRows(sheet["components"]) { drawSymbol(c) }
+        drawWirePreview()
+    }
+
+    private func drawWires(_ wires: [(CGPoint, CGPoint)], _ nets: [String: [String]], _ pins: [String: PinAt]) {
+        // Colour by the net of whatever pin each connected group reaches.
+        let groups = SchematicEdit.groups(wires)
+        var netOf: [Int: String] = [:]
+        for (name, refs) in nets {
+            for r in refs {
+                guard let p = pins[r] else { continue }
+                for (i, w) in wires.enumerated() where SchematicEdit.on(p.at, w.0, w.1) { netOf[groups[i]] = name }
+            }
+        }
+        for (i, w) in wires.enumerated() {
+            let net = netOf[groups[i]] ?? ""
+            stroke([w.0, w.1], net.isEmpty ? wireColor : tint(net), ec.highlightNet == net && !net.isEmpty ? 2 : 1.3)
+        }
+        for j in SchematicEdit.junctions(wires) {
+            let c = screen(j), r = max(2.2, 0.45 * scale)
+            context.fill(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)), with: .color(wireColor))
+        }
+    }
+
+    private func drawLabel(_ l: ECObject) {
+        let text = l["name"] as? String ?? "", at = ecPoint(l["position"])
+        let p = PinAt(at: at, out: CGPoint(x: 0, y: -1))
+        if text.uppercased().contains("GND") { ground(PinAt(at: at, out: CGPoint(x: 0, y: 1)), text); return }
+        if ElectronicsCanvas.isPowerNet(text) { supply(p, text); return }
+        let color = tint(text)
+        context.fill(Path(ellipseIn: CGRect(x: screen(at).x - 2, y: screen(at).y - 2, width: 4, height: 4)), with: .color(color))
+        label(text, at: CGPoint(x: at.x + 0.5, y: at.y - 0.4), size: max(textSize, 9), color: color, anchor: .bottomLeading, weight: .semibold)
+    }
+
+    private func drawWirePreview() {
+        guard let last = ec.wirePoints.last else { return }
+        stroke(ec.wirePoints, .white, 1.5)
+        if let c = ec.cursor {
+            let end = ec.snapped(c)
+            var p = Path(); p.addLines(SchematicEdit.leg(last, end).map(screen))
+            context.stroke(p, with: .color(.white.opacity(0.8)), style: StrokeStyle(lineWidth: 1.2, dash: [4, 3]))
+        }
+        let s = screen(ec.wirePoints[0])
+        context.stroke(Path(ellipseIn: CGRect(x: s.x - 4, y: s.y - 4, width: 8, height: 8)), with: .color(.accentColor), lineWidth: 2)
     }
 
     private func drawNet(_ name: String, _ points: [PinAt]) {
@@ -303,6 +354,9 @@ extension ElectronicsWorkspace {
                 if let ref = c["ref"] as? String, let p = placed[ref] { c["position"] = ecJSON(p) }
                 return c
             }
+            // Parts all moved: drawn wires would dangle. The netlist keeps the
+            // connections, and they redraw as stubs and flags.
+            s["wires"] = [ECObject](); s["junctions"] = [ECObject](); s["labels"] = [ECObject]()
             doc["schematic"] = s
         }
         zoom = 1; pan = .zero
@@ -315,5 +369,136 @@ extension ElectronicsWorkspace {
         var rows = ecRows(s["components"])
         if let i = rows.firstIndex(where: { $0["ref"] as? String == ref }) { rows[i]["position"] = ecJSON(p); s["components"] = rows }
         return s
+    }
+}
+
+/// Sheet geometry shared by drawing and editing.
+enum SchematicEdit {
+    static func on(_ p: CGPoint, _ a: CGPoint, _ b: CGPoint) -> Bool {
+        let dx = b.x - a.x, dy = b.y - a.y, l2 = max(1e-9, dx * dx + dy * dy)
+        let u = max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2))
+        return hypot(p.x - a.x - u * dx, p.y - a.y - u * dy) < 0.05
+    }
+    static func closest(_ p: CGPoint, _ a: CGPoint, _ b: CGPoint) -> CGPoint {
+        let dx = b.x - a.x, dy = b.y - a.y, l2 = max(1e-9, dx * dx + dy * dy)
+        let u = max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2))
+        return CGPoint(x: a.x + u * dx, y: a.y + u * dy)
+    }
+    /// Right-angle leg from `a` to `b`: horizontal, then vertical.
+    static func leg(_ a: CGPoint, _ b: CGPoint) -> [CGPoint] {
+        if abs(a.x - b.x) < 1e-6 || abs(a.y - b.y) < 1e-6 { return [a, b] }
+        return [a, CGPoint(x: b.x, y: a.y), b]
+    }
+    /// Group index per wire: wires touching end-to-anywhere share one.
+    static func groups(_ wires: [(CGPoint, CGPoint)]) -> [Int] {
+        var parent = Array(wires.indices)
+        func find(_ x: Int) -> Int { var x = x; while parent[x] != x { parent[x] = parent[parent[x]]; x = parent[x] }; return x }
+        for i in wires.indices {
+            for j in wires.indices where j > i {
+                let (a, b) = (wires[i], wires[j])
+                if on(a.0, b.0, b.1) || on(a.1, b.0, b.1) || on(b.0, a.0, a.1) || on(b.1, a.0, a.1) { parent[find(i)] = find(j) }
+            }
+        }
+        return wires.indices.map(find)
+    }
+    /// Points where three or more wire ends meet, or an end lands mid-wire.
+    static func junctions(_ wires: [(CGPoint, CGPoint)]) -> [CGPoint] {
+        var out: [CGPoint] = []
+        for p in wires.flatMap({ [$0.0, $0.1] }) where !out.contains(where: { hypot($0.x - p.x, $0.y - p.y) < 0.05 }) {
+            var degree = 0
+            for w in wires where on(p, w.0, w.1) {
+                let atEnd = hypot(p.x - w.0.x, p.y - w.0.y) < 0.05 || hypot(p.x - w.1.x, p.y - w.1.y) < 0.05
+                degree += atEnd ? 1 : 2
+            }
+            if degree >= 3 { out.append(p) }
+        }
+        return out
+    }
+}
+
+extension ElectronicsWorkspace {
+    private func sheetPins(_ model: EditorModel) -> [(key: String, at: CGPoint)] {
+        ecRows(schematic(model)["components"]).flatMap { c -> [(key: String, at: CGPoint)] in
+            let ref = c["ref"] as? String ?? ""
+            return ElectronicsCanvas.symbolPins(c).map { pin, local in
+                ("\(ref).\(pin["number"] as? String ?? "")", ElectronicsCanvas.world(local: local, in: c))
+            }
+        }
+    }
+    private func sheetWires(_ model: EditorModel) -> [(CGPoint, CGPoint)] {
+        ecRows(schematic(model)["wires"]).map { (ecPoint($0["start"]), ecPoint($0["end"])) }
+    }
+    /// What a click at `p` lands on: a pin, a point on a wire, or the grid.
+    func wireSnap(_ model: EditorModel, _ p: CGPoint, tolerance: CGFloat) -> (at: CGPoint, onCopper: Bool) {
+        if let pin = sheetPins(model).min(by: { hypot($0.at.x - p.x, $0.at.y - p.y) < hypot($1.at.x - p.x, $1.at.y - p.y) }),
+           hypot(pin.at.x - p.x, pin.at.y - p.y) < tolerance { return (pin.at, true) }
+        for w in sheetWires(model) {
+            let q = SchematicEdit.closest(p, w.0, w.1)
+            if hypot(q.x - p.x, q.y - p.y) < tolerance { return (q, true) }
+        }
+        return (snapped(p), false)
+    }
+    /// Click with the Wire tool: start, add a corner, or finish on a pin or wire.
+    func wireClick(_ model: EditorModel, at p: CGPoint, tolerance: CGFloat) {
+        let hit = wireSnap(model, p, tolerance: tolerance)
+        guard let last = wirePoints.last else { wirePoints = [hit.at]; return }
+        guard hypot(last.x - hit.at.x, last.y - hit.at.y) > 1e-6 else { return }
+        wirePoints += SchematicEdit.leg(last, hit.at).dropFirst()
+        if hit.onCopper { finishWire(model) }
+    }
+    /// Commit the wire in progress and join what it touches into one net.
+    func finishWire(_ model: EditorModel) {
+        guard wirePoints.count >= 2 else { wirePoints = []; return }
+        let new = zip(wirePoints, wirePoints.dropFirst()).map { ($0, $1) }
+        wirePoints = []
+        let before = sheetWires(model), all = before + new
+        let groups = SchematicEdit.groups(all)
+        let group = groups[before.count]
+        let reach = all.indices.filter { groups[$0] == group }.map { all[$0] }
+        let pins = sheetPins(model).filter { pin in reach.contains { SchematicEdit.on(pin.at, $0.0, $0.1) } }.map(\.key)
+        let labels = ecRows(schematic(model)["labels"]).filter { l in reach.contains { SchematicEdit.on(ecPoint(l["position"]), $0.0, $0.1) } }
+            .compactMap { $0["name"] as? String }
+        applyToNets(model, name: "Draw Wire", pins: pins, wanted: labels.first) { s in
+            s["wires"] = ecRows(s["wires"]) + new.map { ["start": ecJSON($0.0), "end": ecJSON($0.1)] as ECObject }
+        }
+    }
+    /// Place a net label at `p`: whatever it touches joins the named net.
+    func placeLabel(_ model: EditorModel, at p: CGPoint, tolerance: CGFloat) {
+        let text = labelText.trimmingCharacters(in: .whitespaces)
+        guard !text.isEmpty else { message = "Type a net name in the inspector first."; return }
+        let hit = wireSnap(model, p, tolerance: tolerance)
+        let wires = sheetWires(model), groups = SchematicEdit.groups(wires)
+        let touched = Set(wires.indices.filter { SchematicEdit.on(hit.at, wires[$0].0, wires[$0].1) }.map { groups[$0] })
+        let reach = wires.indices.filter { touched.contains(groups[$0]) }.map { wires[$0] }
+        let pins = sheetPins(model).filter { pin in
+            hypot(pin.at.x - hit.at.x, pin.at.y - hit.at.y) < 0.05 || reach.contains { SchematicEdit.on(pin.at, $0.0, $0.1) }
+        }.map(\.key)
+        applyToNets(model, name: "Place Label", pins: pins, wanted: text) { s in
+            s["labels"] = ecRows(s["labels"]) + [["name": text, "position": ecJSON(hit.at), "rotation": 0, "scope": "Local"] as ECObject]
+        }
+    }
+    /// Join `pins` into one net — `wanted`, or the best name they already
+    /// have — keep the board in step, and make the whole edit one undo.
+    private func applyToNets(_ model: EditorModel, name: String, pins: [String], wanted: String?, _ edit: (inout ECObject) -> Void) {
+        let undoBefore = model.undoStack
+        let before = model.documentJSON.flatMap { DocEdit.serialize($0) }
+        var nets = schematic(model)["nets"] as? [String: [String]] ?? [:]
+        let matching = nets.keys.filter { key in nets[key]!.contains { pins.contains($0) } }
+        let isAuto = { (n: String) in n.first == "N" && n.dropFirst().allSatisfy(\.isNumber) }
+        var next = 1
+        while nets["N\(next)"] != nil { next += 1 }
+        let target = wanted ?? matching.filter { !isAuto($0) }.sorted().first ?? matching.sorted().first ?? "N\(next)"
+        let joined = matching.filter { $0 != target && !isAuto($0) }
+        var refs = Set(pins).union(nets[target] ?? [])
+        for key in matching where key != target { refs.formUnion(nets.removeValue(forKey: key) ?? []) }
+        if !refs.isEmpty { nets[target] = refs.sorted() }
+        model.editElectronics(name: name) { doc in
+            var s = doc["schematic"] as? ECObject ?? [:]
+            edit(&s); s["nets"] = nets; doc["schematic"] = s
+        }
+        if !refs.isEmpty { syncBoardNets(model, nets: nets, merged: matching.filter { $0 != target }, target: target) }
+        if let before { model.undoStack = Array((undoBefore + [UndoEntry(data: before, name: name)]).suffix(64)) }
+        message = joined.isEmpty ? nil : "Joined \(joined.joined(separator: ", ")) into \(target)"
+        activeNet = target
     }
 }
