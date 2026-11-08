@@ -138,7 +138,8 @@ extension EditorModel {
     static let shellPrefixes = ["cover-", "trim-", "puck-", "visor-", "accent-", "sole"]
     /// How far along its parent→child pivot vector each link travels at full
     /// explode, and how far shells leave their link, radially in XY (mm).
-    static let explodeLinkFraction: Float = 0.35
+    // 0.35 read as a seam on simple chains (the 2-DOF arm looked unexploded at 100%).
+    static let explodeLinkFraction: Float = 1.0
     static let explodeShellMM: Float = 45
 
     /// Explode the posed assembly. Walk the joint tree from the ground: each
