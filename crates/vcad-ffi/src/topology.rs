@@ -189,6 +189,14 @@ fn analyze(solid: &Solid) -> Result<(Topo, &BRepSolid), String> {
                 if fa == fb {
                     continue; // seam
                 }
+                // Two fragments of ONE surface: the boolean's imprint of an
+                // untrimmed intersection circle (a cup's outer wall split at
+                // its floor height). Smooth and invisible — not an edge the
+                // user can mean, and a fillet on it can only be refused —
+                // but within a pick tolerance of the real rim next to it.
+                if topo.faces[fa].surface_index == topo.faces[fb].surface_index {
+                    continue;
+                }
                 let (Some(&oa), Some(&ob)) = (face_ordinal.get(&fa), face_ordinal.get(&fb)) else {
                     continue;
                 };
@@ -867,5 +875,40 @@ mod tests {
             "chamfer removed {}",
             v0 - v1
         );
+    }
+
+    /// A cup's boolean leaves imprint seams between fragments of one surface
+    /// (its outer wall split at the floor height). They sit within a pick
+    /// tolerance of the real bottom rim, and a fillet on one can only be
+    /// refused — so the report never offers them.
+    #[test]
+    fn cup_offers_no_same_surface_seams() {
+        let mut outer = vcad_kernel::Solid::cylinder(86.0, 40.0, 0);
+        outer.set_name_scope("n2");
+        let mut inner = vcad_kernel::Solid::cylinder(84.0, 40.0, 0);
+        inner.set_name_scope("n1");
+        let cup = outer.difference(&inner.translate(0.0, 0.0, 2.0));
+        let (topo, brep) = analyze(&cup).unwrap();
+        let mut rim = 0;
+        for e in &topo.edges {
+            let (Some(fa), Some(fb)) = brep.topology.edge_faces(e.kernel) else {
+                continue;
+            };
+            assert_ne!(
+                brep.topology.faces[fa].surface_index, brep.topology.faces[fb].surface_index,
+                "same-surface seam offered: {:?}",
+                e.entry.selector
+            );
+            let sel = e
+                .entry
+                .selector
+                .as_ref()
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            if sel.contains("n2:bottom") && sel.contains("n2:side") {
+                rim += 1;
+            }
+        }
+        assert!(rim > 0, "the real bottom rim is still offered");
     }
 }
