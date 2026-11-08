@@ -502,7 +502,7 @@ struct ElectronicsCanvas: View {
             .onChange(of: geo.size) { _, new in canvasSize = new }
             .onChange(of: ec.focusPoint) { _, p in
                 guard let p else { return }
-                ec.zoom = max(ec.zoom, 5); ec.pan = .zero
+                ec.zoom = max(ec.zoom, 3); ec.pan = .zero
                 let (s, o) = transform(geo.size)
                 ec.pan = CGSize(width: geo.size.width / 2 - (o.x + p.x * s), height: geo.size.height / 2 - (o.y + p.y * s))
             }
@@ -649,6 +649,7 @@ struct ElectronicsCanvas: View {
                     ec.editComponent(model, key: "rotation", value: (ecNumber(f?["rotation"]) + 90).truncatingRemainder(dividingBy: 360))
                     return nil
                 case "h": ec.showRatsnest.toggle(); return nil
+                case "0": ec.zoom = 1; ec.pan = .zero; ec.focusPoint = nil; return nil
                 default: return event
                 }
             }
