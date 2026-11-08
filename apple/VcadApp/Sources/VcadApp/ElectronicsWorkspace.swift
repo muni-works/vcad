@@ -30,6 +30,17 @@ final class ElectronicsWorkspace {
     var snap = true
     var zoom = 1.0
     var pan = CGSize.zero
+    /// Latest live route from `routeStart` to the cursor (router JSON).
+    var routePreview: ECObject?
+    var routeTarget: CGPoint?
+    /// The cursor has snapped to copper of the routed net: a click finishes.
+    var routeEndsOnCopper = false
+    @ObservationIgnored private var router: PcbFFI.Router?
+    @ObservationIgnored private var routerKey = -1
+    @ObservationIgnored private var routeGeneration = 0
+    @ObservationIgnored private var routeBusy = false
+    @ObservationIgnored private var routeQueued: ECBox?
+    private static let routeQueue = DispatchQueue(label: "vcad.interactive-route", qos: .userInitiated)
     /// The net lit on the canvas; everything else dims.
     var highlightNet: String?
     var hiddenLayers = Set<String>()
@@ -40,6 +51,83 @@ final class ElectronicsWorkspace {
     /// A DRC location to centre and ring.
     var focusPoint: CGPoint?
     @ObservationIgnored private var airwireCache: (key: Int, wires: [Airwire]) = (-1, [])
+    private func boardKey(_ board: ECObject) -> Int {
+        var h = Hasher()
+        let t = ecRows(board["traces"]), v = ecRows(board["vias"])
+        h.combine(t.count); h.combine(v.count)
+        for x in t.suffix(8) { h.combine(ecPoint(x["end"]).x) }
+        for x in ecRows(board["footprints"]) { let p = ecPoint(x["position"]); h.combine(p.x); h.combine(p.y); h.combine(ecNumber(x["rotation"])) }
+        return h.finalize()
+    }
+    private func liveRouter(_ board: ECObject) -> PcbFFI.Router? {
+        let key = boardKey(board)
+        if router == nil || routerKey != key { router = try? PcbFFI.Router(board: board); routerKey = key }
+        return router
+    }
+    /// Ask for a route to `target`. One search at a time, latest cursor wins.
+    func updateRoute(_ model: EditorModel, to target: CGPoint, endsOnCopper: Bool) {
+        guard let start = routeStart, tool == .route, !activeNet.isEmpty else { return }
+        routeTarget = target; routeEndsOnCopper = endsOnCopper
+        guard let router = liveRouter(board(model)) else { return }
+        let req: ECObject = ["net": activeNet, "from": ecJSON(start), "to": ecJSON(target), "layer": activeLayer]
+        routeGeneration += 1
+        let generation = routeGeneration
+        if routeBusy { routeQueued = ECBox(value: req); return }
+        runRoute(router, req, generation)
+    }
+    private func runRoute(_ router: PcbFFI.Router, _ req: ECObject, _ generation: Int) {
+        routeBusy = true
+        let box = ECBox(value: req)
+        Self.routeQueue.async { [weak self] in
+            let result = (try? router.route(box.value)) ?? ["status": "blocked", "reason": "router error"]
+            let out = ECBox(value: result)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.routeBusy = false
+                if generation == self.routeGeneration, self.routeStart != nil { self.routePreview = out.value }
+                if let next = self.routeQueued {
+                    self.routeQueued = nil
+                    self.runRoute(router, next.value, self.routeGeneration)
+                }
+            }
+        }
+    }
+    func cancelRoute() {
+        routeStart = nil; routePreview = nil; routeTarget = nil; routeGeneration += 1; routeQueued = nil
+    }
+    /// Commit the current preview. Finishes when it reached copper of the net;
+    /// otherwise carries on from where it stopped.
+    func commitRoute(_ model: EditorModel, at target: CGPoint, endsOnCopper: Bool) {
+        // A click can outrun the cursor's preview; route to where it landed.
+        if routePreview == nil || routeTarget != target, let start = routeStart, let r = liveRouter(board(model)) {
+            routeGeneration += 1; routeQueued = nil
+            routeTarget = target; routeEndsOnCopper = endsOnCopper
+            routePreview = try? r.route(["net": activeNet, "from": ecJSON(start), "to": ecJSON(target), "layer": activeLayer])
+        }
+        guard let preview = routePreview, preview["status"] as? String == "routed",
+              let path = preview["path"] as? [Any], let last = path.last as? [Any], last.count == 3,
+              let router = liveRouter(board(model)) else {
+            message = (routePreview?["reason"] as? String).map { "No legal path: \($0)" } ?? "No legal path to there."
+            return
+        }
+        guard let added = try? router.commit(["net": activeNet, "path": path]) else {
+            message = "That path is no longer legal."; return
+        }
+        let end = ecPoint(last[1]), finished = routeEndsOnCopper
+        mutateBoard(model) { b in
+            b["traces"] = ecRows(b["traces"]) + ecRows(added["traces"])
+            b["vias"] = ecRows(b["vias"]) + ecRows(added["vias"])
+        }
+        // The session already holds this copper; keep it rather than re-index.
+        routerKey = boardKey(board(model))
+        if let l = last[2] as? String { activeLayer = l }
+        routePreview = nil
+        if finished { cancelRoute() } else { routeStart = end }
+    }
+    func nextRouteLayer() {
+        let layers = BoardLayers.copper
+        activeLayer = layers[((layers.firstIndex(of: activeLayer) ?? 0) + 1) % layers.count]
+    }
     func airwires(_ board: ECObject) -> [Airwire] {
         var h = Hasher()
         let t = ecRows(board["traces"]), v = ecRows(board["vias"]), f = ecRows(board["footprints"])

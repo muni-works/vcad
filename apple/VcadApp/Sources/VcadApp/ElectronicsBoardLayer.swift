@@ -153,6 +153,33 @@ struct Airwire { let a: CGPoint, b: CGPoint, net: String }
         for f in ecRows(board["footprints"]) { drawLabel(f) }
         if ec.showRatsnest { drawRatsnest() }
         drawMarkers()
+        drawRoutePreview()
+    }
+
+    private func drawRoutePreview() {
+        guard let start = ec.routeStart else { return }
+        let preview = ec.routePreview
+        if preview?["status"] as? String == "routed", let path = preview?["path"] as? [[Any]] {
+            let w = max(1.5, ecNumber(preview?["width"], 0.25) * scale)
+            for seg in path where seg.count == 3 {
+                var p = Path(); p.move(to: screen(ecPoint(seg[0]))); p.addLine(to: screen(ecPoint(seg[1])))
+                context.stroke(p, with: .color(BoardLayers.color(seg[2] as? String ?? "").mix(with: .white, by: 0.3)),
+                               style: StrokeStyle(lineWidth: w, lineCap: .round))
+            }
+            for via in preview?["vias"] as? [Any] ?? [] {
+                let c = screen(ecPoint(via)), r = max(3, 0.3 * scale)
+                context.stroke(Path(ellipseIn: CGRect(x: c.x - r, y: c.y - r, width: 2 * r, height: 2 * r)), with: .color(.white), lineWidth: 1.5)
+            }
+        } else if let target = ec.routeTarget, preview != nil {
+            var p = Path(); p.move(to: screen(start)); p.addLine(to: screen(target))
+            context.stroke(p, with: .color(.red.opacity(0.9)), style: StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+        }
+        if let target = ec.routeTarget, ec.routeEndsOnCopper {
+            let c = screen(target)
+            context.stroke(Path(ellipseIn: CGRect(x: c.x - 8, y: c.y - 8, width: 16, height: 16)), with: .color(.green), lineWidth: 2)
+        }
+        let c = screen(start)
+        context.stroke(Path(ellipseIn: CGRect(x: c.x - 6, y: c.y - 6, width: 12, height: 12)), with: .color(.accentColor), lineWidth: 2)
     }
 
     private func artVisible(_ layer: String) -> Bool {

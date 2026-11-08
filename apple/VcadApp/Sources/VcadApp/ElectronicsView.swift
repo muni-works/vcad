@@ -367,10 +367,6 @@ struct ElectronicsCanvas: View {
                         context.fill(Path(ellipseIn: CGRect(x: x, y: y, width: 1, height: 1)), with: .color(.secondary.opacity(0.22)))
                     }
                 }
-                if ec.tool == .route, let start = ec.routeStart, let pointer {
-                    line(start, ec.snapped(pointer), .yellow.opacity(0.16), max(5, (ec.traceWidth + 0.4) * scale))
-                    line(start, ec.snapped(pointer), .yellow, max(1.5, ec.traceWidth * scale))
-                }
                 if ec.view != .schematic {
                     let vertices = ecRows((board["outline"] as? ECObject)?["vertices"]).map { screen(ecPoint($0)) }
                     var path = Path(); path.addLines(vertices); path.closeSubpath()
@@ -451,7 +447,12 @@ struct ElectronicsCanvas: View {
             }
             .onContinuousHover { phase in
                 switch phase {
-                case .active(let location): pointerScreen = location; pointer = CGPoint(x: (location.x - offset.x) / scale, y: (location.y - offset.y) / scale)
+                case .active(let location):
+                    pointerScreen = location; pointer = CGPoint(x: (location.x - offset.x) / scale, y: (location.y - offset.y) / scale)
+                    if ec.tool == .route, ec.routeStart != nil, let p = pointer {
+                        let hit = copperAt(p, tolerance: 10 / scale, net: ec.activeNet)
+                        ec.updateRoute(model, to: hit?.at ?? ec.snapped(p), endsOnCopper: hit != nil)
+                    }
                 case .ended: pointer = nil; pointerScreen = nil
                 }
             }
@@ -462,19 +463,16 @@ struct ElectronicsCanvas: View {
                 switch ec.tool {
                 case .place: ec.place(model, at: p)
                 case .route:
-                    var target = p
-                    var onPad = false
-                    for component in ecRows(ec.board(model)["footprints"]) {
-                        for pad in ecRows(component["pads"]) {
-                            let q = Self.world(pad, in: component)
-                            if hypot(p.x - q.x, p.y - q.y) < 10 / scale {
-                                if ec.routeStart == nil { ec.activeNet = pad["net"] as? String ?? "" }
-                                else if pad["net"] as? String != ec.activeNet { ec.message = "This pad belongs to a different net."; return }
-                                target = q; onPad = true
-                            }
-                        }
+                    if ec.routeStart != nil {
+                        let hit = copperAt(p, tolerance: 10 / scale, net: ec.activeNet)
+                        ec.commitRoute(model, at: hit?.at ?? ec.snapped(p), endsOnCopper: hit != nil)
+                        return
                     }
-                    ec.addTrace(model, to: target, snapToGrid: !onPad)
+                    guard let hit = copperAt(p, tolerance: 10 / scale, net: nil), !hit.net.isEmpty else {
+                        ec.message = "Start on a pad, via or trace."; return
+                    }
+                    ec.activeNet = hit.net; ec.highlightNet = hit.net; ec.routeStart = hit.at
+                    if let l = hit.layer { ec.activeLayer = l }
                 case .via: ec.addVia(model, at: p)
                 case .wire:
                     if let pin = nearestPin(p, distance: 8 / scale) { ec.connect(model, pin: pin) }
@@ -602,6 +600,36 @@ struct ElectronicsCanvas: View {
         }
         return best.map { ($0.0, $0.1) }
     }
+    /// Copper to start or end a route on: a pad, via or trace, optionally of one net.
+    private func copperAt(_ p: CGPoint, tolerance: CGFloat, net: String?) -> (at: CGPoint, net: String, layer: String?)? {
+        let board = ec.board(model)
+        if ec.routeStart == nil || net != nil {
+            for f in ecRows(board["footprints"]) {
+                for pad in ecRows(f["pads"]) {
+                    let copper = (pad["layers"] as? [String] ?? []).filter { BoardLayers.copper.contains($0) }
+                    guard !copper.isEmpty, let n = pad["net"] as? String, net == nil || n == net else { continue }
+                    let q = Self.world(pad, in: f), shape = pad["shape"] as? ECObject ?? [:], d = ecNumber(shape["diameter"], 0.6)
+                    let reach = CGFloat(max(ecNumber(shape["width"], d), ecNumber(shape["height"], d))) / 2
+                    if hypot(p.x - q.x, p.y - q.y) < max(reach, tolerance), q != ec.routeStart {
+                        return (q, n, copper.count == 1 ? copper[0] : (copper.contains(ec.activeLayer) ? ec.activeLayer : copper[0]))
+                    }
+                }
+            }
+        }
+        for v in ecRows(board["vias"]) {
+            let q = ecPoint(v["position"])
+            guard let n = v["net"] as? String, net == nil || n == net, q != ec.routeStart else { continue }
+            if hypot(p.x - q.x, p.y - q.y) < max(CGFloat(ecNumber(v["diameter"], 0.6)) / 2, tolerance) { return (q, n, nil) }
+        }
+        for t in ecRows(board["traces"]) {
+            guard let n = t["net"] as? String, net == nil || n == net else { continue }
+            let a = ecPoint(t["start"]), b = ecPoint(t["end"]), dx = b.x - a.x, dy = b.y - a.y
+            let u = max(0, min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / max(1e-9, dx * dx + dy * dy)))
+            let q = CGPoint(x: a.x + u * dx, y: a.y + u * dy)
+            if hypot(p.x - q.x, p.y - q.y) < tolerance, q != ec.routeStart { return (q, n, t["layer"] as? String) }
+        }
+        return nil
+    }
     /// The footprint under `p`: a pad of it, or its body.
     private func partAt(_ p: CGPoint, tolerance: CGFloat) -> String? {
         if ec.view == .schematic {
@@ -641,6 +669,12 @@ struct ElectronicsCanvas: View {
             guard ec.view != .spatial, model.workspace == .electronics else { return event }
             if event.type == .keyDown {
                 if NSApp.keyWindow?.firstResponder is NSTextView { return event }
+                if event.keyCode == 53, ec.routeStart != nil { ec.cancelRoute(); return nil }
+                if ec.routeStart != nil, event.charactersIgnoringModifiers == "v" {
+                    ec.nextRouteLayer()
+                    if let t = ec.routeTarget { ec.updateRoute(model, to: t, endsOnCopper: ec.routeEndsOnCopper) }
+                    return nil
+                }
                 if event.keyCode == 53, ec.highlightNet != nil || ec.focusPoint != nil { ec.highlightNet = nil; ec.focusPoint = nil; return nil }
                 guard event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return event }
                 switch event.charactersIgnoringModifiers {

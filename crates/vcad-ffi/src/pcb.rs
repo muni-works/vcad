@@ -997,3 +997,90 @@ mod tests {
         assert!(r["result"]["nets"].as_array().unwrap().len() == 2);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Interactive routing
+// ---------------------------------------------------------------------------
+
+/// An open board answering live routing queries.
+pub struct VcadPcbRouter(std::sync::Mutex<vcad_ecad_fabprep::verdict::InteractiveRouter>);
+
+/// Index a board for interactive routing. Free with [`vcad_pcb_router_free`].
+#[no_mangle]
+pub extern "C" fn vcad_pcb_router_open(pcb_json: *const c_char) -> *mut VcadPcbRouter {
+    match parse_pcb(pcb_json) {
+        Ok(pcb) => Box::into_raw(Box::new(VcadPcbRouter(std::sync::Mutex::new(
+            vcad_ecad_fabprep::verdict::InteractiveRouter::new(pcb),
+        )))),
+        Err(e) => {
+            err::set_error(format!("vcad_pcb_router_open: {e}"));
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Free a router from [`vcad_pcb_router_open`].
+#[no_mangle]
+pub extern "C" fn vcad_pcb_router_free(router: *mut VcadPcbRouter) {
+    if !router.is_null() {
+        drop(unsafe { Box::from_raw(router) });
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct RouteQuery {
+    net: String,
+    from: vcad_ir::Vec2,
+    to: vcad_ir::Vec2,
+    layer: Option<vcad_ir::ecad::PcbLayer>,
+    budget: Option<usize>,
+}
+
+#[derive(serde::Deserialize)]
+struct RouteCommit {
+    net: String,
+    path: Vec<(vcad_ir::Vec2, vcad_ir::Vec2, vcad_ir::ecad::PcbLayer)>,
+}
+
+/// Route `{net, from, to, layer?, budget?}`; `{status, reason, path, vias, width}`.
+#[no_mangle]
+pub extern "C" fn vcad_pcb_router_route(
+    router: *const VcadPcbRouter,
+    request_json: *const c_char,
+) -> *mut c_char {
+    run("vcad_pcb_router_route", || {
+        if router.is_null() {
+            return Err("null router".to_string());
+        }
+        let q: RouteQuery =
+            serde_json::from_str(borrow_str("request", request_json).ok_or("bad request")?)
+                .map_err(|e| e.to_string())?;
+        let r = unsafe { &*router }
+            .0
+            .lock()
+            .map_err(|_| "router poisoned")?;
+        Ok(r.route(&q.net, q.from, q.to, q.layer, q.budget.unwrap_or(150_000)))
+    })
+}
+
+/// Commit `{net, path}` (a `route` result's path); `{traces, vias}` to append.
+#[no_mangle]
+pub extern "C" fn vcad_pcb_router_commit(
+    router: *const VcadPcbRouter,
+    request_json: *const c_char,
+) -> *mut c_char {
+    run("vcad_pcb_router_commit", || {
+        if router.is_null() {
+            return Err("null router".to_string());
+        }
+        let q: RouteCommit =
+            serde_json::from_str(borrow_str("request", request_json).ok_or("bad request")?)
+                .map_err(|e| e.to_string())?;
+        let mut r = unsafe { &*router }
+            .0
+            .lock()
+            .map_err(|_| "router poisoned")?;
+        let (traces, vias) = r.commit(&q.net, &q.path)?;
+        Ok(json!({ "traces": traces, "vias": vias }))
+    })
+}

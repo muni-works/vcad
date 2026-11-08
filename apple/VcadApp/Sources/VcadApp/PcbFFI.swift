@@ -28,6 +28,26 @@ enum PcbFFI {
         String(decoding: try JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]), as: UTF8.self)
     }
 
+    /// A board open for hand routing (`vcad_pcb_router_*`). Queries are
+    /// serialised by the Rust side's lock.
+    final class Router: @unchecked Sendable {
+        private let handle: OpaquePointer
+        init(board: Obj) throws {
+            let json = try PcbFFI.text(board)
+            guard let h = json.withCString({ vcad_pcb_router_open($0) }) else {
+                throw Failure(message: AnalysisFFI.lastError() ?? "router open failed")
+            }
+            handle = h
+        }
+        deinit { vcad_pcb_router_free(handle) }
+        private func ask(_ f: (OpaquePointer?, UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?, _ req: Obj, _ what: String) throws -> Obj {
+            let text = try PcbFFI.text(req)
+            return try PcbFFI.finish(text.withCString { f(handle, $0) }, what)
+        }
+        func route(_ req: Obj) throws -> Obj { try ask(vcad_pcb_router_route, req, "route") }
+        func commit(_ req: Obj) throws -> Obj { try ask(vcad_pcb_router_commit, req, "commit") }
+    }
+
     static func call2(_ f: (UnsafePointer<CChar>?, UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?,
                       _ a: Any, _ req: Obj, _ what: String) throws -> Obj {
         let sa = try text(a), sr = try text(req)

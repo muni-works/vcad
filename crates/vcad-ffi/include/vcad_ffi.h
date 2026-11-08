@@ -728,6 +728,15 @@ char *vcad_pcb_import(const char *path);
 char *vcad_pcb_drc(const char *pcb_json, const char *request_json);
 /* route unrouted connections -> {pcb, verdict, drc} */
 char *vcad_pcb_autoroute(const char *pcb_json, const char *request_json);
+
+/** Board held open for interactive routing. */
+typedef struct VcadPcbRouter VcadPcbRouter;
+VcadPcbRouter *vcad_pcb_router_open(const char *pcb_json);
+void vcad_pcb_router_free(VcadPcbRouter *router);
+/** Route {net,from,to,layer?,budget?} -> {status,reason,path,vias,width}. */
+char *vcad_pcb_router_route(const VcadPcbRouter *router, const char *request_json);
+/** Commit {net,path} -> {traces,vias} to append to the board. */
+char *vcad_pcb_router_commit(const VcadPcbRouter *router, const char *request_json);
 /* fab-prep fix loop; request {"calibrate"?,"route"?,"max_rounds"?,"accept"?}
  * -> {pcb, converged, headline, summary, report, drc} */
 char *vcad_pcb_fix_drc(const char *pcb_json, const char *request_json);

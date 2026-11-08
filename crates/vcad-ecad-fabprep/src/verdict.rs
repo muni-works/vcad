@@ -10,8 +10,8 @@
 use std::collections::{BTreeSet, HashMap};
 
 use vcad_ecad_pcb::router::complete::{
-    path_vias, route_window_complete_islands, CompleteOutcome, IslandTerminals, ViaClass,
-    WindowBudget,
+    live_layers, path_vias, route_window_complete_islands, route_window_complete_pinned,
+    CompleteOutcome, IslandTerminals, TerminalLayers, ViaClass, WindowBudget,
 };
 use vcad_ecad_pcb::router::islands::{island_connections, IslandConnection};
 use vcad_ecad_pcb::session::RouteSession;
@@ -525,6 +525,177 @@ pub fn nets_with_copper(pcb: &Pcb) -> BTreeSet<String> {
         .collect()
 }
 
+/// One attempt at the interactive route from a start point to the cursor.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct InteractiveRoute {
+    /// `routed`, `blocked` (proved, or rejected by the oracle) or `unknown`
+    /// (search budget ran out).
+    pub status: String,
+    /// Why it is not `routed`.
+    pub reason: Option<String>,
+    /// The path as `(a, b, layer)` segments; empty unless `routed`.
+    pub path: Vec<(Vec2, Vec2, PcbLayer)>,
+    /// Barrel positions the path would drill.
+    pub vias: Vec<Vec2>,
+    /// Trace width the path commits at.
+    pub width: f64,
+}
+
+/// A board held open for hand routing: an indexed session answering "route
+/// this net from here to the cursor" fast enough to follow the mouse, with
+/// the same fail-closed legality as the autorouter's commit — a preview that
+/// comes back `routed` is copper DRC will accept.
+pub struct InteractiveRouter {
+    pcb: Pcb,
+    session: RouteSession,
+    layers: Vec<PcbLayer>,
+    through: Option<(PcbLayer, PcbLayer)>,
+}
+
+impl InteractiveRouter {
+    /// Index `pcb` for routing.
+    pub fn new(pcb: Pcb) -> Self {
+        let layers = copper_layers(&pcb);
+        let through = (!declares_blind_vias(&pcb))
+            .then(|| Some((*layers.first()?, *layers.last()?)))
+            .flatten();
+        let session = RouteSession::from_pcb(&pcb);
+        Self {
+            pcb,
+            session,
+            layers,
+            through,
+        }
+    }
+
+    fn width_for(&self, net: &str) -> f64 {
+        self.pcb
+            .rules
+            .class_rules
+            .iter()
+            .find(|rule| {
+                self.pcb
+                    .rules
+                    .net_class_assignments
+                    .get(&rule.name)
+                    .is_some_and(|nets| nets.iter().any(|n| n == net))
+            })
+            .map(|rule| rule.trace_width)
+            .unwrap_or(self.pcb.rules.default_rules.trace_width)
+    }
+
+    /// Search for a legal path from `from` to `to` on `net`, staying on
+    /// `preferred` when one layer will do and changing layers only when it
+    /// must. Grows the search window once before giving up.
+    pub fn route(
+        &self,
+        net: &str,
+        from: Vec2,
+        to: Vec2,
+        preferred: Option<PcbLayer>,
+        budget: usize,
+    ) -> InteractiveRoute {
+        let mut stacks: Vec<Vec<PcbLayer>> = Vec::new();
+        if let Some(p) = preferred.filter(|p| self.layers.contains(p)) {
+            let mut stack = vec![p];
+            for l in live_layers(&self.pcb, &self.layers, net, from) {
+                if !stack.contains(&l) {
+                    stack.push(l);
+                }
+            }
+            stacks.push(stack);
+        }
+        stacks.push(self.layers.clone());
+        let width = self.width_for(net);
+        let conns = [(net.to_string(), from, to)];
+        let sz = self.session.via_sizing();
+        let (via_d, via_drill) = sz.drilled_size(net);
+        let mut last = ("no path".to_string(), "blocked");
+        for margin in [1.5, 6.0] {
+            let window = (
+                Vec2::new(from.x.min(to.x) - margin, from.y.min(to.y) - margin),
+                Vec2::new(from.x.max(to.x) + margin, from.y.max(to.y) + margin),
+            );
+            for stack in &stacks {
+                let pins = TerminalLayers::for_connection(&self.pcb, stack, net, from, to);
+                match route_window_complete_pinned(
+                    &self.session,
+                    window,
+                    stack,
+                    &conns,
+                    &[pins],
+                    width,
+                    Some(ViaClass {
+                        pad_diameter: via_d,
+                        drill: via_drill,
+                    }),
+                    WindowBudget::new(budget),
+                ) {
+                    CompleteOutcome::Routed(mut paths) => {
+                        let Some(path) = paths.pop() else { continue };
+                        if !self.legal(net, width, &path) {
+                            last = ("the path breaks a clearance rule".into(), "blocked");
+                            continue;
+                        }
+                        let vias = barrels(&path, self.through)
+                            .into_iter()
+                            .map(|b| b.0)
+                            .collect();
+                        return InteractiveRoute {
+                            status: "routed".into(),
+                            reason: None,
+                            path,
+                            vias,
+                            width,
+                        };
+                    }
+                    CompleteOutcome::ProvedInfeasible { reason } => last = (reason, "blocked"),
+                    CompleteOutcome::BudgetExhausted => {
+                        last = ("search budget ran out".into(), "unknown")
+                    }
+                }
+            }
+        }
+        InteractiveRoute {
+            status: last.1.into(),
+            reason: Some(last.0),
+            path: Vec::new(),
+            vias: Vec::new(),
+            width,
+        }
+    }
+
+    fn legal(&self, net: &str, w: f64, path: &[(Vec2, Vec2, PcbLayer)]) -> bool {
+        path.iter().all(|&(a, b, l)| {
+            let g = CopperGeom::Segment {
+                a,
+                b,
+                half_w: w / 2.0,
+            };
+            self.session
+                .probe(&g, l, net, self.session.clearance_for(net))
+                .legal
+        }) && vias_legal(&self.pcb, &self.session, net, path, self.through)
+    }
+
+    /// Re-check `path` and commit it, returning the new traces and vias.
+    /// `Err` (and no change) when it is no longer legal.
+    pub fn commit(
+        &mut self,
+        net: &str,
+        path: &[(Vec2, Vec2, PcbLayer)],
+    ) -> Result<(Vec<Trace>, Vec<vcad_ir::ecad::Via>), String> {
+        let w = self.width_for(net);
+        if !self.legal(net, w, path) {
+            return Err("that path is no longer legal".into());
+        }
+        let (t0, v0) = (self.pcb.traces.len(), self.pcb.vias.len());
+        let through = self.through;
+        commit_path(&mut self.pcb, &mut self.session, net, w, path, through);
+        Ok((self.pcb.traces[t0..].to_vec(), self.pcb.vias[v0..].to_vec()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -717,5 +888,25 @@ mod tests {
         // A second path through the same spot is now refused rather than
         // stacking a coincident drill.
         assert!(!vias_legal(&pcb, &session, "B", &transition_path(), None));
+    }
+
+    #[test]
+    fn interactive_router_previews_commits_and_refuses_a_stale_path() {
+        use crate::test_support::{test_board, with_smd_pad};
+        let mut pcb = test_board();
+        with_smd_pad(&mut pcb, "R1", "1", 2.0, 5.0, "X");
+        with_smd_pad(&mut pcb, "R2", "1", 8.0, 5.0, "X");
+        let (a, b) = (Vec2::new(2.0, 5.0), Vec2::new(8.0, 5.0));
+        let mut r = InteractiveRouter::new(pcb);
+        let attempt = r.route("X", a, b, Some(PcbLayer::FCu), 150_000);
+        assert_eq!(attempt.status, "routed", "{:?}", attempt.reason);
+        assert!(
+            attempt.path.iter().all(|s| s.2 == PcbLayer::FCu),
+            "stays on the preferred layer"
+        );
+        let (traces, vias) = r.commit("X", &attempt.path).expect("commits");
+        assert!(!traces.is_empty() && vias.is_empty());
+        // Copper now occupies that path: another net can't take it.
+        assert!(r.commit("Y", &attempt.path).is_err());
     }
 }
