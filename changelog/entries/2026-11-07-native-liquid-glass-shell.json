@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-07-native-liquid-glass-shell",
+  "version": "0.11.0",
+  "date": "2026-11-07",
+  "category": "feat",
+  "title": "Mac app: Liquid Glass shell, edit bar, history, agent pill",
+  "summary": "Floating glass sidebar/inspector, one centered dock across five workspaces, a Keynote-style edit bar with live feedback, a history filmstrip, and agent suggestion pills.",
+  "features": ["native", "ui", "agent"],
+  "mcpTools": ["suggest_edit", "history_seek", "set_workspace", "select_feature", "app_screenshot"]
+}

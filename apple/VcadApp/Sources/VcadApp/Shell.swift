@@ -243,18 +243,20 @@ struct DocumentCommands: Commands {
             Button("Show All Parts") { model.showAllParts() }
                 .keyboardShortcut("h", modifiers: [.command, .shift, .option]).disabled(!model.hasHiddenParts)
             Divider()
-            Button("Describe a Part…") { intent.focusRequested = true }
-                .keyboardShortcut("k")
+            if IntentEngine.isAvailable {
+                Button("Describe a Part…") { intent.focusRequested = true }
+                    .keyboardShortcut("k")
+            }
             Button(AgentSession.shared.isOpen ? "Hide Agent" : "Show Agent") { AgentSession.shared.toggle() }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
         }
         CommandGroup(after: .sidebar) {
             Divider()
-            ForEach(Workspace.available.count > 1 ? Workspace.available : []) { ws in
-                Toggle(ws.label, isOn: Binding(
-                    get: { model.workspace == ws },
-                    set: { if $0 { model.workspace = ws } }))
-                    .keyboardShortcut(ws.keyEquivalent, modifiers: [.command, .control])
+            ForEach(DockSpace.allCases) { ds in
+                Toggle(ds.label, isOn: Binding(
+                    get: { GlassUI.shared.space == ds },
+                    set: { if $0 { GlassUI.shared.enter(ds, model: model) } }))
+                    .keyboardShortcut(ds.key, modifiers: [.command, .control])
             }
             Divider()
             Toggle("Model Navigator", isOn: $model.showsTree)
@@ -783,13 +785,35 @@ struct ScrubField: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        HStack(spacing: Theme.Space.s) {
+        // Inspector-standard: label, text field, unit, stepper. The label is
+        // still a scrub handle (drag it), the way Xcode's and Keynote's are.
+        HStack(spacing: 4) {
             if !label.isEmpty {
-                Text(label).font(.callout).foregroundStyle(.secondary)
-                Spacer(minLength: Theme.Space.s)
+                Text(label).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                    .contentShape(Rectangle())
+                    .onHover { ($0 ? NSCursor.resizeLeftRight : NSCursor.arrow).set() }
+                    .gesture(scrub)
+                    .help("Drag to scrub (⌥ fine · ⇧ coarse)")
+                Spacer(minLength: 2)
             }
-            if typing != nil { editor } else { pill }
+            TextField(label.isEmpty ? "Value" : label,
+                      text: Binding(get: { typing ?? Self.plain(value) }, set: { typing = $0 }))
+                .textFieldStyle(.roundedBorder)
+                .font(.callout.monospacedDigit())
+                .multilineTextAlignment(.trailing)
+                .frame(width: 52)
+                .focused($focused)
+                .onSubmit { commit() }
+                .onEscape { typing = nil; focused = false }
+                .onChange(of: focused) { _, now in if !now { commit() } }
+            if !unit.isEmpty {
+                Text(unit).font(.callout).foregroundStyle(.secondary).frame(minWidth: 14, alignment: .leading)
+            }
+            Stepper(label, value: Binding(get: { value }, set: { onChange(max(minValue, $0), true) }),
+                    step: sensitivity * 10)
+                .labelsHidden()
         }
+        .controlSize(.small)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label.isEmpty ? "Value" : label)
         .accessibilityValue(formatted)
@@ -799,29 +823,19 @@ struct ScrubField: View {
         }
     }
 
-    private var pill: some View {
-        Text(formatted).font(.callout.monospacedDigit())
-            .padding(.horizontal, Theme.Space.s).padding(.vertical, 3)
-            .frame(minWidth: 70, alignment: .trailing)
-            .controlWell(active: base != nil)
-            .contentShape(Rectangle())
-            .onHover { hovering in
-                #if os(macOS)
-                (hovering ? NSCursor.resizeLeftRight : NSCursor.arrow).set()
-                #endif
+    private var scrub: some Gesture {
+        DragGesture(minimumDistance: 2)
+            .onChanged { v in
+                let first = base == nil
+                let b = base ?? value
+                if base == nil { base = b }
+                onChange(max(minValue, b + Double(v.translation.width) * sensitivity * Self.modifierScale), first)
             }
-            .help("Drag to scrub (⌥ fine · ⇧ coarse) · double-click to type")
-            .onTapGesture(count: 2) { typing = String(format: "%g", value) }
-            .gesture(
-                DragGesture(minimumDistance: 2)
-                    .onChanged { v in
-                        let first = base == nil
-                        let b = base ?? value
-                        if base == nil { base = b }
-                        onChange(max(minValue, b + Double(v.translation.width) * sensitivity * Self.modifierScale), first)
-                    }
-                    .onEnded { _ in base = nil }
-            )
+            .onEnded { _ in base = nil }
+    }
+
+    static func plain(_ v: Double) -> String {
+        abs(v - v.rounded()) < 0.001 ? String(Int(v.rounded())) : String(format: "%.2f", v)
     }
 
     /// ⌥ scrubs at a tenth of the rate, ⇧ at ten times — the Xcode/Motion idiom.
@@ -832,21 +846,6 @@ struct ScrubField: View {
         if flags.contains(.shift) { return 10 }
         #endif
         return 1
-    }
-
-    private var editor: some View {
-        TextField("", text: Binding(get: { typing ?? "" }, set: { typing = $0 }))
-            .textFieldStyle(.plain)
-            .font(.callout.monospacedDigit())
-            .multilineTextAlignment(.trailing)
-            .frame(width: 70)
-            .focused($focused)
-            .onAppear { focused = true }
-            .onSubmit { commit() }
-            .onEscape { typing = nil }
-            .onChange(of: focused) { _, now in if !now { commit() } }
-            .padding(.horizontal, Theme.Space.s).padding(.vertical, 3)
-            .controlWell(active: true)
     }
 
     private func commit() {

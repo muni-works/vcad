@@ -179,7 +179,7 @@ enum DrawingKernel {
 // MARK: - State
 
 /// What a click on the sheet does.
-enum DrawingTool: Equatable {
+enum DrawingTool: Hashable {
     case select, detail, section, gdt(GdtKind)
     var hint: String? {
         switch self {
@@ -370,13 +370,9 @@ struct DrawingWorkspaceView: View {
     @Environment(\.colorScheme) private var scheme
 
     var body: some View {
-        VStack(spacing: 0) {
-            DrawingToolbar(store: store)
-                .padding(.horizontal, 18).padding(.vertical, Theme.Space.s).background(.bar)
-                .modifier(ChromeRegion(key: "drawingToolbar"))
-            Divider()
-            ZStack {
-                Color(nsColor: .underPageBackgroundColor)
+        ZStack(alignment: .top) {
+            Color(nsColor: .underPageBackgroundColor)
+            Group {
                 if let r = store.result {
                     DrawingSheetCanvas(result: r, store: store)
                 } else if let e = store.error {
@@ -384,30 +380,25 @@ struct DrawingWorkspaceView: View {
                 } else {
                     ProgressView("Projecting views…")
                 }
-                VStack {
-                    HStack {
-                        if let hint = store.tool.hint {
-                            Label(hint, systemImage: "hand.point.up.left").font(.callout)
-                                .padding(.horizontal, 10).padding(.vertical, 6).panelSurface()
-                        }
-                        if let e = store.error, store.result != nil {
-                            Label(e, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
-                                .padding(.horizontal, 10).padding(.vertical, 6).panelSurface()
-                        }
-                        Spacer()
-                        if store.busy { ProgressView().controlSize(.small) }
-                    }
-                    Spacer()
-                    if let r = store.result {
-                        HStack {
-                            Text("\(r.main.scale_note) · \(r.visible_edges) visible, \(r.hidden_edges) hidden edges · DXF \(r.dxf_entities) entities")
-                                .font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                            Spacer()
-                        }
-                    }
-                }.padding(Theme.Space.m)
+            }
+            HStack(alignment: .top, spacing: 0) {
+                if model.showsTree {
+                    DrawingNavigator(store: store).modifier(ChromeRegion(key: "drawingNavigator"))
+                }
+                Spacer(minLength: 0)
+                if model.showsInspector {
+                    DrawingInspector(store: store).modifier(ChromeRegion(key: "drawingInspector"))
+                }
+            }
+            .padding(.horizontal, Glass.inset).padding(.top, Glass.toolbarHeight)
+            // One status pill: the active tool's hint, else the sheet's counts.
+            VStack {
+                Spacer()
+                DrawingStatusPill(store: store).padding(.bottom, Glass.inset + 6)
             }
         }
+        .animation(Motion.panel, value: model.showsTree)
+        .animation(Motion.panel, value: model.showsInspector)
         .onAppear { store.model = model; store.refresh(force: true) }
         .onChange(of: model.source) { _, _ in store.details = []; store.gdt = []; store.refresh(force: true) }
         .onChange(of: model.undoStack.count) { _, _ in store.refresh() }
@@ -415,59 +406,116 @@ struct DrawingWorkspaceView: View {
     }
 }
 
-private struct DrawingToolbar: View {
+/// Left panel: the sheet's views and annotations.
+private struct DrawingNavigator: View {
+    @Bindable var store: DrawingStore
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.s) {
+            PanelHeader(title: "Sheet")
+            Divider()
+            Eyebrow("Views")
+            ForEach(DrawingView.allCases) { v in
+                Button { store.view = v } label: {
+                    HStack {
+                        Text(v.label)
+                        Spacer(minLength: 0)
+                        if v == store.view, let r = store.result {
+                            Text(r.main.scale_note).foregroundStyle(.secondary).monospacedDigit()
+                        }
+                    }
+                    .font(.callout).padding(.horizontal, 6).padding(.vertical, 3)
+                    .contentShape(Rectangle())
+                    .selectableRow(selected: v == store.view)
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(v == store.view ? .isSelected : [])
+            }
+            if !store.sectionsForView.isEmpty || !store.details.isEmpty || !store.gdt.isEmpty {
+                Divider()
+                Eyebrow("Annotations")
+                ForEach(store.sectionsForView, id: \.label) { s in
+                    Label("Section \(s.label)–\(s.label)", systemImage: "rectangle.split.2x1").font(.callout)
+                }
+                ForEach(store.details) { d in
+                    Label("Detail \(d.label)", systemImage: "plus.magnifyingglass").font(.callout)
+                }
+                if !store.gdt.isEmpty {
+                    Label("\(store.gdt.count) GD&T frame\(store.gdt.count == 1 ? "" : "s")", systemImage: "a.square").font(.callout)
+                }
+            }
+        }
+        .padding(Theme.Space.m).frame(width: Theme.Width.navigator).panelSurface()
+    }
+}
+
+/// Right panel: the selected view's display options, the parts list and the
+/// title block.
+private struct DrawingInspector: View {
     @Bindable var store: DrawingStore
     @State private var titleBlockShown = false
-
     var body: some View {
-        HStack(spacing: Theme.Space.m) {
-            Picker("View", selection: $store.view) {
-                ForEach(DrawingView.allCases) { Text($0.label).tag($0) }
-            }.pickerStyle(.menu).labelsHidden().fixedSize().help("Projection direction")
-            Divider().frame(height: 18)
-            Toggle(isOn: $store.showHidden) { Label("Hidden Lines", systemImage: "line.3.horizontal.decrease") }
-                .toggleStyle(.button).help("Show hidden edges dashed")
-            Toggle(isOn: $store.showDimensions) { Label("Dimensions", systemImage: "ruler") }
-                .toggleStyle(.button).help("Overall dimensions")
-            Divider().frame(height: 18)
-            toolButton("Detail", "plus.magnifyingglass", .detail)
-            toolButton("Section", "rectangle.split.2x1", .section).disabled(!store.view.canSection)
-            Menu {
-                ForEach(GdtKind.allCases) { k in Button(k.label) { store.tool = .gdt(k) } }
-                Divider()
-                Button("Clear GD&T") { store.gdt = [] }.disabled(store.gdt.isEmpty)
-            } label: { Label("GD&T", systemImage: "square.grid.3x1.below.line.grid.1x2") }
-                .fixedSize().help("Feature control frames and datums")
+        VStack(alignment: .leading, spacing: Theme.Space.s) {
+            PanelHeader(title: "\(store.view.label) View")
+            Divider()
+            Toggle("Hidden lines", isOn: $store.showHidden).font(.callout)
+            Toggle("Dimensions", isOn: $store.showDimensions).font(.callout)
+            Toggle("Parts list", isOn: Binding(get: { store.documentSettings.showBom ?? false },
+                                               set: { v in store.updateSettings(name: v ? "Show BOM" : "Hide BOM") { $0.showBom = v } }))
+                .font(.callout)
             if case .gdt = store.tool {
-                TextField("Tol", value: $store.gdtTolerance, format: .number).frame(width: 52)
-                    .textFieldStyle(.roundedBorder).help("Tolerance zone (mm)")
-                TextField("Datum", text: $store.gdtDatum).frame(width: 34)
-                    .textFieldStyle(.roundedBorder).help("Datum letter")
+                Divider()
+                Eyebrow("GD&T")
+                HStack(spacing: 4) {
+                    Text("Tolerance").font(.callout).foregroundStyle(.secondary)
+                    Spacer(minLength: 2)
+                    TextField("Tolerance", value: $store.gdtTolerance, format: .number)
+                        .textFieldStyle(.roundedBorder).frame(width: 52).multilineTextAlignment(.trailing)
+                    Text("mm").font(.callout).foregroundStyle(.secondary)
+                }
+                HStack {
+                    Text("Datum").font(.callout).foregroundStyle(.secondary)
+                    Spacer()
+                    TextField("Datum", text: $store.gdtDatum).textFieldStyle(.roundedBorder).frame(width: 34)
+                }
+                Picker("Frame", selection: $store.tool) {
+                    ForEach(GdtKind.allCases) { k in Text(k.label).tag(DrawingTool.gdt(k)) }
+                }.labelsHidden()
             }
-            Menu {
-                Button("Clear Details") { store.details = [] }.disabled(store.details.isEmpty)
-                Button("Clear Sections in This View") { store.clearSections() }.disabled(store.sectionsForView.isEmpty)
-            } label: { Image(systemName: "eraser") }.menuIndicator(.hidden).fixedSize().help("Clear annotations")
-            Spacer(minLength: 0)
-            Toggle(isOn: Binding(get: { store.documentSettings.showBom ?? false },
-                                 set: { v in store.updateSettings(name: v ? "Show BOM" : "Hide BOM") { $0.showBom = v } })) {
-                Label("BOM", systemImage: "list.number")
-            }.toggleStyle(.button).help("Bill of materials table")
-            Button { titleBlockShown.toggle() } label: { Label("Title Block", systemImage: "rectangle.bottomhalf.inset.filled") }
-                .popover(isPresented: $titleBlockShown, arrowEdge: .bottom) {
+            Divider()
+            Button("Title Block…") { titleBlockShown.toggle() }
+                .popover(isPresented: $titleBlockShown, arrowEdge: .leading) {
                     DrawingTitleBlockEditor(store: store, shown: $titleBlockShown)
                 }
-            Menu {
-                Button("DXF…") { store.export(.dxf) }
-                Button("PDF…") { store.export(.pdf) }
-            } label: { Label("Export", systemImage: "square.and.arrow.up") }.fixedSize()
-        }.labelStyle(.titleAndIcon).controlSize(.small)
+            Menu("Clear") {
+                Button("Clear Details") { store.details = [] }.disabled(store.details.isEmpty)
+                Button("Clear Sections in This View") { store.clearSections() }.disabled(store.sectionsForView.isEmpty)
+                Button("Clear GD&T") { store.gdt = [] }.disabled(store.gdt.isEmpty)
+            }.fixedSize()
+        }
+        .controlSize(.small)
+        .padding(Theme.Space.m).frame(width: Theme.Width.inspector).panelSurface()
     }
+}
 
-    private func toolButton(_ title: String, _ symbol: String, _ tool: DrawingTool) -> some View {
-        Toggle(isOn: Binding(get: { store.tool == tool }, set: { store.tool = $0 ? tool : .select })) {
-            Label(title, systemImage: symbol)
-        }.toggleStyle(.button)
+/// The tool's hint while one is armed; otherwise the sheet's numbers.
+private struct DrawingStatusPill: View {
+    let store: DrawingStore
+    var body: some View {
+        HStack(spacing: 8) {
+            if store.busy { ProgressView().controlSize(.mini) }
+            if let hint = store.tool.hint {
+                Label(hint, systemImage: "hand.point.up.left")
+            } else if let e = store.error, store.result != nil {
+                Label(e, systemImage: "exclamationmark.triangle")
+            } else if let r = store.result {
+                Text("\(r.main.scale_note) · \(r.visible_edges) visible · \(r.hidden_edges) hidden edges · DXF \(r.dxf_entities)")
+                    .monospacedDigit().foregroundStyle(.secondary)
+            }
+        }
+        .font(.callout)
+        .padding(.horizontal, 12).padding(.vertical, 6)
+        .glassCapsule()
+        .modifier(ChromeRegion(key: "drawingStatus"))
     }
 }
 
@@ -580,7 +628,7 @@ struct DrawingSheetCanvas: View {
         case "visible", "section": return (ink, StrokeStyle(lineWidth: mm(0.5), lineCap: .round))
         case "hidden": return (ink.opacity(0.7), StrokeStyle(lineWidth: mm(0.25), dash: [3 * fit, 1.5 * fit]))
         case "hatch": return (ink.opacity(0.55), StrokeStyle(lineWidth: mm(0.13)))
-        case "dimension": return (Color.accentColor, StrokeStyle(lineWidth: mm(0.18)))
+        case "dimension": return (Color.primary.opacity(0.75), StrokeStyle(lineWidth: mm(0.18)))
         case "cuttingplane": return (ink, StrokeStyle(lineWidth: mm(0.5), dash: [8 * fit, 1.5 * fit, 1.5 * fit, 1.5 * fit]))
         case "center": return (ink.opacity(0.7), StrokeStyle(lineWidth: mm(0.18), dash: [8 * fit, 1.5 * fit, 1.5 * fit, 1.5 * fit]))
         case "border": return (ink, StrokeStyle(lineWidth: mm(0.7)))

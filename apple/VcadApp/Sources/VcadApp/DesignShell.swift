@@ -9,7 +9,7 @@ struct DesignModelNavigator: View {
     @Bindable var model: EditorModel
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
-            PanelHeader(title: "Model", onClose: { model.showsTree = false })
+            PanelHeader(title: "Model")
             Divider()
             ScrollViewReader { proxy in
                 ScrollView {
@@ -30,54 +30,10 @@ struct DesignModelNavigator: View {
                 }
             }
             .font(.caption).foregroundStyle(.secondary)
-        }.padding(Theme.Space.l).frame(width: Theme.Width.navigator).panelSurface()
+        }.padding(Theme.Space.m).frame(width: Theme.Width.navigator).panelSurface()
     }
 }
 
-/// The modelling tools strip under the header: tool group, the group's tools,
-/// undo/redo.
-struct DesignModelingTools: View {
-    @Bindable var model: EditorModel
-    var body: some View {
-        HStack(spacing: 14) {
-            Picker("Tool group", selection: $model.toolTab) {
-                ForEach(model.availableTabs) { Text($0.label).tag($0) }
-            }.pickerStyle(.segmented).labelsHidden().fixedSize()
-                .help("Create, modify, or combine")
-            Divider().frame(height: 22)
-            ScrollView(.horizontal) {
-                HStack(spacing: 14) {
-                    ForEach(model.tools(for: model.toolTab)) { tool in
-                        Button(action: tool.action) { Label(tool.label, systemImage: tool.symbol) }
-                            .disabled(!tool.enabled).help(tool.hint.isEmpty ? tool.label : tool.hint)
-                            .foregroundStyle(tool.isActive ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.primary))
-                    }
-                }
-            }.scrollIndicators(.hidden).fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
-            if let armed = model.armedShape {
-                Text("Click in the scene to place \(armed.label) · Esc")
-                    .font(.caption).foregroundStyle(Color.accentColor).lineLimit(1)
-            }
-            Button { model.undo() } label: { Image(systemName: "arrow.uturn.backward") }
-                .disabled(!model.canUndo)
-                .help(model.undoActionName.map { "Undo \($0)" } ?? "Undo").accessibilityLabel("Undo")
-            Button { model.redo() } label: { Image(systemName: "arrow.uturn.forward") }
-                .disabled(!model.canRedo)
-                .help(model.redoActionName.map { "Redo \($0)" } ?? "Redo").accessibilityLabel("Redo")
-        }.buttonStyle(.borderless).controlSize(.small)
-            .disabled(model.cnc.machine.active)
-            .onChange(of: model.source) { _, _ in if !model.availableTabs.contains(model.toolTab) { model.toolTab = .create } }
-            .sheet(item: $model.activeFeatureOp) { op in FeatureOpSheet(model: model, op: op) }
-            .sheet(isPresented: $model.showsCommandPalette) { CommandPaletteSheet(model: model) }
-            .sheet(isPresented: $model.showsParameterTable) { ParameterTableSheet(model: model) }
-            .background {
-                Button("") { model.disarm() }.keyboardShortcut(.cancelAction)
-                    .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
-                    .disabled(model.armedShape == nil)
-            }
-    }
-}
 
 /// Document › selected feature, floating at the top of the viewport.
 struct DesignBreadcrumb: View {

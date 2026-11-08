@@ -14,11 +14,43 @@ enum FabTab: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// One fabrication run: a part through a process.
+struct FabJob: Identifiable, Equatable {
+    let id = UUID()
+    let process: FabTab
+    let part: Int
+    let partName: String
+    var summary: String
+    var updated = Date()
+    var symbol: String {
+        switch process {
+        case .sheet: "square.3.layers.3d.down.right"
+        case .print: "printer"
+        case .cam: "gearshape.2"
+        }
+    }
+}
+
 @MainActor @Observable
 final class FabStore {
     static let shared = FabStore()
     var shown = false
     var tab: FabTab = .sheet
+    /// Every fabrication run this session: which part, which process, what
+    /// came out. The Fab navigator lists these.
+    var jobs: [FabJob] = []
+    var selectedJob: FabJob.ID?
+
+    /// Record (or refresh) the job for `part` × `tab` after a run lands.
+    func record(_ tab: FabTab, part: Int, partName: String, summary: String) {
+        if let i = jobs.firstIndex(where: { $0.process == tab && $0.part == part }) {
+            jobs[i].summary = summary; jobs[i].updated = Date()
+            selectedJob = jobs[i].id
+        } else {
+            let j = FabJob(process: tab, part: part, partName: partName, summary: summary)
+            jobs.append(j); selectedJob = j.id
+        }
+    }
     let sheet = SheetMetalStore()
     let print = PrintStore()
     let cam = CamJobStore()
@@ -155,17 +187,15 @@ func fabRings(_ v: Any?) -> [[[Double]]] {
     (v as? [[[NSNumber]]])?.map { $0.map { $0.map(\.doubleValue) } } ?? []
 }
 
+/// The Fab inspector: the active process's settings and results. The dock
+/// picks the process, so there is no tab row here.
 struct FabricatePanel: View {
     @Bindable var model: EditorModel
     @Bindable var store = FabStore.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
-            PanelHeader(title: "Fabricate", systemImage: "hammer", onClose: { store.shown = false })
-            Picker("", selection: $store.tab) {
-                ForEach(FabTab.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented).labelsHidden()
+            PanelHeader(title: store.tab.rawValue)
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Space.m) {
                     switch store.tab {
@@ -177,8 +207,86 @@ struct FabricatePanel: View {
             }
             .frame(maxHeight: 620).fixedSize(horizontal: false, vertical: true)
         }
-        .padding(Theme.Space.l).frame(width: 320).panelSurface()
+        .controlSize(.small)
+        .padding(Theme.Space.m).frame(width: Theme.Width.inspector).panelSurface()
         .accessibilityIdentifier("fabricate-panel")
+        // A run that lands becomes a job in the navigator.
+        .onChange(of: store.sheet.busy) { was, now in
+            guard was, !now, store.sheet.result != nil else { return }
+            record(.sheet, part: store.sheet.part, summary: "Flat pattern · ×\(store.sheet.quantity)")
+        }
+        .onChange(of: store.print.busy) { was, now in
+            guard was, !now, store.print.slice != nil || store.print.analysis != nil else { return }
+            record(.print, part: model.selectedPartIndex ?? 0,
+                   summary: store.print.slice != nil ? "Sliced · \(store.print.material)" : "Analyzed · \(store.print.material)")
+        }
+        .onChange(of: store.cam.busy) { was, now in
+            guard was, !now, store.cam.result != nil else { return }
+            record(.cam, part: model.selectedPartIndex ?? 0, summary: "\(store.cam.ops.count) ops · \(store.cam.post)")
+        }
+    }
+
+    private func record(_ tab: FabTab, part: Int, summary: String) {
+        let name = model.featureNodes.first { $0.partIndex == part }?.name ?? "Part \(part + 1)"
+        store.record(tab, part: part, partName: name, summary: summary)
+    }
+}
+
+/// The Fab navigator: jobs this session, then the checks with their counts.
+struct FabJobsNavigator: View {
+    @Bindable var model: EditorModel
+    @Bindable var store = FabStore.shared
+    @Bindable var analysis = AnalysisStore.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.s) {
+            PanelHeader(title: "Jobs")
+            Divider()
+            if store.jobs.isEmpty {
+                Text("Run Flatten, Slice, or Post to add a job.").font(.caption).foregroundStyle(.secondary)
+            }
+            ForEach(store.jobs) { j in
+                Button {
+                    store.selectedJob = j.id; store.tab = j.process
+                    if let id = model.featureNodes.first(where: { $0.partIndex == j.part })?.id { model.selectFeature(id) }
+                } label: {
+                    HStack(alignment: .top, spacing: 6) {
+                        Image(systemName: j.symbol).frame(width: 16)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(j.partName).lineLimit(1)
+                            Text(j.summary).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .font(.callout).padding(.horizontal, 6).padding(.vertical, 3)
+                    .contentShape(Rectangle())
+                    .selectableRow(selected: store.selectedJob == j.id)
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(store.selectedJob == j.id ? .isSelected : [])
+            }
+            Divider()
+            Eyebrow("Checks")
+            checkRow("DFM", "checkmark.shield", analysis.dfmReport.map { "\($0.issues.count) issue\($0.issues.count == 1 ? "" : "s")" }) {
+                analysis.shown = true; analysis.tab = .dfm
+            }
+            checkRow("Stress", "waveform.path.ecg", analysis.feaResult.map { r in
+                r.safety_factor.map { String(format: "SF %.1f", $0) } ?? String(format: "%.0f MPa", r.max_von_mises_mpa)
+            }) { analysis.shown = true; analysis.tab = .fea }
+        }
+        .padding(Theme.Space.m).frame(width: Theme.Width.navigator).panelSurface()
+    }
+
+    private func checkRow(_ title: String, _ symbol: String, _ value: String?, _ open: @escaping () -> Void) -> some View {
+        Button(action: open) {
+            HStack {
+                Label(title, systemImage: symbol)
+                Spacer(minLength: 0)
+                Text(value ?? "Not run").foregroundStyle(.secondary).monospacedDigit()
+            }.font(.callout).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Open \(title)")
     }
 }
 
