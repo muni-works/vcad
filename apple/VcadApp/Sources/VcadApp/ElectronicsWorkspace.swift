@@ -40,6 +40,7 @@ final class ElectronicsWorkspace {
     var selectedZone: Int?
     /// Poured copper per zone, as the fab will see it.
     var zoneFills: [ECObject] = []
+    var teardrops: [ECObject] = []
     /// Parts selected together (shift-click), for align and distribute.
     var multiRefs = Set<String>()
     /// KiCad library footprints as "Library:Name".
@@ -255,7 +256,7 @@ final class ElectronicsWorkspace {
         ratsQueued = nil; ratsBusy = true
         Self.ratsQueue.async { [weak self] in
             var out = (try? PcbFFI.ratsnest(box.value)) ?? [:]
-            if let fill = try? PcbFFI.fillZones(box.value) { out["zones"] = fill["zones"] }
+            if let fill = try? PcbFFI.fillZones(box.value) { out["zones"] = fill["zones"]; out["teardrops"] = fill["teardrops"] }
             let result = ECBox(value: out)
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -264,6 +265,7 @@ final class ElectronicsWorkspace {
                 }
                 self.airwireCache = (key, wires)
                 if let zones = result.value["zones"] { self.zoneFills = ecRows(zones) }
+                self.teardrops = ecRows(result.value["teardrops"])
                 self.ratsnestVersion += 1
                 self.runRatsnest()
             }
@@ -793,5 +795,80 @@ extension ElectronicsWorkspace {
             y = rect.maxY + 10
             return (inst["name"] as? String ?? "sheet", rect, ports)
         }
+    }
+}
+
+
+extension ElectronicsWorkspace {
+    func editRules(_ model: EditorModel, _ change: (inout ECObject) -> Void) {
+        mutateBoard(model) { b in var r = b["rules"] as? ECObject ?? [:]; change(&r); b["rules"] = r }
+    }
+    func addNetClass(_ model: EditorModel) {
+        editRules(model) { r in
+            var classes = ecRows(r["classRules"]), n = classes.count + 1
+            let names = classes.compactMap { $0["name"] as? String }
+            while names.contains("CLASS\(n)") { n += 1 }
+            var new = r["defaultRules"] as? ECObject ?? [:]; new["name"] = "CLASS\(n)"
+            classes.append(new); r["classRules"] = classes
+        }
+    }
+    func netClass(_ net: String, in board: ECObject) -> String {
+        let map = (board["rules"] as? ECObject)?["netClassAssignments"] as? [String: [String]] ?? [:]
+        return map.first { $0.value.contains(net) }?.key ?? ""
+    }
+    func setNetClass(_ model: EditorModel, _ net: String, _ name: String) {
+        editRules(model) { r in
+            var map = r["netClassAssignments"] as? [String: [String]] ?? [:]
+            for k in map.keys { map[k]?.removeAll { $0 == net }; if map[k]?.isEmpty == true { map[k] = nil } }
+            if !name.isEmpty { map[name, default: []].append(net) }
+            r["netClassAssignments"] = map
+        }
+    }
+
+    /// Renumber references across every sheet, top-left to bottom-right, per
+    /// prefix; the board and the netlist follow in one undo step.
+    func annotate(_ model: EditorModel) {
+        model.editElectronics(name: "Annotate") { doc in
+            var root = doc["schematic"] as? ECObject ?? [:]
+            var hierarchy = root["hierarchy"] as? ECObject ?? [:]
+            var sheets = ecRows(hierarchy["sheets"])
+            func parts(_ s: ECObject) -> [ECObject] { ecRows(s["components"]) }
+            var all = parts(root)
+            for sheet in sheets { all += parts(sheet["body"] as? ECObject ?? [:]) }
+            let prefix = { (r: String) in String(r.prefix { $0.isLetter }) }
+            var counts: [String: Int] = [:], renames: [String: String] = [:]
+            let ordered = all.sorted {
+                let a = ecPoint($0["position"]), b = ecPoint($1["position"])
+                return a.y != b.y ? a.y < b.y : a.x < b.x
+            }
+            for c in ordered {
+                guard let ref = c["ref"] as? String, !ref.hasPrefix("#"), ref.last?.isNumber == true else { continue }
+                let p = prefix(ref); counts[p, default: 0] += 1
+                renames[ref] = "\(p)\(counts[p]!)"
+            }
+            func apply(_ s: inout ECObject) {
+                s["components"] = parts(s).map { c in var c = c
+                    if let r = c["ref"] as? String, let n = renames[r] { c["ref"] = n }
+                    return c }
+                let nets = s["nets"] as? [String: [String]] ?? [:]
+                s["nets"] = nets.mapValues { pins in pins.map { pin in
+                    guard let dot = pin.firstIndex(of: "."), let n = renames[String(pin[..<dot])] else { return pin }
+                    return n + pin[dot...] } }
+            }
+            apply(&root)
+            for i in sheets.indices { var b = sheets[i]["body"] as? ECObject ?? [:]; apply(&b); sheets[i]["body"] = b }
+            if !sheets.isEmpty { hierarchy["sheets"] = sheets; root["hierarchy"] = hierarchy }
+            doc["schematic"] = root
+            var nodes = doc["nodes"] as? ECObject ?? [:]
+            for (id, value) in nodes {
+                guard var node = value as? ECObject, var op = node["op"] as? ECObject, var b = op["board"] as? ECObject else { continue }
+                b["footprints"] = ecRows(b["footprints"]).map { f in var f = f
+                    if let r = f["ref"] as? String, let n = renames[r] { f["ref"] = n }
+                    return f }
+                op["board"] = b; node["op"] = op; nodes[id] = node
+            }
+            doc["nodes"] = nodes
+        }
+        selectedRef = nil; multiRefs = []
     }
 }

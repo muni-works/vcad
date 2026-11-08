@@ -3,7 +3,10 @@
   "version": "undefined",
   "date": "2026-11-08",
   "category": "feat",
-  "title": "Symbol browser, footprint save, sheet symbols",
-  "summary": "Place KiCad symbols from the schematic, save edited footprints to a user library, open child sheets from drawn boxes, and route pairs around obstacles.",
-  "features": ["electronics", "native-app"]
+  "title": "Libraries, sheets, net classes, stitching",
+  "summary": "Place KiCad symbols, save footprints, open child sheets, route pairs around obstacles, edit net classes, stitch zones, annotate refs, and see teardrops.",
+  "features": [
+    "electronics",
+    "native-app"
+  ]
 }

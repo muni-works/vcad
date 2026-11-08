@@ -1147,7 +1147,10 @@ pub extern "C" fn vcad_pcb_ratsnest(pcb_json: *const c_char) -> *mut c_char {
 pub extern "C" fn vcad_pcb_fill_zones(pcb_json: *const c_char) -> *mut c_char {
     run("vcad_pcb_fill_zones", || {
         let pcb = parse_pcb(pcb_json)?;
-        Ok(json!({ "zones": vcad_ecad_pcb::copper_pour::fill_zones(&pcb) }))
+        Ok(json!({
+            "zones": vcad_ecad_pcb::copper_pour::fill_zones(&pcb),
+            "teardrops": vcad_ecad_pcb::generate_teardrops(&pcb),
+        }))
     })
 }
 
@@ -1273,5 +1276,34 @@ pub extern "C" fn vcad_pcb_library_symbol(request_json: *const c_char) -> *mut c
             .map(|p| json!({ "number": p.number, "name": p.name, "pin_type": p.pin_type, "position": { "x": p.position.0, "y": -p.position.1 } }))
             .collect();
         Ok(json!({ "pins": pins, "footprint": footprint }))
+    })
+}
+
+/// Stitch a net's overlapping zones with vias: `{pcb, added}` for
+/// `{net, pitch?}`. Adds nothing if the result would break a design rule.
+#[no_mangle]
+pub extern "C" fn vcad_pcb_stitch_zones(
+    pcb_json: *const c_char,
+    request_json: *const c_char,
+) -> *mut c_char {
+    run("vcad_pcb_stitch_zones", || {
+        let pcb = parse_pcb(pcb_json)?;
+        let req = parse_request(request_json)?;
+        let net = req
+            .get("net")
+            .and_then(Value::as_str)
+            .ok_or("missing net")?;
+        let pitch = req.get("pitch").and_then(Value::as_f64).unwrap_or(5.0);
+        let accepted = accepted_rules(&req);
+        let mut out = pcb.clone();
+        let added = vcad_ecad_fabprep::verdict::stitch_zones(&mut out, net, pitch);
+        if drc_report(&out, &accepted).route_attributable
+            > drc_report(&pcb, &accepted).route_attributable
+        {
+            return Ok(
+                json!({ "pcb": pcb, "added": 0, "reason": "Stitching would break a design rule." }),
+            );
+        }
+        Ok(json!({ "pcb": out, "added": added, "reason": null }))
     })
 }

@@ -19,6 +19,7 @@ struct ElectronicsToolMenus: View {
                 Divider()
                 Button("Length Tuning…") { t.openLengths(ec, model) }.disabled(!hasBoard)
                 Button("Layer Stack…") { t.sheet = .stackup }.disabled(!hasBoard)
+                Button("Net Classes…") { t.sheet = .netClasses }.disabled(!hasBoard)
                 Divider()
                 Button("Export Gerbers…") { t.exportGerbers(ec, model) }.disabled(!hasBoard)
             }.fixedSize()
@@ -49,6 +50,7 @@ struct ElectronicsToolSheet: View {
             case .symbol: SymbolEditorPanel(model: model)
             case .length: LengthTuningPanel(model: model)
             case .stackup: LayerStackPanel(model: model)
+            case .netClasses: NetClassesPanel(model: model)
             case .simulate: SimulationPanel(model: model)
             case .enclosure: EnclosureFitPanel(model: model)
             }
@@ -141,6 +143,44 @@ struct LengthTuningPanel: View {
         ForEach(Array(t.tuneResult.enumerated()), id: \.offset) { _, n in
             if let why = n["skip_reason"] as? String { Text("\(n["net"] as? String ?? ""): \(why)").font(.caption).foregroundStyle(.orange) }
         }
+    }
+}
+
+struct NetClassesPanel: View {
+    @Bindable var model: EditorModel
+    private var ec: ElectronicsWorkspace { model.electronics }
+    private static let fields = [("traceWidth", "Width"), ("clearance", "Clearance"), ("viaDiameter", "Via"), ("viaDrill", "Drill")]
+    private func field(_ rule: ECObject, _ key: String, set: @escaping (Double) -> Void) -> some View {
+        TextField("", value: Binding(get: { ecNumber(rule[key]) }, set: set), format: .number.precision(.fractionLength(0...3)))
+            .textFieldStyle(.roundedBorder).frame(width: 64)
+    }
+    var body: some View {
+        let rules = ec.board(model)["rules"] as? ECObject ?? [:]
+        let classes = ecRows(rules["classRules"]), assigned = rules["netClassAssignments"] as? [String: [String]] ?? [:]
+        Text("Rules in mm. Assign a net by selecting it in the Nets list.").font(.callout).foregroundStyle(.secondary)
+        Grid(alignment: .leading) {
+            GridRow { Text("Class"); ForEach(Self.fields, id: \.0) { Text($0.1) }; Text("Nets") }.font(.caption).foregroundStyle(.secondary)
+            GridRow {
+                Text(rules["defaultRules"].flatMap { ($0 as? ECObject)?["name"] as? String } ?? "Default")
+                ForEach(Self.fields, id: \.0) { key, _ in
+                    field(rules["defaultRules"] as? ECObject ?? [:], key) { v in ec.editRules(model) { r in
+                        var d = r["defaultRules"] as? ECObject ?? [:]; d[key] = v; r["defaultRules"] = d } }
+                }
+                Text("the rest").foregroundStyle(.secondary)
+            }
+            ForEach(classes.indices, id: \.self) { i in
+                let name = classes[i]["name"] as? String ?? ""
+                GridRow {
+                    Text(name)
+                    ForEach(Self.fields, id: \.0) { key, _ in
+                        field(classes[i], key) { v in ec.editRules(model) { r in
+                            var c = ecRows(r["classRules"]); guard c.indices.contains(i) else { return }; c[i][key] = v; r["classRules"] = c } }
+                    }
+                    Text("\(assigned[name]?.count ?? 0)").foregroundStyle(.secondary)
+                }
+            }
+        }
+        Button("Add Class") { ec.addNetClass(model) }
     }
 }
 

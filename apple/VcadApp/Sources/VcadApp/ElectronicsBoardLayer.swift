@@ -48,6 +48,12 @@ struct Airwire { let a: CGPoint, b: CGPoint, net: String }
         let hidden = ec.hiddenLayers
         // Bottom-up, with the active layer last so it reads on top.
         let order = BoardLayers.copper.reversed().filter { $0 != ec.activeLayer } + [ec.activeLayer]
+        for drop in ec.teardrops where !hidden.contains(drop["layer"] as? String ?? "") {
+            let pts = ecRows(drop["polygon"]).map { screen(ecPoint($0)) }
+            guard pts.count > 2 else { continue }
+            var path = Path(); path.addLines(pts); path.closeSubpath()
+            context.fill(path, with: .color(BoardLayers.color(drop["layer"] as? String ?? "").opacity(dim(drop["net"] as? String ?? ""))))
+        }
         if ec.zoneFills.isEmpty {
             for z in ecRows(board["zones"]) where !hidden.contains(z["layer"] as? String ?? "") {
                 let pts = ecRows(z["outline"]).map { screen(ecPoint($0)) }

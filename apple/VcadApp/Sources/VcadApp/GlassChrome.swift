@@ -505,6 +505,7 @@ enum DockTools {
                            isActive: false) { ec.buildSchematicFromBoard(m) }
                     : Tool(id: "ec.check", label: "Check Connectivity", symbol: "checkmark.seal", isActive: ec.checking) { ec.check(m) },
                 Tool(id: "ec.erc", label: "Electrical Rule Check", symbol: "bolt.badge.checkmark", isActive: t.sheet == .erc, enabled: !empty, hint: "Build or draw a schematic first") { t.runErc(ec, m) },
+                Tool(id: "ec.annotate", label: "Annotate", symbol: "textformat.123", isActive: false) { ec.annotate(m) },
                 Tool(id: "ec.tidy", label: "Tidy Sheet", symbol: "square.grid.3x3", isActive: false) { ec.tidySchematic(m) },
                 Tool(id: "ec.simulate", label: "Simulate", symbol: "waveform", isActive: t.sheet == .simulate,
                      enabled: !empty, hint: "Build or draw a schematic first") { t.sheet = .simulate },
@@ -536,6 +537,7 @@ enum DockTools {
                      enabled: !t.tuneNets.isEmpty, hint: "Pick nets in Diff Pair first") { t.tune(ec, m) },
                 Tool(id: "ec.fix", label: "Fix DRC", symbol: "wrench.adjustable", isActive: false) { t.fixDrc(ec, m) },
                 Tool(id: "ec.stack", label: "Layer Stack", symbol: "square.3.layers.3d", isActive: false) { t.sheet = .stackup },
+                Tool(id: "ec.netclass", label: "Net Classes", symbol: "list.bullet.rectangle", isActive: false) { t.sheet = .netClasses },
                 Tool(id: "ec.enclose", label: "Enclose Board", symbol: "shippingbox", isActive: false) { t.encloseBoard(ec, m) },
                 Tool(id: "ec.fit", label: "Fit Check", symbol: "cube.transparent", isActive: false) { t.sheet = .enclosure },
                 Tool(id: "ec.sim", label: "Simulate", symbol: "bolt.horizontal", isActive: false) { t.sheet = .simulate },

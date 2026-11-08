@@ -16,7 +16,7 @@ struct ECBox: @unchecked Sendable { let value: ECObject }
 /// `EditorModel.editElectronics`, so each is one undo step.
 @MainActor @Observable
 final class ElectronicsTools {
-    enum Sheet: String, Identifiable { case drc, erc, footprint, symbol, length, stackup, simulate, enclosure; var id: String { rawValue } }
+    enum Sheet: String, Identifiable { case drc, erc, footprint, symbol, length, stackup, netClasses, simulate, enclosure; var id: String { rawValue } }
 
     var busy: String?
     var sheet: Sheet?
@@ -157,6 +157,14 @@ final class ElectronicsTools {
             tuneResult = ecRows((r["result"] as? ECObject)?["nets"])
             drc = r["drc"] as? ECObject
             status = (r["result"] as? ECObject)?["all_matched"] as? Bool == true ? "All selected nets matched" : "Some nets could not be matched — see Length Tuning"
+        }
+    }
+
+    func stitch(_ ec: ElectronicsWorkspace, _ model: EditorModel, _ net: String) {
+        guard let b = boardBox(ec, model) else { return }
+        run("Stitching") { ECBox(value: try PcbFFI.stitchZones(b.value, net: net, pitch: 5)) } then: { [self] r in
+            adopt(board: r["pcb"], ec, model)
+            status = r["reason"] as? String ?? "Added \(r["added"] as? Int ?? 0) stitching vias on \(net)"
         }
     }
 

@@ -1485,6 +1485,92 @@ pub fn route_nets(pcb: &mut Pcb, nets: &[String], budget: usize) -> bool {
         .all(|(n, _, _)| !only.contains(n))
 }
 
+/// Add through vias on a grid wherever `net`'s zones overlap on two or more
+/// layers, skipping anywhere a via wouldn't be legal. Returns how many it added.
+pub fn stitch_zones(pcb: &mut Pcb, net: &str, pitch: f64) -> usize {
+    let inside = |p: Vec2, poly: &[Vec2]| {
+        let mut odd = false;
+        for i in 0..poly.len() {
+            let (a, b) = (poly[i], poly[(i + 1) % poly.len()]);
+            if (a.y > p.y) != (b.y > p.y) && p.x < a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x) {
+                odd = !odd;
+            }
+        }
+        odd
+    };
+    let zones: Vec<_> = pcb.zones.iter().filter(|z| z.net == net).cloned().collect();
+    let points = || zones.iter().flat_map(|z| z.outline.iter());
+    let (Some(x0), Some(x1), Some(y0), Some(y1)) = (
+        points().map(|p| p.x).min_by(f64::total_cmp),
+        points().map(|p| p.x).max_by(f64::total_cmp),
+        points().map(|p| p.y).min_by(f64::total_cmp),
+        points().map(|p| p.y).max_by(f64::total_cmp),
+    ) else {
+        return 0;
+    };
+    let rules = &pcb.rules;
+    let class = rules
+        .net_class_assignments
+        .iter()
+        .find(|(_, nets)| nets.iter().any(|n| n == net))
+        .and_then(|(name, _)| rules.class_rules.iter().find(|c| &c.name == name))
+        .unwrap_or(&rules.default_rules);
+    let (diameter, drill) = (class.via_diameter, class.via_drill);
+    let layers = copper_layers(pcb);
+    let (Some(&first), Some(&last)) = (layers.first(), layers.last()) else {
+        return 0;
+    };
+    let r = InteractiveRouter::new(pcb.clone());
+    let (start, end) = r.through.unwrap_or((first, last));
+    // Own-net lands keep the pitch's distance: stitching isn't via-in-pad.
+    let mut taken: Vec<Vec2> = pcb.vias.iter().map(|v| v.position).collect();
+    for fp in &pcb.footprints {
+        for pad in &fp.pads {
+            taken.push(vcad_ecad_pcb::geometry::pad_world_position(fp, pad));
+        }
+    }
+    let clear = |p: Vec2, q: Vec2| ((p.x - q.x).powi(2) + (p.y - q.y).powi(2)).sqrt() > 1.0;
+    let mut added = 0;
+    let mut y = y0 + pitch / 2.0;
+    while y < y1 {
+        let mut x = x0 + pitch / 2.0;
+        while x < x1 {
+            let p = Vec2::new(x, y);
+            let covering: BTreeSet<_> = zones
+                .iter()
+                .filter(|z| inside(p, &z.outline))
+                .map(|z| z.layer)
+                .collect();
+            if covering.len() >= 2
+                && taken.iter().all(|&q| clear(p, q))
+                && vias_legal(
+                    &r.pcb,
+                    &r.session,
+                    net,
+                    &[(p, p, start), (p, p, end)],
+                    r.through,
+                )
+            {
+                pcb.vias.push(Via {
+                    via_type: None,
+                    position: p,
+                    diameter,
+                    drill,
+                    start_layer: start,
+                    end_layer: end,
+                    net: net.to_string(),
+                    source: None,
+                });
+                taken.push(p);
+                added += 1;
+            }
+            x += pitch;
+        }
+        y += pitch;
+    }
+    added
+}
+
 /// Up to this many neighbouring nets are tried for each stuck connection.
 const RIP_UP_CANDIDATES: usize = 8;
 /// A neighbour's copper must come this close to a terminal to be a candidate.
@@ -1794,6 +1880,38 @@ mod tests {
         assert!(r.pcb.traces[1].start.y < 5.4, "the run moved down");
         let added: Vec<_> = clearance(&r.pcb).difference(&before).cloned().collect();
         assert!(added.is_empty(), "the shove added violations: {added:?}");
+    }
+
+    #[test]
+    fn stitch_zones_adds_vias_only_where_zones_overlap() {
+        use crate::test_support::{test_board, with_trace};
+        let square = |a: f64, b: f64| {
+            vec![
+                Vec2::new(a, a),
+                Vec2::new(b, a),
+                Vec2::new(b, b),
+                Vec2::new(a, b),
+            ]
+        };
+        let mut pcb = test_board();
+        with_trace(&mut pcb, "Z", 0.5, 5.0, 9.5, 5.0);
+        for (layer, outline) in [
+            (PcbLayer::FCu, square(1.0, 9.0)),
+            (PcbLayer::BCu, square(1.0, 4.0)),
+        ] {
+            pcb.zones.push(
+                serde_json::from_value(serde_json::json!({
+                    "outline": outline, "net": "GND", "layer": layer, "clearance": 0.2
+                }))
+                .unwrap(),
+            );
+        }
+        let added = stitch_zones(&mut pcb, "GND", 1.0);
+        assert!(added > 0);
+        assert!(pcb
+            .vias
+            .iter()
+            .all(|v| v.net == "GND" && v.position.y <= 4.0));
     }
 
     #[test]

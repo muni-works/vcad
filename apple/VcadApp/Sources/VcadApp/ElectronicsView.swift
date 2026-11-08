@@ -100,6 +100,7 @@ struct NativeElectronicsView: View {
         case .symbol: "Symbol Editor"
         case .length: "Diff Pair / Length Tuning"
         case .stackup: "Layer Stack"
+        case .netClasses: "Net Classes"
         case .simulate: "Simulate"
         case .enclosure: "Enclosure Fit"
         case nil: ""
@@ -282,6 +283,13 @@ struct NativeElectronicsView: View {
                 if ec.view == .board, let net = ec.highlightNet {
                     let board = ec.board(model)
                     KeyValueRow(net, String(format: "%.2f mm routed", ec.netLength(net, in: board)))
+                    Picker("Class", selection: Binding(get: { ec.netClass(net, in: board) }, set: { ec.setNetClass(model, net, $0) })) {
+                        Text("Default").tag("")
+                        ForEach(ecRows((board["rules"] as? ECObject)?["classRules"]).compactMap { $0["name"] as? String }, id: \.self) { Text($0).tag($0) }
+                    }
+                    if Set(ecRows(board["zones"]).filter { $0["net"] as? String == net }.compactMap { $0["layer"] as? String }).count >= 2 {
+                        Button("Stitch Zones") { ec.tools.stitch(ec, model, net) }.controlSize(.small)
+                    }
                     if let other = ec.pairPartner(of: net, in: board) {
                         KeyValueRow("Pair skew", String(format: "%.3f mm", abs(ec.netLength(net, in: board) - ec.netLength(other, in: board))))
                         Button("Route Pair with \(other)") { ec.tools.routePair(ec, model, net, other) }.controlSize(.small)

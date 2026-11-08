@@ -43,6 +43,9 @@ enum PcbFFI {
         let json = try text(["id": id])
         return try finish(json.withCString { vcad_pcb_library_symbol($0) }, "symbol")
     }
+    static func stitchZones(_ pcb: Obj, net: String, pitch: Double) throws -> Obj {
+        try call2(vcad_pcb_stitch_zones, pcb, ["net": net, "pitch": pitch], "stitching")
+    }
     static func ratsnest(_ pcb: Obj) throws -> Obj {
         let json = try text(pcb)
         return try finish(json.withCString { vcad_pcb_ratsnest($0) }, "ratsnest")
