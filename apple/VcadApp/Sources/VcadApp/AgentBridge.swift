@@ -296,6 +296,9 @@ enum AgentTools {
         ["name": "import_board",
          "description": "Import a KiCad (.kicad_pcb) or Eagle (.brd) board file into the open document and switch to Electronics.",
          "inputSchema": schema(["path": ["type": "string"]], required: ["path"])],
+        ["name": "press_key",
+         "description": "Press a bare-letter tool shortcut as if typed in the viewport (e.g. \"f\" for Fillet, \"?\" for the shortcut sheet). Returns whether a tool was bound.",
+         "inputSchema": schema(["key": ["type": "string"]], required: ["key"])],
         ["name": "suggest_edit",
          "description": "Offer ONE edit as a suggestion pill in the user's viewport instead of applying it: a short question (\"Add 4 M3 counterbores on the motor bolt circle?\") plus the edit tool call it would make. The parts it touches shimmer softly. Nothing changes until the user clicks Add (then it is one named undo step); × dismisses. A new suggestion replaces the old one.",
          "inputSchema": schema(["text": ["type": "string", "description": "One-line question shown on the pill."],
@@ -416,6 +419,10 @@ enum AgentTools {
             GlassUI.shared.enter(.electronics, model: m)
             m.electronics.tools.importBoard(URL(fileURLWithPath: path.expandingTildeInPath), m.electronics, m)
             return text("Importing \(path.lastPathComponent)…")
+        case "press_key":
+            guard let ch = (a["key"] as? String)?.first else { throw Failure(message: "key required") }
+            let ok = GlassUI.shared.handleKey(ch, model: m)
+            return text(ok ? "Handled \(ch)." : "Nothing bound to \(ch) here.")
         case "set_workspace":
             guard let ws = DockSpace(rawValue: (a["workspace"] as? String ?? "").lowercased()) else {
                 throw Failure(message: "workspace must be one of design, assembly, drawing, electronics, fab")

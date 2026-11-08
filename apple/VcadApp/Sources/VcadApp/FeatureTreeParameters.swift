@@ -5,13 +5,12 @@ import SwiftUI
 
 struct ParameterTableSheet: View {
     @Bindable var model: EditorModel
-    @Environment(\.dismiss) private var dismiss
+    private func dismiss() { GlassUI.shared.closePanel() }
     @State private var newName = ""
     @State private var newValue = "10"
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
-            Label("Parameters", systemImage: "slider.horizontal.3").font(.headline)
             if model.docParameters.isEmpty {
                 Text("No parameters yet. Add one below, then reference it from any field by name.")
                     .font(.caption).foregroundStyle(.secondary)
