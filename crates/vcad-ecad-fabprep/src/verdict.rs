@@ -890,9 +890,16 @@ impl InteractiveRouter {
             }
             if layers.len() > 1 {
                 let legal = *via_ok.entry((s.0, s.1)).or_insert_with(|| {
-                    self.session
-                        .probe_via_span(at((s.0, s.1)), net, top, bottom)
-                        .legal
+                    // The commit's own barrel check, so the search can't
+                    // propose a via that legality would throw away.
+                    let p = at((s.0, s.1));
+                    vias_legal(
+                        &self.pcb,
+                        &self.session,
+                        net,
+                        &[(p, p, top), (p, p, bottom)],
+                        self.through,
+                    )
                 });
                 if legal {
                     for li in 0..layers.len() as u8 {
@@ -1397,9 +1404,9 @@ fn route_open(
 }
 
 /// Up to this many neighbouring nets are tried for each stuck connection.
-const RIP_UP_CANDIDATES: usize = 4;
+const RIP_UP_CANDIDATES: usize = 8;
 /// A neighbour's copper must come this close to a terminal to be a candidate.
-const RIP_UP_REACH_MM: f64 = 2.5;
+const RIP_UP_REACH_MM: f64 = 4.0;
 
 fn rip_up_pass(pcb: &mut Pcb, layers: &[PcbLayer], budget: usize) -> bool {
     let plane_nets: BTreeSet<String> = pcb.zones.iter().map(|z| z.net.clone()).collect();
@@ -1763,6 +1770,9 @@ mod tests {
         let t = std::time::Instant::now();
         let closed = finish_remaining(&mut pcb, budget);
         let after = open(&pcb);
+        if let Ok(out) = std::env::var("VCAD_FINISH_OUT") {
+            std::fs::write(out, serde_json::to_string(&pcb).unwrap()).unwrap();
+        }
         let added: Vec<_> = geom(&pcb).difference(&g0).cloned().collect();
         eprintln!(
             "closed {closed} in {:?}; open {} -> {}: {after:?}; new violations {}: {:?}",
