@@ -448,9 +448,16 @@ fn inspect(id: &str, doc: &DocumentApi) -> Result<String, CommandError> {
         .iter()
         .find(|p| p.id() == id)
         .ok_or_else(|| CommandError::UnknownId { id: id.to_string() })?;
+    // Measure what the viewport draws: parameters applied through bindings.
+    let (resolved, _) =
+        vcad_eval::resolve::resolve_document_cloned(&state.document).map_err(|e| {
+            CommandError::Invalid {
+                message: format!("parameters could not be applied: {e}"),
+            }
+        })?;
     let mut cache = std::collections::HashMap::new();
     let solid =
-        vcad_eval::evaluate::evaluate_node(part.root_node_id(), &state.document.nodes, &mut cache)
+        vcad_eval::evaluate::evaluate_node(part.root_node_id(), &resolved.nodes, &mut cache)
             .ok()
             .flatten()
             .ok_or_else(|| CommandError::Invalid {
@@ -666,6 +673,17 @@ mod tests {
         assert_eq!(api.get_state().parts.len(), 1);
         let name = serde_json::to_value(&api.get_state().parts[0]).unwrap()["name"].clone();
         assert_eq!(name, "cube");
+    }
+
+    #[test]
+    fn inspect_measures_with_parameters_applied() {
+        let mut doc: serde_json::Value =
+            serde_json::from_str(include_str!("../../../examples/parametric-plate.vcad")).unwrap();
+        doc["parameters"]["width"]["value"] = json!(120.0);
+        let api = DocumentApi::from_ir(&doc.to_string(), ReplicaId(1)).unwrap();
+        let id = api.get_state().parts[0].id().to_string();
+        let text = read_tool("inspect", &json!({"part_id": id}), &api).unwrap();
+        assert!(text.contains("size (120.00, 50.00"), "{text}");
     }
 
     #[test]

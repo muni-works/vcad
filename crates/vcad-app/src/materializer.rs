@@ -248,8 +248,25 @@ pub fn materialize(crdt: &CrdtDocument) -> MaterializeResult {
 
     // Imported document-level fields fill in only what no dedicated
     // feature set, so later edits (e.g. scene settings) win.
+    let extras_for_bindings = extras.clone();
     for feature in extras {
         materialize_doc_extras(&mut doc, feature);
+    }
+    let records: Vec<serde_json::Value> = extras_for_bindings
+        .iter()
+        .filter_map(|f| get_str(f, "extras"))
+        .filter_map(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+        .filter_map(|v| v.get(crate::migrate::FEATURE_BINDINGS)?.as_array().cloned())
+        .flatten()
+        .collect();
+    if !records.is_empty() {
+        let parts_json = serde_json::to_value(&parts).unwrap_or_default();
+        let (bindings, warnings) = crate::migrate::resolve_feature_bindings(&records, &parts_json);
+        ctx.warnings.extend(warnings);
+        match serde_json::from_value(serde_json::Value::Object(bindings)) {
+            Ok(b) => doc.bindings = b,
+            Err(e) => ctx.warnings.push(format!("bindings: {e}")),
+        }
     }
 
     MaterializeResult {
@@ -1499,14 +1516,14 @@ fn materialize_joint(doc: &mut Document, fid: FeatureId, feature: &FeatureState)
         "Revolute" => JointKind::Revolute {
             axis: axis.unwrap_or(Vec3::new(0.0, 0.0, 1.0)),
             limits,
-            effort_limit: None,
-            velocity_limit: None,
+            effort_limit: get_f64(feature, "effort_limit"),
+            velocity_limit: get_f64(feature, "velocity_limit"),
         },
         "Slider" => JointKind::Slider {
             axis: axis.unwrap_or(Vec3::new(0.0, 0.0, 1.0)),
             limits,
-            effort_limit: None,
-            velocity_limit: None,
+            effort_limit: get_f64(feature, "effort_limit"),
+            velocity_limit: get_f64(feature, "velocity_limit"),
         },
         "Cylindrical" => JointKind::Cylindrical {
             axis: axis.unwrap_or(Vec3::new(0.0, 0.0, 1.0)),

@@ -144,6 +144,7 @@ pub fn migrate_v1_mapped(doc: &Document) -> (CrdtDocument, MigrationMap) {
     let map = MigrationMap {
         mappings: std::mem::take(&mut ctx.node_roles),
     };
+    store_feature_bindings(&mut crdt, doc, &map);
     (crdt, map)
 }
 
@@ -718,7 +719,8 @@ fn migrate_doc_extras(crdt: &mut CrdtDocument, ctx: &mut MigrationCtx, doc: &Doc
         .into_iter()
         .filter(|(k, v)| DOC_EXTRA_FIELDS.contains(&k.as_str()) && !is_empty_json(v))
         .collect();
-    if extras.is_empty() {
+    // Bindings are written onto this feature once ids are final.
+    if extras.is_empty() && doc.bindings.is_empty() {
         return;
     }
     let mut params = HashMap::new();
@@ -727,6 +729,85 @@ fn migrate_doc_extras(crdt: &mut CrdtDocument, ctx: &mut MigrationCtx, doc: &Doc
         Value::String(serde_json::Value::Object(extras).to_string()),
     );
     create(crdt, ctx, "doc-extras", params);
+}
+
+/// Key on the `doc-extras` blob holding bindings addressed by feature.
+pub(crate) const FEATURE_BINDINGS: &str = "feature_bindings";
+
+/// Persist `doc.bindings` against features instead of v1 node ids. Node ids
+/// are reassigned on every materialize, so a stored id would go stale at the
+/// first edit; the feature id and field path don't.
+fn store_feature_bindings(crdt: &mut CrdtDocument, doc: &Document, map: &MigrationMap) {
+    let Ok(serde_json::Value::Object(bindings)) = serde_json::to_value(&doc.bindings) else {
+        return;
+    };
+    if bindings.is_empty() {
+        return;
+    }
+    let features: HashMap<NodeId, &str> = map
+        .mappings
+        .iter()
+        .map(|m| (m.old_node_id, m.feature_id.as_str()))
+        .collect();
+    let records: Vec<serde_json::Value> = bindings
+        .iter()
+        .filter_map(|(key, expr)| {
+            let (node, field) = key.split_once(':')?;
+            let feature = features.get(&node.parse::<NodeId>().ok()?)?;
+            Some(serde_json::json!({ "feature": feature, "field": field, "expr": expr }))
+        })
+        .collect();
+    let Some(fid) = crdt
+        .ordered_features()
+        .into_iter()
+        .find(|(_, f)| f.kind == "doc-extras")
+        .map(|(fid, _)| fid)
+    else {
+        return;
+    };
+    let mut extras = match crdt.get_feature(fid).and_then(|f| f.params.get("extras")) {
+        Some((Value::String(s), _)) => serde_json::from_str(s).unwrap_or_default(),
+        _ => serde_json::Map::new(),
+    };
+    extras.insert(FEATURE_BINDINGS.to_string(), records.into());
+    crdt.set_param(
+        fid,
+        "extras",
+        Value::String(serde_json::Value::Object(extras).to_string()),
+    );
+}
+
+/// Turn feature-addressed bindings back into `"<nodeId>:<field>"` keys for
+/// this materialize. Returns the bindings plus one warning per record whose
+/// feature or node is gone.
+pub(crate) fn resolve_feature_bindings(
+    records: &[serde_json::Value],
+    parts_json: &serde_json::Value,
+) -> (serde_json::Map<String, serde_json::Value>, Vec<String>) {
+    let mut out = serde_json::Map::new();
+    let mut warnings = Vec::new();
+    for record in records {
+        let (Some(feature), Some(field), Some(expr)) = (
+            record.get("feature").and_then(|v| v.as_str()),
+            record.get("field").and_then(|v| v.as_str()),
+            record.get("expr"),
+        ) else {
+            continue;
+        };
+        let node = parts_json.as_array().and_then(|parts| {
+            let part = parts
+                .iter()
+                .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(feature))?;
+            role_node_id(part, role_for_field(field))
+        });
+        match node {
+            Some(id) => {
+                out.insert(format!("{id}:{field}"), expr.clone());
+            }
+            None => warnings.push(format!("binding on {feature}.{field} has no target")),
+        }
+    }
+    (out, warnings)
 }
 
 pub(crate) fn is_empty_json(v: &serde_json::Value) -> bool {
@@ -936,6 +1017,19 @@ fn migrate_assembly(crdt: &mut CrdtDocument, ctx: &mut MigrationCtx, doc: &Docum
                 .as_ref()
                 .and_then(|id| instance_stable.get(id));
 
+            let (effort_limit, velocity_limit) = match &joint.kind {
+                JointKind::Revolute {
+                    effort_limit,
+                    velocity_limit,
+                    ..
+                }
+                | JointKind::Slider {
+                    effort_limit,
+                    velocity_limit,
+                    ..
+                } => (*effort_limit, *velocity_limit),
+                _ => (None, None),
+            };
             let (kind_str, axis, limits_json) = match &joint.kind {
                 JointKind::Fixed => ("Fixed", None, None),
                 JointKind::Revolute { axis, limits, .. } => (
@@ -990,6 +1084,12 @@ fn migrate_assembly(crdt: &mut CrdtDocument, ctx: &mut MigrationCtx, doc: &Docum
                 params.insert("limits".to_string(), Value::String(j));
             }
             params.insert("state".to_string(), Value::F64(joint.state));
+            if let Some(v) = effort_limit {
+                params.insert("effort_limit".to_string(), Value::F64(v));
+            }
+            if let Some(v) = velocity_limit {
+                params.insert("velocity_limit".to_string(), Value::F64(v));
+            }
 
             create(crdt, ctx, "joint", params);
         }
@@ -1091,6 +1191,66 @@ mod tests {
             visible: None,
         });
         doc
+    }
+
+    /// Real documents, through the same path the app opens them with.
+    fn load(json: &str) -> Document {
+        serde_json::from_str(json).expect("example parses")
+    }
+
+    #[test]
+    fn a_loaded_document_keeps_its_bindings_on_the_right_nodes() {
+        let original = load(include_str!("../../../examples/parametric-plate.vcad"));
+        let once = crate::materializer::materialize(&migrate_v1(&original)).document;
+        // Twice: a saved document must reload the same way.
+        let twice = crate::materializer::materialize(&migrate_v1(&once)).document;
+        for doc in [&once, &twice] {
+            let json = serde_json::to_value(&doc.bindings).unwrap();
+            let bindings = json.as_object().unwrap();
+            assert_eq!(bindings.len(), 7, "{bindings:?}");
+            for key in bindings.keys() {
+                let (node, field) = key.split_once(':').unwrap();
+                let op = &doc.nodes[&node.parse::<NodeId>().unwrap()].op;
+                match field {
+                    "size.x" | "size.y" | "size.z" => {
+                        assert!(matches!(op, CsgOp::Cube { .. }), "{key}: {op:?}")
+                    }
+                    "radius" | "height" => {
+                        assert!(matches!(op, CsgOp::Cylinder { .. }), "{key}: {op:?}")
+                    }
+                    "offset.x" | "offset.y" => {
+                        assert!(matches!(op, CsgOp::Translate { .. }), "{key}: {op:?}")
+                    }
+                    other => panic!("unexpected field {other}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_loaded_document_keeps_its_actuator_limits() {
+        let limits = |doc: &Document| -> Vec<(Option<f64>, Option<f64>)> {
+            let mut v: Vec<_> = doc
+                .joints
+                .iter()
+                .flatten()
+                .filter_map(|j| match j.kind {
+                    JointKind::Revolute {
+                        effort_limit,
+                        velocity_limit,
+                        ..
+                    } => Some((effort_limit, velocity_limit)),
+                    _ => None,
+                })
+                .collect();
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v
+        };
+        let original = load(include_str!("../../../examples/k1-floating.vcad"));
+        let want = limits(&original);
+        assert!(want.iter().any(|l| l.0.is_some()), "fixture has limits");
+        let got = crate::materializer::materialize(&migrate_v1(&original)).document;
+        assert_eq!(limits(&got), want);
     }
 
     /// Migration renumbers every node, so bindings authored against v1 ids
