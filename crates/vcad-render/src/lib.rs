@@ -1053,6 +1053,7 @@ fn place_parts_cached(
     let settings = vcad_eval::cache::FingerprintSettings {
         segments,
         fold_sheet_metal: true,
+        chord_tol_mm: 0.0,
     };
     let mut node_cache = HashMap::new();
     // Serial: keys, cache lookups, and the BRep each miss must tessellate.

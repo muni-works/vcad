@@ -1295,6 +1295,21 @@ pub extern "C" fn vcad_doc_gripper_slice1() -> *mut VcadDoc {
 /// gripper solve quoted the enclosure at 0 cents the moment an earlier run
 /// had warmed the cache (cold: pass, warm: fail — which is how it got past a
 /// local run whose every rebuild minted a new kernel id and an empty cache).
+/// Viewport chord tolerance: a chord may stray at most this far (mm) from
+/// the true surface, so an r86 cup isn't drawn as a visible 32-gon. The
+/// tessellator caps the per-circle count, so huge radii can't explode the
+/// mesh. Applied only where the native app evaluates for display.
+pub(crate) const DISPLAY_CHORD_MM: f64 = 0.02;
+
+/// Evaluate for the viewport (see [`DISPLAY_CHORD_MM`]).
+fn viewport_eval(
+    doc: &vcad_ir::Document,
+    opts: &EvalOptions,
+) -> Result<vcad_eval::EvaluatedScene, vcad_eval::EvalError> {
+    let _chord = vcad_eval::evaluate::DisplayChordGuard::enable(DISPLAY_CHORD_MM);
+    evaluate_document(doc, opts)
+}
+
 fn open_opts() -> EvalOptions {
     EvalOptions {
         root_cache: root_mesh_cache()
@@ -1351,7 +1366,7 @@ pub extern "C" fn vcad_doc_set_param(
         d.inner
             .parameters
             .insert(name.to_string(), Parameter::literal(value));
-        match evaluate_document(&d.inner, &interactive_opts()) {
+        match viewport_eval(&d.inner, &interactive_opts()) {
             Ok(scene) => Box::into_raw(Box::new(VcadScene {
                 inner: scene,
                 doc: None,
@@ -1390,7 +1405,7 @@ pub extern "C" fn vcad_doc_set_param_cheap(
         let nodes = fast.nodes.clone();
         fast.roots
             .retain(|e| !subtree_has_sheet_metal(&nodes, e.root));
-        match evaluate_document(&fast, &interactive_opts()) {
+        match viewport_eval(&fast, &interactive_opts()) {
             Ok(scene) => Box::into_raw(Box::new(VcadScene {
                 inner: scene,
                 doc: None,
@@ -2202,7 +2217,7 @@ pub extern "C" fn vcad_doc_solve(
         d.inner
             .parameters
             .insert(name.to_string(), Parameter::literal(value));
-        let Ok(scene) = evaluate_document(&d.inner, &interactive_opts()) else {
+        let Ok(scene) = viewport_eval(&d.inner, &interactive_opts()) else {
             return ptr::null_mut();
         };
         // The PCB lives in the document: resolve it (the "pcb." binding moves the
@@ -3383,7 +3398,7 @@ pub extern "C" fn vcad_eval_begin(
                     p.done = p.done.max(index + 1);
                 }
             }));
-            let result = catch_unwind(AssertUnwindSafe(|| evaluate_document(&doc, &opts)));
+            let result = catch_unwind(AssertUnwindSafe(|| viewport_eval(&doc, &opts)));
             let out = match result {
                 Ok(Ok(scene)) => Ok(VcadScene {
                     inner: scene,
