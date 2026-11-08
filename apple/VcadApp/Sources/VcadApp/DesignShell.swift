@@ -9,7 +9,7 @@ struct DesignModelNavigator: View {
     @Bindable var model: EditorModel
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
-            PanelHeader(title: "Model", onClose: { model.showsTree = false })
+            PanelHeader(title: "Model")
             Divider()
             ScrollViewReader { proxy in
                 ScrollView {

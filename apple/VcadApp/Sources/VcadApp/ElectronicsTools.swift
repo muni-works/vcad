@@ -75,6 +75,11 @@ final class ElectronicsTools {
         panel.allowedContentTypes = ["kicad_pcb", "brd"].compactMap { UTType(filenameExtension: $0) }
         panel.message = "Choose a KiCad (.kicad_pcb) or Eagle (.brd) board"
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        importBoard(url, ec, model)
+    }
+
+    /// Import a KiCad/Eagle board file into this document's board.
+    func importBoard(_ url: URL, _ ec: ElectronicsWorkspace, _ model: EditorModel) {
         let path = url.path
         run("Import") { ECBox(value: try PcbFFI.importBoard(path: path)) } then: { [self] r in
             if ec.board(model).isEmpty { ec.createBoard(model) }

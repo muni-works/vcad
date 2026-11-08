@@ -74,6 +74,9 @@ final class GlassUI {
     var lastBuildMillis: Double = 0
     /// Wall time of the last history seek until its rebuild landed, ms.
     var lastSeekMillis: Double?
+    @ObservationIgnored var shimmerTask: Task<Void, Never>?
+    /// Viewport thumbnails per history frame (frame index → image).
+    var thumbnails: [Int: NSImage] = [:]
 
     /// Enter a dock workspace, keeping the document model's workspace and
     /// panels in step with it.
@@ -393,38 +396,79 @@ enum DockTools {
         ]
     }
 
+    /// Drawing: exclusive modes only. On/off display toggles live in the
+    /// inspector and the View menu, so the dock never shows three "active".
     private static func drawing(_ m: EditorModel) -> [Tool] {
         let s = DrawingStore.shared
         return [
             Tool(id: "dwg.select", label: "Select", symbol: "cursorarrow", isActive: s.tool == .select) { s.tool = .select },
-            Tool(id: "dwg.section", label: "Section", symbol: "rectangle.split.2x1", isActive: s.tool == .section) { s.tool = .section },
+            Tool(id: "dwg.section", label: "Section", symbol: "rectangle.split.2x1", isActive: s.tool == .section,
+                 enabled: s.view.canSection, hint: "Not in the isometric view") { s.tool = .section },
             Tool(id: "dwg.detail", label: "Detail", symbol: "plus.magnifyingglass", isActive: s.tool == .detail) { s.tool = .detail },
             Tool(id: "dwg.datum", label: "Datum", symbol: "a.square", isActive: s.tool == .gdt(.datum)) { s.tool = .gdt(.datum) },
-            Tool(id: "dwg.dims", label: "Dimensions", symbol: "ruler", isActive: s.showDimensions) { s.showDimensions.toggle() },
-            Tool(id: "dwg.hidden", label: "Hidden Lines", symbol: "eye.slash", isActive: s.showHidden) { s.showHidden.toggle() },
+            Tool(id: "dwg.frame", label: "Feature Control Frame", symbol: "square.grid.3x1.below.line.grid.1x2",
+                 isActive: { if case .gdt(let k) = s.tool { return k != .datum }; return false }()) { s.tool = .gdt(.position) },
         ]
     }
 
+    /// Electronics: the editing modes plus the two board-wide verbs. An empty
+    /// document gets the one thing it can do — start a board.
     private static func electronics(_ m: EditorModel) -> [Tool] {
         let ec = m.electronics
-        let has = !ec.board(m).isEmpty
         let t = ec.tools
+        guard !ec.board(m).isEmpty else {
+            return [
+                Tool(id: "ec.create", label: "Create Board", symbol: "plus.rectangle.on.rectangle", isActive: false) { ec.createBoard(m) },
+                Tool(id: "ec.import", label: "Import KiCad Board", symbol: "square.and.arrow.down", isActive: false) { t.importBoard(ec, m) },
+            ]
+        }
+        func mode(_ tool: ElectronicsTool, _ label: String, _ symbol: String, boardOnly: Bool = false) -> Tool {
+            Tool(id: "ec.\(tool.rawValue)", label: label, symbol: symbol, isActive: ec.tool == tool) {
+                if boardOnly && ec.view != .board { ec.view = .board }
+                ec.tool = tool
+            }
+        }
         return [
-            Tool(id: "ec.route", label: "Route", symbol: "point.topleft.down.to.point.bottomright.curvepath",
-                 isActive: ec.tool == .route, enabled: has, hint: "Create a board first") {
-                ec.view = .board; ec.tool = ec.tool == .route ? .select : .route
-            },
-            Tool(id: "ec.pair", label: "Diff Pair", symbol: "equal", isActive: t.sheet == .length,
-                 enabled: has, hint: "Create a board first") { t.openLengths(ec, m) },
-            Tool(id: "ec.tune", label: "Tune", symbol: "waveform.path", isActive: false,
-                 enabled: has && !t.tuneNets.isEmpty, hint: "Pick nets in Diff Pair first") { t.tune(ec, m) },
+            mode(.select, "Select", "cursorarrow"),
+            mode(.place, "Place Component", "square.on.square.dashed"),
+            ec.view == .schematic ? mode(.wire, "Connect Pins", "point.3.connected.trianglepath.dotted")
+                                  : mode(.route, "Route", "point.topleft.down.to.point.bottomright.curvepath", boardOnly: true),
+            mode(.via, "Via", "smallcircle.filled.circle", boardOnly: true),
             Tool(id: "ec.autoroute", label: "Autoroute", symbol: "wand.and.stars", isActive: t.busy == "Autoroute",
-                 enabled: has && t.busy == nil) { t.autoroute(ec, m) },
+                 enabled: t.busy == nil, hint: "Busy") { t.autoroute(ec, m) },
             Tool(id: "ec.drc", label: "DRC", symbol: "checklist", isActive: t.sheet == .drc,
-                 enabled: has && t.busy == nil) { t.runDrc(ec, m) },
-            Tool(id: "ec.enclosure", label: "Enclosure", symbol: "shippingbox", isActive: t.sheet == .enclosure,
-                 enabled: has) { t.sheet = .enclosure },
+                 enabled: t.busy == nil, hint: "Busy") { t.runDrc(ec, m) },
         ]
+    }
+
+    /// The rest of a workspace's verbs, for the ··· palette only.
+    static func extras(_ space: DockSpace, model m: EditorModel) -> [Tool] {
+        switch space {
+        case .electronics:
+            let ec = m.electronics, t = ec.tools
+            guard !ec.board(m).isEmpty else { return [] }
+            return [
+                Tool(id: "ec.pair", label: "Diff Pair", symbol: "equal", isActive: false) { t.openLengths(ec, m) },
+                Tool(id: "ec.tune", label: "Tune Lengths", symbol: "waveform.path", isActive: false,
+                     enabled: !t.tuneNets.isEmpty, hint: "Pick nets in Diff Pair first") { t.tune(ec, m) },
+                Tool(id: "ec.fix", label: "Fix DRC", symbol: "wrench.adjustable", isActive: false) { t.fixDrc(ec, m) },
+                Tool(id: "ec.stack", label: "Layer Stack", symbol: "square.3.layers.3d", isActive: false) { t.sheet = .stackup },
+                Tool(id: "ec.enclose", label: "Enclose Board", symbol: "shippingbox", isActive: false) { t.encloseBoard(ec, m) },
+                Tool(id: "ec.fit", label: "Fit Check", symbol: "cube.transparent", isActive: false) { t.sheet = .enclosure },
+                Tool(id: "ec.sim", label: "Simulate", symbol: "bolt.horizontal", isActive: false) { t.sheet = .simulate },
+                Tool(id: "ec.check", label: "Connectivity", symbol: "link", isActive: false) { ec.check(m) },
+                Tool(id: "ec.gerber", label: "Export Gerbers", symbol: "square.and.arrow.up", isActive: false) { t.exportGerbers(ec, m) },
+                Tool(id: "ec.import2", label: "Import Board", symbol: "square.and.arrow.down", isActive: false) { t.importBoard(ec, m) },
+            ]
+        case .drawing:
+            let s = DrawingStore.shared
+            return [
+                Tool(id: "dwg.dxf", label: "Export DXF", symbol: "square.and.arrow.up", isActive: false) { s.export(.dxf) },
+                Tool(id: "dwg.pdf", label: "Export PDF", symbol: "doc.richtext", isActive: false) { s.export(.pdf) },
+            ]
+        default:
+            return []
+        }
     }
 
     private static func fab(_ m: EditorModel) -> [Tool] {
@@ -517,11 +561,12 @@ struct GlassDock: View {
                 .frame(width: 38, height: 32)
                 .background {
                     if tool.isActive {
-                        Capsule(style: .continuous).fill(Color.accentColor.opacity(0.22))
+                        // Gray, not blue: blue/orange belong to the 3D selection.
+                        Capsule(style: .continuous).fill(Color.primary.opacity(0.14))
                             .matchedGeometryEffect(id: "active", in: morph)
                     }
                 }
-                .foregroundStyle(tool.isActive ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.primary))
+                .foregroundStyle(.primary)
                 .contentShape(Capsule())
         }
         .opacity(tool.enabled ? 1 : 0.35)
@@ -553,7 +598,7 @@ struct ToolPalette: View {
             Picker("Workspace", selection: $tab) {
                 ForEach(DockSpace.allCases) { Text($0.label).tag($0) }
             }.pickerStyle(.segmented).labelsHidden()
-            let tools = tab == .design ? designAll : DockTools.tools(tab, model: model)
+            let tools = (tab == .design ? designAll : DockTools.tools(tab, model: model)) + DockTools.extras(tab, model: model)
             LazyVGrid(columns: Array(repeating: GridItem(.fixed(84), spacing: 6), count: 4), spacing: 6) {
                 ForEach(tools) { t in
                     Button {
@@ -641,10 +686,17 @@ struct SelectionEditBar: View {
             Stepper(param.label, value: Binding(get: { value }, set: { set($0, snapshot: true) }),
                     in: param.min...1_000_000, step: param.detent)
                 .labelsHidden()
+            if feedback.hasSomething {
+                Divider().frame(height: 18)
+                feedbackText
+            }
             Divider().frame(height: 18)
-            feedbackText
-            Divider().frame(height: 18)
-            Button("Done", action: dismiss).keyboardShortcut(.return, modifiers: [])
+            Button("Done", action: dismiss)
+                .background {
+                    Button("", action: dismiss).keyboardShortcut(.return, modifiers: [])
+                        .frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
+                        .disabled(focused)
+                }
         }
         .controlSize(.small)
         .padding(.horizontal, 12).padding(.vertical, 7)
@@ -694,8 +746,8 @@ struct SelectionEditBar: View {
             if let g = feedback.massDelta {
                 Text(feedback.massIsVolume ? "\(signed(g, 0)) mm³" : "\(signed(g, 1)) g")
             }
-            if feedback.stressChange == nil && feedback.massDelta == nil {
-                Text(feedback.busy ? "Solving…" : "No change").foregroundStyle(.secondary)
+            if feedback.stressChange == nil && feedback.massDelta == nil && feedback.busy {
+                Text("Solving…").foregroundStyle(.secondary)
             }
             if feedback.busy { ProgressView().controlSize(.mini) }
         }
@@ -737,6 +789,8 @@ final class LiveFeedback {
     var massIsVolume = false
     var stressChange: Double?
     var busy = false
+    /// Only show the feedback section once there is a number (or a solve).
+    var hasSomething: Bool { busy || stressChange != nil || (massDelta.map { abs($0) > 1e-6 } ?? false) }
 
     @ObservationIgnored private var baseMass: (value: Double, isVolume: Bool)?
     @ObservationIgnored private var baseStress: Double?
@@ -830,24 +884,20 @@ struct EditBarOverlay: View {
         return n
     }
 
-    /// To the right of the part's bounds, clamped inside the viewport and
-    /// clear of the floating panels.
+    /// Beside the part's projected bounds — never on top of the part — and
+    /// clear of the floating panels and the dock.
     private func anchor(_ node: FeatureNode, in size: CGSize) -> CGPoint {
-        let fallback = CGPoint(x: size.width / 2, y: size.height * 0.28)
-        let rw = ReleaseWindowController.shared
-        guard let pi = node.partIndex ?? model.selectedPartIndex, let ar = rw.arView,
-              let e = rw.centeringEntity?.findEntity(named: "part\(pi)") else { return fallback }
-        let b = e.visualBounds(relativeTo: nil)
-        guard let c = ar.project(b.center), let edge = ar.project(b.center + SIMD3(b.extents.x / 2, 0, 0)) else {
-            return fallback
-        }
-        let y = ar.isFlipped ? c.y : ar.bounds.height - c.y
-        let reach = max(60, abs(edge.x - c.x))
-        let barHalf: CGFloat = 200
+        let barHalf: CGFloat = 190, gap: CGFloat = 20
         let left = Glass.panelWidth + 2 * Glass.inset + barHalf
         let right = size.width - Glass.panelWidth - 2 * Glass.inset - barHalf
-        return CGPoint(x: min(max(c.x + reach + barHalf - 40, left), max(left, right)),
-                       y: min(max(y - 40, 80), size.height - 140))
+        let fallback = CGPoint(x: size.width / 2, y: Glass.toolbarHeight + 40)
+        guard let pi = node.partIndex ?? model.selectedPartIndex,
+              let r = AgentShimmerOverlay.rect(pi, pad: 0) else { return fallback }
+        let y = min(max(r.midY, Glass.toolbarHeight + 30), size.height - 120)
+        if r.maxX + gap + barHalf <= right + barHalf { return CGPoint(x: max(left, r.maxX + gap + barHalf), y: y) }
+        if r.minX - gap - barHalf >= left { return CGPoint(x: r.minX - gap - barHalf, y: y) }
+        // No room either side: above the part.
+        return CGPoint(x: min(max(r.midX, left), max(left, right)), y: max(Glass.toolbarHeight + 30, r.minY - 30))
     }
 }
 
@@ -890,16 +940,25 @@ struct HistoryFilmstrip: View {
                 }.buttonStyle(.borderless).help("Close History").accessibilityLabel("Close History")
             }
             GeometryReader { geo in
-                let w = max(64, min(110, geo.size.width / CGFloat(max(frames.count, 1))))
+                let w: CGFloat = 96
                 ScrollViewReader { proxy in
                     ScrollView(.horizontal) {
-                        ZStack(alignment: .leading) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            // The playhead rides its own track above the frames.
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(.quaternary).frame(height: 4)
+                                Capsule().fill(Color.primary.opacity(0.5))
+                                    .frame(width: CGFloat(preview ?? playhead) * (w + 4) + w / 2, height: 4)
+                                Circle().fill(Color.primary).frame(width: 12, height: 12)
+                                    .offset(x: CGFloat(preview ?? playhead) * (w + 4) + w / 2 - 6)
+                                    .accessibilityHidden(true)
+                            }
+                            .frame(width: CGFloat(frames.count) * (w + 4), height: 12)
                             HStack(spacing: 4) {
                                 ForEach(Array(frames.enumerated()), id: \.offset) { i, name in
                                     frame(i, name, width: w).id(i)
                                 }
                             }
-                            playheadLine(x: CGFloat(preview ?? playhead) * (w + 4) + w / 2)
                         }
                         .contentShape(Rectangle())
                         .gesture(DragGesture(minimumDistance: 0).onChanged { g in
@@ -914,11 +973,12 @@ struct HistoryFilmstrip: View {
                     }
                     .scrollIndicators(.hidden)
                     .onAppear { proxy.scrollTo(playhead, anchor: .center) }
+                    .frame(width: geo.size.width)
                 }
-            }.frame(height: 58)
+            }.frame(height: 98)
         }
         .padding(12)
-        .frame(width: 560)
+        .frame(width: 600)
         .glassPanel()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("History")
@@ -934,30 +994,39 @@ struct HistoryFilmstrip: View {
                     : "\(step) · \(String(format: "%.1f", ms / 1000)) s rebuild — applies on release"
     }
 
-    private func frame(_ i: Int, _ name: String, width: CGFloat) -> some View {
+    private func frame(_ i: Int, _ raw: String, width: CGFloat) -> some View {
         let current = i == playhead
         let future = i > playhead
+        // "Claude: Create tab" → sparkle badge + "Create tab".
+        let byAgent = raw.hasPrefix("Claude: ")
+        let name = byAgent ? String(raw.dropFirst(8)) : raw
         return VStack(spacing: 3) {
-            Image(systemName: i == 0 ? "doc" : "square.stack.3d.up")
-                .font(.system(size: 15))
-            Text(name).font(.caption2).lineLimit(1).truncationMode(.tail)
+            Group {
+                if let img = ui.thumbnails[i] {
+                    Image(nsImage: img).resizable().aspectRatio(contentMode: .fill)
+                } else {
+                    Image(systemName: i == 0 ? "doc" : "square.stack.3d.up").font(.system(size: 15))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .background(.quaternary.opacity(0.5))
+                }
+            }
+            .frame(width: width, height: 52)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(alignment: .topTrailing) {
+                if byAgent {
+                    Image(systemName: "sparkle").font(.caption2)
+                        .padding(3).background(.ultraThinMaterial, in: Circle()).padding(3)
+                        .help("Made by the agent")
+                }
+            }
+            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .strokeBorder(Color.primary.opacity(current ? 0.8 : (hover == i ? 0.3 : 0)), lineWidth: current ? 2 : 1))
+            Text(name).font(.caption2).lineLimit(1).truncationMode(.tail).frame(width: width)
         }
-        .frame(width: width, height: 52)
-        .background(current ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear),
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .strokeBorder(.separator, lineWidth: hover == i ? 1 : 0))
         .opacity(future ? 0.45 : 1)
         .onHover { hover = $0 ? i : (hover == i ? nil : hover) }
-        .help(i == 0 ? "The document as opened" : name)
-        .accessibilityLabel("\(name)\(current ? ", current" : "")\(future ? ", undone" : "")")
-    }
-
-    private func playheadLine(x: CGFloat) -> some View {
-        Capsule().fill(Color.primary).frame(width: 2, height: 58)
-            .offset(x: x - 1)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
+        .help(i == 0 ? "The document as opened" : raw)
+        .accessibilityLabel("\(raw)\(current ? ", current" : "")\(future ? ", undone" : "")")
     }
 
     private func index(at x: CGFloat, width: CGFloat) -> Int {
@@ -974,6 +1043,52 @@ extension GlassUI {
     /// Rewind/replay the undo history to `frame` (0 = as opened) and rebuild
     /// the viewport. Returns the wall time until the rebuilt scene landed, ms
     /// (including a background kernel solve when the document needs one).
+    /// Pulse a soft violet glow on the suggestion's parts until it is
+    /// accepted or dismissed. Reduce Motion holds a steady glow instead.
+    func startShimmer(model: EditorModel) {
+        shimmerTask?.cancel()
+        shimmerTask = Task { @MainActor in
+            let rw = ReleaseWindowController.shared
+            let still = NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            let t0 = Date()
+            while !Task.isCancelled, GlassUI.shared.suggestion != nil, !model.agentShimmer.isEmpty {
+                let t = Date().timeIntervalSince(t0)
+                let level = still ? 0.12 : Float(0.05 + 0.13 * (sin(t * 2.4) + 1) / 2)
+                rw.glow(parts: model.agentShimmer, level: level)
+                try? await Task.sleep(for: .milliseconds(still ? 500 : 33))
+            }
+            rw.repaintAll()
+        }
+    }
+
+    /// Snapshot the viewport as history frame `frame`'s thumbnail once the
+    /// rebuild has landed. Called after every history change.
+    func captureThumbnail(model: EditorModel) {
+        let frame = model.undoStack.count
+        let total = frame + model.redoStack.count
+        thumbnails = thumbnails.filter { $0.key <= total }
+        Task { @MainActor in
+            var waited = 0
+            while (model.geometryDirty || model.solving) && waited < 600 {
+                try? await Task.sleep(for: .milliseconds(50)); waited += 1
+            }
+            try? await Task.sleep(for: .milliseconds(80))
+            guard model.undoStack.count == frame, let ar = ReleaseWindowController.shared.arView else { return }
+            ar.snapshot(saveToHDR: false) { img in
+                guard let img else { return }
+                let thumb = NSImage(size: NSSize(width: 96, height: 60))
+                thumb.lockFocus()
+                let src = img.size, aspect = 96.0 / 60.0
+                let w = min(src.width, src.height * aspect), h = w / aspect
+                img.draw(in: NSRect(x: 0, y: 0, width: 96, height: 60),
+                         from: NSRect(x: (src.width - w) / 2, y: (src.height - h) / 2, width: w, height: h),
+                         operation: .copy, fraction: 1)
+                thumb.unlockFocus()
+                Task { @MainActor in GlassUI.shared.thumbnails[frame] = thumb }
+            }
+        }
+    }
+
     static func seek(model: EditorModel, to frame: Int) async -> Double {
         let started = Date()
         while model.undoStack.count > frame, model.canUndo { model.undo() }
@@ -1021,8 +1136,7 @@ struct AgentSuggestionPill: View {
                 .accessibilityHidden(true)
             Text(error ?? suggestion.text).font(.callout).lineLimit(2)
                 .foregroundStyle(error == nil ? .primary : .secondary)
-            Button("Add") { accept() }.buttonStyle(.borderedProminent).controlSize(.small)
-                .keyboardShortcut(.defaultAction)
+            Button("Add") { accept() }.buttonStyle(.bordered).controlSize(.small)
                 .help("Apply the suggested edit (one undo step)")
             Button { dismiss() } label: { Image(systemName: "xmark") }
                 .buttonStyle(.borderless).controlSize(.small)
@@ -1075,45 +1189,13 @@ struct AgentSuggestionPill: View {
     }
 }
 
-/// The soft shimmer over parts a pending suggestion would touch: a slow
-/// pulse of a translucent glow at each part's projected bounds. Never a
-/// cursor, never a card.
-struct AgentShimmerOverlay: View {
-    @Bindable var model: EditorModel
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        if model.agentShimmer.isEmpty {
-            EmptyView()
-        } else {
-            TimelineView(.animation(paused: reduceMotion)) { ctx in
-                let t = ctx.date.timeIntervalSinceReferenceDate
-                let pulse = reduceMotion ? 0.5 : (sin(t * 2.2) + 1) / 2
-                ZStack(alignment: .topLeading) {
-                    ForEach(Array(model.agentShimmer), id: \.self) { pi in
-                        if let r = Self.rect(pi) {
-                            RoundedRectangle(cornerRadius: min(r.width, r.height) / 3, style: .continuous)
-                                .fill(RadialGradient(colors: [Color.purple.opacity(0.10 + 0.14 * pulse), .clear],
-                                                     center: .center, startRadius: 0,
-                                                     endRadius: max(r.width, r.height) * 0.7))
-                                .overlay(RoundedRectangle(cornerRadius: min(r.width, r.height) / 3, style: .continuous)
-                                    .strokeBorder(AngularGradient(colors: AgentSuggestionPill.colors, center: .center,
-                                                                  angle: .degrees(t * 40)),
-                                                  lineWidth: 1).opacity(0.35 + 0.35 * pulse))
-                                .frame(width: r.width, height: r.height)
-                                .offset(x: r.minX, y: r.minY)
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            }
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-        }
-    }
-
+/// Screen-space helpers for the parts a pending suggestion touches. The
+/// shimmer itself is a material glow on the part (see `GlassUI.startShimmer`),
+/// never an outline box, cursor, or card.
+@MainActor
+enum AgentShimmerOverlay {
     /// Screen rect of a part's bounds, in overlay coordinates.
-    static func rect(_ pi: Int) -> CGRect? {
+    static func rect(_ pi: Int, pad: CGFloat = 18) -> CGRect? {
         let rw = ReleaseWindowController.shared
         guard let ar = rw.arView,
               let e = rw.centeringEntity?.findEntity(named: "part\(pi)") ?? rw.centeringEntity?.findEntity(named: "inst\(pi)")
@@ -1126,7 +1208,7 @@ struct AgentShimmerOverlay: View {
         }}}
         guard let minX = pts.map(\.x).min(), let maxX = pts.map(\.x).max(),
               let minY = pts.map(\.y).min(), let maxY = pts.map(\.y).max() else { return nil }
-        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY).insetBy(dx: -18, dy: -18)
+        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY).insetBy(dx: -pad, dy: -pad)
     }
 }
 

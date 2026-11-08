@@ -293,6 +293,9 @@ enum AgentTools {
         ["name": "history_seek",
          "description": "Move the history playhead: frame 0 is the document as opened, frame k is after the k-th undo step. Rewinds/replays and rebuilds the viewport; returns the rebuild time.",
          "inputSchema": schema(["frame": ["type": "integer"]], required: ["frame"])],
+        ["name": "import_board",
+         "description": "Import a KiCad (.kicad_pcb) or Eagle (.brd) board file into the open document and switch to Electronics.",
+         "inputSchema": schema(["path": ["type": "string"]], required: ["path"])],
         ["name": "suggest_edit",
          "description": "Offer ONE edit as a suggestion pill in the user's viewport instead of applying it: a short question (\"Add 4 M3 counterbores on the motor bolt circle?\") plus the edit tool call it would make. The parts it touches shimmer softly. Nothing changes until the user clicks Add (then it is one named undo step); × dismisses. A new suggestion replaces the old one.",
          "inputSchema": schema(["text": ["type": "string", "description": "One-line question shown on the pill."],
@@ -400,12 +403,19 @@ enum AgentTools {
             GlassUI.shared.suggestion = AgentSuggestion(text: a["text"] as? String ?? "Apply this edit?",
                                                         tool: tool, args: args, parts: parts)
             m.agentShimmer = Set(parts)
+            GlassUI.shared.startShimmer(model: m)
             return text("Suggestion shown. The user decides; app_state.suggestion reports whether it is still pending.")
         case "history_seek":
             let total = m.undoStack.count + m.redoStack.count
             let f = max(0, min(total, (a["frame"] as? NSNumber)?.intValue ?? total))
             let ms = await GlassUI.seek(model: m, to: f)
             return text(String(format: "At frame %d of %d; rebuilt in %.0f ms.", f, total, ms))
+        case "import_board":
+            let path = (a["path"] as? String ?? "") as NSString
+            guard FileManager.default.fileExists(atPath: path.expandingTildeInPath) else { throw Failure(message: "no such file") }
+            GlassUI.shared.enter(.electronics, model: m)
+            m.electronics.tools.importBoard(URL(fileURLWithPath: path.expandingTildeInPath), m.electronics, m)
+            return text("Importing \(path.lastPathComponent)…")
         case "set_workspace":
             guard let ws = DockSpace(rawValue: (a["workspace"] as? String ?? "").lowercased()) else {
                 throw Failure(message: "workspace must be one of design, assembly, drawing, electronics, fab")

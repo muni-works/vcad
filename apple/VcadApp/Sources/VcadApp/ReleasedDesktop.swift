@@ -509,6 +509,20 @@ final class ReleaseWindowController {
         e.model?.materials = [m]
     }
 
+    /// The agent suggestion's shimmer: a violet emissive glow, driven by
+    /// `GlassUI.startShimmer`. Parts that are also selected keep the selection.
+    func glow(parts: Set<Int>, level: Float) {
+        for i in parts where !isSelected("part\(i)") {
+            for name in ["part\(i)", "inst\(i)"] {
+                guard let e = centeringEntity?.findEntity(named: name) as? ModelEntity,
+                      var m = e.model?.materials.first as? PhysicallyBasedMaterial else { continue }
+                m.emissiveColor = .init(color: NSColor(red: 0.62, green: 0.42, blue: 1.0, alpha: 1))
+                m.emissiveIntensity = level
+                e.model?.materials = [m]
+            }
+        }
+    }
+
     private func isSelected(_ name: String) -> Bool {
         if let i = Int(name.dropFirst(4)), name.hasPrefix("part") {
             return model?.highlightedParts.contains(i) ?? false
@@ -658,7 +672,7 @@ struct ReleasedOverlayView: View {
 
     /// Whether the viewport runs under the toolbar (full-bleed) or the
     /// workspace's own content starts below it.
-    private var fullBleed: Bool { model.workspace == .design }
+    private var fullBleed: Bool { model.workspace != .manufacture }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -715,7 +729,7 @@ struct ReleasedOverlayView: View {
             if model.workspace == .drawing || model.workspace == .electronics {
                 GlassDock(model: model)
                     .modifier(ChromeRegion(key: "dock"))
-                    .padding(.bottom, model.workspace == .electronics ? 44 : Glass.inset + 6)
+                    .padding(.bottom, Glass.inset + 6)
             }
         }
         .ignoresSafeArea(.container, edges: .top)
@@ -833,8 +847,12 @@ struct ReleasedOverlayView: View {
                     SectionPanel(model: model).modifier(ChromeRegion(key: "section"))
                 }
                 if model.showsTree {
-                    DesignModelNavigator(model: model)
-                        .modifier(ChromeRegion(key: "tree"))
+                    if FabStore.shared.shown {
+                        FabJobsNavigator(model: model).modifier(ChromeRegion(key: "tree"))
+                    } else {
+                        DesignModelNavigator(model: model)
+                            .modifier(ChromeRegion(key: "tree"))
+                    }
                 }
                 if model.assembly.showsPanel {
                     AssemblyPanel(model: model).modifier(ChromeRegion(key: "assembly"))
@@ -871,7 +889,12 @@ struct ReleasedOverlayView: View {
             if !studio {
             // The right rail: the inspector, docked to the screen edge.
             VStack(alignment: .trailing, spacing: Theme.Space.m) {
-                if model.showsInspector {
+                if FabStore.shared.shown && !model.source.isGripper {
+                    // Fab: the inspector IS the active process's settings.
+                    if model.showsInspector {
+                        FabricatePanel(model: model).modifier(ChromeRegion(key: "inspector"))
+                    }
+                } else if model.showsInspector {
                     if model.source.isGripper {
                         ReceiptLedgerWindow(model: model)
                             .modifier(ChromeRegion(key: "inspector"))
@@ -879,11 +902,6 @@ struct ReleasedOverlayView: View {
                         ObjectInspectorWindow(model: model)
                             .modifier(ChromeRegion(key: "inspector"))
                     }
-                }
-                // Sheet metal / 3D print / CAM job (FabricatePanel.swift).
-                if FabStore.shared.shown && !model.source.isGripper {
-                    FabricatePanel(model: model)
-                        .modifier(ChromeRegion(key: "fabricate"))
                 }
             }
             .padding(.trailing, Glass.inset).padding(.bottom, Glass.inset)
@@ -921,22 +939,12 @@ struct ReleasedOverlayView: View {
                 .padding(.top, chromeTop)
                 .transition(.opacity)
                 .accessibilityLabel("Solving \(model.documentName)")
-            } else if !studio && !model.source.isGripper {
-                DesignBreadcrumb(model: model).padding(.top, chromeTop)
-            }
-        }
-        .overlay(alignment: .bottomTrailing) {
-            if !studio {
-                DesignViewportTools(model: model)
-                    .padding(.trailing, Glass.inset).padding(.bottom, Glass.inset)
-                    .modifier(ChromeRegion(key: "designViewportTools"))
             }
         }
         .overlay {
             // Labels an agent pinned over the MCP bridge (AgentBridge.swift).
             AgentAnnotationOverlay(model: model)
         }
-        .overlay { if !studio { AgentShimmerOverlay(model: model) } }
         .overlay { if !studio { EditBarOverlay(model: model) } }
         .overlay(alignment: .topLeading) {
             // Decoded compressed scalar field (FieldOverlay.swift).
@@ -1031,6 +1039,8 @@ struct ReleasedOverlayView: View {
             if shape == nil { NSCursor.arrow.set() }
         }
         .onChange(of: model.section) { _, _ in applySectionView(model: model) }
+        .onChange(of: model.undoStack.count, initial: true) { _, _ in GlassUI.shared.captureThumbnail(model: model) }
+        .onChange(of: model.source) { _, _ in GlassUI.shared.thumbnails = [:]; GlassUI.shared.captureThumbnail(model: model) }
         .onChange(of: model.picking.revision) { _, _ in refreshTopologyOverlay() }
         .onChange(of: model.measuring) { _, on in if !on { model.picking.filter = .body }; refreshTopologyOverlay() }
         .onChange(of: model.sketching) { _, on in
@@ -1729,7 +1739,7 @@ struct ObjectInspectorWindow: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
-            PanelHeader(title: title, onClose: { model.showsInspector = false })
+            PanelHeader(title: title)
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Space.m) {
                     if model.usesDocumentTree { documentSections } else { sandboxSection }
@@ -1971,7 +1981,7 @@ struct AxisTriad: View {
         }
         .frame(width: size, height: size)
         .padding(6)
-        .pillSurface()
+
         .accessibilityLabel("Orientation: X right, Y forward, Z up")
     }
 
