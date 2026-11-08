@@ -920,7 +920,12 @@ struct ReleasedOverlayView: View {
             if !studio {
             // The right rail: the inspector, docked to the screen edge.
             VStack(alignment: .trailing, spacing: Theme.Space.m) {
-                if FabStore.shared.shown && !model.source.isGripper {
+                if AnalysisStore.shared.shown && !model.source.isGripper && model.showsInspector {
+                    // DFM / stress / clearance (AnalysisPanel.swift). Its host was
+                    // dropped in #1055, so the dock's DFM and Stress buttons lit
+                    // up and showed nothing; it takes the rail while active.
+                    AnalysisPanel(model: model).modifier(ChromeRegion(key: "analysis"))
+                } else if FabStore.shared.shown && !model.source.isGripper {
                     // Fab: the inspector IS the active process's settings.
                     if model.showsInspector {
                         FabricatePanel(model: model).modifier(ChromeRegion(key: "inspector"))

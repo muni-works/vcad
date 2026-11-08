@@ -555,12 +555,12 @@ enum DockTools {
         let a = AnalysisStore.shared
         return keyed([
             Tool(id: "fab.sheet", label: "Sheet Metal", symbol: "square.3.layers.3d.down.right",
-                 isActive: f.shown && f.tab == .sheet) { f.shown = true; f.tab = .sheet },
+                 isActive: f.shown && f.tab == .sheet) { a.shown = false; f.shown = true; f.tab = .sheet },
             Tool(id: "fab.print", label: "3D Print", symbol: "printer", isActive: f.shown && f.tab == .print) {
-                f.shown = true; f.tab = .print
+                a.shown = false; f.shown = true; f.tab = .print
             },
             Tool(id: "fab.cam", label: "CAM", symbol: "gearshape.2", isActive: f.shown && f.tab == .cam) {
-                f.shown = true; f.tab = .cam
+                a.shown = false; f.shown = true; f.tab = .cam
             },
             Tool(id: "fab.dfm", label: "DFM", symbol: "checkmark.shield", isActive: a.shown && a.tab == .dfm,
                  enabled: m.usesDocumentTree) { a.shown = true; a.tab = .dfm },

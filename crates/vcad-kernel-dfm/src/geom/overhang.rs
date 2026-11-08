@@ -12,7 +12,7 @@
 use vcad_kernel_math::{Point3, Vec3};
 use vcad_kernel_primitives::BRepSolid;
 
-use super::face_midpoint_and_normal;
+use super::{brep_bbox, face_midpoint_and_normal};
 
 /// One overhang flag.
 #[derive(Debug, Clone, Copy)]
@@ -32,6 +32,10 @@ pub struct OverhangSample {
 pub fn sample(brep: &BRepSolid, max_overhang_deg: f64) -> Vec<OverhangSample> {
     let z_up = Vec3::new(0.0, 0.0, 1.0);
     let n = brep.topology.faces.len();
+    // The part prints sitting on its lowest face; a face pointing straight
+    // down at that height rests on the build plate and needs no support.
+    // It was flagged as a 180° overhang ("supports required") on every part.
+    let bed_z = brep_bbox(brep).0[2];
     let mut out = Vec::new();
 
     #[cfg(feature = "raytrace")]
@@ -53,6 +57,9 @@ pub fn sample(brep: &BRepSolid, max_overhang_deg: f64) -> Vec<OverhangSample> {
         let dot = normal.dot(z_up).clamp(-1.0, 1.0);
         let angle = dot.acos().to_degrees();
         if angle <= max_overhang_deg {
+            continue;
+        }
+        if angle > 175.0 && (midpoint.z - bed_z).abs() < 1e-3 {
             continue;
         }
 
@@ -102,4 +109,16 @@ pub fn total_support_volume_mm3(samples: &[OverhangSample]) -> f64 {
         .iter()
         .map(|s| s.support_column_mm.max(0.0))
         .sum::<f64>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_face_on_the_build_plate_is_not_an_overhang() {
+        // A plain box: its bottom face rests on the plate, nothing overhangs.
+        let cube = vcad_kernel_primitives::make_cube(20.0, 20.0, 5.0);
+        assert!(sample(&cube, 45.0).is_empty(), "bed face flagged as overhang");
+    }
 }
