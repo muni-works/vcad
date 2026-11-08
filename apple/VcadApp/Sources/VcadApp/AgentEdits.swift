@@ -64,6 +64,13 @@ enum AgentEdits {
          "inputSchema": schema(["source": ["type": "string", "description": "loon source"],
                                 "name": ["type": "string", "description": "Short name for the undo step"]],
                                required: ["source"])],
+        ["name": "adopt_document",
+         "description": "Show an MCP session's document in this window as one undo step. Sent by @vcad/mcp after each edit; agents don't call it. Refused when the window holds other work, or the user edited since the last push.",
+         "inputSchema": schema(["document": ["type": "object"], "link_id": ["type": "string"],
+                                "tool": ["type": "string"]], required: ["document", "link_id"])],
+        ["name": "link_status",
+         "description": "The current revision of a linked session's document, the document itself when pull is set.",
+         "inputSchema": schema(["link_id": ["type": "string"], "pull": ["type": "boolean"]], required: ["link_id"])],
         ["name": "undo",
          "description": "Undo the last edit in the app (yours or the user's), exactly like ⌘Z.",
          "inputSchema": schema([:])],
@@ -81,6 +88,8 @@ enum AgentEdits {
         case "list_parameters": return AgentTools.json(parameters(m))
         case "set_parameters": return try setParameters(a, m)
         case "create_cad_loon": return try createLoon(a, m)
+        case "adopt_document": return try adoptDocument(a, m)
+        case "link_status": return try linkStatus(a, m)
         case "undo":
             guard let label = m.undoActionName else { throw Failure(message: "Nothing to undo.") }
             m.undo()
@@ -145,6 +154,35 @@ enum AgentEdits {
         }
         if let n = a["name"] as? String, !n.isEmpty { return "Claude: \(verb) \(n)" }
         return "Claude: \(verb)"
+    }
+
+    private static func adoptDocument(_ a: [String: Any], _ m: EditorModel) throws -> [String: Any] {
+        guard let document = a["document"] as? [String: Any], let link = a["link_id"] as? String else {
+            throw Failure(message: "document and link_id are required")
+        }
+        let mine = m.agentLinkID == link
+        guard mine || m.isDisposableScratch else { return AgentTools.json(["adopted": false, "reason": "busy"]) }
+        if mine, try editableEngine(m).stateHash != m.agentLinkRevision {
+            return AgentTools.json(["adopted": false, "reason": "edited"])
+        }
+        let tool = (a["tool"] as? String) ?? "edit"
+        try edit(m, name: "Agent: \(tool)") { try $0.loadIR(document) }
+        let revision = try editableEngine(m).stateHash
+        m.agentLinkID = link
+        m.agentLinkRevision = revision
+        return AgentTools.json(["adopted": true, "revision": revision])
+    }
+
+    private static func linkStatus(_ a: [String: Any], _ m: EditorModel) throws -> [String: Any] {
+        guard m.agentLinkID == (a["link_id"] as? String), m.agentLinkID != nil else {
+            return AgentTools.json(["linked": false])
+        }
+        var out: [String: Any] = ["linked": true, "edited": try editableEngine(m).stateHash != m.agentLinkRevision]
+        if a["pull"] as? Bool == true, let json = m.documentJSON {
+            out["document"] = json
+            m.agentLinkRevision = try editableEngine(m).stateHash
+        }
+        return AgentTools.json(out)
     }
 
     private static func setParameters(_ a: [String: Any], _ m: EditorModel) throws -> [String: Any] {

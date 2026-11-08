@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-08-mcp-live-app-link",
+  "version": "undefined",
+  "date": "2026-11-08",
+  "category": "feat",
+  "title": "Any MCP agent can work live in the vcad app",
+  "summary": "Local @vcad/mcp sessions now appear in the running Mac app, with each edit as one undo step, and your own edits in the app win over stale agent calls.",
+  "features": ["native-app", "mcp"],
+  "mcpTools": ["route_nets"]
+}

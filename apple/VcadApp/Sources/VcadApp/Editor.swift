@@ -277,6 +277,9 @@ final class EditorModel {
     /// Command palette / parameter table sheets.
     var showsCommandPalette = false
     var sketchPlaneChosen = false
+    /// The external MCP session this window shows, and the engine state it last pushed.
+    var agentLinkID: String?
+    var agentLinkRevision: String?
     var showsParameterTable = false
     var isWindowed = false { didSet { saveLayout() } }
     init() {

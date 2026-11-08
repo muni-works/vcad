@@ -35,6 +35,7 @@ import {
   durabilityWarning,
   addDocumentEnterHook,
 } from "./tools/session.js";
+import { pushAfterWrite, reconcileBeforeWrite } from "./app-link.js";
 import { createCadLoon } from "./tools/loon.js";
 import {
   markSourceDiverged,
@@ -1460,6 +1461,13 @@ export async function createServer(
       }
     }
 
+    // ── Live app link ──
+    // The user's edits in the desktop app win over a stale tool call.
+    if (incomingId && def?.behavior.writesDoc) {
+      const refused = await reconcileBeforeWrite(incomingId, documents);
+      if (refused) return { content: [{ type: "text", text: refused }], isError: true };
+    }
+
     // ── Undo snapshot ─────────────────────────────────────────────────────
     // Snapshot the document BEFORE any mutation of an existing session, so
     // `undo` can rewind it. Gated to writers that target a resident session
@@ -1580,6 +1588,10 @@ export async function createServer(
       // (import_step / create_cad_loon) aren't double-registered.
       if (!result.isError && def?.behavior.writesDoc) {
         const writtenId = effectiveDocId(result, args);
+        if (writtenId) {
+          const note = await pushAfterWrite(writtenId, name, documents.get(writtenId));
+          if (note) result.content.push({ type: "text", text: note });
+        }
         // A tool that just MINTED a session (returned an id the caller didn't
         // pass in) is the one moment an agent can still act on the storage
         // contract — before 30 turns of work depend on a handle that a restart
