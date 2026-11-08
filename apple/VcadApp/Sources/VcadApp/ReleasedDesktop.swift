@@ -1128,6 +1128,17 @@ struct ReleasedOverlayView: View {
     }
 
     private func sketchTap(at p: CGPoint) {
+        // The first click of an untouched sketch picks its plane: a planar
+        // face under the pointer beats the default plane.
+        if model.sketchAwaitsPlane {
+            let filter = model.picking.filter
+            model.picking.filter = .face
+            model.picking.select(hit: topologyHit(at: p), additive: false)
+            // Adopt before restoring: going back to a body filter clears the pick.
+            let adopted = model.adoptPickedFaceAsSketchPlane()
+            model.picking.filter = filter
+            if adopted { refreshSketchInk(); return }
+        }
         guard let pt = sketchPlanePoint(at: p) else { return }
         model.sketchTap(pt)
         refreshSketchInk()

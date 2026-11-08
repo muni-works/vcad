@@ -24,6 +24,10 @@ struct SketchPaletteView: View {
                     ForEach(SketchToolKind.allCases) { Label($0.label, systemImage: $0.symbol).tag($0) }
                 }
                 .pickerStyle(.segmented).labelsHidden().controlSize(.small).fixedSize()
+                if sketch.tool == .polygon {
+                    Stepper("\(sketch.polygonSides) sides", value: Binding(get: { sketch.polygonSides }, set: { sketch.polygonSides = $0 }), in: 3...64)
+                        .controlSize(.small).fixedSize()
+                }
                 Menu {
                     ForEach(SketchConstraintKind.allCases.filter { !$0.isDimension || $0 == .distance || $0 == .angle }) { k in
                         Button("\(k.glyph)  \(k.label)") { _ = sketch.constrainSelection(k); model.sketchDirty = true }
@@ -49,7 +53,6 @@ struct SketchPaletteView: View {
             .disabled(!model.canFinishSketch)
             Button { model.exitSketch() } label: { Image(systemName: "xmark") }
                 .buttonStyle(.bordered).controlSize(.small)
-                .keyboardShortcut(.cancelAction)
                 .help("Cancel sketch (Esc)")
                 .accessibilityLabel("Cancel sketch")
         }
@@ -146,7 +149,7 @@ struct SketchHintBar: View {
             }
             if let c = model.sketchCursor {
                 Divider().frame(height: 11)
-                Text(String(format: "%.1f, %.1f mm", c.x, c.y)).monospacedDigit()
+                Text(String(format: "%.1f, %.1f mm", c.x + 0, c.y + 0)).monospacedDigit()
             }
             if let s = model.sketch {
                 Divider().frame(height: 11)
@@ -180,6 +183,19 @@ func buildSketchRoot(model: EditorModel) -> Entity {
     func dot(_ p: SIMD2<Double>, _ color: NSColor, _ r: Float) {
         let e = ModelEntity(mesh: .generateSphere(radius: r), materials: [UnlitMaterial(color: color)])
         e.position = w(p); root.addChild(e)
+    }
+
+    // The floor grid only serves an XY sketch: every other plane gets its own,
+    // with the sketch axes through the origin the cursor grid is measured from.
+    if model.sketchFace != nil || model.sketchPlane != .xy {
+        let spacing = 10.0, half = (Double(max(model.displayedSceneSize, 100)) / spacing).rounded(.up) * spacing
+        var lines: [SIMD2<Double>] = []
+        for v in stride(from: -half, through: half, by: spacing) where abs(v) > 1e-9 {
+            lines += [SIMD2(v, -half), SIMD2(v, half), SIMD2(-half, v), SIMD2(half, v)]
+        }
+        ribbon(lines, NSColor(white: 0.38, alpha: 1), 0.5)
+        ribbon([SIMD2(-half, 0), SIMD2(half, 0)], NSColor(srgbRed: 0.75, green: 0.25, blue: 0.25, alpha: 1))
+        ribbon([SIMD2(0, -half), SIMD2(0, half)], NSColor(srgbRed: 0.25, green: 0.65, blue: 0.3, alpha: 1))
     }
 
     let (geometry, preview, points) = sketch.ink()

@@ -270,7 +270,7 @@ struct RenderScene {
     /// the viewport keeps whatever it was showing until the real scene lands.
     var solving = false
 
-    static let empty = RenderScene(meshes: [], center: .zero, size: 1, triangleCount: 0, partCount: 0)
+    static let empty = RenderScene(meshes: [], center: .zero, size: 100, triangleCount: 0, partCount: 0)
     static var pending: RenderScene { var s = RenderScene.empty; s.solving = true; return s }
 }
 

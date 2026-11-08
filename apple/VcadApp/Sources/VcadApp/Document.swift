@@ -156,7 +156,7 @@ struct DocumentGraph {
 
     /// Build a graph from an already-parsed JSON object — the editable path,
     /// where the model keeps a mutable doc dict and re-parses after each edit.
-    static func parse(_ obj: [String: Any]) -> DocumentGraph? {
+    static func parse(_ obj: [String: Any], allowEmpty: Bool = false) -> DocumentGraph? {
         guard let nodesRaw = obj["nodes"] as? [String: Any] else { return nil }
 
         var nodes: [Int: DocNode] = [:]
@@ -269,7 +269,7 @@ struct DocumentGraph {
         // Assembly documents may have no scene roots — instances carry the
         // geometry there, so an empty `roots` is only fatal without them.
         let hasInstances = ((obj["instances"] as? [[String: Any]])?.isEmpty == false)
-        guard !nodes.isEmpty, !roots.isEmpty || hasInstances else { return nil }
+        guard allowEmpty || (!nodes.isEmpty && (!roots.isEmpty || hasInstances)) else { return nil }
         return DocumentGraph(nodes: nodes, roots: roots, materials: materials,
                              parameters: parameters, joints: joints, timeline: timeline)
     }

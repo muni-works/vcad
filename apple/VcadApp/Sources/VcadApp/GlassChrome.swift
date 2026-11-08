@@ -404,7 +404,7 @@ enum DockTools {
         var out: [Tool] = []
         out.append(Tool(id: "sketch", label: "Sketch", symbol: "scribble.variable", isActive: m.sketching,
                         enabled: doc || sandbox, hint: doc || sandbox ? "" : "Open a document") {
-            if m.promoteSandboxToDocument() { m.enterSketch() }
+            if m.promoteSandboxToDocument(blank: true) { m.enterSketch() }
         })
         out += m.tools(for: .create).filter { ["shape.cube", "shape.cylinder"].contains($0.id) }
         for op in FeatureOp.modifyOps where [.fillet, .chamfer, .shell, .circularPattern].contains(op) {

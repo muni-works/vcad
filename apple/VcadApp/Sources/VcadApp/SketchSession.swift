@@ -44,13 +44,15 @@ extension Comparable {
 
 /// What a sketch click does.
 enum SketchToolKind: String, CaseIterable, Identifiable {
-    case select, line, rectangle, circle, arc, spline, dimension
+    case select, line, rectangle, polygon, slot, circle, arc, spline, dimension
     var id: String { rawValue }
     var label: String {
         switch self {
         case .select: "Select"
         case .line: "Line"
         case .rectangle: "Rectangle"
+        case .polygon: "Polygon"
+        case .slot: "Slot"
         case .circle: "Circle"
         case .arc: "Arc"
         case .spline: "Spline"
@@ -62,6 +64,8 @@ enum SketchToolKind: String, CaseIterable, Identifiable {
         case .select: "cursorarrow"
         case .line: "line.diagonal"
         case .rectangle: "rectangle"
+        case .polygon: "hexagon"
+        case .slot: "capsule"
         case .circle: "circle"
         case .arc: "circle.lefthalf.striped.horizontal"
         case .spline: "point.bottomleft.forward.to.point.topright.scurvepath"
@@ -73,6 +77,8 @@ enum SketchToolKind: String, CaseIterable, Identifiable {
         case .select: "Click entities to select · ⌘-click to add"
         case .line: "Click points · click the first point to close"
         case .rectangle: "Click two opposite corners"
+        case .polygon: "Click the center, then a corner"
+        case .slot: "Click both end centers, then the width"
         case .circle: "Click the center, then the radius"
         case .arc: "Click the center, the start, then the end"
         case .spline: "Click control points · Return to finish"
@@ -236,6 +242,8 @@ final class SketchSession {
     private(set) var revision = 0
     /// Snap radius in plane mm.
     var snap: Double = 2.5
+    /// Side count of the polygon tool.
+    var polygonSides = 6
 
     init?(frame: SketchFrame) {
         var o = [frame.origin.x, frame.origin.y, frame.origin.z]
@@ -391,6 +399,13 @@ final class SketchSession {
             if let a = pending.first {
                 rectangle(a, p); pending = []
             } else { pending = [p] }
+        case .polygon:
+            if let c = pending.first {
+                polygon(center: c, corner: p); pending = []
+            } else { pending = [p] }
+        case .slot:
+            pending.append(p)
+            if pending.count == 3 { slot(pending[0], pending[1], through: p); pending = [] }
         case .circle:
             if let c = pending.first {
                 let ch = pointAt(c)
@@ -444,6 +459,8 @@ final class SketchSession {
         solve()
     }
 
+    var hasInProgress: Bool { !pending.isEmpty || !chain.isEmpty }
+
     /// Escape: drop in-progress clicks.
     func cancelPending() { pending = []; chain = []; revision &+= 1 }
 
@@ -454,6 +471,35 @@ final class SketchSession {
         constrain(.vertical, l[1], solveNow: false)
         constrain(.horizontal, l[2], solveNow: false)
         constrain(.vertical, l[3], solveNow: false)
+    }
+
+    /// The corners a polygon would have: shared with the live preview.
+    static func polygonCorners(center c: SIMD2<Double>, corner p: SIMD2<Double>, sides n: Int) -> [SIMD2<Double>] {
+        let d = p - c, r = simd_length(d), a0 = atan2(d.y, d.x)
+        return (0..<n).map { c + r * SIMD2(cos(a0 + Double($0) * 2 * .pi / Double(n)), sin(a0 + Double($0) * 2 * .pi / Double(n))) }
+    }
+    private func polygon(center: SIMD2<Double>, corner: SIMD2<Double>) {
+        guard simd_distance(center, corner) > 0.1 else { return }
+        let c = Self.polygonCorners(center: center, corner: corner, sides: polygonSides).map { pointAt($0) }
+        let l = c.indices.map { addLine(c[$0], c[($0 + 1) % c.count]) }
+        for i in l.indices.dropFirst() { constrain(.equalLength, l[0], VCAD_SKETCH_REF_SELF, l[i], solveNow: false) }
+    }
+    /// A stadium: `a`→`b` is the centerline, `p` sets the half-width.
+    static func slotOffset(_ a: SIMD2<Double>, _ b: SIMD2<Double>, through p: SIMD2<Double>) -> SIMD2<Double>? {
+        let d = b - a
+        guard simd_length(d) > 0.1 else { return nil }
+        let u = simd_normalize(d), n = SIMD2(-u.y, u.x)
+        let r = abs(simd_dot(p - a, n))
+        return r > 0.05 ? n * r : nil
+    }
+    private func slot(_ a: SIMD2<Double>, _ b: SIMD2<Double>, through p: SIMD2<Double>) {
+        guard let n = Self.slotOffset(a, b, through: p) else { return }
+        let ca = addPoint(a), cb = addPoint(b)
+        let a0 = addPoint(a + n), a1 = addPoint(a - n), b0 = addPoint(b + n), b1 = addPoint(b - n)
+        let top = addLine(b0, a0), bottom = addLine(a1, b1)
+        addArc(start: a0, end: a1, center: ca, ccw: true)
+        addArc(start: b1, end: b0, center: cb, ccw: true)
+        constrain(.parallel, top, VCAD_SKETCH_REF_SELF, bottom, solveNow: false)
     }
 
     /// Apply a constraint to the current selection, inferring refs from kinds.
@@ -574,6 +620,68 @@ final class SketchSession {
         return try? JSONSerialization.jsonObject(with: Data(String(cString: r).utf8)) as? [String: Any]
     }
 
+    /// One profile per closed loop, for a sketch the single-loop export
+    /// refuses: a bore and its bolt circle, a row of slots. Nil if any curve
+    /// is left open, or — unless `allowNested` — a loop lies inside another,
+    /// which would need to become a hole in it rather than a separate body.
+    func loopProfiles(allowNested: Bool) -> [[String: Any]]? {
+        let curves = entities.filter { $0.kind != .point && !$0.construction }
+        guard !curves.isEmpty else { return nil }
+        var parent = Dictionary(curves.flatMap { $0.points.prefix(2) }.map { ($0, $0) }) { first, _ in first }
+        func root(_ h: UInt32) -> UInt32 { var r = h; while let n = parent[r], n != r { r = n }; return r }
+        for e in curves where e.kind != .circle { parent[root(e.points[0])] = root(e.points[1]) }
+        let loops = Dictionary(grouping: curves) { root($0.points[0]) }.values
+        func xy(_ p: SIMD2<Double>) -> [String: Double] { ["x": p.x, "y": p.y] }
+        func xyz(_ v: SIMD3<Double>) -> [String: Double] { ["x": v.x, "y": v.y, "z": v.z] }
+        var profiles: [[String: Any]] = []
+        var bounds: [(min: SIMD2<Double>, max: SIMD2<Double>)] = []
+        for loop in loops {
+            var segments: [[String: Any]] = []
+            var extent: [SIMD2<Double>] = []
+            if loop.count == 1, loop[0].kind == .circle {
+                guard let c = positions[loop[0].points[0]], let r = radii[loop[0].handle] else { return nil }
+                let a = c + SIMD2(r, 0), b = c - SIMD2(r, 0)
+                segments = [["type": "Arc", "start": xy(a), "end": xy(b), "center": xy(c), "ccw": true],
+                            ["type": "Arc", "start": xy(b), "end": xy(a), "center": xy(c), "ccw": true]]
+                extent = [c - SIMD2(r, r), c + SIMD2(r, r)]
+            } else {
+                guard loop.allSatisfy({ $0.kind != .circle }) else { return nil }
+                var open = loop
+                let start = open[0].points[0]
+                var at = start
+                while !open.isEmpty {
+                    guard let i = open.firstIndex(where: { $0.points[0] == at || $0.points[1] == at }) else { return nil }
+                    let e = open.remove(at: i)
+                    let forward = e.points[0] == at
+                    let to = e.points[forward ? 1 : 0]
+                    guard let p = positions[at], let q = positions[to] else { return nil }
+                    if e.kind == .line {
+                        segments.append(["type": "Line", "start": xy(p), "end": xy(q)])
+                    } else {
+                        guard let c = positions[e.points[2]] else { return nil }
+                        segments.append(["type": "Arc", "start": xy(p), "end": xy(q), "center": xy(c), "ccw": forward])
+                        let r = simd_distance(c, p)
+                        extent += [c - SIMD2(r, r), c + SIMD2(r, r)]
+                    }
+                    extent += [p, q]
+                    at = to
+                }
+                guard at == start else { return nil }
+            }
+            bounds.append((extent.reduce(extent[0], pointwiseMin), extent.reduce(extent[0], pointwiseMax)))
+            profiles.append(["origin": xyz(frame.origin), "x_dir": xyz(frame.xDir), "y_dir": xyz(frame.yDir), "segments": segments])
+        }
+        if !allowNested {
+            for (i, a) in bounds.enumerated() {
+                for (j, b) in bounds.enumerated() where i != j
+                    && a.min.x <= b.min.x && a.min.y <= b.min.y && a.max.x >= b.max.x && a.max.y >= b.max.y {
+                    return nil
+                }
+            }
+        }
+        return profiles
+    }
+
     func profileSegments() -> [Seg]? {
         guard let segs = profileJSON()?["segments"] as? [[String: Any]] else { return nil }
         func v(_ a: Any?) -> SIMD2<Double> {
@@ -620,6 +728,18 @@ final class SketchSession {
                 if let a = pending.first {
                     let k = [a, SIMD2(c.x, a.y), c, SIMD2(a.x, c.y)]
                     for i in 0..<4 { pv += [k[i], k[(i + 1) % 4]] }
+                }
+            case .polygon:
+                if let a = pending.first, simd_distance(a, c) > 0.01 {
+                    let v = Self.polygonCorners(center: a, corner: c, sides: polygonSides)
+                    for k in v.indices { pv += [v[k], v[(k + 1) % v.count]] }
+                }
+            case .slot:
+                if pending.count == 1 { pv += [pending[0], c] }
+                if pending.count == 2, let w = Self.slotOffset(pending[0], pending[1], through: c) {
+                    let (a, b) = (pending[0], pending[1]), r = simd_length(w), t = atan2(w.y, w.x)
+                    pv += [a + w, b + w, a - w, b - w]
+                    pv += Self.ring(a, r, t, t + .pi, n) + Self.ring(b, r, t - .pi, t, n)
                 }
             case .circle:
                 if let a = pending.first { pv += Self.ring(a, simd_distance(a, c), 0, 2 * .pi, n) }

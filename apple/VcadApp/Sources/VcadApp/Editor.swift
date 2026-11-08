@@ -276,6 +276,7 @@ final class EditorModel {
     var section: SectionPlane?
     /// Command palette / parameter table sheets.
     var showsCommandPalette = false
+    var sketchPlaneChosen = false
     var showsParameterTable = false
     var isWindowed = false { didSet { saveLayout() } }
     init() {
@@ -824,7 +825,7 @@ final class EditorModel {
     }
     #endif
 
-    var usesDocumentTree: Bool { documentGraph != nil && !featureNodes.isEmpty }
+    var usesDocumentTree: Bool { documentGraph != nil && (!featureNodes.isEmpty || engine != nil) }
 
     /// Parse the DAG when a `.vcad` document loads; clear it for every other
     /// source. Resets visibility + expansion so each document opens clean.
@@ -1258,7 +1259,8 @@ final class EditorModel {
         documentJSON = r.document
         adoptingDelta = false
         documentDirty = engine.map { $0.stateHash != savedHash } ?? true
-        if let g = DocumentGraph.parse(r.document) {
+        // The engine's document is always valid, including with nothing in it.
+        if let g = DocumentGraph.parse(r.document, allowEmpty: true) {
             documentGraph = g
             featureNodes = g.featureRoots()
         }
@@ -1542,7 +1544,10 @@ final class EditorModel {
         guard var doc = documentJSON, !features.isEmpty else { return false }
         var prev: Int?
         for var f in features {
-            if (f["child"] as? Int) == -1 { guard let prev else { return false }; f["child"] = prev }
+            for key in ["child", "target"] where (f[key] as? Int) == -1 {
+                guard let prev else { return false }
+                f[key] = prev
+            }
             guard let docData = try? JSONSerialization.data(withJSONObject: doc),
                   let fData = try? JSONSerialization.data(withJSONObject: f),
                   let docStr = String(data: docData, encoding: .utf8),
@@ -1636,13 +1641,20 @@ final class EditorModel {
     }
     var canFinishSketch: Bool {
         guard let sketch else { return false }
-        return sketchFinish == .loft ? (loftProfiles.count >= 2 || sketch.canFinish) : sketch.canFinish
+        if sketch.canFinish { return true }
+        switch sketchFinish {
+        case .loft: return loftProfiles.count >= 2
+        case .extrude: return sketch.loopProfiles(allowNested: false) != nil
+        case .cut: return sketch.loopProfiles(allowNested: true) != nil
+        default: return false
+        }
     }
 
     /// Start a sketch: on the picked planar face when exactly one is picked,
     /// else on `sketchPlane`.
     func enterSketch() {
         guard usesDocumentTree else { return }
+        sketchPlaneChosen = false
         var frame = SketchFrame.principal(sketchPlane)
         sketchFace = nil
         if picking.selectedFaces.count == 1, let f = picking.selectedFaces.first,
@@ -1665,8 +1677,24 @@ final class EditorModel {
         sketchFace = nil
         sketchDirty = true
     }
+    /// Nothing drawn and no plane chosen yet: the next click may pick a face.
+    var sketchAwaitsPlane: Bool {
+        guard let k = sketch, sketchFace == nil, !sketchPlaneChosen else { return false }
+        return k.isEmpty && !k.hasInProgress
+    }
+    /// Restart the sketch on the face just picked. False when it isn't planar.
+    func adoptPickedFaceAsSketchPlane() -> Bool {
+        guard picking.selectedFaces.count == 1, let f = picking.selectedFaces.first,
+              partTopology(f.part)?.face(f.id)?.isPlanar == true else { picking.clear(); return false }
+        let tool = sketch?.tool ?? .line
+        enterSketch()
+        sketch?.tool = tool
+        picking.clear()
+        return sketchFace != nil
+    }
     func setSketchPlane(_ p: SketchPlane) {
         sketchPlane = p
+        sketchPlaneChosen = true
         guard sketching, sketchFace == nil else { return }
         sketch = SketchSession(frame: .principal(p))
         aimCamera(at: .principal(p))
@@ -1679,7 +1707,13 @@ final class EditorModel {
         azimuth = abs(n.z) > 0.99 ? 0 : Float(atan2(n.x, -n.y))
     }
 
-    func setSketchTool(_ t: SketchToolKind) { sketch?.tool = t; sketchDirty = true }
+    func setSketchTool(_ t: SketchToolKind) {
+        // A tool's in-progress clicks don't carry over: a line chain left open
+        // would otherwise resume from its old end on the next Line click.
+        if sketch?.tool != t { sketch?.cancelPending() }
+        sketch?.tool = t
+        sketchDirty = true
+    }
 
     /// A tap on the sketch plane (2D plane coords) — drives the active tool.
     func sketchTap(_ p: SIMD2<Float>, additive: Bool = false) {
@@ -1687,11 +1721,18 @@ final class EditorModel {
         sketchDirty = true
     }
 
+    /// Spacing of the sketch cursor grid, in mm.
+    static let sketchGridStep = 0.5
+
     /// Project a kernel-space ray onto the sketch plane → 2D plane coords.
     func sketchPlanePoint(originKernel o: SIMD3<Float>, dirKernel d: SIMD3<Float>) -> SIMD2<Float>? {
         let frame = sketch?.frame ?? .principal(sketchPlane)
         guard let p = frame.intersect(origin: SIMD3<Double>(o), dir: SIMD3<Double>(d)) else { return nil }
-        return SIMD2(Float(p.x), Float(p.y))
+        // Sketch points land on a grid measured from the sketch origin, so a
+        // click can hit a real dimension. Hold Option to place freely.
+        guard !NSEvent.modifierFlags.contains(.option) else { return SIMD2(Float(p.x), Float(p.y)) }
+        let step = Self.sketchGridStep
+        return SIMD2(Float((p.x / step).rounded() * step), Float((p.y / step).rounded() * step))
     }
 
     /// 2D plane coords → 3D kernel coords (for drawing the ink).
@@ -1708,6 +1749,31 @@ final class EditorModel {
         let n = sketch.frame.normal
         func vec(_ v: SIMD3<Double>) -> [String: Double] { ["x": v.x, "y": v.y, "z": v.z] }
         let dir = vec(n * sketchExtrudeDepth)
+        // Several separate loops: one feature each, in one undo step.
+        if !sketch.canFinish, sketchFinish == .extrude || sketchFinish == .cut {
+            let cutting = sketchFinish == .cut
+            guard let profiles = sketch.loopProfiles(allowNested: cutting) else {
+                engineError = "Every loop must be closed, and an extrude can't have one loop inside another"
+                return false
+            }
+            var features: [[String: Any]]
+            if cutting {
+                guard let target = sketchFace.flatMap({ rootNodeId(forPart: $0.part) })
+                        ?? selectedPartIndex.flatMap({ rootNodeId(forPart: $0) }) else {
+                    engineError = "Select the part to cut"; return false
+                }
+                features = profiles.enumerated().map { i, p in
+                    ["kind": "cut_extrude", "target": i == 0 ? target : -1, "profile": p,
+                     "direction": vec(-n * sketchExtrudeDepth), "name": "Cut"]
+                }
+            } else {
+                features = profiles.map { ["kind": "extrude", "profile": $0, "direction": dir, "name": "Extrude"] }
+            }
+            guard appendIRFeatures(features, name: sketchFinish.label) else { return false }
+            selectedFeatureID = featureNodes.last?.id
+            exitSketch()
+            return true
+        }
         var feature: [String: Any]
         switch sketchFinish {
         case .loft:
@@ -2507,7 +2573,11 @@ final class EditorModel {
                 guard let self else { return }
                 if event.keyCode == 53 {                       // Escape
                     if self.sketching {
-                        self.exitSketch()
+                        // Escape backs out one step: the stroke, then the tool. It never
+                        // discards drawn geometry; the toolbar's X does that.
+                        if let k = self.sketch, k.hasInProgress { k.cancelPending() }
+                        else if let k = self.sketch, k.tool != .select { self.setSketchTool(.select) }
+                        else if self.sketch?.isEmpty ?? true { self.exitSketch() }
                     } else if GlassUI.shared.shortcutsShown {
                         GlassUI.shared.shortcutsShown = false
                     } else if self.activeFeatureOp != nil || self.showsCommandPalette || GlassUI.shared.panel != nil {
@@ -3750,9 +3820,11 @@ extension EditorModel {
     /// anything. One undo step back to the sandbox. Returns whether the
     /// window now has an editable document.
     @discardableResult
-    func promoteSandboxToDocument() -> Bool {
+    func promoteSandboxToDocument(blank: Bool = false) -> Bool {
         if usesDocumentTree, engine != nil { return true }
         guard source.isSandbox, engine == nil, documentJSON == nil else { return usesDocumentTree }
+        // A sketch starts a part from nothing; it shouldn't inherit the demo cube.
+        if blank { return agentEnsureEngine() != nil && usesDocumentTree }
         let applies = modifierApplies && modifierEffective
         let (shape, mod, amount) = (baseShape, modifier, modifierValue)
         guard let e = agentEnsureEngine() else { return false }
