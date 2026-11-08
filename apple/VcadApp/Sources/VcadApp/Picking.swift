@@ -67,6 +67,11 @@ struct TopoFace: Decodable, Hashable {
     /// and its outward normal.
     var selector: JSONValue?
 
+    // A face is its id within the part's topology; JSONValue isn't Hashable,
+    // so identity is by id rather than synthesized over every field.
+    static func == (a: TopoFace, b: TopoFace) -> Bool { a.id == b.id }
+    func hash(into h: inout Hasher) { h.combine(id) }
+
     var centerF: SIMD3<Float> { Self.v(center) }
     var normalF: SIMD3<Float> { Self.v(normal) }
     var isPlanar: Bool { surface.lowercased() == "plane" || surface.lowercased() == "planar" }
