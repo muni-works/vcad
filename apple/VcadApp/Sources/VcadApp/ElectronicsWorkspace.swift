@@ -84,6 +84,10 @@ final class ElectronicsWorkspace {
         var h = Hasher()
         let t = ecRows(board["traces"]), v = ecRows(board["vias"])
         h.combine(t.count); h.combine(v.count)
+        for z in ecRows(board["zones"]) {
+            h.combine(z["net"] as? String); h.combine(z["layer"] as? String)
+            for p in ecRows(z["outline"]) { h.combine(ecPoint(p).x); h.combine(ecPoint(p).y) }
+        }
         for x in t.suffix(8) { h.combine(ecPoint(x["end"]).x) }
         for x in ecRows(board["footprints"]) { let p = ecPoint(x["position"]); h.combine(p.x); h.combine(p.y); h.combine(ecNumber(x["rotation"])); h.combine(x["front"] as? Bool ?? true) }
         return h.finalize()
