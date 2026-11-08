@@ -743,6 +743,7 @@ impl InteractiveRouter {
     /// edge checked against the clearance oracle. Bends cost a little and a
     /// layer change more, so among equal lengths the straighter, single-layer
     /// route wins. `None` when no path on this grid.
+    #[allow(clippy::too_many_arguments)]
     fn shortest_path(
         &self,
         net: &str,
