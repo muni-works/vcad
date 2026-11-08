@@ -836,7 +836,13 @@ struct ScrubField: View {
                 let first = base == nil
                 let b = base ?? value
                 if base == nil { base = b }
-                onChange(max(minValue, b + Double(v.translation.width) * sensitivity * Self.modifierScale), first)
+                // Snap to the stepper's step (1 mm by default; ⌥ 0.1, ⇧ 10) so a
+                // mouse-only edit lands on round numbers (it gave 44.70).
+                let scale = Self.modifierScale
+                let step = sensitivity * 10 * scale
+                let raw = b + Double(v.translation.width) * sensitivity * scale
+                let snapped = step > 0 ? (raw / step).rounded() * step : raw
+                onChange(max(minValue, snapped), first)
             }
             .onEnded { _ in base = nil }
     }
