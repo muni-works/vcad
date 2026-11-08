@@ -484,7 +484,7 @@ pub fn route_window_complete_pinned(
                         (free[li * plane + cell]
                             && !claimed.contains(&(li * plane + cell))
                             && stub_ok(p, c, layers[li]))
-                            .then_some((li * plane + cell, None))
+                        .then_some((li * plane + cell, None))
                     })
             });
             if direct.is_some() || allowed.is_empty() {
