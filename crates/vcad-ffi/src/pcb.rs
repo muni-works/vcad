@@ -25,7 +25,9 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use vcad_ecad_fabprep::{run_fab_prep, DrcDelta, FabPrepOptions, VerdictOptions};
 use vcad_ecad_pcb::drc::{check_drc, DrcViolation};
-use vcad_ecad_pcb::router::length_match::{match_lengths, net_routed_length, LengthMatchOptions};
+use vcad_ecad_pcb::router::length_match::{
+    match_lengths_runs, net_routed_length, LengthMatchOptions,
+};
 use vcad_ir::ecad::Pcb;
 use vcad_kernel_enclosure as encl;
 
@@ -440,16 +442,44 @@ pub fn length_match(mut pcb: Pcb, req: &Value) -> Result<Value, String> {
     if let Some(a) = req.get("max_amplitude").and_then(Value::as_f64) {
         opts.max_amplitude = a;
     }
-    let result = match_lengths(&pcb, &nets, &opts);
-    for n in result
-        .nets
-        .iter()
-        .filter(|n| n.tuned && !n.new_traces.is_empty())
-    {
-        pcb.traces.retain(|t| t.net != n.net);
-        pcb.traces.extend(n.new_traces.iter().cloned());
+    // The tuner clears its meanders against what it can see; the DRC has the
+    // last word. Shallower meanders if they break a rule, nothing if they
+    // still do.
+    let accepted = accepted_rules(req);
+    let before = drc_report(&pcb, &accepted).route_attributable;
+    let mut result = match_lengths_runs(&pcb, &nets, &opts);
+    let mut tuned = None;
+    for _ in 0..4 {
+        let mut trial = pcb.clone();
+        for n in result
+            .nets
+            .iter()
+            .filter(|n| n.tuned && !n.new_traces.is_empty())
+        {
+            trial.traces.retain(|t| t.net != n.net);
+            trial.traces.extend(n.new_traces.iter().cloned());
+        }
+        if drc_report(&trial, &accepted).route_attributable <= before {
+            tuned = Some(trial);
+            break;
+        }
+        opts.max_amplitude /= 2.0;
+        result = match_lengths_runs(&pcb, &nets, &opts);
     }
-    let drc = drc_report(&pcb, &accepted_rules(req));
+    match tuned {
+        Some(trial) => pcb = trial,
+        None => {
+            result.all_matched = false;
+            for n in result.nets.iter_mut().filter(|n| n.tuned) {
+                n.tuned = false;
+                n.matched = false;
+                n.length_after = n.length_before;
+                n.new_traces.clear();
+                n.skip_reason = Some("meanders would break a design rule here".into());
+            }
+        }
+    }
+    let drc = drc_report(&pcb, &accepted);
     Ok(json!({ "pcb": pcb, "result": result, "drc": drc }))
 }
 

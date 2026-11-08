@@ -667,7 +667,7 @@ impl InteractiveRouter {
                 }
             }
         }
-        self.search(net, from, to, &self.layers, budget)
+        self.search_legal(net, from, to, &self.layers, budget)
     }
 
     /// The layers a route may end on at `p`: [`live_layers`], and if `p` is
@@ -725,7 +725,32 @@ impl InteractiveRouter {
                 }
             }
         }
-        self.search(net, from, to, stack, budget)
+        self.search_legal(net, from, to, stack, budget)
+    }
+
+    /// [`Self::search`], held to the same check commit makes, so a preview
+    /// never promises a route that the click then refuses.
+    fn search_legal(
+        &self,
+        net: &str,
+        from: Vec2,
+        to: Vec2,
+        stack: &[PcbLayer],
+        budget: usize,
+    ) -> InteractiveRoute {
+        let found = self.search(net, from, to, stack, budget);
+        let width = self.width_for(net);
+        if found.status == "routed" && !self.legal(net, width, &found.path) {
+            return InteractiveRoute {
+                status: "blocked".into(),
+                reason: Some("No legal path here.".into()),
+                path: Vec::new(),
+                vias: Vec::new(),
+                width,
+                moved: Vec::new(),
+            };
+        }
+        found
     }
 
     fn segment_clear(&self, net: &str, w: f64, a: Vec2, b: Vec2, layer: PcbLayer) -> bool {
@@ -1826,6 +1851,71 @@ mod tests {
             len(&around.path)
         );
         assert!(around.path.len() <= 8, "{} segments", around.path.len());
+    }
+
+    /// Re-routes each net of a real board on one layer, where the router has
+    /// to shove more often, and reports what moved: `VCAD_SHOVE_BOARD=path`.
+    #[test]
+    #[ignore]
+    fn measure_shove_on_board() {
+        let path = std::env::var("VCAD_SHOVE_BOARD").expect("board path");
+        let board: Pcb = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let geom = |p: &Pcb| {
+            vcad_ecad_pcb::drc::check_drc(p)
+                .into_iter()
+                .filter(|v| crate::connectivity_count(std::slice::from_ref(v)) == 0)
+                .map(|v| v.message)
+                .collect::<BTreeSet<_>>()
+        };
+        let layers = copper_layers(&board);
+        let nets: BTreeSet<String> = board.traces.iter().map(|t| t.net.clone()).collect();
+        let (mut tried, mut routed, mut shoved, mut bad, mut moved_total, mut touches) =
+            (0, 0, 0, 0, 0, 0);
+        for net in nets {
+            let mut pcb = board.clone();
+            strip_nets(&mut pcb, &[net.clone()].into_iter().collect());
+            let g0 = geom(&pcb);
+            let open: Vec<_> = open_connections(&pcb, &layers)
+                .into_iter()
+                .filter(|(n, _, _)| *n == net)
+                .take(3)
+                .collect();
+            let mut r = InteractiveRouter::new(pcb);
+            for (_, a, b) in open {
+                tried += 1;
+                let stack = [PcbLayer::FCu];
+                // Ask for the shove first: on a finished board a plain route
+                // nearly always exists, so it would otherwise never run.
+                let attempt = r
+                    .shove(&net, a, b, PcbLayer::FCu, &stack, 60_000)
+                    .unwrap_or_else(|| r.route(&net, a, b, Some(PcbLayer::FCu), 60_000));
+                if attempt.status != "routed" {
+                    continue;
+                }
+                routed += 1;
+                if !attempt.moved.is_empty() {
+                    shoved += 1;
+                    moved_total += attempt.moved.len();
+                }
+                if let Err(e) = r.commit(&net, &attempt.path, &attempt.moved) {
+                    bad += 1;
+                    eprintln!("{net}: commit refused: {e}; moved {}", attempt.moved.len());
+                    continue;
+                }
+                let added: Vec<_> = geom(&r.pcb).difference(&g0).cloned().collect();
+                touches += added.iter().filter(|m| m.starts_with("Same-net")).count();
+                let real: Vec<_> = added
+                    .iter()
+                    .filter(|m| !m.starts_with("Same-net"))
+                    .collect();
+                if !real.is_empty() {
+                    bad += 1;
+                    eprintln!("{net}: {} new: {:?}", real.len(), real[0]);
+                }
+            }
+        }
+        eprintln!("tried {tried} routed {routed} shoved {shoved} moved {moved_total} same-net touches {touches} bad {bad}");
+        assert_eq!(bad, 0);
     }
 
     /// Measures the finishing pass on a real board: `VCAD_FINISH_BOARD=path`.
