@@ -1150,3 +1150,52 @@ pub extern "C" fn vcad_pcb_library_footprint(request_json: *const c_char) -> *mu
         Ok(json!({ "footprint": fp }))
     })
 }
+
+/// Route a declared differential pair `{p, n}`: `{pcb, routed, reason}`.
+/// The router goes straight, so a result that adds any route-attributable
+/// violation is thrown away and the board returned untouched.
+#[no_mangle]
+pub extern "C" fn vcad_pcb_route_diff_pair(
+    pcb_json: *const c_char,
+    request_json: *const c_char,
+) -> *mut c_char {
+    run("vcad_pcb_route_diff_pair", || {
+        let pcb = parse_pcb(pcb_json)?;
+        let req = parse_request(request_json)?;
+        let net = |k: &str| {
+            req.get(k)
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .ok_or(format!("missing {k}"))
+        };
+        let (p, n) = (net("p")?, net("n")?);
+        let accepted = accepted_rules(&req);
+        let before = drc_report(&pcb, &accepted).route_attributable;
+        let Some((rp, rn)) = vcad_ecad_pcb::router::diff_pair::route_diff_pair(&pcb, &p, &n) else {
+            return Ok(
+                json!({ "pcb": pcb, "routed": false, "reason": "Declare this pair in a net class, with two pads on each net." }),
+            );
+        };
+        let mut out = pcb.clone();
+        let layer = vcad_ir::ecad::PcbLayer::FCu;
+        let width = out.rules.default_rules.trace_width;
+        for r in [&rp, &rn] {
+            for (a, b) in &r.segments {
+                out.traces.push(vcad_ir::ecad::Trace {
+                    start: *a,
+                    end: *b,
+                    width,
+                    layer,
+                    net: r.net.clone(),
+                    source: None,
+                });
+            }
+        }
+        if drc_report(&out, &accepted).route_attributable > before {
+            return Ok(
+                json!({ "pcb": pcb, "routed": false, "reason": "A straight coupled route would break a design rule here." }),
+            );
+        }
+        Ok(json!({ "pcb": out, "routed": true, "reason": null }))
+    })
+}

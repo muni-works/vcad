@@ -36,6 +36,9 @@ enum PcbFFI {
         let json = try text(req)
         return try finish(json.withCString { vcad_pcb_library_footprint($0) }, "footprint")
     }
+    static func routeDiffPair(_ pcb: Obj, p: String, n: String) throws -> Obj {
+        try call2(vcad_pcb_route_diff_pair, pcb, ["p": p, "n": n], "route pair")
+    }
     static func ratsnest(_ pcb: Obj) throws -> Obj {
         let json = try text(pcb)
         return try finish(json.withCString { vcad_pcb_ratsnest($0) }, "ratsnest")

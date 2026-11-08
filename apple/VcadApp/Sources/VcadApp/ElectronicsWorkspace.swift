@@ -30,6 +30,8 @@ final class ElectronicsWorkspace {
     var snap = true
     var zoom = 1.0
     var pan = CGSize.zero
+    /// Open child sheet by name; nil is the root.
+    var activeSheet: String?
     /// Corners of the zone being drawn.
     var zonePoints: [CGPoint] = []
     var selectedZone: Int?
@@ -287,6 +289,11 @@ final class ElectronicsWorkspace {
     }
     func schematic(_ model: EditorModel) -> ECObject {
         _ = model.undoStack.count; _ = model.redoStack.count
+        return model.documentJSON.map { sheetData($0) } ?? [:]
+    }
+    /// The whole design's root sheet, whichever sheet is open.
+    func rootSchematic(_ model: EditorModel) -> ECObject {
+        _ = model.undoStack.count; _ = model.redoStack.count
         return model.documentJSON?["schematic"] as? ECObject ?? [:]
     }
     func mutateBoard(_ model: EditorModel, _ mutate: (inout ECObject) -> Void) {
@@ -340,10 +347,10 @@ final class ElectronicsWorkspace {
         mutateBoard(model) { b in var f = ecRows(b["footprints"]); f.append(fp); b["footprints"] = f }
         // Add schematic and board as one undoable placement.
         model.editElectronics { doc in
-            var sch = doc["schematic"] as? ECObject ?? [:], components = ecRows(sch["components"])
+            var sch = sheetData(doc), components = ecRows(sch["components"])
             let pins: [ECObject] = [-2.0, 2.0].enumerated().map { i, x in ["number": "\(i + 1)", "name": "\(i + 1)", "pin_type": "Passive", "position": ["x": x, "y": 0]] }
             components.append(["ref": ref, "value": value, "footprintId": "vcad:Native_2Pad", "position": ecJSON(point), "pins": pins, "pads": pads])
-            sch["components"] = components; sch["wires"] = sch["wires"] ?? [ECObject](); sch["junctions"] = sch["junctions"] ?? [ECObject](); sch["labels"] = sch["labels"] ?? [ECObject](); doc["schematic"] = sch
+            sch["components"] = components; sch["wires"] = sch["wires"] ?? [ECObject](); sch["junctions"] = sch["junctions"] ?? [ECObject](); sch["labels"] = sch["labels"] ?? [ECObject](); setSheet(&doc, sch)
         }
         if let before { model.undoStack = Array((undoBefore + [UndoEntry(data: before, name: "Place Component")]).suffix(64)) }
         selectedRef = ref   // stay in Place until Esc, like every EDA tool (it reverted to Select after one part)
@@ -359,18 +366,18 @@ final class ElectronicsWorkspace {
                 b["footprints"] = rows
             }
             model.editElectronics { doc in
-                var sch = doc["schematic"] as? ECObject ?? [:], rows = ecRows(sch["components"])
+                var sch = sheetData(doc), rows = ecRows(sch["components"])
                 if let i = rows.firstIndex(where: { $0["ref"] as? String == ref }) { rows[i][key] = value }
-                sch["components"] = rows; doc["schematic"] = sch
+                sch["components"] = rows; setSheet(&doc, sch)
             }
             if let before { model.undoStack = Array((undoBefore + [UndoEntry(data: before, name: "Change Value")]).suffix(64)) }
             return
         }
         if view == .schematic {
             model.editElectronics { doc in
-                var sch = doc["schematic"] as? ECObject ?? [:], rows = ecRows(sch["components"])
+                var sch = sheetData(doc), rows = ecRows(sch["components"])
                 if let i = rows.firstIndex(where: { $0["ref"] as? String == ref }) { rows[i][key] = value }
-                sch["components"] = rows; doc["schematic"] = sch
+                sch["components"] = rows; setSheet(&doc, sch)
             }
         } else {
             mutateBoard(model) { b in var rows = ecRows(b["footprints"]); if let i = rows.firstIndex(where: { $0["ref"] as? String == ref }) { rows[i][key] = value }; b["footprints"] = rows }
@@ -399,7 +406,7 @@ final class ElectronicsWorkspace {
         while nets["N\(next)"] != nil { next += 1 }
         let name = matching.sorted().first ?? "N\(next)"
         var refs = Set([start, pin]); for key in matching { refs.formUnion(nets.removeValue(forKey: key) ?? []) }; nets[name] = refs.sorted()
-        model.editElectronics { doc in var sch = doc["schematic"] as? ECObject ?? [:]; sch["nets"] = nets; doc["schematic"] = sch }
+        model.editElectronics { doc in var sch = sheetData(doc); sch["nets"] = nets; setSheet(&doc, sch) }
         // Net assignment updates are committed with the schematic by syncBoardNets.
         syncBoardNets(model, nets: nets, merged: matching, target: name)
         if let before { model.undoStack = Array((undoBefore + [UndoEntry(data: before, name: "Connect Pins")]).suffix(64)) }
@@ -510,7 +517,7 @@ extension ElectronicsWorkspace {
         }
         if onSheet {
             model.editElectronics(name: "Align") { doc in
-                var s = doc["schematic"] as? ECObject ?? [:]; s["components"] = apply(ecRows(s["components"])); doc["schematic"] = s
+                var s = sheetData(doc); s["components"] = apply(ecRows(s["components"])); setSheet(&doc, s)
             }
         } else {
             mutateBoard(model) { b in b["footprints"] = apply(ecRows(b["footprints"])) }
@@ -571,11 +578,104 @@ extension ElectronicsWorkspace {
         let before = model.documentJSON.flatMap { DocEdit.serialize($0) }
         mutateBoard(model) { b in b["footprints"] = ecRows(b["footprints"]) + [fp] }
         model.editElectronics(name: "Place") { doc in
-            var s = doc["schematic"] as? ECObject ?? [:]
+            var s = sheetData(doc)
             let c: ECObject = ["ref": ref, "value": fp["value"] ?? "", "footprintId": id, "position": ecJSON(at), "rotation": 0, "mirror": false, "pins": pins]
-            s["components"] = ecRows(s["components"]) + [c]; doc["schematic"] = s
+            s["components"] = ecRows(s["components"]) + [c]; setSheet(&doc, s)
         }
         if let before { model.undoStack = Array((undoBefore + [UndoEntry(data: before, name: "Place \(ref)")]).suffix(64)) }
         selectedRef = ref
+    }
+}
+
+
+extension ElectronicsWorkspace {
+    // MARK: hierarchical sheets
+
+    func sheetData(_ doc: ECObject) -> ECObject {
+        let root = doc["schematic"] as? ECObject ?? [:]
+        guard let name = activeSheet, let h = root["hierarchy"] as? ECObject else { return root }
+        return ecRows(h["sheets"]).first { $0["name"] as? String == name }?["body"] as? ECObject ?? root
+    }
+    func setSheet(_ doc: inout ECObject, _ value: ECObject) {
+        guard let name = activeSheet, var root = doc["schematic"] as? ECObject, var h = root["hierarchy"] as? ECObject else {
+            doc["schematic"] = value; return
+        }
+        h["sheets"] = ecRows(h["sheets"]).map { d -> ECObject in
+            var d = d; if d["name"] as? String == name { d["body"] = value }; return d
+        }
+        root["hierarchy"] = h; doc["schematic"] = root
+    }
+    func sheetNames(_ model: EditorModel) -> [String] {
+        ecRows((rootSchematic(model)["hierarchy"] as? ECObject)?["sheets"]).compactMap { $0["name"] as? String }
+    }
+    /// Move the selected symbols to a new child sheet. Nets they share with
+    /// what stays become global, so the design's connectivity is unchanged.
+    func moveSelectionToNewSheet(_ model: EditorModel, named name: String) {
+        var picked = multiRefs
+        if let r = selectedRef { picked.insert(r) }
+        let clean = name.trimmingCharacters(in: .whitespaces)
+        guard !picked.isEmpty, !clean.isEmpty, !sheetNames(model).contains(clean), activeSheet == nil else {
+            message = "Select parts on the root sheet and give the new sheet a unique name."; return
+        }
+        model.editElectronics(name: "Move to Sheet") { doc in
+            var root = doc["schematic"] as? ECObject ?? [:]
+            let all = ecRows(root["components"])
+            let moving = all.filter { picked.contains($0["ref"] as? String ?? "") }
+            let nets = root["nets"] as? [String: [String]] ?? [:]
+            func inSet(_ pin: String) -> Bool { picked.contains(String(pin.split(separator: ".")[0])) }
+            var childNets: [String: [String]] = [:], rootNets: [String: [String]] = [:], shared: [String] = []
+            for (net, pins) in nets {
+                let a = pins.filter(inSet), b = pins.filter { !inSet($0) }
+                if !a.isEmpty { childNets[net] = a }
+                if !b.isEmpty { rootNets[net] = b }
+                if !a.isEmpty, !b.isEmpty { shared.append(net) }
+            }
+            let body: ECObject = ["title": clean, "components": moving, "wires": [ECObject](), "junctions": [ECObject](), "labels": [ECObject](), "nets": childNets]
+            var h = root["hierarchy"] as? ECObject ?? ["sheets": [ECObject](), "instances": [ECObject](), "global_nets": [String]()]
+            h["sheets"] = ecRows(h["sheets"]) + [["name": clean, "ports": [ECObject](), "body": body] as ECObject]
+            h["instances"] = ecRows(h["instances"]) + [["name": clean, "sheet": clean, "connections": [String: String]()] as ECObject]
+            h["global_nets"] = Array(Set((h["global_nets"] as? [String] ?? []) + shared)).sorted()
+            root["components"] = all.filter { !picked.contains($0["ref"] as? String ?? "") }
+            root["nets"] = rootNets; root["hierarchy"] = h
+            doc["schematic"] = root
+        }
+        multiRefs = []; selectedRef = nil
+    }
+
+    // MARK: footprint and symbol editing
+
+    func editFootprint(_ model: EditorModel, _ change: (inout ECObject) -> Void) {
+        guard let ref = selectedRef else { return }
+        mutateBoard(model) { b in
+            var rows = ecRows(b["footprints"])
+            guard let i = rows.firstIndex(where: { $0["ref"] as? String == ref }) else { return }
+            change(&rows[i]); b["footprints"] = rows
+        }
+    }
+    func editSymbol(_ model: EditorModel, _ change: (inout ECObject) -> Void) {
+        guard let ref = selectedRef else { return }
+        model.editElectronics(name: "Edit Symbol") { doc in
+            var s = sheetData(doc), rows = ecRows(s["components"])
+            guard let i = rows.firstIndex(where: { $0["ref"] as? String == ref }) else { return }
+            change(&rows[i]); s["components"] = rows; setSheet(&doc, s)
+        }
+    }
+
+    // MARK: pairs and length
+
+    /// The other half of a differential pair, by the usual naming.
+    func pairPartner(of net: String, in board: ECObject) -> String? {
+        let ids = Set(ecRows(board["nets"]).compactMap { $0["id"] as? String })
+        for (a, b) in [("_P", "_N"), ("_N", "_P"), ("+", "-"), ("-", "+"), ("DP", "DM"), ("DM", "DP"), ("CANH", "CANL"), ("CANL", "CANH")] where net.hasSuffix(a) {
+            let other = String(net.dropLast(a.count)) + b
+            if ids.contains(other) { return other }
+        }
+        return nil
+    }
+    func netLength(_ net: String, in board: ECObject) -> Double {
+        ecRows(board["traces"]).filter { $0["net"] as? String == net }.reduce(0) { sum, t in
+            let a = ecPoint(t["start"]), b = ecPoint(t["end"])
+            return sum + Double(hypot(a.x - b.x, a.y - b.y))
+        }
     }
 }

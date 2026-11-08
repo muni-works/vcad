@@ -366,7 +366,7 @@ extension ElectronicsWorkspace {
             x += block.size.width; rowH = max(rowH, block.size.height)
         }
         model.editElectronics(name: "Tidy Schematic") { doc in
-            var s = doc["schematic"] as? ECObject ?? [:]
+            var s = sheetData(doc)
             s["components"] = ecRows(s["components"]).map { c -> ECObject in
                 var c = c
                 if let ref = c["ref"] as? String, let p = placed[ref] { c["position"] = ecJSON(p) }
@@ -375,7 +375,7 @@ extension ElectronicsWorkspace {
             // Parts all moved: drawn wires would dangle. The netlist keeps the
             // connections, and they redraw as stubs and flags.
             s["wires"] = [ECObject](); s["junctions"] = [ECObject](); s["labels"] = [ECObject]()
-            doc["schematic"] = s
+            setSheet(&doc, s)
         }
         zoom = 1; pan = .zero
     }
@@ -511,8 +511,8 @@ extension ElectronicsWorkspace {
         for key in matching where key != target { refs.formUnion(nets.removeValue(forKey: key) ?? []) }
         if !refs.isEmpty { nets[target] = refs.sorted() }
         model.editElectronics(name: name) { doc in
-            var s = doc["schematic"] as? ECObject ?? [:]
-            edit(&s); s["nets"] = nets; doc["schematic"] = s
+            var s = sheetData(doc)
+            edit(&s); s["nets"] = nets; setSheet(&doc, s)
         }
         if !refs.isEmpty { syncBoardNets(model, nets: nets, merged: matching.filter { $0 != target }, target: target) }
         if let before { model.undoStack = Array((undoBefore + [UndoEntry(data: before, name: name)]).suffix(64)) }
@@ -525,7 +525,7 @@ extension ElectronicsWorkspace {
     /// Move a symbol; wires ending on its pins come with it, staying square.
     func moveSymbol(_ model: EditorModel, ref: String, to position: CGPoint) {
         model.editElectronics(name: "Move Symbol") { doc in
-            var s = doc["schematic"] as? ECObject ?? [:]
+            var s = sheetData(doc)
             var rows = ecRows(s["components"])
             guard let i = rows.firstIndex(where: { $0["ref"] as? String == ref }) else { return }
             let old = rows[i]
@@ -547,7 +547,7 @@ extension ElectronicsWorkspace {
             s["labels"] = ecRows(s["labels"]).map { l -> ECObject in
                 var l = l; l["position"] = ecJSON(follow(ecPoint(l["position"]))); return l
             }
-            doc["schematic"] = s
+            setSheet(&doc, s)
         }
     }
     /// Pick the wire or label under `p`. Returns whether it hit one.
@@ -604,9 +604,9 @@ extension ElectronicsWorkspace {
         }
         let finalNets = nets.filter { !$0.value.isEmpty }
         model.editElectronics(name: "Delete") { doc in
-            var s = doc["schematic"] as? ECObject ?? [:]
+            var s = sheetData(doc)
             s["wires"] = wires; s["labels"] = labels; s["nets"] = finalNets
-            doc["schematic"] = s
+            setSheet(&doc, s)
         }
         message = note
     }

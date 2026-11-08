@@ -45,6 +45,8 @@ struct ElectronicsToolSheet: View {
             switch kind {
             case .drc: DrcPanel(model: model)
             case .erc: ErcPanel(model: model)
+            case .footprint: FootprintEditorPanel(model: model)
+            case .symbol: SymbolEditorPanel(model: model)
             case .length: LengthTuningPanel(model: model)
             case .stackup: LayerStackPanel(model: model)
             case .simulate: SimulationPanel(model: model)
@@ -298,5 +300,113 @@ struct ErcPanel: View {
                 Text(f["message"] as? String ?? "").font(.caption).lineLimit(3)
             }
         }.frame(height: 280)
+    }
+}
+
+
+/// Edit the selected part's land pattern: pad numbers, positions, sizes, shape.
+struct FootprintEditorPanel: View {
+    @Bindable var model: EditorModel
+    private var ec: ElectronicsWorkspace { model.electronics }
+    @State private var rowCount = 4
+    @State private var pitch = 1.27
+    private var fp: ECObject { ecRows(ec.board(model)["footprints"]).first { $0["ref"] as? String == ec.selectedRef } ?? [:] }
+    private func set(_ i: Int, _ change: @escaping (inout ECObject) -> Void) {
+        ec.editFootprint(model) { f in var p = ecRows(f["pads"]); guard p.indices.contains(i) else { return }; change(&p[i]); f["pads"] = p }
+    }
+    private func num(_ value: Double, _ apply: @escaping (Double) -> Void) -> some View {
+        TextField("", value: Binding(get: { value }, set: apply), format: .number.precision(.fractionLength(0...3))).frame(width: 56).multilineTextAlignment(.trailing)
+    }
+    var body: some View {
+        let pads = ecRows(fp["pads"])
+        Text(fp["footprintName"] as? String ?? (ec.selectedRef ?? "")).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+        Canvas { ctx, size in
+            let pts = pads.map { ecPoint($0["position"]) }
+            let span = max(2, (pts.map { max(abs($0.x), abs($0.y)) }.max() ?? 1) * 2 + 3)
+            let k = min(size.width, size.height) / span
+            for pad in pads {
+                let p = ecPoint(pad["position"]), s = pad["shape"] as? ECObject ?? [:], d = ecNumber(s["diameter"], 0.6)
+                let w = ecNumber(s["width"], d) * k, h = ecNumber(s["height"], d) * k
+                let c = CGPoint(x: size.width / 2 + p.x * k, y: size.height / 2 + p.y * k)
+                let r = CGRect(x: c.x - w / 2, y: c.y - h / 2, width: w, height: h)
+                ctx.fill(s["type"] as? String == "Circle" ? Path(ellipseIn: r) : Path(roundedRect: r, cornerRadius: 1), with: .color(BoardLayers.color((pad["layers"] as? [String])?.first ?? "FCu")))
+                ctx.draw(Text(pad["number"] as? String ?? "").font(.system(size: 9)).foregroundStyle(.white), at: c)
+            }
+        }.frame(height: 150).background(Color.black.opacity(0.25))
+        List(pads.indices, id: \.self) { i in
+            let pad = pads[i], shape = pad["shape"] as? ECObject ?? [:], at = ecPoint(pad["position"]), d = ecNumber(shape["diameter"], 0.6)
+            HStack(spacing: 4) {
+                TextField("#", text: Binding(get: { pad["number"] as? String ?? "" }, set: { v in set(i) { $0["number"] = v } })).frame(width: 34)
+                num(Double(at.x)) { v in set(i) { $0["position"] = ecJSON(CGPoint(x: v, y: at.y)) } }
+                num(Double(at.y)) { v in set(i) { $0["position"] = ecJSON(CGPoint(x: at.x, y: v)) } }
+                num(ecNumber(shape["width"], d)) { v in set(i) { var s = $0["shape"] as? ECObject ?? [:]; s["width"] = v; $0["shape"] = s } }
+                num(ecNumber(shape["height"], d)) { v in set(i) { var s = $0["shape"] as? ECObject ?? [:]; s["height"] = v; $0["shape"] = s } }
+                Button { ec.editFootprint(model) { f in var p = ecRows(f["pads"]); if p.indices.contains(i) { p.remove(at: i) }; f["pads"] = p } } label: { Image(systemName: "trash") }.buttonStyle(.borderless)
+            }.font(.caption.monospacedDigit())
+        }.frame(height: 200)
+        HStack {
+            Stepper("Row of \(rowCount)", value: $rowCount, in: 1...64)
+            TextField("Pitch", value: $pitch, format: .number).frame(width: 60)
+            Button("Add Row") {
+                let n = rowCount, pitch = pitch
+                ec.editFootprint(model) { f in
+                    var p = ecRows(f["pads"])
+                    let y = (p.map { ecPoint($0["position"]).y }.max() ?? -pitch) + pitch
+                    let start = p.count
+                    for k in 0..<n {
+                        let x = (Double(k) - Double(n - 1) / 2) * pitch
+                        p.append(["number": "\(start + k + 1)", "padType": "SMD", "shape": ["type": "Rect", "width": pitch * 0.6, "height": 1.2], "position": ["x": x, "y": y], "rotation": 0, "layers": ["FCu", "FMask", "FPaste"]])
+                    }
+                    f["pads"] = p
+                }
+            }
+        }
+    }
+}
+
+/// Edit the selected symbol's pins: number, name, electrical type, position.
+struct SymbolEditorPanel: View {
+    @Bindable var model: EditorModel
+    private var ec: ElectronicsWorkspace { model.electronics }
+    private static let types = ["Input", "Output", "Bidirectional", "Passive", "PowerInput", "PowerOutput", "OpenCollector", "NotConnected", "Free"]
+    private var symbol: ECObject { ecRows(ec.schematic(model)["components"]).first { $0["ref"] as? String == ec.selectedRef } ?? [:] }
+    private func set(_ i: Int, _ change: @escaping (inout ECObject) -> Void) {
+        ec.editSymbol(model) { c in var p = ecRows(c["pins"]); guard p.indices.contains(i) else { return }; change(&p[i]); c["pins"] = p }
+    }
+    var body: some View {
+        let pins = ecRows(symbol["pins"])
+        List(pins.indices, id: \.self) { i in
+            let pin = pins[i], at = ecPoint(pin["position"])
+            HStack(spacing: 4) {
+                TextField("#", text: Binding(get: { pin["number"] as? String ?? "" }, set: { v in set(i) { $0["number"] = v } })).frame(width: 36)
+                TextField("Name", text: Binding(get: { pin["name"] as? String ?? "" }, set: { v in set(i) { $0["name"] = v } })).frame(width: 90)
+                Picker("", selection: Binding(get: { pin["pin_type"] as? String ?? "Passive" }, set: { v in set(i) { $0["pin_type"] = v } })) {
+                    ForEach(Self.types, id: \.self) { Text($0) }
+                }.labelsHidden().frame(width: 120)
+                TextField("", value: Binding(get: { Double(at.x) }, set: { v in set(i) { $0["position"] = ecJSON(CGPoint(x: v, y: at.y)) } }), format: .number).frame(width: 52)
+                TextField("", value: Binding(get: { Double(at.y) }, set: { v in set(i) { $0["position"] = ecJSON(CGPoint(x: at.x, y: v)) } }), format: .number).frame(width: 52)
+                Button { ec.editSymbol(model) { c in var p = ecRows(c["pins"]); if p.indices.contains(i) { p.remove(at: i) }; c["pins"] = p } } label: { Image(systemName: "trash") }.buttonStyle(.borderless)
+            }.font(.caption.monospacedDigit())
+        }.frame(height: 300)
+        HStack {
+            Button("Add Pin") {
+                ec.editSymbol(model) { c in
+                    var p = ecRows(c["pins"])
+                    p.append(["number": "\(p.count + 1)", "name": "\(p.count + 1)", "pin_type": "Passive", "position": ["x": -10.16, "y": Double(p.count) * 2.54]])
+                    c["pins"] = p
+                }
+            }
+            Button("Arrange Left and Right") {
+                ec.editSymbol(model) { c in
+                    var p = ecRows(c["pins"])
+                    let left = (p.count + 1) / 2
+                    for i in p.indices {
+                        let onLeft = i < left, row = onLeft ? i : i - left, rows = onLeft ? left : p.count - left
+                        p[i]["position"] = ["x": onLeft ? -10.16 : 10.16, "y": (Double(row) - Double(rows - 1) / 2) * 2.54]
+                    }
+                    c["pins"] = p
+                }
+            }
+        }
     }
 }

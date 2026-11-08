@@ -8,6 +8,7 @@ struct NativeElectronicsView: View {
     @State private var fileError: String?
     @State private var search = ""
     @State private var navigatorTab = "Parts"
+    @State private var newSheetName = ""
     var body: some View {
         @Bindable var ec = ec
         ZStack(alignment: .top) {
@@ -95,6 +96,8 @@ struct NativeElectronicsView: View {
         switch kind {
         case .drc: "Design Rule Check"
         case .erc: "Electrical Rule Check"
+        case .footprint: "Footprint Editor"
+        case .symbol: "Symbol Editor"
         case .length: "Diff Pair / Length Tuning"
         case .stackup: "Layer Stack"
         case .simulate: "Simulate"
@@ -215,6 +218,12 @@ struct NativeElectronicsView: View {
             Button(ec.view == .schematic ? "Show in Board" : "Show in Schematic", systemImage: "arrow.left.arrow.right") {
                 ec.view = ec.view == .schematic ? .board : .schematic
             }
+            if ec.view == .schematic, !ec.sheetNames(model).isEmpty {
+                Picker("Sheet", selection: Binding(get: { ec.activeSheet ?? "" }, set: { ec.activeSheet = $0.isEmpty ? nil : $0; ec.selectedRef = nil })) {
+                    Text("Root").tag("")
+                    ForEach(ec.sheetNames(model), id: \.self) { Text($0).tag($0) }
+                }
+            }
             Group {
                 if ec.view == .schematic {
                     Text("\(counted(ecRows(ec.schematic(model)["components"]).count, "symbol")) · \(counted((ec.schematic(model)["nets"] as? [String: [String]])?.count ?? 0, "net"))")
@@ -258,6 +267,26 @@ struct NativeElectronicsView: View {
                     }
                     Text("Move coordinates independently in Schematic and Board views.").font(.caption).foregroundStyle(.secondary)
                     Divider()
+                }
+                if ec.tool == .select, ec.selectedRef != nil, ec.view != .spatial {
+                    Button(ec.view == .schematic ? "Edit Symbol…" : "Edit Footprint…", systemImage: "pencil.and.ruler") {
+                        ec.tools.sheet = ec.view == .schematic ? .symbol : .footprint
+                    }.controlSize(.small)
+                }
+                if ec.view == .schematic, ec.tool == .select, ec.activeSheet == nil, ec.selectedRef != nil || !ec.multiRefs.isEmpty {
+                    HStack {
+                        TextField("New sheet name", text: $newSheetName).textFieldStyle(.roundedBorder)
+                        Button("Move") { ec.moveSelectionToNewSheet(model, named: newSheetName); newSheetName = "" }
+                    }
+                }
+                if ec.view == .board, let net = ec.highlightNet {
+                    let board = ec.board(model)
+                    KeyValueRow(net, String(format: "%.2f mm routed", ec.netLength(net, in: board)))
+                    if let other = ec.pairPartner(of: net, in: board) {
+                        KeyValueRow("Pair skew", String(format: "%.3f mm", abs(ec.netLength(net, in: board) - ec.netLength(other, in: board))))
+                        Button("Route Pair with \(other)") { ec.tools.routePair(ec, model, net, other) }.controlSize(.small)
+                        Button("Match Lengths…") { ec.tools.tuneNets = [net, other]; ec.tools.openLengths(ec, model) }.controlSize(.small)
+                    }
                 }
                 if ec.multiRefs.count >= 2, ec.tool == .select {
                     Eyebrow("\(ec.multiRefs.count) selected")

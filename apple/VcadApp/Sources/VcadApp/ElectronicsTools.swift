@@ -16,7 +16,7 @@ struct ECBox: @unchecked Sendable { let value: ECObject }
 /// `EditorModel.editElectronics`, so each is one undo step.
 @MainActor @Observable
 final class ElectronicsTools {
-    enum Sheet: String, Identifiable { case drc, erc, length, stackup, simulate, enclosure; var id: String { rawValue } }
+    enum Sheet: String, Identifiable { case drc, erc, footprint, symbol, length, stackup, simulate, enclosure; var id: String { rawValue } }
 
     var busy: String?
     var sheet: Sheet?
@@ -223,12 +223,20 @@ final class ElectronicsTools {
     /// ERC findings with positions, kept for the sheet's markers.
     var ercFindings: [ECObject] = []
     func runErc(_ ec: ElectronicsWorkspace, _ model: EditorModel) {
-        let sheetJSON = ec.schematic(model)
+        let sheetJSON = ec.rootSchematic(model)
         guard !sheetJSON.isEmpty else { error = "This document has no schematic."; return }
         let s = ECBox(value: sheetJSON)
         run("ERC") { ECBox(value: try PcbFFI.erc(s.value)) } then: { [self] r in
             ercFindings = ecRows(r["violations"])
             sheet = .erc
+        }
+    }
+
+    func routePair(_ ec: ElectronicsWorkspace, _ model: EditorModel, _ p: String, _ n: String) {
+        guard let b = boardBox(ec, model) else { return }
+        run("Route pair") { ECBox(value: try PcbFFI.routeDiffPair(b.value, p: p, n: n)) } then: { [self] r in
+            adopt(board: r["pcb"], ec, model)
+            status = (r["routed"] as? Bool) == true ? "Routed pair \(p) / \(n)" : (r["reason"] as? String ?? "Pair not routed")
         }
     }
 
