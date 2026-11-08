@@ -93,6 +93,29 @@ extension EditorModel {
         if ok { picking.clear() }
         return ok
     }
+
+    /// Shell: with the picked faces of the selected part removed (the
+    /// opening — an open-top enclosure), else a closed hollow. Faces travel
+    /// as their durable selectors, never the session ids.
+    @discardableResult
+    func applyShell(thickness: Double) -> Bool {
+        guard thickness > 0, let pi = selectedPartIndex ?? picking.selectionPart,
+              let id = partId(forPart: pi) else { return false }
+        let faces = picking.selectedFaceIDs(part: pi)
+        var openFacesJson: String?
+        if !faces.isEmpty {
+            guard let topo = partTopology(pi) else { return false }
+            let refs: [Any] = faces.compactMap { topo.face($0)?.selector?.any }
+            guard refs.count == faces.count,
+                  let data = try? JSONSerialization.data(withJSONObject: refs),
+                  let json = String(data: data, encoding: .utf8) else { return false }
+            openFacesJson = json
+        }
+        let ok = addOp(.shell(input: id, thickness: thickness, openFacesJson: openFacesJson),
+                       name: "Shell", materialFrom: id)
+        if ok, !faces.isEmpty { picking.clear() }
+        return ok
+    }
 }
 
 /// The dialog sheet. Presented from `model.activeFeatureOp`.
@@ -150,6 +173,9 @@ struct FeatureOpSheet: View {
                 .font(.caption).foregroundStyle(.secondary)
         case .shell:
             num("Thickness", $thickness, unit: "mm")
+            let n = model.picking.selectedFaces.count
+            Text(n > 0 ? "Opens \(n) picked face\(n == 1 ? "" : "s")" : "Closed shell (pick faces with ⌃F to open them)")
+                .font(.caption).foregroundStyle(.secondary)
         case .linearPattern:
             axisPicker
             Stepper("Count: \(count)", value: $count, in: 2...100)
@@ -221,7 +247,7 @@ struct FeatureOpSheet: View {
         case .fillet, .chamfer:
             ok = model.applyBlend(fillet: op == .fillet, size: size)
         case .shell:
-            if let id { ok = model.addOp(.shell(input: id, thickness: thickness), name: "Shell", materialFrom: id) }
+            ok = model.applyShell(thickness: thickness)
         case .linearPattern:
             if let id {
                 ok = model.addOp(.linearPattern(input: id, direction: axis.vector, count: count, spacing: spacing),

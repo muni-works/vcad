@@ -1085,9 +1085,18 @@ fn evaluate_op_timed(
             }))
         }
 
-        CsgOp::Shell { child, thickness } => {
+        CsgOp::Shell {
+            child,
+            thickness,
+            open_faces,
+        } => {
             let c = eval_child(*child, cache)?;
-            blend_result(c.map(|s| s.shell(*thickness)), "shell", *child)
+            let refs = crate::convert::to_face_refs(open_faces);
+            blend_result(
+                c.map(|s| s.shell_open_refs(*thickness, &refs)),
+                "shell",
+                *child,
+            )
         }
 
         CsgOp::Fillet { child, radius } => {

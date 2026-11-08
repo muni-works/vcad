@@ -224,6 +224,19 @@ pub enum BlendError {
     Shell(String),
 }
 
+/// A reference to one face of a solid: a persistent name, a geometric
+/// hint, or both (the name wins when it resolves). See
+/// [`Solid::resolve_face`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FaceRef {
+    /// Persistent face name, e.g. `n1:top`.
+    pub name: Option<String>,
+    /// A point on (or near) the face.
+    pub point: Option<Point3>,
+    /// The face's outward normal near `point`, to disambiguate.
+    pub normal: Option<Vec3>,
+}
+
 impl std::fmt::Display for BlendError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1226,6 +1239,196 @@ impl Solid {
                 }),
                 None,
             ),
+        }
+    }
+
+    /// Shell the solid with `open_faces` removed — hollow it inward by
+    /// `thickness` and leave the picked faces as the opening (the open-top
+    /// box every enclosure starts as). See
+    /// [`vcad_kernel_shell::shell_brep_open`] for what is supported.
+    ///
+    /// With no open faces this is exactly [`Solid::shell`]. Fail-closed:
+    /// a non-positive thickness, a mesh-only solid, an unsupported face, a
+    /// thickness that consumes the solid, or a result that did not strictly
+    /// lose volume inside the original bounds is an error, never a
+    /// best-effort solid.
+    pub fn shell_open(
+        &self,
+        thickness: f64,
+        open_faces: &[vcad_kernel_topo::FaceId],
+    ) -> Result<Solid, BlendError> {
+        if open_faces.is_empty() {
+            return self.shell(thickness);
+        }
+        if !thickness.is_finite() || thickness <= 0.0 {
+            return Err(BlendError::Shell(format!(
+                "shell thickness must be a positive finite number, got {thickness}"
+            )));
+        }
+        let brep = match &self.repr {
+            SolidRepr::Empty => return Err(BlendError::EmptySolid),
+            SolidRepr::Mesh(_) => {
+                return Err(BlendError::Shell(
+                    "opening faces needs a B-rep solid; this one is a mesh".into(),
+                ))
+            }
+            SolidRepr::BRep(b) => b,
+        };
+        let shelled = vcad_kernel_shell::shell_brep_open(brep, thickness, open_faces)
+            .map_err(|e| BlendError::Shell(e.to_string()))?;
+        let out = Solid {
+            names: None,
+            provenance: self.provenance.clone(),
+            repr: SolidRepr::BRep(Box::new(shelled)),
+            segments: self.segments,
+        };
+        // Post-flight: a shell only ever removes material from inside the
+        // solid. A volume that did not strictly drop (or went non-positive)
+        // or a body that grew past the input's bounds means the offset
+        // inverted or collapsed.
+        let (v_in, v_out) = (self.volume(), out.volume());
+        if !(v_out.is_finite() && v_out > 0.0 && v_out < v_in) {
+            return Err(BlendError::Shell(format!(
+                "wall thickness {thickness} consumes the solid (shelled volume {v_out:.3} \
+                 vs solid {v_in:.3})"
+            )));
+        }
+        let ((lo, hi), (olo, ohi)) = (self.bounding_box(), out.bounding_box());
+        let tol = 1e-6 * (1.0 + (0..3).map(|i| hi[i] - lo[i]).fold(0.0, f64::max));
+        if (0..3).any(|i| olo[i] < lo[i] - tol || ohi[i] > hi[i] + tol) {
+            return Err(BlendError::Shell(format!(
+                "wall thickness {thickness} consumes the solid (the offset inverted past the \
+                 outer surface)"
+            )));
+        }
+        Ok(out)
+    }
+
+    /// [`Solid::shell_open`] with the open faces given as references
+    /// ([`Solid::resolve_face`]), each resolved against this solid. Two
+    /// references to the same face are one opening.
+    pub fn shell_open_refs(
+        &self,
+        thickness: f64,
+        open_faces: &[FaceRef],
+    ) -> Result<Solid, BlendError> {
+        let mut ids = Vec::with_capacity(open_faces.len());
+        for r in open_faces {
+            let f = self.resolve_face(r.name.as_deref(), r.point, r.normal)?;
+            if !ids.contains(&f) {
+                ids.push(f);
+            }
+        }
+        self.shell_open(thickness, &ids)
+    }
+
+    /// Resolve a face reference to one face of this solid, for
+    /// [`Solid::shell_open`] and other face-picking operations.
+    ///
+    /// A persistent `name` (`n1:top`, see [`Solid::names`]) wins when the
+    /// solid carries names and it resolves to exactly one face. Otherwise
+    /// the geometric hint decides: the face nearest `point` whose outward
+    /// normal there agrees with `normal` (when given). Fail-closed — no
+    /// usable reference, no face within reach, or a tie between two faces
+    /// is an error, never a guess.
+    pub fn resolve_face(
+        &self,
+        name: Option<&str>,
+        point: Option<Point3>,
+        normal: Option<Vec3>,
+    ) -> Result<vcad_kernel_topo::FaceId, BlendError> {
+        let err = |m: String| Err(BlendError::Shell(m));
+        let SolidRepr::BRep(brep) = &self.repr else {
+            return err("face references need a B-rep solid".into());
+        };
+        let mut name_failure = None;
+        if let Some(n) = name {
+            match (vcad_kernel_naming::FaceName::parse(n), &self.names) {
+                (None, _) => name_failure = Some(format!("`{n}` is not a face name")),
+                (Some(_), None) => {
+                    name_failure = Some(format!("face `{n}`: this solid carries no face names"))
+                }
+                (Some(fname), Some(names)) => match names.face_named(&fname) {
+                    Some(f) => return Ok(f),
+                    None => name_failure = Some(format!("face `{n}` is lost or ambiguous")),
+                },
+            }
+        }
+        let Some(p) = point else {
+            return err(
+                name_failure.unwrap_or_else(|| "empty face reference (no name or point)".into())
+            );
+        };
+        let want = normal.filter(|n| n.norm() > 1e-12).map(|n| n.normalize());
+        let params = vcad_kernel_tessellate::TessellationParams::from_segments(32);
+        let mut best: Vec<(f64, vcad_kernel_topo::FaceId)> = Vec::new();
+        for (fid, _, m) in vcad_kernel_tessellate::tessellate_brep_by_face(brep, &params) {
+            let v = |i: u32| {
+                let i = i as usize * 3;
+                Point3::new(
+                    m.vertices[i] as f64,
+                    m.vertices[i + 1] as f64,
+                    m.vertices[i + 2] as f64,
+                )
+            };
+            let mut face_best = f64::INFINITY;
+            for t in m.indices.as_chunks::<3>().0 {
+                let (a, b, c) = (v(t[0]), v(t[1]), v(t[2]));
+                let mut n = (b - a).cross(c - a);
+                if n.norm() < 1e-18 {
+                    continue;
+                }
+                // The tessellator's vertex normals carry the face
+                // orientation; triangle winding is not guaranteed to.
+                if m.normals.len() == m.vertices.len() {
+                    let vn = |i: u32| {
+                        let i = i as usize * 3;
+                        Vec3::new(
+                            m.normals[i] as f64,
+                            m.normals[i + 1] as f64,
+                            m.normals[i + 2] as f64,
+                        )
+                    };
+                    let avg = vn(t[0]) + vn(t[1]) + vn(t[2]);
+                    if avg.norm() > 1e-12 {
+                        n = avg;
+                    }
+                }
+                if let Some(w) = want {
+                    if n.normalize().dot(w) < 0.7 {
+                        continue;
+                    }
+                }
+                face_best = face_best.min((closest_on_triangle(p, a, b, c) - p).norm());
+            }
+            if m.indices.is_empty() {
+                // A full-circle planar cap (one vertex, one closed edge)
+                // has no per-face tessellation: measure the disk directly.
+                face_best = disk_cap_distance(brep, fid, p, want).unwrap_or(face_best);
+            }
+            if face_best.is_finite() {
+                best.push((face_best, fid));
+            }
+        }
+        best.sort_by(|x, y| x.0.total_cmp(&y.0));
+        let diag = {
+            let (lo, hi) = self.bounding_box();
+            (0..3).map(|i| (hi[i] - lo[i]).powi(2)).sum::<f64>().sqrt()
+        };
+        match best.as_slice() {
+            [] => err(format!(
+                "no face matches the reference near ({:.3}, {:.3}, {:.3})",
+                p.x, p.y, p.z
+            )),
+            [(d, _), ..] if *d > 0.25 * diag.max(1e-9) => err(format!(
+                "no face within reach of ({:.3}, {:.3}, {:.3}) (nearest is {d:.3} mm away)",
+                p.x, p.y, p.z
+            )),
+            [(d0, f0), (d1, f1), ..] if f0 != f1 && (d1 - d0) < 1e-6 => err(format!(
+                "face reference at ({:.3}, {:.3}, {:.3}) is ambiguous between two faces",
+                p.x, p.y, p.z
+            )),
+            [(_, f), ..] => Ok(*f),
         }
     }
 
@@ -2502,6 +2705,75 @@ fn compute_center_of_mass(mesh: &TriangleMesh) -> [f64; 3] {
     } else {
         area_centroid
     }
+}
+
+/// Distance from `p` to a full-circle planar cap face (a single-vertex
+/// loop), or `None` when `fid` is not one or its normal disagrees with
+/// `want`.
+fn disk_cap_distance(
+    brep: &BRepSolid,
+    fid: vcad_kernel_topo::FaceId,
+    p: Point3,
+    want: Option<Vec3>,
+) -> Option<f64> {
+    let topo = &brep.topology;
+    let face = &topo.faces[fid];
+    let verts = topo.loop_vertices(face.outer_loop);
+    let [v] = verts.as_slice() else {
+        return None;
+    };
+    let surf = &brep.geometry.surfaces[face.surface_index];
+    if surf.surface_type() != vcad_kernel_geom::SurfaceKind::Plane {
+        return None;
+    }
+    let origin = vcad_kernel_math::Point2::new(0.0, 0.0);
+    let center = surf.evaluate(origin);
+    let mut n = *surf.normal(origin).as_ref();
+    if face.orientation == vcad_kernel_topo::Orientation::Reversed {
+        n = -n;
+    }
+    if want.is_some_and(|w| n.dot(w) < 0.7) {
+        return None;
+    }
+    let r = (topo.vertices[*v].point - center).norm();
+    let d = p - center;
+    let h = d.dot(n);
+    let radial = (d - n * h).norm();
+    Some(h.hypot((radial - r).max(0.0)))
+}
+
+/// Closest point to `p` on triangle `abc` (Ericson, Real-Time Collision
+/// Detection §5.1.5).
+fn closest_on_triangle(p: Point3, a: Point3, b: Point3, c: Point3) -> Point3 {
+    let (ab, ac, ap) = (b - a, c - a, p - a);
+    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
+    if d1 <= 0.0 && d2 <= 0.0 {
+        return a;
+    }
+    let bp = p - b;
+    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
+    if d3 >= 0.0 && d4 <= d3 {
+        return b;
+    }
+    let vc = d1 * d4 - d3 * d2;
+    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 {
+        return a + ab * (d1 / (d1 - d3));
+    }
+    let cp = p - c;
+    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
+    if d6 >= 0.0 && d5 <= d6 {
+        return c;
+    }
+    let vb = d5 * d2 - d1 * d6;
+    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 {
+        return a + ac * (d2 / (d2 - d6));
+    }
+    let va = d3 * d6 - d5 * d4;
+    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 {
+        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
+    }
+    let denom = 1.0 / (va + vb + vc);
+    a + ab * (vb * denom) + ac * (vc * denom)
 }
 
 #[cfg(test)]

@@ -1726,6 +1726,23 @@ impl Solid {
         })
     }
 
+    /// Shell with faces removed: hollow inward by `thickness` and leave
+    /// the referenced faces as the opening (an open-top box).
+    /// `open_faces_json` is a JSON array of IR `FaceRef`s
+    /// (`{name}` and/or `{point:{x,y,z}, normal:{x,y,z}}`). An empty array
+    /// is the closed shell.
+    #[wasm_bindgen(js_name = shellOpen)]
+    pub fn shell_open(&self, thickness: f64, open_faces_json: &str) -> Result<Solid, JsError> {
+        let refs: Vec<vcad_ir::FaceRef> = serde_json::from_str(open_faces_json)
+            .map_err(|e| JsError::new(&format!("shell: bad open_faces: {e}")))?;
+        Ok(Solid {
+            inner: self
+                .inner
+                .shell_open_refs(thickness, &vcad_eval::convert::to_face_refs(&refs))
+                .map_err(|e| JsError::new(&format!("shell: {e}")))?,
+        })
+    }
+
     // =========================================================================
     // Pattern operations
     // =========================================================================
@@ -4934,9 +4951,17 @@ fn evaluate_node(doc: &vcad_ir::Document, node_id: vcad_ir::NodeId) -> Result<So
             ))
         }
 
-        vcad_ir::CsgOp::Shell { child, thickness } => {
+        vcad_ir::CsgOp::Shell {
+            child,
+            thickness,
+            open_faces,
+        } => {
             let c = evaluate_node(doc, *child)?;
-            c.shell(*thickness)
+            let refs = vcad_eval::convert::to_face_refs(open_faces);
+            c.inner
+                .shell_open_refs(*thickness, &refs)
+                .map(|inner| Solid { inner })
+                .map_err(|e| JsError::new(&format!("shell: {e}")))
         }
 
         vcad_ir::CsgOp::Fillet { child, radius } => {

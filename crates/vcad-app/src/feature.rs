@@ -185,6 +185,12 @@ pub enum FeatureInput {
         input: String,
         /// Wall thickness.
         thickness: f64,
+        /// Faces to remove, leaving an opening, as a JSON array of IR
+        /// `FaceRef`s (`{name}` and/or `{point, normal}`). Absent = closed
+        /// shell.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-rs", ts(optional))]
+        open_faces_json: Option<String>,
     },
     /// Linear pattern (array of copies along a direction).
     LinearPattern {
@@ -598,9 +604,16 @@ impl FeatureInput {
                 p.insert("input".into(), Value::FeatureRef(input.clone()));
                 p.insert("distance".into(), Value::F64(*distance));
             }
-            Self::Shell { input, thickness } => {
+            Self::Shell {
+                input,
+                thickness,
+                open_faces_json,
+            } => {
                 p.insert("input".into(), Value::FeatureRef(input.clone()));
                 p.insert("thickness".into(), Value::F64(*thickness));
+                if let Some(v) = open_faces_json {
+                    p.insert("open_faces_json".into(), Value::String(v.clone()));
+                }
             }
             Self::LinearPattern {
                 input,
@@ -892,6 +905,7 @@ impl FeatureInput {
             "shell" => Self::Shell {
                 input: get_str(params, "input").unwrap_or_default(),
                 thickness: get_f64(params, "thickness").unwrap_or(1.0),
+                open_faces_json: get_str(params, "open_faces_json"),
             },
             "linear-pattern" => Self::LinearPattern {
                 input: get_str(params, "input").unwrap_or_default(),
@@ -1184,6 +1198,7 @@ mod tests {
                 FeatureInput::Shell {
                     input: "".into(),
                     thickness: 1.0,
+                    open_faces_json: None,
                 },
                 "shell",
             ),

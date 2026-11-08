@@ -14,6 +14,17 @@ pub fn to_point3(v: &IrVec3) -> Point3 {
     Point3::new(v.x, v.y, v.z)
 }
 
+/// Convert IR face references (a shell's `open_faces`) to kernel ones.
+pub fn to_face_refs(refs: &[vcad_ir::FaceRef]) -> Vec<vcad_kernel::FaceRef> {
+    refs.iter()
+        .map(|r| vcad_kernel::FaceRef {
+            name: r.name.clone(),
+            point: r.point.as_ref().map(to_point3),
+            normal: r.normal.as_ref().map(to_vec3),
+        })
+        .collect()
+}
+
 /// Convert IR sketch segment to kernel SketchSegment.
 fn convert_segment(seg: &SketchSegment2D) -> SketchSegment {
     match seg {

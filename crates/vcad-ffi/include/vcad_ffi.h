@@ -615,7 +615,7 @@ char *vcad_sketch_profile_json(const VcadSketch *s);
  * edge id = ordinal from vcad_topology_json. Session handles, not durable. */
 #define VCAD_TOPO_NONE 0xFFFFFFFFu
 VcadSolid *vcad_scene_part_solid(const VcadScene *scene, size_t index);
-/* {"faces":[{id,surface,center,normal,area}],
+/* {"faces":[{id,surface,center,normal,area,selector}],
  *  "edges":[{id,faces:[a,b],a,b,segments:[f32 x6..],planar,selector}]} */
 char *vcad_topology_json(const VcadSolid *solid);
 typedef struct VcadPick {

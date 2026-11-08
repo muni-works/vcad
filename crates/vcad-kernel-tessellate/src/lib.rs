@@ -7295,6 +7295,25 @@ fn tessellate_degenerate_cap(
             .loop_half_edges(inner_loop)
             .map(|he| brep.topology.vertices[brep.topology.half_edges[he].origin].point)
             .collect();
+        // A single-vertex inner loop is a full circle too — the rim of an
+        // open-face shell of a cylinder (its offset cap circle). It is
+        // concentric with the outer circle by construction, so sample it
+        // on the same angular grid, starting at its own vertex.
+        let iv = match iv.as_slice() {
+            [c] => {
+                let ri = (*c - center).norm();
+                if ri <= 1e-12 || ri >= r {
+                    continue;
+                }
+                (0..n)
+                    .map(|i| {
+                        let theta = 2.0 * PI * (i as f64) / (n as f64);
+                        center + ri * (theta.cos() * x_dir + theta.sin() * y_dir)
+                    })
+                    .collect()
+            }
+            _ => iv,
+        };
         if iv.len() >= 3 {
             let iv_2d: Vec<(f64, f64)> = iv.iter().map(&project).collect();
             inner_loops_3d.push(iv);
