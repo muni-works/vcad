@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-08-ecad-workspace",
+  "version": "0.11.0",
+  "date": "2026-11-08",
+  "category": "feat",
+  "title": "Electronics workspace: real board and schematic editing",
+  "summary": "Mac app gains a true PCB canvas, interactive router with shove, stronger Autoroute, zones, footprint library, and a schematic editor with wires, labels and ERC.",
+  "features": ["native-app", "electronics", "routing", "schematic"]
+}
