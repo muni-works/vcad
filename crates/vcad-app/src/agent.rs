@@ -367,18 +367,26 @@ fn fmt3(v: [f64; 3]) -> String {
 /// resolves to the wrong edge, an over-size radius) often yields an empty
 /// solid rather than an error — the app uses this to refuse such an edit.
 pub fn evaluation_errors(doc: &DocumentApi) -> String {
-    doc.get_state()
-        .parts
-        .iter()
-        .filter(|p| doc.part_world_bbox(p.id()).is_none())
-        .map(|p| {
-            let name = serde_json::to_value(p)
-                .ok()
-                .and_then(|v| v.get("name").and_then(Value::as_str).map(str::to_owned))
-                .unwrap_or_default();
-            format!("- {} \"{name}\": produced no geometry\n", p.id())
-        })
-        .collect()
+    let state = doc.get_state();
+    let mut out = String::new();
+    for p in &state.parts {
+        let mut cache = std::collections::HashMap::new();
+        let why = match vcad_eval::evaluate::evaluate_node(
+            p.root_node_id(),
+            &state.document.nodes,
+            &mut cache,
+        ) {
+            Ok(Some(_)) => continue,
+            Ok(None) => "produced no geometry".to_string(),
+            Err(e) => e.to_string(),
+        };
+        let name = serde_json::to_value(p)
+            .ok()
+            .and_then(|v| v.get("name").and_then(Value::as_str).map(str::to_owned))
+            .unwrap_or_default();
+        out.push_str(&format!("- {} \"{name}\": {why}\n", p.id()));
+    }
+    out
 }
 
 /// One line per part: id, name, kind, material, bbox.
