@@ -1555,7 +1555,25 @@ final class EditorModel {
             doc = next
             prev = (obj["node_id"] as? NSNumber)?.intValue
         }
-        return irEdit(name, reeval: .rebuild, base: doc) { _ in } != nil
+        guard irEdit(name, reeval: .rebuild, base: doc) { _ in } != nil else { return false }
+        // A feature the kernel can't build (a fillet whose edge reference no
+        // longer resolves, an over-size radius) was committed anyway and the
+        // whole part vanished with no message. Check, and take it back.
+        if let failed = newEvaluationErrors(), !failed.isEmpty {
+            undo()
+            redoStack.removeAll()
+            engineError = "\(name) couldn't be built, so it was undone:\n\(failed)"
+            return false
+        }
+        return true
+    }
+
+    /// The kernel's per-part build failures for the current document, or nil
+    /// when this kernel build can't report them.
+    func newEvaluationErrors() -> String? {
+        guard let engine else { return nil }
+        return (try? engine.agentRead("evaluation_errors", [:]))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Mutate the IR document directly and reload, as ONE undo step — for
