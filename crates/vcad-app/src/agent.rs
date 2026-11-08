@@ -488,6 +488,17 @@ mod tests {
         api
     }
 
+    /// Stable id of the part named `name`.
+    fn part_named(api: &DocumentApi, name: &str) -> String {
+        api.get_state()
+            .parts
+            .iter()
+            .find(|p| serde_json::to_value(p).unwrap()["name"] == name)
+            .unwrap()
+            .id()
+            .to_string()
+    }
+
     fn cube_op(z: f64) -> Value {
         json!({"type": "Cube", "size": {"x": 10.0, "y": 10.0, "z": z}})
     }
@@ -506,7 +517,7 @@ mod tests {
         let scene = read_tool("describe_scene", &json!({}), &api).unwrap();
         assert!(scene.contains("evaluation failed"), "{scene}");
         assert!(!scene.contains("no geometry"), "{scene}");
-        let id = api.get_state().parts[0].id().to_string();
+        let id = part_named(&api, "fillet");
         let err = read_tool("inspect", &json!({"part_id": id}), &api).unwrap_err();
         assert!(err.to_string().contains("radius"), "{err}");
         let text = read_tool("evaluation_errors", &json!({}), &api).unwrap();
@@ -526,7 +537,7 @@ mod tests {
             (2, "shell", json!({"type": "Shell", "child": 1, "thickness": 1.0})),
         ]);
         assert!(ok.evaluation_errors().is_empty());
-        let id = ok.get_state().parts[0].id().to_string();
+        let id = part_named(&ok, "shell");
         let text = read_tool("inspect", &json!({"part_id": id}), &ok).unwrap();
         assert!(text.contains("volume 488.000"), "{text}");
     }
@@ -542,8 +553,9 @@ mod tests {
         ]);
         let scene = read_tool("describe_scene", &json!({}), &api).unwrap();
         assert!(scene.contains("empty (no volume)"), "{scene}");
-        assert!(!scene.contains("e308") && !scene.contains("bbox"), "{scene}");
-        let id = api.get_state().parts[0].id().to_string();
+        assert!(!scene.contains("e308"), "{scene}");
+        assert!(scene.contains("\"difference\" [boolean] material=default empty (no volume)"), "{scene}");
+        let id = part_named(&api, "difference");
         let text = read_tool("inspect", &json!({"part_id": id}), &api).unwrap();
         assert!(text.contains("empty (no volume)") && !text.contains("e308"), "{text}");
         assert_eq!(api.part_world_bbox(&id), None);

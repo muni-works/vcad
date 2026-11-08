@@ -225,6 +225,18 @@ pub enum BlendError {
     /// The fillet radius / chamfer distance is zero, negative, or not a
     /// finite number.
     InvalidSize(f64),
+    /// The radius / setback cannot fit the solid at all: it reaches half
+    /// the solid's thinnest bounding-box extent, where opposing blends
+    /// meet. (A necessary bound, not a sufficient one — smaller features
+    /// can still refuse with a more local reason.)
+    SizeExceedsLimit {
+        /// The operation ("fillet radius" / "chamfer distance").
+        what: &'static str,
+        /// The requested size in mm.
+        size: f64,
+        /// The exclusive upper bound in mm.
+        limit: f64,
+    },
 }
 
 impl std::fmt::Display for BlendError {
@@ -257,6 +269,11 @@ impl std::fmt::Display for BlendError {
             ),
             Self::NamedEdge(e) => write!(f, "named edge: {e}"),
             Self::Shell(msg) => write!(f, "shell failed: {msg}"),
+            Self::SizeExceedsLimit { what, size, limit } => write!(
+                f,
+                "{what} {size} mm exceeds the {limit:.4} mm limit for this solid \
+                 (half its thinnest extent) — opposing blends would meet"
+            ),
             Self::InvalidSize(v) => {
                 write!(f, "blend size must be a positive finite number, got {v}")
             }
@@ -796,6 +813,9 @@ impl Solid {
         let SolidRepr::BRep(brep) = &self.repr else {
             return Err(self.non_brep_error());
         };
+        if let Some(e) = blend_size_limit(brep, "chamfer distance", distance) {
+            return Err(e);
+        }
         // Same inner-loop hazard as `fillet` — see brep_has_inner_loops.
         let holes = count_inner_loop_faces(brep);
         if holes > 0 {
@@ -885,6 +905,10 @@ impl Solid {
             return (Err(e), report);
         };
 
+        if let Some(e) = blend_size_limit(brep, "fillet radius", radius) {
+            report.declined = Some(e.clone());
+            return (Err(e), report);
+        }
         // Faces with inner loops (holes from booleans) can't survive
         // the rebuild — refuse rather than fill the holes in.
         let holes = count_inner_loop_faces(brep);
@@ -2310,6 +2334,29 @@ fn fillet_aabb_is_reasonable(input: &BRepSolid, filleted: &BRepSolid, radius: f6
 /// boundary edges relative to the input's bbox diagonal: shipped-good
 /// curved fillets measure ≈1.4×, while broken rebuilds (cracked cap
 /// rims, fillet-of-fillet) measure 2.6–26×.
+/// Up-front bound for whole-solid blends: a size reaching half the
+/// thinnest bbox extent can never fit (opposing blends meet), so refuse
+/// with the number instead of letting the rebuild fail opaquely.
+fn blend_size_limit(brep: &BRepSolid, what: &'static str, size: f64) -> Option<BlendError> {
+    let mut lo = [f64::MAX; 3];
+    let mut hi = [f64::MIN; 3];
+    for (_, v) in &brep.topology.vertices {
+        for (i, c) in [v.point.x, v.point.y, v.point.z].into_iter().enumerate() {
+            lo[i] = lo[i].min(c);
+            hi[i] = hi[i].max(c);
+        }
+    }
+    let limit = (0..3)
+        .map(|i| 0.5 * (hi[i] - lo[i]))
+        .fold(f64::INFINITY, f64::min);
+    // Only meaningful when the vertex box is the real box (planar
+    // solids); a curved solid's vertices can under-report its extent.
+    if !brep_is_all_planar(brep) || !limit.is_finite() || limit <= 0.0 {
+        return None;
+    }
+    (size >= limit).then_some(BlendError::SizeExceedsLimit { what, size, limit })
+}
+
 /// Fail-closed gate for [`Solid::shell_reported`]: the shelled body must
 /// stay inside the input's bounding box and have strictly less (but
 /// positive) volume. Returns the reason when it does not.
