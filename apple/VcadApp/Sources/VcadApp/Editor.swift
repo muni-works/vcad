@@ -1465,6 +1465,36 @@ final class EditorModel {
         selectionDirty = true
     }
 
+    /// A boolean waiting for its second part: the selected part is the target,
+    /// the next part clicked is the tool (Fusion's target/tool idiom). ⌘-click
+    /// multi-select still works, but nothing on screen taught it.
+    var pendingBoolean: (op: BooleanOp, target: Int)?
+
+    /// Modeling is possible: a document, or the Untitled sandbox that the first
+    /// modeling action promotes.
+    var canModel: Bool { usesDocumentTree || (source.isSandbox && documentJSON == nil) }
+
+    /// Start a boolean: two parts already selected combine now; one selected
+    /// waits for a click on the other.
+    func beginCombine(_ op: BooleanOp) {
+        if multiSelectedParts.count == 2 { combineSelected(op); return }
+        guard let target = selectedPartIndex else { return }
+        pendingBoolean = (op, target)
+    }
+
+    /// The click that completes a pending boolean. Returns whether it consumed
+    /// the click.
+    func completePendingBoolean(withPart pi: Int) -> Bool {
+        guard let p = pendingBoolean else { return false }
+        // Clicking the target again is a miss, not a cancel: keep waiting
+        // (Cancel / Esc in the prompt pill ends it).
+        guard pi != p.target else { return true }
+        pendingBoolean = nil
+        multiSelectedParts = [p.target, pi]
+        combineSelected(p.op)
+        return true
+    }
+
     /// Combine the two ⌘-selected parts with a boolean op (first = base).
     func combineSelected(_ op: BooleanOp) {
         guard multiSelectedParts.count == 2,

@@ -374,9 +374,12 @@ enum DockTools {
             })
         }
         let ready = m.multiSelectedParts.count == 2
-        out.append(Tool(id: "bool.difference", label: "Subtract", symbol: BooleanOp.difference.symbol,
-                        isActive: false, enabled: doc && ready, hint: ready ? "" : "⌘-click 2 parts") {
-            m.combineSelected(.difference)
+        let waiting = m.pendingBoolean?.op == .difference
+        out.append(Tool(id: "bool.difference", label: waiting ? "Subtract — click the part to cut away" : "Subtract",
+                        symbol: BooleanOp.difference.symbol,
+                        isActive: waiting, enabled: doc && (ready || selected || waiting),
+                        hint: ready || selected ? "" : "Select the part to cut from") {
+            if waiting { m.pendingBoolean = nil } else { m.beginCombine(.difference) }
         })
         out.append(Tool(id: "measure", label: "Measure", symbol: "ruler", isActive: m.measuring, enabled: doc) {
             m.measuring.toggle()

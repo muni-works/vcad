@@ -300,14 +300,19 @@ struct DocumentCommands: Commands {
                                                  set: { model.section = $0 ? SectionPlane() : nil }))
                 .keyboardShortcut("x", modifiers: [.command, .option])
             Divider()
-            Button("New Sketch") { model.enterSketch() }
+            Button("New Sketch") { if model.promoteSandboxToDocument() { model.enterSketch() } }
                 .keyboardShortcut("s", modifiers: [.control])
-                .disabled(!model.usesDocumentTree || model.sketching)
+                .disabled(!model.canModel || model.sketching)
             Menu("Feature") {
                 ForEach(FeatureOp.allCases) { op in
-                    Button(op.label + "…") { model.activeFeatureOp = op }
+                    Button(op.label + "…") { if model.promoteSandboxToDocument() { model.activeFeatureOp = op } }
                 }
-            }.disabled(!model.usesDocumentTree)
+            }.disabled(!model.canModel)
+            Menu("Combine") {
+                ForEach([BooleanOp.union, .difference, .intersection], id: \.self) { op in
+                    Button(op.label) { model.beginCombine(op) }
+                }
+            }.disabled(!model.usesDocumentTree || model.selectedPartIndex == nil)
         }
         CommandMenu("Select") {
             ForEach(PickFilter.allCases) { f in

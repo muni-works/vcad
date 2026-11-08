@@ -306,6 +306,20 @@ struct DocumentGraph {
         return cur
     }
 
+    /// The first non-transform node under a Translate/Rotate/Scale chain, or nil
+    /// when `node` isn't a transform.
+    private func heldShape(_ node: DocNode) -> DocNode? {
+        let transforms: Set<String> = ["Translate", "Rotate", "Scale"]
+        guard transforms.contains(node.opType) else { return nil }
+        var cur = node
+        for _ in 0..<8 {
+            guard let child = (cur.op["child"] as? NSNumber)?.intValue, let next = nodes[child] else { return nil }
+            if !transforms.contains(next.opType) { return next }
+            cur = next
+        }
+        return nil
+    }
+
     private func buildNode(_ rawId: Int, partIndex: Int?, depth: Int, visited: Set<Int>) -> FeatureNode {
         let id = unwrapIdentity(rawId)
         guard let node = nodes[id] else {
@@ -321,12 +335,18 @@ struct DocumentGraph {
                 kids.append(buildNode(ref, partIndex: nil, depth: depth + 1, visited: seen))
             }
         }
+        // A placed part is a transform chain over its shape: name and badge the
+        // row after the shape ("Cylinder", not "Translate"), keep the row bound
+        // to the transform so the inspector still edits its position.
+        let held = heldShape(node)
+        let named = node.name?.isEmpty == false ? node.name! : nil
         return FeatureNode(
             id: "n\(id)",
             nodeId: id,
-            name: node.name?.isEmpty == false ? node.name! : Self.label(node.opType),
+            name: named ?? held.map { $0.name?.isEmpty == false ? $0.name! : Self.label($0.opType) }
+                ?? Self.label(node.opType),
             opType: node.opType,
-            symbol: Self.symbol(node.opType),
+            symbol: Self.symbol(held?.opType ?? node.opType),
             detail: Self.paramSummary(node),
             partIndex: partIndex,
             children: kids)

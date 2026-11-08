@@ -941,6 +941,19 @@ struct ReleasedOverlayView: View {
                 .padding(.top, chromeTop)
                 .transition(.opacity)
                 .accessibilityLabel("Solving \(model.documentName)")
+            } else if let p = model.pendingBoolean {
+                HStack(spacing: Theme.Space.s) {
+                    Image(systemName: p.op.symbol)
+                    Text(p.op == .union ? "Click the part to join"
+                         : p.op == .difference ? "Click the part to cut away"
+                         : "Click the part to intersect with").font(.callout)
+                    Button("Cancel") { model.pendingBoolean = nil }
+                        .buttonStyle(.borderless).keyboardShortcut(.cancelAction)
+                }
+                .padding(.horizontal, 14).padding(.vertical, 8).pillSurface()
+                .padding(.top, chromeTop)
+                .transition(.opacity)
+                .accessibilityElement(children: .combine)
             }
         }
         .overlay {
@@ -1270,7 +1283,9 @@ struct ReleasedOverlayView: View {
             // Modifiers come from the gesture (.modifiers(.command)), not
             // NSEvent.modifierFlags — that reads hardware key state and misses
             // synthetic events (and some tap orderings).
-            if additive {
+            if model.completePendingBoolean(withPart: stack[depth]) {
+                // the click picked the boolean's tool part
+            } else if additive {
                 model.toggleMultiSelect(part: stack[depth], featureID: fid)
             } else {
                 model.selectFeature(fid)
