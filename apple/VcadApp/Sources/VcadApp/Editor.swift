@@ -3770,10 +3770,18 @@ extension EditorModel {
             }
             var r = try call("create", primitive)
             if applies, let base = r.createdFeatureId {
+                let primitiveOnly = e.save()
                 switch mod {
                 case .fillet: r = try call("create", ["type": "fillet", "name": "Fillet", "parent_part_id": base, "params": ["radius": amount]])
                 case .chamfer: r = try call("create", ["type": "chamfer", "name": "Chamfer", "parent_part_id": base, "params": ["distance": amount]])
                 case .none: break
+                }
+                // The kernel can refuse the demo's modifier (a fillet on a
+                // cylinder's circular edges diverges); keep the plain primitive
+                // rather than promote to a part that doesn't build and vanishes.
+                if let failed = (try? e.agentRead("evaluation_errors", [:]))?
+                    .trimmingCharacters(in: .whitespacesAndNewlines), !failed.isEmpty {
+                    r = try e.restore(primitiveOnly)
                 }
             }
             adopt(r, reeval: .rebuild)
