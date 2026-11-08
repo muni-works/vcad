@@ -3,6 +3,7 @@ import AppKit
 #endif
 import CVcadFFI
 import Foundation
+import os
 import simd
 import SwiftUI
 
@@ -40,10 +41,31 @@ extension EditorModel {
             defer { vcad_cam_free(c) }
             return Data(bytes: c, count: strlen(c))
         }
+        // A .loon compile is a full evaluation (an ECAD board resolves every
+        // KiCad symbol and footprint), and this is called from every scene
+        // rebuild, export and graph parse. Uncached, a 111-part board was
+        // recompiled on the main thread on each SwiftUI update and never
+        // settled. Memoize on (path, mtime, size): the file watch's reload
+        // changes the mtime, so hot reload still sees the new source.
+        let key = loonCacheKey(path)
+        if let key, let hit = loonCache.withLock({ $0[path] }), hit.key == key { return hit.data }
         guard let c = bytes.withUnsafeBufferPointer({ vcad_loon_file_to_json($0.baseAddress, $0.count) })
         else { return nil }
         defer { vcad_cam_free(c) }
-        return Data(bytes: c, count: strlen(c))
+        let data = Data(bytes: c, count: strlen(c))
+        if let key { loonCache.withLock { $0[path] = (key, data) } }
+        return data
+    }
+
+    private nonisolated static let loonCache = OSAllocatedUnfairLock(initialState: [String: (key: String, data: Data)]())
+
+    /// Identity of a .loon file's current contents for the compile cache.
+    /// `[use]` modules beside it are not tracked: editing only a module needs
+    /// the main file touched to recompile.
+    private nonisolated static func loonCacheKey(_ path: String) -> String? {
+        guard let a = try? FileManager.default.attributesOfItem(atPath: path),
+              let m = a[.modificationDate] as? Date, let s = a[.size] as? NSNumber else { return nil }
+        return "\(m.timeIntervalSince1970):\(s.intValue)"
     }
 
     /// The open document is generated loon source: read-only, watched.
