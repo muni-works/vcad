@@ -1694,7 +1694,7 @@ pub fn split_planar_face_by_closed_loop(
 
     for lp in existing_holes {
         let points = loop_points(brep, lp);
-        let target = if points.first().is_some_and(&encloses) {
+        let target = if points.first().is_some_and(encloses) {
             enclosed_face
         } else {
             kept_face
