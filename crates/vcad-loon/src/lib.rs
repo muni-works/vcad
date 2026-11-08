@@ -456,9 +456,8 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "needs loon-lang with ecto/loon#98 — un-ignore with the rev bump"]
     fn scientific_notation_literals_are_numbers() {
-        // Until the rev bump these lex as `1e` + `6` ("unknown unit: e").
+        // ecto/loon#98: these used to lex as `1e` + `6` ("unknown unit: e").
         let doc = eval_vcad("[cube 1e6 2.5e-3 1E+3]", None).unwrap();
         match root_op(&doc) {
             CsgOp::Cube { size } => {
