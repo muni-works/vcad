@@ -115,13 +115,7 @@ impl TerminalLayers {
     /// driver). Calling the router with `&[]` instead lets it start an F.Cu
     /// SMD pad's trace on In1/In2/B.Cu with no via back to the pad; the prune
     /// then deletes it as floating copper.
-    pub fn for_connection(
-        pcb: &Pcb,
-        layers: &[PcbLayer],
-        net: &str,
-        from: Vec2,
-        to: Vec2,
-    ) -> Self {
+    pub fn for_connection(pcb: &Pcb, layers: &[PcbLayer], net: &str, from: Vec2, to: Vec2) -> Self {
         Self {
             from: live_layers(pcb, layers, net, from),
             to: live_layers(pcb, layers, net, to),

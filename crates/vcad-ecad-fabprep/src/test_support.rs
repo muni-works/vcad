@@ -234,8 +234,7 @@ pub fn floating_pad_attachments(pcb: &Pcb) -> Vec<(String, PcbLayer, f64, f64)> 
                     }
                     let via_here = pcb.vias.iter().any(|v| {
                         v.net == t.net
-                            && ((v.position.x - p.x).powi(2) + (v.position.y - p.y).powi(2))
-                                .sqrt()
+                            && ((v.position.x - p.x).powi(2) + (v.position.y - p.y).powi(2)).sqrt()
                                 <= v.diameter / 2.0
                             && t.layer.spanned_by(v.start_layer, v.end_layer)
                             && pad

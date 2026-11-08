@@ -243,7 +243,10 @@ pub fn open_nets(violations: &[vcad_ecad_pcb::drc::DrcViolation]) -> Vec<String>
             let named = delta::nets_in_message(&v.message);
             if named.is_empty() {
                 // Never let an unattributable open net vanish from the count.
-                vec![format!("<unnamed @ {:.3},{:.3}>", v.position.x, v.position.y)]
+                vec![format!(
+                    "<unnamed @ {:.3},{:.3}>",
+                    v.position.x, v.position.y
+                )]
             } else {
                 named
             }
@@ -651,7 +654,8 @@ pub fn run_fab_prep(pcb: &mut Pcb, opts: &FabPrepOptions) -> FabPrepOutcome {
         blocker = None;
     } else if geometric {
         const SHOWN: usize = 12;
-        let mut names = connectivity.open_nets[..connectivity.open_nets.len().min(SHOWN)].join(", ");
+        let mut names =
+            connectivity.open_nets[..connectivity.open_nets.len().min(SHOWN)].join(", ");
         if connectivity.open_nets.len() > SHOWN {
             names.push_str(&format!(", +{} more", connectivity.open_nets.len() - SHOWN));
         }
@@ -1048,7 +1052,10 @@ mod tests {
         let mut pcb = crate::test_support::walled_board();
         let v = verdict::route_remaining(&mut pcb, VerdictOptions::default());
         assert_eq!(v.routed, 1, "{v:?}");
-        assert!(!pcb.vias.is_empty(), "crossing the wall needs a layer change");
+        assert!(
+            !pcb.vias.is_empty(),
+            "crossing the wall needs a layer change"
+        );
         assert_eq!(
             crate::test_support::floating_pad_attachments(&pcb),
             vec![],
@@ -1122,9 +1129,16 @@ mod tests {
         assert_eq!(report.delta.route_attributable_fixable, 0);
         assert_eq!(report.connectivity.open_nets, vec!["OPEN".to_string()]);
         assert_eq!(report.connectivity.status(), "1 net open");
-        assert!(report.headline().contains("not fully routed"), "{}", report.headline());
         assert!(
-            report.blocker.as_deref().is_some_and(|b| b.contains("--allow-incomplete")),
+            report.headline().contains("not fully routed"),
+            "{}",
+            report.headline()
+        );
+        assert!(
+            report
+                .blocker
+                .as_deref()
+                .is_some_and(|b| b.contains("--allow-incomplete")),
             "{:?}",
             report.blocker
         );
