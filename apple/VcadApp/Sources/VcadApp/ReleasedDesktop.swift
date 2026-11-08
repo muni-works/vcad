@@ -1122,22 +1122,7 @@ struct ReleasedOverlayView: View {
     private func refreshTopologyOverlay() {
         guard let centering = ReleaseWindowController.shared.centeringEntity else { return }
         centering.findEntity(named: "topoOverlay")?.removeFromParent()
-        guard model.picking.filter.picksTopology else { return }
-        let (sel, hov) = model.topologyHighlight()
-        let root = Entity(); root.name = "topoOverlay"
-        let w = max(model.displayedSceneSize, 1) * 0.006
-        if let m = EdgeOverlay.ribbonResource(segments: sel, width: w * 1.4, name: "topoSel") {
-            root.addChild(ModelEntity(mesh: m, materials: [UnlitMaterial(
-                color: NSColor(red: 1.0, green: 0.62, blue: 0.12, alpha: 1))]))
-        }
-        if let m = EdgeOverlay.ribbonResource(segments: hov, width: w, name: "topoHover") {
-            root.addChild(ModelEntity(mesh: m, materials: [UnlitMaterial(color: .white)]))
-        }
-        if model.measuring, let span = model.measurement?.span,
-           let m = EdgeOverlay.ribbonResource(segments: [span.0, span.1], width: w, name: "measureSpan") {
-            root.addChild(ModelEntity(mesh: m, materials: [UnlitMaterial(color: .systemTeal)]))
-        }
-        centering.addChild(root)
+        if let root = topologyOverlayEntity(model: model) { centering.addChild(root) }
     }
 
     /// The entity name of the body under a screen point — a root part or an
@@ -1654,6 +1639,10 @@ struct ReleasedARView: NSViewRepresentable {
         ReleaseWindowController.shared.centeringEntity = centering
         // Keep the in-progress sketch ink alive across geometry rebuilds.
         if model.sketching { centering.addChild(buildSketchRoot(model: model)) }
+        // And the face/edge selection highlight: a pick triggers a rebuild,
+        // which used to drop the overlay the pick had just drawn, so picked
+        // edges never showed.
+        if let topo = topologyOverlayEntity(model: model) { centering.addChild(topo) }
         applySectionView(model: model)
         // Transform gizmo on the selected part — same shared builder as the
         // studio; its handle proxies carry collision shapes, so the ARView
@@ -2251,4 +2240,27 @@ func applySectionView(model: EditorModel) {
         root.addChild(ModelEntity(mesh: r, materials: [UnlitMaterial(color: NSColor(red: 1, green: 0.62, blue: 0.12, alpha: 1))]))
     }
     centering.addChild(root)
+}
+
+/// Face/edge highlight ribbons under the kernel frame: selection orange, hover
+/// white, measure span teal. Nil when the pick filter isn't topological.
+/// Shared by the pick refresh and the geometry rebuild, so a rebuild keeps it.
+@MainActor
+func topologyOverlayEntity(model: EditorModel) -> Entity? {
+    guard model.picking.filter.picksTopology else { return nil }
+    let (sel, hov) = model.topologyHighlight()
+    let root = Entity(); root.name = "topoOverlay"
+    let w = max(model.displayedSceneSize, 1) * 0.006
+    if let m = EdgeOverlay.ribbonResource(segments: sel, width: w * 1.4, name: "topoSel") {
+        root.addChild(ModelEntity(mesh: m, materials: [UnlitMaterial(
+            color: NSColor(red: 1.0, green: 0.62, blue: 0.12, alpha: 1))]))
+    }
+    if let m = EdgeOverlay.ribbonResource(segments: hov, width: w, name: "topoHover") {
+        root.addChild(ModelEntity(mesh: m, materials: [UnlitMaterial(color: .white)]))
+    }
+    if model.measuring, let span = model.measurement?.span,
+       let m = EdgeOverlay.ribbonResource(segments: [span.0, span.1], width: w, name: "measureSpan") {
+        root.addChild(ModelEntity(mesh: m, materials: [UnlitMaterial(color: .systemTeal)]))
+    }
+    return root
 }
