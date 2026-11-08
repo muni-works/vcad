@@ -10,19 +10,20 @@ struct NativeElectronicsView: View {
     @State private var navigatorTab = "Parts"
     var body: some View {
         @Bindable var ec = ec
-        VStack(spacing: 0) {
-            commands.padding(.horizontal, 16).padding(.vertical, 8).background(.bar)
-            Divider()
+        ZStack(alignment: .top) {
+            Color(nsColor: .underPageBackgroundColor)
             if ec.board(model).isEmpty {
+                // An invitation, not a wall of disabled tools: one action here
+                // and the same one first in the dock.
                 ContentUnavailableView {
-                    Label("Electronics", systemImage: "cpu")
+                    Label("Start a circuit board", systemImage: "cpu")
                 } description: {
-                    Text(ec.message ?? "Create a circuit board in this document, or open a vcad document containing a PCB.")
+                    Text(ec.message ?? "Create a board in this document, or import one from KiCad or Eagle.")
                 } actions: {
-                    Button("Create circuit board") { ec.createBoard(model) }.buttonStyle(.borderedProminent)
-                    Button("Import KiCad board…") { ec.tools.importBoard(ec, model) }
-                    Button("Open document…") { open() }
+                    Button("Create Board") { ec.createBoard(model) }
+                    Button("Import KiCad Board…") { ec.tools.importBoard(ec, model) }
                 }
+                .frame(maxHeight: .infinity)
             } else {
                 GeometryReader { geometry in
                     ZStack(alignment: .top) {
@@ -30,29 +31,32 @@ struct NativeElectronicsView: View {
                             if ec.view == .spatial { ElectronicsBoardPreview(board: ec.board(model)) }
                             else { ElectronicsCanvas(model: model) }
                         }
-                        .padding(.horizontal, Theme.Width.inspector + 2 * Theme.Space.l)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        HStack(alignment: .top, spacing: Theme.Space.l) {
-                            navigator.padding(Theme.Space.l).frame(width: Theme.Width.navigator)
-                                .frame(maxHeight: min(470, geometry.size.height - 32))
-                                .panelSurface()
+                        HStack(alignment: .top, spacing: 0) {
+                            if model.showsTree {
+                                navigator.padding(Theme.Space.m).frame(width: Theme.Width.navigator)
+                                    .frame(maxHeight: min(470, geometry.size.height - Glass.toolbarHeight - 90))
+                                    .panelSurface()
+                                    .modifier(ChromeRegion(key: "ecNavigator"))
+                            }
                             Spacer(minLength: 0)
-                            inspector.padding(Theme.Space.l).frame(width: Theme.Width.inspector)
-                                .frame(maxHeight: min(600, geometry.size.height - 32))
-                                .panelSurface()
-                        }.padding(Theme.Space.l)
+                            if model.showsInspector {
+                                inspector.padding(Theme.Space.m).frame(width: Theme.Width.inspector)
+                                    .frame(maxHeight: min(600, geometry.size.height - Glass.toolbarHeight - 90))
+                                    .panelSurface()
+                                    .modifier(ChromeRegion(key: "ecInspector"))
+                            }
+                        }
+                        .padding(.horizontal, Glass.inset).padding(.top, Glass.toolbarHeight)
+                        VStack {
+                            Spacer()
+                            statusPill.padding(.bottom, Glass.inset + 6)
+                        }
                     }
                 }
-                Divider()
-                HStack {
-                    Text(ec.tools.error ?? ec.tools.status ?? ec.message ?? (ec.view == .spatial ? "3D layout preview · simplified component bodies" : ec.tool == .wire ? "Select two pins to connect their net" : ec.tool == .route ? "Click to route · Escape ends the route" : ec.tool == .place ? "Click to place \(ec.componentKind.lowercased())" : "Select a component to edit its properties"))
-                        .lineLimit(1)
-                    Spacer()
-                    Text("mm").foregroundStyle(.secondary)
-                }.font(.caption).padding(10)
             }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onChange(of: ec.boardID) { _, _ in ec.selectedRef = nil; ec.selectedTrace = nil; ec.selectedVia = nil; ec.routeStart = nil }
         .onChange(of: model.source) { _, _ in ec.selectedRef = nil; ec.selectedTrace = nil; ec.routeStart = nil; ec.pendingPin = nil }
         .sheet(isPresented: $ec.checking) {
@@ -71,29 +75,31 @@ struct NativeElectronicsView: View {
             Button("") { ec.routeStart = nil; ec.pendingPin = nil; ec.tool = .select }.keyboardShortcut(.cancelAction).frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
         }
     }
-    private var commands: some View {
-        @Bindable var ec = ec
-        return HStack(spacing: 12) {
-            Picker("Electronics view", selection: $ec.view) { ForEach(ElectronicsView.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented).frame(width: 235)
-            if ec.view != .spatial {
-                Picker("Tool", selection: $ec.tool) {
-                    Text("Select").tag(ElectronicsTool.select)
-                    Text("Place").tag(ElectronicsTool.place)
-                    if ec.view == .schematic { Text("Connect pins").tag(ElectronicsTool.wire) }
-                    else { Text("Route").tag(ElectronicsTool.route); Text("Via").tag(ElectronicsTool.via) }
-                }.pickerStyle(.segmented).labelsHidden().frame(width: 245)
+    /// One glass pill: what the tool wants, then the board's counts as numbers.
+    private var statusPill: some View {
+        HStack(spacing: 8) {
+            if let busy = ec.tools.busy { ProgressView().controlSize(.mini); Text("\(busy)…") }
+            Text(ec.tools.error ?? ec.tools.status ?? ec.message ?? (ec.view == .spatial ? "3D layout preview" : ec.tool == .wire ? "Select two pins to connect their net" : ec.tool == .route ? "Click to route · Esc ends the route" : ec.tool == .place ? "Click to place \(ec.componentKind.lowercased())" : ec.selectedRef ?? "Select a component"))
+                .lineLimit(1)
+            Text("·").foregroundStyle(.secondary)
+            Text("\(ecRows(ec.board(model)["nets"]).count) nets").monospacedDigit()
+            if let r = ec.tools.drc {
+                let n = Int(ecNumber(r["route_attributable"]))
+                Text("·").foregroundStyle(.secondary)
+                Text(n == 0 ? "DRC clean" : "DRC \(n)").monospacedDigit()
             }
-            Spacer(minLength: 0)
-            Button("Undo", systemImage: "arrow.uturn.backward") { model.undo() }.labelStyle(.iconOnly).disabled(!model.canUndo)
-            Button("Redo", systemImage: "arrow.uturn.forward") { model.redo() }.labelStyle(.iconOnly).disabled(!model.canRedo)
-            ElectronicsToolMenus(model: model)
-            Button("Check Connectivity") { ec.check(model) }.disabled(ec.board(model).isEmpty)
-        }.controlSize(.small)
+        }
+        .font(.callout)
+        .padding(.horizontal, 12).padding(.vertical, 6)
+        .glassCapsule()
+        .modifier(ChromeRegion(key: "ecStatus"))
     }
     private var navigator: some View {
         @Bindable var ec = ec
         return VStack(alignment: .leading, spacing: 12) {
-            PanelHeader(title: "Circuit", systemImage: "cpu")
+            Picker("View", selection: $ec.view) { ForEach(ElectronicsView.allCases, id: \.self) { Text($0 == .spatial ? "3D" : $0.rawValue).tag($0) } }
+                .pickerStyle(.segmented).labelsHidden()
+                .help("Schematic, board, or 3D")
             TextField("Search parts or nets", text: $search).textFieldStyle(.roundedBorder)
             Picker("Navigator", selection: $navigatorTab) {
                 ForEach(["Parts", "Nets", "Layers"], id: \.self) { Text($0) }

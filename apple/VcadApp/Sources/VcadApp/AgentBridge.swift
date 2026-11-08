@@ -2,6 +2,7 @@
 import AppKit
 #endif
 import Foundation
+import Darwin
 import Network
 import RealityKit
 import simd
@@ -42,7 +43,10 @@ final class AgentBridge {
         self.model = model
         guard listener == nil else { return }
         guard ProcessInfo.processInfo.environment["VCAD_AGENT_BRIDGE"] != "0" else { return }
-        listen(on: Self.basePort, attemptsLeft: 8)
+        // VCAD_AGENT_PORT pins the port (a second instance during development
+        // would otherwise share 47361 through endpoint reuse).
+        let pinned = ProcessInfo.processInfo.environment["VCAD_AGENT_PORT"].flatMap { UInt16($0) }
+        listen(on: pinned ?? Self.basePort, attemptsLeft: pinned == nil ? 8 : 0)
     }
 
     private func listen(on p: UInt16, attemptsLeft: Int) {
@@ -277,6 +281,28 @@ enum AgentTools {
         ["name": "snapshot",
          "description": "PNG of the shared viewport exactly as the user sees it (geometry, highlights; labels are an overlay and not included).",
          "inputSchema": schema([:])],
+        ["name": "app_screenshot",
+         "description": "PNG of the whole editor window as the user sees it: toolbar, panels, dock, edit bar, suggestion pill.",
+         "inputSchema": schema([:])],
+        ["name": "set_workspace",
+         "description": "Switch the dock workspace: design, assembly, drawing, electronics or fab. history:true/false opens or closes the history filmstrip.",
+         "inputSchema": schema(["workspace": ["type": "string"], "history": ["type": "boolean"]], required: ["workspace"])],
+        ["name": "select_feature",
+         "description": "Select a feature-tree node by name (case-insensitive substring) — the user sees it selected, and its edit bar opens beside it.",
+         "inputSchema": schema(["name": ["type": "string"]], required: ["name"])],
+        ["name": "history_seek",
+         "description": "Move the history playhead: frame 0 is the document as opened, frame k is after the k-th undo step. Rewinds/replays and rebuilds the viewport; returns the rebuild time.",
+         "inputSchema": schema(["frame": ["type": "integer"]], required: ["frame"])],
+        ["name": "import_board",
+         "description": "Import a KiCad (.kicad_pcb) or Eagle (.brd) board file into the open document and switch to Electronics.",
+         "inputSchema": schema(["path": ["type": "string"]], required: ["path"])],
+        ["name": "suggest_edit",
+         "description": "Offer ONE edit as a suggestion pill in the user's viewport instead of applying it: a short question (\"Add 4 M3 counterbores on the motor bolt circle?\") plus the edit tool call it would make. The parts it touches shimmer softly. Nothing changes until the user clicks Add (then it is one named undo step); × dismisses. A new suggestion replaces the old one.",
+         "inputSchema": schema(["text": ["type": "string", "description": "One-line question shown on the pill."],
+                                "tool": ["type": "string", "description": "An edit tool name (create, update, difference, set_parameters, …)."],
+                                "args": ["type": "object", "description": "That tool's arguments."],
+                                "parts": partsProp],
+                               required: ["text", "tool", "args"])],
         ["name": "photoreal",
          "description": "Path-trace the current pose/explode from the current camera (the vcad render --photoreal renderer, ~30-60 s). Returns the image and its saved path.",
          "inputSchema": schema(["spp": ["type": "integer", "description": "samples per pixel, default 64"]])],
@@ -362,6 +388,56 @@ enum AgentTools {
                 ReleaseWindowController.shared.repaintAll()
             }
             return text("Cleared.")
+        case "suggest_edit":
+            let tool = a["tool"] as? String ?? ""
+            let reads: Set<String> = ["get_document", "inspect_cad", "list_parameters", "undo"]
+            guard AgentEdits.toolNames.contains(tool), !reads.contains(tool), !AgentEdits.readEngineTools.contains(tool) else {
+                throw Failure(message: "suggest_edit needs an edit tool; \(tool) is not one.")
+            }
+            let args = (a["args"] as? [String: Any] ?? [:]).compactMapValues { $0 as? AnyHashable }
+            let names = (a["parts"] as? [String]) ?? []
+            // Engine part ids → viewport part indices (visible roots).
+            let visible = (0..<max(m.partCount, 1)).compactMap { pi in m.partId(forPart: pi).map { (pi, $0) } }
+            let byId = names.compactMap { n in visible.first { $0.1 == n }?.0 }
+            let parts = !byId.isEmpty ? byId : (names.isEmpty ? [] : ((try? resolve(names, m)) ?? []))
+            GlassUI.shared.suggestion = AgentSuggestion(text: a["text"] as? String ?? "Apply this edit?",
+                                                        tool: tool, args: args, parts: parts)
+            m.agentShimmer = Set(parts)
+            GlassUI.shared.startShimmer(model: m)
+            return text("Suggestion shown. The user decides; app_state.suggestion reports whether it is still pending.")
+        case "history_seek":
+            let total = m.undoStack.count + m.redoStack.count
+            let f = max(0, min(total, (a["frame"] as? NSNumber)?.intValue ?? total))
+            let ms = await GlassUI.seek(model: m, to: f)
+            return text(String(format: "At frame %d of %d; rebuilt in %.0f ms.", f, total, ms))
+        case "import_board":
+            let path = (a["path"] as? String ?? "") as NSString
+            guard FileManager.default.fileExists(atPath: path.expandingTildeInPath) else { throw Failure(message: "no such file") }
+            GlassUI.shared.enter(.electronics, model: m)
+            m.electronics.tools.importBoard(URL(fileURLWithPath: path.expandingTildeInPath), m.electronics, m)
+            return text("Importing \(path.lastPathComponent)…")
+        case "set_workspace":
+            guard let ws = DockSpace(rawValue: (a["workspace"] as? String ?? "").lowercased()) else {
+                throw Failure(message: "workspace must be one of design, assembly, drawing, electronics, fab")
+            }
+            GlassUI.shared.enter(ws, model: m)
+            if let h = a["history"] as? Bool { GlassUI.shared.historyOpen = h }
+            return text("Workspace: \(ws.label).")
+        case "select_feature":
+            let q = a["name"] as? String ?? ""
+            func find(_ ns: [FeatureNode]) -> FeatureNode? {
+                for n in ns {
+                    if n.name.localizedCaseInsensitiveContains(q) || n.opType.localizedCaseInsensitiveContains(q) { return n }
+                    if let c = find(n.children) { return c }
+                }
+                return nil
+            }
+            guard let n = find(m.featureNodes) else { throw Failure(message: "no feature matched \(q)") }
+            m.selectFeature(n.id)
+            return text("Selected \(n.name) (\(n.opType)).")
+        case "app_screenshot":
+            guard let png = await windowPNG() else { throw Failure(message: "No editor window.") }
+            return ["content": [["type": "image", "data": png.base64EncodedString(), "mimeType": "image/png"]]]
         case "snapshot":
             guard let png = await snapshotPNG() else { throw Failure(message: "The viewport is not on screen.") }
             return ["content": [["type": "image", "data": png.base64EncodedString(), "mimeType": "image/png"],
@@ -402,6 +478,8 @@ enum AgentTools {
             "agent": ["highlights": m.agentHighlights.sorted().map { ids.indices.contains($0) ? ids[$0] : "\($0)" },
                       "labels": m.agentAnnotations.map { ["part": $0.id, "text": $0.text] }] as [String: Any],
             "mode": m.isWindowed ? "windowed" : "released-to-desktop",
+            "suggestion": GlassUI.shared.suggestion?.text ?? NSNull(),
+            "workspace_dock": GlassUI.shared.space.rawValue,
         ]
         if let t = m.lastReload { s["lastReload"] = ISO8601DateFormatter().string(from: t) }
         s["joints"] = m.drivenJoints.map { j -> [String: Any] in
@@ -439,6 +517,37 @@ enum AgentTools {
     }
 
     // MARK: images
+
+    /// The whole editor window — chrome included — as the user sees it.
+    /// Uses the window server's own-window capture (no Screen Recording grant
+    /// is needed for a process's own windows); falls back to compositing the
+    /// viewport snapshot under a cached render of the SwiftUI chrome.
+    static func windowPNG() async -> Data? {
+        guard let w = ReleaseWindowController.shared.hostWindow else { return nil }
+        typealias Capture = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
+        if let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage") {
+            let fn = unsafeBitCast(sym, to: Capture.self)
+            // .optionIncludingWindow = 1 << 3; .boundsIgnoreFraming = 1 << 0
+            if let img = fn(.null, 1 << 3, UInt32(w.windowNumber), 1 << 0)?.takeRetainedValue(),
+               img.width > 1 {
+                return downscaledPNG(NSImage(cgImage: img, size: .zero), maxSide: 1600)
+            }
+        }
+        guard let view = w.contentView else { return nil }
+        let size = view.bounds.size
+        let out = NSImage(size: size)
+        out.lockFocus()
+        if let vp = await snapshotPNG(), let vimg = NSImage(data: vp), let ar = ReleaseWindowController.shared.arView {
+            let r = ar.convert(ar.bounds, to: nil)
+            vimg.draw(in: r)
+        }
+        if let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: rep)
+            NSImage(size: size, flipped: false) { rect in rep.draw(in: rect) }.draw(in: view.bounds)
+        }
+        out.unlockFocus()
+        return downscaledPNG(out, maxSide: 1600)
+    }
 
     static func snapshotPNG() async -> Data? {
         guard let ar = ReleaseWindowController.shared.arView else { return nil }

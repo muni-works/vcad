@@ -449,6 +449,8 @@ final class EditorModel {
     /// Instances an agent (over the app's MCP bridge) is pointing at — painted
     /// like a selection so the user sees what the agent means.
     var agentHighlights: Set<Int> = []
+    /// Parts a pending agent suggestion would touch (soft shimmer preview).
+    var agentShimmer: Set<Int> = []
     /// Labels an agent pinned to instances, drawn in the viewport overlay.
     var agentAnnotations: [AgentAnnotation] = []
     /// The tree row that is hot, whichever side the pointer is on. Hovering
