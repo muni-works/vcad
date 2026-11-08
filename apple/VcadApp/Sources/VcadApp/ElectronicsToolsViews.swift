@@ -76,7 +76,7 @@ struct DrcPanel: View {
             stat("route-attributable", r["route_attributable"], good: clean)
             stat("total", r["total"])
             stat("unrouted floor", r["baseline_total"])
-            stat("unrouted connections", r["unrouted"], good: ecNumber(r["unrouted"]) == 0)
+            stat("open nets", r["unrouted"], good: ecNumber(r["unrouted"]) == 0)
         }
         Label(clean ? "Clean — ready for Gerber export" : "Not clean — run Fix DRC", systemImage: clean ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
             .foregroundStyle(clean ? .green : .orange)

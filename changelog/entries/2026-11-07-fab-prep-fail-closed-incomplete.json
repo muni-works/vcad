@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-07-fab-prep-fail-closed-incomplete",
+  "version": "0.11.0",
+  "date": "2026-11-07",
+  "category": "fix",
+  "title": "fab-prep fails closed on open nets; pinned, through-only routing",
+  "summary": "fab-prep no longer ships boards with unconnected nets (opt in with --allow-incomplete), pins traces to pad layers, emits through vias by default, and autoroute reports true open nets.",
+  "features": ["pcb", "fab-prep", "autoroute", "drc", "native-app"],
+  "mcpTools": ["fab_prep"]
+}

@@ -11,11 +11,12 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use vcad_ecad_pcb::ratsnest::{compute_ratsnest, NetConnection, Netlist, NetlistNet};
 use vcad_ecad_pcb::router::complete::{
-    path_vias, route_window_complete_pinned, CompleteOutcome, ViaClass, WindowBudget,
+    path_vias, route_window_complete_pinned, CompleteOutcome, TerminalLayers, ViaClass,
+    WindowBudget,
 };
 use vcad_ecad_pcb::session::RouteSession;
 use vcad_ecad_pcb::spatial::{CopperElement, CopperGeom};
-use vcad_ir::ecad::{Pcb, PcbLayer, Trace, Via};
+use vcad_ir::ecad::{Pcb, PcbLayer, Trace, Via, ViaType};
 use vcad_ir::Vec2;
 
 /// Search knobs for one pass of the ladder.
@@ -26,6 +27,15 @@ pub struct VerdictOptions {
     pub budget: usize,
     /// Maximum connections coalesced into one joint search window.
     pub max_cluster: usize,
+    /// Permit blind/buried (layer-pair) vias even when the board does not
+    /// declare them. **Off by default**: a standard 2/4-layer process (JLC,
+    /// PCBWay, OSH Park) drills through vias only, and a layer-pair via the
+    /// fab cannot build either gets drilled through — shorting every layer it
+    /// crosses — or bounces the order. A board that already carries blind,
+    /// buried or micro vias has declared the process and keeps them
+    /// regardless (see [`declares_blind_vias`]).
+    #[serde(default)]
+    pub allow_blind_vias: bool,
 }
 
 impl Default for VerdictOptions {
@@ -33,8 +43,34 @@ impl Default for VerdictOptions {
         Self {
             budget: 5_000_000,
             max_cluster: 6,
+            allow_blind_vias: false,
         }
     }
+}
+
+/// Whether `pcb` declares a blind/buried-capable process: it already carries a
+/// via typed blind or micro, or one whose span stops short of the full copper
+/// stack. An imported HDI board (the CM5) says so through its own copper; a
+/// freshly placed board says nothing and gets through vias.
+pub fn declares_blind_vias(pcb: &Pcb) -> bool {
+    let copper: Vec<PcbLayer> = copper_layers(pcb);
+    let (Some(&top), Some(&bottom)) = (copper.first(), copper.last()) else {
+        return false;
+    };
+    pcb.vias.iter().any(|v| {
+        matches!(v.via_type, Some(ViaType::Blind) | Some(ViaType::Micro))
+            || !((v.start_layer == top && v.end_layer == bottom)
+                || (v.start_layer == bottom && v.end_layer == top))
+    })
+}
+
+fn copper_layers(pcb: &Pcb) -> Vec<PcbLayer> {
+    pcb.stackup
+        .layers
+        .iter()
+        .map(|l| l.layer)
+        .filter(|l| l.is_copper())
+        .collect()
 }
 
 /// What one pass of the ladder concluded.
@@ -54,6 +90,11 @@ pub struct VerdictSummary {
     /// Infeasibility certificates, verbatim — capped so a large board's
     /// receipt stays readable.
     pub certificates: Vec<String>,
+    /// True when every via this pass committed was a through via (the
+    /// default unless the board declares blind/buried vias or the caller
+    /// opted in with [`VerdictOptions::allow_blind_vias`]).
+    #[serde(default)]
+    pub through_vias_only: bool,
 }
 
 /// How many certificates a summary carries before it stops collecting.
@@ -100,8 +141,16 @@ pub fn route_remaining(pcb: &mut Pcb, opts: VerdictOptions) -> VerdictSummary {
         .collect();
     rats.retain(|l| !plane_nets.contains(l.net.as_str()));
 
+    let layers = copper_layers(pcb);
+    // Via policy: through vias only, unless the board declares a blind/buried
+    // process or the caller opted in. `through` is the span every barrel is
+    // widened to.
+    let through = (!(opts.allow_blind_vias || declares_blind_vias(pcb)))
+        .then(|| Some((*layers.first()?, *layers.last()?)))
+        .flatten();
     let mut summary = VerdictSummary {
         connections: rats.len(),
+        through_vias_only: through.is_some(),
         ..Default::default()
     };
     if rats.is_empty() {
@@ -109,13 +158,6 @@ pub fn route_remaining(pcb: &mut Pcb, opts: VerdictOptions) -> VerdictSummary {
     }
 
     let mut session = RouteSession::from_pcb(pcb);
-    let layers: Vec<_> = pcb
-        .stackup
-        .layers
-        .iter()
-        .map(|l| l.layer)
-        .filter(|l| l.is_copper())
-        .collect();
     let width = pcb.rules.default_rules.trace_width;
     // Per-net class widths: an SI-class net must be routed AND committed at its
     // class width, because the DRC's MinTraceWidth rule is per-net. A joint
@@ -187,19 +229,33 @@ pub fn route_remaining(pcb: &mut Pcb, opts: VerdictOptions) -> VerdictSummary {
         // single-hop via of the cluster (a microvia on an HDI board). A
         // stacked descent it emits is judged at its real, drilled size by
         // `vias_legal` before anything is committed.
+        //
+        // Through-only: every barrel is drilled, so search at the drilled size.
         let sz = session.via_sizing();
         let via_class = conns
             .iter()
-            .map(|(n, _, _)| sz.micro_size(n).unwrap_or_else(|| sz.drilled_size(n)))
+            .map(|(n, _, _)| match through {
+                Some(_) => sz.drilled_size(n),
+                None => sz.micro_size(n).unwrap_or_else(|| sz.drilled_size(n)),
+            })
             .fold((0.0_f64, 0.0_f64), |(ad, adr), (d, dr)| {
                 (ad.max(d), adr.max(dr))
             });
+        // Pin each terminal to the layers electrically live there (a pad's own
+        // copper, or existing copper of the net). Unpinned, the search attaches
+        // an F.Cu SMD pad on whatever layer happens to be free and commits a
+        // stub on In1/In2/B.Cu with no via back to the pad — which the prune
+        // then deletes as floating copper.
+        let pins: Vec<TerminalLayers> = conns
+            .iter()
+            .map(|(n, f, t)| TerminalLayers::for_connection(pcb, &layers, n, *f, *t))
+            .collect();
         match route_window_complete_pinned(
             &session,
             (*lo, *hi),
             &layers,
             conns,
-            &[],
+            &pins,
             cluster_width,
             Some(ViaClass {
                 pad_diameter: via_class.0,
@@ -223,13 +279,13 @@ pub fn route_remaining(pcb: &mut Pcb, opts: VerdictOptions) -> VerdictSummary {
                             half_w: w / 2.0,
                         };
                         session.probe(&g, l, net, session.clearance_for(net)).legal
-                    }) && vias_legal(pcb, &session, net, path);
+                    }) && vias_legal(pcb, &session, net, path, through);
                     if !legal {
                         summary.unknown += 1;
                         continue;
                     }
                     summary.routed += 1;
-                    commit_path(pcb, &mut session, net, w, path);
+                    commit_path(pcb, &mut session, net, w, path, through);
                 }
                 // A cluster the router answered for fewer paths than it holds
                 // (the zip is short) leaves the remainder unaccounted; charge
@@ -295,9 +351,10 @@ fn vias_legal(
     session: &RouteSession,
     net: &str,
     path: &[(Vec2, Vec2, PcbLayer)],
+    through: Option<(PcbLayer, PcbLayer)>,
 ) -> bool {
     let clearance = session.clearance_for(net);
-    let vias = path_vias(path);
+    let vias = barrels(path, through);
     vias.iter().all(|&(p, l0, l1)| {
         // Each barrel at its own span's size.
         let spec = session.via_spec(net, l0, l1);
@@ -327,6 +384,29 @@ fn vias_legal(
     })
 }
 
+/// The barrels a path commits: [`path_vias`], each widened to `through`
+/// (outer to outer) when the via policy is through-only, with coincident
+/// barrels merged — two through vias at one point are one hole.
+fn barrels(
+    path: &[(Vec2, Vec2, PcbLayer)],
+    through: Option<(PcbLayer, PcbLayer)>,
+) -> Vec<(Vec2, PcbLayer, PcbLayer)> {
+    let vias = path_vias(path);
+    let Some((top, bottom)) = through else {
+        return vias;
+    };
+    let mut out: Vec<(Vec2, PcbLayer, PcbLayer)> = Vec::new();
+    for (p, _, _) in vias {
+        if !out
+            .iter()
+            .any(|(q, _, _)| (q.x - p.x).abs() + (q.y - p.y).abs() < 1e-9)
+        {
+            out.push((p, top, bottom));
+        }
+    }
+    out
+}
+
 /// Commit one accepted path to both the legality oracle and the board.
 fn commit_path(
     pcb: &mut Pcb,
@@ -334,6 +414,7 @@ fn commit_path(
     net: &str,
     w: f64,
     path: &[(Vec2, Vec2, vcad_ir::ecad::PcbLayer)],
+    through: Option<(PcbLayer, PcbLayer)>,
 ) {
     for (a, b, layer) in path {
         session.commit(CopperElement {
@@ -359,7 +440,7 @@ fn commit_path(
     // Layer changes are barrels. `path_vias` merges a multi-step transition at
     // one point into a single barrel — two stacked vias at the same position
     // are a hole-to-hole violation against each other.
-    for (p, l0, l1) in path_vias(path) {
+    for (p, l0, l1) in barrels(path, through) {
         let spec = session.via_spec(net, l0, l1);
         let (via_d, via_drill, r) = (spec.diameter, spec.drill, spec.r());
         // Copper on every spanned layer, and the drill in the hole index, so
@@ -540,7 +621,7 @@ mod tests {
     fn via_over_interior_layer_copper_is_refused() {
         let mut pcb = four_layer_board();
         let clear = RouteSession::from_pcb(&pcb);
-        assert!(vias_legal(&pcb, &clear, "A", &transition_path()));
+        assert!(vias_legal(&pcb, &clear, "A", &transition_path(), None));
 
         pcb.traces.push(Trace {
             start: Vec2::new(5.0, 4.0),
@@ -552,7 +633,7 @@ mod tests {
         });
         let session = RouteSession::from_pcb(&pcb);
         assert!(
-            !vias_legal(&pcb, &session, "A", &transition_path()),
+            !vias_legal(&pcb, &session, "A", &transition_path(), None),
             "a barrel straight through an interior-layer foreign trace must be illegal"
         );
     }
@@ -592,7 +673,7 @@ mod tests {
                 .legal
         );
         assert!(
-            !vias_legal(&pcb, &session, "A", &transition_path()),
+            !vias_legal(&pcb, &session, "A", &transition_path(), None),
             "a barrel 0.20mm hole-to-hole from an existing via must be illegal"
         );
     }
@@ -609,7 +690,7 @@ mod tests {
             (Vec2::new(5.4, 5.0), Vec2::new(7.0, 5.0), PcbLayer::FCu),
         ];
         assert!(
-            !vias_legal(&pcb, &session, "A", &path),
+            !vias_legal(&pcb, &session, "A", &path, None),
             "two barrels 0.10mm hole-to-hole apart must be illegal"
         );
     }
@@ -620,7 +701,7 @@ mod tests {
     fn commit_indexes_barrel_copper_and_drill() {
         let mut pcb = four_layer_board();
         let mut session = RouteSession::from_pcb(&pcb);
-        commit_path(&mut pcb, &mut session, "A", 0.2, &transition_path());
+        commit_path(&mut pcb, &mut session, "A", 0.2, &transition_path(), None);
         assert_eq!(pcb.vias.len(), 1);
         assert_eq!(pcb.vias[0].position, Vec2::new(5.0, 5.0));
         // Interior layer now blocked for a foreign net...
@@ -642,6 +723,6 @@ mod tests {
         assert!(!session.probe_drill(Vec2::new(5.5, 5.0), 0.3).legal);
         // A second path through the same spot is now refused rather than
         // stacking a coincident drill.
-        assert!(!vias_legal(&pcb, &session, "B", &transition_path()));
+        assert!(!vias_legal(&pcb, &session, "B", &transition_path(), None));
     }
 }

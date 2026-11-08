@@ -338,11 +338,13 @@ export interface FabPrepOptions {
   /** Maximum strip-and-re-route rounds. */
   max_rounds?: number;
   /** Search knobs for the complete window router. */
-  verdict?: { budget: number; max_cluster: number };
+  verdict?: { budget: number; max_cluster: number; allow_blind_vias?: boolean };
   /** Remove copper reaching no pad or pour of its net before the final DRC. */
   prune_dangling?: boolean;
   /** DRC rule names whose route-attributable violations are explicitly waived. */
   accept_rules?: string[];
+  /** Ship a geometrically clean board that still has open nets (opt-in, logged). */
+  allow_incomplete?: boolean;
 }
 
 /**
@@ -367,8 +369,11 @@ export interface FabPrepReport {
   rounds: Record<string, unknown>[];
   pruned_traces: number;
   pruned_vias: number;
-  connectivity: { on_arrival: number; on_completion: number };
+  connectivity: { on_arrival: number; on_completion: number; open_nets?: string[] };
   accepted_rules: string[];
+  allow_incomplete_requested?: boolean;
+  shipped_incomplete?: boolean;
+  through_vias_only?: boolean;
   delta: {
     rules: {
       rule: string;

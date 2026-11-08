@@ -99,7 +99,7 @@ final class ElectronicsTools {
             adopt(board: r["pcb"], ec, model)
             drc = r["drc"] as? ECObject
             let unrouted = ecNumber(drc?["unrouted"])
-            status = "Autorouted · \(Int(unrouted)) unrouted connection(s) · \(Int(ecNumber(drc?["route_attributable"]))) route-attributable DRC"
+            status = "Autorouted · \(Int(unrouted)) open net(s) · \(Int(ecNumber(drc?["route_attributable"]))) route-attributable DRC"
         }
     }
 

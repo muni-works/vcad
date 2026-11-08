@@ -80,7 +80,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
-use vcad_ir::ecad::PcbLayer;
+use vcad_ir::ecad::{Pcb, PcbLayer};
 use vcad_ir::Vec2;
 
 use crate::session::RouteSession;
@@ -104,6 +104,89 @@ pub struct TerminalLayers {
     pub from: Vec<PcbLayer>,
     /// Layers the `to` terminal may attach on.
     pub to: Vec<PcbLayer>,
+}
+
+impl TerminalLayers {
+    /// Pin both terminals of the connection `net: from → to` on `pcb` to the
+    /// layers that are electrically live there — see [`live_layers`].
+    ///
+    /// This is the one implementation every window-router caller shares (the
+    /// fab-prep verdict ladder, the Mac app's autoroute, the CM5 example
+    /// driver). Calling the router with `&[]` instead lets it start an F.Cu
+    /// SMD pad's trace on In1/In2/B.Cu with no via back to the pad; the prune
+    /// then deletes it as floating copper.
+    pub fn for_connection(
+        pcb: &Pcb,
+        layers: &[PcbLayer],
+        net: &str,
+        from: Vec2,
+        to: Vec2,
+    ) -> Self {
+        Self {
+            from: live_layers(pcb, layers, net, from),
+            to: live_layers(pcb, layers, net, to),
+        }
+    }
+}
+
+/// The copper layers (restricted to `layers`, returned in `layers` order) that
+/// are electrically live for `net` at point `p`: the layers of any pad of the
+/// net centred there, of any trace of the net passing through it, and every
+/// layer spanned by a via of the net covering it.
+///
+/// A ratsnest endpoint is always one of those three, so a stub that starts on
+/// any other layer is dangling — nothing joins it to the group, and the board
+/// gains a net island instead of a connection. Empty when nothing of the net
+/// is there (the router then treats the terminal as unconstrained).
+pub fn live_layers(pcb: &Pcb, layers: &[PcbLayer], net: &str, p: Vec2) -> Vec<PcbLayer> {
+    let mut out: Vec<PcbLayer> = Vec::new();
+    for fp in &pcb.footprints {
+        for pad in &fp.pads {
+            if pad.net.as_deref() != Some(net) {
+                continue;
+            }
+            let w = crate::geometry::pad_world_position(fp, pad);
+            if (w.x - p.x).abs() < 1e-3 && (w.y - p.y).abs() < 1e-3 {
+                out.extend(pad.layers.iter().filter(|l| layers.contains(l)));
+            }
+        }
+    }
+    for t in &pcb.traces {
+        if t.net != net || !layers.contains(&t.layer) {
+            continue;
+        }
+        if point_segment_dist(p, t.start, t.end) <= t.width / 2.0 + 1e-3 {
+            out.push(t.layer);
+        }
+    }
+    for v in &pcb.vias {
+        if v.net != net {
+            continue;
+        }
+        if dist(v.position, p) <= v.diameter / 2.0 + 1e-3 {
+            out.extend(
+                layers
+                    .iter()
+                    .copied()
+                    .filter(|l| l.spanned_by(v.start_layer, v.end_layer)),
+            );
+        }
+    }
+    out.sort_by_key(|l| layers.iter().position(|s| s == l).unwrap_or(usize::MAX));
+    out.dedup();
+    out
+}
+
+/// Distance from `p` to the segment `a`–`b`.
+fn point_segment_dist(p: Vec2, a: Vec2, b: Vec2) -> f64 {
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 < 1e-18 {
+        0.0
+    } else {
+        (((p.x - a.x) * dx + (p.y - a.y) * dy) / len2).clamp(0.0, 1.0)
+    };
+    dist(p, Vec2::new(a.x + t * dx, a.y + t * dy))
 }
 
 /// The via the caller will actually commit for a layer change.
