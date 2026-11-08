@@ -283,7 +283,7 @@ mod tests {
                 let to = m["to"].as_array().unwrap();
                 let (x, y) = (to[0].as_f64().unwrap(), to[1].as_f64().unwrap());
                 assert!(
-                    x >= -1.6 && x <= 41.6 && y >= -1.6 && y <= 31.6,
+                    (-1.6..=41.6).contains(&x) && (-1.6..=31.6).contains(&y),
                     "{op}: {x},{y}"
                 );
             }

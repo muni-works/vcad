@@ -250,6 +250,7 @@ pub extern "C" fn vcad_sheet_metal_flatten(
 }
 
 #[cfg(test)]
+#[allow(clippy::approx_constant)]
 mod tests {
     use super::*;
 
