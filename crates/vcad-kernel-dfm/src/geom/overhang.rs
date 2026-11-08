@@ -119,6 +119,7 @@ mod tests {
     fn a_face_on_the_build_plate_is_not_an_overhang() {
         // A plain box: its bottom face rests on the plate, nothing overhangs.
         let cube = vcad_kernel_primitives::make_cube(20.0, 20.0, 5.0);
-        assert!(sample(&cube, 45.0).is_empty(), "bed face flagged as overhang");
+        // 135° from +Z is the FDM rule pack's default (vertical walls are 90°).
+        assert!(sample(&cube, 135.0).is_empty(), "bed face flagged as overhang");
     }
 }
