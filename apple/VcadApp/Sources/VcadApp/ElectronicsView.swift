@@ -326,7 +326,11 @@ struct ElectronicsCanvas: View {
         vertices = ecRows((ec.board(model)["outline"] as? ECObject)?["vertices"]).map { ecPoint($0) }
         let minX = min(0, vertices.map(\.x).min() ?? 0), maxX = max(80, vertices.map(\.x).max() ?? 80)
         let minY = min(0, vertices.map(\.y).min() ?? 0), maxY = max(50, vertices.map(\.y).max() ?? 50)
-        let scale = max(0.1, min((size.width - 60) / (maxX - minX), (size.height - 60) / (maxY - minY))) * ec.zoom
+        // Leave room for the floating navigator/inspector and the toolbar +
+        // status pill: the board used to fill the window and run under them.
+        let usableW = max(120, size.width - 2 * (Theme.Width.inspector + 2 * Glass.inset) - 40)
+        let usableH = max(120, size.height - Glass.toolbarHeight - 90)
+        let scale = max(0.1, min(usableW / (maxX - minX), usableH / (maxY - minY))) * ec.zoom
         return (scale, CGPoint(x: size.width / 2 - (minX + maxX) / 2 * scale, y: size.height / 2 - (minY + maxY) / 2 * scale))
     }
     var body: some View {

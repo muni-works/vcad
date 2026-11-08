@@ -111,7 +111,7 @@ final class ElectronicsWorkspace {
             sch["components"] = components; sch["wires"] = sch["wires"] ?? [ECObject](); sch["junctions"] = sch["junctions"] ?? [ECObject](); sch["labels"] = sch["labels"] ?? [ECObject](); doc["schematic"] = sch
         }
         if let before { model.undoStack = Array((undoBefore + [UndoEntry(data: before, name: "Place Component")]).suffix(64)) }
-        selectedRef = ref; tool = .select
+        selectedRef = ref   // stay in Place until Esc, like every EDA tool (it reverted to Select after one part)
     }
     func editComponent(_ model: EditorModel, key: String, value: Any) {
         guard let ref = selectedRef else { return }
