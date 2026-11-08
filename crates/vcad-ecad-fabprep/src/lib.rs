@@ -188,7 +188,7 @@ impl BoardStats {
 /// perfectly on clearance, width, hole-to-hole and shorts. Watching connectivity
 /// across the run is what turns "the violations went away" back into "the board
 /// got better".
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Connectivity {
     /// Unconnected-net + net-island violations on the board as given.
     pub on_arrival: usize,
