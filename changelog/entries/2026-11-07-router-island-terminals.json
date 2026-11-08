@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-07-router-island-terminals",
+  "version": "0.11.0",
+  "date": "2026-11-07",
+  "category": "fix",
+  "title": "Router starts from any copper joined to a pad",
+  "summary": "fab-prep routes island-to-island: a connection can start on fan-out stubs, vias or earlier traces already joined to its pad, so a walled-in fine-pitch pad with hand-placed fan-out now routes.",
+  "features": ["pcb", "fab-prep", "autoroute"],
+  "mcpTools": ["fab_prep"]
+}

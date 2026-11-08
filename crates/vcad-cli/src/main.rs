@@ -473,6 +473,17 @@ enum Commands {
         /// anything. An unrecognised rule name refuses the run.
         #[arg(long = "accept", value_name = "RULE")]
         accept: Vec<String>,
+        /// Ship a board that is geometrically clean but NOT fully connected
+        /// (nets still unconnected/islanded). OFF by default: such a run fails
+        /// closed. The opt-in is logged in the receipt and FAB_NOTES.md is
+        /// headed "NOT FULLY ROUTED".
+        #[arg(long)]
+        allow_incomplete: bool,
+        /// Let the router emit blind/buried (layer-pair) vias. OFF by default:
+        /// standard 2/4-layer processes drill through vias only. A board that
+        /// already carries blind/buried/micro vias keeps that process anyway.
+        #[arg(long)]
+        allow_blind_vias: bool,
     },
 
     /// Run a physics simulation on a robot assembly (.vcad or .urdf)
@@ -1022,6 +1033,8 @@ fn run_command(cli: Cli) -> Result<()> {
             max_cluster,
             report_only,
             accept,
+            allow_incomplete,
+            allow_blind_vias,
         }) => {
             let output = output.unwrap_or_else(|| fabprep::default_output_dir(&input));
             let converged = fabprep::run(&fabprep::FabPrepArgs {
@@ -1036,6 +1049,8 @@ fn run_command(cli: Cli) -> Result<()> {
                 max_cluster,
                 report_only,
                 accept,
+                allow_incomplete,
+                allow_blind_vias,
             })?;
             // Fail closed: a board that did not converge must not look like a
             // successful run to a script or a CI step.
