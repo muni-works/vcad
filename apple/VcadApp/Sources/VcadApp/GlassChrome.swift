@@ -504,6 +504,7 @@ enum DockTools {
                     ? Tool(id: "ec.buildsch", label: "Build Schematic from Board", symbol: "arrow.triangle.branch",
                            isActive: false) { ec.buildSchematicFromBoard(m) }
                     : Tool(id: "ec.check", label: "Check Connectivity", symbol: "checkmark.seal", isActive: ec.checking) { ec.check(m) },
+                Tool(id: "ec.erc", label: "Electrical Rule Check", symbol: "bolt.badge.checkmark", isActive: t.sheet == .erc, enabled: !empty, hint: "Build or draw a schematic first") { t.runErc(ec, m) },
                 Tool(id: "ec.tidy", label: "Tidy Sheet", symbol: "square.grid.3x3", isActive: false) { ec.tidySchematic(m) },
                 Tool(id: "ec.simulate", label: "Simulate", symbol: "waveform", isActive: t.sheet == .simulate,
                      enabled: !empty, hint: "Build or draw a schematic first") { t.sheet = .simulate },

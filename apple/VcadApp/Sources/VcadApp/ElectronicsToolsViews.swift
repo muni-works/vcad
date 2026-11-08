@@ -44,6 +44,7 @@ struct ElectronicsToolSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             switch kind {
             case .drc: DrcPanel(model: model)
+            case .erc: ErcPanel(model: model)
             case .length: LengthTuningPanel(model: model)
             case .stackup: LayerStackPanel(model: model)
             case .simulate: SimulationPanel(model: model)
@@ -271,5 +272,32 @@ struct SimulationPanel: View {
             }
         }
         ForEach(t.erc, id: \.self) { Text("ERC: \($0)").font(.caption).foregroundStyle(.orange) }
+    }
+}
+
+
+/// Electrical rule check results, each with a jump to its place on the sheet.
+struct ErcPanel: View {
+    @Bindable var model: EditorModel
+    var body: some View {
+        let t = model.electronics.tools
+        let errors = t.ercFindings.filter { ($0["severity"] as? String ?? "").lowercased() == "error" }.count
+        HStack(spacing: 28) {
+            VStack(alignment: .leading) { Text("\(errors)").font(.title2.monospacedDigit()).foregroundStyle(errors == 0 ? .green : .red); Text("errors").font(.caption) }
+            VStack(alignment: .leading) { Text("\(t.ercFindings.count - errors)").font(.title2.monospacedDigit()); Text("warnings").font(.caption) }
+        }
+        List(Array(t.ercFindings.prefix(300).enumerated()), id: \.offset) { _, f in
+            HStack(alignment: .firstTextBaseline) {
+                if f["position"] is ECObject {
+                    Button {
+                        model.electronics.focus(on: ecPoint(f["position"]), minZoom: 2)
+                        GlassUI.shared.closePanel()
+                    } label: { Image(systemName: "scope") }.buttonStyle(.borderless).help("Show on the sheet")
+                }
+                Text(f["severity"] as? String ?? "").font(.caption.monospaced()).frame(width: 60, alignment: .leading)
+                Text(f["message"] as? String ?? "").font(.caption).lineLimit(3)
+            }
+        }.frame(height: 280)
+        HStack { Spacer(); Button("Done") { GlassUI.shared.closePanel() }.keyboardShortcut(.defaultAction) }
     }
 }

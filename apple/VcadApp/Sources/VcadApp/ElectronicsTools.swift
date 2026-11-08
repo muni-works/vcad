@@ -16,7 +16,7 @@ struct ECBox: @unchecked Sendable { let value: ECObject }
 /// `EditorModel.editElectronics`, so each is one undo step.
 @MainActor @Observable
 final class ElectronicsTools {
-    enum Sheet: String, Identifiable { case drc, length, stackup, simulate, enclosure; var id: String { rawValue } }
+    enum Sheet: String, Identifiable { case drc, erc, length, stackup, simulate, enclosure; var id: String { rawValue } }
 
     var busy: String?
     var sheet: Sheet?
@@ -219,6 +219,18 @@ final class ElectronicsTools {
     }
 
     // MARK: simulation
+
+    /// ERC findings with positions, kept for the sheet's markers.
+    var ercFindings: [ECObject] = []
+    func runErc(_ ec: ElectronicsWorkspace, _ model: EditorModel) {
+        let sheetJSON = ec.schematic(model)
+        guard !sheetJSON.isEmpty else { error = "This document has no schematic."; return }
+        let s = ECBox(value: sheetJSON)
+        run("ERC") { ECBox(value: try PcbFFI.erc(s.value)) } then: { [self] r in
+            ercFindings = ecRows(r["violations"])
+            sheet = .erc
+        }
+    }
 
     func simulate(_ ec: ElectronicsWorkspace, _ model: EditorModel) {
         let sheetJSON = ec.schematic(model)

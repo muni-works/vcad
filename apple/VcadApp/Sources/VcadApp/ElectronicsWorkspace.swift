@@ -30,6 +30,8 @@ final class ElectronicsWorkspace {
     var snap = true
     var zoom = 1.0
     var pan = CGSize.zero
+    var selectedWire: Int?
+    var selectedLabel: Int?
     /// Corners of the schematic wire being drawn.
     var wirePoints: [CGPoint] = []
     /// Text the Net Label tool places.

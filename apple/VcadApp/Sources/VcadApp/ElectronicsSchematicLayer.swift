@@ -85,9 +85,26 @@ private let bodyColor = Color(white: 0.88)
             drawNet(name, points)
         }
         drawWires(wires, nets, pins)
-        for l in labels { drawLabel(l) }
+        for (i, l) in labels.enumerated() {
+            drawLabel(l)
+            if ec.selectedLabel == i {
+                let c = screen(ecPoint(l["position"]))
+                context.stroke(Path(ellipseIn: CGRect(x: c.x - 7, y: c.y - 7, width: 14, height: 14)), with: .color(.accentColor), lineWidth: 2)
+            }
+        }
         for c in ecRows(sheet["components"]) { drawSymbol(c) }
         drawWirePreview()
+        for f in ec.tools.ercFindings where f["position"] is ECObject {
+            let p = screen(ecPoint(f["position"]))
+            let color: Color = (f["severity"] as? String ?? "").lowercased() == "error" ? .red : .yellow
+            var x = Path(); x.move(to: CGPoint(x: p.x - 5, y: p.y - 5)); x.addLine(to: CGPoint(x: p.x + 5, y: p.y + 5))
+            x.move(to: CGPoint(x: p.x + 5, y: p.y - 5)); x.addLine(to: CGPoint(x: p.x - 5, y: p.y + 5))
+            context.stroke(x, with: .color(color), lineWidth: 2)
+        }
+        if let focus = ec.focusPoint {
+            let p = screen(focus)
+            context.stroke(Path(ellipseIn: CGRect(x: p.x - 16, y: p.y - 16, width: 32, height: 32)), with: .color(.yellow), lineWidth: 2)
+        }
     }
 
     private func drawWires(_ wires: [(CGPoint, CGPoint)], _ nets: [String: [String]], _ pins: [String: PinAt]) {
@@ -102,7 +119,8 @@ private let bodyColor = Color(white: 0.88)
         }
         for (i, w) in wires.enumerated() {
             let net = netOf[groups[i]] ?? ""
-            stroke([w.0, w.1], net.isEmpty ? wireColor : tint(net), ec.highlightNet == net && !net.isEmpty ? 2 : 1.3)
+            let picked = ec.selectedWire == i
+            stroke([w.0, w.1], picked ? .accentColor : net.isEmpty ? wireColor : tint(net), picked || (ec.highlightNet == net && !net.isEmpty) ? 2.2 : 1.3)
         }
         for j in SchematicEdit.junctions(wires) {
             let c = screen(j), r = max(2.2, 0.45 * scale)
@@ -500,5 +518,104 @@ extension ElectronicsWorkspace {
         if let before { model.undoStack = Array((undoBefore + [UndoEntry(data: before, name: name)]).suffix(64)) }
         message = joined.isEmpty ? nil : "Joined \(joined.joined(separator: ", ")) into \(target)"
         activeNet = target
+    }
+}
+
+extension ElectronicsWorkspace {
+    /// Move a symbol; wires ending on its pins come with it, staying square.
+    func moveSymbol(_ model: EditorModel, ref: String, to position: CGPoint) {
+        model.editElectronics(name: "Move Symbol") { doc in
+            var s = doc["schematic"] as? ECObject ?? [:]
+            var rows = ecRows(s["components"])
+            guard let i = rows.firstIndex(where: { $0["ref"] as? String == ref }) else { return }
+            let old = rows[i]
+            var moved = old; moved["position"] = ecJSON(position); rows[i] = moved
+            s["components"] = rows
+            let pairs = ElectronicsCanvas.symbolPins(old).map {
+                (ElectronicsCanvas.world(local: $0.local, in: old), ElectronicsCanvas.world(local: $0.local, in: moved))
+            }
+            func follow(_ p: CGPoint) -> CGPoint {
+                pairs.first { hypot($0.0.x - p.x, $0.0.y - p.y) < 0.05 }?.1 ?? p
+            }
+            var wires: [ECObject] = []
+            for w in ecRows(s["wires"]) {
+                let (a, b) = (follow(ecPoint(w["start"])), follow(ecPoint(w["end"])))
+                let pts = SchematicEdit.leg(a, b)
+                for (u, v) in zip(pts, pts.dropFirst()) { wires.append(["start": ecJSON(u), "end": ecJSON(v)]) }
+            }
+            s["wires"] = wires
+            s["labels"] = ecRows(s["labels"]).map { l -> ECObject in
+                var l = l; l["position"] = ecJSON(follow(ecPoint(l["position"]))); return l
+            }
+            doc["schematic"] = s
+        }
+    }
+    /// Pick the wire or label under `p`. Returns whether it hit one.
+    func selectSheetItem(_ model: EditorModel, at p: CGPoint, tolerance: CGFloat) -> Bool {
+        let sheet = schematic(model)
+        for (i, l) in ecRows(sheet["labels"]).enumerated() {
+            let q = ecPoint(l["position"])
+            if hypot(q.x - p.x, q.y - p.y) < tolerance { selectedLabel = i; highlightNet = l["name"] as? String; return true }
+        }
+        for (i, w) in ecRows(sheet["wires"]).enumerated() {
+            let a = ecPoint(w["start"]), b = ecPoint(w["end"]), q = SchematicEdit.closest(p, a, b)
+            if hypot(q.x - p.x, q.y - p.y) < tolerance { selectedWire = i; return true }
+        }
+        return false
+    }
+    /// Delete the selected wire or label. A net made entirely of drawn
+    /// connections splits where the wire was; one that also has connections
+    /// from outside the drawing keeps its netlist, and says so.
+    func deleteSheetSelection(_ model: EditorModel) {
+        let sheet = schematic(model)
+        var wires = ecRows(sheet["wires"]), labels = ecRows(sheet["labels"])
+        if let i = selectedLabel, labels.indices.contains(i) { labels.remove(at: i) }
+        let wireIndex = selectedWire
+        let old = wires.map { (ecPoint($0["start"]), ecPoint($0["end"])) }
+        if let i = wireIndex, wires.indices.contains(i) { wires.remove(at: i) }
+        selectedWire = nil; selectedLabel = nil
+        var nets = sheet["nets"] as? [String: [String]] ?? [:]
+        var note: String?
+        if let i = wireIndex, old.indices.contains(i) {
+            let all = sheetPinsPublic(model)
+            let oldGroups = SchematicEdit.groups(old), g = oldGroups[i]
+            let oldReach = old.indices.filter { oldGroups[$0] == g }.map { old[$0] }
+            let pinsOn = { (ws: [(CGPoint, CGPoint)]) in all.filter { p in ws.contains { SchematicEdit.on(p.at, $0.0, $0.1) } }.map(\.key) }
+            let before = pinsOn(oldReach)
+            if let name = nets.first(where: { n in before.contains { n.value.contains($0) } })?.key {
+                if Set(nets[name] ?? []) == Set(before) {
+                    let remain = old.indices.filter { oldGroups[$0] == g && $0 != i }.map { old[$0] }
+                    let parts = SchematicEdit.groups(remain)
+                    var pieces = Dictionary(grouping: remain.indices, by: { parts[$0] }).values
+                        .map { Set(pinsOn($0.map { remain[$0] })) }.filter { !$0.isEmpty }
+                    pieces.sort { $0.count > $1.count }
+                    let covered = pieces.reduce(Set<String>()) { $0.union($1) }
+                    nets[name] = pieces.first.map { $0.sorted() }
+                    var k = 1
+                    for piece in pieces.dropFirst() where piece.count > 1 {
+                        while nets["N\(k)"] != nil { k += 1 }
+                        nets["N\(k)"] = piece.sorted()
+                    }
+                    _ = covered
+                } else {
+                    note = "Removed the wire. \(name) is still connected in the netlist."
+                }
+            }
+        }
+        let finalNets = nets.filter { !$0.value.isEmpty }
+        model.editElectronics(name: "Delete") { doc in
+            var s = doc["schematic"] as? ECObject ?? [:]
+            s["wires"] = wires; s["labels"] = labels; s["nets"] = finalNets
+            doc["schematic"] = s
+        }
+        message = note
+    }
+    func sheetPinsPublic(_ model: EditorModel) -> [(key: String, at: CGPoint)] {
+        ecRows(schematic(model)["components"]).flatMap { c -> [(key: String, at: CGPoint)] in
+            let ref = c["ref"] as? String ?? ""
+            return ElectronicsCanvas.symbolPins(c).map { pin, local in
+                ("\(ref).\(pin["number"] as? String ?? "")", ElectronicsCanvas.world(local: local, in: c))
+            }
+        }
     }
 }

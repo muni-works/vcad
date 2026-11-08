@@ -94,6 +94,7 @@ struct NativeElectronicsView: View {
     static func title(for kind: ElectronicsTools.Sheet?) -> String {
         switch kind {
         case .drc: "Design Rule Check"
+        case .erc: "Electrical Rule Check"
         case .length: "Diff Pair / Length Tuning"
         case .stackup: "Layer Stack"
         case .simulate: "Simulate"
@@ -489,11 +490,21 @@ struct ElectronicsCanvas: View {
                 }
             }.onEnded { _ in
                 defer { panStart = nil; ec.dragRef = nil; ec.dragPosition = nil }
-                if ec.dragRef != nil, let p = ec.dragPosition { ec.editComponent(model, key: "position", value: ecJSON(p)) }
+                if let ref = ec.dragRef, let p = ec.dragPosition {
+                    if ec.view == .schematic { ec.moveSymbol(model, ref: ref, to: p) }
+                    else { ec.editComponent(model, key: "position", value: ecJSON(p)) }
+                }
             })
             .onAppear { canvasSize = geo.size; installMonitor() }
             .onDisappear { if let monitor { NSEvent.removeMonitor(monitor) }; monitor = nil }
             .onChange(of: geo.size) { _, new in canvasSize = new }
+            .onChange(of: ec.view) { _, view in
+                // Cross-probe: whatever is selected stays in view on the other side.
+                ec.zoom = 1; ec.pan = .zero
+                guard let ref = ec.selectedRef, view != .spatial else { return }
+                let rows = ecRows(view == .schematic ? ec.schematic(model)["components"] : ec.board(model)["footprints"])
+                if let row = rows.first(where: { $0["ref"] as? String == ref }) { ec.focus(on: ecPoint(row["position"]), minZoom: 1) }
+            }
             .onChange(of: ec.focusPoint) { _, p in
                 guard let p else { return }
                 ec.zoom = max(ec.zoom, ec.focusMinZoom); ec.pan = .zero
@@ -667,12 +678,15 @@ struct ElectronicsCanvas: View {
     }
     private func select(_ p: CGPoint, tolerance: CGFloat) {
         ec.selectedRef = nil; ec.selectedTrace = nil; ec.selectedVia = nil; ec.highlightNet = nil
+        ec.selectedWire = nil; ec.selectedLabel = nil
         if ec.view == .schematic {
             if let pin = nearestPin(p, distance: max(1.4, tolerance)) {
                 let nets = ec.schematic(model)["nets"] as? [String: [String]] ?? [:]
                 ec.highlightNet = nets.first { $0.value.contains(pin) }?.key
                 ec.selectedRef = String(pin.split(separator: ".")[0])
-            } else { ec.selectedRef = partAt(p, tolerance: tolerance) }
+            } else if !ec.selectSheetItem(model, at: p, tolerance: tolerance) {
+                ec.selectedRef = partAt(p, tolerance: tolerance)
+            }
             return
         }
         let board = ec.board(model)
@@ -705,6 +719,9 @@ struct ElectronicsCanvas: View {
                 if !ec.wirePoints.isEmpty {
                     if event.keyCode == 53 { ec.wirePoints = []; return nil }
                     if event.keyCode == 36 { ec.finishWire(model); return nil }
+                }
+                if event.keyCode == 51 || event.keyCode == 117, ec.selectedWire != nil || ec.selectedLabel != nil {
+                    ec.deleteSheetSelection(model); return nil
                 }
                 if event.keyCode == 51 || event.keyCode == 117, ec.selectedTrace != nil || ec.selectedVia != nil {
                     ec.removeSelection(model); return nil
