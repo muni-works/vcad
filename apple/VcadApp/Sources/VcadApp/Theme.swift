@@ -12,7 +12,7 @@ import SwiftUI
 enum Theme {
     enum Radius {
         /// Floating panels and the workspace header.
-        static let panel: CGFloat = 12
+        static let panel: CGFloat = 16
         /// Buttons, scrub fields, keycaps, badges.
         static let control: CGFloat = 6
         /// List rows (feature tree, operations, parts).
@@ -26,9 +26,9 @@ enum Theme {
     }
     enum Width {
         /// The left rail: model navigator, CNC job outline, circuit navigator.
-        static let navigator: CGFloat = 236
+        static let navigator: CGFloat = 170
         /// The right rail: object inspector, machine panel, circuit inspector.
-        static let inspector: CGFloat = 268
+        static let inspector: CGFloat = 170
         /// Manufacture's compact job outline.
         static let cncOutline: CGFloat = 192
     }
@@ -47,9 +47,14 @@ private struct PanelSurface<S: InsettableShape>: ViewModifier {
     let shape: S
     @Environment(\.colorScheme) private var scheme
 
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
     func body(content: Content) -> some View {
         #if os(macOS)
-        if #available(macOS 26.0, *) {
+        if reduceTransparency {
+            content.background(Color(nsColor: .windowBackgroundColor), in: shape)
+                .overlay(shape.strokeBorder(.separator, lineWidth: 1))
+        } else if #available(macOS 26.0, *) {
             content.glassEffect(.regular, in: shape)
         } else {
             fallback(content)
@@ -79,7 +84,7 @@ extension View {
     /// The background of a list row: accent selection, a quiet hover, or nothing.
     func selectableRow(selected: Bool, hovered: Bool = false) -> some View {
         background(
-            selected ? AnyShapeStyle(.selection) : hovered ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear),
+            selected ? AnyShapeStyle(Color.primary.opacity(0.12)) : hovered ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear),
             in: RoundedRectangle(cornerRadius: Theme.Radius.row, style: .continuous))
     }
     /// The inset well behind an editable value (scrub field, rename field).

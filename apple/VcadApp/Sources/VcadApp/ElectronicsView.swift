@@ -23,6 +23,7 @@ struct NativeElectronicsView: View {
                     Button("Import KiCad board…") { ec.tools.importBoard(ec, model) }
                     Button("Open document…") { open() }
                 }
+                .frame(maxHeight: .infinity)
             } else {
                 GeometryReader { geometry in
                     ZStack(alignment: .top) {
@@ -33,11 +34,11 @@ struct NativeElectronicsView: View {
                         .padding(.horizontal, Theme.Width.inspector + 2 * Theme.Space.l)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         HStack(alignment: .top, spacing: Theme.Space.l) {
-                            navigator.padding(Theme.Space.l).frame(width: Theme.Width.navigator)
+                            navigator.padding(Theme.Space.m).frame(width: Theme.Width.navigator)
                                 .frame(maxHeight: min(470, geometry.size.height - 32))
                                 .panelSurface()
                             Spacer(minLength: 0)
-                            inspector.padding(Theme.Space.l).frame(width: Theme.Width.inspector)
+                            inspector.padding(Theme.Space.m).frame(width: Theme.Width.inspector)
                                 .frame(maxHeight: min(600, geometry.size.height - 32))
                                 .panelSurface()
                         }.padding(Theme.Space.l)
@@ -48,10 +49,17 @@ struct NativeElectronicsView: View {
                     Text(ec.tools.error ?? ec.tools.status ?? ec.message ?? (ec.view == .spatial ? "3D layout preview · simplified component bodies" : ec.tool == .wire ? "Select two pins to connect their net" : ec.tool == .route ? "Click to route · Escape ends the route" : ec.tool == .place ? "Click to place \(ec.componentKind.lowercased())" : "Select a component to edit its properties"))
                         .lineLimit(1)
                     Spacer()
+                    // Counts as numbers, never color alone.
+                    Text("\(ecRows(ec.board(model)["nets"]).count) nets").monospacedDigit()
+                    if let r = ec.tools.drc {
+                        let n = Int(ecNumber(r["route_attributable"]))
+                        Text(n == 0 ? "DRC clean" : "DRC \(n) route violation\(n == 1 ? "" : "s")").monospacedDigit()
+                    }
                     Text("mm").foregroundStyle(.secondary)
                 }.font(.caption).padding(10)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Color(nsColor: .windowBackgroundColor))
         .onChange(of: ec.boardID) { _, _ in ec.selectedRef = nil; ec.selectedTrace = nil; ec.selectedVia = nil; ec.routeStart = nil }
         .onChange(of: model.source) { _, _ in ec.selectedRef = nil; ec.selectedTrace = nil; ec.routeStart = nil; ec.pendingPin = nil }
@@ -84,8 +92,6 @@ struct NativeElectronicsView: View {
                 }.pickerStyle(.segmented).labelsHidden().frame(width: 245)
             }
             Spacer(minLength: 0)
-            Button("Undo", systemImage: "arrow.uturn.backward") { model.undo() }.labelStyle(.iconOnly).disabled(!model.canUndo)
-            Button("Redo", systemImage: "arrow.uturn.forward") { model.redo() }.labelStyle(.iconOnly).disabled(!model.canRedo)
             ElectronicsToolMenus(model: model)
             Button("Check Connectivity") { ec.check(model) }.disabled(ec.board(model).isEmpty)
         }.controlSize(.small)

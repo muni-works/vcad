@@ -39,7 +39,7 @@ struct AssemblyPanel: View {
                 Spacer()
             }
         }
-        .padding(Theme.Space.l).frame(width: Theme.Width.navigator).panelSurface()
+        .padding(Theme.Space.m).frame(width: Theme.Width.navigator).panelSurface()
         .sheet(item: Binding(get: { newJoint.map(SheetBox.init) }, set: { newJoint = $0?.spec })) { box in
             JointEditorSheet(model: model, title: "Add Joint", spec: box.spec) { spec in
                 model.addJoint(spec) != nil

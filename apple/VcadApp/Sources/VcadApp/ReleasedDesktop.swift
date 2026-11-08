@@ -653,26 +653,23 @@ struct ReleasedOverlayView: View {
     }
 
     private var studio: Bool { model.workspace == .manufacture }
+    /// Floating chrome starts below the toolbar row.
+    private var chromeTop: CGFloat { Glass.toolbarHeight + (model.isWindowed ? 0 : 20) }
+
+    /// Whether the viewport runs under the toolbar (full-bleed) or the
+    /// workspace's own content starts below it.
+    private var fullBleed: Bool { model.workspace == .design }
 
     var body: some View {
+        ZStack(alignment: .top) {
         VStack(spacing: 0) {
-            if model.isWindowed {
-                WorkspaceHeader(model: model).background(.bar)
-                    .modifier(ChromeRegion(key: "workspaceHeader"))
-                Divider()
-            } else {
-                WorkspaceHeader(model: model).frame(maxWidth: 920).panelSurface()
-                    .modifier(ChromeRegion(key: "workspaceHeader"))
-                    .padding(.horizontal, Theme.Space.l).padding(.vertical, 10)
-            }
+            if !fullBleed { Color.clear.frame(height: Glass.toolbarHeight + (model.isWindowed ? 0 : 20)) }
             switch model.workspace {
             case .electronics:
                 NativeElectronicsView(model: model)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .modifier(ChromeRegion(key: "electronicsWorkspace"))
             case .design:
-                DesignModelingTools(model: model).frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 18).padding(.vertical, Theme.Space.s).background(.bar)
-                    .modifier(ChromeRegion(key: "designCommands"))
                 viewport.frame(maxWidth: .infinity, maxHeight: .infinity)
             case .drawing:
                 DrawingWorkspaceView(model: model)
@@ -709,11 +706,36 @@ struct ReleasedOverlayView: View {
                     }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+            toolbar
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .overlay(alignment: .bottom) {
+            // Workspaces with their own canvas get the same dock as Design.
+            if model.workspace == .drawing || model.workspace == .electronics {
+                GlassDock(model: model)
+                    .modifier(ChromeRegion(key: "dock"))
+                    .padding(.bottom, model.workspace == .electronics ? 44 : Glass.inset + 6)
+            }
+        }
         .ignoresSafeArea(.container, edges: .top)
         .onAppear { ReleaseWindowController.shared.updateDocumentWindow() }
         .onChange(of: model.source) { _, _ in ReleaseWindowController.shared.updateDocumentWindow() }
         .onChange(of: model.documentDirty) { _, _ in ReleaseWindowController.shared.updateDocumentWindow() }
         .onChange(of: model.workspace) { _, _ in ReleaseWindowController.shared.updateCNCWindowMinimum() }
+    }
+
+    @ViewBuilder private var toolbar: some View {
+        if model.isWindowed {
+            GlassToolbar(model: model)
+                .background(fullBleed ? AnyShapeStyle(.clear) : AnyShapeStyle(.bar))
+                .modifier(ChromeRegion(key: "workspaceHeader"))
+        } else {
+            // Released to the desktop: the same row, as a glass capsule.
+            GlassToolbar(model: model).frame(maxWidth: 920).glassCapsule()
+                .modifier(ChromeRegion(key: "workspaceHeader"))
+                .padding(.horizontal, Glass.inset).padding(.top, Glass.inset)
+        }
     }
 
     private var viewport: some View {
@@ -829,7 +851,8 @@ struct ReleasedOverlayView: View {
                         .modifier(ChromeRegion(key: "sim"))
                 }
             }
-            .padding(Theme.Space.l)
+            .padding(.leading, Glass.inset).padding(.bottom, Glass.inset)
+            .padding(.top, chromeTop)
             .animation(Motion.panel, value: model.showsTree)
             }
         }
@@ -863,7 +886,8 @@ struct ReleasedOverlayView: View {
                         .modifier(ChromeRegion(key: "fabricate"))
                 }
             }
-            .padding(Theme.Space.l)
+            .padding(.trailing, Glass.inset).padding(.bottom, Glass.inset)
+            .padding(.top, chromeTop)
             .animation(Motion.panel, value: model.showsInspector)
             .animation(Motion.panel, value: model.source.isGripper)
             }
@@ -894,16 +918,17 @@ struct ReleasedOverlayView: View {
                          : "Solving \(model.documentName)…").font(.callout).monospacedDigit()
                 }
                 .padding(.horizontal, 14).padding(.vertical, 8).pillSurface()
-                .padding(.top, Theme.Space.l)
+                .padding(.top, chromeTop)
                 .transition(.opacity)
                 .accessibilityLabel("Solving \(model.documentName)")
             } else if !studio && !model.source.isGripper {
-                DesignBreadcrumb(model: model).padding(.top, Theme.Space.l)
+                DesignBreadcrumb(model: model).padding(.top, chromeTop)
             }
         }
         .overlay(alignment: .bottomTrailing) {
             if !studio {
-                DesignViewportTools(model: model).padding(Theme.Space.l)
+                DesignViewportTools(model: model)
+                    .padding(.trailing, Glass.inset).padding(.bottom, Glass.inset)
                     .modifier(ChromeRegion(key: "designViewportTools"))
             }
         }
@@ -911,6 +936,8 @@ struct ReleasedOverlayView: View {
             // Labels an agent pinned over the MCP bridge (AgentBridge.swift).
             AgentAnnotationOverlay(model: model)
         }
+        .overlay { if !studio { AgentShimmerOverlay(model: model) } }
+        .overlay { if !studio { EditBarOverlay(model: model) } }
         .overlay(alignment: .topLeading) {
             // Decoded compressed scalar field (FieldOverlay.swift).
             FieldHud(store: FieldOverlayStore.shared)
@@ -957,14 +984,24 @@ struct ReleasedOverlayView: View {
                         AgentPanel(session: AgentSession.shared, model: model)
                             .modifier(ChromeRegion(key: "agentPanel"))
                     }
-                    if IntentEngine.isAvailable {
-                        CommandBar(engine: intent, model: model)
-                            .modifier(ChromeRegion(key: "composer"))
+                    if GlassUI.shared.historyOpen && model.usesDocumentTree {
+                        HistoryFilmstrip(model: model)
+                            .modifier(ChromeRegion(key: "history"))
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
                     }
+                    if let s = GlassUI.shared.suggestion {
+                        AgentSuggestionPill(model: model, suggestion: s)
+                            .id(s.id)
+                            .modifier(ChromeRegion(key: "suggestion"))
+                            .transition(.scale(scale: 0.94).combined(with: .opacity))
+                    }
+                    GlassDock(model: model)
+                        .modifier(ChromeRegion(key: "dock"))
                 }
             }
-            .padding(.bottom, Theme.Space.l)
-            .animation(Motion.smooth, value: intent.draft.isEmpty)
+            .padding(.bottom, Glass.inset + 6)
+            .animation(Motion.smooth, value: GlassUI.shared.historyOpen)
+            .animation(Motion.smooth, value: GlassUI.shared.suggestion)
             .animation(Motion.smooth, value: model.timeline == nil)
             .animation(Motion.panel, value: model.sketching)
             }
@@ -1133,6 +1170,9 @@ struct ReleasedOverlayView: View {
         if model.hasHiddenParts {
             Button("Show All Parts") { model.showAllParts() }
         }
+        // The same tools as the dock, as a standard menu.
+        DockContextMenu(model: model)
+        Divider()
         Button("Deselect All") { model.deselectAll() }
             .disabled(model.selectedPartIndex == nil && model.multiSelectedParts.isEmpty)
         Divider()
@@ -1576,6 +1616,8 @@ struct ReleasedARView: NSViewRepresentable {
         coordinator.builtGrounded = grounded
         model.geometryDirty = false
 
+        let buildStarted = Date()
+        defer { GlassUI.shared.lastBuildMillis = Date().timeIntervalSince(buildStarted) * 1000 }
         let scene = model.buildScene()
         // Still solving with nothing landed yet: leave the previous geometry
         // (or nothing) on screen; parts are drawn as they land and the model
@@ -1704,7 +1746,7 @@ struct ObjectInspectorWindow: View {
                     }.font(.callout)
                 }
             }.frame(maxHeight: 420).fixedSize(horizontal: false, vertical: true)
-        }.padding(Theme.Space.l).frame(width: Theme.Width.inspector).panelSurface()
+        }.padding(Theme.Space.m).frame(width: Theme.Width.inspector).panelSurface()
     }
 
     // MARK: document (a .vcad's feature tree)
@@ -1872,7 +1914,7 @@ struct ReceiptLedgerWindow: View {
             PanelHeader(title: "Receipt", systemImage: "checklist", onClose: { model.showsInspector = false })
             ReceiptLedger(model: model)
         }
-        .padding(Theme.Space.l).frame(width: Theme.Width.inspector).panelSurface()
+        .padding(Theme.Space.m).frame(width: Theme.Width.inspector).panelSurface()
     }
 }
 
@@ -1891,7 +1933,7 @@ struct SimulationWindow: View {
             PanelHeader(title: "Simulation", systemImage: "atom", onClose: { model.sim.teardown() })
             SimInspector(model: model)
         }
-        .padding(Theme.Space.l).frame(width: Theme.Width.navigator).panelSurface()
+        .padding(Theme.Space.m).frame(width: Theme.Width.navigator).panelSurface()
     }
 }
 

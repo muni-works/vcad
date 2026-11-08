@@ -425,7 +425,7 @@ struct PoseStudioWindow: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         }
-        .padding(Theme.Space.l).frame(width: Theme.Width.navigator).panelSurface()
+        .padding(Theme.Space.m).frame(width: Theme.Width.navigator).panelSurface()
     }
 }
 
