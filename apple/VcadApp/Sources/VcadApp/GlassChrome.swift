@@ -406,7 +406,13 @@ enum DockTools {
                         enabled: doc || sandbox, hint: doc || sandbox ? "" : "Open a document") {
             if m.promoteSandboxToDocument(blank: true) { m.enterSketch() }
         })
-        out += m.tools(for: .create).filter { ["shape.cube", "shape.cylinder"].contains($0.id) }
+        out += m.tools(for: .create).filter { ["shape.cube", "shape.cylinder", "shape.sphere"].contains($0.id) }
+        for op in [FeatureOp.cone, .torus, .wedge, .prism] {
+            out.append(Tool(id: "op.\(op.rawValue)", label: op.label, symbol: op.symbol,
+                            isActive: m.activeFeatureOp == op, enabled: doc || sandbox) {
+                if m.promoteSandboxToDocument(blank: true) { m.activeFeatureOp = op }
+            })
+        }
         for op in FeatureOp.modifyOps where [.fillet, .chamfer, .shell, .hole, .circularPattern].contains(op) {
             out.append(Tool(id: "op.\(op.rawValue)", label: op.label, symbol: op.symbol,
                             isActive: m.activeFeatureOp == op, enabled: sandbox || (doc && selected),

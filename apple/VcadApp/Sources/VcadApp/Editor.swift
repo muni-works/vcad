@@ -1542,6 +1542,40 @@ final class EditorModel {
 
     // MARK: feature ops (FeatureOps.swift drives these)
 
+    /// Add a kernel primitive the feature model has no typed input for, as one undo step.
+    @discardableResult
+    func addIRPrimitive(_ op: [String: Any], name: String) -> Bool {
+        guard promoteSandboxToDocument(blank: true), var doc = documentJSON else { return false }
+        var nodes = doc["nodes"] as? [String: Any] ?? [:]
+        let id = (nodes.keys.compactMap(Int.init).max() ?? 0) + 1
+        nodes[String(id)] = ["id": id, "name": name, "op": op]
+        doc["nodes"] = nodes
+        doc["roots"] = (doc["roots"] as? [[String: Any]] ?? []) + [["root": id, "material": "default"]]
+        guard irEdit(name, reeval: .rebuild, base: doc, { _ in }) != nil else { return false }
+        selectedFeatureID = featureNodes.last?.id
+        return true
+    }
+
+    /// Replace the selected parts with their convex hull.
+    @discardableResult
+    func hullSelected() -> Bool {
+        let picked = multiSelectedParts.compactMap { rootNodeId(forPart: $0) }
+        guard picked.count >= 2, var doc = documentJSON else { return false }
+        var nodes = doc["nodes"] as? [String: Any] ?? [:]
+        let id = (nodes.keys.compactMap(Int.init).max() ?? 0) + 1
+        nodes[String(id)] = ["id": id, "name": "Convex Hull", "op": ["type": "Hull", "children": picked, "points": [Double]()] as [String: Any]]
+        doc["nodes"] = nodes
+        var roots = doc["roots"] as? [[String: Any]] ?? []
+        let kept = roots.first { ($0["root"] as? NSNumber)?.intValue == picked[0] }?["material"] ?? "default"
+        roots.removeAll { (($0["root"] as? NSNumber)?.intValue).map(picked.contains) == true }
+        doc["roots"] = roots + [["root": id, "material": kept]]
+        guard irEdit("Convex Hull", reeval: .rebuild, base: doc, { _ in }) != nil else { return false }
+        multiSelectedParts = []
+        hiddenParts.removeAll(); isolatedPart = nil
+        selectedFeatureID = featureNodes.last?.id
+        return true
+    }
+
     /// Add any engine feature as one undo step; the new part takes
     /// `materialFrom`'s material (or the default). Selects the result.
     @discardableResult

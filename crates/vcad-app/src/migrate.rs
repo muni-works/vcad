@@ -407,32 +407,6 @@ fn migrate_node(
             params.insert("segments".to_string(), Value::F64(*segments as f64));
             Some(create(crdt, ctx, "cone", params))
         }
-        CsgOp::Torus {
-            major_radius,
-            minor_radius,
-            segments,
-        } => {
-            params.insert("major_radius".to_string(), Value::F64(*major_radius));
-            params.insert("minor_radius".to_string(), Value::F64(*minor_radius));
-            params.insert("segments".to_string(), Value::F64(*segments as f64));
-            Some(create(crdt, ctx, "torus", params))
-        }
-        CsgOp::Wedge { size } => {
-            params.insert("size_x".to_string(), Value::F64(size.x));
-            params.insert("size_y".to_string(), Value::F64(size.y));
-            params.insert("size_z".to_string(), Value::F64(size.z));
-            Some(create(crdt, ctx, "wedge", params))
-        }
-        CsgOp::Prism {
-            sides,
-            radius,
-            height,
-        } => {
-            params.insert("sides".to_string(), Value::F64(*sides as f64));
-            params.insert("radius".to_string(), Value::F64(*radius));
-            params.insert("height".to_string(), Value::F64(*height));
-            Some(create(crdt, ctx, "prism", params))
-        }
         // Boolean ops: migrate both operands first so their feature ids
         // exist before the boolean feature that references them.
         CsgOp::Union { left, right } => {
@@ -1200,6 +1174,35 @@ mod tests {
             visible: None,
         });
         doc
+    }
+
+    #[test]
+    fn torus_wedge_and_prism_survive_a_load() {
+        let doc: Document = serde_json::from_value(serde_json::json!({
+            "version": "0.1",
+            "nodes": {
+                "1": {"id": 1, "op": {"type": "Torus", "major_radius": 20.0, "minor_radius": 5.0, "segments": 64}},
+                "2": {"id": 2, "op": {"type": "Wedge", "size": {"x": 10.0, "y": 20.0, "z": 30.0}}},
+                "3": {"id": 3, "op": {"type": "Prism", "sides": 6, "radius": 10.0, "height": 5.0}}
+            },
+            "materials": {}, "part_materials": {},
+            "roots": [{"root": 1, "material": "default"}, {"root": 2, "material": "default"}, {"root": 3, "material": "default"}]
+        })).unwrap();
+        let got = crate::materializer::materialize(&migrate_v1(&doc)).document;
+        assert_eq!(got.roots.len(), 3);
+        for found in [
+            got.nodes
+                .values()
+                .any(|n| matches!(n.op, CsgOp::Torus { .. })),
+            got.nodes
+                .values()
+                .any(|n| matches!(n.op, CsgOp::Wedge { .. })),
+            got.nodes
+                .values()
+                .any(|n| matches!(n.op, CsgOp::Prism { .. })),
+        ] {
+            assert!(found);
+        }
     }
 
     /// Real documents, through the same path the app opens them with.

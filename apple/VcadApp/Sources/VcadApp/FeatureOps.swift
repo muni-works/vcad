@@ -10,7 +10,7 @@ import SwiftUI
 
 /// One modeling operation a dialog can author.
 enum FeatureOp: String, CaseIterable, Identifiable {
-    case fillet, chamfer, shell, hole, linearPattern, circularPattern, mirror, scale, text, cone
+    case fillet, chamfer, shell, hole, linearPattern, circularPattern, mirror, scale, text, cone, torus, wedge, prism, hull
 
     var id: String { rawValue }
     var label: String {
@@ -25,6 +25,10 @@ enum FeatureOp: String, CaseIterable, Identifiable {
         case .scale: "Scale"
         case .text: "Text"
         case .cone: "Cone"
+        case .torus: "Torus"
+        case .wedge: "Wedge"
+        case .prism: "Prism"
+        case .hull: "Convex Hull"
         }
     }
     var symbol: String {
@@ -39,14 +43,18 @@ enum FeatureOp: String, CaseIterable, Identifiable {
         case .scale: "arrow.up.left.and.arrow.down.right"
         case .text: "textformat"
         case .cone: "cone"
+        case .torus: "circle.circle"
+        case .wedge: "triangle.righthalf.filled"
+        case .prism: "hexagon"
+        case .hull: "skew"
         }
     }
     /// Ops that create a new part instead of transforming the selected one.
-    var createsPart: Bool { self == .text || self == .cone }
+    var createsPart: Bool { [.text, .cone, .torus, .wedge, .prism].contains(self) }
     /// Ops shown on the Modify tab.
     static let modifyOps: [FeatureOp] = [.fillet, .chamfer, .shell, .hole, .linearPattern,
-                                         .circularPattern, .mirror, .scale]
-    static let createOps: [FeatureOp] = [.cone, .text]
+                                         .circularPattern, .mirror, .scale, .hull]
+    static let createOps: [FeatureOp] = [.cone, .torus, .wedge, .prism, .text]
 }
 
 /// Axis presets shared by pattern and mirror dialogs.
@@ -217,6 +225,12 @@ struct FeatureOpSheet: View {
     @State private var rTop: Double = 0
     @State private var coneHeight: Double = 30
     @State private var error: String?
+    @State private var torusMajor: Double = 20
+    @State private var torusMinor: Double = 5
+    @State private var wedgeSize: [Double] = [30, 30, 30]
+    @State private var prismSides = 6
+    @State private var prismRadius: Double = 15
+    @State private var prismHeight: Double = 30
     @State private var holeSize = MetricHole.m3
     @State private var holeTapped = false
     @State private var holeThrough = true
@@ -258,6 +272,7 @@ struct FeatureOpSheet: View {
 
     private var canApply: Bool {
         if op == .hole { return model.picking.selectedFaces.count == 1 }
+        if op == .hull { return model.multiSelectedParts.count >= 2 }
         return op.createsPart || model.selectedPartFeatureId != nil || model.picking.selectionPart != nil
     }
 
@@ -320,6 +335,18 @@ struct FeatureOpSheet: View {
             Picker("Align", selection: $alignment) {
                 Text("Left").tag("left"); Text("Center").tag("center"); Text("Right").tag("right")
             }.pickerStyle(.segmented)
+        case .torus:
+            num("Major radius", $torusMajor, unit: "mm")
+            num("Minor radius", $torusMinor, unit: "mm")
+        case .wedge:
+            vec("Size", $wedgeSize)
+        case .prism:
+            Stepper("Sides: \(prismSides)", value: $prismSides, in: 3...64)
+            num("Radius", $prismRadius, unit: "mm")
+            num("Height", $prismHeight, unit: "mm")
+        case .hull:
+            Text(model.multiSelectedParts.count >= 2 ? "\(model.multiSelectedParts.count) parts selected" : "Select two or more parts with ⌘-click.")
+                .font(.caption).foregroundStyle(.secondary)
         case .cone:
             num("Bottom radius", $rBottom, unit: "mm")
             num("Top radius", $rTop, unit: "mm")
@@ -388,6 +415,14 @@ struct FeatureOpSheet: View {
         case .text:
             ok = !text.isEmpty && model.addOp(.text(text: text, height: height, depth: depth, alignment: alignment),
                                               name: "Text")
+        case .torus:
+            ok = model.addIRPrimitive(["type": "Torus", "major_radius": torusMajor, "minor_radius": torusMinor, "segments": 64], name: "Torus")
+        case .wedge:
+            ok = model.addIRPrimitive(["type": "Wedge", "size": ["x": wedgeSize[0], "y": wedgeSize[1], "z": wedgeSize[2]]], name: "Wedge")
+        case .prism:
+            ok = model.addIRPrimitive(["type": "Prism", "sides": prismSides, "radius": prismRadius, "height": prismHeight], name: "Prism")
+        case .hull:
+            ok = model.hullSelected()
         case .cone:
             ok = model.addOp(.cone(radiusBottom: rBottom, radiusTop: rTop, height: coneHeight, segments: 64),
                              name: "Cone")
