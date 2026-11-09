@@ -916,6 +916,84 @@ fn find_line_polygon_crossings(polygon: &[Point3], line: &vcad_kernel_geom::Line
     crossings
 }
 
+/// Where a line crossing a planar face's boundary meets the true circle, when
+/// the boundary there is a chord of an adjoining cylinder wall's rim.
+///
+/// The wall splits at the plane's exact intersection with the cylinder, while
+/// a crossing read off the polygon lies on the chord, up to the rim's sag
+/// inside it. The two faces then carry different vertices for one corner, and
+/// whether they meet comes down to how the mesh welder rounds them.
+fn crossing_on_rim_circle(
+    brep: &BRepSolid,
+    polygon: &[Point3],
+    line: &vcad_kernel_geom::Line3d,
+    crossing: Point3,
+) -> Point3 {
+    /// Twice `arc_segments`' sag: every rim chord is flatter than this.
+    const MAX_RIM_SAG: f64 = 2e-3;
+    const ON_SURFACE: f64 = 1e-6;
+
+    let (edge, dist) = find_closest_edge_with_dist(polygon, &crossing);
+    if dist > ON_SURFACE {
+        return crossing;
+    }
+    let (a, b) = (polygon[edge], polygon[(edge + 1) % polygon.len()]);
+    let half = (b - a).norm() / 2.0;
+    let mut owners: std::collections::HashMap<usize, (bool, bool)> = Default::default();
+    for (_, face) in &brep.topology.faces {
+        let surface = &brep.geometry.surfaces[face.surface_index];
+        let Some(cyl) = surface
+            .as_any()
+            .downcast_ref::<vcad_kernel_geom::CylinderSurface>()
+        else {
+            continue;
+        };
+        let axis = *cyl.axis.as_ref();
+        let radius = cyl.radius.abs();
+        let radial = |p: &Point3| {
+            let d = *p - cyl.center;
+            (d - axis * d.dot(axis)).norm()
+        };
+        if radius <= half
+            || (b - a).dot(axis).abs() > ON_SURFACE
+            || line.direction.normalize().dot(axis).abs() > 1e-9
+            || radius - (radius * radius - half * half).sqrt() > MAX_RIM_SAG
+            || (radial(&a) - radius).abs() > ON_SURFACE
+            || (radial(&b) - radius).abs() > ON_SURFACE
+        {
+            continue;
+        }
+        let owner = owners.entry(face.surface_index).or_default();
+        for lp in std::iter::once(face.outer_loop).chain(face.inner_loops.iter().copied()) {
+            for he in brep.topology.loop_half_edges(lp) {
+                let p = brep.topology.vertices[brep.topology.half_edges[he].origin].point;
+                owner.0 |= (p - a).norm() < ON_SURFACE;
+                owner.1 |= (p - b).norm() < ON_SURFACE;
+            }
+        }
+        if *owner != (true, true) {
+            continue;
+        }
+        // Line against circle, measured from the crossing.
+        let dir = line.direction.normalize();
+        let d = crossing - cyl.center;
+        let flat = d - axis * d.dot(axis);
+        let along = flat.dot(dir);
+        let disc = along * along - (flat.norm_squared() - radius * radius);
+        if disc < 0.0 {
+            continue;
+        }
+        let root = disc.sqrt();
+        let t = if (-along + root).abs() < (-along - root).abs() {
+            -along + root
+        } else {
+            -along - root
+        };
+        return snap_point(crossing + dir * t);
+    }
+    crossing
+}
+
 /// Create a new face in the BRep from a set of 3D points.
 ///
 /// Reuses existing vertices within tolerance, creating new ones only when needed.
@@ -3258,7 +3336,10 @@ pub fn split_planar_face(
                 .collect();
 
             // Find where the line intersects the polygon edges
-            let crossings = find_line_polygon_crossings(&loop_verts, line);
+            let crossings: Vec<Point3> = find_line_polygon_crossings(&loop_verts, line)
+                .into_iter()
+                .map(|p| crossing_on_rim_circle(brep, &loop_verts, line, p))
+                .collect();
 
             if crossings.len() >= 2 {
                 // Cut the span the recorded trimmed segment sits on — the
