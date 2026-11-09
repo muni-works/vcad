@@ -79,6 +79,7 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
   close_document: { title: "Close Document", annotations: DESTRUCTIVE },
   save_document: { title: "Save Document", annotations: RW },
   load_document: { title: "Load Document", annotations: RW },
+  attach_app_document: { title: "Attach to App Document", annotations: RW },
   checkpoint_document: { title: "Checkpoint Document", annotations: RW },
   branch_from: { title: "Branch From Checkpoint", annotations: RW },
   continue_document: { title: "Continue Document", annotations: RW_NET },

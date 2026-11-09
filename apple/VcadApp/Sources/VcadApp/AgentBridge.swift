@@ -336,7 +336,8 @@ enum AgentTools {
             m.openDocument(url)
             return text("Opened \(url.lastPathComponent). It solves in the background; call app_state to see when instances appear.")
         case "set_pose":
-            guard m.hasPoseStudio else { throw Failure(message: "The open document has no poseable assembly.") }
+            guard m.hasPoseStudio || m.poseAwaitsScene else { throw Failure(message: "The open document has no poseable assembly.") }
+            AgentEdits.surfacePose(m)
             if a["reset"] as? Bool == true { m.jointPose = [:] }
             var unknown: [String] = [], applied: [String: Double] = [:]
             for (k, v) in (a["joints"] as? [String: Any]) ?? [:] {
@@ -352,7 +353,7 @@ enum AgentTools {
                 m.setAgentBasePose(base.map(\.doubleValue), restart: a["restart"] as? Bool == true)
             }
             m.applyStudioPose()
-            var msg = "Pose applied: \(applied.map { "\($0.key)=\(String(format: "%.1f", $0.value))°" }.sorted().joined(separator: ", "))"
+            var msg = "\(m.hasPoseStudio ? "Pose applied" : "Pose held until the scene is ready"): \(applied.map { "\($0.key)=\(String(format: "%.1f", $0.value))°" }.sorted().joined(separator: ", "))"
             if !unknown.isEmpty {
                 msg += ". Unknown joints: \(unknown.joined(separator: ", ")) — names are \(m.drivenJoints.map(EditorModel.poseKey).joined(separator: ", "))"
             }

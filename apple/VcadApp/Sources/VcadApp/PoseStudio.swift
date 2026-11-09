@@ -83,6 +83,12 @@ extension EditorModel {
     /// timeline fighting it for the transforms.
     var hasPoseStudio: Bool { assemblyInstanceCount > 0 && timeline == nil && documentGraph != nil }
 
+    /// The document has joints but its scene hasn't landed. A pose set now is
+    /// kept in `jointPose` (latest wins) and applied by `assemblyScene`.
+    var poseAwaitsScene: Bool {
+        assemblyInstanceCount == 0 && timeline == nil && documentGraph?.joints.isEmpty == false
+    }
+
     static func poseKey(_ j: DocJoint) -> String { j.name ?? j.id }
 
     func jointValue(_ j: DocJoint) -> Double { jointPose[Self.poseKey(j)] ?? j.state }

@@ -65,9 +65,14 @@ enum AgentEdits {
                                 "name": ["type": "string", "description": "Short name for the undo step"]],
                                required: ["source"])],
         ["name": "adopt_document",
-         "description": "Show an MCP session's document in this window as one undo step. Sent by @vcad/mcp after each edit; agents don't call it. Refused when the window holds other work, or the user edited since the last push.",
+         "description": "Show an MCP session's document in this window as one undo step. Sent by @vcad/mcp after each edit; agents don't call it. A new session takes over a window showing only another agent's unedited push. Refused when the window holds the user's work, or the user edited since the last push.",
          "inputSchema": schema(["document": ["type": "object"], "link_id": ["type": "string"],
-                                "tool": ["type": "string"]], required: ["document", "link_id"])],
+                                "tool": ["type": "string"],
+                                "base_dir": ["type": "string", "description": "Folder the document's relative mesh paths resolve from."]],
+                               required: ["document", "link_id"])],
+        ["name": "attach_document",
+         "description": "Link an MCP session to the document open in this window and return it. Sent by @vcad/mcp's attach_app_document; agents don't call it.",
+         "inputSchema": schema(["link_id": ["type": "string"]], required: ["link_id"])],
         ["name": "link_status",
          "description": "The current revision of a linked session's document, the document itself when pull is set.",
          "inputSchema": schema(["link_id": ["type": "string"], "pull": ["type": "boolean"]], required: ["link_id"])],
@@ -90,6 +95,7 @@ enum AgentEdits {
         case "create_cad_loon": return try createLoon(a, m)
         case "adopt_document": return try adoptDocument(a, m)
         case "link_status": return try linkStatus(a, m)
+        case "attach_document": return try attachDocument(a, m)
         case "undo":
             guard let label = m.undoActionName else { throw Failure(message: "Nothing to undo.") }
             m.undo()
@@ -161,7 +167,9 @@ enum AgentEdits {
             throw Failure(message: "document and link_id are required")
         }
         let mine = m.agentLinkID == link
-        guard mine || m.isDisposableScratch else { return AgentTools.json(["adopted": false, "reason": "busy"]) }
+        guard mine || m.isDisposableScratch || canTakeOver(m) else {
+            return AgentTools.json(["adopted": false, "reason": "busy"])
+        }
         if mine, try editableEngine(m).stateHash != m.agentLinkRevision {
             return AgentTools.json(["adopted": false, "reason": "edited"])
         }
@@ -170,9 +178,59 @@ enum AgentEdits {
         try edit(m, name: "Agent: \(tool)") { try $0.loadIR(document) }
         if !oldBoard.isEmpty { m.electronics.revealNewCopper(from: oldBoard, to: m.electronics.board(m)) }
         let revision = try editableEngine(m).stateHash
+        if !mine {
+            // A new session's document: nothing of the last one's pose carries over.
+            m.jointPose = [:]; m.explode = 0; m.agentBaseFirst = nil; m.agentBaseDelta = nil
+            m.agentLinkOwned = true
+            m.agentLinkBaseDir = nil
+            m.agentPoseSurfacedLink = nil
+        }
+        if let dir = a["base_dir"] as? String, !dir.isEmpty { m.agentLinkBaseDir = dir }
         m.agentLinkID = link
         m.agentLinkRevision = revision
+        // A mechanical document is blank in Electronics. Only on arrival or when
+        // the board goes away, so a user who walks back there isn't pulled out.
+        if m.workspace == .electronics, m.electronics.board(m).isEmpty, !mine || !oldBoard.isEmpty {
+            GlassUI.shared.enter(.design, model: m)
+        }
         return AgentTools.json(["adopted": true, "revision": revision])
+    }
+
+    /// Whether a different session may replace this window's document: it got
+    /// here by an agent's push, is still in its unsaved Untitled window, and
+    /// nobody has changed it since. Anything else is the user's.
+    private static func canTakeOver(_ m: EditorModel) -> Bool {
+        guard m.agentLinkID != nil, m.agentLinkOwned, m.source.isSandbox, let engine = m.engine else { return false }
+        return engine.stateHash == m.agentLinkRevision
+    }
+
+    /// A pose arrived for a linked window that can't show one: go to Assembly,
+    /// once per link, so a stream of poses never fights the user.
+    static func surfacePose(_ m: EditorModel) {
+        guard let link = m.agentLinkID, m.agentPoseSurfacedLink != link else { return }
+        m.agentPoseSurfacedLink = link
+        if m.workspace != .design || GlassUI.shared.space == .fab { GlassUI.shared.enter(.assembly, model: m) }
+    }
+
+    /// Hand the open document to a new MCP session. Editable documents become
+    /// linked; the user's work stays theirs, so `agentLinkOwned` stays false and
+    /// no other session can take the window. A generated `.loon` is owned by its
+    /// file: the session gets a copy, and only poses mirror.
+    private static func attachDocument(_ a: [String: Any], _ m: EditorModel) throws -> [String: Any] {
+        guard let link = a["link_id"] as? String else { throw Failure(message: "link_id is required") }
+        guard let document = m.documentJSON else { return AgentTools.json(["attached": false, "reason": "empty"]) }
+        var out: [String: Any] = ["attached": true, "document": document, "name": m.documentName]
+        if let path = m.documentURL?.path { out["path"] = path }
+        if let dir = m.documentDirectory { out["base_dir"] = dir }
+        guard let engine = m.engine, !m.isLoonDocument else {
+            out["view_only"] = true
+            return AgentTools.json(out)
+        }
+        m.agentLinkID = link
+        m.agentLinkRevision = engine.stateHash
+        m.agentLinkOwned = false
+        m.agentPoseSurfacedLink = nil
+        return AgentTools.json(out)
     }
 
     private static func linkStatus(_ a: [String: Any], _ m: EditorModel) throws -> [String: Any] {
@@ -183,6 +241,7 @@ enum AgentEdits {
         if a["pull"] as? Bool == true, let json = m.documentJSON {
             out["document"] = json
             m.agentLinkRevision = try editableEngine(m).stateHash
+            m.agentLinkOwned = false   // the user's edits are in it now
         }
         return AgentTools.json(out)
     }

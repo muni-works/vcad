@@ -280,6 +280,15 @@ final class EditorModel {
     /// The external MCP session this window shows, and the engine state it last pushed.
     var agentLinkID: String?
     var agentLinkRevision: String?
+    /// The linked document exists only because an agent pushed it into an empty
+    /// window: another agent session may take the window over while it is
+    /// unedited. False for a document the user opened and an agent attached to.
+    var agentLinkOwned = false
+    /// Folder a linked document's relative mesh paths resolve from.
+    var agentLinkBaseDir: String?
+    /// The link a pose has already moved to a posing workspace, so a pose
+    /// stream switches at most once and the user can walk away.
+    var agentPoseSurfacedLink: String?
     /// A simulated floating base: its first pose this episode, and its motion since.
     var agentBaseFirst: simd_float4x4?
     var agentBaseDelta: simd_float4x4?
@@ -355,7 +364,13 @@ final class EditorModel {
     var source: GeometrySource = .sandbox {
         didSet {
             geometryDirty = true
-            if source.id != oldValue.id { jointPose = [:]; explode = 0 }
+            if source.id != oldValue.id {
+                jointPose = [:]; explode = 0
+                // A different document is not the one any session was linked to.
+                agentLinkID = nil; agentLinkRevision = nil; agentLinkOwned = false
+                agentLinkBaseDir = nil; agentPoseSurfacedLink = nil
+                agentBaseFirst = nil; agentBaseDelta = nil
+            }
             watchDocumentFile()                   // hot reload on regenerate
             loadDocumentTree()                    // parse the DAG for a .vcad
             if !availableTabs.contains(toolTab) { toolTab = .create }
@@ -572,7 +587,7 @@ final class EditorModel {
     /// Directory of the currently open document, when it came from a file —
     /// the base for resolving its relative mesh references.
     var documentDirectory: String? {
-        guard case .document(let path, _) = source else { return nil }
+        guard case .document(let path, _) = source else { return agentLinkBaseDir }
         return (path as NSString).deletingLastPathComponent
     }
 
@@ -3613,6 +3628,18 @@ final class EditorModel {
         return sceneFromHandle(scene, start: start)
     }
 
+    /// Visible roots of an assembly document that no part definition points
+    /// at, with their index among the evaluated parts (one per visible root).
+    private func freeRoots() -> [(part: Int, material: String)] {
+        guard let json = documentJSON, let roots = json["roots"] as? [[String: Any]],
+              let defs = json["partDefs"] as? [String: [String: Any]] else { return [] }
+        let defRoots = Set(defs.values.compactMap { ($0["root"] as? NSNumber)?.intValue })
+        return roots.filter { ($0["visible"] as? Bool) ?? true }.enumerated().compactMap { i, r in
+            guard let root = (r["root"] as? NSNumber)?.intValue, !defRoots.contains(root) else { return nil }
+            return (i, r["material"] as? String ?? "default")
+        }
+    }
+
     /// Gather an ASSEMBLY scene: one entity per instance, mesh in part-def
     /// local coordinates + a world transform, rendered instead of the root
     /// parts (mirrors the web viewport). Takes ownership of `scene` and keeps
@@ -3663,6 +3690,22 @@ final class EditorModel {
                 material: resolvedMaterial(named: matKey, fallbackIndex: i),
                 transform: world))
         }
+        // A root no part definition uses (a frozen topology_optimize mesh added
+        // to an assembly) has no instance to draw it. Index past the instances
+        // so FK, playback and picking never see it.
+        let partTotal = vcad_scene_part_count(scene)
+        for (k, root) in freeRoots().enumerated() where root.part < partTotal {
+            let km = KernelMesh.fromView(vcad_scene_part_mesh(scene, root.part))
+            guard !km.isEmpty else { continue }
+            tris += km.triangleCount
+            lo = simd_min(lo, km.minBound); hi = simd_max(hi, km.maxBound)
+            instances.append(RenderInstance(
+                index: count + k,
+                id: "root\(root.part)",
+                mesh: km.resource(name: "free\(k)"),
+                material: resolvedMaterial(named: root.material, fallbackIndex: count + k),
+                transform: matrix_identity_float4x4))
+        }
         guard !instances.isEmpty else {
             clearAssembly()
             return .empty
@@ -3693,7 +3736,8 @@ final class EditorModel {
         // Land on the authored pose at t=0 when a timeline exists.
         if timeline != nil { applyPlaybackPose() }
         // A reload keeps the pose you were looking at.
-        if timeline == nil, !jointPose.isEmpty || explode > 0 { applyStudioPose() }
+        // So does a pose an agent sent while this scene was still solving.
+        if timeline == nil, !jointPose.isEmpty || explode > 0 || agentBaseDelta != nil { applyStudioPose() }
         return RenderScene(meshes: [], center: center, size: size,
                            triangleCount: tris, partCount: instances.count,
                            instances: instances)

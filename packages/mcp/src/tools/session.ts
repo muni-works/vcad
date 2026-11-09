@@ -42,6 +42,7 @@ import {
 import { sourceStatus } from "./source-provenance.js";
 import { isRemoteDeployment } from "./remote.js";
 import { assetNote, resolveLoonAssets } from "./loon-assets.js";
+import { noteDocumentFolder } from "../app-link.js";
 
 // The browser-safe core of the session layer (document cache, ids, undo
 // snapshots, resolveDocInput) lives in session-core.ts so pure-compute tool
@@ -701,6 +702,7 @@ async function loadDocumentFromPath(
       return fail(`${abs} is not valid .vcad JSON: ${(e as Error).message}`);
     }
     const id = registerSession(doc);
+    noteDocumentFolder(id, dirname(abs));
     return {
       content: [
         {
@@ -736,6 +738,7 @@ async function loadDocumentFromPath(
   const imports = assetNote(resolveLoonAssets(doc, { base_dir: baseDir }, engine));
 
   const id = registerSession(doc);
+  noteDocumentFolder(id, baseDir);
   return {
     content: [
       {
