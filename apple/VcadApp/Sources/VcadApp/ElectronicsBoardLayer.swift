@@ -81,7 +81,7 @@ struct Airwire { let a: CGPoint, b: CGPoint, net: String }
         let traces = ecRows(board["traces"])
         for layer in order where !hidden.contains(layer) {
             let alpha = layer == ec.activeLayer ? 1.0 : 0.72
-            for (i, t) in traces.enumerated() where t["layer"] as? String == layer {
+            for (i, t) in traces.enumerated() where t["layer"] as? String == layer && !ec.revealHiddenTraces.contains(i) {
                 let net = t["net"] as? String
                 var path = Path(); path.move(to: screen(ecPoint(t["start"]))); path.addLine(to: screen(ecPoint(t["end"])))
                 let color = i == ec.selectedTrace ? Color.white : tint(BoardLayers.color(layer).opacity(alpha), net)
@@ -90,7 +90,7 @@ struct Airwire { let a: CGPoint, b: CGPoint, net: String }
         }
         for f in ecRows(board["footprints"]) { drawArt(f) }
         for f in ecRows(board["footprints"]) { drawPads(f) }
-        for (i, v) in ecRows(board["vias"]).enumerated() {
+        for (i, v) in ecRows(board["vias"]).enumerated() where !ec.revealHiddenVias.contains(i) {
             let net = v["net"] as? String, p = screen(ecPoint(v["position"]))
             let r = max(2, ecNumber(v["diameter"], 0.6) * scale / 2), d = max(0.8, ecNumber(v["drill"], 0.3) * scale / 2)
             context.fill(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: 2 * r, height: 2 * r)),

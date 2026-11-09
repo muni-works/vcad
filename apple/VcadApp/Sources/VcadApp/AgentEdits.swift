@@ -166,7 +166,9 @@ enum AgentEdits {
             return AgentTools.json(["adopted": false, "reason": "edited"])
         }
         let tool = (a["tool"] as? String) ?? "edit"
+        let oldBoard = m.electronics.board(m)
         try edit(m, name: "Agent: \(tool)") { try $0.loadIR(document) }
+        if !oldBoard.isEmpty { m.electronics.revealNewCopper(from: oldBoard, to: m.electronics.board(m)) }
         let revision = try editableEngine(m).stateHash
         m.agentLinkID = link
         m.agentLinkRevision = revision

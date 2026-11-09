@@ -40,6 +40,10 @@ final class ElectronicsWorkspace {
     var selectedZone: Int?
     /// Poured copper per zone, as the fab will see it.
     var zoneFills: [ECObject] = []
+    /// New copper still waiting to appear after an agent's edit.
+    var revealHiddenTraces: Set<Int> = []
+    var revealHiddenVias: Set<Int> = []
+    @ObservationIgnored private var revealTask: Task<Void, Never>?
     var teardrops: [ECObject] = []
     /// Parts selected together (shift-click), for align and distribute.
     var multiRefs = Set<String>()
@@ -870,5 +874,37 @@ extension ElectronicsWorkspace {
             doc["nodes"] = nodes
         }
         selectedRef = nil; multiRefs = []
+    }
+}
+
+
+extension ElectronicsWorkspace {
+    /// Draw copper added by an edit one piece at a time, so a route that
+    /// arrived all at once reads as routing. Display only: the document
+    /// already holds the finished board.
+    func revealNewCopper(from old: ECObject, to new: ECObject) {
+        revealTask?.cancel()
+        revealHiddenTraces = []; revealHiddenVias = []
+        guard !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        func added(_ key: String, _ id: (ECObject) -> String) -> [Int] {
+            let before = Set(ecRows(old[key]).map(id))
+            return ecRows(new[key]).enumerated().filter { !before.contains(id($0.element)) }.map(\.offset)
+        }
+        func point(_ v: Any?) -> String { let p = ecPoint(v); return "\(p.x),\(p.y)" }
+        let traces = added("traces") { "\(point($0["start"]))|\(point($0["end"]))|\($0["layer"] ?? "")|\($0["net"] ?? "")" }
+        let vias = added("vias") { "\(point($0["position"]))|\($0["net"] ?? "")" }
+        let total = traces.count + vias.count
+        guard total >= 2 else { return }
+        revealHiddenTraces = Set(traces); revealHiddenVias = Set(vias)
+        let frames = max(1, Int(min(4.0, max(0.5, Double(total) * 0.02)) * 30))
+        revealTask = Task { [weak self] in
+            for frame in 1...frames {
+                try? await Task.sleep(for: .milliseconds(33))
+                guard let self, !Task.isCancelled else { return }
+                let t = traces.count * frame / frames, v = vias.count * frame / frames
+                self.revealHiddenTraces = Set(traces.dropFirst(t))
+                self.revealHiddenVias = Set(vias.dropFirst(v))
+            }
+        }
     }
 }
