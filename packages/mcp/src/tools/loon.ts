@@ -9,11 +9,103 @@ import { toVCode } from "@vcad/ir";
 import type { Document } from "@vcad/ir";
 import { appendIntegrity, computeIntegrity } from "./integrity.js";
 import { hydrateMacros, macroPrelude, type InlineLoon } from "./loon-macros.js";
+import { getPcbNodeIds } from "@vcad/core";
 import { documents, getSession, recordTriangles } from "./session-core.js";
 import { assetNote, resolveLoonAssets } from "./loon-assets.js";
 import { isRemoteDeployment } from "./remote.js";
 import { behavior, type ToolDef } from "./tool-def.js";
 import type { ToolResult } from "./tool-result.js";
+
+type EcadDoc = Document & { pcb?: unknown; __pendingDesignRules?: unknown };
+
+/**
+ * Carry a session's electronics onto a freshly evaluated loon document, in
+ * place: loon authors mechanical geometry, so re-authoring must not take the
+ * board and schematic with it. Board nodes move to fresh ids (loon numbers its
+ * nodes from zero, so they would collide) along with their bindings and any
+ * constraint anchored purely on the board.
+ *
+ * Throws, before anything is written, when the loon program brings its own
+ * board or schematic: two boards can't be merged and neither should silently
+ * win. Returns a note for the caller, or null when there was nothing to carry.
+ */
+export function carryElectronics(session: Document, loonDoc: Document): string | null {
+  const from = session as EcadDoc;
+  const to = loonDoc as EcadDoc;
+  const boardIds = getPcbNodeIds(session);
+  if (!boardIds.length && !from.pcb && !from.schematic && !from.__pendingDesignRules) return null;
+  if (
+    ((boardIds.length || from.pcb) && (getPcbNodeIds(loonDoc).length || to.pcb)) ||
+    (from.schematic && to.schematic)
+  ) {
+    throw new Error(
+      "create_cad_loon: this session already holds a board or schematic and the loon program " +
+        "defines its own, so they can't be merged — nothing was changed. Remove them from the " +
+        "loon source, or omit document_id to author into a new session.",
+    );
+  }
+
+  let next = Math.max(-1, ...Object.keys(to.nodes).map(Number)) + 1;
+  const remap = new Map<number, number>();
+  for (const oldId of boardIds) {
+    const id = next++;
+    remap.set(oldId, id);
+    to.nodes[String(id)] = { ...session.nodes[String(oldId)]!, id };
+    const stableId = session.partIds?.[String(oldId)];
+    if (stableId) to.partIds = { ...to.partIds, [String(id)]: stableId };
+    for (const entry of session.roots) {
+      if (entry.root !== oldId) continue;
+      to.roots.push({ ...entry, root: id });
+      if (entry.material && session.materials[entry.material]) {
+        to.materials[entry.material] ??= session.materials[entry.material]!;
+      }
+    }
+    for (const [key, expr] of Object.entries(session.bindings ?? {})) {
+      if (!key.startsWith(`${oldId}:`)) continue;
+      to.bindings = { ...to.bindings, [`${id}:${key.slice(`${oldId}:`.length)}`]: expr };
+      for (const name of (typeof expr === "string" ? expr.match(/[A-Za-z_]\w*/g) : null) ?? []) {
+        const param = session.parameters?.[name];
+        if (param && !to.parameters?.[name]) to.parameters = { ...to.parameters, [name]: param };
+      }
+    }
+  }
+
+  // A constraint survives only if everything it anchors to survived.
+  let droppedConstraints = 0;
+  for (const c of session.constraints ?? []) {
+    const clone = JSON.parse(JSON.stringify(c)) as unknown;
+    let onBoardOnly = true;
+    const visit = (v: unknown): void => {
+      if (Array.isArray(v)) return v.forEach(visit);
+      if (!v || typeof v !== "object") return;
+      const o = v as Record<string, unknown>;
+      if (typeof o.kind === "string" && "node" in o) {
+        const moved = o.kind.startsWith("pcb") ? remap.get(o.node as number) : undefined;
+        if (moved === undefined) onBoardOnly = false;
+        else o.node = moved;
+      }
+      Object.values(o).forEach(visit);
+    };
+    visit(clone);
+    if (onBoardOnly && remap.size) (to.constraints ??= []).push(clone as (typeof c));
+    else droppedConstraints++;
+  }
+
+  if (from.pcb) to.pcb = from.pcb;
+  if (from.schematic) to.schematic = from.schematic;
+  if (from.__pendingDesignRules) to.__pendingDesignRules = from.__pendingDesignRules;
+
+  const kept = [
+    boardIds.length || from.pcb ? "PCB board" : null,
+    from.schematic ? "schematic" : null,
+  ].filter(Boolean);
+  return (
+    `Mechanical geometry replaced; kept the session's ${kept.join(" and ") || "pending design rules"}.` +
+    (droppedConstraints
+      ? ` Dropped ${droppedConstraints} constraint(s) anchored on the replaced geometry.`
+      : "")
+  );
+}
 
 /** JSON Schema for create_cad_loon input. */
 export const createCadLoonSchema = {
@@ -421,7 +513,13 @@ export const toolDefs: ToolDef[] = [
       // via getSession so an unknown id fails loudly, not silently forks.
       const targetId =
         typeof args.document_id === "string" ? args.document_id : null;
-      if (targetId) getSession(targetId); // unknown id fails loudly
+      if (targetId) {
+        const session = getSession(targetId); // unknown id fails loudly
+        // Outside the best-effort block below: a conflict must fail the call
+        // with the session untouched.
+        const kept = doc ? carryElectronics(session, doc) : null;
+        if (kept) result.content.push({ type: "text", text: kept });
+      }
       // Attach the integrity certificate to the largest mutation of all:
       // authoring a whole document. The loon evaluation is cheap relative to
       // the mesh evaluation computeIntegrity runs anyway.

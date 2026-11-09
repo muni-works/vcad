@@ -40,6 +40,7 @@ import {
   runDocumentEnterHooks,
 } from "./session-core.js";
 import { sourceStatus } from "./source-provenance.js";
+import { isRemoteDeployment } from "./remote.js";
 import { assetNote, resolveLoonAssets } from "./loon-assets.js";
 
 // The browser-safe core of the session layer (document cache, ids, undo
@@ -676,7 +677,7 @@ async function loadDocumentFromPath(
   // Hosted instances have an ephemeral, unshared filesystem: a path load would
   // succeed once and then resolve to nothing after an instance flip. Refusing
   // is the honest answer.
-  if (store.scope !== "memory") {
+  if (isRemoteDeployment() || store.scope === "user") {
     return fail(
       "`path` loads are local/stdio only — this server's filesystem is " +
         "ephemeral. Pass the source inline to create_cad_loon, or save with " +

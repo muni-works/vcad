@@ -116,10 +116,11 @@ import { validatePcb, pcbValidationError } from "./pcb-validate.js";
 import { COPPER_STACK, PCB_LAYERS } from "./pcb-layers.js";
 import { sizePdnExact, ecadDiffEngineAvailable } from "../wasm/ecad-diff.js";
 import { bundleBytes, storeArtifact } from "./artifact-store.js";
-import { maxInlineArtifactBytes, maxInlineExportBytes } from "./remote.js";
+import { isRemoteDeployment, maxInlineArtifactBytes, maxInlineExportBytes } from "./remote.js";
 import type { FabFile } from "@vcad/engine";
 import { behavior, type ToolContext, type ToolDef } from "./tool-def.js";
 import { findPartCandidate, partIdForNode } from "./part-ids.js";
+import { documentSolids, type DocumentSolid } from "./document-solids.js";
 import type { ToolResult } from "./tool-result.js";
 
 /** Get PCB data from a document — checks PcbBoard nodes first, falls back to legacy doc.pcb */
@@ -789,8 +790,8 @@ export const createSchematicSchema = {
             type: "string" as const,
             description: 'Footprint ID (e.g. "Resistor_SMD:R_0805", "SOIC-8", "DIP-8")',
           },
-          x: { type: "number" as const, description: "X position on sheet" },
-          y: { type: "number" as const, description: "Y position on sheet" },
+          x: { type: "number" as const, description: "X position on sheet (optional; default: auto grid)" },
+          y: { type: "number" as const, description: "Y position on sheet (optional; default: auto grid)" },
           rotation: { type: "number" as const, description: "Rotation in degrees (default 0)" },
           pins: {
             type: "array" as const,
@@ -843,7 +844,7 @@ export const createSchematicSchema = {
             },
           },
         },
-        required: ["ref", "footprint", "x", "y"],
+        required: ["ref", "footprint"],
       },
     },
     wires: {
@@ -1263,9 +1264,9 @@ export const exportGerberSchema = {
       type: "string" as const,
       description:
         "Directory to write the fabrication files to (created if missing). " +
-        "Resolved on the MCP server's filesystem — on hosted/sandboxed servers " +
-        "the write may fail. When omitted (or the write fails), a small bundle " +
-        "is returned inline, but a bundle over the inline byte cap (~168 KB " +
+        "Resolved on the MCP server's filesystem; absolute paths work locally. " +
+        "A hosted server, or a write that fails, is an error and nothing is " +
+        "delivered. When omitted, a small bundle is returned inline, but a bundle over the inline byte cap (~168 KB " +
         "Gerber sets exceed it) is written to the artifact store and the result " +
         "carries { artifact_url, manifest, artifact_id } instead of the files — " +
         "pass that artifact_id to quote_manufacturing / place_order so the fab " +
@@ -2176,8 +2177,10 @@ async function buildSheetBody(args: Record<string, unknown>, where = ""): Promis
       value: (c.value as string) || (c.part as string) || def?.name || "",
       footprintId: c.footprint as string,
       position: {
-        x: coord(c.x, `components[${i}].x`),
-        y: coord(c.y, `components[${i}].y`),
+        // Position is cosmetic on the sheet: unplaced parts land on a 100-mil-pitch
+        // grid (8 per row) rather than stacking at the origin.
+        x: c.x === undefined || c.x === null ? 25.4 * (i % 8) : coord(c.x, `components[${i}].x`),
+        y: c.y === undefined || c.y === null ? 25.4 * Math.floor(i / 8) : coord(c.y, `components[${i}].y`),
       },
       rotation: coordOpt(c.rotation, `components[${i}].rotation`),
       pins,
@@ -5756,14 +5759,23 @@ export async function exportGerber(args: Record<string, unknown>) {
   }
 
   if (outputDir) {
+    // A hosted server's disk is not the caller's: nothing written there could
+    // be collected, so refuse rather than report a write the caller can't use.
+    if (isRemoteDeployment()) {
+      return ecadError(
+        "export_gerber: output_dir is unavailable on a hosted server — nothing was written. " +
+          "Omit output_dir to get the files inline or as an artifact.",
+      );
+    }
     // Node-only path: write the files to disk. Imported dynamically so this
     // module stays loadable in browser bundles (e.g. the HTTP MCP frontend).
     try {
       const fs = await import("node:fs/promises");
+      const { resolve: resolvePath } = await import("node:path");
       const { resolveWithinRoot } = await import("./safe-path.js");
-      // Validate both the directory and each filename against cwd so a
-      // crafted output_dir or file name can't escape the workspace.
-      const dir = resolveWithinRoot(outputDir);
+      // A local server writes where its user says, absolute paths included;
+      // file names still can't climb out of that directory.
+      const dir = resolvePath(outputDir);
       await fs.mkdir(dir, { recursive: true });
       for (const f of files) {
         await fs.writeFile(resolveWithinRoot(f.name, dir), f.content, "utf8");
@@ -5775,17 +5787,19 @@ export async function exportGerber(args: Record<string, unknown>) {
             text: JSON.stringify({
               success: true,
               message: `Wrote ${files.length} fabrication files`,
-              output_dir: outputDir,
+              output_dir: dir,
               files: files.map((f) => ({ name: f.name, bytes: f.content.length })),
             }),
           },
         ],
       };
     } catch (e) {
-      // Sandboxed/hosted servers can't write arbitrary paths — fall through to
-      // the inline/offload decision so the caller still gets the files.
+      // The caller asked for files on disk: success must mean they are there.
       const reason = e instanceof Error ? e.message : String(e);
-      return deliverFabFiles(files, `could not write to '${outputDir}': ${reason}`);
+      return ecadError(
+        `export_gerber: could not write to '${outputDir}': ${reason}. ` +
+          "Pick a writable directory, or omit output_dir to get the files inline or as an artifact.",
+      );
     }
   }
 
@@ -5800,12 +5814,10 @@ export async function exportGerber(args: Record<string, unknown>) {
  * over the default cap, so it offloads by default — the whole point: the fab
  * files stop transiting model context and an order can reference them by id.
  */
-function deliverFabFiles(files: FabFile[], diskFailReason?: string) {
+function deliverFabFiles(files: FabFile[]) {
   const total = bundleBytes(files);
   const cap = maxInlineArtifactBytes();
-  const base = diskFailReason
-    ? `Generated ${files.length} fabrication files (${diskFailReason})`
-    : `Generated ${files.length} fabrication files`;
+  const base = `Generated ${files.length} fabrication files`;
 
   if (total <= cap) {
     return {
@@ -12894,26 +12906,14 @@ export function boardFromSolid(args: Record<string, unknown>, engine: Engine) {
   const doc = getSession(documentId);
   const thickness = (args.thickness as number) || 1.6;
 
-  const scene = engine.evaluate(doc);
-  const visibleRoots = doc.roots.filter((e) => e.visible !== false);
-
-  const candidates: Array<{ rootId: number; id: string; name?: string; mesh: TriangleMesh }> = [];
-  for (let i = 0; i < scene.parts.length && i < visibleRoots.length; i++) {
-    const rootId = visibleRoots[i].root;
-    const node = doc.nodes[String(rootId)];
-    const opType = (node?.op as { type?: string } | undefined)?.type;
-    if (opType === "PcbBoard") continue;
-    const mesh = scene.parts[i].mesh;
-    if (!mesh || mesh.positions.length === 0) continue;
-    candidates.push({ rootId, id: partIdForNode(doc, rootId), name: node?.name ?? undefined, mesh });
-  }
+  const candidates = documentSolids(doc, engine);
 
   if (candidates.length === 0) {
     throw new Error("Document has no solid parts to trace (PcbBoard parts are excluded)");
   }
 
   const partId = args.part_id ? String(args.part_id) : undefined;
-  let part: { rootId: number; id: string; name?: string; mesh: TriangleMesh };
+  let part: DocumentSolid;
   if (partId) {
     const found = findPartCandidate(doc, candidates, partId);
     if (!found) {
@@ -15153,7 +15153,7 @@ export const toolDefs: ToolDef[] = [
     description:
       "Re-run a prior receipt (from build_receipt) against the session's current document and return the verdict \u2014 Holds (unchanged, clean), Stale (changed but claims still hold), or Violated. Covers the PCB Receipt (board hash + DRC diff) and mech.clearance claims (re-measured against current geometry); worst verdict wins. Powers the ledger's Re-run button.",
     inputSchema: verifyReceiptSchema,
-    handler: (a) => verifyReceipt(a) as ToolResult | Promise<ToolResult>,
+    handler: (a, c) => verifyReceipt(a, c.engine) as ToolResult | Promise<ToolResult>,
     behavior: behavior({ widgetCallable: true }),
   },
   {

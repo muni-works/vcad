@@ -24,9 +24,10 @@ export type { ResolvedPart, PartIdMatch } from "@vcad/core";
 /**
  * Pick a measured/evaluated part candidate (`id` = stable part id or an
  * instance id) for a caller-supplied id: exact id first, then through the
- * stable-id layer (legacy digit ids), then by exact name.
+ * stable-id layer (legacy digit ids), then by exact name, then by alias (an
+ * assembly instance answers to its part def's id and name).
  */
-export function findPartCandidate<T extends { id: string; name?: string }>(
+export function findPartCandidate<T extends { id: string; name?: string; aliases?: string[] }>(
   doc: Document,
   candidates: T[],
   wanted: string,
@@ -36,7 +37,8 @@ export function findPartCandidate<T extends { id: string; name?: string }>(
   const stable = rootForPartId(doc, wanted)?.partId;
   return (
     (stable !== undefined ? candidates.find((c) => c.id === stable) : undefined) ??
-    candidates.find((c) => c.name === wanted)
+    candidates.find((c) => c.name === wanted) ??
+    candidates.find((c) => c.aliases?.includes(wanted))
   );
 }
 

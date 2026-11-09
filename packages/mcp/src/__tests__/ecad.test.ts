@@ -4757,24 +4757,20 @@ describe("ecad pipeline behaviors (session flow)", () => {
     expect(unique.size).toBe(8);
   });
 
-  it("export_gerber falls back to inline files when output_dir is unwritable", async () => {
+  it("export_gerber errors when output_dir is unwritable", async () => {
     const created = out(
       await createSchematic({ components: [resistor("R1", 0, ["A", "B"])] }),
     );
     const id = created.document_id;
     out(await placeComponents({ document_id: id, board_width: 30, board_height: 30 }));
 
-    const res = out(
-      await exportGerber({
-        document_id: id,
-        // /dev/null can't be a directory — mkdir fails on every platform.
-        output_dir: "/dev/null/nope",
-      }),
-    );
-    expect(res.success).toBe(true);
-    expect(res.message).toContain("returning contents inline");
-    expect(res.files.length).toBeGreaterThan(0);
-    expect(res.files[0].content).toBeTruthy();
+    const res = await exportGerber({
+      document_id: id,
+      // /dev/null can't be a directory — mkdir fails on every platform.
+      output_dir: "/dev/null/nope",
+    });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("could not write");
   });
 
   it("export_gerber offloads a large bundle to an artifact (URL + manifest), keeps a small one inline", async () => {
