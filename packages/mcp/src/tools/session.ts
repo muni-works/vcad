@@ -11,7 +11,7 @@
 import { createDocument } from "@vcad/ir";
 import type { Document } from "@vcad/ir";
 import type { Engine } from "@vcad/engine";
-import { writeFileSync, readFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -20,6 +20,7 @@ import { composeLoonModules } from "./loon.js";
 import { storeArtifact } from "./artifact-store.js";
 import { maxInlineArtifactBytes } from "./remote.js";
 import {
+  FileSessionStore,
   isSessionStoreDurable,
   sessionStoreInfo,
   type SessionStore,
@@ -266,6 +267,15 @@ export const getDocumentSchema = {
   required: ["document_id"],
 };
 
+/** Write a get_document snapshot where a local client can read it. */
+function writeLocalSnapshot(id: string, json: string): string {
+  const dir = resolve(stateRoot(), "get_document");
+  mkdirSync(dir, { recursive: true });
+  const path = resolveWithinRoot(`${id}.vcad`, dir);
+  writeFileSync(path, json);
+  return path;
+}
+
 export function getDocumentTool(args: Record<string, unknown>): {
   content: Array<{ type: "text"; text: string }>;
   structuredContent?: Record<string, unknown>;
@@ -281,21 +291,31 @@ export function getDocumentTool(args: Record<string, unknown>): {
   const cap = maxInlineArtifactBytes();
   if (Buffer.byteLength(inline, "utf8") > cap) {
     const handle = storeArtifact([{ name: `${id}.vcad`, content: inline }]);
+    // A relative artifact_url is only meaningful behind the server's HTTP
+    // route, which a stdio client doesn't have: hand it a file instead.
+    const localPath = /^https?:/.test(handle.artifact_url) ? undefined : writeLocalSnapshot(id, inline);
+    const location = localPath
+      ? { path: localPath }
+      : { artifact_url: handle.artifact_url };
     const overflow = {
       document_id: id,
       parts: doc.roots?.length ?? 0,
       nodes: Object.keys(doc.nodes ?? {}).length,
       bytes: handle.bytes,
       artifact_id: handle.artifact_id,
-      artifact_url: handle.artifact_url,
+      ...location,
       manifest: handle.manifest,
       expires_at: handle.expires_at,
       ...sourceStatus(doc),
-      note:
-        `Document IR is ${handle.bytes} bytes — over the ${cap}-byte inline ` +
-        "limit, so the full IR was written to the artifact store. Download " +
-        "it at artifact_url (sha256 in the manifest verifies the snapshot); " +
-        "the session stays live via document_id.",
+      note: localPath
+        ? `Document IR is ${handle.bytes} bytes — over the ${cap}-byte inline ` +
+          "limit, so the full IR was written to `path` on this machine " +
+          "(sha256 in the manifest verifies the snapshot); the session stays " +
+          "live via document_id."
+        : `Document IR is ${handle.bytes} bytes — over the ${cap}-byte inline ` +
+          "limit, so the full IR was written to the artifact store. Download " +
+          "it at artifact_url (sha256 in the manifest verifies the snapshot); " +
+          "the session stays live via document_id.",
     };
     return {
       content: [{ type: "text", text: JSON.stringify(overflow) }],
@@ -380,6 +400,13 @@ function stateRoot(): string {
   return process.env.VCAD_MCP_STATE_DIR ?? process.cwd();
 }
 
+/** A local server saves `<name>.vcad` files. FileSessionStore is local too: it
+ *  makes sessions survive a restart, but its capability scope is not a reason
+ *  to hand a local user an anonymous key instead of the file they asked for. */
+function savesToFiles(store: SessionStore): boolean {
+  return store.scope === "memory" || store instanceof FileSessionStore;
+}
+
 /** Normalize a human save name to the deterministic durable-key slug. Both
  *  save and load apply this, so "My Part" and "my-part" reopen the same row. */
 function savedNameSlug(name: string): string {
@@ -446,7 +473,7 @@ export async function saveDocument(
   // Local/stdio: file-backed, exactly as before. resolveWithinRoot sanitizes
   // `name` (rejects absolute/.. /NUL/escape) and confines the write to the
   // state root.
-  if (store.scope === "memory") {
+  if (savesToFiles(store)) {
     const path = resolveWithinRoot(`${name}.vcad`, stateRoot());
     writeFileSync(path, JSON.stringify(doc));
     // A document that knows its source saves BOTH forms, so the file and the
@@ -588,7 +615,7 @@ export async function loadDocument(
   }
 
   // Local/stdio: file-backed, exactly as before.
-  if (store.scope === "memory") {
+  if (savesToFiles(store)) {
     const root = stateRoot();
     const path = resolveWithinRoot(`${name}.vcad`, root);
     let raw: string;
@@ -789,7 +816,7 @@ export const toolDefs: ToolDef[] = [
     name: "get_document",
     pack: null,
     description:
-      "Return the full IR Document JSON for an open session. Use after a series of mutations to capture the result, or to feed into `export_cad` / `open_in_browser`. A document authored from loon carries that source under `source`, and the result reports `source_stale` when the session no longer matches it (the file changed, or incremental edits moved the session away from it). Very large documents come back as a compact artifact handle instead ({document_id, artifact_url, manifest with sha256, …}) — download the full IR at `artifact_url`.",
+      "Return the full IR Document JSON for an open session. Use after a series of mutations to capture the result, or to feed into `export_cad` / `open_in_browser`. A document authored from loon carries that source under `source`, and the result reports `source_stale` when the session no longer matches it (the file changed, or incremental edits moved the session away from it). Very large documents come back as a compact artifact handle instead ({document_id, artifact_url, manifest with sha256, …}) — download the full IR at `artifact_url`, or read it from `path` on a local server.",
     inputSchema: getDocumentSchema,
     handler: (a) => getDocumentTool(a),
     behavior: behavior({ geometry: true, widgetCallable: true, pureJson: true }),

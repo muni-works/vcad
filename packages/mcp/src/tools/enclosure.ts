@@ -33,6 +33,7 @@ import {
 import { getSession } from "./session.js";
 import { findPartCandidate } from "./part-ids.js";
 import { documentSolids } from "./document-solids.js";
+import { sealedCavityFromMesh } from "./ecad.js";
 import { behavior, type ToolDef } from "./tool-def.js";
 
 /** PCB data from a document — PcbBoard nodes first, legacy `doc.pcb` fallback. */
@@ -138,6 +139,8 @@ export interface EnclosureFitResult {
   cavity?: ReturnType<typeof extractEnclosureFeatures>["cavity"];
   standoffs_detected?: number;
   openings_detected?: number;
+  cavity_basis?: "sealed-void";
+  note?: string;
   error?: string;
 }
 
@@ -167,7 +170,12 @@ export async function computeEnclosureFitForBoard(
   }
 
   const features = extractEnclosureFeatures(chosen.mesh.positions, chosen.mesh.indices);
-  if (!features.cavity) {
+  // The kernel detector only knows open-top trays. A closed case has its
+  // cavity found the way board_from_solid finds it; posts and wall cutouts
+  // aren't extracted from a sealed void, and the result says so.
+  const sealed = features.cavity ? null : sealedCavityFromMesh(chosen.mesh);
+  const cavity = features.cavity ?? sealed;
+  if (!cavity) {
     return {
       error:
         "No interior cavity found in the enclosure solid — it reads as a solid block. " +
@@ -190,7 +198,7 @@ export async function computeEnclosureFitForBoard(
 
   const report = computeEnclosureFit({
     outline: pcb.outline,
-    cavity: features.cavity,
+    cavity,
     standoffs: features.standoffs,
     openings: features.openings,
     mountingHoles,
@@ -204,12 +212,21 @@ export async function computeEnclosureFitForBoard(
 
   const result: EnclosureFitResult = {
     report,
-    cavity: features.cavity,
+    cavity,
     standoffs_detected: features.standoffs.length,
     openings_detected: features.openings.length,
+    ...(sealed
+      ? {
+          cavity_basis: "sealed-void" as const,
+          note:
+            "Closed case: the cavity is the largest box inside the sealed void. Standoffs and " +
+            "wall openings are not detected in a sealed case, so checks that need them are not " +
+            "evidence of a fit — verify mounting and connector access separately.",
+        }
+      : {}),
   };
   if (opts.derive) {
-    result.derived = deriveBoardFromCavity(features.cavity, features.standoffs, {
+    result.derived = deriveBoardFromCavity(cavity, features.standoffs, {
       clearance: opts.clearance,
       thickness: pcb.outline.thickness,
       standoffHeight: opts.standoffHeight,
@@ -265,6 +282,7 @@ export async function checkEnclosureFit(args: Record<string, unknown>, engine: E
     cavity: res.cavity,
     standoffs_detected: res.standoffs_detected,
     openings_detected: res.openings_detected,
+    ...(res.cavity_basis ? { cavity_basis: res.cavity_basis, note: res.note } : {}),
     checks: res.report.checks,
     ...(res.derived ? { derived_board: res.derived } : {}),
   };

@@ -26,6 +26,53 @@ export interface DocumentSolid {
   mesh: TriangleMesh;
 }
 
+function isBoardRoot(doc: Document, root: Document["roots"][number]): boolean {
+  return (doc.nodes[String(root.root)]?.op as { type?: string } | undefined)?.type === "PcbBoard";
+}
+
+/**
+ * The document with its PcbBoard scene roots removed. A board's kernel solid
+ * carries every trace, via and pour (145k triangles and ~3 s on a routed
+ * four-layer board), so a caller that discards the board must not evaluate it.
+ */
+export function withoutBoardRoots(doc: Document): Document {
+  if (!doc.roots.some((r) => isBoardRoot(doc, r))) return doc;
+  return { ...doc, roots: doc.roots.filter((r) => !isBoardRoot(doc, r)) };
+}
+
+/**
+ * `engine.evaluate`, except PcbBoard roots go through their own minimal
+ * document. The engine caches scenes by whole-document content, so any edit
+ * anywhere re-tessellated the board; evaluated apart, the board's scene is
+ * keyed by the board alone and an edit elsewhere is a cache hit. Parts come
+ * back in visible-root order, exactly as `engine.evaluate` returns them.
+ */
+export function evaluateBoardsApart(doc: Document, engine: Engine): EvaluatedScene {
+  const visible = doc.roots.filter((r) => r.visible !== false);
+  const boardRoots = visible.filter((r) => isBoardRoot(doc, r));
+  if (boardRoots.length === 0) return engine.evaluate(doc);
+
+  const nodes: Document["nodes"] = {};
+  for (const r of boardRoots) nodes[String(r.root)] = doc.nodes[String(r.root)]!;
+  const boardDoc = {
+    version: doc.version,
+    nodes,
+    materials: doc.materials,
+    part_materials: doc.part_materials,
+    roots: boardRoots,
+  } as Document;
+  const boards = engine.evaluate(boardDoc);
+  const rest = engine.evaluate(withoutBoardRoots(doc));
+
+  let b = 0;
+  let o = 0;
+  const parts = visible.flatMap((r) => {
+    const part = isBoardRoot(doc, r) ? boards.parts[b++] : rest.parts[o++];
+    return part ? [part] : [];
+  });
+  return { ...rest, parts };
+}
+
 /** The assembly instances in an evaluated scene, posed in the world frame. */
 export function instanceSolids(doc: Document, scene: EvaluatedScene): DocumentSolid[] {
   const out: DocumentSolid[] = [];
@@ -51,8 +98,10 @@ export function instanceSolids(doc: Document, scene: EvaluatedScene): DocumentSo
 
 /** Every non-empty solid in the document: scene roots (PCBs excluded), then instances. */
 export function documentSolids(doc: Document, engine: Engine): DocumentSolid[] {
-  const scene = engine.evaluate(doc);
-  const visibleRoots = doc.roots.filter((e) => e.visible !== false);
+  // Boards are excluded below, so don't pay to tessellate them.
+  const solids = withoutBoardRoots(doc);
+  const scene = engine.evaluate(solids);
+  const visibleRoots = solids.roots.filter((e) => e.visible !== false);
   const out: DocumentSolid[] = [];
   for (let i = 0; i < scene.parts.length && i < visibleRoots.length; i++) {
     const rootId = visibleRoots[i].root;

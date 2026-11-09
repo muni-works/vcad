@@ -1255,6 +1255,16 @@ export const lengthMatchTracesSchema = {
   required: ["nets"],
 };
 
+/** Shared by validate_for_fab and export_gerber so their gates can't diverge. */
+const allowBlindViasProperty = {
+  type: "boolean" as const,
+  description:
+    "Confirm this board is going to a blind/buried-capable (HDI) fab process " +
+    "(default FALSE). Without it, a board with any non-through via is blocked " +
+    "by both validate_for_fab and export_gerber: standard fabs drill through " +
+    "vias only. With it, layer-pair drill files are written, one per via span.",
+};
+
 /** JSON Schema for export_gerber tool. */
 export const exportGerberSchema = {
   type: "object" as const,
@@ -1282,8 +1292,10 @@ export const exportGerberSchema = {
         "(fail-closed: a board that won't even parse never counts as clean). " +
         "Set false only to force a Gerber bundle from a board you know is dirty; " +
         "the resulting files would otherwise fabricate an invalid board. Use " +
-        "validate_for_fab first for the full readiness verdict.",
+        "validate_for_fab first for the full readiness verdict. It does not " +
+        "waive the blind/buried via gate — see allow_blind_vias.",
     },
+    allow_blind_vias: allowBlindViasProperty,
   },
   required: [],
 };
@@ -1293,6 +1305,7 @@ export const validateForFabSchema = {
   type: "object" as const,
   properties: {
     ...docInputProperties,
+    allow_blind_vias: allowBlindViasProperty,
   },
   required: [],
 };
@@ -5887,6 +5900,26 @@ export async function exportGerber(args: Record<string, unknown>) {
     }
   }
 
+  // Same gate as validate_for_fab: a board it calls blocked must not ship.
+  // Deliberately separate from require_clean_drc, which waives DRC only.
+  const unsupported = detectUnsupportedFeatures(pcb, args.allow_blind_vias === true);
+  if (unsupported.length > 0) {
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify({
+            success: false,
+            blocked: true,
+            reason: unsupported.map((u) => u.detail).join(" "),
+            unsupported_features: unsupported,
+            hint: [...new Set(unsupported.map((u) => u.fix))].join(" "),
+          }),
+        },
+      ],
+    };
+  }
+
   const files = await exportFabFiles(pcb);
   if (files === null) {
     return {
@@ -6265,20 +6298,23 @@ function isThroughVia(via: Via): boolean {
 /** Scan the board for features the Gerber/Excellon export can't faithfully
  *  produce. Heuristic and intentionally narrow — it flags the known-unsupported
  *  set, not "everything that could ever be wrong". Today: blind/buried vias,
- *  which our drill writer collapses to plain through-holes. */
-function detectUnsupportedFeatures(pcb: Pcb): UnsupportedFeature[] {
+ *  which need an HDI process the caller has to confirm. */
+function detectUnsupportedFeatures(pcb: Pcb, allowBlindVias = false): UnsupportedFeature[] {
   const out: UnsupportedFeature[] = [];
 
   const blindBuried = pcb.vias.filter((v) => !isThroughVia(v));
-  if (blindBuried.length > 0) {
+  if (blindBuried.length > 0 && !allowBlindVias) {
     out.push({
       feature: "blind/buried via",
       count: blindBuried.length,
       detail:
-        `${blindBuried.length} via(s) span inner layers (not FCu↔BCu). The Excellon ` +
-        "drill export drills every via straight through, so blind/buried vias would " +
-        "fabricate as through-holes — electrically wrong.",
-      fix: "Re-route these connections with through-vias (FCu↔BCu), or split the board so no via needs controlled depth.",
+        `${blindBuried.length} via(s) span inner layers (not FCu↔BCu), which needs a ` +
+        "blind/buried-capable (HDI) process. The export writes a separate layer-pair " +
+        "drill file per span, but a standard fab drills through vias only: it rejects " +
+        "those files, or drills the vias through and shorts every layer they cross.",
+      fix:
+        "Re-route these connections with through-vias (FCu↔BCu), or confirm an HDI " +
+        "process with allow_blind_vias:true on validate_for_fab and export_gerber.",
     });
   }
 
@@ -6513,7 +6549,9 @@ export async function validateForFab(args: Record<string, unknown>) {
   }
 
   // 4. Unsupported features — present in the IR but not faithfully fabricable.
-  const unsupported = detectUnsupportedFeatures(pcb);
+  const allowBlindVias = args.allow_blind_vias === true;
+  const unsupported = detectUnsupportedFeatures(pcb, allowBlindVias);
+  const hdiVias = allowBlindVias ? pcb.vias.filter((v) => !isThroughVia(v)).length : 0;
   for (const u of unsupported) {
     blockers.push(`Unsupported feature — ${u.detail}`);
     fixes.push(u.fix);
@@ -6535,6 +6573,13 @@ export async function validateForFab(args: Record<string, unknown>) {
           renderable: renderPayload,
           gerber_exportable: gerberPayload,
           unsupported_features: unsupported,
+          ...(hdiVias > 0
+            ? {
+                process_requirements: [
+                  `${hdiVias} blind/buried via(s): order on a blind/buried-capable (HDI) process, with the layer-pair drill files.`,
+                ],
+              }
+            : {}),
           blockers,
           unverifiable,
           suggested_fixes: [...new Set(fixes)],
@@ -13110,7 +13155,7 @@ function findCavity(
   toMm: (p: Vec2) => Vec2,
   eps: number,
   outerArea: number,
-): { vertices: Vec2[]; cutouts: Vec2[][]; area: number; z: number } | null {
+): { vertices: Vec2[]; cutouts: Vec2[][]; area: number; z: number; section: Uint8Array } | null {
   let minZ = Infinity;
   let maxZ = -Infinity;
   for (let i = 2; i < pos.length; i += 3) {
@@ -13155,7 +13200,177 @@ function findCavity(
   const cutouts = loops
     .filter((l) => l.area > 0 && pointInPolygon(l.points[0]!, vertices))
     .map((l) => l.points);
-  return { vertices, cutouts, area: -hole.area, z: best.z };
+  return { vertices, cutouts, area: -hole.area, z: best.z, section: best.section };
+}
+
+/** Largest axis-aligned rectangle of set cells (histogram method), in cells. */
+function largestRectangle(
+  mask: Uint8Array,
+  gw: number,
+  gh: number,
+): { i0: number; j0: number; i1: number; j1: number; area: number } | null {
+  const heights = new Int32Array(gw + 1);
+  let best: { i0: number; j0: number; i1: number; j1: number; area: number } | null = null;
+  for (let j = 0; j < gh; j++) {
+    for (let i = 0; i < gw; i++) heights[i] = mask[j * gw + i] ? heights[i]! + 1 : 0;
+    const stack: number[] = [];
+    for (let i = 0; i <= gw; i++) {
+      while (stack.length > 0 && heights[stack[stack.length - 1]!]! >= heights[i]!) {
+        const h = heights[stack.pop()!]!;
+        const left = stack.length > 0 ? stack[stack.length - 1]! + 1 : 0;
+        const area = h * (i - left);
+        if (area > 0 && (!best || area > best.area)) {
+          best = { i0: left, j0: j - h + 1, i1: i, j1: j + 1, area };
+        }
+      }
+      stack.push(i);
+    }
+  }
+  return best;
+}
+
+/** Heights where a vertical line at (px, py) crosses the mesh, ascending. */
+function verticalCrossings(
+  pos: ArrayLike<number>,
+  idx: ArrayLike<number>,
+  px: number,
+  py: number,
+): number[] {
+  const zs: number[] = [];
+  for (let t = 0; t < idx.length; t += 3) {
+    const [i0, i1, i2] = [idx[t]! * 3, idx[t + 1]! * 3, idx[t + 2]! * 3];
+    const [ax, ay, az] = [pos[i0]!, pos[i0 + 1]!, pos[i0 + 2]!];
+    const [bx, by, bz] = [pos[i1]!, pos[i1 + 1]!, pos[i1 + 2]!];
+    const [cx, cy, cz] = [pos[i2]!, pos[i2 + 1]!, pos[i2 + 2]!];
+    const det = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+    if (Math.abs(det) < 1e-12) continue;
+    const l0 = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / det;
+    const l1 = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / det;
+    const l2 = 1 - l0 - l1;
+    if (
+      (l0 > 0 || (l0 === 0 && l1 > 0)) &&
+      (l1 > 0 || (l1 === 0 && l2 > 0)) &&
+      (l2 > 0 || (l2 === 0 && l0 > 0))
+    ) {
+      zs.push(l0 * az + l1 * bz + l2 * cz);
+    }
+  }
+  return zs.sort((a, b) => a - b);
+}
+
+/**
+ * The sealed interior of a closed case, as an axis-aligned cavity box — what
+ * `check_enclosure_fit` needs when the kernel's open-top detector finds
+ * nothing. Same void detection as `board_from_solid`. The box is the largest
+ * rectangle inside the void, never its bounding box, so a non-rectangular
+ * cavity can't claim room it doesn't have; posts are ignored, as they are for
+ * an open tray. The ceiling is the lowest one sampled. Null for a solid part.
+ */
+export function sealedCavityFromMesh(
+  mesh: TriangleMesh,
+): { minX: number; maxX: number; minY: number; maxY: number; floorZ: number; ceilZ: number; hasLid: true } | null {
+  const pos = mesh.positions;
+  const idx = mesh.indices;
+  const g = projectionGrid(pos, idx);
+  if (!g) return null;
+  const { ox, oy, cell, gw, gh, grid } = g;
+  let filled = 0;
+  for (let c = 0; c < grid.length; c++) filled += grid[c]!;
+  const toMm = (p: Vec2) => ({ x: round3(ox + p.x * cell), y: round3(oy + p.y * cell) });
+  const cavity = findCavity(pos, idx, g, toMm, cell * 1.5, filled * cell * cell);
+  if (!cavity) return null;
+
+  const mask = new Uint8Array(gw * gh);
+  for (let j = 0; j < gh; j++) {
+    for (let i = 0; i < gw; i++) {
+      const p = { x: ox + (i + 0.5) * cell, y: oy + (j + 0.5) * cell };
+      if (pointInPolygon(p, cavity.vertices)) mask[j * gw + i] = 1;
+    }
+  }
+  const rect = largestRectangle(mask, gw, gh);
+  if (!rect) return null;
+
+  // Floor and ceiling from columns through the void. Most columns land on the
+  // floor proper, so a post top can't pass for it; the ceiling stays the
+  // tightest one found.
+  const floors = new Map<number, number>();
+  let ceilZ = Infinity;
+  const SAMPLES = 7;
+  for (let a = 0; a < SAMPLES; a++) {
+    for (let b = 0; b < SAMPLES; b++) {
+      const i = Math.min(gw - 1, rect.i0 + Math.floor(((a + 0.5) * (rect.i1 - rect.i0)) / SAMPLES));
+      const j = Math.min(gh - 1, rect.j0 + Math.floor(((b + 0.5) * (rect.j1 - rect.j0)) / SAMPLES));
+      if (cavity.section[j * gw + i]) continue; // a post at this height
+      const zs = verticalCrossings(pos, idx, ox + (i + 0.5) * cell, oy + (j + 0.5) * cell);
+      const above = zs.findIndex((z) => z > cavity.z);
+      if (above <= 0) return null; // no floor or no lid over the void: not sealed
+      const floor = round3(zs[above - 1]!);
+      floors.set(floor, (floors.get(floor) ?? 0) + 1);
+      ceilZ = Math.min(ceilZ, zs[above]!);
+    }
+  }
+  if (floors.size === 0 || !Number.isFinite(ceilZ)) return null;
+  const floorZ = [...floors.entries()].sort((p, q) => q[1] - p[1] || q[0] - p[0])[0]![0];
+  return {
+    minX: round3(ox + rect.i0 * cell),
+    maxX: round3(ox + rect.i1 * cell),
+    minY: round3(oy + rect.j0 * cell),
+    maxY: round3(oy + rect.j1 * cell),
+    floorZ,
+    ceilZ: round3(ceilZ),
+    hasLid: true,
+  };
+}
+
+/** Occupancy grid of a mesh's XY projection, one padding cell on every side. */
+function projectionGrid(pos: ArrayLike<number>, idx: ArrayLike<number>, resolution?: number) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < pos.length; i += 3) {
+    if (pos[i]! < minX) minX = pos[i]!;
+    if (pos[i]! > maxX) maxX = pos[i]!;
+    if (pos[i + 1]! < minY) minY = pos[i + 1]!;
+    if (pos[i + 1]! > maxY) maxY = pos[i + 1]!;
+  }
+  const extent = Math.max(maxX - minX, maxY - minY);
+  if (!(extent > 0)) return null;
+
+  // Floor the cell size so the grid can never exceed ~4M cells, whatever
+  // `resolution` the caller asks for on however large a part.
+  const cell = Math.min(Math.max(resolution || extent / 400, 0.02, extent / 2000), extent / 8);
+  const ox = minX - cell;
+  const oy = minY - cell;
+  const gw = Math.ceil((maxX - minX) / cell) + 2;
+  const gh = Math.ceil((maxY - minY) / cell) + 2;
+  const grid = new Uint8Array(gw * gh);
+
+  const triCount = idx.length / 3;
+  for (let t = 0; t < triCount; t++) {
+    const i0 = idx[t * 3]! * 3;
+    const i1 = idx[t * 3 + 1]! * 3;
+    const i2 = idx[t * 3 + 2]! * 3;
+    const ax = pos[i0]!;
+    const ay = pos[i0 + 1]!;
+    const bx = pos[i1]!;
+    const by = pos[i1 + 1]!;
+    const cx = pos[i2]!;
+    const cy = pos[i2 + 1]!;
+    const tMinI = Math.max(0, Math.floor((Math.min(ax, bx, cx) - ox) / cell));
+    const tMaxI = Math.min(gw - 1, Math.ceil((Math.max(ax, bx, cx) - ox) / cell));
+    const tMinJ = Math.max(0, Math.floor((Math.min(ay, by, cy) - oy) / cell));
+    const tMaxJ = Math.min(gh - 1, Math.ceil((Math.max(ay, by, cy) - oy) / cell));
+    for (let j = tMinJ; j <= tMaxJ; j++) {
+      for (let i = tMinI; i <= tMaxI; i++) {
+        if (grid[j * gw + i] === 1) continue;
+        const px = ox + (i + 0.5) * cell;
+        const py = oy + (j + 0.5) * cell;
+        if (pointInTriangle2D(px, py, ax, ay, bx, by, cx, cy)) grid[j * gw + i] = 1;
+      }
+    }
+  }
+  return { ox, oy, cell, gw, gh, grid, minX, minY, maxX, maxY };
 }
 
 export function boardFromSolid(args: Record<string, unknown>, engine: Engine) {
@@ -13194,58 +13409,9 @@ export function boardFromSolid(args: Record<string, unknown>, engine: Engine) {
   // Project to XY (Z-up: the board plane) and rasterize.
   const pos = part.mesh.positions;
   const idx = part.mesh.indices;
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (let i = 0; i < pos.length; i += 3) {
-    if (pos[i] < minX) minX = pos[i];
-    if (pos[i] > maxX) maxX = pos[i];
-    if (pos[i + 1] < minY) minY = pos[i + 1];
-    if (pos[i + 1] > maxY) maxY = pos[i + 1];
-  }
-  const extent = Math.max(maxX - minX, maxY - minY);
-  if (!(extent > 0)) throw new Error("Part has no XY extent to trace");
-
-  // Floor the cell size so the grid can never exceed ~4M cells, whatever
-  // `resolution` the caller asks for on however large a part.
-  const cell = Math.min(
-    Math.max((args.resolution as number) || extent / 400, 0.02, extent / 2000),
-    extent / 8,
-  );
-  // One padding cell on every side so the outer boundary always closes.
-  const ox = minX - cell;
-  const oy = minY - cell;
-  const gw = Math.ceil((maxX - minX) / cell) + 2;
-  const gh = Math.ceil((maxY - minY) / cell) + 2;
-  const grid = new Uint8Array(gw * gh);
-
-  const triCount = idx.length / 3;
-  for (let t = 0; t < triCount; t++) {
-    const i0 = idx[t * 3] * 3;
-    const i1 = idx[t * 3 + 1] * 3;
-    const i2 = idx[t * 3 + 2] * 3;
-    const ax = pos[i0];
-    const ay = pos[i0 + 1];
-    const bx = pos[i1];
-    const by = pos[i1 + 1];
-    const cx = pos[i2];
-    const cy = pos[i2 + 1];
-    const tMinI = Math.max(0, Math.floor((Math.min(ax, bx, cx) - ox) / cell));
-    const tMaxI = Math.min(gw - 1, Math.ceil((Math.max(ax, bx, cx) - ox) / cell));
-    const tMinJ = Math.max(0, Math.floor((Math.min(ay, by, cy) - oy) / cell));
-    const tMaxJ = Math.min(gh - 1, Math.ceil((Math.max(ay, by, cy) - oy) / cell));
-    for (let j = tMinJ; j <= tMaxJ; j++) {
-      for (let i = tMinI; i <= tMaxI; i++) {
-        if (grid[j * gw + i] === 1) continue;
-        const px = ox + (i + 0.5) * cell;
-        const py = oy + (j + 0.5) * cell;
-        if (pointInTriangle2D(px, py, ax, ay, bx, by, cx, cy)) {
-          grid[j * gw + i] = 1;
-        }
-      }
-    }
-  }
+  const projection = projectionGrid(pos, idx, args.resolution as number | undefined);
+  if (!projection) throw new Error("Part has no XY extent to trace");
+  const { ox, oy, cell, gw, gh, grid, minX, minY, maxX, maxY } = projection;
 
   const rawLoops = traceGridBoundaries(grid, gw, gh).flatMap(splitAtRepeatedVertices);
   if (rawLoops.length === 0) {
@@ -14010,6 +14176,20 @@ export async function verifySubstitution(args: Record<string, unknown>) {
   return { content: [{ type: "text" as const, text: JSON.stringify(sub) }] };
 }
 
+/**
+ * Hash of the document a receipt was built on. A receipt's claims measure only
+ * what they measure (DRC on the copper, one clearance pair), so without this a
+ * change those claims don't look at — a parameter, another part — left the
+ * receipt reading Holds on a document it never saw. `source` is excluded: it is
+ * provenance text, rewritten by a save without touching the design.
+ */
+async function documentStateHash(doc: Document): Promise<string> {
+  const { source: _source, ...design } = doc as Document & { source?: unknown };
+  // WebCrypto, not node:crypto: this module stays loadable in browser bundles.
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(design)));
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 /** Build a re-runnable verification Receipt for the session's PCB. When an
  *  `enclosure_document_id` is supplied (and `engine` is available), the Receipt
  *  also carries a cross-domain enclosure-fit verdict — proof the board fits the
@@ -14040,6 +14220,7 @@ export async function buildReceipt(args: Record<string, unknown>, engine?: Engin
         ...(await constraintReceiptClaims(ctx.doc)),
       ],
     };
+    await bindReceiptToDocument(unified, ctx.doc);
     return {
       content: [
         {
@@ -14115,6 +14296,9 @@ export async function buildReceipt(args: Record<string, unknown>, engine?: Engin
     unified.claims.push(...(await constraintReceiptClaims(ctx.doc)));
   }
 
+  await bindReceiptToDocument(unified, ctx.doc);
+  await bindReceiptToDocument(receipt, ctx.doc);
+
   // The receipt rides in structuredContent so the inline viewer renders it
   // as an audit ledger (the only carrier ChatGPT's widget bridge exposes);
   // document_id lets the viewer also fetch the board GLB behind the ledger.
@@ -14161,6 +14345,13 @@ export const verifyReceiptSchema = {
   },
   required: ["receipt"],
 } as const;
+
+/** Field carrying a receipt's binding to the document state it was built on. */
+const DOCUMENT_STATE_FIELD = "document_state_sha256";
+
+async function bindReceiptToDocument(receipt: object, doc: Document): Promise<void> {
+  (receipt as Record<string, unknown>)[DOCUMENT_STATE_FIELD] = await documentStateHash(doc);
+}
 
 /** Worst-wins rollup across verification domains. */
 function worstStatus(statuses: ReceiptStatus[]): ReceiptStatus {
@@ -14275,8 +14466,32 @@ export async function verifyReceipt(args: Record<string, unknown>, engine?: Engi
     statuses.push(constraintChecks.status);
   }
 
+  // Hash after the claims ran: re-measuring can normalize the document's specs.
+  const boundHash = [raw, legacy, unified]
+    .map((r) => (r as Record<string, unknown> | undefined)?.[DOCUMENT_STATE_FIELD])
+    .find((h): h is string => typeof h === "string" && h.length > 0);
+  const documentChanged = boundHash !== undefined && boundHash !== (await documentStateHash(ctx.doc));
+  const measuredStatus = worstStatus(statuses);
+  const status: ReceiptStatus = measuredStatus === "Holds" && documentChanged ? "Stale" : measuredStatus;
+  const documentState =
+    boundHash === undefined
+      ? {
+          bound: false,
+          note: "This receipt predates document binding, so Holds covers only the claims it re-measured, not the rest of the document.",
+        }
+      : {
+          bound: true,
+          changed: documentChanged,
+          ...(status === "Stale" && measuredStatus === "Holds"
+            ? {
+                note: "The document changed since this receipt was built, but every claim re-measured unchanged: the edit is outside what the receipt measures. Rebuild the receipt to certify the current document.",
+              }
+            : {}),
+        };
+
   const payload = {
-    status: worstStatus(statuses),
+    status,
+    document_state: documentState,
     ...(boardHash ? { board_hash: boardHash } : {}),
     ...(clearance ? { clearance } : {}),
     ...(constraintChecks ? { constraints: constraintChecks } : {}),
@@ -15511,7 +15726,7 @@ export const toolDefs: ToolDef[] = [
     name: "verify_receipt",
     pack: "ecad",
     description:
-      "Re-run a prior receipt (from build_receipt) against the session's current document and return the verdict \u2014 Holds (unchanged, clean), Stale (changed but claims still hold), or Violated. Covers the PCB Receipt (board hash + DRC diff) and mech.clearance claims (re-measured against current geometry); worst verdict wins. Powers the ledger's Re-run button.",
+      "Re-run a prior receipt (from build_receipt) against the session's current document and return the verdict \u2014 Holds (document unchanged, claims clean), Stale (document changed but the claims still hold), or Violated. The receipt is bound to the document state it was built on, so any edit — even one its claims don't measure — reads Stale, and `document_state` says why. Covers the PCB Receipt (board hash + DRC diff) and mech.clearance claims (re-measured against current geometry); worst verdict wins. Powers the ledger's Re-run button.",
     inputSchema: verifyReceiptSchema,
     handler: (a, c) => verifyReceipt(a, c.engine) as ToolResult | Promise<ToolResult>,
     behavior: behavior({ widgetCallable: true }),

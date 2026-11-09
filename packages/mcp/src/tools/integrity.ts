@@ -14,6 +14,7 @@
 import type { Document } from "@vcad/ir";
 import type { Engine, TriangleMesh } from "@vcad/engine";
 import { transformMesh } from "@vcad/engine";
+import { evaluateBoardsApart } from "./document-solids.js";
 
 /** Compact aggregate geometry report attached to mutation results. */
 export interface IntegrityReport {
@@ -249,7 +250,8 @@ export function computeIntegrity(
   // @vcad/engine — the same untyped pattern check_clearance uses.
   let scene: ReturnType<Engine["evaluate"]>;
   try {
-    scene = engine.evaluate(doc);
+    // Boards apart: an edit that leaves the board alone must not re-tessellate it.
+    scene = evaluateBoardsApart(doc, engine);
   } catch {
     return null;
   }
