@@ -419,6 +419,131 @@ fn line_runs_along(line: &vcad_kernel_geom::Line3d, loops: &[Vec<Point3>]) -> bo
         >= 2
 }
 
+/// Where `other`'s flat walls cross a plane, as closed loops. Empty unless
+/// every wall reaching the plane is flat and contributes exactly one segment:
+/// the outline of a curved or re-entrant wall isn't readable from corners.
+fn planar_wall_crossings(
+    other: &BRepSolid,
+    origin: Point3,
+    normal: vcad_kernel_math::Vec3,
+) -> Vec<Vec<Point3>> {
+    const TOL: f64 = 1e-6;
+    let height = |p: &Point3| (*p - origin).dot(normal);
+    let mut segments = Vec::new();
+    for (fid, face) in &other.topology.faces {
+        let mut crossings: Vec<Point3> = Vec::new();
+        let mut any_off_plane = false;
+        for lp in std::iter::once(face.outer_loop).chain(face.inner_loops.iter().copied()) {
+            let verts: Vec<Point3> = other
+                .topology
+                .loop_half_edges(lp)
+                .map(|he| other.topology.vertices[other.topology.half_edges[he].origin].point)
+                .collect();
+            any_off_plane |= verts.iter().any(|p| height(p).abs() >= TOL);
+            for i in 0..verts.len() {
+                let (p, q) = (verts[i], verts[(i + 1) % verts.len()]);
+                let (hp, hq) = (height(&p), height(&q));
+                let hit = if hp.abs() < TOL {
+                    Some(p)
+                } else if hq.abs() >= TOL && hp * hq < 0.0 {
+                    Some(p + (q - p) * (hp / (hp - hq)))
+                } else {
+                    None
+                };
+                let Some(hit) = hit else { continue };
+                if !crossings.iter().any(|c| (*c - hit).norm() < TOL) {
+                    crossings.push(hit);
+                }
+            }
+        }
+        if crossings.is_empty() || !any_off_plane {
+            continue;
+        }
+        if !split::is_planar_face(other, fid) || crossings.len() != 2 {
+            return Vec::new();
+        }
+        segments.push((crossings[0], crossings[1]));
+    }
+    chain_into_loops(&segments)
+}
+
+/// Whether `p`..`q` and `r`..`s`, in a common plane, come within `tol`.
+fn segments_touch(p: Point3, q: Point3, r: Point3, s: Point3, tol: f64) -> bool {
+    let (u, v, w) = (q - p, s - r, p - r);
+    let (a, b, c, d, e) = (u.dot(u), u.dot(v), v.dot(v), u.dot(w), v.dot(w));
+    let det = a * c - b * b;
+    let closest = |t: f64, k: f64| ((w + u * t) - v * k).norm();
+    let clamp = |x: f64| x.clamp(0.0, 1.0);
+    let mut best = closest(0.0, clamp(e / c))
+        .min(closest(1.0, clamp((b + e) / c)))
+        .min(closest(clamp(-d / a), 0.0))
+        .min(closest(clamp((b - d) / a), 1.0));
+    if det > 1e-18 {
+        best = best.min(closest(
+            clamp((b * e - c * d) / det),
+            clamp((a * e - b * d) / det),
+        ));
+    }
+    best < tol
+}
+
+/// Whether a planar face's cuts are a flat-walled tool's outline lying wholly
+/// inside it, clear of its boundary and holes.
+///
+/// Such a section is a hole, and is cut as one. Applied chord by chord, each
+/// wall's line runs on to the face boundary and the cap shatters into the
+/// lines' full arrangement. Those pieces persist in the result, so the next
+/// cut meets chords the last one left, and a sliver tooth it fails to part
+/// from its fragment leaves with that fragment, as open edges.
+fn is_interior_polygon_section(
+    solid: &BRepSolid,
+    face_id: FaceId,
+    splits: &FaceSplits,
+    other: &BRepSolid,
+) -> bool {
+    if splits.len() < 3
+        || !splits
+            .iter()
+            .all(|(curve, _, _)| matches!(curve, ssi::IntersectionCurve::Line(_)))
+    {
+        return false;
+    }
+    let Some((origin, normal)) = face_plane(solid, face_id) else {
+        return false;
+    };
+    let face = &solid.topology.faces[face_id];
+    let boundary: Vec<(Point3, Point3)> = std::iter::once(face.outer_loop)
+        .chain(face.inner_loops.iter().copied())
+        .flat_map(|lp| {
+            let verts: Vec<Point3> = solid
+                .topology
+                .loop_half_edges(lp)
+                .map(|he| solid.topology.vertices[solid.topology.half_edges[he].origin].point)
+                .collect();
+            (0..verts.len())
+                .map(|i| (verts[i], verts[(i + 1) % verts.len()]))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let inside: Vec<Vec<Point3>> = planar_wall_crossings(other, origin, normal)
+        .into_iter()
+        .filter(|l| {
+            l.iter().all(|p| trim::point_in_face(solid, face_id, p))
+                && (0..l.len()).all(|i| {
+                    let (p, q) = (l[i], l[(i + 1) % l.len()]);
+                    !boundary
+                        .iter()
+                        .any(|(r, s)| segments_touch(p, q, *r, *s, 1e-5))
+                })
+        })
+        .collect();
+    !inside.is_empty()
+        && splits.iter().all(|(curve, _, _)| match curve {
+            ssi::IntersectionCurve::Line(l) => line_runs_along(l, &inside),
+            _ => false,
+        })
+}
+
 /// Move the faces whose cuts are a tool section out of `splits`.
 fn take_section_outlines(
     solid: &BRepSolid,
@@ -429,7 +554,9 @@ fn take_section_outlines(
         .iter()
         .filter(|(fid, list)| {
             split::is_planar_face(solid, **fid)
-                && (is_section_outline(list) || ends_on_section_outline(solid, **fid, list, other))
+                && (is_section_outline(list)
+                    || ends_on_section_outline(solid, **fid, list, other)
+                    || is_interior_polygon_section(solid, **fid, list, other))
         })
         .map(|(fid, _)| *fid)
         .collect();
@@ -448,17 +575,8 @@ fn section_loops(
     normal: vcad_kernel_math::Vec3,
 ) -> Vec<Vec<Point3>> {
     const TOL: f64 = 1e-6;
-    type Key = [i64; 3];
-    let key = |p: &Point3| -> Key {
-        [
-            (p.x / TOL).round() as i64,
-            (p.y / TOL).round() as i64,
-            (p.z / TOL).round() as i64,
-        ]
-    };
     let on_plane = |p: &Point3| (*p - origin).dot(normal).abs() < TOL;
-    let mut position: HashMap<Key, Point3> = HashMap::new();
-    let mut neighbors: HashMap<Key, Vec<Key>> = HashMap::new();
+    let mut segments = Vec::new();
     for (_, face) in &other.topology.faces {
         for lp in std::iter::once(face.outer_loop).chain(face.inner_loops.iter().copied()) {
             let verts: Vec<Point3> = other
@@ -471,24 +589,43 @@ fn section_loops(
             }
             for i in 0..verts.len() {
                 let (p, q) = (verts[i], verts[(i + 1) % verts.len()]);
-                if !on_plane(&p) || !on_plane(&q) {
-                    continue;
-                }
-                let (kp, kq) = (key(&p), key(&q));
-                if kp == kq {
-                    continue;
-                }
-                position.insert(kp, p);
-                position.insert(kq, q);
-                let around_p = neighbors.entry(kp).or_default();
-                if !around_p.contains(&kq) {
-                    around_p.push(kq);
-                }
-                let around_q = neighbors.entry(kq).or_default();
-                if !around_q.contains(&kp) {
-                    around_q.push(kp);
+                if on_plane(&p) && on_plane(&q) {
+                    segments.push((p, q));
                 }
             }
+        }
+    }
+    chain_into_loops(&segments)
+}
+
+/// Chain segments into closed vertex loops. Empty unless they form simple
+/// loops, every vertex meeting exactly two distinct neighbours.
+fn chain_into_loops(segments: &[(Point3, Point3)]) -> Vec<Vec<Point3>> {
+    const TOL: f64 = 1e-6;
+    type Key = [i64; 3];
+    let key = |p: &Point3| -> Key {
+        [
+            (p.x / TOL).round() as i64,
+            (p.y / TOL).round() as i64,
+            (p.z / TOL).round() as i64,
+        ]
+    };
+    let mut position: HashMap<Key, Point3> = HashMap::new();
+    let mut neighbors: HashMap<Key, Vec<Key>> = HashMap::new();
+    for (p, q) in segments {
+        let (kp, kq) = (key(p), key(q));
+        if kp == kq {
+            continue;
+        }
+        position.insert(kp, *p);
+        position.insert(kq, *q);
+        let around_p = neighbors.entry(kp).or_default();
+        if !around_p.contains(&kq) {
+            around_p.push(kq);
+        }
+        let around_q = neighbors.entry(kq).or_default();
+        if !around_q.contains(&kp) {
+            around_q.push(kp);
         }
     }
     if neighbors.values().any(|n| n.len() != 2) {
