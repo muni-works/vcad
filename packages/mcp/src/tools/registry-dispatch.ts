@@ -492,6 +492,7 @@ interface EngineEnvelope {
     consumedPartIds?: string[];
     warnings?: string[];
     createdFeatureId?: string;
+      deleted?: Array<{ id: string; name?: string; kind: string }>;
   };
   error?: { kind: string; message?: string; id?: string; tool?: string };
 }
@@ -670,6 +671,7 @@ function runMutationViaEngine(
     const payload: Record<string, unknown> = { document_id: documentId };
     if (toolName === "delete") {
       payload.removed = args.part_id;
+      payload.removed_features = envelope.result.deleted ?? [];
     } else if (toolName === "set_material") {
       payload.part_id = args.part_id ?? args.part_ids;
       payload.material = toolArgs.material;

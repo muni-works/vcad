@@ -373,6 +373,22 @@ fn lower_update(args: &Value, doc: &DocumentApi) -> Result<DocCommand, CommandEr
             _ => return None,
         })
     };
+    // Every feature with a transform chain has these whether or not they were
+    // ever set: a boolean authored at the origin stores no `offset`.
+    let has_transform = parts_json(doc).iter().any(|p| {
+        p.get("id").and_then(Value::as_str) == Some(owner.as_str())
+            && p.get("translateNodeId").is_some()
+    });
+    let current_vec3 = |key: &str, default: f64| -> [f64; 3] {
+        doc.stable_ids()
+            .resolve(&owner)
+            .and_then(|fid| doc.crdt().get_feature(fid))
+            .and_then(|f| match f.params.get(key) {
+                Some((vcad_crdt::Value::Vec3(v), _)) => Some(*v),
+                _ => None,
+            })
+            .unwrap_or([default; 3])
+    };
     let mut commands = Vec::new();
     for (key, v) in params {
         let set = |key: String, value| DocCommand::SetParam {
@@ -380,7 +396,29 @@ fn lower_update(args: &Value, doc: &DocumentApi) -> Result<DocCommand, CommandEr
             key,
             value,
         };
-        if existing.contains(key) {
+        if has_transform && matches!(key.as_str(), "offset" | "rotation" | "scale") {
+            let obj = v
+                .as_object()
+                .filter(|o| !o.is_empty())
+                .ok_or_else(|| invalid(format!("update: `{key}` must be an {{x, y, z}} object")))?;
+            let mut value = current_vec3(key, if key == "scale" { 1.0 } else { 0.0 });
+            for (axis, n) in obj {
+                let slot = match axis.as_str() {
+                    "x" => 0,
+                    "y" => 1,
+                    "z" => 2,
+                    _ => {
+                        return Err(invalid(format!(
+                            "update: `{key}.{axis}` is not a parameter of this part"
+                        )))
+                    }
+                };
+                value[slot] = n
+                    .as_f64()
+                    .ok_or_else(|| invalid(format!("update: `{key}.{axis}` must be a number")))?;
+            }
+            commands.push(set(key.clone(), vcad_crdt::Value::Vec3(value)));
+        } else if existing.contains(key) {
             let value = scalar(v)
                 .or_else(|| {
                     Some(vcad_crdt::Value::Vec3([
@@ -1583,6 +1621,44 @@ mod tests {
             .unwrap();
         assert_eq!(res.parts.len(), 1);
         assert!(res.warnings.is_empty(), "{:?}", res.warnings);
+    }
+
+    #[test]
+    fn update_moves_a_boolean_authored_at_the_origin() {
+        let mut api = DocumentApi::new(ReplicaId(1));
+        let make = |api: &mut DocumentApi| -> String {
+            let v: Value = serde_json::from_str(&api.apply_tool_envelope(
+                "create",
+                r#"{"type":"cube","params":{"size":{"x":10,"y":10,"z":10}}}"#,
+            ))
+            .unwrap();
+            v["result"]["createdFeatureId"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let (a, b) = (make(&mut api), make(&mut api));
+        let v: Value = serde_json::from_str(
+            &api.apply_tool_envelope("difference", &json!({"left": a, "right": b}).to_string()),
+        )
+        .unwrap();
+        assert_eq!(v["ok"], true, "{v}");
+        let id = v["result"]["createdFeatureId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let v: Value = serde_json::from_str(&api.apply_tool_envelope(
+            "update",
+            &json!({"node_id": id, "params": {"offset": {"x": 25}}}).to_string(),
+        ))
+        .unwrap();
+        assert_eq!(v["ok"], true, "{v}");
+        let fid = api.stable_ids().resolve(&id).unwrap();
+        let feature = api.crdt().get_feature(fid).unwrap();
+        assert!(matches!(
+            feature.params.get("offset"),
+            Some((vcad_crdt::Value::Vec3([x, y, z]), _)) if *x == 25.0 && *y == 0.0 && *z == 0.0
+        ));
     }
 
     #[test]

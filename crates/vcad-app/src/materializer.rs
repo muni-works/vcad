@@ -147,30 +147,31 @@ fn collect_consumed_feature_ids(crdt: &CrdtDocument) -> std::collections::HashSe
                 }
             }
         }
-        let Some(input) = FeatureInput::from_crdt_params(&feature.kind, &feature.params) else {
-            continue;
-        };
-        match input {
-            FeatureInput::Boolean {
-                input_a, input_b, ..
-            } => {
-                consumed.insert(input_a);
-                consumed.insert(input_b);
-            }
-            FeatureInput::Hull { inputs, .. } => consumed.extend(inputs),
-            FeatureInput::SweepRotate { input, .. }
-            | FeatureInput::Fillet { input, .. }
-            | FeatureInput::Chamfer { input, .. }
-            | FeatureInput::Shell { input, .. }
-            | FeatureInput::LinearPattern { input, .. }
-            | FeatureInput::CircularPattern { input, .. }
-            | FeatureInput::Mirror { input, .. } => {
-                consumed.insert(input);
-            }
-            _ => {}
-        }
+        consumed.extend(feature_input_ids(feature));
     }
     consumed
+}
+
+/// The features a modifier/boolean feature takes as inputs. They exist only to
+/// feed it unless something else references them too.
+pub(crate) fn feature_input_ids(feature: &FeatureState) -> Vec<String> {
+    let Some(input) = FeatureInput::from_crdt_params(&feature.kind, &feature.params) else {
+        return Vec::new();
+    };
+    match input {
+        FeatureInput::Boolean {
+            input_a, input_b, ..
+        } => vec![input_a, input_b],
+        FeatureInput::Hull { inputs, .. } => inputs,
+        FeatureInput::SweepRotate { input, .. }
+        | FeatureInput::Fillet { input, .. }
+        | FeatureInput::Chamfer { input, .. }
+        | FeatureInput::Shell { input, .. }
+        | FeatureInput::LinearPattern { input, .. }
+        | FeatureInput::CircularPattern { input, .. }
+        | FeatureInput::Mirror { input, .. } => vec![input],
+        _ => Vec::new(),
+    }
 }
 
 /// Materialize the full CRDT document into an IR document and parts list.
@@ -1889,7 +1890,7 @@ fn materialize_scene_settings(doc: &mut Document, feature: &FeatureState) {
 
 // -- Helpers --
 
-fn fid_to_string(fid: FeatureId) -> String {
+pub(crate) fn fid_to_string(fid: FeatureId) -> String {
     format!("{}:{}", fid.0 .0, fid.1)
 }
 

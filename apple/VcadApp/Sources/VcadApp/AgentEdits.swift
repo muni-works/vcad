@@ -305,12 +305,102 @@ enum AgentEdits {
         guard let source = a["source"] as? String, !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw Failure(message: "source is required")
         }
-        let json = try compileLoon(source)
+        var json = try compileLoon(source)
+        var kept: String?
+        if let session = m.documentJSON { kept = try carryElectronics(from: session, into: &json) }
         let label = (a["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Loon Program"
         let r = try edit(m, name: "Claude: \(label)") { try $0.loadIR(json) }
         var text = "Loaded; document has \(r.partCount) part\(r.partCount == 1 ? "" : "s")"
+        if let kept { text += "; \(kept)" }
         if !r.warnings.isEmpty { text += "; warnings: " + r.warnings.joined(separator: "; ") }
         return AgentTools.text(text + ".")
+    }
+
+    /// Carry the open document's board and schematic into a compiled loon
+    /// document, as the MCP path does (`carryElectronics` in loon.ts): loading
+    /// the program replaces the mechanical parts, not the electronics. A
+    /// program that brings its own board can't be merged and is refused before
+    /// anything changes. Returns a note, or nil when there was nothing to keep.
+    static func carryElectronics(from session: [String: Any], into doc: inout [String: Any]) throws -> String? {
+        let nodes = session["nodes"] as? [String: [String: Any]] ?? [:]
+        let op = { (id: Int) in nodes[String(id)]?["op"] as? [String: Any] }
+        let isBoard = { (n: [String: Any]) in (n["op"] as? [String: Any])?["type"] as? String == "PcbBoard" }
+        let boardIds = nodes.values.filter(isBoard).compactMap { ($0["id"] as? NSNumber)?.intValue }
+        let hasPcb = session["pcb"] != nil
+        let schematic = session["schematic"]
+        guard !boardIds.isEmpty || hasPcb || schematic != nil else { return nil }
+
+        var target = doc["nodes"] as? [String: [String: Any]] ?? [:]
+        let programHasBoard = target.values.contains(where: isBoard) || doc["pcb"] != nil
+        if ((!boardIds.isEmpty || hasPcb) && programHasBoard) || (schematic != nil && doc["schematic"] != nil) {
+            throw Failure(message: "create_cad_loon: this document already holds a board or schematic and the program "
+                + "defines its own, so they can't be merged; nothing was changed. Remove them from the source.")
+        }
+
+        // After the engine materializes a document the scene root is the
+        // Translate above the board; carry that whole chain.
+        func chain(_ root: Int) -> [Int]? {
+            var out: [Int] = []
+            var id: Int? = root
+            while let at = id, let o = op(at), !out.contains(at) {
+                out.append(at)
+                let type = o["type"] as? String
+                if type == "PcbBoard" { return out }
+                id = ["Translate", "Rotate", "Scale"].contains(type ?? "") ? (o["child"] as? NSNumber)?.intValue : nil
+            }
+            return nil
+        }
+        let rootEntries = session["roots"] as? [[String: Any]] ?? []
+        let rooted = rootEntries.compactMap { e -> (entry: [String: Any], chain: [Int])? in
+            guard let r = (e["root"] as? NSNumber)?.intValue, let c = chain(r) else { return nil }
+            return (e, c)
+        }
+        var carried: [Int] = []
+        for id in rooted.flatMap(\.chain) + boardIds where !carried.contains(id) { carried.append(id) }
+
+        var next = (target.keys.compactMap(Int.init).max() ?? -1) + 1
+        var remap: [Int: Int] = [:]
+        for id in carried { remap[id] = next; next += 1 }
+        var targetRoots = doc["roots"] as? [[String: Any]] ?? []
+        var materials = doc["materials"] as? [String: Any] ?? [:]
+        let sessionMaterials = session["materials"] as? [String: Any] ?? [:]
+        func keepMaterial(_ key: String?) {
+            if let key, materials[key] == nil, let m = sessionMaterials[key] { materials[key] = m }
+        }
+        for (entry, c) in rooted {
+            var e = entry
+            e["root"] = remap[c[0]]!
+            targetRoots.append(e)
+            keepMaterial(entry["material"] as? String)
+        }
+        let rootedBoards = Set(rooted.compactMap(\.chain.last))
+        for id in boardIds where !rootedBoards.contains(id) {
+            targetRoots.append(["root": remap[id]!, "material": "__pcb_fr4__"])
+            keepMaterial("__pcb_fr4__")
+        }
+        var partIds = doc["partIds"] as? [String: Any] ?? [:]
+        let sessionPartIds = session["partIds"] as? [String: Any] ?? [:]
+        for old in carried {
+            var node = nodes[String(old)]!
+            let id = remap[old]!
+            node["id"] = id
+            if var o = node["op"] as? [String: Any], let child = (o["child"] as? NSNumber)?.intValue {
+                o["child"] = remap[child]!
+                node["op"] = o
+            }
+            target[String(id)] = node
+            if let stable = sessionPartIds[String(old)] { partIds[String(id)] = stable }
+        }
+        doc["nodes"] = target
+        doc["roots"] = targetRoots
+        doc["materials"] = materials
+        if !partIds.isEmpty { doc["partIds"] = partIds }
+        if let pcb = session["pcb"] { doc["pcb"] = pcb }
+        if let schematic { doc["schematic"] = schematic }
+
+        let what = [boardIds.isEmpty && !hasPcb ? nil : "PCB board", schematic == nil ? nil : "schematic"]
+            .compactMap { $0 }.joined(separator: " and ")
+        return "kept the document's \(what)"
     }
 
     /// Compile loon source to `.vcad` JSON through a temp file (the FFI takes

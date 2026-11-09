@@ -5340,7 +5340,7 @@
         },
         "resolution": {
           "type": "number",
-          "description": "Coarse-level lattice cells along the longest bbox axis (default 24). The finest level is resolution * 2^(levels-1), capped at 160 for this tier. Keep >= ~6 cells through the thinnest load-bearing section — the tool measures the part and refuses below ~4, with the cell arithmetic attached. Raising this is NOT the lever for a thin wall (a 2 mm wall on a 300 mm member needs ~950 cells): use beam_check."
+          "description": "Coarse-level lattice cells along the longest bbox axis (default: 24, raised automatically when that can't resolve the part's thinnest section, within the tier cap; pass a value to pin it). The finest level is resolution * 2^(levels-1), capped at 160 for this tier. Keep >= ~6 cells through the thinnest load-bearing section — the tool measures the part and refuses below ~4, with the cell arithmetic attached. Raising this is NOT the lever for a thin wall (a 2 mm wall on a 300 mm member needs ~950 cells): use beam_check."
         },
         "levels": {
           "type": "number",
@@ -7716,6 +7716,10 @@
     "inputSchema": {
       "type": "object",
       "properties": {
+        "document_id": {
+          "type": "string",
+          "description": "Insert the board into this open document (e.g. one holding the motor and case) instead of minting a new one. Refused, changing nothing, if the document already has a board."
+        },
         "filename": {
           "type": "string",
           "description": "Path to a .kicad_pcb file on the server filesystem (relative to VCAD_MCP_EXPORT_DIR or cwd). On hosted servers pass content_base64 instead."
@@ -7741,6 +7745,10 @@
     "inputSchema": {
       "type": "object",
       "properties": {
+        "document_id": {
+          "type": "string",
+          "description": "Insert the board into this open document (e.g. one holding the motor and case) instead of minting a new one. Refused, changing nothing, if the document already has a board."
+        },
         "filename": {
           "type": "string",
           "description": "Path to a .PcbDoc file on the server filesystem (relative to VCAD_MCP_EXPORT_DIR or cwd). Native binary and ASCII exports are both accepted. On hosted servers pass content_base64 instead."
@@ -7787,6 +7795,10 @@
     "inputSchema": {
       "type": "object",
       "properties": {
+        "document_id": {
+          "type": "string",
+          "description": "Insert the board into this open document (e.g. one holding the motor and case) instead of minting a new one. Refused, changing nothing, if the document already has a board."
+        },
         "filename": {
           "type": "string",
           "description": "Path to a .brd file (Eagle XML, Eagle 6+)."
@@ -8531,6 +8543,10 @@
     "inputSchema": {
       "type": "object",
       "properties": {
+        "document_id": {
+          "type": "string",
+          "description": "Add the electronics to this open document (one holding mechanical parts) instead of minting a new one. Then call place_components with the same id. Refused, changing nothing, if the document already has a schematic or board."
+        },
         "title": {
           "type": "string",
           "description": "Schematic sheet title"

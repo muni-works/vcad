@@ -1537,6 +1537,23 @@ direction: [Expr, Expr, Expr], } | { "kind": "point",
 position: [Expr, Expr, Expr], };
 
 /**
+ * One feature a delete removed.
+ */
+export type DeletedFeature = { 
+/**
+ * Stable id.
+ */
+id: string, 
+/**
+ * Feature name, when it had one.
+ */
+name?: string, 
+/**
+ * Feature kind (`cube`, `boolean`, ...).
+ */
+kind: string, };
+
+/**
  * IPC-7351 producibility level, controlling fillet (toe/heel/side) goals and
  * courtyard excess. Higher density → smaller lands.
  */
@@ -2414,6 +2431,134 @@ rotateNodeId: number,
 /**
  * Translation transform node.
  */
+translateNodeId: number, } | { "kind": "torus", 
+/**
+ * Part identifier.
+ */
+id: string, 
+/**
+ * Human-readable name.
+ */
+name: string, 
+/**
+ * The primitive IR node.
+ */
+primitiveNodeId: number, 
+/**
+ * Scale transform node.
+ */
+scaleNodeId: number, 
+/**
+ * Rotation transform node.
+ */
+rotateNodeId: number, 
+/**
+ * Translation transform node.
+ */
+translateNodeId: number, } | { "kind": "wedge", 
+/**
+ * Part identifier.
+ */
+id: string, 
+/**
+ * Human-readable name.
+ */
+name: string, 
+/**
+ * The primitive IR node.
+ */
+primitiveNodeId: number, 
+/**
+ * Scale transform node.
+ */
+scaleNodeId: number, 
+/**
+ * Rotation transform node.
+ */
+rotateNodeId: number, 
+/**
+ * Translation transform node.
+ */
+translateNodeId: number, } | { "kind": "prism", 
+/**
+ * Part identifier.
+ */
+id: string, 
+/**
+ * Human-readable name.
+ */
+name: string, 
+/**
+ * The primitive IR node.
+ */
+primitiveNodeId: number, 
+/**
+ * Scale transform node.
+ */
+scaleNodeId: number, 
+/**
+ * Rotation transform node.
+ */
+rotateNodeId: number, 
+/**
+ * Translation transform node.
+ */
+translateNodeId: number, } | { "kind": "hull", 
+/**
+ * Part identifier.
+ */
+id: string, 
+/**
+ * Human-readable name.
+ */
+name: string, 
+/**
+ * The hull IR node.
+ */
+hullNodeId: number, 
+/**
+ * Scale transform node.
+ */
+scaleNodeId: number, 
+/**
+ * Rotation transform node.
+ */
+rotateNodeId: number, 
+/**
+ * Translation transform node.
+ */
+translateNodeId: number, 
+/**
+ * Source part IDs.
+ */
+sourcePartIds: Array<string>, } | { "kind": "sweep-rotate", 
+/**
+ * Part identifier.
+ */
+id: string, 
+/**
+ * Human-readable name.
+ */
+name: string, 
+/**
+ * Source part ID.
+ */
+sourcePartId: string, 
+/**
+ * The sweep IR node.
+ */
+sweepNodeId: number, 
+/**
+ * Scale transform node.
+ */
+scaleNodeId: number, 
+/**
+ * Rotation transform node.
+ */
+rotateNodeId: number, 
+/**
+ * Translation transform node.
+ */
 translateNodeId: number, } | { "kind": "boolean", 
 /**
  * Part identifier.
@@ -2915,7 +3060,11 @@ warnings: Array<string>,
 /**
  * Stable id of the feature the command created, if any.
  */
-createdFeatureId?: string, };
+createdFeatureId?: string, 
+/**
+ * What a delete removed, the requested feature and any inputs only it used.
+ */
+deleted: Array<DeletedFeature>, };
 
 /**
  * Environment lighting configuration.
@@ -3030,7 +3179,79 @@ height: number,
 /**
  * Tessellation segments.
  */
-segments?: number, } | { "type": "Boolean", 
+segments?: number, } | { "type": "Torus", 
+/**
+ * Distance from the axis to the tube centre.
+ */
+major_radius: number, 
+/**
+ * Tube radius.
+ */
+minor_radius: number, 
+/**
+ * Tessellation segments.
+ */
+segments?: number, } | { "type": "Wedge", 
+/**
+ * Width (X).
+ */
+size_x: number, 
+/**
+ * Depth (Y).
+ */
+size_y: number, 
+/**
+ * Height (Z).
+ */
+size_z: number, } | { "type": "Prism", 
+/**
+ * Number of sides (3 or more).
+ */
+sides: number, 
+/**
+ * Circumscribed radius.
+ */
+radius: number, 
+/**
+ * Height along Z.
+ */
+height: number, } | { "type": "Hull", 
+/**
+ * Feature IDs of the parts to hull (consumed).
+ */
+inputs: Array<string>, 
+/**
+ * Extra points, flat `[x, y, z, ...]` (mm).
+ */
+points: Array<number>, } | { "type": "SweepRotate", 
+/**
+ * Input feature ID (consumed).
+ */
+input: string, 
+/**
+ * A point on the rotation axis.
+ */
+axis_origin: [number, number, number], 
+/**
+ * Rotation axis direction.
+ */
+axis_dir: [number, number, number], 
+/**
+ * Start angle, degrees.
+ */
+angle_lo_deg: number, 
+/**
+ * End angle, degrees.
+ */
+angle_hi_deg: number, 
+/**
+ * Angular step, degrees (the kernel picks one when absent).
+ */
+step_deg?: number, 
+/**
+ * Clearance added around the swept solid, mm.
+ */
+clearance?: number, } | { "type": "Boolean", 
 /**
  * Union, difference, or intersection.
  */

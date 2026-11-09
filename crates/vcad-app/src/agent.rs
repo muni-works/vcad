@@ -725,7 +725,7 @@ mod tests {
         let api = DocumentApi::from_ir(ir, ReplicaId(1)).unwrap();
         let id = api.get_state().parts[0].id().to_string();
         let text = read_tool("inspect", &json!({"part_id": id}), &api).unwrap();
-        assert!(text.contains("size (70.00, 69.92, 2.60)"), "{text}");
+        assert!(text.contains("size (70.00, 70.00, 2.60)"), "{text}");
     }
 
     #[test]

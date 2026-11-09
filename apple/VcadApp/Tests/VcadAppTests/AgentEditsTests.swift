@@ -29,6 +29,58 @@ final class AgentEditsTests: XCTestCase {
 
     private func roots(_ m: EditorModel) -> Int { (m.documentJSON?["roots"] as? [Any])?.count ?? 0 }
 
+    private func boardDocument() -> [String: Any] {
+        ["version": "0.1", "nodes": [
+            "7": ["id": 7, "name": "PCB", "op": ["type": "PcbBoard", "board": ["outline": ["vertices": [] as [Any], "thickness": 1.6]]]],
+            "8": ["id": 8, "name": NSNull(), "op": ["type": "Translate", "child": 7, "offset": ["x": 1, "y": 2, "z": 3]]],
+        ], "roots": [["root": 8, "material": "__pcb_fr4__"]],
+           "materials": ["__pcb_fr4__": ["name": "__pcb_fr4__"]],
+           "schematic": ["components": [] as [Any]]]
+    }
+
+    func testCreateLoonKeepsTheBoardThroughItsChain() throws {
+        var doc: [String: Any] = ["version": "0.1", "materials": [:] as [String: Any],
+                                  "nodes": ["1": ["id": 1, "name": "b", "op": ["type": "Cube", "size": ["x": 1, "y": 1, "z": 1]]]],
+                                  "roots": [["root": 1, "material": "default"]]]
+        let note = try AgentEdits.carryElectronics(from: boardDocument(), into: &doc)
+        XCTAssertEqual(note, "kept the document's PCB board and schematic")
+        let nodes = try XCTUnwrap(doc["nodes"] as? [String: [String: Any]])
+        XCTAssertEqual(nodes.count, 3)
+        let roots = try XCTUnwrap(doc["roots"] as? [[String: Any]])
+        XCTAssertEqual(roots.count, 2)
+        let top = try XCTUnwrap(nodes["\(roots[1]["root"] as! Int)"]?["op"] as? [String: Any])
+        XCTAssertEqual(top["type"] as? String, "Translate")
+        let child = try XCTUnwrap(top["child"] as? Int)
+        XCTAssertEqual((nodes["\(child)"]?["op"] as? [String: Any])?["type"] as? String, "PcbBoard")
+        XCTAssertNotNil(doc["schematic"])
+        XCTAssertNotNil((doc["materials"] as? [String: Any])?["__pcb_fr4__"])
+    }
+
+    func testCreateLoonRefusesAProgramWithItsOwnBoard() {
+        var doc: [String: Any] = ["nodes": ["1": ["id": 1, "op": ["type": "PcbBoard"]]], "roots": [["root": 1]]]
+        XCTAssertThrowsError(try AgentEdits.carryElectronics(from: boardDocument(), into: &doc))
+    }
+
+    func testAssemblyInstancesAppearInTheTree() throws {
+        let json: [String: Any] = [
+            "version": "0.1",
+            "nodes": [
+                "1": ["id": 1, "name": "Base", "op": ["type": "Cube", "size": ["x": 1, "y": 1, "z": 1]]],
+                "2": ["id": 2, "name": "Link", "op": ["type": "Cube", "size": ["x": 2, "y": 1, "z": 1]]],
+            ],
+            "roots": [["root": 1, "material": "default"]],
+            "partDefs": ["d1": ["id": "d1", "name": "Link", "root": 2]],
+            "instances": [["id": "i1", "partDefId": "d1", "name": "Upper"],
+                          ["id": "i2", "partDefId": "d1", "name": "Lower"]],
+        ]
+        let data = try JSONSerialization.data(withJSONObject: json)
+        let graph = try XCTUnwrap(DocumentGraph.parse(data))
+        let rows = graph.featureRoots()
+        XCTAssertEqual(rows.map(\.name), ["Base", "Upper", "Lower"])
+        XCTAssertEqual(rows[1].id, "instance:i1")
+        XCTAssertEqual(rows[1].nodeId, 2)
+    }
+
     func testToolsAreListedWithSchemas() {
         let names = Set((AgentTools.definitions + AgentEdits.definitions).compactMap { $0["name"] as? String })
         for n in ["create", "update", "delete", "set_material", "difference", "set_parameters",

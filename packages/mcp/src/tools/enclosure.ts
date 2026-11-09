@@ -194,6 +194,10 @@ export function addComponentOverhangCheck(
   report.summary = `Component bodies pass through the case wall: ${names}. ${report.summary}`;
 }
 
+function footprint(c: { minX: number; maxX: number; minY: number; maxY: number }): number {
+  return (c.maxX - c.minX) * (c.maxY - c.minY);
+}
+
 /**
  * Core: given a board PCB and an enclosure CAD session, extract the cavity and
  * run the cross-domain checks. Pure of MCP plumbing so `check_enclosure_fit`
@@ -223,8 +227,16 @@ export async function computeEnclosureFitForBoard(
   // The kernel detector only knows open-top trays. A closed case has its
   // cavity found the way board_from_solid finds it; posts and wall cutouts
   // aren't extracted from a sealed void, and the result says so.
-  const sealed = features.cavity ? null : sealedCavityFromMesh(chosen.mesh);
-  const cavity = features.cavity ?? sealed;
+  // That detector also reads a through-slot in a closed lid as a shallow open
+  // pocket, so the void wins whenever it is the bigger of the two.
+  const sealedVoid = sealedCavityFromMesh(chosen.mesh);
+  const sealed =
+    sealedVoid && (!features.cavity || footprint(sealedVoid) > footprint(features.cavity))
+      ? sealedVoid
+      : null;
+  const cavity = sealed ?? features.cavity;
+  const standoffs = sealed ? [] : features.standoffs;
+  const openings = sealed ? [] : features.openings;
   if (!cavity) {
     return {
       error:
@@ -251,8 +263,8 @@ export async function computeEnclosureFitForBoard(
   const report = computeEnclosureFit({
     outline: pcb.outline,
     cavity,
-    standoffs: features.standoffs,
-    openings: features.openings,
+    standoffs: standoffs,
+    openings: openings,
     mountingHoles,
     connectors,
     componentExtents,
@@ -261,13 +273,13 @@ export async function computeEnclosureFitForBoard(
     standoffHeight: opts.standoffHeight,
     holeTolerance: opts.holeTolerance,
   });
-  addComponentOverhangCheck(report, bodies, cavity, features.openings.length > 0);
+  addComponentOverhangCheck(report, bodies, cavity, openings.length > 0);
 
   const result: EnclosureFitResult = {
     report,
     cavity,
-    standoffs_detected: features.standoffs.length,
-    openings_detected: features.openings.length,
+    standoffs_detected: standoffs.length,
+    openings_detected: openings.length,
     ...(sealed
       ? {
           cavity_basis: "sealed-void" as const,
@@ -279,7 +291,7 @@ export async function computeEnclosureFitForBoard(
       : {}),
   };
   if (opts.derive) {
-    result.derived = deriveBoardFromCavity(cavity, features.standoffs, {
+    result.derived = deriveBoardFromCavity(cavity, standoffs, {
       clearance: opts.clearance,
       thickness: pcb.outline.thickness,
       standoffHeight: opts.standoffHeight,

@@ -27,8 +27,27 @@ export interface DocumentSolid {
   mesh: TriangleMesh;
 }
 
-function isBoardRoot(doc: Document, root: Document["roots"][number]): boolean {
-  return (doc.nodes[String(root.root)]?.op as { type?: string } | undefined)?.type === "PcbBoard";
+/**
+ * The node ids from a scene root down through its transform chain, stopping at
+ * the first non-transform op. A board straight from `place_components` is a
+ * bare PcbBoard root; any engine edit to the document rebuilds it as
+ * Translate → Rotate → Scale → PcbBoard.
+ */
+export function transformChain(doc: Document, rootId: number): number[] {
+  const chain = [rootId];
+  for (let id = rootId; ; ) {
+    const op = doc.nodes[String(id)]?.op as { type?: string; child?: number } | undefined;
+    if (!op || !["Translate", "Rotate", "Scale"].includes(op.type ?? "") || op.child === undefined) {
+      return chain;
+    }
+    id = op.child;
+    chain.push(id);
+  }
+}
+
+export function isBoardRoot(doc: Document, root: Document["roots"][number]): boolean {
+  const leaf = transformChain(doc, root.root).at(-1)!;
+  return (doc.nodes[String(leaf)]?.op as { type?: string } | undefined)?.type === "PcbBoard";
 }
 
 /**
@@ -54,7 +73,9 @@ export function evaluateBoardsApart(doc: Document, engine: Engine): EvaluatedSce
   if (boardRoots.length === 0) return engine.evaluate(doc);
 
   const nodes: Document["nodes"] = {};
-  for (const r of boardRoots) nodes[String(r.root)] = doc.nodes[String(r.root)]!;
+  for (const r of boardRoots) {
+    for (const id of transformChain(doc, r.root)) nodes[String(id)] = doc.nodes[String(id)]!;
+  }
   const boardDoc = {
     version: doc.version,
     nodes,
