@@ -22,10 +22,11 @@ use std::ptr;
 
 use serde::Serialize;
 use vcad_kernel::vcad_kernel_fillet::{BlendKey, BlendSection, EdgeQuery};
+use vcad_kernel::vcad_kernel_geom::SurfaceKind;
 use vcad_kernel::vcad_kernel_primitives::BRepSolid;
 use vcad_kernel::vcad_kernel_sketch::{SketchProfile, SketchSegment};
 use vcad_kernel::vcad_kernel_tessellate::{tessellate_brep_by_face, TessellationParams};
-use vcad_kernel::vcad_kernel_topo::{EdgeId, FaceId};
+use vcad_kernel::vcad_kernel_topo::{EdgeId, FaceId, Orientation};
 use vcad_kernel::Solid;
 use vcad_kernel_math::{Point2, Point3, Vec3};
 use vcad_kernel_raytrace::{BrepBvh, Bvh, Ray};
@@ -165,6 +166,25 @@ fn analyze(solid: &Solid) -> Result<(Topo, &BRepSolid), String> {
         boundaries.insert(ord, rim);
         let c = if area > 0.0 { c / area } else { c };
         let n = if n.norm() > 0.0 { n.normalize() } else { n };
+        // A full-turn revolve's flat rings are bounded by one-vertex seam
+        // circles, which per-face tessellation can't triangulate. The plane
+        // itself still knows where it is and which way it faces.
+        let (c, n, on_face) = if m.indices.is_empty() && matches!(kind, SurfaceKind::Plane) {
+            let face = &topo.faces[*fid];
+            let surface = &brep.geometry.surfaces[face.surface_index];
+            let uv = Point2::new(0.0, 0.0);
+            let o = surface.evaluate(uv);
+            let mut nf = surface.normal(uv).into_inner();
+            if face.orientation == Orientation::Reversed {
+                nf = -nf;
+            }
+            let he = topo.loop_half_edges(face.outer_loop).next();
+            let rim = he.map(|h| topo.vertices[topo.half_edges[h].origin].point);
+            let on = rim.unwrap_or(o);
+            (Vec3::new(o.x, o.y, o.z), nf, Vec3::new(on.x, on.y, on.z))
+        } else {
+            (c, n, on_face)
+        };
         let mut selector = serde_json::json!({
             "point": {"x": on_face.x, "y": on_face.y, "z": on_face.z},
             "normal": {"x": n.x, "y": n.y, "z": n.z},
@@ -676,6 +696,50 @@ mod tests {
 
     fn report(s: *const VcadSolid) -> serde_json::Value {
         serde_json::from_str(&take(vcad_topology_json(s))).unwrap()
+    }
+
+    #[test]
+    fn full_revolve_flat_rings_report_their_plane() {
+        let profile =
+            SketchProfile::rectangle(Point3::new(5.0, 0.0, 2.0), Vec3::x(), Vec3::z(), 3.0, 10.0);
+        let inner = Solid::revolve(profile, Point3::origin(), Vec3::z(), 360.0).unwrap();
+        let s = Box::into_raw(Box::new(VcadSolid { inner }));
+        let r = report(s);
+        let planes: Vec<_> = r["faces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|f| f["surface"] == "Plane")
+            .collect();
+        assert_eq!(planes.len(), 2);
+        let mut zs: Vec<f64> = planes
+            .iter()
+            .map(|f| {
+                let n: Vec<f64> = f["normal"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_f64().unwrap())
+                    .collect();
+                let c: Vec<f64> = f["center"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|v| v.as_f64().unwrap())
+                    .collect();
+                assert!(c[0].abs() < 1e-9 && c[1].abs() < 1e-9, "{f}");
+                // Outward: the top ring faces up, the bottom ring down.
+                assert!((n[2].abs() - 1.0).abs() < 1e-9, "{f}");
+                assert_eq!(n[2] > 0.0, c[2] > 5.0, "{f}");
+                c[2]
+            })
+            .collect();
+        zs.sort_by(f64::total_cmp);
+        assert!(
+            (zs[0] - 2.0).abs() < 1e-9 && (zs[1] - 12.0).abs() < 1e-9,
+            "{zs:?}"
+        );
+        vcad_solid_free(s);
     }
 
     #[test]
