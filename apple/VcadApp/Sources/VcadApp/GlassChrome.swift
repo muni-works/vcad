@@ -22,8 +22,14 @@ enum Glass {
     static let windowRadius: CGFloat = 26
     /// A panel nested `inset` inside the window keeps the corners concentric.
     static var panelRadius: CGFloat { windowRadius - inset }
-    /// Toolbar height (title-bar row).
-    static let toolbarHeight: CGFloat = 52
+    /// Height of the title-bar row itself.
+    static let toolbarRow: CGFloat = 52
+    /// Air above the row in a window, so the dock doesn't crowd the top edge.
+    static let toolbarDrop: CGFloat = 6
+    /// Vertical center of the row, which the window controls line up with.
+    static var toolbarCenter: CGFloat { toolbarDrop + toolbarRow / 2 }
+    /// Space the row takes from the top of the window.
+    static var toolbarHeight: CGFloat { toolbarDrop + toolbarRow }
     /// Below this toolbar width the dock folds modify and combine tools too,
     /// so it clears the document title and search field.
     static let dockFullWidth: CGFloat = 1080
@@ -229,7 +235,7 @@ struct GlassToolbar: View {
         }
         .padding(.leading, model.isWindowed ? 84 : Glass.inset + 6)
         .padding(.trailing, Glass.inset + 6)
-        .frame(height: Glass.toolbarHeight)
+        .frame(height: Glass.toolbarRow)
         // The tool dock lives in the title-bar row, centred on the window.
         .overlay {
             if model.workspace != .manufacture {
@@ -237,6 +243,7 @@ struct GlassToolbar: View {
             }
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarWidth = $0 }
+        .padding(.top, model.isWindowed ? Glass.toolbarDrop : 0)
         .background {
             // ⌘F and ⌘K both land in search.
             Group {

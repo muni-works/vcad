@@ -22,14 +22,25 @@ final class KeyableWindow: NSWindow, NSWindowDelegate {
 
     func alignTitlebarButtons() {
         guard styleMask.contains(.titled), !styleMask.contains(.fullScreen) else { return }
+        // The buttons clip to AppKit's titlebar view, so it has to reach the
+        // row's center before they can sit on it.
+        let height = Glass.toolbarCenter * 2
+        if let titlebar = standardWindowButton(.closeButton)?.superview?.superview,
+           titlebar.frame.height != height {
+            titlebar.frame = NSRect(x: titlebar.frame.minX, y: frame.height - height,
+                                    width: titlebar.frame.width, height: height)
+        }
         for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
             guard let button = standardWindowButton(type), let container = button.superview else { continue }
-            let center = container.convert(NSPoint(x: 0, y: frame.height - 26), from: nil)
-            button.setFrameOrigin(NSPoint(x: button.frame.minX, y: center.y - button.frame.height / 2))
+            let center = container.convert(NSPoint(x: 0, y: frame.height - Glass.toolbarCenter), from: nil)
+            let y = center.y - button.frame.height / 2
+            if button.frame.minY != y { button.setFrameOrigin(NSPoint(x: button.frame.minX, y: y)) }
         }
     }
     func windowDidResize(_ notification: Notification) { alignTitlebarButtons() }
     func windowDidBecomeKey(_ notification: Notification) { alignTitlebarButtons() }
+    /// AppKit lays the titlebar out again on its own schedule.
+    func windowDidUpdate(_ notification: Notification) { alignTitlebarButtons() }
     func windowDidExitFullScreen(_ notification: Notification) { alignTitlebarButtons() }
     /// The red button and ⌘W both go through the unsaved-changes check.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
