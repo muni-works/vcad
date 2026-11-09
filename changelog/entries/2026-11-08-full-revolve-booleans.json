@@ -1,6 +1,6 @@
 {
   "id": "2026-11-08-full-revolve-booleans",
-  "version": "",
+  "version": "undefined",
   "date": "2026-11-08",
   "category": "fix",
   "title": "Booleans on 360-degree revolves keep their walls",
