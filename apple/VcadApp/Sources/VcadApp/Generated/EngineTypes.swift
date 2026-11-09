@@ -274,6 +274,38 @@ public enum CrdtValue: Codable, Equatable, Sendable {
     }
 }
 
+// MARK: - DeletedFeature
+
+/// One feature a delete removed.
+public struct DeletedFeature: Codable, Equatable, Sendable {
+    /// Stable id.
+    public var id: String
+    /// Feature name, when it had one.
+    public var name: String?
+    /// Feature kind (`cube`, `boolean`, ...).
+    public var kind: String
+
+    public init(id: String, name: String? = nil, kind: String) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: GenKey.self)
+        id = try c.decode(String.self, forKey: "id")
+        name = try c.decodeIfPresent(String.self, forKey: "name")
+        kind = try c.decode(String.self, forKey: "kind")
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: GenKey.self)
+        try c.encode(id, forKey: "id")
+        try c.encodeIfPresent(name, forKey: "name")
+        try c.encode(kind, forKey: "kind")
+    }
+}
+
 // MARK: - DocCommand
 
 /// One document mutation (or history step).
@@ -1602,13 +1634,16 @@ public struct EngineResult: Codable, Equatable, Sendable {
     public var warnings: [String]
     /// Stable id of the feature the command created, if any.
     public var createdFeatureId: String?
+    /// What a delete removed, the requested feature and any inputs only it used.
+    public var deleted: [DeletedFeature]
 
-    public init(document: EngineJSON, parts: [EnginePartInfo], consumedPartIds: [String], warnings: [String], createdFeatureId: String? = nil) {
+    public init(document: EngineJSON, parts: [EnginePartInfo], consumedPartIds: [String], warnings: [String], createdFeatureId: String? = nil, deleted: [DeletedFeature]) {
         self.document = document
         self.parts = parts
         self.consumedPartIds = consumedPartIds
         self.warnings = warnings
         self.createdFeatureId = createdFeatureId
+        self.deleted = deleted
     }
 
     public init(from decoder: Decoder) throws {
@@ -1618,6 +1653,7 @@ public struct EngineResult: Codable, Equatable, Sendable {
         consumedPartIds = try c.decode([String].self, forKey: "consumedPartIds")
         warnings = try c.decode([String].self, forKey: "warnings")
         createdFeatureId = try c.decodeIfPresent(String.self, forKey: "createdFeatureId")
+        deleted = try c.decode([DeletedFeature].self, forKey: "deleted")
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1627,6 +1663,7 @@ public struct EngineResult: Codable, Equatable, Sendable {
         try c.encode(consumedPartIds, forKey: "consumedPartIds")
         try c.encode(warnings, forKey: "warnings")
         try c.encodeIfPresent(createdFeatureId, forKey: "createdFeatureId")
+        try c.encode(deleted, forKey: "deleted")
     }
 }
 
