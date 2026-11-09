@@ -28,7 +28,7 @@
   {
     "name": "get_document",
     "title": "Get Document",
-    "description": "Return the full IR Document JSON for an open session. Use after a series of mutations to capture the result, or to feed into `export_cad` / `open_in_browser`. A document authored from loon carries that source under `source`, and the result reports `source_stale` when the session no longer matches it (the file changed, or incremental edits moved the session away from it). Very large documents come back as a compact artifact handle instead ({document_id, artifact_url, manifest with sha256, …}) — download the full IR at `artifact_url`.",
+    "description": "Return the full IR Document JSON for an open session. Use after a series of mutations to capture the result, or to feed into `export_cad` / `open_in_browser`. A document authored from loon carries that source under `source`, and the result reports `source_stale` when the session no longer matches it (the file changed, or incremental edits moved the session away from it). Very large documents come back as a compact artifact handle instead ({document_id, artifact_url, manifest with sha256, …}) — download the full IR at `artifact_url`, or read it from `path` on a local server.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -6386,7 +6386,7 @@
   {
     "name": "render_view",
     "title": "Render View",
-    "description": "Render an open session document to a PNG image so you can SEE the current geometry — silhouettes, holes, creases — not just numbers. Drafting-style line art, Z-up, same renderer as the vcad CLI. Defaults to isometric; pass azimuth/elevation for an arbitrary orbit view, and focus to frame a single part. Opt-in overlays add engineering context: `axes` (X/Y/Z origin gizmo), `labels` (part names), `dims` (overall W×D×H in mm). Pass style:'shaded' to render parts in their full assigned material colors instead of the navy drafting look. Pass `joint_state` to render a jointed assembly at a real pose (joint id or name → degrees, or mm for sliders) instead of its zero pose — forward kinematics resolves the instance placements and the resolved transforms come back in `pose.transforms`. Call after mutations to visually confirm the part matches intent before declaring done.",
+    "description": "Render an open session document to a PNG image so you can SEE the current geometry — silhouettes, holes, creases — not just numbers. Drafting-style line art, Z-up, same renderer as the vcad CLI. Defaults to isometric; pass azimuth/elevation for an arbitrary orbit view, and focus to frame a single part. Opt-in overlays add engineering context: `axes` (X/Y/Z origin gizmo), `labels` (part names), `dims` (overall W×D×H in mm). Pass style:'shaded' to render parts in their full assigned material colors instead of the navy drafting look. Pass `joint_state` to render a jointed assembly at a real pose (joint id or name → degrees, or mm for sliders) instead of its zero pose — forward kinematics resolves the instance placements and the resolved transforms come back in `pose.transforms`. Call after mutations to visually confirm the part matches intent before declaring done. A document too dense to render whole is simplified rather than refused (board copper dropped, then parts decimated), and the result's `simplified` field says exactly what the image leaves out.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -11393,7 +11393,7 @@
   {
     "name": "verify_receipt",
     "title": "Verify Receipt",
-    "description": "Re-run a prior receipt (from build_receipt) against the session's current document and return the verdict — Holds (unchanged, clean), Stale (changed but claims still hold), or Violated. Covers the PCB Receipt (board hash + DRC diff) and mech.clearance claims (re-measured against current geometry); worst verdict wins. Powers the ledger's Re-run button.",
+    "description": "Re-run a prior receipt (from build_receipt) against the session's current document and return the verdict — Holds (document unchanged, claims clean), Stale (document changed but the claims still hold), or Violated. The receipt is bound to the document state it was built on, so any edit — even one its claims don't measure — reads Stale, and `document_state` says why. Covers the PCB Receipt (board hash + DRC diff) and mech.clearance claims (re-measured against current geometry); worst verdict wins. Powers the ledger's Re-run button.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -11587,7 +11587,11 @@
         },
         "require_clean_drc": {
           "type": "boolean",
-          "description": "Gate the export on a clean DRC (default TRUE). When set, the board is DRC-checked first and the export is BLOCKED — returning `blocked:true` plus the DRC summary — if it has any errors (shorts, clearance, unconnected nets, fab-rule breaks) or the check is unverifiable (fail-closed: a board that won't even parse never counts as clean). Set false only to force a Gerber bundle from a board you know is dirty; the resulting files would otherwise fabricate an invalid board. Use validate_for_fab first for the full readiness verdict."
+          "description": "Gate the export on a clean DRC (default TRUE). When set, the board is DRC-checked first and the export is BLOCKED — returning `blocked:true` plus the DRC summary — if it has any errors (shorts, clearance, unconnected nets, fab-rule breaks) or the check is unverifiable (fail-closed: a board that won't even parse never counts as clean). Set false only to force a Gerber bundle from a board you know is dirty; the resulting files would otherwise fabricate an invalid board. Use validate_for_fab first for the full readiness verdict. It does not waive the blind/buried via gate — see allow_blind_vias."
+        },
+        "allow_blind_vias": {
+          "type": "boolean",
+          "description": "Confirm this board is going to a blind/buried-capable (HDI) fab process (default FALSE). Without it, a board with any non-through via is blocked by both validate_for_fab and export_gerber: standard fabs drill through vias only. With it, layer-pair drill files are written, one per via span."
         }
       },
       "required": []
@@ -11722,6 +11726,10 @@
         "document": {
           "type": "object",
           "description": "Inline vcad IR Document (legacy stateless flow). Prefer document_id."
+        },
+        "allow_blind_vias": {
+          "type": "boolean",
+          "description": "Confirm this board is going to a blind/buried-capable (HDI) fab process (default FALSE). Without it, a board with any non-through via is blocked by both validate_for_fab and export_gerber: standard fabs drill through vias only. With it, layer-pair drill files are written, one per via span."
         }
       },
       "required": []
