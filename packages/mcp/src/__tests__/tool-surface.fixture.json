@@ -213,6 +213,18 @@
     }
   },
   {
+    "name": "attach_app_document",
+    "title": "Attach to App Document",
+    "description": "Attach to the document the user has open in the vcad desktop app: pulls it into a new session and links it, so each edit you make lands in their window as one undo step. Use this when the user says \"this part\" or \"my document\" and has vcad open. Takes no arguments; returns document_id.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {}
+    },
+    "annotations": {
+      "readOnlyHint": false
+    }
+  },
+  {
     "name": "server_info",
     "title": "Server Info",
     "description": "Report the running build's identity: version, git sha (if stamped), tool count, enabled packs, whether the kernel WASM loaded, and whether sessions are durable (`durable` — survive a redeploy/cold start, vs. in-memory only). Call this to confirm a tool exists in THIS build before assuming a stale or version-skewed deploy, and to check durable:true before relying on checkpoints across a long session.",

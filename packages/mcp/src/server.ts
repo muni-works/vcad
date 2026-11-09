@@ -35,7 +35,12 @@ import {
   durabilityWarning,
   addDocumentEnterHook,
 } from "./tools/session.js";
-import { pushAfterWrite, pushPose, reconcileBeforeWrite } from "./app-link.js";
+import {
+  pushAfterWrite,
+  pushPose,
+  reconcileBeforeWrite,
+  toolDefs as appLinkToolDefs,
+} from "./app-link.js";
 import { getEnvRecord } from "./tools/gym.js";
 import { createCadLoon } from "./tools/loon.js";
 import {
@@ -327,6 +332,7 @@ const WIDGET_CALLABLE_META = {
  */
 const STATIC_TOOL_DEFS: readonly ToolDef[] = [
   ...sessionToolDefs,
+  ...appLinkToolDefs,
   ...batchEditToolDefs,
   ...checkpointToolDefs,
   ...continueDocToolDefs,
@@ -401,6 +407,7 @@ const LIST_TOOL_ORDER: readonly string[] = [
   "checkpoint_document",
   "branch_from",
   "continue_document",
+  "attach_app_document",
   "server_info",
   "list_tool_packs",
   "set_tool_packs",

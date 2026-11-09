@@ -1717,16 +1717,19 @@ struct ReleasedARView: NSViewRepresentable {
                 m.metallic = .init(floatLiteral: inst.material.metallic)
             }
             let e = ModelEntity(mesh: inst.mesh, materials: [m])
-            e.name = "inst\(i)"
+            // A free root (see `freeRoots`) stays where it is: it isn't an
+            // instance, so nothing that poses or picks instances may reach it.
+            let isFreeRoot = inst.index >= model.assemblyInstanceCount
+            e.name = isFreeRoot ? "free\(i)" : "inst\(i)"
             // Live transforms win over the authored pose: kinematic playback
             // and physics both publish through `instanceTransforms`, and a
             // rebuild mid-episode must not snap the robot back to its rest
             // pose.
-            e.transform = Transform(matrix: i < model.instanceTransforms.count
+            e.transform = Transform(matrix: !isFreeRoot && i < model.instanceTransforms.count
                                     ? model.instanceTransforms[i] : inst.transform)
             e.generateCollisionShapes(recursive: false)
             centering.addChild(e)
-            coordinator.instanceEntities.append(e)
+            if !isFreeRoot { coordinator.instanceEntities.append(e) }
         }
         for (i, item) in scene.meshes.enumerated() {
             var m = PhysicallyBasedMaterial()

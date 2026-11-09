@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-08-mac-app-live-link-fixes",
+  "version": "0.11.0",
+  "date": "2026-11-08",
+  "category": "fix",
+  "title": "Live agent link to the Mac app holds up across sessions",
+  "summary": "New sessions take over agent-only windows, poses survive Solving, meshes added to assemblies draw, relative mesh paths resolve, and attach_app_document links the open document.",
+  "features": ["native-app", "mcp", "live-link"],
+  "mcpTools": ["attach_app_document"]
+}
