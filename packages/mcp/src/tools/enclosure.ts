@@ -144,6 +144,56 @@ export interface EnclosureFitResult {
   error?: string;
 }
 
+type ComponentBody = { footprint_ref: string; positions: ArrayLike<number> };
+
+/**
+ * The board-fit check measures the outline. Parts hang past it, connectors most
+ * of all, and a body through a solid wall is a collision whatever the outline
+ * says: `check_clearance` reports it as penetration. A wall with openings may
+ * be letting the connector through, so that only warns; the alignment check
+ * has the detail.
+ */
+export function addComponentOverhangCheck(
+  report: EnclosureFitReport,
+  bodies: ComponentBody[],
+  cavity: { minX: number; maxX: number; minY: number; maxY: number },
+  hasOpenings: boolean,
+): void {
+  const t = (report.placement.rotationDeg * Math.PI) / 180;
+  const [sin, cos] = [Math.sin(t), Math.cos(t)];
+  const { x: ox, y: oy } = report.placement.offset;
+  const over = bodies.flatMap((b) => {
+    let worst = 0;
+    for (let i = 0; i + 2 < b.positions.length; i += 3) {
+      const [x, y] = [b.positions[i]!, b.positions[i + 1]!];
+      const wx = ox + x * cos - y * sin;
+      const wy = oy + x * sin + y * cos;
+      worst = Math.max(worst, cavity.minX - wx, wx - cavity.maxX, cavity.minY - wy, wy - cavity.maxY);
+    }
+    return worst > 1e-3 ? [{ ref: b.footprint_ref, mm: Math.round(worst * 100) / 100 }] : [];
+  });
+  if (bodies.length === 0) return;
+  const worst = over.reduce((m, o) => Math.max(m, o.mm), 0);
+  const names = over.map((o) => `${o.ref} (${o.mm} mm)`).join(", ");
+  report.checks.push({
+    id: "component_overhang",
+    label: "Component bodies inside cavity",
+    status: over.length === 0 ? "pass" : hasOpenings ? "warn" : "fail",
+    detail:
+      over.length === 0
+        ? `All ${bodies.length} component bodies stay inside the cavity`
+        : hasOpenings
+          ? `Past the cavity wall: ${names}. Confirm each passes through a wall opening.`
+          : `Through a solid wall, and the case has no openings: ${names}. check_clearance reports this as penetration.`,
+    measurements: { overhanging: over.length, worst_mm: worst },
+  });
+  if (over.length === 0) return;
+  report.verified = false;
+  if (hasOpenings) return;
+  report.ok = false;
+  report.summary = `Component bodies pass through the case wall: ${names}. ${report.summary}`;
+}
+
 /**
  * Core: given a board PCB and an enclosure CAD session, extract the cavity and
  * run the cross-domain checks. Pure of MCP plumbing so `check_enclosure_fit`
@@ -186,9 +236,11 @@ export async function computeEnclosureFitForBoard(
   // Component Z extents from the kernel's 3D component bodies (best-effort: an
   // empty list degrades the lid check to a skip, never an error).
   let componentExtents: ComponentExtent[] = [];
+  let bodies: ComponentBody[] = [];
   try {
     const meshes = await componentMeshes(pcb);
     if (meshes.length > 0) componentExtents = componentExtentsFromMeshes(meshes, pcb);
+    bodies = meshes;
   } catch {
     /* WASM unavailable — lid clearance check will report skip */
   }
@@ -209,6 +261,7 @@ export async function computeEnclosureFitForBoard(
     standoffHeight: opts.standoffHeight,
     holeTolerance: opts.holeTolerance,
   });
+  addComponentOverhangCheck(report, bodies, cavity, features.openings.length > 0);
 
   const result: EnclosureFitResult = {
     report,

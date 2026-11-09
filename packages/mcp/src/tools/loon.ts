@@ -45,21 +45,45 @@ export function carryElectronics(session: Document, loonDoc: Document): string |
     );
   }
 
+  // Once the engine has materialized a document, a board's scene root is not
+  // the PcbBoard node but the Translate above it. Carry that whole chain:
+  // keyed only on the board node, the root stayed behind and the board went
+  // unrooted, so the next engine load (the app window, any `add_mesh_part`)
+  // dropped it.
+  const chains = session.roots.flatMap((entry) => {
+    const chain = boardChain(session, entry.root);
+    return chain ? [{ entry, chain }] : [];
+  });
+  const rooted = new Set(chains.map(({ chain }) => chain[chain.length - 1]!));
+  const carried = [...new Set([...chains.flatMap(({ chain }) => chain), ...boardIds])];
+
   let next = Math.max(-1, ...Object.keys(to.nodes).map(Number)) + 1;
-  const remap = new Map<number, number>();
+  const remap = new Map<number, number>(carried.map((oldId) => [oldId, next++]));
+  const keepMaterial = (key: string | undefined) => {
+    if (key && session.materials[key]) to.materials[key] ??= session.materials[key]!;
+  };
+  for (const { entry, chain } of chains) {
+    to.roots.push({ ...entry, root: remap.get(chain[0]!)! });
+    keepMaterial(entry.material);
+  }
   for (const oldId of boardIds) {
-    const id = next++;
-    remap.set(oldId, id);
-    to.nodes[String(id)] = { ...session.nodes[String(oldId)]!, id };
+    if (rooted.has(oldId)) continue;
+    to.roots.push({ root: remap.get(oldId)!, material: "__pcb_fr4__" });
+    keepMaterial("__pcb_fr4__");
+  }
+  for (const oldId of carried) {
+    const id = remap.get(oldId)!;
+    const node = session.nodes[String(oldId)]!;
+    const op = node.op as { child?: number };
+    to.nodes[String(id)] = {
+      ...node,
+      id,
+      ...(typeof op.child === "number"
+        ? { op: { ...node.op, child: remap.get(op.child)! } as typeof node.op }
+        : {}),
+    };
     const stableId = session.partIds?.[String(oldId)];
     if (stableId) to.partIds = { ...to.partIds, [String(id)]: stableId };
-    for (const entry of session.roots) {
-      if (entry.root !== oldId) continue;
-      to.roots.push({ ...entry, root: id });
-      if (entry.material && session.materials[entry.material]) {
-        to.materials[entry.material] ??= session.materials[entry.material]!;
-      }
-    }
     for (const [key, expr] of Object.entries(session.bindings ?? {})) {
       if (!key.startsWith(`${oldId}:`)) continue;
       to.bindings = { ...to.bindings, [`${id}:${key.slice(`${oldId}:`.length)}`]: expr };
@@ -107,6 +131,83 @@ export function carryElectronics(session: Document, loonDoc: Document): string |
   );
 }
 
+/** The transform wrappers from `root` down to a PcbBoard, board last; null if it isn't one. */
+function boardChain(doc: Document, root: number): number[] | null {
+  const chain: number[] = [];
+  for (let id: number | undefined = root; id !== undefined; ) {
+    const op = doc.nodes[String(id)]?.op as { type: string; child?: number } | undefined;
+    if (!op || chain.includes(id)) return null;
+    chain.push(id);
+    if (op.type === "PcbBoard") return chain;
+    id = op.type === "Translate" || op.type === "Rotate" || op.type === "Scale" ? op.child : undefined;
+  }
+  return null;
+}
+
+/** Every field of a CsgOp that holds a node id (mirrors `CsgOp::child_ids`). */
+const CHILD_FIELDS = ["child", "left", "right", "sketch", "parent"] as const;
+const CHILD_LIST_FIELDS = ["sketches", "children"] as const;
+
+/**
+ * Append a freshly evaluated loon document to a session without touching what
+ * is there: nodes move to fresh ids, roots and assembly records are added, and
+ * nothing is overwritten. Throws, before anything is written, on a board, a
+ * schematic, or an id that already exists. Returns a note for the caller.
+ */
+export function addLoonToSession(session: Document, loonDoc: Document): string {
+  const add = loonDoc as EcadDoc;
+  if (getPcbNodeIds(loonDoc).length || add.pcb || add.schematic) {
+    throw new Error(
+      "create_cad_loon: mode \"add\" adds mechanical parts; this program defines a board or schematic. Nothing was changed.",
+    );
+  }
+  const clash = (what: string, ids: string[], held: Iterable<string>) => {
+    const taken = new Set(held);
+    const hit = ids.filter((id) => taken.has(id));
+    if (hit.length) {
+      throw new Error(
+        `create_cad_loon: mode "add" would overwrite ${what} ${hit.join(", ")}. Rename them in the program. Nothing was changed.`,
+      );
+    }
+  };
+  clash("part definition(s)", Object.keys(loonDoc.partDefs ?? {}), Object.keys(session.partDefs ?? {}));
+  clash("instance(s)", (loonDoc.instances ?? []).map((i) => i.id), (session.instances ?? []).map((i) => i.id));
+  clash("joint(s)", (loonDoc.joints ?? []).map((j) => j.id), (session.joints ?? []).map((j) => j.id));
+  clash("parameter(s)", Object.keys(loonDoc.parameters ?? {}), Object.keys(session.parameters ?? {}));
+
+  const offset = Math.max(-1, ...Object.keys(session.nodes).map(Number)) + 1;
+  for (const [key, node] of Object.entries(loonDoc.nodes)) {
+    const id = Number(key) + offset;
+    const op = { ...node.op } as unknown as Record<string, unknown>;
+    for (const f of CHILD_FIELDS) if (typeof op[f] === "number") op[f] = (op[f] as number) + offset;
+    for (const f of CHILD_LIST_FIELDS) {
+      if (Array.isArray(op[f])) op[f] = (op[f] as number[]).map((c) => c + offset);
+    }
+    session.nodes[String(id)] = { ...node, id, op: op as unknown as typeof node.op };
+  }
+  session.roots.push(...loonDoc.roots.map((r) => ({ ...r, root: r.root + offset })));
+  for (const [key, mat] of Object.entries(loonDoc.materials)) session.materials[key] ??= mat;
+  for (const [key, pd] of Object.entries(loonDoc.partDefs ?? {})) {
+    (session.partDefs ??= {})[key] = {
+      ...pd,
+      root: pd.root + offset,
+      ...(pd.colliders ? { colliders: pd.colliders.map((c) => c + offset) } : {}),
+    };
+  }
+  if (loonDoc.instances?.length) (session.instances ??= []).push(...loonDoc.instances);
+  if (loonDoc.joints?.length) (session.joints ??= []).push(...loonDoc.joints);
+  if (!session.groundInstanceId && loonDoc.groundInstanceId) {
+    session.groundInstanceId = loonDoc.groundInstanceId;
+  }
+  if (loonDoc.parameters) session.parameters = { ...session.parameters, ...loonDoc.parameters };
+  for (const [key, expr] of Object.entries(loonDoc.bindings ?? {})) {
+    const at = key.indexOf(":");
+    session.bindings = { ...session.bindings, [`${Number(key.slice(0, at)) + offset}:${key.slice(at + 1)}`]: expr };
+  }
+  const parts = loonDoc.roots.length + Object.keys(loonDoc.partDefs ?? {}).length;
+  return `Added ${parts} part(s) to the document; nothing already there changed.`;
+}
+
 /** JSON Schema for create_cad_loon input. */
 export const createCadLoonSchema = {
   type: "object" as const,
@@ -121,6 +222,15 @@ export const createCadLoonSchema = {
     source: {
       type: "string" as const,
       description: "Loon source code defining CAD geometry",
+    },
+    mode: {
+      type: "string" as const,
+      enum: ["replace", "add"],
+      description:
+        "With document_id: `replace` (default) rebuilds the document's mechanical geometry from " +
+        "this program, keeping any board and schematic. `add` keeps everything and appends this " +
+        "program's parts, part defs, instances, joints and parameters; an id that already exists " +
+        "fails the call with nothing changed. To joint new instances to existing ones, use `assemble`.",
     },
     use_loons: {
       type: "array" as const,
@@ -513,20 +623,26 @@ export const toolDefs: ToolDef[] = [
       // via getSession so an unknown id fails loudly, not silently forks.
       const targetId =
         typeof args.document_id === "string" ? args.document_id : null;
+      const adding = args.mode === "add";
+      if (adding && !targetId) throw new Error('create_cad_loon: mode "add" requires document_id');
       if (targetId) {
         const session = getSession(targetId); // unknown id fails loudly
         // Outside the best-effort block below: a conflict must fail the call
         // with the session untouched.
-        const kept = doc ? carryElectronics(session, doc) : null;
-        if (kept) result.content.push({ type: "text", text: kept });
+        if (adding && doc) {
+          result.content.push({ type: "text", text: addLoonToSession(session, doc) });
+        } else {
+          const kept = doc ? carryElectronics(session, doc) : null;
+          if (kept) result.content.push({ type: "text", text: kept });
+        }
       }
       // Attach the integrity certificate to the largest mutation of all:
       // authoring a whole document. The loon evaluation is cheap relative to
       // the mesh evaluation computeIntegrity runs anyway.
       try {
         if (doc) {
-          if (targetId) documents.set(targetId, doc);
-          const integrity = computeIntegrity(doc, ctx.engine);
+          if (targetId && !adding) documents.set(targetId, doc);
+          const integrity = computeIntegrity(adding ? getSession(targetId!) : doc, ctx.engine);
           if (integrity) {
             appendIntegrity(result, integrity);
             if (targetId) recordTriangles(targetId, integrity.triangles);

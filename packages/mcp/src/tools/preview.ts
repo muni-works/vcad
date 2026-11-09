@@ -12,6 +12,7 @@
  * board.
  */
 
+import { evaluateIncrementally } from "./document-solids.js";
 import type { Document } from "@vcad/ir";
 import { pcbPreviewMeshes, transformMesh, type Engine } from "@vcad/engine";
 import { getNodePcb } from "@vcad/core";
@@ -196,7 +197,7 @@ export async function generateGlbPreview(
     const sceneRoots = sceneDoc.roots.filter((r) => r.visible !== false);
     const labelIndex = new Map(visibleRoots.map((r, i) => [Number(r.root), i]));
     const needsScene = sceneRoots.length > 0 || (doc.instances?.length ?? 0) > 0;
-    const scene = needsScene ? engine.evaluate(sceneDoc) : null;
+    const scene = needsScene ? evaluateIncrementally(sceneDoc, engine) : null;
     for (let i = 0; i < (scene?.parts.length ?? 0); i++) {
       const rootId = sceneRoots[i]?.root;
       const part = scene!.parts[i];
@@ -480,7 +481,7 @@ export function generateInstancesGlbPreview(
   engine: Engine,
 ): string | null {
   try {
-    const scene = engine.evaluate(doc);
+    const scene = evaluateIncrementally(doc, engine);
     const instances = scene?.instances;
     if (!instances || instances.length === 0) return null;
 

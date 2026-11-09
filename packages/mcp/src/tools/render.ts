@@ -12,6 +12,9 @@
  * inspect_cad gives numbers, render_view shows the part.
  */
 
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { getKernelWasm, resetKernelWasm, computeRatsnest } from "@vcad/engine";
 import type { Engine, NetlistResult } from "@vcad/engine";
 import { boardCopperLayers, getNodePcb, getPcbNodeIds } from "@vcad/core";
@@ -34,6 +37,8 @@ import {
   withRenderAssets,
 } from "./render-assets.js";
 import { asBool } from "./arg-coerce.js";
+import { isRemoteDeployment } from "./remote.js";
+import { loadResvg } from "./resvg-loader.js";
 import { rootForPartId } from "./part-ids.js";
 import { applyJointState, jointStateSchemaProp, type PoseInfo } from "./pose.js";
 
@@ -184,6 +189,27 @@ type RasterOutcome =
   | { png: Buffer }
   | { png: null; reason: "module-missing" | string };
 
+/**
+ * What a client gets for an SVG too big to inline: on a local server, the
+ * file on disk, which it can read; hosted, only the reason.
+ */
+export function oversizedSvg(
+  svg: string,
+  svgBytes: number,
+  label: string,
+): { svg_omitted: string; svg_path?: string } {
+  const svg_omitted = `SVG is ${svgBytes} bytes (inline cap ${MAX_INLINE_SVG_BYTES}).`;
+  if (isRemoteDeployment()) return { svg_omitted };
+  try {
+    const dir = mkdtempSync(join(tmpdir(), "vcad-render-"));
+    const svg_path = join(dir, `${label.replace(/[^a-z0-9.-]/gi, "_")}.svg`);
+    writeFileSync(svg_path, svg);
+    return { svg_omitted: `${svg_omitted} Written to svg_path.`, svg_path };
+  } catch {
+    return { svg_omitted };
+  }
+}
+
 /** Rasterize SVG to PNG via the optional resvg dependency. A missing
  *  module and a genuine rasterization failure are distinct outcomes so
  *  the fallback note never tells the agent to install a dependency that
@@ -202,25 +228,15 @@ export async function rasterize(
         `(cap ${MAX_RASTER_SVG_BYTES}) — the document is too dense to raster safely`,
     };
   }
-  let ResvgCtor: typeof import("@resvg/resvg-js").Resvg;
-  try {
-    ({ Resvg: ResvgCtor } = await import("@resvg/resvg-js"));
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException)?.code;
-    if (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") {
-      return { png: null, reason: "module-missing" };
-    }
-    return {
-      png: null,
-      reason: `resvg import failed: ${e instanceof Error ? e.message : String(e)}`,
-    };
-  }
+  const loaded = await loadResvg();
+  if ("reason" in loaded) return { png: null, reason: loaded.reason };
+  const ResvgCtor = loaded.Resvg;
   try {
     const resvg = new ResvgCtor(svg, {
       fitTo: { mode: "width", value: widthPx },
       background,
     });
-    return { png: resvg.render().asPng() };
+    return { png: Buffer.from(resvg.render().asPng()) };
   } catch (e) {
     return {
       png: null,
@@ -828,6 +844,7 @@ export async function renderView(
             document_id: documentId,
             view: viewLabel,
             svg_bytes: svgBytes,
+            ...oversizedSvg(svg, svgBytes, `${documentId || "inline"}-${viewLabel}`),
             hint:
               "The document is too dense for the per-triangle SVG renderer. Reduce " +
               "pattern counts, render a subset via `focus`, or inspect numerically " +
@@ -861,7 +878,7 @@ export async function renderView(
           ...(svgBytes <= MAX_INLINE_SVG_BYTES
             ? { svg }
             : {
-                svg_omitted: `SVG is ${svgBytes} bytes (inline cap ${MAX_INLINE_SVG_BYTES}) — use export_cad for geometry output.`,
+                ...oversizedSvg(svg, svgBytes, `${documentId || "inline"}-${viewLabel}`),
               }),
         }),
       },
@@ -1078,7 +1095,7 @@ export async function renderPcb(
           note,
           ...(svgBytes <= MAX_INLINE_SVG_BYTES
             ? { svg }
-            : { svg_omitted: `SVG is ${svgBytes} bytes (inline cap ${MAX_INLINE_SVG_BYTES}).` }),
+            : oversizedSvg(svg, svgBytes, "render")),
         }),
       },
     ],
@@ -1304,7 +1321,7 @@ export async function renderRatsnest(
           note,
           ...(svgBytes <= MAX_INLINE_SVG_BYTES
             ? { svg }
-            : { svg_omitted: `SVG is ${svgBytes} bytes (inline cap ${MAX_INLINE_SVG_BYTES}).` }),
+            : oversizedSvg(svg, svgBytes, "render")),
         }),
       },
     ],

@@ -148,6 +148,7 @@ import { toolDefs as liveShareToolDefs } from "./tools/live-share.js";
 import { toolDefs as partsToolDefs } from "./tools/parts.js";
 import { toolDefs as previewToolDefs } from "./tools/preview.js";
 import { toolDefs as loonToolDefs } from "./tools/loon.js";
+import { toolDefs as assembleToolDefs } from "./tools/assemble.js";
 import { toolDefs as exportToolDefs } from "./tools/export.js";
 import { toolDefs as inspectToolDefs } from "./tools/inspect.js";
 import { toolDefs as measureToolDefs } from "./tools/measure.js";
@@ -347,6 +348,7 @@ const STATIC_TOOL_DEFS: readonly ToolDef[] = [
   ...partsToolDefs,
   ...previewToolDefs,
   ...loonToolDefs,
+  ...assembleToolDefs,
   ...exportToolDefs,
   ...inspectToolDefs,
   ...measureToolDefs,
@@ -444,6 +446,7 @@ const LIST_TOOL_ORDER: readonly string[] = [
   "apply_edits",
   // ── Loon DSL one-shot + core see/measure/export ────────────
   "create_cad_loon",
+  "assemble",
   // ── Agent macro library (define once, instantiate anywhere) ──
   "define_loon",
   "call_loon",
@@ -1658,7 +1661,7 @@ export async function createServer(
         if (
           incomingId &&
           writtenId === incomingId &&
-          name !== "create_cad_loon" &&
+          (name !== "create_cad_loon" || args.mode === "add") &&
           name !== "undo" &&
           markSourceDiverged(incomingId, name)
         ) {

@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-09-agent-actuator-run-fixes",
+  "version": "0.11.0",
+  "date": "2026-11-09",
+  "category": "fix",
+  "title": "Agents keep boards, assemble in place, and stop waiting",
+  "summary": "Boards survive loon and assembly edits, the new assemble tool adds joints in place, edits re-solve only changed parts, and render_view returns a PNG out of the box.",
+  "features": ["mcp", "assembly", "electronics", "app-link"],
+  "mcpTools": ["assemble", "create_cad_loon", "render_view", "topology_optimize", "fab_prep", "check_enclosure_fit", "board_from_solid"]
+}

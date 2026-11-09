@@ -112,6 +112,7 @@ pub fn migrate_v1_mapped(doc: &Document) -> (CrdtDocument, MigrationMap) {
     }
 
     migrate_assembly(&mut crdt, &mut ctx, doc);
+    migrate_orphan_boards(&mut crdt, &mut ctx, doc);
 
     // Atomic / molecular domain: one `molecule` feature carrying the whole
     // system as a JSON blob (mirrors how schematic/scene data round-trips).
@@ -970,6 +971,37 @@ fn fid_to_stable(fid: FeatureId) -> String {
     format!("{}:{}", fid.0 .0, fid.1)
 }
 
+/// A board node no root or part definition reaches is still the document's
+/// board. Everything else is carried by walking from the roots, so without
+/// this it vanished on load, and took the Electronics workspace with it.
+fn migrate_orphan_boards(crdt: &mut CrdtDocument, ctx: &mut MigrationCtx, doc: &Document) {
+    let mut reached = std::collections::HashSet::new();
+    let part_roots = doc.part_defs.iter().flatten().map(|(_, pd)| pd.root);
+    let mut stack: Vec<NodeId> = doc.roots.iter().map(|e| e.root).chain(part_roots).collect();
+    while let Some(id) = stack.pop() {
+        if reached.insert(id) {
+            stack.extend(
+                doc.nodes
+                    .get(&id)
+                    .map(|n| n.op.child_ids())
+                    .unwrap_or_default(),
+            );
+        }
+    }
+    let mut orphans: Vec<NodeId> = doc
+        .nodes
+        .iter()
+        .filter(|(id, node)| matches!(node.op, CsgOp::PcbBoard { .. }) && !reached.contains(id))
+        .map(|(id, _)| *id)
+        .collect();
+    orphans.sort_unstable();
+    for id in orphans {
+        if let Some(fid) = migrate_node(crdt, ctx, doc, id) {
+            crdt.set_param(fid, "material", Value::String("__pcb_fr4__".to_string()));
+        }
+    }
+}
+
 /// Migrate the assembly portion of a v1 document: part definitions, their
 /// instances, and the joints connecting them. No-op when the document has
 /// no `partDefs`.
@@ -1295,6 +1327,38 @@ mod tests {
         assert!(got.document.nodes.values().any(
             |n| matches!(n.op, CsgOp::SweepRotate { angle_hi_deg, .. } if angle_hi_deg == 90.0)
         ));
+    }
+
+    #[test]
+    fn an_unrooted_board_survives_a_load() {
+        let doc: Document = serde_json::from_value(serde_json::json!({
+            "version": "0.1",
+            "nodes": {
+                "1": {"id": 1, "op": {"type": "Cube", "size": {"x": 1.0, "y": 1.0, "z": 1.0}}},
+                "2": {"id": 2, "name": "PCB", "op": {"type": "PcbBoard", "board": {
+                    "outline": {"vertices": [], "thickness": 1.6},
+                    "stackup": {"layers": []},
+                    "nets": [],
+                    "rules": {"defaultRules": {"name": "default", "traceWidth": 0.2,
+                        "clearance": 0.2, "viaDiameter": 0.6, "viaDrill": 0.3},
+                        "edgeClearance": 0.3, "holeToHole": 0.25,
+                        "minAnnularRing": 0.1, "minDrill": 0.2},
+                    "footprints": [], "traces": [], "vias": [], "zones": []
+                }}}
+            },
+            "materials": {},
+            "part_materials": {},
+            "roots": [{"root": 1, "material": "default"}]
+        }))
+        .expect("fixture");
+        let out = crate::materializer::materialize(&migrate_v1(&doc)).document;
+        assert!(
+            out.nodes
+                .values()
+                .any(|n| matches!(n.op, CsgOp::PcbBoard { .. })),
+            "the board must be in the materialized document"
+        );
+        assert_eq!(out.roots.len(), 2, "and reachable from the scene");
     }
 
     #[test]

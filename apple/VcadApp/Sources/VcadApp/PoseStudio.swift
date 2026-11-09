@@ -95,6 +95,7 @@ extension EditorModel {
 
     func setJoint(_ j: DocJoint, _ value: Double) {
         jointPose[Self.poseKey(j)] = value
+        clearJointDrags(forPoseKeys: [Self.poseKey(j)])
         applyStudioPose()
     }
 
@@ -106,6 +107,7 @@ extension EditorModel {
     func resetPose() {
         jointPose = [:]
         explode = 0
+        assembly.dragValues = [:]
         applyStudioPose()
     }
 

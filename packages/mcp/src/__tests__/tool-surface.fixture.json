@@ -1592,6 +1592,14 @@
           "type": "string",
           "description": "Loon source code defining CAD geometry"
         },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "replace",
+            "add"
+          ],
+          "description": "With document_id: `replace` (default) rebuilds the document's mechanical geometry from this program, keeping any board and schematic. `add` keeps everything and appends this program's parts, part defs, instances, joints and parameters; an id that already exists fails the call with nothing changed. To joint new instances to existing ones, use `assemble`."
+        },
         "use_loons": {
           "type": "array",
           "items": {
@@ -1663,6 +1671,155 @@
       "openai/outputTemplate": "ui://vcad/viewer-openai.html",
       "openai/toolInvocation/invoking": "Modeling geometry…",
       "openai/toolInvocation/invoked": "Model updated"
+    }
+  },
+  {
+    "name": "assemble",
+    "title": "Assemble",
+    "description": "Add instances and joints to a document without rebuilding it. Everything already there (parts, board, other joints) stays. An instance names an existing part id, part name, or part definition; a loose part it names becomes a part definition, shown through its instance. To add new geometry first, use `create` or `create_cad_loon` with mode:\"add\". All-or-nothing: an invalid entry fails the call with the document unchanged.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "description": "Session to add to."
+        },
+        "instances": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "New instance id."
+              },
+              "part": {
+                "type": "string",
+                "description": "Part id, part name, or part definition."
+              },
+              "name": {
+                "type": "string"
+              },
+              "at": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "z": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "x",
+                  "y",
+                  "z"
+                ],
+                "description": "Translation in mm. Identity when omitted: the part stays where it is."
+              },
+              "transform": {
+                "type": "object",
+                "description": "Full {translation, rotation, scale}; overrides `at`."
+              },
+              "material": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id",
+              "part"
+            ]
+          }
+        },
+        "joints": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "parent": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Parent instance, by id or name; null grounds it to the world."
+              },
+              "child": {
+                "type": "string",
+                "description": "Child instance, by id or name."
+              },
+              "parent_anchor": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "z": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "x",
+                  "y",
+                  "z"
+                ]
+              },
+              "child_anchor": {
+                "type": "object",
+                "properties": {
+                  "x": {
+                    "type": "number"
+                  },
+                  "y": {
+                    "type": "number"
+                  },
+                  "z": {
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "x",
+                  "y",
+                  "z"
+                ]
+              },
+              "kind": {
+                "type": "object",
+                "description": "E.g. {\"type\":\"Revolute\",\"axis\":{\"x\":0,\"y\":0,\"z\":1},\"limits\":[-90,90]}. type: Fixed, Revolute, Slider, Cylindrical, Ball."
+              },
+              "state": {
+                "type": "number",
+                "description": "Initial angle (deg) or position (mm)."
+              }
+            },
+            "required": [
+              "child",
+              "kind"
+            ]
+          }
+        },
+        "ground": {
+          "type": "string",
+          "description": "Instance to ground."
+        }
+      },
+      "required": [
+        "document_id"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false
     }
   },
   {

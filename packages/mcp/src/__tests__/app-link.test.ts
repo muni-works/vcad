@@ -26,6 +26,65 @@ describe("app link", () => {
     expect(sent).toEqual(["adopt_document", "adopt_document"]);
   });
 
+  it("returns before a slow app finishes, and the note arrives on the next call", async () => {
+    let release: (v: Record<string, unknown>) => void = () => {};
+    const slow = () => new Promise<Record<string, unknown>>((r) => (release = r));
+    const start = Date.now();
+    expect(await pushAfterWrite("a", "create", doc(1), slow)).toBeNull();
+    expect(Date.now() - start).toBeLessThan(1000);
+    release({ adopted: true });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(takeLinkNote("a")).toMatch(/live/);
+    expect(takeLinkNote("a")).toBeNull();
+  });
+
+  it("collapses pushes made during a slow one to the newest", async () => {
+    const sent: unknown[] = [];
+    let release: () => void = () => {};
+    const call = (_: string, a: Record<string, unknown>) => {
+      sent.push((a.document as { version: string }).version);
+      return new Promise<Record<string, unknown>>((r) => (release = () => r({ adopted: true })));
+    };
+    await pushAfterWrite("a", "create", doc(1), call);
+    await pushAfterWrite("a", "update", doc(2), call);
+    await pushAfterWrite("a", "update", doc(3), call);
+    release();
+    await new Promise((r) => setTimeout(r, 0));
+    release();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(sent).toEqual(["1", "3"]);
+  });
+
+  it("a user edit during a slow push still stops the next write", async () => {
+    const store = new Map<string, Document>();
+    let release: (v: Record<string, unknown>) => void = () => {};
+    await pushAfterWrite("a", "create", doc(1), async () => ({ adopted: true }));
+    const refusing = () => new Promise<Record<string, unknown>>((r) => (release = r));
+    await pushAfterWrite("a", "update", doc(2), refusing);
+    // In flight: the pre-write check doesn't queue behind the busy app.
+    const calls: string[] = [];
+    const record = async (tool: string) => (calls.push(tool), null);
+    expect(await reconcileBeforeWrite("a", store, record)).toBeNull();
+    expect(calls).toEqual([]);
+    release({ adopted: false, reason: "edited" });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(takeLinkNote("a")).toMatch(/user just changed/);
+    // Now idle: the user's version comes in and the call stops.
+    const theirs = doc(9);
+    const app = async (_: string, a: Record<string, unknown>) =>
+      a.pull ? { linked: true, edited: true, document: theirs } : { linked: true, edited: true };
+    expect(await reconcileBeforeWrite("a", store, app)).toMatch(/user changed/);
+    expect(store.get("a")).toBe(theirs);
+  });
+
+  it("does not hold a write for a link_status the app can't answer yet", async () => {
+    await pushAfterWrite("a", "create", doc(1), async () => ({ adopted: true }));
+    const hung = () => new Promise<Record<string, unknown>>(() => {});
+    const start = Date.now();
+    expect(await reconcileBeforeWrite("a", new Map(), hung)).toBeNull();
+    expect(Date.now() - start).toBeLessThan(1000);
+  });
+
   it("does nothing without an app", async () => {
     const none = async () => null;
     expect(await pushAfterWrite("a", "create", doc(1), none)).toBeNull();
