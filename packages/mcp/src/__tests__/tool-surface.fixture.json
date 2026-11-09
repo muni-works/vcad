@@ -5036,7 +5036,7 @@
         },
         "part": {
           "type": "string",
-          "description": "Root part id or exact name; its evaluated mesh is analyzed."
+          "description": "Root part id, exact name, assembly instance, or part def; its evaluated, world-posed mesh is analyzed."
         },
         "loads": {
           "type": "array",
@@ -7686,7 +7686,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Instance IDs to track as end effectors"
+          "description": "Instance IDs to track as end effectors (default: none)"
         },
         "dt": {
           "type": "number",
@@ -7740,9 +7740,7 @@
           "description": "Ground restitution: 0 = inelastic rest, 1 = elastic bounce (default: 0)"
         }
       },
-      "required": [
-        "end_effector_ids"
-      ]
+      "required": []
     },
     "annotations": {
       "readOnlyHint": false
@@ -8188,7 +8186,7 @@
           "items": {
             "type": "string"
           },
-          "description": "Instance IDs to track as end effectors"
+          "description": "Instance IDs to track as end effectors (default: none)"
         },
         "dt": {
           "type": "number",
@@ -8220,8 +8218,7 @@
         }
       },
       "required": [
-        "n_envs",
-        "end_effector_ids"
+        "n_envs"
       ]
     },
     "annotations": {
@@ -8373,11 +8370,11 @@
               },
               "x": {
                 "type": "number",
-                "description": "X position on sheet"
+                "description": "X position on sheet (optional; default: auto grid)"
               },
               "y": {
                 "type": "number",
-                "description": "Y position on sheet"
+                "description": "Y position on sheet (optional; default: auto grid)"
               },
               "rotation": {
                 "type": "number",
@@ -8461,9 +8458,7 @@
             },
             "required": [
               "ref",
-              "footprint",
-              "x",
-              "y"
+              "footprint"
             ]
           }
         },
@@ -9511,7 +9506,7 @@
         },
         "enclosure_part_id": {
           "type": "string",
-          "description": "Root id of the enclosure part when the CAD session has more than one solid."
+          "description": "Part id, name, assembly instance, or part def of the enclosure when the CAD session has more than one solid."
         },
         "clearance": {
           "type": "number",
@@ -11567,7 +11562,7 @@
         },
         "output_dir": {
           "type": "string",
-          "description": "Directory to write the fabrication files to (created if missing). Resolved on the MCP server's filesystem — on hosted/sandboxed servers the write may fail. When omitted (or the write fails), a small bundle is returned inline, but a bundle over the inline byte cap (~168 KB Gerber sets exceed it) is written to the artifact store and the result carries { artifact_url, manifest, artifact_id } instead of the files — pass that artifact_id to quote_manufacturing / place_order so the fab files never transit model context."
+          "description": "Directory to write the fabrication files to (created if missing). Resolved on the MCP server's filesystem; absolute paths work locally. A hosted server, or a write that fails, is an error and nothing is delivered. When omitted, a small bundle is returned inline, but a bundle over the inline byte cap (~168 KB Gerber sets exceed it) is written to the artifact store and the result carries { artifact_url, manifest, artifact_id } instead of the files — pass that artifact_id to quote_manufacturing / place_order so the fab files never transit model context."
         },
         "require_clean_drc": {
           "type": "boolean",

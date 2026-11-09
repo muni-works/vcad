@@ -26,7 +26,10 @@ import type {
 import { behavior, type ToolDef } from "./tool-def.js";
 import { resolveParameters, solveDesignConstraints } from "@vcad/engine";
 import type { Document, Expr, Parameter } from "@vcad/ir";
+import { getPcbNodeIds } from "@vcad/core";
 import { appendIntegrity, computeIntegrity } from "./integrity.js";
+import { carryElectronics } from "./loon.js";
+import { resolveLoonAssets } from "./loon-assets.js";
 import {
   getSession,
   resolveDocInput,
@@ -146,6 +149,71 @@ function referencedNames(doc: Document): Set<string> {
   return out;
 }
 
+/** Canonical JSON (sorted keys): a kernel's map ordering is not stable. */
+function canonical(value: unknown): string {
+  return JSON.stringify(value, (_k, v: unknown) =>
+    v && typeof v === "object" && !Array.isArray(v)
+      ? Object.fromEntries(
+          Object.entries(v as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : 1)),
+        )
+      : v,
+  );
+}
+
+const geometryOf = (d: Document) =>
+  canonical({ nodes: d.nodes, roots: d.roots, defs: d.partDefs, inst: d.instances, joints: d.joints });
+
+/** A loon literal: always with a decimal point, never in exponent notation. */
+function loonNumber(v: number): string {
+  const text = String(v);
+  if (text.includes("e")) return v.toFixed(12);
+  return text.includes(".") ? text : `${text}.0`;
+}
+
+/** The source with these `[defparam name <number>` values, or null if one isn't there. */
+function sourceWithValues(text: string, values: Record<string, number>): string | null {
+  let out = text;
+  for (const [name, value] of Object.entries(values)) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const form = new RegExp(`(\\[\\s*defparam\\s+${escaped}\\s+)-?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][-+]?\\d+)?`, "g");
+    if (!form.test(out)) return null;
+    out = out.replace(form, (_m, head: string) => head + loonNumber(value));
+  }
+  return out;
+}
+
+/**
+ * Re-run the document's loon source at given parameter values, or null when
+ * that isn't possible. Binding recovery can only express affine dependence on
+ * addressable fields, so a parameter reaching sketch points or non-linear
+ * arithmetic gets no binding; the source still knows how it drives geometry.
+ *
+ * Direct edits don't round-trip to loon, so a diverged source is off limits —
+ * except divergence from set_parameters alone, which this reproduces by
+ * substituting every current value.
+ */
+function sourceEvaluator(
+  doc: Document,
+  engine: Engine,
+): ((values: Record<string, number>) => Document | null) | null {
+  const src = doc.source;
+  if (!src || src.language !== "loon") return null;
+  if (src.diverged && (src.diverged_by ?? []).some((t) => t !== "set_parameters")) return null;
+  return (values) => {
+    const text = sourceWithValues(src.text, values);
+    if (text === null) return null;
+    try {
+      const evaluated = engine.evalLoonDocument(text, src.modules ?? {}, {
+        baseDir: src.base_dir ?? undefined,
+      });
+      if (evaluated) resolveLoonAssets(evaluated, { base_dir: src.base_dir ?? undefined }, engine);
+      return evaluated;
+    } catch {
+      return null;
+    }
+  };
+}
+
 interface ParameterDelta {
   name: string;
   previous: Expr;
@@ -196,9 +264,53 @@ export async function setParameters(input: unknown, engine: Engine): Promise<Too
   // parameter (a stack boundary follows from thicknesses and gaps; geometry
   // is bound to those), so the report names what to set instead.
   const referenced = referencedNames(doc);
-  const noEffect = entries
-    .map(([name]) => name)
-    .filter((name) => !referenced.has(name))
+  const unbound = entries.map(([name]) => name).filter((name) => !referenced.has(name));
+
+  // An unbound base parameter may still drive the model through its source.
+  // Probe one at a time, so a batch can't credit an inert name with another's
+  // effect; a parameter already at the requested value is nudged for the probe.
+  const evaluate = sourceEvaluator(doc, engine);
+  const numericValues = (over: Record<string, number> = {}) => ({
+    ...Object.fromEntries(
+      Object.entries(params).flatMap(([n, p]) =>
+        typeof (p as Parameter).value === "number" ? [[n, (p as Parameter).value as number]] : [],
+      ),
+    ),
+    ...over,
+  });
+  const candidates = unbound.filter((n) => typeof (params[n] as Parameter).value === "number");
+  const baseline = evaluate && candidates.length ? evaluate(numericValues()) : null;
+  const sourceDriven = new Set<string>();
+  if (evaluate && baseline) {
+    const reference = geometryOf(baseline);
+    for (const name of candidates) {
+      const current = (params[name] as Parameter).value as number;
+      const target = (updates as Record<string, number>)[name]!;
+      const probe = evaluate(
+        numericValues({ [name]: target !== current ? target : current + Math.max(1, Math.abs(current)) * 0.01 }),
+      );
+      if (probe && geometryOf(probe) !== reference) sourceDriven.add(name);
+    }
+  }
+
+  const unboundReason = (name: string, isDerived: boolean, expr: unknown): string => {
+    if (isDerived) return `derived (${JSON.stringify(expr)}) — no field is bound to it`;
+    if (baseline) {
+      return "the loon source declares it, but re-evaluating the source at a new value changes no geometry — nothing in the model reads it";
+    }
+    if (doc.source) {
+      return (
+        "no field is bound to it: the loon expression reaching geometry can't be captured as a " +
+        "formula (sketch points or non-linear arithmetic), and the source can't be re-run here " +
+        "(the session was edited directly, or the parameter isn't a literal defparam in the " +
+        "source). Change it in the source and re-run create_cad_loon."
+      );
+    }
+    return "no field is bound to it";
+  };
+
+  const noEffect = unbound
+    .filter((name) => !sourceDriven.has(name))
     .map((name) => {
       const value = (params[name] as Parameter).value;
       const inputs =
@@ -209,19 +321,41 @@ export async function setParameters(input: unknown, engine: Engine): Promise<Too
           : [];
       return {
         name,
-        reason:
-          typeof value === "string"
-            ? `derived (${JSON.stringify(value)}) — no field is bound to it`
-            : "no field is bound to it",
+        reason: unboundReason(name, typeof value === "string", value),
         ...(inputs.length ? { set_instead: inputs } : {}),
       };
     });
+
+  // Source-driven parameters have no binding to apply: rebuild from source at
+  // the new values, before anything is touched so a failure changes nothing.
+  // The session's board comes along unless the source authored it; `source`
+  // stays the authored text, as a binding-only change would leave it.
+  let rebuilt: Document | null = null;
+  if (evaluate && sourceDriven.size > 0) {
+    rebuilt = evaluate(numericValues(updates as Record<string, number>));
+    if (!rebuilt) {
+      throw new Error(
+        `Could not re-evaluate the loon source for: ${[...sourceDriven].join(", ")}. Nothing was changed.`,
+      );
+    }
+    const authorsBoard =
+      getPcbNodeIds(rebuilt).length > 0 ||
+      Boolean((rebuilt as Document & { pcb?: unknown }).pcb) ||
+      Boolean(rebuilt.schematic);
+    if (!authorsBoard) carryElectronics(doc, rebuilt);
+  }
 
   const changed: ParameterDelta[] = [];
   for (const [name, value] of entries) {
     const param = doc.parameters[name] as Parameter;
     changed.push({ name, previous: param.value, value: value as number });
     param.value = value as number;
+  }
+
+  if (rebuilt) {
+    const source = doc.source;
+    for (const key of Object.keys(doc)) delete (doc as unknown as Record<string, unknown>)[key];
+    Object.assign(doc, rebuilt, { source });
   }
 
   // Parameters drive constraint dimensions ("board_width - 2*margin") —
@@ -243,6 +377,7 @@ export async function setParameters(input: unknown, engine: Engine): Promise<Too
     document_id: documentId,
     updated: changed.length,
     changed,
+    ...(rebuilt ? { reevaluated_from_source: [...sourceDriven] } : {}),
     ...(noEffect.length ? { no_effect: noEffect } : {}),
     ...(constraintSolve ? { constraint_solve: constraintSolve } : {}),
   });

@@ -108,7 +108,8 @@ export const toolDefs: ToolDef[] = [
         },
         part: {
           type: "string" as const,
-          description: "Root part id or exact name; its evaluated mesh is analyzed.",
+          description:
+            "Root part id, exact name, assembly instance, or part def; its evaluated, world-posed mesh is analyzed.",
         },
         loads: {
           type: "array" as const,

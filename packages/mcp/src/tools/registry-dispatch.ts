@@ -11,6 +11,7 @@
 
 import type { AnthropicTool } from "@vcad/core";
 import { commandRegistry, listPartsFromDocument } from "@vcad/core";
+import { assemblyPartList, findAssemblyPart } from "./document-solids.js";
 // session-core, not session.ts: this module is bundled into the browser app
 // (via topopt), and session.ts pulls in node:path / node:fs.
 import {
@@ -765,17 +766,20 @@ function handleRead(
       content: [
         {
           type: "text",
-          text: JSON.stringify({ parts: listPartsFromDocument(doc) }),
+          text: JSON.stringify({ parts: [...listPartsFromDocument(doc), ...assemblyPartList(doc)] }),
         },
       ],
     };
   }
   const resolved = rootForPartId(doc, String(partId));
-  if (!resolved) {
+  const assemblyPart = resolved ? null : findAssemblyPart(doc, String(partId));
+  if (!resolved && !assemblyPart) {
     throw new Error(`read: no part with id "${partId}"`);
   }
-  const root = resolved.entry;
-  const deprecation = partIdDeprecation(String(partId), resolved);
+  const root = resolved
+    ? resolved.entry
+    : { root: assemblyPart!.root, material: assemblyPart!.material };
+  const deprecation = resolved ? partIdDeprecation(String(partId), resolved) : undefined;
   // Walk descendant nodes for the feature tree, keyed by node id.
   const tree: Record<string, unknown> = {};
   const stack = [root.root];
@@ -794,7 +798,7 @@ function handleRead(
       {
         type: "text",
         text: JSON.stringify({
-          part_id: resolved.partId,
+          part_id: resolved ? resolved.partId : assemblyPart!.id,
           node_id: String(root.root),
           material: root.material,
           nodes: tree,

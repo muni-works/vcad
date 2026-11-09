@@ -349,7 +349,7 @@ export const createRobotEnvSchema = {
     end_effector_ids: {
       type: "array" as const,
       items: { type: "string" as const },
-      description: "Instance IDs to track as end effectors",
+      description: "Instance IDs to track as end effectors (default: none)",
     },
     dt: {
       type: "number" as const,
@@ -400,7 +400,7 @@ export const createRobotEnvSchema = {
     },
     ...GROUND_SCHEMA_PROPS,
   },
-  required: ["end_effector_ids"],
+  required: [] as string[],
 };
 
 /** JSON Schema for gym_step input */
@@ -474,7 +474,7 @@ export async function createRobotEnv(input: unknown): Promise<GymResult> {
   const args = input as {
     document_id?: string;
     document?: Document;
-    end_effector_ids: string[];
+    end_effector_ids?: string[];
     dt?: number;
     substeps?: number;
     max_steps?: number;
@@ -507,7 +507,7 @@ export async function createRobotEnv(input: unknown): Promise<GymResult> {
     const { doc, documentId: sessionId, source } = resolveEnvDocument(args);
 
     const env = await PhysicsEnv.create(doc, {
-      endEffectorIds: args.end_effector_ids,
+      endEffectorIds: args.end_effector_ids ?? [],
       dt: args.dt,
       substeps: args.substeps,
       maxSteps: args.max_steps,
@@ -529,7 +529,7 @@ export async function createRobotEnv(input: unknown): Promise<GymResult> {
     envRecords.set(envId, {
       document: doc,
       documentId,
-      endEffectorIds: args.end_effector_ids,
+      endEffectorIds: args.end_effector_ids ?? [],
       trajectory: [],
       rewards: [],
       dones: [],
@@ -567,7 +567,7 @@ export async function createRobotEnv(input: unknown): Promise<GymResult> {
       actuated_joint_ids: env.actuatedJointIds,
       action_dim: env.actionDim,
       observation_dim: env.observationDim,
-      end_effector_ids: args.end_effector_ids,
+      end_effector_ids: args.end_effector_ids ?? [],
       dt: args.dt ?? 1 / 240,
       substeps: args.substeps ?? 4,
       max_steps: args.max_steps ?? 1000,
@@ -803,7 +803,7 @@ export const batchCreateEnvsSchema = {
     end_effector_ids: {
       type: "array" as const,
       items: { type: "string" as const },
-      description: "Instance IDs to track as end effectors",
+      description: "Instance IDs to track as end effectors (default: none)",
     },
     dt: {
       type: "number" as const,
@@ -819,7 +819,7 @@ export const batchCreateEnvsSchema = {
     },
     ...GROUND_SCHEMA_PROPS,
   },
-  required: ["n_envs", "end_effector_ids"],
+  required: ["n_envs"],
 };
 
 /** JSON Schema for batch_step input */
@@ -865,7 +865,7 @@ export async function batchCreateEnvs(input: unknown): Promise<GymResult> {
     document_id?: string;
     document?: Document;
     n_envs: number;
-    end_effector_ids: string[];
+    end_effector_ids?: string[];
     dt?: number;
     substeps?: number;
     max_steps?: number;
@@ -893,7 +893,7 @@ export async function batchCreateEnvs(input: unknown): Promise<GymResult> {
     // the inline path registers nothing.
     const { doc, documentId, source } = resolveEnvDocument(args);
     const envOptions = {
-      endEffectorIds: args.end_effector_ids,
+      endEffectorIds: args.end_effector_ids ?? [],
       dt: args.dt,
       substeps: args.substeps,
       maxSteps: args.max_steps,
@@ -932,7 +932,7 @@ export async function batchCreateEnvs(input: unknown): Promise<GymResult> {
       // labeling the single-env path returns per observation.
       joint_ids: envs[0].jointIds,
       actuated_joint_ids: envs[0].actuatedJointIds,
-      end_effector_ids: args.end_effector_ids,
+      end_effector_ids: args.end_effector_ids ?? [],
     };
 
     return {

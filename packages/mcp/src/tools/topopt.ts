@@ -23,7 +23,8 @@ import type {
 } from "@vcad/engine";
 import { getSession, registerSession } from "./session-core.js";
 import { behavior, type ToolDef } from "./tool-def.js";
-import { rootForPartId } from "./part-ids.js";
+import { findPartCandidate, rootForPartId } from "./part-ids.js";
+import { instanceSolids } from "./document-solids.js";
 import { runMutation } from "./registry-dispatch.js";
 
 const regionSchema = {
@@ -190,8 +191,14 @@ export function resolvePartMesh(
       material: root.material ?? undefined,
     };
   }
+  // Not a scene root: an assembly part, addressed by instance or part def.
+  // Posed in the world frame, like the load and support regions.
+  const inst = findPartCandidate(doc, instanceSolids(doc, scene), wanted);
+  if (inst) {
+    return { mesh: inst.mesh, rootIndex: -1, name: inst.name };
+  }
   throw new Error(
-    `part "${wanted}" not found — pass a root part id or exact name`,
+    `part "${wanted}" not found — pass a root part id, exact name, assembly instance, or part def`,
   );
 }
 

@@ -31,7 +31,8 @@ import {
   type TriangleMesh,
 } from "@vcad/engine";
 import { getSession } from "./session.js";
-import { findPartCandidate, partIdForNode } from "./part-ids.js";
+import { findPartCandidate } from "./part-ids.js";
+import { documentSolids } from "./document-solids.js";
 import { behavior, type ToolDef } from "./tool-def.js";
 
 /** PCB data from a document — PcbBoard nodes first, legacy `doc.pcb` fallback. */
@@ -65,7 +66,8 @@ export const checkEnclosureFitSchema = {
     },
     enclosure_part_id: {
       type: "string" as const,
-      description: "Root id of the enclosure part when the CAD session has more than one solid.",
+      description:
+        "Part id, name, assembly instance, or part def of the enclosure when the CAD session has more than one solid.",
     },
     clearance: {
       type: "number" as const,
@@ -103,23 +105,7 @@ function enclosureMesh(
   engine: Engine,
   partId?: string,
 ): { mesh: TriangleMesh; rootId: number; id: string; name?: string } {
-  const scene = engine.evaluate(enclosureDoc);
-  const visibleRoots = enclosureDoc.roots.filter((e) => e.visible !== false);
-  const candidates: Array<{ rootId: number; id: string; name?: string; mesh: TriangleMesh }> = [];
-  for (let i = 0; i < scene.parts.length && i < visibleRoots.length; i++) {
-    const rootId = visibleRoots[i].root;
-    const node = enclosureDoc.nodes[String(rootId)];
-    const opType = (node?.op as { type?: string } | undefined)?.type;
-    if (opType === "PcbBoard") continue;
-    const mesh = scene.parts[i].mesh;
-    if (!mesh || mesh.positions.length === 0) continue;
-    candidates.push({
-      rootId,
-      id: partIdForNode(enclosureDoc, rootId),
-      name: node?.name ?? undefined,
-      mesh,
-    });
-  }
+  const candidates = documentSolids(enclosureDoc, engine);
   if (candidates.length === 0) {
     throw new Error("Enclosure document has no solid parts (PcbBoard parts are excluded)");
   }
