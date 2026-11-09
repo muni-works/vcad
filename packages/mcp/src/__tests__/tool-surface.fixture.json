@@ -9301,7 +9301,7 @@
   {
     "name": "route_nets",
     "title": "Route Nets",
-    "description": "Route electrical nets on the PCB with copper traces. Connects pads belonging to the same net. Idempotent: re-running rips up the previously autorouted copper on the target nets before routing, so a second call replaces the route instead of stacking shorts. Hand-placed copper (add_trace / add_via / coils) is preserved automatically; `locked_nets` additionally protects whole nets. A net with a copper-pour zone (a plane) is connected by stitching each pad to the plane with a via instead of tracing it — those nets come back in `plane_stitched`. Mutates the session document (pass document_id).",
+    "description": "Route electrical nets on the PCB with copper traces. Connects pads belonging to the same net. Idempotent: re-running rips up the previously autorouted copper on the target nets before routing, so a second call replaces the route instead of stacking shorts. Without `nets`, nets already connected on imported copper are left alone (`already_routed_nets`). Fails closed: a route that makes DRC worse restores the board and returns before/after counts. Hand-placed copper (add_trace / add_via / coils) is preserved automatically; `locked_nets` additionally protects whole nets. A net with a copper-pour zone (a plane) is connected by stitching each pad to the plane with a via instead of tracing it — those nets come back in `plane_stitched`. Mutates the session document (pass document_id).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -10773,7 +10773,7 @@
   {
     "name": "undo",
     "title": "Undo",
-    "description": "Rewind the most recent mutation on a session — the snapshot taken before the last add_zone / add_trace / add_via / delete_* / route_nets / place_components (or a CAD create/update/delete) is restored, without re-sending the document. Repeated calls walk further back. Returns a `changed` diff of the board elements the rewind moved.",
+    "description": "Rewind the most recent mutation on a session — the snapshot taken before the last add_zone / add_trace / add_via / delete_* / route_nets / place_components (or a CAD create/update/delete) is restored, without re-sending the document. Repeated calls walk further back. Returns a `changed` diff of the board elements the rewind moved and a `document_changes` diff of instances, joints, part defs and nodes.",
     "inputSchema": {
       "type": "object",
       "properties": {

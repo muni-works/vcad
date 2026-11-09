@@ -31,6 +31,7 @@ import {
   dropSession,
   runInSessionScope,
   recordHistorySnapshot,
+  discardUnchangedSnapshot,
   currentBootToken,
   durabilityWarning,
   addDocumentEnterHook,
@@ -1589,6 +1590,7 @@ export async function createServer(
 
     try {
       const result = await runTool();
+      if (incomingId && name !== "undo" && def?.behavior.writesDoc) discardUnchangedSnapshot(incomingId);
 
       // Tools that RETURN {isError:true} (the ECAD / sheet-metal / DFM surface)
       // never reach the throw-catch below, so enrich them here — every failure

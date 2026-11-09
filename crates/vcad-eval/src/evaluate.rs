@@ -5,7 +5,8 @@
 
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use vcad_ir::ecad::{Footprint, Pad, PadShape, Pcb, PcbLayer, Trace, TraceArc, Via, Zone};
 use vcad_ir::{CsgOp, Document, NodeId, PathCurve};

@@ -58,6 +58,7 @@ export {
   getSession,
   resolveDocInput,
   recordHistorySnapshot,
+  discardUnchangedSnapshot,
   historyDepth,
   undoLastSnapshot,
   clearHistory,

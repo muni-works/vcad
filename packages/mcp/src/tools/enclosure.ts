@@ -194,6 +194,99 @@ export function addComponentOverhangCheck(
   report.summary = `Component bodies pass through the case wall: ${names}. ${report.summary}`;
 }
 
+/** Grid pitch for scanning a wall (mm); coarsened to stay within the cap. */
+const WALL_SCAN_CELL = 0.25;
+const WALL_SCAN_MAX_CELLS = 512;
+/** A gap narrower or shorter than this is a mesh artifact, not a cutout (mm). */
+const MIN_OPENING_MM = 1;
+
+type WallOpenings = ReturnType<typeof extractEnclosureFeatures>["openings"];
+type SealedCavity = NonNullable<ReturnType<typeof sealedCavityFromMesh>>;
+
+/**
+ * Cutouts through the walls of a closed case. Looking outward from each cavity
+ * wall, a patch of wall with no surface at or beyond it is open to the outside:
+ * a blind pocket still has the outer skin behind it. Every triangle reaching
+ * the wall is projected onto it and rasterized; what stays uncovered, grouped
+ * into connected regions, is an opening.
+ */
+export function sealedWallOpenings(mesh: TriangleMesh, cavity: SealedCavity): WallOpenings {
+  const walls = [
+    { edge: "minX", normal: 0, sign: -1, at: cavity.minX, from: cavity.minY, to: cavity.maxY },
+    { edge: "maxX", normal: 0, sign: 1, at: cavity.maxX, from: cavity.minY, to: cavity.maxY },
+    { edge: "minY", normal: 1, sign: -1, at: cavity.minY, from: cavity.minX, to: cavity.maxX },
+    { edge: "maxY", normal: 1, sign: 1, at: cavity.maxY, from: cavity.minX, to: cavity.maxX },
+  ] as const;
+  const { positions: pos, indices: idx } = mesh;
+  const openings: WallOpenings = [];
+
+  for (const w of walls) {
+    const tangent = 1 - w.normal;
+    const [spanU, spanZ] = [w.to - w.from, cavity.ceilZ - cavity.floorZ];
+    if (spanU <= 0 || spanZ <= 0) continue;
+    const cell = Math.max(WALL_SCAN_CELL, Math.max(spanU, spanZ) / WALL_SCAN_MAX_CELLS);
+    const nu = Math.ceil(spanU / cell);
+    const nz = Math.ceil(spanZ / cell);
+    const [du, dz] = [spanU / nu, spanZ / nz];
+    const covered = new Uint8Array(nu * nz);
+
+    for (let t = 0; t + 2 < idx.length; t += 3) {
+      const [a, b, c] = [idx[t]! * 3, idx[t + 1]! * 3, idx[t + 2]! * 3];
+      const [ad, bd, cd] = [pos[a + w.normal]!, pos[b + w.normal]!, pos[c + w.normal]!];
+      if (Math.max(w.sign * (ad - w.at), w.sign * (bd - w.at), w.sign * (cd - w.at)) < -1e-3) continue;
+      const [au, bu, cu] = [pos[a + tangent]!, pos[b + tangent]!, pos[c + tangent]!];
+      const [az, bz, cz] = [pos[a + 2]!, pos[b + 2]!, pos[c + 2]!];
+      const det = (bz - cz) * (au - cu) + (cu - bu) * (az - cz);
+      if (Math.abs(det) < 1e-12) continue; // edge-on: a slot's side walls
+      const i0 = Math.max(0, Math.floor((Math.min(au, bu, cu) - w.from) / du - 0.5));
+      const i1 = Math.min(nu - 1, Math.ceil((Math.max(au, bu, cu) - w.from) / du - 0.5));
+      const k0 = Math.max(0, Math.floor((Math.min(az, bz, cz) - cavity.floorZ) / dz - 0.5));
+      const k1 = Math.min(nz - 1, Math.ceil((Math.max(az, bz, cz) - cavity.floorZ) / dz - 0.5));
+      for (let k = k0; k <= k1; k++) {
+        const z = cavity.floorZ + (k + 0.5) * dz;
+        for (let i = i0; i <= i1; i++) {
+          const u = w.from + (i + 0.5) * du;
+          const l0 = ((bz - cz) * (u - cu) + (cu - bu) * (z - cz)) / det;
+          const l1 = ((cz - az) * (u - cu) + (au - cu) * (z - cz)) / det;
+          const l2 = 1 - l0 - l1;
+          if (l0 < -1e-9 || l1 < -1e-9 || l2 < -1e-9) continue;
+          if (w.sign * (l0 * ad + l1 * bd + l2 * cd - w.at) >= -1e-3) covered[k * nu + i] = 1;
+        }
+      }
+    }
+
+    const seen = new Uint8Array(nu * nz);
+    for (let start = 0; start < covered.length; start++) {
+      if (covered[start] || seen[start]) continue;
+      seen[start] = 1;
+      const stack = [start];
+      let [iMin, iMax, kMin, kMax] = [nu, -1, nz, -1];
+      while (stack.length) {
+        const c = stack.pop()!;
+        const [k, i] = [Math.floor(c / nu), c % nu];
+        [iMin, iMax, kMin, kMax] = [Math.min(iMin, i), Math.max(iMax, i), Math.min(kMin, k), Math.max(kMax, k)];
+        const next = [i > 0 ? c - 1 : -1, i < nu - 1 ? c + 1 : -1, k > 0 ? c - nu : -1, k < nz - 1 ? c + nu : -1];
+        for (const n of next) {
+          if (n < 0 || covered[n] || seen[n]) continue;
+          seen[n] = 1;
+          stack.push(n);
+        }
+      }
+      const width = (iMax - iMin + 1) * du;
+      if (width < MIN_OPENING_MM || (kMax - kMin + 1) * dz < MIN_OPENING_MM) continue;
+      const along = w.from + ((iMin + iMax + 1) / 2) * du;
+      openings.push({
+        edge: w.edge,
+        center: w.normal === 0 ? { x: w.at, y: along } : { x: along, y: w.at },
+        width,
+        zMin: cavity.floorZ + kMin * dz,
+        zMax: cavity.floorZ + (kMax + 1) * dz,
+      });
+    }
+  }
+  return openings;
+}
+
 function footprint(c: { minX: number; maxX: number; minY: number; maxY: number }): number {
   return (c.maxX - c.minX) * (c.maxY - c.minY);
 }
@@ -225,8 +318,8 @@ export async function computeEnclosureFitForBoard(
 
   const features = extractEnclosureFeatures(chosen.mesh.positions, chosen.mesh.indices);
   // The kernel detector only knows open-top trays. A closed case has its
-  // cavity found the way board_from_solid finds it; posts and wall cutouts
-  // aren't extracted from a sealed void, and the result says so.
+  // cavity found the way board_from_solid finds it and its wall cutouts scanned
+  // directly; posts aren't extracted from a sealed void, and the result says so.
   // That detector also reads a through-slot in a closed lid as a shallow open
   // pocket, so the void wins whenever it is the bigger of the two.
   const sealedVoid = sealedCavityFromMesh(chosen.mesh);
@@ -236,7 +329,7 @@ export async function computeEnclosureFitForBoard(
       : null;
   const cavity = sealed ?? features.cavity;
   const standoffs = sealed ? [] : features.standoffs;
-  const openings = sealed ? [] : features.openings;
+  const openings = sealed ? sealedWallOpenings(chosen.mesh, sealed) : features.openings;
   if (!cavity) {
     return {
       error:
@@ -284,9 +377,9 @@ export async function computeEnclosureFitForBoard(
       ? {
           cavity_basis: "sealed-void" as const,
           note:
-            "Closed case: the cavity is the largest box inside the sealed void. Standoffs and " +
-            "wall openings are not detected in a sealed case, so checks that need them are not " +
-            "evidence of a fit — verify mounting and connector access separately.",
+            "Closed case: the cavity is the largest box inside the sealed void, and wall openings " +
+            "are scanned from it. Standoffs are not detected in a sealed case, so the mounting " +
+            "check is not evidence of a fit — verify mounting separately.",
         }
       : {}),
   };
