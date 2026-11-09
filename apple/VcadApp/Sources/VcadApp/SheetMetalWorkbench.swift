@@ -20,7 +20,7 @@ struct SheetFlange: Identifiable, Equatable {
     var edge = 0
     var length = 25.0
     var angleDeg = 90.0
-    var radius = 1.0
+    var radius = 1.5
     var up = true
 }
 
@@ -140,6 +140,11 @@ final class SheetMetalStore {
 
     /// Append the authored chain to the document as SheetMetal IR nodes.
     func insert(_ model: EditorModel) {
+        // The starter cube isn't a document yet, and a new part doesn't want it.
+        guard model.promoteSandboxToDocument(blank: true) else {
+            error = model.engineError ?? "Couldn't start a document."
+            return
+        }
         let ok = model.editIR("Sheet Metal Part") { doc in
             var nodes = doc["nodes"] as? [String: Any] ?? [:]
             var next = (nodes.keys.compactMap { Int($0) }.max() ?? 0) + 1
@@ -225,7 +230,7 @@ struct SheetMetalWorkbench: View {
             HStack {
                 Eyebrow("Edge flanges")
                 Spacer()
-                Button { store.flanges.append(SheetFlange(edge: store.flanges.count % 4)) } label: { Image(systemName: "plus") }
+                Button { store.flanges.append(SheetFlange(edge: (0...3).first { e in !store.flanges.contains { $0.edge == e } } ?? 0)) } label: { Image(systemName: "plus") }
                     .buttonStyle(.borderless)
             }
             ForEach($store.flanges) { $f in

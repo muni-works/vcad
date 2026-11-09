@@ -300,7 +300,7 @@ struct DocumentCommands: Commands {
                                                  set: { model.section = $0 ? SectionPlane() : nil }))
                 .keyboardShortcut("x", modifiers: [.command, .option])
             Divider()
-            Button("New Sketch") { if model.promoteSandboxToDocument() { model.enterSketch() } }
+            Button("New Sketch") { if model.promoteSandboxToDocument(blank: true) { model.enterSketch() } }
                 .keyboardShortcut("s", modifiers: [.control])
                 .disabled(!model.canModel || model.sketching)
             Menu("Feature") {
