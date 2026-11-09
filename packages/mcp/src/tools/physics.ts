@@ -185,7 +185,7 @@ function limitClaim(
     description,
     subject,
     oracle: ORACLE,
-    verdict: actual <= limit ? "pass" : "fail",
+    verdict: actual > limit ? "fail" : basis === "predicted" ? "provisional" : "pass",
     basis,
     predicted: { value: limit, unit },
     measured: { value: round5(actual), unit },

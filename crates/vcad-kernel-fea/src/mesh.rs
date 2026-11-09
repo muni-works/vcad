@@ -23,8 +23,12 @@ pub struct TetMesh {
     pub nodes: Vec<[f64; 3]>,
     /// Tetrahedra as node indices, positively oriented (signed volume > 0).
     pub tets: Vec<[u32; 4]>,
-    /// Lattice pitch, mm.
+    /// Nominal lattice pitch (longest bounding-box axis / resolution), mm.
     pub h: f64,
+    /// Actual cell size along each axis, mm. Shorter axes are rescaled so a
+    /// whole number of cells spans the bounding box exactly (see
+    /// [`tet_fill`]), so these differ slightly from `h`.
+    pub pitch: [f64; 3],
     /// Lattice cell counts per axis.
     pub grid: [usize; 3],
 }
@@ -36,6 +40,13 @@ impl TetMesh {
             .iter()
             .map(|t| tet_volume(&self.nodes, t))
             .sum::<f64>()
+    }
+
+    /// Tolerance for selecting nodes with a load or support region: a
+    /// quarter of the smallest cell size, so a region can never reach
+    /// across a cell to the next layer of nodes.
+    pub(crate) fn region_tol(&self) -> f64 {
+        self.pitch[0].min(self.pitch[1]).min(self.pitch[2]) * 0.25
     }
 }
 
@@ -101,6 +112,16 @@ const KUHN: [[usize; 4]; 6] = [
 ///
 /// `resolution` is the lattice cell count along the longest bounding-box
 /// axis, clamped to `[2, 256]`.
+///
+/// Each axis gets a whole number of cells that spans the bounding box
+/// exactly. A single cubic pitch cannot do that: a 10 mm section at a
+/// 4.17 mm pitch would mesh as 2 cells, 8.33 mm deep, which is 42% too
+/// flexible in bending, and rounding up instead puts the top nodes outside
+/// the part and out of reach of any load or support region drawn on its
+/// faces. Either error changes with each refinement, which reads as a
+/// failure to converge. An axis under half a nominal pitch keeps that
+/// pitch, so its cell center falls outside the part and it reports
+/// [`MeshError::NoInteriorCells`] instead of inflating one cell to fit.
 pub fn tet_fill(mesh: &TriangleMesh, resolution: usize) -> Result<TetMesh, MeshError> {
     let nv = mesh.num_vertices();
     if nv == 0 {
@@ -119,9 +140,17 @@ pub fn tet_fill(mesh: &TriangleMesh, resolution: usize) -> Result<TetMesh, MeshE
     let longest = size[0].max(size[1]).max(size[2]).max(1e-9);
     let resolution = resolution.clamp(2, 256);
     let h = longest / resolution as f64;
-    let nx = ((size[0] / h).round() as usize).max(1);
-    let ny = ((size[1] / h).round() as usize).max(1);
-    let nz = ((size[2] / h).round() as usize).max(1);
+    let axis = |extent: f64| -> (usize, f64) {
+        let n = (extent / h).round() as usize;
+        if n == 0 {
+            (1, h)
+        } else {
+            (n, extent / n as f64)
+        }
+    };
+    let (nx, px) = axis(size[0]);
+    let (ny, py) = axis(size[1]);
+    let (nz, pz) = axis(size[2]);
 
     // Gather triangles as f64 for the parity test.
     let tris: Vec<[[f64; 3]; 3]> = (0..mesh.num_triangles())
@@ -145,8 +174,8 @@ pub fn tet_fill(mesh: &TriangleMesh, resolution: usize) -> Result<TetMesh, MeshE
     let jitter = h * 0.01371;
     for iy in 0..ny {
         for ix in 0..nx {
-            let cx = min[0] + (ix as f64 + 0.5) * h + jitter;
-            let cy = min[1] + (iy as f64 + 0.5) * h + jitter * 0.618;
+            let cx = min[0] + (ix as f64 + 0.5) * px + jitter;
+            let cy = min[1] + (iy as f64 + 0.5) * py + jitter * 0.618;
             let mut crossings: Vec<f64> = tris
                 .iter()
                 .filter_map(|tri| ray_z_crossing(tri, cx, cy))
@@ -157,8 +186,8 @@ pub fn tet_fill(mesh: &TriangleMesh, resolution: usize) -> Result<TetMesh, MeshE
                 let z0 = crossings[k];
                 let z1 = crossings[k + 1];
                 k += 2;
-                let i0 = ((z0 - min[2]) / h - 0.5).ceil().max(0.0) as usize;
-                let i1f = ((z1 - min[2]) / h - 0.5).floor();
+                let i0 = ((z0 - min[2]) / pz - 0.5).ceil().max(0.0) as usize;
+                let i1f = ((z1 - min[2]) / pz - 0.5).floor();
                 if i1f < 0.0 {
                     continue;
                 }
@@ -195,9 +224,9 @@ pub fn tet_fill(mesh: &TriangleMesh, resolution: usize) -> Result<TetMesh, MeshE
                     if node_map[gi] == u32::MAX {
                         node_map[gi] = nodes.len() as u32;
                         nodes.push([
-                            min[0] + (ix + dx) as f64 * h,
-                            min[1] + (iy + dy) as f64 * h,
-                            min[2] + (iz + dz) as f64 * h,
+                            min[0] + (ix + dx) as f64 * px,
+                            min[1] + (iy + dy) as f64 * py,
+                            min[2] + (iz + dz) as f64 * pz,
                         ]);
                     }
                     *slot = node_map[gi];
@@ -217,6 +246,7 @@ pub fn tet_fill(mesh: &TriangleMesh, resolution: usize) -> Result<TetMesh, MeshE
         nodes,
         tets,
         h,
+        pitch: [px, py, pz],
         grid: [nx, ny, nz],
     })
 }
@@ -542,6 +572,25 @@ pub fn box_mesh(min: [f64; 3], max: [f64; 3]) -> TriangleMesh {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lattice_spans_the_bounding_box_on_every_axis() {
+        // 10 mm is 2.4 nominal pitches at resolution 24: a cubic lattice
+        // meshed it 8.33 mm deep, and at other resolutions overshot it.
+        for res in [12, 16, 24, 48, 96] {
+            let tm = tet_fill(&box_mesh([0.0; 3], [100.0, 10.0, 10.0]), res).unwrap();
+            for axis in 0..3 {
+                let hi = tm.nodes.iter().map(|p| p[axis]).fold(f64::MIN, f64::max);
+                let want = [100.0, 10.0, 10.0][axis];
+                assert!((hi - want).abs() < 1e-5, "res {res} axis {axis}: {hi}");
+            }
+            assert!(
+                (tm.volume() - 10_000.0).abs() < 1e-3,
+                "res {res}: volume {}",
+                tm.volume()
+            );
+        }
+    }
 
     #[test]
     fn box_fill_recovers_volume_and_conformity() {

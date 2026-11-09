@@ -3194,6 +3194,50 @@ fn append_endcap(
     }
 }
 
+#[cfg(test)]
+mod via_mesh_tests {
+    use super::*;
+
+    #[test]
+    fn via_barrels_are_closed_and_wound_outward() {
+        let doc: vcad_ir::Document =
+            serde_json::from_str(include_str!("../../../examples/pcb-motor/stator-v3.vcad"))
+                .unwrap();
+        let CsgOp::PcbBoard { board } = &doc.nodes[&1].op else {
+            panic!("stator-v3 root is a PcbBoard");
+        };
+        assert!(!board.vias.is_empty());
+        for via in &board.vias {
+            let (verts, tris) = via_to_mesh(via, board, 16, 0.0);
+            let mut net = HashMap::<(u32, u32), i32>::new();
+            let mut volume = 0.0;
+            for t in &tris {
+                for k in 0..3 {
+                    let (a, b) = (t[k], t[(k + 1) % 3]);
+                    *net.entry((a.min(b), a.max(b))).or_default() += if a < b { 1 } else { -1 };
+                }
+                let [p, q, r] = [
+                    verts[t[0] as usize],
+                    verts[t[1] as usize],
+                    verts[t[2] as usize],
+                ];
+                volume += (p[0] * (q[1] * r[2] - q[2] * r[1]) - p[1] * (q[0] * r[2] - q[2] * r[0])
+                    + p[2] * (q[0] * r[1] - q[1] * r[0]))
+                    / 6.0;
+            }
+            assert!(net.values().all(|n| *n == 0), "via mesh has open edges");
+            // A 16-gon annulus: polygon area 8·r²·sin(2π/16), both radii.
+            let sector = 8.0 * (std::f64::consts::TAU / 16.0).sin();
+            let (ro, ri) = (via.diameter / 2.0, via.drill / 2.0);
+            let expected = sector * (ro * ro - ri * ri) * board.outline.thickness;
+            assert!(
+                (volume - expected).abs() < 1e-9 * expected.max(1.0),
+                "volume {volume} vs {expected}"
+            );
+        }
+    }
+}
+
 /// Generate a box mesh for a trace segment (oriented ribbon at layer Z) with
 /// round end caps, so chained segments (arc approximations, routed polylines)
 /// read as continuous copper instead of disjoint tiles with gaps at joints.
@@ -3379,9 +3423,10 @@ pub(crate) fn via_to_mesh(via: &Via, pcb: &Pcb, n_seg: usize, z_over: f64) -> Ra
     let n = n_seg as u32;
     for i in 0..n {
         let next = (i + 1) % n;
-        // top-ring[i], top-ring[next], bot-ring[next], bot-ring[i]
-        tris.push([i, next, n + next]);
-        tris.push([i, n + next, n + i]);
+        // top-ring[i], bot-ring[next], top-ring[next] — wound outward, so each
+        // rim edge cancels against the annular cap that shares it.
+        tris.push([i, n + next, next]);
+        tris.push([i, n + i, n + next]);
     }
 
     // Inner cylinder (drill hole): top ring, bottom ring
@@ -3398,18 +3443,18 @@ pub(crate) fn via_to_mesh(via: &Via, pcb: &Pcb, n_seg: usize, z_over: f64) -> Ra
         verts.push([x, y, z_bot]);
     }
 
-    // Inner cylinder side faces (reversed winding — faces inward)
+    // Inner cylinder side faces (reversed winding — faces the drill axis)
     for i in 0..n {
         let next = (i + 1) % n;
         tris.push([
             inner_top_start + i,
-            inner_bot_start + next,
             inner_top_start + next,
+            inner_bot_start + next,
         ]);
         tris.push([
             inner_top_start + i,
-            inner_bot_start + i,
             inner_bot_start + next,
+            inner_bot_start + i,
         ]);
     }
 

@@ -456,6 +456,7 @@ mod tests {
             assert!(c.id.starts_with("em."));
             assert_eq!(c.domain, RECEIPT_DOMAIN);
             assert_eq!(c.basis, Some(vcad_receipt::ClaimBasis::Predicted));
+            assert_eq!(c.verdict, vcad_receipt::ClaimVerdict::Provisional);
             assert!(c.measured.is_some());
             let details = c.details.as_deref().unwrap_or("");
             assert!(details.contains("axisym-magnetostatics"));

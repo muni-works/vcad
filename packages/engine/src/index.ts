@@ -1126,7 +1126,7 @@ export interface SensitivityRow {
   /** `predicted` | `verified` | `measured`. */
   basis: "predicted" | "verified" | "measured";
   /** `pass` | `fail` | `unverifiable`. */
-  verdict: "pass" | "fail" | "unverifiable";
+  verdict: "pass" | "provisional" | "fail" | "unverifiable";
   /** Where it stops being true, when a radius could be established. */
   trust?: TrustRadius;
   /** Caveats worth reading. */

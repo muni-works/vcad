@@ -101,6 +101,7 @@ const CHIP_TEXT: Record<ChipStatus, string> = {
 function chipStatus(verdict: unknown, basis: unknown): ChipStatus {
   if (verdict === "fail") return "violated";
   if (verdict === "unverifiable") return "unverifiable";
+  if (verdict === "provisional") return "provisional";
   if (verdict !== "pass") return "unverifiable";
   return basis === "predicted" || basis === "surrogate" ? "provisional" : "holds";
 }

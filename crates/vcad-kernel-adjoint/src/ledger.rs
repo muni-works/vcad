@@ -192,7 +192,8 @@ impl Completeness {
     pub fn verdict(&self) -> ClaimVerdict {
         match self {
             Completeness::Incomplete { .. } => ClaimVerdict::Unverifiable,
-            _ => ClaimVerdict::Pass,
+            Completeness::Complete { all_exact: true } => ClaimVerdict::Pass,
+            _ => ClaimVerdict::Provisional,
         }
     }
 

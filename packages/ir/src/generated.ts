@@ -599,7 +599,7 @@ export type ClaimValue = number | boolean | string;
  * claim (missing inputs, engine unavailable, capped coverage). It is never
  * a pass and never silently dropped.
  */
-export type ClaimVerdict = "pass" | "fail" | "unverifiable";
+export type ClaimVerdict = "pass" | "provisional" | "fail" | "unverifiable";
 
 /**
  * A named clearance assertion between two part groups, with its measured
@@ -5002,6 +5002,10 @@ total: number,
  */
 passed: number, 
 /**
+ * Claims that hold only on a predicted basis — never counted as passed.
+ */
+provisional: number, 
+/**
  * Claims that failed.
  */
 failed: number, 
@@ -5015,8 +5019,10 @@ unverifiable: number,
 predicted_basis: number, 
 /**
  * Fail-closed rollup: `Fail` if anything failed, else `Unverifiable`
- * if anything (or everything — zero claims) is unverified, else `Pass`.
- * Basis-blind; see [`ReceiptSummary::verdict`] for the basis-aware view.
+ * if anything (or everything — zero claims) is unverified, else
+ * `Provisional` if any claim is, else `Pass`. See
+ * [`ReceiptSummary::verdict`] for the rollup that also covers receipts
+ * saved before `Provisional` existed.
  */
 overall: ClaimVerdict, 
 /**
