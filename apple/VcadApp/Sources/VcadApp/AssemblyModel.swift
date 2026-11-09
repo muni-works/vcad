@@ -192,6 +192,18 @@ extension EditorModel {
         return v
     }
 
+    /// A pose set from outside the panel supersedes any drag left on those
+    /// joints. A drag override outranks the pose, so one left behind pinned
+    /// the Joints panel to a value the joint no longer has.
+    func clearJointDrags(forPoseKeys keys: Set<String>) {
+        guard !assembly.dragValues.isEmpty else { return }
+        for j in asmJoints {
+            guard let id = j["id"] as? String else { continue }
+            let key = (j["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? id
+            if keys.contains(key) || keys.contains(id) { assembly.dragValues.removeValue(forKey: id) }
+        }
+    }
+
     /// Live FK while dragging a joint: one kernel solve, no document change.
     func dragJoint(_ id: String, to value: Double) {
         var v = value

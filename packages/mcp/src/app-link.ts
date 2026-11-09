@@ -86,7 +86,13 @@ export async function reconcileBeforeWrite(
 ): Promise<string | null> {
   const link = links.get(documentId);
   if (!link?.shown || link.viewOnly) return null;
-  const status = await call("link_status", { link_id: documentId });
+  // The app is busy with an earlier push, and it re-checks for user edits
+  // itself on every adopt, so a push made now is refused rather than lost.
+  if (pushes.get(documentId)?.running) return null;
+  const status = await Promise.race([
+    call("link_status", { link_id: documentId }),
+    wait(RECONCILE_WAIT_MS).then(() => null),
+  ]);
   if (status?.linked === false) {
     loseWindow(documentId, LOST_WINDOW);
     return null;
@@ -103,6 +109,22 @@ export async function reconcileBeforeWrite(
   );
 }
 
+/**
+ * How long a tool call waits on the app. The window's re-solve runs on its
+ * main thread and can take seconds; the agent's call must not. Past this, the
+ * window catches up on its own and anything it has to say arrives with the
+ * agent's next call.
+ */
+const PUSH_WAIT_MS = 100;
+const RECONCILE_WAIT_MS = 150;
+const wait = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
+
+type Push = { run: () => Promise<string | null>; json: string; done: (note: string | null) => void };
+/** Per session: one push in flight, and only the newest one waiting behind it. */
+const pushes = new Map<string, { running: boolean; next?: Push; lastJson?: string }>();
+/** Notes from pushes that finished after their tool call had already returned. */
+const lateNotes = new Map<string, string>();
+
 const LOST_WINDOW =
   "This document is no longer on screen in the vcad app: its window now shows something else. " +
   "Edits stay in this session. To put it back, call show_in_app.";
@@ -117,6 +139,11 @@ function loseWindow(documentId: string, why: string): void {
 
 /** The note owed to a session that lost its window, once. Nothing if it is back on screen. */
 export function takeLinkNote(documentId: string): string | null {
+  const late = lateNotes.get(documentId);
+  if (late) {
+    lateNotes.delete(documentId);
+    return late;
+  }
   const link = links.get(documentId);
   if (!link?.lost) return null;
   const note = link.lost;
@@ -138,9 +165,32 @@ export function linkIntent(tool: string, minted: boolean): LinkIntent {
   return minted && OPENING_TOOLS.has(tool) ? "opened" : "implicit";
 }
 
+async function drainPushes(documentId: string): Promise<void> {
+  const state = pushes.get(documentId);
+  if (!state || state.running) return;
+  state.running = true;
+  while (state.next) {
+    const push = state.next;
+    state.next = undefined;
+    let note: string | null = null;
+    try {
+      note = await push.run();
+    } catch {
+      // A display failure must never reach the session.
+    }
+    // Refused or unanswered: the window doesn't hold this, so it can be sent again.
+    if (!state.next && links.get(documentId)?.pushed !== state.lastJson) state.lastJson = undefined;
+    push.done(note);
+  }
+  state.running = false;
+}
+
 /**
- * After a write: show the session in the app. Returns a note for the agent:
- * once when it goes live, and on every call the user's work keeps it off screen.
+ * After a write: show the session in the app, without making the agent wait
+ * for it. Latest wins: pushes made while one is in flight collapse to the
+ * newest. Returns a note for the agent when the app answers quickly: once when
+ * it goes live, and on every call the user's work keeps it off screen. A
+ * slower answer's note comes back through `takeLinkNote`.
  */
 export async function pushAfterWrite(
   documentId: string,
@@ -152,7 +202,46 @@ export async function pushAfterWrite(
   if (!document) return null;
   const json = JSON.stringify(document);
   const link = links.get(documentId);
-  if (link?.viewOnly || (link?.shown && link.pushed === json && intent !== "explicit")) return null;
+  const state = pushes.get(documentId) ?? { running: false };
+  pushes.set(documentId, state);
+  const latest = state.lastJson ?? link?.pushed;
+  if (link?.viewOnly || (link?.shown && latest === json && intent !== "explicit")) return null;
+  state.lastJson = json;
+
+  let returned = false;
+  const finished = new Promise<string | null>((done) => {
+    const superseded = state.next;
+    state.next = {
+      json,
+      run: () => deliverPush(documentId, tool, document, json, call, intent),
+      done: (note) => {
+        if (note && returned) lateNotes.set(documentId, note);
+        done(note);
+      },
+    };
+    superseded?.done(null);
+  });
+  void drainPushes(documentId);
+  // An explicit show_in_app is asking for the answer; everything else is a side effect.
+  if (intent === "explicit") return finished;
+  return Promise.race([
+    finished,
+    wait(PUSH_WAIT_MS).then(() => {
+      returned = true;
+      return null;
+    }),
+  ]);
+}
+
+async function deliverPush(
+  documentId: string,
+  tool: string,
+  document: Document,
+  json: string,
+  call: Call,
+  intent: LinkIntent,
+): Promise<string | null> {
+  const link = links.get(documentId);
   const opened = intent === "opened" || link?.opened === true;
   const effective: LinkIntent = intent === "implicit" && opened ? "opened" : intent;
   const base_dir = documentFolder(documentId, document);
@@ -381,6 +470,8 @@ export function pushPose(
 /** Test seam: forget every link. */
 export function resetAppLinks(): void {
   links.clear();
+  pushes.clear();
+  lateNotes.clear();
   poseBusy = false;
   lastPose = 0;
   pendingRestart = null;

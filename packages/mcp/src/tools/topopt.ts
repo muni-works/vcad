@@ -204,6 +204,69 @@ export function resolvePartMesh(
 
 const round5 = (v: number) => Number(v.toPrecision(5));
 
+type Box = { min: number[]; max: number[] };
+
+/**
+ * Why the structure fails to carry every load to a support, or null if it
+ * does: each load region must touch a connected piece that also touches a
+ * support region. Regions get two voxels of slack: the isosurface sits up to
+ * a voxel inside the density field, and a zero-thickness region is a plane.
+ */
+export function loadPathGap(
+  mesh: { positions: ArrayLike<number>; indices: ArrayLike<number> },
+  spec: { loads: { region: Box }[]; supports: { region: Box }[] },
+  voxelSize: number,
+): string | null {
+  const { positions: pos, indices: idx } = mesh;
+  const count = pos.length / 3;
+  const parent = Int32Array.from({ length: count }, (_, i) => i);
+  const find = (i: number): number => {
+    while (parent[i] !== i) {
+      parent[i] = parent[parent[i]!]!;
+      i = parent[i]!;
+    }
+    return i;
+  };
+  for (let t = 0; t + 2 < idx.length; t += 3) {
+    parent[find(idx[t + 1]!)] = find(idx[t]!);
+    parent[find(idx[t + 2]!)] = find(idx[t]!);
+  }
+  const slack = voxelSize * 2;
+  const piecesTouching = (region: Box): Set<number> => {
+    const hit = new Set<number>();
+    for (let v = 0; v < count; v++) {
+      const inside = [0, 1, 2].every(
+        (a) => pos[v * 3 + a]! >= region.min[a]! - slack && pos[v * 3 + a]! <= region.max[a]! + slack,
+      );
+      if (inside) hit.add(find(v));
+    }
+    return hit;
+  };
+  const supported = new Set(spec.supports.flatMap((s) => [...piecesTouching(s.region)]));
+  if (supported.size === 0) return "no material reaches any support region.";
+  const span = (axis: number) => {
+    let [lo, hi] = [Infinity, -Infinity];
+    for (let v = 0; v < count; v++) {
+      lo = Math.min(lo, pos[v * 3 + axis]!);
+      hi = Math.max(hi, pos[v * 3 + axis]!);
+    }
+    return `${round5(lo)}..${round5(hi)}`;
+  };
+  for (const [i, load] of spec.loads.entries()) {
+    const touching = piecesTouching(load.region);
+    if (touching.size === 0) {
+      return (
+        `load ${i + 1} has no material at its region (min [${load.region.min}], max [${load.region.max}]); ` +
+        `the structure spans x ${span(0)}, y ${span(1)}, z ${span(2)}.`
+      );
+    }
+    if (![...touching].some((p) => supported.has(p))) {
+      return `load ${i + 1} sits on a piece of material that is not connected to any support.`;
+    }
+  }
+  return null;
+}
+
 export function topologyOptimizeTool(
   args: Record<string, unknown>,
   engine: Engine,
@@ -265,6 +328,17 @@ export function topologyOptimizeTool(
     throw new Error(
       "topology optimization produced an empty structure — check that loads " +
         "and supports touch the design domain and volume_fraction isn't too low",
+    );
+  }
+
+  // A layout that never reaches its load carries nothing. Fail like the empty
+  // case above: a part in the document would read as a working structure.
+  const gap = loadPathGap(result.mesh, spec, result.voxelSize);
+  if (gap) {
+    throw new Error(
+      `topology optimization did NOT produce a usable structure: ${gap} ` +
+        `No part was added. (${result.iterations} iterations, ${result.converged ? "converged" : "not converged"}.) ` +
+        "Raise max_iterations or volume_fraction, or check the load and support regions.",
     );
   }
 

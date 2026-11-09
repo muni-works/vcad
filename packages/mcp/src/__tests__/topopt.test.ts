@@ -88,7 +88,7 @@ describe("topology_optimize", () => {
 
   it("says so plainly when the iteration limit stops the run", () => {
     const result = out(
-      topologyOptimizeTool({ ...cantileverArgs, max_iterations: 2 }, engine),
+      topologyOptimizeTool({ ...cantileverArgs, max_iterations: 2, volume_fraction: 0.8 }, engine),
     );
     expect(result.converged).toBe(false);
     expect(result.status).toBe("not_converged");

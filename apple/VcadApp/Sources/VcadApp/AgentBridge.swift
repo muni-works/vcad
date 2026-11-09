@@ -366,6 +366,7 @@ enum AgentTools {
         AgentEdits.surfacePose(m)
         if reset { m.jointPose = [:] }
         for t in targets { m.jointPose[t.key] = t.degrees }
+        m.clearJointDrags(forPoseKeys: Set(targets.map(\.key)))
         if let base { m.setAgentBasePose(base, restart: a["restart"] as? Bool == true) }
         m.applyStudioPose()
         var msg = "\(m.hasPoseStudio ? "Pose applied" : "Pose held until the scene is ready"): \(targets.map { "\($0.key)=\(String(format: "%.1f", $0.degrees))°" }.sorted().joined(separator: ", "))"

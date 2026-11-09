@@ -6437,11 +6437,29 @@ export async function fabPrep(args: Record<string, unknown>) {
     offenders: report.delta.offenders.slice(0, 25),
     offender_count: report.delta.offenders.length,
     next_action: report.converged
-      ? "export_gerber (the clean-DRC gate will now pass)"
+      ? fabPrepNextStep(fixed, args.allow_blind_vias === true)
       : "resolve the offenders above (fix_drc / route_nets / set_placement), then re-run fab_prep",
     ...docResultPayload(ctx),
   };
   return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
+}
+
+/**
+ * The step after a converged fab_prep, stating only what export_gerber will
+ * really do: it has a second gate besides DRC, and fab_prep's own waiver of
+ * blind vias doesn't reach it.
+ */
+export function fabPrepNextStep(pcb: Pcb, allowBlindVias: boolean): string {
+  const unsupported = detectUnsupportedFeatures(pcb, allowBlindVias);
+  if (unsupported.length === 0) {
+    return allowBlindVias
+      ? "export_gerber with allow_blind_vias:true (DRC is clean; this board needs an HDI process)"
+      : "export_gerber (the clean-DRC gate will now pass)";
+  }
+  return (
+    "DRC is clean, but export_gerber will still refuse this board: " +
+    unsupported.map((u) => u.detail).join(" ")
+  );
 }
 
 /** One-sentence statement of what a fab-prep run established. */
@@ -13148,6 +13166,9 @@ function rasterizeSection(
  * silhouette and is not a cavity. Solid islands inside the void (screw bosses)
  * come back as cutouts. Null when no void is big enough to hold a board.
  */
+/** Smallest island inside a cavity that counts as geometry, in grid cells. */
+const CAVITY_MIN_CUTOUT_CELLS = 9;
+
 function findCavity(
   pos: ArrayLike<number>,
   idx: ArrayLike<number>,
@@ -13197,8 +13218,11 @@ function findCavity(
   if (covered <= open) return null;
   // Traced CW as a hole; a board outline is CCW.
   const vertices = [...hole.points].reverse();
+  // A section traced on the grid leaves specks a cell or two wide where a
+  // triangle edge grazes the plane; a real post in the cavity is far larger.
+  const minCutoutArea = CAVITY_MIN_CUTOUT_CELLS * g.cell * g.cell;
   const cutouts = loops
-    .filter((l) => l.area > 0 && pointInPolygon(l.points[0]!, vertices))
+    .filter((l) => l.area >= minCutoutArea && pointInPolygon(l.points[0]!, vertices))
     .map((l) => l.points);
   return { vertices, cutouts, area: -hole.area, z: best.z, section: best.section };
 }

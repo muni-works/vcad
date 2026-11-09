@@ -138,6 +138,7 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
 
   // ── Loon one-shot + core see/measure/export ────────────────────────────
   create_cad_loon: { title: "Create CAD (Loon)", annotations: RW },
+  assemble: { title: "Assemble", annotations: RW },
   export_cad: { title: "Export CAD", annotations: RW },
   inspect_cad: { title: "Inspect CAD", annotations: RO },
   inspect_faces: {

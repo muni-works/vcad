@@ -58,7 +58,7 @@ run("npx", [
   "--target=node20",
   "--format=esm",
   // Native rasterizer ships as an optionalDependency instead of being bundled
-  // (.node binaries); render.ts degrades to raw SVG when the import fails.
+  // (.node binaries); resvg-loader.ts falls back to the bundled resvg.wasm.
   "--external:@resvg/resvg-js",
   `--define:__VCAD_VERSION__="${version}"`,
   `--define:__VCAD_BUILD_SHA__="${sha}"`,
@@ -76,6 +76,13 @@ copyFileSync(
   join(out, "vcad_kernel_wasm_bg.wasm"),
 );
 
+// The WASM rasterizer ships inside the tarball, so PNG output never depends on
+// a platform-specific native binary having installed.
+copyFileSync(
+  require.resolve("@resvg/resvg-wasm/index_bg.wasm"),
+  join(out, "resvg.wasm"),
+);
+
 writeFileSync(
   join(out, "package.json"),
   JSON.stringify(
@@ -88,7 +95,7 @@ writeFileSync(
       type: "module",
       bin: { "vcad-mcp": "index.mjs" },
       engines: { node: ">=20" },
-      // Best-effort native PNG rasterizer; server falls back to SVG without it.
+      // Faster native PNG rasterizer when it installs; the bundled WASM one covers the rest.
       optionalDependencies: { "@resvg/resvg-js": "^2" },
       repository: { type: "git", url: "https://github.com/ecto/vcad" },
       homepage: "https://vcad.io",

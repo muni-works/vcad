@@ -9,6 +9,8 @@
 //! and must equal [`manifest`] (see the drift test; regenerate with
 //! `VCAD_UPDATE_AGENT_MANIFEST=1 cargo test -p vcad-app agent`).
 
+use std::collections::HashSet;
+
 use serde_json::{json, Value};
 
 use crate::command::CommandError;
@@ -392,11 +394,36 @@ pub fn evaluation_errors(doc: &DocumentApi) -> String {
 /// One line per part: id, name, kind, material, bbox.
 pub fn describe_scene(doc: &DocumentApi) -> String {
     let state = doc.get_state();
-    if state.parts.is_empty() {
+    // What the feature tree shows: scene roots. A boolean's operands and a
+    // part definition's source are features, not parts.
+    let roots: HashSet<&String> = state
+        .document
+        .part_ids
+        .iter()
+        .flat_map(|m| m.values())
+        .collect();
+    let parts: Vec<_> = state
+        .parts
+        .iter()
+        .filter(|p| roots.contains(&p.id().to_string()))
+        .collect();
+    let instances = state.document.instances.as_deref().unwrap_or_default();
+    if parts.is_empty() && instances.is_empty() {
         return "The document is empty (no parts).".into();
     }
-    let mut out = format!("{} part(s), units mm, Z up:\n", state.parts.len());
-    for part in &state.parts {
+    let mut out = format!(
+        "{} part(s), units mm, Z up. Ids are current as of this call; a document \
+         pushed from an MCP session can renumber them, so re-read after one.\n",
+        parts.len() + instances.len()
+    );
+    for inst in instances {
+        let name = inst.name.as_deref().unwrap_or(&inst.id);
+        out.push_str(&format!(
+            "- instance {} \"{name}\" of {}\n",
+            inst.id, inst.part_def_id
+        ));
+    }
+    for part in parts {
         let v = serde_json::to_value(part).unwrap_or(Value::Null);
         let id = part.id();
         let name = v.get("name").and_then(Value::as_str).unwrap_or("");
@@ -718,6 +745,31 @@ mod tests {
         let err = read_tool_envelope(&api, "inspect", &json!({"part_id": id}).to_string());
         assert!(err.contains("\"ok\":false"), "{err}");
         assert!(err.contains("inner loops"), "reason hidden: {err}");
+    }
+
+    #[test]
+    fn describe_scene_lists_what_the_tree_shows() {
+        let mut api = DocumentApi::new(ReplicaId(2));
+        let mut cube = |x: f64| {
+            let r = apply(
+                &mut api,
+                "create",
+                json!({"type": "cube", "params": {"size": {"x": x, "y": 10, "z": 10}}}),
+            );
+            r["result"]["createdFeatureId"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let (a, b) = (cube(10.0), cube(5.0));
+        apply(&mut api, "difference", json!({"left": a, "right": b}));
+        let scene = describe_scene(&api);
+        assert!(
+            scene.starts_with("1 part(s)"),
+            "operands listed as parts: {scene}"
+        );
+        assert!(!scene.contains(&format!("- {a} ")), "{scene}");
+        assert!(scene.contains("current as of this call"), "{scene}");
     }
 
     #[test]
