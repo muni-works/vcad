@@ -284,6 +284,9 @@ final class EditorModel {
     /// window: another agent session may take the window over while it is
     /// unedited. False for a document the user opened and an agent attached to.
     var agentLinkOwned = false
+    /// When the linked session last touched this window. A session may only
+    /// take the window from one that has gone quiet (`AgentEdits.takeoverIdleSeconds`).
+    var agentLinkActiveAt: Date?
     /// Folder a linked document's relative mesh paths resolve from.
     var agentLinkBaseDir: String?
     /// The link a pose has already moved to a posing workspace, so a pose

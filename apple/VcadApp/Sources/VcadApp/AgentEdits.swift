@@ -65,9 +65,10 @@ enum AgentEdits {
                                 "name": ["type": "string", "description": "Short name for the undo step"]],
                                required: ["source"])],
         ["name": "adopt_document",
-         "description": "Show an MCP session's document in this window as one undo step. Sent by @vcad/mcp after each edit; agents don't call it. A new session takes over a window showing only another agent's unedited push. Refused when the window holds the user's work, or the user edited since the last push.",
+         "description": "Show an MCP session's document in this window as one undo step. Sent by @vcad/mcp after each edit; agents don't call it. A window showing another agent's unedited push moves only for intent \"explicit\", or \"opened\" once that session has been idle 30 s. Refused when the window holds the user's work, or the user edited since the last push.",
          "inputSchema": schema(["document": ["type": "object"], "link_id": ["type": "string"],
                                 "tool": ["type": "string"],
+                                "intent": ["type": "string", "description": "implicit (default), opened, or explicit: how far this push may displace another session."],
                                 "base_dir": ["type": "string", "description": "Folder the document's relative mesh paths resolve from."]],
                                required: ["document", "link_id"])],
         ["name": "attach_document",
@@ -167,8 +168,10 @@ enum AgentEdits {
             throw Failure(message: "document and link_id are required")
         }
         let mine = m.agentLinkID == link
-        guard mine || m.isDisposableScratch || canTakeOver(m) else {
-            return AgentTools.json(["adopted": false, "reason": "busy"])
+        let idle = m.agentLinkActiveAt.map { Date().timeIntervalSince($0) } ?? .infinity
+        if !mine, let reason = takeoverRefusal(scratch: m.isDisposableScratch, agentsOnly: canTakeOver(m),
+                                               intent: a["intent"] as? String, idleSeconds: idle) {
+            return AgentTools.json(["adopted": false, "reason": reason])
         }
         if mine, try editableEngine(m).stateHash != m.agentLinkRevision {
             return AgentTools.json(["adopted": false, "reason": "edited"])
@@ -178,6 +181,7 @@ enum AgentEdits {
         try edit(m, name: "Agent: \(tool)") { try $0.loadIR(document) }
         if !oldBoard.isEmpty { m.electronics.revealNewCopper(from: oldBoard, to: m.electronics.board(m)) }
         let revision = try editableEngine(m).stateHash
+        let displaced = mine ? nil : m.agentLinkID
         if !mine {
             // A new session's document: nothing of the last one's pose carries over.
             m.jointPose = [:]; m.explode = 0; m.agentBaseFirst = nil; m.agentBaseDelta = nil
@@ -188,12 +192,34 @@ enum AgentEdits {
         if let dir = a["base_dir"] as? String, !dir.isEmpty { m.agentLinkBaseDir = dir }
         m.agentLinkID = link
         m.agentLinkRevision = revision
+        m.agentLinkActiveAt = Date()
         // A mechanical document is blank in Electronics. Only on arrival or when
         // the board goes away, so a user who walks back there isn't pulled out.
         if m.workspace == .electronics, m.electronics.board(m).isEmpty, !mine || !oldBoard.isEmpty {
             GlassUI.shared.enter(.design, model: m)
         }
-        return AgentTools.json(["adopted": true, "revision": revision])
+        var out: [String: Any] = ["adopted": true, "revision": revision]
+        if let displaced { out["displaced"] = displaced }
+        return AgentTools.json(out)
+    }
+
+    /// How long a linked session must be quiet before a deliberately opened one
+    /// may take its window.
+    static let takeoverIdleSeconds: TimeInterval = 30
+
+    /// Why a push from another session may not replace this window, or nil if
+    /// it may. An empty window is free. The user's work is never taken. A
+    /// window showing another agent's build moves only on intent: an explicit
+    /// call, or a deliberately opened session once the old one has gone idle.
+    /// A session a tool minted implicitly never takes it.
+    static func takeoverRefusal(scratch: Bool, agentsOnly: Bool, intent: String?, idleSeconds: TimeInterval) -> String? {
+        if scratch { return nil }
+        guard agentsOnly else { return "busy" }
+        switch intent {
+        case "explicit": return nil
+        case "opened": return idleSeconds >= takeoverIdleSeconds ? nil : "linked_active"
+        default: return "linked"
+        }
     }
 
     /// Whether a different session may replace this window's document: it got
@@ -229,6 +255,7 @@ enum AgentEdits {
         m.agentLinkID = link
         m.agentLinkRevision = engine.stateHash
         m.agentLinkOwned = false
+        m.agentLinkActiveAt = Date()
         m.agentPoseSurfacedLink = nil
         return AgentTools.json(out)
     }
@@ -237,6 +264,7 @@ enum AgentEdits {
         guard m.agentLinkID == (a["link_id"] as? String), m.agentLinkID != nil else {
             return AgentTools.json(["linked": false])
         }
+        m.agentLinkActiveAt = Date()
         var out: [String: Any] = ["linked": true, "edited": try editableEngine(m).stateHash != m.agentLinkRevision]
         if a["pull"] as? Bool == true, let json = m.documentJSON {
             out["document"] = json

@@ -37,8 +37,10 @@ import {
 } from "./tools/session.js";
 import {
   pushAfterWrite,
+  linkIntent,
   pushPose,
   reconcileBeforeWrite,
+  takeLinkNote,
   toolDefs as appLinkToolDefs,
 } from "./app-link.js";
 import { getEnvRecord } from "./tools/gym.js";
@@ -408,6 +410,7 @@ const LIST_TOOL_ORDER: readonly string[] = [
   "branch_from",
   "continue_document",
   "attach_app_document",
+  "show_in_app",
   "server_info",
   "list_tool_packs",
   "set_tool_packs",
@@ -1605,6 +1608,8 @@ export async function createServer(
                 ? { pose: (parsed.observation ?? parsed).base_pose, restart: name === "gym_reset" }
                 : undefined,
             );
+            const lost = takeLinkNote(record.documentId);
+            if (lost) result.content.push({ type: "text", text: lost });
           }
         } catch {
           // The display must never fail a simulation step.
@@ -1624,7 +1629,13 @@ export async function createServer(
       if (!result.isError && def?.behavior.writesDoc) {
         const writtenId = effectiveDocId(result, args);
         if (writtenId) {
-          const note = await pushAfterWrite(writtenId, name, documents.get(writtenId));
+          const note = await pushAfterWrite(
+            writtenId,
+            name,
+            documents.get(writtenId),
+            undefined,
+            linkIntent(name, writtenId !== incomingId),
+          );
           if (note) result.content.push({ type: "text", text: note });
         }
         // A tool that just MINTED a session (returned an id the caller didn't
@@ -1673,6 +1684,10 @@ export async function createServer(
             // best-effort event append
           }
         }
+      }
+      if (incomingId) {
+        const lost = takeLinkNote(incomingId);
+        if (lost) result.content.push({ type: "text", text: lost });
       }
       // close_document → also forget the durable row (flush-then-forget).
       if (name === "close_document" && incomingId) {

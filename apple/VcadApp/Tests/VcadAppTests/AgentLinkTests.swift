@@ -43,14 +43,133 @@ final class AgentLinkTests: XCTestCase {
 
     // MARK: defect 1 — one window, one session
 
-    func testNewSessionTakesOverAnUneditedAgentPush() async throws {
+    func testAToolMintedSessionNeverTakesALiveWindow() async throws {
         let m = EditorModel()
-        let first = try await adopt(m, box(10), link: "a")
-        XCTAssertEqual(first["adopted"] as? Bool, true)
-        let second = try await adopt(m, box(20), link: "b")
-        XCTAssertEqual(second["adopted"] as? Bool, true, "\(second)")
+        _ = try await adopt(m, box(10), link: "a")
+        let throwaway = try await adopt(m, box(20), link: "b")
+        XCTAssertEqual(throwaway["reason"] as? String, "linked", "\(throwaway)")
+        XCTAssertEqual(m.agentLinkID, "a")
+        m.agentLinkActiveAt = Date(timeIntervalSinceNow: -3600)
+        let later = try await adopt(m, box(20), link: "b")
+        XCTAssertEqual(later["reason"] as? String, "linked", "idleness alone isn't intent")
+        XCTAssertEqual(m.agentLinkID, "a")
+    }
+
+    func testAnOpenedSessionWaitsForTheOldOneToGoIdle() async throws {
+        let m = EditorModel()
+        _ = try await adopt(m, box(10), link: "a")
+        var args: [String: Any] = ["document": box(20), "link_id": "b", "tool": "create_cad_loon", "intent": "opened"]
+        let early = try await call(m, "adopt_document", args)
+        XCTAssertEqual(early["reason"] as? String, "linked_active")
+        m.agentLinkActiveAt = Date(timeIntervalSinceNow: -(AgentEdits.takeoverIdleSeconds + 1))
+        args["tool"] = "update"
+        let idle = try await call(m, "adopt_document", args)
+        XCTAssertEqual(idle["adopted"] as? Bool, true, "\(idle)")
+        XCTAssertEqual(idle["displaced"] as? String, "a", "the loser must be named so it can be told")
         XCTAssertEqual(m.agentLinkID, "b")
         XCTAssertEqual(m.undoStack.count, 2, "a takeover is one undo step, so it can be walked back")
+    }
+
+    func testAnExplicitCallTakesAnAgentsWindowButNeverTheUsers() async throws {
+        let m = EditorModel()
+        _ = try await adopt(m, box(10), link: "a")
+        let force: [String: Any] = ["document": box(20), "link_id": "b", "tool": "show_in_app", "intent": "explicit"]
+        let taken = try await call(m, "adopt_document", force)
+        XCTAssertEqual(taken["displaced"] as? String, "a")
+        try await userEdit(m)
+        var other = force; other["link_id"] = "c"
+        let refused = try await call(m, "adopt_document", other)
+        XCTAssertEqual(refused["reason"] as? String, "busy")
+    }
+
+    func testAPoseAndAStatusCheckKeepASessionActive() async throws {
+        let m = EditorModel()
+        _ = try await adopt(m, try arm(), link: "a")
+        m.agentLinkActiveAt = nil
+        let name = try XCTUnwrap(m.drivenJoints.first).name ?? ""
+        _ = try await call(m, "set_pose", ["joints": [name: 5], "link_id": "a"])
+        XCTAssertNotNil(m.agentLinkActiveAt)
+        m.agentLinkActiveAt = nil
+        _ = try await call(m, "link_status", ["link_id": "a"])
+        XCTAssertNotNil(m.agentLinkActiveAt)
+    }
+
+    func testTakeoverRefusalMatrix() {
+        let idle = AgentEdits.takeoverIdleSeconds
+        typealias T = AgentEdits
+        XCTAssertNil(T.takeoverRefusal(scratch: true, agentsOnly: false, intent: nil, idleSeconds: 0))
+        XCTAssertEqual(T.takeoverRefusal(scratch: false, agentsOnly: false, intent: "explicit", idleSeconds: 999), "busy")
+        XCTAssertEqual(T.takeoverRefusal(scratch: false, agentsOnly: true, intent: nil, idleSeconds: 999), "linked")
+        XCTAssertEqual(T.takeoverRefusal(scratch: false, agentsOnly: true, intent: "opened", idleSeconds: idle - 1), "linked_active")
+        XCTAssertNil(T.takeoverRefusal(scratch: false, agentsOnly: true, intent: "opened", idleSeconds: idle))
+        XCTAssertNil(T.takeoverRefusal(scratch: false, agentsOnly: true, intent: "explicit", idleSeconds: 0))
+    }
+
+    // MARK: set_pose input
+
+    private func expectPoseFailure(_ m: EditorModel, _ args: [String: Any], contains: String,
+                                   line: UInt = #line) async throws {
+        let before = m.jointPose
+        do {
+            _ = try await AgentTools.call("set_pose", args, model: m)
+            XCTFail("should refuse \(args)", line: line)
+        } catch let f as AgentTools.Failure {
+            XCTAssertTrue(f.message.contains(contains), f.message, line: line)
+        }
+        XCTAssertEqual(m.jointPose, before, "a refused call changes nothing", line: line)
+    }
+
+    func testSetPoseRejectsBadShapesAndChangesNothing() async throws {
+        let m = EditorModel()
+        _ = try await adopt(m, try arm(), link: "a")
+        let name = try XCTUnwrap(m.drivenJoints.first).name ?? ""
+        _ = try await call(m, "set_pose", ["joints": [name: 12]])
+        try await expectPoseFailure(m, ["joint": name, "value": 30], contains: "unknown argument joint, value")
+        try await expectPoseFailure(m, [:], contains: "nothing to apply")
+        try await expectPoseFailure(m, ["joints": [String: Any]()], contains: "nothing to apply")
+        try await expectPoseFailure(m, ["joints": 3], contains: "must be an object")
+        try await expectPoseFailure(m, ["joints": [name: "up"]], contains: "number of degrees")
+        try await expectPoseFailure(m, ["joints": [name: 20, "nope": 1]], contains: "unknown joints nope")
+        try await expectPoseFailure(m, ["base": [1, 2]], contains: "7 numbers")
+        try await expectPoseFailure(m, ["joints": [name: 20], "link_id": "other"], contains: "different session")
+        XCTAssertEqual(m.jointPose[name], 12)
+    }
+
+    func testAMirroredStreamPosesWhatMatches() async throws {
+        let m = EditorModel()
+        _ = try await adopt(m, try arm(), link: "a")
+        let name = try XCTUnwrap(m.drivenJoints.first).name ?? ""
+        let r = try await call(m, "set_pose", ["joints": [name: 15, "welded": 0], "partial": true, "link_id": "a"])
+        XCTAssertEqual(m.jointPose[name], 15)
+        XCTAssertTrue((r["text"] as? String ?? "").contains("welded"), "\(r)")
+    }
+
+    func testAFixedJointInAPoseIsSkippedNotUnknown() async throws {
+        var doc = try arm()
+        var joints = try XCTUnwrap(doc["joints"] as? [[String: Any]])
+        let driven = try XCTUnwrap(joints.first?["name"] as? String)
+        joints[1]["kind"] = ["type": "Fixed"]
+        joints[1]["name"] = "weld"
+        doc["joints"] = joints
+        let m = EditorModel()
+        _ = try await adopt(m, doc, link: "a")
+        _ = try await call(m, "set_pose", ["joints": [driven: 9, "weld": 3]])
+        XCTAssertEqual(m.jointPose[driven], 9)
+        XCTAssertNil(m.jointPose["weld"])
+    }
+
+    func testAssemblyRootsSurviveAdoptionAndPull() async throws {
+        var doc = try arm()
+        // One scene root; the other part definitions exist only through instances.
+        doc["roots"] = Array(try XCTUnwrap(doc["roots"] as? [Any]).prefix(1))
+        let before = (doc["roots"] as? [Any])?.count
+        let m = EditorModel()
+        _ = try await adopt(m, doc, link: "a")
+        XCTAssertEqual((m.documentJSON?["roots"] as? [Any])?.count, before, "part definitions must not become roots")
+        try await userEdit(m)
+        let pulled = try await call(m, "link_status", ["link_id": "a", "pull": true])
+        let roots = (pulled["document"] as? [String: Any])?["roots"] as? [Any]
+        XCTAssertEqual(roots?.count, (before ?? 0) + 1, "only the user's part is new")
     }
 
     func testUserEditsBlockTakeoverAndTheirOwnSessionIsToldEdited() async throws {

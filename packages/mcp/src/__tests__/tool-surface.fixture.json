@@ -225,6 +225,26 @@
     }
   },
   {
+    "name": "show_in_app",
+    "title": "Show in App",
+    "description": "Put this session's document on screen in the vcad desktop app, taking the window from another session if one holds it. Sessions never take a window on their own while another is working in it; this is the deliberate way. Never replaces the user's own unsaved work. Returns whether it is shown.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "description": "Session to show."
+        }
+      },
+      "required": [
+        "document_id"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false
+    }
+  },
+  {
     "name": "server_info",
     "title": "Server Info",
     "description": "Report the running build's identity: version, git sha (if stamped), tool count, enabled packs, whether the kernel WASM loaded, and whether sessions are durable (`durable` — survive a redeploy/cold start, vs. in-memory only). Call this to confirm a tool exists in THIS build before assuming a stale or version-skewed deploy, and to check durable:true before relying on checkpoints across a long session.",

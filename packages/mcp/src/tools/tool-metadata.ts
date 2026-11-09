@@ -80,6 +80,7 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
   save_document: { title: "Save Document", annotations: RW },
   load_document: { title: "Load Document", annotations: RW },
   attach_app_document: { title: "Attach to App Document", annotations: RW },
+  show_in_app: { title: "Show in App", annotations: RW },
   checkpoint_document: { title: "Checkpoint Document", annotations: RW },
   branch_from: { title: "Branch From Checkpoint", annotations: RW },
   continue_document: { title: "Continue Document", annotations: RW_NET },

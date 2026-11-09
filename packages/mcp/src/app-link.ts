@@ -15,8 +15,12 @@ import type { Document } from "@vcad/ir";
 import { documents, nextSessionId, runDocumentEnterHooks } from "./tools/session-core.js";
 import { behavior, type ToolDef } from "./tools/tool-def.js";
 
-/** `viewOnly`: a copy of a document the app can't edit; only poses mirror. */
-type Link = { pushed: string; shown: boolean; viewOnly?: boolean };
+/**
+ * `viewOnly`: a copy of a document the app can't edit; only poses mirror.
+ * `opened`: the session was deliberately opened, so it may take a window whose
+ * session has gone idle. `lost`: why the window went away, told once.
+ */
+type Link = { pushed: string; shown: boolean; viewOnly?: boolean; opened?: boolean; lost?: string };
 const links = new Map<string, Link>();
 const folders = new Map<string, string>();
 
@@ -83,6 +87,10 @@ export async function reconcileBeforeWrite(
   const link = links.get(documentId);
   if (!link?.shown || link.viewOnly) return null;
   const status = await call("link_status", { link_id: documentId });
+  if (status?.linked === false) {
+    loseWindow(documentId, LOST_WINDOW);
+    return null;
+  }
   if (!status?.linked || !status.edited) return null;
   const pulled = await call("link_status", { link_id: documentId, pull: true });
   if (!pulled?.document) return null;
@@ -95,6 +103,41 @@ export async function reconcileBeforeWrite(
   );
 }
 
+const LOST_WINDOW =
+  "This document is no longer on screen in the vcad app: its window now shows something else. " +
+  "Edits stay in this session. To put it back, call show_in_app.";
+
+function loseWindow(documentId: string, why: string): void {
+  const link = links.get(documentId);
+  if (!link) return;
+  link.shown = false;
+  link.pushed = "";
+  link.lost = why;
+}
+
+/** The note owed to a session that lost its window, once. Nothing if it is back on screen. */
+export function takeLinkNote(documentId: string): string | null {
+  const link = links.get(documentId);
+  if (!link?.lost) return null;
+  const note = link.lost;
+  delete link.lost;
+  return link.shown ? null : note;
+}
+
+/**
+ * How much a push may displace another session's window:
+ * `implicit` never; `opened` once that session has gone idle; `explicit` always.
+ * None of them can replace the user's own work.
+ */
+export type LinkIntent = "implicit" | "opened" | "explicit";
+
+const OPENING_TOOLS = new Set(["open_document", "create_schematic", "create_cad_loon"]);
+
+/** A session is deliberately opened only by these tools, and only when they mint it. */
+export function linkIntent(tool: string, minted: boolean): LinkIntent {
+  return minted && OPENING_TOOLS.has(tool) ? "opened" : "implicit";
+}
+
 /**
  * After a write: show the session in the app. Returns a note for the agent:
  * once when it goes live, and on every call the user's work keeps it off screen.
@@ -104,22 +147,42 @@ export async function pushAfterWrite(
   tool: string,
   document: Document | undefined,
   call: Call = callApp,
+  intent: LinkIntent = "implicit",
 ): Promise<string | null> {
   if (!document) return null;
   const json = JSON.stringify(document);
   const link = links.get(documentId);
-  if (link?.pushed === json || link?.viewOnly) return null;
+  if (link?.viewOnly || (link?.shown && link.pushed === json && intent !== "explicit")) return null;
+  const opened = intent === "opened" || link?.opened === true;
+  const effective: LinkIntent = intent === "implicit" && opened ? "opened" : intent;
   const base_dir = documentFolder(documentId, document);
   const reply = await call("adopt_document", {
     document,
     link_id: documentId,
     tool,
+    intent: effective,
     ...(base_dir ? { base_dir } : {}),
   });
   if (reply?.adopted) {
     const first = !link?.shown;
-    links.set(documentId, { pushed: json, shown: true });
+    links.set(documentId, { pushed: json, shown: true, ...(opened ? { opened } : {}) });
+    if (typeof reply.displaced === "string" && reply.displaced !== documentId) {
+      loseWindow(reply.displaced, LOST_WINDOW);
+    }
     return first ? "This document is live in the vcad app: the user sees each edit as one undo step." : null;
+  }
+  if (opened && !link) links.set(documentId, { pushed: "", shown: false, opened });
+  if (reply?.reason === "linked") {
+    return (
+      "Not shown in the vcad app: its window is showing another session's build, and a session a tool " +
+      "minted on its own never takes it. This edit exists only in this session. To show it, call show_in_app."
+    );
+  }
+  if (reply?.reason === "linked_active") {
+    return (
+      "Not shown in the vcad app yet: the session on screen was active moments ago. " +
+      "Your next edit takes the window once it has been idle for 30 seconds; show_in_app takes it now."
+    );
   }
   if (reply?.reason === "busy") {
     return (
@@ -198,16 +261,83 @@ export const toolDefs: ToolDef[] = [
     },
     behavior: behavior({ writesDoc: true }),
   },
+  {
+    name: "show_in_app",
+    pack: null,
+    description:
+      "Put this session's document on screen in the vcad desktop app, taking the window from another " +
+      "session if one holds it. Sessions never take a window on their own while another is working in it; " +
+      "this is the deliberate way. Never replaces the user's own unsaved work. Returns whether it is shown.",
+    inputSchema: {
+      type: "object" as const,
+      properties: { document_id: { type: "string", description: "Session to show." } },
+      required: ["document_id"],
+    },
+    handler: async (args) => {
+      const id = String((args as { document_id?: unknown }).document_id ?? "");
+      const result = await showInApp(id, documents.get(id));
+      return { content: [{ type: "text" as const, text: result.text }], ...(result.ok ? {} : { isError: true }) };
+    },
+    behavior: behavior({}),
+  },
 ];
 
+/** Deliberately put a session on screen; the only call that displaces a busy session. */
+export async function showInApp(
+  documentId: string,
+  document: Document | undefined,
+  call: Call = callApp,
+): Promise<{ ok: boolean; text: string }> {
+  if (!document) return { ok: false, text: `Unknown document_id: ${documentId}` };
+  if (links.get(documentId)?.viewOnly) {
+    return { ok: false, text: "This session is a view-only copy: only poses mirror in the app." };
+  }
+  const note = await pushAfterWrite(documentId, "show_in_app", document, call, "explicit");
+  if (links.get(documentId)?.shown) return { ok: true, text: note ?? "This document is on screen in the vcad app." };
+  return { ok: false, text: note ?? "No running vcad app was found. Open the vcad desktop app, then try again." };
+}
+
 const POSE_INTERVAL_MS = 33;
+
+type PoseFrame = { args: Record<string, unknown>; call: Call };
 let poseBusy = false;
 let lastPose = 0;
+/** A new episode's anchor: delivered before any later frame, never replaced by one. */
+let pendingRestart: PoseFrame | null = null;
+/** The newest frame not yet sent. Whatever is here when the stream stops still lands. */
+let pendingLatest: PoseFrame | null = null;
+let poseTimer: ReturnType<typeof setTimeout> | null = null;
+
+function sendPose(frame: PoseFrame, now: number): void {
+  poseBusy = true;
+  lastPose = now;
+  const done = () => {
+    poseBusy = false;
+    schedulePendingPose();
+  };
+  void frame.call("set_pose", frame.args).then(done, done);
+}
+
+function schedulePendingPose(): void {
+  if (poseBusy || poseTimer || (!pendingRestart && !pendingLatest)) return;
+  const wait = pendingRestart ? 0 : Math.max(0, lastPose + POSE_INTERVAL_MS - Date.now());
+  poseTimer = setTimeout(() => {
+    poseTimer = null;
+    if (poseBusy) return;
+    const frame = pendingRestart ?? pendingLatest;
+    if (!frame) return;
+    if (pendingRestart) pendingRestart = null;
+    else pendingLatest = null;
+    sendPose(frame, Date.now());
+  }, wait);
+}
 
 /**
- * Mirror a simulation step in the app. Latest wins: steps that arrive while a
- * pose is in flight, or inside the frame interval, are dropped so a training
- * loop is never slowed by the display. Multi-DOF joints have no angle to set.
+ * Mirror a simulation step in the app. Latest wins: a step that arrives while a
+ * pose is in flight, or inside the frame interval, replaces the waiting frame so
+ * a training loop is never slowed by the display, and the waiting frame is sent
+ * when the slot frees, so the last pose of a run always lands. Returns whether
+ * this frame went out now. Multi-DOF joints have no angle to set.
  */
 export function pushPose(
   documentId: string,
@@ -216,17 +346,35 @@ export function pushPose(
   now: number = Date.now(),
   base?: { pose: number[]; restart: boolean },
 ): boolean {
-  if (!links.get(documentId)?.shown || poseBusy) return false;
-  // A new episode's first pose anchors the base, so it is never dropped.
-  if (!base?.restart && now - lastPose < POSE_INTERVAL_MS) return false;
+  const link = links.get(documentId);
+  if (!link?.shown) return false;
   const pose = Object.fromEntries(joints.filter((j) => !j.positions).map((j) => [j.id, j.position]));
   if (Object.keys(pose).length === 0 && !base) return false;
-  poseBusy = true;
-  lastPose = now;
-  const args = base ? { joints: pose, base: base.pose, restart: base.restart } : { joints: pose };
-  void call("set_pose", args).finally(() => {
-    poseBusy = false;
-  });
+  // `partial`: a stream carries joints the window doesn't drive; pose what it can.
+  const args: Record<string, unknown> = {
+    joints: pose,
+    partial: true,
+    ...(link.viewOnly ? {} : { link_id: documentId }),
+    ...(base ? { base: base.pose, restart: base.restart } : {}),
+  };
+  const frame: PoseFrame = { args, call };
+  if (base?.restart) {
+    pendingLatest = null;
+    if (poseBusy) {
+      pendingRestart = frame;
+      return false;
+    }
+    pendingRestart = null;
+    sendPose(frame, now);
+    return true;
+  }
+  if (poseBusy || pendingRestart || now - lastPose < POSE_INTERVAL_MS) {
+    pendingLatest = frame;
+    schedulePendingPose();
+    return false;
+  }
+  pendingLatest = null;
+  sendPose(frame, now);
   return true;
 }
 
@@ -235,5 +383,9 @@ export function resetAppLinks(): void {
   links.clear();
   poseBusy = false;
   lastPose = 0;
+  pendingRestart = null;
+  pendingLatest = null;
+  if (poseTimer) clearTimeout(poseTimer);
+  poseTimer = null;
   folders.clear();
 }

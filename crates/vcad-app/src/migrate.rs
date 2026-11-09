@@ -60,6 +60,10 @@ pub struct MigrationMap {
     pub mappings: Vec<NodeMapping>,
 }
 
+/// Part-def param: its source feature exists only to define the part, and is
+/// not a scene root.
+pub(crate) const PART_DEF_SOURCE_CONSUMED: &str = "source_consumed";
+
 /// Migrate a v1 document (IR DAG + parts metadata) into a CRDT document.
 ///
 /// Each scene entry's root node tree is converted recursively: primitives
@@ -948,6 +952,11 @@ fn migrate_assembly(crdt: &mut CrdtDocument, ctx: &mut MigrationCtx, doc: &Docum
             "source_feature".to_string(),
             Value::FeatureRef(fid_to_stable(source_fid)),
         );
+        // A part definition's geometry reaches the scene through its instances.
+        // Only a node the document itself lists as a root is also a scene root.
+        if !doc.roots.iter().any(|entry| entry.root == pd.root) {
+            params.insert(PART_DEF_SOURCE_CONSUMED.to_string(), Value::Bool(true));
+        }
         if let Some(n) = &pd.name {
             params.insert("name".to_string(), Value::String(n.clone()));
         }
@@ -1507,6 +1516,92 @@ mod tests {
         let crdt = migrate_v1(&doc);
         assert_eq!(crdt.ordered_features().len(), 1);
         assert_eq!(crdt.ordered_features()[0].1.kind, "cube");
+    }
+
+    /// An assembly: `n` part defs, each instanced once, plus `roots`.
+    fn assembly(n: u64, roots: &[u64]) -> Document {
+        let mut value = serde_json::json!({
+            "version": "0.1", "nodes": {}, "materials": {}, "part_materials": {},
+            "roots": roots.iter().map(|r| serde_json::json!({"root": r, "material": "default"})).collect::<Vec<_>>(),
+            "partDefs": {}, "instances": [],
+        });
+        for i in 1..=n {
+            value["nodes"][i.to_string()] = serde_json::json!({
+                "id": i, "name": format!("link{i}"),
+                "op": {"type": "Cube", "size": {"x": 1.0, "y": 1.0, "z": i as f64}},
+            });
+            let id = format!("def{i}");
+            value["partDefs"][&id] = serde_json::json!({"id": id, "root": i});
+            value["instances"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({
+                    "id": format!("inst{i}"), "partDefId": id,
+                }));
+        }
+        serde_json::from_value(value).expect("assembly fixture")
+    }
+
+    #[test]
+    fn part_definitions_do_not_become_scene_roots() {
+        let doc = assembly(6, &[]);
+        let result = crate::materializer::materialize(&migrate_v1(&doc));
+        assert_eq!(
+            result.document.roots.len(),
+            0,
+            "{:?}",
+            result.document.roots
+        );
+        assert_eq!(result.document.part_defs.as_ref().unwrap().len(), 6);
+        assert_eq!(result.document.instances.as_ref().unwrap().len(), 6);
+    }
+
+    #[test]
+    fn a_root_that_is_also_a_part_definition_stays_one_root() {
+        let doc = assembly(6, &[3]);
+        let result = crate::materializer::materialize(&migrate_v1(&doc));
+        assert_eq!(
+            result.document.roots.len(),
+            1,
+            "{:?}",
+            result.document.roots
+        );
+        // The surviving root is that part's geometry, under any transform wrappers.
+        let mut id = result.document.roots[0].root;
+        while let CsgOp::Translate { child, .. }
+        | CsgOp::Rotate { child, .. }
+        | CsgOp::Scale { child, .. } = &result.document.nodes[&id].op
+        {
+            id = *child;
+        }
+        match &result.document.nodes[&id].op {
+            CsgOp::Cube { size } => assert_eq!(size.z, 3.0),
+            other => panic!("expected the third part's cube, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assembly_roots_are_stable_across_repeated_round_trips() {
+        let mut doc = assembly(4, &[2]);
+        for _ in 0..3 {
+            doc = crate::materializer::materialize(&migrate_v1(&doc)).document;
+            assert_eq!(doc.roots.len(), 1, "{:?}", doc.roots);
+            assert_eq!(doc.part_defs.as_ref().unwrap().len(), 4);
+        }
+    }
+
+    #[test]
+    fn a_plain_document_round_trips_with_the_same_roots() {
+        let doc: Document = serde_json::from_value(serde_json::json!({
+            "version": "0.1", "materials": {}, "part_materials": {},
+            "nodes": {
+                "1": {"id": 1, "name": "a", "op": {"type": "Cube", "size": {"x": 1.0, "y": 1.0, "z": 1.0}}},
+                "2": {"id": 2, "name": "b", "op": {"type": "Cube", "size": {"x": 2.0, "y": 1.0, "z": 1.0}}},
+            },
+            "roots": [{"root": 1, "material": "default"}, {"root": 2, "material": "default"}],
+        })).expect("plain fixture");
+        let result = crate::materializer::materialize(&migrate_v1(&doc));
+        assert_eq!(result.document.roots.len(), 2);
     }
 
     #[test]
