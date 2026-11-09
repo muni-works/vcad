@@ -280,6 +280,9 @@ final class EditorModel {
     /// The external MCP session this window shows, and the engine state it last pushed.
     var agentLinkID: String?
     var agentLinkRevision: String?
+    /// A simulated floating base: its first pose this episode, and its motion since.
+    var agentBaseFirst: simd_float4x4?
+    var agentBaseDelta: simd_float4x4?
     var showsParameterTable = false
     var isWindowed = false { didSet { saveLayout() } }
     init() {

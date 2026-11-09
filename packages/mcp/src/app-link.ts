@@ -117,13 +117,17 @@ export function pushPose(
   joints: { id: string; position: number; positions?: number[] }[],
   call: Call = callApp,
   now: number = Date.now(),
+  base?: { pose: number[]; restart: boolean },
 ): boolean {
-  if (!links.get(documentId)?.shown || poseBusy || now - lastPose < POSE_INTERVAL_MS) return false;
+  if (!links.get(documentId)?.shown || poseBusy) return false;
+  // A new episode's first pose anchors the base, so it is never dropped.
+  if (!base?.restart && now - lastPose < POSE_INTERVAL_MS) return false;
   const pose = Object.fromEntries(joints.filter((j) => !j.positions).map((j) => [j.id, j.position]));
-  if (Object.keys(pose).length === 0) return false;
+  if (Object.keys(pose).length === 0 && !base) return false;
   poseBusy = true;
   lastPose = now;
-  void call("set_pose", { joints: pose }).finally(() => {
+  const args = base ? { joints: pose, base: base.pose, restart: base.restart } : { joints: pose };
+  void call("set_pose", args).finally(() => {
     poseBusy = false;
   });
   return true;

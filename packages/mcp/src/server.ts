@@ -1592,6 +1592,11 @@ export async function createServer(
                 ...j,
                 id: names.get(j.id) ?? j.id,
               })),
+              undefined,
+              undefined,
+              (parsed.observation ?? parsed).base_pose
+                ? { pose: (parsed.observation ?? parsed).base_pose, restart: name === "gym_reset" }
+                : undefined,
             );
           }
         } catch {

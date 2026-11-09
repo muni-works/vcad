@@ -56,4 +56,15 @@ describe("app link", () => {
     expect(pushPose("a", j, call, 1010)).toBe(false);
     expect(pushPose("a", j, call, 1040)).toBe(true);
   });
+
+  it("sends the floating base and never drops an episode's first pose", async () => {
+    const sent: Record<string, unknown>[] = [];
+    const call = async (_: string, a: Record<string, unknown>) => (sent.push(a), {});
+    await pushAfterWrite("a", "create", doc(1), async () => ({ adopted: true }));
+    const base = [0, 0, 1, 1, 0, 0, 0];
+    expect(pushPose("a", [], call, 1000, { pose: base, restart: false })).toBe(true);
+    await Promise.resolve();
+    expect(pushPose("a", [], call, 1001, { pose: base, restart: true })).toBe(true);
+    expect(sent[1]).toEqual({ joints: {}, base, restart: true });
+  });
 });

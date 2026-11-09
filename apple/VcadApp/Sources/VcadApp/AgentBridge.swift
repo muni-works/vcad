@@ -258,7 +258,10 @@ enum AgentTools {
         ["name": "set_pose",
          "description": "Set joint angles in degrees (clamped to limits), by joint name, e.g. {\"l_knee_pitch\": 60}. reset:true first returns every joint to its authored value.",
          "inputSchema": schema(["joints": ["type": "object", "additionalProperties": ["type": "number"]],
-                                "reset": ["type": "boolean"]])],
+                                "reset": ["type": "boolean"],
+                                "base": ["type": "array", "items": ["type": "number"],
+                                         "description": "Floating base pose: x, y, z in metres, then w, x, y, z"],
+                                "restart": ["type": "boolean", "description": "base starts a new episode"]])],
         ["name": "set_explode",
          "description": "Explode amount 0 (assembled) … 1 (fully exploded).",
          "inputSchema": schema(["amount": ["type": "number"]], required: ["amount"])],
@@ -344,6 +347,9 @@ enum AgentTools {
                 let clamped = j.limits.map { min(max(deg, $0.lowerBound), $0.upperBound) } ?? deg
                 m.jointPose[EditorModel.poseKey(j)] = clamped
                 applied[EditorModel.poseKey(j)] = clamped
+            }
+            if let base = a["base"] as? [NSNumber] {
+                m.setAgentBasePose(base.map(\.doubleValue), restart: a["restart"] as? Bool == true)
             }
             m.applyStudioPose()
             var msg = "Pose applied: \(applied.map { "\($0.key)=\(String(format: "%.1f", $0.value))°" }.sorted().joined(separator: ", "))"
