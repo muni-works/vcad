@@ -8059,10 +8059,8 @@ export async function addCoilArray(args: Record<string, unknown>) {
   for (let i = 0; i < count; i++) {
     const angleDeg = startAngleDeg + (i * 360) / count;
     const angle = (angleDeg * Math.PI) / 180;
-    const coilCenter = {
-      x: round3(center.x + pitchRadius * Math.cos(angle)),
-      y: round3(center.y + pitchRadius * Math.sin(angle)),
-    };
+    const coilPoint = windPolar(center, pitchRadius, angle);
+    const coilCenter = { x: round3(coilPoint.x), y: round3(coilPoint.y) };
     const coilNet = netSequence?.length ? netSequence[i % netSequence.length] : net;
     const direction = dirFor(i);
     const res = await addCoil({
@@ -11644,10 +11642,8 @@ export async function addMotorWinding(args: Record<string, unknown>) {
   const coilTraceRanges: Array<[number, number]> = [];
   for (const coil of plan.coils) {
     const angle = (coil.angleDeg * Math.PI) / 180;
-    const coilCenter = {
-      x: round3(center.x + pitchRadius * Math.cos(angle)),
-      y: round3(center.y + pitchRadius * Math.sin(angle)),
-    };
+    const coilPoint = windPolar(center, pitchRadius, angle);
+    const coilCenter = { x: round3(coilPoint.x), y: round3(coilPoint.y) };
     const dir = coil.polarity === 1 ? "ccw" : "cw";
     const beforeTraces = pcb.traces.length;
     const res = await addCoil({
