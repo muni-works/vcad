@@ -100,6 +100,12 @@ pub struct FabPrepOptions {
     /// loudly and `FAB_NOTES.md` is headed "NOT FULLY ROUTED".
     #[serde(default)]
     pub allow_incomplete: bool,
+    /// Nets whose open connections to route island to island, around the copper
+    /// already on the board and without removing any of it. Runs in place of
+    /// the verdict ladder's whole-board pass; pair it with `max_rounds: 0` and
+    /// `prune_dangling: false` to change nothing but those nets.
+    #[serde(default)]
+    pub connect_nets: Vec<String>,
 }
 
 impl Default for FabPrepOptions {
@@ -112,6 +118,7 @@ impl Default for FabPrepOptions {
             prune_dangling: true,
             accept_rules: Vec::new(),
             allow_incomplete: false,
+            connect_nets: Vec::new(),
         }
     }
 }
@@ -460,6 +467,14 @@ pub fn run_fab_prep(pcb: &mut Pcb, opts: &FabPrepOptions) -> FabPrepOutcome {
     //     resulting board is DRC-clean and electrically useless. Recording what
     //     the netlist realized on arrival lets the verdict refuse that trade.
     let entry_connectivity = connectivity_count(&check_drc(pcb));
+    // The board as it arrived, kept so a run that ends up worse can hand it back.
+    let entry_board = pcb.clone();
+
+    // 3a. Close named nets around the existing copper, when asked to.
+    if !opts.connect_nets.is_empty() {
+        let done = verdict::route_nets(pcb, &opts.connect_nets, vopts.budget);
+        log::info!("fab-prep: connect_nets closed every named net: {done}");
+    }
 
     // 3. Route or certify whatever the board arrived unrouted.
     let initial_verdict = opts.route_remaining.then(|| {
@@ -491,7 +506,16 @@ pub fn run_fab_prep(pcb: &mut Pcb, opts: &FabPrepOptions) -> FabPrepOutcome {
     /// bad round can be a productive intermediate; two in a row is wandering.
     const MAX_NON_IMPROVING: usize = 2;
 
+    let (mut pruned_traces, mut pruned_vias) = (0usize, 0usize);
     for round in 0..=opts.max_rounds {
+        // Dead copper first. The ladder's speculative stubs read as NetIslands
+        // until pruned, and judging the board with them still on it blames the
+        // run for faults the prune below was always going to remove.
+        if opts.prune_dangling {
+            let (t, v) = vcad_ecad_pcb::drc::prune_dangling_copper(pcb);
+            pruned_traces += t;
+            pruned_vias += v;
+        }
         let now = check_drc(pcb);
         let regression = connectivity_count(&now).saturating_sub(entry_connectivity);
         let delta = DrcDelta::compute(&baseline, &now, &accepted);
@@ -514,11 +538,13 @@ pub fn run_fab_prep(pcb: &mut Pcb, opts: &FabPrepOptions) -> FabPrepOutcome {
         }
         if attributable == 0 {
             // Geometrically clean, but the loop got there by removing copper.
-            blocker = Some(format!(
-                "the board is geometrically clean but {regression} more net(s) are unconnected or \
-                 islanded than when it arrived — the loop cleared violations by removing copper it \
-                 could not re-route, which is not a fix"
-            ));
+            // No count here: the board can still change below, and the receipt
+            // states connectivity from the final DRC.
+            blocker = Some(
+                "the board is geometrically clean but has unconnected nets it did not arrive \
+                 with: the loop removed copper it could not re-route"
+                    .to_string(),
+            );
             break;
         }
         if non_improving >= MAX_NON_IMPROVING {
@@ -616,17 +642,29 @@ pub fn run_fab_prep(pcb: &mut Pcb, opts: &FabPrepOptions) -> FabPrepOutcome {
                 restored_best = true;
             }
         }
+        // The ladder runs before the loop's first snapshot, so `best` can't
+        // protect against a pass that made the board worse than it arrived.
+        let score_of = |b: &Pcb| {
+            let v = check_drc(b);
+            DrcDelta::compute(&baseline, &v, &accepted).route_attributable_fixable
+                + connectivity_count(&v).saturating_sub(entry_connectivity)
+        };
+        if score_of(&entry_board) < score_of(pcb) {
+            log::info!("fab-prep: restoring the board as it arrived");
+            *pcb = entry_board;
+            restored_best = true;
+        }
     }
 
     // 5. Prune copper that reaches no pad or pour of its net. Removing copper
     //    can only remove geometric violations, so this cannot invalidate a
     //    convergence reached above — but the final DRC below is what the
     //    receipt reports either way.
-    let (pruned_traces, pruned_vias) = if opts.prune_dangling {
-        vcad_ecad_pcb::drc::prune_dangling_copper(pcb)
-    } else {
-        (0, 0)
-    };
+    if opts.prune_dangling {
+        let (t, v) = vcad_ecad_pcb::drc::prune_dangling_copper(pcb);
+        pruned_traces += t;
+        pruned_vias += v;
+    }
 
     // 6. Final DRC and the delta that is the receipt.
     let violations = check_drc(pcb);
@@ -638,8 +676,9 @@ pub fn run_fab_prep(pcb: &mut Pcb, opts: &FabPrepOptions) -> FabPrepOutcome {
     };
     // The prune runs after the loop's last check, so re-derive convergence from
     // the numbers actually being reported rather than trusting the loop's flag.
-    let geometric =
-        converged && delta.route_attributable_fixable == 0 && connectivity.regression() == 0;
+    let geometric = (converged || restored_best)
+        && delta.route_attributable_fixable == 0
+        && connectivity.regression() == 0;
     // Geometrically clean is not fab-ready: a board with open nets is not the
     // circuit. Fail closed unless the caller explicitly opted in.
     let shipped_incomplete = geometric && !connectivity.complete() && opts.allow_incomplete;
@@ -674,7 +713,7 @@ pub fn run_fab_prep(pcb: &mut Pcb, opts: &FabPrepOptions) -> FabPrepOutcome {
             "violations appeared in the post-prune check".to_string()
         });
     }
-    if restored_best {
+    if restored_best && !converged {
         if let Some(why) = &mut blocker {
             why.push_str(" (the best board the loop saw was restored)");
         }
@@ -1080,6 +1119,71 @@ mod tests {
             .iter()
             .filter(|i| !i.pads.is_empty())
             .count()
+    }
+
+    /// Dead copper on arrival is the prune's to remove, not a connectivity
+    /// regression: judging the board before pruning it failed clean boards and
+    /// quoted a count of faults that run_drc never saw.
+    #[test]
+    fn dead_copper_does_not_read_as_a_connectivity_regression() {
+        let mut pcb = crate::test_support::three_resistor_board();
+        run_fab_prep(&mut pcb, &FabPrepOptions::default());
+        // A trace touching nothing: its net is otherwise complete.
+        let net = pcb.traces[0].net.clone();
+        crate::test_support::with_trace(&mut pcb, &net, 2.0, 2.0, 4.0, 2.0);
+        let before = pcb.traces.len();
+        let out = run_fab_prep(&mut pcb, &FabPrepOptions::default());
+        assert!(out.report.converged, "{:?}", out.report.blocker);
+        assert_eq!(out.report.connectivity.on_completion, 0);
+        assert_eq!(out.report.pruned_traces, 1);
+        assert_eq!(pcb.traces.len(), before - 1);
+    }
+
+    /// The receipt's open nets are the final DRC's, and the blocker carries no
+    /// separate count that could contradict them.
+    #[test]
+    fn an_open_board_reports_the_open_nets_of_the_final_drc() {
+        let mut pcb = crate::test_support::split_island_board();
+        let out = run_fab_prep(
+            &mut pcb,
+            &FabPrepOptions {
+                route_remaining: false,
+                ..Default::default()
+            },
+        );
+        let drc_open = open_nets(&check_drc(&pcb));
+        assert!(!drc_open.is_empty(), "fixture must stay open");
+        assert_eq!(out.report.connectivity.open_nets, drc_open);
+        assert!(
+            !out.report
+                .blocker
+                .as_deref()
+                .unwrap_or("")
+                .contains("more net"),
+            "{:?}",
+            out.report.blocker
+        );
+    }
+
+    /// `connect_nets` closes a named net without disturbing what is there.
+    #[test]
+    fn connect_nets_keeps_existing_copper() {
+        let mut pcb = crate::test_support::split_island_board();
+        let existing = pcb.traces.clone();
+        let net = existing[0].net.clone();
+        assert_eq!(islands_of(&pcb, &net), 2);
+        run_fab_prep(
+            &mut pcb,
+            &FabPrepOptions {
+                route_remaining: false,
+                max_rounds: 0,
+                prune_dangling: false,
+                connect_nets: vec![net.clone()],
+                ..Default::default()
+            },
+        );
+        assert_eq!(islands_of(&pcb, &net), 1);
+        assert!(existing.iter().all(|t| pcb.traces.contains(t)));
     }
 
     /// A pad walled in on its own layer, with a fixed fan-out stub to a free

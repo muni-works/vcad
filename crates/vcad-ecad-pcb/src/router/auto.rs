@@ -482,7 +482,7 @@ pub fn route_all(pcb: &Pcb, width: f64, nets_filter: &[String]) -> RouteAllResul
 /// DRC-clean. With `negotiation_rounds == 1` this reduces exactly to the
 /// historical greedy + rip-up router.
 #[tracing::instrument(level = "info", skip_all)]
-pub fn route_all_with_opts(
+fn route_all_once(
     pcb: &Pcb,
     width: f64,
     nets_filter: &[String],
@@ -1335,6 +1335,62 @@ pub fn route_all_with_opts(
         routability,
         zones: synthesized,
     }
+}
+
+/// Route the board, and never hand back a synthesized pour that strands a net.
+///
+/// See [`route_all_once`] for the routing itself. A pour is a routing decision
+/// the router made on the caller's behalf, so it is held to the same standard
+/// as the copper: a poured net that ends up open has its pour withdrawn and the
+/// board re-routed. If any poured net is still open once the retries run out, no
+/// pour is returned at all. If other nets remain open, a pour-free route is
+/// also tried and wins when it closes strictly more nets.
+pub fn route_all_with_opts(
+    pcb: &Pcb,
+    width: f64,
+    nets_filter: &[String],
+    opts: &RouteOptions,
+) -> RouteAllResult {
+    withdraw_stranding_pours(opts, |o| route_all_once(pcb, width, nets_filter, o))
+}
+
+/// Run `route`, retrying under narrower pour policies until no returned pour
+/// belongs to an open net. Separate from the router so it can be tested on its
+/// decisions alone.
+fn withdraw_stranding_pours(
+    opts: &RouteOptions,
+    mut route: impl FnMut(&RouteOptions) -> RouteAllResult,
+) -> RouteAllResult {
+    let stranded = |r: &RouteAllResult| -> Vec<String> {
+        let poured: BTreeSet<&str> = r.zones.iter().map(|z| z.net.as_str()).collect();
+        r.unrouted_nets
+            .iter()
+            .filter(|n| poured.contains(n.as_str()))
+            .cloned()
+            .collect()
+    };
+    let mut best = route(opts);
+    let mut retry = opts.clone();
+    // Each pass excludes at least one more net, so this ends.
+    loop {
+        let open = stranded(&best);
+        if open.is_empty() {
+            break;
+        }
+        log::info!("pour synthesis: withdrawing pours that stranded {open:?}");
+        retry.pour_policy.excluded_nets.extend(open);
+        best = route(&retry);
+    }
+    if best.zones.is_empty() || best.unrouted_nets.is_empty() {
+        return best;
+    }
+    let mut no_pours = opts.clone();
+    no_pours.pour_policy.enabled = false;
+    let bare = route(&no_pours);
+    if bare.unrouted_nets.len() < best.unrouted_nets.len() {
+        return bare;
+    }
+    best
 }
 
 /// One representative position per net that owns copper in the router's output
@@ -6276,6 +6332,60 @@ mod tests {
         assert_eq!(s, vec![&cu[..], &cu[1..=3]]);
         // plane span IS the through span: one entry
         assert_eq!(stitch_spans(&cu, FCu, &[BCu], false).len(), 1);
+    }
+
+    fn route_result(zones: &[&str], unrouted: &[&str]) -> RouteAllResult {
+        RouteAllResult {
+            traces: Vec::new(),
+            vias: Vec::new(),
+            routed_nets: Vec::new(),
+            unrouted_nets: unrouted.iter().map(|n| n.to_string()).collect(),
+            diagnostics: Vec::new(),
+            routability: 1.0,
+            zones: zones.iter().map(|n| plane(n, PcbLayer::FCu)).collect(),
+        }
+    }
+
+    /// A pour that strands its own net is withdrawn: the returned result holds
+    /// a pour for no open net, whatever the first pass decided.
+    #[test]
+    fn a_pour_that_strands_its_net_is_withdrawn() {
+        let opts = RouteOptions::default();
+        let mut policies: Vec<BTreeSet<String>> = Vec::new();
+        let got = withdraw_stranding_pours(&opts, |o| {
+            policies.push(o.pour_policy.excluded_nets.clone());
+            if o.pour_policy.excluded_nets.contains("VBUS") {
+                route_result(&["GND"], &[])
+            } else {
+                route_result(&["VBUS", "GND"], &["VBUS"])
+            }
+        });
+        assert_eq!(policies.len(), 2, "one retry, excluding the stranded net");
+        assert!(got.unrouted_nets.is_empty());
+        assert!(got.zones.iter().all(|z| z.net != "VBUS"), "{:?}", got.zones);
+    }
+
+    /// When the pours aren't the stranded nets but other nets stay open, a
+    /// pour-free route wins only by closing more of them.
+    #[test]
+    fn a_pour_free_route_wins_only_by_closing_more_nets() {
+        let opts = RouteOptions::default();
+        let better = withdraw_stranding_pours(&opts, |o| {
+            if o.pour_policy.enabled {
+                route_result(&["GND"], &["SIG"])
+            } else {
+                route_result(&[], &[])
+            }
+        });
+        assert!(better.zones.is_empty() && better.unrouted_nets.is_empty());
+        let tie = withdraw_stranding_pours(&opts, |o| {
+            if o.pour_policy.enabled {
+                route_result(&["GND"], &["SIG"])
+            } else {
+                route_result(&[], &["SIG"])
+            }
+        });
+        assert_eq!(tie.zones.len(), 1, "a tie keeps the pour");
     }
 
     /// The routed claim is fail-closed: a pad DRC sees stranded makes its net

@@ -9418,7 +9418,7 @@
   {
     "name": "board_from_solid",
     "title": "Board From Solid",
-    "description": "Derive a PCB outline polygon (with cutouts, e.g. a center bore) from a solid part in a CAD session by projecting its geometry onto the XY plane. Bridges solid modeling and PCB layout: feed the returned `outline` to place_components.",
+    "description": "Derive a PCB outline polygon (with cutouts, e.g. a center bore) from a solid part in a CAD session by projecting its geometry onto the XY plane. For a hollow part (an enclosure) it returns the interior cavity by default; `outline_basis` states which outline came back. Bridges solid modeling and PCB layout: feed the returned `outline` to place_components.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -9433,6 +9433,15 @@
         "thickness": {
           "type": "number",
           "description": "Board thickness in mm (default 1.6)"
+        },
+        "region": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "outer",
+            "cavity"
+          ],
+          "description": "Which outline to return. 'outer' is the part's silhouette. 'cavity' is the largest interior void, for a board that sits inside an enclosure. 'auto' (default) returns the cavity when the part is hollow and the silhouette otherwise. The result's `outline_basis` says which you got."
         },
         "resolution": {
           "type": "number",
