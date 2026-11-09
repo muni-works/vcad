@@ -10,7 +10,7 @@ import SwiftUI
 
 /// One modeling operation a dialog can author.
 enum FeatureOp: String, CaseIterable, Identifiable {
-    case fillet, chamfer, shell, hole, linearPattern, circularPattern, mirror, scale, text, cone, torus, wedge, prism, hull
+    case fillet, chamfer, shell, hole, linearPattern, circularPattern, mirror, scale, move, rotate, sweepRotate, blend, text, hull, hullPoints
 
     var id: String { rawValue }
     var label: String {
@@ -24,11 +24,12 @@ enum FeatureOp: String, CaseIterable, Identifiable {
         case .mirror: "Mirror"
         case .scale: "Scale"
         case .text: "Text"
-        case .cone: "Cone"
-        case .torus: "Torus"
-        case .wedge: "Wedge"
-        case .prism: "Prism"
+        case .move: "Move"
+        case .rotate: "Rotate"
+        case .sweepRotate: "Rotational Sweep"
+        case .blend: "Edge Blend"
         case .hull: "Convex Hull"
+        case .hullPoints: "Hull from Points"
         }
     }
     var symbol: String {
@@ -42,19 +43,20 @@ enum FeatureOp: String, CaseIterable, Identifiable {
         case .mirror: "arrow.left.and.right.righttriangle.left.righttriangle.right"
         case .scale: "arrow.up.left.and.arrow.down.right"
         case .text: "textformat"
-        case .cone: "cone"
-        case .torus: "circle.circle"
-        case .wedge: "triangle.righthalf.filled"
-        case .prism: "hexagon"
+        case .move: "arrow.up.and.down.and.arrow.left.and.right"
+        case .rotate: "rotate.3d"
+        case .sweepRotate: "arrow.trianglehead.2.clockwise.rotate.90"
+        case .blend: "circle.bottomrighthalf.pattern.checkered"
         case .hull: "skew"
+        case .hullPoints: "point.3.connected.trianglepath.dotted"
         }
     }
     /// Ops that create a new part instead of transforming the selected one.
-    var createsPart: Bool { [.text, .cone, .torus, .wedge, .prism].contains(self) }
+    var createsPart: Bool { [.text, .hullPoints].contains(self) }
     /// Ops shown on the Modify tab.
     static let modifyOps: [FeatureOp] = [.fillet, .chamfer, .shell, .hole, .linearPattern,
-                                         .circularPattern, .mirror, .scale, .hull]
-    static let createOps: [FeatureOp] = [.cone, .torus, .wedge, .prism, .text]
+                                         .circularPattern, .mirror, .scale, .move, .rotate, .sweepRotate, .blend, .hull]
+    static let createOps: [FeatureOp] = [.text, .hullPoints]
 }
 
 /// Axis presets shared by pattern and mirror dialogs.
@@ -79,7 +81,7 @@ extension EditorModel {
     /// are any (one EdgeBlend per edge, chained), else on every edge (the
     /// web dialog's behaviour).
     @discardableResult
-    func applyBlend(fillet: Bool, size: Double) -> Bool {
+    func applyBlend(fillet: Bool, size: Double, shape: Double? = nil) -> Bool {
         guard size > 0, let pi = selectedPartIndex ?? picking.selectionPart,
               let id = partId(forPart: pi) else { return false }
         let edges = picking.selectedEdgeIDs(part: pi)
@@ -96,8 +98,8 @@ extension EditorModel {
                 "point": ["x": Double(e.midpoint.x), "y": Double(e.midpoint.y), "z": Double(e.midpoint.z)],
             ]
             return ["kind": "edge_blend", "child": i == 0 ? root : -1, "edges": query,
-                    "size": size, "shape": fillet ? 1.0 : 0.0,
-                    "name": fillet ? "Fillet" : "Chamfer"]
+                    "size": size, "shape": shape ?? (fillet ? 1.0 : 0.0),
+                    "name": shape != nil ? "Edge Blend" : fillet ? "Fillet" : "Chamfer"]
         }
         guard features.count == edges.count else { return false }
         let ok = appendIRFeatures(features, name: fillet ? "Fillet Edges" : "Chamfer Edges")
@@ -221,16 +223,13 @@ struct FeatureOpSheet: View {
     @State private var height: Double = 10
     @State private var depth: Double = 2
     @State private var alignment = "left"
-    @State private var rBottom: Double = 15
-    @State private var rTop: Double = 0
-    @State private var coneHeight: Double = 30
     @State private var error: String?
-    @State private var torusMajor: Double = 20
-    @State private var torusMinor: Double = 5
-    @State private var wedgeSize: [Double] = [30, 30, 30]
-    @State private var prismSides = 6
-    @State private var prismRadius: Double = 15
-    @State private var prismHeight: Double = 30
+    @State private var vec3: [Double] = [0, 0, 0]
+    @State private var angleLo: Double = 0
+    @State private var angleHi: Double = 90
+    @State private var clearance: Double = 0
+    @State private var blendShape: Double = 0.5
+    @State private var pointsText = "0 0 0\n20 0 0\n0 20 0\n0 0 20"
     @State private var holeSize = MetricHole.m3
     @State private var holeTapped = false
     @State private var holeThrough = true
@@ -264,7 +263,13 @@ struct FeatureOpSheet: View {
         }
         .padding(Theme.Space.l).frame(width: 360)
         // The hole tool works on a face: clicks pick faces while it's open.
-        .onAppear { if op == .hole { priorFilter = model.picking.filter; model.picking.filter = .face } }
+        .onAppear {
+            if op == .hole { priorFilter = model.picking.filter; model.picking.filter = .face }
+            if op == .blend { priorFilter = model.picking.filter; model.picking.filter = .edge }
+            // Move and Rotate start from where the part already is.
+            if op == .move || op == .rotate, let id = model.selectedPartFeatureId,
+               let v = model.partVector(id, key: op == .move ? "offset" : "angles") { vec3 = v }
+        }
         .onDisappear { if let f = priorFilter { model.picking.filter = f } }
         // A failure message describes the last attempt, not the next pick.
         .onChange(of: model.picking.revision) { _, _ in error = nil }
@@ -273,6 +278,7 @@ struct FeatureOpSheet: View {
     private var canApply: Bool {
         if op == .hole { return model.picking.selectedFaces.count == 1 }
         if op == .hull { return model.multiSelectedParts.count >= 2 }
+        if op == .blend { return !model.picking.selectedEdges.isEmpty }
         return op.createsPart || model.selectedPartFeatureId != nil || model.picking.selectionPart != nil
     }
 
@@ -335,22 +341,30 @@ struct FeatureOpSheet: View {
             Picker("Align", selection: $alignment) {
                 Text("Left").tag("left"); Text("Center").tag("center"); Text("Right").tag("right")
             }.pickerStyle(.segmented)
-        case .torus:
-            num("Major radius", $torusMajor, unit: "mm")
-            num("Minor radius", $torusMinor, unit: "mm")
-        case .wedge:
-            vec("Size", $wedgeSize)
-        case .prism:
-            Stepper("Sides: \(prismSides)", value: $prismSides, in: 3...64)
-            num("Radius", $prismRadius, unit: "mm")
-            num("Height", $prismHeight, unit: "mm")
+        case .move:
+            vec("Offset", $vec3)
+        case .rotate:
+            vec("Angles (°)", $vec3)
+        case .sweepRotate:
+            axisPicker
+            vec("Axis origin", $origin)
+            num("From", $angleLo, unit: "°")
+            num("To", $angleHi, unit: "°")
+            num("Clearance", $clearance, unit: "mm")
+        case .blend:
+            num("Size", $size, unit: "mm")
+            LabeledContent("Shape") {
+                Slider(value: $blendShape, in: 0...1).frame(width: 140)
+            }
+            let n = model.picking.selectedEdges.count
+            Text(n > 0 ? "\(n) picked edge\(n == 1 ? "" : "s") · 0 is a chamfer, 1 a fillet" : "Click the edges to blend.")
+                .font(.caption).foregroundStyle(.secondary)
+        case .hullPoints:
+            TextEditor(text: $pointsText).font(.body.monospaced()).frame(height: 96)
+            Text("One x y z per line, at least four, not flat.").font(.caption).foregroundStyle(.secondary)
         case .hull:
             Text(model.multiSelectedParts.count >= 2 ? "\(model.multiSelectedParts.count) parts selected" : "Select two or more parts with ⌘-click.")
                 .font(.caption).foregroundStyle(.secondary)
-        case .cone:
-            num("Bottom radius", $rBottom, unit: "mm")
-            num("Top radius", $rTop, unit: "mm")
-            num("Height", $coneHeight, unit: "mm")
         }
     }
 
@@ -381,6 +395,12 @@ struct FeatureOpSheet: View {
                 }
             }
         }
+    }
+
+    /// Every number in `text`, in order; a flat `[x, y, z, ...]` when whole triples.
+    static func parsePoints(_ text: String) -> [Double] {
+        let values = text.split(whereSeparator: { " ,\n\t".contains($0) }).compactMap { Double($0) }
+        return values.count % 3 == 0 ? values : []
     }
 
     private func apply() {
@@ -415,18 +435,83 @@ struct FeatureOpSheet: View {
         case .text:
             ok = !text.isEmpty && model.addOp(.text(text: text, height: height, depth: depth, alignment: alignment),
                                               name: "Text")
-        case .torus:
-            ok = model.addIRPrimitive(["type": "Torus", "major_radius": torusMajor, "minor_radius": torusMinor, "segments": 64], name: "Torus")
-        case .wedge:
-            ok = model.addIRPrimitive(["type": "Wedge", "size": ["x": wedgeSize[0], "y": wedgeSize[1], "z": wedgeSize[2]]], name: "Wedge")
-        case .prism:
-            ok = model.addIRPrimitive(["type": "Prism", "sides": prismSides, "radius": prismRadius, "height": prismHeight], name: "Prism")
         case .hull:
             ok = model.hullSelected()
-        case .cone:
-            ok = model.addOp(.cone(radiusBottom: rBottom, radiusTop: rTop, height: coneHeight, segments: 64),
-                             name: "Cone")
+        case .hullPoints:
+            let pts = FeatureOpSheet.parsePoints(pointsText)
+            ok = pts.count >= 12 && model.addOp(.hull(inputs: [], points: pts), name: "Hull")
+        case .move:
+            if let id { ok = model.runCommand(.setTranslation(id: id, offset: vec3), name: "Move") }
+        case .rotate:
+            if let id { ok = model.runCommand(.setRotation(id: id, angles: vec3), name: "Rotate") }
+        case .sweepRotate:
+            if let id {
+                ok = model.addOp(.sweepRotate(input: id, axisOrigin: origin, axisDir: axis.vector, angleLoDeg: angleLo,
+                                              angleHiDeg: angleHi, clearance: clearance > 0 ? clearance : nil),
+                                 name: "Rotational Sweep", materialFrom: id)
+            }
+        case .blend:
+            ok = model.applyBlend(fillet: blendShape >= 0.5, size: size, shape: blendShape)
         }
         if ok { dismiss() } else { error = model.engineError ?? "\(op.label) failed" }
+    }
+}
+
+/// A convex hull's inspector: which parts it wraps, and its loose points.
+struct HullInputsEditor: View {
+    @Bindable var model: EditorModel
+    let nodeId: Int
+    @State private var pointsText: String?
+
+    var body: some View {
+        if let hull = model.hullFeature(nodeId: nodeId) {
+            let others = model.featureNodes.filter { node in
+                guard let pid = node.partIndex.flatMap({ model.partId(forPart: $0) }) else { return false }
+                return pid != hull.id && !hull.inputs.contains(pid)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(hull.inputs, id: \.self) { pid in
+                    HStack {
+                        Text(model.engineState?.parts.first { $0.id == pid }?.name ?? pid).lineLimit(1)
+                        Spacer()
+                        Button { remove(pid, from: hull) } label: { Image(systemName: "minus.circle") }
+                            .buttonStyle(.borderless)
+                            .disabled(hull.inputs.count == 1 && hull.points.count < 12)
+                            .accessibilityLabel("Remove from hull")
+                    }
+                }
+                Menu("Add Part") {
+                    ForEach(others) { node in
+                        Button(node.name) {
+                            if let pi = node.partIndex, let pid = model.partId(forPart: pi) {
+                                model.setHull(id: hull.id, inputs: hull.inputs + [pid], points: hull.points, name: "Add to Hull")
+                            }
+                        }
+                    }
+                }
+                .disabled(others.isEmpty)
+                TextField("Points: x y z per line", text: Binding(
+                    get: { pointsText ?? Self.format(hull.points) },
+                    set: { pointsText = $0 }), axis: .vertical)
+                    .font(.caption.monospaced()).lineLimit(2...6)
+                    .onSubmit {
+                        guard let t = pointsText else { return }
+                        let pts = t.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? [] : FeatureOpSheet.parsePoints(t)
+                        if !t.isEmpty && pts.isEmpty { return }
+                        model.setHull(id: hull.id, inputs: hull.inputs, points: pts, name: "Change Hull Points")
+                        pointsText = nil
+                    }
+            }
+        }
+    }
+
+    private func remove(_ pid: String, from hull: (id: String, inputs: [String], points: [Double])) {
+        model.setHull(id: hull.id, inputs: hull.inputs.filter { $0 != pid }, points: hull.points, name: "Remove from Hull")
+    }
+
+    private static func format(_ p: [Double]) -> String {
+        stride(from: 0, to: p.count - p.count % 3, by: 3)
+            .map { "\(p[$0].formatted()) \(p[$0 + 1].formatted()) \(p[$0 + 2].formatted())" }
+            .joined(separator: "\n")
     }
 }

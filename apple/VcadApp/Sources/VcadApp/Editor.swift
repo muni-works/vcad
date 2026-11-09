@@ -129,15 +129,22 @@ enum GeometrySource: Hashable, Identifiable {
 
 /// The sandbox primitive — chosen from the Create tab of the tool palette.
 enum BaseShape: String, CaseIterable {
-    case cube, cylinder, sphere
+    case cube, cylinder, sphere, cone, torus, wedge, prism
     var label: String { rawValue.capitalized }
     var symbol: String {
         switch self {
         case .cube: return "cube"
         case .cylinder: return "cylinder"
-        case .sphere: return "circle.circle"
+        case .sphere: return "globe"
+        case .cone: return "cone"
+        case .torus: return "circle.circle"
+        case .wedge: return "triangle.righthalf.filled"
+        case .prism: return "hexagon"
         }
     }
+    /// The sandbox preview only builds these three; the rest promote to a
+    /// document first.
+    var sandboxPreview: Bool { [.cube, .cylinder, .sphere].contains(self) }
 }
 
 /// The sandbox modifier — chosen from the Modify tab.
@@ -201,7 +208,7 @@ enum BooleanOp: String, CaseIterable, Identifiable {
         switch self {
         case .union: return "plus.circle"
         case .difference: return "minus.circle"
-        case .intersection: return "circle.circle"
+        case .intersection: return "square.on.square.intersection.dashed"
         }
     }
 }
@@ -239,6 +246,10 @@ struct Tool: Identifiable {
     /// A bare-letter key (Fusion/KiCad style) — fires only when nothing else
     /// handles the key, so it can never steal typing from a field.
     var shortcut: Character? = nil
+    /// Tools sharing a group collapse into one dock button with a popover.
+    var group: String? = nil
+    /// Like `group`, but only when the dock is short of room.
+    var compactGroup: String? = nil
     let action: () -> Void
 }
 
@@ -1377,7 +1388,7 @@ final class EditorModel {
         case ("translate", "offset"): return with("offset").map { .setTranslation(id: id, offset: $0) }
         case ("rotate", "angles"): return with("angles").map { .setRotation(id: id, angles: $0) }
         case ("scale", "factor"): return with("factor").map { .setScale(id: id, factor: $0) }
-        case ("primitive", "size") where kind == "cube":
+        case ("primitive", "size") where kind == "cube" || kind == "wedge":
             guard let axis, ["x", "y", "z"].contains(axis) else { return nil }
             return param("size_\(axis)")
         case ("primitive", _) where axis == nil:
@@ -1385,6 +1396,9 @@ final class EditorModel {
                 "cylinder": ["radius", "height", "segments"],
                 "sphere": ["radius", "segments"],
                 "cone": ["radius_bottom", "radius_top", "height", "segments"],
+                "torus": ["major_radius", "minor_radius", "segments"],
+                "prism": ["sides", "radius", "height"],
+                "sweep-rotate": ["angle_lo_deg", "angle_hi_deg", "step_deg", "clearance"],
                 "fillet": ["radius"], "chamfer": ["distance"],
             ]
             return keys[kind]?.contains(key) == true ? param(key) : nil
@@ -1446,6 +1460,14 @@ final class EditorModel {
             return .addFeature(feature: .cylinder(radius: 15, height: 30, segments: 64), name: "Cylinder")
         case .sphere:
             return .addFeature(feature: .sphere(radius: 15, segments: 48), name: "Sphere")
+        case .cone:
+            return .addFeature(feature: .cone(radiusBottom: 15, radiusTop: 0, height: 30, segments: 64), name: "Cone")
+        case .torus:
+            return .addFeature(feature: .torus(majorRadius: 20, minorRadius: 5, segments: 64), name: "Torus")
+        case .wedge:
+            return .addFeature(feature: .wedge(sizeX: 30, sizeY: 30, sizeZ: 30), name: "Wedge")
+        case .prism:
+            return .addFeature(feature: .prism(sides: 6, radius: 15, height: 30), name: "Prism")
         }
     }
 
@@ -1542,38 +1564,52 @@ final class EditorModel {
 
     // MARK: feature ops (FeatureOps.swift drives these)
 
-    /// Add a kernel primitive the feature model has no typed input for, as one undo step.
+    /// Replace the selected parts with their convex hull, as an editable feature.
     @discardableResult
-    func addIRPrimitive(_ op: [String: Any], name: String) -> Bool {
-        guard promoteSandboxToDocument(blank: true), var doc = documentJSON else { return false }
-        var nodes = doc["nodes"] as? [String: Any] ?? [:]
-        let id = (nodes.keys.compactMap(Int.init).max() ?? 0) + 1
-        nodes[String(id)] = ["id": id, "name": name, "op": op]
-        doc["nodes"] = nodes
-        doc["roots"] = (doc["roots"] as? [[String: Any]] ?? []) + [["root": id, "material": "default"]]
-        guard irEdit(name, reeval: .rebuild, base: doc, { _ in }) != nil else { return false }
-        selectedFeatureID = featureNodes.last?.id
+    func hullSelected() -> Bool {
+        let picked = multiSelectedParts.compactMap { partId(forPart: $0) }
+        guard picked.count >= 2 else { return false }
+        guard addOp(.hull(inputs: picked, points: []), name: "Convex Hull", materialFrom: picked[0]) else { return false }
+        multiSelectedParts = []
+        hiddenParts.removeAll(); isolatedPart = nil
         return true
     }
 
-    /// Replace the selected parts with their convex hull.
+    /// The hull feature owning `nodeId`: its id, input part ids and loose points.
+    func hullFeature(nodeId: Int) -> (id: String, inputs: [String], points: [Double])? {
+        guard let (part, _) = engineState?.owner(ofNode: nodeId),
+              case .hull(let id, _, _, _, _, _, let inputs) = part else { return nil }
+        let points = (opDict(nodeId: nodeId)?["points"] as? [NSNumber] ?? []).map(\.doubleValue)
+        return (id, inputs, points)
+    }
+
+    /// Replace a hull's inputs and points. One undo step.
     @discardableResult
-    func hullSelected() -> Bool {
-        let picked = multiSelectedParts.compactMap { rootNodeId(forPart: $0) }
-        guard picked.count >= 2, var doc = documentJSON else { return false }
-        var nodes = doc["nodes"] as? [String: Any] ?? [:]
-        let id = (nodes.keys.compactMap(Int.init).max() ?? 0) + 1
-        nodes[String(id)] = ["id": id, "name": "Convex Hull", "op": ["type": "Hull", "children": picked, "points": [Double]()] as [String: Any]]
-        doc["nodes"] = nodes
-        var roots = doc["roots"] as? [[String: Any]] ?? []
-        let kept = roots.first { ($0["root"] as? NSNumber)?.intValue == picked[0] }?["material"] ?? "default"
-        roots.removeAll { (($0["root"] as? NSNumber)?.intValue).map(picked.contains) == true }
-        doc["roots"] = roots + [["root": id, "material": kept]]
-        guard irEdit("Convex Hull", reeval: .rebuild, base: doc, { _ in }) != nil else { return false }
-        multiSelectedParts = []
-        hiddenParts.removeAll(); isolatedPart = nil
-        selectedFeatureID = featureNodes.last?.id
-        return true
+    func setHull(id: String, inputs: [String], points: [Double], name: String) -> Bool {
+        runCommand(.updateFeature(id: id, feature: .hull(inputs: inputs, points: points)), name: name)
+    }
+
+    /// Set one field of a constant edge blend (`size` or `shape`).
+    func editBlend(nodeId: Int, field: String, value: Double, snapshot: Bool) {
+        irEdit("Change Blend", gestureStart: snapshot, reeval: .inPlace) { doc in
+            guard var nodes = doc["nodes"] as? [String: Any],
+                  var node = nodes[String(nodeId)] as? [String: Any],
+                  var op = node["op"] as? [String: Any],
+                  var profile = op["profile"] as? [String: Any], profile["type"] as? String == "Constant" else { return }
+            profile[field] = value
+            op["profile"] = profile
+            node["op"] = op
+            nodes[String(nodeId)] = node
+            doc["nodes"] = nodes
+        }
+    }
+
+    /// The current offset or rotation on a part's transform chain.
+    func partVector(_ id: String, key: String) -> [Double]? {
+        guard let part = engineState?.parts.first(where: { $0.id == id }),
+              let op = opDict(nodeId: key == "offset" ? part.translateNodeId : part.rotateNodeId),
+              let v = op[key] as? [String: Any] else { return nil }
+        return ["x", "y", "z"].map { (v[$0] as? NSNumber)?.doubleValue ?? 0 }
     }
 
     /// Add any engine feature as one undo step; the new part takes
@@ -3169,7 +3205,10 @@ final class EditorModel {
                      label: docMode ? "Add \(shape.label)" : shape.label, symbol: shape.symbol,
                      isActive: docMode ? armedShape == shape : baseShape == shape,
                      hint: docMode ? "Click in the scene to place it" : "") { [weak self] in
-                    if docMode { self?.arm(shape) } else { self?.baseShape = shape }
+                    guard let self else { return }
+                    if docMode { self.arm(shape) }
+                    else if shape.sandboxPreview { self.baseShape = shape }
+                    else if self.promoteSandboxToDocument(blank: true) { self.arm(shape) }
                 }
             }
             if docMode {
@@ -3319,6 +3358,7 @@ final class EditorModel {
         case .cube: return vcad_solid_cube(30, 30, 30)
         case .cylinder: return vcad_solid_cylinder(15, 30, 64)
         case .sphere: return vcad_solid_sphere(15, 48)
+        case .cone, .torus, .wedge, .prism: return vcad_solid_cube(30, 30, 30)   // never previewed
         }
     }
 
@@ -3948,6 +3988,7 @@ extension EditorModel {
             case .cube: ["type": "cube", "name": "Cube", "params": ["size": ["x": 30, "y": 30, "z": 30]]]
             case .cylinder: ["type": "cylinder", "name": "Cylinder", "params": ["radius": 15, "height": 30]]
             case .sphere: ["type": "sphere", "name": "Sphere", "params": ["radius": 15]]
+            case .cone, .torus, .wedge, .prism: ["type": "cube", "name": "Cube", "params": ["size": ["x": 30, "y": 30, "z": 30]]]   // never previewed
             }
             var r = try call("create", primitive)
             if applies, let base = r.createdFeatureId {

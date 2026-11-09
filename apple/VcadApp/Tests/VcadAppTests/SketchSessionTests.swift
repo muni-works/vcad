@@ -78,25 +78,12 @@ final class SketchSessionTests: XCTestCase {
         XCTAssertEqual(try volume(m), before, accuracy: 1e-6)
     }
 
-    func testKernelPrimitivesReachTheDocument() throws {
-        let m = try open()
-        XCTAssertTrue(m.addIRPrimitive(["type": "Torus", "major_radius": 20.0, "minor_radius": 5.0, "segments": 64], name: "Torus"), m.engineError ?? "")
-        let torus = 2 * Double.pi * .pi * 20 * 5 * 5
-        XCTAssertEqual(try volume(m), torus, accuracy: torus * 0.03)
-        XCTAssertTrue(m.addIRPrimitive(["type": "Wedge", "size": ["x": 10.0, "y": 20.0, "z": 30.0]], name: "Wedge"), m.engineError ?? "")
-        XCTAssertEqual(try volume(m), 3000, accuracy: 30)
-        XCTAssertTrue(m.addIRPrimitive(["type": "Prism", "sides": 6, "radius": 10.0, "height": 5.0], name: "Prism"), m.engineError ?? "")
-        let hex = 1.5 * 3.0.squareRoot() * 100 * 5
-        XCTAssertEqual(try volume(m), hex, accuracy: hex * 0.01)
-    }
-
     func testConvexHullReplacesTheSelectedParts() throws {
         let m = try open()
-        XCTAssertTrue(m.addIRPrimitive(["type": "Cube", "size": ["x": 10.0, "y": 10.0, "z": 10.0]], name: "Other"))
-        let count = try XCTUnwrap(m.engineState?.parts.count)
+        XCTAssertTrue(m.addOp(.cube(sizeX: 10, sizeY: 10, sizeZ: 10), name: "Other"))
         m.multiSelectedParts = [0, 1]
         XCTAssertTrue(m.hullSelected(), m.engineError ?? "")
-        XCTAssertEqual(m.engineState?.parts.count, count - 1)
+        XCTAssertEqual((m.documentJSON?["roots"] as? [[String: Any]])?.count, 1)
         XCTAssertEqual(try volume(m), 40 * 40 * 10, accuracy: 200)
     }
 

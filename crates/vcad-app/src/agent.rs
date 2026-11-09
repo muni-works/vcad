@@ -24,8 +24,9 @@ pub const MANIFEST_JSON: &str = include_str!("../agent/manifest.json");
 pub const READ_TOOLS: [&str; 2] = ["describe_scene", "inspect"];
 
 /// `create` kinds the agent is offered (all lowered by `tools::lower`).
-pub const CREATE_KINDS: [&str; 8] = [
-    "cube", "cylinder", "sphere", "cone", "tube", "fillet", "chamfer", "shell",
+pub const CREATE_KINDS: [&str; 11] = [
+    "cube", "cylinder", "sphere", "cone", "torus", "wedge", "prism", "tube", "fillet", "chamfer",
+    "shell",
 ];
 
 const SYSTEM_PROMPT: &str = "You are the modeling agent inside vcad, a parametric CAD app. \
@@ -109,7 +110,8 @@ pub fn tools() -> Vec<Value> {
         tool(
             "create",
             "Create a part. Primitives: cube {size:{x,y,z}}, cylinder {radius, height}, sphere {radius}, \
-             cone {radius_bottom, radius_top, height}, tube {start:{x,y,z}, end:{x,y,z}, radius}. \
+             cone {radius_bottom, radius_top, height}, torus {major_radius, minor_radius}, \
+             wedge {size:{x,y,z}}, prism {sides, radius, height}, tube {start:{x,y,z}, end:{x,y,z}, radius}. \
              Modifiers on an existing part (pass parent_part_id): fillet {radius}, chamfer {distance}, \
              shell {thickness, open_faces?} — open_faces removes faces to leave an opening (an open-top enclosure): \
              an array of {name} or {point:{x,y,z}, normal:{x,y,z}} on each face, e.g. the top face's center with normal {z:1}.",
@@ -615,6 +617,9 @@ mod tests {
                     json!({"radius_bottom": 3, "radius_top": 1, "height": 4}),
                     None,
                 ),
+                "torus" => (json!({"major_radius": 5, "minor_radius": 1}), None),
+                "wedge" => (json!({"size": {"x": 1, "y": 2, "z": 3}}), None),
+                "prism" => (json!({"sides": 6, "radius": 2, "height": 3}), None),
                 "tube" => (
                     json!({"start": {"x": 0, "y": 0, "z": 0}, "end": {"x": 0, "y": 0, "z": 10}, "radius": 1}),
                     None,

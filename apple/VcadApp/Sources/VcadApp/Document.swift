@@ -392,8 +392,14 @@ struct DocumentGraph {
         switch t {
         case "Cube": return "cube"
         case "Cylinder": return "cylinder"
-        case "Sphere": return "circle.circle"
+        case "Sphere": return "globe"
         case "Cone": return "cone"
+        case "Torus": return "circle.circle"
+        case "Wedge": return "triangle.righthalf.filled"
+        case "Prism": return "hexagon"
+        case "Hull": return "skew"
+        case "SweepRotate": return "arrow.trianglehead.2.clockwise.rotate.90"
+        case "EdgeBlend": return "circle.bottomrighthalf.pattern.checkered"
         case "Empty": return "circle.dashed"
         case "Union": return "plus.square.on.square"
         case "Difference": return "minus.square"
@@ -445,8 +451,16 @@ struct DocumentGraph {
         case "Sphere":
             if let r = num("radius") { return "⌀\(g(r * 2)) mm" }
         case "Cone":
-            let r = num("radius1") ?? num("radius") ?? 0
+            let r = num("radius_bottom") ?? 0
             return "⌀\(g(r * 2)) × \(g(num("height") ?? 0)) mm"
+        case "Torus":
+            if let a = num("major_radius"), let b = num("minor_radius") { return "⌀\(g(a * 2)) × ⌀\(g(b * 2)) mm" }
+        case "Wedge":
+            if let s = vec("size") { return "\(g(s.0)) × \(g(s.1)) × \(g(s.2)) mm" }
+        case "Prism":
+            if let n = intv("sides"), let r = num("radius"), let h = num("height") { return "\(n)-sided r\(g(r)) × \(g(h)) mm" }
+        case "SweepRotate":
+            if let a = num("angle_lo_deg"), let b = num("angle_hi_deg") { return "\(g(a))° to \(g(b))°" }
         case "Translate":
             if let o = vec("offset") { return "(\(g(o.0)), \(g(o.1)), \(g(o.2)))" }
         case "Rotate":

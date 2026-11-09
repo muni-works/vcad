@@ -154,13 +154,62 @@ impl DocumentApi {
     /// Update all params on an existing feature by replacing with new input.
     pub fn update_feature(&mut self, stable_id: &str, input: FeatureInput) -> ApiResult {
         if let Some(fid) = self.stable_ids.resolve(stable_id) {
+            let hoist = matches!(input, FeatureInput::Hull { .. });
             let (_kind, params) = input.to_crdt_params();
             for (key, value) in params {
                 self.crdt.set_param(fid, &key, value);
             }
+            if hoist {
+                self.hoist_dependencies(fid);
+            }
             self.dirty = true;
         }
         self.build_result(None)
+    }
+
+    /// Move everything `target` now depends on to just before it. Features
+    /// materialize in list order, so a hull that gains a part made after it
+    /// would otherwise lose that input.
+    fn hoist_dependencies(&mut self, target: FeatureId) {
+        let ordered = self.crdt.ordered_features();
+        let Some(at) = ordered.iter().position(|(id, _)| *id == target) else {
+            return;
+        };
+        let refs_of = |i: usize| -> Vec<String> {
+            ordered[i]
+                .1
+                .params
+                .values()
+                .flat_map(|(v, _)| match v {
+                    Value::FeatureRef(r) => vec![r.clone()],
+                    Value::FeatureRefList(rs) => rs.clone(),
+                    _ => Vec::new(),
+                })
+                .collect()
+        };
+        let mut late = std::collections::BTreeSet::new();
+        let mut stack = refs_of(at);
+        while let Some(r) = stack.pop() {
+            let Some(fid) = self.stable_ids.resolve(&r) else {
+                continue;
+            };
+            let Some(i) = ordered.iter().position(|(id, _)| *id == fid) else {
+                continue;
+            };
+            if i > at && late.insert(i) {
+                stack.extend(refs_of(i));
+            }
+        }
+        let moves: Vec<FeatureId> = late.iter().map(|&i| ordered[i].0).collect();
+        for fid in moves {
+            let now = self.crdt.ordered_features();
+            let Some(t) = now.iter().position(|(id, _)| *id == target) else {
+                return;
+            };
+            let before = t.checked_sub(1).map(|b| &now[b].1.position);
+            let pos = FractionalIndex::between(before, Some(&now[t].1.position));
+            self.crdt.move_feature(fid, pos);
+        }
     }
 
     /// Delete a feature.
@@ -594,7 +643,13 @@ fn compute_consumed_part_ids(parts: &[PartInfo]) -> Vec<String> {
             } => {
                 consumed.extend(source_part_ids.iter().cloned());
             }
-            PartInfo::Fillet { source_part_id, .. }
+            PartInfo::Hull {
+                source_part_ids, ..
+            } => {
+                consumed.extend(source_part_ids.iter().cloned());
+            }
+            PartInfo::SweepRotate { source_part_id, .. }
+            | PartInfo::Fillet { source_part_id, .. }
             | PartInfo::Chamfer { source_part_id, .. }
             | PartInfo::Shell { source_part_id, .. }
             | PartInfo::LinearPattern { source_part_id, .. }
@@ -644,6 +699,40 @@ mod tests {
 
         let result = api.delete_feature(&id);
         assert_eq!(result.parts.len(), 0);
+    }
+
+    #[test]
+    fn hull_can_gain_a_part_made_after_it() {
+        let mut api = DocumentApi::new(ReplicaId(1));
+        let cube = |api: &mut DocumentApi, x: f64| {
+            api.add_feature(FeatureInput::Cube {
+                size_x: x,
+                size_y: 10.0,
+                size_z: 10.0,
+            })
+            .created_feature_id
+            .unwrap()
+        };
+        let a = cube(&mut api, 10.0);
+        let b = cube(&mut api, 20.0);
+        let hull = api
+            .add_feature(FeatureInput::Hull {
+                inputs: vec![a.clone(), b.clone()],
+                points: Vec::new(),
+            })
+            .created_feature_id
+            .unwrap();
+        let later = cube(&mut api, 30.0);
+        let r = api.update_feature(
+            &hull,
+            FeatureInput::Hull {
+                inputs: vec![a, b, later.clone()],
+                points: Vec::new(),
+            },
+        );
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+        assert!(r.consumed_part_ids.contains(&later));
+        assert_eq!(r.document.roots.len(), 1);
     }
 
     #[test]

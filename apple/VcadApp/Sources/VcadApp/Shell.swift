@@ -303,6 +303,11 @@ struct DocumentCommands: Commands {
             Button("New Sketch") { if model.promoteSandboxToDocument(blank: true) { model.enterSketch() } }
                 .keyboardShortcut("s", modifiers: [.control])
                 .disabled(!model.canModel || model.sketching)
+            Menu("Add Shape") {
+                ForEach(BaseShape.allCases, id: \.self) { shape in
+                    Button(shape.label) { if model.promoteSandboxToDocument(blank: true) { model.arm(shape) } }
+                }
+            }.disabled(!model.canModel)
             Menu("Feature") {
                 ForEach(FeatureOp.allCases) { op in
                     Button(op.label + "…") { if model.promoteSandboxToDocument() { model.activeFeatureOp = op } }
@@ -686,7 +691,8 @@ struct FeatureParamEditors: View {
 
     /// Op types that expose live-editable parameters in the inspector.
     static let editableOps: Set<String> = [
-        "Cube", "Cylinder", "Sphere", "Cone", "Fillet", "Chamfer", "Shell",
+        "Cube", "Cylinder", "Sphere", "Cone", "Torus", "Wedge", "Prism", "Hull", "SweepRotate",
+        "EdgeBlend", "Fillet", "Chamfer", "Shell",
         "Translate", "Rotate", "Scale", "Revolve", "LinearPattern", "CircularPattern",
     ]
 
@@ -712,9 +718,29 @@ struct FeatureParamEditors: View {
         case "Sphere":
             scalarField(op, id, "Radius", "radius")
         case "Cone":
-            scalarField(op, id, "Radius 1", "radius1", minV: 0)
-            scalarField(op, id, "Radius 2", "radius2", minV: 0)
+            scalarField(op, id, "Bottom radius", "radius_bottom", minV: 0)
+            scalarField(op, id, "Top radius", "radius_top", minV: 0)
             scalarField(op, id, "Height", "height")
+        case "Torus":
+            scalarField(op, id, "Major radius", "major_radius")
+            scalarField(op, id, "Minor radius", "minor_radius")
+        case "Wedge":
+            axisField(op, id, "Width", "size", "x", minV: 0.1)
+            axisField(op, id, "Depth", "size", "y", minV: 0.1)
+            axisField(op, id, "Height", "size", "z", minV: 0.1)
+        case "Prism":
+            sidesStepper(id, (op["sides"] as? NSNumber)?.intValue ?? 6)
+            scalarField(op, id, "Radius", "radius")
+            scalarField(op, id, "Height", "height")
+        case "Hull":
+            HullInputsEditor(model: model, nodeId: id)
+        case "SweepRotate":
+            scalarField(op, id, "From", "angle_lo_deg", unit: "°", sens: 0.5, minV: -3600)
+            scalarField(op, id, "To", "angle_hi_deg", unit: "°", sens: 0.5, minV: -3600)
+            scalarField(op, id, "Clearance", "clearance", sens: 0.05, minV: 0)
+        case "EdgeBlend":
+            blendField(op, id, "Size", "size", sens: 0.05, minV: 0)
+            blendField(op, id, "Shape", "shape", unit: "", sens: 0.01, minV: 0)
         case "Fillet":
             scalarField(op, id, "Radius", "radius", sens: 0.05, minV: 0)
         case "Chamfer":
@@ -759,6 +785,27 @@ struct FeatureParamEditors: View {
         let value = ((op[key] as? [String: Any])?[a] as? NSNumber)?.doubleValue ?? 0
         return ScrubField(label: label, value: value, unit: unit, sensitivity: sens, minValue: minV) { v, s in
             model.editVec(nodeId: id, key: key, axis: a, value: v, snapshot: s, name: "Change \(label)")
+            onEdit(s)
+        }
+    }
+
+    private func sidesStepper(_ id: Int, _ sides: Int) -> some View {
+        Stepper(value: Binding(
+            get: { sides },
+            set: {
+                model.editInt(nodeId: id, key: "sides", value: max(3, $0), snapshot: true, name: "Change Sides")
+                onEdit(true)
+            }
+        ), in: 3...64) {
+            KeyValueRow("Sides", "\(sides)")
+        }
+    }
+
+    private func blendField(_ op: [String: Any], _ id: Int, _ label: String, _ key: String,
+                            unit: String = "mm", sens: Double, minV: Double) -> some View {
+        let value = ((op["profile"] as? [String: Any])?[key] as? NSNumber)?.doubleValue ?? 0
+        return ScrubField(label: label, value: value, unit: unit, sensitivity: sens, minValue: minV) { v, s in
+            model.editBlend(nodeId: id, field: key, value: v, snapshot: s)
             onEdit(s)
         }
     }

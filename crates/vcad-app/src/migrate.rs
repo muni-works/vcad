@@ -407,6 +407,73 @@ fn migrate_node(
             params.insert("segments".to_string(), Value::F64(*segments as f64));
             Some(create(crdt, ctx, "cone", params))
         }
+        CsgOp::Torus {
+            major_radius,
+            minor_radius,
+            segments,
+        } => {
+            params.insert("major_radius".to_string(), Value::F64(*major_radius));
+            params.insert("minor_radius".to_string(), Value::F64(*minor_radius));
+            params.insert("segments".to_string(), Value::F64(*segments as f64));
+            Some(create(crdt, ctx, "torus", params))
+        }
+        CsgOp::Wedge { size } => {
+            params.insert("size_x".to_string(), Value::F64(size.x));
+            params.insert("size_y".to_string(), Value::F64(size.y));
+            params.insert("size_z".to_string(), Value::F64(size.z));
+            Some(create(crdt, ctx, "wedge", params))
+        }
+        CsgOp::Prism {
+            sides,
+            radius,
+            height,
+        } => {
+            params.insert("sides".to_string(), Value::F64(*sides as f64));
+            params.insert("radius".to_string(), Value::F64(*radius));
+            params.insert("height".to_string(), Value::F64(*height));
+            Some(create(crdt, ctx, "prism", params))
+        }
+        CsgOp::Hull { children, points } => {
+            let mut inputs = Vec::with_capacity(children.len());
+            for child in children {
+                inputs.push(fid_to_stable(migrate_node(crdt, ctx, doc, *child)?));
+            }
+            params.insert("inputs".to_string(), Value::FeatureRefList(inputs));
+            params.insert(
+                "points_json".to_string(),
+                Value::String(serde_json::to_string(points).ok()?),
+            );
+            Some(create(crdt, ctx, "hull", params))
+        }
+        CsgOp::SweepRotate {
+            child,
+            axis_origin,
+            axis_dir,
+            angle_lo_deg,
+            angle_hi_deg,
+            step_deg,
+            clearance,
+        } => {
+            let input = migrate_node(crdt, ctx, doc, *child)?;
+            params.insert("input".to_string(), Value::FeatureRef(fid_to_stable(input)));
+            params.insert(
+                "axis_origin".to_string(),
+                Value::Vec3([axis_origin.x, axis_origin.y, axis_origin.z]),
+            );
+            params.insert(
+                "axis_dir".to_string(),
+                Value::Vec3([axis_dir.x, axis_dir.y, axis_dir.z]),
+            );
+            params.insert("angle_lo_deg".to_string(), Value::F64(*angle_lo_deg));
+            params.insert("angle_hi_deg".to_string(), Value::F64(*angle_hi_deg));
+            if let Some(v) = step_deg {
+                params.insert("step_deg".to_string(), Value::F64(*v));
+            }
+            if let Some(v) = clearance {
+                params.insert("clearance".to_string(), Value::F64(*v));
+            }
+            Some(create(crdt, ctx, "sweep-rotate", params))
+        }
         // Boolean ops: migrate both operands first so their feature ids
         // exist before the boolean feature that references them.
         CsgOp::Union { left, right } => {
@@ -1174,6 +1241,60 @@ mod tests {
             visible: None,
         });
         doc
+    }
+
+    #[test]
+    fn torus_wedge_and_prism_are_typed_after_a_load() {
+        let doc: Document = serde_json::from_value(serde_json::json!({
+            "version": "0.1",
+            "nodes": {
+                "1": {"id": 1, "op": {"type": "Torus", "major_radius": 20.0, "minor_radius": 5.0, "segments": 64}},
+                "2": {"id": 2, "op": {"type": "Wedge", "size": {"x": 10.0, "y": 20.0, "z": 30.0}}},
+                "3": {"id": 3, "op": {"type": "Prism", "sides": 6, "radius": 10.0, "height": 5.0}}
+            },
+            "materials": {}, "part_materials": {},
+            "roots": [{"root": 1, "material": "default"}, {"root": 2, "material": "default"}, {"root": 3, "material": "default"}]
+        })).unwrap();
+        let got = crate::materializer::materialize(&migrate_v1(&doc));
+        let kinds: Vec<_> = got
+            .parts
+            .iter()
+            .map(|p| serde_json::to_value(p).unwrap()["kind"].clone())
+            .collect();
+        assert_eq!(kinds, vec!["torus", "wedge", "prism"]);
+    }
+
+    #[test]
+    fn hull_and_sweep_rotate_migrate_typed_and_consume_children() {
+        let doc: Document = serde_json::from_value(serde_json::json!({
+            "version": "0.1",
+            "nodes": {
+                "1": {"id": 1, "op": {"type": "Cube", "size": {"x": 10.0, "y": 10.0, "z": 10.0}}},
+                "2": {"id": 2, "op": {"type": "Sphere", "radius": 5.0, "segments": 16}},
+                "3": {"id": 3, "op": {"type": "Hull", "children": [1, 2], "points": [0.0, 0.0, 40.0]}},
+                "4": {"id": 4, "op": {"type": "Cube", "size": {"x": 2.0, "y": 2.0, "z": 2.0}}},
+                "5": {"id": 5, "op": {"type": "SweepRotate", "child": 4,
+                    "axis_origin": {"x": 0.0, "y": 0.0, "z": 0.0}, "axis_dir": {"x": 0.0, "y": 0.0, "z": 1.0},
+                    "angle_lo_deg": 0.0, "angle_hi_deg": 90.0}}
+            },
+            "materials": {}, "part_materials": {},
+            "roots": [{"root": 3, "material": "default"}, {"root": 5, "material": "default"}]
+        })).unwrap();
+        let got = crate::materializer::materialize(&migrate_v1(&doc));
+        assert_eq!(got.document.roots.len(), 2, "{:?}", got.warnings);
+        let hull = got
+            .document
+            .nodes
+            .values()
+            .find_map(|n| match &n.op {
+                CsgOp::Hull { children, points } => Some((children.len(), points.clone())),
+                _ => None,
+            })
+            .expect("hull");
+        assert_eq!(hull, (2, vec![0.0, 0.0, 40.0]));
+        assert!(got.document.nodes.values().any(
+            |n| matches!(n.op, CsgOp::SweepRotate { angle_hi_deg, .. } if angle_hi_deg == 90.0)
+        ));
     }
 
     #[test]
