@@ -384,6 +384,7 @@ final class EditorModel {
                 agentLinkID = nil; agentLinkRevision = nil; agentLinkOwned = false
                 agentLinkBaseDir = nil; agentPoseSurfacedLink = nil
                 agentBaseFirst = nil; agentBaseDelta = nil
+                cameraUserMoved = false; agentFramedSize = nil; agentFramePending = false
             }
             watchDocumentFile()                   // hot reload on regenerate
             loadDocumentTree()                    // parse the DAG for a .vcad
@@ -2598,6 +2599,7 @@ final class EditorModel {
     /// Turn the camera to a standard view, animated.
     func animateCamera(to preset: CameraPreset) {
         stopSpin()
+        cameraUserMoved = true
         withAnimation(Motion.smooth) {
             azimuth = preset.azimuth
             elevation = preset.elevation
@@ -2614,6 +2616,7 @@ final class EditorModel {
 
     /// Pan the look-at target in the camera's screen plane (⇧-drag).
     func panBy(dx: Float, dy: Float) {
+        cameraUserMoved = true
         let forward = normalize(-orbitVector)
         let right = normalize(cross(forward, SIMD3<Float>(0, 1, 0)))
         let up = cross(right, forward)
@@ -2629,6 +2632,7 @@ final class EditorModel {
     /// A drag started — kill any running momentum and reset velocity tracking.
     func beginOrbit() {
         stopSpin()
+        cameraUserMoved = true
         lastOrbitTime = Date()
         azVel = 0; elVel = 0
     }
@@ -2720,6 +2724,7 @@ final class EditorModel {
             MainActor.assumeIsolated {
                 guard let self, !self.draggingHandle else { return }
                 self.stopSpin()                       // zooming interrupts coasting
+                self.cameraUserMoved = true
                 let dy = Float(event.scrollingDeltaY)
                 let k = Float(event.hasPreciseScrollingDeltas ? 0.004 : 0.04)
                 self.distance = max(0.45, min(8.0, self.distance * (1 - dy * k)))
@@ -3292,6 +3297,14 @@ final class EditorModel {
     }
 
     var panOffset: SIMD3<Float> = .zero
+    /// The user has orbited, panned, zoomed or picked a view of this document.
+    /// From then on the camera is theirs and an agent's build never moves it.
+    @ObservationIgnored var cameraUserMoved = false
+    /// An agent changed the geometry and the next finished scene should be
+    /// considered for framing.
+    @ObservationIgnored var agentFramePending = false
+    /// The content size (mm) the camera was last framed on for an agent.
+    @ObservationIgnored var agentFramedSize: SIMD3<Float>?
     var orbitVector: SIMD3<Float> {
         let r = distance
         return SIMD3<Float>(
@@ -3950,6 +3963,53 @@ extension EditorModel {
     func agentApplied(_ r: DocumentEngine.Result) {
         engineError = nil
         adopt(r, reeval: .rebuild)
+        agentFramePending = true
+    }
+
+    /// Whether content going from `old` to `new` (mm) is worth reframing for:
+    /// its first geometry, or any axis moving by over a third of the larger
+    /// of the two bodies' longest sides.
+    static func agentShouldFrame(from old: SIMD3<Float>?, to new: SIMD3<Float>) -> Bool {
+        let longest = new.max()
+        guard longest > 0 else { return false }
+        guard let old else { return true }
+        let change = simd_abs(new - old).max()
+        return change > max(longest, old.max()) / 3
+    }
+
+    /// Camera distance that puts a box of `size` (mm, Z-up), scaled to the
+    /// scene's display normalization and centred, inside `margin` of a 60°
+    /// view from this orbit direction. Leaves room for the window's chrome.
+    static func fittedDistance(size: SIMD3<Float>, azimuth: Float, elevation: Float,
+                               aspect: Float, margin: Float = 0.8) -> Float {
+        let world = SIMD3(size.x, size.z, size.y) * (0.6 / max(size.max(), 0.0001)) / 2
+        let toCamera = SIMD3(cos(elevation) * sin(azimuth), sin(elevation), cos(elevation) * cos(azimuth))
+        let right = normalize(cross(-toCamera, SIMD3<Float>(0, 1, 0)))
+        let up = cross(right, -toCamera)
+        let tanHalf = tan(Float.pi / 6) * margin
+        var needed: Float = 0
+        for sx: Float in [-1, 1] {
+            for sy: Float in [-1, 1] {
+                for sz: Float in [-1, 1] {
+                    let c = world * SIMD3(sx, sy, sz)
+                    let reach = max(abs(dot(c, up)) / tanHalf,
+                                    abs(dot(c, right)) / (tanHalf * max(aspect, 0.1)))
+                    needed = max(needed, dot(c, toCamera) + reach)
+                }
+            }
+        }
+        return max(0.45, min(8.0, needed))
+    }
+
+    /// Where the camera should go for the agent build that just finished, or
+    /// nil to leave it alone. Consumes the pending request.
+    func takeAgentFrameDistance(aspect: Float) -> Float? {
+        guard agentFramePending else { return nil }
+        agentFramePending = false
+        guard !cameraUserMoved, !sketching, workspace != .manufacture, workspace != .electronics,
+              Self.agentShouldFrame(from: agentFramedSize, to: sizeMM) else { return nil }
+        agentFramedSize = sizeMM
+        return Self.fittedDistance(size: sizeMM, azimuth: azimuth, elevation: elevation, aspect: aspect)
     }
 
     /// Close an agent turn that changed the document: one undo step back to

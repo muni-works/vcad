@@ -75,7 +75,7 @@ enum AgentEdits {
          "description": "Link an MCP session to the document open in this window and return it. Sent by @vcad/mcp's attach_app_document; agents don't call it.",
          "inputSchema": schema(["link_id": ["type": "string"]], required: ["link_id"])],
         ["name": "link_status",
-         "description": "The current revision of a linked session's document, the document itself when pull is set.",
+         "description": "Whether the session named by link_id is the one this window is linked to, and if so whether the user has edited since its last push (the document itself when pull is set). linked:false says nothing about other sessions: window_linked reports whether the window has a link at all, reason why this session isn't it.",
          "inputSchema": schema(["link_id": ["type": "string"], "pull": ["type": "boolean"]], required: ["link_id"])],
         ["name": "undo",
          "description": "Undo the last edit in the app (yours or the user's), exactly like ⌘Z.",
@@ -261,8 +261,11 @@ enum AgentEdits {
     }
 
     private static func linkStatus(_ a: [String: Any], _ m: EditorModel) throws -> [String: Any] {
+        // `linked` is per session: @vcad/mcp reads false as "this session lost
+        // the window", so a window held by someone else must still answer false.
         guard m.agentLinkID == (a["link_id"] as? String), m.agentLinkID != nil else {
-            return AgentTools.json(["linked": false])
+            let reason = m.agentLinkID == nil ? "no_link" : (a["link_id"] == nil ? "no_link_id" : "other_session")
+            return AgentTools.json(["linked": false, "window_linked": m.agentLinkID != nil, "reason": reason])
         }
         m.agentLinkActiveAt = Date()
         var out: [String: Any] = ["linked": true, "edited": try editableEngine(m).stateHash != m.agentLinkRevision]

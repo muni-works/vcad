@@ -374,6 +374,7 @@ final class ReleaseWindowController {
     private func dolly(by dy: Float) -> Bool {
         guard pointerOverScene, dy != 0, let m = model else { return false }
         m.stopSpin()
+        m.cameraUserMoved = true
         m.distance = max(0.45, min(8.0, m.distance * (1 - dy)))
         m.pinchBaseline = m.distance
         return true
@@ -591,6 +592,7 @@ final class ReleaseWindowController {
               let e = centeringEntity?.findEntity(named: name) else { return }
         let b = e.visualBounds(relativeTo: nil)
         model.stopSpin()
+        if name != "cncRoot" { model.cameraUserMoved = true }
         withAnimation(.smooth(duration: 0.35)) {
             model.panOffset = b.center
             let extent = max(b.extents.x, max(b.extents.y, b.extents.z))
@@ -1460,6 +1462,7 @@ struct ReleasedOverlayView: View {
         MagnifyGesture()
             .onChanged { value in
                 model.stopSpin()
+                model.cameraUserMoved = true
                 model.distance = max(0.45, min(8.0, model.pinchBaseline / Float(value.magnification)))
             }
             .onEnded { _ in model.pinchBaseline = model.distance }
@@ -1693,6 +1696,18 @@ struct ReleasedARView: NSViewRepresentable {
         // (or nothing) on screen; parts are drawn as they land and the model
         // flips geometryDirty when the kernel is done.
         if scene.solving && scene.meshes.isEmpty { return }
+        if !scene.solving {
+            let bounds = ReleaseWindowController.shared.arView?.bounds.size ?? .zero
+            let aspect = bounds.height > 0 ? Float(bounds.width / bounds.height) : 1.6
+            if let target = model.takeAgentFrameDistance(aspect: aspect) {
+                // Deferred: this runs inside a view update.
+                Task { @MainActor in
+                    guard !model.cameraUserMoved else { return }
+                    withAnimation(Motion.smooth) { model.distance = target }
+                    model.pinchBaseline = target
+                }
+            }
+        }
         coordinator.instanceEntities.removeAll(keepingCapacity: true)
         anchor.children.filter { ["geomRoot", "grid", "contactShadow"].contains($0.name) }
             .forEach { $0.removeFromParent() }

@@ -1,4 +1,5 @@
 import XCTest
+import simd
 @testable import VcadApp
 
 /// The live link to `@vcad/mcp`, driven exactly as the bridge dispatches it.
@@ -133,6 +134,75 @@ final class AgentLinkTests: XCTestCase {
         try await expectPoseFailure(m, ["base": [1, 2]], contains: "7 numbers")
         try await expectPoseFailure(m, ["joints": [name: 20], "link_id": "other"], contains: "different session")
         XCTAssertEqual(m.jointPose[name], 12)
+    }
+
+    func testLinkStatusIsPerSessionAndSaysWhy() async throws {
+        let m = EditorModel()
+        var r = try await call(m, "link_status", ["link_id": "a"])
+        XCTAssertEqual(r["linked"] as? Bool, false)
+        XCTAssertEqual(r["window_linked"] as? Bool, false)
+        XCTAssertEqual(r["reason"] as? String, "no_link")
+
+        _ = try await adopt(m, box(10), link: "a")
+        r = try await call(m, "link_status", ["link_id": "a"])
+        XCTAssertEqual(r["linked"] as? Bool, true)
+
+        r = try await call(m, "link_status", ["link_id": "b"])
+        XCTAssertEqual(r["linked"] as? Bool, false, "@vcad/mcp reads false as this session losing the window")
+        XCTAssertEqual(r["window_linked"] as? Bool, true)
+        XCTAssertEqual(r["reason"] as? String, "other_session")
+
+        r = try await call(m, "link_status")
+        XCTAssertEqual(r["linked"] as? Bool, false)
+        XCTAssertEqual(r["window_linked"] as? Bool, true)
+        XCTAssertEqual(r["reason"] as? String, "no_link_id")
+    }
+
+    func testAgentBuildFramesTheContentUntilTheUserMovesTheCamera() async throws {
+        let m = EditorModel()
+        _ = try await adopt(m, box(10), link: "a")
+        XCTAssertTrue(m.agentFramePending)
+        m.sizeMM = SIMD3(200, 40, 40)
+        let first = try XCTUnwrap(m.takeAgentFrameDistance(aspect: 1.6), "first geometry frames")
+        XCTAssertLessThan(first, 1.5, "the default distance leaves the model small")
+
+        _ = try await adopt(m, box(11), link: "a")
+        m.sizeMM = SIMD3(205, 40, 40)
+        XCTAssertNil(m.takeAgentFrameDistance(aspect: 1.6), "a small change leaves the camera alone")
+
+        _ = try await adopt(m, box(12), link: "a")
+        m.sizeMM = SIMD3(200, 40, 300)
+        XCTAssertNotNil(m.takeAgentFrameDistance(aspect: 1.6), "a large change reframes")
+
+        m.beginOrbit()
+        _ = try await adopt(m, box(13), link: "a")
+        m.sizeMM = SIMD3(900, 900, 40)
+        XCTAssertNil(m.takeAgentFrameDistance(aspect: 1.6), "the camera is the user's now")
+    }
+
+    func testFittedDistanceKeepsEveryCornerInView() {
+        for size in [SIMD3<Float>(100, 100, 100), SIMD3(300, 10, 10), SIMD3(10, 10, 300)] {
+            for aspect: Float in [0.7, 1.0, 2.2] {
+                let (az, el) = (Float.pi / 5, Float.pi / 7)
+                let d = EditorModel.fittedDistance(size: size, azimuth: az, elevation: el, aspect: aspect)
+                let world = SIMD3(size.x, size.z, size.y) * (0.6 / size.max()) / 2
+                let toCamera = SIMD3(cos(el) * sin(az), sin(el), cos(el) * cos(az))
+                let right = normalize(cross(-toCamera, SIMD3<Float>(0, 1, 0)))
+                let up = cross(right, -toCamera)
+                let tanHalf = tan(Float.pi / 6)
+                var widest: Float = 0
+                for sx: Float in [-1, 1] { for sy: Float in [-1, 1] { for sz: Float in [-1, 1] {
+                    let c = world * SIMD3(sx, sy, sz)
+                    let depth = d - dot(c, toCamera)
+                    XCTAssertGreaterThan(depth, 0)
+                    widest = max(widest, abs(dot(c, up)) / (depth * tanHalf),
+                                 abs(dot(c, right)) / (depth * tanHalf * aspect))
+                }}}
+                // At the dolly's near limit the box may sit inside the margin.
+                XCTAssertLessThanOrEqual(widest, 0.81, "\(size) @ \(aspect) stays in the margin")
+                if d > 0.45 { XCTAssertEqual(widest, 0.8, accuracy: 0.01, "\(size) @ \(aspect) fills the margin") }
+            }
+        }
     }
 
     func testAMirroredStreamPosesWhatMatches() async throws {
