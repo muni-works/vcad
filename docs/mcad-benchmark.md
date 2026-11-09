@@ -8,7 +8,7 @@ Every friction point found gets fixed or listed here.
 |---|------|-----------|--------|
 | 1 | NEMA 17 bracket | sketch, extrude, cuts, slots, fillet | Built |
 | 2 | Flanged bearing housing | revolve, holes, counterbores, circular pattern | Built: 18,981 mm^3 |
-| 3 | Sheet-metal enclosure | flanges, bends, flat pattern | Flat pattern built: 156.4 x 116.4 mm, 15,018 mm^2 |
+| 3 | Sheet-metal enclosure | flanges, bends, flat pattern | Built: flat 156.4 x 116.4 mm, 15,018 mm^2; folded 22,734 mm^3 |
 | 4 | 3D-print snap-fit case | shell, lip, clips, tolerance | Open |
 | 5 | Swept and lofted duct | sweep, loft, shell | Open |
 | 6 | Patterned heatsink | linear pattern, fin spacing | Open |
@@ -23,8 +23,8 @@ Every friction point found gets fixed or listed here.
   progress. The label column also widens when Counterbore turns on, which moves
   the controls.
 
-- Part 3: `inspect_cad` reports sheet-metal roots as not measurable, so the
-  folded volume has no check; only the flat pattern matches the hand numbers.
+- Part 3: `inspect_cad` reports sheet-metal roots as not measurable. An exported
+  STL measures 22,734 mm^3 against 22,696 by hand (mid-surface bends).
 - Part 3: Flatten refuses a folded four-flange box as a closed section. The
   Author tab's Unfold works, and warns that the flanges meet at the corners.
   There's no corner relief control.
