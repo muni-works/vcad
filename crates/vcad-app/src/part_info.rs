@@ -100,6 +100,110 @@ pub enum PartInfo {
         #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
         translate_node_id: NodeId,
     },
+    /// Torus primitive.
+    #[serde(rename = "torus", rename_all = "camelCase")]
+    Torus {
+        /// Part identifier.
+        id: String,
+        /// Human-readable name.
+        name: String,
+        /// The primitive IR node.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
+        primitive_node_id: NodeId,
+        /// Scale transform node.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
+        scale_node_id: NodeId,
+        /// Rotation transform node.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
+        rotate_node_id: NodeId,
+        /// Translation transform node.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
+        translate_node_id: NodeId,
+    },
+    /// Wedge primitive.
+    #[serde(rename = "wedge", rename_all = "camelCase")]
+    Wedge {
+        /// Part identifier.
+        id: String,
+        /// Human-readable name.
+        name: String,
+        /// The primitive IR node.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
+        primitive_node_id: NodeId,
+        /// Scale transform node.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
+        scale_node_id: NodeId,
+        /// Rotation transform node.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
+        rotate_node_id: NodeId,
+        /// Translation transform node.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
+        translate_node_id: NodeId,
+    },
+    /// Prism primitive.
+    #[serde(rename = "prism", rename_all = "camelCase")]
+    Prism {
+        /// Part identifier.
+        id: String,
+        /// Human-readable name.
+        name: String,
+        /// The primitive IR node.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
+        primitive_node_id: NodeId,
+        /// Scale transform node.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
+        scale_node_id: NodeId,
+        /// Rotation transform node.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
+        rotate_node_id: NodeId,
+        /// Translation transform node.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
+        translate_node_id: NodeId,
+    },
+    /// Convex hull of parts and/or points.
+    #[serde(rename = "hull", rename_all = "camelCase")]
+    Hull {
+        /// Part identifier.
+        id: String,
+        /// Human-readable name.
+        name: String,
+        /// The hull IR node.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
+        hull_node_id: NodeId,
+        /// Scale transform node.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
+        scale_node_id: NodeId,
+        /// Rotation transform node.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
+        rotate_node_id: NodeId,
+        /// Translation transform node.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
+        translate_node_id: NodeId,
+        /// Source part IDs.
+        source_part_ids: Vec<String>,
+    },
+    /// Rotational sweep envelope.
+    #[serde(rename = "sweep-rotate", rename_all = "camelCase")]
+    SweepRotate {
+        /// Part identifier.
+        id: String,
+        /// Human-readable name.
+        name: String,
+        /// Source part ID.
+        source_part_id: String,
+        /// The sweep IR node.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
+        sweep_node_id: NodeId,
+        /// Scale transform node.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
+        scale_node_id: NodeId,
+        /// Rotation transform node.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
+        rotate_node_id: NodeId,
+        /// Translation transform node.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
+        translate_node_id: NodeId,
+    },
     /// Boolean operation (union, difference, intersection).
     #[serde(rename = "boolean", rename_all = "camelCase")]
     Boolean {
@@ -490,6 +594,11 @@ impl PartInfo {
             | PartInfo::Cylinder { id, .. }
             | PartInfo::Sphere { id, .. }
             | PartInfo::Cone { id, .. }
+            | PartInfo::Torus { id, .. }
+            | PartInfo::Wedge { id, .. }
+            | PartInfo::Prism { id, .. }
+            | PartInfo::Hull { id, .. }
+            | PartInfo::SweepRotate { id, .. }
             | PartInfo::Boolean { id, .. }
             | PartInfo::Extrude { id, .. }
             | PartInfo::Revolve { id, .. }
@@ -526,6 +635,21 @@ impl PartInfo {
                 translate_node_id, ..
             }
             | PartInfo::Cone {
+                translate_node_id, ..
+            }
+            | PartInfo::Torus {
+                translate_node_id, ..
+            }
+            | PartInfo::Wedge {
+                translate_node_id, ..
+            }
+            | PartInfo::Prism {
+                translate_node_id, ..
+            }
+            | PartInfo::Hull {
+                translate_node_id, ..
+            }
+            | PartInfo::SweepRotate {
                 translate_node_id, ..
             }
             | PartInfo::Boolean {

@@ -461,6 +461,24 @@ fn lower_create(
             height: num(p, "height", "cone")?,
             segments: Some(segments(p)?),
         }),
+        "torus" => add(FeatureInput::Torus {
+            major_radius: num_or(p, "major_radius", 20.0)?,
+            minor_radius: num_or(p, "minor_radius", 5.0)?,
+            segments: Some(segments(p)?),
+        }),
+        "wedge" => {
+            let size = p.get("size");
+            add(FeatureInput::Wedge {
+                size_x: size.map_or(Ok(20.0), |s| num(s, "x", "wedge size"))?,
+                size_y: size.map_or(Ok(20.0), |s| num(s, "y", "wedge size"))?,
+                size_z: size.map_or(Ok(20.0), |s| num(s, "z", "wedge size"))?,
+            })
+        }
+        "prism" => add(FeatureInput::Prism {
+            sides: num_or(p, "sides", 6.0)? as u32,
+            radius: num_or(p, "radius", 10.0)?,
+            height: num_or(p, "height", 20.0)?,
+        }),
         "union" | "difference" | "intersection" => add(FeatureInput::Boolean {
             boolean_type: BooleanType::from_str_lossy(kind),
             input_a: str_arg(p, "left", kind)?.to_string(),
@@ -1496,6 +1514,59 @@ mod tests {
         )
         .unwrap();
         assert_eq!(v["error"]["kind"], "unknown_id");
+    }
+
+    /// Creates each new primitive through the tool path, and reads the
+    /// dimensions back out of a save-and-reload.
+    #[test]
+    fn new_primitives_create_and_round_trip() {
+        for (spec, check) in [
+            (
+                json!({"type": "torus", "params": {"major_radius": 20, "minor_radius": 4}}),
+                "torus",
+            ),
+            (
+                json!({"type": "wedge", "params": {"size": {"x": 10, "y": 20, "z": 30}}}),
+                "wedge",
+            ),
+            (
+                json!({"type": "prism", "params": {"sides": 8, "radius": 6, "height": 12}}),
+                "prism",
+            ),
+        ] {
+            let mut api = DocumentApi::new(ReplicaId(1));
+            let res = api.apply(lower_empty("create", &spec).unwrap()).unwrap();
+            assert!(res.warnings.is_empty(), "{:?}", res.warnings);
+            let saved = serde_json::to_string(&res.document).unwrap();
+            let doc: vcad_ir::Document = serde_json::from_str(&saved).unwrap();
+            let again = crate::materializer::materialize(&crate::migrate::migrate_v1(&doc));
+            assert_eq!(
+                serde_json::to_value(&again.parts[0]).unwrap()["kind"],
+                check
+            );
+            let ops = |d: &vcad_ir::Document| {
+                let mut v: Vec<_> = d
+                    .nodes
+                    .values()
+                    .filter(|n| {
+                        !matches!(
+                            n.op,
+                            vcad_ir::CsgOp::Translate { .. }
+                                | vcad_ir::CsgOp::Rotate { .. }
+                                | vcad_ir::CsgOp::Scale { .. }
+                        )
+                    })
+                    .map(|n| serde_json::to_string(&n.op).unwrap())
+                    .collect();
+                v.sort();
+                v
+            };
+            assert_eq!(
+                ops(&again.document),
+                ops(&res.document),
+                "{check} changed across save and reload"
+            );
+        }
     }
 
     #[test]
