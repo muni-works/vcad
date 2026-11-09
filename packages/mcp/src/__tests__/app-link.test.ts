@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { pushAfterWrite, reconcileBeforeWrite, resetAppLinks } from "../app-link.js";
+import { pushAfterWrite, pushPose, reconcileBeforeWrite, resetAppLinks } from "../app-link.js";
 import type { Document } from "@vcad/ir";
 
 const doc = (v: number) => ({ version: String(v), nodes: {}, roots: [] }) as unknown as Document;
@@ -42,5 +42,18 @@ describe("app link", () => {
     await pushAfterWrite("a", "create", doc(1), async () => ({ adopted: true }));
     const call = async () => ({ linked: true, edited: false });
     expect(await reconcileBeforeWrite("a", new Map(), call)).toBeNull();
+  });
+
+  it("mirrors poses for a shown session, latest wins", async () => {
+    const sent: unknown[] = [];
+    const call = async (_: string, a: Record<string, unknown>) => (sent.push(a.joints), {});
+    const j = [{ id: "knee", position: 30 }, { id: "base", position: 0, positions: [0, 0, 0] }];
+    expect(pushPose("a", j, call, 1000)).toBe(false);
+    await pushAfterWrite("a", "create", doc(1), async () => ({ adopted: true }));
+    expect(pushPose("a", j, call, 1000)).toBe(true);
+    expect(sent).toEqual([{ knee: 30 }]);
+    await Promise.resolve();
+    expect(pushPose("a", j, call, 1010)).toBe(false);
+    expect(pushPose("a", j, call, 1040)).toBe(true);
   });
 });

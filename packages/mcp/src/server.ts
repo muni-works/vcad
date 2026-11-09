@@ -35,7 +35,8 @@ import {
   durabilityWarning,
   addDocumentEnterHook,
 } from "./tools/session.js";
-import { pushAfterWrite, reconcileBeforeWrite } from "./app-link.js";
+import { pushAfterWrite, pushPose, reconcileBeforeWrite } from "./app-link.js";
+import { getEnvRecord } from "./tools/gym.js";
 import { createCadLoon } from "./tools/loon.js";
 import {
   markSourceDiverged,
@@ -1576,6 +1577,28 @@ export async function createServer(
       // carries next_actions, not just the ones that throw. Successes on the
       // canonical PCB flow carry happy-path next_actions too, so the order of
       // operations is discoverable without first tripping over an ordering error.
+      if (!result.isError && (name === "gym_step" || name === "gym_reset")) {
+        const record = getEnvRecord(String(args.env_id));
+        try {
+          const text = result.content[0]?.type === "text" ? result.content[0].text : "{}";
+          const parsed = JSON.parse(text);
+          const joints = parsed.observation?.joints ?? parsed.joints;
+          if (record && joints) {
+            // The app renumbers joint ids on load; names survive.
+            const names = new Map((record.document.joints ?? []).map((j) => [j.id, j.name ?? j.id]));
+            pushPose(
+              record.documentId,
+              joints.map((j: { id: string; position: number; positions?: number[] }) => ({
+                ...j,
+                id: names.get(j.id) ?? j.id,
+              })),
+            );
+          }
+        } catch {
+          // The display must never fail a simulation step.
+        }
+      }
+
       if (result.isError) enrichErrorResult(result, name, args);
       else enrichSuccessResult(result, name, args);
 

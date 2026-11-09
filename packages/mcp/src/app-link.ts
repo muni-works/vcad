@@ -103,8 +103,36 @@ export async function pushAfterWrite(
   return null;
 }
 
+const POSE_INTERVAL_MS = 33;
+let poseBusy = false;
+let lastPose = 0;
+
+/**
+ * Mirror a simulation step in the app. Latest wins: steps that arrive while a
+ * pose is in flight, or inside the frame interval, are dropped so a training
+ * loop is never slowed by the display. Multi-DOF joints have no angle to set.
+ */
+export function pushPose(
+  documentId: string,
+  joints: { id: string; position: number; positions?: number[] }[],
+  call: Call = callApp,
+  now: number = Date.now(),
+): boolean {
+  if (!links.get(documentId)?.shown || poseBusy || now - lastPose < POSE_INTERVAL_MS) return false;
+  const pose = Object.fromEntries(joints.filter((j) => !j.positions).map((j) => [j.id, j.position]));
+  if (Object.keys(pose).length === 0) return false;
+  poseBusy = true;
+  lastPose = now;
+  void call("set_pose", { joints: pose }).finally(() => {
+    poseBusy = false;
+  });
+  return true;
+}
+
 /** Test seam: forget every link. */
 export function resetAppLinks(): void {
   links.clear();
+  poseBusy = false;
+  lastPose = 0;
   refusedNoted.clear();
 }
