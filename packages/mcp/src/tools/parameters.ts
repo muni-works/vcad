@@ -28,8 +28,7 @@ import { resolveParameters, solveDesignConstraints } from "@vcad/engine";
 import type { Document, Expr, Parameter } from "@vcad/ir";
 import { getPcbNodeIds } from "@vcad/core";
 import { appendIntegrity, computeIntegrity } from "./integrity.js";
-import { carryElectronics } from "./loon.js";
-import { resolveLoonAssets } from "./loon-assets.js";
+import { carryElectronics } from "./carry-electronics.js";
 import {
   getSession,
   resolveDocInput,
@@ -206,12 +205,24 @@ function sourceEvaluator(
       const evaluated = engine.evalLoonDocument(text, src.modules ?? {}, {
         baseDir: src.base_dir ?? undefined,
       });
-      if (evaluated) resolveLoonAssets(evaluated, { base_dir: src.base_dir ?? undefined }, engine);
+      if (evaluated) resolveAssets?.(evaluated, src.base_dir ?? undefined, engine);
       return evaluated;
     } catch {
       return null;
     }
   };
+}
+
+type AssetResolver = (doc: Document, baseDir: string | undefined, engine: Engine) => void;
+let resolveAssets: AssetResolver | null = null;
+
+/**
+ * Give set_parameters a way to read a loon program's mesh and STEP imports.
+ * A hook because that means the filesystem and this module also ships in the
+ * browser tool set, where there are no files to resolve.
+ */
+export function setParameterAssetResolver(resolver: AssetResolver): void {
+  resolveAssets = resolver;
 }
 
 interface ParameterDelta {

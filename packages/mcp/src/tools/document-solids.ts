@@ -11,7 +11,6 @@
  * document coordinates (load regions, cavity frames, board outlines).
  */
 
-import { createHash } from "node:crypto";
 import type { Document } from "@vcad/ir";
 import { transformMesh, type EvaluatedScene, type Engine, type TriangleMesh } from "@vcad/engine";
 import { partIdForNode } from "./part-ids.js";
@@ -145,7 +144,7 @@ function canonicalNodes(doc: Document, roots: number[]) {
 }
 
 function evaluatePiece(piece: Document, engine: Engine): EvaluatedScene {
-  const key = createHash("sha1").update(JSON.stringify(piece)).digest("hex");
+  const key = JSON.stringify(piece);
   const hit = pieceCache.get(key);
   if (hit) return hit;
   const scene = engine.evaluate(piece);

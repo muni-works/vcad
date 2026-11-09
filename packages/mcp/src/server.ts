@@ -154,7 +154,8 @@ import { toolDefs as inspectToolDefs } from "./tools/inspect.js";
 import { toolDefs as measureToolDefs } from "./tools/measure.js";
 import { toolDefs as jointRangeToolDefs } from "./tools/joint-range.js";
 import { toolDefs as facesToolDefs } from "./tools/faces.js";
-import { toolDefs as parametersToolDefs } from "./tools/parameters.js";
+import { toolDefs as parametersToolDefs, setParameterAssetResolver } from "./tools/parameters.js";
+import { resolveLoonAssets } from "./tools/loon-assets.js";
 import { toolDefs as designConstraintsToolDefs } from "./tools/design-constraints.js";
 import { toolDefs as printCheckToolDefs } from "./tools/print-check.js";
 import { toolDefs as renderToolDefs } from "./tools/render.js";
@@ -195,6 +196,10 @@ import { toolDefs as enclosureToolDefs } from "./tools/enclosure.js";
 import { toolDefs as simReplayToolDefs } from "./tools/sim-replay.js";
 import { toolDefs as orderFeedToolDefs } from "./tools/order-feed.js";
 import { toolDefs as animateToolDefs } from "./tools/animate.js";
+
+setParameterAssetResolver((doc, base_dir, engine) => {
+  resolveLoonAssets(doc, { base_dir }, engine);
+});
 
 // Re-exported so the Vercel transport entry can drain in-flight PostHog
 // captures before a serverless instance freezes (see services/mcp/entry.ts).
