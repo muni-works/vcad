@@ -3336,6 +3336,25 @@ mod tests {
     }
 
     #[test]
+    fn hole_through_full_revolve_keeps_the_curved_walls() {
+        use vcad_kernel_sketch::SketchProfile;
+
+        let profile =
+            SketchProfile::rectangle(Point3::new(5.0, 0.0, 0.0), Vec3::x(), Vec3::z(), 6.0, 10.0);
+        let ring = Solid::revolve(profile, Point3::origin(), Vec3::z(), 360.0).unwrap();
+        let tool = Solid::cylinder(1.0, 30.0, 32).translate(8.0, 0.0, -10.0);
+        let cut = ring.difference(&tool);
+        // Ring r 5..11, height 10, less a r=1 through-hole. Against the
+        // analytic value: the operand mesh is coarser than the result's.
+        let expected = std::f64::consts::PI * (121.0 - 25.0 - 1.0) * 10.0;
+        let got = cut.volume();
+        assert!(
+            (got - expected).abs() < expected * 0.005,
+            "expected {expected}, got {got}"
+        );
+    }
+
+    #[test]
     fn test_extrude_then_boolean() {
         use vcad_kernel_sketch::SketchProfile;
 
