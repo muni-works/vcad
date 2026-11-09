@@ -1508,29 +1508,45 @@ fn evaluate_op_timed(
                 .map_err(EvalError::Sketch)?;
 
             let dir = Vec3::new(0.0, 0.0, board.outline.thickness);
-            let mut board_solid = Solid::extrude(profile, dir).map_err(EvalError::Sketch)?;
-
-            // Subtract cutout holes
-            for cutout in &board.outline.cutouts {
-                if cutout.len() < 3 {
-                    continue;
-                }
-                let mut cut_segs = Vec::with_capacity(cutout.len());
-                for i in 0..cutout.len() {
-                    let next = (i + 1) % cutout.len();
-                    cut_segs.push(vcad_ir::SketchSegment2D::Line {
-                        start: cutout[i],
-                        end: cutout[next],
-                    });
-                }
-                if let Ok(cut_profile) = ir_sketch_to_profile(&origin, &x_dir, &y_dir, &cut_segs) {
-                    // Extrude slightly taller to ensure clean boolean
+            // Cutouts are walls of the extrusion, not booleans: differencing them
+            // one at a time left stray triangles inside the holes (24 open edges
+            // from the second cutout on stator-v3).
+            let cutout_profiles: Vec<_> = board
+                .outline
+                .cutouts
+                .iter()
+                .filter(|c| c.len() >= 3)
+                .filter_map(|cutout| {
+                    let segs: Vec<_> = (0..cutout.len())
+                        .map(|i| vcad_ir::SketchSegment2D::Line {
+                            start: cutout[i],
+                            end: cutout[(i + 1) % cutout.len()],
+                        })
+                        .collect();
+                    ir_sketch_to_profile(&origin, &x_dir, &y_dir, &segs).ok()
+                })
+                .collect();
+            let holes: Vec<_> = cutout_profiles.iter().map(|p| p.segments.clone()).collect();
+            let mut board_solid = match Solid::extrude_with_holes(profile.clone(), &holes, dir) {
+                Ok(solid) => solid,
+                // Outside its preconditions (holes that touch), cut them instead.
+                Err(_) => {
+                    let mut solid = Solid::extrude(profile, dir).map_err(EvalError::Sketch)?;
+                    let overshoot = Vec3::new(0.0, 0.0, -board.outline.thickness * 0.05);
                     let cut_dir = Vec3::new(0.0, 0.0, board.outline.thickness * 1.1);
-                    if let Ok(cut_solid) = Solid::extrude(cut_profile, cut_dir) {
-                        board_solid = board_solid.difference(&cut_solid);
+                    for cut in cutout_profiles {
+                        if let Ok(cutter) = Solid::extrude(cut, cut_dir) {
+                            let cutter = cutter.apply_transform(&Transform::translation(
+                                overshoot.x,
+                                overshoot.y,
+                                overshoot.z,
+                            ));
+                            solid = solid.difference(&cutter);
+                        }
                     }
+                    solid
                 }
-            }
+            };
 
             // Add component bounding boxes estimated from footprint pad extents
             for fp in &board.footprints {
@@ -3197,6 +3213,51 @@ fn append_endcap(
 #[cfg(test)]
 mod via_mesh_tests {
     use super::*;
+
+    fn open_edge_count(vertices: &[f32], indices: &[u32]) -> usize {
+        // Vertices compared exactly: a T-junction or sliver gap is open here.
+        let key = |i: u32| {
+            let v = &vertices[i as usize * 3..i as usize * 3 + 3];
+            [v[0].to_bits(), v[1].to_bits(), v[2].to_bits()]
+        };
+        let mut net = HashMap::<([u32; 3], [u32; 3]), i32>::new();
+        for t in indices.as_chunks::<3>().0 {
+            for k in 0..3 {
+                let (a, b) = (key(t[k]), key(t[(k + 1) % 3]));
+                if a == b {
+                    continue;
+                }
+                let (lo, hi, d) = if a < b { (a, b, 1) } else { (b, a, -1) };
+                *net.entry((lo, hi)).or_default() += d;
+            }
+        }
+        net.values().map(|n| n.unsigned_abs() as usize).sum()
+    }
+
+    #[test]
+    fn stator_board_slab_with_cutouts_is_closed() {
+        let doc: vcad_ir::Document =
+            serde_json::from_str(include_str!("../../../examples/pcb-motor/stator-v3.vcad"))
+                .unwrap();
+        let CsgOp::PcbBoard { board } = &doc.nodes[&1].op else {
+            panic!("stator-v3 root is a PcbBoard");
+        };
+        // Outline and cutouts only: copper is merged as separate open-free shells.
+        let mut bare = (**board).clone();
+        bare.footprints.clear();
+        bare.traces.clear();
+        bare.trace_arcs.clear();
+        bare.vias.clear();
+        bare.zones.clear();
+        assert!(bare.outline.cutouts.len() >= 2);
+        let mut slab_doc = doc.clone();
+        slab_doc.nodes.get_mut(&1).unwrap().op = CsgOp::PcbBoard {
+            board: Box::new(bare),
+        };
+        let scene = evaluate_document(&slab_doc, &EvalOptions::default()).expect("board evaluates");
+        let part = &scene.parts[0];
+        assert_eq!(open_edge_count(&part.mesh.positions, &part.mesh.indices), 0);
+    }
 
     #[test]
     fn via_barrels_are_closed_and_wound_outward() {

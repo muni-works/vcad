@@ -760,6 +760,11 @@ const sheetDefinitionSchema = {
 export const createSchematicSchema = {
   type: "object" as const,
   properties: {
+    document_id: {
+      type: "string" as const,
+      description:
+        "Add the electronics to this open document (one holding mechanical parts) instead of minting a new one. Then call place_components with the same id. Refused, changing nothing, if the document already has a schematic or board.",
+    },
     title: {
       type: "string" as const,
       description: "Schematic sheet title",
@@ -2409,6 +2414,18 @@ export async function createSchematic(args: Record<string, unknown>) {
     };
   }
 
+  // Into an existing document: nothing is written unless the whole schematic
+  // built, and a document that already has one is left untouched.
+  if (args.document_id !== undefined) {
+    const ctx = resolveDocInput(args);
+    if ((ctx.doc as Document & { schematic?: SchematicSheet }).schematic || getPcbNodeIds(ctx.doc).length > 0) {
+      return ecadError(
+        `Document ${String(args.document_id)} already has a schematic or board; a document holds one design. Nothing was changed.`,
+      );
+    }
+    ctx.doc.schematic = schematic;
+    return schematicSummary(schematic, String(args.document_id), warnings, resolvedParts);
+  }
   const doc = createDocument();
   doc.schematic = schematic;
   const documentId = registerSession(doc);
@@ -13184,16 +13201,47 @@ function findCavity(
     maxZ = Math.max(maxZ, pos[i]!);
   }
   if (!(maxZ > minZ)) return null;
-  let best: { section: Uint8Array; z: number; voidCells: number } | null = null;
+  const samples: Array<{ section: Uint8Array; z: number; voidCells: number }> = [];
   for (let s = 1; s <= CAVITY_Z_SAMPLES; s++) {
     const z = minZ + ((maxZ - minZ) * s) / (CAVITY_Z_SAMPLES + 1);
     const section = rasterizeSection(pos, idx, g, z);
     let voidCells = 0;
     for (let c = 0; c < section.length; c++) if (g.grid[c] && !section[c]) voidCells++;
-    if (!best || voidCells > best.voidCells) best = { section, z, voidCells };
+    samples.push({ section, z, voidCells });
   }
-  if (!best || best.voidCells === 0) return null;
-  const loops = traceGridBoundaries(best.section, g.gw, g.gh)
+  // Ties go to the lowest height, as the first sample always has.
+  const best = samples.reduce((a, b) => (b.voidCells > a.voidCells ? b : a));
+  if (best.voidCells === 0) return null;
+  // The void is judged on its own cells, never on a traced hole in the section:
+  // a connector cutout joins the interior to the outside at that height, so the
+  // section has no hole at all. A cell counts when the silhouette covers it and
+  // it is empty through most of the cavity's height, which drops a wall opening
+  // shorter than half the cavity.
+  const cavitySamples = samples.filter((s) => s.voidCells >= best.voidCells * 0.5);
+  const needed = cavitySamples.length / 2;
+  const mask = new Uint8Array(g.gw * g.gh);
+  for (let c = 0; c < mask.length; c++) {
+    if (!g.grid[c] || best.section[c]) continue;
+    let empty = 0;
+    for (const s of cavitySamples) if (!s.section[c]) empty++;
+    if (empty >= needed) mask[c] = 1;
+  }
+  const component = largestComponent(mask, g.gw, g.gh);
+  if (!component) return null;
+  // Empty cells the void surrounds belong to it (a lid slot or a bore that
+  // runs through); solid ones stay out and become cutouts (posts).
+  let covered = 0;
+  let open = 0;
+  const enclosed = enclosedCells(component, g.gw, g.gh);
+  for (let c = 0; c < component.length; c++) {
+    if (enclosed[c] && !best.section[c]) component[c] = 1;
+    if (!component[c]) continue;
+    if (g.grid[c]) covered++;
+    else open++;
+  }
+  // Mostly uncovered means a through-hole with a ledge, not a cavity.
+  if (covered <= open) return null;
+  const loops = traceGridBoundaries(component, g.gw, g.gh)
     .flatMap(splitAtRepeatedVertices)
     .map((loop) => {
       const mm = loop.map(toMm);
@@ -13201,30 +13249,86 @@ function findCavity(
       return { points: simplified.length >= 3 ? simplified : mm, area: loopSignedArea(mm) };
     })
     .filter((l) => l.points.length >= 3 && Math.abs(l.area) > 1e-9);
-  const hole = loops.filter((l) => l.area < 0).sort((a, b) => a.area - b.area)[0];
-  if (!hole || -hole.area < outerArea * CAVITY_MIN_AREA_FRACTION) return null;
-  // The hole must be covered by the silhouette, or it's a through-hole.
-  const inHole = (px: number, py: number) => pointInPolygon({ x: px, y: py }, hole.points);
-  let covered = 0;
-  let open = 0;
-  for (let j = 0; j < g.gh; j++) {
-    for (let i = 0; i < g.gw; i++) {
-      if (best.section[j * g.gw + i]) continue;
-      if (!inHole(g.ox + (i + 0.5) * g.cell, g.oy + (j + 0.5) * g.cell)) continue;
-      if (g.grid[j * g.gw + i]) covered++;
-      else open++;
-    }
-  }
-  if (covered <= open) return null;
-  // Traced CW as a hole; a board outline is CCW.
-  const vertices = [...hole.points].reverse();
+  const outer = loops.filter((l) => l.area > 0).sort((a, b) => b.area - a.area)[0];
+  if (!outer) return null;
+  const islandArea = loops.reduce((sum, l) => sum + (l.area < 0 ? -l.area : 0), 0);
+  if (outer.area - islandArea < outerArea * CAVITY_MIN_AREA_FRACTION) return null;
   // A section traced on the grid leaves specks a cell or two wide where a
   // triangle edge grazes the plane; a real post in the cavity is far larger.
   const minCutoutArea = CAVITY_MIN_CUTOUT_CELLS * g.cell * g.cell;
   const cutouts = loops
-    .filter((l) => l.area >= minCutoutArea && pointInPolygon(l.points[0]!, vertices))
-    .map((l) => l.points);
-  return { vertices, cutouts, area: -hole.area, z: best.z, section: best.section };
+    .filter((l) => l.area <= -minCutoutArea)
+    .map((l) => [...l.points].reverse());
+  return {
+    vertices: outer.points,
+    cutouts,
+    area: outer.area,
+    z: best.z,
+    section: best.section,
+  };
+}
+
+/** Largest 4-connected component of set cells, or null if none are set. */
+function largestComponent(mask: Uint8Array, gw: number, gh: number): Uint8Array | null {
+  const labels = new Int32Array(gw * gh);
+  let bestLabel = 0;
+  let bestSize = 0;
+  let label = 0;
+  for (let start = 0; start < mask.length; start++) {
+    if (!mask[start] || labels[start]) continue;
+    label++;
+    let size = 0;
+    const stack = [start];
+    labels[start] = label;
+    while (stack.length > 0) {
+      const c = stack.pop()!;
+      size++;
+      const i = c % gw;
+      for (const n of [i > 0 ? c - 1 : -1, i < gw - 1 ? c + 1 : -1, c - gw, c + gw]) {
+        if (n < 0 || n >= mask.length || !mask[n] || labels[n]) continue;
+        labels[n] = label;
+        stack.push(n);
+      }
+    }
+    if (size > bestSize) {
+      bestSize = size;
+      bestLabel = label;
+    }
+  }
+  if (bestLabel === 0) return null;
+  const out = new Uint8Array(gw * gh);
+  for (let c = 0; c < out.length; c++) if (labels[c] === bestLabel) out[c] = 1;
+  return out;
+}
+
+/** Unset cells that cannot reach the grid border through unset cells. */
+function enclosedCells(mask: Uint8Array, gw: number, gh: number): Uint8Array {
+  const outside = new Uint8Array(gw * gh);
+  const stack: number[] = [];
+  const seed = (c: number) => {
+    if (mask[c] || outside[c]) return;
+    outside[c] = 1;
+    stack.push(c);
+  };
+  for (let i = 0; i < gw; i++) {
+    seed(i);
+    seed((gh - 1) * gw + i);
+  }
+  for (let j = 0; j < gh; j++) {
+    seed(j * gw);
+    seed(j * gw + gw - 1);
+  }
+  while (stack.length > 0) {
+    const c = stack.pop()!;
+    const i = c % gw;
+    if (i > 0) seed(c - 1);
+    if (i < gw - 1) seed(c + 1);
+    if (c - gw >= 0) seed(c - gw);
+    if (c + gw < mask.length) seed(c + gw);
+  }
+  const out = new Uint8Array(gw * gh);
+  for (let c = 0; c < out.length; c++) out[c] = !mask[c] && !outside[c] ? 1 : 0;
+  return out;
 }
 
 /** Largest axis-aligned rectangle of set cells (histogram method), in cells. */
@@ -13282,6 +13386,10 @@ function verticalCrossings(
   return zs.sort((a, b) => a - b);
 }
 
+/** Share of the void that must have both a floor and a lid for the case to
+ *  read as closed. Below this it is an open tray with a partial cover. */
+const SEALED_MIN_LIDDED_FRACTION = 0.5;
+
 /**
  * The sealed interior of a closed case, as an axis-aligned cavity box — what
  * `check_enclosure_fit` needs when the kernel's open-top detector finds
@@ -13319,6 +13427,8 @@ export function sealedCavityFromMesh(
   // tightest one found.
   const floors = new Map<number, number>();
   let ceilZ = Infinity;
+  let probed = 0;
+  let lidded = 0;
   const SAMPLES = 7;
   for (let a = 0; a < SAMPLES; a++) {
     for (let b = 0; b < SAMPLES; b++) {
@@ -13327,13 +13437,19 @@ export function sealedCavityFromMesh(
       if (cavity.section[j * gw + i]) continue; // a post at this height
       const zs = verticalCrossings(pos, idx, ox + (i + 0.5) * cell, oy + (j + 0.5) * cell);
       const above = zs.findIndex((z) => z > cavity.z);
-      if (above <= 0) return null; // no floor or no lid over the void: not sealed
+      probed++;
+      // A column under a lid slot has no lid, one over a floor hole no floor.
+      // Those are openings in the case; enough of them means it isn't closed.
+      if (above <= 0) continue;
+      lidded++;
       const floor = round3(zs[above - 1]!);
       floors.set(floor, (floors.get(floor) ?? 0) + 1);
       ceilZ = Math.min(ceilZ, zs[above]!);
     }
   }
-  if (floors.size === 0 || !Number.isFinite(ceilZ)) return null;
+  if (floors.size === 0 || !Number.isFinite(ceilZ) || lidded < probed * SEALED_MIN_LIDDED_FRACTION) {
+    return null;
+  }
   const floorZ = [...floors.entries()].sort((p, q) => q[1] - p[1] || q[0] - p[0])[0]![0];
   return {
     minX: round3(ox + rect.i0 * cell),

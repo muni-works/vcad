@@ -228,24 +228,36 @@ export interface GroupClearance {
  * the evaluated scene. Pure of MCP plumbing so `check_clearance`,
  * `build_receipt`, and `verify_receipt` share one implementation.
  */
+/**
+ * Shared across one receipt's specs: the document evaluates once however many
+ * specs read it, and a part pair is measured once however many specs (or
+ * groups) name it. Mesh-to-mesh distance on a routed board takes over a second.
+ */
+export interface ClearanceMemo {
+  base?: PoseablePart[];
+  pairs: Map<string, ClearanceResult>;
+}
+
 export function computeGroupClearance(
   doc: Document,
   engine: Engine,
   groupA: string[],
   groupB: string[],
   sweep?: JointSweep[],
+  memo?: ClearanceMemo,
 ): { result?: GroupClearance; error?: string } {
   if (groupA.length === 0 || groupB.length === 0) {
     return { error: "Both `group_a` and `group_b` need at least one part id." };
   }
   let base: PoseablePart[];
   try {
-    base = poseableParts(doc, engine);
+    base = memo?.base ?? poseableParts(doc, engine);
+    if (memo) memo.base = base;
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }
   if (!sweep || sweep.length === 0) {
-    return measureGroups(doc, engine, placeParts(base), groupA, groupB);
+    return measureGroups(doc, engine, placeParts(base), groupA, groupB, memo?.pairs);
   }
 
   const { axes, warnings, error: sweepError } = resolveSweepAxes(doc, sweep);
@@ -306,6 +318,7 @@ function measureGroups(
   candidates: ResolvedPart[],
   groupA: string[],
   groupB: string[],
+  pairCache?: Map<string, ClearanceResult>,
 ): { result?: GroupClearance; error?: string } {
   const a = resolveGroup(doc, candidates, groupA);
   const b = resolveGroup(doc, candidates, groupB);
@@ -332,11 +345,14 @@ function measureGroups(
   for (const pa of a.parts) {
     for (const pb of b.parts) {
       let r: ClearanceResult;
+      const key = `${pa.id}\0${pb.id}`;
+      const known = pairCache?.get(key);
       try {
-        r = engine.meshClearance(pa.mesh, pb.mesh);
+        r = known ?? engine.meshClearance(pa.mesh, pb.mesh);
       } catch (e) {
         return { error: e instanceof Error ? e.message : String(e) };
       }
+      pairCache?.set(key, r);
       pairs += 1;
       if (!worst || worseThan(r, worst.r)) {
         worst = { a: pa, b: pb, r };
@@ -811,6 +827,7 @@ export function migrateClearanceSpecs(doc: Document): void {
 export function clearanceReceiptClaims(doc: Document, engine: Engine | undefined): ReceiptClaim[] {
   migrateClearanceSpecs(doc);
   const specs = doc.clearance_specs ?? [];
+  const memo: ClearanceMemo = { pairs: new Map() };
   return specs.map((spec) => {
     const id = `${CLEARANCE_CLAIM_PREFIX}${spec.label}`;
     const description = spec.sweep?.length
@@ -835,6 +852,7 @@ export function clearanceReceiptClaims(doc: Document, engine: Engine | undefined
       spec.group_a,
       spec.group_b,
       spec.sweep,
+      memo,
     );
     if (error || !result) {
       return {
@@ -910,6 +928,7 @@ export function verifyClearanceClaims(
   receipt: DesignReceipt,
 ): { status: ReceiptStatus; checks: ClearanceCheckStatus[] } {
   const checks: ClearanceCheckStatus[] = [];
+  const memo: ClearanceMemo = { pairs: new Map() };
   for (const claim of receipt.claims ?? []) {
     if (!claim.id.startsWith(CLEARANCE_CLAIM_PREFIX)) continue;
     const label = claim.id.slice(CLEARANCE_CLAIM_PREFIX.length);
@@ -928,6 +947,7 @@ export function verifyClearanceClaims(
       stored.group_a,
       stored.group_b,
       stored.sweep,
+      memo,
     );
     if (error || !result) {
       checks.push({

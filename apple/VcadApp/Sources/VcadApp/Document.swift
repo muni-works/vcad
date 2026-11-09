@@ -130,6 +130,13 @@ struct DocTimeline {
 
 /// A parsed parametric document — just enough structure to render the tree and
 /// the inspector; geometry still comes from the kernel.
+/// An assembly instance: its id, display name and part def's root node.
+struct DocInstance {
+    let id: String
+    let name: String
+    let root: Int
+}
+
 struct DocumentGraph {
     let nodes: [Int: DocNode]
     let roots: [DocRoot]
@@ -140,6 +147,8 @@ struct DocumentGraph {
     let joints: [DocJoint]
     /// Animation timeline, when the document carries one with joint tracks.
     let timeline: DocTimeline?
+    /// Assembly instances that resolve to a part def (empty for part-only documents).
+    var instances: [DocInstance] = []
 
     /// Visible roots in order — index-aligned with the kernel scene's parts.
     var visibleRoots: [DocRoot] { roots.filter { $0.visible } }
@@ -270,8 +279,15 @@ struct DocumentGraph {
         // geometry there, so an empty `roots` is only fatal without them.
         let hasInstances = ((obj["instances"] as? [[String: Any]])?.isEmpty == false)
         guard allowEmpty || (!nodes.isEmpty && (!roots.isEmpty || hasInstances)) else { return nil }
+        let partDefs = obj["partDefs"] as? [String: [String: Any]] ?? [:]
+        let instances: [DocInstance] = ((obj["instances"] as? [[String: Any]]) ?? []).compactMap { inst in
+            guard let id = inst["id"] as? String, let defId = inst["partDefId"] as? String,
+                  let def = partDefs[defId], let root = (def["root"] as? NSNumber)?.intValue else { return nil }
+            return DocInstance(id: id, name: inst["name"] as? String ?? def["name"] as? String ?? id, root: root)
+        }
         return DocumentGraph(nodes: nodes, roots: roots, materials: materials,
-                             parameters: parameters, joints: joints, timeline: timeline)
+                             parameters: parameters, joints: joints, timeline: timeline,
+                             instances: instances)
     }
 
     // MARK: feature tree
@@ -279,8 +295,23 @@ struct DocumentGraph {
     /// Top-level rows: one per VISIBLE root (so `partIndex` aligns with the
     /// kernel scene), each expandable into its operation sub-tree.
     func featureRoots() -> [FeatureNode] {
-        visibleRoots.enumerated().map { partIndex, root in
+        let rows = visibleRoots.enumerated().map { partIndex, root in
             buildNode(root.nodeId, partIndex: partIndex, depth: 0, visited: [])
+        }
+        return rows + instanceRows(excluding: rows)
+    }
+
+    /// One row per assembly instance, so the tree matches what the scene
+    /// draws. A part def that is also a scene root already has its row.
+    /// `nodeId` stays the def's root: selection and hover map instances by it.
+    private func instanceRows(excluding rows: [FeatureNode]) -> [FeatureNode] {
+        let shown = Set(rows.map(\.nodeId))
+        return instances.filter { !shown.contains(unwrapIdentity($0.root)) }.map { inst in
+            let body = buildNode(inst.root, partIndex: nil, depth: 0, visited: [])
+            return FeatureNode(id: "instance:\(inst.id)", nodeId: inst.root, name: inst.name,
+                               opType: body.opType, symbol: body.symbol, detail: body.detail,
+                               partIndex: nil, children: body.children,
+                               heldNodeId: body.heldNodeId, heldOpType: body.heldOpType)
         }
     }
 

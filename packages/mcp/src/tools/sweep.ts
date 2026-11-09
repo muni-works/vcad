@@ -12,10 +12,10 @@
  * `clearance.ts` re-exports the ones its callers already imported.
  */
 
-import { evaluateBoardsApart } from "./document-solids.js";
-import type { Document, JointSweep, Transform3D } from "@vcad/ir";
+import { evaluateBoardsApart, transformChain } from "./document-solids.js";
+import type { Document, JointSweep, Pcb, Transform3D } from "@vcad/ir";
 import type { Engine, TriangleMesh } from "@vcad/engine";
-import { solveForwardKinematics, transformMesh } from "@vcad/engine";
+import { getKernelWasmSync, solveForwardKinematics, transformMesh } from "@vcad/engine";
 import { partIdForRoot } from "./part-ids.js";
 
 /** One sampled configuration of the mechanism: joint id → state. */
@@ -256,6 +256,57 @@ export function placeMesh(mesh: TriangleMesh, transform?: Transform3D): Triangle
   });
 }
 
+/**
+ * A board root's mesh with its real component bodies added. The evaluated
+ * board carries only a pad-sized 1 mm box per footprint, so anything measured
+ * against it reads a tall connector as flat. Bodies come out in the board's
+ * own frame (top face at z = thickness); the slab is centred on z = 0, and the
+ * root's transform chain places both.
+ */
+function withComponentBodies(doc: Document, rootId: number, mesh: TriangleMesh): TriangleMesh {
+  const chain = transformChain(doc, rootId);
+  const leaf = doc.nodes[String(chain.at(-1)!)]?.op as { type?: string; board?: Pcb } | undefined;
+  if (leaf?.type !== "PcbBoard" || !leaf.board) return mesh;
+  const wasm = getKernelWasmSync() as unknown as {
+    ecadComponentMeshes?: (json: string) => Array<{ positions: number[]; indices: number[] }>;
+  } | null;
+  if (!wasm?.ecadComponentMeshes) return mesh;
+  let bodies: Array<{ positions: number[]; indices: number[] }>;
+  try {
+    bodies = wasm.ecadComponentMeshes(JSON.stringify(leaf.board));
+  } catch {
+    return mesh;
+  }
+  const dz = -leaf.board.outline.thickness / 2;
+  const transforms: Array<Partial<Transform3D>> = [];
+  for (const id of chain) {
+    const op = doc.nodes[String(id)]!.op as unknown as Record<string, Transform3D["translation"]> & { type: string };
+    if (op.type === "Translate") transforms.push({ translation: op.offset });
+    else if (op.type === "Rotate") transforms.push({ rotation: op.angles });
+    else if (op.type === "Scale") transforms.push({ scale: op.factor });
+  }
+  const positions = Array.from(mesh.positions);
+  const indices = Array.from(mesh.indices);
+  for (const body of bodies) {
+    let placed: TriangleMesh = {
+      positions: Float32Array.from(body.positions.map((v, i) => (i % 3 === 2 ? v + dz : v))),
+      indices: Uint32Array.from(body.indices),
+    } as TriangleMesh;
+    // Leaf outward: the chain is listed root first.
+    for (const t of [...transforms].reverse()) {
+      placed = transformMesh(placed, {
+        translate: t.translation ?? { x: 0, y: 0, z: 0 },
+        rotate: t.rotation ?? { x: 0, y: 0, z: 0 },
+        scale: t.scale ?? { x: 1, y: 1, z: 1 },
+      });
+    }
+    const base = positions.length / 3;
+    for (const v of placed.positions) positions.push(v);
+    for (const i of placed.indices) indices.push(i + base);
+  }
+  return { ...mesh, positions: Float32Array.from(positions), indices: Uint32Array.from(indices) } as TriangleMesh;
+}
+
 /** Evaluate a CAD session once into re-poseable parts. */
 export function poseableParts(doc: Document, engine: Engine): PoseablePart[] {
   const scene = evaluateBoardsApart(doc, engine);
@@ -272,7 +323,7 @@ export function poseableParts(doc: Document, engine: Engine): PoseablePart[] {
       id: partIdForRoot(doc, root),
       name: node?.name ?? undefined,
       material: root.material ?? partMaterials?.[rootId] ?? undefined,
-      localMesh: mesh,
+      localMesh: withComponentBodies(doc, root.root, mesh),
     });
   }
   // Assembly instances: bake the FK world transform into the part-local mesh

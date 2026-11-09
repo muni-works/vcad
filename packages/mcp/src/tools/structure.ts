@@ -78,6 +78,36 @@ function textResult(payload: unknown) {
   };
 }
 
+const DEFAULT_LATTICE_RESOLUTION = 24;
+/** The kernel's default refinement study. */
+const DEFAULT_LEVELS = 2;
+/** The kernel's MCP-tier cap on the finest level's cells along the longest axis. */
+const FINEST_RESOLUTION_CAP = 160;
+
+/** The thin-wall diagnosis of a completed study: finest-level resolution the section wants, if it wants more. */
+function requiredFromStudy(out: unknown): number | undefined {
+  const thin = (out as { study?: { thin_wall?: { required_resolution?: number; reachable?: boolean; cells_through_section?: number } } })
+    .study?.thin_wall;
+  if (!thin || !thin.reachable || (thin.cells_through_section ?? Infinity) >= 6) return undefined;
+  return thin.required_resolution;
+}
+
+/** The same figure from a study the kernel refused outright for a thin wall. */
+function requiredFromMessage(e: unknown): number | undefined {
+  const text = e instanceof Error ? e.message : String(e);
+  if (!/THIN-WALLED/.test(text) || /no resolution setting reaches it/.test(text)) return undefined;
+  const m = text.match(/i\.e\. resolution (\d+)/);
+  return m ? Number(m[1]) : undefined;
+}
+
+/** Coarse-level resolution putting the finest level at `required`, within the cap and above the default. */
+function resolutionForSection(required: number | undefined, levels: number): number | undefined {
+  if (required === undefined) return undefined;
+  const factor = 2 ** (levels - 1);
+  const coarse = Math.min(Math.ceil(required / factor), Math.floor(FINEST_RESOLUTION_CAP / factor));
+  return coarse > DEFAULT_LATTICE_RESOLUTION ? coarse : undefined;
+}
+
 export const toolDefs: ToolDef[] = [
   {
     name: "analyze_structure",
@@ -170,7 +200,9 @@ export const toolDefs: ToolDef[] = [
         resolution: {
           type: "number" as const,
           description:
-            "Coarse-level lattice cells along the longest bbox axis (default 24). The " +
+            "Coarse-level lattice cells along the longest bbox axis (default: 24, raised " +
+            "automatically when that can't resolve the part's thinnest section, within the " +
+            "tier cap; pass a value to pin it). The " +
             "finest level is resolution * 2^(levels-1), capped at 160 for this tier. " +
             "Keep >= ~6 cells through the thinnest load-bearing section — the tool measures " +
             "the part and refuses below ~4, with the cell arithmetic attached. Raising this " +
@@ -200,7 +232,7 @@ export const toolDefs: ToolDef[] = [
       const doc = getSession(String(a.document_id));
       const resolved = resolvePartMesh(doc, ctx.engine, String(a.part));
       const spec = {
-        resolution: a.resolution ?? 24,
+        resolution: a.resolution ?? DEFAULT_LATTICE_RESOLUTION,
         youngs_modulus_mpa: a.youngs_modulus_mpa ?? 69_000,
         poisson: a.poisson ?? 0.33,
         yield_strength_mpa: a.yield_strength_mpa ?? null,
@@ -215,17 +247,46 @@ export const toolDefs: ToolDef[] = [
       if (a.displacement_tol !== undefined) options.displacement_tol = a.displacement_tol;
       if (a.stress_tol !== undefined) options.stress_tol = a.stress_tol;
       const started = performance.now();
-      const out = ctx.engine.feaAnalyzeMesh(
-        JSON.stringify(spec),
-        JSON.stringify(options),
-        resolved.mesh.positions,
-        resolved.mesh.indices,
-      );
+      const solve = (resolution: number) =>
+        ctx.engine.feaAnalyzeMesh(
+          JSON.stringify({ ...spec, resolution }),
+          JSON.stringify(options),
+          resolved.mesh.positions,
+          resolved.mesh.indices,
+        );
+      // Left to choose, resolve the thinnest section rather than report that
+      // the default couldn't. The convergence gate still judges the result; a
+      // section past the tier's cap keeps the answer naming the route forward.
+      const levels = a.levels ?? DEFAULT_LEVELS;
+      let out: unknown;
+      let autoResolution: number | undefined;
+      try {
+        out = solve(spec.resolution);
+        if (a.resolution === undefined) {
+          const raised = resolutionForSection(requiredFromStudy(out), levels);
+          if (raised !== undefined) {
+            out = solve(raised);
+            autoResolution = raised;
+          }
+        }
+      } catch (e) {
+        const raised =
+          a.resolution === undefined ? resolutionForSection(requiredFromMessage(e), levels) : undefined;
+        if (raised === undefined) throw e;
+        out = solve(raised);
+        autoResolution = raised;
+      }
       const solveMs = Math.round(performance.now() - started);
       return textResult({
         document_id: a.document_id,
         part: resolved.name ?? a.part,
         solve_ms: solveMs,
+        ...(autoResolution !== undefined
+          ? {
+              resolution_used: autoResolution,
+              note: `resolution ${spec.resolution} couldn't resolve the part's thinnest section; used ${autoResolution}.`,
+            }
+          : {}),
         ...(out as Record<string, unknown>),
       });
     },

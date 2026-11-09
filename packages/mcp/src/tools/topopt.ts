@@ -204,13 +204,18 @@ export function resolvePartMesh(
 
 const round5 = (v: number) => Number(v.toPrecision(5));
 
+/** How close, in voxels, the frozen mesh must come to a load or support region. */
+const REGION_CONTACT_VOXELS = 0.75;
+
 type Box = { min: number[]; max: number[] };
 
 /**
  * Why the structure fails to carry every load to a support, or null if it
- * does: each load region must touch a connected piece that also touches a
- * support region. Regions get two voxels of slack: the isosurface sits up to
- * a voxel inside the density field, and a zero-thickness region is a plane.
+ * does: one connected piece of the frozen mesh must touch every load and a
+ * support, and no piece may touch a load without reaching a support. Regions
+ * get under a voxel of slack: the isosurface sits inside the density field by
+ * less than one, and a zero-thickness region is a plane. Anything further off
+ * is a gap, not meshing noise.
  */
 export function loadPathGap(
   mesh: { positions: ArrayLike<number>; indices: ArrayLike<number> },
@@ -231,7 +236,7 @@ export function loadPathGap(
     parent[find(idx[t + 1]!)] = find(idx[t]!);
     parent[find(idx[t + 2]!)] = find(idx[t]!);
   }
-  const slack = voxelSize * 2;
+  const slack = voxelSize * REGION_CONTACT_VOXELS;
   const piecesTouching = (region: Box): Set<number> => {
     const hit = new Set<number>();
     for (let v = 0; v < count; v++) {
@@ -252,6 +257,7 @@ export function loadPathGap(
     }
     return `${round5(lo)}..${round5(hi)}`;
   };
+  let carriers = null as Set<number> | null;
   for (const [i, load] of spec.loads.entries()) {
     const touching = piecesTouching(load.region);
     if (touching.size === 0) {
@@ -260,9 +266,13 @@ export function loadPathGap(
         `the structure spans x ${span(0)}, y ${span(1)}, z ${span(2)}.`
       );
     }
-    if (![...touching].some((p) => supported.has(p))) {
+    if ([...touching].some((p) => !supported.has(p))) {
       return `load ${i + 1} sits on a piece of material that is not connected to any support.`;
     }
+    carriers = carriers ? new Set([...carriers].filter((p) => touching.has(p))) : touching;
+  }
+  if (carriers && ![...carriers].some((p) => supported.has(p))) {
+    return "the loads are carried by separate pieces of material; no single connected piece reaches them all and a support.";
   }
   return null;
 }
