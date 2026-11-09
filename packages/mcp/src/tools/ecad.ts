@@ -1493,6 +1493,15 @@ export const boardFromSolidSchema = {
         "solid part; errors with a list if the document has several.",
     },
     thickness: { type: "number" as const, description: "Board thickness in mm (default 1.6)" },
+    region: {
+      type: "string" as const,
+      enum: ["auto", "outer", "cavity"],
+      description:
+        "Which outline to return. 'outer' is the part's silhouette. 'cavity' is " +
+        "the largest interior void, for a board that sits inside an enclosure. " +
+        "'auto' (default) returns the cavity when the part is hollow and the " +
+        "silhouette otherwise. The result's `outline_basis` says which you got.",
+    },
     resolution: {
       type: "number" as const,
       description:
@@ -3683,6 +3692,69 @@ const CONNECTIVITY_GUARD_MAX_NETS = 300;
 const POWER_NET_RE =
   /(^|[_\-/])(A?D?GND|VCC|VDD[A]?|VBAT|VBUS|VIN|VOUT|VSYS|VREF|PWR|POWER|\d+V\d*)(\d*)([_\-/]|$)/i;
 
+/** Rules that mean a net's copper doesn't yet realize it. */
+const OPEN_NET_RULES = new Set(["UnconnectedNet", "NetIslands", "UnstitchedPad"]);
+
+/**
+ * Open connections per net from a full DRC listing. `UnconnectedNet` carries
+ * the pad-group count (N groups need N-1 connections); the other open-net rules
+ * mean at least one.
+ */
+function openConnectionsByNet(violations: DrcViol[]): Map<string, number> {
+  const open = new Map<string, number>();
+  for (const v of violations) {
+    if (!OPEN_NET_RULES.has(v.rule)) continue;
+    const [net] = parseNetPair(v.message);
+    if (!net) continue;
+    const count = v.rule === "UnconnectedNet" && typeof v.actual === "number" ? v.actual - 1 : 1;
+    open.set(net, Math.max(open.get(net) ?? 0, count, 1));
+  }
+  return open;
+}
+
+/** Search budget for routing a named net's open connections. */
+const CONNECT_NET_BUDGET = 150_000;
+
+/** Identity of a piece of copper across a kernel round trip. */
+const copperKey = (c: Trace | Via): string =>
+  "position" in c
+    ? `v:${c.net}:${c.position.x},${c.position.y}:${c.diameter}:${c.drill}:${c.startLayer}:${c.endLayer}`
+    : `t:${c.net}:${c.start.x},${c.start.y}:${c.end.x},${c.end.y}:${c.width}:${c.layer}`;
+
+/**
+ * Route the open connections of `nets` island to island, around the board's
+ * existing copper. Traces and vias already there keep their identity. Leaves
+ * the board alone and returns the reason if it can't, or if the router would
+ * have to move hand-placed copper to do it. Returns null on success.
+ */
+async function connectOpenNets(pcb: Pcb, nets: string[]): Promise<string | null> {
+  const options = {
+    calibrate_rules: false,
+    route_remaining: false,
+    max_rounds: 0,
+    prune_dangling: false,
+    connect_nets: nets,
+    verdict: { budget: CONNECT_NET_BUDGET, max_cluster: 6, allow_blind_vias: false },
+  };
+  const out = await kernelRunFabPrep(pcb, options);
+  if (!out.ok) return `the island router could not run: ${out.message}`;
+  const merge = <T extends Trace | Via>(current: T[], next: T[]): T[] | null => {
+    const nextKeys = new Set(next.map(copperKey));
+    if (current.some((c) => c.source === "manual" && !nextKeys.has(copperKey(c)))) return null;
+    const currentKeys = new Set(current.map(copperKey));
+    const added = next
+      .filter((c) => !currentKeys.has(copperKey(c)))
+      .map((c) => ({ ...c, source: "autoroute" as const }));
+    return [...current.filter((c) => nextKeys.has(copperKey(c))), ...added];
+  };
+  const traces = merge(pcb.traces, out.value.pcb.traces);
+  const vias = merge(pcb.vias, out.value.pcb.vias);
+  if (!traces || !vias) return "routing around the existing copper would have moved hand-placed copper";
+  pcb.traces = traces;
+  pcb.vias = vias;
+  return null;
+}
+
 /** Route nets on a PCB with the kernel autorouter (obstacle-avoiding). */
 export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolContext) {
   const progress = toolCtx?.progress;
@@ -3817,16 +3889,17 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
     }
   }
 
-  let tracesRemoved = 0;
-  let viasRemoved = 0;
+  // Copper this call found on the board. The reported added/removed counts are
+  // taken from it at the end, so a retry or rollback can't inflate them.
+  const originalTraces = pcb.traces.length;
+  const originalVias = pcb.vias.length;
+  const priorTraces = new Set(pcb.traces);
+  const priorVias = new Set(pcb.vias);
+  const zonesBefore = new Set(pcb.zones);
   let zonesAdded = 0;
   if (targetNets.size > 0) {
-    const beforeT = pcb.traces.length;
-    const beforeV = pcb.vias.length;
     pcb.traces = pcb.traces.filter((t) => !targetNets.has(t.net) || t.source === "manual");
     pcb.vias = pcb.vias.filter((v) => !targetNets.has(v.net) || v.source === "manual");
-    tracesRemoved = beforeT - pcb.traces.length;
-    viasRemoved = beforeV - pcb.vias.length;
   }
 
   const rats = await computeRatsnest(pcb, netlist);
@@ -3843,8 +3916,6 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
   // The default "auto" strategy is a single pass, so we forward its value
   // verbatim as the authoritative figure rather than recomputing/rounding.
   const kernelRoutabilities: number[] = [];
-  let tracesAdded = 0;
-  let viasAdded = 0;
 
   // Auto-route the whole board in the kernel: every net is routed against one
   // growing clearance oracle and retried on the back layer with transition vias
@@ -3916,7 +3987,6 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
         source: "autoroute",
       });
       realizedWidths[t.net] = Math.max(realizedWidths[t.net] ?? 0, t.width);
-      tracesAdded++;
     }
     for (const v of result.vias) {
       pcb.vias.push({
@@ -3933,7 +4003,6 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
         source: "autoroute",
         ...(v.via_type ? { viaType: v.via_type } : {}),
       });
-      viasAdded++;
     }
     for (const n of result.routed_nets) routedNets.add(n);
     for (const n of result.unrouted_nets) unroutedNets.add(n);
@@ -3995,7 +4064,6 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
           net: netId,
           source: "autoroute",
         });
-        tracesAdded++;
       }
       routedNets.add(netId);
       fallbackNets.add(netId);
@@ -4010,7 +4078,11 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
   // so a route_nets call can never silently degrade a net's connectivity.
   const connectivityRegressions: Record<
     string,
-    { groups_before: number; groups_after: number; action: "repaired-by-retry" | "rolled_back" }
+    {
+      groups_before: number;
+      groups_after: number;
+      action: "repaired-by-retry" | "repaired-by-island-route" | "rolled_back";
+    }
   > = {};
   if (islandsBefore && copperBefore) {
     progress?.(0, undefined, "verifying net connectivity");
@@ -4042,6 +4114,7 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
         applyRoute(retried);
       }
       const stillWorse = (await worseNets(worse.keys())) ?? worse;
+      const rolledBack: string[] = [];
       for (const [n, afterRoute] of worse) {
         if (!stillWorse.has(n)) {
           connectivityRegressions[n] = {
@@ -4056,33 +4129,88 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
         // (and by the `receipt` after-snapshot below when requested).
         pcb.traces = pcb.traces.filter((t) => t.net !== n);
         pcb.vias = pcb.vias.filter((v) => v.net !== n);
-        for (const t of copperBefore.traces) if (t.net === n) pcb.traces.push(t);
-        for (const v of copperBefore.vias) if (v.net === n) pcb.vias.push(v);
-        connectivityRegressions[n] = {
-          groups_before: before.get(n)!,
-          groups_after: stillWorse.get(n)!,
-          action: "rolled_back",
-        };
+        pcb.zones = pcb.zones.filter((z) => z.net !== n || zonesBefore.has(z));
+        for (const t of copperBefore.traces) {
+          if (t.net !== n) continue;
+          pcb.traces.push(t);
+          priorTraces.add(t);
+        }
+        for (const v of copperBefore.vias) {
+          if (v.net !== n) continue;
+          pcb.vias.push(v);
+          priorVias.add(v);
+        }
+        rolledBack.push(n);
+      }
+      // Restoring a net's own copper can't help when other nets' new copper
+      // cut its pour. Close the gap around what's there, then measure: the
+      // receipt states the group count the board really ended with.
+      if (rolledBack.length > 0) {
+        const open = (await worseNets(rolledBack)) ?? new Map<string, number>();
+        const toConnect = [...open.keys()];
+        if (toConnect.length > 0) await connectOpenNets(pcb, toConnect);
+        const final = (await worseNets(rolledBack)) ?? open;
+        for (const n of rolledBack) {
+          connectivityRegressions[n] = {
+            groups_before: before.get(n)!,
+            groups_after: final.get(n) ?? before.get(n)!,
+            action: final.has(n)
+              ? "rolled_back"
+              : open.has(n)
+                ? "repaired-by-island-route"
+                : "repaired-by-retry",
+          };
+        }
       }
     }
   }
 
+  // The result reports what the board now is, measured by DRC.
+  const keptTraces = pcb.traces.filter((t) => priorTraces.has(t)).length;
+  const keptVias = pcb.vias.filter((v) => priorVias.has(v)).length;
+  const tracesAdded = pcb.traces.length - keptTraces;
+  const viasAdded = pcb.vias.length - keptVias;
+  const tracesRemoved = originalTraces - keptTraces;
+  const viasRemoved = originalVias - keptVias;
+  const addedTraceNets = pcb.traces.filter((t) => !priorTraces.has(t)).map((t) => t.net);
+
+  progress?.(0, undefined, "measuring connectivity with DRC");
+  const finalDrc = await drcPcb(pcb, "full", 20);
+  const openNets = finalDrc.success ? openConnectionsByNet(finalDrc.details ?? []) : null;
+  // A scoped call answers for the nets it was asked about; an unscoped one (or
+  // a scope that matched nothing routable) answers for the whole board.
+  const routableNets = [...netConnections.entries()].filter(([, c]) => c.length >= 2);
+  const scoped = routableNets.filter(([n]) => effectiveFilter.includes(n));
+  const scopeEntries = scoped.length > 0 ? scoped : routableNets;
+  if (openNets) {
+    unroutedNets.clear();
+    for (const [n] of scopeEntries) if (openNets.has(n)) unroutedNets.add(n);
+    for (const n of openNets.keys()) routedNets.delete(n);
+  }
+
   const planeStitched = [...routedNets].filter((n) => planeNets.has(n)).sort();
 
-  // Overall routability in [0, 1]: how close the board is to fully routed. A
-  // single-pass "auto" route forwards the kernel's exact connection-granular
-  // figure verbatim (authoritative — no divergence, no rounding). Tier
-  // strategies run several passes over disjoint net sets with no shared
-  // connection count, so there we fall back to a net-level estimate. Either way
-  // we keep full precision so small boards aren't misrepresented (2 of 3 reads
-  // 0.6667, not 0.67).
+  // Overall routability in [0, 1]: the fraction of the scope's pad-to-pad
+  // connections that DRC finds closed. Only when DRC could not run does it fall
+  // back to the router's own figure, and `routability_basis` says so. Full
+  // precision, so small boards aren't misrepresented (2 of 3 reads 0.6667).
   const attemptedNets = routedNets.size + unroutedNets.size;
-  const routability =
-    kernelRoutabilities.length === 1
-      ? kernelRoutabilities[0]
-      : attemptedNets === 0
-        ? 1
-        : routedNets.size / attemptedNets;
+  let routability: number;
+  if (openNets) {
+    const total = scopeEntries.reduce((n, [, c]) => n + c.length - 1, 0);
+    const open = scopeEntries.reduce(
+      (n, [net, c]) => n + Math.min(openNets.get(net) ?? 0, c.length - 1),
+      0,
+    );
+    routability = total === 0 ? 1 : (total - open) / total;
+  } else {
+    routability =
+      kernelRoutabilities.length === 1
+        ? kernelRoutabilities[0]!
+        : attemptedNets === 0
+          ? 0
+          : routedNets.size / attemptedNets;
+  }
   // Keep one diagnostic per still-unrouted net (the kernel may report several
   // connections for a multi-pin net; the first is the most useful summary).
   const dedupedDiagnostics: RouteDiagnostic[] = [];
@@ -4095,8 +4223,18 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
 
   const warnings: string[] = [];
   if (unroutedNets.size > 0) {
+    const onOpen = addedTraceNets.filter((n) => unroutedNets.has(n)).length;
     warnings.push(
-      `${unroutedNets.size} net(s) could not be routed without shorting and were left unrouted (no copper added) — they need another layer or rip-up rerouting: ${[...unroutedNets].join(", ")}`,
+      `${unroutedNets.size} net(s) are still open (${
+        onOpen > 0
+          ? `${onOpen} of the traces added are on these nets but do not complete them`
+          : "no traces were added on them"
+      }) — they need another layer or rip-up rerouting: ${[...unroutedNets].join(", ")}`,
+    );
+  }
+  if (!finalDrc.success) {
+    warnings.push(
+      `routability is the router's own estimate — DRC could not verify the routed board: ${finalDrc.reason}`,
     );
   }
   if (fallbackNets.size > 0) {
@@ -4129,11 +4267,11 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
       (n) => connectivityRegressions[n]!.action === "rolled_back",
     );
     warnings.push(
-      `connectivity regression on ${regressedNets.length} net(s) — this call left their copper in more disjoint groups than before (${regressedNets
+      `connectivity regression on ${regressedNets.length} net(s) — routing split their copper into more disjoint groups (groups before→final: ${regressedNets
         .map((n) => `${n}: ${connectivityRegressions[n]!.groups_before}→${connectivityRegressions[n]!.groups_after}`)
         .join(", ")}). Regressed nets were re-routed once${
         rolled.length > 0
-          ? `; ${rolled.join(", ")} stayed worse and had their pre-call copper restored (rolled back) — the restored copper may now conflict with newly routed nets, run run_drc`
+          ? `; ${rolled.join(", ")} had their pre-call copper restored (rolled back) and are still worse than before — run run_drc`
           : " and repaired"
       }`,
     );
@@ -4187,6 +4325,10 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
           success: true,
           nets_routed: routedNets.size,
           routability,
+          routability_basis: openNets ? "drc" : "router_estimate",
+          // Every net DRC finds open, board-wide, including nets outside a
+          // scoped call — the same answer run_drc gives.
+          ...(openNets && openNets.size > 0 ? { open_nets: [...openNets.keys()].sort() } : {}),
           traces_added: tracesAdded,
           // Copper pours the router synthesized for high-current nets: those
           // nets are now carried by a plane and stitched to it, not traced.
@@ -6206,6 +6348,12 @@ export async function fabPrep(args: Record<string, unknown>) {
     return ecadError(`fab_prep could not run: ${out.message}`);
   }
   const { report, pcb: fixed } = out.value;
+  const copper = {
+    traces_before: pcb.traces.length,
+    traces_after: fixed.traces.length,
+    vias_before: pcb.vias.length,
+    vias_after: fixed.vias.length,
+  };
 
   if (!dryRun) {
     // The kernel returns a whole board; copy the copper it changed back onto the
@@ -6247,6 +6395,7 @@ export async function fabPrep(args: Record<string, unknown>) {
     initial_verdict: report.initial_verdict,
     rounds: report.rounds,
     pruned: { traces: report.pruned_traces, vias: report.pruned_vias },
+    copper,
     // Cap the offender list: a non-converging run on a dense board can name
     // thousands, and the full list lives in the board's own DRC.
     offenders: report.delta.offenders.slice(0, 25),
@@ -12901,6 +13050,114 @@ function splitAtRepeatedVertices(
  * cutouts (e.g. a stator's center bore). The result plugs straight into
  * place_components' `outline` parameter.
  */
+/** Fraction of the silhouette an interior void must cover to count as a cavity
+ *  rather than a pocket or a screw boss. */
+const CAVITY_MIN_AREA_FRACTION = 0.25;
+/** Heights sampled when looking for a part's cavity. */
+const CAVITY_Z_SAMPLES = 9;
+
+/** Rasterize the part's cross-section at height `z`: a cell is solid when a
+ *  vertical line through it crosses the mesh an odd number of times below `z`. */
+function rasterizeSection(
+  pos: ArrayLike<number>,
+  idx: ArrayLike<number>,
+  g: { ox: number; oy: number; cell: number; gw: number; gh: number },
+  z: number,
+): Uint8Array {
+  const { ox, oy, cell, gw, gh } = g;
+  const section = new Uint8Array(gw * gh);
+  for (let t = 0; t < idx.length; t += 3) {
+    const [i0, i1, i2] = [idx[t]! * 3, idx[t + 1]! * 3, idx[t + 2]! * 3];
+    const [ax, ay, az] = [pos[i0]!, pos[i0 + 1]!, pos[i0 + 2]!];
+    const [bx, by, bz] = [pos[i1]!, pos[i1 + 1]!, pos[i1 + 2]!];
+    const [cx, cy, cz] = [pos[i2]!, pos[i2 + 1]!, pos[i2 + 2]!];
+    if (Math.min(az, bz, cz) > z) continue;
+    const det = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+    if (Math.abs(det) < 1e-12) continue; // Vertical wall: no crossing.
+    const minI = Math.max(0, Math.floor((Math.min(ax, bx, cx) - ox) / cell));
+    const maxI = Math.min(gw - 1, Math.ceil((Math.max(ax, bx, cx) - ox) / cell));
+    const minJ = Math.max(0, Math.floor((Math.min(ay, by, cy) - oy) / cell));
+    const maxJ = Math.min(gh - 1, Math.ceil((Math.max(ay, by, cy) - oy) / cell));
+    for (let j = minJ; j <= maxJ; j++) {
+      const py = oy + (j + 0.5) * cell;
+      for (let i = minI; i <= maxI; i++) {
+        const px = ox + (i + 0.5) * cell;
+        const l0 = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / det;
+        const l1 = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / det;
+        const l2 = 1 - l0 - l1;
+        // Half-open edges, so a line through a shared edge crosses one triangle.
+        const inside =
+          (l0 > 0 || (l0 === 0 && l1 > 0)) &&
+          (l1 > 0 || (l1 === 0 && l2 > 0)) &&
+          (l2 > 0 || (l2 === 0 && l0 > 0));
+        if (inside && l0 * az + l1 * bz + l2 * cz < z) section[j * gw + i] ^= 1;
+      }
+    }
+  }
+  return section;
+}
+
+/**
+ * The largest interior void of a part: empty space at some height that the
+ * part's silhouette covers. A hole that runs all the way through shows in the
+ * silhouette and is not a cavity. Solid islands inside the void (screw bosses)
+ * come back as cutouts. Null when no void is big enough to hold a board.
+ */
+function findCavity(
+  pos: ArrayLike<number>,
+  idx: ArrayLike<number>,
+  g: { ox: number; oy: number; cell: number; gw: number; gh: number; grid: Uint8Array },
+  toMm: (p: Vec2) => Vec2,
+  eps: number,
+  outerArea: number,
+): { vertices: Vec2[]; cutouts: Vec2[][]; area: number; z: number } | null {
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (let i = 2; i < pos.length; i += 3) {
+    minZ = Math.min(minZ, pos[i]!);
+    maxZ = Math.max(maxZ, pos[i]!);
+  }
+  if (!(maxZ > minZ)) return null;
+  let best: { section: Uint8Array; z: number; voidCells: number } | null = null;
+  for (let s = 1; s <= CAVITY_Z_SAMPLES; s++) {
+    const z = minZ + ((maxZ - minZ) * s) / (CAVITY_Z_SAMPLES + 1);
+    const section = rasterizeSection(pos, idx, g, z);
+    let voidCells = 0;
+    for (let c = 0; c < section.length; c++) if (g.grid[c] && !section[c]) voidCells++;
+    if (!best || voidCells > best.voidCells) best = { section, z, voidCells };
+  }
+  if (!best || best.voidCells === 0) return null;
+  const loops = traceGridBoundaries(best.section, g.gw, g.gh)
+    .flatMap(splitAtRepeatedVertices)
+    .map((loop) => {
+      const mm = loop.map(toMm);
+      const simplified = simplifyLoop(mm, eps);
+      return { points: simplified.length >= 3 ? simplified : mm, area: loopSignedArea(mm) };
+    })
+    .filter((l) => l.points.length >= 3 && Math.abs(l.area) > 1e-9);
+  const hole = loops.filter((l) => l.area < 0).sort((a, b) => a.area - b.area)[0];
+  if (!hole || -hole.area < outerArea * CAVITY_MIN_AREA_FRACTION) return null;
+  // The hole must be covered by the silhouette, or it's a through-hole.
+  const inHole = (px: number, py: number) => pointInPolygon({ x: px, y: py }, hole.points);
+  let covered = 0;
+  let open = 0;
+  for (let j = 0; j < g.gh; j++) {
+    for (let i = 0; i < g.gw; i++) {
+      if (best.section[j * g.gw + i]) continue;
+      if (!inHole(g.ox + (i + 0.5) * g.cell, g.oy + (j + 0.5) * g.cell)) continue;
+      if (g.grid[j * g.gw + i]) covered++;
+      else open++;
+    }
+  }
+  if (covered <= open) return null;
+  // Traced CW as a hole; a board outline is CCW.
+  const vertices = [...hole.points].reverse();
+  const cutouts = loops
+    .filter((l) => l.area > 0 && pointInPolygon(l.points[0]!, vertices))
+    .map((l) => l.points);
+  return { vertices, cutouts, area: -hole.area, z: best.z };
+}
+
 export function boardFromSolid(args: Record<string, unknown>, engine: Engine) {
   const documentId = String(args.document_id ?? "");
   const doc = getSession(documentId);
@@ -13026,9 +13283,26 @@ export function boardFromSolid(args: Record<string, unknown>, engine: Engine) {
     .filter((l) => l.area < 0 && pointInPolygon(l.points[0], outer.points))
     .map((l) => [...l.points].reverse());
 
+  const region = String(args.region ?? "auto");
+  if (!["auto", "outer", "cavity"].includes(region)) {
+    throw new Error(`Unknown region "${region}" — use auto, outer, or cavity`);
+  }
+  const silhouette = { vertices: outer.points, cutouts, area: outer.area };
+  const toMm = (p: Vec2) => ({ x: round3(ox + p.x * cell), y: round3(oy + p.y * cell) });
+  const cavity =
+    region === "outer"
+      ? null
+      : findCavity(pos, idx, { ox, oy, cell, gw, gh, grid }, toMm, eps, outer.area);
+  if (region === "cavity" && !cavity) {
+    throw new Error(
+      "Part has no interior cavity — every void in it runs all the way through, so its silhouette already shows them. Use region: \"outer\"",
+    );
+  }
+  const chosen = cavity ?? silhouette;
+  const basis = cavity ? "cavity" : "outer";
   const outline: BoardOutline = {
-    vertices: outer.points,
-    ...(cutouts.length > 0 ? { cutouts } : {}),
+    vertices: chosen.vertices,
+    ...(chosen.cutouts.length > 0 ? { cutouts: chosen.cutouts } : {}),
     thickness,
   };
 
@@ -13040,9 +13314,19 @@ export function boardFromSolid(args: Record<string, unknown>, engine: Engine) {
           success: true,
           part: { part_id: part.id, root_id: part.rootId, ...(part.name ? { name: part.name } : {}) },
           outline,
-          outline_vertices: outer.points.length,
-          cutouts: cutouts.length,
-          area_mm2: Math.round(outer.area * 10) / 10,
+          outline_basis: basis,
+          ...(cavity
+            ? {
+                cavity_z_mm: round3(cavity.z),
+                note: "Outline is the part's interior cavity at the reported height, with no clearance. Inset it for the fit you want; region: \"outer\" returns the silhouette.",
+              }
+            : region === "auto"
+              ? { note: "Outline is the part's outer silhouette; the part has no interior cavity." }
+              : {}),
+          outer_area_mm2: Math.round(outer.area * 10) / 10,
+          outline_vertices: chosen.vertices.length,
+          cutouts: chosen.cutouts.length,
+          area_mm2: Math.round(chosen.area * 10) / 10,
           bbox: { min: { x: round3(minX), y: round3(minY) }, max: { x: round3(maxX), y: round3(maxY) } },
           cell_size_mm: round3(cell),
           ...(warnings.length > 0 ? { warnings } : {}),
@@ -14110,7 +14394,8 @@ const FIX_DRC_NEVER: Record<string, string> = {
   Clearance:
     "different-net clearance — pushing copper risks new shorts; re-route the involved nets deliberately",
   CourtyardOverlap: "placement decision — fix_drc never moves components (use set_placement)",
-  Keepout: "copper inside a keepout — deliberate design change required",
+  Keepout:
+    "item inside a keepout — move it (set_placement for a component) or change the keepout; a deliberate design change",
   SilkscreenClearance: "silkscreen artwork — cosmetic, not auto-fixable",
   MinTraceWidth:
     "fab-rule break — widen the trace (or change design rules) deliberately",
@@ -14146,6 +14431,24 @@ export const fixDrcSchema = {
   },
   required: ["document_id"],
 };
+
+/** Group a final DRC listing by rule, each with the reason it remains. */
+function remainingViolations(violations: DrcViol[], skipped: DrcFixSkip[]) {
+  const byRule = new Map<string, DrcViol[]>();
+  for (const v of violations) byRule.set(v.rule, [...(byRule.get(v.rule) ?? []), v]);
+  return [...byRule.entries()].map(([rule, list]) => {
+    const known = skipped.filter((s) => s.rule === rule).map((s) => s.reason);
+    return {
+      rule,
+      count: list.length,
+      reasons:
+        known.length > 0
+          ? [...new Set(known)]
+          : [FIX_DRC_NEVER[rule] ?? "fix_drc has no automatic fix for this rule"],
+      sample_message: list[0]!.message,
+    };
+  });
+}
 
 /** Outcome of one verified fix attempt. */
 type FixAttempt = { ok: true; delta: DrcDelta } | { ok: false; reason: string };
@@ -14499,69 +14802,117 @@ export async function fixDrc(args: Record<string, unknown>, toolCtx?: ToolContex
     }
   }
 
-  // -- 4) UnconnectedNet / NetIslands: rip-up + re-route the net --------------
-  const rerouteNets: string[] = [];
-  for (const v of viols) {
-    if (v.rule !== "UnconnectedNet" && v.rule !== "NetIslands") continue;
-    const [net] = parseNetPair(v.message);
-    if (net && !rerouteNets.includes(net)) rerouteNets.push(net);
-  }
-  for (const net of rerouteNets) {
-    if (budget <= 0) break;
-    if (pcb.traces.some((t) => t.net === net && t.source === "manual")) {
-      skip(
-        "UnconnectedNet",
-        `net '${net}' carries hand-placed copper — route_nets preserves it wholesale; delete the manual copper first`,
-      );
-      continue;
-    }
-    if (dryRun) {
-      planned.push({
-        rule: "UnconnectedNet",
-        action: "reroute_net",
-        detail: `rip-up + re-route net '${net}' at effort ${effort}`,
-        net,
-      });
-      budget--;
-      continue;
-    }
-    progress?.(++fixAttempts, undefined, `re-routing net '${net}' (${fixed.length} fix(es) applied so far)`);
+  // -- 4) UnconnectedNet / NetIslands: close the net ---------------------------
+  // Rip-up + re-route first, unless the net carries hand copper, which is never
+  // ripped; then route the open connections around what's there. A fix can free
+  // the channel another net needed, so this repeats until a round closes nothing.
+  const isOpenRule = (rule: string) => rule === "UnconnectedNet" || rule === "NetIslands";
+  const openNetsIn = (list: DrcViol[]): string[] => [
+    ...new Set(
+      list.flatMap((v) => {
+        const [net] = isOpenRule(v.rule) ? parseNetPair(v.message) : [undefined];
+        return net ? [net] : [];
+      }),
+    ),
+  ];
+
+  /** Keep `attempt` only if it closes a fault and introduces nothing. */
+  const tryCloseNet = async (attempt: () => Promise<string | null>): Promise<FixAttempt> => {
     const savedTraces = pcb.traces;
     const savedVias = pcb.vias;
-    const cap = await beginDrcDelta(pcb, "full");
-    const routeArgs: Record<string, unknown> = ctx.documentId
-      ? { document_id: ctx.documentId, nets: [net], effort }
-      : { document: ctx.doc, nets: [net], effort };
-    const routeResult = (await routeNets(routeArgs)) as {
-      content: Array<{ text?: string }>;
-      isError?: boolean;
-    };
-    if (routeResult.isError) {
+    const savedZones = pcb.zones;
+    const restore = () => {
       pcb.traces = savedTraces;
       pcb.vias = savedVias;
-      skip("UnconnectedNet", `re-route of net '${net}' failed — ${routeResult.content[0]?.text ?? "unknown error"}`);
-      continue;
+      pcb.zones = savedZones;
+    };
+    const cap = await beginDrcDelta(pcb, "full");
+    const failure = await attempt();
+    if (failure) {
+      restore();
+      return { ok: false, reason: failure };
     }
     const delta = await cap.finish();
-    if (delta.unverifiable || delta.introduced > 0 || delta.resolved === 0) {
-      pcb.traces = savedTraces;
-      pcb.vias = savedVias;
-      const reason = delta.unverifiable
-        ? `verification failed: ${delta.unverifiable.reason}`
-        : delta.introduced > 0
-          ? `re-route would introduce ${delta.introduced} new violation(s)`
-          : "re-route did not resolve the connectivity fault";
-      skip("UnconnectedNet", `re-route of net '${net}' reverted — ${reason}`);
-      continue;
+    const reason = delta.unverifiable
+      ? `verification failed: ${delta.unverifiable.reason}`
+      : delta.introduced > 0
+        ? `it would introduce ${delta.introduced} new violation(s) (worst: ${delta.sample[0]?.rule ?? "unknown"})`
+        : delta.resolved === 0
+          ? "it did not close the net"
+          : null;
+    if (reason) {
+      restore();
+      return { ok: false, reason };
     }
-    fixed.push({
-      rule: "UnconnectedNet",
-      action: "reroute_net",
-      detail: `re-routed net '${net}' at effort ${effort} (${delta.resolved} violation(s) resolved)`,
-      net,
-    });
-    budget--;
+    return { ok: true, delta };
+  };
+
+  const openFailures = new Map<string, string>();
+  const MAX_CONNECTIVITY_ROUNDS = 4;
+  let openRound = openNetsIn(viols);
+  for (let round = 0; round < MAX_CONNECTIVITY_ROUNDS && openRound.length > 0; round++) {
+    let closedThisRound = 0;
+    for (const net of openRound) {
+      if (budget <= 0) break;
+      const hasManual = pcb.traces.some((t) => t.net === net && t.source === "manual");
+      if (dryRun) {
+        planned.push({
+          rule: "UnconnectedNet",
+          action: hasManual ? "connect_net" : "reroute_net",
+          detail: hasManual
+            ? `route the open connections of net '${net}' around its hand-placed copper`
+            : `rip-up + re-route net '${net}' at effort ${effort}`,
+          net,
+        });
+        budget--;
+        continue;
+      }
+      progress?.(++fixAttempts, undefined, `closing net '${net}' (${fixed.length} fix(es) applied so far)`);
+      const failures: string[] = [];
+      if (!hasManual) {
+        const routeArgs: Record<string, unknown> = ctx.documentId
+          ? { document_id: ctx.documentId, nets: [net], effort }
+          : { document: ctx.doc, nets: [net], effort };
+        const res = await tryCloseNet(async () => {
+          const r = (await routeNets(routeArgs)) as ToolResult;
+          return r.isError ? `route_nets failed: ${r.content[0]?.text ?? "unknown error"}` : null;
+        });
+        if (res.ok) {
+          fixed.push({
+            rule: "UnconnectedNet",
+            action: "reroute_net",
+            detail: `re-routed net '${net}' at effort ${effort} (${res.delta.resolved} violation(s) resolved)`,
+            net,
+          });
+          budget--;
+          closedThisRound++;
+          openFailures.delete(net);
+          continue;
+        }
+        failures.push(`re-route reverted: ${res.reason}`);
+      }
+      const res = await tryCloseNet(() => connectOpenNets(pcb, [net]));
+      if (res.ok) {
+        fixed.push({
+          rule: "UnconnectedNet",
+          action: "connect_net",
+          detail: `routed the open connections of net '${net}' around its existing copper (${res.delta.resolved} violation(s) resolved)`,
+          net,
+        });
+        budget--;
+        closedThisRound++;
+        openFailures.delete(net);
+        continue;
+      }
+      failures.push(`island route reverted: ${res.reason}`);
+      openFailures.set(net, `net '${net}' stays open — ${failures.join("; ")}`);
+    }
+    if (dryRun || closedThisRound === 0 || budget <= 0) break;
+    const now = await drcPcb(pcb, "full", 20);
+    if (!now.success) break;
+    openRound = openNetsIn(now.details ?? []);
   }
+  for (const reason of openFailures.values()) skip("UnconnectedNet", reason);
 
   // -- 5) Everything else: never touched, with the reason on record -----------
   for (const v of viols) {
@@ -14588,6 +14939,13 @@ export async function fixDrc(args: Record<string, unknown>, toolCtx?: ToolContex
     before: brief(before),
     after: after.success ? brief(after) : null,
     ...(after.success ? {} : { unverified_reason: (after as DrcUnverifiable).reason }),
+    // What the board still fails after this call, and why it wasn't fixed.
+    ...(after.success
+      ? {
+          clean: after.violations === 0,
+          remaining: remainingViolations(after.details ?? [], skipped),
+        }
+      : {}),
     fixed,
     ...(dryRun ? { planned } : {}),
     skipped,
@@ -14721,8 +15079,10 @@ export const toolDefs: ToolDef[] = [
     description:
       "Derive a PCB outline polygon (with cutouts, e.g. a center bore) " +
       "from a solid part in a CAD session by projecting its geometry onto " +
-      "the XY plane. Bridges solid modeling and PCB layout: feed the " +
-      "returned `outline` to place_components.",
+      "the XY plane. For a hollow part (an enclosure) it returns the interior " +
+      "cavity by default; `outline_basis` states which outline came back. " +
+      "Bridges solid modeling and PCB layout: feed the returned `outline` to " +
+      "place_components.",
     inputSchema: boardFromSolidSchema,
     handler: (a, c) =>
       boardFromSolid(a, c.engine) as ToolResult | Promise<ToolResult>,
