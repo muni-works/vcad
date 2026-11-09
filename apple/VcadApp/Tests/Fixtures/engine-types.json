@@ -642,6 +642,7 @@
       "result": {
         "consumedPartIds": [],
         "createdFeatureId": "5:0",
+        "deleted": [],
         "document": {
           "materials": {},
           "nodes": {
@@ -728,6 +729,7 @@
       "result": {
         "consumedPartIds": [],
         "createdFeatureId": "5:1",
+        "deleted": [],
         "document": {
           "materials": {},
           "nodes": {
@@ -880,6 +882,7 @@
           "5:1"
         ],
         "createdFeatureId": "5:2",
+        "deleted": [],
         "document": {
           "materials": {},
           "nodes": {
@@ -1090,6 +1093,7 @@
           "5:2"
         ],
         "createdFeatureId": "5:3",
+        "deleted": [],
         "document": {
           "materials": {},
           "nodes": {
