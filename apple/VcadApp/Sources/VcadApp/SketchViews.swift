@@ -24,6 +24,8 @@ struct SketchPaletteView: View {
                     ForEach(SketchToolKind.allCases) { Label($0.label, systemImage: $0.symbol).tag($0) }
                 }
                 .pickerStyle(.segmented).labelsHidden().controlSize(.small).fixedSize()
+                Toggle("1 mm", isOn: Binding(get: { sketch.gridStep > 0 }, set: { sketch.gridStep = $0 ? 1 : 0 }))
+                    .toggleStyle(.button).controlSize(.small).help("Snap clicks to a 1 mm grid")
                 if sketch.tool == .polygon {
                     Stepper("\(sketch.polygonSides) sides", value: Binding(get: { sketch.polygonSides }, set: { sketch.polygonSides = $0 }), in: 3...64)
                         .controlSize(.small).fixedSize()
@@ -33,6 +35,8 @@ struct SketchPaletteView: View {
                         Button("\(k.glyph)  \(k.label)") { _ = sketch.constrainSelection(k); model.sketchDirty = true }
                     }
                     Divider()
+                    Button("Delete Selected") { sketch.deleteSelection(); model.sketchDirty = true }
+                        .disabled(sketch.selection.isEmpty)
                     Button("Offset Profile…") { model.sketchOffsetPrompt = true }
                     Button("Remove Last Constraint") { sketch.popConstraint(); model.sketchDirty = true }
                         .disabled(sketch.constraints.isEmpty)

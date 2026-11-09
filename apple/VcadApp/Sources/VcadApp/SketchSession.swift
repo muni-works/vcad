@@ -161,6 +161,7 @@ struct SketchEntity: Identifiable, Hashable {
     var points: [UInt32] = []
     /// Construction geometry (spline control points) never enters the profile.
     var construction = false
+    var ccw = true
     var id: UInt32 { handle }
 }
 
@@ -217,7 +218,7 @@ struct SketchFrame: Equatable {
 @Observable
 final class SketchSession {
     let frame: SketchFrame
-    @ObservationIgnored nonisolated(unsafe) private let raw: OpaquePointer
+    @ObservationIgnored nonisolated(unsafe) private var raw: OpaquePointer
 
     private(set) var entities: [SketchEntity] = []
     private(set) var constraints: [SketchConstraintRow] = []
@@ -228,6 +229,8 @@ final class SketchSession {
     private(set) var state: UInt8 = UInt8(VCAD_SKETCH_UNDER)
     private(set) var converged = true
     private(set) var lastError: String?
+    /// Every applied constraint as sent to the solver, for rebuilding after a delete.
+    private var recorded: [VcadSketchConstraint] = []
 
     var tool: SketchToolKind = .line { didSet { pending = [] } }
     /// Selected entity handles (select tool), in click order.
@@ -241,7 +244,9 @@ final class SketchSession {
     /// Bumped on every change: the viewport redraws the ink.
     private(set) var revision = 0
     /// Snap radius in plane mm.
-    var snap: Double = 2.5
+    var snap: Double = 1.2
+    /// Clicks round to this many mm unless they land on a point. 0 turns it off.
+    var gridStep: Double = 1
     /// Side count of the polygon tool.
     var polygonSides = 6
 
@@ -289,7 +294,7 @@ final class SketchSession {
     @discardableResult
     func addArc(start: UInt32, end: UInt32, center: UInt32, ccw: Bool = true) -> UInt32 {
         let h = vcad_sketch_add_arc(raw, start, end, center, ccw)
-        if h != 0 { entities.append(.init(handle: h, kind: .arc, points: [start, end, center])) }
+        if h != 0 { entities.append(.init(handle: h, kind: .arc, points: [start, end, center], ccw: ccw)) }
         return h
     }
     @discardableResult
@@ -310,6 +315,7 @@ final class SketchSession {
                                      e2: e2, r2: r2, value: value, value2: value2)
         let idx = vcad_sketch_add_constraint(raw, &c)
         guard idx >= 0 else { lastError = SimError.pending() ?? "Constraint refused"; return false }
+        recorded.append(c)
         constraints.append(.init(index: Int(idx), kind: kind,
                                  entities: [e0, e1, e2].filter { $0 != 0 }, value: value))
         if solveNow { solve() }
@@ -322,6 +328,7 @@ final class SketchSession {
             lastError = SimError.pending() ?? "Dimension refused"; return
         }
         if let i = constraints.firstIndex(of: row) { constraints[i].value = value }
+        if recorded.indices.contains(row.index) { recorded[row.index].value = value }
         solve()
     }
 
@@ -329,10 +336,78 @@ final class SketchSession {
     func popConstraint() {
         guard !constraints.isEmpty, vcad_sketch_pop_constraint(raw) else { return }
         constraints.removeLast()
+        recorded.removeLast()
         solve()
     }
 
     /// Re-solve and refresh every solved position.
+    /// Delete the selected entities, plus any line or arc built on a deleted
+    /// point and any point left unused. The solver can't remove entities, so
+    /// this rebuilds it from what remains, keeping solved positions.
+    func deleteSelection() {
+        guard !selection.isEmpty else { return }
+        var gone = Set(selection)
+        for e in entities where e.kind != .point && e.points.contains(where: gone.contains) { gone.insert(e.handle) }
+        let kept = entities.filter { !gone.contains($0.handle) }
+        let used = Set(kept.filter { $0.kind != .point }.flatMap(\.points))
+        for e in entities where e.kind != .point && gone.contains(e.handle) {
+            for p in e.points where !used.contains(p) { gone.insert(p) }
+        }
+        var o = [frame.origin.x, frame.origin.y, frame.origin.z]
+        var x = [frame.xDir.x, frame.xDir.y, frame.xDir.z]
+        var y = [frame.yDir.x, frame.yDir.y, frame.yDir.z]
+        guard let fresh = vcad_sketch_new_on_plane(&o, &x, &y) else { lastError = "Sketch solver unavailable"; return }
+        var map: [UInt32: UInt32] = [:]
+        var rebuilt: [SketchEntity] = []
+        for e in entities where !gone.contains(e.handle) {
+            var n = e
+            n.points = e.points.compactMap { map[$0] }
+            switch e.kind {
+            case .point:
+                let q = positions[e.handle] ?? .zero
+                n.handle = vcad_sketch_add_point(fresh, q.x, q.y)
+            case .line:
+                n.handle = vcad_sketch_add_line(fresh, n.points[0], n.points[1])
+            case .arc:
+                n.handle = vcad_sketch_add_arc(fresh, n.points[0], n.points[1], n.points[2], e.ccw)
+            case .circle:
+                n.handle = vcad_sketch_add_circle(fresh, n.points[0], radii[e.handle] ?? 1)
+            }
+            map[e.handle] = n.handle
+            rebuilt.append(n)
+        }
+        var rows: [SketchConstraintRow] = []
+        var replayed: [VcadSketchConstraint] = []
+        for (row, source) in zip(constraints, recorded) {
+            guard row.entities.allSatisfy({ map[$0] != nil }) else { continue }
+            var c = source
+            c.e0 = map[c.e0] ?? 0
+            c.e1 = map[c.e1] ?? 0
+            c.e2 = map[c.e2] ?? 0
+            let index = vcad_sketch_add_constraint(fresh, &c)
+            guard index >= 0 else { continue }
+            rows.append(.init(index: Int(index), kind: row.kind, entities: row.entities.compactMap { map[$0] }, value: row.value))
+            replayed.append(c)
+        }
+        var moved: [UInt32: SIMD2<Double>] = [:]
+        var sizes: [UInt32: Double] = [:]
+        for (old, new) in map {
+            if let p = positions[old] { moved[new] = p }
+            if let r = radii[old] { sizes[new] = r }
+        }
+        vcad_sketch_free(raw)
+        raw = fresh
+        entities = rebuilt
+        constraints = rows
+        recorded = replayed
+        positions = moved
+        radii = sizes
+        selection = []
+        pending = []
+        chain = []
+        solve()
+    }
+
     func solve() {
         let r = vcad_sketch_solve(raw)
         converged = r.converged != 0 || r.status == 3 || r.status == 4
@@ -379,7 +454,14 @@ final class SketchSession {
     }
 
     /// A click on the plane.
-    func tap(_ p: SIMD2<Double>, additive: Bool = false) {
+    /// Where a click at `p` lands: an existing point, else the nearest grid crossing.
+    func gridded(_ p: SIMD2<Double>) -> SIMD2<Double> {
+        guard gridStep > 0, tool != .select, tool != .dimension, snapPoint(p) == nil else { return p }
+        return (p / gridStep).rounded(.toNearestOrAwayFromZero) * gridStep
+    }
+
+    func tap(_ raw: SIMD2<Double>, additive: Bool = false) {
+        let p = gridded(raw)
         switch tool {
         case .select:
             let hit = nearestEntity(p)

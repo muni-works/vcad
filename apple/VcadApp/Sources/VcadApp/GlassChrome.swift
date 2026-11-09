@@ -407,7 +407,7 @@ enum DockTools {
             if m.promoteSandboxToDocument(blank: true) { m.enterSketch() }
         })
         out += m.tools(for: .create).filter { ["shape.cube", "shape.cylinder"].contains($0.id) }
-        for op in FeatureOp.modifyOps where [.fillet, .chamfer, .shell, .circularPattern].contains(op) {
+        for op in FeatureOp.modifyOps where [.fillet, .chamfer, .shell, .hole, .circularPattern].contains(op) {
             out.append(Tool(id: "op.\(op.rawValue)", label: op.label, symbol: op.symbol,
                             isActive: m.activeFeatureOp == op, enabled: sandbox || (doc && selected),
                             hint: sandbox || selected ? "" : "Select a part first") {
@@ -426,7 +426,7 @@ enum DockTools {
             m.measuring.toggle()
         })
         return keyed(out, ["sketch": "s", "shape.cube": "b", "shape.cylinder": "y", "op.fillet": "f",
-                           "op.chamfer": "c", "op.shell": "k", "op.circularPattern": "p",
+                           "op.chamfer": "c", "op.shell": "k", "op.hole": "h", "op.circularPattern": "p",
                            "bool.difference": "x", "measure": "i"])
     }
 

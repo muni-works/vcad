@@ -1640,7 +1640,7 @@ final class EditorModel {
 
     var sketchCursor: SIMD2<Float>? {
         get { sketch?.cursor.map { SIMD2(Float($0.x), Float($0.y)) } }
-        set { sketch?.cursor = newValue.map { SIMD2(Double($0.x), Double($0.y)) }; sketchDirty = true }
+        set { sketch?.cursor = newValue.map { sketch?.gridded(SIMD2(Double($0.x), Double($0.y))) ?? SIMD2(Double($0.x), Double($0.y)) }; sketchDirty = true }
     }
     var canFinishSketch: Bool {
         guard let sketch else { return false }
@@ -1655,6 +1655,7 @@ final class EditorModel {
 
     /// Start a sketch: on the picked planar face when exactly one is picked,
     /// else on `sketchPlane`.
+    @ObservationIgnored private var cameraBeforeSketch: CameraState?
     func enterSketch() {
         guard usesDocumentTree else { return }
         sketchPlaneChosen = false
@@ -1668,6 +1669,7 @@ final class EditorModel {
             sketchFace = (f.part, c, n)
         }
         guard let s = SketchSession(frame: frame) else { engineError = "Sketch solver unavailable"; return }
+        if sketch == nil { cameraBeforeSketch = CameraState(azimuth: azimuth, elevation: elevation, distance: distance, pan: panOffset) }
         sketch = s
         sketching = true
         hoveredPartIndex = nil; hoverDirty = true
@@ -1679,6 +1681,11 @@ final class EditorModel {
         sketch = nil
         sketchFace = nil
         sketchDirty = true
+        if let c = cameraBeforeSketch {
+            azimuth = c.azimuth; elevation = c.elevation
+            distance = c.distance; pinchBaseline = c.distance; panOffset = c.pan
+            cameraBeforeSketch = nil
+        }
     }
     /// Nothing drawn and no plane chosen yet: the next click may pick a face.
     var sketchAwaitsPlane: Bool {
@@ -1708,6 +1715,13 @@ final class EditorModel {
         let n = f.normal
         elevation = Float(asin(max(-1, min(1, n.z)))).clamped(to: -1.45...1.45)
         azimuth = abs(n.z) > 0.99 ? 0 : Float(atan2(n.x, -n.y))
+        // Open close enough that the 0.5 mm grid can be hit, centred on the plane.
+        let o = SIMD3<Float>(f.origin) - displayCenter
+        // An empty document has no scene yet, so its display centre is stale.
+        let empty = (documentJSON?["roots"] as? [Any])?.isEmpty ?? true
+        panOffset = empty ? .zero : SIMD3(o.x, o.z, -o.y) * displayScale
+        distance = max(0.45, min(1.5, displayScale * 20))
+        pinchBaseline = distance
     }
 
     func setSketchTool(_ t: SketchToolKind) {
@@ -2173,6 +2187,11 @@ final class EditorModel {
     /// Delete every highlighted part as one undo step. Highest index first so
     /// the remaining indices stay valid while removing.
     func deleteSelectedParts() {
+        if sketching {
+            sketch?.deleteSelection()
+            sketchDirty = true
+            return
+        }
         let ids = highlightedParts.compactMap { partId(forPart: $0) }
         guard !ids.isEmpty else { return }
         guard send(.batch(commands: ids.map { .deleteFeature(id: $0) }),
@@ -2583,7 +2602,10 @@ final class EditorModel {
                         else if self.sketch?.isEmpty ?? true { self.exitSketch() }
                     } else if GlassUI.shared.shortcutsShown {
                         GlassUI.shared.shortcutsShown = false
-                    } else if self.activeFeatureOp != nil || self.showsCommandPalette || GlassUI.shared.panel != nil {
+                    } else if self.activeFeatureOp != nil {
+                        // A focused number field swallows the panel's own Esc shortcut.
+                        self.activeFeatureOp = nil
+                    } else if self.showsCommandPalette || GlassUI.shared.panel != nil {
                         // Their own Cancel handles Esc; keep the selection.
                     } else if self.usesDocumentTree, self.renamingFeatureID == nil, self.hasSelection {
                         self.deselectAll()

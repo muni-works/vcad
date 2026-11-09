@@ -1,3 +1,4 @@
+import simd
 import SwiftUI
 
 // Feature dialogs for the design workspace: native twins of the web app's
@@ -9,12 +10,13 @@ import SwiftUI
 
 /// One modeling operation a dialog can author.
 enum FeatureOp: String, CaseIterable, Identifiable {
-    case fillet, chamfer, shell, linearPattern, circularPattern, mirror, scale, text, cone
+    case fillet, chamfer, shell, hole, linearPattern, circularPattern, mirror, scale, text, cone
 
     var id: String { rawValue }
     var label: String {
         switch self {
         case .fillet: "Fillet"
+        case .hole: "Hole"
         case .chamfer: "Chamfer"
         case .shell: "Shell"
         case .linearPattern: "Linear Pattern"
@@ -28,6 +30,7 @@ enum FeatureOp: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .fillet: "circle.bottomhalf.filled"
+        case .hole: "smallcircle.filled.circle"
         case .chamfer: "triangle.bottomhalf.filled"
         case .shell: "square.dashed"
         case .linearPattern: "square.grid.3x1.below.line.grid.1x2"
@@ -41,7 +44,7 @@ enum FeatureOp: String, CaseIterable, Identifiable {
     /// Ops that create a new part instead of transforming the selected one.
     var createsPart: Bool { self == .text || self == .cone }
     /// Ops shown on the Modify tab.
-    static let modifyOps: [FeatureOp] = [.fillet, .chamfer, .shell, .linearPattern,
+    static let modifyOps: [FeatureOp] = [.fillet, .chamfer, .shell, .hole, .linearPattern,
                                          .circularPattern, .mirror, .scale]
     static let createOps: [FeatureOp] = [.cone, .text]
 }
@@ -118,6 +121,78 @@ extension EditorModel {
     }
 }
 
+/// ISO metric hole sizes: nominal, close-fit clearance and tap drill, mm.
+enum MetricHole: String, CaseIterable, Identifiable {
+    case m2 = "M2", m25 = "M2.5", m3 = "M3", m4 = "M4", m5 = "M5", m6 = "M6", m8 = "M8", m10 = "M10", m12 = "M12"
+    var id: String { rawValue }
+    var nominal: Double { Double(rawValue.dropFirst())! }
+    var clearance: Double {
+        switch self {
+        case .m2: 2.2; case .m25: 2.7; case .m3: 3.2; case .m4: 4.3; case .m5: 5.3
+        case .m6: 6.4; case .m8: 8.4; case .m10: 10.5; case .m12: 13
+        }
+    }
+    var tapDrill: Double {
+        switch self {
+        case .m2: 1.6; case .m25: 2.05; case .m3: 2.5; case .m4: 3.3; case .m5: 4.2
+        case .m6: 5; case .m8: 6.8; case .m10: 8.5; case .m12: 10.2
+        }
+    }
+}
+
+extension EditorModel {
+    /// Longer than any part, so a through hole always clears the far side.
+    static let throughAllDepth = 2000.0
+
+    /// Cut a round hole into the picked planar face, optionally counterbored,
+    /// as one undo step. `offset` moves it from the face centre along the
+    /// face's own axes.
+    @discardableResult
+    func applyHole(diameter: Double, depth: Double?, offset: SIMD2<Double>,
+                   counterbore: (diameter: Double, depth: Double)?,
+                   boltCircle: (count: Int, radius: Double)? = nil) -> Bool {
+        guard diameter > 0, picking.selectedFaces.count == 1, let f = picking.selectedFaces.first,
+              let face = partTopology(f.part)?.face(f.id), face.isPlanar,
+              let root = rootNodeId(forPart: f.part) else {
+            engineError = "Pick one flat face"; return false
+        }
+        let frame = SketchFrame.onFace(center: SIMD3(face.center[0], face.center[1], face.center[2]),
+                                       normal: SIMD3(face.normal[0], face.normal[1], face.normal[2]))
+        // One hole, or one per bolt: evenly spaced around `offset`.
+        let centers: [SIMD2<Double>] = boltCircle.map { b in
+            (0..<b.count).map { i in
+                let t = 2 * Double.pi * Double(i) / Double(b.count)
+                return offset + b.radius * SIMD2(cos(t), sin(t))
+            }
+        } ?? [offset]
+        func circle(_ d: Double, at c: SIMD2<Double>) -> [String: Any]? {
+            guard let s = SketchSession(frame: frame) else { return nil }
+            s.addCircle(center: s.addPoint(c), radius: d / 2)
+            s.solve()
+            return s.profileJSON()
+        }
+        func down(_ d: Double) -> [String: Double] {
+            let v = frame.normal * -d
+            return ["x": v.x, "y": v.y, "z": v.z]
+        }
+        var cuts: [(profile: [String: Any]?, depth: Double)] = []
+        for c in centers {
+            if let b = counterbore { cuts.append((circle(b.diameter, at: c), b.depth)) }
+            cuts.append((circle(diameter, at: c), depth ?? Self.throughAllDepth))
+        }
+        var features: [[String: Any]] = []
+        for (i, cut) in cuts.enumerated() {
+            guard let profile = cut.profile else { engineError = "Couldn't build the hole"; return false }
+            features.append(["kind": "cut_extrude", "target": i == 0 ? root : -1, "profile": profile,
+                             "direction": down(cut.depth), "name": i == cuts.count - 1 ? "Hole" : "Counterbore"])
+        }
+        guard appendIRFeatures(features, name: "Hole") else { return false }
+        picking.clear()
+        selectedFeatureID = featureNodes.last?.id
+        return true
+    }
+}
+
 /// The dialog sheet. Presented from `model.activeFeatureOp`.
 struct FeatureOpSheet: View {
     @Bindable var model: EditorModel
@@ -142,11 +217,27 @@ struct FeatureOpSheet: View {
     @State private var rTop: Double = 0
     @State private var coneHeight: Double = 30
     @State private var error: String?
+    @State private var holeSize = MetricHole.m3
+    @State private var holeTapped = false
+    @State private var holeThrough = true
+    @State private var holeDepth: Double = 10
+    @State private var holeX: Double = 0
+    @State private var holeY: Double = 0
+    @State private var holeBored = false
+    @State private var holeBoreD: Double = 6.5
+    @State private var holeBoreDepth: Double = 3.3
+    @State private var holeCircle = false
+    @State private var holeCount = 4
+    @State private var holeRadius: Double = 20
+    @State private var priorFilter: PickFilter?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
             Label(op.label, systemImage: op.symbol).font(.headline)
-            if !op.createsPart, model.selectedPartFeatureId == nil, model.picking.selectionPart == nil {
+            if op == .hole {
+                Text(model.picking.selectedFaces.count == 1 ? "On the picked face" : "Click a flat face.")
+                    .foregroundStyle(.secondary)
+            } else if !op.createsPart, model.selectedPartFeatureId == nil, model.picking.selectionPart == nil {
                 Text("Select a part first.").foregroundStyle(.secondary)
             }
             Form { fields }.formStyle(.columns)
@@ -158,10 +249,16 @@ struct FeatureOpSheet: View {
             }
         }
         .padding(Theme.Space.l).frame(width: 360)
+        // The hole tool works on a face: clicks pick faces while it's open.
+        .onAppear { if op == .hole { priorFilter = model.picking.filter; model.picking.filter = .face } }
+        .onDisappear { if let f = priorFilter { model.picking.filter = f } }
+        // A failure message describes the last attempt, not the next pick.
+        .onChange(of: model.picking.revision) { _, _ in error = nil }
     }
 
     private var canApply: Bool {
-        op.createsPart || model.selectedPartFeatureId != nil || model.picking.selectionPart != nil
+        if op == .hole { return model.picking.selectedFaces.count == 1 }
+        return op.createsPart || model.selectedPartFeatureId != nil || model.picking.selectionPart != nil
     }
 
     @ViewBuilder private var fields: some View {
@@ -176,6 +273,26 @@ struct FeatureOpSheet: View {
             let n = model.picking.selectedFaces.count
             Text(n > 0 ? "Opens \(n) picked face\(n == 1 ? "" : "s")" : "Closed shell (pick faces with ⌃F to open them)")
                 .font(.caption).foregroundStyle(.secondary)
+        case .hole:
+            Picker("Size", selection: $holeSize) { ForEach(MetricHole.allCases) { Text($0.rawValue).tag($0) } }
+                .onChange(of: holeSize) { _, v in holeBoreD = 2 * v.nominal + 0.5; holeBoreDepth = v.nominal + 0.3 }
+            Picker("Fit", selection: $holeTapped) { Text("Clearance").tag(false); Text("Tap drill").tag(true) }
+                .pickerStyle(.segmented)
+            if holeTapped { Text("Drills \(holeSize.tapDrill.formatted()) mm. The thread itself isn't modeled.").font(.caption).foregroundStyle(.secondary) }
+            Toggle("Through all", isOn: $holeThrough)
+            if !holeThrough { num("Depth", $holeDepth, unit: "mm") }
+            num("Offset X", $holeX, unit: "mm")
+            num("Offset Y", $holeY, unit: "mm")
+            Toggle("Bolt circle", isOn: $holeCircle)
+            if holeCircle {
+                Stepper("Holes: \(holeCount)", value: $holeCount, in: 2...64)
+                num("Circle radius", $holeRadius, unit: "mm")
+            }
+            Toggle("Counterbore", isOn: $holeBored)
+            if holeBored {
+                num("Bore diameter", $holeBoreD, unit: "mm")
+                num("Bore depth", $holeBoreDepth, unit: "mm")
+            }
         case .linearPattern:
             axisPicker
             Stepper("Count: \(count)", value: $count, in: 2...100)
@@ -248,6 +365,11 @@ struct FeatureOpSheet: View {
             ok = model.applyBlend(fillet: op == .fillet, size: size)
         case .shell:
             ok = model.applyShell(thickness: thickness)
+        case .hole:
+            ok = model.applyHole(diameter: holeTapped ? holeSize.tapDrill : holeSize.clearance,
+                                 depth: holeThrough ? nil : holeDepth, offset: SIMD2(holeX, holeY),
+                                 counterbore: holeBored ? (holeBoreD, holeBoreDepth) : nil,
+                                 boltCircle: holeCircle ? (holeCount, holeRadius) : nil)
         case .linearPattern:
             if let id {
                 ok = model.addOp(.linearPattern(input: id, direction: axis.vector, count: count, spacing: spacing),

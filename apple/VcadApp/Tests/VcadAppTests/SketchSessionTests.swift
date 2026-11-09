@@ -32,6 +32,86 @@ final class SketchSessionTests: XCTestCase {
         return nodes.values.compactMap { (($0 as? [String: Any])?["op"] as? [String: Any])?["type"] as? String }
     }
 
+    private func volume(_ m: EditorModel) throws -> Double {
+        let id = try XCTUnwrap(m.engineState?.parts.last?.id)
+        let text = try XCTUnwrap(m.agentEnsureEngine()).agentRead("inspect", ["part_id": id])
+        let range = try XCTUnwrap(text.range(of: #"volume [0-9.]+"#, options: .regularExpression))
+        return try XCTUnwrap(Double(text[range].dropFirst(7)))
+    }
+
+    /// The top face of the block, picked the way a click picks it.
+    private func pickTop(_ m: EditorModel) throws {
+        let topo = try XCTUnwrap(m.partTopology(0))
+        let top = try XCTUnwrap(topo.faces.max { $0.center[2] < $1.center[2] })
+        m.picking.filter = .face
+        m.picking.select(.face(top.id, part: 0), additive: false)
+    }
+
+    func testThroughHoleRemovesItsCylinder() throws {
+        let m = try open()
+        let before = try volume(m)
+        try pickTop(m)
+        XCTAssertTrue(m.applyHole(diameter: 6, depth: nil, offset: .zero, counterbore: nil), m.engineError ?? "")
+        let height = 10.0
+        XCTAssertEqual(before - (try volume(m)), .pi * 9 * height, accuracy: .pi * 9 * height * 0.02)
+    }
+
+    func testCounterboreIsOneUndoStep() throws {
+        let m = try open()
+        let before = try volume(m)
+        try pickTop(m)
+        XCTAssertTrue(m.applyHole(diameter: 3.2, depth: nil, offset: SIMD2(5, 2), counterbore: (6.5, 3.3)), m.engineError ?? "")
+        let removed = Double.pi * (1.6 * 1.6 * (10 - 3.3) + 3.25 * 3.25 * 3.3)
+        XCTAssertEqual(before - (try volume(m)), removed, accuracy: removed * 0.03)
+        m.undo()
+        XCTAssertEqual(try volume(m), before, accuracy: 1e-6)
+    }
+
+    func testBoltCircleCutsEveryHoleInOneUndoStep() throws {
+        let m = try open()
+        let before = try volume(m)
+        try pickTop(m)
+        XCTAssertTrue(m.applyHole(diameter: 3, depth: nil, offset: .zero, counterbore: nil, boltCircle: (4, 6)), m.engineError ?? "")
+        let removed = 4 * Double.pi * 2.25 * 10
+        XCTAssertEqual(before - (try volume(m)), removed, accuracy: removed * 0.03)
+        m.undo()
+        XCTAssertEqual(try volume(m), before, accuracy: 1e-6)
+    }
+
+    func testDeletingALineKeepsTheRestAndItsConstraints() throws {
+        let s = try XCTUnwrap(SketchSession(frame: .principal(.xy)))
+        s.tool = .rectangle
+        s.tap([0, 0]); s.tap([20, 10])
+        let lines = s.entities.filter { $0.kind == .line }
+        XCTAssertTrue(s.constrain(.length, lines[0].handle, value: 20))
+        s.selection = [lines[2].handle]
+        s.deleteSelection()
+        XCTAssertEqual(s.entities.filter { $0.kind == .line }.count, 3)
+        XCTAssertEqual(s.entities.filter { $0.kind == .point }.count, 4)
+        XCTAssertEqual(s.constraints.filter { $0.kind == .length }.count, 1)
+        XCTAssertEqual(s.constraints.filter { $0.kind == .horizontal }.count, 1)
+        XCTAssertTrue(s.selection.isEmpty)
+
+        // The rebuilt solver still drives geometry.
+        let row = try XCTUnwrap(s.constraints.first { $0.kind == .length })
+        s.setDimension(row, value: 35)
+        let line = try XCTUnwrap(s.entities.first { $0.handle == row.entities[0] })
+        let a = try XCTUnwrap(s.point(line.points[0])), b = try XCTUnwrap(s.point(line.points[1]))
+        XCTAssertEqual(simd_distance(a, b), 35, accuracy: 1e-6)
+    }
+
+    func testDeletingACornerRemovesItsLinesAndOrphanPoints() throws {
+        let s = try XCTUnwrap(SketchSession(frame: .principal(.xy)))
+        s.tool = .line
+        s.tap([0, 0]); s.tap([20, 0])
+        s.commitPending()
+        let line = try XCTUnwrap(s.entities.first { $0.kind == .line })
+        s.selection = [line.points[0]]
+        s.deleteSelection()
+        XCTAssertTrue(s.isEmpty)
+        XCTAssertTrue(s.entities.isEmpty)
+    }
+
     func testRectangleIsClosedAndDimensionsDriveIt() throws {
         let s = try XCTUnwrap(SketchSession(frame: .principal(.xy)))
         s.tool = .rectangle
