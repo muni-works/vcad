@@ -261,7 +261,9 @@ enum AgentTools {
                                 "reset": ["type": "boolean"],
                                 "base": ["type": "array", "items": ["type": "number"],
                                          "description": "Floating base pose: x, y, z in metres, then w, x, y, z"],
-                                "restart": ["type": "boolean", "description": "base starts a new episode"]])],
+                                "restart": ["type": "boolean", "description": "base starts a new episode"],
+                                "link_id": ["type": "string", "description": "Sent by @vcad/mcp: the session this pose belongs to."],
+                                "partial": ["type": "boolean", "description": "Sent by @vcad/mcp for a mirrored stream: skip joints this window doesn't drive."]])],
         ["name": "set_explode",
          "description": "Explode amount 0 (assembled) … 1 (fully exploded).",
          "inputSchema": schema(["amount": ["type": "number"]], required: ["amount"])],
@@ -314,6 +316,63 @@ enum AgentTools {
          "inputSchema": schema(["spp": ["type": "integer", "description": "samples per pixel, default 64"]])],
     ]
 
+    private static let setPoseArgs: Set<String> = ["joints", "reset", "base", "restart", "link_id", "partial"]
+
+    /// Validates everything before touching the pose, so a malformed call
+    /// changes nothing. `partial` is for a mirrored stream, which carries joints
+    /// this window doesn't drive: it poses what matches instead of refusing.
+    static func setPose(_ a: [String: Any], _ m: EditorModel) throws -> [String: Any] {
+        let usage = "Expected {\"joints\": {\"<joint name>\": degrees}}, optionally with reset or base."
+        let stray = a.keys.filter { !setPoseArgs.contains($0) }.sorted()
+        guard stray.isEmpty else { throw Failure(message: "set_pose: unknown argument \(stray.joined(separator: ", ")). \(usage)") }
+        guard m.hasPoseStudio || m.poseAwaitsScene else { throw Failure(message: "The open document has no poseable assembly.") }
+        if let link = a["link_id"] as? String, m.agentLinkID != link {
+            throw Failure(message: "set_pose: this window is showing a different session.")
+        }
+        let partial = a["partial"] as? Bool == true
+        let requested: [String: Any]
+        switch a["joints"] {
+        case nil: requested = [:]
+        case let d as [String: Any]: requested = d
+        default: throw Failure(message: "set_pose: joints must be an object. \(usage)")
+        }
+        let names = m.drivenJoints.map(EditorModel.poseKey).joined(separator: ", ")
+        var unknown: [String] = [], targets: [(key: String, degrees: Double)] = []
+        for (k, v) in requested {
+            guard let deg = (v as? NSNumber)?.doubleValue, deg.isFinite else {
+                throw Failure(message: "set_pose: joint \(k) needs a number of degrees. \(usage)")
+            }
+            if let j = m.drivenJoints.first(where: { EditorModel.poseKey($0) == k || $0.id == k }) {
+                let clamped = j.limits.map { min(max(deg, $0.lowerBound), $0.upperBound) } ?? deg
+                targets.append((EditorModel.poseKey(j), clamped))
+            } else if m.documentGraph?.joints.contains(where: { EditorModel.poseKey($0) == k || $0.id == k }) != true {
+                unknown.append(k)
+            }
+        }
+        unknown.sort()
+        if !unknown.isEmpty && !partial {
+            throw Failure(message: "set_pose: unknown joints \(unknown.joined(separator: ", ")). Names are \(names).")
+        }
+        var base: [Double]?
+        if let raw = a["base"] {
+            if let b = (raw as? [NSNumber])?.map(\.doubleValue), b.count == 7 { base = b }
+            else if !partial { throw Failure(message: "set_pose: base must be 7 numbers: x, y, z in metres, then w, x, y, z.") }
+        }
+        let reset = a["reset"] as? Bool == true
+        guard !targets.isEmpty || reset || base != nil else {
+            throw Failure(message: "set_pose: nothing to apply. \(usage) Names are \(names).")
+        }
+        if let link = a["link_id"] as? String, m.agentLinkID == link { m.agentLinkActiveAt = Date() }
+        AgentEdits.surfacePose(m)
+        if reset { m.jointPose = [:] }
+        for t in targets { m.jointPose[t.key] = t.degrees }
+        if let base { m.setAgentBasePose(base, restart: a["restart"] as? Bool == true) }
+        m.applyStudioPose()
+        var msg = "\(m.hasPoseStudio ? "Pose applied" : "Pose held until the scene is ready"): \(targets.map { "\($0.key)=\(String(format: "%.1f", $0.degrees))°" }.sorted().joined(separator: ", "))"
+        if !unknown.isEmpty { msg += ". Unknown joints: \(unknown.joined(separator: ", ")) — names are \(names)" }
+        return text(msg)
+    }
+
     static func call(_ name: String, _ a: [String: Any], model m: EditorModel) async throws -> [String: Any] {
         switch name {
         case "app_state": return json(state(m))
@@ -336,28 +395,7 @@ enum AgentTools {
             m.openDocument(url)
             return text("Opened \(url.lastPathComponent). It solves in the background; call app_state to see when instances appear.")
         case "set_pose":
-            guard m.hasPoseStudio || m.poseAwaitsScene else { throw Failure(message: "The open document has no poseable assembly.") }
-            AgentEdits.surfacePose(m)
-            if a["reset"] as? Bool == true { m.jointPose = [:] }
-            var unknown: [String] = [], applied: [String: Double] = [:]
-            for (k, v) in (a["joints"] as? [String: Any]) ?? [:] {
-                guard let deg = (v as? NSNumber)?.doubleValue else { continue }
-                guard let j = m.drivenJoints.first(where: { EditorModel.poseKey($0) == k || $0.id == k }) else {
-                    unknown.append(k); continue
-                }
-                let clamped = j.limits.map { min(max(deg, $0.lowerBound), $0.upperBound) } ?? deg
-                m.jointPose[EditorModel.poseKey(j)] = clamped
-                applied[EditorModel.poseKey(j)] = clamped
-            }
-            if let base = a["base"] as? [NSNumber] {
-                m.setAgentBasePose(base.map(\.doubleValue), restart: a["restart"] as? Bool == true)
-            }
-            m.applyStudioPose()
-            var msg = "\(m.hasPoseStudio ? "Pose applied" : "Pose held until the scene is ready"): \(applied.map { "\($0.key)=\(String(format: "%.1f", $0.value))°" }.sorted().joined(separator: ", "))"
-            if !unknown.isEmpty {
-                msg += ". Unknown joints: \(unknown.joined(separator: ", ")) — names are \(m.drivenJoints.map(EditorModel.poseKey).joined(separator: ", "))"
-            }
-            return text(msg)
+            return try setPose(a, m)
         case "set_explode":
             guard let t = (a["amount"] as? NSNumber)?.doubleValue else { throw Failure(message: "amount is required") }
             m.setExplode(t)

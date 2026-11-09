@@ -137,6 +137,15 @@ fn collect_consumed_feature_ids(crdt: &CrdtDocument) -> std::collections::HashSe
             if let Some((Value::FeatureRefList(ids), _)) = feature.params.get("colliders") {
                 consumed.extend(ids.iter().cloned());
             }
+            let source_only = matches!(
+                feature.params.get(crate::migrate::PART_DEF_SOURCE_CONSUMED),
+                Some((Value::Bool(true), _))
+            );
+            if source_only {
+                if let Some((Value::FeatureRef(id), _)) = feature.params.get("source_feature") {
+                    consumed.insert(id.clone());
+                }
+            }
         }
         let Some(input) = FeatureInput::from_crdt_params(&feature.kind, &feature.params) else {
             continue;
