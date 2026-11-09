@@ -267,6 +267,7 @@ impl Sensitivity {
         let verdict = match &route {
             Route::Coupled { completeness } => completeness.verdict(),
             _ if !value.is_finite() => ClaimVerdict::Unverifiable,
+            _ if basis == ClaimBasis::Predicted => ClaimVerdict::Provisional,
             _ => ClaimVerdict::Pass,
         };
         Sensitivity {
@@ -358,8 +359,10 @@ impl Sensitivity {
             }
             ClaimVerdict::Fail => ReceiptClaim::fail(id, "sensitivity", description, oracle)
                 .with_details(detail.clone()),
-            ClaimVerdict::Pass => ReceiptClaim::pass(id, "sensitivity", description, oracle)
-                .with_details(detail.clone()),
+            ClaimVerdict::Pass | ClaimVerdict::Provisional => {
+                ReceiptClaim::pass(id, "sensitivity", description, oracle)
+                    .with_details(detail.clone())
+            }
         };
         claim
             .with_basis(self.basis)

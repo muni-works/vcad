@@ -1,0 +1,20 @@
+{
+  "id": "2026-11-08-honest-analysis-verdicts",
+  "version": "0.11.0",
+  "date": "2026-11-08",
+  "category": "fix",
+  "title": "More accurate analysis verdicts and via meshes",
+  "summary": "Predictions now report Provisional instead of Pass, FEA meshes true section depth, topology optimization flags unconverged runs, and PCB vias are closed.",
+  "features": [
+    "fea",
+    "receipts",
+    "topology-optimization",
+    "pcb"
+  ],
+  "mcpTools": [
+    "analyze_structure",
+    "simulate_em",
+    "predict_physics",
+    "topology_optimize"
+  ]
+}

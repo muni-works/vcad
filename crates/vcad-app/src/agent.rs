@@ -458,8 +458,9 @@ fn inspect(id: &str, doc: &DocumentApi) -> Result<String, CommandError> {
     let mut cache = std::collections::HashMap::new();
     let solid =
         vcad_eval::evaluate::evaluate_node(part.root_node_id(), &resolved.nodes, &mut cache)
-            .ok()
-            .flatten()
+            .map_err(|e| CommandError::Invalid {
+                message: format!("part {id} could not be evaluated: {e}"),
+            })?
             .ok_or_else(|| CommandError::Invalid {
                 message: format!("part {id} has no evaluated geometry"),
             })?;
@@ -684,6 +685,39 @@ mod tests {
         let id = api.get_state().parts[0].id().to_string();
         let text = read_tool("inspect", &json!({"part_id": id}), &api).unwrap();
         assert!(text.contains("size (120.00, 50.00"), "{text}");
+    }
+
+    #[test]
+    fn inspect_measures_a_pcb_board_document() {
+        let ir = include_str!("../../../examples/pcb-motor/stator-v3.vcad");
+        let api = DocumentApi::from_ir(ir, ReplicaId(1)).unwrap();
+        let id = api.get_state().parts[0].id().to_string();
+        let text = read_tool("inspect", &json!({"part_id": id}), &api).unwrap();
+        assert!(text.contains("size (70.00, 69.92, 2.60)"), "{text}");
+    }
+
+    #[test]
+    fn inspect_says_why_a_part_could_not_be_evaluated() {
+        // A fillet over a through-hole refuses to rebuild the holed faces.
+        let ir = json!({
+            "version": "0.1",
+            "nodes": {
+                "0": {"id": 0, "name": null, "op": {"type": "Cube", "size": {"x": 20.0, "y": 20.0, "z": 5.0}}},
+                "1": {"id": 1, "name": null, "op": {"type": "Cylinder", "radius": 3.0, "height": 7.0, "segments": 0}},
+                "2": {"id": 2, "name": null, "op": {"type": "Translate", "child": 1, "offset": {"x": 10.0, "y": 10.0, "z": -1.0}}},
+                "3": {"id": 3, "name": null, "op": {"type": "Difference", "left": 0, "right": 2}},
+                "4": {"id": 4, "name": null, "op": {"type": "Fillet", "child": 3, "radius": 0.5}}
+            },
+            "materials": {"default": {"name": "default", "color": [0.8, 0.8, 0.8], "metallic": 0.0, "roughness": 0.5}},
+            "part_materials": {},
+            "roots": [{"root": 4, "material": "default"}]
+        });
+        let api = DocumentApi::from_ir(&ir.to_string(), ReplicaId(1)).unwrap();
+        let state = api.get_state();
+        let id = state.parts.last().unwrap().id().to_string();
+        let err = read_tool_envelope(&api, "inspect", &json!({"part_id": id}).to_string());
+        assert!(err.contains("\"ok\":false"), "{err}");
+        assert!(err.contains("inner loops"), "reason hidden: {err}");
     }
 
     #[test]

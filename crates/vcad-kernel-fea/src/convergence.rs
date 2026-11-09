@@ -335,6 +335,54 @@ mod tests {
     }
 
     #[test]
+    fn deflection_rises_steadily_when_the_section_is_not_a_whole_number_of_cells() {
+        // 100x10x10 mm at res 24: 2.4, 4.8 and 9.6 nominal cells through the
+        // section. Rounding to a cubic pitch gave 1.07 / 0.73 / 0.83 of the
+        // beam-theory value, which no gate can read as convergence.
+        let surface = box_mesh([0.0; 3], [100.0, 10.0, 10.0]);
+        let mut spec = cantilever(24, None);
+        for (region, x) in [
+            (&mut spec.loads[0].region, 100.0),
+            (&mut spec.supports[0].region, 0.0),
+        ] {
+            *region = RegionBox {
+                min: [x, 0.0, 0.0],
+                max: [x, 10.0, 10.0],
+            };
+        }
+        let conv = ConvergenceOptions {
+            levels: 3,
+            ..Default::default()
+        };
+        let study = analyze_converged(&surface, &spec, &conv, &SolveOptions::default()).unwrap();
+        let d: Vec<f64> = study.levels.iter().map(|l| l.max_displacement_mm).collect();
+        assert!(d[0] < d[1] && d[1] < d[2], "not monotone: {d:?}");
+        // Euler-Bernoulli value; shear adds about 1%.
+        let beam = 100.0 * 100.0_f64.powi(3) / (3.0 * 69_000.0 * 10.0_f64.powi(4) / 12.0);
+        assert!(d[2] < 1.03 * beam, "overshot beam theory: {d:?} vs {beam}");
+        assert!(d[2] > 0.90 * beam, "finest too stiff: {d:?} vs {beam}");
+    }
+
+    #[test]
+    fn a_support_reaches_the_whole_face_when_the_lattice_rounds_up() {
+        // 120x20x10 at res 8: pitch 15 mm, and the old lattice put the top
+        // nodes at z = 15, out of reach of a support drawn on the 10 mm
+        // face. The bar hinged on its bottom edge and PCG stalled.
+        let surface = box_mesh([0.0; 3], [120.0, 20.0, 10.0]);
+        let mut spec = cantilever(8, None);
+        spec.loads[0].region = RegionBox {
+            min: [120.0, 0.0, 0.0],
+            max: [120.0, 20.0, 10.0],
+        };
+        spec.supports[0].region = RegionBox {
+            min: [0.0, 0.0, 0.0],
+            max: [0.0, 20.0, 10.0],
+        };
+        let tm = tet_fill(&surface, 8).unwrap();
+        solve_static_full(&tm, &spec, &SolveOptions::default()).expect("bar is fully clamped");
+    }
+
+    #[test]
     fn unconverged_study_is_unverifiable_and_claims_nothing() {
         // Deliberately absurd coarse start: resolution 2 halves nothing.
         let surface = box_mesh([0.0; 3], [80.0, 10.0, 10.0]);

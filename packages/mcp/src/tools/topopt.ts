@@ -301,8 +301,18 @@ export function topologyOptimizeTool(
             document_id: documentId,
             part_id: created.part_id,
             name: partName,
+            status: result.converged ? "converged" : "not_converged",
             iterations: result.iterations,
             converged: result.converged,
+            ...(result.converged
+              ? {}
+              : {
+                  warning:
+                    `NOT CONVERGED: the density field was still changing when ` +
+                    `the ${result.iterations}-iteration limit stopped the run, so this layout ` +
+                    `is a preliminary shape, not an optimum. Re-run with a higher ` +
+                    `max_iterations before relying on it.`,
+                }),
             compliance: {
               initial: history[0],
               final: history[history.length - 1],
