@@ -12,7 +12,7 @@
  * `clearance.ts` re-exports the ones its callers already imported.
  */
 
-import { evaluateBoardsApart, transformChain } from "./document-solids.js";
+import { evaluateIncrementally, transformChain } from "./document-solids.js";
 import type { Document, JointSweep, Pcb, Transform3D } from "@vcad/ir";
 import type { Engine, TriangleMesh } from "@vcad/engine";
 import { getKernelWasmSync, solveForwardKinematics, transformMesh } from "@vcad/engine";
@@ -309,7 +309,7 @@ function withComponentBodies(doc: Document, rootId: number, mesh: TriangleMesh):
 
 /** Evaluate a CAD session once into re-poseable parts. */
 export function poseableParts(doc: Document, engine: Engine): PoseablePart[] {
-  const scene = evaluateBoardsApart(doc, engine);
+  const scene = evaluateIncrementally(doc, engine);
   const visibleRoots = doc.roots.filter((e) => e.visible !== false);
   const partMaterials = (doc as { part_materials?: Record<string, string> }).part_materials;
   const out: PoseablePart[] = [];

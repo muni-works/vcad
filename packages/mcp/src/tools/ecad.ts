@@ -3718,6 +3718,20 @@ async function netIslandCounts(
  *  because each kernel continuity query serializes the whole board. */
 const CONNECTIVITY_GUARD_MAX_NETS = 300;
 
+/** Violations that mean illegal copper, as opposed to work left to route. */
+const illegalCount = (d: DrcSummary) => d.categories.clearance + d.categories.manufacturing;
+
+/**
+ * Whether a route left the board worse than it found it: more DRC errors
+ * overall, or more illegal copper without closing a single connection. Trading
+ * a few new clearance errors for many closed nets still counts as progress.
+ */
+function routeMadeBoardWorse(before: DrcSummary, after: DrcSummary): boolean {
+  if (after.errors > before.errors) return true;
+  return illegalCount(after) > illegalCount(before) &&
+    after.categories.connectivity >= before.categories.connectivity;
+}
+
 /** Heuristic power/ground net names, for the `power_first` routing strategy. */
 const POWER_NET_RE =
   /(^|[_\-/])(A?D?GND|VCC|VDD[A]?|VBAT|VBUS|VIN|VOUT|VSYS|VREF|PWR|POWER|\d+V\d*)(\d*)([_\-/]|$)/i;
@@ -3809,9 +3823,11 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
 
   // Receipt: snapshot DRC before the route so the after-diff can attribute
   // exactly what this call fixed and what it introduced.
+  // The same snapshot decides which nets are already done and whether the
+  // route made the board worse, so it is always taken.
   const wantReceipt = Boolean(args.receipt);
-  if (wantReceipt) progress?.(0, undefined, "snapshotting pre-route DRC");
-  const beforeSnap = wantReceipt ? await drcPcb(pcb, "full", 500) : null;
+  progress?.(0, undefined, "snapshotting pre-route DRC");
+  const beforeSnap = await drcPcb(pcb, "full", 500);
 
   // Synthesize a netlist from pad assignments so the kernel ratsnest can
   // compute the unrouted connections (MST per net).
@@ -3876,6 +3892,37 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
     if (t.source === "manual" && targetNets.has(t.net)) manualNets.add(t.net);
   }
   for (const n of manualNets) targetNets.delete(n);
+
+  // A net that closed before this call on copper the router did not lay
+  // (imported from KiCad/Altium/Eagle, carrying no `source`) is finished work.
+  // An unscoped call leaves it alone: the router cannot reproduce a foreign
+  // layout, and laying a fresh one around the zones and vias that remain took
+  // a DRC-clean four-layer board to 309 violations. Naming the net in `nets`
+  // still re-routes it.
+  const alreadyRouted = new Set<string>();
+  if (netsFilter.length === 0 && beforeSnap.success) {
+    const open = openConnectionsByNet(beforeSnap.details ?? []);
+    const autorouted = new Set(
+      [...pcb.traces, ...pcb.vias].filter((c) => c.source === "autoroute").map((c) => c.net),
+    );
+    const withCopper = new Set(
+      [...pcb.traces, ...pcb.vias, ...pcb.zones].map((c) => c.net),
+    );
+    for (const n of targetNets) {
+      if (withCopper.has(n) && !autorouted.has(n) && !open.has(n) && !staleNets.has(n)) {
+        alreadyRouted.add(n);
+      }
+    }
+    for (const n of alreadyRouted) targetNets.delete(n);
+  }
+
+  // Everything this call may touch, so a route that makes the board worse can
+  // be undone whole.
+  const boardBefore = {
+    traces: structuredClone(pcb.traces),
+    vias: structuredClone(pcb.vias),
+    zones: structuredClone(pcb.zones),
+  };
 
   // Connectivity guard: snapshot per-net disjoint copper-group counts before
   // any rip-up so the result can report every net this call left WORSE
@@ -3962,7 +4009,7 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
   // copper stays exactly as authored. An empty effectiveFilter means "route
   // everything", so to subtract preserved nets we make the all-set explicit;
   // with nothing preserved it stays empty (behavior unchanged).
-  const preservedNets = new Set<string>([...lockedNets, ...manualNets]);
+  const preservedNets = new Set<string>([...lockedNets, ...manualNets, ...alreadyRouted]);
   let routeFilter = effectiveFilter;
   if (preservedNets.size > 0) {
     if (effectiveFilter.length > 0) {
@@ -4041,7 +4088,10 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
   };
 
   let routedSomething = false;
-  if (strategy === "auto") {
+  if (preservedNets.size > 0 && routeFilter.length === 0) {
+    // Every routable net is preserved. An empty filter means "route everything"
+    // to the kernel, so it must not be sent.
+  } else if (strategy === "auto") {
     progress?.(0, undefined, "routing all nets (negotiated whole-board pass)");
     const result = await routeAll(pcb, width, routeFilter, effort);
     routedSomething =
@@ -4206,6 +4256,34 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
 
   progress?.(0, undefined, "measuring connectivity with DRC");
   const finalDrc = await drcPcb(pcb, "full", 20);
+  if (beforeSnap.success && finalDrc.success && routeMadeBoardWorse(beforeSnap, finalDrc)) {
+    pcb.traces = boardBefore.traces;
+    pcb.vias = boardBefore.vias;
+    pcb.zones = boardBefore.zones;
+    const counts = (d: DrcSummary) => ({
+      violations: d.violations,
+      errors: d.errors,
+      by_rule: d.byRule,
+    });
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify({
+            success: false,
+            board_unchanged: true,
+            reason:
+              `Routing would have made the board worse (${beforeSnap.errors} DRC errors before, ` +
+              `${finalDrc.errors} after), so every trace, via and zone was restored.`,
+            drc: { before: counts(beforeSnap), after: counts(finalDrc) },
+            ...(alreadyRouted.size > 0 ? { already_routed_nets: [...alreadyRouted].sort() } : {}),
+            ...docResultPayload(ctx),
+          }),
+        },
+      ],
+      isError: true,
+    };
+  }
   const openNets = finalDrc.success ? openConnectionsByNet(finalDrc.details ?? []) : null;
   // A scoped call answers for the nets it was asked about; an unscoped one (or
   // a scope that matched nothing routable) answers for the whole board.
@@ -4290,6 +4368,16 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
     );
   }
 
+  if (alreadyRouted.size > 0) {
+    warnings.push(
+      `${alreadyRouted.size} net(s) were already connected on copper the router did not lay and were left as-is. Name them in \`nets\` to re-route them`,
+    );
+  }
+  if (beforeSnap.success && finalDrc.success && illegalCount(finalDrc) > illegalCount(beforeSnap)) {
+    warnings.push(
+      `routing closed open connections but added illegal copper: ${illegalCount(beforeSnap)} clearance/manufacturing violation(s) before, ${illegalCount(finalDrc)} after — run fix_drc`,
+    );
+  }
   if (guardSkipped) warnings.push(guardSkipped);
   const regressedNets = Object.keys(connectivityRegressions).sort();
   if (regressedNets.length > 0) {
@@ -4312,7 +4400,7 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
   // diffed against an unverifiable (kernel-rejected) board would be meaningless.
   // But a requested receipt is never SILENTLY dropped: an unverifiable
   // snapshot yields `receipt_error` with the reason instead of nothing.
-  if (wantReceipt && beforeSnap && beforeSnap.success) {
+  if (wantReceipt && beforeSnap.success) {
     const after = await drcPcb(pcb, "full", 500);
     // Only build a receipt when the after-snapshot also verified — an
     // unverifiable (kernel-rejected) board has no byNetPair to diff against.
@@ -4343,7 +4431,7 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
         short_pairs: shortPairs,
       };
     }
-  } else if (wantReceipt && beforeSnap && !beforeSnap.success) {
+  } else if (wantReceipt && !beforeSnap.success) {
     receiptField.receipt_error = `receipt requested but the before-route DRC snapshot could not verify the board: ${beforeSnap.reason}`;
   }
 
@@ -4371,6 +4459,10 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
           ...(viasRemoved > 0 ? { vias_removed: viasRemoved } : {}),
           ...(staleCleared.length > 0 ? { stale_nets_cleared: staleCleared } : {}),
           ...(lockedNets.size > 0 ? { locked_nets: [...lockedNets] } : {}),
+          ...(alreadyRouted.size > 0 ? { already_routed_nets: [...alreadyRouted].sort() } : {}),
+          ...(beforeSnap.success && finalDrc.success
+            ? { drc: { before: beforeSnap.violations, after: finalDrc.violations } }
+            : {}),
           ...(manualNets.size > 0
             ? { manual_nets_preserved: [...manualNets].sort() }
             : {}),
@@ -10820,6 +10912,27 @@ function diffPcbElements(before: Pcb | null, after: Pcb | null): PcbElementChang
   ];
 }
 
+/** What an undo did to the CAD structure: ids that came back or went away. */
+function diffDocumentStructure(before: Document, after: Document) {
+  const diff = (a: string[], b: string[]) => ({
+    removed: a.filter((x) => !b.includes(x)),
+    added: b.filter((x) => !a.includes(x)),
+  });
+  const ids = (d: Document) => ({
+    instances: (d.instances ?? []).map((i) => i.id),
+    joints: (d.joints ?? []).map((j) => j.id),
+    part_defs: Object.keys(d.partDefs ?? {}),
+    nodes: Object.keys(d.nodes),
+  });
+  const [b, a] = [ids(before), ids(after)];
+  return {
+    instances: diff(b.instances, a.instances),
+    joints: diff(b.joints, a.joints),
+    part_defs: diff(b.part_defs, a.part_defs),
+    nodes: diff(b.nodes, a.nodes),
+  };
+}
+
 /** JSON Schema for the undo tool. */
 export const undoSchema = {
   type: "object" as const,
@@ -10850,11 +10963,20 @@ export function undo(args: Record<string, unknown>) {
   const beforePcb = getDocPcb(current);
   const beforePcbCopy = beforePcb ? (JSON.parse(JSON.stringify(beforePcb)) as Pcb) : null;
 
-  const restored = undoLastSnapshot(id);
+  const currentCopy = JSON.parse(JSON.stringify(current)) as Document;
+  const currentJson = JSON.stringify(current);
+  // A snapshot identical to the live document records no change, so it cannot
+  // be the step the caller wants back.
+  let restored = undoLastSnapshot(id);
+  while (restored && JSON.stringify(restored) === currentJson) restored = undoLastSnapshot(id);
   if (!restored) {
-    return ecadError("nothing to undo — no mutation has been recorded for this session");
+    return ecadError(
+      "nothing to undo — no recorded step changed this session's document " +
+        "(simulation and read-only tools record nothing)",
+    );
   }
   const changed = diffPcbElements(beforePcbCopy, getDocPcb(restored));
+  const document_changes = diffDocumentStructure(currentCopy, restored);
 
   return {
     content: [
@@ -10865,6 +10987,7 @@ export function undo(args: Record<string, unknown>) {
           undone: true,
           remaining_undos: historyDepth(id),
           changed,
+          document_changes,
           document_id: id,
         }),
       },
@@ -15383,6 +15506,9 @@ export const toolDefs: ToolDef[] = [
       "belonging to the same net. Idempotent: re-running rips up the " +
       "previously autorouted copper on the target nets before routing, so " +
       "a second call replaces the route instead of stacking shorts. " +
+      "Without `nets`, nets already connected on imported copper are left " +
+      "alone (`already_routed_nets`). Fails closed: a route that makes DRC " +
+      "worse restores the board and returns before/after counts. " +
       "Hand-placed copper (add_trace / add_via / coils) is preserved " +
       "automatically; `locked_nets` additionally protects whole nets. A " +
       "net with a copper-pour zone (a plane) is connected by stitching " +
@@ -15692,7 +15818,8 @@ export const toolDefs: ToolDef[] = [
       "before the last add_zone / add_trace / add_via / delete_* / route_nets " +
       "/ place_components (or a CAD create/update/delete) is restored, without " +
       "re-sending the document. Repeated calls walk further back. Returns a " +
-      "`changed` diff of the board elements the rewind moved.",
+      "`changed` diff of the board elements the rewind moved and a " +
+      "`document_changes` diff of instances, joints, part defs and nodes.",
     inputSchema: undoSchema,
     handler: (a) => undo(a) as ToolResult | Promise<ToolResult>,
     behavior: behavior({ writesDoc: true, geometry: true }),

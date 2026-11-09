@@ -291,9 +291,61 @@ function missingModules(source: string, modules: Record<string, string>): string
   return [...new Set(all)].filter((n) => !(n in modules));
 }
 
+/** Whether any `[root ...]` form has a single argument. */
+function hasRootWithoutMaterial(source: string): boolean {
+  const stack: Array<{ head: string; args: number; inAtom: boolean; words: number }> = [];
+  const endAtom = () => {
+    const top = stack.at(-1);
+    if (top) top.inAtom = false;
+  };
+  const addChild = () => {
+    const top = stack.at(-1);
+    if (top && ++top.words > 1) top.args++;
+  };
+  for (let i = 0; i < source.length; i++) {
+    const c = source[i]!;
+    if (c === ";") {
+      while (i < source.length && source[i] !== "\n") i++;
+      endAtom();
+    } else if (c === '"') {
+      for (i++; i < source.length && source[i] !== '"'; i++) if (source[i] === "\\") i++;
+      endAtom();
+      addChild();
+    } else if (c === "[" || c === "(") {
+      endAtom();
+      addChild();
+      stack.push({ head: "", args: 0, inAtom: false, words: 0 });
+    } else if (c === "]" || c === ")") {
+      const done = stack.pop();
+      if (done?.head === "root" && done.args === 1) return true;
+    } else if (/\s/.test(c)) {
+      endAtom();
+    } else {
+      const top = stack.at(-1);
+      if (!top) continue;
+      if (!top.inAtom) addChild();
+      top.inAtom = true;
+      if (top.words === 1) top.head += c;
+    }
+  }
+  return false;
+}
+
 /** Rewrite a kernel module-read failure into what the caller should do. */
-function explainEvalError(e: unknown, input: CreateLoonInput, missing: string[]): Error {
+function explainEvalError(
+  e: unknown,
+  input: CreateLoonInput,
+  missing: string[],
+  source: string,
+): Error {
   const msg = e instanceof Error ? e.message : String(e);
+  if (/runtime error/.test(msg) && hasRootWithoutMaterial(source)) {
+    return new Error(
+      `${msg}\n[root <solid> "<material>"] takes a solid and a material name, and this ` +
+        `program has a root with only the solid. Add a material, ` +
+        `e.g. [root [cube 20 20 20] "default"].`,
+    );
+  }
   if (!missing.length || !/cannot read module|not supported on this platform/.test(msg)) {
     return e instanceof Error ? e : new Error(msg);
   }
@@ -335,7 +387,7 @@ export function evalCadLoon(
     // on a macro registry a restart may have emptied) plus its modules.
     doc = engine.evalLoonDocument(source, modules, { baseDir: base_dir });
   } catch (e) {
-    throw explainEvalError(e, parsed, missingModules(source, modules));
+    throw explainEvalError(e, parsed, missingModules(source, modules), source);
   }
   if (!doc) {
     // Distinguish "no loon at all" from "loon, but a kernel too old to

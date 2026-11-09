@@ -459,6 +459,20 @@ export function recordHistorySnapshot(documentId: string, toolName?: string): vo
   sessionHistory.set(documentId, stack);
 }
 
+/**
+ * Drop the snapshot just recorded when the tool left the document as it found
+ * it, so `undo` always rewinds a step that changed something rather than a
+ * failed call or one that only read the document (`create_robot_env`).
+ */
+export function discardUnchangedSnapshot(documentId: string): void {
+  const stack = sessionHistory.get(documentId);
+  const doc = documents.get(documentId);
+  if (!stack?.length || !doc) return;
+  if (JSON.stringify(stack[stack.length - 1]) !== JSON.stringify(doc)) return;
+  stack.pop();
+  if (stack.length === 0) sessionHistory.delete(documentId);
+}
+
 /** Number of undo steps available for a session. */
 export function historyDepth(documentId: string): number {
   return sessionHistory.get(documentId)?.length ?? 0;

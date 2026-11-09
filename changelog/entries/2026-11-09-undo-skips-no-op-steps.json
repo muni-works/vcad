@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-09-undo-skips-no-op-steps",
+  "version": "0.11.0",
+  "date": "2026-11-09",
+  "category": "fix",
+  "title": "undo rewinds the step that changed the document",
+  "summary": "Tools that leave a document unchanged no longer use up an undo step, and undo reports the instances, joints and nodes it changed.",
+  "features": ["mcp", "undo"],
+  "mcpTools": ["undo"]
+}
