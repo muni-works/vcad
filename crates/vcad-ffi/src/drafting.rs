@@ -15,6 +15,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use vcad_eval::EvaluatedMesh;
 use vcad_ir::{Document, DrawingSectionLine, DrawingSettings, DrawingTitleBlock};
+use vcad_kernel_drafting::dimension::placement::{obstacles_of, place_clear, Obstacle};
 use vcad_kernel_drafting::{
     compose_sheet, create_detail_view, offset_section_mesh, project_mesh, projected_view_to_dxf,
     sheet_to_pdf, AnnotationLayer, BomRow, BoundingBox2D, DetailViewParams, DrawingSheet,
@@ -516,8 +517,15 @@ pub fn compose(doc_text: &str, doc: &Document, req: &DrawingRequest) -> Result<C
 
     // GD&T: placed directly at the anchor's sheet position so frame boxes
     // and text stay readable at any view scale.
-    let mut gdt = AnnotationLayer::new();
+    // Each symbol is kept clear of the part outline, dimensions, cut lines,
+    // callouts and earlier symbols: one placed on top of something slides
+    // outward and gets a leader back to the clicked point.
+    let mut obstacles: Vec<Obstacle> = spec.annotations.iter().flat_map(obstacles_of).collect();
+    let lo = main.to_sheet(Point2D::new(b.min_x, b.min_y));
+    let hi = main.to_sheet(Point2D::new(b.max_x, b.max_y));
+    obstacles.push(Obstacle::Rect((lo, hi)));
     for g in &req.gdt {
+        let mut gdt = AnnotationLayer::new();
         let at = main.to_sheet(Point2D::new(g.at[0], g.at[1]));
         let datum = g
             .datum
@@ -539,8 +547,12 @@ pub fn compose(doc_text: &str, doc: &Document, req: &DrawingRequest) -> Result<C
             }
             other => return Err(format!("unknown GD&T kind `{other}`")),
         }
+        for rd in gdt.render_all(None) {
+            let placed = place_clear(&rd, at, &obstacles, 1.0);
+            obstacles.extend(obstacles_of(&placed));
+            spec.annotations.push(placed);
+        }
     }
-    spec.annotations.extend(gdt.render_all(None));
 
     if let Some(tb) = &drawing.title_block {
         spec.title_block = Some(kernel_title_block(tb, &scale_note));
@@ -908,6 +920,69 @@ mod tests {
         assert!((bottom - 40.0).abs() < 0.5, "bottom width {bottom}");
         assert!((top - 36.0).abs() < 0.5, "top width {top}");
         assert!(sv.num_hatch_lines() > 0);
+    }
+
+    /// Datum and feature-control-frame symbols dropped on the part and on a
+    /// dimension land clear of both, with a leader back to the click.
+    #[test]
+    fn gdt_symbols_clear_dimensions_and_geometry() {
+        use vcad_kernel_drafting::dimension::placement::{annotation_box, text_box};
+        let doc_text = heatsink_doc("");
+        let doc = Document::from_json(&doc_text).unwrap();
+        let base = compose(
+            &doc_text,
+            &doc,
+            &DrawingRequest {
+                view: Some("front".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let dims = base.spec.annotations.clone();
+        // View coords of the width dimension's text (below the part): map
+        // the sheet position back through the placement.
+        let m = &base.main;
+        let to_view = |p: Point2D| {
+            [
+                m.view_center[0] + (p.x - m.sheet_center[0]) / m.scale,
+                m.view_center[1] + (p.y - m.sheet_center[1]) / m.scale,
+            ]
+        };
+        let dim_text = dims[0].texts[0].position;
+        let req: DrawingRequest = serde_json::from_value(serde_json::json!({
+            "view": "front",
+            "gdt": [
+                {"kind": "datum", "datum": "A", "at": to_view(dim_text)},
+                {"kind": "flatness", "tolerance": 0.05, "at": [25.0, 15.0]},
+                {"kind": "perpendicularity", "tolerance": 0.1, "datum": "A", "at": [25.0, 15.0]}
+            ]
+        }))
+        .unwrap();
+        let c = compose(&doc_text, &doc, &req).unwrap();
+        let n = dims.len();
+        assert_eq!(c.spec.annotations.len(), n + 3);
+        let lo = m.to_sheet(Point2D::new(m.bounds.min_x, m.bounds.min_y));
+        let hi = m.to_sheet(Point2D::new(m.bounds.max_x, m.bounds.max_y));
+        let overlap = |a: (Point2D, Point2D), b: (Point2D, Point2D)| {
+            a.0.x < b.1.x && b.0.x < a.1.x && a.0.y < b.1.y && b.0.y < a.1.y
+        };
+        let mut placed: Vec<(Point2D, Point2D)> = Vec::new();
+        for g in &c.spec.annotations[n..] {
+            // The symbol proper (minus its leader, the last line).
+            let mut body = g.clone();
+            body.lines.pop();
+            let bx = annotation_box(&body).unwrap();
+            assert!(!overlap(bx, (lo, hi)), "symbol on the part: {bx:?}");
+            for d in &dims {
+                for t in &d.texts {
+                    assert!(!overlap(bx, text_box(t)), "symbol on dimension text");
+                }
+            }
+            for p in &placed {
+                assert!(!overlap(bx, *p), "symbols overlap each other");
+            }
+            placed.push(bx);
+        }
     }
 
     /// Gate: every sample the app ships draws in every orthographic view, and
