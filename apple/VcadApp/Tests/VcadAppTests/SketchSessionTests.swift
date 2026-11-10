@@ -202,4 +202,106 @@ final class SketchSessionTests: XCTestCase {
         XCTAssertEqual(frame.origin.z, 10, accuracy: 1e-6, "sketch sits on the top face")
         XCTAssertEqual(frame.normal.z, 1, accuracy: 1e-6)
     }
+
+    // MARK: sketch friction
+
+    /// Cmd-Z inside a sketch walks the sketch's history and never removes a
+    /// document feature, even once the sketch has nothing left to undo.
+    func testUndoInSketchIsScopedToTheSketch() throws {
+        let m = try open()
+        try pickTop(m)
+        XCTAssertTrue(m.applyHole(diameter: 6, depth: nil, offset: .zero, counterbore: nil), m.engineError ?? "")
+        let features = opTypes(m).sorted()
+        let withHole = try volume(m)
+        m.picking.clear()
+        m.enterSketch(); m.setSketchTool(.rectangle)
+        m.sketchTap([50, 0]); m.sketchTap([60, 10])
+        let sketch = try XCTUnwrap(m.sketch)
+        XCTAssertEqual(sketch.entities.filter { $0.kind == .line }.count, 4)
+        XCTAssertTrue(m.canUndo)
+        m.undo()
+        XCTAssertTrue(sketch.isEmpty, "undo removed the rectangle")
+        XCTAssertEqual(opTypes(m).sorted(), features)
+        // Nothing left in the sketch: undo again is a no-op, not a document undo.
+        XCTAssertFalse(m.canUndo)
+        m.undo(); m.undo()
+        XCTAssertEqual(opTypes(m).sorted(), features, "document kept every feature")
+        XCTAssertEqual(try volume(m), withHole, accuracy: 1e-6)
+        // Redo brings the rectangle back.
+        XCTAssertTrue(m.canRedo)
+        m.redo()
+        XCTAssertEqual(sketch.entities.filter { $0.kind == .line }.count, 4)
+        XCTAssertEqual(sketch.constraints.count, 4)
+        // An in-progress click is the first thing undo drops.
+        m.sketchTap([70, 0])
+        XCTAssertTrue(sketch.hasInProgress)
+        m.undo()
+        XCTAssertFalse(sketch.hasInProgress)
+        XCTAssertEqual(sketch.entities.filter { $0.kind == .line }.count, 4)
+        // Out of the sketch, undo reaches the document again.
+        m.exitSketch()
+        m.undo()
+        XCTAssertGreaterThan(try volume(m), withHole, "document undo removed the hole")
+    }
+
+    func testSketchUndoRestoresDeletedGeometry() throws {
+        let s = try XCTUnwrap(SketchSession(frame: .principal(.xy)))
+        s.tool = .rectangle
+        s.tap([0, 0]); s.tap([10, 5])
+        let line = try XCTUnwrap(s.entities.first { $0.kind == .line })
+        s.selection = [line.handle]
+        s.deleteSelection()
+        XCTAssertEqual(s.entities.filter { $0.kind == .line }.count, 3)
+        XCTAssertTrue(s.undo())
+        XCTAssertEqual(s.entities.filter { $0.kind == .line }.count, 4)
+        XCTAssertEqual(s.constraints.count, 4)
+        XCTAssertTrue(s.canFinish, "restored rectangle is a closed profile")
+    }
+
+    /// Two corners on the same x (or y) are not a rectangle: no degenerate
+    /// line, no constraint on a refused entity, no raw solver text.
+    func testZeroWidthRectangleKeepsWaitingForAValidCorner() throws {
+        let s = try XCTUnwrap(SketchSession(frame: .principal(.xy)))
+        s.tool = .rectangle
+        for second in [SIMD2<Double>(0, 10), SIMD2<Double>(10, 0)] {
+            s.tap([0, 0]); s.tap(second)
+            XCTAssertTrue(s.hasInProgress, "still waiting for the opposite corner")
+            XCTAssertFalse(s.entities.contains { $0.kind == .line })
+            XCTAssertTrue(s.constraints.isEmpty)
+            let err = try XCTUnwrap(s.lastError)
+            XCTAssertFalse(err.contains("handle") || err.contains("add_constraint"), err)
+            s.cancelPending()
+        }
+        s.tap([0, 0]); s.tap([10, 10])
+        XCTAssertEqual(s.entities.filter { $0.kind == .line }.count, 4)
+        XCTAssertEqual(s.constraints.count, 4)
+        XCTAssertNil(s.lastError)
+    }
+
+    func testConstraintOnMissingEntityIsRefusedPlainly() throws {
+        let s = try XCTUnwrap(SketchSession(frame: .principal(.xy)))
+        XCTAssertFalse(s.constrain(.horizontal, 0))
+        XCTAssertFalse(s.constrain(.horizontal, 999))
+        let err = try XCTUnwrap(s.lastError)
+        XCTAssertFalse(err.contains("handle"), err)
+        XCTAssertTrue(s.constraints.isEmpty)
+    }
+
+    /// With a drawing tool armed, a click places geometry: it never moves the
+    /// sketch onto a face. Only the Select tool may pick a face for an untouched sketch.
+    func testArmedToolNeverRetargetsTheSketchPlane() throws {
+        let m = try open()
+        m.enterSketch()
+        for t in SketchToolKind.allCases where t != .select {
+            m.setSketchTool(t)
+            XCTAssertFalse(m.sketchAwaitsPlane, "\(t) click would move the sketch")
+        }
+        m.setSketchTool(.select)
+        XCTAssertTrue(m.sketchAwaitsPlane)
+        // Adopting with Select still works and lands on the face.
+        try pickTop(m)
+        XCTAssertTrue(m.adoptPickedFaceAsSketchPlane())
+        XCTAssertNotNil(m.sketchFace)
+        XCTAssertEqual(try XCTUnwrap(m.sketch?.frame).origin.z, 10, accuracy: 1e-6)
+    }
 }

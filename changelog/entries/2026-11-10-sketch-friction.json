@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-10-sketch-friction",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "fix",
+  "title": "Mac app: sketch-scoped undo, clean rectangles, stable plane",
+  "summary": "Cmd-Z in a sketch undoes sketch edits and never removes a document feature; zero-width rectangles wait for a valid corner; armed-tool clicks draw instead of moving the sketch.",
+  "features": ["sketch", "undo", "native-app"]
+}

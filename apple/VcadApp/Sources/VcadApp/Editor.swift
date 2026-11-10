@@ -1226,10 +1226,19 @@ final class EditorModel {
                                                      undo: [UndoEntry], redo: [UndoEntry], dirty: Bool)?
     /// What ⌘Z would undo, for the Edit menu.
     var undoActionName: String? {
+        if let sketch = sketchHistory { return sketch.canUndo ? "Sketch Edit" : nil }
         if let last = undoStack.last { return last.name }
         return generationUndo != nil ? "Generate" : nil
     }
-    var redoActionName: String? { redoStack.last?.name }
+    var redoActionName: String? {
+        if let sketch = sketchHistory { return sketch.canRedo ? "Sketch Edit" : nil }
+        return redoStack.last?.name
+    }
+    /// While sketching, undo/redo are scoped to the sketch (Fusion/Onshape
+    /// style): the open sketch's own history, never the document's. Document
+    /// history comes back once the sketch is finished or cancelled, so an
+    /// undo pressed mid-sketch can never remove a feature under it.
+    var sketchHistory: SketchSession? { sketching ? sketch : nil }
     /// One scrub gesture = one undo entry; skip the materialize-pop on edits.
     @ObservationIgnored var suppressMaterializePop = false
     /// In-place re-eval of a parameter edit (mesh swap, no full rebuild / pop).
@@ -1438,8 +1447,14 @@ final class EditorModel {
         markReeval(.rebuild)
     }
 
-    var canUndo: Bool { !undoStack.isEmpty || generationUndo != nil }
-    var canRedo: Bool { !redoStack.isEmpty }
+    var canUndo: Bool {
+        if let sketch = sketchHistory { return sketch.canUndo }
+        return !undoStack.isEmpty || generationUndo != nil
+    }
+    var canRedo: Bool {
+        if let sketch = sketchHistory { return sketch.canRedo }
+        return !redoStack.isEmpty
+    }
     /// Export is available for anything with exportable geometry (not the gripper).
     var canExport: Bool { if case .gripper = source { return false }; return true }
 
@@ -1782,6 +1797,10 @@ final class EditorModel {
     /// Nothing drawn and no plane chosen yet: the next click may pick a face.
     var sketchAwaitsPlane: Bool {
         guard let k = sketch, sketchFace == nil, !sketchPlaneChosen else { return false }
+        // A click with a drawing tool armed places geometry (Fusion/Shapr3D:
+        // the plane is chosen before drawing). Only the Select tool picks a
+        // face to move an untouched sketch onto.
+        guard k.tool == .select else { return false }
         return k.isEmpty && !k.hasInProgress
     }
     /// Restart the sketch on the face just picked. False when it isn't planar.
@@ -1792,6 +1811,7 @@ final class EditorModel {
         enterSketch()
         sketch?.tool = tool
         picking.clear()
+        if sketchFace != nil { GlassUI.shared.flash("Sketch moved onto the picked face", symbol: "square.on.square") }
         return sketchFace != nil
     }
     func setSketchPlane(_ p: SketchPlane) {
@@ -2305,12 +2325,21 @@ final class EditorModel {
     }
 
     func undo() {
+        if let sketch = sketchHistory {
+            if sketch.undo() { sketchDirty = true }
+            else { GlassUI.shared.flash("Nothing to undo in this sketch", symbol: "pencil.and.outline") }
+            return
+        }
         guard let entry = undoStack.popLast() else { undoGeneration(); return }
         guard let back = step(entry, forward: false) else { return }
         redoStack.append(back)
         GlassUI.shared.flash("Undo \(entry.name)", symbol: "arrow.uturn.backward")
     }
     func redo() {
+        if let sketch = sketchHistory {
+            if sketch.redo() { sketchDirty = true }
+            return
+        }
         guard let entry = redoStack.popLast() else { return }
         guard let back = step(entry, forward: true) else { return }
         undoStack.append(back)

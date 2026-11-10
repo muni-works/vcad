@@ -311,10 +311,17 @@ final class SketchSession {
                    _ e1: UInt32 = 0, _ r1: UInt32 = VCAD_SKETCH_REF_SELF,
                    _ e2: UInt32 = 0, _ r2: UInt32 = VCAD_SKETCH_REF_SELF,
                    value: Double = 0, value2: Double = 0, solveNow: Bool = true) -> Bool {
+        // A zero handle is an entity the solver refused (e.g. a zero-length
+        // line): never hand it a constraint.
+        let known = Set(entities.map(\.handle))
+        guard e0 != 0, known.contains(e0), e1 == 0 || known.contains(e1), e2 == 0 || known.contains(e2) else {
+            lastError = "\(kind.label) can't be added to that geometry"; return false
+        }
         var c = VcadSketchConstraint(kind: kind.rawValue, e0: e0, r0: r0, e1: e1, r1: r1,
                                      e2: e2, r2: r2, value: value, value2: value2)
         let idx = vcad_sketch_add_constraint(raw, &c)
-        guard idx >= 0 else { lastError = SimError.pending() ?? "Constraint refused"; return false }
+        // The solver's message is for developers (handles, function names).
+        guard idx >= 0 else { _ = SimError.pending(); lastError = "\(kind.label) can't be added to that geometry"; return false }
         recorded.append(c)
         constraints.append(.init(index: Int(idx), kind: kind,
                                  entities: [e0, e1, e2].filter { $0 != 0 }, value: value))
@@ -323,9 +330,10 @@ final class SketchSession {
     }
 
     /// Edit a driving dimension in place and re-solve.
-    func setDimension(_ row: SketchConstraintRow, value: Double) {
+    func setDimension(_ row: SketchConstraintRow, value: Double) { recording { setDimensionNow(row, value: value) } }
+    private func setDimensionNow(_ row: SketchConstraintRow, value: Double) {
         guard vcad_sketch_set_dimension(raw, UInt32(row.index), value, 0) else {
-            lastError = SimError.pending() ?? "Dimension refused"; return
+            _ = SimError.pending(); lastError = "That dimension can't be applied"; return
         }
         if let i = constraints.firstIndex(of: row) { constraints[i].value = value }
         if recorded.indices.contains(row.index) { recorded[row.index].value = value }
@@ -333,67 +341,129 @@ final class SketchSession {
     }
 
     /// Remove the most recent constraint (the solver's stack is LIFO).
-    func popConstraint() {
+    func popConstraint() { recording { popConstraintNow() } }
+    private func popConstraintNow() {
         guard !constraints.isEmpty, vcad_sketch_pop_constraint(raw) else { return }
         constraints.removeLast()
         recorded.removeLast()
         solve()
     }
 
-    /// Re-solve and refresh every solved position.
     /// Delete the selected entities, plus any line or arc built on a deleted
     /// point and any point left unused. The solver can't remove entities, so
     /// this rebuilds it from what remains, keeping solved positions.
     func deleteSelection() {
         guard !selection.isEmpty else { return }
-        var gone = Set(selection)
-        for e in entities where e.kind != .point && e.points.contains(where: gone.contains) { gone.insert(e.handle) }
-        let kept = entities.filter { !gone.contains($0.handle) }
-        let used = Set(kept.filter { $0.kind != .point }.flatMap(\.points))
-        for e in entities where e.kind != .point && gone.contains(e.handle) {
-            for p in e.points where !used.contains(p) { gone.insert(p) }
+        recording {
+            var gone = Set(selection)
+            for e in entities where e.kind != .point && e.points.contains(where: gone.contains) { gone.insert(e.handle) }
+            let kept = entities.filter { !gone.contains($0.handle) }
+            let used = Set(kept.filter { $0.kind != .point }.flatMap(\.points))
+            for e in entities where e.kind != .point && gone.contains(e.handle) {
+                for p in e.points where !used.contains(p) { gone.insert(p) }
+            }
+            var snap = snapshot()
+            snap.entities = entities.filter { !gone.contains($0.handle) }
+            restore(snap)
         }
+    }
+
+    // MARK: history
+
+    /// Everything the sketch is made of, solver-independent. Undo/redo
+    /// rebuild the solver from one of these, since it can't remove entities.
+    private struct Snapshot {
+        var entities: [SketchEntity]
+        var constraints: [SketchConstraintRow]
+        var recorded: [VcadSketchConstraint]
+        var positions: [UInt32: SIMD2<Double>]
+        var radii: [UInt32: Double]
+    }
+    private var undoStack: [Snapshot] = []
+    private var redoStack: [Snapshot] = []
+    private var recordingDepth = 0
+
+    /// The sketch's own history: Cmd-Z inside a sketch walks this, never the document.
+    var canUndo: Bool { hasInProgress || !undoStack.isEmpty }
+    var canRedo: Bool { !redoStack.isEmpty }
+
+    private func snapshot() -> Snapshot {
+        Snapshot(entities: entities, constraints: constraints, recorded: recorded, positions: positions, radii: radii)
+    }
+    /// Run a user action; it becomes one undo step when it changed geometry or constraints.
+    private func recording(_ body: () -> Void) {
+        recordingDepth += 1
+        let before = snapshot()
+        body()
+        recordingDepth -= 1
+        guard recordingDepth == 0,
+              before.entities != entities || before.constraints != constraints else { return }
+        undoStack.append(before)
+        redoStack = []
+    }
+    /// Undo: first drop in-progress clicks, else step back one action.
+    @discardableResult
+    func undo() -> Bool {
+        if hasInProgress { cancelPending(); return true }
+        guard let s = undoStack.popLast() else { return false }
+        redoStack.append(snapshot())
+        restore(s)
+        return true
+    }
+    @discardableResult
+    func redo() -> Bool {
+        guard let s = redoStack.popLast() else { return false }
+        undoStack.append(snapshot())
+        restore(s)
+        return true
+    }
+
+    /// Rebuild the solver from a snapshot, keeping its solved positions.
+    /// Constraints whose entities are gone are dropped.
+    private func restore(_ snap: Snapshot) {
         var o = [frame.origin.x, frame.origin.y, frame.origin.z]
         var x = [frame.xDir.x, frame.xDir.y, frame.xDir.z]
         var y = [frame.yDir.x, frame.yDir.y, frame.yDir.z]
         guard let fresh = vcad_sketch_new_on_plane(&o, &x, &y) else { lastError = "Sketch solver unavailable"; return }
         var map: [UInt32: UInt32] = [:]
         var rebuilt: [SketchEntity] = []
-        for e in entities where !gone.contains(e.handle) {
+        for e in snap.entities {
             var n = e
             n.points = e.points.compactMap { map[$0] }
+            guard n.points.count == e.points.count else { continue }
             switch e.kind {
             case .point:
-                let q = positions[e.handle] ?? .zero
+                let q = snap.positions[e.handle] ?? .zero
                 n.handle = vcad_sketch_add_point(fresh, q.x, q.y)
             case .line:
                 n.handle = vcad_sketch_add_line(fresh, n.points[0], n.points[1])
             case .arc:
                 n.handle = vcad_sketch_add_arc(fresh, n.points[0], n.points[1], n.points[2], e.ccw)
             case .circle:
-                n.handle = vcad_sketch_add_circle(fresh, n.points[0], radii[e.handle] ?? 1)
+                n.handle = vcad_sketch_add_circle(fresh, n.points[0], snap.radii[e.handle] ?? 1)
             }
+            guard n.handle != 0 else { continue }
             map[e.handle] = n.handle
             rebuilt.append(n)
         }
         var rows: [SketchConstraintRow] = []
         var replayed: [VcadSketchConstraint] = []
-        for (row, source) in zip(constraints, recorded) {
+        for (row, source) in zip(snap.constraints, snap.recorded) {
             guard row.entities.allSatisfy({ map[$0] != nil }) else { continue }
             var c = source
             c.e0 = map[c.e0] ?? 0
             c.e1 = map[c.e1] ?? 0
             c.e2 = map[c.e2] ?? 0
             let index = vcad_sketch_add_constraint(fresh, &c)
-            guard index >= 0 else { continue }
+            guard index >= 0 else { _ = SimError.pending(); continue }
             rows.append(.init(index: Int(index), kind: row.kind, entities: row.entities.compactMap { map[$0] }, value: row.value))
             replayed.append(c)
         }
         var moved: [UInt32: SIMD2<Double>] = [:]
         var sizes: [UInt32: Double] = [:]
         for (old, new) in map {
-            if let p = positions[old] { moved[new] = p }
-            if let r = radii[old] { sizes[new] = r }
+            if let p = snap.positions[old] { moved[new] = p }
+            if let r = snap.radii[old] { sizes[new] = r }
         }
         vcad_sketch_free(raw)
         raw = fresh
@@ -405,9 +475,11 @@ final class SketchSession {
         selection = []
         pending = []
         chain = []
+        lastError = nil
         solve()
     }
 
+    /// Re-solve and refresh every solved position.
     func solve() {
         let r = vcad_sketch_solve(raw)
         converged = r.converged != 0 || r.status == 3 || r.status == 4
@@ -460,7 +532,9 @@ final class SketchSession {
         return (p / gridStep).rounded(.toNearestOrAwayFromZero) * gridStep
     }
 
-    func tap(_ raw: SIMD2<Double>, additive: Bool = false) {
+    func tap(_ raw: SIMD2<Double>, additive: Bool = false) { recording { tapNow(raw, additive: additive) } }
+    private func tapNow(_ raw: SIMD2<Double>, additive: Bool) {
+        if tool != .select { lastError = nil }
         let p = gridded(raw)
         switch tool {
         case .select:
@@ -479,6 +553,13 @@ final class SketchSession {
             }
         case .rectangle:
             if let a = pending.first {
+                // Corners sharing a row or column make a zero-area box (the
+                // corners would snap together into a degenerate line): keep
+                // waiting for a real second corner.
+                guard Self.isRectangle(a, p, snap: snap) else {
+                    lastError = "A rectangle needs width and height. Pick the opposite corner off this line."
+                    break
+                }
                 rectangle(a, p); pending = []
             } else { pending = [p] }
         case .polygon:
@@ -524,7 +605,8 @@ final class SketchSession {
     }
 
     /// Finish a multi-click tool (spline: sample the control polygon).
-    func commitPending() {
+    func commitPending() { recording { commitPendingNow() } }
+    private func commitPendingNow() {
         if tool == .spline, pending.count >= 2 {
             let pts = Self.catmullRom(pending, samplesPerSpan: 8)
             // Interior samples are closer than the snap radius: only the
@@ -546,6 +628,11 @@ final class SketchSession {
     /// Escape: drop in-progress clicks.
     func cancelPending() { pending = []; chain = []; revision &+= 1 }
 
+    /// Two clicks span a real rectangle: both sides longer than the snap radius,
+    /// so no two corners merge.
+    static func isRectangle(_ a: SIMD2<Double>, _ b: SIMD2<Double>, snap: Double) -> Bool {
+        abs(b.x - a.x) >= max(snap, 1e-6) && abs(b.y - a.y) >= max(snap, 1e-6)
+    }
     private func rectangle(_ a: SIMD2<Double>, _ b: SIMD2<Double>) {
         let c = [a, SIMD2(b.x, a.y), b, SIMD2(a.x, b.y)].map { pointAt($0) }
         let l = (0..<4).map { addLine(c[$0], c[($0 + 1) % 4]) }
@@ -587,6 +674,11 @@ final class SketchSession {
     /// Apply a constraint to the current selection, inferring refs from kinds.
     @discardableResult
     func constrainSelection(_ kind: SketchConstraintKind) -> Bool {
+        var ok = false
+        recording { ok = constrainSelectionNow(kind) }
+        return ok
+    }
+    private func constrainSelectionNow(_ kind: SketchConstraintKind) -> Bool {
         let sel = selection.compactMap { entity($0) }
         defer { solve() }
         switch (kind, sel.count) {
@@ -657,7 +749,8 @@ final class SketchSession {
     /// Offset every closed loop outward (positive) or inward by `d`, adding
     /// the result as new geometry: lines offset with mitred corners, circles
     /// and arcs by radius.
-    func offsetProfile(by d: Double) {
+    func offsetProfile(by d: Double) { recording { offsetProfileNow(by: d) } }
+    private func offsetProfileNow(by d: Double) {
         guard let prof = profileSegments() else { return }
         let lines = prof.compactMap { s -> (SIMD2<Double>, SIMD2<Double>)? in
             if case .line(let a, let b) = s { return (a, b) }; return nil
