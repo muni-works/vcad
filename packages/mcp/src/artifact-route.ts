@@ -1,10 +1,12 @@
 /**
  * Shared HTTP handler for the artifact channel (`/artifacts/*`).
  *
- * Served by the local HTTP transport (packages/mcp/src/http.ts).
+ * Both deployment entry points use it, so the routes behave identically:
+ *   - services/mcp/entry.ts   → the Vercel serverless function (mcp.vcad.io)
+ *   - packages/mcp/src/http.ts → the standalone Node server (Fly.io / local)
  *
  * Capability-keyed by the unguessable artifact id in the path — possession of
- * the id is the grant, the same model as session ids. This is how a
+ * the id is the grant, the same model as live-share session ids. This is how a
  * large fab/export bundle leaves the model's context: the tool returns a
  * { artifact_url, manifest } handle and the actual bytes are fetched here.
  *

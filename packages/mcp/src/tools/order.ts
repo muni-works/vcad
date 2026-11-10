@@ -4,16 +4,18 @@
  *   quote_manufacturing — measure a live design, run light DFM, fan out to fab
  *                         adapters, return a margin-inclusive quote, and persist
  *                         it + a QUOTED order. NO money moves.
+ *   get_order_status    — read an order's lifecycle row.
+ *   list_orders         — list the caller's orders.
  *
- * The hosted order lifecycle (get_order_status / list_orders / place_order /
- * authorize_spend) was removed with the hosted services in vcad 1.0. Nothing
- * here can spend; the fab_handoff tells the user how to order on the fab's site.
+ * place_order / authorize_spend / wallet tools (the money plane) are Phase 1,
+ * gated on the three critical fixes (DB-backed revocable authz, idempotent
+ * outbox worker, atomic debit RPC). Nothing here can spend.
  */
 
 import { randomUUID, createHash } from "node:crypto";
 import { estimateCost, type Engine } from "@vcad/engine";
 import type { Document } from "@vcad/ir";
-import type { AuthUser } from "../auth-user.js";
+import type { AuthUser } from "../oauth.js";
 import { getSession } from "./session.js";
 import { measureDocument } from "../fabricate/geometry.js";
 import { FulfillmentBroker } from "../fabricate/broker.js";
@@ -23,6 +25,7 @@ import { buildFabHandoff } from "../fabricate/handoff.js";
 import { buildKerfSheetMetalIntent, KERF_VENDOR } from "../fabricate/adapters/kerf.js";
 import { intentHash } from "../fabricate/kerf/intent-hash.js";
 import type { ConfiguratorIntent, FileRef } from "../fabricate/kerf/contract.js";
+import { captureEvent } from "../telemetry.js";
 import { getArtifactFileAsync, resolveArtifactRefAsync } from "./artifact-store.js";
 import { behavior, type ToolDef } from "./tool-def.js";
 import {
@@ -96,7 +99,8 @@ function quoteDfm(process: Process, metrics: GeometryMetrics): DfmSummary {
 }
 
 /** sha256(JSON)[0..16] — the design fingerprint persisted on quotes and
- *  (exported for reuse). */
+ *  re-checked by place_order's geometry gate (exported so the gate hashes
+ *  with the exact same function, never a near-copy). */
 export function docHash(ir: unknown): string {
   return createHash("sha256").update(JSON.stringify(ir)).digest("hex").slice(0, 16);
 }
@@ -471,6 +475,18 @@ export async function quoteManufacturing(
   // Interim rail for processes with no signed fab partner: hand the agent a
   // structured path to finish the order on a fab's own instant-quote site.
   const fabHandoff = buildFabHandoff(process, { hasArtifact: fabArtifact != null });
+  if (fabHandoff) {
+    // Aggregate BD telemetry — how much order-ready demand the handoff rail
+    // generates (counts + totals only; no argument values or IR).
+    captureEvent("fab_handoff_generated", {
+      process,
+      quantity,
+      material: quote.material ?? "unspecified",
+      total_usd: toUsd(quote.total_amount_minor),
+      has_fab_artifact: fabArtifact != null,
+      dfm_passed: dfm.passed,
+    });
+  }
 
   // Agent-facing payload: margin-inclusive prices only; fab cost / margin never appear.
   const quoteResult = ok({
@@ -539,7 +555,7 @@ export async function quoteManufacturing(
       (result.recommended.pricing_basis === "quoted"
         ? "The recommended price is the fab's OWN displayed quote (via the kerf rail), bound to kerf_intent_hash — any geometry/config/quantity edit kills it (re-quote). Ordering/payment still ships separately. "
         : "Phase 0: quote-only. Prices are local ESTIMATES (no binding fab quote yet) and ordering/payment ships in Phase 1. ") +
-      "Ordering through vcad is not available in the local build — use `fab_handoff` to order directly from the fab." +
+      "An order row was created at state QUOTED — see it with get_order_status / list_orders." +
       (fabArtifact
         ? " Fab files are bound by reference (artifact_id) — they stay in the artifact store and never transit model context."
         : "") +
@@ -556,6 +572,78 @@ export async function quoteManufacturing(
   return quoteResult;
 }
 
+// ── get_order_status ─────────────────────────────────────────────────────────
+
+export const getOrderStatusSchema = {
+  type: "object" as const,
+  properties: {
+    order_id: { type: "string" as const, description: "Order id from quote_manufacturing." },
+  },
+  required: ["order_id"],
+};
+
+export async function getOrderStatus(
+  input: unknown,
+  store: FabricateStore,
+  user: AuthUser | null,
+): Promise<ToolResult> {
+  const args = (input ?? {}) as Record<string, unknown>;
+  const orderId = String(args.order_id ?? "");
+  if (!orderId) return err("order_id is required.");
+
+  const order = await store.getOrder(orderId, ownerId(user));
+  if (!order) return err(`Unknown order_id: ${orderId}`);
+
+  return ok({
+    order_id: order.order_id,
+    document_id: order.document_id,
+    quote_id: order.quote_id,
+    state: order.state,
+    fab: order.fab,
+    fab_order_ref: order.fab_order_ref,
+    total_amount_usd: toUsd(order.amount_total_minor),
+    currency: order.currency,
+    tracking: null,
+    fab_artifact: order.fab_artifact ?? null,
+    events: order.events,
+  });
+}
+
+// ── list_orders ───────────────────────────────────────────────────────────────
+
+export const listOrdersSchema = {
+  type: "object" as const,
+  properties: {
+    status: { type: "string" as const, description: "Optional order state filter (e.g. QUOTED)." },
+    limit: { type: "integer" as const, minimum: 1, maximum: 200, description: "Max rows (default 50)." },
+  },
+  required: [],
+};
+
+export async function listOrders(
+  input: unknown,
+  store: FabricateStore,
+  user: AuthUser | null,
+): Promise<ToolResult> {
+  const args = (input ?? {}) as Record<string, unknown>;
+  const status = typeof args.status === "string" ? (args.status as OrderState) : undefined;
+  const limit = typeof args.limit === "number" ? args.limit : undefined;
+
+  const orders = await store.listOrders(ownerId(user), { status, limit });
+  return ok({
+    count: orders.length,
+    orders: orders.map((o) => ({
+      order_id: o.order_id,
+      document_id: o.document_id,
+      state: o.state,
+      fab: o.fab,
+      total_amount_usd: toUsd(o.amount_total_minor),
+      currency: o.currency,
+      created_at: o.created_at,
+    })),
+  });
+}
+
 export const toolDefs: ToolDef[] = [
   {
     name: "quote_manufacturing",
@@ -565,5 +653,23 @@ export const toolDefs: ToolDef[] = [
     inputSchema: quoteManufacturingSchema,
     handler: (a, c) => quoteManufacturing(a, c.engine, c.fabricateStore, c.user),
     behavior: behavior({ mount: true }),
+  },
+  {
+    name: "get_order_status",
+    pack: "fabricate",
+    description:
+      "Return the lifecycle row for a Fabricate order (state, fab, totals, event timeline). Read-only.",
+    inputSchema: getOrderStatusSchema,
+    handler: (a, c) => getOrderStatus(a, c.fabricateStore, c.user),
+    behavior: behavior({}),
+  },
+  {
+    name: "list_orders",
+    pack: "fabricate",
+    description:
+      "List the caller's Fabricate orders, newest first. Optional status filter and limit. Read-only.",
+    inputSchema: listOrdersSchema,
+    handler: (a, c) => listOrders(a, c.fabricateStore, c.user),
+    behavior: behavior({}),
   },
 ];

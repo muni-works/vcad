@@ -22,6 +22,7 @@ vcad-crdt = { path = "../vcad-crdt", version = "0.11.0" }
 vcad-kernel = { path = "../vcad-kernel", version = "0.11.0" }
 vcad-app = { path = "../vcad-app", version = "0.11.0" }
 vcad-i18n = { workspace = true }
+vcad-chat = { path = "../vcad-chat", version = "0.11.0" }
 vcad-eval = { path = "../vcad-eval", version = "0.11.0" }
 vcad-kernel-urdf = { path = "../vcad-kernel-urdf", version = "0.11.0" }
 vcad-kernel-sketch = { path = "../vcad-kernel-sketch", version = "0.11.0" }
@@ -52,10 +53,11 @@ axum = { version = "0.8", optional = true }
 tower-http = { version = "0.6", features = ["cors"], optional = true }
 termview = { workspace = true }
 
-# Async runtime. `tokio` is required
+# Async runtime for the chat stream background thread. `tokio` is required
 # unconditionally now; the print-server feature extends it with full runtime
 # support via `tokio` → full pulled in through feature.
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros", "time"] }
+futures-util = "0.3"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 opentelemetry = "0.30"

@@ -73,7 +73,7 @@ if (readStamp() !== fingerprint || !existsSync(entry)) {
   // Explicit dependency order — `npm run build --workspaces` does NOT
   // topologically sort (proven by the first mcp-publish CI run, where
   // @vcad/app built before its deps and failed). Same set + order as
-  // mcp-publish.yml.
+  // services/mcp/build.sh.
   for (const pkg of ["@vcad/ir", "@vcad/engine", "@vcad/core", "@vcad/mcp"]) {
     execSync(`npm run build -w ${pkg}`, {
       cwd: repo,

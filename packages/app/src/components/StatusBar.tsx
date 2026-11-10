@@ -10,6 +10,7 @@ import { useDocumentStore, useUiStore, useSketchStore, t, tFmt, type LogLevelNam
 import { useLocaleStore, supportedLocales, type SupportedLocale } from "@/stores/locale-store";
 import { useDrawingStore } from "@/stores/drawing-store";
 import { useLogStore, getFilteredEntries } from "@/stores/log-store";
+import { FooterUsageMeter } from "@/components/FooterUsageMeter";
 import { FooterChip, FooterChipButton } from "@/components/footer/FooterChip";
 import { CursorCoordChip } from "@/components/footer/CursorCoordChip";
 import { KernelPulseChip } from "@/components/footer/KernelPulseChip";
@@ -282,6 +283,7 @@ export function StatusBar() {
 
       <SelectionFilterChips />
 
+      <FooterUsageMeter />
 
       <LocalePicker />
 

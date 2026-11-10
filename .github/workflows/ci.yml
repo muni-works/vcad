@@ -300,7 +300,10 @@ jobs:
           key: turbo-${{ runner.os }}-${{ github.sha }}
           restore-keys: |
             turbo-${{ runner.os }}-
-      # --ignore-scripts skips native postinstall builds no CI task needs.
+      # --ignore-scripts skips the canvas native build (hf-space only).
+      # hf-space has no `build` or `test` task so CI never touches canvas
+      # at runtime, which lets us drop libcairo/libpango/librsvg apt deps
+      # (~23s) and the native compile step.
       - run: npm ci --prefer-offline --no-audit --no-fund --ignore-scripts
       - run: npm run version:check
       # Engine boundary: core/app mutate the Rust engine only via

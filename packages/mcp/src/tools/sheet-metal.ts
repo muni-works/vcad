@@ -11,7 +11,7 @@
  *
  * Session-document based (like `inspect_cad` / `export_cad`) so the same
  * `document_id` works with the rest of the MCP surface — `export_cad`,
- * `open_in_app`, `inspect_cad` all operate on the part this creates.
+ * `open_in_browser`, `inspect_cad` all operate on the part this creates.
  *
  * `cost` and `suggest_fix` from the spec are deferred: costing needs the
  * process-cost model wired to the sheet IR, and fix synthesis needs IR-edit
@@ -727,7 +727,7 @@ export const toolDefs: ToolDef[] = [
     name: "sheet_metal_create",
     pack: "sheet_metal",
     description:
-      "Create a sheet-metal part: a rectangular or polygon base flange plus an ordered chain of edge flanges, hems, and jogs. Supports `shop_profile` (e.g. \"sendcutsend\") to resolve bend radii/K-factors from the fab's published catalog, `bend_relief` to cut relief notches at bend ends, and `engravings` (text labels via a built-in single-stroke font, or raw polylines) surface-marked on the base flange — no material removal, exempt from min-feature DFM, emitted on the DXF ENGRAVE layer. Returns a `document_id` (usable with sheet_metal_unfold/check, inspect_cad, export_cad, open_in_app), the panel/bend model summary, flat bbox + area, and DFM violations.",
+      "Create a sheet-metal part: a rectangular or polygon base flange plus an ordered chain of edge flanges, hems, and jogs. Supports `shop_profile` (e.g. \"sendcutsend\") to resolve bend radii/K-factors from the fab's published catalog, `bend_relief` to cut relief notches at bend ends, and `engravings` (text labels via a built-in single-stroke font, or raw polylines) surface-marked on the base flange — no material removal, exempt from min-feature DFM, emitted on the DXF ENGRAVE layer. Returns a `document_id` (usable with sheet_metal_unfold/check, inspect_cad, export_cad, open_in_browser), the panel/bend model summary, flat bbox + area, and DFM violations.",
     inputSchema: sheetMetalCreateSchema,
     handler: (a, c) => sheetMetalCreate(a, c.engine),
     behavior: behavior({ writesDoc: true, geometry: true, mount: true }),

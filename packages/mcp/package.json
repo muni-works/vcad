@@ -12,16 +12,18 @@
     ".": "./dist/index.js",
     "./server": "./dist/server.js",
     "./viewer": "./dist/viewer.js",
-    "./browser-tools": "./dist/browser-tools.js"
+    "./browser-tools": "./dist/browser-tools.js",
+    "./oauth": "./dist/oauth.js"
   },
   "files": [
     "dist"
   ],
   "scripts": {
     "build:viewer": "vite build --config vite.viewer.config.ts && node scripts/wrap-viewer.mjs",
+    "build:live": "vite build --config vite.live.config.ts && node scripts/wrap-live.mjs",
     "build:mech-catalog": "node scripts/gen-mech-catalog.mjs && node scripts/gen-orderable-catalog.mjs",
-    "build": "npm run build:viewer && npm run build:mech-catalog && tsc --noCheck",
-    "typecheck": "npm run build:viewer && npm run build:mech-catalog && tsc --noEmit",
+    "build": "npm run build:viewer && npm run build:live && npm run build:mech-catalog && tsc --noCheck",
+    "typecheck": "npm run build:viewer && npm run build:live && npm run build:mech-catalog && tsc --noEmit",
     "test": "npm run build:mech-catalog && vitest run",
     "serve": "node scripts/serve.mjs",
     "build:npm": "node scripts/build-npm.mjs"
@@ -39,6 +41,7 @@
   },
   "devDependencies": {
     "@modelcontextprotocol/ext-apps": "^1.7.4",
+    "@supabase/supabase-js": "^2.45.0",
     "@types/node": "^22",
     "@types/three": "^0.184.1",
     "three": "^0.184.0",

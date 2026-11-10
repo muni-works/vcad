@@ -14,17 +14,89 @@ if (import.meta.env.DEV && "serviceWorker" in navigator) {
     }
   });
 }
+import {
+  AuthProvider,
+  configureStorage,
+  configureVersionHistoryStorage,
+  initSyncListeners,
+  triggerSync,
+  type StorageAdapter,
+} from "@vcad/auth";
 import { App } from "./App";
+import { CliAuth } from "./components/CliAuth";
+import { AuthorizePage } from "./components/AuthorizePage";
+import { getAuthorizeRouteId } from "./lib/authorize-route";
+import { ExportAllPage } from "./components/ExportAllPage";
 import { RetirementPage } from "./components/RetirementPage";
 import {
+  EXPORT_PATH,
   isProtectedPath,
   planRetirementRoute,
   retirementRedirectsEnabled,
   type RetirementRoute,
 } from "./lib/retirement";
 import "./index.css";
+import {
+  getAllDocuments,
+  loadDocument,
+  saveCompleteDocument,
+  updateDocument,
+} from "./lib/storage";
 import { installLastOpenedTracker } from "./lib/last-opened";
+import { useBootStore } from "./stores/boot-store";
 
+// Configure storage adapter for auth/sync
+const storageAdapter: StorageAdapter = {
+  getAllDocuments: async () => {
+    const docs = await getAllDocuments();
+    return docs.map((d) => ({
+      id: d.id,
+      name: d.name,
+      document: d.document,
+      createdAt: d.createdAt,
+      modifiedAt: d.modifiedAt,
+      version: d.version,
+      syncStatus: d.syncStatus,
+      cloudId: d.cloudId,
+      thumbnail: d.thumbnail,
+    }));
+  },
+  getDocument: async (id) => {
+    const doc = await loadDocument(id);
+    if (!doc) return null;
+    return {
+      id: doc.id,
+      name: doc.name,
+      document: doc.document,
+      createdAt: doc.createdAt,
+      modifiedAt: doc.modifiedAt,
+      version: doc.version,
+      syncStatus: doc.syncStatus,
+      cloudId: doc.cloudId,
+      thumbnail: doc.thumbnail,
+    };
+  },
+  saveDocument: async (doc) => {
+    await saveCompleteDocument({
+      id: doc.id,
+      name: doc.name,
+      document: doc.document as import("@vcad/core").VcadFile,
+      createdAt: doc.createdAt,
+      modifiedAt: doc.modifiedAt,
+      version: doc.version,
+      syncStatus: doc.syncStatus,
+      cloudId: doc.cloudId,
+      thumbnail: doc.thumbnail,
+    });
+  },
+  updateDocument: async (id, updates) => {
+    await updateDocument(id, updates as Parameters<typeof updateDocument>[1]);
+  },
+};
+
+configureStorage(storageAdapter);
+configureVersionHistoryStorage(storageAdapter);
+initSyncListeners();
 installLastOpenedTracker();
 
 // Dev-only automation hook: expose the core stores so headless harnesses
@@ -42,19 +114,76 @@ if (import.meta.env.DEV) {
   );
 }
 
+/**
+ * Defer the first sync until bootstrap finishes.
+ *
+ * On cold-start, AuthProvider's `ensureSession()` resolves quickly with the
+ * cached session and fires `onSignIn` while `bootstrap()` is still resolving
+ * the document. The original handler called `triggerSync()` immediately,
+ * which raced our IDB read in `fetchDocumentData()` — sync's downloads could
+ * land first and shift "most recent" out from under us. Gating the first
+ * sync on `phase === "ready"` removes that race entirely. Later sign-ins
+ * (user clicks "Sign in") happen long after boot, so they're unaffected.
+ */
+let firstSyncDone = false;
+function onSignInGated(): void {
+  if (firstSyncDone) {
+    void triggerSync();
+    return;
+  }
+  if (useBootStore.getState().phase === "ready") {
+    firstSyncDone = true;
+    void triggerSync();
+    return;
+  }
+  const unsub = useBootStore.subscribe((s) => {
+    if (s.phase !== "ready") return;
+    unsub();
+    firstSyncDone = true;
+    void triggerSync();
+  });
+}
+
+// Route: `/cli-auth` is the device-code browser flow completion page for
+// `vcad login`. Check the pathname at mount time and render the standalone
+// CliAuth component instead of the full editor — zero risk of breaking the
+// normal load path since App never runs in this branch.
+const isCliAuth = window.location.pathname === "/cli-auth";
+
+// Route: `/authorize/<id>` is the spend-authorization approval page the MCP
+// `authorize_spend` elicitation deep-links to. Same standalone pattern as
+// /cli-auth — App never runs in this branch.
+const authorizeId = getAuthorizeRouteId();
+
+// Route: `/export` — download every document ahead of the vcad.io shutdown.
+// Live regardless of the retirement flag so users can leave before the switch.
+const isExport = window.location.pathname.replace(/\/+$/, "") === EXPORT_PATH;
+
 // vcad.io retirement redirects (docs/launch/web-retirement.md). OFF unless the
 // build sets VITE_VCAD_RETIREMENT_REDIRECTS=1; when off this is always null.
-const retirementRoute: Exclude<RetirementRoute, { kind: "keep" }> | null = (() => {
+const retirementRoute: Exclude<RetirementRoute, { kind: "keep" | "export" }> | null = (() => {
   if (!retirementRedirectsEnabled()) return null;
   // Belt and braces: /desktop/* (Sparkle appcast) is static and never redirected.
   if (isProtectedPath(window.location.pathname)) return null;
   const route = planRetirementRoute(window.location);
-  return route.kind === "keep" ? null : route;
+  return route.kind === "keep" || route.kind === "export" ? null : route;
 })();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    {retirementRoute ? <RetirementPage route={retirementRoute} /> : <App />}
+    <AuthProvider onSignIn={onSignInGated}>
+      {isExport ? (
+        <ExportAllPage />
+      ) : retirementRoute ? (
+        <RetirementPage route={retirementRoute} />
+      ) : isCliAuth ? (
+        <CliAuth />
+      ) : authorizeId ? (
+        <AuthorizePage authorizationId={authorizeId} />
+      ) : (
+        <App />
+      )}
+    </AuthProvider>
   </StrictMode>,
 );
 

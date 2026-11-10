@@ -25,7 +25,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { HardwareLine, ReceiptClaim } from "@vcad/ir";
-import type { AuthUser } from "../auth-user.js";
+import type { AuthUser } from "../oauth.js";
 import { ownerId, type FabricateStore } from "../fabricate/store.js";
 import { estimateLandedCost } from "../fabricate/pricing.js";
 import { PROCESSES } from "../fabricate/types.js";

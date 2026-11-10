@@ -3,8 +3,7 @@
  *
  * vcad agents ingest untrusted content (imported STEP/KiCad/Eagle files,
  * part descriptions, datasheets) and also hold spend authority
- * (the hosted build's ordering tools; the local build keeps only
- * quote_manufacturing, which never spends). This module is the mechanical guard
+ * (authorize_spend / place_order). This module is the mechanical guard
  * between the two: a synchronous, pure pre-dispatch check that runs before
  * any commerce tool handler and rejects argument shapes an injection would
  * need — regardless of what the model was convinced to do.
@@ -15,7 +14,7 @@
  *     whitespace, or control characters is refused outright.
  *  2. Artifact handles must point at OUR artifact store. A bare `art_…` id
  *     or a relative `/artifacts/…` path is fine; a full URL is only accepted
- *     on a loopback host (the local HTTP transport). A poisoned document that plants
+ *     on an allowlisted vcad host. A poisoned document that plants
  *     `https://evil.example/artifacts/art_x` never reaches resolution.
  *  3. Free-text that travels to the fab (ship_to, material, finish) must be
  *     plain: no URLs, no control characters, bounded length. An address is
@@ -28,11 +27,15 @@
 /** Tools the guard applies to (the commerce plane). */
 export const COMMERCE_TOOLS: ReadonlySet<string> = new Set([
   "quote_manufacturing",
+  "authorize_spend",
+  "place_order",
 ]);
 
 /** Arguments that must be opaque ids, per tool. */
 const ID_FIELDS: Record<string, readonly string[]> = {
   quote_manufacturing: ["document_id"],
+  authorize_spend: ["order_id"],
+  place_order: ["order_id", "authorization_id", "idempotency_key"],
 };
 
 /** Free-text fields that travel to the fab, per tool. */
@@ -43,6 +46,7 @@ const FAB_TEXT_FIELDS: Record<string, readonly string[]> = {
 /** Artifact-handle fields, per tool. */
 const ARTIFACT_FIELDS: Record<string, readonly string[]> = {
   quote_manufacturing: ["fab_artifact_id"],
+  place_order: ["fab_artifact_id"],
 };
 
 /** Opaque-id charset: what our own tools mint (uuid/art_/ord_/auth_ …). */
@@ -50,6 +54,9 @@ const SAFE_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 
 /** Hosts an artifact_url may name. Everything else is refused. */
 const ARTIFACT_HOSTS: ReadonlySet<string> = new Set([
+  "mcp.vcad.io",
+  "vcad.io",
+  "www.vcad.io",
   "localhost",
   "127.0.0.1",
 ]);

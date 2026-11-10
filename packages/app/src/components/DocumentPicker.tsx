@@ -14,6 +14,12 @@ import { cn } from "@/lib/utils";
 import { Tooltip } from "@/components/ui/tooltip";
 import { useEffect, useState, useCallback } from "react";
 import { useDocumentStore } from "@vcad/core";
+import {
+  useAuthStore,
+  listCloudDocuments,
+  fetchCloudDocument,
+  type CloudDocumentMeta,
+} from "@vcad/auth";
 import { useNotificationStore } from "@/stores/notification-store";
 import {
   listDocuments,
@@ -230,11 +236,17 @@ export function DocumentPicker({
   const [documents, setDocuments] = useState<UnifiedDocumentMeta[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [lockedIds, setLockedIds] = useState<Set<string>>(new Set());
-  const downloadingIds = new Set<string>();
+  const [downloadingIds, setDownloadingIds] = useState<Set<string>>(new Set());
   const [storageUsage, setStorageUsage] = useState({ used: 0, quota: 0, percentage: 0 });
   const [loading, setLoading] = useState(true);
+  const [loadingCloud, setLoadingCloud] = useState(false);
   const [isOffline, setIsOffline] = useState(!navigator.onLine);
 
+  const user = useAuthStore((s) => s.user);
+  const isAnonymous = useAuthStore((s) => s.isAnonymous);
+  // Anonymous sessions don't have cloud-synced documents — they exist only
+  // for chat-thread RLS scoping. Skip the cloud-list path for them.
+  const isCloudUser = !!user && !isAnonymous;
   const currentDocId = useDocumentStore((s) => s.documentId);
   // The doc that bootstrap will reopen on next launch. Read-once (re-read on
   // open is fine — the slot updates synchronously when docs switch).
@@ -283,12 +295,28 @@ export function DocumentPicker({
       // Get storage usage
       const usage = await getStorageUsage();
       setStorageUsage(usage);
+
+      // If signed in and online, also fetch cloud documents
+      if (isCloudUser && !isOffline) {
+        setLoadingCloud(true);
+        try {
+          const cloudDocs = await listCloudDocuments();
+
+          // Merge cloud documents with local
+          mergeCloudDocuments(unifiedDocs, cloudDocs, setDocuments);
+        } catch (err) {
+          console.error("Failed to load cloud documents:", err);
+          // Don't fail the whole load, just skip cloud docs
+        } finally {
+          setLoadingCloud(false);
+        }
+      }
     } catch (err) {
       console.error("Failed to load documents:", err);
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isCloudUser, isOffline]);
 
   useEffect(() => {
     if (open) {
@@ -316,6 +344,41 @@ export function DocumentPicker({
 
     // Persist any pending edit on the OUTGOING doc before we swap engines.
     await flushPendingSave();
+
+    // Cloud-only document - download first
+    if (doc.syncStatus === "cloud-only" && doc.cloudId) {
+      setDownloadingIds((prev) => new Set(prev).add(selectedId));
+      try {
+        const localId = await fetchCloudDocument(doc.cloudId);
+
+        // Update the document in our list
+        setDocuments((prev) =>
+          prev.map((d) =>
+            d.id === selectedId
+              ? { ...d, id: localId, localId, syncStatus: "synced" as const, source: "both" as const }
+              : d
+          )
+        );
+
+        // Now open it
+        const stored = await loadDocument(localId);
+        if (stored) {
+          useDocumentStore.getState().loadDocument(stored.document);
+          useDocumentStore.getState().setDocumentMeta(stored.id, stored.name);
+          onOpenChange(false);
+        }
+      } catch (err) {
+        console.error("Failed to download document:", err);
+        useNotificationStore.getState().addToast("Failed to download document", "error");
+      } finally {
+        setDownloadingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(selectedId);
+          return next;
+        });
+      }
+      return;
+    }
 
     // Local document
     const isLocked = await isDocumentLocked(selectedId);
@@ -428,7 +491,10 @@ export function DocumentPicker({
               <Dialog.Title className="text-sm font-bold text-text">
                 Documents
               </Dialog.Title>
-              {isOffline && (
+              {loadingCloud && (
+                <SpinnerGap size={12} className="text-brand animate-spin" />
+              )}
+              {isOffline && isCloudUser && (
                 <div className="flex items-center gap-1 text-[10px] text-text-muted" title="Offline - showing local documents only">
                   <WifiSlash size={12} />
                   Offline
@@ -514,4 +580,41 @@ export function DocumentPicker({
       </Dialog.Portal>
     </Dialog.Root>
   );
+}
+
+/**
+ * Merge cloud documents into the unified document list.
+ * De-duplicates by cloud ID and adds cloud-only documents.
+ */
+function mergeCloudDocuments(
+  currentDocs: UnifiedDocumentMeta[],
+  cloudDocs: CloudDocumentMeta[],
+  setDocuments: React.Dispatch<React.SetStateAction<UnifiedDocumentMeta[]>>
+) {
+  // Create a map of existing cloud IDs
+  const existingCloudIds = new Set(
+    currentDocs.filter((d) => d.cloudId).map((d) => d.cloudId)
+  );
+
+  // Find cloud-only documents
+  const cloudOnlyDocs: UnifiedDocumentMeta[] = cloudDocs
+    .filter((c) => !existingCloudIds.has(c.id))
+    .map((c) => ({
+      id: c.id, // Use cloud ID as the document ID
+      cloudId: c.id,
+      localId: undefined,
+      name: c.name,
+      modifiedAt: c.device_modified_at,
+      source: "cloud" as const,
+      syncStatus: "cloud-only" as const,
+    }));
+
+  if (cloudOnlyDocs.length > 0) {
+    setDocuments((prev) => {
+      // Combine and sort by modified date
+      const combined = [...prev, ...cloudOnlyDocs];
+      combined.sort((a, b) => b.modifiedAt - a.modifiedAt);
+      return combined;
+    });
+  }
 }

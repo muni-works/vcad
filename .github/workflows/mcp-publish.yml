@@ -45,7 +45,8 @@ jobs:
       - name: Build server packages (checked-in kernel WASM)
         # Explicit dependency order — `npm run build --workspaces` does NOT
         # topologically sort, so @vcad/app can build before its deps and fail
-        # the step. The rest of the workspace (app, docs, leaderboard) is irrelevant here.
+        # the step. Same package set + order as services/mcp/build.sh; the
+        # rest of the workspace (app, docs, leaderboard) is irrelevant here.
         run: |
           npm run build -w @vcad/ir
           npm run build -w @vcad/engine

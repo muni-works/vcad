@@ -1,6 +1,7 @@
-import { useState, useCallback, type ReactNode, Suspense, lazy } from "react";
+import { useState, useEffect, useCallback, type ReactNode, Suspense, lazy } from "react";
 import { List as MenuIcon } from "@phosphor-icons/react/dist/ssr/List";
 import { TreeStructure } from "@phosphor-icons/react/dist/ssr/TreeStructure";
+import { ChatDots } from "@phosphor-icons/react/dist/ssr/ChatDots";
 import { ArrowsOutCardinal } from "@phosphor-icons/react/dist/ssr/ArrowsOutCardinal";
 import { ArrowCounterClockwise } from "@phosphor-icons/react/dist/ssr/ArrowCounterClockwise";
 import { ArrowClockwise } from "@phosphor-icons/react/dist/ssr/ArrowClockwise";
@@ -8,12 +9,14 @@ import {
   useDocumentStore,
   useUiStore,
   useSketchStore,
+  useChatStore,
   COMMAND_CATEGORIES,
   CATEGORY_LABELS,
   CATEGORY_ICON_COLORS,
   type Command,
 } from "@vcad/core";
 import { useChangelogStore } from "@/stores/changelog-store";
+import { SignInButton, UserMenu, triggerSync } from "@vcad/auth";
 import { cn } from "@/lib/utils";
 import { BottomSheet } from "./BottomSheet";
 import { MobileToolPalette } from "./MobileToolPalette";
@@ -23,6 +26,9 @@ import { COMMAND_ICONS } from "@/lib/command-icons";
 
 const PropertyPanel = lazy(() =>
   import("@/components/PropertyPanel").then((m) => ({ default: m.PropertyPanel })),
+);
+const ChatSidebar = lazy(() =>
+  import("@/components/ChatSidebar").then((m) => ({ default: m.ChatSidebar })),
 );
 
 interface MobileShellProps {
@@ -40,6 +46,7 @@ interface MobileShellProps {
 export function MobileShell({ onAboutOpen, onSave, onOpen, children }: MobileShellProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [treeOpen, setTreeOpen] = useState(false);
+  const [chatSheetOpen, setChatSheetOpen] = useState(false);
 
   const isDirty = useDocumentStore((s) => s.isDirty);
   const docName = useDocumentStore((s) => s.documentName);
@@ -68,6 +75,22 @@ export function MobileShell({ onAboutOpen, onSave, onOpen, children }: MobileShe
     surface: "mobile-menu",
   });
 
+  // Chat opens only on explicit action — dock button, ⌘K / F6 event, or
+  // code that dispatches `vcad:open-chat`. Never mirrors the store's default
+  // `open: true` (which is right for desktop sidebars, wrong for mobile sheets).
+  // We use setState directly (bypassing setOpen) so these mobile-only
+  // transitions don't overwrite the persisted desktop preference.
+  const handleChatSheetChange = (next: boolean) => {
+    setChatSheetOpen(next);
+    useChatStore.setState({ open: next });
+  };
+  useEffect(() => {
+    // Force the store closed on mount so the mobile shell starts with no sheet.
+    if (useChatStore.getState().open) useChatStore.setState({ open: false });
+    const handleOpen = () => setChatSheetOpen(true);
+    window.addEventListener("vcad:open-chat", handleOpen);
+    return () => window.removeEventListener("vcad:open-chat", handleOpen);
+  }, []);
 
   return (
     <div className="flex h-[100dvh] w-screen flex-col overflow-hidden bg-bg">
@@ -117,12 +140,24 @@ export function MobileShell({ onAboutOpen, onSave, onOpen, children }: MobileShe
           <TreeStructure size={18} />
         </button>
         <button
+          onClick={() => handleChatSheetChange(true)}
+          className="flex h-10 w-9 items-center justify-center text-text-muted active:text-text"
+          aria-label="Chat"
+        >
+          <ChatDots size={18} />
+        </button>
+        <button
           onClick={() => window.dispatchEvent(new CustomEvent("vcad:camera-fit"))}
           className="flex h-10 w-9 items-center justify-center text-text-muted active:text-text"
           aria-label="Fit View"
         >
           <ArrowsOutCardinal size={18} />
         </button>
+        <SignInButton
+          variant="icon-text"
+          className="flex items-center justify-center h-10 px-2 text-xs text-text-muted"
+        />
+        <UserMenu onSyncNow={() => triggerSync()} />
       </div>
 
       {/* ──── Viewport ───────────────────────────────── */}
@@ -179,6 +214,13 @@ export function MobileShell({ onAboutOpen, onSave, onOpen, children }: MobileShe
         </div>
       </BottomSheet>
 
+      <BottomSheet open={chatSheetOpen} onOpenChange={handleChatSheetChange} title="AI Chat" size="full">
+        <div className="h-full flex flex-col">
+          <Suspense fallback={null}>
+            <ChatSidebar />
+          </Suspense>
+        </div>
+      </BottomSheet>
     </div>
   );
 }

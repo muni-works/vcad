@@ -1,0 +1,134 @@
+// Client
+export {
+  ensureSession,
+  getAuthRedirectUrl,
+  getSupabase,
+  isAuthEnabled,
+  requireSupabase,
+} from "./client";
+
+// Auth callback handling (used by the popup OAuth flow)
+export { applyAuthCallback, type AuthCallbackResult } from "./auth-callback";
+
+// Web popup OAuth flow
+export {
+  signInWithOAuthPopup,
+  type OAuthPopupProvider,
+  type OAuthPopupResult,
+} from "./oauth-popup";
+
+// Stores
+export { useAuthStore } from "./stores/auth-store";
+export {
+  useSyncStore,
+  type SyncStatus,
+  type SyncConflict,
+} from "./stores/sync-store";
+export { useSignInDelightStore } from "./stores/sign-in-delight-store";
+
+// Hooks
+export { useAuth } from "./hooks/useAuth";
+export { useRequireAuth, type GatedFeature } from "./hooks/useRequireAuth";
+export { useUserPreferences, type UserPreferences } from "./hooks/useUserPreferences";
+
+// Components
+export { AuthProvider } from "./components/AuthProvider";
+export { AuthModal } from "./components/AuthModal";
+export { UserMenu } from "./components/UserMenu";
+export { FeatureGate } from "./components/FeatureGate";
+export { SignInButton } from "./components/SignInButton";
+export { VersionHistoryPanel } from "./components/VersionHistoryPanel";
+
+// Sync
+export {
+  triggerSync,
+  debouncedSync,
+  cloudContentToVcadFile,
+  vcadFileToCloudContent,
+  enableCloudSync,
+  initSyncListeners,
+  configureStorage,
+  listCloudDocuments,
+  fetchCloudDocument,
+  createShare,
+  revokeShare,
+  listSharesForDocument,
+  fetchSharedDocument,
+  type StorageAdapter,
+  type LocalDocument,
+  type CloudDocument,
+  type CloudDocumentMeta,
+  type ShareRecord,
+  type SharedDocumentResult,
+} from "./sync";
+
+// Profiles
+export {
+  getMyProfile,
+  getProfileByUsername,
+  checkUsernameAvailable,
+  createProfile,
+  updateProfile,
+  fetchPublicDocument,
+  listPublicDocuments,
+  publishDocument,
+  slugify,
+  createShareRedirect,
+  lookupShareRedirect,
+  type Profile,
+  type PublicDocumentResult,
+  type PublicDocumentMeta,
+} from "./profile";
+
+// Collab transport
+export {
+  joinCollabChannel,
+  isApplyingRemoteOps,
+  type CollabCallbacks,
+  type CollabChannel,
+} from "./collab-channel";
+
+// Version history
+export {
+  getVersionHistory,
+  restoreVersion,
+  getCloudIdForDocument,
+  configureVersionHistoryStorage,
+  labelVersion,
+  unlabelVersion,
+  listNamedVersions,
+  type DocumentVersion,
+  type NamedVersion,
+} from "./version-history";
+
+// AI
+export { textToCAD, isAIAvailable } from "./ai";
+
+// XR presence transport
+export {
+  joinXRCollabChannel,
+  type XRCollabChannel,
+  type XRPose,
+  type XRPresenceUpdate,
+  type XRPresenceListener,
+  type XRPresenceLeaveListener,
+} from "./xr-collab";
+
+// Chat persistence
+export {
+  loadOrCreateThread,
+  hydrateThread,
+  loadDeltas,
+  subscribeToThread,
+  persistToolResult,
+  clearThreadMessages,
+  type DbChatThread,
+  type DbChatMessage,
+  type DbChatToolCall,
+  type DbChatMessageDelta,
+  type ChatMessageStatus,
+  type ChatToolStatus,
+  type ThreadHydration,
+  type ThreadSubscription,
+  type ThreadSubscriptionCallbacks,
+} from "./chat-persistence";

@@ -37,12 +37,20 @@ const InlineOnboarding = lazyWithRetry(() => import("@/components/InlineOnboardi
 const GuidedFlowOverlay = lazyWithRetry(() => import("@/components/GuidedFlowOverlay").then(m => ({ default: m.GuidedFlowOverlay })), "GuidedFlowOverlay");
 const GhostPromptController = lazyWithRetry(() => import("@/components/GhostPromptController").then(m => ({ default: m.GhostPromptController })), "GhostPromptController");
 const CelebrationOverlay = lazyWithRetry(() => import("@/components/CelebrationOverlay").then(m => ({ default: m.CelebrationOverlay })), "CelebrationOverlay");
+const SignInDelight = lazyWithRetry(() => import("@/components/SignInDelight").then(m => ({ default: m.SignInDelight })), "SignInDelight");
 const LoginNotifications = lazyWithRetry(() => import("@/components/LoginNotifications").then(m => ({ default: m.LoginNotifications })), "LoginNotifications");
+const UpgradeDelight = lazyWithRetry(() => import("@/components/UpgradeDelight").then(m => ({ default: m.UpgradeDelight })), "UpgradeDelight");
 const AboutModal = lazyWithRetry(() => import("@/components/AboutModal").then(m => ({ default: m.AboutModal })), "AboutModal");
 const ProductModal = lazyWithRetry(() => import("@/components/ProductModal").then(m => ({ default: m.ProductModal })), "ProductModal");
+const ShareDialog = lazyWithRetry(() => import("@/components/ShareDialog").then(m => ({ default: m.ShareDialog })), "ShareDialog");
+const ContinueDialog = lazyWithRetry(() => import("@/components/ContinueDialog").then(m => ({ default: m.ContinueDialog })), "ContinueDialog");
+const VersionTimeline = lazyWithRetry(() => import("@/components/VersionTimeline").then(m => ({ default: m.VersionTimeline })), "VersionTimeline");
+const ForkPromptModal = lazyWithRetry(() => import("@/components/ForkPromptModal").then(m => ({ default: m.ForkPromptModal })), "ForkPromptModal");
 const ReadOnlyBanner = lazyWithRetry(() => import("@/components/ReadOnlyBanner").then(m => ({ default: m.ReadOnlyBanner })), "ReadOnlyBanner");
+const ProfilePage = lazyWithRetry(() => import("@/components/ProfilePage").then(m => ({ default: m.ProfilePage })), "ProfilePage");
 const LegalPage = lazyWithRetry(() => import("@/components/LegalPage").then(m => ({ default: m.LegalPage })), "LegalPage");
 const TermsGate = lazyWithRetry(() => import("@/components/TermsGate").then(m => ({ default: m.TermsGate })), "TermsGate");
+// UsernamePickerModal is lazy-loaded inside ShareDialog, not here.
 const CommandPalette = lazyWithRetry(() => import("@/components/CommandPalette").then(m => ({ default: m.CommandPalette })), "CommandPalette");
 const DrawingToolbar = lazyWithRetry(() => import("@/components/DrawingToolbar").then(m => ({ default: m.DrawingToolbar })), "DrawingToolbar");
 const AnimationTimeline = lazyWithRetry(() => import("@/components/AnimationTimeline").then(m => ({ default: m.AnimationTimeline })), "AnimationTimeline");
@@ -53,6 +61,7 @@ const PrintPanel = lazyWithRetry(() => import("@/components/print").then(m => ({
 const DfmOverlay = lazyWithRetry(() => import("@/components/print/DfmOverlay").then(m => ({ default: m.DfmOverlay })), "DfmOverlay");
 const CamPanel = lazyWithRetry(() => import("@/components/cam").then(m => ({ default: m.CamPanel })), "CamPanel");
 const AnalyzePanel = lazyWithRetry(() => import("@/components/AnalyzePanel").then(m => ({ default: m.AnalyzePanel })), "AnalyzePanel");
+const ChatSidebar = lazyWithRetry(() => import("@/components/ChatSidebar").then(m => ({ default: m.ChatSidebar })), "ChatSidebar");
 const DocumentPicker = lazyWithRetry(() => import("@/components/DocumentPicker").then(m => ({ default: m.DocumentPicker })), "DocumentPicker");
 const OfflineIndicator = lazyWithRetry(() => import("@/components/OfflineIndicator").then(m => ({ default: m.OfflineIndicator })), "OfflineIndicator");
 const UpdateNotification = lazyWithRetry(() => import("@/components/UpdateNotification").then(m => ({ default: m.UpdateNotification })), "UpdateNotification");
@@ -66,6 +75,7 @@ import {
   useEngineStore,
   useDocumentStore,
   useUiStore,
+  useChatStore,
   isEmbroideryPatternPart,
   parseVcadFile,
   parseStl,
@@ -87,20 +97,25 @@ import { useKeyboardShortcuts } from "@/hooks/useKeyboardShortcuts";
 import { useKeybindingDispatcher } from "@/hooks/useKeybindingDispatcher";
 import { useOperationPreview } from "@/hooks/useOperationPreview";
 import { useAutoSave, flushPendingSave } from "@/hooks/useAutoSave";
+import { useCollabSync } from "@/hooks/useCollabSync";
+import { useChatHandler } from "@/hooks/useChatHandler";
+import { useChatHydration } from "@/hooks/useChatHydration";
 import { useUrlSync } from "@/hooks/useUrlSync";
 import { useSketchAutoFit } from "@/hooks/useSketchAutoFit";
 import { usePcbAutoFit } from "@/hooks/usePcbAutoFit";
 import { saveDocument } from "@/lib/save-load";
+import { openLocalDocumentById } from "@/lib/open-document";
 import { bootstrap } from "@/lib/bootstrap";
 import { useBootStore } from "@/stores/boot-store";
 import { Splash } from "@/components/Splash";
 import { ErrorScreen } from "@/components/ErrorScreen";
-import { getLegalRouteSlug } from "@/lib/url-document";
+import { getProfileRouteUsername, getLegalRouteSlug } from "@/lib/url-document";
 import {
   mergeMeshes,
 } from "@vcad/engine";
 import type { EmbroideryDesign } from "@vcad/ir";
 import { useNotificationStore } from "@/stores/notification-store";
+import { useVersionTimelineStore } from "@/stores/version-timeline-store";
 import { useOnboardingStore } from "@/stores/onboarding-store";
 import { useSlicerStore } from "@/stores/slicer-store";
 import { useCamStore } from "@/stores/cam-store";
@@ -217,6 +232,9 @@ export function App() {
   useEngine();
   useThemeSync();
   useAutoSave();
+  useCollabSync();
+  useChatHandler();
+  useChatHydration();
   useUrlSync();
   useOperationPreview();
   useSketchAutoFit();
@@ -224,6 +242,9 @@ export function App() {
 
   const [aboutOpen, setAboutOpen] = useState(false);
   const [productOpen, setProductOpen] = useState(false);
+  const [shareOpen, setShareOpen] = useState(false);
+  const [continueOpen, setContinueOpen] = useState(false);
+  const versionTimelineOpen = useVersionTimelineStore((s) => s.open);
   const [documentPickerOpen, setDocumentPickerOpen] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isDraggingImage, setIsDraggingImage] = useState(false);
@@ -235,6 +256,39 @@ export function App() {
   useEffect(() => {
     void bootstrap();
 
+    // When a sync conflict creates a fork, surface it as an actionable toast
+    // with a one-click "Open my version" button. Without this the fork sits
+    // silently in the document picker and the user has no way to find it.
+    let prevConflictCount = 0;
+    void import("@vcad/auth").then(({ useSyncStore }) => {
+      const initial = useSyncStore.getState().conflicts;
+      prevConflictCount = initial.length;
+      useSyncStore.subscribe((state) => {
+        const conflicts = state.conflicts;
+        if (conflicts.length <= prevConflictCount) {
+          prevConflictCount = conflicts.length;
+          return;
+        }
+        const fresh = conflicts.slice(prevConflictCount);
+        prevConflictCount = conflicts.length;
+        for (const c of fresh) {
+          useNotificationStore.getState().showActionResult({
+            type: "success",
+            title: "Cloud version was newer — your edits were saved as a fork",
+            description: c.forkName,
+            actions: [
+              {
+                label: "Open my version",
+                variant: "primary",
+                onClick: () => {
+                  void openLocalDocumentById(c.forkId);
+                },
+              },
+            ],
+          });
+        }
+      });
+    });
   }, []);
 
   const isMobile = useIsMobile();
@@ -313,6 +367,18 @@ export function App() {
 
   const processFile = useCallback(async (file: File) => {
     const ext = file.name.split(".").pop()?.toLowerCase();
+
+    // Images dropped onto the viewport go to the AI chat as attachments —
+    // the user can then ask it to build something from the image. The bridge
+    // inside ChatSidebar's PromptInput drains pendingAttachments on mount
+    // (handles the case where the sidebar was closed and is lazy-loaded by
+    // setOpen), and also picks up subsequent queued pushes.
+    if (file.type.startsWith("image/")) {
+      useChatStore.getState().queuePendingAttachments([file]);
+      useChatStore.getState().setOpen(true);
+      window.dispatchEvent(new Event("vcad:focus-chat-input"));
+      return;
+    }
 
     // Handle URDF (Unified Robot Description Format) files. The Rust
     // kernel parses the XML, builds a vcad Document with assembly +
@@ -836,6 +902,7 @@ export function App() {
   const document = useDocumentStore((s) => s.document);
   const selectedPartIds = useUiStore((s) => s.selectedPartIds);
   const featureTreeOpen = useUiStore((s) => s.featureTreeOpen);
+  const chatOpen = useChatStore((s) => s.open);
   const cylinderInitialPos = useRef<{ x: number; y: number; z: number } | null>(null);
 
   useEffect(() => {
@@ -896,6 +963,23 @@ export function App() {
   if (error && !engineReady) return <ErrorScreen message={error} />;
   if (bootPhase !== "ready") return <Splash />;
 
+  // /@username profile page — render a standalone page, not the editor.
+  const profileUsername = getProfileRouteUsername();
+  if (profileUsername) {
+    return (
+      <AsyncBoundary
+        region="profile-page"
+        fallback={
+          <div className="flex h-screen items-center justify-center bg-bg text-text-muted text-sm">
+            Loading…
+          </div>
+        }
+      >
+        <ProfilePage username={profileUsername} />
+      </AsyncBoundary>
+    );
+  }
+
   // /privacy, /terms, /security — render static legal content.
   const legalSlug = getLegalRouteSlug();
   if (legalSlug) {
@@ -944,7 +1028,9 @@ export function App() {
         <GuidedFlowOverlay />
         <GhostPromptController />
         <CelebrationOverlay />
+        <SignInDelight />
         <LoginNotifications />
+        <UpgradeDelight />
       </Suspense>
 
       {/* Manufacturability drawer (slides up from bottom; chip-triggered) */}
@@ -1028,6 +1114,11 @@ export function App() {
                 onProductOpen={() => setProductOpen(true)}
                 onSave={handleSave}
                 onOpen={handleOpen}
+                onShareOpen={() => setShareOpen(true)}
+                onContinueOpen={() => setContinueOpen(true)}
+                onVersionHistoryOpen={() =>
+                  void useVersionTimelineStore.getState().openPanel()
+                }
               >
                 <ToolPalette />
               </Header>
@@ -1035,7 +1126,20 @@ export function App() {
             leftSidebar={!showOnboarding && featureTreeOpen && (
               <FeatureTreeSlot sketchActive={sketchActive} />
             )}
-            rightSidebar={null}
+            rightSidebar={
+              !showOnboarding &&
+              (versionTimelineOpen ? (
+                <AsyncBoundary region="version-timeline" fallback={null}>
+                  <VersionTimeline />
+                </AsyncBoundary>
+              ) : (
+                chatOpen && (
+                  <AsyncBoundary region="chat-sidebar" fallback={null}>
+                    <ChatSidebar />
+                  </AsyncBoundary>
+                )
+              ))
+            }
             bottomDock={(
               <AsyncBoundary region="log-viewer" fallback={null}>
                 <LogViewer />
@@ -1057,6 +1161,9 @@ export function App() {
         <AsyncBoundary region="modals" fallback={null}>
           <AboutModal open={aboutOpen} onOpenChange={setAboutOpen} />
           <ProductModal open={productOpen} onOpenChange={setProductOpen} />
+          <ShareDialog open={shareOpen} onOpenChange={setShareOpen} />
+          <ContinueDialog open={continueOpen} onOpenChange={setContinueOpen} />
+          <ForkPromptModal />
           <DocumentPicker
             open={documentPickerOpen}
             onOpenChange={setDocumentPickerOpen}

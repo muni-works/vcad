@@ -3,7 +3,7 @@
  *
  * Before the ToolDef registry refactor each tool module carried its own
  * near-identical copy of these (checkpoint, continue-doc, atoms, order,
- * verify). They diverged only in two axes — compact vs
+ * ordering, live-share, verify). They diverged only in two axes — compact vs
  * pretty-printed JSON, and whether the error body is a raw string or an
  * `{error}` envelope — so the primitives below cover both without changing any
  * handler's emitted bytes.

@@ -1,6 +1,7 @@
 /**
- * open_in_app emits a `vcad://` deep link into the native app (format:
- * docs/launch/vcad-url-scheme.md), with the download page as the fallback.
+ * open_in_app / open_in_browser emit a `vcad://` deep link into the native
+ * app (format: docs/launch/vcad-url-scheme.md), with the download page as the
+ * fallback. `open_in_browser` is a legacy alias of the same handler.
  */
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -12,6 +13,7 @@ import {
   VCAD_DOWNLOAD_URL,
   buildAppLink,
   openInApp,
+  openInBrowser,
   toolDefs,
 } from "../tools/share.js";
 
@@ -82,14 +84,16 @@ describe("open_in_app tool", () => {
     expect(decodeDoc(url)).toEqual(JSON.parse(JSON.stringify(cube)));
   });
 
-  it("never emits a vcad.io web link and drops open_in_browser", () => {
+  it("emits the legacy web link only when opted in", () => {
     process.env.VCAD_LEGACY_WEB_LINKS = "1";
-    try {
-      const text = openInApp({ document: JSON.stringify(cube) }).content[0].text;
-      expect(text).not.toContain("/#/new?");
-    } finally {
-      delete process.env.VCAD_LEGACY_WEB_LINKS;
-    }
-    expect(toolDefs.map((t) => t.name)).toEqual(["open_in_app"]);
+    const text = openInApp({ document: JSON.stringify(cube) }).content[0].text;
+    expect(text).toContain("https://vcad.io/#/new?");
+  });
+
+  it("keeps open_in_browser as an alias", () => {
+    expect(openInBrowser).toBe(openInApp);
+    const names = toolDefs.map((t) => t.name);
+    expect(names).toEqual(["open_in_app", "open_in_browser"]);
+    expect(toolDefs[1].description).toMatch(/alias of `open_in_app`/);
   });
 });

@@ -10,7 +10,7 @@
  * same key/fill/rim directional lights, the same procedural studio IBL
  * baked through PMREM, the same infinite grid, axis lines, contact
  * shadow, and ACES tone mapping — so a part previewed here reads the
- * same as it does in the vcad app.
+ * same as it does on vcad.io.
  */
 
 import * as THREE from "three";
@@ -56,6 +56,11 @@ const tpSparkDotEl = document.getElementById("tp-spark-dot")!;
 const tpLiveEl = document.getElementById("tp-live") as HTMLButtonElement;
 const tpJointsEl = document.getElementById("tp-joints")!;
 const tpNoteEl = document.getElementById("tp-note")!;
+const ordersEl = document.getElementById("orders")!;
+const ordersBodyEl = document.getElementById("orders-body")!;
+const ordersCountEl = document.getElementById("orders-count")!;
+const ordersFootEl = document.getElementById("orders-foot")!;
+const ordersToggleBtn = document.getElementById("orders-toggle") as HTMLButtonElement;
 
 // Hostless dev harness (`#dev*`): selection affordances stay active but
 // protocol calls are logged instead of sent.
@@ -1093,7 +1098,7 @@ async function fetchAndRenderGlb(
   }
 }
 
-/** Note that IR is available, so the "Open in vcad" button can show. */
+/** Capture VCode IR text for the "Open in vcad.io" button. */
 function captureVcode(result: ToolResultLike): void {
   for (const block of result.content ?? []) {
     if (block?.type === "text" && block.text?.startsWith("# vcad")) {
@@ -1951,6 +1956,357 @@ tpLiveEl.addEventListener("click", () => {
   applySimFrame(true);
 });
 
+// ── Order dock — fused vcad+kerf order lifecycle ─────────────
+// Read-only by contract: get_order_feed is the ONLY tool this dock calls;
+// approval happens on vcad.io via openLink and decline goes through the
+// agent — no money action ever originates in this iframe. Polls slow
+// (10s) normally, fast (2.5s) while any order is transitional
+// (approval/placing), and backs way off after repeated failures (the
+// feed tool may not be deployed on every server yet).
+
+interface OrderAuthorizationLike {
+  status?: string;
+  max_amount_usd?: number;
+  cap_usd?: number; // spec-doc name — guarded alongside the wire name
+  expires_at?: string;
+  approve_url?: string;
+}
+
+interface OrderEventLike {
+  state?: string;
+  type?: string; // spec-doc name for the same field
+  at?: string;
+  note?: string;
+}
+
+interface OrderLike {
+  order_id: string;
+  state_chip?: string;
+  raw_state?: string;
+  process?: string;
+  quantity?: number;
+  total_amount_usd?: number;
+  pricing_basis?: string;
+  vendor?: string;
+  vendor_display_name?: string; // spec-doc name — guarded
+  lead_time_days?: number;
+  quote_expires_at?: string;
+  created_at?: string;
+  events?: OrderEventLike[];
+  authorization?: OrderAuthorizationLike | null;
+  tracking?: unknown;
+  receipt?: { status?: string } | null;
+  kerf_intent_hash?: string;
+}
+
+interface OrderFeedLike {
+  orders?: OrderLike[];
+  wallet_balance_usd?: number | null;
+  version?: string;
+}
+
+const ORDER_STOPS = [
+  "quoted",
+  "approval",
+  "placing",
+  "confirmed",
+  "production",
+  "delivered",
+];
+
+const ORDER_POLL_FAST_MS = 2500;
+const ORDER_POLL_SLOW_MS = 10000;
+const ORDER_POLL_BACKOFF_MS = 60000;
+const ORDER_POLL_FAILURE_LIMIT = 4;
+
+let orderPollStarted = false;
+let orderPollHandle: ReturnType<typeof setTimeout> | undefined;
+let orderPollFailures = 0;
+let lastOrderFeed: OrderFeedLike | null = null;
+let lastOrderFeedVersion: string | null = null;
+let orderDockArmed = false; // first non-empty feed arms the dock for good
+let ordersCollapsed = false;
+const expandedOrders = new Set<string>();
+
+function usd(n: number): string {
+  return (
+    "$" +
+    n.toLocaleString("en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })
+  );
+}
+
+function fmtWhen(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function orderCard(o: OrderLike): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "ord-card";
+
+  // Name line: process · qty.
+  const name = document.createElement("div");
+  name.className = "ord-name";
+  name.textContent = `${o.process ?? "order"}${o.quantity != null ? ` · ×${o.quantity}` : ""}`;
+  card.append(name);
+
+  // Vendor · lead · quote expiry.
+  const subBits: string[] = [];
+  const vendor = o.vendor ?? o.vendor_display_name;
+  if (vendor) subBits.push(vendor);
+  if (o.lead_time_days != null) subBits.push(`${o.lead_time_days}d lead`);
+  if (o.quote_expires_at) subBits.push(`quote expires ${fmtWhen(o.quote_expires_at)}`);
+  if (subBits.length > 0) {
+    const sub = document.createElement("div");
+    sub.className = "ord-sub";
+    sub.textContent = subBits.join(" · ");
+    card.append(sub);
+  }
+
+  // Total + pricing-basis pill (ACP-CM colors users learn to trust).
+  const total = document.createElement("div");
+  total.className = "ord-total";
+  const amount = document.createElement("b");
+  amount.textContent = o.total_amount_usd != null ? usd(o.total_amount_usd) : "—";
+  total.append(amount);
+  const basis = o.pricing_basis;
+  if (basis === "estimate" || basis === "quoted" || basis === "binding") {
+    const pill = document.createElement("span");
+    pill.className = `pill pill-${basis}`;
+    pill.textContent = basis;
+    total.append(pill);
+  }
+  card.append(total);
+
+  // Six-stop timeline; a failed order shows all stops muted + a red chip.
+  const chips = document.createElement("div");
+  chips.className = "ord-chips";
+  const failed = o.state_chip === "failed";
+  const cur = failed ? -1 : ORDER_STOPS.indexOf(o.state_chip ?? "");
+  ORDER_STOPS.forEach((stop, i) => {
+    const c = document.createElement("span");
+    c.className =
+      "ord-chip" +
+      (cur >= 0 && i < cur ? " done" : "") +
+      (i === cur ? " now" : "");
+    c.textContent = stop;
+    chips.append(c);
+  });
+  if (failed) {
+    const c = document.createElement("span");
+    c.className = "ord-chip fail";
+    c.textContent = "failed";
+    chips.append(c);
+  }
+  card.append(chips);
+
+  // RECONCILING = an explained wait, never a retry affordance.
+  if ((o.raw_state ?? "").toUpperCase() === "RECONCILING") {
+    const wait = document.createElement("div");
+    wait.className = "ord-wait";
+    wait.textContent =
+      "reconciling with the vendor — verifying order state, no action needed";
+    card.append(wait);
+  }
+
+  // Approval banner: the human approves on vcad.io — the widget never
+  // approves and offers no decline (that goes through the agent).
+  const auth = o.authorization;
+  if (auth?.status === "pending_human") {
+    const banner = document.createElement("div");
+    banner.className = "ord-banner";
+    const text = document.createElement("div");
+    text.className = "ord-banner-text";
+    const cap = auth.max_amount_usd ?? auth.cap_usd;
+    const bits = ["needs your approval"];
+    if (cap != null) bits.push(`cap ${usd(cap)}`);
+    if (auth.expires_at) bits.push(`expires ${fmtWhen(auth.expires_at)}`);
+    text.textContent = bits.join(" · ");
+    banner.append(text);
+    if (auth.approve_url) {
+      const url = auth.approve_url;
+      const btn = document.createElement("button");
+      btn.className = "btn btn-brand";
+      btn.textContent = "Approve in vcad.io";
+      btn.addEventListener("click", () => {
+        app.openLink({ url }).catch(() => window.open(url, "_blank"));
+      });
+      banner.append(btn);
+    }
+    card.append(banner);
+  }
+
+  // Receipt chip — the design-half verification verdict.
+  const rs = o.receipt?.status ?? "unverified";
+  const rcptRowEl = document.createElement("div");
+  rcptRowEl.className = "ord-rcpt";
+  const rcptChip = document.createElement("span");
+  rcptChip.className =
+    "rcpt-chip " +
+    (rs === "holds" ? "holds" : rs === "stale" || rs === "violated" ? "bad" : "unverified");
+  rcptChip.textContent = `receipt ${rs}`;
+  rcptRowEl.append(rcptChip);
+  card.append(rcptRowEl);
+
+  // Event log expander (collapsed by default) — raw vcad+kerf states.
+  const events = o.events ?? [];
+  if (events.length > 0) {
+    const expanded = expandedOrders.has(o.order_id);
+    const label = (open: boolean): string =>
+      `${events.length} ${events.length === 1 ? "event" : "events"} ${open ? "▾" : "▸"}`;
+    const toggle = document.createElement("button");
+    toggle.className = "ord-evt-toggle";
+    toggle.textContent = label(expanded);
+    const list = document.createElement("div");
+    list.className = "ord-events";
+    list.style.display = expanded ? "block" : "none";
+    for (const ev of events) {
+      const row = document.createElement("div");
+      row.className = "ord-evt";
+      const t = document.createElement("span");
+      t.className = "t";
+      t.textContent = ev.at ? fmtWhen(ev.at) : "";
+      const s = document.createElement("span");
+      s.className = "s";
+      s.textContent = ev.state ?? ev.type ?? "event";
+      row.append(t, s);
+      if (ev.note) {
+        const noteEl = document.createElement("span");
+        noteEl.className = "n";
+        noteEl.textContent = ev.note;
+        noteEl.title = ev.note;
+        row.append(noteEl);
+      }
+      list.append(row);
+    }
+    toggle.addEventListener("click", () => {
+      const open = list.style.display === "none";
+      list.style.display = open ? "block" : "none";
+      if (open) expandedOrders.add(o.order_id);
+      else expandedOrders.delete(o.order_id);
+      toggle.textContent = label(open);
+    });
+    card.append(toggle, list);
+  }
+
+  return card;
+}
+
+function renderOrderFeed(feed: OrderFeedLike): void {
+  const orders = feed.orders ?? [];
+  ordersCountEl.textContent = String(orders.length);
+  ordersBodyEl.innerHTML = "";
+  if (orders.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "ord-sub";
+    empty.textContent = "no orders yet";
+    ordersBodyEl.append(empty);
+  } else {
+    for (const o of orders) ordersBodyEl.append(orderCard(o));
+  }
+  if (feed.wallet_balance_usd != null) {
+    ordersFootEl.textContent = `Wallet ${usd(feed.wallet_balance_usd)}`;
+    ordersFootEl.style.display = "block";
+  } else {
+    ordersFootEl.textContent = "";
+    ordersFootEl.style.display = "none";
+  }
+}
+
+function applyOrderFeed(feed: OrderFeedLike): void {
+  const version = typeof feed.version === "string" ? feed.version : null;
+  const unchanged =
+    version != null && version === lastOrderFeedVersion && lastOrderFeed != null;
+  lastOrderFeed = feed;
+  lastOrderFeedVersion = version;
+  if ((feed.orders?.length ?? 0) > 0) orderDockArmed = true;
+  if (!orderDockArmed) return; // stay hidden until the first non-empty feed
+  if (!unchanged) renderOrderFeed(feed);
+  ordersEl.classList.add("visible");
+}
+
+function orderFeedTransitional(): boolean {
+  return Boolean(
+    lastOrderFeed?.orders?.some(
+      (o) => o.state_chip === "approval" || o.state_chip === "placing",
+    ),
+  );
+}
+
+async function pollOrderFeed(): Promise<void> {
+  if (!lastDocumentId) return; // nothing mounted yet — stay lazy
+  if (typeof document !== "undefined" && document.hidden) return;
+  try {
+    const res = (await app.callServerTool({
+      name: "get_order_feed",
+      arguments: { document_id: lastDocumentId },
+    })) as ToolResultLike;
+    orderPollFailures = 0;
+    const feed = findPayload<OrderFeedLike>(res, (o) => Array.isArray(o.orders));
+    if (feed) applyOrderFeed(feed);
+  } catch {
+    // Tool may not be deployed on this server — count and back off.
+    orderPollFailures++;
+  }
+}
+
+function scheduleNextOrderPoll(): void {
+  const delay =
+    orderPollFailures >= ORDER_POLL_FAILURE_LIMIT
+      ? ORDER_POLL_BACKOFF_MS
+      : orderFeedTransitional()
+        ? ORDER_POLL_FAST_MS
+        : ORDER_POLL_SLOW_MS;
+  if (orderPollHandle) clearTimeout(orderPollHandle);
+  orderPollHandle = setTimeout(() => void runOrderPoll(), delay);
+}
+
+// In-flight guard: visibilitychange fires runOrderPoll directly, and while a
+// poll is awaiting the server its timer id is already consumed — without the
+// guard each hide/show during an in-flight poll would fork a SECOND
+// setTimeout chain that then polls forever in parallel.
+let orderPollInFlight = false;
+
+async function runOrderPoll(): Promise<void> {
+  if (orderPollInFlight) return; // the live chain reschedules on completion
+  orderPollInFlight = true;
+  try {
+    await pollOrderFeed();
+  } finally {
+    orderPollInFlight = false;
+    scheduleNextOrderPoll();
+  }
+}
+
+function startOrderPolling(): void {
+  if (orderPollStarted) return;
+  orderPollStarted = true;
+  if (typeof document !== "undefined") {
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) return;
+      if (orderPollHandle) clearTimeout(orderPollHandle);
+      void runOrderPoll();
+    });
+  }
+  scheduleNextOrderPoll();
+}
+
+ordersToggleBtn.addEventListener("click", () => {
+  ordersCollapsed = !ordersCollapsed;
+  ordersEl.classList.toggle("collapsed", ordersCollapsed);
+  ordersToggleBtn.textContent = ordersCollapsed ? "▸" : "▾";
+  ordersToggleBtn.title = ordersCollapsed ? "Expand" : "Collapse";
+});
+
 // ── Host protocol ────────────────────────────────────────────
 // MCP Apps hosts (Claude, Cursor) speak the SEP-1865 postMessage
 // protocol via the App class; ChatGPT injects `window.openai` instead —
@@ -2135,37 +2491,33 @@ async function handleToolResult(result: ToolResultLike): Promise<void> {
   }
 }
 
-// ── "Open in vcad" deep link (native app) ──────────────────────
-// Emits the same `vcad://open?doc=` form as the open_in_app tool
-// (docs/launch/vcad-url-scheme.md): gzip + base64url of the IR JSON.
+// ── "Open in vcad.io" deep link ──────────────────────────────
 let vcodeDoc: string | null = null;
 let lastDocumentId: string | null = null;
 // Last geometry version this canvas has rendered — the self-refresh poll
 // re-fetches only when the server reports a different token (see below).
 let lastPreviewVersion: string | null = null;
 
-async function gzipBase64Url(text: string): Promise<string> {
-  const stream = new Blob([text]).stream().pipeThrough(new CompressionStream("gzip"));
-  const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
-  let bin = "";
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
 openBtn.addEventListener("click", async () => {
-  if (!lastDocumentId) return;
-  let json: string | undefined;
-  try {
-    const fetched = (await app.callServerTool({
-      name: "get_document",
-      arguments: { document_id: lastDocumentId },
-    })) as ToolResultLike;
-    json = fetched.content?.find((c) => c.type === "text")?.text;
-  } catch (e) {
-    console.warn("[vcad-viewer] get_document for open link failed:", e);
+  let doc = vcodeDoc;
+  if (!doc && lastDocumentId) {
+    try {
+      const fetched = (await app.callServerTool({
+        name: "get_document",
+        arguments: { document_id: lastDocumentId },
+      })) as ToolResultLike;
+      const text = fetched.content?.find((c) => c.type === "text")?.text;
+      if (text) doc = text;
+    } catch (e) {
+      console.warn("[vcad-viewer] get_document for open link failed:", e);
+    }
   }
-  if (!json || !json.trim().startsWith("{")) return;
-  const url = "vcad://open?doc=" + (await gzipBase64Url(json));
+  if (!doc) return;
+  const encoded = btoa(unescape(encodeURIComponent(doc)))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+  const url = "https://vcad.io/#/new?doc=" + encoded;
   app.openLink({ url }).catch(() => window.open(url, "_blank"));
 });
 
@@ -2253,7 +2605,7 @@ function scheduleNextPoll(): void {
   pollHandle = setTimeout(() => void runPoll(), delay);
 }
 
-// In-flight guard: a visibilitychange while a poll is
+// Same in-flight guard as the order poll: a visibilitychange while a poll is
 // awaiting the server must not fork a second parallel poll chain.
 let previewPollInFlight = false;
 
@@ -2469,12 +2821,84 @@ if (location.hash.startsWith("#dev")) {
       sourcing: { lines: [1, 2, 3] },
     });
   }
+  if (location.hash === "#dev-orders") {
+    const now = Date.now();
+    const iso = (offsetMs: number): string => new Date(now + offsetMs).toISOString();
+    applyOrderFeed({
+      orders: [
+        {
+          order_id: "ord_dev1",
+          state_chip: "approval",
+          raw_state: "AWAITING_AUTHORIZATION",
+          process: "sheet_metal",
+          quantity: 5,
+          total_amount_usd: 182.4,
+          pricing_basis: "quoted",
+          vendor: "SendCutSend",
+          lead_time_days: 6,
+          quote_expires_at: iso(2 * 86400e3),
+          created_at: iso(-3600e3),
+          events: [
+            { state: "QUOTED", at: iso(-3600e3), note: "laser + bend, 5052-H32 2.0mm" },
+            { state: "AWAITING_AUTHORIZATION", at: iso(-1800e3) },
+          ],
+          authorization: {
+            status: "pending_human",
+            max_amount_usd: 200,
+            expires_at: iso(86400e3),
+            approve_url: "https://vcad.io/authorize/auth_dev",
+          },
+          tracking: null,
+          receipt: { status: "holds" },
+        },
+        {
+          order_id: "ord_dev2",
+          state_chip: "placing",
+          raw_state: "RECONCILING",
+          process: "cnc",
+          quantity: 1,
+          total_amount_usd: 512,
+          pricing_basis: "binding",
+          vendor: "Protolabs",
+          lead_time_days: 9,
+          created_at: iso(-7200e3),
+          events: [
+            { state: "PLACING", at: iso(-600e3) },
+            { state: "RECONCILING", at: iso(-60e3), note: "vendor confirmation pending" },
+          ],
+          authorization: null,
+          tracking: null,
+          receipt: { status: "unverified" },
+        },
+        {
+          order_id: "ord_dev3",
+          state_chip: "failed",
+          raw_state: "FAILED_VALIDATION",
+          process: "3dp_sls",
+          quantity: 12,
+          total_amount_usd: 96.05,
+          pricing_basis: "estimate",
+          vendor: "JLC3DP",
+          created_at: iso(-2 * 86400e3),
+          events: [
+            { state: "QUOTED", at: iso(-2 * 86400e3) },
+            { state: "FAILED_VALIDATION", at: iso(-86400e3), note: "wall thickness below process minimum" },
+          ],
+          authorization: null,
+          tracking: null,
+          receipt: { status: "violated" },
+        },
+      ],
+      wallet_balance_usd: 250,
+      version: "dev",
+    });
+  }
   // Debug handle for poking the scene from the console. `loadGlb` lets a
   // harness swap in an arbitrary base64 GLB (e.g. a generated PCB preview).
   (window as unknown as Record<string, unknown>).__vcad = {
     scene, camera, controls, grid, gridUniforms, contactShadow, renderer,
     select, partInfoFor, modelGroup, loadGlb, renderGlbForDoc,
-    adoptSimReplay, applySimFrame,
+    adoptSimReplay, applySimFrame, applyOrderFeed, renderOrderFeed,
     get renderedDocId() { return renderedDocId; },
     get simState() {
       return {
@@ -2499,6 +2923,9 @@ if (location.hash.startsWith("#dev")) {
   );
   // Keep the one mounted canvas live as the agent mutates the document.
   startPreviewPolling();
+  // Lazy order feed: ticks idle until a document mounts, then renders the
+  // dock on the first non-empty feed.
+  startOrderPolling();
   // Dock as a side panel when the host supports it, so it persists and
   // updates across the conversation rather than scrolling away.
   void maybeAutoDock();

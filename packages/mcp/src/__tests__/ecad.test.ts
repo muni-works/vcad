@@ -67,7 +67,7 @@ import {
   recordHistorySnapshot,
   registerSession,
 } from "../tools/session.js";
-import { openInApp } from "../tools/share.js";
+import { openInBrowser } from "../tools/share.js";
 
 let engine: Engine;
 
@@ -4809,14 +4809,14 @@ describe("ecad pipeline behaviors (session flow)", () => {
     }
   });
 
-  it("open_in_app produces a vcad:// link for PCB documents", async () => {
+  it("open_in_browser produces a vcad:// link for PCB documents", async () => {
     const created = out(
       await createSchematic({ components: [resistor("R1", 0, ["A", "B"])] }),
     );
     const id = created.document_id;
     out(await placeComponents({ document_id: id, board_width: 30, board_height: 30 }));
 
-    const res = openInApp({
+    const res = openInBrowser({
       document: JSON.stringify(getSession(id)),
       name: "pcb-test",
     });

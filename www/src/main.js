@@ -58,11 +58,11 @@ function toggleMenu(open) {
 chev?.addEventListener("click", (e) => { e.stopPropagation(); toggleMenu(); });
 main?.addEventListener("click", (e) => {
   e.stopPropagation();
-  copied("claude mcp add vcad -- npx -y @vcad/mcp");
+  copied("claude mcp add --transport http vcad https://mcp.vcad.io/mcp");
   toggleMenu(false);
 });
 $("agentMain2")?.addEventListener("click", () => {
-  copied("claude mcp add vcad -- npx -y @vcad/mcp");
+  copied("claude mcp add --transport http vcad https://mcp.vcad.io/mcp");
 });
 menu?.querySelectorAll("[data-copy]").forEach((b) =>
   b.addEventListener("click", (e) => {

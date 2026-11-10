@@ -1,0 +1,6 @@
+# Requirements for cad0 HuggingFace Inference Endpoint
+# Upload as requirements.txt to the campedersen/cad0 model repo
+transformers>=4.44.0
+torch>=2.0.0
+accelerate>=0.34.0
+bitsandbytes>=0.46.0

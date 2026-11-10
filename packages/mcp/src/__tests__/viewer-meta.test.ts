@@ -82,6 +82,7 @@ describe("viewer _meta split (one canvas, not one iframe per call)", () => {
       "get_preview_version",
       "get_sim_replay",
       "get_sim_version",
+      "get_order_feed",
     ]) {
       const m = by(name)?._meta;
       expect(by(name), `${name} exists`).toBeDefined();
@@ -99,14 +100,25 @@ describe("viewer _meta split (one canvas, not one iframe per call)", () => {
     await server.close();
   });
 
-  it("exposes no money tools (ordering was a hosted service)", async () => {
+  it("money tools are never widget-callable (the iframe is read-only for money)", async () => {
     documents.clear();
     const { client, server } = await connect(engine);
     const { tools } = (await client.listTools()) as { tools: ToolDesc[] };
-    const names = new Set(tools.map((t) => t.name));
-    for (const name of ["authorize_spend", "place_order", "get_order_feed"]) {
-      expect(names.has(name), `${name} must be absent`).toBe(false);
+    const by = (n: string) => tools.find((t) => t.name === n);
+
+    // The asymmetric seam: the agent proposes, the human approves out-of-band,
+    // the agent places. The widget must not be able to call either money tool —
+    // no template, no openai/widgetAccessible.
+    for (const name of ["authorize_spend", "place_order"]) {
+      const m = by(name)?._meta;
+      expect(by(name), `${name} exists`).toBeDefined();
+      expect(hasTemplate(m), `${name} must not mount`).toBe(false);
+      expect(
+        m?.["openai/widgetAccessible"],
+        `${name} must not be widget-callable`,
+      ).not.toBe(true);
     }
+
     await client.close();
     await server.close();
   });

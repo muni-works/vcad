@@ -9,8 +9,8 @@ import SwiftUI
 @MainActor
 @Observable
 final class IntentEngine {
-    /// Off for vcad 1.0. The bar was backed by vcad.io's hosted /api/chat
-    /// (removed: vcad runs no hosted services), and Apple's on-device model
+    /// Off for vcad 1.0. The bar was backed by vcad.io's hosted /api/chat,
+    /// which retires with the web app, and Apple's on-device model
     /// (FoundationModels, tested 2026-11-07) can't write valid loon from this
     /// prompt — it invents syntax. Re-enable once a local route produces
     /// geometry reliably (e.g. guided generation into a typed feature list).

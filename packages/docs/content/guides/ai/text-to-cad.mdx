@@ -12,11 +12,19 @@ Click the AI icon in the toolbar or press **Cmd+J** to open the AI panel. A text
 
 The AI panel maintains conversation context. After generating a part, you can say "make it taller" or "add a slot on the front face" and the AI modifies the existing geometry rather than starting from scratch. This iterative refinement is how most real designs are built -- rough shape first, then adjustments.
 
-## Inference
+## Browser vs Server Inference
 
-**Browser inference** runs a small model directly in your browser using WebGPU. It is fast (sub-second for simple parts), completely private (no data leaves your machine), and works offline. It handles single-part geometry with straightforward features (primitives, booleans, basic patterns) but struggles with complex multi-step constructions, assemblies, or unusual shapes.
+vcad offers two inference modes.
 
-**Larger models** are not hosted by vcad. To use a frontier model, connect your own agent (Claude Code, Claude Desktop, or any MCP client) to the local MCP server with `npx -y @vcad/mcp`; your agent runs under your own account and vcad never sees your prompts.
+**Browser inference** runs a small model directly in your browser using WebGPU. It is fast (sub-second for simple parts), completely private (no data leaves your machine), and works offline. The trade-off is capability: the browser model handles single-part geometry with straightforward features (primitives, booleans, basic patterns) but struggles with complex multi-step constructions, assemblies, or unusual shapes.
+
+**Server inference** sends your prompt to a larger model hosted in the cloud. It handles more complex requests: multi-part assemblies, intricate sweep and loft geometry, parametric relationships, and detailed feature trees. The trade-off is latency (a few seconds) and the requirement for an internet connection. Your prompts are processed on Anthropic's servers.
+
+Toggle between modes with the switch at the top of the AI panel. Browser mode shows a lightning bolt icon; server mode shows a cloud icon. Start with browser inference for quick iterations and switch to server when you need more capability.
+
+<Callout type="info" title="Model selection">
+Browser inference uses a small model optimized for token efficiency and CAD-specific tasks. Server inference uses a larger model with broader reasoning capability. Both produce the same IR format -- the output is a vcad document regardless of which model generated it.
+</Callout>
 
 ## Writing Effective Prompts
 

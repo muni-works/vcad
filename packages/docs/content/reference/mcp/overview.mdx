@@ -4,11 +4,19 @@ description: "All MCP server tools for AI-assisted CAD"
 order: 1
 ---
 
-The vcad MCP server exposes the parametric kernel as a set of tools that AI agents can call through the Model Context Protocol. The server runs locally on your machine (there is no hosted vcad MCP server) and includes the full WASM engine for geometry evaluation. Bring your own agent: any MCP client works.
+The vcad MCP server exposes the parametric kernel as a set of tools that AI agents can call through the Model Context Protocol. Connect to the hosted server or run it locally -- both include the full WASM engine for geometry evaluation.
 
 ## Connect
 
-**Local (stdio, for Claude Code, Claude Desktop, or any MCP client):**
+**Remote (Claude.ai, Claude Desktop, any MCP client):**
+
+```
+https://mcp.vcad.io/mcp
+```
+
+Add this URL as a custom connector in your MCP client. In Claude.ai: Settings > Connectors > Add custom connector.
+
+**Local (stdio, for Claude Code or Claude Desktop):**
 
 ```json
 {
@@ -27,7 +35,7 @@ This page lists every available tool with its purpose and key parameters. For se
 
 ### create_cad_document
 
-The primary tool for building 3D geometry. Takes a structured JSON description of parts and operations, and returns an IR document that can be inspected, exported, or opened in the Mac app.
+The primary tool for building 3D geometry. Takes a structured JSON description of parts and operations, and returns an IR document that can be inspected, exported, or opened in the browser.
 
 Each part can be defined by a `primitive` (cube, cylinder, sphere, cone), or by a sketch-based operation (`extrude`, `revolve`, `sweep`, `loft`). Parts support a chain of `operations` that modify the geometry: boolean operations (union, difference, intersection), transforms (translate, rotate, scale), patterns (linear, circular), features (fillet, chamfer, shell), and holes.
 
@@ -66,9 +74,15 @@ Output format: `compact` (default) or `json`.
 
 Loon supports `let` bindings, `pipe` for operation chaining, all primitives, booleans, transforms, and features. See [Loon Format](/tutorials/mcp/loon) and the [create_cad_loon reference](/reference/mcp/create-cad-loon) for syntax details.
 
-### open_in_app
+### open_in_browser
 
-Returns a `vcad://open?doc=...` deep link that opens the document in the vcad Mac app. Nothing is uploaded: the document is compressed and embedded in the link, and no vcad server is involved.
+Generates a shareable URL that opens an IR document in the vcad.io web app. The document is compressed (gzip + base64url) and embedded in the URL, so no server storage is needed.
+
+<Param name="ir" type="object">
+IR document from `create_cad_document` or `create_cad_loon`.
+</Param>
+
+Returns a URL like `https://vcad.io/#doc=...`. Note that very large documents may exceed browser URL length limits (roughly 2KB of compressed data).
 
 ## Analysis Tools
 

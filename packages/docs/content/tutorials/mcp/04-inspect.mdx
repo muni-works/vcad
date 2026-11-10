@@ -125,7 +125,7 @@ create_cad_document → inspect_cad → export_cad
        └── fix parameters ──┘
 ```
 
-This create-inspect-export pipeline is the standard workflow for AI-driven part generation. The AI can also call `open_in_app` to hand you a `vcad://` link that opens the model in the vcad Mac app.
+This create-inspect-export pipeline is the standard workflow for AI-driven part generation. The AI can also call `open_in_browser` after export to generate a shareable vcad.io link, letting you view the model in 3D without downloading any files.
 
 <Callout type="tip" title="Asking for mass">
 If you want mass estimates, make sure your materials include density. The built-in material presets (aluminum, steel, brass, etc.) all have density values. Custom materials defined in Loon with the `M` opcode can include density as the seventh parameter: `M custom 0.5 0.5 0.5 0.0 0.8 1200` gives a plastic-like material at 1200 kg/m3.

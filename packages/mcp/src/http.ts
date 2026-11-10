@@ -1,14 +1,13 @@
 /**
  * HTTP entry point for the vcad MCP server.
  *
- * Runs as a standalone Node.js HTTP server with StreamableHTTPServerTransport,
- * for local clients that speak MCP over HTTP instead of stdio. vcad does not
- * operate a hosted instance; bind it to localhost.
+ * Runs as a standalone Node.js HTTP server with StreamableHTTPServerTransport.
+ * Designed for deployment to Vercel, Fly.io, or any Node.js host.
  *
  * Stateless mode: each request creates a fresh transport + server.
  * No session persistence — every tool call is independent.
  *
- * Optional hardening via environment variables:
+ * Security posture for public deployments is gated on environment variables:
  *   MCP_API_KEY               required Bearer token for /mcp; unset = anon (dev only)
  *   MCP_ALLOWED_ORIGINS       comma-separated CORS allowlist; unset = no CORS headers
  *   MCP_RATE_LIMIT_PER_MINUTE per-IP cap for /mcp (default 60)
@@ -22,7 +21,10 @@ import { createServer as createHttpServer } from "node:http";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { Engine } from "@vcad/engine";
 import { createServer } from "./server.js";
+import { verifyAccessToken } from "./oauth.js";
 import { getViewerHtml, MCP_APP_MIME_TYPE } from "./viewer.js";
+import { flushTelemetry } from "./telemetry.js";
+import { handleLiveRequest } from "./live-route.js";
 import { handleArtifactRequest } from "./artifact-route.js";
 import { sessionStoreInfo } from "./session-store.js";
 import {
@@ -32,8 +34,6 @@ import {
 } from "./protocol-2026.js";
 
 const PORT = parseInt(process.env.PORT || "8080", 10);
-// Loopback by default: this is a local server, not a hosted service.
-const HOST = process.env.HOST || "127.0.0.1";
 
 const API_KEY = process.env.MCP_API_KEY || "";
 const ALLOWED_ORIGINS = (process.env.MCP_ALLOWED_ORIGINS || "")
@@ -109,10 +109,11 @@ async function handleMcpRequest(
   res: import("node:http").ServerResponse,
 ): Promise<void> {
   const eng = await getEngine();
+  const user = verifyAccessToken(req);
   // assumeUiClient: this stateless path builds a fresh Server per request,
   // so the UI-extension capability from `initialize` is never visible here —
   // attach the inline `_meta` preview unconditionally (see ServerContext).
-  const makeServer = () => createServer(eng, { user: null, assumeUiClient: true });
+  const makeServer = () => createServer(eng, { user, assumeUiClient: true });
 
   // Dual-era: a request that declares its own protocol version (or asks for
   // `server/discover`) speaks MCP 2026-07-28 and is served by the modern
@@ -267,7 +268,7 @@ async function handleLegacyMcpRequest(
 }
 
 /** Read request body as string, enforcing a max size (default MAX_BODY_BYTES;
- *  callers may pass a smaller cap). */
+ *  callers like the live annotate route pass a much smaller cap). */
 function readBody(
   req: import("node:http").IncomingMessage,
   maxBytes: number = MAX_BODY_BYTES,
@@ -356,6 +357,7 @@ const httpServer = createHttpServer(async (req, res) => {
         return;
       }
       await handleMcpRequest(req, res);
+      await flushTelemetry();
       return;
     }
 
@@ -375,8 +377,15 @@ const httpServer = createHttpServer(async (req, res) => {
       return;
     }
 
-    // Health check. `durable` / `session_store` report whether open sessions
-    // survive a restart (the local disk store).
+    // Live review window (/live/*) — shared, flag-gated handler. Returns true
+    // once it has written a response.
+    if (await handleLiveRequest(req, res, { user: verifyAccessToken(req), getEngine })) {
+      return;
+    }
+
+    // Health check. `durable` / `session_store` make the session-durability
+    // state observable with a plain curl — durable:false means a redeploy will
+    // drop open sessions (service-role key unset).
     if (path === "/health") {
       const eng = await getEngine();
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -420,8 +429,8 @@ async function main() {
     );
   }
 
-  httpServer.listen(PORT, HOST, () => {
-    console.error(`[vcad-mcp] HTTP server listening on ${HOST}:${PORT}`);
+  httpServer.listen(PORT, () => {
+    console.error(`[vcad-mcp] HTTP server listening on port ${PORT}`);
     console.error(`[vcad-mcp] MCP endpoint: http://localhost:${PORT}/mcp`);
     console.error(`[vcad-mcp] Viewer: http://localhost:${PORT}/viewer.html`);
     console.error(`[vcad-mcp] Health: http://localhost:${PORT}/health`);

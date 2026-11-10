@@ -16,6 +16,7 @@ import { Star } from "@phosphor-icons/react/dist/ssr/Star";
 import type { Icon } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 import { useDocumentStore, useChatStore, parseVcadFile } from "@vcad/core";
+import { useAuth, isAuthEnabled, AuthModal } from "@vcad/auth";
 import { useOnboardingStore } from "@/stores/onboarding-store";
 import { examples, exampleToVcadFile } from "@/data/examples";
 import type { Example } from "@/data/examples";
@@ -57,6 +58,9 @@ export function InlineOnboarding({ visible }: InlineOnboardingProps) {
     (s) => s.incrementProjectsCreated,
   );
 
+  const { user, isAuthenticated } = useAuth();
+  const authEnabled = isAuthEnabled();
+  const [showAuthModal, setShowAuthModal] = useState(false);
 
   const hide = useCallback(() => {
     if (dontShowAgain) {
@@ -353,9 +357,28 @@ export function InlineOnboarding({ visible }: InlineOnboardingProps) {
         {/* Footer */}
         <div className="border-t border-border px-5 py-2.5 flex items-center justify-between gap-3 text-[10px] text-text-muted">
           <div className="flex items-center gap-1 min-w-0">
-            <span className="opacity-60">
-              your work is saved locally in this browser
-            </span>
+            {authEnabled ? (
+              isAuthenticated ? (
+                <span className="truncate">
+                  signed in as{" "}
+                  <span className="text-text">{user?.email}</span>
+                </span>
+              ) : (
+                <>
+                  <button
+                    onClick={() => setShowAuthModal(true)}
+                    className="text-text-muted hover:text-text"
+                  >
+                    sign in
+                  </button>
+                  <span className="opacity-60">to sync across devices</span>
+                </>
+              )
+            ) : (
+              <span className="opacity-60">
+                your work is saved locally in this browser
+              </span>
+            )}
           </div>
           <label className="flex shrink-0 items-center gap-1.5 cursor-pointer">
             <input
@@ -369,6 +392,7 @@ export function InlineOnboarding({ visible }: InlineOnboardingProps) {
         </div>
       </div>
 
+      <AuthModal open={showAuthModal} onOpenChange={setShowAuthModal} />
     </div>
   );
 }

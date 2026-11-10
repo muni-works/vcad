@@ -10,31 +10,53 @@ import { Engine } from "@vcad/engine";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createServer } from "../server.js";
-import { existsSync, mkdtempSync, readdirSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { setSessionFetch } from "../session-store.js";
 import { documents } from "../tools/session.js";
 
 /**
  * End-to-end coverage of checkpoint_document / branch_from, driven through the
  * real CallTool handler in createServer over an in-memory MCP client, with a
- * temp disk session store so checkpoints persist (and survive a simulated
- * restart).
+ * fake PostgREST backend so checkpoints persist (and survive a simulated
+ * redeploy) exactly as in production.
  */
 
-/** Point the disk session store at a fresh temp dir. The dir is the durable
- *  backend: it survives a "restart" (a cleared `documents` cache + a fresh
- *  server). `has(id)` says whether that session reached disk. */
+/** PostgREST + append_session_event stand-in. The `rows` map is the durable
+ *  backend — it survives a "redeploy" (a cleared `documents` cache + a fresh
+ *  server) because it's closed over here, not in instance memory. */
 function installFake() {
-  const dir = mkdtempSync(join(tmpdir(), "vcad-mcp-test-"));
-  process.env.VCAD_MCP_SESSION_DIR = dir;
-  const file = (id: string) => join(dir, `${id}.json`);
-  return {
-    dir,
-    has: (id: string) => existsSync(file(id)),
-    mtime: (id: string) => (existsSync(file(id)) ? statSync(file(id)).mtimeMs : -1),
-    count: () => readdirSync(dir).filter((f) => f.endsWith(".json")).length,
+  const rows = new Map<string, Record<string, unknown>>();
+  const eq = (sp: URLSearchParams, k: string): string | null => {
+    const v = sp.get(k);
+    return v && v.startsWith("eq.") ? v.slice(3) : null;
   };
+  setSessionFetch((async (input: unknown, init: RequestInit = {}) => {
+    const url = new URL(String(input));
+    const method = (init.method ?? "GET").toUpperCase();
+    if (method === "POST" && url.pathname.endsWith("/rpc/append_session_event")) {
+      return new Response(JSON.stringify({ ok: true, id: 1, seq: 1 }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (method === "POST") {
+      const body = JSON.parse(String(init.body)) as Array<
+        Record<string, unknown>
+      >;
+      for (const r of body) rows.set(`${r.user_id}|${r.local_id}`, r);
+      return new Response(null, { status: 201 });
+    }
+    const key = `${eq(url.searchParams, "user_id")}|${eq(url.searchParams, "local_id")}`;
+    if (method === "GET") {
+      const row = rows.get(key);
+      if (!row) return new Response("", { status: 406 });
+      return new Response(JSON.stringify({ content: row.content }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return new Response(null, { status: 204 });
+  }) as unknown as typeof fetch);
+  return { rows };
 }
 
 async function connect(
@@ -90,17 +112,28 @@ const USER = { sub: "user-ckpt", email: "c@x.test" };
 
 describe("checkpoint_document / branch_from", () => {
   let engine: Engine;
+  let prevUrl: string | undefined;
+  let prevKey: string | undefined;
 
   beforeAll(async () => {
     engine = await Engine.init();
   });
 
   beforeEach(() => {
+    prevUrl = process.env.SUPABASE_URL;
+    prevKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    process.env.SUPABASE_URL = "https://supa.test";
+    process.env.SUPABASE_SERVICE_ROLE_KEY = "svc";
     documents.clear();
   });
 
   afterEach(() => {
-    delete process.env.VCAD_MCP_SESSION_DIR;
+    if (prevUrl === undefined) delete process.env.SUPABASE_URL;
+    else process.env.SUPABASE_URL = prevUrl;
+    if (prevKey === undefined) delete process.env.SUPABASE_SERVICE_ROLE_KEY;
+    else process.env.SUPABASE_SERVICE_ROLE_KEY = prevKey;
+    setSessionFetch(((...a: Parameters<typeof fetch>) =>
+      fetch(...a)) as typeof fetch);
   });
 
   it("snapshots a session and reports the netlist anchor in the summary", async () => {
@@ -229,7 +262,7 @@ describe("checkpoint_document / branch_from", () => {
       }),
     ).checkpoint_id as string;
     // The checkpoint reached the durable backend.
-    expect(fake.has(checkpointId)).toBe(true);
+    expect(fake.rows.has(`${USER.sub}|mcp:${checkpointId}`)).toBe(true);
     await a.client.close();
     await a.server.close();
 

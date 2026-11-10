@@ -5,17 +5,6 @@ web editor retires, and with it cloud sync, accounts, collaboration and
 billing. This doc maps every vcad.io route to its post-retirement behavior and
 says what is built and what is still a switch to flip.
 
-## Status (vcad 1.0, branch chore-drop-hosted)
-
-The hosted services are removed from the repo: `packages/api`, `packages/auth`,
-`packages/hf-space`, `supabase/`, `services/mcp`, the web app's `/api/*`
-functions and Edge middleware, and the app's accounts, sync, sharing, billing,
-chat, version history and `/export` page. The web editor is now a local-only
-static SPA. Live infrastructure is untouched until someone turns it off; the
-`/export` page disappears on the next deploy of this code, so announce the
-shutdown date (and keep the old deploy) before deploying it. The sections
-below describe the pre-removal plan and are kept for history.
-
 ## Release-blocking: the update feed stays up
 
 Every installed copy of the Mac app checks

@@ -11,10 +11,11 @@
  */
 
 import type { Engine } from "@vcad/engine";
-import type { AuthUser } from "../auth-user.js";
+import type { AuthUser } from "../oauth.js";
 import type {
   SessionStore,
   SessionEventStore,
+  ShareStore,
 } from "../session-store.js";
 import type { FabricateStore } from "../fabricate/store.js";
 import type { ToolResult } from "./tool-result.js";
@@ -50,6 +51,7 @@ export interface ToolContext {
   sessionStore: SessionStore;
   eventStore: SessionEventStore;
   fabricateStore: FabricateStore;
+  shareStore: ShareStore;
   /**
    * Server-injected elicitation bridge (MCP URL-mode elicitation, SDK ≥1.29).
    * Injected by `createServer` when the transport can carry an in-band

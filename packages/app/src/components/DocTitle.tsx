@@ -12,6 +12,7 @@ import {
   AI_PARTICIPANT_ID,
   getSketchPlaneName,
 } from "@vcad/core";
+import { useAuthStore, useSyncStore } from "@vcad/auth";
 import { useDrawingStore } from "@/stores/drawing-store";
 import { useElectronicsStore } from "@/stores/electronics-store";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -23,7 +24,7 @@ import { analytics } from "@/lib/analytics";
  *
  * Centered in the header row. Click the name to inline-rename (Enter commits,
  * Esc reverts). The save dot reuses the same state machine as StatusBar:
- *  local dirty → brand/pulse,
+ *  local dirty → brand/pulse, cloud syncing → yellow/pulse, sync error → danger,
  *  otherwise muted "saved". In a read-only share session, a lock badge replaces
  *  the save dot.
  *
@@ -37,6 +38,10 @@ export function DocTitle() {
   const isDirty = useDocumentStore((s) => s.isDirty);
   const readOnlyShare = useUiStore((s) => s.readOnlyShare);
 
+  const user = useAuthStore((s) => s.user);
+  const isAnonymous = useAuthStore((s) => s.isAnonymous);
+  const isSignedIn = !!user && !isAnonymous;
+  const syncStatus = useSyncStore((s) => s.syncStatus);
 
   const sketchActive = useSketchStore((s) => s.active);
   const sketchPlane = useSketchStore((s) => s.plane);
@@ -98,11 +103,23 @@ export function DocTitle() {
         pulse: true,
         tooltip: "Unsaved changes",
       }
-    : {
-        dotClass: "text-text-muted/50",
-        pulse: false,
-        tooltip: "Saved",
-      };
+    : isSignedIn && syncStatus === "syncing"
+      ? {
+          dotClass: "text-yellow-500",
+          pulse: true,
+          tooltip: "Syncing to cloud",
+        }
+      : isSignedIn && syncStatus === "error"
+        ? {
+            dotClass: "text-danger",
+            pulse: false,
+            tooltip: "Cloud sync failed",
+          }
+        : {
+            dotClass: "text-text-muted/50",
+            pulse: false,
+            tooltip: isSignedIn ? "Saved · synced to cloud" : "Saved",
+          };
 
   const nameDisplay = documentName || "Untitled";
   const nameIsDefault = !documentName || documentName === "Untitled";

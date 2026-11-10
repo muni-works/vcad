@@ -10,7 +10,7 @@
 - Simulation: Physics with Rapier3D, gym-style RL interface
 - Import/Export: STEP import, STL/GLB/STEP/DXF export
 - Rendering: Direct BRep ray tracing + tessellated mode
-- Storage: local only (browser IndexedDB); no accounts or cloud sync
+- Cloud: Supabase sync with Google/GitHub auth
 - MCP Server: AI agents can create and manipulate CAD models
 - CLI: Headless export and STEP import
 

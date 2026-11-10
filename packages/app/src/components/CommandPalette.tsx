@@ -32,8 +32,10 @@ import { SpinnerGap } from "@phosphor-icons/react/dist/ssr/SpinnerGap";
 import { Play } from "@phosphor-icons/react/dist/ssr/Play";
 import { Plus } from "@phosphor-icons/react/dist/ssr/Plus";
 import { fromVCode, type Document } from "@vcad/ir";
+import { generateCADServer } from "@/lib/server-inference";
 import { generateCAD, isWebGPUAvailable } from "@/lib/browser-inference";
 import { useNotificationStore } from "@/stores/notification-store";
+import { useRequireAuth, AuthModal, useAuthStore } from "@vcad/auth";
 import { useOnboardingStore } from "@/stores/onboarding-store";
 import type { Command } from "@vcad/core";
 import { useUiStore, useDocumentStore, parseVcadFile, useChatStore, t } from "@vcad/core";
@@ -148,6 +150,9 @@ export function CommandPalette({ open, onOpenChange, onAboutOpen }: CommandPalet
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
 
+  // Auth gating for AI features
+  const { requireAuth, showAuth, setShowAuth, feature } = useRequireAuth("ai");
+
   const loadDocument = useDocumentStore((s) => s.loadDocument);
   const startGuidedFlow = useOnboardingStore((s) => s.startGuidedFlow);
   const incrementProjectsCreated = useOnboardingStore((s) => s.incrementProjectsCreated);
@@ -171,7 +176,7 @@ export function CommandPalette({ open, onOpenChange, onAboutOpen }: CommandPalet
   });
 
   // AI generation handler (inner function that does the actual work)
-  const doAIGenerate = useCallback(async (prompt: string) => {
+  const doAIGenerate = useCallback(async (prompt: string, useBrowser: boolean) => {
     const controller = new AbortController();
     abortControllerRef.current = controller;
     setAiGenerating(true);
@@ -181,24 +186,47 @@ export function CommandPalette({ open, onOpenChange, onAboutOpen }: CommandPalet
     const docStore = useDocumentStore.getState();
 
     // Start AI progress with semantic stages
-    const stages = ["Loading AI model", "Generating geometry", "Building mesh"];
+    const stages = useBrowser
+      ? ["Loading AI model", "Generating geometry", "Building mesh"]
+      : ["Connecting to server", "Generating geometry", "Building mesh"];
     const progressId = store.startAIOperation(prompt, stages);
 
     try {
-      // Browser inference with cad0-mini (on-device; no hosted fallback)
-      store.updateAIProgress(progressId, 0, 10);
-      setAiStatus("Loading AI model...");
+      let ir: string;
+      let durationMs: number;
 
-      const result = await generateCAD(prompt, undefined, (loaded, total, status) => {
-        const pct = Math.round((loaded / total) * 100);
-        setAiStatus(status);
-        if (status.includes("Loading") || status.includes("Initializing")) {
-          store.updateAIProgress(progressId, 0, Math.min(pct * 0.7, 70));
+      if (useBrowser) {
+        // Browser inference with cad0-mini
+        store.updateAIProgress(progressId, 0, 10);
+        setAiStatus("Loading AI model...");
+
+        const result = await generateCAD(prompt, undefined, (loaded, total, status) => {
+          const pct = Math.round((loaded / total) * 100);
+          setAiStatus(status);
+          if (status.includes("Loading") || status.includes("Initializing")) {
+            store.updateAIProgress(progressId, 0, Math.min(pct * 0.7, 70));
+          }
+        }, controller.signal);
+
+        ir = result.ir;
+        durationMs = result.durationMs;
+      } else {
+        // Server inference with cad0
+        store.updateAIProgress(progressId, 0, 10);
+        setAiStatus("Connecting to server...");
+
+        const currentSession = useAuthStore.getState().session;
+        if (!currentSession) {
+          throw new Error("Not authenticated");
         }
-      }, controller.signal);
+        const result = await generateCADServer(prompt, {
+          authToken: currentSession.access_token,
+          signal: controller.signal,
+        });
 
-      const ir = result.ir;
-      const durationMs = result.durationMs;
+        ir = result.ir;
+        durationMs = result.durationMs;
+      }
 
       // Stage 2: Building geometry
       store.updateAIProgress(progressId, 1, 80);
@@ -216,7 +244,7 @@ export function CommandPalette({ open, onOpenChange, onAboutOpen }: CommandPalet
       // Complete with action result
       store.completeAIOperation(progressId, {
         type: "success",
-        title: "Generated locally",
+        title: useBrowser ? "Generated locally" : "Generated from server",
         description: `Created in ${(durationMs / 1000).toFixed(1)}s`,
         actions: [
           {
@@ -248,13 +276,12 @@ export function CommandPalette({ open, onOpenChange, onAboutOpen }: CommandPalet
     // Try browser inference first if WebGPU available
     const hasWebGPU = await isWebGPUAvailable();
     if (hasWebGPU) {
-      doAIGenerate(prompt);
+      doAIGenerate(prompt, true);
     } else {
-      useNotificationStore
-        .getState()
-        .addToast("AI generation needs WebGPU (runs on-device only)", "error");
+      // Fall back to server (requires auth)
+      requireAuth(() => doAIGenerate(prompt, false));
     }
-  }, [doAIGenerate]);
+  }, [requireAuth, doAIGenerate]);
 
   // Get contextual AI suggestions
   const aiSuggestions = useMemo(() => {
@@ -630,6 +657,7 @@ export function CommandPalette({ open, onOpenChange, onAboutOpen }: CommandPalet
           </div>
         </Dialog.Content>
       </Dialog.Portal>
+      <AuthModal open={showAuth} onOpenChange={setShowAuth} feature={feature} />
     </Dialog.Root>
   );
 }
