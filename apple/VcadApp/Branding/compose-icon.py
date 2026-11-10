@@ -4,8 +4,8 @@
   python3 compose-icon.py <mark.png> <out-1024.png>
   python3 compose-icon.py --sheet <out.png> <icon1.png> [icon2.png ...]
 
-Plate: 1024 canvas, 824 px continuous-corner squircle centred (Apple's macOS
-icon grid), near-black carbon gradient, faint brand-orange glow under the mark.
+Plate: 1024 canvas, 824 px continuous-corner rounded rect centred (Apple's
+macOS icon grid), near-black carbon gradient, faint brand-orange glow under the mark.
 Needs Pillow.
 """
 import sys
@@ -17,22 +17,39 @@ BODY = 824
 ORANGE = (242, 92, 31)  # brand-spec §4
 
 
-def squircle_mask(size, body, n=5.0, ss=4):
-    """Superellipse |x|^n + |y|^n = 1, the continuous-corner approximation."""
-    big = size * ss
-    r = body * ss / 2
-    c = big / 2
-    pts = []
-    import math
+def _bezier(p0, p1, p2, p3, n=24):
+    return [tuple((1 - t) ** 3 * a + 3 * (1 - t) ** 2 * t * b + 3 * (1 - t) * t * t * c + t ** 3 * d
+                  for a, b, c, d in zip(p0, p1, p2, p3)) for t in (k / n for k in range(1, n + 1))]
 
-    for i in range(720):
-        t = 2 * math.pi * i / 720
-        ct, st = math.cos(t), math.sin(t)
-        x = abs(ct) ** (2 / n) * r * (1 if ct >= 0 else -1)
-        y = abs(st) ** (2 / n) * r * (1 if st >= 0 else -1)
-        pts.append((c + x, c + y))
-    m = Image.new("L", (big, big), 0)
-    ImageDraw.Draw(m).polygon(pts, fill=255)
+
+def squircle_mask(size, body, radius=185.4, ss=4):
+    """Apple's continuous-corner rounded rect (the iOS 7+/Big Sur icon
+    shape): each corner is three cubic Béziers spanning 1.528665·r along
+    each edge, so curvature ramps up from the straight edge instead of
+    jumping as a circular arc does. Body 824 on a 1024 canvas, r = 185.4
+    (22.5% of the body), per Apple's macOS app icon template."""
+    k = ss
+    o = (size - body) / 2 * k
+    W = body * k
+    r = radius * k
+    # One corner in local coords (x along the edge from the corner, y in).
+    def corner(map_pt):
+        seg = [(1.52866483, 0.0)]
+        pts = []
+        cur = (1.52866483, 0.0)
+        for c1, c2, end in (((1.08849296, 0.0), (0.86840694, 0.0), (0.66993427, 0.06549600)),
+                            ((0.37282383, 0.16905956), (0.16906001, 0.37282400), (0.06549600, 0.66993427)),
+                            ((0.0, 0.86840694), (0.0, 1.08849296), (0.0, 1.52866483))):
+            pts += _bezier(cur, c1, c2, end)
+            cur = end
+        return [map_pt(seg[0])] + [map_pt(p) for p in pts]
+    tr = corner(lambda p: (o + W - p[0] * r, o + p[1] * r))
+    br = corner(lambda p: (o + W - p[1] * r, o + W - p[0] * r))
+    bl = corner(lambda p: (o + p[0] * r, o + W - p[1] * r))
+    tl = corner(lambda p: (o + p[1] * r, o + p[0] * r))
+    poly = tr + br + bl + tl
+    m = Image.new("L", (size * k, size * k), 0)
+    ImageDraw.Draw(m).polygon(poly, fill=255)
     return m.resize((size, size), Image.LANCZOS)
 
 

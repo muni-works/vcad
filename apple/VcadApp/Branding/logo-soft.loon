@@ -1,3 +1,6 @@
+; Variant v3 render source: the soft prism without engraving (see gen-logo.py
+; for the canonical logo.loon = v4). v1/v2 used fillet 2.5 instead of 7.0.
+[material "mark" 0.949 0.361 0.122 0.0 0.3]
 ; logo.vcad — the vcad mark as a real part (docs/brand-spec.md §1).
 ; A filled inverted triangle (apex down), extruded into a triangular prism.
 ; Apex angle 63.5° (spec §2): half-width / height = tan(31.75°) = 0.6188.
