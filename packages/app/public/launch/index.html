@@ -1,0 +1,587 @@
+<!doctype html>
+<!--
+  DRAFT launch landing page for vcad 1.0 (vcad.io). Served at /launch/ only;
+  the site root is untouched until launch day. Not deployed by this PR.
+  Before going live: point the paper link at the arXiv id, confirm the DMG
+  is published (desktop-v* release), and swap the hero still for the video.
+
+  Design: muni "Pilot Light" treatment, as on tang.toys and phyz.dev. Warm
+  paper by day, warm black by night, one flame per page. tang's flame is
+  safety orange, phyz's electric blue; vcad's is coral (#ff2052), its colour
+  on muni.works. Fonts are self-hosted and the toggle is an external script
+  because vcad.io's CSP allows neither Google Fonts nor inline scripts.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vcad. CAD you can take the derivative of</title>
+<meta name="description" content="vcad is free, open-source parametric CAD for Mac. Its BRep kernel is written from scratch in Rust and returns exact gradients with respect to any dimension. PCB layout, DFM and FEA are in the app, and agents connect over local MCP.">
+<meta property="og:title" content="vcad. CAD you can take the derivative of">
+<meta property="og:description" content="Free, open CAD for Mac. No account, no cloud, no subscription.">
+<meta property="og:image" content="https://vcad.io/launch/gallery/stirling-engine.jpg">
+<link rel="icon" href="/favicon.ico">
+<script src="theme.js"></script>
+<script src="kernel.js"></script>
+<script type="module" src="launch.js"></script>
+<style>
+@font-face { font-family: "IBM Plex Sans"; font-weight: 400; font-display: swap; src: url(fonts/ibm-plex-sans-latin-400-normal.woff2) format("woff2"); }
+@font-face { font-family: "IBM Plex Sans"; font-weight: 500; font-display: swap; src: url(fonts/ibm-plex-sans-latin-500-normal.woff2) format("woff2"); }
+@font-face { font-family: "IBM Plex Sans"; font-weight: 600; font-display: swap; src: url(fonts/ibm-plex-sans-latin-600-normal.woff2) format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 400; font-display: swap; src: url(fonts/ibm-plex-mono-latin-400-normal.woff2) format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 500; font-display: swap; src: url(fonts/ibm-plex-mono-latin-500-normal.woff2) format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 600; font-display: swap; src: url(fonts/ibm-plex-mono-latin-600-normal.woff2) format("woff2"); }
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  color-scheme: light dark;
+  --track: 0.12em;
+  --s-xs: 10.5px; --s-sm: 12.5px; --s-body: 15px; --s-md: 17px; --s-lg: 21px; --s-xl: 26px; --s-display: 72px;
+  --sans: "IBM Plex Sans", system-ui, sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+
+  --bg: #ffffff; --fg: #1c1917; --muted: #8a7658;
+  --surface: #faf7f1; --raised: #ffffff; --border: #cfc4b2; --border-muted: #e6dfd3;
+
+  /* the one flame: vcad coral */
+  --flame: #ff2052;
+  --flame-ink: color-mix(in oklab, #ff2052 78%, #000);
+  --flame-50: color-mix(in oklab, #ff2052 10%, #fff);
+
+  --cyan: color-mix(in oklab, #00f0ff 55%, #000);
+  --amber: color-mix(in oklab, #ffd400 60%, #000);
+  --blue: color-mix(in oklab, #3d8bff 72%, #000);
+  --orange: color-mix(in oklab, #ff5f00 80%, #000);
+  --purple: oklch(0.58 0.22 300);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b0907; --fg: #e8e1d2; --muted: #a08d70;
+    --surface: #15110d; --raised: #1e1813; --border: #4a3a2a; --border-muted: #2a2119;
+    --flame-ink: #ff2052; --flame-50: color-mix(in oklab, #ff2052 14%, #0b0907);
+    --cyan: #00f0ff; --amber: #ffd400; --blue: #3d8bff; --orange: #ff5f00; --purple: oklch(0.72 0.20 300);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0b0907; --fg: #e8e1d2; --muted: #a08d70;
+  --surface: #15110d; --raised: #1e1813; --border: #4a3a2a; --border-muted: #2a2119;
+  --flame-ink: #ff2052; --flame-50: color-mix(in oklab, #ff2052 14%, #0b0907);
+  --cyan: #00f0ff; --amber: #ffd400; --blue: #3d8bff; --orange: #ff5f00; --purple: oklch(0.72 0.20 300);
+}
+
+html { -webkit-font-smoothing: antialiased; scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+body { background: var(--bg); color: var(--fg); font-family: var(--sans); font-size: var(--s-body); line-height: 1.62; font-variant-numeric: tabular-nums; }
+::selection { background: var(--flame-ink); color: #fff; }
+code, pre, kbd { font-family: var(--mono); }
+
+.container { max-width: 720px; margin: 0 auto; padding: 0 24px; }
+.container-wide { max-width: 1120px; margin: 0 auto; padding: 0 40px; }
+
+/* links: no underline; hover fills with the flame */
+a, a:visited { color: var(--flame-ink); text-decoration: none; padding: 0 2px; margin: 0 -2px; transition: background .12s, color .12s; }
+a:hover { background: var(--flame-ink); color: #fff; }
+
+.label-caps { font-family: var(--mono); font-size: var(--s-xs); font-weight: 500; letter-spacing: var(--track); text-transform: uppercase; color: var(--muted); }
+
+/* theme toggle */
+#theme-toggle { position: fixed; top: 16px; right: 16px; z-index: 50; width: 36px; height: 36px; display: grid; place-items: center; border: 0.5px solid var(--border-muted); background: var(--bg); color: var(--fg); cursor: pointer; }
+#theme-toggle:hover { color: var(--flame-ink); }
+
+/* top nav: caps labels, quiet */
+.topnav { position: absolute; top: 22px; left: 0; right: 0; }
+.topnav .container { display: flex; gap: 22px; justify-content: flex-end; padding-right: 72px; }
+.topnav a { font-family: var(--mono); font-size: var(--s-xs); font-weight: 500; letter-spacing: var(--track); text-transform: uppercase; color: var(--muted); }
+.topnav a:hover { color: #fff; }
+
+/* hero */
+.hero { position: relative; padding: clamp(7rem, 14vw, 11rem) 0 clamp(4rem, 7vw, 6rem); }
+.hero-brand { display: flex; align-items: center; gap: 18px; margin-bottom: 2rem; }
+.hero-mark { width: 128px; height: 64px; color: var(--flame-ink); overflow: visible; }
+.hero-mark .wire { stroke: var(--fg); opacity: .55; }
+.hero-mark .grad { transform-box: fill-box; transform-origin: 0% 50%; animation: vcad-nudge 2.4s ease-in-out infinite; }
+.hero-mark .face { animation: vcad-face 2.4s ease-in-out infinite; }
+@keyframes vcad-nudge { 0%, 100% { transform: scaleX(.55); } 50% { transform: scaleX(1); } }
+@keyframes vcad-face { 0%, 100% { transform: translateX(0); } 50% { transform: translateX(3px); } }
+@media (prefers-reduced-motion: reduce) { .hero-mark .grad, .hero-mark .face { animation: none; } }
+.hero h1 { font-size: var(--s-display); line-height: 1; font-weight: 600; letter-spacing: -0.035em; }
+.hero h1 .dot { color: var(--flame-ink); }
+.hero-claim { font-size: var(--s-xl); font-weight: 600; line-height: 1.25; letter-spacing: -0.01em; margin-bottom: 1.1rem; max-width: 26ch; }
+.hero-claim .hero-sub { color: var(--muted); font-weight: 500; }
+.flame-rule { width: 22%; height: 2px; background: var(--flame-ink); margin: 0 0 1.1rem; }
+.hero-note { color: var(--muted); margin-bottom: 2rem; max-width: 54ch; }
+.hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 1rem; }
+a.hero-btn { display: inline-flex; align-items: center; gap: 10px; height: 40px; padding: 0 14px; margin: 0; background: var(--surface); color: var(--fg); font-size: var(--s-sm); transition: background .15s, color .15s; }
+a.hero-btn.primary { background: var(--flame-ink); color: #fff; font-weight: 500; }
+a.hero-btn:hover { background: var(--flame-ink); color: #fff; }
+a.hero-btn.primary:hover { background: var(--fg); color: var(--bg); }
+.hero-fine { font-family: var(--mono); font-size: var(--s-xs); color: var(--muted); margin-bottom: 1.25rem; }
+.hero-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* pills: master-plan neon, tinted fill, no rule */
+.pill { --ink: color-mix(in oklab, var(--pill) 55%, #000); display: inline-block; padding: 3px 9px; font-family: var(--mono); font-size: var(--s-xs); font-weight: 500; color: var(--ink); background: color-mix(in oklab, var(--pill) 16%, transparent); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .pill { --ink: var(--pill); background: color-mix(in oklab, var(--pill) 12%, transparent); } }
+:root[data-theme="dark"] .pill { --ink: var(--pill); background: color-mix(in oklab, var(--pill) 12%, transparent); }
+
+/* hero figure */
+.hero-fig { margin-top: 3.5rem; }
+@media (min-width: 1000px) { .hero-fig.wide { margin-left: -140px; margin-right: -140px; } }
+.hero-live { display: grid; grid-template-columns: minmax(0, 1fr) 260px; background: var(--surface); }
+.hero-live canvas { width: 100%; aspect-ratio: 4 / 3; display: block; cursor: grab; touch-action: none; }
+.hero-live canvas:active { cursor: grabbing; }
+.hero-panel { padding: 16px 16px 14px; border-left: 0.5px solid var(--border-muted); display: flex; flex-direction: column; gap: 8px; }
+.hero-panel label { display: grid; grid-template-columns: 74px minmax(0,1fr) 52px; align-items: center; gap: 8px; font-family: var(--mono); font-size: var(--s-xs); color: var(--muted); }
+.hero-panel input { width: 100%; accent-color: var(--flame); }
+.hero-panel output { color: var(--fg); text-align: right; font-variant-numeric: tabular-nums; }
+.hero-ro { grid-template-columns: 1fr 1fr !important; margin: 6px 0 4px; }
+.step-btn { height: 36px; border: 0; cursor: pointer; justify-content: center; font-family: var(--sans); background: var(--bg); color: var(--fg); opacity: .45; pointer-events: none; }
+.kernel-ready .step-btn { opacity: 1; pointer-events: auto; }
+.step-btn:hover { background: var(--flame-ink); color: #fff; }
+.hero-status { font-family: var(--mono); font-size: var(--s-xs); color: var(--muted); min-height: 1.4em; }
+@media (max-width: 900px) { .hero-live { grid-template-columns: 1fr; } .hero-panel { border-left: 0; border-top: 0.5px solid var(--border-muted); } }
+
+/* sections */
+section { padding: clamp(4.5rem, 10vw, 8rem) 0; }
+h2 { font-size: var(--s-lg); line-height: 1.3; font-weight: 600; letter-spacing: -0.01em; margin-bottom: 1rem; }
+.lead { max-width: 60ch; margin: 0 0 3rem; }
+.lead.muted { color: var(--muted); }
+.kicker { margin-bottom: .9rem; }
+
+/* proof strip */
+.proof { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0 1.25rem; }
+.proof-item { display: flex; flex-direction: column; gap: 6px; }
+.proof-val { font-family: var(--mono); font-size: var(--s-xl); font-weight: 500; line-height: 1.1; }
+.proof-val small { font-size: var(--s-sm); color: var(--muted); }
+.proof-label { font-size: var(--s-sm); color: var(--muted); line-height: 1.5; }
+.proof-src { margin-top: 1.5rem; font-size: var(--s-sm); color: var(--muted); }
+
+/* pitch */
+.pitch p { max-width: 62ch; margin-bottom: 1rem; }
+.pitch-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 2rem; }
+.pitch-grid h3 { font-size: var(--s-md); font-weight: 600; margin-bottom: .4rem; }
+.pitch-grid p { font-size: var(--s-sm); color: var(--muted); }
+
+/* gallery */
+.gallery { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 40px 24px; }
+.ex { margin: 0; display: flex; flex-direction: column; }
+.ex canvas { width: 100%; aspect-ratio: 4 / 3; display: block; background: var(--surface); cursor: grab; touch-action: none; }
+.ex canvas:active { cursor: grabbing; }
+.ex-meta { padding-top: 12px; }
+.ex .pill { margin-bottom: 6px; }
+.ex-name { display: block; font-family: var(--mono); font-size: var(--s-sm); font-weight: 500; color: var(--fg); }
+.ex-desc { font-size: var(--s-sm); color: var(--muted); line-height: 1.5; }
+
+/* code */
+pre { font-size: 12.5px; line-height: 1.7; background: var(--surface); color: var(--fg); padding: 18px 20px; overflow-x: auto; }
+pre .str { color: var(--amber); }
+pre .key { color: var(--flame-ink); }
+pre .cm { color: var(--muted); }
+.fig-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 32px; align-items: start; }
+.fig-cap { font-size: var(--s-sm); color: var(--muted); margin-top: .85rem; line-height: 1.6; }
+.fig-n { font-weight: 600; font-size: var(--s-xs); color: var(--fg); margin-right: .7em; }
+
+/* paper */
+.claims { list-style: none; border-top: 0.5px solid var(--border-muted); }
+.claims li { display: grid; grid-template-columns: 9rem minmax(0, 1fr); gap: 1rem; padding: .7rem 0; border-bottom: 0.5px solid var(--border-muted); font-size: var(--s-sm); }
+.claims li b { font-family: var(--mono); font-size: var(--s-xs); font-weight: 500; letter-spacing: var(--track); text-transform: uppercase; color: var(--muted); }
+.claims li.limit b { color: var(--flame-ink); }
+
+/* footer */
+.site-foot { text-align: center; padding: clamp(5rem, 11vw, 9rem) 1rem 4rem; color: var(--muted); font-size: var(--s-sm); }
+.foot-logo { display: inline-block; color: var(--orange); margin-bottom: 1.25rem; padding: 0; margin-left: 0; margin-right: 0; transition: opacity .2s; }
+.foot-logo:hover { background: none; color: var(--orange); opacity: .8; }
+.foot-logo svg { width: 96px; height: auto; display: block; }
+.site-foot p { margin: 0 auto .6rem; max-width: 52ch; }
+.foot-links { display: flex; flex-wrap: wrap; justify-content: center; gap: .6rem; }
+
+
+/* how it works: three panels, tang-style */
+.pipe { display: grid; grid-template-columns: minmax(0,1fr) 24px minmax(0,1fr) 24px minmax(0,1fr); align-items: stretch; gap: 0; }
+.pipe-card { display: flex; flex-direction: column; background: var(--surface); }
+.pipe-h { font-family: var(--mono); font-size: var(--s-xs); font-weight: 500; letter-spacing: var(--track); text-transform: uppercase; color: var(--muted); padding: 10px 14px; border-bottom: 0.5px solid var(--border-muted); }
+.pipe-body { flex: 1; display: flex; align-items: center; justify-content: center; padding: 14px; }
+.pipe-body pre { background: none; padding: 0; font-size: 11.5px; }
+.pipe-foot { font-size: var(--s-sm); color: var(--muted); padding: 10px 14px; border-top: 0.5px solid var(--border-muted); }
+.pipe-arrow { display: flex; align-items: center; justify-content: center; color: var(--muted); }
+.pipe-arrow::before { content: "→"; font-family: var(--mono); }
+.chips { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; width: 100%; font-family: var(--mono); font-size: var(--s-xs); }
+.chips span { background: var(--bg); padding: 6px 8px; text-align: center; }
+pre .kw { color: var(--purple); }
+pre .num { color: var(--flame-ink); }
+@media (max-width: 900px) { .pipe { grid-template-columns: 1fr; } .pipe-arrow { height: 24px; } .pipe-arrow::before { content: "↓"; } }
+
+/* mechanisms: numbered, one running example */
+.mech { margin-top: 4rem; }
+.mech-h { position: relative; font-size: var(--s-lg); font-weight: 600; letter-spacing: -0.01em; margin-bottom: 1rem; }
+.mech-n { font-weight: 500; color: var(--flame-ink); margin-right: .6rem; }
+@media (min-width: 900px) { .mech-n { position: absolute; right: calc(100% + 1.1rem); top: 0; margin: 0; } }
+.mech p { max-width: 62ch; margin-bottom: 1rem; }
+.eq { display: flex; align-items: center; justify-content: center; gap: 1rem; margin: 1.25rem 0; font-family: "Iowan Old Style", "Palatino", Georgia, serif; font-size: 19px; }
+.eq .m { font-style: italic; }
+.eq-n { font-family: var(--mono); font-size: var(--s-xs); color: var(--muted); margin-left: auto; }
+.eq-body { margin-left: auto; text-align: center; }
+.frac { display: inline-flex; flex-direction: column; vertical-align: middle; text-align: center; font-size: 16px; }
+.frac > span:first-child { border-bottom: 1px solid currentColor; padding: 0 3px; }
+.mech-fig { background: var(--surface); padding: 18px 18px 6px; margin: 1.5rem 0 1rem; }
+.mech-fig svg { display: block; width: 100%; max-width: 420px; height: auto; margin: 0 auto; }
+.pipe-body svg { width: 100%; max-width: 260px; height: auto; }
+.mech-fig .fig-cap { margin-top: 14px; }
+.fig-lead { color: var(--fg); font-weight: 500; }
+.svg-ink { stroke: var(--fg); }
+.svg-mute { stroke: var(--muted); }
+.svg-flame { stroke: var(--flame-ink); }
+.svg-t { fill: var(--muted); font-family: var(--mono); font-size: 9px; }
+.svg-tf { fill: var(--flame-ink); font-family: var(--mono); font-size: 9px; }
+.stages { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px; }
+.stage { background: var(--bg); padding: 12px; }
+.stage b { display: block; font-family: var(--mono); font-size: var(--s-xs); font-weight: 500; letter-spacing: var(--track); text-transform: uppercase; color: var(--flame-ink); margin-bottom: 4px; }
+.stage span { font-size: var(--s-sm); color: var(--muted); line-height: 1.5; display: block; }
+@media (max-width: 700px) { .stages { grid-template-columns: 1fr 1fr; } }
+.g-ctl { display: flex; align-items: center; gap: 12px; font-family: var(--mono); font-size: var(--s-sm); margin-bottom: 12px; }
+.g-ctl input { flex: 1; accent-color: var(--flame); }
+.ro { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 16px; margin-top: 12px; }
+.ro dt { font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: var(--track); text-transform: uppercase; color: var(--muted); }
+.ro dd { font-family: var(--mono); font-size: var(--s-sm); font-weight: 500; color: var(--fg); }
+.ro .hot dd { color: var(--flame-ink); }
+@media (max-width: 640px) { .ro { grid-template-columns: 1fr 1fr; } }
+
+/* comparison */
+.cmp-head, .cmp-row { display: grid; grid-template-columns: minmax(0,1.7fr) repeat(4, minmax(0,1fr)); align-items: center; gap: 8px; }
+.cmp-head { font-size: var(--s-sm); color: var(--muted); padding-bottom: 10px; }
+.cmp-head .me { color: var(--flame-ink); font-weight: 600; }
+.cmp-row { padding: 9px 0; font-size: var(--s-sm); }
+.cmp-row:nth-child(even) { background: var(--surface); }
+.cmp-name { padding-left: 8px; }
+.hb { display: inline-block; width: 12px; height: 12px; border: 1.5px solid var(--hb, var(--muted)); border-radius: 50%; }
+.hb-2 { background: var(--hb, var(--muted)); }
+.hb-1 { background: linear-gradient(90deg, var(--hb, var(--muted)) 50%, transparent 50%); }
+.cmp-row .me .hb { --hb: var(--flame-ink); width: 15px; height: 15px; }
+.cmp-key { font-size: var(--s-sm); color: var(--muted); margin-top: 18px; line-height: 2; }
+.cmp-key .hb { vertical-align: -1px; margin: 0 4px 0 10px; }
+.cmp-key .hb:first-child { margin-left: 0; }
+@media (max-width: 640px) { .cmp-head, .cmp-row { grid-template-columns: minmax(0,1.4fr) repeat(4, minmax(0,1fr)); font-size: 11px; } }
+
+/* further reading */
+.deeper-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem 1.5rem; }
+.deeper { display: block; padding: 0; margin: 0; color: var(--fg); }
+.deeper:hover { background: none; color: var(--fg); }
+.deeper-title { font-weight: 600; margin-bottom: .25rem; }
+.deeper-desc { font-size: var(--s-sm); color: var(--muted); margin-bottom: .35rem; }
+.deeper-link { font-family: var(--mono); font-size: var(--s-xs); color: var(--flame-ink); }
+.deeper:hover .deeper-link { background: var(--flame-ink); color: #fff; }
+@media (max-width: 640px) { .deeper-grid { grid-template-columns: 1fr; } }
+
+@media (max-width: 900px) {
+  .gallery { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .fig-split, .pitch-grid { grid-template-columns: 1fr; gap: 1.5rem; }
+  .proof { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.5rem 1.25rem; }
+}
+@media (max-width: 640px) {
+  .container-wide { padding: 0 16px; }
+  .container { padding: 0 16px; }
+  .hero h1 { font-size: 52px; }
+  .hero-mark { width: 96px; height: 48px; }
+  .topnav a:not(.keep) { display: none; }
+  .claims li { grid-template-columns: 1fr; gap: 2px; }
+}
+</style>
+</head>
+<body>
+<button id="theme-toggle" aria-label="Toggle dark mode"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor"/></svg></button>
+
+<nav class="topnav"><div class="container">
+  <a href="#kernel">Kernel</a>
+  <a href="#gallery">Gallery</a>
+  <a href="#agent">Agent</a>
+  <a href="#paper">Paper</a>
+  <a href="/docs">Docs</a>
+  <a class="keep" href="https://github.com/ecto/vcad">GitHub</a>
+</div></nav>
+
+<header class="hero">
+  <div class="container">
+    <div class="hero-brand">
+      <!-- the vcad glyph: a wireframe block whose face is pushed by its gradient -->
+      <svg class="hero-mark" viewBox="0 0 64 32" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" aria-hidden="true">
+        <path class="wire" d="M8 12 L20 6 L36 6 L24 12 Z M8 12 L8 26 L24 26 L24 12 M24 26 L36 20 L36 6"/>
+        <g class="face"><path d="M24 12 L36 6 L36 20 L24 26 Z" fill="currentColor" fill-opacity=".14"/></g>
+        <g class="grad"><line x1="40" y1="16" x2="58" y2="16"/><path d="M54 12.5 L58 16 L54 19.5" /></g>
+      </svg>
+      <h1>vcad<span class="dot">.</span></h1>
+    </div>
+    <p class="hero-claim">Free, open CAD for Mac.<br><span class="hero-sub">You can take the derivative of it.</span></p>
+    <div class="flame-rule"></div>
+    <p class="hero-note">A parametric modeler on a boundary-representation kernel we wrote from scratch in Rust. Change a dimension and the kernel rebuilds the exact solid. Ask it how the mass changes with that dimension and it returns the derivative. PCB layout, DFM and FEA run in the same app, and Claude can drive the viewport over MCP on your Mac. It needs no account, and your files stay on your disk.</p>
+    <div class="hero-actions">
+      <a class="hero-btn primary" href="/desktop/">Download for Mac ↓</a>
+      <a class="hero-btn" href="https://github.com/ecto/vcad">GitHub →</a>
+      <a class="hero-btn" href="/docs">Docs →</a>
+    </div>
+    <p class="hero-fine">macOS 15+ · Apple silicon · signed, notarized, updates itself</p>
+    <div class="hero-pills">
+      <span class="pill" style="--pill:#ff2052">BRep kernel</span>
+      <span class="pill" style="--pill:#3d8bff">local MCP</span>
+      <span class="pill" style="--pill:#39ff14">PCB co-design</span>
+      <span class="pill" style="--pill:#ffd400">DFM + FEA</span>
+      <span class="pill" style="--pill:#00f0ff">STEP · STL · DXF</span>
+    </div>
+    <figure class="hero-fig wide">
+      <div class="hero-live">
+        <canvas id="hero-canvas" aria-label="A wall bracket built live by the vcad kernel. Drag to orbit."></canvas>
+        <div class="hero-panel">
+          <p class="label-caps">Parameters</p>
+          <label><span>width</span><input data-param="w" data-unit=" mm" type="range" min="50" max="140" step="1" value="90"><output id="v-w"></output></label>
+          <label><span>depth</span><input data-param="d" data-unit=" mm" type="range" min="30" max="80" step="1" value="50"><output id="v-d"></output></label>
+          <label><span>wall height</span><input data-param="h" data-unit=" mm" type="range" min="25" max="90" step="1" value="50"><output id="v-h"></output></label>
+          <label><span>thickness</span><input data-param="t" data-unit=" mm" type="range" min="3" max="12" step="0.5" value="6"><output id="v-t"></output></label>
+          <label><span>holes</span><input data-param="n" type="range" min="1" max="6" step="1" value="3"><output id="v-n"></output></label>
+          <label><span>hole Ø</span><input data-param="hole" data-unit=" mm" type="range" min="3" max="10" step="0.5" value="6"><output id="v-hole"></output></label>
+          <label><span>bore Ø</span><input data-param="bore" data-unit=" mm" type="range" min="6" max="30" step="1" value="18"><output id="v-bore"></output></label>
+          <dl class="ro hero-ro">
+            <div><dt>volume</dt><dd id="r-vol">…</dd></div>
+            <div><dt>mass, 6061</dt><dd id="r-mass">…</dd></div>
+            <div><dt>area</dt><dd id="r-area">…</dd></div>
+            <div><dt>triangles</dt><dd id="r-tris">…</dd></div>
+            <div class="hot"><dt>rebuild</dt><dd id="r-ms">…</dd></div>
+          </dl>
+          <button id="hero-step" class="hero-btn step-btn" type="button">Download this part as STEP ↓</button>
+          <p id="hero-status" class="hero-status"></p>
+        </div>
+      </div>
+      <figcaption class="fig-cap"><span class="fig-n">Fig 1</span><span class="fig-lead">The kernel, in this tab.</span> This is vcad's BRep kernel compiled to WebAssembly, running in a worker. Each slider change rebuilds the bracket from booleans on exact surfaces, retessellates it, and recomputes its mass properties. The cylindrical faces it reports are in coral. Drag the model to orbit it, and the STEP file you download is the solid itself, not this mesh.</figcaption>
+    </figure>
+  </div>
+</header>
+
+<!-- How it works -->
+<section id="how" style="padding-top:0">
+  <div class="container-wide">
+    <div class="container" style="padding:0; margin:0 0 2rem">
+      <h2>How it works</h2>
+      <p class="lead muted" style="margin-bottom:0">A part is a program. The kernel turns it into an exact solid, and the solid becomes whatever the shop needs.</p>
+    </div>
+    <div class="pipe">
+      <div class="pipe-card">
+        <div class="pipe-h">Write</div>
+        <div class="pipe-body"><pre><code><span class="cm">; the first-part sample</span>
+[<span class="kw">defparam</span> width <span class="num">60</span> :unit <span class="str">"mm"</span>]
+[<span class="kw">defparam</span> hole <span class="num">4</span>]
+[<span class="kw">difference</span>
+  [cube width <span class="num">40 6</span>]
+  [translate <span class="num">8 8</span> <span class="num">-1</span>
+    [cylinder [/ hole <span class="num">2</span>] <span class="num">18</span>]]]</code></pre></div>
+        <div class="pipe-foot">loon source or the feature tree. Both save as a plain-text <code>.vcad</code> file.</div>
+      </div>
+      <div class="pipe-arrow"></div>
+      <div class="pipe-card">
+        <div class="pipe-h">Solve</div>
+        <div class="pipe-body">
+          <svg viewBox="0 0 220 130" aria-hidden="true">
+            <g fill="none" stroke-width="1.2" stroke-linejoin="round">
+              <path class="svg-mute" d="M30 60 L110 25 L190 60 L110 95 Z"/>
+              <path class="svg-mute" d="M30 60 L30 82 L110 117 L190 82 L190 60 M110 95 L110 117"/>
+              <ellipse class="svg-flame" cx="110" cy="60" rx="18" ry="8"/>
+              <path class="svg-flame" d="M92 60 L92 70 M128 60 L128 70" stroke-dasharray="2 2"/>
+            </g>
+            <circle cx="30" cy="60" r="2.5" fill="var(--fg)"/><circle cx="190" cy="60" r="2.5" fill="var(--fg)"/>
+            <text class="svg-t" x="8" y="56">vertex</text>
+            <text class="svg-t" x="150" y="38">edge</text>
+            <text class="svg-t" x="58" y="62">face</text>
+            <text class="svg-tf" x="132" y="57">cylinder</text>
+          </svg>
+        </div>
+        <div class="pipe-foot">Faces carry exact surfaces: planes, cylinders, cones, spheres, tori, NURBS.</div>
+      </div>
+      <div class="pipe-arrow"></div>
+      <div class="pipe-card">
+        <div class="pipe-h">Make</div>
+        <div class="pipe-body"><div class="chips"><span>STEP AP214</span><span>STL · GLB</span><span>DXF drawing</span><span>G-code</span><span>Gerber</span><span>∂ mass / ∂ width</span></div></div>
+        <div class="pipe-foot">Files for the machine, and gradients for the optimizer.</div>
+      </div>
+    </div>
+    <p class="fig-cap"><span class="fig-n">Fig 2</span><span class="fig-lead">One document, start to finish.</span> The same <code>.vcad</code> file drives the viewport, the exporters and the MCP tools, so what an agent edits is what you see.</p>
+  </div>
+</section>
+
+<!-- How the kernel works -->
+<section id="kernel" style="padding-top:0">
+  <div class="container">
+    <h2>How the kernel works</h2>
+    <p class="lead">Four ideas, in about 285,000 lines of Rust. One part runs through all of them: the 60 × 40 × 6 mm plate from the first sample, with one hole of radius <i>r</i>.</p>
+
+    <article class="mech">
+      <h3 class="mech-h"><span class="mech-n">1</span>A solid is its boundary</h3>
+      <p>vcad stores a part as the faces that enclose it. Each face points to an exact surface and is bounded by loops of edges, and each edge joins two vertices. The topology is a half-edge structure: every edge is two half-edges, one per adjacent face, so walking around a face or fanning around a vertex is a pointer chase.</p>
+      <p>A closed, valid boundary has to satisfy the Euler–Poincaré formula, where <i>g</i> counts the through-holes:</p>
+      <div class="eq"><span class="eq-body"><span class="m">V</span> − <span class="m">E</span> + <span class="m">F</span> = 2 (1 − <span class="m">g</span>)</span><span class="eq-n">(1)</span></div>
+      <p>Drilling the plate takes <i>g</i> from 0 to 1, so the right side drops from 2 to 0. A boolean that leaves a gap or a dangling face breaks the count, which makes the formula a cheap test that a result is a real solid and not just a convincing picture.</p>
+    </article>
+
+    <article class="mech">
+      <h3 class="mech-h"><span class="mech-n">2</span>Booleans in four stages</h3>
+      <p>The hole is a difference, the plate minus a cylinder. Every union, difference and intersection runs the same pipeline.</p>
+      <figure class="mech-fig">
+        <div class="stages">
+          <div class="stage"><b>1 · Filter</b><span>Bounding boxes discard face pairs that can't touch. Of the plate's six faces, only the top and bottom reach the cylinder.</span></div>
+          <div class="stage"><b>2 · Intersect</b><span>Surface pairs intersect analytically where a closed form exists. A plane and a cylinder meet in a circle. A sampled fallback covers the rest.</span></div>
+          <div class="stage"><b>3 · Classify</b><span>Each split face is inside or outside the other solid. A ray cast with a winding-number vote decides.</span></div>
+          <div class="stage"><b>4 · Sew</b><span>Kept faces are trimmed to the new edges and stitched into one closed shell.</span></div>
+        </div>
+        <p class="fig-cap"><span class="fig-n">Fig 3</span><span class="fig-lead">Plate minus cylinder.</span> The top and bottom faces gain a circular inner loop, the cylinder's side becomes the bore, and its caps fall outside the plate and are dropped.</p>
+      </figure>
+    </article>
+
+    <article class="mech">
+      <h3 class="mech-h"><span class="mech-n">3</span>Exact answers to yes-or-no questions</h3>
+      <p>Classification comes down to questions like "is this point above or below that plane?" In floating point, a point very close to the plane can get the wrong sign, and one wrong sign flips which side of the solid a face lands on. vcad answers these with Shewchuk's adaptive-precision predicates. The core one is the sign of a determinant:</p>
+      <div class="eq"><span class="eq-body">orient3d(<span class="m">a</span>, <span class="m">b</span>, <span class="m">c</span>, <span class="m">d</span>) = sign det [ <span class="m">a</span> − <span class="m">d</span>, &nbsp;<span class="m">b</span> − <span class="m">d</span>, &nbsp;<span class="m">c</span> − <span class="m">d</span> ]</span><span class="eq-n">(2)</span></div>
+      <p>The predicate first evaluates the determinant in ordinary doubles with an error bound. It only switches to exact arithmetic when the result falls inside that bound, so almost every call costs about the same as the naive version. The coplanar case, where the bore's end circle sits exactly on the plate's face, is where this matters.</p>
+    </article>
+
+    <article class="mech">
+      <h3 class="mech-h"><span class="mech-n">4</span>Derivatives of the part</h3>
+      <p>For the plate, volume as a function of the hole radius is simple:</p>
+      <div class="eq"><span class="eq-body"><span class="m">V</span>(<span class="m">r</span>) = <span class="m">t</span> (<span class="m">W D</span> − π<span class="m">r</span>²), &nbsp;&nbsp; <span class="frac"><span>∂<span class="m">V</span></span><span>∂<span class="m">r</span></span></span> = −2π<span class="m">r t</span></span><span class="eq-n">(3)</span></div>
+      <p>Real parts have no closed form, so vcad gets the derivative from the kernel itself. It freezes the tessellation, lifts every surface to dual numbers from <a href="https://tang.toys">tang</a>, and solves for how fast each mesh node moves as the parameter changes. The derivative of mass, centroid or inertia then follows from those node velocities. Reverse mode gives every parameter's gradient in one pass, and it carries on through a phyz contact simulation.</p>
+      <figure class="mech-fig">
+        <div class="g-ctl"><span>r</span><input id="g-r" type="range" min="2" max="16" step="0.1" value="8"><span id="g-r-v"></span></div>
+        <svg viewBox="0 0 300 160" aria-hidden="true">
+          <rect x="78" y="32" width="144" height="96" fill="none" class="svg-ink" stroke-width="1.2"/>
+          <path id="g-hole" d="" fill="var(--flame-50)" class="svg-flame" stroke-width="1.2"/>
+          <line id="g-arrow" x1="170" y1="80" x2="186" y2="80" class="svg-flame" stroke-width="1.2"/>
+          <text class="svg-t" x="78" y="26">60 × 40 × 6 mm</text>
+          <text class="svg-tf" x="232" y="84">∂/∂r</text>
+        </svg>
+        <dl class="ro">
+          <div><dt>volume (mesh)</dt><dd id="g-vol"></dd></div>
+          <div class="hot"><dt>∂V/∂r, kernel</dt><dd id="g-seam"></dd></div>
+          <div><dt>∂V/∂r, finite diff.</dt><dd id="g-fd"></dd></div>
+          <div><dt>relative error</dt><dd id="g-err"></dd></div>
+          <div><dt>smooth −2πrt</dt><dd id="g-smooth"></dd></div>
+        </dl>
+        <p class="fig-cap"><span class="fig-n">Fig 4</span><span class="fig-lead">The gradient of what was meshed.</span> Drag <i>r</i>. The kernel's gradient matches a central difference on the same 64-segment mesh to rounding error, and sits 0.16% from the smooth formula (3). That gap is the mesh, not the method.</p>
+      </figure>
+      <p>The method has limits. Gradients come from a frozen tessellation, so a change in topology, like a hole that breaks through an edge, is an error rather than a derivative. Contact gradients use phyz's penalty model, not the production collision pipeline. The paper lists both.</p>
+    </article>
+  </div>
+</section>
+
+<!-- How it compares -->
+<section id="compare" style="padding-top:0">
+  <div class="container">
+    <h2>How it compares</h2>
+    <p class="lead muted">Fusion 360 and Onshape are the commercial standard, and FreeCAD is the open one. vcad is newer than all three.</p>
+    <div class="cmp">
+      <div class="cmp-head"><span></span><span class="me">vcad</span><span>Fusion 360</span><span>Onshape</span><span>FreeCAD</span></div>
+      <div class="cmp-row"><span class="cmp-name">Free to use</span><span class="cmp-cell me"><span class="hb hb-2"></span></span><span class="cmp-cell"><span class="hb hb-1" title="Limited personal-use license"></span></span><span class="cmp-cell"><span class="hb hb-1" title="Free plan, public documents only"></span></span><span class="cmp-cell"><span class="hb hb-2"></span></span></div>
+      <div class="cmp-row"><span class="cmp-name">Works offline</span><span class="cmp-cell me"><span class="hb hb-2"></span></span><span class="cmp-cell"><span class="hb hb-1" title="Cloud-backed, limited offline mode"></span></span><span class="cmp-cell"><span class="hb hb-0" title="Runs in the browser"></span></span><span class="cmp-cell"><span class="hb hb-2"></span></span></div>
+      <div class="cmp-row"><span class="cmp-name">Open-source kernel</span><span class="cmp-cell me"><span class="hb hb-2" title="vcad's own, in Rust"></span></span><span class="cmp-cell"><span class="hb hb-0"></span></span><span class="cmp-cell"><span class="hb hb-0" title="Parasolid"></span></span><span class="cmp-cell"><span class="hb hb-2" title="Open CASCADE"></span></span></div>
+      <div class="cmp-row"><span class="cmp-name">Plain-text, diffable files</span><span class="cmp-cell me"><span class="hb hb-2" title="JSON"></span></span><span class="cmp-cell"><span class="hb hb-0"></span></span><span class="cmp-cell"><span class="hb hb-0"></span></span><span class="cmp-cell"><span class="hb hb-1" title="Zipped XML"></span></span></div>
+      <div class="cmp-row"><span class="cmp-name">PCB and enclosure in one tool</span><span class="cmp-cell me"><span class="hb hb-2"></span></span><span class="cmp-cell"><span class="hb hb-2" title="Fusion Electronics"></span></span><span class="cmp-cell"><span class="hb hb-1" title="Through integrations"></span></span><span class="cmp-cell"><span class="hb hb-1" title="KiCad StepUp workbench"></span></span></div>
+      <div class="cmp-row"><span class="cmp-name">Exact gradients with respect to dimensions</span><span class="cmp-cell me"><span class="hb hb-2"></span></span><span class="cmp-cell"><span class="hb hb-0"></span></span><span class="cmp-cell"><span class="hb hb-0"></span></span><span class="cmp-cell"><span class="hb hb-0"></span></span></div>
+      <div class="cmp-row"><span class="cmp-name">Maturity</span><span class="cmp-cell me"><span class="hb hb-0" title="Young"></span></span><span class="cmp-cell"><span class="hb hb-2"></span></span><span class="cmp-cell"><span class="hb hb-2"></span></span><span class="cmp-cell"><span class="hb hb-2"></span></span></div>
+      <p class="cmp-key"><span class="hb hb-2"></span>yes <span class="hb hb-1"></span>partly, or through another product <span class="hb hb-0"></span>no. Hover a mark for detail. If something here is wrong, <a href="https://github.com/ecto/vcad/issues/new">open an issue</a>.</p>
+    </div>
+  </div>
+</section>
+
+<!-- Pitch -->
+<section class="pitch" style="padding-top:0">
+  <div class="container">
+    <div class="pitch-grid">
+      <div><h3>Files you can diff</h3><p>A <code>.vcad</code> file is JSON. <code>git diff</code> shows which dimension changed, and a merge conflict is a line of text.</p></div>
+      <div><h3>Board and enclosure together</h3><p>The board and its housing are parts of one document, so a fit check measures the gap from every component to the case wall.</p></div>
+      <div><h3>Checks before you cut</h3><p>DFM marks walls thinner than the process allows and proposes the edit that fixes them. FEA colors the part by stress under the loads you pick.</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- Gallery -->
+<section id="gallery" style="padding-top:0">
+  <div class="container-wide">
+    <div class="container" style="padding:0; margin:0 0 2.5rem">
+      <h2>Open a sample</h2>
+      <p class="lead muted" style="margin-bottom:0">Thirteen samples ship in the app under File ▸ Open Sample. Each one below is the sample's own mesh, exported by the kernel. Drag any of them to orbit.</p>
+    </div>
+    <div class="gallery">
+      <figure class="ex"><canvas data-model="models/stirling-engine.glb" aria-label="stirling-engine, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#ff2052">mechanical</span><span class="ex-name">stirling-engine</span><span class="ex-desc">Ten parts, four materials, a flywheel on a joint</span></figcaption></figure>
+      <figure class="ex"><canvas data-model="models/k1-humanoid.glb" aria-label="k1-humanoid, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#3d8bff">robotics</span><span class="ex-name">k1-humanoid</span><span class="ex-desc">22 DOF, simulated standing in physics</span></figcaption></figure>
+      <figure class="ex"><canvas data-model="models/pcb-motor.glb" data-board="models/pcb-stator" aria-label="pcb-motor, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#39ff14">electronics</span><span class="ex-name">pcb-motor</span><span class="ex-desc">Printed-coil stator between two rotors</span></figcaption></figure>
+      <figure class="ex"><canvas data-pcb="models/pcb-stator.pcb.json" aria-label="pcb-stator, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#39ff14">electronics</span><span class="ex-name">pcb-stator</span><span class="ex-desc">The coil board: schematic, copper, solid</span></figcaption></figure>
+      <figure class="ex"><canvas data-pcb="models/fpga-board.pcb.json" aria-label="fpga-board, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#39ff14">electronics</span><span class="ex-name">fpga-board</span><span class="ex-desc">Designed end to end by an agent, DRC-clean</span></figcaption></figure>
+      <figure class="ex"><canvas data-model="models/l-bracket.glb" aria-label="l-bracket, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#ffd400">analysis</span><span class="ex-name">l-bracket</span><span class="ex-desc">Fix the base, load the flange, read the stress</span></figcaption></figure>
+      <figure class="ex"><canvas data-model="models/motor-flange.glb" aria-label="motor-flange, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#00f0ff">manufacture</span><span class="ex-name">motor-flange</span><span class="ex-desc">A 2.5D part ready for toolpaths</span></figcaption></figure>
+      <figure class="ex"><canvas data-model="models/snap-cap.glb" aria-label="snap-cap, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#ff2052">mechanical</span><span class="ex-name">snap-cap</span><span class="ex-desc">A snap fit, checked as clearance</span></figcaption></figure>
+      <figure class="ex"><canvas data-model="models/robot-arm.glb" aria-label="robot-arm, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#3d8bff">robotics</span><span class="ex-name">robot-arm</span><span class="ex-desc">Two revolute joints. Pose it or simulate it</span></figcaption></figure>
+      <figure class="ex"><canvas data-model="models/ribbed-plate.glb" aria-label="ribbed-plate, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#ffd400">analysis</span><span class="ex-name">ribbed-plate</span><span class="ex-desc">A first DFM check for thin ribs</span></figcaption></figure>
+      <figure class="ex"><canvas data-model="models/sensor-mast.glb" aria-label="sensor-mast, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#ff2052">mechanical</span><span class="ex-name">sensor-mast</span><span class="ex-desc">Pocketed base, mast, sensor housings</span></figcaption></figure>
+      <figure class="ex"><canvas data-model="models/pulley.glb" aria-label="pulley, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#ff2052">mechanical</span><span class="ex-name">pulley</span><span class="ex-desc">Flanges, groove and bore from booleans</span></figcaption></figure>
+    </div>
+  </div>
+</section>
+
+<!-- Agent -->
+<section id="agent" style="padding-top:0">
+  <div class="container-wide">
+    <div class="fig-split">
+      <div>
+        <p class="label-caps kicker">Bring your agent</p>
+        <h2>Claude edits the model you have open.</h2>
+        <p class="lead" style="margin-bottom:1rem">The app runs an MCP server on 127.0.0.1. Help ▸ Connect Claude writes the client config. From then on Claude can add features, set parameters, run DFM and FEA, and move the camera in your window. Each change lands as one named step in Edit ▸ Undo.</p>
+        <p class="lead muted" style="margin-bottom:0">Without the app, <code>npx -y @vcad/mcp</code> starts the same kernel as a standalone MCP server.</p>
+      </div>
+      <figure class="fig">
+<pre><code>{
+  <span class="key">"mcpServers"</span>: {
+    <span class="key">"vcad-app"</span>: {
+      <span class="key">"command"</span>: <span class="str">"node"</span>,
+      <span class="key">"args"</span>: [<span class="str">"/Applications/vcad.app/Contents/Resources/vcad-app-mcp.mjs"</span>]
+    }
+  }
+}</code></pre>
+        <figcaption class="fig-cap"><span class="fig-n">Fig 5</span>The config that Connect Claude writes for you.</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<!-- Paper -->
+<section id="paper" style="padding-top:0">
+  <div class="container">
+    <p class="label-caps kicker">The paper</p>
+    <h2>A differentiable BRep kernel</h2>
+    <p class="lead">The preprint covers section 4 in full: the method, finite-difference validation, L-BFGS on real parts, and gradients taken through a contact simulation.</p>
+    <ul class="claims">
+      <li><b>validated</b><span>Finite-difference checked gradients, first and second order</span></li>
+      <li><b>reverse mode</b><span>One adjoint pass returns the gradient for every parameter</span></li>
+      <li><b>parameters</b><span>Gradients with respect to the named parameters in a <code>.vcad</code> file</span></li>
+      <li class="limit"><b>limits</b><span>Gradients are of frozen tessellations (no topology changes); contact uses phyz's penalty model</span></li>
+    </ul>
+    <div class="hero-actions" style="margin-top:2rem">
+      <!-- TODO(launch day): replace with the arXiv abs URL. -->
+      <a class="hero-btn" href="https://github.com/ecto/vcad/tree/main/crates/vcad-kernel-diff">Read the paper · preprint on launch day →</a>
+    </div>
+  </div>
+</section>
+
+
+<section id="reading" style="padding-top:0">
+  <div class="container">
+    <h2>Further reading</h2>
+    <p class="lead muted">The source for everything on this page.</p>
+    <div class="deeper-grid">
+      <a class="deeper" href="https://github.com/ecto/vcad/blob/main/packages/docs/content/architecture/kernel-features.mdx"><div class="deeper-title">Kernel features</div><p class="deeper-desc">Every modeling operation with the loon that builds it and a render the kernel made.</p><span class="deeper-link">kernel-features.mdx →</span></a>
+      <a class="deeper" href="https://github.com/ecto/vcad/tree/main/crates/vcad-kernel-booleans"><div class="deeper-title">Booleans</div><p class="deeper-desc">The four-stage pipeline from section 2, with its torture-test suite.</p><span class="deeper-link">vcad-kernel-booleans →</span></a>
+      <a class="deeper" href="https://github.com/ecto/vcad/blob/main/docs/differentiable-seam-m0-m2.md"><div class="deeper-title">The differentiable seam</div><p class="deeper-desc">Design notes and measured tolerances for section 4, milestone by milestone.</p><span class="deeper-link">differentiable-seam-m0-m2.md →</span></a>
+      <a class="deeper" href="https://github.com/ecto/vcad/blob/main/docs/launch/speed-pass.md"><div class="deeper-title">Speed pass</div><p class="deeper-desc">How the launch, open and frame-rate numbers were measured, and what is still slow.</p><span class="deeper-link">speed-pass.md →</span></a>
+    </div>
+  </div>
+</section>
+
+<footer class="site-foot">
+  <a href="https://muni.works" class="foot-logo" aria-label="Municipal Robotics"><svg viewBox="-60 -60 880 400" fill="none"><g stroke="currentColor" stroke-width="40" stroke-linecap="round" stroke-linejoin="round" fill="none"> <path d="M 20 240 L 20 100 C 20 50, 80 50, 100 50 C 140 50, 160 70, 160 100"/> <path d="M 160 240 L 160 100"/> <path d="M 160 100 C 160 50, 220 50, 240 50 C 280 50, 300 70, 300 100 L 300 240 C 300 270, 330 280, 370 280 C 410 280, 440 270, 440 240 L 440 100"/> <path d="M 440 100 C 440 50, 500 50, 520 50 C 560 50, 600 70, 600 100 L 600 240 C 600 270, 630 280, 670 280 C 710 280, 740 270, 740 240 L 740 100"/> </g></svg></a>
+  <p>vcad is built by <a href="https://muni.works">Municipal Robotics</a> alongside <a href="https://tang.toys">tang</a>, <a href="https://phyz.dev">phyz</a>, <a href="https://frog.toys">frog</a> and <a href="https://ribt.dev">ribt</a>. Usable by everyone.</p>
+  <p class="foot-links"><a href="https://github.com/ecto/vcad">GitHub</a><span>·</span><a href="https://crates.io/crates/vcad">crates.io</a><span>·</span><a href="https://www.npmjs.com/package/@vcad/mcp">npm</a><span>·</span><a href="/desktop/appcast.xml">update feed</a><span>·</span><a href="https://muni.works">muni.works</a></p>
+</footer>
+</body>
+</html>
