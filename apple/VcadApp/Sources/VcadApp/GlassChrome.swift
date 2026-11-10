@@ -33,7 +33,9 @@ enum Glass {
     /// Height of the tool dock's capsule.
     static let dockHeight: CGFloat = 38
     /// Space the dock takes from the bottom, for chrome that stacks above it.
-    static var dockClearance: CGFloat { inset + dockHeight + 8 }
+    /// Air between the dock and the window's bottom edge.
+    static let dockLift: CGFloat = inset + 6
+    static var dockClearance: CGFloat { dockLift + dockHeight + 8 }
     /// Below this window width the dock folds modify and combine tools too,
     /// so it clears the side panels.
     static let dockFullWidth: CGFloat = 1080
@@ -243,7 +245,7 @@ struct DockHost: View {
             }
         }
             .animation(glassSpring(reduceMotion), value: model.sketching)
-            .padding(.bottom, Glass.inset)
+            .padding(.bottom, Glass.dockLift)
             .frame(maxWidth: .infinity)
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
     }
