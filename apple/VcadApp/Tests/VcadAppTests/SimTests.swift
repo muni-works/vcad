@@ -82,7 +82,7 @@ final class SimParityTests: XCTestCase {
         // A stale libvcad_ffi.a is the classic native-app failure: the Swift
         // side calls a signature that moved, and the result is corruption
         // rather than a link error. Assert the contract explicitly.
-        XCTAssertEqual(vcadFFIABIVersion(), 6,
+        XCTAssertEqual(vcadFFIABIVersion(), 7,
                        "libvcad_ffi.a is stale — re-run apple/VcadApp/build-ffi.sh")
     }
 

@@ -63,6 +63,9 @@ fi
 mkdir -p "$app/Contents/Frameworks"
 ditto "$bin_dir/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
 
+# The agent bridge's stdio MCP shim ("Connect Claude…" points clients here).
+cp "$here/scripts/vcad-app-mcp.mjs" "$app/Contents/Resources/"
+
 # Sample projects for the welcome window (symlinks in the checkout are
 # copied as the files they point at).
 if [ -f "$here/Samples/samples.json" ]; then
@@ -101,6 +104,14 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
   <key>NSLocalNetworkUsageDescription</key><string>Connect to your CNC controller to show machine status and send toolpaths.</string>
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.graphics-design</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>io.vcad.deeplink</string>
+      <key>CFBundleTypeRole</key><string>Editor</string>
+      <key>CFBundleURLSchemes</key><array><string>vcad</string></array>
+    </dict>
+  </array>
   <key>CFBundleDocumentTypes</key>
   <array>
     <dict>
@@ -159,6 +170,13 @@ s = (s.replace("@VERSION@", version).replace("@BUILD@", build)
 open(path, "w").write(s)
 PY
 plutil -lint "$plist" >/dev/null
+
+# Bake the samples' solved meshes into the bundle (first open = cache hit, not
+# a cold solve). Default on for a release (BAKE_SAMPLES=0 skips), BAKE_SAMPLES=1 for dev builds.
+if [ "${BAKE_SAMPLES:-$release_build}" = 1 ] || [ "${BAKE_SAMPLES:-$release_build}" = true ]; then
+  echo "baking sample meshes…"
+  "$here/scripts/bake-sample-meshes.sh" "$app"
+fi
 
 if [ -z "$sign_identity" ]; then
   codesign --force --deep --sign - "$app" >/dev/null 2>&1 || echo "(codesign skipped)"

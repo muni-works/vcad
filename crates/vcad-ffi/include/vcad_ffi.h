@@ -532,6 +532,224 @@ VcadBytes *vcad_render_photoreal_png(const uint8_t *json, size_t json_len,
                                      const VcadPhotorealParams *params,
                                      VcadRenderProgress progress, void *ctx);
 
+/* ===================== Modeling surface (ABI 7) =====================
+ * Owned strings from vcad_sketch_* / vcad_topology_* / vcad_feature_* /
+ * vcad_import_* are freed ONLY with vcad_string_free. Failures return
+ * NULL / 0 / -1 and record vcad_last_error (same thread). */
+void vcad_string_free(char *s);
+
+/* --- Sketch constraint solver (crates/vcad-ffi/src/sketch.rs) ---
+ * Entity handles are 1-based uint32 (0 = error). Point selectors: */
+#define VCAD_SKETCH_REF_SELF 0u
+#define VCAD_SKETCH_REF_START 1u
+#define VCAD_SKETCH_REF_END 2u
+#define VCAD_SKETCH_REF_CENTER 3u
+/* Constraint kinds (field usage documented on sketch::kind). */
+#define VCAD_SC_COINCIDENT 0u
+#define VCAD_SC_HORIZONTAL 1u
+#define VCAD_SC_VERTICAL 2u
+#define VCAD_SC_PARALLEL 3u
+#define VCAD_SC_PERPENDICULAR 4u
+#define VCAD_SC_TANGENT 5u
+#define VCAD_SC_DISTANCE 6u
+#define VCAD_SC_LENGTH 7u
+#define VCAD_SC_RADIUS 8u
+#define VCAD_SC_ANGLE 9u /* degrees */
+#define VCAD_SC_EQUAL_LENGTH 10u
+#define VCAD_SC_EQUAL_RADIUS 11u
+#define VCAD_SC_FIXED 12u /* value = x, value2 = y */
+#define VCAD_SC_POINT_ON_LINE 13u
+#define VCAD_SC_CONCENTRIC 14u
+#define VCAD_SC_POINT_ON_CIRCLE 15u
+#define VCAD_SC_MIDPOINT 16u
+#define VCAD_SC_HORIZONTAL_DISTANCE 17u
+#define VCAD_SC_VERTICAL_DISTANCE 18u
+#define VCAD_SC_DIAMETER 19u
+#define VCAD_SC_POINT_LINE_DISTANCE 20u
+#define VCAD_SC_SYMMETRIC 21u
+typedef struct VcadSketch VcadSketch;
+typedef struct VcadSketchConstraint {
+    uint32_t kind;
+    uint32_t e0;
+    uint32_t r0;
+    uint32_t e1;
+    uint32_t r1;
+    uint32_t e2;
+    uint32_t r2;
+    double value;
+    double value2;
+} VcadSketchConstraint;
+#define VCAD_SKETCH_UNDER 0
+#define VCAD_SKETCH_FULL 1
+#define VCAD_SKETCH_OVER 2
+typedef struct VcadSketchSolve {
+    uint8_t converged;
+    uint8_t state;  /* VCAD_SKETCH_UNDER / _FULL / _OVER */
+    uint8_t status; /* 0 converged,1 max iter,2 lambda overflow,3 no constraints,4 no params,5 singular,255 bad handle */
+    int32_t dof;
+    uint32_t iterations;
+    double residual;
+} VcadSketchSolve;
+VcadSketch *vcad_sketch_new(void);
+VcadSketch *vcad_sketch_new_on_plane(const double *origin, const double *x_dir, const double *y_dir);
+void vcad_sketch_free(VcadSketch *s);
+uint32_t vcad_sketch_add_point(VcadSketch *s, double x, double y);
+uint32_t vcad_sketch_add_line(VcadSketch *s, uint32_t start, uint32_t end);
+uint32_t vcad_sketch_add_arc(VcadSketch *s, uint32_t start, uint32_t end, uint32_t center, bool ccw);
+uint32_t vcad_sketch_add_circle(VcadSketch *s, uint32_t center, double radius);
+/* Returns the constraint index (>= 0) or -1. */
+int32_t vcad_sketch_add_constraint(VcadSketch *s, const VcadSketchConstraint *c);
+/* Edit a driving dimension in place (ANGLE in degrees), then re-solve. */
+bool vcad_sketch_set_dimension(VcadSketch *s, uint32_t index, double value, double value2);
+bool vcad_sketch_pop_constraint(VcadSketch *s);
+int32_t vcad_sketch_dof(const VcadSketch *s);
+VcadSketchSolve vcad_sketch_solve(VcadSketch *s);
+/* Solved 2D position of a point / line|arc start|end / center. */
+bool vcad_sketch_point(const VcadSketch *s, uint32_t handle, uint32_t which, double *out_xy);
+double vcad_sketch_radius(const VcadSketch *s, uint32_t handle);
+/* Closed profile as JSON {origin,x_dir,y_dir,segments:[IR SketchSegment2D]}. */
+char *vcad_sketch_profile_json(const VcadSketch *s);
+
+/* --- Topology picking + selection modifiers (topology.rs) ---
+ * Face id = ordinal in the outer shell (matches vcad_scene_part_face_ids);
+ * edge id = ordinal from vcad_topology_json. Session handles, not durable. */
+#define VCAD_TOPO_NONE 0xFFFFFFFFu
+VcadSolid *vcad_scene_part_solid(const VcadScene *scene, size_t index);
+/* {"faces":[{id,surface,center,normal,area}],
+ *  "edges":[{id,faces:[a,b],a,b,segments:[f32 x6..],planar,selector}]} */
+char *vcad_topology_json(const VcadSolid *solid);
+typedef struct VcadPick {
+    uint8_t hit;
+    uint32_t face;
+    uint32_t edge;
+    double point[3];
+    double normal[3];
+    double t;
+    double edge_distance;
+} VcadPick;
+VcadPick vcad_solid_pick(const VcadSolid *solid, const double *origin, const double *dir, double edge_tol);
+VcadSolid *vcad_solid_fillet_edges(const VcadSolid *solid, const uint32_t *edge_ids, size_t count, double radius);
+VcadSolid *vcad_solid_chamfer_edges(const VcadSolid *solid, const uint32_t *edge_ids, size_t count, double distance);
+VcadSolid *vcad_solid_shell_open(const VcadSolid *solid, double thickness, const uint32_t *face_ids, size_t count);
+
+/* --- Feature builders (features.rs): append IR nodes to a .vcad document.
+ * feature_json {"kind": extrude|cut_extrude|extrude_to_face|revolve|sweep|
+ * loft|linear_pattern|circular_pattern|mirror|scale|text|cone|edge_blend|
+ * shell|boolean, ...}. doc_json NULL/"" = new document. Returns
+ * {"document":..., "node_id":N, "added":[..]}. */
+char *vcad_feature_append(const char *doc_json, const char *feature_json);
+
+/* --- Import (import.rs) --- */
+/* {"document": <StepImport nodes, one root per solid>, "solids": N} */
+char *vcad_import_step(const char *path);
+/* IR assembly document JSON. */
+char *vcad_import_urdf(const char *path);
+
+/* --- Drawings (drafting.rs): 2D shop drawings on vcad-kernel-drafting.
+ * request_json (NULL/"" = defaults): {"view": front|back|top|bottom|left|
+ * right|isometric, "show_hidden": bool, "show_dimensions": bool,
+ * "details": [{"label","center":[x,y],"scale","width","height"}],
+ * "gdt": [{"kind": flatness|position|perpendicularity|datum, "tolerance",
+ * "datum", "at":[x,y]}], "drawing": <IR DrawingSettings override>,
+ * "base_dir": str}. Section lines, title block and BOM come from the
+ * document's `drawing` settings. */
+#define VCAD_DRAWING_DXF 0
+#define VCAD_DRAWING_PDF 1
+/* Composed A4 sheet: {"width","height","sheet":{lines,arcs,polygons,texts},
+ * "main":{sheet_center,view_center,scale,scale_note,bounds},
+ * "visible_edges","hidden_edges","dxf_entities","sections"}. Free with
+ * vcad_string_free; NULL + vcad_last_error on failure. */
+char *vcad_drawing_sheet_json(const char *doc_json, const char *request_json);
+/* DXF (active view, same writer as the web export) or PDF (the sheet), written
+ * atomically. Returns DXF entity count / PDF bytes, or -1 + vcad_last_error. */
+int64_t vcad_drawing_export(const char *doc_json, const char *request_json,
+                            const char *out_path, uint32_t format);
+/* --- Analysis: DFM / FEA / clearance (dfm.rs, fea.rs, clearance.rs) ---
+ * All take NUL-terminated IR JSON, return owned JSON freed ONLY with
+ * vcad_string_free; null + vcad_last_error on failure (fail-closed). */
+/* request {"process":"fdm"|"cnc_3axis"|..., "rule_pack_toml"?, "ruleset"?} ->
+ * {issues:[{...kernel issue, part_index, face_ids, patch|null, patch_note}], counts, score, ...} */
+char *vcad_dfm_check(const char *doc_json, const char *request_json);
+/* patch = an issue's "patch" object -> patched IR document JSON. */
+char *vcad_dfm_apply_patch(const char *doc_json, const char *patch_json);
+/* {"processes":[...], "rulesets":[...]} */
+char *vcad_dfm_processes(void);
+/* request {"part_index","material"?,"elastic"?,"resolution"?,"levels"?,
+ * "loads":[{"faces":[ids]|"region":{min,max},"force":[N,N,N]}],
+ * "supports":[{"faces"|"region","fix"?:[b,b,b]}],"fields"?} ->
+ * {max_von_mises_mpa, max_displacement_mm, safety_factor, converged, study,
+ *  field:{dims_zyx, origin_mm, voxel_mm, von_mises_mpa, displacement_mm, mask, ...}} */
+char *vcad_fea_solve(const char *doc_json, const char *request_json);
+/* [{id,label,youngs_modulus_mpa,poisson,yield_strength_mpa}] */
+char *vcad_fea_materials(void);
+/* request (nullable) {"pairs"?:[[a,b]], "include_mesh"?} ->
+ * {pairs:[{a,b,distance_mm,intersecting,overlap_volume_mm3,status,clash?}], ...} */
+char *vcad_clearance(const char *doc_json, const char *request_json);
+
+/* --- Assembly + animation authoring (assembly.rs, animation.rs) ---
+ * Owned JSON freed ONLY with vcad_string_free; null + vcad_last_error on
+ * failure. Additive, no ABI bump. */
+/* .vcad JSON -> [{id,kind,instances:[a,b],pass,measured,expected,tolerance,
+ * unit,detail,error|null}] — mates re-verified against the FK-posed assembly. */
+char *vcad_assembly_check_mates(const char *doc_json);
+/* Timeline JSON -> canonical Timeline JSON (keys sorted + clamped to
+ * [0,durationS], coincident keys collapsed last-wins, empty tracks dropped). */
+char *vcad_timeline_normalize(const char *timeline_json);
+
+/* ── Fabrication: sheet metal, 3D print, multi-tool CAM ──────────────────
+ * All return owned JSON (free with vcad_string_free) or null +
+ * vcad_last_error. */
+/* Chain API {"op":"evaluate"|"check"|"cost"|"nest"|"nested_dxf"|"sequence"|
+ * "folded_step"|"materials"|"bend_table"|"shop_catalog", "chain"?, ...}. */
+char *vcad_sheet_metal_call(const char *request_json);
+/* Flat pattern from a solid. request (nullable) {"part"?,"material"?,
+ * "shopProfile"?,"kernelVolumeTol"?} -> {flat_pattern, model, dxf, bends,
+ * kernelVolumeCheck:{pass,...}, error?}. Fails closed (empty dxf). */
+char *vcad_sheet_metal_flatten(const char *doc_json, const char *request_json);
+/* {"op":"profiles"|"analyze"|"slice"|"export_3mf", "settings"?, ...};
+ * doc_json may be null for "profiles". slice writes "gcodePath" /
+ * "threeMfPath" when given. */
+char *vcad_print_call(const char *doc_json, const char *request_json);
+/* Multi-tool job {"stock","tools","operations","post"?,"target"?,...} ->
+ * {gcode, programs[], toolChanges, moves[], operations[], verification}. */
+char *vcad_cam_job(const char *request_json);
+/* {"tools":[...]} — the kernel's default tool library. */
+char *vcad_cam_tool_library(void);
+/* --- Electronics co-design (pcb.rs, schematic.rs) ---
+ * Board = IR Pcb JSON (camelCase, as stored under doc.pcb / a PcbBoard node);
+ * sheet = IR SchematicSheet JSON. All return owned JSON freed ONLY with
+ * vcad_string_free; null + vcad_last_error on failure (fail-closed).
+ * DRC reports carry {total, baseline_total, route_attributable, route_fixable,
+ * unrouted, clean, findings[], rules[]}; "route-attributable" is measured
+ * against the same board with all routing stripped. */
+/* .kicad_pcb | .brd -> {pcb, warnings[], footprints, nets, traces, vias} */
+char *vcad_pcb_import(const char *path);
+/* request {"accept"?:[rule]} -> DRC report */
+char *vcad_pcb_drc(const char *pcb_json, const char *request_json);
+/* route unrouted connections -> {pcb, verdict, drc} */
+char *vcad_pcb_autoroute(const char *pcb_json, const char *request_json);
+/* fab-prep fix loop; request {"calibrate"?,"route"?,"max_rounds"?,"accept"?}
+ * -> {pcb, converged, headline, summary, report, drc} */
+char *vcad_pcb_fix_drc(const char *pcb_json, const char *request_json);
+/* request {"dir", "accept"?} -> {dir, files[], drc}. REFUSES (null) unless
+ * route_attributable == 0; nothing is written on refusal. */
+char *vcad_pcb_export_gerbers(const char *pcb_json, const char *request_json);
+/* request {"nets":[..],"target"?,"tolerance"?,"max_amplitude"?} -> {pcb, result, drc};
+ * without "nets" -> {"lengths":[[net, mm]]} */
+char *vcad_pcb_length_match(const char *pcb_json, const char *request_json);
+/* request {"part","clearance"?,"placement"?} -> {report: EnclosureFitReport, features} */
+char *vcad_pcb_enclosure_fit(const char *doc_json, const char *pcb_json, const char *request_json);
+/* request {"part","clearance"?,"thickness"?,"hole_diameter"?} -> {pcb, placement, derived} */
+char *vcad_pcb_board_from_solid(const char *doc_json, const char *request_json);
+/* request {"name"?,"x"?,"y"?,"z"?} -> updated document JSON (board as a solid part) */
+char *vcad_pcb_solid_from_board(const char *doc_json, const char *pcb_json, const char *request_json);
+/* request {"clearance"?,"wall"?,"floor"?,"depth"?,"name"?} -> {document, placement, part} */
+char *vcad_pcb_enclosure_for_board(const char *doc_json, const char *pcb_json, const char *request_json);
+/* request {"ground"?,"tstop"?,"dt"?,"probes"?} -> {dc:{net:V}, currents:{ref:A}, transient?, stubbed[]} */
+char *vcad_schematic_simulate(const char *schematic_json, const char *request_json);
+/* -> {count, violations[]} */
+char *vcad_schematic_erc(const char *schematic_json);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1,5 +1,14 @@
 /**
- * open_in_browser tool — generate shareable vcad.io URLs.
+ * open_in_app / open_in_browser — hand a document to the native vcad app.
+ *
+ * vcad 2 is a native Mac app; the vcad.io web editor is retiring. These tools
+ * emit a `vcad://` deep link (format: docs/launch/vcad-url-scheme.md) that the
+ * app registers in its bundle Info.plist, plus the download page as the
+ * fallback for machines without the app. `open_in_browser` is the legacy name,
+ * kept as an alias so existing agent prompts keep working.
+ *
+ * Set `VCAD_LEGACY_WEB_LINKS=1` to also emit the old vcad.io `#/new` web link
+ * while the web app is still up.
  */
 
 import type { Document } from "@vcad/ir";
@@ -8,6 +17,15 @@ import { fromVCode, toVCode } from "@vcad/ir";
 import { gzipSync } from "node:zlib";
 import { behavior, type ToolDef } from "./tool-def.js";
 import { getSession } from "./session-core.js";
+import { sessionDir, useFileSessionStore } from "../session-store.js";
+import * as os from "node:os";
+import * as nodePath from "node:path";
+
+/** Where users without the native app get it. */
+export const VCAD_DOWNLOAD_URL = "https://vcad.io/download";
+
+/** Session ids the app will look up on disk: no separators, no dots. */
+const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 interface ShareInput {
   document_id?: string; // live session — the session-first path
@@ -95,7 +113,63 @@ function compressForUrl(compact: string): string {
   return base64urlEncode(compressed);
 }
 
-export function openInBrowser(
+export interface AppLink {
+  /** `vcad://open?...` — opens the document in the native app. */
+  url: string;
+  /** How the document travels: a session id on the shared disk store, or inline. */
+  via: "session" | "inline";
+}
+
+/**
+ * Build the `vcad://` deep link for a document.
+ *
+ * A live session on the local disk store (`~/.vcad/mcp-sessions`, the default
+ * for local MCP runs) travels by id — the app reads `<id>.json` from the same
+ * directory, so the link stays short however big the model is. Anything else
+ * (hosted server, inline document) is embedded as gzip+base64url JSON. JSON
+ * rather than VCode: the native app loads `.vcad` JSON directly.
+ */
+export function buildAppLink(
+  doc: Document,
+  opts: { documentId?: string; name?: string; fileStore?: boolean } = {},
+): AppLink {
+  const params = new URLSearchParams();
+  const fileStore = opts.fileStore ?? useFileSessionStore();
+  let via: AppLink["via"];
+  if (opts.documentId && fileStore && SESSION_ID_RE.test(opts.documentId)) {
+    params.set("session", opts.documentId);
+    const dir = sessionDir();
+    const defaultDir = nodePath.join(os.homedir(), ".vcad", "mcp-sessions");
+    if (nodePath.resolve(dir) !== nodePath.resolve(defaultDir)) {
+      params.set("dir", dir);
+    }
+    via = "session";
+  } else {
+    params.set("doc", compressForUrl(JSON.stringify(doc)));
+    via = "inline";
+  }
+  if (opts.name) params.set("name", opts.name);
+  return { url: `vcad://open?${params.toString()}`, via };
+}
+
+/** The pre-retirement vcad.io `#/new` link (VCode when it fits, else JSON). */
+function legacyWebLink(doc: Document, name?: string): string {
+  let payload: string;
+  try {
+    payload = toVCode(doc);
+  } catch {
+    payload = JSON.stringify(doc);
+  }
+  // VCAD_APP_URL is host-controlled (operator env var), but we still sanitize
+  // so a bad value produces vcad.io rather than a phishing URL.
+  const baseUrl = validateAppUrl(process.env.VCAD_APP_URL || "https://vcad.io");
+  const params = new URLSearchParams();
+  params.set("doc", compressForUrl(payload));
+  if (name) params.set("name", name);
+  return `${baseUrl}/#/new?${params.toString()}`;
+}
+
+export function openInApp(
   input: unknown,
   engine?: Engine,
 ): { content: Array<{ type: "text"; text: string }> } {
@@ -108,66 +182,57 @@ export function openInBrowser(
       "Pass `document_id` (a live session) or `document` (inline IR).",
     );
   }
-  // Parse and convert to compact (smallest representation). Documents that
-  // VCode can't represent yet (e.g. PCB boards) ship as raw JSON — the
-  // app's parseVcadFile loader accepts both formats.
   const live = document_id ? getSession(document_id) : parseDocument(docInput!);
   // A `step_import` node is a reference into this server's STEP registry — the
-  // browser cannot resolve it and would show an empty part. Bake those nodes
-  // to meshes for the trip only; the session keeps its B-rep.
+  // app cannot resolve it and would show an empty part. Bake those nodes to
+  // meshes for the trip; when baking changed the document, it must travel
+  // inline (the on-disk session still holds the reference).
   const doc = engine ? engine.bakeStepImports(live) : live;
-  let payload: string;
-  let format: "vcode" | "json";
-  try {
-    payload = toVCode(doc);
-    format = "vcode";
-  } catch {
-    payload = JSON.stringify(doc);
-    format = "json";
+  const baked = doc !== live;
+  const link = buildAppLink(doc, {
+    documentId: baked ? undefined : document_id,
+    name,
+  });
+
+  const lines = [
+    `Open in vcad:\n${link.url}`,
+    "",
+    `Don't have the vcad app? Download it: ${VCAD_DOWNLOAD_URL}`,
+    link.via === "session"
+      ? `(Link carries session id ${document_id}; the app reads it from this machine's session store, so it works on the machine running this MCP server.)`
+      : `(Document embedded in the link: ${link.url.length} characters.)`,
+  ];
+  if (/^(1|true|on)$/i.test(process.env.VCAD_LEGACY_WEB_LINKS || "")) {
+    lines.push("", `Legacy web link (vcad.io, retiring):\n${legacyWebLink(doc, name)}`);
   }
-
-  // Compress for URL
-  const encoded = compressForUrl(payload);
-
-  // Build URL. VCAD_APP_URL is host-controlled (operator env var), but
-  // we still sanitize so a bad value produces a clear error rather than
-  // a phishing URL rendered to the user.
-  const baseUrl = validateAppUrl(process.env.VCAD_APP_URL || "https://vcad.io");
-  const params = new URLSearchParams();
-  params.set("doc", encoded);
-  if (name) {
-    params.set("name", name);
-  }
-
-  const url = `${baseUrl}/#/new?${params.toString()}`;
-
-  // Check URL length (browsers typically support ~2KB in URL)
-  const urlLength = url.length;
-  const warning = urlLength > 2000
-    ? `\n\nWarning: URL is ${urlLength} characters. Some browsers may truncate URLs over ~2000 characters. Consider exporting to a file instead for larger documents.`
-    : "";
-
-  return {
-    content: [
-      {
-        type: "text",
-        text: `Open in vcad.io:\n${url}${warning}\n\nPayload (${format}): ${payload.length} bytes\nCompressed URL param: ${encoded.length} bytes`,
-      },
-    ],
-  };
+  return { content: [{ type: "text", text: lines.join("\n") }] };
 }
 
+/** Legacy name — same behavior as `openInApp`. */
+export const openInBrowser = openInApp;
+
+const DESCRIPTION =
+  "Open a CAD document in the native vcad app via a `vcad://` deep link. " +
+  "Pass a live session's `document_id` (the usual ship path), or an inline IR `document` (JSON or VCode format). " +
+  "Local sessions travel by id; otherwise the document is embedded (gzip + base64url). " +
+  "The result also carries the vcad download page as the fallback for users without the app.";
+
 export const toolDefs: ToolDef[] = [
+  {
+    name: "open_in_app",
+    pack: null,
+    description: DESCRIPTION,
+    inputSchema: openInBrowserSchema,
+    handler: (a, c) => openInApp(a, c.engine),
+    behavior: behavior({}),
+  },
   {
     name: "open_in_browser",
     pack: null,
     description:
-      "Generate a shareable URL to open a CAD document in vcad.io. " +
-      "Pass a live session's `document_id` (the usual ship path), or an inline IR `document` (JSON or VCode format). " +
-      "Documents are compressed (gzip + base64url) for URL embedding. " +
-      "Note: Very large documents may exceed URL length limits (~2KB).",
+      "Legacy alias of `open_in_app` (the vcad.io web editor is retiring). " + DESCRIPTION,
     inputSchema: openInBrowserSchema,
-    handler: (a, c) => openInBrowser(a, c.engine),
+    handler: (a, c) => openInApp(a, c.engine),
     behavior: behavior({}),
   },
 ];

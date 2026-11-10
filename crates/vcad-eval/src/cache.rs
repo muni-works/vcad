@@ -76,6 +76,10 @@ pub struct FingerprintSettings {
     /// Whether sheet-metal ops fold to real solids (see
     /// `evaluate_document_with_sheet_metal`).
     pub fold_sheet_metal: bool,
+    /// Display chord tolerance (mm) the root meshes were tessellated with;
+    /// 0 = the fixed segment count. Hashed only when set, so existing keys
+    /// are unchanged.
+    pub chord_tol_mm: f64,
 }
 
 /// Storage for evaluated root meshes, keyed by [`RootKey`].
@@ -137,6 +141,10 @@ pub fn root_fingerprint(
     hasher.update(b"\0");
     hasher.update(settings.segments.to_le_bytes());
     hasher.update([settings.fold_sheet_metal as u8]);
+    if settings.chord_tol_mm > 0.0 {
+        hasher.update(b"chord=");
+        hasher.update(settings.chord_tol_mm.to_le_bytes());
+    }
     hasher.update(b"\0");
     for (name, value) in kernel_knobs() {
         hasher.update(name.as_bytes());
@@ -158,13 +166,30 @@ pub fn root_fingerprint(
         hasher.update((bytes.len() as u64).to_le_bytes());
         hasher.update(&bytes);
     }
-    let digest = hasher.finalize();
+    Some(RootKey(hex_digest(hasher)))
+}
+
+fn hex_digest(hasher: Sha256) -> String {
     let mut hex = String::with_capacity(64);
-    for b in digest {
+    for b in hasher.finalize() {
         use std::fmt::Write;
         let _ = write!(hex, "{b:02x}");
     }
-    Some(RootKey(hex))
+    hex
+}
+
+impl RootKey {
+    /// A key for a mesh derived from this root's — the same shape under a
+    /// placement, say — told apart from the root's own entry (and from
+    /// other derivations) by `salt`.
+    pub fn derive(&self, salt: &[u8]) -> RootKey {
+        let mut hasher = Sha256::new();
+        hasher.update(b"vcad-derived-mesh/1\0");
+        hasher.update(self.0.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(salt);
+        RootKey(hex_digest(hasher))
+    }
 }
 
 /// `VCAD_NO_*` environment variables, sorted — the kernel's own algorithm
@@ -507,6 +532,7 @@ mod tests {
         FingerprintSettings {
             segments: 32,
             fold_sheet_metal: false,
+            chord_tol_mm: 0.0,
         }
     }
 
@@ -587,6 +613,7 @@ mod tests {
             &FingerprintSettings {
                 segments: 16,
                 fold_sheet_metal: false,
+                chord_tol_mm: 0.0,
             },
         );
         let kfold = root_fingerprint(
@@ -595,6 +622,7 @@ mod tests {
             &FingerprintSettings {
                 segments: 32,
                 fold_sheet_metal: true,
+                chord_tol_mm: 0.0,
             },
         );
         assert_ne!(k32, k16);

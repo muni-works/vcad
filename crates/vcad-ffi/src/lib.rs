@@ -53,13 +53,30 @@ use vcad_kernel_math::{Point3, Vec3};
 use vcad_kernel_raytrace::{BrepBvh, Bvh, Ray};
 use vcad_kernel_tessellate::TriangleMesh;
 
+mod analysis;
+pub mod animation;
+pub mod assembly;
 mod cam;
+pub mod cam_job;
+pub mod clearance;
+pub mod dfm;
+pub mod drafting;
 pub mod engine;
 mod err;
 pub mod export;
+pub mod fea;
+pub mod features;
 pub mod gym;
+pub mod import;
+mod json;
+pub mod pcb;
+pub mod print;
+pub mod schematic;
 pub mod sensitivity;
 pub mod session;
+pub mod sheet_metal;
+pub mod sketch;
+pub mod topology;
 pub mod train;
 
 pub use err::vcad_last_error;
@@ -128,10 +145,14 @@ impl VcadEdgesView {
 /// Swift side assert it linked a compatible static lib.
 #[no_mangle]
 pub extern "C" fn vcad_ffi_abi_version() -> u32 {
+    // 7: added the modeling surface — `vcad_sketch_*` (constraint solver),
+    //    `vcad_topology_json` / `vcad_solid_pick` / per-edge blends / open
+    //    shells, `vcad_feature_append` (IR builders), `vcad_import_*`,
+    //    `vcad_scene_part_solid` and `vcad_string_free`.
     // 6: added the simulation surface — `vcad_gym_*` (physics envs, the
     //    render seam, policy inference), `vcad_train_*` (in-process ARS), and
     //    the shared `vcad_last_error` diagnostic channel.
-    6
+    7
 }
 
 /// Create a box (corner at origin, extends to `(sx, sy, sz)`). Returns null on panic.
@@ -1274,6 +1295,21 @@ pub extern "C" fn vcad_doc_gripper_slice1() -> *mut VcadDoc {
 /// gripper solve quoted the enclosure at 0 cents the moment an earlier run
 /// had warmed the cache (cold: pass, warm: fail — which is how it got past a
 /// local run whose every rebuild minted a new kernel id and an empty cache).
+/// Viewport chord tolerance: a chord may stray at most this far (mm) from
+/// the true surface, so an r86 cup isn't drawn as a visible 32-gon. The
+/// tessellator caps the per-circle count, so huge radii can't explode the
+/// mesh. Applied only where the native app evaluates for display.
+pub(crate) const DISPLAY_CHORD_MM: f64 = 0.02;
+
+/// Evaluate for the viewport (see [`DISPLAY_CHORD_MM`]).
+fn viewport_eval(
+    doc: &vcad_ir::Document,
+    opts: &EvalOptions,
+) -> Result<vcad_eval::EvaluatedScene, vcad_eval::EvalError> {
+    let _chord = vcad_eval::evaluate::DisplayChordGuard::enable(DISPLAY_CHORD_MM);
+    evaluate_document(doc, opts)
+}
+
 fn open_opts() -> EvalOptions {
     EvalOptions {
         root_cache: root_mesh_cache()
@@ -1330,7 +1366,7 @@ pub extern "C" fn vcad_doc_set_param(
         d.inner
             .parameters
             .insert(name.to_string(), Parameter::literal(value));
-        match evaluate_document(&d.inner, &interactive_opts()) {
+        match viewport_eval(&d.inner, &interactive_opts()) {
             Ok(scene) => Box::into_raw(Box::new(VcadScene {
                 inner: scene,
                 doc: None,
@@ -1369,7 +1405,7 @@ pub extern "C" fn vcad_doc_set_param_cheap(
         let nodes = fast.nodes.clone();
         fast.roots
             .retain(|e| !subtree_has_sheet_metal(&nodes, e.root));
-        match evaluate_document(&fast, &interactive_opts()) {
+        match viewport_eval(&fast, &interactive_opts()) {
             Ok(scene) => Box::into_raw(Box::new(VcadScene {
                 inner: scene,
                 doc: None,
@@ -2181,7 +2217,7 @@ pub extern "C" fn vcad_doc_solve(
         d.inner
             .parameters
             .insert(name.to_string(), Parameter::literal(value));
-        let Ok(scene) = evaluate_document(&d.inner, &interactive_opts()) else {
+        let Ok(scene) = viewport_eval(&d.inner, &interactive_opts()) else {
             return ptr::null_mut();
         };
         // The PCB lives in the document: resolve it (the "pcb." binding moves the
@@ -2500,7 +2536,10 @@ mod tests {
             view.vertices_len, view.normals_len,
             "one normal per position"
         );
-        assert!(view.indices_len % 3 == 0, "indices form whole triangles");
+        assert!(
+            view.indices_len.is_multiple_of(3),
+            "indices form whole triangles"
+        );
         vcad_mesh_free(mesh);
         vcad_solid_free(solid);
     }
@@ -2546,7 +2585,10 @@ mod tests {
         assert!(n > 0, "expected >= 1 evaluated part, got {n}");
         let view = vcad_scene_part_mesh(scene, 0);
         assert!(view.vertices_len > 0, "part 0 should have geometry");
-        assert!(view.indices_len % 3 == 0, "indices form whole triangles");
+        assert!(
+            view.indices_len.is_multiple_of(3),
+            "indices form whole triangles"
+        );
         vcad_scene_free(scene);
     }
 
@@ -2565,7 +2607,10 @@ mod tests {
         assert!(n > 0, "expected >= 1 part, got {n}");
         let view = vcad_scene_part_mesh(scene, 0);
         assert!(view.vertices_len > 0, "part 0 should have geometry");
-        assert!(view.indices_len % 3 == 0, "indices form whole triangles");
+        assert!(
+            view.indices_len.is_multiple_of(3),
+            "indices form whole triangles"
+        );
         vcad_scene_free(scene);
     }
 
@@ -3184,7 +3229,7 @@ mod tests {
         assert!(!edges.is_null());
         let view = vcad_edges_view(edges);
         assert!(
-            view.floats_len > 0 && view.floats_len % 6 == 0,
+            view.floats_len > 0 && view.floats_len.is_multiple_of(6),
             "edges must be 6 floats per segment, got {}",
             view.floats_len
         );
@@ -3353,7 +3398,7 @@ pub extern "C" fn vcad_eval_begin(
                     p.done = p.done.max(index + 1);
                 }
             }));
-            let result = catch_unwind(AssertUnwindSafe(|| evaluate_document(&doc, &opts)));
+            let result = catch_unwind(AssertUnwindSafe(|| viewport_eval(&doc, &opts)));
             let out = match result {
                 Ok(Ok(scene)) => Ok(VcadScene {
                     inner: scene,

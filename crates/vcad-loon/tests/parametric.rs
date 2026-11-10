@@ -372,9 +372,9 @@ fn recovered_bindings_reproduce_the_program_at_a_point_never_fitted() {
     };
     let (doc, warnings) = eval_vcad_parametric(&src(1.0), None, None).unwrap();
     assert!(warnings.is_empty(), "{warnings:?}");
-    let driven = with_params(&doc, &[("a", 11.5), ("b", -2.25)]);
+    let driven = with_params(&doc, &[("a", 11.5), ("b", 2.25)]);
     let truth = eval_vcad(
-        "[defparam a 11.5]\n[defparam b -2.25]\n\
+        "[defparam a 11.5]\n[defparam b 2.25]\n\
          [root [translate [+ a b] [- a b] [* 2.0 a] [cube a b 1.0]] \"steel\"]",
         None,
     )

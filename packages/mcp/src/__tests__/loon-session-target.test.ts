@@ -43,7 +43,7 @@ describe("create_cad_loon document_id targeting", () => {
     if (!doc) throw new Error("engine build lacks loon support");
     const id = registerSession(doc);
     const res = openInBrowser({ document_id: id, name: "cube" });
-    expect(res.content[0].text).toContain("https://vcad.io/#/new?");
+    expect(res.content[0].text).toContain("vcad://open?");
   });
 
   it("open_in_browser without document_id or document is a loud error", () => {

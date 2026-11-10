@@ -1,0 +1,81 @@
+; assembly — the whole kit on a placeholder 32-inch reacher, for the render.
+;
+; Printed parts come in as their exported STLs (stl/, built by build.sh), so
+; this file shows exactly what gets printed. Everything else here is a
+; REFERENCE ENVELOPE (not printed): shaft, handle, trigger, DS3225, horn,
+; pushrod, 18650 holder, and the K1 cuff + hand ball.
+;
+; Reacher frame (shaft Z, +Z distal, -Y trigger side), handle front face at
+; z = 0. Stations along the shaft:
+;   handle housing   z -170..0
+;   servo-mount      z    0..64
+;   cuff-sleeve      z   70..148.5  (cuff tunnel centered at z = 110)
+;   pod              z  152..298
+; The sleeve station is the one to move: put it at the loaded reacher's
+; measured balance point (README).
+
+[use params [shaft-r reacher-len handle-len trigger-drop]]
+
+[let bx [fn [sx sy sz px py pz] [translate px py pz [cube sx sy sz]]]]
+[let part [fn [path] [import-mesh path :units "mm"]]]
+[let rod [fn [r y0 z0 y1 z1 x]
+  [hull [translate x y0 z0 [sphere r]] [translate x y1 z1 [sphere r]]]]]
+
+[material "petg" 0.15 0.55 0.75 0.0 0.45]
+[material "petg-lid" 0.85 0.85 0.88 0.0 0.45]
+[material "aluminum" 0.78 0.79 0.80 0.9 0.35]
+[material "plastic" 0.12 0.12 0.13 0.0 0.6]
+[material "servo" 0.10 0.10 0.11 0.3 0.5]
+[material "k1" 0.92 0.92 0.92 0.0 0.5]
+
+; --- reacher (reference) ----------------------------------------------------
+[let shaft [cylinder shaft-r [- reacher-len handle-len]]]
+[let handle
+  [union [translate 0.0 0.0 [- 0.0 handle-len] [cylinder [+ shaft-r 6.0] handle-len]]
+    [union [bx 24.0 70.0 45.0 -12.0 -85.0 -150.0]   ; pistol grip
+           [bx 12.0 50.0 6.0 -6.0 [- 0.0 [+ trigger-drop 15.0]] -46.0]]]]  ; trigger
+[let jaws [translate 0.0 0.0 [- reacher-len handle-len]
+  [union [bx 50.0 8.0 70.0 -25.0 6.0 0.0] [bx 50.0 8.0 70.0 -25.0 -14.0 0.0]]]]
+
+; --- actuation (reference) --------------------------------------------------
+; DS3225 case + ears; spline at (x 8, y -28, z 22), horn arm to the pin.
+[let servo [union [bx 40.5 20.0 40.0 -32.5 -38.0 12.0]
+                  [bx 2.5 20.0 54.5 -4.5 -38.0 4.75]]]
+[let horn [union [translate 8.0 -28.0 22.0 [rotate 0.0 90.0 0.0 [cylinder 6.0 5.0]]]
+                 [rod 3.0 -28.0 22.0 -42.3 26.4 11.0]]]
+[let pushrod [rod 1.5 -42.3 26.4 -45.0 -33.0 13.0]]
+
+; --- pod contents (reference) -----------------------------------------------
+[let holder [translate 0.0 0.0 152.0 [bx 41.0 20.0 77.0 -20.5 17.0 10.5]]]
+
+; --- K1 cuff + hand ball (reference envelope of k1-ball-cuff rev E.1.1) ----
+; Cuff frame -> reacher frame: cuff X (tunnel) -> +Z, cuff Z (boss) -> -X.
+[let cuff-env
+  [difference [bx 60.0 25.8 25.8 -30.0 -12.9 32.0]
+    [union [translate 0.0 -40.0 0.0 [rotate -90.0 0.0 0.0 [cylinder 31.0 70.0]]]
+           [bx 52.0 46.0 34.0 -26.0 -16.0 28.0]]]]
+[let ball [sphere 25.0]]
+[let forearm [translate 0.0 -150.0 0.0 [rotate -90.0 0.0 0.0 [cylinder 17.5 112.0]]]]
+[let at-cuff [fn [s] [translate 44.9 0.0 110.0 [rotate 0.0 -90.0 0.0 s]]]]
+
+[root [part "stl/servo-mount.stl"] "petg"]
+; Print-oriented STLs are un-rotated with ONE translate over ONE rotate:
+; a three-deep transform nest on an import-mesh drops the outer transform
+; and swaps the inner two (vcad bug, repro filed; README).
+; trigger-shoe: T(0,-drop,-40) . Ry180 . T(0,0,-11) = T(0,-drop,-29) . Ry180
+[root [translate 0.0 [- 0.0 trigger-drop] -29.0 [rotate 0.0 180.0 0.0 [part "stl/trigger-shoe.stl"]]] "petg"]
+[root [translate 0.0 0.0 70.0 [part "stl/cuff-sleeve.stl"]] "petg"]
+[root [translate 0.0 0.0 136.5 [part "stl/cuff-collar.stl"]] "petg"]
+[root [translate 0.0 0.0 152.0 [part "stl/pod.stl"]] "petg"]
+; pod-lid: T(0,0,152) . Rx90 . T(0,0,-41) = T(0,41,152) . Rx90  (41 = ytop + t)
+[root [translate 0.0 41.0 152.0 [rotate 90.0 0.0 0.0 [part "stl/pod-lid.stl"]]] "petg-lid"]
+[root shaft "aluminum"]
+[root handle "plastic"]
+[root jaws "plastic"]
+[root servo "servo"]
+[root horn "aluminum"]
+[root pushrod "aluminum"]
+[root holder "plastic"]
+[root [at-cuff cuff-env] "k1"]
+[root [at-cuff ball] "k1"]
+[root [at-cuff forearm] "k1"]

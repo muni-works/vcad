@@ -1,0 +1,46 @@
+; pod-lid — closes the pod's open +Y face. 2.5 plate plus a 1.5 locating
+; lip that drops inside the opening (0.3 per side clearance), 4 x M3 x 10
+; into the pod's corner bosses.
+;
+; Frame matches pod.loon (lid seats on y = ytop = 38.5), so the assembly
+; places it by undoing the print rotation below. PRINT: plate face down, lip
+; up (the exported STL is already oriented). No supports.
+
+[use params [shaft-r m3-clear]]
+
+[let petg [material "petg" 0.15 0.55 0.75 0.0 0.45]]
+[let bx [fn [sx sy sz px py pz] [translate px py pz [cube sx sy sz]]]]
+
+; must match pod.loon
+[let wall 2.5]
+[let iw 42.0]
+[let ih 22.0]
+[let il 141.0]
+[let ow [+ iw [* 2.0 wall]]]
+[let ol [+ il [* 2.0 wall]]]
+[let ytop [+ [- [+ shaft-r 5.0] 2.0] [+ wall ih]]]
+
+[let t 2.5]
+[let plate [bx ow t ol [- 0.0 [/ ow 2.0]] ytop 0.0]]
+; lip ring: inside the opening, clear of the corner bosses' bays
+[let lip-o [bx [- iw 0.6] 1.5 [- il 0.6] [- 0.3 [/ iw 2.0]] [- ytop 1.5] [+ wall 0.3]]]
+[let lip-i [bx [- iw 4.6] 3.0 [- il 4.6] [- 2.3 [/ iw 2.0]] [- ytop 2.0] [+ wall 2.3]]]
+; notch the lip where the 7 x 7 bosses stand
+[let bpos [- [/ iw 2.0] 3.5]]
+; (stops at ytop: a taller notch pockets the plate 1 mm at every screw —
+; the volume check against hand arithmetic caught exactly that)
+[let notch [fn [px pz] [bx 7.6 2.0 7.6 [- px 3.8] [- ytop 2.0] [- pz 3.8]]]]
+[let bz0 [+ wall 3.5]]
+[let bz1 [- ol [+ wall 3.5]]]
+[let hole [fn [px pz] [translate px [- ytop 1.0] pz
+  [rotate -90.0 0.0 0.0 [cylinder m3-clear [+ t 2.0]]]]]]
+
+[let lid
+  [pipe [union plate [difference lip-i lip-o]]
+    [difference [notch bpos bz0]] [difference [notch [- 0.0 bpos] bz0]]
+    [difference [notch bpos bz1]] [difference [notch [- 0.0 bpos] bz1]]
+    [difference [hole bpos bz0]] [difference [hole [- 0.0 bpos] bz0]]
+    [difference [hole bpos bz1]] [difference [hole [- 0.0 bpos] bz1]]]]
+
+; Exported in print orientation: plate face down on z = 0, lip up.
+[root [translate 0.0 0.0 [+ ytop t] [rotate -90.0 0.0 0.0 lid]] "petg"]

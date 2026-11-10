@@ -2522,6 +2522,47 @@ fn tessellate_planar_face_with_geom(
     mesh
 }
 
+/// Flip any triangle whose winding disagrees with its own vertex normals.
+///
+/// The normals come straight from the surface and the face orientation; the
+/// winding comes from loop order and per-path conventions (fan centre, ear
+/// clipping, the apex-first cone fan), which a foreign STEP loop can defeat.
+/// Downstream consumers (back-face culling, signed volume) read the winding,
+/// so make it agree with the normals the tessellator already trusts.
+fn align_winding_to_normals(mesh: &mut TriangleMesh) {
+    if mesh.normals.len() != mesh.vertices.len() {
+        return;
+    }
+    let p = |m: &TriangleMesh, i: u32| {
+        let j = i as usize * 3;
+        Vec3::new(
+            m.vertices[j] as f64,
+            m.vertices[j + 1] as f64,
+            m.vertices[j + 2] as f64,
+        )
+    };
+    let n = |m: &TriangleMesh, i: u32| {
+        let j = i as usize * 3;
+        Vec3::new(
+            m.normals[j] as f64,
+            m.normals[j + 1] as f64,
+            m.normals[j + 2] as f64,
+        )
+    };
+    for t in 0..mesh.indices.len() / 3 {
+        let (a, b, c) = (
+            mesh.indices[3 * t],
+            mesh.indices[3 * t + 1],
+            mesh.indices[3 * t + 2],
+        );
+        let winding = (p(mesh, b) - p(mesh, a)).cross(p(mesh, c) - p(mesh, a));
+        let normal = n(mesh, a) + n(mesh, b) + n(mesh, c);
+        if winding.dot(normal) < 0.0 {
+            mesh.indices.swap(3 * t + 1, 3 * t + 2);
+        }
+    }
+}
+
 /// Core tessellation logic for a planar polygon without holes.
 fn tessellate_planar_face_core(outer_verts: &[Point3], reversed: bool) -> TriangleMesh {
     // Find the best fan center vertex index.
@@ -2597,7 +2638,17 @@ fn tessellate_planar_face_core(outer_verts: &[Point3], reversed: bool) -> Triang
 /// Tessellate a concave polygon using ear clipping algorithm.
 /// This is the fallback when fan triangulation cannot produce valid triangles.
 fn tessellate_concave_polygon(verts: &[Point3], reversed: bool) -> TriangleMesh {
+    // Coincident consecutive vertices (a repeated corner, e.g. a micro edge
+    // collapsed by vertex merging) give a zero-length first edge, which the
+    // plane fit below reads as a fully degenerate polygon.
     let n = verts.len();
+    if (0..n).any(|i| verts[i] == verts[(i + 1) % n]) {
+        let deduped: Vec<Point3> = (0..n)
+            .filter(|&i| verts[i] != verts[(i + 1) % n])
+            .map(|i| verts[i])
+            .collect();
+        return tessellate_concave_polygon(&deduped, reversed);
+    }
     if n < 3 {
         return TriangleMesh::new();
     }
@@ -2816,6 +2867,20 @@ fn tessellate_bilinear_face(
     }
 }
 
+/// Newell's area-weighted normal of a closed polygon: its direction follows
+/// the loop's winding (counter-clockwise about the result) regardless of
+/// convexity or which vertex the loop starts at. Not normalized.
+fn newell_normal(verts: &[Point3]) -> Vec3 {
+    let mut n = Vec3::zeros();
+    for (i, a) in verts.iter().enumerate() {
+        let b = verts[(i + 1) % verts.len()];
+        n.x += (a.y - b.y) * (a.z + b.z);
+        n.y += (a.z - b.z) * (a.x + b.x);
+        n.z += (a.x - b.x) * (a.y + b.y);
+    }
+    n
+}
+
 /// Tessellate a planar face with inner loops (holes).
 /// Uses a ring-based approach for better triangle quality: adds intermediate
 /// Steiner points around each hole to prevent long thin triangles.
@@ -2853,14 +2918,23 @@ fn tessellate_planar_face_with_holes(
         return tessellate_simple_polygon(&outer_verts, reversed);
     }
 
-    // Build a 2D projection for triangulation
-    // Compute the face plane from first 3 vertices
-    let e1 = outer_verts[1] - outer_verts[0];
-    let e2 = outer_verts[2] - outer_verts[0];
-    let face_normal = e1.cross(e2);
+    // Build a 2D projection for triangulation. The frame's normal must
+    // follow the loop's winding: a cross product of the first two edges
+    // flips sign whenever vertex 0 is a reflex corner (a notch in a foreign
+    // STEP outline), and the CCW normalization below would then wind every
+    // triangle into the solid. Newell's area-weighted normal has no such
+    // dependence on where the loop starts.
+    let face_normal = newell_normal(&outer_verts);
     if face_normal.norm() < 1e-12 {
         return TriangleMesh::new();
     }
+    let Some(e1) = outer_verts
+        .windows(2)
+        .map(|w| w[1] - w[0])
+        .find(|e| e.norm() > 1e-12)
+    else {
+        return TriangleMesh::new();
+    };
 
     let u_axis = e1.normalize();
     let v_axis = face_normal.cross(e1).normalize();
@@ -4136,6 +4210,16 @@ fn tessellate_cylindrical_face(
     }
 
     verts.extend(borrowed_ring);
+    // A seamless full-circle wall from a foreign STEP file (Onshape writes
+    // these) is bounded by two circular loops — one ring per end, no seam
+    // edge. The outer loop alone sits at a single height, which would give
+    // a zero-height band; the other end ring lives in the hole loop.
+    for &inner in &face.inner_loops {
+        verts.extend(
+            topo.loop_half_edges(inner)
+                .map(|he| topo.vertices[topo.half_edges[he].origin].point),
+        );
+    }
     let verts = verts;
 
     let mut radius = None;
@@ -5026,6 +5110,27 @@ fn tessellate_spherical_face(
         .map(|he| topo.vertices[topo.half_edges[he].origin].point)
         .collect();
 
+    // A patch with holes (a sphere a box trims on several sides: each
+    // disjoint cut circle punches one) has no single pole to ring from.
+    if !face.inner_loops.is_empty() {
+        if let Some(sph) = surface
+            .as_any()
+            .downcast_ref::<vcad_kernel_geom::SphereSurface>()
+        {
+            let mut loops = vec![loop_verts.clone()];
+            for &l in &face.inner_loops {
+                loops.push(
+                    topo.loop_half_edges(l)
+                        .map(|he| topo.vertices[topo.half_edges[he].origin].point)
+                        .collect(),
+                );
+            }
+            if let Some(mesh) = tessellate_spherical_region(sph, &loops, params, reversed) {
+                return mesh;
+            }
+        }
+    }
+
     // A normal closed-sphere B-rep has exactly 4 edges (seam cycle).
     // Faces with 3 or >4 loop vertices are partial spherical caps —
     // either boolean-split caps or fillet vertex-blend patches — and
@@ -5150,6 +5255,299 @@ fn tessellate_spherical_face(
     }
 
     mesh
+}
+
+/// Lawson flips toward the planar Delaunay triangulation of `tris` (CCW
+/// in `uv`), never flipping a `boundary` edge or creating an inverted
+/// triangle.
+fn delaunay_flip(
+    tris: &mut [[u32; 3]],
+    uv: &[(f64, f64)],
+    boundary: &std::collections::HashSet<(u32, u32)>,
+) {
+    use std::collections::HashMap;
+    let key = |a: u32, b: u32| if a < b { (a, b) } else { (b, a) };
+    let orient = |t: &[u32; 3]| -> f64 {
+        let (a, b, c) = (uv[t[0] as usize], uv[t[1] as usize], uv[t[2] as usize]);
+        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+    };
+    let in_circle = |a: (f64, f64), b: (f64, f64), c: (f64, f64), d: (f64, f64)| -> f64 {
+        let (adx, ady) = (a.0 - d.0, a.1 - d.1);
+        let (bdx, bdy) = (b.0 - d.0, b.1 - d.1);
+        let (cdx, cdy) = (c.0 - d.0, c.1 - d.1);
+        (adx * adx + ady * ady) * (bdx * cdy - cdx * bdy)
+            - (bdx * bdx + bdy * bdy) * (adx * cdy - cdx * ady)
+            + (cdx * cdx + cdy * cdy) * (adx * bdy - bdx * ady)
+    };
+    for _ in 0..100 {
+        let mut edges: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+        for (t, tri) in tris.iter().enumerate() {
+            for k in 0..3 {
+                edges
+                    .entry(key(tri[k], tri[(k + 1) % 3]))
+                    .or_default()
+                    .push(t);
+            }
+        }
+        let mut touched = vec![false; tris.len()];
+        let mut flipped = false;
+        for (e, ts) in &edges {
+            if ts.len() != 2 || boundary.contains(e) || touched[ts[0]] || touched[ts[1]] {
+                continue;
+            }
+            let (t0, t1) = (tris[ts[0]], tris[ts[1]]);
+            // t0 = (a, b, c) CCW with the shared edge a→b; d opposite in t1.
+            let r = (0..3)
+                .find(|&k| key(t0[k], t0[(k + 1) % 3]) == *e)
+                .unwrap_or(0);
+            let (a, b, c) = (t0[r], t0[(r + 1) % 3], t0[(r + 2) % 3]);
+            let Some(&d) = t1.iter().find(|&&v| v != a && v != b) else {
+                continue;
+            };
+            let p = |v: u32| uv[v as usize];
+            let scale = {
+                let s = (p(a).0 - p(c).0).abs() + (p(a).1 - p(c).1).abs();
+                s.powi(4).max(1e-300)
+            };
+            if in_circle(p(a), p(b), p(c), p(d)) <= 1e-12 * scale {
+                continue;
+            }
+            let n0 = [c, a, d];
+            let n1 = [d, b, c];
+            if orient(&n0) <= 0.0 || orient(&n1) <= 0.0 {
+                continue;
+            }
+            tris[ts[0]] = n0;
+            tris[ts[1]] = n1;
+            touched[ts[0]] = true;
+            touched[ts[1]] = true;
+            flipped = true;
+        }
+        if !flipped {
+            break;
+        }
+    }
+}
+
+/// Tessellate a spherical patch bounded by `loops` (outer first, then
+/// holes), keeping every boundary vertex exactly as given so the patch
+/// welds to its neighbours.
+///
+/// Stereographic projection from the pole opposite the outer loop's
+/// solid-angle direction (a point outside the patch) turns the patch into a
+/// planar polygon with holes. Earcut triangulates that without adding
+/// vertices, but its ears and fans are useless on a curved surface — a
+/// boundary ear lies in the cut circle's plane, tilted far off the
+/// sphere's normal. So the planar mesh is refined where it stays a valid
+/// embedding: interior edges whose LIFTED length exceeds the boundary
+/// spacing are bisected in the plane (both neighbours at once, keeping the
+/// mesh conforming), then edges are flipped to Delaunay. Stereographic
+/// projection maps circles to circles, so planar Delaunay is spherical
+/// Delaunay. Boundary edges are never touched. `None` when the projection
+/// or triangulation degenerates, leaving the caller its old path.
+fn tessellate_spherical_region(
+    sphere: &vcad_kernel_geom::SphereSurface,
+    loops: &[Vec<Point3>],
+    params: &TessellationParams,
+    reversed: bool,
+) -> Option<TriangleMesh> {
+    use std::collections::{HashMap, HashSet};
+    let center = sphere.center;
+    let radius = sphere.radius.abs();
+    let outer = loops.first()?;
+    if radius < 1e-9 || outer.len() < 3 {
+        return None;
+    }
+    let mut sa = Vec3::zeros();
+    for i in 0..outer.len() {
+        sa += (outer[i] - center).cross(outer[(i + 1) % outer.len()] - center);
+    }
+    if sa.norm() < 1e-9 * radius * radius {
+        return None;
+    }
+    let q = -sa.normalize();
+    let e1 = if q.x.abs() < 0.9 {
+        Vec3::new(1.0, 0.0, 0.0).cross(q).normalize()
+    } else {
+        Vec3::new(0.0, 1.0, 0.0).cross(q).normalize()
+    };
+    let e2 = q.cross(e1);
+    let project = |p: &Point3| -> (f64, f64) {
+        let u = (*p - center).normalize();
+        let d = (1.0 - u.dot(q)).max(1e-12);
+        (u.dot(e1) / d, u.dot(e2) / d)
+    };
+    let lift = |(x, y): (f64, f64)| -> Point3 {
+        let s = x * x + y * y;
+        center + radius * ((2.0 * x * e1 + 2.0 * y * e2 + (s - 1.0) * q) / (s + 1.0))
+    };
+
+    let mut pts: Vec<Point3> = loops.iter().flatten().copied().collect();
+    let mut uv: Vec<(f64, f64)> = pts.iter().map(project).collect();
+    let outer_2d: Vec<(f64, f64)> = uv[..outer.len()].to_vec();
+    let mut holes_2d: Vec<Vec<(f64, f64)>> = Vec::new();
+    let mut base = outer.len();
+    for l in &loops[1..] {
+        holes_2d.push(uv[base..base + l.len()].to_vec());
+        base += l.len();
+    }
+    let mut tris: Vec<[u32; 3]> = triangulate_polygon_2d(&outer_2d, &holes_2d)?;
+    if tris.is_empty() {
+        return None;
+    }
+    let orient = |uv: &[(f64, f64)], t: &[u32; 3]| -> f64 {
+        let (a, b, c) = (uv[t[0] as usize], uv[t[1] as usize], uv[t[2] as usize]);
+        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+    };
+    for t in &mut tris {
+        if orient(&uv, t) < 0.0 {
+            t.swap(1, 2);
+        }
+    }
+
+    let key = |a: u32, b: u32| if a < b { (a, b) } else { (b, a) };
+    let mut boundary: HashSet<(u32, u32)> = HashSet::new();
+    let mut base = 0u32;
+    for l in loops {
+        let n = l.len() as u32;
+        for i in 0..n {
+            boundary.insert(key(base + i, base + (i + 1) % n));
+        }
+        base += n;
+    }
+    let edge_map = |tris: &[[u32; 3]]| -> HashMap<(u32, u32), Vec<usize>> {
+        let mut m: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+        for (t, tri) in tris.iter().enumerate() {
+            for k in 0..3 {
+                m.entry(key(tri[k], tri[(k + 1) % 3])).or_default().push(t);
+            }
+        }
+        m
+    };
+
+    // Target edge length: a little under the circumferential spacing this
+    // sphere gets. At the full spacing a 32-segment box∩sphere ran 0.5%
+    // short of the closed-form volume from interior chord sag alone; the
+    // ring-based cap path is denser than this still.
+    let n_lon = params.circle_segments_for_radius(radius).max(8) as f64;
+    let target = 0.6 * 2.0 * PI * radius / n_lon;
+
+    // Seed the interior with an even spread of sphere points (a Fibonacci
+    // lattice at the target spacing), each inserted into the planar
+    // triangle containing it. Bisection alone gets there too, but cascades
+    // into fans around every boundary vertex at several times the count.
+    let n_boundary = pts.len();
+    let spacing_area = 0.5 * 3f64.sqrt() * target * target;
+    let n_fib = ((4.0 * PI * radius * radius) / spacing_area).ceil() as usize;
+    if n_fib <= 200_000 {
+        let golden = PI * (3.0 - 5f64.sqrt());
+        for k in 0..n_fib {
+            let z = 1.0 - 2.0 * (k as f64 + 0.5) / n_fib as f64;
+            let rho = (1.0 - z * z).max(0.0).sqrt();
+            let (st, ct) = (golden * k as f64).sin_cos();
+            let p = center + radius * Vec3::new(rho * ct, rho * st, z);
+            if pts[..n_boundary]
+                .iter()
+                .any(|b| (*b - p).norm() < 0.6 * target)
+            {
+                continue;
+            }
+            let w = project(&p);
+            let Some(t) = tris.iter().position(|t| {
+                let (a, b, c) = (uv[t[0] as usize], uv[t[1] as usize], uv[t[2] as usize]);
+                let o = |p: (f64, f64), q: (f64, f64)| {
+                    (q.0 - p.0) * (w.1 - p.1) - (q.1 - p.1) * (w.0 - p.0)
+                };
+                o(a, b) > 0.0 && o(b, c) > 0.0 && o(c, a) > 0.0
+            }) else {
+                continue;
+            };
+            let [a, b, c] = tris[t];
+            let m = pts.len() as u32;
+            pts.push(p);
+            uv.push(w);
+            tris[t] = [a, b, m];
+            tris.push([b, c, m]);
+            tris.push([c, a, m]);
+        }
+        delaunay_flip(&mut tris, &uv, &boundary);
+    }
+
+    // Conforming longest-edge bisection of interior edges, in the plane.
+    let max_tris = 200_000;
+    loop {
+        let edges = edge_map(&tris);
+        let mut long: Vec<((u32, u32), f64)> = edges
+            .iter()
+            .filter(|(e, ts)| ts.len() == 2 && !boundary.contains(e))
+            .map(|(e, _)| (*e, (pts[e.0 as usize] - pts[e.1 as usize]).norm()))
+            .filter(|(_, len)| *len > 1.5 * target)
+            .collect();
+        if long.is_empty() || tris.len() > max_tris {
+            break;
+        }
+        long.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let mut touched = vec![false; tris.len()];
+        for ((a, b), _) in long {
+            let ts = &edges[&(a, b)];
+            if ts.iter().any(|&t| touched[t]) {
+                continue;
+            }
+            let (ua, ub) = (uv[a as usize], uv[b as usize]);
+            let mid = (0.5 * (ua.0 + ub.0), 0.5 * (ua.1 + ub.1));
+            let m = pts.len() as u32;
+            uv.push(mid);
+            pts.push(lift(mid));
+            for &t in ts {
+                touched[t] = true;
+                let tri = tris[t];
+                let r = (0..3)
+                    .find(|&k| key(tri[k], tri[(k + 1) % 3]) == (a, b))
+                    .unwrap_or(0);
+                let (x, y, z) = (tri[r], tri[(r + 1) % 3], tri[(r + 2) % 3]);
+                tris[t] = [x, m, z];
+                tris.push([m, y, z]);
+                touched.push(true);
+            }
+        }
+    }
+
+    delaunay_flip(&mut tris, &uv, &boundary);
+
+    // All triangles are CCW in the plane; one lifted triangle decides
+    // whether that is outward on the sphere.
+    let (big, _) = tris
+        .iter()
+        .map(|t| (t, orient(&uv, t)))
+        .fold(
+            (&tris[0], f64::MIN),
+            |acc, x| if x.1 > acc.1 { x } else { acc },
+        );
+    let (a, b, c) = (
+        pts[big[0] as usize],
+        pts[big[1] as usize],
+        pts[big[2] as usize],
+    );
+    let ccw_is_outward = (b - a).cross(c - a).dot(a - center) > 0.0;
+    let flip = ccw_is_outward == reversed;
+
+    let mut mesh = TriangleMesh::new();
+    for p in &pts {
+        mesh.vertices
+            .extend_from_slice(&[p.x as f32, p.y as f32, p.z as f32]);
+        let n = (*p - center).normalize();
+        let n = if reversed { -n } else { n };
+        mesh.normals
+            .extend_from_slice(&[n.x as f32, n.y as f32, n.z as f32]);
+    }
+    for t in &tris {
+        if flip {
+            mesh.indices.extend_from_slice(&[t[0], t[2], t[1]]);
+        } else {
+            mesh.indices.extend_from_slice(t);
+        }
+    }
+    Some(mesh)
 }
 
 /// Tessellate a spherical cap defined by a boundary loop.
@@ -5729,14 +6127,33 @@ fn tessellate_conical_face(
         }
     }
 
-    // Project vertices onto axis to get v parameter range (distance from apex)
+    // Project vertices onto axis to get v parameter range (distance from apex).
+    // A seamless frustum from a foreign STEP file is bounded by two circular
+    // loops — one ring per end, no seam — so the other end lives in the hole
+    // loop; the outer loop alone would give a zero-height band.
+    let inner_verts: Vec<_> = face
+        .inner_loops
+        .iter()
+        .flat_map(|&l| topo.loop_half_edges(l))
+        .map(|he| topo.vertices[topo.half_edges[he].origin].point)
+        .collect();
     let mut v_min = f64::MAX;
     let mut v_max = f64::MIN;
-    for pt in &verts {
+    for pt in verts.iter().chain(&inner_verts) {
         let d = pt - apex;
         let v = d.dot(axis) / half_angle.cos();
         v_min = v_min.min(v);
         v_max = v_max.max(v);
+    }
+    // A single closed ring with no holes can only bound the tip side of the
+    // cone (the other side is unbounded): a drill-point face whose apex
+    // VERTEX_LOOP carries no edges. Run the band to the apex.
+    if face.inner_loops.is_empty()
+        && verts.len() > 2
+        && (v_max - v_min).abs() <= 1e-9 * v_max.abs().max(v_min.abs()).max(1.0)
+    {
+        v_min = v_min.min(0.0);
+        v_max = v_max.max(0.0);
     }
 
     // Pick the widest ring's radius for adaptive sampling so the base of
@@ -5853,6 +6270,7 @@ fn tessellate_conical_face(
         }
     }
 
+    align_winding_to_normals(&mut mesh);
     mesh
 }
 
@@ -7051,7 +7469,36 @@ pub fn tessellate(brep: &BRepSolid, segments: u32) -> TriangleMesh {
 ///
 /// This is the primary tessellation function used by the facade crate.
 pub fn tessellate_brep(brep: &BRepSolid, segments: u32) -> TriangleMesh {
-    let params = TessellationParams::from_segments(segments);
+    tessellate_brep_with(brep, TessellationParams::from_segments(segments))
+}
+
+/// [`tessellate_brep`] with explicit parameters — e.g. a chord tolerance, so
+/// a large cylinder isn't drawn as a visible 32-gon.
+pub fn tessellate_brep_with(brep: &BRepSolid, params: TessellationParams) -> TriangleMesh {
+    // A tolerance is resolved to ONE count for the whole solid. Per-face
+    // counts left cracks: a cylinder's wall went dense while its disc caps
+    // kept the base count, and a cone's small cap disagreed with its rim
+    // (which samples at the larger radius). Half the largest bbox extent
+    // bounds every circle on the solid, so this count satisfies the
+    // tolerance everywhere; the fixed-count path is already watertight.
+    let params = if params.chord_tolerance.is_some() || params.angular_tolerance.is_some() {
+        let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+        for (_, v) in brep.topology.vertices.iter() {
+            let p = [v.point.x, v.point.y, v.point.z];
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+        let r = (0..3).map(|k| hi[k] - lo[k]).fold(0.0_f64, f64::max) * 0.5;
+        if r.is_finite() && r > 0.0 {
+            TessellationParams::from_segments(params.circle_segments_for_radius(r))
+        } else {
+            TessellationParams::from_segments(params.circle_segments)
+        }
+    } else {
+        params
+    };
     let solid = &brep.topology.solids[brep.solid_id];
     let shell = &brep.topology.shells[solid.outer_shell];
 
@@ -7850,6 +8297,31 @@ mod tests {
             "closed cube should have zero non-manifold edges, got {}",
             nm.len()
         );
+    }
+
+    /// A thin quad ~25 mm from the origin with a repeated corner. The fan
+    /// check rejects it (f32 rounding exceeds its tolerance here), and the
+    /// repeated corner used to defeat the ear clipper's plane fit, so the
+    /// face came out empty. Both paths must emit its one real triangle.
+    fn far_sliver_quad() -> [Point3; 4] {
+        [
+            Point3::new(25.77266172598, 12.16706750808, -4.999670655715),
+            Point3::new(25.77266172598, 12.16706750808, -4.999670655715),
+            Point3::new(25.5249090077692, 12.254206929160299, -4.80000000000165),
+            Point3::new(25.524909007769402, 12.2542069291597, -2.0),
+        ]
+    }
+
+    #[test]
+    fn planar_face_with_duplicate_corner_far_from_origin_is_not_empty() {
+        let mesh = tessellate_planar_face_core(&far_sliver_quad(), false);
+        assert!(!mesh.indices.is_empty());
+    }
+
+    #[test]
+    fn ear_clip_drops_coincident_consecutive_vertices() {
+        let mesh = tessellate_concave_polygon(&far_sliver_quad(), false);
+        assert_eq!(mesh.indices.len(), 3);
     }
 
     #[test]

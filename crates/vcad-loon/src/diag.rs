@@ -75,6 +75,41 @@ pub(crate) fn record_failure(candidates: impl IntoIterator<Item = usize>) {
     LAST.with(|l| *l.borrow_mut() = at);
 }
 
+/// Attach a location to a document-conversion error.
+///
+/// Conversion runs on the evaluated value, which carries no spans, so the
+/// interpreter cannot say where a bad argument came from. Errors raised by
+/// the converter name the stdlib function first (`"translate: argument 4
+/// ..."`); when that function is called exactly once in the author's source,
+/// the call site is unambiguous and is reported as `(line L, col C)` and
+/// recorded for [`eval_vcad_file_diagnostic`]. Otherwise the message is
+/// returned unchanged.
+pub(crate) fn locate_conversion_error(source: &str, message: String) -> String {
+    let Some((name, _)) = message.split_once(": ") else {
+        return message;
+    };
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return message;
+    }
+    let needle = format!("[{name}");
+    let mut hits = source.match_indices(&needle).filter(|(i, _)| {
+        source[i + needle.len()..]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_whitespace() || c == ']')
+    });
+    let (Some((off, _)), None) = (hits.next(), hits.next()) else {
+        return message;
+    };
+    LAST.with(|l| *l.borrow_mut() = Some(off));
+    let (line, col) = line_col(source, off);
+    format!("{message} (line {line}, col {col})")
+}
+
 fn take_failure() -> Option<usize> {
     LAST.with(|l| l.borrow_mut().take())
 }
@@ -157,6 +192,21 @@ mod tests {
         let p = dir.join(format!("{name}.loon"));
         std::fs::write(&p, src).unwrap();
         p
+    }
+
+    #[test]
+    fn conversion_error_gets_a_location_when_the_call_is_unique() {
+        let src = "[let a [cube 1 1 1]]\n[translate 1 2 3 3]";
+        let m = locate_conversion_error(src, "translate: argument 4 expected Solid".into());
+        assert_eq!(m, "translate: argument 4 expected Solid (line 2, col 1)");
+        // Two call sites: ambiguous, left alone.
+        let src = "[translate 1 2 3 a]\n[translate 1 2 3 3]";
+        let m = locate_conversion_error(src, "translate: argument 4".into());
+        assert_eq!(m, "translate: argument 4");
+        // `[translate-x` is a different function.
+        let src = "[translate-x 1 a]";
+        let m = locate_conversion_error(src, "translate: argument 4".into());
+        assert_eq!(m, "translate: argument 4");
     }
 
     #[test]

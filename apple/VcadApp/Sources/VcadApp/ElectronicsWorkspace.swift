@@ -34,7 +34,9 @@ final class ElectronicsWorkspace {
     var message: String?
     var issues: [String] = []
     var checking = false
-    let kinds = ["Resistor", "Capacitor", "Connector"]
+    let kinds = ["Resistor", "Capacitor", "Voltage source", "Connector"]
+    /// Kernel-backed tools (DRC, routing, fab, enclosure, simulation).
+    let tools = ElectronicsTools()
 
     func boards(_ model: EditorModel) -> [String] {
         _ = model.undoStack.count; _ = model.redoStack.count; _ = model.documentDirty
@@ -89,7 +91,7 @@ final class ElectronicsWorkspace {
         return CGPoint(x: (p.x / grid).rounded() * grid, y: (p.y / grid).rounded() * grid)
     }
     func place(_ model: EditorModel, at point: CGPoint) {
-        let prefix = componentKind == "Resistor" ? "R" : componentKind == "Capacitor" ? "C" : "J"
+        let prefix = componentKind == "Resistor" ? "R" : componentKind == "Capacitor" ? "C" : componentKind == "Voltage source" ? "V" : "J"
         let existing = ecRows(board(model)["footprints"]).compactMap { $0["ref"] as? String } + ecRows(schematic(model)["components"]).compactMap { $0["ref"] as? String }
         var index = 1; while existing.contains("\(prefix)\(index)") { index += 1 }
         let undoBefore = model.undoStack
@@ -98,7 +100,7 @@ final class ElectronicsWorkspace {
         let pads: [ECObject] = [-2.0, 2.0].enumerated().map { i, x in
             ["number": "\(i + 1)", "padType": "SMD", "shape": ["type": "Rect", "width": 1.5, "height": 2.0], "position": ["x": x, "y": 0], "layers": ["FCu"]]
         }
-        let value = componentKind == "Resistor" ? "10k" : componentKind == "Capacitor" ? "100nF" : "2-pin"
+        let value = componentKind == "Resistor" ? "10k" : componentKind == "Capacitor" ? "100nF" : componentKind == "Voltage source" ? "5" : "2-pin"
         let fp: ECObject = ["ref": ref, "value": value, "footprintName": "vcad:Native_2Pad", "position": ecJSON(point), "rotation": 0, "front": true, "pads": pads, "graphics": [ECObject]()]
         mutateBoard(model) { b in var f = ecRows(b["footprints"]); f.append(fp); b["footprints"] = f }
         // Add schematic and board as one undoable placement.

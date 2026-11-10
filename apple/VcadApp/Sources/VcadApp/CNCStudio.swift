@@ -19,13 +19,13 @@ struct WorkspaceHeader: View {
                     HStack(spacing: 14) {
                         BrandMark().accessibilityLabel("vcad")
                             // Labs switched off while in a Labs workspace: back to Design.
-                            .onChange(of: labs, initial: true) { if !labs, model.workspace != .design { model.workspace = .design } }
-                        if labs {
+                            .onChange(of: labs, initial: true) { if !Workspace.available.contains(model.workspace) { model.workspace = .design } }
+                        if Workspace.available.count > 1 {
                             Picker("Workspace", selection: $model.workspace) {
                                 ForEach(Workspace.available) { Label($0.label, systemImage: $0.symbol).tag($0) }
                             }.pickerStyle(.menu).labelsHidden().fixedSize()
                                 .accessibilityLabel("Workspace")
-                                .help("Design, Electronics, or Manufacture (⌃⌘1–3)")
+                                .help("Switch workspace (⌃⌘1–4)")
                         }
                     }
                     Spacer(minLength: 0)
@@ -56,6 +56,8 @@ struct WorkspaceHeader: View {
                                 Toggle("Inspector", isOn: $model.showsInspector)
                             case .electronics:
                                 Text("Electronics panels are always shown")
+                            case .drawing:
+                                Text("The drawing sheet fills the window")
                             }
                             Divider()
                             Button(model.isWindowed ? "Release to Desktop" : "Open in Window") {
@@ -337,7 +339,7 @@ struct CNCStudioInspector: View {
                 }
             }
         }
-        .padding(Theme.Space.l).frame(width: Theme.Width.inspector)
+        .padding(Theme.Space.m).frame(width: Theme.Width.inspector)
     }
 
     private var title: String {

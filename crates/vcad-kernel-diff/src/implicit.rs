@@ -497,7 +497,7 @@ pub fn surface_residual(surface: &dyn Surface, x: &Point3) -> Option<f64> {
 /// velocity along an arbitrary direction. Below this angle, treating the
 /// row as dependent — and checking its rhs for consistency instead — is
 /// the safe branch.
-const DEPENDENT_TOL: f64 = 1e-6;
+pub(crate) const DEPENDENT_TOL: f64 = 1e-6;
 
 /// Absolute tolerance for the consistency residual of dependent rows
 /// (velocity units, mm per unit θ).

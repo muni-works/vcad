@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-06-native-drawings-workspace",
+  "version": "0.11.0",
+  "date": "2026-11-06",
+  "category": "feat",
+  "title": "Drawings workspace in the native Mac app",
+  "summary": "Shop drawings natively: orthographic, section and detail views, dimensions, GD&T frames, title block and BOM, with DXF and PDF export matching the web.",
+  "features": ["drawings", "drafting", "native-app", "dxf", "pdf"]
+}

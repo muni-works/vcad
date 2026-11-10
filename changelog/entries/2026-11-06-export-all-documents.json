@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-06-export-all-documents",
+  "version": "0.11.0",
+  "date": "2026-11-06",
+  "category": "feat",
+  "title": "Export all your documents as a zip",
+  "summary": "New /export page downloads every cloud document (and this browser's local ones) as .vcad files in one zip, ahead of the move to the vcad 2 Mac app.",
+  "features": ["export", "cloud-sync", "vcad-2"],
+  "mcpTools": ["open_in_app", "open_in_browser"]
+}
