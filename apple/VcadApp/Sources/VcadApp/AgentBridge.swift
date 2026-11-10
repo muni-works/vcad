@@ -605,6 +605,7 @@ enum AgentTools {
     static func snapshotPNG() async -> Data? {
         guard let ar = ReleaseWindowController.shared.arView else { return nil }
         let cg: CGImage? = await withCheckedContinuation { cont in
+            RenderGate.wake(for: 2)  // a paused view never delivers a snapshot
             ar.snapshot(saveToHDR: false) { image in
                 cont.resume(returning: image?.cgImage(forProposedRect: nil, context: nil, hints: nil))
             }
