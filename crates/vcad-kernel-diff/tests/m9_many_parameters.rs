@@ -657,3 +657,72 @@ fn m9_reverse_is_cheaper_per_iterate() {
     );
     assert!(fwd_ms > 0.0 && rev_ms > 0.0);
 }
+
+/// Node-level regression for the two same-plan FD plateaus this model used
+/// to show (r off by 1.4e-4 relative, s_x by 2.4e-5, flat in the FD step):
+///
+/// - the corner-sphere/blend-cylinder contact arcs sit ~5e-8 off exact
+///   tangency after the Boolean (centers rounded through `f32`), and were
+///   captured as two-surface `Boundary` nodes whose Newton position is
+///   ill-conditioned (its r-derivative never converged); they must now bind
+///   to the sphere as `SurfaceUv` samples;
+/// - the hole-rim vertices got only plane + cylinder rows, so their slide
+///   along the rim was frozen at zero while the kernel translates them with
+///   the hole; the carry completion now moves them with the hole wall.
+///
+/// Every node velocity, for every parameter, must match the same-plan
+/// central difference to FD-noise level.
+#[test]
+fn m9_node_velocities_match_same_plan_fd() {
+    use vcad_kernel_geom::SurfaceKind;
+    use vcad_kernel_tessellate::frozen::{canonical_index, NodeRecipe};
+
+    let b0 = build(&THETA0);
+    let plan = capture_plan(&b0, &tess()).expect("capture");
+    let ci = canonical_index(&b0);
+    let kind = |face: u32| {
+        b0.geometry.surfaces[b0.topology.faces[ci.faces[face as usize]].surface_index]
+            .surface_type()
+    };
+    let tangent_boundaries = plan
+        .nodes
+        .iter()
+        .filter(|n| match **n {
+            NodeRecipe::Boundary { face_a, face_b, .. } => {
+                let mut k = [kind(face_a), kind(face_b)];
+                k.sort_by_key(|k| *k as u8);
+                matches!(
+                    k,
+                    [SurfaceKind::Cylinder, SurfaceKind::Sphere]
+                        | [SurfaceKind::Sphere, SurfaceKind::Cylinder]
+                )
+            }
+            _ => false,
+        })
+        .count();
+    assert_eq!(
+        tangent_boundaries, 0,
+        "tangent blend/corner arcs captured as Boundary nodes"
+    );
+
+    let h = 1e-6;
+    for k in 0..5 {
+        let seam = evaluate_with_sensitivity(&b0, &plan, &seeding_for(&b0, k)).expect("seam");
+        let (mut a, mut b) = (THETA0, THETA0);
+        a[k] += h;
+        b[k] -= h;
+        let pa = evaluate_plan(&build(&a), &plan).expect("plus").positions;
+        let pb = evaluate_plan(&build(&b), &plan).expect("minus").positions;
+        let worst = seam
+            .velocities
+            .iter()
+            .zip(pa.iter().zip(&pb))
+            .map(|(v, (p, m))| (*v - (*p - *m) / (2.0 * h)).norm())
+            .fold(0.0_f64, f64::max);
+        eprintln!("param {k}: max node |seam − FD| = {worst:.3e}");
+        assert!(
+            worst < 1e-7,
+            "param {k}: node velocity off same-plan FD by {worst:.3e}"
+        );
+    }
+}
