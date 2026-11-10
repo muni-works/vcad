@@ -175,6 +175,7 @@ struct DocumentCommands: Commands {
                 }
             }
             .disabled(model.recents.isEmpty)
+            Button("Import from Photos (Experimental)…") { PhotoImportController.shared.show(for: model) }
             if !model.examples.isEmpty {
                 Menu("Open Example") {
                     ForEach(model.examples, id: \.path) { ex in

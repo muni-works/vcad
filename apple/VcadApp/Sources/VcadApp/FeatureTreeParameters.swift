@@ -16,13 +16,18 @@ struct ParameterTableSheet: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Table(model.docParameters) {
-                TableColumn("Name") { p in Text(p.name).font(.callout.monospaced()) }
+                TableColumn("Name") { p in Text(p.name).font(.callout.monospaced()).help(p.description ?? "") }
                 TableColumn("Value / Formula") { p in
                     ParameterValueField(initial: p.formula ?? p.value.map { Self.fmt($0) } ?? "") { text in
                         model.setDocParameter(p.name, value: Self.parse(text), unit: p.unit)
                     }
                 }
                 TableColumn("Unit") { p in Text(p.unit ?? "").foregroundStyle(.secondary) }.width(48)
+                // Imported-from-photos parameters carry their fit ±σ here.
+                TableColumn("Note") { p in
+                    Text(p.description ?? "").font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).help(p.description ?? "")
+                }
                 TableColumn("") { p in
                     Button(role: .destructive) { model.removeDocParameter(p.name) } label: { Image(systemName: "minus.circle") }
                         .buttonStyle(.borderless)
@@ -40,7 +45,7 @@ struct ParameterTableSheet: View {
             if let err = model.engineError { Text(err).font(.caption).foregroundStyle(.red).lineLimit(2) }
             HStack { Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.defaultAction) }
         }
-        .padding(Theme.Space.l).frame(width: 520)
+        .padding(Theme.Space.l).frame(width: 640)
     }
 
     /// A plain number stays a literal; anything else is a formula string.

@@ -71,6 +71,8 @@ pub mod import;
 mod json;
 pub mod pcb;
 pub mod print;
+#[cfg(feature = "recon")]
+pub mod recon;
 pub mod schematic;
 pub mod sensitivity;
 pub mod session;

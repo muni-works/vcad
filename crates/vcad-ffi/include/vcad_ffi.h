@@ -645,6 +645,18 @@ char *vcad_import_step(const char *path);
 /* IR assembly document JSON. */
 char *vcad_import_urdf(const char *path);
 
+/* --- Image to CAD, EXPERIMENTAL (recon.rs, feature "recon", via irys-recon).
+ * request_json {"photos": [paths], "tag_mm": 50, "sensor_w_mm": null}; every
+ * photo must show a tag36h11 AprilTag and carry an EXIF focal length.
+ * vcad_recon_check: fast pre-flight -> [{name, size, tag_id, rms_px,
+ * focal_px, focal_exif_px}]. vcad_recon_photos: the reconstruction (minutes,
+ * blocking, not interruptible; call off the main thread) -> {"document",
+ * "program", "dimensions": [{name, parameter, value, sigma, unit}], "weak",
+ * "low_confidence", "warnings", "photos", "seconds"}. Null + vcad_last_error
+ * (a plain, user-facing reason) on failure. Free with vcad_string_free. */
+char *vcad_recon_check(const char *request_json);
+char *vcad_recon_photos(const char *request_json);
+
 /* --- Drawings (drafting.rs): 2D shop drawings on vcad-kernel-drafting.
  * request_json (NULL/"" = defaults): {"view": front|back|top|bottom|left|
  * right|isometric, "show_hidden": bool, "show_dimensions": bool,

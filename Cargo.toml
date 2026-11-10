@@ -216,7 +216,11 @@ thiserror = "2"
 # onto its in-repo crate, and a consumer that wants a development kosm-render
 # does the same in an untracked .cargo/config.toml.
 kosm-render = "0.2"
-tang = { version = "0.2.1" }
+# irys-recon (image to CAD) is not on crates.io (publish = false): pinned by
+# rev to a commit on ecto/irys main. Only vcad-ffi links it (the Mac app's
+# experimental "Import from Photos").
+irys-recon = { git = "https://github.com/ecto/irys", rev = "084d42404e91f2069d4cd008c738597498e98c75" }
+tang ={ version = "0.2.1" }
 tang-la = { version = "0.1.1" }
 tang-expr = { version = "0.2" }
 tang-optim = { version = "0.2.0" }
@@ -402,3 +406,13 @@ kosm-render = { git = "https://github.com/ecto/kosm", rev = "59b1d03ec45cf9e9a04
 # loon-lang 0.7.0 on crates.io is published from this rev; the patch keeps
 # local checkouts and CI on exactly that source.
 loon-lang = { git = "https://github.com/ecto/loon", rev = "c12ef566613995f913012c79773bab825950566f" }
+# irys-recon (via irys-diff) mixes tang + tang-expr 0.1 with tang-compile from
+# ecto/tang@bfc8003, and only builds because irys's own workspace patches tang
+# and tang-expr to that rev (so they agree on `ExprId` / `Scalar`). A
+# dependency's [patch] does not reach us, so it is repeated here. tang@bfc8003
+# is version 0.2.1 and differs from the crates.io 0.2.1 only in its wgpu glue
+# (gpu/, splatting/), not the CPU math vcad uses. tang-expr@bfc8003 is 0.1.1,
+# so it matches only `^0.1` requirements; vcad's own tang-expr 0.2 stays on
+# crates.io. Drop both when irys depends on published tang crates.
+tang = { git = "https://github.com/ecto/tang", rev = "bfc8003" }
+tang-expr = { git = "https://github.com/ecto/tang", rev = "bfc8003" }

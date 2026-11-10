@@ -53,6 +53,9 @@ let package = Package(
             name: "VcadAppTests",
             dependencies: ["VcadApp", "VcadUpdate", "CVcadFFI", "CTangCompress"],
             path: "Tests/VcadAppTests",
+            // Test inputs read by #filePath (e.g. the tag36h11 photos of
+            // PhotoImportTests), not bundled resources.
+            exclude: ["Fixtures"],
             linkerSettings: [
                 .unsafeFlags(["-L", ffiLibDir]),
                 .linkedLibrary("c++"),

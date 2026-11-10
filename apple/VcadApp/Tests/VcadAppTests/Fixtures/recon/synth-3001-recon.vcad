@@ -1,0 +1,138 @@
+{
+  "version": "0.1",
+  "nodes": {
+    "5": {
+      "id": 5,
+      "name": "Part from photos",
+      "op": {
+        "type": "Difference",
+        "left": 2,
+        "right": 4
+      }
+    },
+    "3": {
+      "id": 3,
+      "name": "f0 hole tool",
+      "op": {
+        "type": "Cylinder",
+        "radius": 3.3882945722468807,
+        "height": 19.342778079338323,
+        "segments": 48
+      }
+    },
+    "2": {
+      "id": 2,
+      "name": "base",
+      "op": {
+        "type": "Translate",
+        "child": 1,
+        "offset": {
+          "x": -35.05812049052042,
+          "y": -29.452890961296962,
+          "z": 0.0
+        }
+      }
+    },
+    "4": {
+      "id": 4,
+      "name": "f0 hole tool at",
+      "op": {
+        "type": "Translate",
+        "child": 3,
+        "offset": {
+          "x": 4.767238343700247,
+          "y": -10.802043315919214,
+          "z": -1.0
+        }
+      }
+    },
+    "1": {
+      "id": 1,
+      "name": "base block",
+      "op": {
+        "type": "Cube",
+        "size": {
+          "x": 70.11624098104085,
+          "y": 58.905781922593924,
+          "z": 17.342778079338323
+        }
+      }
+    }
+  },
+  "materials": {
+    "pla": {
+      "name": "PLA (from photos)",
+      "color": [
+        1.0,
+        0.8111991858451711,
+        0.030680506693038706
+      ],
+      "metallic": 0.0,
+      "roughness": 0.35
+    }
+  },
+  "part_materials": {},
+  "roots": [
+    {
+      "root": 5,
+      "material": "pla"
+    }
+  ],
+  "parameters": {
+    "base_h": {
+      "value": 17.342778079338323,
+      "unit": "mm",
+      "min": 2.0,
+      "max": 60.0,
+      "description": "From photos (experimental): ±0.03 mm fit σ, likely optimistic"
+    },
+    "base_w": {
+      "value": 70.11624098104085,
+      "unit": "mm",
+      "min": 10.0,
+      "max": 200.0,
+      "description": "From photos (experimental): ±0.03 mm fit σ, likely optimistic"
+    },
+    "f0_x": {
+      "value": 4.767238343700247,
+      "unit": "mm",
+      "min": -200.0,
+      "max": 200.0,
+      "description": "From photos (experimental): ±0.06 mm fit σ, likely optimistic"
+    },
+    "base_d": {
+      "value": 58.905781922593924,
+      "unit": "mm",
+      "min": 10.0,
+      "max": 200.0,
+      "description": "From photos (experimental): ±0.01 mm fit σ, likely optimistic"
+    },
+    "f0_y": {
+      "value": -10.802043315919214,
+      "unit": "mm",
+      "min": -200.0,
+      "max": 200.0,
+      "description": "From photos (experimental): ±0.07 mm fit σ, likely optimistic"
+    },
+    "f0_r": {
+      "value": 3.3882945722468807,
+      "unit": "mm",
+      "min": 0.4,
+      "max": 40.0,
+      "description": "From photos (experimental): ±0.04 mm fit σ, likely optimistic"
+    }
+  },
+  "bindings": {
+    "4:offset.y": "f0_y",
+    "2:offset.x": "-base_w / 2",
+    "4:offset.z": "-1",
+    "3:radius": "f0_r",
+    "2:offset.y": "-base_d / 2",
+    "1:size.y": "base_d",
+    "2:offset.z": "0",
+    "4:offset.x": "f0_x",
+    "1:size.x": "base_w",
+    "1:size.z": "base_h",
+    "3:height": "base_h + 2"
+  }
+}
