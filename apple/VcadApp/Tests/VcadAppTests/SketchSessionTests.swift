@@ -518,6 +518,29 @@ final class SketchSessionTests: XCTestCase {
         XCTAssertNil(m.sketchStatusLine())
     }
 
+    /// Drawing shows the snapped cursor first, then the short prompt and DOF.
+    func testSketchStatusLineLeadsWithSnappedCursor() throws {
+        let m = try open()
+        m.enterSketch()
+        m.setSketchTool(.line)
+        m.sketch?.gridStep = 1
+        m.sketchCursor = [12.3, -3.8]
+        let dof = try XCTUnwrap(m.sketch?.stateLabel)
+        XCTAssertEqual(m.sketchStatusLine(), "x 12.0, y -4.0 mm · Click points · \(dof)")
+        m.sketchCursor = [0.2, -0.2]
+        XCTAssertEqual(m.sketchStatusLine(), "x 0.0, y 0.0 mm · Click points · \(dof)")
+        m.setSketchTool(.select)
+        XCTAssertFalse(m.sketchStatusLine()?.contains("mm ·") ?? true, "no coords while selecting")
+        for t in SketchToolKind.allCases {
+            XCTAssertLessThanOrEqual(t.shortHint.count, 22, t.label)
+        }
+        m.exitSketch()
+    }
+
+    func testShortcutSheetListsSketchKeys() {
+        XCTAssertEqual(ShortcutSheet.sketch.map(\.key), ["S", "L", "R", "C", "N", "P", "O", "A", "D"])
+    }
+
     /// A blocked Done is clickable: it authors nothing, raises no error, and
     /// puts the reason in the status field — on click (for a while) and on hover.
     func testDoneWithBlockerSaysWhyAndAuthorsNothing() throws {

@@ -1602,6 +1602,11 @@ struct ShortcutSheet: View {
         ("Esc", "Cancel / deselect"), ("?", "This sheet"),
     ]
 
+    /// Sketch-mode tool keys, in bar order (live only while sketching).
+    static let sketch: [(key: String, tool: SketchToolKind)] =
+        (SketchBar.primaryTools + SketchBar.overflowTools + [.dimension])
+            .compactMap { t in t.shortcut.map { (String($0).uppercased(), t) } }
+
     var body: some View {
         let tools = DockTools.tools(ui.space, model: model).filter { $0.shortcut != nil }
         VStack(alignment: .leading, spacing: Theme.Space.m) {
@@ -1617,13 +1622,17 @@ struct ShortcutSheet: View {
                     ForEach(tools) { t in row(String(t.shortcut!).uppercased(), t.label, symbol: t.symbol) }
                 }
                 VStack(alignment: .leading, spacing: 6) {
+                    Eyebrow("Sketch")
+                    ForEach(Self.sketch, id: \.key) { row($0.key, $0.tool.label, symbol: $0.tool.symbol) }
+                }
+                VStack(alignment: .leading, spacing: 6) {
                     Eyebrow("Everywhere")
                     ForEach(Self.global, id: \.0) { row($0.0, $0.1) }
                 }
             }
         }
         .padding(18)
-        .frame(width: 520)
+        .frame(width: 700)
         .glassPanel()
         .modifier(ChromeRegion(key: "shortcuts"))
     }

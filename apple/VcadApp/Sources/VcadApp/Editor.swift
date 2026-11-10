@@ -1781,7 +1781,19 @@ final class EditorModel {
            sketchDoneHovered || (sketchBlockerShownUntil.map { now < $0 } ?? false) {
             return "Can't finish — \(why)"
         }
+        // Drawing: the snapped cursor first (it's what you place by), then a
+        // short prompt, so the 340 pt field truncates the prompt, not the numbers.
+        if let c = s.cursor, s.tool.draws {
+            return "\(Self.cursorText(c)) · \(s.tool.shortHint) · \(s.stateLabel)"
+        }
         return "\(s.tool.hint) · \(s.stateLabel)"
+    }
+
+    /// "x 12.0, y -4.0 mm" (never "-0.0").
+    static func cursorText(_ c: SIMD2<Double>) -> String {
+        String(format: "x %.1f, y %.1f mm", c.x + 0, c.y + 0)
+            .replacingOccurrences(of: "-0.0,", with: "0.0,")
+            .replacingOccurrences(of: "y -0.0 ", with: "y 0.0 ")
     }
 
     /// Why Finish is disabled, in words — the button's tooltip and the sketch

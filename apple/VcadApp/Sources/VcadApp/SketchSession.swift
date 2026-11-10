@@ -73,6 +73,22 @@ enum SketchToolKind: String, CaseIterable, Identifiable {
         case .dimension: "d"
         }
     }
+    /// Places geometry by clicking (the status line shows the cursor).
+    var draws: Bool { self != .select && self != .dimension }
+    /// The prompt cut to fit beside the cursor coordinates.
+    var shortHint: String {
+        switch self {
+        case .select: "Click to select"
+        case .line: "Click points"
+        case .rectangle: "Two corners"
+        case .polygon: "Center, then corner"
+        case .slot: "Ends, then width"
+        case .circle: "Center, then radius"
+        case .arc: "Center, start, end"
+        case .spline: "Points · Return ends"
+        case .dimension: "Pick a line or circle"
+        }
+    }
     /// "Line  L".
     var tooltip: String { shortcut.map { "\(label)  \(String($0).uppercased())" } ?? label }
     var symbol: String {
