@@ -833,8 +833,10 @@ struct ReleasedOverlayView: View {
                 .simultaneousGesture(zoomGesture)
                 .gesture(SpatialTapGesture(coordinateSpace: .local).modifiers(.command)
                     .onEnded { value in
-                        if model.sketching, let pt = sketchPlanePoint(at: value.location) {
-                            model.sketchTap(pt, additive: true); refreshSketchInk()
+                        if model.sketching, let ray = kernelRay(at: value.location) {
+                            model.sketchTap(ray: ray, neighbour: kernelRay(at: CGPoint(x: value.location.x + 1, y: value.location.y)),
+                                            additive: true)
+                            refreshSketchInk()
                         } else { tapSelect(at: value.location, additive: true) }
                     })
                 .gesture(SpatialTapGesture(coordinateSpace: .local)
@@ -1149,8 +1151,9 @@ struct ReleasedOverlayView: View {
             model.picking.filter = filter
             if adopted { refreshSketchInk(); return }
         }
-        guard let pt = sketchPlanePoint(at: p) else { return }
-        model.sketchTap(pt)
+        // The ray one point over sets the pick scale (mm per screen point).
+        guard let ray = kernelRay(at: p) else { return }
+        model.sketchTap(ray: ray, neighbour: kernelRay(at: CGPoint(x: p.x + 1, y: p.y)))
         refreshSketchInk()
     }
 

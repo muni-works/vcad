@@ -1902,6 +1902,27 @@ final class EditorModel {
         sketchDirty = true
     }
 
+    /// A viewport click on the sketch plane, given as the pick ray and the ray
+    /// one screen point to its right. The pair sets the picking scale (plane
+    /// mm per screen point), so edges and points hit within a few points of
+    /// their ink at any zoom. Picking tools (Select, Dimension) take the raw
+    /// hit; drawing tools land on the cursor grid.
+    func sketchTap(ray: (o: SIMD3<Float>, d: SIMD3<Float>), neighbour: (o: SIMD3<Float>, d: SIMD3<Float>)?,
+                   additive: Bool = false) {
+        guard let sketch else { return }
+        guard let raw = sketch.frame.intersect(origin: SIMD3<Double>(ray.o), dir: SIMD3<Double>(ray.d)) else { return }
+        if let n = neighbour, let q = sketch.frame.intersect(origin: SIMD3<Double>(n.o), dir: SIMD3<Double>(n.d)) {
+            let k = simd_distance(raw, q)
+            sketch.pickScale = k.isFinite && k > 0 ? k : nil
+        }
+        if sketch.tool == .select || sketch.tool == .dimension {
+            sketch.tap(raw, additive: additive)
+            sketchDirty = true
+        } else if let p = sketchPlanePoint(originKernel: ray.o, dirKernel: ray.d) {
+            sketchTap(p, additive: additive)
+        }
+    }
+
     /// Spacing of the sketch cursor grid, in mm.
     static let sketchGridStep = 0.5
 

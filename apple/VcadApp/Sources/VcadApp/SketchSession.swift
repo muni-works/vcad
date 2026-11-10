@@ -86,7 +86,7 @@ enum SketchToolKind: String, CaseIterable, Identifiable {
         case .circle: "Center, then radius"
         case .arc: "Center, start, end"
         case .spline: "Points · Return ends"
-        case .dimension: "Pick a line or circle"
+        case .dimension: "Pick an edge or points"
         }
     }
     /// "Line  L".
@@ -114,7 +114,7 @@ enum SketchToolKind: String, CaseIterable, Identifiable {
         case .circle: "Click the center, then the radius"
         case .arc: "Click the center, the start, then the end"
         case .spline: "Click control points · Return to finish"
-        case .dimension: "Click a line for its length or a circle/arc for its radius"
+        case .dimension: "Click a line for its length, a circle/arc for its radius, or two points for their distance"
         }
     }
 }
@@ -277,6 +277,11 @@ final class SketchSession {
     private(set) var revision = 0
     /// Snap radius in plane mm.
     var snap: Double = 1.2
+    /// Plane mm per screen point at the last click, set by the viewport so
+    /// picking works in screen space at any zoom. Nil: fixed mm radii.
+    var pickScale: Double?
+    /// The first point of a point-to-point dimension.
+    private(set) var dimensionAnchor: UInt32?
     /// Clicks round to this many mm unless they land on a point. 0 turns it off.
     var gridStep: Double = 1
     /// Side count of the polygon tool.
@@ -450,13 +455,21 @@ final class SketchSession {
         return true
     }
 
-    /// Rebuild the solver from a snapshot, keeping its solved positions.
-    /// Constraints whose entities are gone are dropped.
-    private func restore(_ snap: Snapshot) {
+    /// A solver rebuilt from a snapshot, plus the handle map old -> new.
+    private struct Built {
+        var raw: OpaquePointer
+        var map: [UInt32: UInt32]
+        var entities: [SketchEntity]
+        var rows: [SketchConstraintRow]
+        var recorded: [VcadSketchConstraint]
+    }
+    /// Build a fresh solver from `snap`, leaving out the constraint at list
+    /// position `skipping`. Constraints whose entities are gone are dropped.
+    private func build(_ snap: Snapshot, skipping: Int? = nil) -> Built? {
         var o = [frame.origin.x, frame.origin.y, frame.origin.z]
         var x = [frame.xDir.x, frame.xDir.y, frame.xDir.z]
         var y = [frame.yDir.x, frame.yDir.y, frame.yDir.z]
-        guard let fresh = vcad_sketch_new_on_plane(&o, &x, &y) else { lastError = "Sketch solver unavailable"; return }
+        guard let fresh = vcad_sketch_new_on_plane(&o, &x, &y) else { return nil }
         var map: [UInt32: UInt32] = [:]
         var rebuilt: [SketchEntity] = []
         for e in snap.entities {
@@ -480,7 +493,7 @@ final class SketchSession {
         }
         var rows: [SketchConstraintRow] = []
         var replayed: [VcadSketchConstraint] = []
-        for (row, source) in zip(snap.constraints, snap.recorded) {
+        for (i, (row, source)) in zip(snap.constraints, snap.recorded).enumerated() where i != skipping {
             guard row.entities.allSatisfy({ map[$0] != nil }) else { continue }
             var c = source
             c.e0 = map[c.e0] ?? 0
@@ -491,6 +504,21 @@ final class SketchSession {
             rows.append(.init(index: Int(index), kind: row.kind, entities: row.entities.compactMap { map[$0] }, value: row.value))
             replayed.append(c)
         }
+        return Built(raw: fresh, map: map, entities: rebuilt, rows: rows, recorded: replayed)
+    }
+
+    /// Delete one constraint row (the panel's remove button): rebuild the
+    /// solver without it.
+    func deleteConstraint(_ row: SketchConstraintRow) {
+        guard let i = constraints.firstIndex(of: row) else { return }
+        recording { restore(snapshot(), skipping: i) }
+    }
+
+    /// Rebuild the solver from a snapshot, keeping its solved positions.
+    /// Constraints whose entities are gone are dropped.
+    private func restore(_ snap: Snapshot, skipping: Int? = nil) {
+        guard let b = build(snap, skipping: skipping) else { lastError = "Sketch solver unavailable"; return }
+        let fresh = b.raw, map = b.map, rebuilt = b.entities, rows = b.rows, replayed = b.recorded
         var moved: [UInt32: SIMD2<Double>] = [:]
         var sizes: [UInt32: Double] = [:]
         for (old, new) in map {
@@ -507,6 +535,7 @@ final class SketchSession {
         selection = []
         pending = []
         chain = []
+        dimensionAnchor = nil
         lastError = nil
         solve()
     }
@@ -517,7 +546,31 @@ final class SketchSession {
         converged = r.converged != 0 || r.status == 3 || r.status == 4
         state = r.state
         dof = Int(r.dof)
+        conflicting = isOverConstrained ? findConflicts() : []
         refresh()
+    }
+
+    /// Row indices (`SketchConstraintRow.index`) of the constraints that make
+    /// an over-constrained sketch fail: each is one whose removal alone lets
+    /// the rest solve. Empty when the sketch solves.
+    private(set) var conflicting: Set<Int> = []
+
+    /// Trial-solve without each constraint in turn (the solver reports only
+    /// equation counts, not which equation is redundant).
+    private func findConflicts() -> Set<Int> {
+        let snap = snapshot()
+        guard snap.constraints.count <= 200 else { return [] }
+        var out: Set<Int> = []
+        for (i, row) in snap.constraints.enumerated() {
+            guard let b = build(snap, skipping: i) else { continue }
+            let r = vcad_sketch_solve(b.raw)
+            vcad_sketch_free(b.raw)
+            let ok = r.converged != 0 || r.status == 3 || r.status == 4
+            if ok, Int32(r.state) != VCAD_SKETCH_OVER { out.insert(row.index) }
+        }
+        // Any one would do (a plain duplicate): point at the newest.
+        if out.count == snap.constraints.count, let last = snap.constraints.last { return [last.index] }
+        return out
     }
 
     private func refresh() {
@@ -621,19 +674,37 @@ final class SketchSession {
         case .spline:
             pending.append(p)
         case .dimension:
-            guard let h = nearestEntity(p), let e = entity(h) else { break }
-            switch e.kind {
-            case .line:
-                if let a = positions[e.points[0]], let b = positions[e.points[1]] {
-                    constrain(.length, h, value: simd_distance(a, b), solveNow: false)
-                }
-            case .circle, .arc:
-                constrain(.radius, h, value: radii[h] ?? 1, solveNow: false)
-            case .point:
-                if let q = positions[h] { constrain(.fixed, h, value: q.x, value2: q.y, solveNow: false) }
-            }
+            dimensionTap(p)
         }
         solve()
+    }
+
+    /// Dimension tool: a line gets its length, a circle/arc its radius, and
+    /// two points in turn a point-to-point distance. It never fixes a point.
+    private func dimensionTap(_ p: SIMD2<Double>) {
+        guard let h = nearestEntity(p), let e = entity(h) else { dimensionAnchor = nil; return }
+        if e.kind == .point {
+            guard let first = dimensionAnchor, first != h else { dimensionAnchor = h; revision &+= 1; return }
+            dimensionAnchor = nil
+            guard let a = positions[first], let b = positions[h] else { return }
+            constrain(.distance, first, VCAD_SKETCH_REF_SELF, h, value: simd_distance(a, b), solveNow: false)
+            return
+        }
+        dimensionAnchor = nil
+        let kind: SketchConstraintKind = e.kind == .line ? .length : .radius
+        // A second dimension on the same curve only over-constrains it.
+        guard !constraints.contains(where: { $0.kind == kind && $0.entities == [h] }) else {
+            lastError = "That \(e.kind == .line ? "line" : "curve") already has a dimension — edit it in the list"
+            return
+        }
+        switch e.kind {
+        case .line:
+            if let a = positions[e.points[0]], let b = positions[e.points[1]] {
+                constrain(.length, h, value: simd_distance(a, b), solveNow: false)
+            }
+        default:
+            constrain(.radius, h, value: radii[h] ?? 1, solveNow: false)
+        }
     }
 
     /// Finish a multi-click tool (spline: sample the control polygon).
@@ -655,10 +726,10 @@ final class SketchSession {
         solve()
     }
 
-    var hasInProgress: Bool { !pending.isEmpty || !chain.isEmpty }
+    var hasInProgress: Bool { !pending.isEmpty || !chain.isEmpty || dimensionAnchor != nil }
 
     /// Escape: drop in-progress clicks.
-    func cancelPending() { pending = []; chain = []; revision &+= 1 }
+    func cancelPending() { pending = []; chain = []; dimensionAnchor = nil; revision &+= 1 }
 
     /// Two clicks span a real rectangle: both sides longer than the snap radius,
     /// so no two corners merge.
@@ -757,14 +828,27 @@ final class SketchSession {
         }
     }
 
-    /// Nearest entity to a plane point (lines by segment distance, circles by ring).
+    /// Pick radii in plane mm: a point must be clicked squarely, a curve
+    /// anywhere within a few screen points of its ink.
+    var pickRadii: (point: Double, curve: Double) {
+        guard let k = pickScale, k.isFinite, k > 0 else { return (snap * 0.6, snap * 1.5) }
+        return (5 * k, 8 * k)
+    }
+
+    /// Entity at a plane point. A point wins only when the click is really on
+    /// it; otherwise the nearest line (segment distance) or circle (ring).
     func nearestEntity(_ p: SIMD2<Double>) -> UInt32? {
+        let reach = pickRadii
+        let point = entities.filter { $0.kind == .point }
+            .compactMap { e in positions[e.handle].map { (e.handle, simd_distance($0, p)) } }
+            .filter { $0.1 <= reach.point }.min { $0.1 < $1.1 }
+        if let point { return point.0 }
         var best: (UInt32, Double)?
-        func consider(_ h: UInt32, _ d: Double) { if d < snap * 1.5, d < (best?.1 ?? .infinity) { best = (h, d) } }
+        func consider(_ h: UInt32, _ d: Double) { if d <= reach.curve, d < (best?.1 ?? .infinity) { best = (h, d) } }
         for e in entities {
             switch e.kind {
             case .point:
-                if let q = positions[e.handle] { consider(e.handle, simd_distance(q, p) * 0.8) }
+                break
             case .line:
                 if let a = positions[e.points[0]], let b = positions[e.points[1]] { consider(e.handle, Self.segDist(p, a, b)) }
             case .circle, .arc:
