@@ -3503,8 +3503,10 @@ pub fn analyze_power_integrity(pcb: &Pcb) -> Vec<NetContinuity> {
         }
     }
     for net in &pcb.nets {
-        if is_power_net(&net.name) {
-            relevant.insert(net.id.clone());
+        // Key by NAME — the copper key. An importer that kept a file-local
+        // index as `id` must not mint a phantom "net 23" with no copper.
+        if is_power_net(&net.name) && !net.name.is_empty() {
+            relevant.insert(net.name.clone());
         }
     }
     if relevant.is_empty() {
@@ -5943,6 +5945,24 @@ mod tests {
             .expect("3V3 is poured + power-named");
         assert_eq!(v33.islands, 2, "two disjoint pours");
         assert!(!v33.continuous);
+    }
+
+    /// A `Net` whose `id` is a file-local index (KiCad/Eagle/Altium number)
+    /// must not surface as a phantom power net: copper is keyed by NAME, so
+    /// the pass reports "VCC"/"GND", never "1"/"2" with zero pads.
+    #[test]
+    fn power_integrity_keys_nets_by_name_not_index() {
+        let pcb = clean_pcb(); // nets: id "1" → VCC, id "2" → GND
+        let report = analyze_power_integrity(&pcb);
+        let names: Vec<&str> = report.iter().map(|c| c.net.as_str()).collect();
+        assert!(
+            !names.iter().any(|n| *n == "1" || *n == "2"),
+            "phantom index nets: {names:?}"
+        );
+        assert!(
+            names.contains(&"VCC") && names.contains(&"GND"),
+            "{names:?}"
+        );
     }
 
     // ----- NetIslands DRC rule -----

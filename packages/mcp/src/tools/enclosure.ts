@@ -100,12 +100,20 @@ export const checkEnclosureFitSchema = {
   required: ["document_id", "enclosure_document_id"],
 } as const;
 
-/** Evaluate a CAD session and return the chosen solid's mesh (skips PcbBoard). */
-function enclosureMesh(
+type EnclosureCandidate = { mesh: TriangleMesh; rootId: number; id: string; name?: string };
+
+/**
+ * Evaluate a CAD session and return the enclosure candidates in preference
+ * order (skips PcbBoard). An explicit `partId` yields exactly that part.
+ * Otherwise every solid is a candidate, biggest bounding box first — the
+ * caller takes the first one that actually has a cavity, so a dense stator or
+ * motor sharing the document can't shadow the case it sits in.
+ */
+function enclosureCandidates(
   enclosureDoc: Document,
   engine: Engine,
   partId?: string,
-): { mesh: TriangleMesh; rootId: number; id: string; name?: string } {
+): EnclosureCandidate[] {
   const candidates = documentSolids(enclosureDoc, engine);
   if (candidates.length === 0) {
     throw new Error("Enclosure document has no solid parts (PcbBoard parts are excluded)");
@@ -119,13 +127,24 @@ function enclosureMesh(
           .join(", ")}`,
       );
     }
-    return found;
+    return [found];
   }
-  if (candidates.length > 1) {
-    // Largest mesh wins — the case body dwarfs an incidental lid/fastener.
-    candidates.sort((a, b) => b.mesh.positions.length - a.mesh.positions.length);
-  }
-  return candidates[0];
+  const bboxVolume = (m: TriangleMesh) => {
+    const p = m.positions;
+    const lo = [Infinity, Infinity, Infinity];
+    const hi = [-Infinity, -Infinity, -Infinity];
+    for (let i = 0; i + 2 < p.length; i += 3) {
+      for (let k = 0; k < 3; k++) {
+        lo[k] = Math.min(lo[k], p[i + k]);
+        hi[k] = Math.max(hi[k], p[i + k]);
+      }
+    }
+    return (hi[0] - lo[0]) * (hi[1] - lo[1]) * (hi[2] - lo[2]);
+  };
+  return candidates
+    .map((c) => ({ c, v: bboxVolume(c.mesh) }))
+    .sort((a, b) => b.v - a.v)
+    .map(({ c }) => c);
 }
 
 /** Result of the shared computation, reused by the tool and build_receipt. */
@@ -292,6 +311,46 @@ function footprint(c: { minX: number; maxX: number; minY: number; maxY: number }
 }
 
 /**
+ * The cavity a mesh encloses, or null for a solid block. The kernel detector
+ * only knows open-top trays. A closed case has its cavity found the way
+ * board_from_solid finds it and its wall cutouts scanned directly; posts
+ * aren't extracted from a sealed void, and the result says so. That detector
+ * also reads a through-slot in a closed lid as a shallow open pocket, so the
+ * void wins whenever it is the bigger of the two.
+ */
+function cavityOf(mesh: TriangleMesh) {
+  const features = extractEnclosureFeatures(mesh.positions, mesh.indices);
+  const sealedVoid = sealedCavityFromMesh(mesh);
+  const sealed =
+    sealedVoid && (!features.cavity || footprint(sealedVoid) > footprint(features.cavity))
+      ? sealedVoid
+      : null;
+  const cavity = sealed ?? features.cavity;
+  if (!cavity) return null;
+  return {
+    cavity,
+    sealed,
+    standoffs: sealed ? [] : features.standoffs,
+    openings: sealed ? sealedWallOpenings(mesh, sealed) : features.openings,
+  };
+}
+
+/**
+ * The fit options both `check_enclosure_fit` and `build_receipt` read from
+ * their args — one parser, so the two tools pick and place the enclosure
+ * identically.
+ */
+export function enclosureFitOptsFromArgs(args: Record<string, unknown>) {
+  return {
+    enclosurePartId: args.enclosure_part_id ? String(args.enclosure_part_id) : undefined,
+    clearance: typeof args.clearance === "number" ? args.clearance : undefined,
+    standoffHeight: typeof args.standoff_height === "number" ? args.standoff_height : undefined,
+    holeTolerance: typeof args.hole_tolerance === "number" ? args.hole_tolerance : undefined,
+    placement: placementFromArgs(args),
+  };
+}
+
+/**
  * Core: given a board PCB and an enclosure CAD session, extract the cavity and
  * run the cross-domain checks. Pure of MCP plumbing so `check_enclosure_fit`
  * and `build_receipt` share one implementation.
@@ -309,28 +368,19 @@ export async function computeEnclosureFitForBoard(
     derive?: boolean;
   } = {},
 ): Promise<EnclosureFitResult> {
-  let chosen: { mesh: TriangleMesh; rootId: number; id: string; name?: string };
+  let candidates: EnclosureCandidate[];
   try {
-    chosen = enclosureMesh(enclosureDoc, engine, opts.enclosurePartId);
+    candidates = enclosureCandidates(enclosureDoc, engine, opts.enclosurePartId);
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e) };
   }
 
-  const features = extractEnclosureFeatures(chosen.mesh.positions, chosen.mesh.indices);
-  // The kernel detector only knows open-top trays. A closed case has its
-  // cavity found the way board_from_solid finds it and its wall cutouts scanned
-  // directly; posts aren't extracted from a sealed void, and the result says so.
-  // That detector also reads a through-slot in a closed lid as a shallow open
-  // pocket, so the void wins whenever it is the bigger of the two.
-  const sealedVoid = sealedCavityFromMesh(chosen.mesh);
-  const sealed =
-    sealedVoid && (!features.cavity || footprint(sealedVoid) > footprint(features.cavity))
-      ? sealedVoid
-      : null;
-  const cavity = sealed ?? features.cavity;
-  const standoffs = sealed ? [] : features.standoffs;
-  const openings = sealed ? sealedWallOpenings(chosen.mesh, sealed) : features.openings;
-  if (!cavity) {
+  let found: ReturnType<typeof cavityOf> = null;
+  for (const c of candidates) {
+    found = cavityOf(c.mesh);
+    if (found) break;
+  }
+  if (!found) {
     return {
       error:
         "No interior cavity found in the enclosure solid — it reads as a solid block. " +
@@ -350,6 +400,7 @@ export async function computeEnclosureFitForBoard(
     /* WASM unavailable — lid clearance check will report skip */
   }
 
+  const { cavity, sealed, standoffs, openings } = found;
   const mountingHoles = mountingHolesFromPcb(pcb);
   const connectors = connectorsFromPcb(pcb, pcb.outline);
 
@@ -418,11 +469,7 @@ export async function checkEnclosureFit(args: Record<string, unknown>, engine: E
   const enclosureDoc = getSession(enclosureId);
 
   const res = await computeEnclosureFitForBoard(pcb, enclosureDoc, engine, {
-    enclosurePartId: args.enclosure_part_id ? String(args.enclosure_part_id) : undefined,
-    clearance: typeof args.clearance === "number" ? args.clearance : undefined,
-    standoffHeight: typeof args.standoff_height === "number" ? args.standoff_height : undefined,
-    holeTolerance: typeof args.hole_tolerance === "number" ? args.hole_tolerance : undefined,
-    placement: placementFromArgs(args),
+    ...enclosureFitOptsFromArgs(args),
     derive: args.derive === true,
   });
 

@@ -111,7 +111,7 @@ import { buildKernelEventPayload } from "./kernel-event.js";
 import { emClaim } from "./em-claims.js";
 import { lookupOrderable, searchOrderable } from "./part-stock.js";
 import type { NextAction } from "./next-actions.js";
-import { computeEnclosureFitForBoard } from "./enclosure.js";
+import { computeEnclosureFitForBoard, enclosureFitOptsFromArgs } from "./enclosure.js";
 import { validatePcb, pcbValidationError } from "./pcb-validate.js";
 import { COPPER_STACK, PCB_LAYERS } from "./pcb-layers.js";
 import { sizePdnExact, ecadDiffEngineAvailable } from "../wasm/ecad-diff.js";
@@ -120,7 +120,7 @@ import { isRemoteDeployment, maxInlineArtifactBytes, maxInlineExportBytes } from
 import type { FabFile } from "@vcad/engine";
 import { behavior, type ToolContext, type ToolDef } from "./tool-def.js";
 import { findPartCandidate, partIdForNode, partIdForRoot } from "./part-ids.js";
-import { diffParts, snapshotParts } from "./registry-dispatch.js";
+import { canonicalJson, diffParts, snapshotParts } from "./registry-dispatch.js";
 import { documentSolids, type DocumentSolid } from "./document-solids.js";
 import type { ToolResult } from "./tool-result.js";
 
@@ -10869,9 +10869,12 @@ function diffElementArray(
   before: Array<Zone | Trace | Via>,
   after: Array<Zone | Trace | Via>,
 ): PcbElementChange[] {
+  // Key on MEANING, not serialization: the same zone re-serialized by the
+  // kernel (keys reordered, defaults filled) is not a removal plus an add.
+  const keyOf = canonicalJson;
   const countKeys = (arr: Array<Zone | Trace | Via>) => {
     const m = new Map<string, number>();
-    for (const el of arr) m.set(JSON.stringify(el), (m.get(JSON.stringify(el)) ?? 0) + 1);
+    for (const el of arr) m.set(keyOf(el), (m.get(keyOf(el)) ?? 0) + 1);
     return m;
   };
   const beforeKeys = countKeys(before);
@@ -10885,12 +10888,12 @@ function diffElementArray(
     ...(elementLayer(kind, el) ? { layer: elementLayer(kind, el) } : {}),
   });
   before.forEach((el, i) => {
-    const key = JSON.stringify(el);
+    const key = keyOf(el);
     if ((afterKeys.get(key) ?? 0) > 0) afterKeys.set(key, afterKeys.get(key)! - 1);
     else out.push(describe("removed", el, i));
   });
   after.forEach((el, i) => {
-    const key = JSON.stringify(el);
+    const key = keyOf(el);
     if ((beforeKeys.get(key) ?? 0) > 0) beforeKeys.set(key, beforeKeys.get(key)! - 1);
     else out.push(describe("added", el, i));
   });
@@ -14356,6 +14359,13 @@ export const buildReceiptSchema = {
         "components clear the lid, holes land on standoffs, connectors align) — " +
         "proof the board fits its case, not just that copper passes DRC.",
     },
+    enclosure_part_id: {
+      type: "string",
+      description:
+        "Part id, name, assembly instance, or part def of the enclosure when the " +
+        "enclosure session holds more than one solid (same as check_enclosure_fit). " +
+        "Omitted, the biggest solid that has a cavity is used.",
+    },
     clearance: {
       type: "number",
       description: "Enclosure-fit clearance in mm (default 0.5); only used with enclosure_document_id.",
@@ -14556,9 +14566,12 @@ export async function buildReceipt(args: Record<string, unknown>, engine?: Engin
       enclosureFitError = "enclosure-fit needs the kernel engine; unavailable in this context";
     } else {
       try {
-        const res = await computeEnclosureFitForBoard(pcb, getSession(enclosureId), engine, {
-          clearance: typeof args.clearance === "number" ? args.clearance : undefined,
-        });
+        const res = await computeEnclosureFitForBoard(
+          pcb,
+          getSession(enclosureId),
+          engine,
+          enclosureFitOptsFromArgs(args),
+        );
         if (res.report) enclosureFit = res.report;
         else enclosureFitError = res.error;
       } catch (e) {

@@ -11560,6 +11560,10 @@
           "type": "string",
           "description": "Optional CAD session id holding the enclosure solid. When given, the Receipt also carries a cross-domain enclosure-fit verdict (board fits, components clear the lid, holes land on standoffs, connectors align) — proof the board fits its case, not just that copper passes DRC."
         },
+        "enclosure_part_id": {
+          "type": "string",
+          "description": "Part id, name, assembly instance, or part def of the enclosure when the enclosure session holds more than one solid (same as check_enclosure_fit). Omitted, the biggest solid that has a cavity is used."
+        },
         "clearance": {
           "type": "number",
           "description": "Enclosure-fit clearance in mm (default 0.5); only used with enclosure_document_id."

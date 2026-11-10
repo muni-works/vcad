@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-10-undo-phantom-board-changes",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "fix",
+  "title": "update and undo report only real changes",
+  "summary": "Editing a CAD node next to a board no longer lists the board as modified, and undo no longer reports untouched zones as removed.",
+  "features": ["mcp", "editing", "undo", "pcb"],
+  "mcpTools": ["update", "undo"]
+}

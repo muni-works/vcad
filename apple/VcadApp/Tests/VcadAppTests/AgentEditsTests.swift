@@ -158,6 +158,36 @@ final class AgentEditsTests: XCTestCase {
         XCTAssertEqual(m.undoStack.count, 1, "a loon error adds no undo step")
     }
 
+    /// An agent's undo over the bridge targets the document. While the user
+    /// has a sketch open, ⌘Z is scoped to the sketch — so the agent's undo
+    /// refuses plainly instead of eating the user's sketch strokes.
+    func testAgentUndoRefusesWhileSketching() async throws {
+        let m = EditorModel()
+        _ = try await call(m, "create", ["type": "cube", "name": "Block",
+                                         "params": ["size": ["x": 40, "y": 40, "z": 10]]])
+        let steps = m.undoStack.map(\.name)
+        m.enterSketch(); m.setSketchTool(.rectangle)
+        m.sketchTap([50, 0]); m.sketchTap([60, 10])
+        let sketch = try XCTUnwrap(m.sketch, m.engineError ?? "sketch did not open")
+        let lines = sketch.entities.filter { $0.kind == .line }.count
+        XCTAssertEqual(lines, 4)
+
+        do {
+            _ = try await AgentTools.call("undo", [:], model: m)
+            XCTFail("agent undo should refuse while a sketch is open")
+        } catch let f as AgentTools.Failure {
+            XCTAssertTrue(f.message.contains("sketch"), f.message)
+        }
+        XCTAssertEqual(sketch.entities.filter { $0.kind == .line }.count, lines, "sketch untouched")
+        XCTAssertEqual(m.undoStack.map(\.name), steps, "document history untouched")
+        XCTAssertEqual(roots(m), 1)
+
+        // Out of the sketch, the agent's undo reaches the document.
+        m.exitSketch()
+        _ = try await call(m, "undo")
+        XCTAssertEqual(roots(m), 0)
+    }
+
     func testUndoNames() {
         XCTAssertEqual(AgentEdits.undoName("create", ["type": "cylinder"]), "Claude: Create Cylinder")
         XCTAssertEqual(AgentEdits.undoName("linear_pattern", [:]), "Claude: Linear Pattern")

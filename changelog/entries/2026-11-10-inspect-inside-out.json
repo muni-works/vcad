@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-10-inspect-inside-out",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "fix",
+  "title": "inspect_cad flags inside-out solids",
+  "summary": "inspect_cad lists parts whose faces point inward (negative signed volume, e.g. a reversed-winding mesh import) in inside_out_parts with a warning, not a silent positive volume.",
+  "features": ["mcp", "inspection", "kernel"],
+  "mcpTools": ["inspect_cad"]
+}

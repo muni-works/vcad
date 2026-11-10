@@ -98,6 +98,12 @@ enum AgentEdits {
         case "link_status": return try linkStatus(a, m)
         case "attach_document": return try attachDocument(a, m)
         case "undo":
+            // ⌘Z mid-sketch is scoped to the sketch's own history. An agent's
+            // undo means the document, so refuse rather than silently eat the
+            // user's sketch strokes (or rewind the document under the sketch).
+            if m.sketchHistory != nil {
+                throw Failure(message: "A sketch is open in the app, and undo there acts on the sketch, not the document. Nothing was undone — ask the user to finish or cancel the sketch, then undo again.")
+            }
             guard let label = m.undoActionName else { throw Failure(message: "Nothing to undo.") }
             m.undo()
             return AgentTools.text("Undid \(label).")
