@@ -97,3 +97,35 @@ describe("update on an inner node of a loon part", () => {
     expect(Math.abs((await vol()) - v0)).toBeLessThan(1);
   });
 });
+
+describe("assemble without names", () => {
+  it("names instances and joints after their parts, never after ids", async () => {
+    const call = await connect();
+    const id: string = out(await call("open_document", {})).document_id;
+    await call("create_cad_loon", {
+      document_id: id,
+      mode: "add",
+      source: `[root [cube 20 20 60] "steel"]\n[root [translate 0 0 -60 [cube 20 20 60]] "steel"]\n[root [translate 0 0 -120 [cube 20 20 60]] "steel"]`,
+    });
+    const parts = out(await call("describe_scene", { document_id: id })).parts as Array<{ id: string }>;
+    const r = await call("assemble", {
+      document_id: id,
+      instances: parts.map((p, i) => ({ id: `i${i}`, part: p.id })),
+      joints: [
+        { child: "i1", parent: "i0", kind: { type: "Revolute", axis: { x: 1, y: 0, z: 0 } } },
+        { child: "i2", parent: "i1", name: "knee", kind: { type: "Revolute", axis: { x: 1, y: 0, z: 0 } } },
+      ],
+      ground: "i0",
+    });
+    expect(r.isError, r.content[0]?.text).toBeFalsy();
+    const doc = getSession(id);
+    const names = [...(doc.instances ?? []), ...(doc.joints ?? [])].map((x) => x.name ?? "");
+    for (const n of names) {
+      expect(n).not.toMatch(/^(\d+:\d+|i\d|joint\d+)?$/);
+    }
+    const instName = (k: string) => doc.instances!.find((i) => i.id === k)!.name;
+    expect(doc.joints![0]!.name).toBe(`${instName("i0")} → ${instName("i1")}`);
+    expect(doc.joints![1]!.name).toBe("knee");
+    expect(new Set(doc.instances!.map((i) => i.name)).size).toBe(3);
+  });
+});
