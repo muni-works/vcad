@@ -272,6 +272,19 @@ Three things fall out of declaring the axis instead of composing rotations by ha
 
 The catalog behind `search_mechanical_parts` supplies stocked lengths, so `M4x11` is rejected rather than modeled; `[bolt-stacked]` adds washers and nuts on the same axis and checks the length against the grip plus the stack, refusing a bolt that is too short to reach or too long for a blind hole. `[clearance-hole]` and `[tapped-hole]` take the same thread designation (ISO 273 medium fit, coarse-thread tap drill), so a hole and the fastener that goes in it cannot disagree.
 
+### Spur Gears
+
+`SpurGear` is a parametric involute spur gear: module, tooth count, pressure angle (20° by default; 14.5° and 25° are the other common standards), face width and an optional bore. The flanks are exact involutes of the base circle `d·cos α`, ISO full-depth (addendum 1 m, dedendum 1.25 m), extruded straight up from `z = 0` with the bore as an interior loop — no boolean pass. Tooth 0 is centred on +X, so meshing is arithmetic: put the second gear at `m(z1+z2)/2` and turn it by `vcad_ir::gear::mesh_rotation_deg` (here 180° − half a 30-tooth pitch) so a gap faces the first gear's tooth. The Mac app's **Spur Gear** tool does exactly this with **Mesh with selected gear**.
+
+```lisp
+[root [spur-gear 2 20 20 10 8] "steel"]
+[root [pipe [spur-gear 2 30 20 10 12] [rotate 0 0 174] [translate 50 0 0]] "aluminum"]
+```
+
+![A 20-tooth pinion meshing a 30-tooth wheel, module 2](/assets/kernel/spur-gear.jpg)
+
+Tests pin the tooth thickness on the pitch circle to `π·m/2`, every flank point to the involute, and a meshed pair to zero interference through a full tooth pitch — while the same pair pulled 0.1 module closer, or phased tooth-on-tooth, interferes. Below the base circle the flank runs radially to the root (the hob's trochoid fillet is not modelled), the same approximation as loon's `gear`.
+
 ## Tessellation and Rendering
 
 ### Tessellation
