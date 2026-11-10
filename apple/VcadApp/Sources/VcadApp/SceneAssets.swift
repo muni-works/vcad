@@ -107,7 +107,7 @@ enum SceneAssets {
         if let t = gridTiles[strong] { return t }
         let px = gridTilePixelsPerMinor
         let sz = px * GridSpacing.majorEvery
-        let boost: Float = strong ? 1.25 : 1
+        let boost: Float = strong ? 0.85 : 1
         let minorA: Float = 0.11 * boost, majorA: Float = 0.26 * boost
         // Coverage of the nearest line at each texel centre; the tile edge
         // (texel 0, wrapping) is the major line.
