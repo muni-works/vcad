@@ -16,7 +16,7 @@ import {
 import { documents } from "../tools/session-core.js";
 import { InMemoryFabricateStore } from "../fabricate/store.js";
 import type { FabOption, Quote } from "../fabricate/types.js";
-import type { AuthUser } from "../oauth.js";
+import type { AuthUser } from "../auth-user.js";
 
 const text = (r: { content: Array<{ text: string }> }) => r.content[0].text;
 const json = (r: { content: Array<{ text: string }> }) => JSON.parse(text(r));

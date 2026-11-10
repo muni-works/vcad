@@ -39,7 +39,7 @@ function documentFolder(documentId: string, document: Document): string | undefi
 type Call = (tool: string, args: Record<string, unknown>) => Promise<Record<string, unknown> | null>;
 
 function endpoint(): string | null {
-  if (process.env.VCAD_APP === "0" || process.env.VERCEL) return null;
+  if (process.env.VCAD_APP === "0") return null;
   try {
     const info = JSON.parse(readFileSync(join(homedir(), ".vcad", "app.json"), "utf8"));
     if (typeof info.pid === "number") process.kill(info.pid, 0);
