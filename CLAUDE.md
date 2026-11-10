@@ -4,9 +4,9 @@ Instructions for AI agents working on vcad.
 
 ## Overview
 
-vcad is an open-source parametric CAD system aiming to replace Fusion 360, Onshape, and similar tools. It features a custom BRep kernel written in Rust, a native SwiftUI Mac app (`apple/VcadApp`, the primary product as of vcad 1.0), and AI-native interfaces via MCP. The React/Three.js web app (`packages/app`) still deploys to vcad.io but is being retired along with cloud sync and accounts (see `docs/launch/web-retirement.md`; `packages/app/public/desktop/` hosts the Mac app's update feed and must outlive it).
+vcad is an open-source parametric CAD system aiming to replace Fusion 360, Onshape, and similar tools. It features a custom BRep kernel written in Rust, a native SwiftUI Mac app (`apple/VcadApp`, the primary product as of vcad 1.0), and AI-native interfaces via MCP. vcad operates **no hosted services**: no hosted MCP server, no accounts, no cloud sync, no share links, no server-side API. The MCP server runs on the user's machine (`npx -y @vcad/mcp`, bring your own agent). The React/Three.js web app (`packages/app`) is a local-only static SPA (IndexedDB documents) and is retiring (see `docs/launch/web-retirement.md`); its static deploy is what serves `packages/app/public/desktop/` — the Mac app's update feed — which must outlive it. Do not add server endpoints, Supabase, or other vcad-operated services back.
 
-**Live app:** https://vcad.io
+**Site:** https://vcad.io (static: docs, downloads, Mac update feed)
 
 ## Prerequisites
 
@@ -80,10 +80,6 @@ npm run dev -w @vcad/app           # run web app locally (browser)
 apple/VcadApp/build-ffi.sh         # build the vcad-ffi static library
 apple/VcadApp/bundle.sh            # assemble apple/VcadApp/dist/vcad.app
 
-# Supabase (database)
-supabase db push --dry-run         # preview migration changes
-supabase db push                   # apply migrations to production
-supabase db diff -f name           # generate migration from local changes
 ```
 
 ## MCP server distribution — never point a config at dist/index.js
@@ -102,7 +98,7 @@ Two supported channels instead:
 
 `.github/workflows/mcp-publish.yml` publishes a self-contained bundle (server
 + kernel WASM in one tarball, version/sha/time baked in — see
-`packages/mcp/scripts/build-npm.mjs`, which mirrors `services/mcp/build.sh`)
+`packages/mcp/scripts/build-npm.mjs`)
 on every main merge touching `packages/**` or `lib/**`, versioned
 `<base>-main.<run>` on the `latest` dist-tag. The kernel structurally cannot
 lag the server: they ship in the same immutable tarball, smoke-tested
@@ -150,35 +146,21 @@ without polling.
 **Durability.** Local runs persist sessions to `~/.vcad/mcp-sessions`
 (override with `VCAD_MCP_SESSION_DIR`, opt out with
 `VCAD_MCP_DISK_SESSIONS=0`), so a restart no longer destroys a long build.
-Hosted deploys need `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`; a
-serverless instance never uses the disk store (its filesystem is ephemeral
-and unshared, so it would report durability it can't provide). When
+There is no remote session store (the Supabase backend was removed with the
+hosted server). When
 `server_info` reports `durable:false`, session-minting tools say so in their
 result — keep the authoring source rather than treating the server as
 storage.
 
-**Artifacts are separate and shorter-lived.** `artifact_store:"in-memory"`
-means `render_view` PNG URLs die on the same restart. Treat any artifact link
-handed to a user as short-lived unless the artifact store is durable.
+**Artifacts are separate and shorter-lived.** The artifact store is always
+in-memory (`artifact_store:"in-memory"`), so `render_view` PNG URLs die on the
+same restart. Treat any artifact link handed to a user as short-lived.
 
-## Supabase
-
-Cloud sync uses Supabase (Postgres + Auth). Config and migrations live in `supabase/`.
-
-**Project:** `yteuhwciuxcbjwmabawj` (linked via `supabase link`)
-
-**Tables:**
-- `documents` — synced .vcad files (RLS: users own their docs)
-- `document_versions` — automatic version history on content changes
-
-**Adding a migration:**
-1. Create `supabase/migrations/NNN_description.sql`
-2. Test locally: `supabase db reset` (if running local Supabase)
-3. Deploy: `supabase db push`
-
-**Auth:** Google and GitHub OAuth configured in Supabase dashboard (not in config.toml to avoid secret leakage).
-
-**Client:** `@vcad/auth` package wraps Supabase client. Sync logic in `packages/auth/src/sync.ts`.
+**Local only.** Tools that depended on vcad-hosted services were removed:
+`open_in_browser` (use `open_in_app`, a `vcad://` link), `share_session`,
+`unshare_session`, `place_order`, `authorize_spend`, `get_order_status`,
+`list_orders`, `get_order_feed`. `continue_document` with a share `token`
+fails closed; pass the inline `doc` instead.
 
 ## Architecture
 
@@ -319,13 +301,10 @@ vcad/
 │   ├── kernel-wasm/               # Kernel WASM package
 │   ├── mcp/                       # MCP server for AI agents
 │   ├── training/                  # ML training pipeline
-│   ├── auth/, api/                # Supabase auth/sync + hosted API (retiring with the web app)
-│   ├── hf-space/, wasmosis/       # cad0 demo space; lazy WASM splitting
+│   ├── wasmosis/                  # lazy WASM splitting
 │   └── docs/                      # Documentation site
 ├── apple/VcadApp/                 # Native SwiftUI Mac app (build-ffi.sh, bundle.sh)
 ├── apple/VcadVision/              # visionOS app (shares Shell views with VcadApp)
-├── supabase/                      # Database migrations and config
-│   └── migrations/                # SQL migrations (pushed via `supabase db push`)
 ├── lib/                           # Stdlib for vcad: loon CAD library + DFM rule packs
 │   ├── src/lib.loon               # bundled into crates/vcad-loon via include_str!
 │   └── dfm/                       # DFM rule packs (.toml) bundled into vcad-kernel-dfm
