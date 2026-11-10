@@ -5,19 +5,24 @@
 //! - Silhouette edges: boundary between front-facing and back-facing faces
 //! - Boundary edges: mesh boundaries (edges with only one adjacent face)
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use vcad_kernel_math::{Point3, Vec3};
 use vcad_kernel_tessellate::TriangleMesh;
 
 use crate::types::{EdgeType, MeshEdge, Triangle3D, ViewDirection};
 
-/// Default threshold angle (in radians) for sharp edge detection.
-/// Edges where adjacent face normals differ by more than this are considered sharp.
+/// Default crease threshold (radians) for sharp edge detection.
+///
+/// Edges whose adjacent face normals differ by more than this are drawn as
+/// feature edges. 30° sits well above the facet-to-facet step of a
+/// tessellated cylinder or fillet (a few degrees to ~12° at 32 segments), so
+/// smooth surfaces contribute only silhouettes, and well below the 90° of a
+/// machined corner.
 pub const DEFAULT_SHARP_ANGLE: f64 = std::f64::consts::FRAC_PI_6; // 30 degrees
 
 /// Edge key for hash map lookup (canonical vertex pair ordering).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 struct EdgeKey {
     v0: u32,
     v1: u32,
@@ -37,6 +42,46 @@ impl EdgeKey {
 struct EdgeData {
     tri0: u32,
     tri1: Option<u32>,
+}
+
+/// Weld tolerance (mm) for edge adjacency. Kernel tessellations emit each
+/// B-rep face with its own vertex copies, so two triangles meeting across a
+/// face seam share *positions*, not indices. Keying adjacency by index made
+/// every seam edge (and, on triangle soups, every edge) look like a
+/// one-sided boundary edge, and boundary edges are always drawn — the
+/// "drawing shows the whole triangle mesh" bug.
+const WELD_TOLERANCE: f64 = 1e-4;
+
+/// Below this dihedral angle (radians) two triangles are treated as
+/// coplanar: the edge between them is a tessellation diagonal and is never
+/// drawn, not even as a silhouette (a flat face seen edge-on would otherwise
+/// flicker front/back on rounding noise).
+pub const COPLANAR_ANGLE: f64 = 1e-3;
+
+/// |n·v| below this counts a face as edge-on to the view.
+const EDGE_ON_TOLERANCE: f64 = 1e-6;
+
+/// -1 back-facing, 0 edge-on, 1 front-facing.
+fn facing(t: &Triangle3D, view_vec: &vcad_kernel_math::Vec3) -> i8 {
+    let d = t.normal.dot(*view_vec);
+    if d > EDGE_ON_TOLERANCE {
+        1
+    } else if d < -EDGE_ON_TOLERANCE {
+        -1
+    } else {
+        0
+    }
+}
+
+/// Silhouette test for the edge between `t0` and `t1`: the facing class
+/// changes across it (front↔back, or a turn onto an edge-on face, which is
+/// where a flat face seen side-on meets the rest of the outline) and the two
+/// triangles are not coplanar. At least one side must face the viewer: an
+/// edge-on triangle next to a back-facing one is hidden, not outline.
+fn is_silhouette(t0: &Triangle3D, t1: &Triangle3D, view_vec: &vcad_kernel_math::Vec3) -> bool {
+    let dihedral = t0.normal.dot(t1.normal).clamp(-1.0, 1.0).acos();
+    let (f0, f1) = (facing(t0, view_vec), facing(t1, view_vec));
+    dihedral > COPLANAR_ANGLE && f0 != f1 && (f0 > 0 || f1 > 0)
 }
 
 /// Extract all mesh edges with adjacency information.
@@ -229,40 +274,11 @@ pub fn extract_drawing_edges(
     result
 }
 
-/// Positions closer than this (mm) are the same vertex when building
-/// adjacency. Evaluated meshes duplicate vertices per face (flat-shading
-/// normals), so index-based adjacency saw every triangle edge as a mesh
-/// boundary and drew every tessellation diagonal.
-const WELD_TOLERANCE: f64 = 1e-5;
-
-/// Facing below this |n·v| counts as edge-on.
-const FACING_EPS: f64 = 1e-6;
-
-fn facing(t: &Triangle3D, view_vec: &Vec3) -> i8 {
-    let d = t.normal.dot(*view_vec);
-    if d > FACING_EPS {
-        1
-    } else if d < -FACING_EPS {
-        -1
-    } else {
-        0
-    }
-}
-
-/// Silhouette between two triangles: their facings differ and at least one
-/// faces the viewer. An edge-on triangle next to a front-facing one is the
-/// outline; next to a back-facing one it is not. Float noise on edge-on
-/// coplanar pairs no longer flips them into "silhouettes".
-fn is_silhouette(t0: &Triangle3D, t1: &Triangle3D, view_vec: &Vec3) -> bool {
-    let (f0, f1) = (facing(t0, view_vec), facing(t1, view_vec));
-    f0 != f1 && (f0 > 0 || f1 > 0)
-}
-
 /// Edge adjacency keyed by *welded* vertex position. Each vertex maps to the
 /// first vertex index sharing its (quantized) position, so the returned keys
 /// still index `mesh.vertices`. Degenerate (zero-area) triangles are skipped:
 /// they create spurious unpaired edges.
-fn build_adjacency(mesh: &TriangleMesh, triangles: &[Triangle3D]) -> HashMap<EdgeKey, EdgeData> {
+fn build_adjacency(mesh: &TriangleMesh, triangles: &[Triangle3D]) -> BTreeMap<EdgeKey, EdgeData> {
     let n_verts = mesh.vertices.len() / 3;
     let mut canon: Vec<u32> = Vec::with_capacity(n_verts);
     let mut by_pos: HashMap<(i64, i64, i64), u32> = HashMap::with_capacity(n_verts);
@@ -276,7 +292,8 @@ fn build_adjacency(mesh: &TriangleMesh, triangles: &[Triangle3D]) -> HashMap<Edg
         canon.push(*by_pos.entry(key).or_insert(i as u32));
     }
 
-    let mut edge_map: HashMap<EdgeKey, EdgeData> = HashMap::new();
+    // Ordered map: edge output order must be deterministic run to run.
+    let mut edge_map: BTreeMap<EdgeKey, EdgeData> = BTreeMap::new();
     for (tri_idx, tri_indices) in mesh.indices.chunks(3).enumerate() {
         if tri_indices.len() < 3 || !triangles[tri_idx].normal.x.is_finite() {
             continue;
