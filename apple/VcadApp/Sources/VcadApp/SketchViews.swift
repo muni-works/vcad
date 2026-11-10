@@ -80,13 +80,19 @@ struct SketchPaletteView: View {
                 model.sketchRevolveAngle = min(v, 360)
             }.frame(width: 80).help("Angle (°) about the sketch Y axis")
         case .sweep:
-            HStack(spacing: 4) {
-                ScrubField(label: "", value: model.sweepTurns, sensitivity: 0.05, minValue: 0) { v, _ in
+            HStack(spacing: 8) {
+                ScrubField(label: "Turns", value: model.sweepTurns, unit: "", sensitivity: 0.05, minValue: 0) { v, _ in
                     model.sweepTurns = v
-                }.frame(width: 60).help("Helix turns (0 = straight along the normal)")
-                ScrubField(label: "", value: model.sweepPitch, sensitivity: 0.1, minValue: 0.1) { v, _ in
-                    model.sweepPitch = v
-                }.frame(width: 60).help("Helix pitch")
+                }.help("Helix turns. 0 sweeps straight along the sketch normal.")
+                ScrubField(label: "Radius", value: model.sweepHelixRadius, sensitivity: 0.1, minValue: 0.1) { v, _ in
+                    model.sweepHelixRadius = v
+                }
+                .disabled(model.sweepTurns <= 0)
+                .help("Helix radius (mm), axis to path. The profile is centred on the path: its centroid starts at "
+                      + "(radius, 0, 0) and climbs world Z. It must stay inside the radius, or the coil self-intersects.")
+                ScrubField(label: "Length", value: model.sweepLength, sensitivity: 0.1, minValue: 0.1) { v, _ in
+                    model.sweepLength = v
+                }.help("Total sweep length (mm): the helix height, or the straight distance. Pitch = length ÷ turns.")
             }
         case .extrudeToFace:
             Text("pick target face").font(.caption).foregroundStyle(.secondary)

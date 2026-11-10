@@ -192,6 +192,81 @@ final class SketchSessionTests: XCTestCase {
         XCTAssertFalse(m.sketching)
     }
 
+    // MARK: helix sweep
+
+    /// A 3 mm circle drawn far from the sketch origin still rides the helix
+    /// (its centroid is the anchor): radius 20, 1 turn over 50 mm gives
+    /// π·3²·√((2π·20)² + 50²) ≈ 3,823.6 mm³ (the kernel's 16-gon profile
+    /// tessellation sits ~2.5% under the true circle).
+    func testHelixSweepAnchorsProfileCentroidOnPath() throws {
+        let m = try open()
+        m.enterSketch(); m.setSketchTool(.circle)
+        m.sketchTap([60, 60]); m.sketchTap([63, 60])
+        m.sketchFinish = .sweep
+        m.sweepTurns = 1; m.sweepHelixRadius = 20; m.sweepLength = 50
+        XCTAssertTrue(m.finishSketch(), m.engineError ?? "")
+        let nodes = m.documentJSON?["nodes"] as? [String: Any] ?? [:]
+        let ops = nodes.values.compactMap { ($0 as? [String: Any])?["op"] as? [String: Any] }
+        let path = try XCTUnwrap(ops.first { $0["type"] as? String == "Sweep" }?["path"] as? [String: Any])
+        XCTAssertEqual(path["radius"] as? Double, 20)
+        XCTAssertEqual(path["height"] as? Double, 50)
+        XCTAssertEqual(path["pitch"] as? Double, 50)
+        let expected = Double.pi * 9 * ((2 * Double.pi * 20) * (2 * Double.pi * 20) + 2500).squareRoot()
+        let v = try volume(m)
+        XCTAssertEqual(v, expected * 0.9745, accuracy: expected * 0.01, "volume \(v) vs \(expected)")
+    }
+
+    /// A square profile has no tessellation loss: volume = area × helix length within 1%.
+    func testHelixSweepSquareVolume() throws {
+        let m = try open()
+        m.enterSketch(); m.setSketchTool(.rectangle)
+        m.sketchTap([70, 70]); m.sketchTap([74, 74])
+        m.sketchFinish = .sweep
+        m.sweepTurns = 1; m.sweepHelixRadius = 20; m.sweepLength = 50
+        XCTAssertTrue(m.finishSketch(), m.engineError ?? "")
+        let expected = 16 * ((2 * Double.pi * 20) * (2 * Double.pi * 20) + 2500).squareRoot()
+        let v = try volume(m)
+        XCTAssertEqual(v, expected, accuracy: expected * 0.01, "volume \(v) vs \(expected)")
+    }
+
+    /// The reported 40×30 rectangle at radius 20 crosses the axis: refused, plainly.
+    func testHelixSweepRefusesProfileWiderThanRadius() throws {
+        let m = try open()
+        m.enterSketch(); m.setSketchTool(.rectangle)
+        m.sketchTap([0, 0]); m.sketchTap([40, 30])
+        m.sketchFinish = .sweep
+        m.sweepTurns = 2; m.sweepHelixRadius = 20; m.sweepLength = 100
+        XCTAssertFalse(m.finishSketch())
+        XCTAssertTrue(m.engineError?.contains("helix radius") == true, m.engineError ?? "")
+        XCTAssertTrue(m.sketching, "the sketch stays open to fix")
+        XCTAssertFalse(opTypes(m).contains("Sweep"))
+    }
+
+    func testSweepPlanChecks() {
+        func square(_ x0: Double, _ y0: Double, _ s: Double) -> [String: Any] {
+            let pts = [(x0, y0), (x0 + s, y0), (x0 + s, y0 + s), (x0, y0 + s)]
+            let segs: [[String: Any]] = (0..<4).map { i in
+                let a = pts[i], b = pts[(i + 1) % 4]
+                return ["type": "Line", "start": ["x": a.0, "y": a.1], "end": ["x": b.0, "y": b.1]]
+            }
+            return ["origin": ["x": 0, "y": 0, "z": 0], "segments": segs]
+        }
+        let ok = SweepPlan(profile: square(10, 20, 4), turns: 3, radius: 20, length: 30)
+        XCTAssertNil(ok.problem)
+        XCTAssertEqual(ok.centroid.x, 12, accuracy: 1e-9); XCTAssertEqual(ok.centroid.y, 22, accuracy: 1e-9)
+        XCTAssertEqual(ok.pitch, 10, accuracy: 1e-9)
+        let first = (ok.profile["segments"] as? [[String: Any]])?.first?["start"] as? [String: Double]
+        XCTAssertEqual(first?["x"] ?? .nan, -2, accuracy: 1e-9, "re-centred on the centroid")
+        // Turns crowd each other: 4 mm profile, 3 mm pitch.
+        let tight = SweepPlan(profile: square(0, 0, 4), turns: 10, radius: 20, length: 30)
+        XCTAssertTrue(tight.problem?.contains("apart") == true, tight.problem ?? "")
+        // Straight sweep: left as drawn, no helix checks.
+        let line = SweepPlan(profile: square(0, 0, 40), turns: 0, radius: 1, length: 30)
+        XCTAssertNil(line.problem)
+        let lineFirst = (line.profile["segments"] as? [[String: Any]])?.first?["start"] as? [String: Double]
+        XCTAssertEqual(lineFirst?["x"], 0)
+    }
+
     func testSketchOnPickedFace() throws {
         let m = try open()
         m.picking.filter = .face
