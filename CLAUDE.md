@@ -4,7 +4,7 @@ Instructions for AI agents working on vcad.
 
 ## Overview
 
-vcad is an open-source parametric CAD system aiming to replace Fusion 360, Onshape, and similar tools. It features a custom BRep kernel written in Rust, a React/Three.js web app, a native SwiftUI Mac app (`apple/VcadApp`), and AI-native interfaces via MCP.
+vcad is an open-source parametric CAD system aiming to replace Fusion 360, Onshape, and similar tools. It features a custom BRep kernel written in Rust, a native SwiftUI Mac app (`apple/VcadApp`, the primary product as of vcad 1.0), and AI-native interfaces via MCP. The React/Three.js web app (`packages/app`) still deploys to vcad.io but is being retired along with cloud sync and accounts (see `docs/launch/web-retirement.md`; `packages/app/public/desktop/` hosts the Mac app's update feed and must outlive it).
 
 **Live app:** https://vcad.io
 
@@ -184,13 +184,13 @@ Cloud sync uses Supabase (Postgres + Auth). Config and migrations live in `supab
 
 ```
 vcad/
-├── crates/                        # Rust workspace (~285K LOC)
+├── crates/                        # Rust workspace (~530K LOC)
 │   ├── vcad-kernel-math/          # Linear algebra, transforms, exact predicates
 │   ├── vcad-kernel-topo/          # Half-edge BRep topology
 │   ├── vcad-kernel-geom/          # Curves and surfaces
 │   ├── vcad-kernel-primitives/    # Box, cylinder, sphere, cone
 │   ├── vcad-kernel-tessellate/    # BRep → triangle mesh
-│   ├── vcad-kernel-booleans/      # Boolean operations (~5.4K LOC)
+│   ├── vcad-kernel-booleans/      # Boolean operations (~30K LOC)
 │   ├── vcad-kernel-nurbs/         # NURBS curves/surfaces
 │   ├── vcad-kernel-fillet/        # Fillets and chamfers
 │   ├── vcad-kernel-sketch/        # 2D sketch geometry
@@ -214,6 +214,19 @@ vcad/
 │   ├── vcad-receipt/              # Unified fail-closed verification receipt schema
 │   ├── vcad-cli/                  # `vcad` crate: kernel re-export + the CLI
 │   └── vcad-render/               # Standalone .vcad → isometric SVG renderer
+│
+│   # Also in the workspace (every crates/* dir is a member; see Cargo.toml):
+│   # app/eval core: vcad-app, vcad-eval, vcad-loon, vcad-sim, vcad-crdt,
+│   #   vcad-chat, vcad-ffi (C ABI for the Mac app), vcad-diff, vcad-i18n,
+│   #   vcad-parts, vcad-tool-derive, vcad-design-constraints, vcad-typst
+│   # more kernel: -features, -sheet, -text, -naming, -export, -enclosure,
+│   #   -cost, -dfm, -calibration, -fea, -flow, -optics, -orbit, -qcd,
+│   #   -magnetostatic, -adjoint, -atoms
+│   # electronics: vcad-ecad-{package,parts,symbols,schematic,pcb,verify,
+│   #   source,export,fabprep,sim,diff,diff-wasm}, vcad-gdsii, vcad-process
+│   # fabrication: vcad-slicer{,-bambu,-gcode}, vcad-printcheck,
+│   #   vcad-embroidery{,-pes,-dst}
+│   # misc: stepperoni (STEP parser), termview, wasmosis, vcad-torture
 │
 │   # Analysis/solver crates beyond the app's modeling surface (consumer wiring
 │   # noted per entry; most are self-contained pending vcad-receipt/MCP
@@ -306,8 +319,11 @@ vcad/
 │   ├── kernel-wasm/               # Kernel WASM package
 │   ├── mcp/                       # MCP server for AI agents
 │   ├── training/                  # ML training pipeline
+│   ├── auth/, api/                # Supabase auth/sync + hosted API (retiring with the web app)
+│   ├── hf-space/, wasmosis/       # cad0 demo space; lazy WASM splitting
 │   └── docs/                      # Documentation site
 ├── apple/VcadApp/                 # Native SwiftUI Mac app (build-ffi.sh, bundle.sh)
+├── apple/VcadVision/              # visionOS app (shares Shell views with VcadApp)
 ├── supabase/                      # Database migrations and config
 │   └── migrations/                # SQL migrations (pushed via `supabase db push`)
 ├── lib/                           # Stdlib for vcad: loon CAD library + DFM rule packs
@@ -411,7 +427,7 @@ phyz-based articulated physics via `vcad-kernel-physics`:
 **Rust CLI:**
 ```bash
 vcad export input.vcad output.stl   # Export to STL/GLB/STEP
-vcad import-step input.step out.vcad
+vcad import input.step out.vcad
 vcad info input.vcad                # Show document info
 
 # Routed board → complete fab package + DRC-delta receipt, in one command.
@@ -427,7 +443,7 @@ target/debug/vcad-render path/to/part.vcad > out.svg
 ```
 
 **MCP Server** (for AI agents):
-- `create_cad_document` — create parts from primitives + operations
+- `open_document` / `create_cad_loon` — open a session, author whole parts in loon
 - `export_cad` — export to STL or GLB
 - `inspect_cad` — get volume, area, bbox, center of mass
 - `check_clearance` — min distance / penetration depth between part groups;
