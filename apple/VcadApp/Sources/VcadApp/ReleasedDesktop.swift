@@ -797,6 +797,9 @@ struct ReleasedOverlayView: View {
     @ViewBuilder private var toolbar: some View {
         if model.isWindowed {
             GlassToolbar(model: model)
+                // The row's empty space moves the window and never reaches
+                // the viewport's orbit layer beneath (see WindowDragRegion).
+                .background { WindowDragArea() }
                 .background(fullBleed ? AnyShapeStyle(.clear) : AnyShapeStyle(.bar))
                 .modifier(ChromeRegion(key: "workspaceHeader"))
         } else {
