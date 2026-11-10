@@ -53,6 +53,7 @@ pub mod escape;
 pub mod flow;
 pub mod global;
 pub mod grid;
+pub mod islands;
 pub(crate) mod legalize;
 pub mod length_match;
 pub mod length_tune;
