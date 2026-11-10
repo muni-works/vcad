@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-10-kicad-import-phantom-nets",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "fix",
+  "title": "Clean imported KiCad boards pass build_receipt",
+  "summary": "import_kicad no longer keeps KiCad net numbers as phantom nets, and power integrity keys nets by name, so a routed DRC-clean board no longer fails its receipt on nets like \"23\".",
+  "features": ["ecad", "pcb", "receipt", "import"],
+  "mcpTools": ["import_kicad", "build_receipt"]
+}
