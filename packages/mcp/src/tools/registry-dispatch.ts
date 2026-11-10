@@ -84,7 +84,7 @@ const MCP_DESCRIPTIONS: Record<string, string> = {
   create:
     "Add a single feature node to a session document: a primitive (cube/cylinder/sphere/cone), boolean (union/difference/intersection), transform (translate/rotate/scale), sketch-based feature (extrude/revolve/sweep/loft), pattern, or modifier (fillet/chamfer/shell). Per-type parameters are in the Type Catalog in this server's instructions. One node per call — for whole parts or multi-feature models prefer `create_cad_loon`.",
   update:
-    "Update parameters on an existing node — pass only the fields to change. The surgical-edit tool: when geometry is misplaced or mis-sized, prefer this over delete + re-create. Use `read` to find node ids. The result reports a compact `changed` diff of affected parts.",
+    "Update parameters on an existing node — pass only the fields to change. The surgical-edit tool: when geometry is misplaced or mis-sized, prefer this over delete + re-create. Use `read` to find node ids; an inner node (e.g. one cutter's Translate or Cube inside a difference) edits just that node, not the whole part. Params use the `create` shape: `{size: {x, y, z}}` on a cube (partial axes ok), `{radius}`, `{offset: {x, y, z}}` / `{rotation: {x, y, z}}` for placement. The result reports a compact `changed` diff of affected parts.",
   set_material:
     "Set a part's material preset. Keys — metals: aluminum, steel, brass, copper, titanium, chrome, gold, silver; plastics: abs-white, abs-black, abs-red, abs-blue, pla, petg, nylon, resin, acrylic, rubber; organic: oak, walnut, leather, cork, bamboo; glass: glass, glass-tinted; composite: carbon-fiber, fiberglass, kevlar; other: concrete, ceramic, foam.",
 };
@@ -556,11 +556,15 @@ function engineArgs(
   if ("part_id" in out) out.part_id = toStableId(doc, out.part_id);
   if (Array.isArray(out.part_ids)) out.part_ids = out.part_ids.map((v) => toStableId(doc, v));
   if (out.parent_part_id !== undefined) out.parent_part_id = nodeRefToStableId(doc, out.parent_part_id);
-  // `lower_update` accepts the owning part's stable id as `node_id` and sets
-  // the params on that feature; a session NodeId would be looked up against
-  // the engine's renumbered nodes instead.
+  // `lower_update` resolves a session NodeId itself — through the import's
+  // node map on a freshly imported engine, or the materialized ids on a
+  // cached one (whose output IS the session doc) — to the feature that node
+  // became. Mapping it here to the OWNING ROOT PART edited the wrong
+  // feature: an inner cutter's Translate moved the whole case.
   if (toolName === "update" && out.node_id !== undefined) {
-    out.node_id = nodeRefToStableId(doc, out.node_id);
+    const v = out.node_id;
+    const numeric = typeof v === "number" || (typeof v === "string" && /^\d+$/.test(v));
+    out.node_id = numeric ? Number(v) : toStableId(doc, v);
   }
   if (out.hide_part_id !== undefined) out.hide_part_id = toStableId(doc, out.hide_part_id);
   if (toolName === "place") {

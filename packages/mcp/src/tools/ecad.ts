@@ -119,7 +119,8 @@ import { bundleBytes, storeArtifact } from "./artifact-store.js";
 import { isRemoteDeployment, maxInlineArtifactBytes, maxInlineExportBytes } from "./remote.js";
 import type { FabFile } from "@vcad/engine";
 import { behavior, type ToolContext, type ToolDef } from "./tool-def.js";
-import { findPartCandidate, partIdForNode } from "./part-ids.js";
+import { findPartCandidate, partIdForNode, partIdForRoot } from "./part-ids.js";
+import { diffParts, snapshotParts } from "./registry-dispatch.js";
 import { documentSolids, type DocumentSolid } from "./document-solids.js";
 import type { ToolResult } from "./tool-result.js";
 
@@ -10912,6 +10913,14 @@ function diffPcbElements(before: Pcb | null, after: Pcb | null): PcbElementChang
   ];
 }
 
+/** A CAD part an undo brought back, took away, or changed. */
+interface PartChange {
+  kind: "part";
+  action: "added" | "removed" | "modified";
+  part_id: string;
+  name?: string;
+}
+
 /** What an undo did to the CAD structure: ids that came back or went away. */
 function diffDocumentStructure(before: Document, after: Document) {
   const diff = (a: string[], b: string[]) => ({
@@ -10975,7 +10984,30 @@ export function undo(args: Record<string, unknown>) {
         "(simulation and read-only tools record nothing)",
     );
   }
-  const changed = diffPcbElements(beforePcbCopy, getDocPcb(restored));
+  // Board elements AND CAD parts: a CAD undo used to report `changed: []`
+  // (the diff only looked at copper) while it really restored geometry.
+  // A board is a scene root too; its copper is already reported element-wise.
+  const boardParts = new Set(
+    [currentCopy, restored].flatMap((d) =>
+      d.roots
+        .filter((r) => d.nodes[String(r.root)]?.op.type === "PcbBoard")
+        .map((r) => partIdForRoot(d, r)),
+    ),
+  );
+  const partsAll = diffParts(snapshotParts(currentCopy), snapshotParts(restored));
+  const parts = partsAll && {
+    added: partsAll.added.filter((p) => !boardParts.has(p.part_id)),
+    removed: partsAll.removed.filter((p) => !boardParts.has(p.part_id)),
+    modified: partsAll.modified.filter((p) => !boardParts.has(p.part_id)),
+  };
+  const changed: Array<PcbElementChange | PartChange> = [
+    ...diffPcbElements(beforePcbCopy, getDocPcb(restored)),
+    ...(parts
+      ? (["added", "removed", "modified"] as const).flatMap((action) =>
+          parts[action].map((p) => ({ kind: "part" as const, action, part_id: p.part_id, name: p.name })),
+        )
+      : []),
+  ];
   const document_changes = diffDocumentStructure(currentCopy, restored);
 
   return {
@@ -15818,7 +15850,7 @@ export const toolDefs: ToolDef[] = [
       "before the last add_zone / add_trace / add_via / delete_* / route_nets " +
       "/ place_components (or a CAD create/update/delete) is restored, without " +
       "re-sending the document. Repeated calls walk further back. Returns a " +
-      "`changed` diff of the board elements the rewind moved and a " +
+      "`changed` diff of the board elements and CAD parts (kind \"part\") the rewind moved and a " +
       "`document_changes` diff of instances, joints, part defs and nodes.",
     inputSchema: undoSchema,
     handler: (a) => undo(a) as ToolResult | Promise<ToolResult>,
