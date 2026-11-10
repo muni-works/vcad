@@ -9,15 +9,28 @@ Every friction point found gets fixed or listed here.
 | 1 | NEMA 17 bracket | sketch, extrude, cuts, slots, fillet | Built |
 | 2 | Flanged bearing housing | revolve, holes, counterbores, circular pattern | Built: 18,981 mm^3 |
 | 3 | Sheet-metal enclosure | flanges, bends, flat pattern | Built: flat 156.4 x 116.4 mm, 15,018 mm^2; folded 22,734 mm^3 |
-| 4 | 3D-print snap-fit case | shell, lip, clips, tolerance | Open |
+| 4 | 3D-print snap-fit case | shell, lip, clips, tolerance | Partial: 60 x 40 x 25 box shelled 2 mm, open top, 13,632 mm^3 (hand 13,632). No lip or clips yet |
 | 5 | Swept and lofted duct | sweep, loft, shell | Open |
-| 6 | Patterned heatsink | linear pattern, fin spacing | Open |
+| 6 | Patterned heatsink | linear pattern, fin spacing | Blocked: base built (10,000 mm^3); fin sketch hit three defects below |
 | 7 | Gear pair with a mate | involute profile, mates | Open |
 | 8 | Six-part assembly | joints, interference, explode | Open |
 | 9 | Drawing with GD&T | views, sections, datums, frames | Open |
 | 10 | CAM on a pocketed plate | toolpaths, stock simulation | Open |
 
 ## Known blockers
+
+- Part 4: a rectangle drawn top-left to bottom-right is a clockwise loop, and
+  its extrude is inside out: the viewport shows the interior, the top face
+  reports a downward normal, and Shell then produces no geometry. Drawing it
+  bottom-left to top-right works. Fix in progress.
+- Part 6: in a sketch, Cmd-Z undoes the last document feature (the base
+  extrude), not the last sketch entity.
+- Part 6: a rectangle whose corners snap to the same x is drawn as a line, and
+  the sketch panel shows a raw "add_constraint: horizontal: bad entity handle 0".
+- Part 6: with Rectangle armed, a first click on an existing face moves the
+  sketch onto that face instead of placing a corner.
+- File > New Document opens a second app instance rather than a new window or
+  document in this one.
 
 - Hole panel: Apply with a bolt circle takes several seconds and shows no
   progress. The label column also widens when Counterbore turns on, which moves
