@@ -876,6 +876,10 @@ struct ScrubField: View {
                 .multilineTextAlignment(.trailing)
                 .frame(width: 52)
                 .focused($focused)
+                // A click must take focus: in a floating toolbar the field
+                // could stay unfocused (a triple-click left keystrokes going
+                // to the sketch dimension field focused before it).
+                .simultaneousGesture(TapGesture().onEnded { focused = true })
                 .onSubmit { commit() }
                 .onEscape { typing = nil; focused = false }
                 .onChange(of: focused) { _, now in if !now { commit() } }

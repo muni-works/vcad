@@ -1732,9 +1732,12 @@ final class EditorModel {
     var sketchFinish: SketchFinish = .extrude
     var sketchExtrudeDepth: Double = 10
     var sketchRevolveAngle: Double = 360
-    /// Sweep path along the sketch normal: helix when `sweepTurns > 0`.
+    /// Sweep path: a helix when `sweepTurns > 0` (world-Z axis, rising
+    /// `sweepLength` over `sweepTurns` turns at `sweepHelixRadius`, profile
+    /// re-centred so its centroid rides the helix — see `SweepPlan`), else a
+    /// straight line `sweepLength` along the sketch normal.
     var sweepHelixRadius: Double = 20
-    var sweepPitch: Double = 10
+    var sweepLength: Double = 50
     var sweepTurns: Double = 0
     /// Profiles collected for a loft, in order.
     var loftProfiles: [[String: Any]] = []
@@ -1942,11 +1945,14 @@ final class EditorModel {
                 feature = ["kind": "revolve", "profile": profile, "axis_origin": vec(sketch.frame.origin),
                            "axis_dir": vec(sketch.frame.yDir), "angle_deg": sketchRevolveAngle, "name": "Revolve"]
             case .sweep:
-                let path: [String: Any] = sweepTurns > 0
-                    ? ["type": "Helix", "radius": sweepHelixRadius, "pitch": sweepPitch,
-                       "height": sweepPitch * sweepTurns, "turns": sweepTurns]
-                    : ["type": "Line", "start": vec(.zero), "end": vec(n * sketchExtrudeDepth)]
-                feature = ["kind": "sweep", "profile": profile, "path": path, "name": "Sweep"]
+                let plan = SweepPlan(profile: profile, turns: sweepTurns,
+                                     radius: sweepHelixRadius, length: sweepLength)
+                if let problem = plan.problem { engineError = problem; return false }
+                let path: [String: Any] = plan.isHelix
+                    ? ["type": "Helix", "radius": sweepHelixRadius, "pitch": plan.pitch,
+                       "height": sweepLength, "turns": sweepTurns]
+                    : ["type": "Line", "start": vec(.zero), "end": vec(n * sweepLength)]
+                feature = ["kind": "sweep", "profile": plan.profile, "path": path, "name": "Sweep"]
             case .loft:
                 return false
             }
