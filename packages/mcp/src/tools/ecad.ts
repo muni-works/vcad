@@ -111,7 +111,7 @@ import { buildKernelEventPayload } from "./kernel-event.js";
 import { emClaim } from "./em-claims.js";
 import { lookupOrderable, searchOrderable } from "./part-stock.js";
 import type { NextAction } from "./next-actions.js";
-import { computeEnclosureFitForBoard } from "./enclosure.js";
+import { computeEnclosureFitForBoard, enclosureFitOptsFromArgs } from "./enclosure.js";
 import { validatePcb, pcbValidationError } from "./pcb-validate.js";
 import { COPPER_STACK, PCB_LAYERS } from "./pcb-layers.js";
 import { sizePdnExact, ecadDiffEngineAvailable } from "../wasm/ecad-diff.js";
@@ -14356,6 +14356,13 @@ export const buildReceiptSchema = {
         "components clear the lid, holes land on standoffs, connectors align) — " +
         "proof the board fits its case, not just that copper passes DRC.",
     },
+    enclosure_part_id: {
+      type: "string",
+      description:
+        "Part id, name, assembly instance, or part def of the enclosure when the " +
+        "enclosure session holds more than one solid (same as check_enclosure_fit). " +
+        "Omitted, the biggest solid that has a cavity is used.",
+    },
     clearance: {
       type: "number",
       description: "Enclosure-fit clearance in mm (default 0.5); only used with enclosure_document_id.",
@@ -14556,9 +14563,12 @@ export async function buildReceipt(args: Record<string, unknown>, engine?: Engin
       enclosureFitError = "enclosure-fit needs the kernel engine; unavailable in this context";
     } else {
       try {
-        const res = await computeEnclosureFitForBoard(pcb, getSession(enclosureId), engine, {
-          clearance: typeof args.clearance === "number" ? args.clearance : undefined,
-        });
+        const res = await computeEnclosureFitForBoard(
+          pcb,
+          getSession(enclosureId),
+          engine,
+          enclosureFitOptsFromArgs(args),
+        );
         if (res.report) enclosureFit = res.report;
         else enclosureFitError = res.error;
       } catch (e) {

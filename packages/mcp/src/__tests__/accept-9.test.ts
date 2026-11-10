@@ -94,6 +94,52 @@ describe("build_receipt on a clean imported KiCad board", () => {
   });
 });
 
+describe("build_receipt enclosure selection on a multi-part document", () => {
+  it("finds the case the way check_enclosure_fit does, past a denser stator", async () => {
+    const call = await connect();
+    const id: string = out(await call("open_document", {})).document_id;
+    expect((await call("create_cad_loon", { document_id: id, mode: "add", source: CASE })).isError).toBeFalsy();
+    // A finely tessellated stator beside the case: more mesh than the case,
+    // smaller bounding box, and no cavity.
+    const doc = getSession(id);
+    const next = Math.max(...Object.keys(doc.nodes).map(Number)) + 1;
+    doc.nodes[String(next)] = { id: next, name: "stator", op: { type: "Sphere", radius: 8, segments: 256 } } as Document["nodes"][string];
+    doc.nodes[String(next + 1)] = {
+      id: next + 1,
+      name: "stator-at",
+      op: { type: "Translate", child: next, offset: { x: -30, y: 25, z: 8 } },
+    } as Document["nodes"][string];
+    doc.roots.push({ root: next + 1, material: "steel" });
+    await importRails(call, id);
+
+    // Precondition: the stator out-meshes the case, so "largest mesh" picks it.
+    const solids = documentSolids(getSession(id), engine);
+    const stator = solids.find((s) => s.name === "stator-at")!;
+    const kase = solids.find((s) => s !== stator)!;
+    expect(stator.mesh.positions.length).toBeGreaterThan(kase.mesh.positions.length);
+
+    const casePart = solids.find((s) => s !== stator && s.name !== "stator")!.id;
+    const fitOf = (r: Out) => (r as unknown as { structuredContent: { enclosure_fit: unknown } }).structuredContent.enclosure_fit;
+
+    // check_enclosure_fit told which part is the case…
+    const fit = await call("check_enclosure_fit", { document_id: id, enclosure_document_id: id, enclosure_part_id: casePart });
+    expect(fit.isError, fit.content[0]?.text).toBeFalsy();
+    const expected = JSON.stringify(fitOf(fit));
+
+    // …and build_receipt given the same part reaches the same verdict.
+    const named = await call("build_receipt", { document_id: id, enclosure_document_id: id, enclosure_part_id: casePart });
+    expect(out(named).enclosure_fit_error).toBeUndefined();
+    expect(JSON.stringify(fitOf(named))).toBe(expected);
+
+    // Unnamed, both tools still pick the case over the denser stator.
+    const autoFit = await call("check_enclosure_fit", { document_id: id, enclosure_document_id: id });
+    expect(JSON.stringify(fitOf(autoFit))).toBe(expected);
+    const auto = await call("build_receipt", { document_id: id, enclosure_document_id: id });
+    expect(out(auto).enclosure_fit_error).toBeUndefined();
+    expect(JSON.stringify(fitOf(auto))).toBe(expected);
+  });
+});
+
 describe("inspect_cad on an inside-out solid", () => {
   it("flags reversed winding instead of reporting a silent positive volume", async () => {
     const call = await connect();
