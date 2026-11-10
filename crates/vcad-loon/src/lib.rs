@@ -15,7 +15,7 @@ mod convert;
 pub mod diag;
 pub use diag::{eval_vcad_file_diagnostic, LoonDiagnostic};
 pub mod fastener;
-pub mod gear;
+pub use vcad_ir::gear;
 pub mod modules;
 pub mod params;
 pub mod recover;

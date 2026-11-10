@@ -413,6 +413,7 @@ struct DocumentGraph {
         case "StepImport", "MeshImport", "ImportedMesh": return "Imported"
         case "EmbroideryPattern": return "Embroidery"
         case "PartInstance": return "Instance"
+        case "SpurGear": return "Spur Gear"
         case let s where s.hasPrefix("SheetMetal"):
             return "Sheet Metal " + s.dropFirst("SheetMetal".count)
         default: return t
@@ -428,6 +429,7 @@ struct DocumentGraph {
         case "Torus": return "circle.circle"
         case "Wedge": return "triangle.righthalf.filled"
         case "Prism": return "hexagon"
+        case "SpurGear": return "gearshape"
         case "Hull": return "skew"
         case "SweepRotate": return "arrow.trianglehead.2.clockwise.rotate.90"
         case "EdgeBlend": return "circle.bottomrighthalf.pattern.checkered"
@@ -492,6 +494,10 @@ struct DocumentGraph {
             if let n = intv("sides"), let r = num("radius"), let h = num("height") { return "\(n)-sided r\(g(r)) × \(g(h)) mm" }
         case "SweepRotate":
             if let a = num("angle_lo_deg"), let b = num("angle_hi_deg") { return "\(g(a))° to \(g(b))°" }
+        case "SpurGear":
+            if let m = num("module"), let z = intv("teeth"), let w = num("face_width") {
+                return "\(z)T m\(g(m)) × \(g(w)) mm"
+            }
         case "Translate":
             if let o = vec("offset") { return "(\(g(o.0)), \(g(o.1)), \(g(o.2)))" }
         case "Rotate":

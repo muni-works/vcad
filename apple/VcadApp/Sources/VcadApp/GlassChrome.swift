@@ -937,6 +937,7 @@ struct EditBarParam {
         case "Wedge": EditBarParam(label: "Height", key: "size", axis: "z", unit: "mm", min: 0.1, detent: 1)
         case "SweepRotate": EditBarParam(label: "To", key: "angle_hi_deg", axis: nil, unit: "°", min: -3600, detent: 5)
         case "Cone": EditBarParam(label: "Height", key: "height", axis: nil, unit: "mm", min: 0.1, detent: 1)
+        case "SpurGear": EditBarParam(label: "Face width", key: "face_width", axis: nil, unit: "mm", min: 0.1, detent: 1)
         case "Cube": EditBarParam(label: "Height", key: "size", axis: "z", unit: "mm", min: 0.1, detent: 1)
         case "Revolve", "CircularPattern": EditBarParam(label: "Angle", key: "angle_deg", axis: nil, unit: "°", min: 0, detent: 5)
         default: nil

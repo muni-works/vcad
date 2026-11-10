@@ -1896,6 +1896,23 @@ where
             })
         }
 
+        "SG" => {
+            if parts.len() != 7 {
+                return Err(VCodeParseError {
+                    line: line_num,
+                    message: format!("SG requires 6 args, got {}", parts.len() - 1),
+                });
+            }
+            Ok(CsgOp::SpurGear {
+                module: parse_f64(parts[1], line_num)?,
+                teeth: parse_u64(parts[2], line_num)? as u32,
+                pressure_angle_deg: parse_f64(parts[3], line_num)?,
+                face_width: parse_f64(parts[4], line_num)?,
+                bore_diameter: parse_f64(parts[5], line_num)?,
+                backlash: parse_f64(parts[6], line_num)?,
+            })
+        }
+
         "U" => {
             if parts.len() != 3 {
                 return Err(VCodeParseError {
@@ -2409,6 +2426,18 @@ fn format_op(
             radius,
             height,
         } => Ok(format!("PR {} {} {}{}", sides, radius, height, name_suffix)),
+
+        CsgOp::SpurGear {
+            module,
+            teeth,
+            pressure_angle_deg,
+            face_width,
+            bore_diameter,
+            backlash,
+        } => Ok(format!(
+            "SG {} {} {} {} {} {}{}",
+            module, teeth, pressure_angle_deg, face_width, bore_diameter, backlash, name_suffix
+        )),
 
         CsgOp::Empty => Ok(format!("C 0 0 0{}", name_suffix)),
 

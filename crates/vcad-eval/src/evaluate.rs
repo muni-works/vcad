@@ -923,6 +923,8 @@ fn evaluate_op_timed(
             height,
         } => Ok(Some(Solid::prism(*sides, *radius, *height))),
 
+        CsgOp::SpurGear { .. } => spur_gear_solid(op).map(Some),
+
         CsgOp::Empty => Ok(Some(Solid::empty())),
 
         CsgOp::Union { left, right } => {
@@ -2995,12 +2997,37 @@ fn scope_primitive_names(node_id: NodeId, op: &CsgOp, result: &mut Option<Solid>
             | CsgOp::Torus { .. }
             | CsgOp::Wedge { .. }
             | CsgOp::Prism { .. }
+            | CsgOp::SpurGear { .. }
     );
     if !is_primitive {
         return;
     }
     if let Some(solid) = result {
         solid.set_name_scope(&format!("n{node_id}"));
+    }
+}
+
+/// Build the solid for a [`CsgOp::SpurGear`]: the exact involute profile
+/// (and bore, as an interior loop) extruded straight up the face width — no
+/// boolean pass, the same path a sketch extrude takes. Shared by every
+/// evaluator (vcad-eval, vcad-app, the WASM kernel) so a gear is the same
+/// solid everywhere.
+pub fn spur_gear_solid(op: &CsgOp) -> Result<Solid, EvalError> {
+    let CsgOp::SpurGear { face_width, .. } = op else {
+        return Err(EvalError::Gear("not a SpurGear node".to_string()));
+    };
+    let (segments, holes) = vcad_ir::gear::spur_gear_sketch(op).map_err(EvalError::Gear)?;
+    let origin = vcad_ir::Vec3::new(0.0, 0.0, 0.0);
+    let x_dir = vcad_ir::Vec3::new(1.0, 0.0, 0.0);
+    let y_dir = vcad_ir::Vec3::new(0.0, 1.0, 0.0);
+    let profile =
+        ir_sketch_to_profile(&origin, &x_dir, &y_dir, &segments).map_err(EvalError::Sketch)?;
+    let dir = to_vec3(&vcad_ir::Vec3::new(0.0, 0.0, *face_width));
+    if holes.is_empty() {
+        Solid::extrude(profile, dir).map_err(EvalError::Sketch)
+    } else {
+        let hole_loops = crate::convert::ir_holes_to_segments(&holes);
+        Solid::extrude_with_holes(profile, &hole_loops, dir).map_err(EvalError::Sketch)
     }
 }
 
@@ -3014,6 +3041,7 @@ fn op_name(op: &CsgOp) -> String {
         CsgOp::Torus { .. } => "Torus",
         CsgOp::Wedge { .. } => "Wedge",
         CsgOp::Prism { .. } => "Prism",
+        CsgOp::SpurGear { .. } => "SpurGear",
         CsgOp::Mirror { .. } => "Mirror",
         CsgOp::Empty => "Empty",
         CsgOp::Union { .. } => "Union",
