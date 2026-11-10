@@ -12,7 +12,7 @@ Every friction point found gets fixed or listed here.
 | 4 | 3D-print snap-fit case | shell, lip, clips, tolerance | Partial: 60 x 40 x 25 box shelled 2 mm, open top, 13,632 mm^3 (hand 13,632). No lip or clips yet |
 | 5 | Swept and lofted duct | sweep, loft, shell | Partial: loft from 40 x 30 to 20 x 15 over 50 mm, 35,000 mm^3 (frustum 35,000). Shelled 2 mm with the top open: 11,667.0 mm^3 in the app against 11,653.9 closed form (0.11% high; the kernel test matches to 1e-6, so the gap is unexplained). Sweep not tried |
 | 6 | Patterned heatsink | linear pattern, fin spacing | Built: 50 x 40 x 5 base, 8 fins 1.5 x 36 x 25 at 5.5 mm pitch, unioned: 18,640 mm^3 (hand 18,640) |
-| 7 | Gear pair with a mate | involute profile, mates | Unblocked, not yet re-run: All tools > Spur Gear makes a true involute gear, and Mesh with selected gear places the second at m(z1+z2)/2, tooth into gap |
+| 7 | Gear pair with a mate | involute profile, mates | Built by mouse with the new Spur Gear tool: 20T and 30T, module 2, 20 degrees, meshed at the 50 mm center distance; Clearance & Interference reports the pair clear by 0.001 mm |
 | 8 | Six-part assembly | joints, interference, explode | Built: plate plus cube, cylinder, sphere, cone and wedge as six instances, a revolute joint, explode to 100%, and Clearance & Interference reporting 1 interfering pair (203.5 mm^3 overlap) |
 | 9 | Drawing with GD&T | views, sections, datums, frames | Built on the part 6 heatsink: front view with 50 and 25 mm dimensions, datum A, a position frame to A, Section A-A. Defects below |
 | 10 | CAM on a pocketed plate | toolpaths, stock simulation | Built: 80 x 60 x 10 plate, 40 x 30 x 5 cut pocket, 42,000 mm^3 (hand 42,000); rect-pocket toolpath with a 1/8" endmill verified against the part. Moving the pocket 15 mm makes verification fail, as it should |
@@ -57,6 +57,10 @@ Every friction point found gets fixed or listed here.
   on a loft with sloped planar walls evaluates to no geometry. Fixed: loft cap orientation and shell offsets on sloped walls.
 - Part 5: after Add Section, the previous loft profile isn't shown, so the
   next one is drawn blind.
+- Part 7: with nothing selected, the first gear is placed at the origin, on top
+  of existing geometry.
+- Part 7: the clearance report gives an overlap of 5,425 mm^3 with a depth of
+  0.000 mm, which can't both be right.
 - File > New Document opens a second app instance rather than a new window or
   document in this one.
 
