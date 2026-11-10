@@ -93,3 +93,30 @@ describe("build_receipt on a clean imported KiCad board", () => {
     expect(built.unified_summary.overall).not.toBe("fail");
   });
 });
+
+describe("inspect_cad on an inside-out solid", () => {
+  it("flags reversed winding instead of reporting a silent positive volume", async () => {
+    const call = await connect();
+    // A 10 mm cube mesh, every triangle wound inward.
+    const positions = [0, 0, 0, 10, 0, 0, 10, 10, 0, 0, 10, 0, 0, 0, 10, 10, 0, 10, 10, 10, 10, 0, 10, 10];
+    const outward = [0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 2, 3, 7, 2, 7, 6, 1, 2, 6, 1, 6, 5, 3, 0, 4, 3, 4, 7];
+    const inward: number[] = [];
+    for (let i = 0; i < outward.length; i += 3) inward.push(outward[i]!, outward[i + 2]!, outward[i + 1]!);
+    const mk = (indices: number[], name: string): Document =>
+      ({
+        version: "0.1",
+        nodes: { "1": { id: 1, name, op: { type: "ImportedMesh", positions, indices } } },
+        materials: {},
+        part_materials: {},
+        roots: [{ root: 1, material: "default" }],
+      }) as unknown as Document;
+
+    const good = out(await call("inspect_cad", { document: mk(outward, "good") }));
+    expect(good.volume_mm3).toBeCloseTo(1000, 3);
+    expect(good.inside_out_parts).toBeUndefined();
+
+    const bad = out(await call("inspect_cad", { document: mk(inward, "flipped") }));
+    expect(bad.inside_out_parts).toEqual([{ name: "flipped", signed_volume_mm3: -1000 }]);
+    expect((bad.warnings as string[]).some((w) => w.includes("inside out"))).toBe(true);
+  });
+});
