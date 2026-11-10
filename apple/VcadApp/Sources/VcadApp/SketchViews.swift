@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import RealityKit
 
 // Sketch-mode chrome: the sketch bar (the dock while sketching: plane · tools
@@ -290,9 +291,12 @@ struct SketchConstraintPanel: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 4) {
                         ForEach(sketch.constraints) { c in
+                            let culprit = sketch.conflicting.contains(c.index)
                             HStack(spacing: 6) {
                                 Text(c.kind.glyph).font(.caption.monospaced()).frame(width: 16)
                                 Text(c.kind.label).font(.caption)
+                                    .foregroundStyle(culprit ? Color.red : Color.primary)
+                                    .help(culprit ? "Conflicts with the rest of the sketch: remove it or change its value" : "")
                                 Spacer(minLength: 4)
                                 if c.kind.isDimension {
                                     TextField("", value: Binding(get: { c.value },
@@ -300,12 +304,25 @@ struct SketchConstraintPanel: View {
                                               format: .number.precision(.fractionLength(0...3)))
                                         .multilineTextAlignment(.trailing).frame(width: 64)
                                         .textFieldStyle(.roundedBorder).controlSize(.small)
+                                        // Return commits and hands the keyboard back to
+                                        // the canvas, so the next click acts on the sketch.
+                                        .onSubmit { Self.returnFocusToCanvas(NSApp.keyWindow) }
                                     Text(c.kind == .angle ? "°" : "mm").font(.caption2).foregroundStyle(.secondary)
                                 }
+                                Button {
+                                    sketch.deleteConstraint(c); model.sketchDirty = true
+                                } label: { Image(systemName: "minus.circle") }
+                                    .buttonStyle(.borderless).controlSize(.small)
+                                    .foregroundStyle(culprit ? Color.red : Color.secondary)
+                                    .help("Remove this constraint")
                             }
                         }
                     }
                 }.frame(maxHeight: 220)
+                if sketch.isOverConstrained, !sketch.conflicting.isEmpty {
+                    Text("Remove a red constraint (or change its value) to recover")
+                        .font(.caption2).foregroundStyle(.red).lineLimit(2)
+                }
                 if let err = sketch.lastError {
                     Text(err).font(.caption2).foregroundStyle(.red).lineLimit(2)
                 }
@@ -316,6 +333,12 @@ struct SketchConstraintPanel: View {
             }
             .padding(Theme.Space.m).frame(width: 230).panelSurface()
         }
+    }
+    /// End a field edit: the window's field editor lets go, so keystrokes
+    /// and the next viewport click go to the canvas instead of the field.
+    @discardableResult
+    static func returnFocusToCanvas(_ window: NSWindow?) -> Bool {
+        window?.makeFirstResponder(nil) ?? false
     }
     private func statusColor(_ s: SketchSession) -> Color {
         s.isOverConstrained ? .red : s.isFullyConstrained ? .green : .orange
