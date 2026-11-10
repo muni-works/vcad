@@ -41,6 +41,16 @@ jobs:
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v6
+        with:
+          # main is protected by required status checks (Rust, TypeScript,
+          # Swift), which a bot commit can never carry, so GITHUB_TOKEN's push
+          # is rejected with GH006. Every refresh from 2026-10-21 to
+          # 2026-11-07 failed that way and the published WASM froze at
+          # 558f059, two and a half weeks of boolean fixes behind main (the
+          # launch page's bracket lost its drilled bottom face to it). Push
+          # with WASM_REFRESH_TOKEN, a fine-grained token (contents: write)
+          # from an account on main's bypass list; falls back to GITHUB_TOKEN.
+          token: ${{ secrets.WASM_REFRESH_TOKEN || github.token }}
       - name: Clone sibling repos
         run: |
           git clone --depth 1 https://github.com/ecto/tang.git ../tang

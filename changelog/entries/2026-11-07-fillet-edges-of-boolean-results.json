@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-07-fillet-edges-of-boolean-results",
+  "version": "0.11.0",
+  "date": "2026-11-07",
+  "category": "fix",
+  "title": "Fillet/chamfer a picked edge of a boolean result",
+  "summary": "Picked-edge blends on boolean results no longer fail with 'edge reference lost' or refuse parts with holes; picks carry a geometric hint and split faces resolve by lineage.",
+  "features": ["fillet", "chamfer", "topological-naming", "native"]
+}

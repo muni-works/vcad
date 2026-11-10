@@ -1671,6 +1671,28 @@ struct ReleasedARView: NSViewRepresentable {
         // (or nothing) on screen; parts are drawn as they land and the model
         // flips geometryDirty when the kernel is done.
         if scene.solving && scene.meshes.isEmpty { return }
+        // Release-time hook (scripts/bake-sample-meshes.sh): write the solved
+        // document's `.vcadmesh` beside it and quit, so a bundled sample opens
+        // as a root-cache hit instead of a cold kernel walk on first launch.
+        if ProcessInfo.processInfo.environment["VCAD_BAKE_MESH_BUNDLE"] == "1",
+           !scene.solving, case let .document(path, _) = model.source {
+            let n = model.writeMeshBundle(for: URL(fileURLWithPath: path))
+            FileHandle.standardError.write(Data("[vcad] baked \(n) roots for \(path)\n".utf8))
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
+        if LaunchPerf.enabled, !scene.solving, !model.source.isSandbox,
+           scene.partCount > 0 || !scene.instances.isEmpty {
+            LaunchPerf.once("first full scene", " (\(scene.partCount) parts, \(scene.instances.count) instances, \(scene.triangleCount) tris)")
+            if let ar = ReleaseWindowController.shared.arView, let cam = coordinator.camera {
+                let center = lookAt
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    LaunchPerf.startOrbit(ar, camera: cam, center: center, label: (model.source.id as NSString).lastPathComponent)
+                }
+            }
+            if LaunchPerf.exitWhenDone, LaunchPerf.orbitSeconds == 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApp.terminate(nil) }
+            }
+        }
         coordinator.instanceEntities.removeAll(keepingCapacity: true)
         anchor.children.filter { ["geomRoot", "grid", "contactShadow"].contains($0.name) }
             .forEach { $0.removeFromParent() }

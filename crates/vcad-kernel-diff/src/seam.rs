@@ -7,8 +7,8 @@ use tang::Dual;
 use vcad_kernel_math::{Point3, Vec3};
 use vcad_kernel_primitives::BRepSolid;
 use vcad_kernel_tessellate::frozen::{
-    canonical_index, mesh_volume, refine_boundary_point, signature_with_index, FrozenError,
-    FrozenPlan, NodeRecipe,
+    canonical_index, invert_uv, mesh_volume, refine_boundary_point, signature_with_index,
+    FrozenError, FrozenPlan, NodeRecipe,
 };
 use vcad_kernel_topo::VertexId;
 
@@ -149,6 +149,139 @@ pub(crate) enum RowSource {
         /// Index into the rows `tangency_rows` returned for this pair.
         index: usize,
     },
+    /// Carry completion: `direction · ẋ = direction · ẋ_carrier`, where
+    /// `ẋ_carrier` is the velocity of the carrier surface's point at the
+    /// vertex's frozen `(u, v)` (see [`carry_rows`]).
+    Carry {
+        /// Surface index of the carrier surface.
+        surface: usize,
+        /// Unit direction the implicit rows left unconstrained.
+        direction: Vec3,
+    },
+}
+
+/// Velocity of `surface`'s point at the frozen `(u, v)` of `x`, under
+/// `seeds`. `None` when the kind has no parameter inversion.
+fn carried_velocity(
+    surface: &dyn vcad_kernel_geom::Surface,
+    seeds: &[crate::SurfaceSeed],
+    x: &Point3,
+) -> Result<Option<Vec3>, DiffError> {
+    let Ok(uv) = invert_uv(surface, x) else {
+        return Ok(None);
+    };
+    Ok(Some(
+        lift_surface(surface, seeds)?.evaluate_with_velocity(uv).1,
+    ))
+}
+
+/// The rhs of a [`RowSource::Carry`] row under `seeds` (also used by the
+/// reverse-mode pullback to read the row's seed-Jacobian).
+pub(crate) fn carry_rhs(
+    surface: &dyn vcad_kernel_geom::Surface,
+    seeds: &[crate::SurfaceSeed],
+    x: &Point3,
+    direction: Vec3,
+) -> Result<f64, DiffError> {
+    Ok(carried_velocity(surface, seeds, x)?
+        .map(|v| direction.dot(v))
+        .unwrap_or(0.0))
+}
+
+/// Carry completion for a topology vertex whose implicit and tangency rows
+/// leave directions unconstrained.
+///
+/// A Boolean-cut rim vertex (the end of a hole wall's seam line on a cap
+/// plane) gets only two independent rows, plane and cylinder, and the
+/// minimum-norm solve would freeze its slide along the rim. The kernel does
+/// not: the vertex is where a line of fixed angle on the tool surface meets
+/// the plane, so it moves with the tool, and the same-plan oracle reads
+/// that position. Freezing it is harmless for volume (the rim is a
+/// polygon inscribed in its circle, and opposite slides cancel) but wrong
+/// for moments: a hole translated along x carries its rim vertices at
+/// `ẋ = (½, 0, 0)` while the frozen solve reports ~0.
+///
+/// The completion makes the vertex ride with the highest-ranked curved
+/// incident surface (sphere/torus over cylinder/cone; lowest index on a
+/// tie) at its frozen `(u, v)` in every direction the other rows leave
+/// open. Planes never carry (they have no intrinsic parametrization the
+/// kernel preserves), so vertices with only planar neighbours keep the
+/// minimum-norm convention. The rows' gradients depend on geometry only,
+/// so the completion stays linear in the seeds and the pullback mirrors it.
+fn carry_rows(
+    brep: &BRepSolid,
+    incident: &BTreeSet<usize>,
+    seeding: &ParamSeeding,
+    x: &Point3,
+    rows: &[(RowSource, ConstraintRow)],
+) -> Result<Vec<(RowSource, ConstraintRow)>, DiffError> {
+    let mut basis: Vec<Vec3> = Vec::new();
+    for (_, row) in rows {
+        let norm = row.gradient.norm();
+        if norm < f64::MIN_POSITIVE {
+            continue;
+        }
+        let mut g = row.gradient / norm;
+        for e in &basis {
+            g -= *e * g.dot(*e);
+        }
+        let res = g.norm();
+        if res > crate::implicit::DEPENDENT_TOL {
+            basis.push(g / res);
+        }
+    }
+    if basis.len() >= 3 {
+        return Ok(Vec::new());
+    }
+    let rank = |kind: vcad_kernel_geom::SurfaceKind| -> u8 {
+        use vcad_kernel_geom::SurfaceKind as K;
+        match kind {
+            K::Sphere | K::Torus => 2,
+            K::Cylinder | K::Cone => 1,
+            _ => 0,
+        }
+    };
+    let carrier = incident
+        .iter()
+        .copied()
+        .filter(|&i| rank(brep.geometry.surfaces[i].surface_type()) > 0)
+        .filter(|&i| invert_uv(brep.geometry.surfaces[i].as_ref(), x).is_ok())
+        .max_by_key(|&i| {
+            (
+                rank(brep.geometry.surfaces[i].surface_type()),
+                std::cmp::Reverse(i),
+            )
+        });
+    let Some(carrier) = carrier else {
+        return Ok(Vec::new());
+    };
+    // Orthonormal complement of the constrained directions.
+    let mut free: Vec<Vec3> = Vec::new();
+    for e in [Vec3::x(), Vec3::y(), Vec3::z()] {
+        let mut g = e;
+        for b in basis.iter().chain(&free) {
+            g -= *b * g.dot(*b);
+        }
+        let n = g.norm();
+        if n > 0.5 && basis.len() + free.len() < 3 {
+            free.push(g / n);
+        }
+    }
+    let surface = brep.geometry.surfaces[carrier].as_ref();
+    free.into_iter()
+        .map(|direction| {
+            Ok((
+                RowSource::Carry {
+                    surface: carrier,
+                    direction,
+                },
+                ConstraintRow {
+                    gradient: direction,
+                    rhs: carry_rhs(surface, seeding.get(carrier), x, direction)?,
+                },
+            ))
+        })
+        .collect()
 }
 
 /// Assemble the full implicit system of a topology vertex: one constraint
@@ -201,6 +334,8 @@ pub(crate) fn assemble_vertex_rows(
             }
         }
     }
+    let carry = carry_rows(brep, incident, seeding, x, &rows)?;
+    rows.extend(carry);
     Ok(rows)
 }
 
