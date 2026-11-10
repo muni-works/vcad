@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useAuth, SignInButton, getSupabase, vcadFileToCloudContent } from "@vcad/auth";
+import { useState, type FormEvent } from "react";
+import { getSupabase, signInWithEmail, signInWithProvider, signOut, useExportSession } from "@/lib/export-auth";
 import {
   buildExportZip,
   exportZipName,
@@ -7,6 +7,7 @@ import {
   supabaseDocumentFetcher,
   type DocumentPageFetcher,
   type ExportableDocument,
+  vcadFileToCloudContent,
 } from "@/lib/export-all";
 import { getAllDocuments } from "@/lib/storage";
 import { PageMark, RetirementBanner } from "./RetirementBanner";
@@ -65,6 +66,41 @@ function StatusLine({ status, noun }: { status: Status; noun: string }) {
   return null;
 }
 
+/** Sign in to an existing account: Google, GitHub, or an email magic link. */
+function SignInForm({ button }: { button: string }) {
+  const [email, setEmail] = useState("");
+  const [note, setNote] = useState<string | null>(null);
+  const provider = async (p: "google" | "github") => setNote(await signInWithProvider(p));
+  const magic = async (e: FormEvent) => {
+    e.preventDefault();
+    const err = await signInWithEmail(email.trim());
+    setNote(err ?? `Check ${email.trim()} for a sign-in link.`);
+  };
+  return (
+    <>
+      <p className="mb-3 text-xs text-text">
+        Sign in with the account you used on vcad.io to download your synced documents.
+      </p>
+      <button className={`${button} mb-2`} onClick={() => void provider("google")}>Continue with Google</button>
+      <button className={`${button} mb-2`} onClick={() => void provider("github")}>Continue with GitHub</button>
+      <form className="flex gap-2" onSubmit={(e) => void magic(e)}>
+        <input
+          type="email"
+          required
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="you@example.com"
+          className="h-8 flex-1 border border-border bg-bg px-2 text-xs text-text"
+        />
+        <button className="h-8 border border-border bg-bg px-3 text-xs text-text hover:bg-hover" type="submit">
+          Email link
+        </button>
+      </form>
+      {note && <p className="mt-2 text-xs text-text-muted">{note}</p>}
+    </>
+  );
+}
+
 /**
  * `/export` — download every document as `.vcad` files in one zip, ahead of
  * the vcad.io shutdown. Read-only: it only SELECTs the caller's rows from the
@@ -72,9 +108,10 @@ function StatusLine({ status, noun }: { status: Status; noun: string }) {
  * documents, which never reached the cloud if sync was off.
  */
 export function ExportAllPage() {
-  const auth = useAuth();
+  const { session, loading } = useExportSession();
   const mock = import.meta.env.DEV && new URLSearchParams(window.location.search).has("mock");
-  const signedIn = mock || !!auth.session;
+  const signedIn = mock || !!session;
+  const email = session?.user?.email;
   const [cloud, setCloud] = useState<Status>({ state: "idle" });
   const [local, setLocal] = useState<Status>({ state: "idle" });
 
@@ -123,19 +160,23 @@ export function ExportAllPage() {
             <>
               <p className="mb-3 text-xs text-text-muted">
                 Every document synced to your account
-                {mock ? " (mock session)" : auth.user?.email ? ` (${auth.user.email})` : ""}, as{" "}
+                {mock ? " (mock session)" : email ? ` (${email})` : ""}, as{" "}
                 <code className="text-brand">.vcad</code> files in one zip.
               </p>
               <button className={button} onClick={exportCloud} disabled={cloud.state === "working"}>
                 Download all cloud documents (.zip)
               </button>
               <StatusLine status={cloud} noun="documents" />
+              {!mock && (
+                <button className="mt-3 text-xs text-text-muted underline" onClick={() => void signOut()}>
+                  Sign out
+                </button>
+              )}
             </>
+          ) : loading ? (
+            <p className="text-xs text-text-muted">Checking for a saved session…</p>
           ) : (
-            <>
-              <p className="mb-3 text-xs text-text">Sign in to download your synced documents.</p>
-              <SignInButton className={button} />
-            </>
+            <SignInForm button={button} />
           )}
         </section>
 

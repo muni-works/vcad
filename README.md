@@ -17,8 +17,11 @@ vcad is three things in one repository:
   (Claude Code, Cursor, Codex, and others) and have it model, inspect, and
   export parts.
 
-The web app at [vcad.io](https://vcad.io) still runs, but the hosted web app,
-cloud sync, and accounts are being retired in favor of the Mac app.
+vcad runs entirely on your machine. There are no accounts, no cloud sync, and
+no hosted services: the MCP server runs locally, and the hosted web editor at
+[vcad.io](https://vcad.io) has shut down in favor of the Mac app. If you had
+documents in a vcad.io account, sign in at
+[vcad.io/export](https://vcad.io/export) to download them all as `.vcad` files.
 
 ## Prerequisites
 
@@ -70,7 +73,7 @@ claude mcp add vcad -- npx -y @vcad/mcp
 
 The usual loop is `open_document`, author with `create_cad_loon`, look with
 `render_view`, measure with `inspect_cad`, and ship with `export_cad`
-(STL, GLB, or STEP). Tool packs, protocol details, and the hosted endpoint are
+(STL, GLB, or STEP). Tool packs and protocol details are
 documented in [packages/mcp/README.md](packages/mcp/README.md).
 
 ## CLI
@@ -135,12 +138,10 @@ kernel WASM artifact rule, adding IR operations, and the changelog format.
 
 ## Export controls
 
-The hosted services (vcad.io and mcp.vcad.io) are not available in
-jurisdictions subject to U.S. sanctions and export controls — currently
-Russia, Belarus, Iran, Cuba, North Korea, Syria, and the Crimea, Sevastopol,
-Donetsk, and Luhansk regions of Ukraine. Users must comply with all
-applicable export laws. The open-source code in this repository is not
-affected and remains available to everyone. Details in
+vcad operates no hosted services (beyond the read-only `/export` page for
+existing accounts). It is published open-source software that
+you build and run yourself; users must comply with all export laws that apply
+to them. Details in
 [docs/export-controls.md](docs/export-controls.md).
 
 ## License

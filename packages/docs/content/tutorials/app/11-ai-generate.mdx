@@ -20,19 +20,11 @@ The generated part is fully parametric -- every primitive, boolean, and transfor
 The AI can generate sketches, extrusions, boolean operations, fillets, patterns, and assemblies. Ask for "a flanged hub with six bolt holes on a circular pattern" and the result includes a sketch-and-extrude base, a cylindrical boss, and a circular pattern of through-holes -- all as separate, editable operations in the feature tree.
 </Callout>
 
-## Browser vs Server Inference
+## Inference
 
-vcad offers two inference modes, selectable in the settings menu.
+**Browser inference** runs a small model directly in your browser using WebGPU. It requires no network connection, your prompts never leave your machine, and it responds in a few seconds. The model is compact and handles straightforward parts well -- boxes, plates, brackets, simple housings -- but may struggle with complex assemblies or unusual geometry.
 
-**Browser inference** runs a small model directly in your browser using WebGPU. It requires no network connection, your prompts never leave your machine, and it responds in a few seconds. The trade-off is that the model is compact and handles straightforward parts well -- boxes, plates, brackets, simple housings -- but may struggle with complex assemblies or unusual geometry.
-
-**Server inference** sends your prompt to a larger model hosted on vcad's servers. This model has more capacity for complex and multi-step designs. It handles compound parts ("a planetary gear set with sun gear, three planet gears, and a ring gear"), detailed specifications ("M6 counterbored holes at 30 mm spacing on a 2 mm fillet-edged plate"), and ambiguous descriptions that require engineering judgment. Server inference takes slightly longer and requires an internet connection.
-
-Both modes produce the same output format -- vcad IR -- so the resulting parts are equally editable regardless of which model generated them.
-
-<Callout type="tip" title="Start in browser, escalate to server">
-Try browser inference first. If the result is not what you expected, switch to server inference and submit the same prompt. You can also edit the prompt to be more specific based on what the browser model got wrong. This workflow keeps most interactions fast and local while reserving the larger model for when you need it.
-</Callout>
+**Larger models** are not hosted by vcad. To use a frontier model, connect your own agent (Claude Code, Claude Desktop, or any MCP client) to the local MCP server with `npx -y @vcad/mcp`; your agent runs under your own account and vcad never sees your prompts.
 
 ## Writing Good Prompts
 

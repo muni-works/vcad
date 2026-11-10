@@ -1,14 +1,9 @@
-import { describe, it, expect, beforeAll, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach } from "vitest";
 import { Engine } from "@vcad/engine";
 import type { Document } from "@vcad/ir";
 import { openDocument, documents } from "../tools/session.js";
-import {
-  quoteManufacturing,
-  getOrderStatus,
-  listOrders,
-} from "../tools/order.js";
+import { quoteManufacturing } from "../tools/order.js";
 import { buildFabHandoff } from "../fabricate/handoff.js";
-import { telemetryConfig, flushTelemetry } from "../telemetry.js";
 import { InMemoryFabricateStore } from "../fabricate/store.js";
 import { storeArtifact, clearArtifacts } from "../tools/artifact-store.js";
 import { FulfillmentBroker } from "../fabricate/broker.js";
@@ -183,11 +178,12 @@ describe("fabricate quote loop (engine)", () => {
     // The fab bytes never enter the tool result.
     expect(res.content[0].text).not.toContain("G04 top secret");
 
-    // The binding is persisted on the order and visible via get_order_status.
-    const statusRes = await getOrderStatus({ order_id: quote.order_id }, store, null);
-    const status = JSON.parse(statusRes.content[0].text);
-    expect(status.fab_artifact.artifact_id).toBe(handle.artifact_id);
-    expect(status.fab_artifact.manifest).toHaveLength(2);
+    // The binding is persisted on the (in-memory) order row.
+    const order = (await store.getOrder(quote.order_id, "local")) as unknown as {
+      fab_artifact: { artifact_id: string; manifest: unknown[] };
+    };
+    expect(order.fab_artifact.artifact_id).toBe(handle.artifact_id);
+    expect(order.fab_artifact.manifest).toHaveLength(2);
   });
 
   it("rejects an unknown fab artifact handle", async () => {
@@ -233,16 +229,12 @@ describe("fabricate quote loop (engine)", () => {
     expect(quoteRes.content[0].text).not.toContain("fab_cost");
     expect(quoteRes.content[0].text).not.toContain("margin_minor");
 
-    // The order was persisted at QUOTED and is readable + listable.
-    const statusRes = await getOrderStatus({ order_id: quote.order_id }, store, null);
-    const status = JSON.parse(statusRes.content[0].text);
-    expect(status.state).toBe("QUOTED");
-    expect(status.events[0].state).toBe("QUOTED");
-    expect(status.tracking).toBeNull();
-
-    const listRes = await listOrders({ status: "QUOTED" }, store, null);
-    const list = JSON.parse(listRes.content[0].text);
-    expect(list.orders.some((o: { order_id: string }) => o.order_id === quote.order_id)).toBe(true);
+    // The order row was persisted at QUOTED in the in-memory store.
+    const order = await store.getOrder(quote.order_id, "local");
+    expect(order?.state).toBe("QUOTED");
+    expect(order?.events[0].state).toBe("QUOTED");
+    const listed = await store.listOrders("local", { status: "QUOTED" });
+    expect(listed.some((o) => o.order_id === quote.order_id)).toBe(true);
   });
 
   it("rejects an unknown process", async () => {
@@ -448,37 +440,18 @@ describe("fab handoff in quote_manufacturing (engine)", () => {
     engine = await Engine.init();
   });
 
-  it("attaches fab_handoff to sheet_metal quotes and emits the BD event", async () => {
-    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, statusText: "OK" }));
-    vi.stubGlobal("fetch", fetchMock);
-    telemetryConfig.apiKey = "phc_test_key";
-    try {
-      const res = await quoteManufacturing(
-        { ir: cubeDoc(), process: "sheet_metal", quantity: 3, material: "aluminum" },
-        engine,
-        new InMemoryFabricateStore(),
-        null,
-      );
-      expect(res.isError).toBeFalsy();
-      const quote = JSON.parse(res.content[0].text);
-      expect(quote.fab_handoff).toBeDefined();
-      expect(quote.fab_handoff.orderable_via_vcad).toBe(false);
-      expect(quote.fab_handoff.shops).toHaveLength(3);
-
-      await flushTelemetry();
-      const handoffCall = fetchMock.mock.calls
-        .map(([, init]) => JSON.parse((init as { body: string }).body))
-        .find((p) => p.event === "fab_handoff_generated");
-      expect(handoffCall).toBeDefined();
-      expect(handoffCall.properties.process).toBe("sheet_metal");
-      expect(handoffCall.properties.quantity).toBe(3);
-      expect(handoffCall.properties.total_usd).toBeGreaterThan(0);
-      // Aggregates only — no IR or shop payloads in the event.
-      expect(handoffCall.properties.ir).toBeUndefined();
-    } finally {
-      telemetryConfig.apiKey = "";
-      vi.unstubAllGlobals();
-    }
+  it("attaches fab_handoff to sheet_metal quotes", async () => {
+    const res = await quoteManufacturing(
+      { ir: cubeDoc(), process: "sheet_metal", quantity: 3, material: "aluminum" },
+      engine,
+      new InMemoryFabricateStore(),
+      null,
+    );
+    expect(res.isError).toBeFalsy();
+    const quote = JSON.parse(res.content[0].text);
+    expect(quote.fab_handoff).toBeDefined();
+    expect(quote.fab_handoff.orderable_via_vcad).toBe(false);
+    expect(quote.fab_handoff.shops).toHaveLength(3);
   });
 
   it("omits fab_handoff for non-sheet-metal quotes", async () => {

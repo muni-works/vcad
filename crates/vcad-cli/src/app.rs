@@ -263,16 +263,6 @@ impl App {
             app.keybindings.set_binding(cmd_id, None);
         }
 
-        // Rehydrate chat history so the sidebar shows prior turns on
-        // launch. Full fidelity goes into session.messages (what the
-        // model sees on the next turn); a simplified view goes into
-        // chat.lines (what the user sees in the sidebar).
-        let history = crate::chat_session::load_history();
-        if !history.is_empty() {
-            crate::chat_session::rehydrate_display(&mut app, &history);
-            app.chat_session.messages = history;
-        }
-
         app.evaluate()?;
         Ok(app)
     }

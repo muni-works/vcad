@@ -28,7 +28,7 @@
   {
     "name": "get_document",
     "title": "Get Document",
-    "description": "Return the full IR Document JSON for an open session. Use after a series of mutations to capture the result, or to feed into `export_cad` / `open_in_browser`. A document authored from loon carries that source under `source`, and the result reports `source_stale` when the session no longer matches it (the file changed, or incremental edits moved the session away from it). Very large documents come back as a compact artifact handle instead ({document_id, artifact_url, manifest with sha256, …}) — download the full IR at `artifact_url`, or read it from `path` on a local server.",
+    "description": "Return the full IR Document JSON for an open session. Use after a series of mutations to capture the result, or to feed into `export_cad` / `open_in_app`. A document authored from loon carries that source under `source`, and the result reports `source_stale` when the session no longer matches it (the file changed, or incremental edits moved the session away from it). Very large documents come back as a compact artifact handle instead ({document_id, artifact_url, manifest with sha256, …}) — download the full IR at `artifact_url`, or read it from `path` on a local server.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -184,13 +184,13 @@
   {
     "name": "continue_document",
     "title": "Continue Document",
-    "description": "Open the user's vcad.io part as an editing session from a 'Continue in Claude' handoff (a share `token`, or an inline `doc` for accountless handoffs). The web app hands you this in the starter prompt; call this first, then render_view it and continue the user's work. Returns a `document_id` for subsequent tool calls. The geometry is fetched server-side — never paste it.",
+    "description": "Open a part from an inline 'Continue in Claude' handoff (`doc`: gzip + base64url IR) as an editing session, then render_view it and continue the user's work. Returns a `document_id`. Share-token (`token`) handoffs needed the retired hosted service and return an error.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "token": {
           "type": "string",
-          "description": "The vcad.io share token from a 'Continue in Claude' handoff (a UUID). Opens the signed-in user's current part as an editing session you can render, measure, and continue."
+          "description": "Legacy vcad.io share token. Not available in the local build (hosted services were retired) — returns an error; use `doc`."
         },
         "doc": {
           "type": "string",
@@ -247,7 +247,7 @@
   {
     "name": "server_info",
     "title": "Server Info",
-    "description": "Report the running build's identity: version, git sha (if stamped), tool count, enabled packs, whether the kernel WASM loaded, and whether sessions are durable (`durable` — survive a redeploy/cold start, vs. in-memory only). Call this to confirm a tool exists in THIS build before assuming a stale or version-skewed deploy, and to check durable:true before relying on checkpoints across a long session.",
+    "description": "Report the running build's identity: version, git sha (if stamped), tool count, enabled packs, whether the kernel WASM loaded, and whether sessions are durable (`durable` — saved to the local disk store and survive a restart, vs. in-memory only). Call this to confirm a tool exists in THIS build before assuming a stale or version-skewed deploy, and to check durable:true before relying on checkpoints across a long session.",
     "inputSchema": {
       "type": "object",
       "properties": {}
@@ -372,142 +372,6 @@
       "openai/outputTemplate": "ui://vcad/viewer-openai.html",
       "openai/toolInvocation/invoking": "Modeling geometry…",
       "openai/toolInvocation/invoked": "Model updated"
-    }
-  },
-  {
-    "name": "get_order_status",
-    "title": "Get Order Status",
-    "description": "Return the lifecycle row for a Fabricate order (state, fab, totals, event timeline). Read-only.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "order_id": {
-          "type": "string",
-          "description": "Order id from quote_manufacturing."
-        }
-      },
-      "required": [
-        "order_id"
-      ]
-    },
-    "annotations": {
-      "readOnlyHint": true,
-      "openWorldHint": true
-    }
-  },
-  {
-    "name": "list_orders",
-    "title": "List Orders",
-    "description": "List the caller's Fabricate orders, newest first. Optional status filter and limit. Read-only.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "status": {
-          "type": "string",
-          "description": "Optional order state filter (e.g. QUOTED)."
-        },
-        "limit": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 200,
-          "description": "Max rows (default 50)."
-        }
-      },
-      "required": []
-    },
-    "annotations": {
-      "readOnlyHint": true,
-      "openWorldHint": true
-    }
-  },
-  {
-    "name": "authorize_spend",
-    "title": "Authorize Spend",
-    "description": "Propose a spend authorization for a QUOTED order. Creates a DB-backed, revocable authorization (status pending_human) and records the proposal on the session's event log. A HUMAN must approve it in the vcad app before place_order can charge — the agent cannot approve its own spend; when the client supports URL elicitation the approval page is offered to the human in-band. Flag-gated (test-mode); no money moves here.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "order_id": {
-          "type": "string",
-          "description": "Order id from quote_manufacturing (must be QUOTED)."
-        },
-        "max_amount_minor": {
-          "type": "integer",
-          "minimum": 1,
-          "description": "Optional spend ceiling in minor units (USD cents). Defaults to the order total; must be ≥ the order total."
-        }
-      },
-      "required": [
-        "order_id"
-      ]
-    },
-    "annotations": {
-      "readOnlyHint": false,
-      "openWorldHint": true
-    }
-  },
-  {
-    "name": "place_order",
-    "title": "Place Order",
-    "description": "Place a QUOTED order once its authorization has been human-approved: performs one atomic wallet debit and moves the order to PAID (fab submission follows in a later step). Refuses if the authorization is still pending approval, if the geometry changed since the quote (doc_hash mismatch — re-quote), or if the design's persisted clearance claims fail or cannot be re-verified (fail-closed receipt gate). Flag-gated (test-mode).",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "order_id": {
-          "type": "string",
-          "description": "Order id from quote_manufacturing."
-        },
-        "authorization_id": {
-          "type": "string",
-          "description": "Authorization id from authorize_spend (must be human-approved)."
-        },
-        "idempotency_key": {
-          "type": "string",
-          "description": "Optional. Reuse to retry safely; defaults to a per-order key."
-        },
-        "fab_artifact_id": {
-          "type": "string",
-          "description": "Optional artifact id (or artifact_url) of the fab bundle from export_gerber / export_cad. Binds the exact files to the placed order by reference (recorded on the durable spine for the fab-submission worker) WITHOUT re-sending them through model context. Defaults to the artifact already bound on the order at quote time."
-        }
-      },
-      "required": [
-        "order_id",
-        "authorization_id"
-      ]
-    },
-    "annotations": {
-      "readOnlyHint": false,
-      "destructiveHint": true,
-      "openWorldHint": true
-    }
-  },
-  {
-    "name": "get_order_feed",
-    "title": "Get Order Feed",
-    "description": "App-only: the order-dock feed for a document — orders with fused lifecycle chips, joined quote details, authorization status (+ approve URL while pending), receipt status, and wallet balance. Polled by the inline viewer; read-only.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "document_id": {
-          "type": "string",
-          "description": "Session/document id whose orders to feed."
-        }
-      },
-      "required": [
-        "document_id"
-      ]
-    },
-    "annotations": {
-      "readOnlyHint": true,
-      "openWorldHint": true
-    },
-    "_meta": {
-      "openai/widgetAccessible": true,
-      "ui": {
-        "visibility": [
-          "app"
-        ]
-      }
     }
   },
   {
@@ -895,46 +759,6 @@
     "annotations": {
       "readOnlyHint": true,
       "openWorldHint": true
-    }
-  },
-  {
-    "name": "share_session",
-    "title": "Share Session",
-    "description": "Share this session as a live, watchable link (mcp.vcad.io/live/<id>). Sessions are PRIVATE by default — this is the explicit opt-in that makes one viewable. Anyone with the returned link can watch the geometry + full event log (read-only) and drop annotations, so the result includes a clear public-link warning. Revoke anytime with unshare_session.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "document_id": {
-          "type": "string",
-          "description": "Session id from open_document to share as a live, watchable link."
-        }
-      },
-      "required": [
-        "document_id"
-      ]
-    },
-    "annotations": {
-      "readOnlyHint": false
-    }
-  },
-  {
-    "name": "unshare_session",
-    "title": "Unshare Session",
-    "description": "Revoke a session's live link — it goes dead and the session is private again.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "document_id": {
-          "type": "string",
-          "description": "Session id to stop sharing — the live link goes dead."
-        }
-      },
-      "required": [
-        "document_id"
-      ]
-    },
-    "annotations": {
-      "readOnlyHint": false
     }
   },
   {
@@ -7137,7 +6961,7 @@
   {
     "name": "sheet_metal_create",
     "title": "Create Sheet Metal",
-    "description": "Create a sheet-metal part: a rectangular or polygon base flange plus an ordered chain of edge flanges, hems, and jogs. Supports `shop_profile` (e.g. \"sendcutsend\") to resolve bend radii/K-factors from the fab's published catalog, `bend_relief` to cut relief notches at bend ends, and `engravings` (text labels via a built-in single-stroke font, or raw polylines) surface-marked on the base flange — no material removal, exempt from min-feature DFM, emitted on the DXF ENGRAVE layer. Returns a `document_id` (usable with sheet_metal_unfold/check, inspect_cad, export_cad, open_in_browser), the panel/bend model summary, flat bbox + area, and DFM violations.",
+    "description": "Create a sheet-metal part: a rectangular or polygon base flange plus an ordered chain of edge flanges, hems, and jogs. Supports `shop_profile` (e.g. \"sendcutsend\") to resolve bend radii/K-factors from the fab's published catalog, `bend_relief` to cut relief notches at bend ends, and `engravings` (text labels via a built-in single-stroke font, or raw polylines) surface-marked on the base flange — no material removal, exempt from min-feature DFM, emitted on the DXF ENGRAVE layer. Returns a `document_id` (usable with sheet_metal_unfold/check, inspect_cad, export_cad, open_in_app), the panel/bend model summary, flat bbox + area, and DFM violations.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -7824,31 +7648,6 @@
     "name": "open_in_app",
     "title": "Open in vcad",
     "description": "Open a CAD document in the native vcad app via a `vcad://` deep link. Pass a live session's `document_id` (the usual ship path), or an inline IR `document` (JSON or VCode format). Local sessions travel by id; otherwise the document is embedded (gzip + base64url). The result also carries the vcad download page as the fallback for users without the app.",
-    "inputSchema": {
-      "type": "object",
-      "properties": {
-        "document_id": {
-          "type": "string",
-          "description": "Live session id (from open_document / create_cad_loon) to share — the session-first path. Either this or `document` is required."
-        },
-        "document": {
-          "type": "string",
-          "description": "Inline IR document (JSON or VCode format) — the stateless alternative to document_id."
-        },
-        "name": {
-          "type": "string",
-          "description": "Optional document name"
-        }
-      }
-    },
-    "annotations": {
-      "readOnlyHint": false
-    }
-  },
-  {
-    "name": "open_in_browser",
-    "title": "Open in vcad (legacy name)",
-    "description": "Legacy alias of `open_in_app` (the vcad.io web editor is retiring). Open a CAD document in the native vcad app via a `vcad://` deep link. Pass a live session's `document_id` (the usual ship path), or an inline IR `document` (JSON or VCode format). Local sessions travel by id; otherwise the document is embedded (gzip + base64url). The result also carries the vcad download page as the fallback for users without the app.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -11791,7 +11590,7 @@
         },
         "output_dir": {
           "type": "string",
-          "description": "Directory to write the fabrication files to (created if missing). Resolved on the MCP server's filesystem; absolute paths work locally. A hosted server, or a write that fails, is an error and nothing is delivered. When omitted, a small bundle is returned inline, but a bundle over the inline byte cap (~168 KB Gerber sets exceed it) is written to the artifact store and the result carries { artifact_url, manifest, artifact_id } instead of the files — pass that artifact_id to quote_manufacturing / place_order so the fab files never transit model context."
+          "description": "Directory to write the fabrication files to (created if missing). Resolved on the MCP server's filesystem; absolute paths work locally. A hosted server, or a write that fails, is an error and nothing is delivered. When omitted, a small bundle is returned inline, but a bundle over the inline byte cap (~168 KB Gerber sets exceed it) is written to the artifact store and the result carries { artifact_url, manifest, artifact_id } instead of the files — pass that artifact_id to quote_manufacturing so the fab files never transit model context."
         },
         "require_clean_drc": {
           "type": "boolean",

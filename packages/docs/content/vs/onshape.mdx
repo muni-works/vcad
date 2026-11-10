@@ -12,7 +12,7 @@ Onshape pioneered browser-based parametric CAD when it launched in 2015, proving
 |---------|----------|-------------|
 | **Price** | Free (MIT license) | $1,500+/year (Standard), $2,500+/year (Professional) |
 | **Source** | Open source | Proprietary |
-| **Data storage** | Local files + optional Supabase sync | Cloud-only (PTC servers) |
+| **Data storage** | Local files | Cloud-only (PTC servers) |
 | **Geometry kernel** | Custom BRep (Rust) | Parasolid (Siemens) |
 | **Platform** | Browser, CLI, Rust library | Browser only |
 | **Offline use** | Full offline support | Requires internet connection |
@@ -33,7 +33,7 @@ vcad is free for everyone. The entire codebase is MIT-licensed, meaning you can 
 
 This is the starkest difference between the two tools. Onshape stores all data on PTC's cloud servers. You cannot download your design history, branch structure, or configuration data -- only export current geometry as STEP/STL. If PTC changes terms, raises prices, or discontinues the service, your data is locked in their platform.
 
-vcad stores documents as `.vcad` JSON files on your local filesystem. You own them completely. Optional cloud sync through Supabase is available but not required, and the sync server can be self-hosted. Version history uses standard git. If you stop using vcad, your files remain readable JSON containing the parametric operations, part definitions, and assembly relationships.
+vcad stores documents as `.vcad` JSON files on your local filesystem. You own them completely. Version history uses standard git. If you stop using vcad, your files remain readable JSON containing the parametric operations, part definitions, and assembly relationships.
 
 <Callout type="info" title="Export everything">
 vcad's `.vcad` format is documented JSON. Even without vcad installed, you can parse your files, extract the parametric DAG, and migrate to another tool. Onshape's native format is proprietary and only accessible through their REST API.

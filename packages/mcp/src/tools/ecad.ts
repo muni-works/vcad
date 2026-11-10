@@ -1285,7 +1285,7 @@ export const exportGerberSchema = {
         "delivered. When omitted, a small bundle is returned inline, but a bundle over the inline byte cap (~168 KB " +
         "Gerber sets exceed it) is written to the artifact store and the result " +
         "carries { artifact_url, manifest, artifact_id } instead of the files — " +
-        "pass that artifact_id to quote_manufacturing / place_order so the fab " +
+        "pass that artifact_id to quote_manufacturing so the fab " +
         "files never transit model context.",
     },
     require_clean_drc: {
@@ -6001,7 +6001,7 @@ export async function exportGerber(args: Record<string, unknown>) {
               hint:
                 "Resolve the DRC errors (run run_drc / validate_for_fab for details). " +
                 "To get editable files out of the dirty board now, use export_kicad " +
-                "(native .kicad_pcb/.kicad_sch — no DRC gate) or open_in_browser. " +
+                "(native .kicad_pcb/.kicad_sch — no DRC gate) or open_in_app. " +
                 "Or re-run export_gerber with require_clean_drc:false to force the Gerber bundle anyway.",
             }),
           },
@@ -6133,7 +6133,7 @@ function deliverFabFiles(files: FabFile[]) {
           artifact_url: handle.artifact_url,
           manifest: handle.manifest,
           expires_at: handle.expires_at,
-          // The handle quote_manufacturing / place_order accept verbatim, so the
+          // The handle quote_manufacturing accept verbatim, so the
           // fab files reach an order without ever re-entering model context.
           fab_artifact: {
             artifact_id: handle.artifact_id,
@@ -6143,8 +6143,8 @@ function deliverFabFiles(files: FabFile[]) {
           },
           note:
             "Fab files are at artifact_url (the manifest lists each file with bytes + sha256; " +
-            "download one at <artifact_url>/<file>). Pass artifact_id to quote_manufacturing / " +
-            "place_order so the bundle never transits model context.",
+            "download one at <artifact_url>/<file>). Pass artifact_id to " +
+            "quote_manufacturing so the bundle never transits model context.",
         }),
       },
     ],
@@ -6239,7 +6239,7 @@ async function deliverKicadProject(
  * serializes the schematic. The point is a round trip: a human can open the
  * agent's design in KiCad to finish routing the nets the autorouter couldn't
  * close, then re-import. Large outputs respect the inline byte cap — over the
- * cap, the caller is steered to `output_dir` or open_in_browser.
+ * cap, the caller is steered to `output_dir` or open_in_app.
  */
 export async function exportKicad(args: Record<string, unknown>) {
   const { doc, documentId } = resolveDocInput(args);
@@ -6336,7 +6336,7 @@ export async function exportKicad(args: Record<string, unknown>) {
       if (bytes > cap) {
         return ecadError(
           `Could not write to '${outputDir}' (${reason}) and the ${bytes}-byte file is over the ${cap}-byte inline cap. ` +
-            "Use open_in_browser, or a writable output_dir.",
+            "Use open_in_app, or a writable output_dir.",
         );
       }
       const payload = {
@@ -6360,7 +6360,7 @@ export async function exportKicad(args: Record<string, unknown>) {
   if (bytes > cap) {
     return ecadError(
       `KiCad file is ${bytes} bytes — over the ${cap}-byte inline limit. ` +
-        "Pass output_dir to write it to disk, or use open_in_browser.",
+        "Pass output_dir to write it to disk, or use open_in_app.",
     );
   }
   const payload = {

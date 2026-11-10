@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Build the self-contained npm tarball staging dir for @vcad/mcp.
 //
-// Mirrors services/mcp/build.sh (the Vercel bundle) for the npx/stdio
-// distribution channel: one esbuild bundle + the kernel .wasm co-located
+// The npx/stdio distribution channel (the only one — the hosted Vercel
+// bundle was retired in vcad 1.0): one esbuild bundle + the kernel .wasm co-located
 // beside it, version/sha/time baked in via --define so server_info can
 // fingerprint the exact build. Output lands in packages/mcp/npm-dist/ with
 // a generated minimal package.json (no workspace deps — they're bundled),
@@ -39,10 +39,9 @@ try {
 }
 const buildTime = new Date().toISOString();
 
-// Generated .ts assets (viewer html, live html, mech catalog) must exist
+// Generated .ts assets (viewer html, mech catalog) must exist
 // before bundling from src.
 run("node", [join(mcpDir, "scripts", "wrap-viewer.mjs")]);
-run("node", [join(mcpDir, "scripts", "wrap-live.mjs")]);
 run("node", [join(mcpDir, "scripts", "gen-mech-catalog.mjs")]);
 run("node", [join(mcpDir, "scripts", "gen-orderable-catalog.mjs")]);
 
@@ -65,8 +64,7 @@ run("npx", [
   `--define:__VCAD_BUILD_TIME__="${buildTime}"`,
   `--outfile=${join(out, "index.mjs")}`,
   // esbuild hoists npx-entry.ts's own shebang to line 1; the banner adds the
-  // aliased createRequire shim services/mcp/build.sh documents (bundled
-  // sources emit their own top-level createRequire import, so the alias
+  // aliased createRequire shim (bundled sources emit their own top-level createRequire import, so the alias
   // avoids a redeclare).
   "--banner:js=import { createRequire as __vcadCreateRequire } from 'module'; const require = __vcadCreateRequire(import.meta.url);",
 ]);
