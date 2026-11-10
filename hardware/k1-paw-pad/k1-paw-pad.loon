@@ -1,0 +1,33 @@
+; K1 paw pad, rev A: a stick-on rubber skin for the bare-paw squeeze grasp
+; (ipse docs/prereg/2026-11-bare-paw.md, Amendment 4; in sim as PAD_CAD=1, D3b).
+;
+; WHY: two bare R25 paw bulbs pinch a can with two point contacts. Those can't
+; resist the can turning about the pinch line, and in phyz the can tilted out
+; 0 -> 23 deg during every lift. A flat rubber face gives a contact patch that
+; carries a friction couple, so the can holds.
+;
+; GEOMETRY: the inner face is a sphere conforming to the bulb (R25 + 0.25 mm
+; glue gap); the outer face is FLAT, 30 x 30 mm, 3 mm proud of the bulb at its
+; centre. That flat face is the whole point: a curved outer face is a point
+; contact again.
+; Frame: bulb centre at the origin, forearm axis = Y, pad faces +Z (toward the
+; can). Mount with the face pointing at the opposite paw at the grasp pose:
+; on the K1's hand link, the direction from the bulb centre to the can axis
+; that the sim computes from the grasp IK (bare_paw_session, PADS).
+;
+; MATERIAL: cast Shore-A 40-60 silicone, or nitrile sheet over a printed TPU
+; 95A core, glued with silicone adhesive. The sim assumes mu 0.95. Printed TPU
+; alone is closer to mu 0.6-0.8, which is untested in sim.
+; KNOWN MISMATCH: the sim pad is 40 mm along the forearm x 30 mm. The bulb is
+; only 30 mm long in Y (Right_Arm_4.STL, y 198-228 mm), so this part is
+; 30 x 30. D3b re-runs the held-out pick with this exact pad.
+; Volume check (vcad STL export): 5608 mm^3, z 14.0 -> 28.25 mm.
+[defparam bulb_r 25.0]
+[defparam glue_gap 0.25]
+[defparam face_t 3.0]
+[defparam face_w 30.0]
+[material "silicone" 0.15 0.15 0.15 0.0 0.9]
+[let inner-r [+ 25.0 0.25]]
+[let block [translate -15.0 -15.0 14.0 [cube 30.0 30.0 14.25]]]
+[let pad [difference [sphere-n inner-r 96] block]]
+[root pad "silicone"]
