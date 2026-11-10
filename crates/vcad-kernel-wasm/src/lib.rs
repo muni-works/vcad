@@ -1680,13 +1680,18 @@ impl Solid {
         }
         let spec: Spec = serde_json::from_str(spec_json)
             .map_err(|e| JsError::new(&format!("invalid edge blend spec: {e}")))?;
-        if let vcad_ir::EdgeQuery::Named { face_a, face_b } = &spec.edges {
+        if let vcad_ir::EdgeQuery::Named {
+            face_a,
+            face_b,
+            hint,
+        } = &spec.edges
+        {
             // Fail-closed: an unresolvable named edge is an error, never a
             // nearest-edge guess.
             let keys = kernel_blend_keys(&spec.profile);
             let inner = self
                 .inner
-                .edge_blend_named(face_a, face_b, &keys)
+                .edge_blend_named_hinted(face_a, face_b, kernel_edge_hint(hint), &keys)
                 .map_err(|e| JsError::new(&format!("named edge ('{face_a}' / '{face_b}'): {e}")))?;
             return Ok(Solid { inner });
         }
@@ -4955,13 +4960,21 @@ fn evaluate_node(doc: &vcad_ir::Document, node_id: vcad_ir::NodeId) -> Result<So
             profile,
         } => {
             let c = evaluate_node(doc, *child)?;
-            if let vcad_ir::EdgeQuery::Named { face_a, face_b } = edges {
+            if let vcad_ir::EdgeQuery::Named {
+                face_a,
+                face_b,
+                hint,
+            } = edges
+            {
                 // Fail-closed: an unresolvable named edge is an error,
                 // never a nearest-edge guess.
                 let keys = kernel_blend_keys(profile);
-                let inner = c.inner.edge_blend_named(face_a, face_b, &keys).map_err(|e| {
-                    JsError::new(&format!("named edge ('{face_a}' / '{face_b}'): {e}"))
-                })?;
+                let inner = c
+                    .inner
+                    .edge_blend_named_hinted(face_a, face_b, kernel_edge_hint(hint), &keys)
+                    .map_err(|e| {
+                        JsError::new(&format!("named edge ('{face_a}' / '{face_b}'): {e}"))
+                    })?;
                 return Ok(Solid { inner });
             }
             let (query, keys) = kernel_blend_args(edges, profile);
@@ -8608,6 +8621,26 @@ fn kernel_blend_args(
         }
     };
     (q, kernel_blend_keys(profile))
+}
+
+/// IR pick-time edge snapshot → the kernel's naming hint.
+fn kernel_edge_hint(
+    h: &Option<vcad_ir::NamedEdgeHint>,
+) -> Option<vcad_kernel::vcad_kernel_naming::EdgeHint> {
+    h.as_ref()
+        .map(|h| vcad_kernel::vcad_kernel_naming::EdgeHint {
+            midpoint: vcad_kernel::vcad_kernel_math::Point3::new(
+                h.midpoint.x,
+                h.midpoint.y,
+                h.midpoint.z,
+            ),
+            direction: vcad_kernel::vcad_kernel_math::Vec3::new(
+                h.direction.x,
+                h.direction.y,
+                h.direction.z,
+            ),
+            length: h.length,
+        })
 }
 
 /// Convert an IR blend profile to kernel blend keys.
