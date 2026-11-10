@@ -988,7 +988,31 @@ radius: number,
 /**
  * Extrusion height along +Z.
  */
-height: number, } | { "type": "Empty" } | { "type": "Union", 
+height: number, } | { "type": "SpurGear", 
+/**
+ * Module, mm (pitch diameter = module × teeth).
+ */
+module: number, 
+/**
+ * Tooth count (>= 4).
+ */
+teeth: number, 
+/**
+ * Pressure angle, degrees (20 is the ISO standard).
+ */
+pressure_angle_deg: number, 
+/**
+ * Face width (extrusion along +Z), mm.
+ */
+face_width: number, 
+/**
+ * Bore diameter, mm (0 = solid).
+ */
+bore_diameter: number, 
+/**
+ * Circumferential tooth thinning at the pitch circle, mm (0 = none).
+ */
+backlash: number, } | { "type": "Empty" } | { "type": "Union", 
 /**
  * Left operand.
  */

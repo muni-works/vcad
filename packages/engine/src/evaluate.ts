@@ -746,6 +746,30 @@ function evaluateOp(
     case "Prism":
       return Solid.prism(op.sides, op.radius, op.height);
 
+    case "SpurGear": {
+      // `spurGear` lands in the kernel WASM with this op; guard so a stale
+      // prebuilt kernel fails with a message instead of a TypeError.
+      const make = (Solid as unknown as {
+        spurGear?: (
+          module: number,
+          teeth: number,
+          pressureAngleDeg: number,
+          faceWidth: number,
+          boreDiameter: number,
+          backlash: number,
+        ) => import("@vcad/kernel-wasm").Solid;
+      }).spurGear;
+      if (!make) throw new Error("SpurGear needs a newer kernel WASM build");
+      return make(
+        op.module,
+        op.teeth,
+        op.pressure_angle_deg,
+        op.face_width,
+        op.bore_diameter ?? 0,
+        op.backlash ?? 0,
+      );
+    }
+
     case "Mirror": {
       const child = evaluateNode(op.child, nodes, Solid, cache, depth + 1);
       return child.mirror(

@@ -978,7 +978,10 @@ mod tests {
             let r1 = spec(m, z1, false).dims().tip_diameter() / 2.0;
             let r2 = spec(m, z2, false).dims().tip_diameter() / 2.0;
             let c = clearance(&p1, &p2, (a - r2 - m, r1 + m));
-            assert!((0.0..0.02).contains(&c), "rot1 {rot1} dir {dir}: clearance {c:.5}");
+            assert!(
+                (0.0..0.02).contains(&c),
+                "rot1 {rot1} dir {dir}: clearance {c:.5}"
+            );
         }
     }
 

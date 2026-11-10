@@ -48,7 +48,10 @@ fn spur_gear_volume_matches_closed_form() {
         let v = one(&format!("[spur-gear {m} {z} 20 {fw} 0]")).volume();
         let est = estimate(m, z, fw);
         let rel = (v - est).abs() / est;
-        assert!(rel < 0.04, "m{m} z{z}: volume {v:.2} vs estimate {est:.2} ({rel:.4})");
+        assert!(
+            rel < 0.04,
+            "m{m} z{z}: volume {v:.2} vs estimate {est:.2} ({rel:.4})"
+        );
         // Strictly between the root and tip cylinders.
         let rr = m * z / 2.0 - 1.25 * m;
         let rt = m * z / 2.0 + m;
