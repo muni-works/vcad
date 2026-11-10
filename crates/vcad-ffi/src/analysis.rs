@@ -53,11 +53,27 @@ pub(crate) fn part_roots(doc: &Document, scene: &EvaluatedScene) -> Vec<Option<N
     }
 }
 
-/// Display name for part `i` (its root node's name, else `Part i+1`).
+/// Display name for part `i`: the first name on its root's chain of
+/// Translate/Rotate/Scale wrappers (a placed primitive's root is an unnamed
+/// Translate over the named feature — the name the Model tree shows), else
+/// `Part i+1`.
 pub(crate) fn part_name(doc: &Document, root: Option<NodeId>, i: usize) -> String {
-    root.and_then(|r| doc.nodes.get(&r))
-        .and_then(|n| n.name.clone())
-        .unwrap_or_else(|| format!("Part {}", i + 1))
+    let mut cur = root;
+    for _ in 0..64 {
+        let Some(node) = cur.and_then(|r| doc.nodes.get(&r)) else {
+            break;
+        };
+        if let Some(n) = node.name.as_ref().filter(|n| !n.is_empty()) {
+            return n.clone();
+        }
+        cur = match &node.op {
+            vcad_ir::CsgOp::Translate { child, .. }
+            | vcad_ir::CsgOp::Rotate { child, .. }
+            | vcad_ir::CsgOp::Scale { child, .. } => Some(*child),
+            _ => None,
+        };
+    }
+    format!("Part {}", i + 1)
 }
 
 /// `FaceId → shell ordinal` — the face id the viewport tags triangles with

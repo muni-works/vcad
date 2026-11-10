@@ -14,6 +14,8 @@ use std::ptr;
 use serde::Serialize;
 use serde_json::Value;
 
+use vcad_kernel::Solid;
+
 use crate::analysis::{evaluate, parse_doc, parse_request, part_name, part_roots};
 use crate::err;
 use crate::json::{guard_ptr, json_out};
@@ -75,13 +77,78 @@ pub struct ClearanceReport {
     pub skipped_parts: Vec<String>,
 }
 
-/// Measure every pair of parts (or only `req.pairs: [[a, b], …]`).
+/// The bodies the viewport draws, `(name, solid)`, in render order. A plain
+/// document draws its visible roots. An assembly draws its instances, each
+/// part-def solid posed by forward kinematics (falling back to the
+/// instance's own transform), followed by the free roots — visible roots
+/// that are not some part def's root. Checking only the roots of an
+/// assembly would test the unposed part defs, not what the user built.
+fn bodies(
+    doc: &vcad_ir::Document,
+    scene: &vcad_eval::EvaluatedScene,
+) -> Vec<(String, Option<Solid>)> {
+    let roots = part_roots(doc, scene);
+    let root_body = |i: usize| (part_name(doc, roots[i], i), scene.parts[i].solid.clone());
+    let (Some(instances), Some(defs)) = (doc.instances.as_ref(), scene.part_defs.as_ref()) else {
+        return (0..scene.parts.len()).map(root_body).collect();
+    };
+    if instances.is_empty() {
+        return (0..scene.parts.len()).map(root_body).collect();
+    }
+    let world = vcad_eval::solve_forward_kinematics(doc);
+    let mut out: Vec<(String, Option<Solid>)> = instances
+        .iter()
+        .filter_map(|inst| {
+            let def = defs.iter().find(|d| d.id == inst.part_def_id)?;
+            let solid =
+                def.solid
+                    .as_ref()
+                    .map(|s| match world.get(&inst.id).or(inst.transform.as_ref()) {
+                        Some(t) => place(s, t),
+                        None => s.clone(),
+                    });
+            Some((inst.name.clone().unwrap_or_else(|| inst.id.clone()), solid))
+        })
+        .collect();
+    let def_roots: std::collections::HashSet<vcad_ir::NodeId> = doc
+        .part_defs
+        .as_ref()
+        .map(|m| m.values().map(|d| d.root).collect())
+        .unwrap_or_default();
+    out.extend(
+        (0..scene.parts.len())
+            .filter(|&i| roots[i].is_none_or(|r| !def_roots.contains(&r)))
+            .map(root_body),
+    );
+    out
+}
+
+/// Apply `T · Rz · Ry · Rx · S` (the convention `vcad_eval::kinematics`
+/// emits) to a solid. One call per axis so the order is explicit rather than
+/// left to `Solid::rotate`'s composite.
+fn place(s: &Solid, t: &vcad_ir::Transform3D) -> Solid {
+    let (sc, r, tr) = (t.scale, t.rotation, t.translation);
+    let mut out = s.clone();
+    if (sc.x, sc.y, sc.z) != (1.0, 1.0, 1.0) {
+        out = out.scale(sc.x, sc.y, sc.z);
+    }
+    if r.x != 0.0 {
+        out = out.rotate(r.x, 0.0, 0.0);
+    }
+    if r.y != 0.0 {
+        out = out.rotate(0.0, r.y, 0.0);
+    }
+    if r.z != 0.0 {
+        out = out.rotate(0.0, 0.0, r.z);
+    }
+    out.translate(tr.x, tr.y, tr.z)
+}
+
+/// Measure every pair of bodies (or only `req.pairs: [[a, b], …]`).
 pub fn check(doc: &vcad_ir::Document, req: &Value) -> Result<ClearanceReport, String> {
     let scene = evaluate(doc)?;
-    let roots = part_roots(doc, &scene);
-    let names: Vec<String> = (0..scene.parts.len())
-        .map(|i| part_name(doc, roots[i], i))
-        .collect();
+    let (names, solids): (Vec<String>, Vec<Option<Solid>>) =
+        bodies(doc, &scene).into_iter().unzip();
     let with_mesh = req["include_mesh"].as_bool().unwrap_or(true);
     let pairs: Vec<(usize, usize)> = match req["pairs"].as_array() {
         Some(list) => list
@@ -102,17 +169,15 @@ pub fn check(doc: &vcad_ir::Document, req: &Value) -> Result<ClearanceReport, St
             .flat_map(|a| (a + 1..names.len()).map(move |b| (a, b)))
             .collect(),
     };
-    let skipped_parts = scene
-        .parts
+    let skipped_parts = solids
         .iter()
         .enumerate()
-        .filter(|(_, p)| p.solid.as_ref().is_none_or(|s| s.is_empty()))
+        .filter(|(_, s)| s.as_ref().is_none_or(|s| s.is_empty()))
         .map(|(i, _)| names[i].clone())
         .collect();
     let mut out = Vec::new();
     for (a, b) in pairs {
-        let (Some(sa), Some(sb)) = (scene.parts[a].solid.as_ref(), scene.parts[b].solid.as_ref())
-        else {
+        let (Some(sa), Some(sb)) = (solids[a].as_ref(), solids[b].as_ref()) else {
             continue;
         };
         let Some(c) = sa.clearance(sb) else { continue };
@@ -239,6 +304,65 @@ mod tests {
             r.min_clearance_mm.map(|v| (v * 1000.0).round()),
             Some(3000.0)
         );
+    }
+
+    /// Two named 10 mm cubes, the second placed by an unnamed Translate —
+    /// exactly what the app's "Add Cube, then click" writes.
+    fn placed_doc(dx: f64) -> vcad_ir::Document {
+        serde_json::from_value(json!({
+            "version": "0.1",
+            "nodes": {
+                "1": {"id": 1, "name": "Box", "op": {"type": "Cube", "size": {"x": 10, "y": 10, "z": 10}}},
+                "2": {"id": 2, "name": "Wedge", "op": {"type": "Cube", "size": {"x": 10, "y": 10, "z": 10}}},
+                "3": {"id": 3, "name": null, "op": {"type": "Translate", "child": 2, "offset": {"x": dx, "y": 0, "z": 0}}}
+            },
+            "materials": {},
+            "part_materials": {},
+            "roots": [{"root": 1, "material": "default"}, {"root": 3, "material": "default"}]
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn pairs_use_feature_names_through_transform_wrappers() {
+        let r = check(&placed_doc(13.0), &json!({})).unwrap();
+        assert_eq!(r.parts, vec!["Box", "Wedge"], "{r:#?}");
+        assert_eq!(r.pairs[0].a_name, "Box");
+        assert_eq!(r.pairs[0].b_name, "Wedge");
+    }
+
+    #[test]
+    fn assembly_checks_posed_instances_by_instance_name() {
+        // One part def (the Box root), two instances: "Box 1" at the origin
+        // and "Box 2" moved +6 in x — 400 mm³ of overlap that only exists in
+        // the posed assembly. The Wedge root is not a part def: a free root.
+        let mut d = placed_doc(100.0);
+        let v: Value = json!({
+            "partDefs": {"pd1": {"id": "pd1", "name": "Box", "root": 1}},
+            "instances": [
+                {"id": "i1", "partDefId": "pd1", "name": "Box 1"},
+                {"id": "i2", "partDefId": "pd1", "name": "Box 2",
+                 "transform": {"translation": {"x": 6, "y": 0, "z": 0},
+                               "rotation": {"x": 0, "y": 0, "z": 0},
+                               "scale": {"x": 1, "y": 1, "z": 1}}}
+            ]
+        });
+        d.part_defs = serde_json::from_value(v["partDefs"].clone()).unwrap();
+        d.instances = serde_json::from_value(v["instances"].clone()).unwrap();
+        let r = check(&d, &json!({})).unwrap();
+        assert_eq!(r.parts, vec!["Box 1", "Box 2", "Wedge"], "{r:#?}");
+        let worst = &r.pairs[0];
+        assert_eq!(
+            (worst.a_name.as_str(), worst.b_name.as_str()),
+            ("Box 1", "Box 2")
+        );
+        assert_eq!(worst.status, "interference");
+        assert!(
+            (worst.overlap_volume_mm3 - 400.0).abs() < 1.0,
+            "{}",
+            worst.overlap_volume_mm3
+        );
+        assert_eq!(r.interference_count, 1);
     }
 
     #[test]

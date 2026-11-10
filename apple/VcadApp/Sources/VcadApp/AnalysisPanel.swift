@@ -218,11 +218,7 @@ extension FeaSection {
     var visibleRoots: [[String: Any]] {
         ((model.documentJSON?["roots"] as? [[String: Any]]) ?? []).filter { ($0["visible"] as? Bool) != false }
     }
-    func partLabel(_ i: Int) -> String {
-        let nodes = model.documentJSON?["nodes"] as? [String: Any]
-        guard i < visibleRoots.count, let root = visibleRoots[i]["root"] else { return "Part \(i + 1)" }
-        return ((nodes?["\(root)"] as? [String: Any])?["name"] as? String) ?? "Part \(i + 1)"
-    }
+    func partLabel(_ i: Int) -> String { model.partDisplayName(i) }
 }
 
 private struct SetupRow: View {
