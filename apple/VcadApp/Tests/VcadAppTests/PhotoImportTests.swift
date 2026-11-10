@@ -81,11 +81,19 @@ final class PhotoImportTests: XCTestCase {
         XCTAssertTrue(m.contains("aren't photos"))
     }
 
+    /// Fewer than three photos is refused up front, before any decoding.
+    func testControllerRefusesFewerThanThreePhotos() {
+        let c = PhotoImportController()
+        c.start([fixture("no-tag-exif.jpg")])
+        guard case .failed(let m) = c.phase else { return XCTFail("\(c.phase)") }
+        XCTAssertTrue(m.contains("at least 3 photos"), m)
+    }
+
     /// The controller's pre-flight runs off the main thread and lands a
     /// specific failure on the main actor.
     func testControllerReportsAMissingTag() async throws {
         let c = PhotoImportController()
-        c.start([fixture("no-tag-exif.jpg")])
+        c.start(Array(repeating: fixture("no-tag-exif.jpg"), count: 3))
         XCTAssertEqual(c.phase, .checking)
         for _ in 0..<200 where c.phase == .checking { try await Task.sleep(nanoseconds: 50_000_000) }
         guard case .failed(let m) = c.phase else { return XCTFail("\(c.phase)") }
@@ -95,7 +103,7 @@ final class PhotoImportTests: XCTestCase {
     /// Cancel discards whatever the background call returns later.
     func testCancelDiscardsTheLateResult() async throws {
         let c = PhotoImportController()
-        c.start([fixture("no-tag-exif.jpg")])
+        c.start(Array(repeating: fixture("no-tag-exif.jpg"), count: 3))
         c.cancel()
         try await Task.sleep(nanoseconds: 1_500_000_000)
         XCTAssertEqual(c.phase, .idle)
