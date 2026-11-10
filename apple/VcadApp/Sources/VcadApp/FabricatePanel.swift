@@ -138,15 +138,46 @@ struct FabField: View {
     let label: String
     @Binding var value: Double
     var digits = 2
+    // A text draft rather than `TextField(value:format:)`: the formatted
+    // field only committed on focus loss (Tab), so Return — and a Generate
+    // clicked straight after typing — ran with the old value. Every parseable
+    // keystroke now commits, and Return / focus loss normalise the text.
+    @State private var draft = ""
+    @FocusState private var focused: Bool
+
     var body: some View {
         // The label keeps its size and the field flexes: three fixed 72 pt
         // fields in a row squeezed the labels to nothing (CAM showed bare numbers).
         HStack(spacing: 3) {
             Text(label).foregroundStyle(.secondary).fixedSize()
-            TextField(label, value: $value, format: .number.precision(.fractionLength(0...digits)))
+            TextField(label, text: $draft)
                 .labelsHidden()
+                .focused($focused)
                 .multilineTextAlignment(.trailing).frame(minWidth: 36, maxWidth: 72)
+                .onAppear { draft = Self.format(value, digits) }
+                .onChange(of: draft) { _, t in
+                    if let v = Self.parse(t), v != value { value = v }
+                }
+                .onChange(of: value) { _, v in
+                    if Self.parse(draft) != v { draft = Self.format(v, digits) }
+                }
+                .onSubmit { draft = Self.format(value, digits) }
+                .onChange(of: focused) { _, f in if !f { draft = Self.format(value, digits) } }
         }
+    }
+
+    /// Parses a typed number (locale decimal separator or "."); nil while incomplete.
+    static func parse(_ text: String) -> Double? {
+        let t = text.trimmingCharacters(in: .whitespaces)
+        guard !t.isEmpty else { return nil }
+        if let v = Double(t), v.isFinite { return v }
+        let sep = Locale.current.decimalSeparator ?? "."
+        if sep != ".", let v = Double(t.replacingOccurrences(of: sep, with: ".")), v.isFinite { return v }
+        return nil
+    }
+
+    static func format(_ v: Double, _ digits: Int) -> String {
+        v.formatted(.number.precision(.fractionLength(0...digits)).grouping(.never))
     }
 }
 

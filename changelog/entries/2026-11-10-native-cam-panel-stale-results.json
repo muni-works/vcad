@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-10-native-cam-panel-stale-results",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "fix",
+  "title": "Mac CAM panel: Return commits, stale results marked",
+  "summary": "CAM job number fields commit on Return and Generate uses the typed value; edited jobs dim the old result as out of date. The empty Drawing view no longer shows a blank status pill.",
+  "features": ["native", "cam", "drawing"]
+}

@@ -435,7 +435,10 @@ struct DrawingWorkspaceView: View {
             // One status pill: the active tool's hint, else the sheet's counts.
             VStack {
                 Spacer()
-                DrawingStatusPill(store: store).padding(.bottom, Glass.dockClearance)
+                if DrawingStatusPill.hasContent(busy: store.busy, hint: store.tool.hint,
+                                                error: store.error, hasResult: store.result != nil) {
+                    DrawingStatusPill(store: store).padding(.bottom, Glass.dockClearance)
+                }
             }
         }
         .animation(Motion.panel, value: model.showsTree)
@@ -539,8 +542,13 @@ private struct DrawingInspector: View {
 }
 
 /// The tool's hint while one is armed; otherwise the sheet's numbers.
-private struct DrawingStatusPill: View {
+struct DrawingStatusPill: View {
     let store: DrawingStore
+    /// The pill shows only when it has something to say — not over the
+    /// "No Drawing" empty state as an empty capsule.
+    static func hasContent(busy: Bool, hint: String?, error: String?, hasResult: Bool) -> Bool {
+        busy || hint != nil || hasResult
+    }
     var body: some View {
         HStack(spacing: 8) {
             if store.busy { ProgressView().controlSize(.mini) }
