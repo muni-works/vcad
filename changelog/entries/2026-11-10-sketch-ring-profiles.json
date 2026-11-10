@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-10-sketch-ring-profiles",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "fix",
+  "title": "Mac sketch: ring profiles finish as holes",
+  "summary": "A loop inside another now extrudes or cuts as a hole (a lip ring works); a disabled Finish says why, and toolbar number fields take focus on click.",
+  "features": ["sketch", "native-app"]
+}

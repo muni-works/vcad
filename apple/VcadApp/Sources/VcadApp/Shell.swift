@@ -879,7 +879,18 @@ struct ScrubField: View {
                 // A click must take focus: in a floating toolbar the field
                 // could stay unfocused (a triple-click left keystrokes going
                 // to the sketch dimension field focused before it).
-                .simultaneousGesture(TapGesture().onEnded { focused = true })
+                // `focused = true` alone is not enough: when SwiftUI's focus
+                // state already reads true (stale after another field took the
+                // window's field editor) setting it again is a no-op, and the
+                // gesture itself eats the mouseDown NSTextField uses to take
+                // first responder. So also hand the field editor over the
+                // AppKit way, to the text field actually under the pointer.
+                .simultaneousGesture(TapGesture().onEnded {
+                    focused = true
+                    #if os(macOS)
+                    DispatchQueue.main.async { Self.takeFirstResponderUnderPointer() }
+                    #endif
+                })
                 .onSubmit { commit() }
                 .onEscape { typing = nil; focused = false }
                 .onChange(of: focused) { _, now in if !now { commit() } }
@@ -916,6 +927,30 @@ struct ScrubField: View {
             }
             .onEnded { _ in base = nil }
     }
+
+    #if os(macOS)
+    /// Make the NSTextField under the mouse first responder in the key window,
+    /// unless it already owns the field editor. Returns the field it focused.
+    @discardableResult
+    static func takeFirstResponderUnderPointer(in window: NSWindow? = NSApp.keyWindow) -> NSTextField? {
+        guard let window, let content = window.contentView else { return nil }
+        let p = content.superview?.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            ?? window.mouseLocationOutsideOfEventStream
+        var v = content.hitTest(p)
+        while let view = v, !(view is NSTextField) { v = view.superview }
+        guard let field = v as? NSTextField, field.isEditable else { return nil }
+        return focus(field)
+    }
+
+    /// Move the window's field editor to `field` and select its text.
+    @discardableResult
+    static func focus(_ field: NSTextField) -> NSTextField? {
+        guard let window = field.window else { return nil }
+        if field.currentEditor() == nil { window.makeFirstResponder(field) }
+        field.currentEditor()?.selectAll(nil)
+        return field.currentEditor() != nil ? field : nil
+    }
+    #endif
 
     static func plain(_ v: Double) -> String {
         abs(v - v.rounded()) < 0.001 ? String(Int(v.rounded())) : String(format: "%.2f", v)

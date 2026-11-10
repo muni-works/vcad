@@ -1752,14 +1752,21 @@ final class EditorModel {
         get { sketch?.cursor.map { SIMD2(Float($0.x), Float($0.y)) } }
         set { sketch?.cursor = newValue.map { sketch?.gridded(SIMD2(Double($0.x), Double($0.y))) ?? SIMD2(Double($0.x), Double($0.y)) }; sketchDirty = true }
     }
-    var canFinishSketch: Bool {
-        guard let sketch else { return false }
-        if sketch.canFinish { return true }
-        switch sketchFinish {
-        case .loft: return loftProfiles.count >= 2
-        case .extrude: return sketch.loopProfiles(allowNested: false) != nil
-        case .cut: return sketch.loopProfiles(allowNested: true) != nil
-        default: return false
+    var canFinishSketch: Bool { sketch != nil && sketchFinishBlocker == nil }
+
+    /// Why Finish is disabled, in words — the button's tooltip and the sketch
+    /// status line. Nil when Finish can run.
+    var sketchFinishBlocker: String? {
+        guard let sketch else { return "Not sketching" }
+        if sketchFinish == .loft, loftProfiles.count >= 2 { return nil }
+        if sketch.isEmpty { return "Draw a closed profile to finish" }
+        if sketch.canFinish { return nil }
+        switch (sketchFinish, sketch.loopRegions()) {
+        case (.extrude, .success), (.cut, .success): return nil
+        case (_, .failure(let p)): return p.reason
+        case (_, .success(let profiles)):
+            let what = profiles.contains { $0["holes"] != nil } ? "a profile with holes" : "several separate loops"
+            return "\(sketchFinish.label) can't use \(what) — Extrude or Cut can"
         }
     }
 
@@ -1881,12 +1888,14 @@ final class EditorModel {
         let n = sketch.frame.normal
         func vec(_ v: SIMD3<Double>) -> [String: Double] { ["x": v.x, "y": v.y, "z": v.z] }
         let dir = vec(n * sketchExtrudeDepth)
-        // Several separate loops: one feature each, in one undo step.
+        // Several loops — separate regions, or an outer loop with holes (a
+        // ring): one feature per region, in one undo step.
         if !sketch.canFinish, sketchFinish == .extrude || sketchFinish == .cut {
             let cutting = sketchFinish == .cut
-            guard let profiles = sketch.loopProfiles(allowNested: cutting) else {
-                engineError = "Every loop must be closed, and an extrude can't have one loop inside another"
-                return false
+            let profiles: [[String: Any]]
+            switch sketch.loopRegions() {
+            case .success(let p): profiles = p
+            case .failure(let problem): engineError = problem.reason; return false
             }
             var features: [[String: Any]]
             if cutting {

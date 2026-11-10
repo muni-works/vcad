@@ -159,6 +159,86 @@ final class SketchSessionTests: XCTestCase {
         XCTAssertGreaterThan(s.entities.filter { $0.kind == .line }.count, 8)
     }
 
+    // MARK: rings (an outer loop with holes)
+
+    private func ring(_ m: EditorModel, center c: SIMD2<Float>, outer: SIMD2<Float>, inner: SIMD2<Float>) {
+        m.setSketchTool(.rectangle)
+        m.sketchTap(c - outer / 2); m.sketchTap(c + outer / 2)
+        m.sketchTap(c - inner / 2); m.sketchTap(c + inner / 2)
+    }
+
+    /// The lip sketch from the mouse report: 58×38 around 56×36, same center.
+    /// Finish was disabled with no word why; now the inner loop is a hole and
+    /// a 2 mm extrude is exactly (58·38 − 56·36)·2 = 376 mm³.
+    func testRingSketchExtrudesWithItsHole() throws {
+        let m = try open()
+        m.enterSketch()
+        ring(m, center: [100, 100], outer: [58, 38], inner: [56, 36])
+        XCTAssertEqual(m.sketch?.entities.filter { $0.kind == .line }.count, 8)
+        m.sketchFinish = .extrude; m.sketchExtrudeDepth = 2
+        XCTAssertNil(m.sketchFinishBlocker)
+        XCTAssertTrue(m.canFinishSketch)
+        let regions = try XCTUnwrap(try? m.sketch?.loopRegions().get())
+        XCTAssertEqual(regions.count, 1)
+        XCTAssertEqual((regions[0]["holes"] as? [Any])?.count, 1)
+        XCTAssertTrue(m.finishSketch(), m.engineError ?? "")
+        XCTAssertEqual(try volume(m), 376, accuracy: 1e-6)
+    }
+
+    /// The same ring as a Cut Extrude into the block's top face removes only
+    /// the ring: (30·30 − 26·26)·2 = 448 mm³ out of 40·40·10.
+    func testRingSketchCutsOnlyTheRing() throws {
+        let m = try open()
+        try pickTop(m)
+        m.enterSketch()
+        XCTAssertNotNil(m.sketchFace)
+        ring(m, center: [0, 0], outer: [30, 30], inner: [26, 26])
+        m.sketchFinish = .cut; m.sketchExtrudeDepth = 2
+        XCTAssertTrue(m.canFinishSketch, m.sketchFinishBlocker ?? "")
+        XCTAssertTrue(m.finishSketch(), m.engineError ?? "")
+        XCTAssertEqual(try volume(m), 16000 - 448, accuracy: 1e-6)
+    }
+
+    /// An island inside the hole is a region of its own: two extrudes.
+    func testIslandInsideARingIsItsOwnRegion() throws {
+        let m = try open()
+        m.enterSketch()
+        ring(m, center: [100, 100], outer: [40, 40], inner: [30, 30])
+        m.sketchTap([95, 95]); m.sketchTap([105, 105])
+        let regions = try XCTUnwrap(try? m.sketch?.loopRegions().get())
+        XCTAssertEqual(regions.count, 2)
+        XCTAssertEqual(regions.filter { $0["holes"] != nil }.count, 1)
+    }
+
+    /// When Finish must stay disabled it says why: crossing loops, an open
+    /// chain, and a ring under an op that can't take holes.
+    func testDisabledFinishReportsItsReason() throws {
+        let m = try open()
+        m.enterSketch(); m.sketchFinish = .extrude
+        m.setSketchTool(.rectangle)
+        m.sketchTap([100, 100]); m.sketchTap([120, 120])
+        m.sketchTap([110, 110]); m.sketchTap([130, 130])
+        XCTAssertFalse(m.canFinishSketch)
+        XCTAssertTrue(m.sketchFinishBlocker?.contains("cross") == true, m.sketchFinishBlocker ?? "nil")
+        XCTAssertFalse(m.finishSketch())
+        XCTAssertTrue(m.engineError?.contains("cross") == true, m.engineError ?? "nil")
+        m.exitSketch()
+
+        m.enterSketch()
+        m.setSketchTool(.line)
+        m.sketchTap([0, 0]); m.sketchTap([20, 0]); m.sketchTap([20, 20])
+        m.sketch?.commitPending()
+        XCTAssertFalse(m.canFinishSketch)
+        XCTAssertTrue(m.sketchFinishBlocker?.contains("open") == true, m.sketchFinishBlocker ?? "nil")
+        m.exitSketch()
+
+        m.enterSketch()
+        ring(m, center: [100, 100], outer: [58, 38], inner: [56, 36])
+        m.sketchFinish = .revolve
+        XCTAssertFalse(m.canFinishSketch)
+        XCTAssertTrue(m.sketchFinishBlocker?.contains("holes") == true, m.sketchFinishBlocker ?? "nil")
+    }
+
     func testOffsetAddsAParallelLoop() throws {
         let s = try XCTUnwrap(SketchSession(frame: .principal(.xy)))
         s.tool = .rectangle

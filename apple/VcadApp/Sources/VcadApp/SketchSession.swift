@@ -795,45 +795,74 @@ final class SketchSession {
         return try? JSONSerialization.jsonObject(with: Data(String(cString: r).utf8)) as? [String: Any]
     }
 
-    /// One profile per closed loop, for a sketch the single-loop export
-    /// refuses: a bore and its bolt circle, a row of slots. Nil if any curve
-    /// is left open, or — unless `allowNested` — a loop lies inside another,
-    /// which would need to become a hole in it rather than a separate body.
-    func loopProfiles(allowNested: Bool) -> [[String: Any]]? {
+    /// Why a sketch's loops can't become regions — shown on the disabled
+    /// Finish button and in the sketch status line.
+    struct RegionProblem: Error, Equatable { let reason: String }
+
+    /// The closed loops grouped into regions, for a sketch the single-loop
+    /// export refuses: a bore and its bolt circle, a row of slots, a ring (an
+    /// outer loop with an inner one — a lip). A loop inside another becomes a
+    /// hole in it (`holes` on the profile; the kernel orients outer CCW and
+    /// holes CW); a loop inside a hole is an island, a region of its own.
+    /// Fails, with the reason, when a curve is left open or two loops cross.
+    func loopRegions() -> Result<[[String: Any]], RegionProblem> {
         let curves = entities.filter { $0.kind != .point && !$0.construction }
-        guard !curves.isEmpty else { return nil }
+        guard !curves.isEmpty else { return .failure(.init(reason: "Draw a closed profile to finish")) }
+        let open = RegionProblem(reason: "A curve is left open — close every loop to finish")
         var parent = Dictionary(curves.flatMap { $0.points.prefix(2) }.map { ($0, $0) }) { first, _ in first }
         func root(_ h: UInt32) -> UInt32 { var r = h; while let n = parent[r], n != r { r = n }; return r }
         for e in curves where e.kind != .circle { parent[root(e.points[0])] = root(e.points[1]) }
-        let loops = Dictionary(grouping: curves) { root($0.points[0]) }.values
+        let groups = Dictionary(grouping: curves) { root($0.points[0]) }.values
         func xy(_ p: SIMD2<Double>) -> [String: Double] { ["x": p.x, "y": p.y] }
         func xyz(_ v: SIMD3<Double>) -> [String: Double] { ["x": v.x, "y": v.y, "z": v.z] }
-        var profiles: [[String: Any]] = []
-        var bounds: [(min: SIMD2<Double>, max: SIMD2<Double>)] = []
-        for loop in loops {
+
+        struct Loop {
+            var segments: [[String: Any]]
+            var lo: SIMD2<Double>, hi: SIMD2<Double>
+            var edges: [(SIMD2<Double>, SIMD2<Double>)]   // straight edges, for the crossing test
+            var area: Double { (hi.x - lo.x) * (hi.y - lo.y) }
+            func contains(_ o: Loop) -> Bool {
+                lo.x <= o.lo.x && lo.y <= o.lo.y && hi.x >= o.hi.x && hi.y >= o.hi.y && area > o.area
+            }
+            func overlaps(_ o: Loop) -> Bool { lo.x <= o.hi.x && o.lo.x <= hi.x && lo.y <= o.hi.y && o.lo.y <= hi.y }
+        }
+        var loops: [Loop] = []
+        for group in groups {
             var segments: [[String: Any]] = []
             var extent: [SIMD2<Double>] = []
-            if loop.count == 1, loop[0].kind == .circle {
-                guard let c = positions[loop[0].points[0]], let r = radii[loop[0].handle] else { return nil }
+            var edges: [(SIMD2<Double>, SIMD2<Double>)] = []
+            if group.count == 1, group[0].kind == .circle {
+                guard let c = positions[group[0].points[0]], let r = radii[group[0].handle] else { return .failure(open) }
                 let a = c + SIMD2(r, 0), b = c - SIMD2(r, 0)
                 segments = [["type": "Arc", "start": xy(a), "end": xy(b), "center": xy(c), "ccw": true],
                             ["type": "Arc", "start": xy(b), "end": xy(a), "center": xy(c), "ccw": true]]
                 extent = [c - SIMD2(r, r), c + SIMD2(r, r)]
             } else {
-                guard loop.allSatisfy({ $0.kind != .circle }) else { return nil }
-                var open = loop
-                let start = open[0].points[0]
+                guard group.allSatisfy({ $0.kind != .circle }) else {
+                    return .failure(.init(reason: "A circle shares a point with other curves — loops must not touch"))
+                }
+                // Every vertex of a closed loop joins exactly two curves.
+                var degree: [UInt32: Int] = [:]
+                for e in group { degree[e.points[0], default: 0] += 1; degree[e.points[1], default: 0] += 1 }
+                guard degree.values.allSatisfy({ $0 == 2 }) else {
+                    return .failure(degree.values.contains { $0 > 2 }
+                        ? .init(reason: "Curves branch at a shared point — loops must not cross or overlap")
+                        : open)
+                }
+                var rest = group
+                let start = rest[0].points[0]
                 var at = start
-                while !open.isEmpty {
-                    guard let i = open.firstIndex(where: { $0.points[0] == at || $0.points[1] == at }) else { return nil }
-                    let e = open.remove(at: i)
+                while !rest.isEmpty {
+                    guard let i = rest.firstIndex(where: { $0.points[0] == at || $0.points[1] == at }) else { return .failure(open) }
+                    let e = rest.remove(at: i)
                     let forward = e.points[0] == at
                     let to = e.points[forward ? 1 : 0]
-                    guard let p = positions[at], let q = positions[to] else { return nil }
+                    guard let p = positions[at], let q = positions[to] else { return .failure(open) }
                     if e.kind == .line {
                         segments.append(["type": "Line", "start": xy(p), "end": xy(q)])
+                        edges.append((p, q))
                     } else {
-                        guard let c = positions[e.points[2]] else { return nil }
+                        guard let c = positions[e.points[2]] else { return .failure(open) }
                         segments.append(["type": "Arc", "start": xy(p), "end": xy(q), "center": xy(c), "ccw": forward])
                         let r = simd_distance(c, p)
                         extent += [c - SIMD2(r, r), c + SIMD2(r, r)]
@@ -841,20 +870,45 @@ final class SketchSession {
                     extent += [p, q]
                     at = to
                 }
-                guard at == start else { return nil }
+                guard at == start else { return .failure(open) }
             }
-            bounds.append((extent.reduce(extent[0], pointwiseMin), extent.reduce(extent[0], pointwiseMax)))
-            profiles.append(["origin": xyz(frame.origin), "x_dir": xyz(frame.xDir), "y_dir": xyz(frame.yDir), "segments": segments])
+            loops.append(Loop(segments: segments, lo: extent.reduce(extent[0], pointwiseMin),
+                              hi: extent.reduce(extent[0], pointwiseMax), edges: edges))
         }
-        if !allowNested {
-            for (i, a) in bounds.enumerated() {
-                for (j, b) in bounds.enumerated() where i != j
-                    && a.min.x <= b.min.x && a.min.y <= b.min.y && a.max.x >= b.max.x && a.max.y >= b.max.y {
-                    return nil
-                }
+        // Loops may nest but never cross. Containment is by bounding box
+        // (plus an exact straight-edge crossing test), which is exact for the
+        // rectangles, slots and circles the toolbar draws.
+        func cross(_ a: (SIMD2<Double>, SIMD2<Double>), _ b: (SIMD2<Double>, SIMD2<Double>)) -> Bool {
+            func o(_ p: SIMD2<Double>, _ q: SIMD2<Double>, _ r: SIMD2<Double>) -> Double {
+                (q.x - p.x) * (r.y - p.y) - (q.y - p.y) * (r.x - p.x)
+            }
+            let d1 = o(b.0, b.1, a.0), d2 = o(b.0, b.1, a.1), d3 = o(a.0, a.1, b.0), d4 = o(a.0, a.1, b.1)
+            return d1 * d2 <= 0 && d3 * d4 <= 0
+        }
+        let crossing = RegionProblem(reason: "Two loops cross or touch — a loop must lie fully inside or outside another")
+        for i in loops.indices {
+            for j in loops.indices where i < j {
+                let (a, b) = (loops[i], loops[j])
+                guard a.overlaps(b) else { continue }
+                if !a.contains(b) && !b.contains(a) { return .failure(crossing) }
+                for ea in a.edges { for eb in b.edges where cross(ea, eb) { return .failure(crossing) } }
             }
         }
-        return profiles
+        // Depth = how many loops enclose it: even depths are regions, odd
+        // depths are holes in their innermost enclosing loop.
+        let containers = loops.indices.map { i in loops.indices.filter { $0 != i && loops[$0].contains(loops[i]) } }
+        var holes: [Int: [[[String: Any]]]] = [:]
+        for i in loops.indices where containers[i].count % 2 == 1 {
+            guard let owner = containers[i].min(by: { loops[$0].area < loops[$1].area }) else { continue }
+            holes[owner, default: []].append(loops[i].segments)
+        }
+        let profiles: [[String: Any]] = loops.indices.filter { containers[$0].count % 2 == 0 }.map { i in
+            var p: [String: Any] = ["origin": xyz(frame.origin), "x_dir": xyz(frame.xDir), "y_dir": xyz(frame.yDir),
+                                    "segments": loops[i].segments]
+            if let h = holes[i] { p["holes"] = h }
+            return p
+        }
+        return .success(profiles)
     }
 
     func profileSegments() -> [Seg]? {
