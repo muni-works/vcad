@@ -1,4 +1,3 @@
-import { useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { X } from "@phosphor-icons/react/dist/ssr/X";
 import { Cube } from "@phosphor-icons/react/dist/ssr/Cube";
@@ -7,20 +6,10 @@ import { FileArrowUp } from "@phosphor-icons/react/dist/ssr/FileArrowUp";
 import { Globe } from "@phosphor-icons/react/dist/ssr/Globe";
 import { GitBranch } from "@phosphor-icons/react/dist/ssr/GitBranch";
 import { Lightning } from "@phosphor-icons/react/dist/ssr/Lightning";
-import { Check } from "@phosphor-icons/react/dist/ssr/Check";
-import { ArrowRight } from "@phosphor-icons/react/dist/ssr/ArrowRight";
 import { GithubLogo } from "@phosphor-icons/react/dist/ssr/GithubLogo";
 import { Book } from "@phosphor-icons/react/dist/ssr/Book";
 import { ChatCircle } from "@phosphor-icons/react/dist/ssr/ChatCircle";
-import {
-  TIERS,
-  PURCHASABLE_TIERS,
-  formatTokens,
-  useBillingStore,
-  type PaidTierId,
-} from "@vcad/core";
 import { cn } from "@/lib/utils";
-import { startCheckout } from "@/lib/billing-api";
 
 // ---------------------------------------------------------------------------
 // Feature grid — the product pitch. Each card is one "why vcad" reason.
@@ -76,24 +65,6 @@ export function ProductModal({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const snapshot = useBillingStore((s) => s.snapshot);
-  const currentTier = snapshot?.tier ?? "free";
-  const [busy, setBusy] = useState<PaidTierId | null>(null);
-
-  const handleCheckout = async (tier: PaidTierId) => {
-    setBusy(tier);
-    try {
-      const url = await startCheckout(tier);
-      const a = document.createElement("a");
-      a.href = url;
-      a.rel = "noopener";
-      a.click();
-    } catch (err) {
-      console.error("[product] checkout error:", err);
-      setBusy(null);
-    }
-  };
-
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
@@ -137,109 +108,6 @@ export function ProductModal({
                   </span>
                 </div>
               ))}
-            </div>
-
-            {/* Pricing section */}
-            <div className="mb-8">
-              <div className="flex items-center gap-3 mb-4">
-                <div className="h-px flex-1 bg-border" />
-                <span className="text-[9px] font-semibold uppercase tracking-[0.14em] text-text-muted">
-                  Unlock more with Pro
-                </span>
-                <div className="h-px flex-1 bg-border" />
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                {PURCHASABLE_TIERS.map((tierId) => {
-                  const tier = TIERS[tierId];
-                  const isCurrent = currentTier === tierId;
-                  const isRecommended =
-                    currentTier === "free" && tierId === "pro";
-                  return (
-                    <div
-                      key={tierId}
-                      className={cn(
-                        "relative flex flex-col border p-4",
-                        isRecommended
-                          ? "border-brand/60 ring-1 ring-brand/20 bg-brand/[0.04]"
-                          : "border-border bg-bg",
-                      )}
-                    >
-                      {isRecommended && (
-                        <div className="absolute -top-[9px] left-3 bg-brand px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-[0.14em] text-white">
-                          Popular
-                        </div>
-                      )}
-                      <div className="flex items-baseline justify-between mb-1">
-                        <span className="text-[13px] font-bold tracking-tight text-text">
-                          {tier.name}
-                        </span>
-                        {isCurrent && (
-                          <span className="bg-brand/15 px-1 py-0.5 text-[7px] font-bold uppercase tracking-wider text-brand">
-                            Current
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-baseline gap-1 mb-2">
-                        <span className="text-lg font-bold tracking-tighter text-text">
-                          ${tier.priceMonthlyUsd}
-                        </span>
-                        <span className="text-[9px] text-text-muted">/mo</span>
-                      </div>
-                      <ul className="flex-1 space-y-1 mb-3">
-                        {tier.perks.map((perk) => (
-                          <li
-                            key={perk}
-                            className="flex items-start gap-1 text-[10px] text-text-muted"
-                          >
-                            <Check
-                              size={9}
-                              weight="bold"
-                              className="mt-[3px] shrink-0 text-brand"
-                            />
-                            <span>{perk}</span>
-                          </li>
-                        ))}
-                      </ul>
-                      <button
-                        type="button"
-                        disabled={busy !== null || isCurrent}
-                        onClick={() => handleCheckout(tierId)}
-                        className={cn(
-                          "group flex h-8 items-center justify-center gap-1.5",
-                          "text-[10px] font-bold uppercase tracking-[0.1em]",
-                          "transition-[background-color,transform,box-shadow] duration-150",
-                          "disabled:cursor-not-allowed disabled:opacity-40",
-                          "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand",
-                          isCurrent
-                            ? "border border-border text-text-muted"
-                            : "bg-brand text-white hover:bg-brand-hover hover:shadow-[0_6px_20px_-6px_rgba(249,38,114,0.5)] active:translate-y-[1px]",
-                        )}
-                      >
-                        {busy === tierId ? (
-                          "Redirecting..."
-                        ) : isCurrent ? (
-                          "Current plan"
-                        ) : (
-                          <>
-                            Get {tier.name}
-                            <ArrowRight
-                              size={10}
-                              weight="bold"
-                              className="transition-transform group-hover:translate-x-0.5"
-                            />
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-
-              <p className="mt-3 text-center text-[9px] text-text-muted">
-                Free tier includes {formatTokens(TIERS.free.monthlyTokenLimit)} chat
-                tokens/mo · All CAD tools are always free · Cancel anytime
-              </p>
             </div>
 
             {/* Footer links */}
