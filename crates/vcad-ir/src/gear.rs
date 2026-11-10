@@ -394,27 +394,29 @@ pub fn mesh_rotation_deg(z1: u32, rot1_deg: f64, z2: u32, direction_deg: f64) ->
     (direction_deg + 180.0 + (f - 0.5) * tau2).rem_euclid(360.0)
 }
 
-/// A circular bore of diameter `d` centred on the origin, as two arcs —
-/// ready to go in a [`crate::CsgOp::Sketch2D`]'s `holes`.
+/// Chords on a bore circle. The extruder would polygonise an arc with its
+/// coarse default (a 2.5% area loss on a small bore); a gear's bore is a fit
+/// surface, so it gets a fine, fixed polygon instead (0.07% area loss).
+pub const BORE_SEGMENTS: usize = 96;
+
+/// A circular bore of diameter `d` centred on the origin, as a closed
+/// polygon of [`BORE_SEGMENTS`] chords — ready to go in a
+/// [`crate::CsgOp::Sketch2D`]'s `holes`.
 pub fn bore_segments(d: f64) -> Vec<SketchSegment2D> {
     let r = d / 2.0;
-    let c = Vec2 { x: 0.0, y: 0.0 };
-    let a = Vec2 { x: r, y: 0.0 };
-    let b = Vec2 { x: -r, y: 0.0 };
-    vec![
-        SketchSegment2D::Arc {
-            start: a,
-            end: b,
-            center: c,
-            ccw: true,
-        },
-        SketchSegment2D::Arc {
-            start: b,
-            end: a,
-            center: c,
-            ccw: true,
-        },
-    ]
+    let at = |i: usize| {
+        let t = 2.0 * PI * i as f64 / BORE_SEGMENTS as f64;
+        Vec2 {
+            x: r * t.cos(),
+            y: r * t.sin(),
+        }
+    };
+    (0..BORE_SEGMENTS)
+        .map(|i| SketchSegment2D::Line {
+            start: at(i),
+            end: at((i + 1) % BORE_SEGMENTS),
+        })
+        .collect()
 }
 
 /// Check a bore against a gear: it has to leave a rim inside the root circle.
