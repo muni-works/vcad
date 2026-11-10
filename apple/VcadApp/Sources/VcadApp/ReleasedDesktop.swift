@@ -1109,7 +1109,9 @@ struct ReleasedOverlayView: View {
         .onChange(of: model.sketchDirty) { _, dirty in
             if dirty { refreshSketchInk() }
         }
+        .onChange(of: showsSketchGrid) { _, _ in refreshSketchInk(force: true) }
     }
+    @AppStorage(Prefs.sketchGridKey) private var showsSketchGrid = true
 
     /// Top-left origin for the floating Object Inspector: just right of the
     /// selected part's projected center, clamped inside the overlay. With no
@@ -1160,6 +1162,7 @@ struct ReleasedOverlayView: View {
         guard let centering = ReleaseWindowController.shared.centeringEntity else { return }
         centering.findEntity(named: "sketchRoot")?.removeFromParent()
         if model.sketching { centering.addChild(buildSketchRoot(model: model)) }
+        syncSketchGrid(model, in: centering)
         model.sketchDirty = false
     }
 
@@ -1534,6 +1537,10 @@ struct ReleasedARView: NSViewRepresentable {
         var anchor: AnchorEntity?
         var builtKey = ""
         var builtGrounded = false
+        /// What the ground grid was built from, so a zoom can re-pick its
+        /// spacing without a scene rebuild.
+        var groundSpec: GroundSpec?
+        var builtGridLayout: GridSpacing.Layout?
         var framedCNCRevision = -1
         var builtSelection: Set<Int> = []
         var builtInstances: Set<Int> = []
@@ -1641,6 +1648,7 @@ struct ReleasedARView: NSViewRepresentable {
         }
         applyInstancePoses(context.coordinator)
         syncCamera(context.coordinator)
+        syncGroundGrid(context.coordinator)
     }
 
     /// Re-pose instance entities from the latest solve — the released twin of
@@ -1740,6 +1748,7 @@ struct ReleasedARView: NSViewRepresentable {
         ReleaseWindowController.shared.centeringEntity = centering
         // Keep the in-progress sketch ink alive across geometry rebuilds.
         if model.sketching { centering.addChild(buildSketchRoot(model: model)) }
+        syncSketchGrid(model, in: centering, force: true)
         // And the face/edge selection highlight: a pick triggers a rebuild,
         // which used to drop the overlay the pick had just drawn, so picked
         // edges never showed.
@@ -1820,14 +1829,47 @@ struct ReleasedARView: NSViewRepresentable {
         // Grounding: a reference grid and a contact shadow under the part,
         // only when there is a window floor to stand on. Sized in the same
         // display units as the part so grid cells read as round millimetres.
+        coordinator.groundSpec = nil
         if !model.source.isGripper, !scene.solving, scene.size > 0 {
             let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            for e in SceneAssets.groundingEntities(partSizeMM: model.sizeMM, sceneSize: scene.size,
-                                                   sceneScale: sceneScale, dark: dark) {
+            let spec = GroundSpec(partSizeMM: model.sizeMM, sceneSize: scene.size,
+                                  sceneScale: sceneScale, dark: dark, center: scene.center)
+            coordinator.groundSpec = spec
+            let span = viewSpanMM(spec)
+            coordinator.builtGridLayout = GridSpacing.ground(extentMM: spec.sceneSize, viewSpanMM: span)
+            for e in SceneAssets.groundingEntities(partSizeMM: spec.partSizeMM, sceneSize: spec.sceneSize,
+                                                   sceneScale: spec.sceneScale, dark: spec.dark,
+                                                   sceneCenter: spec.center, viewSpanMM: span) {
                 e.isEnabled = grounded
                 anchor.addChild(e)
             }
         }
+    }
+
+    /// Visible width at the target, in model millimetres (60° vertical FOV,
+    /// ~16:10 window).
+    private func viewSpanMM(_ spec: GroundSpec) -> Float {
+        1.8 * simd_length(cameraPosition - lookAt) / max(spec.sceneScale, 1e-9)
+    }
+
+    /// Re-pick the ground grid when zooming crosses a spacing step, so lines
+    /// stay hairlines up close and don't turn to mush far away. Only swaps
+    /// the one grid quad; textures are cached per layout.
+    private func syncGroundGrid(_ c: Coordinator) {
+        guard let spec = c.groundSpec, let anchor = c.anchor else { return }
+        let span = viewSpanMM(spec)
+        let layout = GridSpacing.ground(extentMM: spec.sceneSize, viewSpanMM: span)
+        guard layout != c.builtGridLayout else { return }
+        c.builtGridLayout = layout
+        let old = anchor.findEntity(named: "grid")
+        let enabled = old?.isEnabled ?? grounded
+        old?.removeFromParent()
+        guard let grid = SceneAssets.groundingEntities(partSizeMM: spec.partSizeMM, sceneSize: spec.sceneSize,
+                                                       sceneScale: spec.sceneScale, dark: spec.dark,
+                                                       sceneCenter: spec.center, viewSpanMM: span)
+            .first(where: { $0.name == "grid" }) else { return }
+        grid.isEnabled = enabled
+        anchor.addChild(grid)
     }
 }
 
@@ -2173,8 +2215,11 @@ struct ReleasedScene: View {
                        visibility: VisibilityState(hidden: model.hiddenParts,
                                                    isolated: model.isolatedPart),
                        geometryKey: geometryKey,
-                       grounded: model.isWindowed && Prefs.showsGrid)
+                       // The ground grid steps aside while sketching: the
+                       // sketch plane draws its own grid at the snap step.
+                       grounded: model.isWindowed && showsGrid && !model.sketching)
     }
+    @AppStorage(Prefs.gridKey) private var showsGrid = true
 }
 
 // MARK: - Live Dock icon

@@ -6,6 +6,7 @@ import SwiftUI
 struct SettingsView: View {
     @AppStorage(Prefs.presentationKey) private var opensInWindow = false
     @AppStorage(Prefs.gridKey) private var showsGrid = true
+    @AppStorage(Prefs.sketchGridKey) private var showsSketchGrid = true
     @AppStorage(Prefs.triadKey) private var showsTriad = true
     @AppStorage(Prefs.soundsKey) private var playsSounds = true
     @AppStorage(Prefs.hapticsKey) private var haptics = true
@@ -26,6 +27,7 @@ struct SettingsView: View {
                 }
                 Section("Viewport") {
                     Toggle("Show reference grid and contact shadow in windows", isOn: $showsGrid)
+                    Toggle("Show grid on the sketch plane while sketching", isOn: $showsSketchGrid)
                     Toggle("Show orientation triad", isOn: $showsTriad)
                 }
             }

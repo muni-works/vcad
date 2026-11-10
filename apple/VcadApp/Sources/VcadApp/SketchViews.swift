@@ -206,18 +206,8 @@ func buildSketchRoot(model: EditorModel) -> Entity {
         e.position = w(p); root.addChild(e)
     }
 
-    // The floor grid only serves an XY sketch: every other plane gets its own,
-    // with the sketch axes through the origin the cursor grid is measured from.
-    if model.sketchFace != nil || model.sketchPlane != .xy {
-        let spacing = 10.0, half = (Double(max(model.displayedSceneSize, 100)) / spacing).rounded(.up) * spacing
-        var lines: [SIMD2<Double>] = []
-        for v in stride(from: -half, through: half, by: spacing) where abs(v) > 1e-9 {
-            lines += [SIMD2(v, -half), SIMD2(v, half), SIMD2(-half, v), SIMD2(half, v)]
-        }
-        ribbon(lines, NSColor(white: 0.38, alpha: 1), 0.5)
-        ribbon([SIMD2(-half, 0), SIMD2(half, 0)], NSColor(srgbRed: 0.75, green: 0.25, blue: 0.25, alpha: 1))
-        ribbon([SIMD2(0, -half), SIMD2(0, half)], NSColor(srgbRed: 0.25, green: 0.65, blue: 0.3, alpha: 1))
-    }
+    // The sketch-plane grid (every plane, at the snap step) is its own
+    // entity — see syncSketchGrid — so a cursor move doesn't rebuild it.
 
     let (geometry, preview, points) = sketch.ink()
     ribbon(geometry, ink)
