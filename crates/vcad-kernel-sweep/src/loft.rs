@@ -170,14 +170,13 @@ fn loft_ruled(profiles: &[SketchProfile], closed: bool) -> Result<BRepSolid, Lof
             let v2 = vertex_grid[next_profile_idx][next_seg_idx];
             let v3 = vertex_grid[next_profile_idx][seg_idx];
 
-            let p0 = topo.vertices[v0].point;
-            let p1 = topo.vertices[v1].point;
-            let p3 = topo.vertices[v3].point;
-
-            // Create planar surface approximation
-            let x_dir = p1 - p0;
-            let y_dir = p3 - p0;
-            let surf_idx = geom.add_surface(Box::new(Plane::new(p0, x_dir, y_dir)));
+            // Planar surface whose normal follows the quad's own winding
+            // (outward), on an orthonormal frame.
+            let quad: Vec<Point3> = [v0, v1, v2, v3]
+                .iter()
+                .map(|&v| topo.vertices[v].point)
+                .collect();
+            let surf_idx = geom.add_surface(Box::new(loop_plane(&quad)));
 
             // Create half-edges
             let he0 = topo.add_half_edge(v0);
@@ -252,32 +251,23 @@ fn build_cap_face<F>(
 where
     F: Fn(Point3) -> [i64; 3],
 {
-    let n = verts.len();
-
-    // Get positions
-    let positions: Vec<Point3> = verts.iter().map(|&v| topo.vertices[v].point).collect();
-
-    // Create plane surface
-    let origin = positions[0];
-    let surf_idx = if n >= 3 {
-        let x_dir = positions[1] - origin;
-        let y_dir = positions[n - 1] - origin;
-        if x_dir.norm() > 1e-12 && y_dir.norm() > 1e-12 {
-            geom.add_surface(Box::new(Plane::new(origin, x_dir, y_dir)))
-        } else {
-            let normal = compute_polygon_normal(&positions);
-            geom.add_surface(Box::new(Plane::from_normal(origin, normal)))
-        }
-    } else {
-        geom.add_surface(Box::new(Plane::from_normal(origin, Vec3::z())))
-    };
-
     // Create half-edges in the correct order
     let ordered_verts: Vec<VertexId> = if reversed {
         verts.iter().rev().copied().collect()
     } else {
         verts.to_vec()
     };
+
+    // The plane's normal must follow the cap's *own* (possibly reversed)
+    // winding. Building it from the unreversed ring gave the start cap a
+    // normal pointing into the solid: the mesh (wound by the loop) still
+    // had the right volume, but everything that reads the surface normal —
+    // shell offsets, face picking, shading — saw the bottom inside out.
+    let ordered_pts: Vec<Point3> = ordered_verts
+        .iter()
+        .map(|&v| topo.vertices[v].point)
+        .collect();
+    let surf_idx = geom.add_surface(Box::new(loop_plane(&ordered_pts)));
 
     let hes: Vec<HalfEdgeId> = ordered_verts
         .iter()
@@ -312,6 +302,27 @@ fn pair_twin_half_edges(topo: &mut Topology, he_map: &FxHashMap<([i64; 3], [i64;
                 paired.insert((origin_key, dest_key));
             }
         }
+    }
+}
+
+/// A plane through a face loop whose normal is the loop's winding normal
+/// (Newell) — outward for a correctly wound face — on an orthonormal
+/// frame anchored at the first vertex.
+fn loop_plane(pts: &[Point3]) -> Plane {
+    let origin = pts[0];
+    let n = compute_polygon_normal(pts);
+    // In-plane x axis: the first edge with any length, projected flat.
+    let x = pts
+        .iter()
+        .skip(1)
+        .map(|p| {
+            let d = p - origin;
+            d - n * d.dot(n)
+        })
+        .find(|d| d.norm() > 1e-12);
+    match x {
+        Some(x) => Plane::new(origin, x, n.cross(x)),
+        None => Plane::from_normal(origin, n),
     }
 }
 
@@ -384,6 +395,39 @@ mod tests {
                 (vol - 2000.0).abs() < 1.0,
                 "frame ({x_dir:?},{y_dir:?}): expected +2000, got {vol}"
             );
+        }
+    }
+
+    /// Every face's plane normal must agree with its loop's winding normal
+    /// (outward). The start cap used to carry a plane built from the
+    /// unreversed ring — pointing into the solid — which made shell offset
+    /// that face the wrong way and the shelled loft evaluate to nothing.
+    #[test]
+    fn loft_face_planes_point_outward() {
+        let p1 = create_rectangle_profile(Point3::new(-20.0, -15.0, 0.0), 40.0, 30.0);
+        let p2 = create_rectangle_profile(Point3::new(-10.0, -7.5, 50.0), 20.0, 15.0);
+        let solid = loft(&[p1, p2], LoftOptions::default()).unwrap();
+        let topo = &solid.topology;
+        let shell = &topo.shells[topo.solids[solid.solid_id].outer_shell];
+        for &f in &shell.faces {
+            let face = &topo.faces[f];
+            let pts: Vec<Point3> = topo
+                .loop_vertices(face.outer_loop)
+                .iter()
+                .map(|&v| topo.vertices[v].point)
+                .collect();
+            let winding = compute_polygon_normal(&pts);
+            let surf = &solid.geometry.surfaces[face.surface_index];
+            let n = *surf
+                .normal(vcad_kernel_math::Point2::new(0.0, 0.0))
+                .as_ref();
+            assert!(
+                n.dot(winding) > 1.0 - 1e-9,
+                "face plane normal {n:?} disagrees with loop winding {winding:?}"
+            );
+            // The point (0,0) of the plane is the loop's first vertex.
+            let o = surf.evaluate(vcad_kernel_math::Point2::new(0.0, 0.0));
+            assert!((o - pts[0]).norm() < 1e-9);
         }
     }
 

@@ -430,15 +430,17 @@ pub fn shell_brep_open(
 
     // Inner vertex positions: offset every vertex so it sits exactly
     // `thickness` inside each distinct KEPT face around it. Open faces do
-    // not move — the rim stays in the open face's plane.
+    // not move — the rim stays in the open face's plane, so each open face
+    // around the vertex is a row with target offset 0. Without those rows
+    // the two-wall solution `α(a + b)` leaves the rim plane whenever the
+    // walls are not perpendicular to it: a sloped (lofted, drafted) wall
+    // lifted the rim off the opening (wrong cavity) or pushed a duct's far
+    // rim outside the solid (rejected by the post-flight).
     let mut inner_pos: HashMap<VertexId, Point3> = HashMap::new();
     for (&v, around) in &vertex_faces {
         let p = topo.vertices[v].point;
-        let mut normals: Vec<Vec3> = Vec::new();
+        let mut rows: Vec<(Vec3, f64)> = Vec::new();
         for &i in around {
-            if is_open[i] {
-                continue;
-            }
             let face = &topo.faces[faces[i].rep];
             let n = surface_normal_at(geom.surfaces[face.surface_index].as_ref(), p);
             let n = match face.orientation {
@@ -449,15 +451,22 @@ pub fn shell_brep_open(
                 continue;
             }
             let n = n.normalize();
-            if !normals.iter().any(|m| m.dot(n) > 1.0 - 1e-9) {
-                normals.push(n);
+            let target = if is_open[i] { 0.0 } else { thickness };
+            match rows.iter_mut().find(|(m, _)| m.dot(n) > 1.0 - 1e-9) {
+                // A kept face wins over a coplanar open one.
+                Some(row) => row.1 = row.1.max(target),
+                None => rows.push((n, target)),
             }
         }
-        let d = solve_offset(&normals, thickness).ok_or_else(|| {
-            ShellError::OpenShell(
-                "every face around a corner is open — nothing is left to offset there".into(),
-            )
-        })?;
+        let has_kept = rows.iter().any(|(_, t)| *t > 0.0);
+        let d = has_kept
+            .then(|| solve_offset(&rows))
+            .flatten()
+            .ok_or_else(|| {
+                ShellError::OpenShell(
+                    "every face around a corner is open — nothing is left to offset there".into(),
+                )
+            })?;
         inner_pos.insert(v, p - d);
     }
 
@@ -762,27 +771,30 @@ fn newell(pts: &[Point3]) -> Vec3 {
     n
 }
 
-/// The displacement `d` with `n · d = t` for every (distinct, unit) normal:
-/// the point `t` inside each face at once. Exact for up to three
-/// independent faces; least-squares (minimum norm) beyond, or when the
-/// normals are dependent. `None` with no normals.
-fn solve_offset(normals: &[Vec3], t: f64) -> Option<Vec3> {
-    match normals {
+/// The displacement `d` with `n · d = t` for every (distinct, unit)
+/// normal/target row: the point `t` inside each face at once (`t = 0`
+/// keeps it in that face's plane). Exact for up to three independent
+/// rows; least-squares beyond, or when the normals are dependent. `None`
+/// with no rows.
+fn solve_offset(rows: &[(Vec3, f64)]) -> Option<Vec3> {
+    match rows {
         [] => None,
-        [n] => Some(*n * t),
-        [a, b] => {
-            // d = α(a + b) by symmetry; a·d = α(1 + a·b) = t.
+        [(n, t)] => Some(*n * *t),
+        [(a, ta), (b, tb)] => {
+            // d = α a + β b with a·d = ta, b·d = tb.
             let c = a.dot(*b);
-            if 1.0 + c < 1e-12 {
-                return Some(*a * t); // opposite faces: degenerate
+            let det = 1.0 - c * c;
+            if det < 1e-12 {
+                // Opposite faces: degenerate.
+                return Some(if ta >= tb { *a * *ta } else { *b * *tb });
             }
-            Some((*a + *b) * (t / (1.0 + c)))
+            Some(*a * ((ta - c * tb) / det) + *b * ((tb - c * ta) / det))
         }
         _ => {
-            // Normal equations: (Σ n nᵀ) d = t Σ n, solved by Cramer's rule.
+            // Normal equations: (Σ n nᵀ) d = Σ t n, solved by Cramer's rule.
             let mut m = [[0.0f64; 3]; 3];
             let mut rhs = [0.0f64; 3];
-            for n in normals {
+            for &(n, t) in rows {
                 let a = [n.x, n.y, n.z];
                 for r in 0..3 {
                     for c in 0..3 {
@@ -811,16 +823,16 @@ fn solve_offset(normals: &[Vec3], t: f64) -> Option<Vec3> {
             // Rank 2 (all normals in one plane): solve in the span of the
             // two most different normals.
             let (mut best, mut pair) = (2.0, (0, 1));
-            for i in 0..normals.len() {
-                for j in i + 1..normals.len() {
-                    let c = normals[i].dot(normals[j]).abs();
+            for i in 0..rows.len() {
+                for j in i + 1..rows.len() {
+                    let c = rows[i].0.dot(rows[j].0).abs();
                     if c < best {
                         best = c;
                         pair = (i, j);
                     }
                 }
             }
-            solve_offset(&[normals[pair.0], normals[pair.1]], t)
+            solve_offset(&[rows[pair.0], rows[pair.1]])
         }
     }
 }
@@ -927,6 +939,28 @@ fn compute_offset_vertex(
 
     if normals.is_empty() {
         return pos;
+    }
+
+    // Up to three distinct face planes: put the vertex exactly `thickness`
+    // inside each. The normal average below is only exact when the faces
+    // are mutually perpendicular (a box); at a sloped wall — a lofted
+    // frustum, a drafted pocket — it leaves the inner faces off their own
+    // offset planes. More faces (faceted blends) keep the robust average.
+    let mut distinct: Vec<(Vec3, f64)> = Vec::new();
+    for n in &normals {
+        if n.norm() > 1e-12 {
+            let n = n.normalize();
+            if !distinct.iter().any(|(m, _)| m.dot(n) > 1.0 - 1e-9) {
+                distinct.push((n, thickness));
+            }
+        }
+    }
+    if (2..=3).contains(&distinct.len()) {
+        if let Some(d) = solve_offset(&distinct) {
+            if d.norm().is_finite() && d.norm() < 10.0 * thickness.abs() {
+                return pos - d;
+            }
+        }
     }
 
     // Average the face normals to get vertex offset direction
