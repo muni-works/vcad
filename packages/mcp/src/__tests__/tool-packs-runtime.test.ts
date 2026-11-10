@@ -5,7 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { createServer } from "../server.js";
 import { resetInMemoryPackStore } from "../session-store.js";
-import type { AuthUser } from "../oauth.js";
+import type { AuthUser } from "../auth-user.js";
 
 /**
  * Runtime tool-pack switching (issue #432): `set_tool_packs` flips the exposed

@@ -3,9 +3,8 @@
  * npm/npx entry point for the published @vcad/mcp package.
  *
  * The npm tarball is a self-contained esbuild bundle, which relocates
- * wasm-singleton away from its source-relative `../kernel-wasm/…` path —
- * the same problem the Vercel serverless entry (services/mcp/entry.ts)
- * solves. Same fix: read the .wasm shipped next to the bundle and prime it
+ * wasm-singleton away from its source-relative `../kernel-wasm/…` path.
+ * Fix: read the .wasm shipped next to the bundle and prime it
  * before anything can trigger kernel init, then hand off to the normal
  * stdio main in index.ts.
  */

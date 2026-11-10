@@ -8,7 +8,6 @@ import { Export } from "@phosphor-icons/react/dist/ssr/Export";
 import { MagnifyingGlass } from "@phosphor-icons/react/dist/ssr/MagnifyingGlass";
 import { Bell } from "@phosphor-icons/react/dist/ssr/Bell";
 import { Megaphone } from "@phosphor-icons/react/dist/ssr/Megaphone";
-import { Link as LinkIcon } from "@phosphor-icons/react/dist/ssr/Link";
 import { DocTitle } from "@/components/DocTitle";
 import { Tooltip } from "@/components/ui/tooltip";
 import * as Menubar from "@radix-ui/react-menubar";
@@ -20,20 +19,15 @@ import {
   exportGltfBlob,
   exportStepBlob,
   CATEGORY_ICON_COLORS,
-  TIERS,
-  useBillingStore,
   t,
   runJob,
   type Command,
 } from "@vcad/core";
-import { openCustomerPortal } from "@/lib/billing-api";
-import { UpgradeModal } from "@/components/UpgradeModal";
 import { cn } from "@/lib/utils";
 import { downloadBlob } from "@/lib/download";
 import { exportDrawingPdf } from "@/lib/drawing-sheet";
 import { examples } from "@/data/examples";
 import { analytics } from "@/lib/analytics";
-import { SignInButton, UserMenu, triggerSync, useAuthStore } from "@vcad/auth";
 import { useChangelogStore } from "@/stores/changelog-store";
 import { useNotificationStore } from "@/stores/notification-store";
 import { ensureNotRecording } from "@/lib/recording-guard";
@@ -59,13 +53,6 @@ interface HeaderProps {
   onProductOpen: () => void;
   onSave: () => void;
   onOpen: () => void;
-  /** Opens the ShareDialog. Enabled only when signed in + cloud-synced. */
-  onShareOpen: () => void;
-  /** Opens the ContinueDialog (hand off this part to Claude/ChatGPT/an editor).
-   *  Enabled only when signed in + cloud-synced. */
-  onContinueOpen: () => void;
-  /** Opens the version timeline sidebar. Enabled only when signed in. */
-  onVersionHistoryOpen: () => void;
   /** Tool palette (tab strip + icon row) docked directly under the menu bar. */
   children?: React.ReactNode;
 }
@@ -365,13 +352,7 @@ function XRMenuItems() {
   );
 }
 
-export function Header({ onAboutOpen, onProductOpen, onSave, onOpen, onShareOpen, onContinueOpen, onVersionHistoryOpen, children }: HeaderProps) {
-  const user = useAuthStore((s) => s.user);
-  const isAnonymous = useAuthStore((s) => s.isAnonymous);
-  // "Has a permanent identity" — false for anon Supabase sessions.
-  const isSignedIn = !!user && !isAnonymous;
-  const billingTier = useBillingStore((s) => s.snapshot?.tier ?? null);
-  const [upgradeOpen, setUpgradeOpen] = useState(false);
+export function Header({ onAboutOpen, onProductOpen, onSave, onOpen, children }: HeaderProps) {
   const [inputPrefsOpen, setInputPrefsOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [menuValue, setMenuValue] = useState("");
@@ -523,30 +504,8 @@ export function Header({ onAboutOpen, onProductOpen, onSave, onOpen, onShareOpen
               >
                 <CommandMenuItem id="new-document" commands={commands} />
                 <CommandMenuItem id="open" commands={commands} />
-                <CommandMenuItem id="open-cloud" commands={commands} />
                 <MenuSeparator />
                 <CommandMenuItem id="save" commands={commands} />
-                <MenuItem
-                  onSelect={onShareOpen}
-                  icon={LinkIcon}
-                  iconClassName="text-sky-400"
-                  disabled={!isSignedIn}
-                >
-                  {t("menu.file.share_link")}
-                </MenuItem>
-                <MenuItem
-                  onSelect={onContinueOpen}
-                  icon={Sparkle}
-                  iconClassName="text-brand"
-                >
-                  {t("menu.file.continue_in_claude")}
-                </MenuItem>
-                <MenuItem
-                  onSelect={onVersionHistoryOpen}
-                  disabled={!isSignedIn}
-                >
-                  {t("menu.file.version_history")}
-                </MenuItem>
                 <MenuSeparator />
                 <Submenu label={t("menu.file.export")} icon={Export} iconClassName="text-sky-400">
                   <MenuItem onSelect={() => handleExport("stl")}>STL</MenuItem>
@@ -761,35 +720,7 @@ export function Header({ onAboutOpen, onProductOpen, onSave, onOpen, onShareOpen
             <Megaphone size={13} />
           </button>
         </Tooltip>
-        <SignInButton
-          variant="icon-text"
-          className={cn(
-            "shrink-0 flex items-center justify-center gap-1.5 h-6 px-2 text-[11px] font-medium",
-            "text-text-muted hover:text-text hover:bg-hover",
-          )}
-        />
-        <UserMenu
-          onSyncNow={() => triggerSync()}
-          planLabel={billingTier ? TIERS[billingTier].name : undefined}
-          onUpgrade={
-            billingTier !== "max" ? () => setUpgradeOpen(true) : undefined
-          }
-          onManageSubscription={
-            billingTier && billingTier !== "free"
-              ? () => {
-                  void openCustomerPortal().catch((err) => {
-                    console.error("[header] portal error:", err);
-                  });
-                }
-              : undefined
-          }
-        />
       </div>
-      <UpgradeModal
-        open={upgradeOpen}
-        onOpenChange={setUpgradeOpen}
-        reason="manual"
-      />
       <Suspense fallback={null}>
         <InputPreferencesDialog
           open={inputPrefsOpen}
