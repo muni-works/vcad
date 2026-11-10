@@ -39,6 +39,7 @@ pub use vcad_kernel_fillet;
 pub use vcad_kernel_flow;
 pub use vcad_kernel_geom;
 pub use vcad_kernel_math;
+pub use vcad_kernel_naming;
 #[cfg(feature = "analysis")]
 pub use vcad_kernel_neutronics;
 #[cfg(feature = "analysis")]
@@ -166,7 +167,11 @@ impl std::fmt::Display for NamedEdgeError {
             Self::NoNames => write!(f, "solid carries no persistent face names"),
             Self::BadName(s) => write!(f, "invalid face name '{s}' (expected scope:tag[.n]*)"),
             Self::Ambiguous { count } => {
-                write!(f, "edge reference is ambiguous ({count} candidate edges)")
+                write!(
+                    f,
+                    "edge reference is ambiguous: {count} candidate edges match and nothing \
+                     singles one out (re-pick the edge so the reference carries a geometric hint)"
+                )
             }
             Self::Lost(reason) => write!(f, "edge reference lost: {reason}"),
         }
@@ -1063,17 +1068,17 @@ impl Solid {
             let e = decline(&mut report, BlendError::NoKeys);
             return (Err(e), report);
         }
-        // Same inner-loop hazard as `fillet` — see count_inner_loop_faces.
-        let holes = count_inner_loop_faces(brep);
-        if holes > 0 {
-            let e = decline(&mut report, BlendError::InnerLoops { faces: holes });
-            return (Err(e), report);
-        }
-
         // Fast path: whole-solid constant fillet/chamfer already have
         // dedicated pipelines with analytic blend surfaces and corner
-        // patches — use them.
+        // patches — use them. They share `fillet`'s inner-loop hazard (see
+        // count_inner_loop_faces); the per-edge loft below carries holes
+        // and curved faces it doesn't touch through unchanged.
         if matches!(query, vcad_kernel_fillet::EdgeQuery::All) && keys.len() == 1 {
+            let holes = count_inner_loop_faces(brep);
+            if holes > 0 {
+                let e = decline(&mut report, BlendError::InnerLoops { faces: holes });
+                return (Err(e), report);
+            }
             let s = keys[0].section;
             if s.shape >= 1.0 - 1e-12 {
                 return self.fillet_reported(s.size);
@@ -1158,6 +1163,19 @@ impl Solid {
         face_a: &str,
         face_b: &str,
     ) -> Result<(Point3, Point3), NamedEdgeError> {
+        self.resolve_named_edge_hinted(face_a, face_b, None)
+    }
+
+    /// [`Solid::resolve_named_edge`] with an optional geometric snapshot of
+    /// the edge (taken when it was picked). The hint is consulted only when
+    /// the names alone cannot pick exactly one edge, and must then match
+    /// exactly one edge within tolerance — never a nearest-edge guess.
+    pub fn resolve_named_edge_hinted(
+        &self,
+        face_a: &str,
+        face_b: &str,
+        hint: Option<vcad_kernel_naming::EdgeHint>,
+    ) -> Result<(Point3, Point3), NamedEdgeError> {
         let SolidRepr::BRep(brep) = &self.repr else {
             return Err(NamedEdgeError::NoNames);
         };
@@ -1168,7 +1186,8 @@ impl Solid {
             .ok_or_else(|| NamedEdgeError::BadName(face_a.to_string()))?;
         let b = vcad_kernel_naming::FaceName::parse(face_b)
             .ok_or_else(|| NamedEdgeError::BadName(face_b.to_string()))?;
-        let edge_ref = vcad_kernel_naming::EdgeRef::new(a, b);
+        let mut edge_ref = vcad_kernel_naming::EdgeRef::new(a, b);
+        edge_ref.hint = hint;
         match vcad_kernel_naming::resolve_edge(brep, names, &edge_ref) {
             vcad_kernel_naming::EdgeResolution::Resolved { endpoints, .. } => Ok(endpoints),
             vcad_kernel_naming::EdgeResolution::Ambiguous { candidates } => {
@@ -1196,7 +1215,20 @@ impl Solid {
         face_b: &str,
         keys: &[vcad_kernel_fillet::BlendKey],
     ) -> Result<Solid, BlendError> {
-        let (a, b) = self.resolve_named_edge(face_a, face_b)?;
+        self.edge_blend_named_hinted(face_a, face_b, None, keys)
+    }
+
+    /// [`Solid::edge_blend_named`] with the edge's pick-time geometric
+    /// snapshot as a fail-closed fallback (see
+    /// [`Solid::resolve_named_edge_hinted`]).
+    pub fn edge_blend_named_hinted(
+        &self,
+        face_a: &str,
+        face_b: &str,
+        hint: Option<vcad_kernel_naming::EdgeHint>,
+        keys: &[vcad_kernel_fillet::BlendKey],
+    ) -> Result<Solid, BlendError> {
+        let (a, b) = self.resolve_named_edge_hinted(face_a, face_b, hint)?;
         self.edge_blend(&vcad_kernel_fillet::EdgeQuery::Endpoints { a, b }, keys)
     }
 
