@@ -55,6 +55,10 @@ struct SketchPaletteView: View {
             }
             .buttonStyle(.borderedProminent).controlSize(.small)
             .disabled(!model.canFinishSketch)
+            // A disabled button shows no tooltip of its own on macOS: the
+            // reason goes on a wrapper that still receives hover.
+            .padding(2).contentShape(Rectangle())
+            .help(model.sketchFinishBlocker ?? "Finish the sketch as \(model.sketchFinish.label)")
             Button { model.exitSketch() } label: { Image(systemName: "xmark") }
                 .buttonStyle(.bordered).controlSize(.small)
                 .help("Cancel sketch (Esc)")
@@ -164,6 +168,13 @@ struct SketchHintBar: View {
             if let s = model.sketch {
                 Divider().frame(height: 11)
                 Text(s.stateLabel)
+                // Why Finish is disabled, once there is something to finish.
+                if !s.isEmpty, let why = model.sketchFinishBlocker {
+                    Divider().frame(height: 11)
+                    Label(why, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                        .accessibilityLabel("Can't finish: \(why)")
+                }
             }
         }
         .font(.subheadline)
