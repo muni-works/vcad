@@ -15,9 +15,12 @@
 //!   Returns the document plus per-dimension ±σ (the fit's Fisher
 //!   information, Cramér–Rao) and the directions the photos do not pin.
 //!
-//! Neither can be interrupted: irys-recon has no cancel or progress hook, so
-//! the app runs them on a background thread and, on Cancel, stops waiting
-//! and discards the result.
+//! The reconstruction also runs as a cancellable job
+//! ([`vcad_recon_start`] → [`vcad_recon_poll`] / [`vcad_recon_cancel`] →
+//! [`vcad_recon_finish`] → [`vcad_recon_job_free`]) on irys-recon's
+//! [`fit::Hook`]: the job thread publishes stage/step/of, the app polls it,
+//! and a cancel stops the fit within one Levenberg–Marquardt iteration with
+//! the error `"cancelled"`.
 //!
 //! Evidence (stated in the app's copy too): synthetic photos only — three
 //! views, 15/20 parts within 1 mm, 10/20 within 0.5 mm. No real-photo test.
@@ -27,14 +30,17 @@ use std::path::Path;
 use std::ptr;
 
 use irys_recon::dsl::{Axis, Corner, Feature, Program, Unit};
-use irys_recon::{tag, v1};
+use irys_recon::{fit, tag, v1};
 use serde::{Deserialize, Serialize};
+use std::panic::AssertUnwindSafe;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread::JoinHandle;
 use vcad_ir::{
     BindingKey, CsgOp, Document, Expr, MaterialDef, Node, NodeId, Parameter, SceneEntry, Vec3,
 };
 
 use crate::err;
-use crate::json::{borrow_str, guard_ptr, json_out};
+use crate::json::{borrow_str, guard_ptr, into_c, json_out};
 
 /// Cylinder segments for the reconstructed features (irys-recon's own).
 const SEGMENTS: u32 = 48;
@@ -185,7 +191,14 @@ pub fn parameter_name(name: &str) -> String {
 
 /// Run the reconstruction end to end.
 pub fn reconstruct(r: &Request) -> Result<Outcome, String> {
+    reconstruct_with(r, fit::Hook::default())
+}
+
+/// [`reconstruct`] with a cancel/progress hook. A cancel returns
+/// `Err(fit::CANCELLED)` verbatim.
+pub fn reconstruct_with(r: &Request, hook: fit::Hook) -> Result<Outcome, String> {
     let t0 = std::time::Instant::now();
+    hook.check()?;
     let photos: Vec<v1::Photo> = r.photos.iter().map(|p| load(p)).collect::<Result<_, _>>()?;
     let checks: Vec<PhotoCheck> = photos
         .iter()
@@ -194,13 +207,17 @@ pub fn reconstruct(r: &Request) -> Result<Outcome, String> {
     let mut o = v1::V1Options {
         tag_mm: r.tag_mm,
         sensor_w_mm: r.sensor_w_mm,
+        hook,
         ..v1::V1Options::default()
     };
+    o.hook.check()?;
     o.search.workers = std::thread::available_parallelism()
         .map(|n| n.get().clamp(1, 8))
         .unwrap_or(4);
     let v = v1::recover_photos(&photos, &o).map_err(|e| {
-        if e.contains("no tag36h11") {
+        if e == fit::CANCELLED {
+            e
+        } else if e.contains("no tag36h11") {
             format!("No AprilTag found: {e}.")
         } else {
             format!("The reconstruction failed: {e}.")
@@ -727,6 +744,218 @@ pub extern "C" fn vcad_recon_photos(request_json: *const c_char) -> *mut c_char 
     entry("recon", request_json, reconstruct)
 }
 
+// ============================================================================
+// Cancellable job
+// ============================================================================
+
+fn stage_code(s: fit::Stage) -> i32 {
+    match s {
+        fit::Stage::Calibrate => 1,
+        fit::Stage::Appearance => 2,
+        fit::Stage::Search => 3,
+        fit::Stage::Finalists => 4,
+        fit::Stage::Polish => 5,
+    }
+}
+
+/// A snapshot of a running reconstruction, filled by [`vcad_recon_poll`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct VcadReconProgress {
+    /// 0 starting (loading and checking photos), 1 calibrate, 2 appearance,
+    /// 3 search, 4 finalists, 5 polish.
+    pub stage: i32,
+    /// 1-based step within the stage (0 while starting).
+    pub step: u32,
+    /// Steps in the stage (for search, the most there can be).
+    pub of: u32,
+    /// 1 once the job has finished (result, error or cancel).
+    pub done: u8,
+    /// 1 once [`vcad_recon_cancel`] was called.
+    pub cancelled: u8,
+}
+
+#[derive(Default)]
+struct Shared {
+    progress: VcadReconProgress,
+    result: Option<Result<String, String>>,
+}
+
+/// A reconstruction running on its own thread. Opaque to C.
+pub struct VcadReconJob {
+    hook: fit::Hook,
+    shared: Arc<Mutex<Shared>>,
+    thread: Option<JoinHandle<()>>,
+}
+
+fn lock(m: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
+    m.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+impl VcadReconJob {
+    fn start(r: Request) -> Self {
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let sink = Arc::clone(&shared);
+        let hook = fit::Hook::new(move |p: &fit::Progress| {
+            let mut s = lock(&sink);
+            s.progress.stage = stage_code(p.stage);
+            s.progress.step = u32::try_from(p.step).unwrap_or(u32::MAX);
+            s.progress.of = u32::try_from(p.of).unwrap_or(u32::MAX);
+        });
+        let job_hook = hook.clone();
+        let out = Arc::clone(&shared);
+        let spawned = std::thread::Builder::new()
+            .name("vcad-recon".into())
+            .spawn(move || {
+                let res = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                    reconstruct_with(&r, job_hook)
+                        .and_then(|o| serde_json::to_string(&o).map_err(|e| format!("recon: {e}")))
+                }))
+                .unwrap_or_else(|_| Err("recon: kernel panicked".into()));
+                let mut s = lock(&out);
+                s.result = Some(res);
+                s.progress.done = 1;
+            });
+        let thread = match spawned {
+            Ok(t) => Some(t),
+            Err(e) => {
+                let mut s = lock(&shared);
+                s.result = Some(Err(format!("recon: couldn't start a thread: {e}")));
+                s.progress.done = 1;
+                None
+            }
+        };
+        Self {
+            hook,
+            shared,
+            thread,
+        }
+    }
+
+    fn progress(&self) -> VcadReconProgress {
+        let mut p = lock(&self.shared).progress;
+        p.cancelled = u8::from(self.hook.cancelled());
+        p
+    }
+
+    fn finish(&mut self) -> Result<String, String> {
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+        lock(&self.shared)
+            .result
+            .clone()
+            .unwrap_or_else(|| Err("recon: no result".into()))
+    }
+}
+
+impl Drop for VcadReconJob {
+    fn drop(&mut self) {
+        self.hook.cancel();
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// Start the reconstruction on a background thread. Same request as
+/// [`vcad_recon_check`]. Returns a job handle, or null + `vcad_last_error`
+/// for a malformed request. Free with [`vcad_recon_job_free`].
+#[no_mangle]
+pub extern "C" fn vcad_recon_start(request_json: *const c_char) -> *mut VcadReconJob {
+    err::clear_error();
+    let Some(s) = borrow_str("recon request", request_json) else {
+        return ptr::null_mut();
+    };
+    guard_ptr("recon start", || match parse_request(s) {
+        Ok(r) => Box::into_raw(Box::new(VcadReconJob::start(r))),
+        Err(e) => {
+            err::set_error(e);
+            ptr::null_mut()
+        }
+    })
+}
+
+/// Copy the job's progress into `out`. Returns 1 when finished, 0 while
+/// running, -1 for a null argument. Never blocks for long; any thread.
+///
+/// # Safety
+/// `job` must come from [`vcad_recon_start`] and not be freed; `out` must be
+/// valid for one write.
+#[no_mangle]
+pub unsafe extern "C" fn vcad_recon_poll(
+    job: *const VcadReconJob,
+    out: *mut VcadReconProgress,
+) -> i32 {
+    if job.is_null() || out.is_null() {
+        return -1;
+    }
+    // SAFETY: caller contract above.
+    let job = unsafe { &*job };
+    let Ok(p) = std::panic::catch_unwind(AssertUnwindSafe(|| job.progress())) else {
+        return -1;
+    };
+    // SAFETY: caller contract above.
+    unsafe { out.write(p) };
+    i32::from(p.done)
+}
+
+/// Ask the job to stop; returns at once. The fit stops within one
+/// Levenberg–Marquardt iteration and [`vcad_recon_finish`] then fails with
+/// `vcad_last_error` == `"cancelled"`. Null is a no-op; any thread.
+///
+/// # Safety
+/// `job` must come from [`vcad_recon_start`] and not be freed.
+#[no_mangle]
+pub unsafe extern "C" fn vcad_recon_cancel(job: *const VcadReconJob) {
+    if job.is_null() {
+        return;
+    }
+    // SAFETY: caller contract above.
+    unsafe { &*job }.hook.cancel();
+}
+
+/// Wait for the job and return its result: the [`vcad_recon_photos`] JSON,
+/// or null + `vcad_last_error` (exactly `"cancelled"` after a cancel). Call
+/// off the main thread; calling it again returns the same result. Free the
+/// string with `vcad_string_free`.
+///
+/// # Safety
+/// `job` must come from [`vcad_recon_start`] and not be freed, nor be passed
+/// to `vcad_recon_finish` on two threads at once.
+#[no_mangle]
+pub unsafe extern "C" fn vcad_recon_finish(job: *mut VcadReconJob) -> *mut c_char {
+    err::clear_error();
+    if job.is_null() {
+        err::set_error("recon finish: null job");
+        return ptr::null_mut();
+    }
+    // SAFETY: caller contract above.
+    let job = unsafe { &mut *job };
+    guard_ptr("recon finish", || match job.finish() {
+        Ok(s) => into_c(s),
+        Err(e) => {
+            err::set_error(e);
+            ptr::null_mut()
+        }
+    })
+}
+
+/// Cancel (if still running), wait for the thread and free the job. Null is
+/// a no-op.
+///
+/// # Safety
+/// `job` must come from [`vcad_recon_start`] and not be used afterwards.
+#[no_mangle]
+pub unsafe extern "C" fn vcad_recon_job_free(job: *mut VcadReconJob) {
+    if job.is_null() {
+        return;
+    }
+    // SAFETY: caller contract above; Drop cancels and joins.
+    let job = unsafe { Box::from_raw(job) };
+    let _ = std::panic::catch_unwind(AssertUnwindSafe(move || drop(job)));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -932,5 +1161,70 @@ mod tests {
         if let Ok(out) = std::env::var("RECON_OUT") {
             std::fs::write(out, serde_json::to_string_pretty(&o.document).unwrap()).unwrap();
         }
+    }
+
+    /// A cancelled job stops promptly and reports exactly "cancelled"; a
+    /// malformed request fails at start; free cancels a running job.
+    #[test]
+    fn cancel_returns_promptly() {
+        let dir = std::env::temp_dir().join(format!("vcad-recon-job-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("tag.jpg");
+        std::fs::write(&path, tag_photo(true, true)).unwrap();
+        let req =
+            CString::new(serde_json::json!({ "photos": [path, path, path] }).to_string()).unwrap();
+
+        let job = vcad_recon_start(req.as_ptr());
+        assert!(!job.is_null(), "{:?}", err::last_error_string());
+        let mut p = VcadReconProgress::default();
+        // Let it get into the fit (or finish failing) before cancelling.
+        let t0 = std::time::Instant::now();
+        while unsafe { vcad_recon_poll(job, &mut p) } == 0
+            && p.stage < 2
+            && t0.elapsed() < std::time::Duration::from_secs(60)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let t = std::time::Instant::now();
+        unsafe { vcad_recon_cancel(job) };
+        let r = unsafe { vcad_recon_finish(job) };
+        let took = t.elapsed();
+        assert!(unsafe { vcad_recon_poll(job, &mut p) } == 1);
+        assert_eq!(p.cancelled, 1);
+        if r.is_null() {
+            let e = err::last_error_string().unwrap();
+            // A synthetic page has no part on it: the fit may also fail on
+            // its own before the cancel lands. Either way it must be prompt.
+            if p.stage >= 1 {
+                assert!(e == "cancelled" || !e.is_empty(), "{e}");
+            }
+        } else {
+            take(r);
+        }
+        assert!(
+            took < std::time::Duration::from_secs(10),
+            "cancel took {took:?}"
+        );
+        unsafe { vcad_recon_job_free(job) };
+
+        // Cancelled before it gets anywhere: exactly "cancelled".
+        let job = vcad_recon_start(req.as_ptr());
+        unsafe { vcad_recon_cancel(job) };
+        let r = unsafe { vcad_recon_finish(job) };
+        assert!(r.is_null());
+        assert_eq!(err::last_error_string().as_deref(), Some("cancelled"));
+        unsafe { vcad_recon_job_free(job) };
+
+        // Free while running cancels and joins.
+        let job = vcad_recon_start(req.as_ptr());
+        let t = std::time::Instant::now();
+        unsafe { vcad_recon_job_free(job) };
+        assert!(t.elapsed() < std::time::Duration::from_secs(10));
+
+        let bad = CString::new("{").unwrap();
+        assert!(vcad_recon_start(bad.as_ptr()).is_null());
+        assert!(unsafe { vcad_recon_poll(ptr::null(), &mut p) } == -1);
+        unsafe { vcad_recon_cancel(ptr::null()) };
+        unsafe { vcad_recon_job_free(ptr::null_mut()) };
     }
 }

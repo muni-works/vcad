@@ -10,10 +10,11 @@ import UniformTypeIdentifiers
 // tag36h11 AprilTag become an editable, parametric document — every fitted
 // dimension a named parameter with its ±σ, not a mesh. The reconstruction is
 // irys-recon, reached through vcad-ffi's `vcad_recon_check` (seconds: decode,
-// EXIF focal length, tag, camera) and `vcad_recon_photos` (minutes).
-//
-// Neither call can be interrupted (irys-recon has no cancel hook), so Cancel
-// stops waiting and the result is discarded when it arrives.
+// EXIF focal length, tag, camera) and the cancellable job
+// `vcad_recon_start` → `vcad_recon_poll` / `vcad_recon_cancel` →
+// `vcad_recon_finish` (minutes). The panel polls the job for stage and
+// step/of on the main actor; Cancel stops the fit within one iteration and
+// the job's "cancelled" result is a quiet return to idle.
 
 /// What the user is told about the evidence. Keep in step with the paper:
 /// synthetic photos only, no real-photo test yet.
@@ -21,19 +22,23 @@ enum PhotoImportCopy {
     static let title = "Import from Photos"
     static let badge = "Experimental"
     static let requirement =
-        "Every photo needs a printed AprilTag (family tag36h11) lying flat beside the part, whole and in focus, and must be the camera's original file: the EXIF focal length sets the scale."
+        "Take at least 3 photos of the part from different sides. Every photo needs a printed AprilTag (family tag36h11) lying flat beside the part, whole and in focus, and must be the camera's original file: the EXIF focal length sets the scale."
     static let scope =
         "Recovers plates and blocks: a base with sharp, filleted or chamfered corners, and holes, counterbores, slots, bosses and hole patterns on top."
     static let evidence =
         "Tested on synthetic renders only: with three views, 15 of 20 parts came back within 1 mm and 10 of 20 within 0.5 mm. It has not yet been tested on real photos — check every dimension before you make anything."
     static let sigmaCaveat =
         "± is the fit's own estimate (Cramér–Rao). It ran optimistic by about 2× in tests, and it cannot see a wrong shape: a missed hole or a wrong-sized plate can still show small ±."
-    static let oneView =
-        "One photo: the accuracy above was measured with three views from different sides. Add more photos if you can."
+    /// Fewer than `PhotoImportFiles.minimum` photos: refused, not attempted.
+    static func tooFew(_ n: Int) -> String {
+        "Choose at least \(PhotoImportFiles.minimum) photos, each with the AprilTag in frame (you chose \(n)). One photo is not reliable: in tests 6 of 20 parts came back within 1 mm from one photo, 15 of 20 from three."
+    }
 }
 
 /// File types the importer accepts (HEIC is transcoded to JPEG first).
 enum PhotoImportFiles {
+    /// Photos needed before a reconstruction starts.
+    static let minimum = 3
     static let extensions: Set<String> = ["jpg", "jpeg", "png", "heic", "heif"]
     static func isPhoto(_ url: URL) -> Bool { extensions.contains(url.pathExtension.lowercased()) }
     static var contentTypes: [UTType] {
@@ -113,9 +118,74 @@ enum ReconFFI {
         return (try JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
     }
 
-    /// The reconstruction. Minutes; not interruptible.
+    /// The reconstruction, blocking. Minutes; prefer `Job`.
     static func reconstruct(_ photos: [URL], tagMM: Double = 50) throws -> ReconResult {
         try ReconResult(json: call(request(photos, tagMM: tagMM)) { vcad_recon_photos($0) })
+    }
+
+    /// The error `vcad_recon_finish` reports after a cancel.
+    static let cancelled = "cancelled"
+
+    /// Where a running reconstruction is.
+    struct Progress: Equatable, Sendable {
+        var stage: Int32 = 0
+        var step: UInt32 = 0
+        var of: UInt32 = 0
+
+        var label: String {
+            switch stage {
+            case 1: "Calibrating photo"
+            case 2: "Fitting appearance"
+            case 3: "Searching shapes"
+            case 4: "Refining finalists"
+            case 5: "Final polish"
+            default: "Starting"
+            }
+        }
+        /// 0…1 within the stage, nil while there is nothing to count.
+        var fraction: Double? {
+            guard of > 0 else { return nil }
+            return min(1, Double(step) / Double(of))
+        }
+        var stepText: String { of > 0 ? "\(step) of \(of)" : "" }
+    }
+
+    /// A reconstruction running on its own Rust thread. The handle is only
+    /// touched through the C ABI, whose poll/cancel are thread-safe; `finish`
+    /// must not run on two threads at once (the controller calls it once).
+    final class Job: @unchecked Sendable {
+        private let handle: OpaquePointer
+
+        init(_ photos: [URL], tagMM: Double) throws {
+            let body = ReconFFI.request(photos, tagMM: tagMM)
+            guard let h = body.withCString({ vcad_recon_start($0) }) else {
+                throw Failure(SimError.pending() ?? "Couldn't start the reconstruction.")
+            }
+            handle = h
+        }
+
+        deinit { vcad_recon_job_free(handle) }
+
+        /// Non-blocking; any thread.
+        func poll() -> (Progress, done: Bool) {
+            var p = VcadReconProgress()
+            let done = vcad_recon_poll(handle, &p) == 1
+            return (Progress(stage: p.stage, step: p.step, of: p.of), done)
+        }
+
+        /// Returns at once; the fit stops within one iteration.
+        func cancel() { vcad_recon_cancel(handle) }
+
+        /// Blocks until the job ends: call off the main actor. Throws
+        /// `Failure(ReconFFI.cancelled)` after a cancel.
+        func finish() throws -> ReconResult {
+            // The last-error slot is thread-local: read it on this thread.
+            guard let raw = vcad_recon_finish(handle) else {
+                throw Failure(SimError.pending() ?? "The reconstruction failed for an unknown reason.")
+            }
+            defer { vcad_string_free(raw) }
+            return try ReconResult(json: Data(String(cString: raw).utf8))
+        }
     }
 
     /// HEIC/HEIF (an iPhone's default) → JPEG beside the import cache, EXIF
@@ -159,6 +229,9 @@ final class PhotoImportController {
     private(set) var photos: [URL] = []
     private(set) var result: ReconResult?
     private(set) var calibration: [String] = []
+    /// The running job's stage and step/of (polled on the main actor).
+    private(set) var progress = ReconFFI.Progress()
+    private var job: ReconFFI.Job?
     /// The printed tag's black square edge, mm (the kit prints 50 mm).
     var tagMM: Double = 50
     /// Bumped on every start/cancel; a finished call whose generation is stale
@@ -189,7 +262,7 @@ final class PhotoImportController {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = PhotoImportFiles.contentTypes
         panel.allowsMultipleSelection = true
-        panel.message = "Choose photos of one part with a tag36h11 AprilTag in every frame"
+        panel.message = "Choose at least 3 photos of one part with a tag36h11 AprilTag in every frame"
         panel.prompt = "Reconstruct"
         let go = { [weak self] in if !panel.urls.isEmpty { self?.start(panel.urls) } }
         if let window { panel.beginSheetModal(for: window) { if $0 == .OK { go() } } }
@@ -200,6 +273,12 @@ final class PhotoImportController {
         let urls = urls.filter(PhotoImportFiles.isPhoto)
         guard !urls.isEmpty else {
             phase = .failed("Those aren't photos. Choose JPEG, PNG or HEIC files.")
+            return
+        }
+        guard urls.count >= PhotoImportFiles.minimum else {
+            photos = urls
+            result = nil
+            phase = .failed(PhotoImportCopy.tooFew(urls.count))
             return
         }
         generation += 1
@@ -231,10 +310,27 @@ final class PhotoImportController {
             phase = .failed(e.localizedDescription)
         case .success(let (prepared, cals)):
             calibration = cals
+            progress = ReconFFI.Progress()
+            let job: ReconFFI.Job
+            do { job = try ReconFFI.Job(prepared, tagMM: tagMM) } catch {
+                phase = .failed(error.localizedDescription)
+                return
+            }
+            self.job = job
             phase = .fitting(since: Date())
-            let tag = tagMM
+            // Progress: poll on the main actor until the job is done (or
+            // superseded). The Rust callback never touches Swift state.
+            Task { @MainActor [weak self] in
+                while let self, gen == self.generation {
+                    let (p, done) = job.poll()
+                    if p != self.progress { self.progress = p }
+                    if done { break }
+                    try? await Task.sleep(for: .milliseconds(150))
+                }
+            }
+            // Result: wait off the main actor, hop back with it.
             Task.detached(priority: .userInitiated) {
-                let fitted = Result { try ReconFFI.reconstruct(prepared, tagMM: tag) }
+                let fitted = Result { try job.finish() }
                 await MainActor.run { [weak self] in self?.fitted(fitted, gen: gen) }
             }
         }
@@ -242,7 +338,10 @@ final class PhotoImportController {
 
     private func fitted(_ r: Result<ReconResult, Error>, gen: Int) {
         guard gen == generation else { return }
+        job = nil
         switch r {
+        case .failure(let e as ReconFFI.Failure) where e.message == ReconFFI.cancelled:
+            phase = .idle
         case .failure(let e): phase = .failed(e.localizedDescription)
         case .success(let res):
             result = res
@@ -251,6 +350,8 @@ final class PhotoImportController {
     }
 
     func cancel() {
+        job?.cancel()
+        job = nil
         generation += 1
         phase = .idle
         result = nil
@@ -312,9 +413,6 @@ struct PhotoImportSheet: View {
             if !controller.photos.isEmpty {
                 Text(controller.photos.map(\.lastPathComponent).joined(separator: ", "))
                     .font(.caption.monospaced()).lineLimit(2).truncationMode(.middle)
-                if controller.photos.count == 1 {
-                    Text(PhotoImportCopy.oneView).font(.caption).foregroundStyle(.orange)
-                }
             }
             status
             buttons
@@ -332,11 +430,21 @@ struct PhotoImportSheet: View {
         case .fitting(let since):
             VStack(alignment: .leading, spacing: 4) {
                 ForEach(controller.calibration, id: \.self) { Text($0).font(.caption).foregroundStyle(.secondary) }
+                let p = controller.progress
+                if let f = p.fraction {
+                    ProgressView(value: f)
+                } else {
+                    ProgressView().progressViewStyle(.linear)
+                }
                 TimelineView(.periodic(from: since, by: 1)) { ctx in
                     HStack {
-                        ProgressView().controlSize(.small)
-                        Text("Fitting the model to the photos… \(Int(ctx.date.timeIntervalSince(since))) s (usually a few minutes)")
+                        Text(p.label).bold()
+                        Text(p.stepText).monospacedDigit().foregroundStyle(.secondary)
+                        Spacer()
+                        Text("\(Int(ctx.date.timeIntervalSince(since))) s (usually a few minutes)")
+                            .monospacedDigit().foregroundStyle(.secondary)
                     }
+                    .font(.caption)
                 }
             }
         case .failed(let message):
