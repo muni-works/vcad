@@ -143,10 +143,34 @@ function canonicalNodes(doc: Document, roots: number[]) {
   return { nodes, map: roots.map(visit), ids };
 }
 
+/**
+ * JSON with object keys sorted, so the cache key is a function of content
+ * only. The document engine re-serializes ops through serde (keys in field
+ * order) while loon emits them in its own order: with a plain
+ * `JSON.stringify` key, the first engine mutation after authoring missed the
+ * cache for every untouched part and re-solved them all — a stator's
+ * booleans turned the first `delete` into a 7–9 s call.
+ */
+export function stableKey(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map(stableKey).join(",")}]`;
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableKey(v)}`).join(",")}}`;
+}
+
+/** Test seam: how many pieces were actually evaluated (cache misses). */
+let pieceEvaluations = 0;
+export function incrementalEvaluationCount(): number {
+  return pieceEvaluations;
+}
+
 function evaluatePiece(piece: Document, engine: Engine): EvaluatedScene {
-  const key = JSON.stringify(piece);
+  const key = stableKey(piece);
   const hit = pieceCache.get(key);
   if (hit) return hit;
+  pieceEvaluations++;
   const scene = engine.evaluate(piece);
   if (scene.failures?.length) return scene;
   pieceCache.set(key, scene);
