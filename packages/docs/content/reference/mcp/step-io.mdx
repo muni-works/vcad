@@ -68,7 +68,7 @@ The tool returns a JSON response containing the IR document and an import summar
 
 Each body in the STEP file becomes an `ImportedMesh` node in the IR document. The node contains the tessellated triangle mesh (positions, indices, and optionally normals) plus a `source` field referencing the original filename. The tessellation is performed by the BRep kernel during import at a quality level appropriate for visualization and inspection.
 
-The imported document can be passed to `inspect_cad` for volume and area measurement, to `export_cad` for format conversion (STEP to STL or GLB), or to `open_in_browser` for visualization.
+The imported document can be passed to `inspect_cad` for volume and area measurement, to `export_cad` for format conversion (STEP to STL or GLB), or to `open_in_app` for visualization.
 
 ### Supported STEP Flavors
 

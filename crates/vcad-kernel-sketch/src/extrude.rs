@@ -186,6 +186,14 @@ pub fn extrude(profile: &SketchProfile, direction: Vec3) -> Result<BRepSolid, Sk
         return extrude(&flipped, direction);
     }
 
+    // Every builder below assumes the loop is CCW in its frame (material on
+    // the left, seen from +normal). A loop drawn clockwise — e.g. a sketch
+    // rectangle clicked top-left then bottom-right — otherwise yields a
+    // watertight, inside-out solid. Reversing the traversal moves no point.
+    if profile.signed_area() < 0.0 {
+        return extrude(&profile.reversed(), direction);
+    }
+
     // Analytic fast path: a profile that is a full circle extruded along
     // its plane normal becomes a true right circular cylinder — one
     // CylinderSurface lateral face plus two planar disk caps, matching
@@ -1091,6 +1099,11 @@ pub fn extrude_with_options(
                 ..options
             },
         );
+    }
+
+    // Same CCW-loop assumption as `extrude`; see the note there.
+    if profile.signed_area() < 0.0 {
+        return extrude_with_options(&profile.reversed(), direction, options);
     }
 
     // Calculate number of segments based on twist angle

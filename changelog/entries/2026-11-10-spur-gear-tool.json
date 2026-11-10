@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-10-spur-gear-tool",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "feat",
+  "title": "Spur Gear tool with mesh-with-selected-gear",
+  "summary": "New parametric SpurGear op: exact involute teeth, module, tooth count, pressure angle, face width and bore. The Mac app places a second gear at m(z1+z2)/2, phased tooth into gap.",
+  "features": ["gears", "involute", "primitives", "native-app", "loon"]
+}

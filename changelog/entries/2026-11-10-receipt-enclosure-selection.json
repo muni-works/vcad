@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-10-receipt-enclosure-selection",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "fix",
+  "title": "build_receipt finds the same enclosure as fit checks",
+  "summary": "build_receipt and check_enclosure_fit share enclosure selection: enclosure_part_id is accepted, and without it the biggest solid with a cavity wins, not the densest mesh.",
+  "features": ["ecad", "enclosure", "receipt"],
+  "mcpTools": ["build_receipt", "check_enclosure_fit"]
+}

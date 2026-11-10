@@ -4,8 +4,9 @@
 //! `FeatureInput` values. It manages stable ID mapping and materializes after
 //! each mutation.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use serde::{Deserialize, Serialize};
 use vcad_crdt::{CrdtDocument, FeatureId, FractionalIndex, ReplicaId, Value};
 use vcad_ir::Document;
 
@@ -76,6 +77,23 @@ pub struct ApiResult {
     /// Non-fatal issues detected during materialization (e.g. dangling
     /// input references). Consumers should surface these to the user.
     pub warnings: Vec<String>,
+    /// Features removed by this call; empty except for a delete.
+    pub deleted: Vec<DeletedFeature>,
+}
+
+/// One feature a delete removed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct DeletedFeature {
+    /// Stable id.
+    pub id: String,
+    /// Feature name, when it had one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub name: Option<String>,
+    /// Feature kind (`cube`, `boolean`, ...).
+    pub kind: String,
 }
 
 impl ApiResult {
@@ -88,6 +106,7 @@ impl ApiResult {
             consumed_part_ids: consumed,
             created_feature_id: created_id,
             warnings: result.warnings,
+            deleted: Vec::new(),
         }
     }
 }
@@ -101,6 +120,11 @@ pub struct DocumentApi {
     stable_ids: StableIdMap,
     name: String,
     dirty: bool,
+    /// Node ids of the last imported IR document → the stable id of the
+    /// feature each became. Valid only until the next applied command:
+    /// a host that imported a session IR (e.g. the MCP server) addresses
+    /// nodes by *those* ids until it adopts the engine's renumbered output.
+    import_nodes: Option<HashMap<vcad_ir::NodeId, String>>,
 }
 
 impl DocumentApi {
@@ -111,6 +135,7 @@ impl DocumentApi {
             stable_ids: StableIdMap::new(),
             name: "Untitled".into(),
             dirty: false,
+            import_nodes: None,
         }
     }
 
@@ -154,22 +179,153 @@ impl DocumentApi {
     /// Update all params on an existing feature by replacing with new input.
     pub fn update_feature(&mut self, stable_id: &str, input: FeatureInput) -> ApiResult {
         if let Some(fid) = self.stable_ids.resolve(stable_id) {
+            let hoist = matches!(input, FeatureInput::Hull { .. });
             let (_kind, params) = input.to_crdt_params();
             for (key, value) in params {
                 self.crdt.set_param(fid, &key, value);
+            }
+            if hoist {
+                self.hoist_dependencies(fid);
             }
             self.dirty = true;
         }
         self.build_result(None)
     }
 
-    /// Delete a feature.
-    pub fn delete_feature(&mut self, stable_id: &str) -> ApiResult {
-        if let Some(fid) = self.stable_ids.resolve(stable_id) {
-            self.crdt.delete_feature(fid);
-            self.dirty = true;
+    /// Move everything `target` now depends on to just before it. Features
+    /// materialize in list order, so a hull that gains a part made after it
+    /// would otherwise lose that input.
+    fn hoist_dependencies(&mut self, target: FeatureId) {
+        let ordered = self.crdt.ordered_features();
+        let Some(at) = ordered.iter().position(|(id, _)| *id == target) else {
+            return;
+        };
+        let refs_of = |i: usize| -> Vec<String> {
+            ordered[i]
+                .1
+                .params
+                .values()
+                .flat_map(|(v, _)| match v {
+                    Value::FeatureRef(r) => vec![r.clone()],
+                    Value::FeatureRefList(rs) => rs.clone(),
+                    _ => Vec::new(),
+                })
+                .collect()
+        };
+        let mut late = std::collections::BTreeSet::new();
+        let mut stack = refs_of(at);
+        while let Some(r) = stack.pop() {
+            let Some(fid) = self.stable_ids.resolve(&r) else {
+                continue;
+            };
+            let Some(i) = ordered.iter().position(|(id, _)| *id == fid) else {
+                continue;
+            };
+            if i > at && late.insert(i) {
+                stack.extend(refs_of(i));
+            }
         }
-        self.build_result(None)
+        let moves: Vec<FeatureId> = late.iter().map(|&i| ordered[i].0).collect();
+        for fid in moves {
+            let now = self.crdt.ordered_features();
+            let Some(t) = now.iter().position(|(id, _)| *id == target) else {
+                return;
+            };
+            let before = t.checked_sub(1).map(|b| &now[b].1.position);
+            let pos = FractionalIndex::between(before, Some(&now[t].1.position));
+            self.crdt.move_feature(fid, pos);
+        }
+    }
+
+    /// Delete a feature.
+    ///
+    /// Inputs that only this feature used go with it (a boolean's operands,
+    /// and theirs), as one undo step; otherwise they would resurface as new
+    /// scene parts. An input another feature still references stays. The
+    /// result's `deleted` lists everything that went.
+    pub fn delete_feature(&mut self, stable_id: &str) -> ApiResult {
+        let Some(fid) = self.stable_ids.resolve(stable_id) else {
+            return self.build_result(None);
+        };
+        let doomed = self.exclusive_inputs_closure(fid);
+        let mut deleted = Vec::with_capacity(doomed.len());
+        let depth = self.crdt.undo_depth();
+        for id in doomed {
+            if let Some(feature) = self.crdt.get_feature(id) {
+                let name = match feature.params.get("name") {
+                    Some((Value::String(s), _)) => Some(s.clone()),
+                    _ => None,
+                };
+                deleted.push(DeletedFeature {
+                    id: crate::materializer::fid_to_string(id),
+                    name,
+                    kind: feature.kind.clone(),
+                });
+            }
+            self.crdt.delete_feature(id);
+        }
+        self.crdt.coalesce_undo_since(depth);
+        self.dirty = true;
+        let mut result = self.build_result(None);
+        result.deleted = deleted;
+        result
+    }
+
+    /// `root` and every input reachable from it that nothing outside the set
+    /// references, root first.
+    fn exclusive_inputs_closure(&self, root: FeatureId) -> Vec<FeatureId> {
+        use crate::materializer::{feature_input_ids, fid_to_string};
+        let features = self.crdt.ordered_features();
+        let by_id: HashMap<String, FeatureId> = features
+            .iter()
+            .map(|(f, _)| (fid_to_string(*f), *f))
+            .collect();
+        // Referencing features per feature, part-def sources and colliders
+        // included: a part def keeps its geometry alive.
+        let mut users: HashMap<String, Vec<String>> = HashMap::new();
+        for (fid, feature) in &features {
+            let me = fid_to_string(*fid);
+            let mut refs = feature_input_ids(feature);
+            if feature.kind == "part-def" {
+                if let Some((Value::FeatureRefList(ids), _)) = feature.params.get("colliders") {
+                    refs.extend(ids.iter().cloned());
+                }
+                if let Some((Value::FeatureRef(id), _)) = feature.params.get("source_feature") {
+                    refs.push(id.clone());
+                }
+            }
+            for r in refs {
+                users.entry(r).or_default().push(me.clone());
+            }
+        }
+        let root_id = fid_to_string(root);
+        let mut doomed: HashSet<String> = HashSet::from([root_id.clone()]);
+        let mut order = vec![root];
+        // Repeat until stable: an input shared by two doomed features only
+        // qualifies once both are in the set.
+        loop {
+            let mut grew = false;
+            for fid in order.clone() {
+                let Some(feature) = self.crdt.get_feature(fid) else {
+                    continue;
+                };
+                for input in feature_input_ids(feature) {
+                    let Some(&input_fid) = by_id.get(&input) else {
+                        continue;
+                    };
+                    let exclusive = users
+                        .get(&input)
+                        .is_none_or(|u| u.iter().all(|x| doomed.contains(x)));
+                    if exclusive && doomed.insert(input) {
+                        order.push(input_fid);
+                        grew = true;
+                    }
+                }
+            }
+            if !grew {
+                return order;
+            }
+        }
     }
 
     /// Set translation offset.
@@ -364,6 +520,7 @@ impl DocumentApi {
             stable_ids: StableIdMap::new(),
             name: "Untitled".into(),
             dirty: false,
+            import_nodes: None,
         };
         let _ = replica_id;
         api.stable_ids.rebuild(&api.crdt);
@@ -388,6 +545,7 @@ impl DocumentApi {
         self.crdt = crdt;
         self.stable_ids.rebuild(&self.crdt);
         self.dirty = true;
+        self.import_nodes = None;
         Ok(())
     }
 
@@ -457,13 +615,36 @@ impl DocumentApi {
     /// Import IR JSON into the document.
     pub fn import_ir(&mut self, ir_json: &str) -> ApiResult {
         if let Ok(doc) = serde_json::from_str::<vcad_ir::Document>(ir_json) {
-            let migrated = crate::migrate::migrate_v1(&doc);
+            let (migrated, map) = crate::migrate::migrate_v1_mapped(&doc);
             let ops = migrated.ops_since(&std::collections::BTreeMap::new());
             self.crdt.merge(ops);
             self.stable_ids.rebuild(&self.crdt);
             self.dirty = true;
+            self.import_nodes = Some(
+                map.mappings
+                    .into_iter()
+                    .map(|m| (m.old_node_id, m.feature_id))
+                    .collect(),
+            );
         }
         self.build_result(None)
+    }
+
+    /// The feature an IR node of the last imported document became, while
+    /// that import is still the host's view (see `import_nodes`).
+    pub fn imported_node_feature(&self, node: vcad_ir::NodeId) -> Option<&str> {
+        self.import_nodes.as_ref()?.get(&node).map(String::as_str)
+    }
+
+    /// Whether node ids from the last import are still the host's view.
+    pub fn has_import_view(&self) -> bool {
+        self.import_nodes.is_some()
+    }
+
+    /// Forget the import's node ids: after an applied command the host
+    /// adopts the engine's materialized document and its node ids.
+    pub(crate) fn clear_import_view(&mut self) {
+        self.import_nodes = None;
     }
 
     /// Get the current document state.
@@ -594,7 +775,13 @@ fn compute_consumed_part_ids(parts: &[PartInfo]) -> Vec<String> {
             } => {
                 consumed.extend(source_part_ids.iter().cloned());
             }
-            PartInfo::Fillet { source_part_id, .. }
+            PartInfo::Hull {
+                source_part_ids, ..
+            } => {
+                consumed.extend(source_part_ids.iter().cloned());
+            }
+            PartInfo::SweepRotate { source_part_id, .. }
+            | PartInfo::Fillet { source_part_id, .. }
             | PartInfo::Chamfer { source_part_id, .. }
             | PartInfo::Shell { source_part_id, .. }
             | PartInfo::LinearPattern { source_part_id, .. }
@@ -644,6 +831,98 @@ mod tests {
 
         let result = api.delete_feature(&id);
         assert_eq!(result.parts.len(), 0);
+    }
+
+    fn cube_feature(api: &mut DocumentApi) -> String {
+        api.add_feature(FeatureInput::Cube {
+            size_x: 10.0,
+            size_y: 10.0,
+            size_z: 10.0,
+        })
+        .created_feature_id
+        .unwrap()
+    }
+
+    fn difference_of(api: &mut DocumentApi, a: &str, b: &str) -> String {
+        api.add_feature(FeatureInput::Boolean {
+            boolean_type: BooleanType::Difference,
+            input_a: a.to_string(),
+            input_b: b.to_string(),
+        })
+        .created_feature_id
+        .unwrap()
+    }
+
+    #[test]
+    fn deleting_a_boolean_takes_its_exclusive_inputs_in_one_undo() {
+        let mut api = test_api();
+        let a = cube_feature(&mut api);
+        let b = cube_feature(&mut api);
+        let c = cube_feature(&mut api);
+        let inner = difference_of(&mut api, &a, &b);
+        let outer = difference_of(&mut api, &inner, &c);
+        let r = api.delete_feature(&outer);
+        assert!(r.document.roots.is_empty(), "children must not resurface");
+        let mut gone: Vec<_> = r.deleted.iter().map(|d| d.id.clone()).collect();
+        gone.sort();
+        let mut want = vec![a, b, c, inner, outer];
+        want.sort();
+        assert_eq!(gone, want);
+        assert_eq!(
+            api.undo().document.roots.len(),
+            1,
+            "one undo restores it all"
+        );
+    }
+
+    #[test]
+    fn deleting_a_boolean_keeps_an_input_something_else_uses() {
+        let mut api = test_api();
+        let shared = cube_feature(&mut api);
+        let b = cube_feature(&mut api);
+        let c = cube_feature(&mut api);
+        let keep = difference_of(&mut api, &shared, &b);
+        let doomed = difference_of(&mut api, &shared, &c);
+        let r = api.delete_feature(&doomed);
+        let gone: Vec<_> = r.deleted.iter().map(|d| d.id.as_str()).collect();
+        assert!(gone.contains(&c.as_str()));
+        assert!(!gone.contains(&shared.as_str()));
+        assert_eq!(r.document.roots.len(), 1);
+        assert!(r.parts.iter().any(|p| p.id() == keep));
+    }
+
+    #[test]
+    fn hull_can_gain_a_part_made_after_it() {
+        let mut api = DocumentApi::new(ReplicaId(1));
+        let cube = |api: &mut DocumentApi, x: f64| {
+            api.add_feature(FeatureInput::Cube {
+                size_x: x,
+                size_y: 10.0,
+                size_z: 10.0,
+            })
+            .created_feature_id
+            .unwrap()
+        };
+        let a = cube(&mut api, 10.0);
+        let b = cube(&mut api, 20.0);
+        let hull = api
+            .add_feature(FeatureInput::Hull {
+                inputs: vec![a.clone(), b.clone()],
+                points: Vec::new(),
+            })
+            .created_feature_id
+            .unwrap();
+        let later = cube(&mut api, 30.0);
+        let r = api.update_feature(
+            &hull,
+            FeatureInput::Hull {
+                inputs: vec![a, b, later.clone()],
+                points: Vec::new(),
+            },
+        );
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+        assert!(r.consumed_part_ids.contains(&later));
+        assert_eq!(r.document.roots.len(), 1);
     }
 
     #[test]

@@ -74,7 +74,10 @@ struct TopoFace: Decodable, Hashable {
 
     var centerF: SIMD3<Float> { Self.v(center) }
     var normalF: SIMD3<Float> { Self.v(normal) }
-    var isPlanar: Bool { surface.lowercased() == "plane" || surface.lowercased() == "planar" }
+    /// A flat face with a usable normal; a zero normal would normalize to NaN.
+    var isPlanar: Bool {
+        (surface.lowercased() == "plane" || surface.lowercased() == "planar") && normal.contains { $0 != 0 }
+    }
     static func v(_ a: [Double]) -> SIMD3<Float> {
         a.count >= 3 ? SIMD3(Float(a[0]), Float(a[1]), Float(a[2])) : .zero
     }

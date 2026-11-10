@@ -4,9 +4,9 @@ Instructions for AI agents working on vcad.
 
 ## Overview
 
-vcad is an open-source parametric CAD system aiming to replace Fusion 360, Onshape, and similar tools. It features a custom BRep kernel written in Rust, a React/Three.js web app, a native SwiftUI Mac app (`apple/VcadApp`), and AI-native interfaces via MCP.
+vcad is an open-source parametric CAD system aiming to replace Fusion 360, Onshape, and similar tools. It features a custom BRep kernel written in Rust, a native SwiftUI Mac app (`apple/VcadApp`, the primary product as of vcad 1.0), and AI-native interfaces via MCP. vcad operates **no hosted services** beyond one read-only off-ramp: no hosted MCP server, no new accounts, no cloud sync, no share links, no billing, no server-side API. The MCP server runs on the user's machine (`npx -y @vcad/mcp`, bring your own agent). The hosted web editor is shut down: production builds of `packages/app` render a notice on every old route pointing at the Mac app download (`/download` → `/desktop/`) and `/export` (see `docs/launch/web-retirement.md`; `npm run dev` still opens the local editor). Two things stay up: the static vcad.io deploy, which serves `packages/app/public/desktop/` (the Mac app's update feed, which must outlive everything) and `/export`; and the Supabase project, which `/export` reads. `/export` (`ExportAllPage.tsx`, `lib/export-all.ts`, `lib/export-auth.ts`) lets an existing user sign in and download their `documents` rows as a zip — plain `SELECT`s under RLS, nothing written. Do not add server endpoints, sync/sharing writes, or other vcad-operated services back.
 
-**Live app:** https://vcad.io
+**Site:** https://vcad.io (static: docs, downloads, Mac update feed)
 
 ## Prerequisites
 
@@ -80,10 +80,6 @@ npm run dev -w @vcad/app           # run web app locally (browser)
 apple/VcadApp/build-ffi.sh         # build the vcad-ffi static library
 apple/VcadApp/bundle.sh            # assemble apple/VcadApp/dist/vcad.app
 
-# Supabase (database)
-supabase db push --dry-run         # preview migration changes
-supabase db push                   # apply migrations to production
-supabase db diff -f name           # generate migration from local changes
 ```
 
 ## MCP server distribution — never point a config at dist/index.js
@@ -102,7 +98,7 @@ Two supported channels instead:
 
 `.github/workflows/mcp-publish.yml` publishes a self-contained bundle (server
 + kernel WASM in one tarball, version/sha/time baked in — see
-`packages/mcp/scripts/build-npm.mjs`, which mirrors `services/mcp/build.sh`)
+`packages/mcp/scripts/build-npm.mjs`)
 on every main merge touching `packages/**` or `lib/**`, versioned
 `<base>-main.<run>` on the `latest` dist-tag. The kernel structurally cannot
 lag the server: they ship in the same immutable tarball, smoke-tested
@@ -150,47 +146,42 @@ without polling.
 **Durability.** Local runs persist sessions to `~/.vcad/mcp-sessions`
 (override with `VCAD_MCP_SESSION_DIR`, opt out with
 `VCAD_MCP_DISK_SESSIONS=0`), so a restart no longer destroys a long build.
-Hosted deploys need `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`; a
-serverless instance never uses the disk store (its filesystem is ephemeral
-and unshared, so it would report durability it can't provide). When
+There is no remote session store (it went with the hosted server). When
 `server_info` reports `durable:false`, session-minting tools say so in their
 result — keep the authoring source rather than treating the server as
 storage.
 
-**Artifacts are separate and shorter-lived.** `artifact_store:"in-memory"`
-means `render_view` PNG URLs die on the same restart. Treat any artifact link
-handed to a user as short-lived unless the artifact store is durable.
+**Artifacts are separate and shorter-lived.** The artifact store is always
+in-memory (`artifact_store:"in-memory"`), so `render_view` PNG URLs die on the
+same restart. Treat any artifact link handed to a user as short-lived.
 
-## Supabase
+**Local only.** Tools that depended on vcad-hosted services were removed:
+`open_in_browser` (use `open_in_app`, a `vcad://` link), `share_session`,
+`unshare_session`, `place_order`, `authorize_spend`, `get_order_status`,
+`list_orders`, `get_order_feed`. `continue_document` with a share `token`
+fails closed; pass the inline `doc` instead.
 
-Cloud sync uses Supabase (Postgres + Auth). Config and migrations live in `supabase/`.
+## Supabase (read-only, for /export)
 
-**Project:** `yteuhwciuxcbjwmabawj` (linked via `supabase link`)
-
-**Tables:**
-- `documents` — synced .vcad files (RLS: users own their docs)
-- `document_versions` — automatic version history on content changes
-
-**Adding a migration:**
-1. Create `supabase/migrations/NNN_description.sql`
-2. Test locally: `supabase db reset` (if running local Supabase)
-3. Deploy: `supabase db push`
-
-**Auth:** Google and GitHub OAuth configured in Supabase dashboard (not in config.toml to avoid secret leakage).
-
-**Client:** `@vcad/auth` package wraps Supabase client. Sync logic in `packages/auth/src/sync.ts`.
+`supabase/` (config + migrations) stays because the live project
+`yteuhwciuxcbjwmabawj` still backs `/export`. Leave the migrations untouched:
+they describe a live schema. The only client is
+`packages/app/src/lib/export-auth.ts` (Google/GitHub OAuth or an email magic
+link for existing users, `shouldCreateUser: false`, redirecting back to
+`/export`) plus `supabaseDocumentFetcher` in `lib/export-all.ts`, which pages
+`documents` (`id, name, content, updated_at`). No writes.
 
 ## Architecture
 
 ```
 vcad/
-├── crates/                        # Rust workspace (~285K LOC)
+├── crates/                        # Rust workspace (~530K LOC)
 │   ├── vcad-kernel-math/          # Linear algebra, transforms, exact predicates
 │   ├── vcad-kernel-topo/          # Half-edge BRep topology
 │   ├── vcad-kernel-geom/          # Curves and surfaces
 │   ├── vcad-kernel-primitives/    # Box, cylinder, sphere, cone
 │   ├── vcad-kernel-tessellate/    # BRep → triangle mesh
-│   ├── vcad-kernel-booleans/      # Boolean operations (~5.4K LOC)
+│   ├── vcad-kernel-booleans/      # Boolean operations (~30K LOC)
 │   ├── vcad-kernel-nurbs/         # NURBS curves/surfaces
 │   ├── vcad-kernel-fillet/        # Fillets and chamfers
 │   ├── vcad-kernel-sketch/        # 2D sketch geometry
@@ -214,6 +205,19 @@ vcad/
 │   ├── vcad-receipt/              # Unified fail-closed verification receipt schema
 │   ├── vcad-cli/                  # `vcad` crate: kernel re-export + the CLI
 │   └── vcad-render/               # Standalone .vcad → isometric SVG renderer
+│
+│   # Also in the workspace (every crates/* dir is a member; see Cargo.toml):
+│   # app/eval core: vcad-app, vcad-eval, vcad-loon, vcad-sim, vcad-crdt,
+│   #   vcad-chat, vcad-ffi (C ABI for the Mac app), vcad-diff, vcad-i18n,
+│   #   vcad-parts, vcad-tool-derive, vcad-design-constraints, vcad-typst
+│   # more kernel: -features, -sheet, -text, -naming, -export, -enclosure,
+│   #   -cost, -dfm, -calibration, -fea, -flow, -optics, -orbit, -qcd,
+│   #   -magnetostatic, -adjoint, -atoms
+│   # electronics: vcad-ecad-{package,parts,symbols,schematic,pcb,verify,
+│   #   source,export,fabprep,sim,diff,diff-wasm}, vcad-gdsii, vcad-process
+│   # fabrication: vcad-slicer{,-bambu,-gcode}, vcad-printcheck,
+│   #   vcad-embroidery{,-pes,-dst}
+│   # misc: stepperoni (STEP parser), termview, wasmosis, vcad-torture
 │
 │   # Analysis/solver crates beyond the app's modeling surface (consumer wiring
 │   # noted per entry; most are self-contained pending vcad-receipt/MCP
@@ -306,10 +310,10 @@ vcad/
 │   ├── kernel-wasm/               # Kernel WASM package
 │   ├── mcp/                       # MCP server for AI agents
 │   ├── training/                  # ML training pipeline
+│   ├── wasmosis/                  # lazy WASM splitting
 │   └── docs/                      # Documentation site
 ├── apple/VcadApp/                 # Native SwiftUI Mac app (build-ffi.sh, bundle.sh)
-├── supabase/                      # Database migrations and config
-│   └── migrations/                # SQL migrations (pushed via `supabase db push`)
+├── apple/VcadVision/              # visionOS app (shares Shell views with VcadApp)
 ├── lib/                           # Stdlib for vcad: loon CAD library + DFM rule packs
 │   ├── src/lib.loon               # bundled into crates/vcad-loon via include_str!
 │   └── dfm/                       # DFM rule packs (.toml) bundled into vcad-kernel-dfm
@@ -411,7 +415,7 @@ phyz-based articulated physics via `vcad-kernel-physics`:
 **Rust CLI:**
 ```bash
 vcad export input.vcad output.stl   # Export to STL/GLB/STEP
-vcad import-step input.step out.vcad
+vcad import input.step out.vcad
 vcad info input.vcad                # Show document info
 
 # Routed board → complete fab package + DRC-delta receipt, in one command.
@@ -427,7 +431,7 @@ target/debug/vcad-render path/to/part.vcad > out.svg
 ```
 
 **MCP Server** (for AI agents):
-- `create_cad_document` — create parts from primitives + operations
+- `open_document` / `create_cad_loon` — open a session, author whole parts in loon
 - `export_cad` — export to STL or GLB
 - `inspect_cad` — get volume, area, bbox, center of mass
 - `check_clearance` — min distance / penetration depth between part groups;

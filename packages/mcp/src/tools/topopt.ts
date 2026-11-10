@@ -23,7 +23,8 @@ import type {
 } from "@vcad/engine";
 import { getSession, registerSession } from "./session-core.js";
 import { behavior, type ToolDef } from "./tool-def.js";
-import { rootForPartId } from "./part-ids.js";
+import { findPartCandidate, rootForPartId } from "./part-ids.js";
+import { instanceSolids } from "./document-solids.js";
 import { runMutation } from "./registry-dispatch.js";
 
 const regionSchema = {
@@ -190,12 +191,91 @@ export function resolvePartMesh(
       material: root.material ?? undefined,
     };
   }
+  // Not a scene root: an assembly part, addressed by instance or part def.
+  // Posed in the world frame, like the load and support regions.
+  const inst = findPartCandidate(doc, instanceSolids(doc, scene), wanted);
+  if (inst) {
+    return { mesh: inst.mesh, rootIndex: -1, name: inst.name };
+  }
   throw new Error(
-    `part "${wanted}" not found — pass a root part id or exact name`,
+    `part "${wanted}" not found — pass a root part id, exact name, assembly instance, or part def`,
   );
 }
 
 const round5 = (v: number) => Number(v.toPrecision(5));
+
+/** How close, in voxels, the frozen mesh must come to a load or support region. */
+const REGION_CONTACT_VOXELS = 0.75;
+
+type Box = { min: number[]; max: number[] };
+
+/**
+ * Why the structure fails to carry every load to a support, or null if it
+ * does: one connected piece of the frozen mesh must touch every load and a
+ * support, and no piece may touch a load without reaching a support. Regions
+ * get under a voxel of slack: the isosurface sits inside the density field by
+ * less than one, and a zero-thickness region is a plane. Anything further off
+ * is a gap, not meshing noise.
+ */
+export function loadPathGap(
+  mesh: { positions: ArrayLike<number>; indices: ArrayLike<number> },
+  spec: { loads: { region: Box }[]; supports: { region: Box }[] },
+  voxelSize: number,
+): string | null {
+  const { positions: pos, indices: idx } = mesh;
+  const count = pos.length / 3;
+  const parent = Int32Array.from({ length: count }, (_, i) => i);
+  const find = (i: number): number => {
+    while (parent[i] !== i) {
+      parent[i] = parent[parent[i]!]!;
+      i = parent[i]!;
+    }
+    return i;
+  };
+  for (let t = 0; t + 2 < idx.length; t += 3) {
+    parent[find(idx[t + 1]!)] = find(idx[t]!);
+    parent[find(idx[t + 2]!)] = find(idx[t]!);
+  }
+  const slack = voxelSize * REGION_CONTACT_VOXELS;
+  const piecesTouching = (region: Box): Set<number> => {
+    const hit = new Set<number>();
+    for (let v = 0; v < count; v++) {
+      const inside = [0, 1, 2].every(
+        (a) => pos[v * 3 + a]! >= region.min[a]! - slack && pos[v * 3 + a]! <= region.max[a]! + slack,
+      );
+      if (inside) hit.add(find(v));
+    }
+    return hit;
+  };
+  const supported = new Set(spec.supports.flatMap((s) => [...piecesTouching(s.region)]));
+  if (supported.size === 0) return "no material reaches any support region.";
+  const span = (axis: number) => {
+    let [lo, hi] = [Infinity, -Infinity];
+    for (let v = 0; v < count; v++) {
+      lo = Math.min(lo, pos[v * 3 + axis]!);
+      hi = Math.max(hi, pos[v * 3 + axis]!);
+    }
+    return `${round5(lo)}..${round5(hi)}`;
+  };
+  let carriers = null as Set<number> | null;
+  for (const [i, load] of spec.loads.entries()) {
+    const touching = piecesTouching(load.region);
+    if (touching.size === 0) {
+      return (
+        `load ${i + 1} has no material at its region (min [${load.region.min}], max [${load.region.max}]); ` +
+        `the structure spans x ${span(0)}, y ${span(1)}, z ${span(2)}.`
+      );
+    }
+    if ([...touching].some((p) => !supported.has(p))) {
+      return `load ${i + 1} sits on a piece of material that is not connected to any support.`;
+    }
+    carriers = carriers ? new Set([...carriers].filter((p) => touching.has(p))) : touching;
+  }
+  if (carriers && ![...carriers].some((p) => supported.has(p))) {
+    return "the loads are carried by separate pieces of material; no single connected piece reaches them all and a support.";
+  }
+  return null;
+}
 
 export function topologyOptimizeTool(
   args: Record<string, unknown>,
@@ -261,6 +341,17 @@ export function topologyOptimizeTool(
     );
   }
 
+  // A layout that never reaches its load carries nothing. Fail like the empty
+  // case above: a part in the document would read as a working structure.
+  const gap = loadPathGap(result.mesh, spec, result.voxelSize);
+  if (gap) {
+    throw new Error(
+      `topology optimization did NOT produce a usable structure: ${gap} ` +
+        `No part was added. (${result.iterations} iterations, ${result.converged ? "converged" : "not converged"}.) ` +
+        "Raise max_iterations or volume_fraction, or check the load and support regions.",
+    );
+  }
+
   // Freeze the result into the document as an ImportedMesh part.
   const partName =
     a.name ?? (sourceName ? `${sourceName} (optimized)` : "topopt");
@@ -294,8 +385,18 @@ export function topologyOptimizeTool(
             document_id: documentId,
             part_id: created.part_id,
             name: partName,
+            status: result.converged ? "converged" : "not_converged",
             iterations: result.iterations,
             converged: result.converged,
+            ...(result.converged
+              ? {}
+              : {
+                  warning:
+                    `NOT CONVERGED: the density field was still changing when ` +
+                    `the ${result.iterations}-iteration limit stopped the run, so this layout ` +
+                    `is a preliminary shape, not an optimum. Re-run with a higher ` +
+                    `max_iterations before relying on it.`,
+                }),
             compliance: {
               initial: history[0],
               final: history[history.length - 1],

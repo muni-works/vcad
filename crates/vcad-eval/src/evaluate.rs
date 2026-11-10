@@ -5,7 +5,8 @@
 
 use std::collections::HashMap;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use web_time::Instant;
 
 use vcad_ir::ecad::{Footprint, Pad, PadShape, Pcb, PcbLayer, Trace, TraceArc, Via, Zone};
 use vcad_ir::{CsgOp, Document, NodeId, PathCurve};
@@ -922,6 +923,8 @@ fn evaluate_op_timed(
             height,
         } => Ok(Some(Solid::prism(*sides, *radius, *height))),
 
+        CsgOp::SpurGear { .. } => spur_gear_solid(op).map(Some),
+
         CsgOp::Empty => Ok(Some(Solid::empty())),
 
         CsgOp::Union { left, right } => {
@@ -1508,29 +1511,45 @@ fn evaluate_op_timed(
                 .map_err(EvalError::Sketch)?;
 
             let dir = Vec3::new(0.0, 0.0, board.outline.thickness);
-            let mut board_solid = Solid::extrude(profile, dir).map_err(EvalError::Sketch)?;
-
-            // Subtract cutout holes
-            for cutout in &board.outline.cutouts {
-                if cutout.len() < 3 {
-                    continue;
-                }
-                let mut cut_segs = Vec::with_capacity(cutout.len());
-                for i in 0..cutout.len() {
-                    let next = (i + 1) % cutout.len();
-                    cut_segs.push(vcad_ir::SketchSegment2D::Line {
-                        start: cutout[i],
-                        end: cutout[next],
-                    });
-                }
-                if let Ok(cut_profile) = ir_sketch_to_profile(&origin, &x_dir, &y_dir, &cut_segs) {
-                    // Extrude slightly taller to ensure clean boolean
+            // Cutouts are walls of the extrusion, not booleans: differencing them
+            // one at a time left stray triangles inside the holes (24 open edges
+            // from the second cutout on stator-v3).
+            let cutout_profiles: Vec<_> = board
+                .outline
+                .cutouts
+                .iter()
+                .filter(|c| c.len() >= 3)
+                .filter_map(|cutout| {
+                    let segs: Vec<_> = (0..cutout.len())
+                        .map(|i| vcad_ir::SketchSegment2D::Line {
+                            start: cutout[i],
+                            end: cutout[(i + 1) % cutout.len()],
+                        })
+                        .collect();
+                    ir_sketch_to_profile(&origin, &x_dir, &y_dir, &segs).ok()
+                })
+                .collect();
+            let holes: Vec<_> = cutout_profiles.iter().map(|p| p.segments.clone()).collect();
+            let mut board_solid = match Solid::extrude_with_holes(profile.clone(), &holes, dir) {
+                Ok(solid) => solid,
+                // Outside its preconditions (holes that touch), cut them instead.
+                Err(_) => {
+                    let mut solid = Solid::extrude(profile, dir).map_err(EvalError::Sketch)?;
+                    let overshoot = Vec3::new(0.0, 0.0, -board.outline.thickness * 0.05);
                     let cut_dir = Vec3::new(0.0, 0.0, board.outline.thickness * 1.1);
-                    if let Ok(cut_solid) = Solid::extrude(cut_profile, cut_dir) {
-                        board_solid = board_solid.difference(&cut_solid);
+                    for cut in cutout_profiles {
+                        if let Ok(cutter) = Solid::extrude(cut, cut_dir) {
+                            let cutter = cutter.apply_transform(&Transform::translation(
+                                overshoot.x,
+                                overshoot.y,
+                                overshoot.z,
+                            ));
+                            solid = solid.difference(&cutter);
+                        }
                     }
+                    solid
                 }
-            }
+            };
 
             // Add component bounding boxes estimated from footprint pad extents
             for fp in &board.footprints {
@@ -2978,12 +2997,37 @@ fn scope_primitive_names(node_id: NodeId, op: &CsgOp, result: &mut Option<Solid>
             | CsgOp::Torus { .. }
             | CsgOp::Wedge { .. }
             | CsgOp::Prism { .. }
+            | CsgOp::SpurGear { .. }
     );
     if !is_primitive {
         return;
     }
     if let Some(solid) = result {
         solid.set_name_scope(&format!("n{node_id}"));
+    }
+}
+
+/// Build the solid for a [`CsgOp::SpurGear`]: the exact involute profile
+/// (and bore, as an interior loop) extruded straight up the face width — no
+/// boolean pass, the same path a sketch extrude takes. Shared by every
+/// evaluator (vcad-eval, vcad-app, the WASM kernel) so a gear is the same
+/// solid everywhere.
+pub fn spur_gear_solid(op: &CsgOp) -> Result<Solid, EvalError> {
+    let CsgOp::SpurGear { face_width, .. } = op else {
+        return Err(EvalError::Gear("not a SpurGear node".to_string()));
+    };
+    let (segments, holes) = vcad_ir::gear::spur_gear_sketch(op).map_err(EvalError::Gear)?;
+    let origin = vcad_ir::Vec3::new(0.0, 0.0, 0.0);
+    let x_dir = vcad_ir::Vec3::new(1.0, 0.0, 0.0);
+    let y_dir = vcad_ir::Vec3::new(0.0, 1.0, 0.0);
+    let profile =
+        ir_sketch_to_profile(&origin, &x_dir, &y_dir, &segments).map_err(EvalError::Sketch)?;
+    let dir = to_vec3(&vcad_ir::Vec3::new(0.0, 0.0, *face_width));
+    if holes.is_empty() {
+        Solid::extrude(profile, dir).map_err(EvalError::Sketch)
+    } else {
+        let hole_loops = crate::convert::ir_holes_to_segments(&holes);
+        Solid::extrude_with_holes(profile, &hole_loops, dir).map_err(EvalError::Sketch)
     }
 }
 
@@ -2997,6 +3041,7 @@ fn op_name(op: &CsgOp) -> String {
         CsgOp::Torus { .. } => "Torus",
         CsgOp::Wedge { .. } => "Wedge",
         CsgOp::Prism { .. } => "Prism",
+        CsgOp::SpurGear { .. } => "SpurGear",
         CsgOp::Mirror { .. } => "Mirror",
         CsgOp::Empty => "Empty",
         CsgOp::Union { .. } => "Union",
@@ -3194,6 +3239,95 @@ fn append_endcap(
     }
 }
 
+#[cfg(test)]
+mod via_mesh_tests {
+    use super::*;
+
+    fn open_edge_count(vertices: &[f32], indices: &[u32]) -> usize {
+        // Vertices compared exactly: a T-junction or sliver gap is open here.
+        let key = |i: u32| {
+            let v = &vertices[i as usize * 3..i as usize * 3 + 3];
+            [v[0].to_bits(), v[1].to_bits(), v[2].to_bits()]
+        };
+        let mut net = HashMap::<([u32; 3], [u32; 3]), i32>::new();
+        for t in indices.as_chunks::<3>().0 {
+            for k in 0..3 {
+                let (a, b) = (key(t[k]), key(t[(k + 1) % 3]));
+                if a == b {
+                    continue;
+                }
+                let (lo, hi, d) = if a < b { (a, b, 1) } else { (b, a, -1) };
+                *net.entry((lo, hi)).or_default() += d;
+            }
+        }
+        net.values().map(|n| n.unsigned_abs() as usize).sum()
+    }
+
+    #[test]
+    fn stator_board_slab_with_cutouts_is_closed() {
+        let doc: vcad_ir::Document =
+            serde_json::from_str(include_str!("../../../examples/pcb-motor/stator-v3.vcad"))
+                .unwrap();
+        let CsgOp::PcbBoard { board } = &doc.nodes[&1].op else {
+            panic!("stator-v3 root is a PcbBoard");
+        };
+        // Outline and cutouts only: copper is merged as separate open-free shells.
+        let mut bare = (**board).clone();
+        bare.footprints.clear();
+        bare.traces.clear();
+        bare.trace_arcs.clear();
+        bare.vias.clear();
+        bare.zones.clear();
+        assert!(bare.outline.cutouts.len() >= 2);
+        let mut slab_doc = doc.clone();
+        slab_doc.nodes.get_mut(&1).unwrap().op = CsgOp::PcbBoard {
+            board: Box::new(bare),
+        };
+        let scene = evaluate_document(&slab_doc, &EvalOptions::default()).expect("board evaluates");
+        let part = &scene.parts[0];
+        assert_eq!(open_edge_count(&part.mesh.positions, &part.mesh.indices), 0);
+    }
+
+    #[test]
+    fn via_barrels_are_closed_and_wound_outward() {
+        let doc: vcad_ir::Document =
+            serde_json::from_str(include_str!("../../../examples/pcb-motor/stator-v3.vcad"))
+                .unwrap();
+        let CsgOp::PcbBoard { board } = &doc.nodes[&1].op else {
+            panic!("stator-v3 root is a PcbBoard");
+        };
+        assert!(!board.vias.is_empty());
+        for via in &board.vias {
+            let (verts, tris) = via_to_mesh(via, board, 16, 0.0);
+            let mut net = HashMap::<(u32, u32), i32>::new();
+            let mut volume = 0.0;
+            for t in &tris {
+                for k in 0..3 {
+                    let (a, b) = (t[k], t[(k + 1) % 3]);
+                    *net.entry((a.min(b), a.max(b))).or_default() += if a < b { 1 } else { -1 };
+                }
+                let [p, q, r] = [
+                    verts[t[0] as usize],
+                    verts[t[1] as usize],
+                    verts[t[2] as usize],
+                ];
+                volume += (p[0] * (q[1] * r[2] - q[2] * r[1]) - p[1] * (q[0] * r[2] - q[2] * r[0])
+                    + p[2] * (q[0] * r[1] - q[1] * r[0]))
+                    / 6.0;
+            }
+            assert!(net.values().all(|n| *n == 0), "via mesh has open edges");
+            // A 16-gon annulus: polygon area 8·r²·sin(2π/16), both radii.
+            let sector = 8.0 * (std::f64::consts::TAU / 16.0).sin();
+            let (ro, ri) = (via.diameter / 2.0, via.drill / 2.0);
+            let expected = sector * (ro * ro - ri * ri) * board.outline.thickness;
+            assert!(
+                (volume - expected).abs() < 1e-9 * expected.max(1.0),
+                "volume {volume} vs {expected}"
+            );
+        }
+    }
+}
+
 /// Generate a box mesh for a trace segment (oriented ribbon at layer Z) with
 /// round end caps, so chained segments (arc approximations, routed polylines)
 /// read as continuous copper instead of disjoint tiles with gaps at joints.
@@ -3379,9 +3513,10 @@ pub(crate) fn via_to_mesh(via: &Via, pcb: &Pcb, n_seg: usize, z_over: f64) -> Ra
     let n = n_seg as u32;
     for i in 0..n {
         let next = (i + 1) % n;
-        // top-ring[i], top-ring[next], bot-ring[next], bot-ring[i]
-        tris.push([i, next, n + next]);
-        tris.push([i, n + next, n + i]);
+        // top-ring[i], bot-ring[next], top-ring[next] — wound outward, so each
+        // rim edge cancels against the annular cap that shares it.
+        tris.push([i, n + next, next]);
+        tris.push([i, n + i, n + next]);
     }
 
     // Inner cylinder (drill hole): top ring, bottom ring
@@ -3398,18 +3533,18 @@ pub(crate) fn via_to_mesh(via: &Via, pcb: &Pcb, n_seg: usize, z_over: f64) -> Ra
         verts.push([x, y, z_bot]);
     }
 
-    // Inner cylinder side faces (reversed winding — faces inward)
+    // Inner cylinder side faces (reversed winding — faces the drill axis)
     for i in 0..n {
         let next = (i + 1) % n;
         tris.push([
             inner_top_start + i,
-            inner_bot_start + next,
             inner_top_start + next,
+            inner_bot_start + next,
         ]);
         tris.push([
             inner_top_start + i,
-            inner_bot_start + i,
             inner_bot_start + next,
+            inner_bot_start + i,
         ]);
     }
 

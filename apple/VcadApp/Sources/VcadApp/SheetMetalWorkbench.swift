@@ -14,13 +14,23 @@ enum SheetMode: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+/// What a sheet-metal row adds to its edge.
+enum SheetEdgeKind: String, CaseIterable, Identifiable {
+    case flange = "Flange", jog = "Jog", hem = "Hem"
+    var id: String { rawValue }
+}
+
 struct SheetFlange: Identifiable, Equatable {
     let id = UUID()
+    var kind = SheetEdgeKind.flange
+    var offset = 5.0        // jog
+    var hemOpen = false
+    var gap = 1.0           // open hem
     var panel = 0
     var edge = 0
     var length = 25.0
     var angleDeg = 90.0
-    var radius = 1.0
+    var radius = 1.5
     var up = true
 }
 
@@ -36,6 +46,13 @@ final class SheetMetalStore {
     var depth = 60.0
     var thickness = 1.5
     var flanges: [SheetFlange] = [SheetFlange(edge: 0), SheetFlange(edge: 2)]
+    /// Base from an outline instead of width x depth: one `x y` per line, CCW.
+    var usePolygon = false
+    var outlineText = "0 0\n100 0\n100 60\n0 60"
+    var bendRelief = false
+    /// Notch size; zero means the kernel's default.
+    var reliefWidth = 0.0
+    var reliefDepth = 0.0
     // Nesting.
     var sheetWidth = 1219.2
     var sheetHeight = 2438.4
@@ -57,14 +74,50 @@ final class SheetMetalStore {
         }
     }
 
-    var chain: [[String: Any]] {
-        var base: [String: Any] = ["type": "BaseFlangeRect", "width": width, "depth": depth,
-                                   "thickness": thickness, "material": material]
-        if !shop.isEmpty { base["shopProfile"] = shop }
-        return [base] + flanges.map { f in
-            ["type": "EdgeFlange", "panelId": f.panel, "edgeIndex": f.edge, "length": f.length,
-             "angle": f.angleDeg * .pi / 180, "radius": f.radius, "direction": f.up ? "Up" : "Down"]
+    /// The base outline as `[x, y]` pairs; empty until it is a valid polygon.
+    var outline: [[Double]] {
+        let v = outlineText.split(whereSeparator: { " ,\n\t".contains($0) }).compactMap { Double($0) }
+        guard v.count >= 6, v.count % 2 == 0 else { return [] }
+        return stride(from: 0, to: v.count, by: 2).map { [v[$0], v[$0 + 1]] }
+    }
+
+    /// The edge op's fields, shared by the chain and IR writers.
+    private func edgeFields(_ f: SheetFlange, panel: String, edge: String) -> (type: String, [String: Any]) {
+        let base: [String: Any] = [panel: f.panel, edge: f.edge, "direction": f.up ? "Up" : "Down"]
+        switch f.kind {
+        case .flange:
+            return ("EdgeFlange", base.merging(["length": f.length, "angle": f.angleDeg * .pi / 180, "radius": f.radius]) { $1 })
+        case .jog:
+            return ("Jog", base.merging(["offset": f.offset, "length": f.length, "radius": f.radius]) { $1 })
+        case .hem:
+            return ("Hem", base.merging(["kind": f.hemOpen ? "Open" : "Closed", "length": f.length, "gap": f.hemOpen ? f.gap : 0]) { $1 })
         }
+    }
+
+    private var reliefFields: [String: Any] {
+        var r: [String: Any] = [:]
+        if reliefWidth > 0 { r["width"] = reliefWidth }
+        if reliefDepth > 0 { r["depth"] = reliefDepth }
+        return r
+    }
+
+    var chain: [[String: Any]] {
+        var base: [String: Any] = ["thickness": thickness, "material": material]
+        if usePolygon {
+            base["type"] = "BaseFlangePolygon"
+            base["outline"] = outline
+        } else {
+            base["type"] = "BaseFlangeRect"
+            base["width"] = width
+            base["depth"] = depth
+        }
+        if !shop.isEmpty { base["shopProfile"] = shop }
+        var ops: [[String: Any]] = [base] + flanges.map { f in
+            let (type, fields) = edgeFields(f, panel: "panelId", edge: "edgeIndex")
+            return fields.merging(["type": type]) { $1 }
+        }
+        if bendRelief { ops.append(reliefFields.merging(["type": "BendRelief"]) { $1 }) }
+        return ops
     }
 
     func run(_ model: EditorModel) async {
@@ -140,20 +193,38 @@ final class SheetMetalStore {
 
     /// Append the authored chain to the document as SheetMetal IR nodes.
     func insert(_ model: EditorModel) {
+        // The starter cube isn't a document yet, and a new part doesn't want it.
+        guard model.promoteSandboxToDocument(blank: true) else {
+            error = model.engineError ?? "Couldn't start a document."
+            return
+        }
         let ok = model.editIR("Sheet Metal Part") { doc in
             var nodes = doc["nodes"] as? [String: Any] ?? [:]
             var next = (nodes.keys.compactMap { Int($0) }.max() ?? 0) + 1
-            var base: [String: Any] = ["type": "SheetMetalBaseFlangeRect", "width": width, "depth": depth,
-                                       "thickness": thickness, "material": material]
+            var base: [String: Any] = ["thickness": thickness, "material": material]
+            if usePolygon {
+                base["type"] = "SheetMetalBaseFlangePolygon"
+                base["outline"] = outline.map { ["x": $0[0], "y": $0[1]] }
+                base["holes"] = [[[String: Double]]]()
+            } else {
+                base["type"] = "SheetMetalBaseFlangeRect"
+                base["width"] = width
+                base["depth"] = depth
+            }
             if !shop.isEmpty { base["shop_profile"] = shop }
             var prev = next
             nodes["\(next)"] = ["id": next, "name": "Base Flange", "op": base]
             for f in flanges {
                 next += 1
-                nodes["\(next)"] = ["id": next, "name": "Edge Flange", "op": [
-                    "type": "SheetMetalEdgeFlange", "parent": prev, "panel_id": f.panel, "edge_index": f.edge,
-                    "length": f.length, "angle": f.angleDeg * .pi / 180, "radius": f.radius,
-                    "direction": f.up ? "Up" : "Down"] as [String: Any]]
+                let (type, fields) = edgeFields(f, panel: "panel_id", edge: "edge_index")
+                let op = fields.merging(["type": "SheetMetal" + type, "parent": prev]) { $1 }
+                nodes["\(next)"] = ["id": next, "name": type == "EdgeFlange" ? "Edge Flange" : type, "op": op]
+                prev = next
+            }
+            if bendRelief {
+                next += 1
+                let op = reliefFields.merging(["type": "SheetMetalBendRelief", "parent": prev]) { $1 }
+                nodes["\(next)"] = ["id": next, "name": "Bend Relief", "op": op]
                 prev = next
             }
             doc["nodes"] = nodes
@@ -219,13 +290,19 @@ struct SheetMetalWorkbench: View {
     private var authorForm: some View {
         VStack(alignment: .leading, spacing: Theme.Space.xs) {
             Eyebrow("Base flange")
-            FabField(label: "Width", value: $store.width)
-            FabField(label: "Depth", value: $store.depth)
+            Toggle("From outline", isOn: $store.usePolygon).toggleStyle(.checkbox).font(.caption)
+            if store.usePolygon {
+                TextEditor(text: $store.outlineText).font(.caption.monospaced()).frame(height: 64)
+                Text("One x y per line, counter-clockwise.").font(.caption2).foregroundStyle(.secondary)
+            } else {
+                FabField(label: "Width", value: $store.width)
+                FabField(label: "Depth", value: $store.depth)
+            }
             FabField(label: "Thickness", value: $store.thickness, digits: 3)
             HStack {
-                Eyebrow("Edge flanges")
+                Eyebrow("Edges")
                 Spacer()
-                Button { store.flanges.append(SheetFlange(edge: store.flanges.count % 4)) } label: { Image(systemName: "plus") }
+                Button { store.flanges.append(SheetFlange(edge: (0...3).first { e in !store.flanges.contains { $0.edge == e } } ?? 0)) } label: { Image(systemName: "plus") }
                     .buttonStyle(.borderless)
             }
             ForEach($store.flanges) { $f in
@@ -236,13 +313,31 @@ struct SheetMetalWorkbench: View {
                         Button { store.flanges.removeAll { $0.id == f.id } } label: { Image(systemName: "minus.circle") }
                             .buttonStyle(.borderless)
                     }
+                    Picker("Kind", selection: $f.kind) { ForEach(SheetEdgeKind.allCases) { Text($0.rawValue).tag($0) } }
+                        .pickerStyle(.segmented).labelsHidden().controlSize(.mini)
                     HStack {
                         FabField(label: "L", value: $f.length, digits: 1)
-                        FabField(label: "∠", value: $f.angleDeg, digits: 1)
-                        FabField(label: "R", value: $f.radius, digits: 2)
+                        switch f.kind {
+                        case .flange:
+                            FabField(label: "∠", value: $f.angleDeg, digits: 1)
+                            FabField(label: "R", value: $f.radius, digits: 2)
+                        case .jog:
+                            FabField(label: "Off", value: $f.offset, digits: 1)
+                            FabField(label: "R", value: $f.radius, digits: 2)
+                        case .hem:
+                            Toggle("Open", isOn: $f.hemOpen).toggleStyle(.checkbox)
+                            if f.hemOpen { FabField(label: "Gap", value: $f.gap, digits: 2) }
+                        }
                     }.font(.caption)
                 }
                 .padding(6).background(RoundedRectangle(cornerRadius: 6).fill(.quaternary.opacity(0.25)))
+            }
+            Toggle("Bend relief", isOn: $store.bendRelief).toggleStyle(.checkbox).font(.caption)
+            if store.bendRelief {
+                HStack {
+                    FabField(label: "W", value: $store.reliefWidth, digits: 2)
+                    FabField(label: "D", value: $store.reliefDepth, digits: 2)
+                }.font(.caption).help("Zero uses the default size")
             }
         }
     }

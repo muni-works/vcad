@@ -317,6 +317,459 @@ fn planar_loop_area(solid: &BRepSolid, lp: vcad_kernel_topo::LoopId) -> f64 {
     0.5 * total.norm()
 }
 
+/// Whether a planar face's cuts are the section of one tool wall that mixes
+/// straight and curved faces: every line cut is tangent to one of the
+/// circles. Such a wall can't be applied curve by curve. Each partial
+/// cylinder contributes its full circle and the lines end mid-face, so the
+/// straight parts of the outline never reach the face.
+fn is_section_outline(splits: &FaceSplits) -> bool {
+    let circles: Vec<&vcad_kernel_geom::Circle3d> = splits
+        .iter()
+        .filter_map(|(curve, _, _)| match curve {
+            ssi::IntersectionCurve::Circle(c) => Some(c),
+            _ => None,
+        })
+        .collect();
+    let tangent_to_a_circle = |line: &vcad_kernel_geom::Line3d| {
+        let dir = line.direction.normalize();
+        circles.iter().any(|c| {
+            let d = c.center - line.origin;
+            ((d - dir * d.dot(dir)).norm() - c.radius).abs() < 1e-4
+        })
+    };
+    let mut lines = 0;
+    for (curve, _, _) in splits {
+        match curve {
+            ssi::IntersectionCurve::Circle(_) => {}
+            ssi::IntersectionCurve::Line(l) if tangent_to_a_circle(l) => lines += 1,
+            _ => return false,
+        }
+    }
+    lines > 0 && !circles.is_empty()
+}
+
+/// A point on a planar face's plane and its unit normal.
+fn face_plane(solid: &BRepSolid, face_id: FaceId) -> Option<(Point3, vcad_kernel_math::Vec3)> {
+    let face = &solid.topology.faces[face_id];
+    let verts: Vec<Point3> = solid
+        .topology
+        .loop_half_edges(face.outer_loop)
+        .map(|he| solid.topology.vertices[solid.topology.half_edges[he].origin].point)
+        .collect();
+    if verts.len() < 3 {
+        return None;
+    }
+    let normal = (1..verts.len() - 1)
+        .map(|i| (verts[i] - verts[0]).cross(verts[i + 1] - verts[0]))
+        .fold(vcad_kernel_math::Vec3::zeros(), |sum, n| sum + n);
+    (normal.norm() >= 1e-12).then(|| (verts[0], normal.normalize()))
+}
+
+/// Whether a face cut only by circles sits where a tool's mixed wall ends
+/// flush: the tool already has an outline in this plane, and part of it is
+/// off every circle. Its flat walls cross no face here, so no line cuts exist.
+fn ends_on_section_outline(
+    solid: &BRepSolid,
+    face_id: FaceId,
+    splits: &FaceSplits,
+    other: &BRepSolid,
+) -> bool {
+    let Some((origin, normal)) = face_plane(solid, face_id) else {
+        return false;
+    };
+    let loops = section_loops(other, origin, normal);
+    let circles: Vec<_> = splits
+        .iter()
+        .filter_map(|(curve, _, _)| match curve {
+            ssi::IntersectionCurve::Circle(c) => Some(c),
+            _ => None,
+        })
+        .collect();
+    let on_circle = |c: &vcad_kernel_geom::Circle3d, p: &Point3| {
+        ((*p - c.center).norm() - c.radius).abs() < 1e-4
+    };
+    !circles.is_empty()
+        && splits.iter().all(|(curve, _, _)| match curve {
+            ssi::IntersectionCurve::Circle(_) => true,
+            ssi::IntersectionCurve::Line(l) => line_runs_along(l, &loops),
+            _ => false,
+        })
+        && loops.iter().any(|l| {
+            (0..l.len()).any(|i| {
+                let (p, q) = (l[i], l[(i + 1) % l.len()]);
+                // A straight wall runs from one cut circle to another.
+                !circles.iter().any(|c| on_circle(c, &p) && on_circle(c, &q))
+                    && circles.iter().any(|c| on_circle(c, &p))
+                    && circles.iter().any(|c| on_circle(c, &q))
+            })
+        })
+}
+
+/// Whether at least two outline vertices lie on a cut line.
+fn line_runs_along(line: &vcad_kernel_geom::Line3d, loops: &[Vec<Point3>]) -> bool {
+    let dir = line.direction.normalize();
+    loops
+        .iter()
+        .flatten()
+        .filter(|p| {
+            let d = **p - line.origin;
+            (d - dir * d.dot(dir)).norm() < 1e-4
+        })
+        .count()
+        >= 2
+}
+
+/// Where `other`'s flat walls cross a plane, as closed loops. Empty unless
+/// every wall reaching the plane is flat and contributes exactly one segment:
+/// the outline of a curved or re-entrant wall isn't readable from corners.
+fn planar_wall_crossings(
+    other: &BRepSolid,
+    origin: Point3,
+    normal: vcad_kernel_math::Vec3,
+) -> Vec<Vec<Point3>> {
+    const TOL: f64 = 1e-6;
+    let height = |p: &Point3| (*p - origin).dot(normal);
+    let mut segments = Vec::new();
+    for (fid, face) in &other.topology.faces {
+        let mut crossings: Vec<Point3> = Vec::new();
+        let mut any_off_plane = false;
+        for lp in std::iter::once(face.outer_loop).chain(face.inner_loops.iter().copied()) {
+            let verts: Vec<Point3> = other
+                .topology
+                .loop_half_edges(lp)
+                .map(|he| other.topology.vertices[other.topology.half_edges[he].origin].point)
+                .collect();
+            any_off_plane |= verts.iter().any(|p| height(p).abs() >= TOL);
+            for i in 0..verts.len() {
+                let (p, q) = (verts[i], verts[(i + 1) % verts.len()]);
+                let (hp, hq) = (height(&p), height(&q));
+                let hit = if hp.abs() < TOL {
+                    Some(p)
+                } else if hq.abs() >= TOL && hp * hq < 0.0 {
+                    Some(p + (q - p) * (hp / (hp - hq)))
+                } else {
+                    None
+                };
+                let Some(hit) = hit else { continue };
+                if !crossings.iter().any(|c| (*c - hit).norm() < TOL) {
+                    crossings.push(hit);
+                }
+            }
+        }
+        if crossings.is_empty() || !any_off_plane {
+            continue;
+        }
+        if !split::is_planar_face(other, fid) || crossings.len() != 2 {
+            return Vec::new();
+        }
+        segments.push((crossings[0], crossings[1]));
+    }
+    chain_into_loops(&segments)
+}
+
+/// Whether `p`..`q` and `r`..`s`, in a common plane, come within `tol`.
+fn segments_touch(p: Point3, q: Point3, r: Point3, s: Point3, tol: f64) -> bool {
+    let (u, v, w) = (q - p, s - r, p - r);
+    let (a, b, c, d, e) = (u.dot(u), u.dot(v), v.dot(v), u.dot(w), v.dot(w));
+    let det = a * c - b * b;
+    let closest = |t: f64, k: f64| ((w + u * t) - v * k).norm();
+    let clamp = |x: f64| x.clamp(0.0, 1.0);
+    let mut best = closest(0.0, clamp(e / c))
+        .min(closest(1.0, clamp((b + e) / c)))
+        .min(closest(clamp(-d / a), 0.0))
+        .min(closest(clamp((b - d) / a), 1.0));
+    if det > 1e-18 {
+        best = best.min(closest(
+            clamp((b * e - c * d) / det),
+            clamp((a * e - b * d) / det),
+        ));
+    }
+    best < tol
+}
+
+/// Whether a planar face's cuts are a flat-walled tool's outline lying wholly
+/// inside it, clear of its boundary and holes.
+///
+/// Such a section is a hole, and is cut as one. Applied chord by chord, each
+/// wall's line runs on to the face boundary and the cap shatters into the
+/// lines' full arrangement. Those pieces persist in the result, so the next
+/// cut meets chords the last one left, and a sliver tooth it fails to part
+/// from its fragment leaves with that fragment, as open edges.
+fn is_interior_polygon_section(
+    solid: &BRepSolid,
+    face_id: FaceId,
+    splits: &FaceSplits,
+    other: &BRepSolid,
+) -> bool {
+    if splits.len() < 3
+        || !splits
+            .iter()
+            .all(|(curve, _, _)| matches!(curve, ssi::IntersectionCurve::Line(_)))
+    {
+        return false;
+    }
+    let Some((origin, normal)) = face_plane(solid, face_id) else {
+        return false;
+    };
+    let face = &solid.topology.faces[face_id];
+    let boundary: Vec<(Point3, Point3)> = std::iter::once(face.outer_loop)
+        .chain(face.inner_loops.iter().copied())
+        .flat_map(|lp| {
+            let verts: Vec<Point3> = solid
+                .topology
+                .loop_half_edges(lp)
+                .map(|he| solid.topology.vertices[solid.topology.half_edges[he].origin].point)
+                .collect();
+            (0..verts.len())
+                .map(|i| (verts[i], verts[(i + 1) % verts.len()]))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let inside: Vec<Vec<Point3>> = planar_wall_crossings(other, origin, normal)
+        .into_iter()
+        .filter(|l| {
+            l.iter().all(|p| trim::point_in_face(solid, face_id, p))
+                && (0..l.len()).all(|i| {
+                    let (p, q) = (l[i], l[(i + 1) % l.len()]);
+                    !boundary
+                        .iter()
+                        .any(|(r, s)| segments_touch(p, q, *r, *s, 1e-5))
+                })
+        })
+        .collect();
+    !inside.is_empty()
+        && splits.iter().all(|(curve, _, _)| match curve {
+            ssi::IntersectionCurve::Line(l) => line_runs_along(l, &inside),
+            _ => false,
+        })
+}
+
+/// Move the faces whose cuts are a tool section out of `splits`.
+fn take_section_outlines(
+    solid: &BRepSolid,
+    other: &BRepSolid,
+    splits: &mut HashMap<FaceId, FaceSplits>,
+) -> Vec<(FaceId, FaceSplits)> {
+    let mut faces: Vec<FaceId> = splits
+        .iter()
+        .filter(|(fid, list)| {
+            split::is_planar_face(solid, **fid)
+                && (is_section_outline(list)
+                    || ends_on_section_outline(solid, **fid, list, other)
+                    || is_interior_polygon_section(solid, **fid, list, other))
+        })
+        .map(|(fid, _)| *fid)
+        .collect();
+    faces.sort();
+    faces
+        .into_iter()
+        .map(|fid| (fid, splits.remove(&fid).expect("key was just read")))
+        .collect()
+}
+
+/// Closed loops of `other`'s wall edges lying in a plane, as vertex lists.
+/// Empty when the edges there don't form simple loops.
+fn section_loops(
+    other: &BRepSolid,
+    origin: Point3,
+    normal: vcad_kernel_math::Vec3,
+) -> Vec<Vec<Point3>> {
+    const TOL: f64 = 1e-6;
+    let on_plane = |p: &Point3| (*p - origin).dot(normal).abs() < TOL;
+    let mut segments = Vec::new();
+    for (_, face) in &other.topology.faces {
+        for lp in std::iter::once(face.outer_loop).chain(face.inner_loops.iter().copied()) {
+            let verts: Vec<Point3> = other
+                .topology
+                .loop_half_edges(lp)
+                .map(|he| other.topology.vertices[other.topology.half_edges[he].origin].point)
+                .collect();
+            if verts.len() < 2 || verts.iter().all(&on_plane) {
+                continue;
+            }
+            for i in 0..verts.len() {
+                let (p, q) = (verts[i], verts[(i + 1) % verts.len()]);
+                if on_plane(&p) && on_plane(&q) {
+                    segments.push((p, q));
+                }
+            }
+        }
+    }
+    chain_into_loops(&segments)
+}
+
+/// Chain segments into closed vertex loops. Empty unless they form simple
+/// loops, every vertex meeting exactly two distinct neighbours.
+fn chain_into_loops(segments: &[(Point3, Point3)]) -> Vec<Vec<Point3>> {
+    const TOL: f64 = 1e-6;
+    type Key = [i64; 3];
+    let key = |p: &Point3| -> Key {
+        [
+            (p.x / TOL).round() as i64,
+            (p.y / TOL).round() as i64,
+            (p.z / TOL).round() as i64,
+        ]
+    };
+    let mut position: HashMap<Key, Point3> = HashMap::new();
+    let mut neighbors: HashMap<Key, Vec<Key>> = HashMap::new();
+    for (p, q) in segments {
+        let (kp, kq) = (key(p), key(q));
+        if kp == kq {
+            continue;
+        }
+        position.insert(kp, *p);
+        position.insert(kq, *q);
+        let around_p = neighbors.entry(kp).or_default();
+        if !around_p.contains(&kq) {
+            around_p.push(kq);
+        }
+        let around_q = neighbors.entry(kq).or_default();
+        if !around_q.contains(&kp) {
+            around_q.push(kp);
+        }
+    }
+    if neighbors.values().any(|n| n.len() != 2) {
+        return Vec::new();
+    }
+    let mut starts: Vec<Key> = neighbors.keys().copied().collect();
+    starts.sort();
+    let mut visited = std::collections::HashSet::new();
+    let mut loops = Vec::new();
+    for start in starts {
+        if visited.contains(&start) {
+            continue;
+        }
+        let mut outline = Vec::new();
+        let (mut prev, mut at) = (start, start);
+        loop {
+            visited.insert(at);
+            outline.push(position[&at]);
+            let n = &neighbors[&at];
+            let next = if n[0] != prev { n[0] } else { n[1] };
+            prev = at;
+            at = next;
+            if at == start {
+                break;
+            }
+        }
+        loops.push(outline);
+    }
+    loops
+}
+
+/// Split curved walls crossing the planes where `other` takes a section
+/// outline along their own rulings, removing those cuts from `splits`. The
+/// circle splitter would give them a denser rim than their caps carry.
+fn split_walls_at_outline_planes(
+    solid: &mut BRepSolid,
+    splits: &mut HashMap<FaceId, FaceSplits>,
+    planes: &[(Point3, vcad_kernel_math::Vec3)],
+) {
+    let mut walls: Vec<FaceId> = splits
+        .keys()
+        .copied()
+        .filter(|&fid| split::is_cylindrical_face(solid, fid))
+        .collect();
+    walls.sort();
+    for wall in walls {
+        let matched: Vec<(Point3, vcad_kernel_math::Vec3)> = splits[&wall]
+            .iter()
+            .filter_map(|(curve, _, _)| match curve {
+                ssi::IntersectionCurve::Circle(c) => planes
+                    .iter()
+                    .find(|(origin, normal)| {
+                        (c.center - origin).dot(normal).abs() < 1e-6
+                            && c.normal.as_ref().cross(normal).norm() < 1e-6
+                    })
+                    .copied(),
+                _ => None,
+            })
+            .collect();
+        if matched.is_empty() || matched.len() != splits[&wall].len() {
+            continue;
+        }
+        let mut pieces = vec![wall];
+        let mut done = true;
+        for (origin, normal) in matched {
+            let mut next = Vec::new();
+            for piece in pieces {
+                match split::split_ruled_wall_at_plane(solid, piece, origin, normal) {
+                    Some(parts) => next.extend(parts),
+                    None => {
+                        // A wall ending on the plane has no cut to make there.
+                        let ends_here = solid
+                            .topology
+                            .loop_half_edges(solid.topology.faces[piece].outer_loop)
+                            .any(|he| {
+                                let origin_id = solid.topology.half_edges[he].origin;
+                                (solid.topology.vertices[origin_id].point - origin)
+                                    .dot(normal)
+                                    .abs()
+                                    < 1e-6
+                            });
+                        done = done && ends_here;
+                        next.push(piece);
+                    }
+                }
+            }
+            pieces = next;
+        }
+        if done {
+            splits.remove(&wall);
+        }
+    }
+}
+
+/// Cut the tool's real outline out of a planar face, using the tool's own
+/// (already split) wall vertices so the two sides sew. False, leaving the
+/// face alone, unless the outline accounts for every cut on the face.
+fn imprint_section_outline(
+    solid: &mut BRepSolid,
+    face_id: FaceId,
+    cuts: &FaceSplits,
+    other: &BRepSolid,
+) -> bool {
+    let Some((origin, normal)) = face_plane(solid, face_id) else {
+        return false;
+    };
+    let loops: Vec<Vec<Point3>> = section_loops(other, origin, normal)
+        .into_iter()
+        .filter(|l| l.iter().all(|p| trim::point_in_face(solid, face_id, p)))
+        .collect();
+    if loops.is_empty() {
+        return false;
+    }
+    let covered = cuts.iter().all(|(curve, _, _)| match curve {
+        ssi::IntersectionCurve::Line(l) => line_runs_along(l, &loops),
+        ssi::IntersectionCurve::Circle(c) => {
+            loops
+                .iter()
+                .flatten()
+                .filter(|p| ((**p - c.center).norm() - c.radius).abs() < 1e-4)
+                .count()
+                >= 3
+        }
+        _ => false,
+    });
+    if !covered {
+        return false;
+    }
+    let mut remaining = vec![face_id];
+    for outline in &loops {
+        let target = remaining
+            .iter()
+            .copied()
+            .find(|&f| outline.iter().all(|p| trim::point_in_face(solid, f, p)));
+        let Some(target) = target else {
+            continue;
+        };
+        let result = split::split_planar_face_by_closed_loop(solid, target, outline);
+        remaining.retain(|&f| f != target);
+        remaining.extend(result.sub_faces);
+    }
+    true
+}
+
 /// Apply splits from intersection curves to solid A.
 fn apply_splits_to_solid(
     solid: &mut BRepSolid,
@@ -1434,6 +1887,19 @@ pub(crate) fn brep_boolean(
 
     // Apply splits to both solids
     let mut sphere_split_unsound = false;
+    // A tool outline is imprinted last, from the other solid's finished split.
+    let (mut splits_a, mut splits_b) = (splits_a, splits_b);
+    let outlines_a = take_section_outlines(&a, &b, &mut splits_a);
+    let outlines_b = take_section_outlines(&b, &a, &mut splits_b);
+    let planes_of = |solid: &BRepSolid, outlines: &[(FaceId, FaceSplits)]| -> Vec<_> {
+        outlines
+            .iter()
+            .filter_map(|(fid, _)| face_plane(solid, *fid))
+            .collect()
+    };
+    let (planes_a, planes_b) = (planes_of(&a, &outlines_a), planes_of(&b, &outlines_b));
+    split_walls_at_outline_planes(&mut b, &mut splits_b, &planes_a);
+    split_walls_at_outline_planes(&mut a, &mut splits_a, &planes_b);
     apply_splits_to_solid(
         &mut a,
         splits_a,
@@ -1459,6 +1925,21 @@ pub(crate) fn brep_boolean(
         &a,
         &mut sphere_split_unsound,
     );
+    crate::repair::repair_topology_fine(&mut b.topology, 1e-6);
+
+    for (fid, cuts) in outlines_a {
+        if !imprint_section_outline(&mut a, fid, &cuts, &b) {
+            let single = HashMap::from([(fid, cuts)]);
+            apply_splits_to_solid(&mut a, single, segments, "A", &b, &mut sphere_split_unsound);
+        }
+    }
+    for (fid, cuts) in outlines_b {
+        if !imprint_section_outline(&mut b, fid, &cuts, &a) {
+            let single = HashMap::from([(fid, cuts)]);
+            apply_splits_to_solid(&mut b, single, segments, "B", &a, &mut sphere_split_unsound);
+        }
+    }
+    crate::repair::repair_topology_fine(&mut a.topology, 1e-6);
     crate::repair::repair_topology_fine(&mut b.topology, 1e-6);
 
     if sphere_split_unsound {
@@ -1723,4 +2204,74 @@ fn sphere_result_implausible(
         BooleanOp::Intersection => va.min(vb),
     };
     v < -slack || v > hi + slack
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f64::consts::TAU;
+    use vcad_kernel_geom::Line3d;
+    use vcad_kernel_primitives::make_cylinder;
+
+    /// The stator board against the back iron in `motor-assembly-v3`: its
+    /// faceted outline is inscribed in the iron's rim, so its walls cut a
+    /// chord off the cap per side. Each chord adds one piece. A sliver whose
+    /// corners landed on the true circle once read as a whole disk, and every
+    /// later chord then doubled the pieces. Few enough chords that a
+    /// regression fails here rather than exhausting memory.
+    #[test]
+    fn rim_chords_add_one_piece_each() {
+        const RADIUS: f64 = 35.0;
+        const SIDES: usize = 64;
+        const CHORDS: usize = 12;
+
+        let mut solid = make_cylinder(RADIUS, 10.0, 64);
+        crate::freeze::freeze_circle_loops(&mut solid, 64);
+        let (cap, _) = solid
+            .topology
+            .faces
+            .iter()
+            .find(|(fid, face)| {
+                split::is_circular_disk_face(&solid, *fid)
+                    && solid.topology.loop_half_edges(face.outer_loop).all(|he| {
+                        let v = solid.topology.half_edges[he].origin;
+                        solid.topology.vertices[v].point.z.abs() < 1e-9
+                    })
+            })
+            .expect("frozen bottom cap");
+
+        // Rounded as the board outline is, so corners sit just off the circle.
+        let corner = |i: usize| {
+            let a = i as f64 * TAU / SIDES as f64;
+            let round = |c: f64| (c * 1e4).round() / 1e4;
+            Point3::new(round(RADIUS * a.cos()), round(RADIUS * a.sin()), 0.0)
+        };
+        let cuts: FaceSplits = (0..CHORDS)
+            .map(|i| {
+                let (p, q) = (corner(i), corner(i + 1));
+                (
+                    ssi::IntersectionCurve::Line(Line3d::from_points(p, q)),
+                    p,
+                    q,
+                )
+            })
+            .collect();
+
+        let before = solid.topology.faces.len();
+        let other = make_cylinder(1.0, 1.0, 64);
+        let mut unsound = false;
+        apply_splits_to_solid(
+            &mut solid,
+            HashMap::from([(cap, cuts)]),
+            64,
+            "A",
+            &other,
+            &mut unsound,
+        );
+        let added = solid.topology.faces.len() - before;
+        assert!(
+            added <= CHORDS,
+            "{CHORDS} chords added {added} faces to the cap"
+        );
+    }
 }

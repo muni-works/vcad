@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-08-sketch-blank-parts",
+  "version": "undefined",
+  "date": "2026-11-08",
+  "category": "feat",
+  "title": "Polygon and slot sketch tools, blank parts",
+  "summary": "Sketch adds polygon and slot tools, Esc backs out one step instead of discarding the sketch, new sketches start on a blank part, and the first click can pick a face.",
+  "features": ["native-app", "sketch"]
+}

@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-10-drawing-gdt-placement",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "fix",
+  "title": "GD&T symbols placed clear of dimensions and geometry",
+  "summary": "Datum feature symbols and feature control frames dropped onto the part or a dimension slide to the nearest clear spot with a leader back to the click.",
+  "features": ["drawing", "drafting", "gdt"],
+  "mcpTools": []
+}

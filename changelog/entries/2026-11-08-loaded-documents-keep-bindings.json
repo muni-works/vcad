@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-08-loaded-documents-keep-bindings",
+  "version": "undefined",
+  "date": "2026-11-08",
+  "category": "fix",
+  "title": "Opened documents keep parameters and joint limits",
+  "summary": "The native app no longer drops parameter bindings or actuator limits when it opens a document, and measurements now reflect current parameter values.",
+  "features": ["native-app", "parameters"],
+  "mcpTools": ["set_parameters", "inspect_cad"]
+}

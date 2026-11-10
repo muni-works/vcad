@@ -274,6 +274,38 @@ public enum CrdtValue: Codable, Equatable, Sendable {
     }
 }
 
+// MARK: - DeletedFeature
+
+/// One feature a delete removed.
+public struct DeletedFeature: Codable, Equatable, Sendable {
+    /// Stable id.
+    public var id: String
+    /// Feature name, when it had one.
+    public var name: String?
+    /// Feature kind (`cube`, `boolean`, ...).
+    public var kind: String
+
+    public init(id: String, name: String? = nil, kind: String) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: GenKey.self)
+        id = try c.decode(String.self, forKey: "id")
+        name = try c.decodeIfPresent(String.self, forKey: "name")
+        kind = try c.decode(String.self, forKey: "kind")
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: GenKey.self)
+        try c.encode(id, forKey: "id")
+        try c.encodeIfPresent(name, forKey: "name")
+        try c.encode(kind, forKey: "kind")
+    }
+}
+
 // MARK: - DocCommand
 
 /// One document mutation (or history step).
@@ -734,6 +766,43 @@ public enum EnginePartInfo: Codable, Equatable, Sendable {
     case cone(id: String, name: String, primitiveNodeId: Int, scaleNodeId: Int, rotateNodeId: Int, translateNodeId: Int)
     /// - id: Part identifier.
     /// - name: Human-readable name.
+    /// - primitiveNodeId: The primitive IR node.
+    /// - scaleNodeId: Scale transform node.
+    /// - rotateNodeId: Rotation transform node.
+    /// - translateNodeId: Translation transform node.
+    case torus(id: String, name: String, primitiveNodeId: Int, scaleNodeId: Int, rotateNodeId: Int, translateNodeId: Int)
+    /// - id: Part identifier.
+    /// - name: Human-readable name.
+    /// - primitiveNodeId: The primitive IR node.
+    /// - scaleNodeId: Scale transform node.
+    /// - rotateNodeId: Rotation transform node.
+    /// - translateNodeId: Translation transform node.
+    case wedge(id: String, name: String, primitiveNodeId: Int, scaleNodeId: Int, rotateNodeId: Int, translateNodeId: Int)
+    /// - id: Part identifier.
+    /// - name: Human-readable name.
+    /// - primitiveNodeId: The primitive IR node.
+    /// - scaleNodeId: Scale transform node.
+    /// - rotateNodeId: Rotation transform node.
+    /// - translateNodeId: Translation transform node.
+    case prism(id: String, name: String, primitiveNodeId: Int, scaleNodeId: Int, rotateNodeId: Int, translateNodeId: Int)
+    /// - id: Part identifier.
+    /// - name: Human-readable name.
+    /// - hullNodeId: The hull IR node.
+    /// - scaleNodeId: Scale transform node.
+    /// - rotateNodeId: Rotation transform node.
+    /// - translateNodeId: Translation transform node.
+    /// - sourcePartIds: Source part IDs.
+    case hull(id: String, name: String, hullNodeId: Int, scaleNodeId: Int, rotateNodeId: Int, translateNodeId: Int, sourcePartIds: [String])
+    /// - id: Part identifier.
+    /// - name: Human-readable name.
+    /// - sourcePartId: Source part ID.
+    /// - sweepNodeId: The sweep IR node.
+    /// - scaleNodeId: Scale transform node.
+    /// - rotateNodeId: Rotation transform node.
+    /// - translateNodeId: Translation transform node.
+    case sweepRotate(id: String, name: String, sourcePartId: String, sweepNodeId: Int, scaleNodeId: Int, rotateNodeId: Int, translateNodeId: Int)
+    /// - id: Part identifier.
+    /// - name: Human-readable name.
     /// - booleanType: Boolean type (union, difference, intersection).
     /// - booleanNodeId: The boolean IR node.
     /// - scaleNodeId: Scale transform node.
@@ -876,6 +945,11 @@ public enum EnginePartInfo: Codable, Equatable, Sendable {
         case .cylinder: return "cylinder"
         case .sphere: return "sphere"
         case .cone: return "cone"
+        case .torus: return "torus"
+        case .wedge: return "wedge"
+        case .prism: return "prism"
+        case .hull: return "hull"
+        case .sweepRotate: return "sweep-rotate"
         case .boolean: return "boolean"
         case .extrude: return "extrude"
         case .revolve: return "revolve"
@@ -902,6 +976,11 @@ public enum EnginePartInfo: Codable, Equatable, Sendable {
         case .cylinder(let v, _, _, _, _, _): return v
         case .sphere(let v, _, _, _, _, _): return v
         case .cone(let v, _, _, _, _, _): return v
+        case .torus(let v, _, _, _, _, _): return v
+        case .wedge(let v, _, _, _, _, _): return v
+        case .prism(let v, _, _, _, _, _): return v
+        case .hull(let v, _, _, _, _, _, _): return v
+        case .sweepRotate(let v, _, _, _, _, _, _): return v
         case .boolean(let v, _, _, _, _, _, _, _): return v
         case .extrude(let v, _, _, _, _, _, _): return v
         case .revolve(let v, _, _, _, _, _, _): return v
@@ -928,6 +1007,11 @@ public enum EnginePartInfo: Codable, Equatable, Sendable {
         case .cylinder(_, let v, _, _, _, _): return v
         case .sphere(_, let v, _, _, _, _): return v
         case .cone(_, let v, _, _, _, _): return v
+        case .torus(_, let v, _, _, _, _): return v
+        case .wedge(_, let v, _, _, _, _): return v
+        case .prism(_, let v, _, _, _, _): return v
+        case .hull(_, let v, _, _, _, _, _): return v
+        case .sweepRotate(_, let v, _, _, _, _, _): return v
         case .boolean(_, let v, _, _, _, _, _, _): return v
         case .extrude(_, let v, _, _, _, _, _): return v
         case .revolve(_, let v, _, _, _, _, _): return v
@@ -954,6 +1038,11 @@ public enum EnginePartInfo: Codable, Equatable, Sendable {
         case .cylinder(_, _, _, let v, _, _): return v
         case .sphere(_, _, _, let v, _, _): return v
         case .cone(_, _, _, let v, _, _): return v
+        case .torus(_, _, _, let v, _, _): return v
+        case .wedge(_, _, _, let v, _, _): return v
+        case .prism(_, _, _, let v, _, _): return v
+        case .hull(_, _, _, let v, _, _, _): return v
+        case .sweepRotate(_, _, _, _, let v, _, _): return v
         case .boolean(_, _, _, _, let v, _, _, _): return v
         case .extrude(_, _, _, _, let v, _, _): return v
         case .revolve(_, _, _, _, let v, _, _): return v
@@ -980,6 +1069,11 @@ public enum EnginePartInfo: Codable, Equatable, Sendable {
         case .cylinder(_, _, _, _, let v, _): return v
         case .sphere(_, _, _, _, let v, _): return v
         case .cone(_, _, _, _, let v, _): return v
+        case .torus(_, _, _, _, let v, _): return v
+        case .wedge(_, _, _, _, let v, _): return v
+        case .prism(_, _, _, _, let v, _): return v
+        case .hull(_, _, _, _, let v, _, _): return v
+        case .sweepRotate(_, _, _, _, _, let v, _): return v
         case .boolean(_, _, _, _, _, let v, _, _): return v
         case .extrude(_, _, _, _, _, let v, _): return v
         case .revolve(_, _, _, _, _, let v, _): return v
@@ -1006,6 +1100,11 @@ public enum EnginePartInfo: Codable, Equatable, Sendable {
         case .cylinder(_, _, _, _, _, let v): return v
         case .sphere(_, _, _, _, _, let v): return v
         case .cone(_, _, _, _, _, let v): return v
+        case .torus(_, _, _, _, _, let v): return v
+        case .wedge(_, _, _, _, _, let v): return v
+        case .prism(_, _, _, _, _, let v): return v
+        case .hull(_, _, _, _, _, let v, _): return v
+        case .sweepRotate(_, _, _, _, _, _, let v): return v
         case .boolean(_, _, _, _, _, _, let v, _): return v
         case .extrude(_, _, _, _, _, _, let v): return v
         case .revolve(_, _, _, _, _, _, let v): return v
@@ -1061,6 +1160,53 @@ public enum EnginePartInfo: Codable, Equatable, Sendable {
                 id: try c.decode(String.self, forKey: "id"),
                 name: try c.decode(String.self, forKey: "name"),
                 primitiveNodeId: try c.decode(Int.self, forKey: "primitiveNodeId"),
+                scaleNodeId: try c.decode(Int.self, forKey: "scaleNodeId"),
+                rotateNodeId: try c.decode(Int.self, forKey: "rotateNodeId"),
+                translateNodeId: try c.decode(Int.self, forKey: "translateNodeId")
+            )
+        case "torus":
+            self = .torus(
+                id: try c.decode(String.self, forKey: "id"),
+                name: try c.decode(String.self, forKey: "name"),
+                primitiveNodeId: try c.decode(Int.self, forKey: "primitiveNodeId"),
+                scaleNodeId: try c.decode(Int.self, forKey: "scaleNodeId"),
+                rotateNodeId: try c.decode(Int.self, forKey: "rotateNodeId"),
+                translateNodeId: try c.decode(Int.self, forKey: "translateNodeId")
+            )
+        case "wedge":
+            self = .wedge(
+                id: try c.decode(String.self, forKey: "id"),
+                name: try c.decode(String.self, forKey: "name"),
+                primitiveNodeId: try c.decode(Int.self, forKey: "primitiveNodeId"),
+                scaleNodeId: try c.decode(Int.self, forKey: "scaleNodeId"),
+                rotateNodeId: try c.decode(Int.self, forKey: "rotateNodeId"),
+                translateNodeId: try c.decode(Int.self, forKey: "translateNodeId")
+            )
+        case "prism":
+            self = .prism(
+                id: try c.decode(String.self, forKey: "id"),
+                name: try c.decode(String.self, forKey: "name"),
+                primitiveNodeId: try c.decode(Int.self, forKey: "primitiveNodeId"),
+                scaleNodeId: try c.decode(Int.self, forKey: "scaleNodeId"),
+                rotateNodeId: try c.decode(Int.self, forKey: "rotateNodeId"),
+                translateNodeId: try c.decode(Int.self, forKey: "translateNodeId")
+            )
+        case "hull":
+            self = .hull(
+                id: try c.decode(String.self, forKey: "id"),
+                name: try c.decode(String.self, forKey: "name"),
+                hullNodeId: try c.decode(Int.self, forKey: "hullNodeId"),
+                scaleNodeId: try c.decode(Int.self, forKey: "scaleNodeId"),
+                rotateNodeId: try c.decode(Int.self, forKey: "rotateNodeId"),
+                translateNodeId: try c.decode(Int.self, forKey: "translateNodeId"),
+                sourcePartIds: try c.decode([String].self, forKey: "sourcePartIds")
+            )
+        case "sweep-rotate":
+            self = .sweepRotate(
+                id: try c.decode(String.self, forKey: "id"),
+                name: try c.decode(String.self, forKey: "name"),
+                sourcePartId: try c.decode(String.self, forKey: "sourcePartId"),
+                sweepNodeId: try c.decode(Int.self, forKey: "sweepNodeId"),
                 scaleNodeId: try c.decode(Int.self, forKey: "scaleNodeId"),
                 rotateNodeId: try c.decode(Int.self, forKey: "rotateNodeId"),
                 translateNodeId: try c.decode(Int.self, forKey: "translateNodeId")
@@ -1275,6 +1421,48 @@ public enum EnginePartInfo: Codable, Equatable, Sendable {
             try c.encode(scaleNodeId, forKey: "scaleNodeId")
             try c.encode(rotateNodeId, forKey: "rotateNodeId")
             try c.encode(translateNodeId, forKey: "translateNodeId")
+        case .torus(let id, let name, let primitiveNodeId, let scaleNodeId, let rotateNodeId, let translateNodeId):
+            try c.encode("torus", forKey: "kind")
+            try c.encode(id, forKey: "id")
+            try c.encode(name, forKey: "name")
+            try c.encode(primitiveNodeId, forKey: "primitiveNodeId")
+            try c.encode(scaleNodeId, forKey: "scaleNodeId")
+            try c.encode(rotateNodeId, forKey: "rotateNodeId")
+            try c.encode(translateNodeId, forKey: "translateNodeId")
+        case .wedge(let id, let name, let primitiveNodeId, let scaleNodeId, let rotateNodeId, let translateNodeId):
+            try c.encode("wedge", forKey: "kind")
+            try c.encode(id, forKey: "id")
+            try c.encode(name, forKey: "name")
+            try c.encode(primitiveNodeId, forKey: "primitiveNodeId")
+            try c.encode(scaleNodeId, forKey: "scaleNodeId")
+            try c.encode(rotateNodeId, forKey: "rotateNodeId")
+            try c.encode(translateNodeId, forKey: "translateNodeId")
+        case .prism(let id, let name, let primitiveNodeId, let scaleNodeId, let rotateNodeId, let translateNodeId):
+            try c.encode("prism", forKey: "kind")
+            try c.encode(id, forKey: "id")
+            try c.encode(name, forKey: "name")
+            try c.encode(primitiveNodeId, forKey: "primitiveNodeId")
+            try c.encode(scaleNodeId, forKey: "scaleNodeId")
+            try c.encode(rotateNodeId, forKey: "rotateNodeId")
+            try c.encode(translateNodeId, forKey: "translateNodeId")
+        case .hull(let id, let name, let hullNodeId, let scaleNodeId, let rotateNodeId, let translateNodeId, let sourcePartIds):
+            try c.encode("hull", forKey: "kind")
+            try c.encode(id, forKey: "id")
+            try c.encode(name, forKey: "name")
+            try c.encode(hullNodeId, forKey: "hullNodeId")
+            try c.encode(scaleNodeId, forKey: "scaleNodeId")
+            try c.encode(rotateNodeId, forKey: "rotateNodeId")
+            try c.encode(translateNodeId, forKey: "translateNodeId")
+            try c.encode(sourcePartIds, forKey: "sourcePartIds")
+        case .sweepRotate(let id, let name, let sourcePartId, let sweepNodeId, let scaleNodeId, let rotateNodeId, let translateNodeId):
+            try c.encode("sweep-rotate", forKey: "kind")
+            try c.encode(id, forKey: "id")
+            try c.encode(name, forKey: "name")
+            try c.encode(sourcePartId, forKey: "sourcePartId")
+            try c.encode(sweepNodeId, forKey: "sweepNodeId")
+            try c.encode(scaleNodeId, forKey: "scaleNodeId")
+            try c.encode(rotateNodeId, forKey: "rotateNodeId")
+            try c.encode(translateNodeId, forKey: "translateNodeId")
         case .boolean(let id, let name, let booleanType, let booleanNodeId, let scaleNodeId, let rotateNodeId, let translateNodeId, let sourcePartIds):
             try c.encode("boolean", forKey: "kind")
             try c.encode(id, forKey: "id")
@@ -1446,13 +1634,16 @@ public struct EngineResult: Codable, Equatable, Sendable {
     public var warnings: [String]
     /// Stable id of the feature the command created, if any.
     public var createdFeatureId: String?
+    /// What a delete removed, the requested feature and any inputs only it used.
+    public var deleted: [DeletedFeature]
 
-    public init(document: EngineJSON, parts: [EnginePartInfo], consumedPartIds: [String], warnings: [String], createdFeatureId: String? = nil) {
+    public init(document: EngineJSON, parts: [EnginePartInfo], consumedPartIds: [String], warnings: [String], createdFeatureId: String? = nil, deleted: [DeletedFeature]) {
         self.document = document
         self.parts = parts
         self.consumedPartIds = consumedPartIds
         self.warnings = warnings
         self.createdFeatureId = createdFeatureId
+        self.deleted = deleted
     }
 
     public init(from decoder: Decoder) throws {
@@ -1462,6 +1653,7 @@ public struct EngineResult: Codable, Equatable, Sendable {
         consumedPartIds = try c.decode([String].self, forKey: "consumedPartIds")
         warnings = try c.decode([String].self, forKey: "warnings")
         createdFeatureId = try c.decodeIfPresent(String.self, forKey: "createdFeatureId")
+        deleted = try c.decode([DeletedFeature].self, forKey: "deleted")
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1471,6 +1663,7 @@ public struct EngineResult: Codable, Equatable, Sendable {
         try c.encode(consumedPartIds, forKey: "consumedPartIds")
         try c.encode(warnings, forKey: "warnings")
         try c.encodeIfPresent(createdFeatureId, forKey: "createdFeatureId")
+        try c.encode(deleted, forKey: "deleted")
     }
 }
 
@@ -1497,6 +1690,29 @@ public enum FeatureInput: Codable, Equatable, Sendable {
     /// - height: Height along Z.
     /// - segments: Tessellation segments.
     case cone(radiusBottom: Double, radiusTop: Double, height: Double, segments: Int? = nil)
+    /// - majorRadius: Distance from the axis to the tube centre.
+    /// - minorRadius: Tube radius.
+    /// - segments: Tessellation segments.
+    case torus(majorRadius: Double, minorRadius: Double, segments: Int? = nil)
+    /// - sizeX: Width (X).
+    /// - sizeY: Depth (Y).
+    /// - sizeZ: Height (Z).
+    case wedge(sizeX: Double, sizeY: Double, sizeZ: Double)
+    /// - sides: Number of sides (3 or more).
+    /// - radius: Circumscribed radius.
+    /// - height: Height along Z.
+    case prism(sides: Double, radius: Double, height: Double)
+    /// - inputs: Feature IDs of the parts to hull (consumed).
+    /// - points: Extra points, flat `[x, y, z, ...]` (mm).
+    case hull(inputs: [String], points: [Double])
+    /// - input: Input feature ID (consumed).
+    /// - axisOrigin: A point on the rotation axis.
+    /// - axisDir: Rotation axis direction.
+    /// - angleLoDeg: Start angle, degrees.
+    /// - angleHiDeg: End angle, degrees.
+    /// - stepDeg: Angular step, degrees (the kernel picks one when absent).
+    /// - clearance: Clearance added around the swept solid, mm.
+    case sweepRotate(input: String, axisOrigin: [Double], axisDir: [Double], angleLoDeg: Double, angleHiDeg: Double, stepDeg: Double? = nil, clearance: Double? = nil)
     /// - booleanType: Union, difference, or intersection.
     /// - inputA: First input feature ID.
     /// - inputB: Second input feature ID.
@@ -1611,6 +1827,11 @@ public enum FeatureInput: Codable, Equatable, Sendable {
         case .cylinder: return "Cylinder"
         case .sphere: return "Sphere"
         case .cone: return "Cone"
+        case .torus: return "Torus"
+        case .wedge: return "Wedge"
+        case .prism: return "Prism"
+        case .hull: return "Hull"
+        case .sweepRotate: return "SweepRotate"
         case .boolean: return "Boolean"
         case .extrude: return "Extrude"
         case .revolve: return "Revolve"
@@ -1666,6 +1887,39 @@ public enum FeatureInput: Codable, Equatable, Sendable {
                 radiusTop: try c.decode(Double.self, forKey: "radius_top"),
                 height: try c.decode(Double.self, forKey: "height"),
                 segments: try c.decodeIfPresent(Int.self, forKey: "segments")
+            )
+        case "Torus":
+            self = .torus(
+                majorRadius: try c.decode(Double.self, forKey: "major_radius"),
+                minorRadius: try c.decode(Double.self, forKey: "minor_radius"),
+                segments: try c.decodeIfPresent(Int.self, forKey: "segments")
+            )
+        case "Wedge":
+            self = .wedge(
+                sizeX: try c.decode(Double.self, forKey: "size_x"),
+                sizeY: try c.decode(Double.self, forKey: "size_y"),
+                sizeZ: try c.decode(Double.self, forKey: "size_z")
+            )
+        case "Prism":
+            self = .prism(
+                sides: try c.decode(Double.self, forKey: "sides"),
+                radius: try c.decode(Double.self, forKey: "radius"),
+                height: try c.decode(Double.self, forKey: "height")
+            )
+        case "Hull":
+            self = .hull(
+                inputs: try c.decode([String].self, forKey: "inputs"),
+                points: try c.decode([Double].self, forKey: "points")
+            )
+        case "SweepRotate":
+            self = .sweepRotate(
+                input: try c.decode(String.self, forKey: "input"),
+                axisOrigin: try c.decode([Double].self, forKey: "axis_origin"),
+                axisDir: try c.decode([Double].self, forKey: "axis_dir"),
+                angleLoDeg: try c.decode(Double.self, forKey: "angle_lo_deg"),
+                angleHiDeg: try c.decode(Double.self, forKey: "angle_hi_deg"),
+                stepDeg: try c.decodeIfPresent(Double.self, forKey: "step_deg"),
+                clearance: try c.decodeIfPresent(Double.self, forKey: "clearance")
             )
         case "Boolean":
             self = .boolean(
@@ -1853,6 +2107,34 @@ public enum FeatureInput: Codable, Equatable, Sendable {
             try c.encode(radiusTop, forKey: "radius_top")
             try c.encode(height, forKey: "height")
             try c.encodeIfPresent(segments, forKey: "segments")
+        case .torus(let majorRadius, let minorRadius, let segments):
+            try c.encode("Torus", forKey: "type")
+            try c.encode(majorRadius, forKey: "major_radius")
+            try c.encode(minorRadius, forKey: "minor_radius")
+            try c.encodeIfPresent(segments, forKey: "segments")
+        case .wedge(let sizeX, let sizeY, let sizeZ):
+            try c.encode("Wedge", forKey: "type")
+            try c.encode(sizeX, forKey: "size_x")
+            try c.encode(sizeY, forKey: "size_y")
+            try c.encode(sizeZ, forKey: "size_z")
+        case .prism(let sides, let radius, let height):
+            try c.encode("Prism", forKey: "type")
+            try c.encode(sides, forKey: "sides")
+            try c.encode(radius, forKey: "radius")
+            try c.encode(height, forKey: "height")
+        case .hull(let inputs, let points):
+            try c.encode("Hull", forKey: "type")
+            try c.encode(inputs, forKey: "inputs")
+            try c.encode(points, forKey: "points")
+        case .sweepRotate(let input, let axisOrigin, let axisDir, let angleLoDeg, let angleHiDeg, let stepDeg, let clearance):
+            try c.encode("SweepRotate", forKey: "type")
+            try c.encode(input, forKey: "input")
+            try c.encode(axisOrigin, forKey: "axis_origin")
+            try c.encode(axisDir, forKey: "axis_dir")
+            try c.encode(angleLoDeg, forKey: "angle_lo_deg")
+            try c.encode(angleHiDeg, forKey: "angle_hi_deg")
+            try c.encodeIfPresent(stepDeg, forKey: "step_deg")
+            try c.encodeIfPresent(clearance, forKey: "clearance")
         case .boolean(let booleanType, let inputA, let inputB):
             try c.encode("Boolean", forKey: "type")
             try c.encode(booleanType, forKey: "boolean_type")

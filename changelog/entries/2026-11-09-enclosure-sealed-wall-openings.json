@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-09-enclosure-sealed-wall-openings",
+  "version": "0.11.0",
+  "date": "2026-11-09",
+  "category": "fix",
+  "title": "check_enclosure_fit finds cutouts in closed cases",
+  "summary": "Wall openings in a sealed case are now detected and matched to connectors. A connector that hits a solid wall is still reported.",
+  "features": ["ecad", "enclosure"],
+  "mcpTools": ["check_enclosure_fit"]
+}

@@ -16,6 +16,7 @@
 
 import { getKernelWasm, resetKernelWasm } from "@vcad/engine";
 import type { Document } from "@vcad/ir";
+import { loadResvg } from "./resvg-loader.js";
 import { getSession } from "./session.js";
 import { getSimulation } from "./gym.js";
 import { resolveObservationJoints } from "./joint-order.js";
@@ -107,19 +108,9 @@ export async function rasterize(
   svg: string,
   widthPx: number,
 ): Promise<RasterOutcome> {
-  let ResvgCtor: typeof import("@resvg/resvg-js").Resvg;
-  try {
-    ({ Resvg: ResvgCtor } = await import("@resvg/resvg-js"));
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException)?.code;
-    if (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") {
-      return { rgba: null, reason: "module-missing" };
-    }
-    return {
-      rgba: null,
-      reason: `resvg import failed: ${e instanceof Error ? e.message : String(e)}`,
-    };
-  }
+  const loaded = await loadResvg();
+  if ("reason" in loaded) return { rgba: null, reason: loaded.reason };
+  const ResvgCtor = loaded.Resvg;
   try {
     const resvg = new ResvgCtor(svg, {
       fitTo: { mode: "width", value: widthPx },

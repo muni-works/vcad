@@ -111,15 +111,17 @@ import { buildKernelEventPayload } from "./kernel-event.js";
 import { emClaim } from "./em-claims.js";
 import { lookupOrderable, searchOrderable } from "./part-stock.js";
 import type { NextAction } from "./next-actions.js";
-import { computeEnclosureFitForBoard } from "./enclosure.js";
+import { computeEnclosureFitForBoard, enclosureFitOptsFromArgs } from "./enclosure.js";
 import { validatePcb, pcbValidationError } from "./pcb-validate.js";
 import { COPPER_STACK, PCB_LAYERS } from "./pcb-layers.js";
 import { sizePdnExact, ecadDiffEngineAvailable } from "../wasm/ecad-diff.js";
 import { bundleBytes, storeArtifact } from "./artifact-store.js";
-import { maxInlineArtifactBytes, maxInlineExportBytes } from "./remote.js";
+import { isRemoteDeployment, maxInlineArtifactBytes, maxInlineExportBytes } from "./remote.js";
 import type { FabFile } from "@vcad/engine";
 import { behavior, type ToolContext, type ToolDef } from "./tool-def.js";
-import { findPartCandidate, partIdForNode } from "./part-ids.js";
+import { findPartCandidate, partIdForNode, partIdForRoot } from "./part-ids.js";
+import { canonicalJson, diffParts, snapshotParts } from "./registry-dispatch.js";
+import { documentSolids, type DocumentSolid } from "./document-solids.js";
 import type { ToolResult } from "./tool-result.js";
 
 /** Get PCB data from a document — checks PcbBoard nodes first, falls back to legacy doc.pcb */
@@ -759,6 +761,11 @@ const sheetDefinitionSchema = {
 export const createSchematicSchema = {
   type: "object" as const,
   properties: {
+    document_id: {
+      type: "string" as const,
+      description:
+        "Add the electronics to this open document (one holding mechanical parts) instead of minting a new one. Then call place_components with the same id. Refused, changing nothing, if the document already has a schematic or board.",
+    },
     title: {
       type: "string" as const,
       description: "Schematic sheet title",
@@ -789,8 +796,8 @@ export const createSchematicSchema = {
             type: "string" as const,
             description: 'Footprint ID (e.g. "Resistor_SMD:R_0805", "SOIC-8", "DIP-8")',
           },
-          x: { type: "number" as const, description: "X position on sheet" },
-          y: { type: "number" as const, description: "Y position on sheet" },
+          x: { type: "number" as const, description: "X position on sheet (optional; default: auto grid)" },
+          y: { type: "number" as const, description: "Y position on sheet (optional; default: auto grid)" },
           rotation: { type: "number" as const, description: "Rotation in degrees (default 0)" },
           pins: {
             type: "array" as const,
@@ -843,7 +850,7 @@ export const createSchematicSchema = {
             },
           },
         },
-        required: ["ref", "footprint", "x", "y"],
+        required: ["ref", "footprint"],
       },
     },
     wires: {
@@ -1254,6 +1261,16 @@ export const lengthMatchTracesSchema = {
   required: ["nets"],
 };
 
+/** Shared by validate_for_fab and export_gerber so their gates can't diverge. */
+const allowBlindViasProperty = {
+  type: "boolean" as const,
+  description:
+    "Confirm this board is going to a blind/buried-capable (HDI) fab process " +
+    "(default FALSE). Without it, a board with any non-through via is blocked " +
+    "by both validate_for_fab and export_gerber: standard fabs drill through " +
+    "vias only. With it, layer-pair drill files are written, one per via span.",
+};
+
 /** JSON Schema for export_gerber tool. */
 export const exportGerberSchema = {
   type: "object" as const,
@@ -1263,12 +1280,12 @@ export const exportGerberSchema = {
       type: "string" as const,
       description:
         "Directory to write the fabrication files to (created if missing). " +
-        "Resolved on the MCP server's filesystem — on hosted/sandboxed servers " +
-        "the write may fail. When omitted (or the write fails), a small bundle " +
-        "is returned inline, but a bundle over the inline byte cap (~168 KB " +
+        "Resolved on the MCP server's filesystem; absolute paths work locally. " +
+        "A hosted server, or a write that fails, is an error and nothing is " +
+        "delivered. When omitted, a small bundle is returned inline, but a bundle over the inline byte cap (~168 KB " +
         "Gerber sets exceed it) is written to the artifact store and the result " +
         "carries { artifact_url, manifest, artifact_id } instead of the files — " +
-        "pass that artifact_id to quote_manufacturing / place_order so the fab " +
+        "pass that artifact_id to quote_manufacturing so the fab " +
         "files never transit model context.",
     },
     require_clean_drc: {
@@ -1281,8 +1298,10 @@ export const exportGerberSchema = {
         "(fail-closed: a board that won't even parse never counts as clean). " +
         "Set false only to force a Gerber bundle from a board you know is dirty; " +
         "the resulting files would otherwise fabricate an invalid board. Use " +
-        "validate_for_fab first for the full readiness verdict.",
+        "validate_for_fab first for the full readiness verdict. It does not " +
+        "waive the blind/buried via gate — see allow_blind_vias.",
     },
+    allow_blind_vias: allowBlindViasProperty,
   },
   required: [],
 };
@@ -1292,6 +1311,7 @@ export const validateForFabSchema = {
   type: "object" as const,
   properties: {
     ...docInputProperties,
+    allow_blind_vias: allowBlindViasProperty,
   },
   required: [],
 };
@@ -1492,6 +1512,15 @@ export const boardFromSolidSchema = {
         "solid part; errors with a list if the document has several.",
     },
     thickness: { type: "number" as const, description: "Board thickness in mm (default 1.6)" },
+    region: {
+      type: "string" as const,
+      enum: ["auto", "outer", "cavity"],
+      description:
+        "Which outline to return. 'outer' is the part's silhouette. 'cavity' is " +
+        "the largest interior void, for a board that sits inside an enclosure. " +
+        "'auto' (default) returns the cavity when the part is hollow and the " +
+        "silhouette otherwise. The result's `outline_basis` says which you got.",
+    },
     resolution: {
       type: "number" as const,
       description:
@@ -2176,8 +2205,10 @@ async function buildSheetBody(args: Record<string, unknown>, where = ""): Promis
       value: (c.value as string) || (c.part as string) || def?.name || "",
       footprintId: c.footprint as string,
       position: {
-        x: coord(c.x, `components[${i}].x`),
-        y: coord(c.y, `components[${i}].y`),
+        // Position is cosmetic on the sheet: unplaced parts land on a 100-mil-pitch
+        // grid (8 per row) rather than stacking at the origin.
+        x: c.x === undefined || c.x === null ? 25.4 * (i % 8) : coord(c.x, `components[${i}].x`),
+        y: c.y === undefined || c.y === null ? 25.4 * Math.floor(i / 8) : coord(c.y, `components[${i}].y`),
       },
       rotation: coordOpt(c.rotation, `components[${i}].rotation`),
       pins,
@@ -2384,6 +2415,18 @@ export async function createSchematic(args: Record<string, unknown>) {
     };
   }
 
+  // Into an existing document: nothing is written unless the whole schematic
+  // built, and a document that already has one is left untouched.
+  if (args.document_id !== undefined) {
+    const ctx = resolveDocInput(args);
+    if ((ctx.doc as Document & { schematic?: SchematicSheet }).schematic || getPcbNodeIds(ctx.doc).length > 0) {
+      return ecadError(
+        `Document ${String(args.document_id)} already has a schematic or board; a document holds one design. Nothing was changed.`,
+      );
+    }
+    ctx.doc.schematic = schematic;
+    return schematicSummary(schematic, String(args.document_id), warnings, resolvedParts);
+  }
   const doc = createDocument();
   doc.schematic = schematic;
   const documentId = registerSession(doc);
@@ -3676,9 +3719,86 @@ async function netIslandCounts(
  *  because each kernel continuity query serializes the whole board. */
 const CONNECTIVITY_GUARD_MAX_NETS = 300;
 
+/** Violations that mean illegal copper, as opposed to work left to route. */
+const illegalCount = (d: DrcSummary) => d.categories.clearance + d.categories.manufacturing;
+
+/**
+ * Whether a route left the board worse than it found it: more DRC errors
+ * overall, or more illegal copper without closing a single connection. Trading
+ * a few new clearance errors for many closed nets still counts as progress.
+ */
+function routeMadeBoardWorse(before: DrcSummary, after: DrcSummary): boolean {
+  if (after.errors > before.errors) return true;
+  return illegalCount(after) > illegalCount(before) &&
+    after.categories.connectivity >= before.categories.connectivity;
+}
+
 /** Heuristic power/ground net names, for the `power_first` routing strategy. */
 const POWER_NET_RE =
   /(^|[_\-/])(A?D?GND|VCC|VDD[A]?|VBAT|VBUS|VIN|VOUT|VSYS|VREF|PWR|POWER|\d+V\d*)(\d*)([_\-/]|$)/i;
+
+/** Rules that mean a net's copper doesn't yet realize it. */
+const OPEN_NET_RULES = new Set(["UnconnectedNet", "NetIslands", "UnstitchedPad"]);
+
+/**
+ * Open connections per net from a full DRC listing. `UnconnectedNet` carries
+ * the pad-group count (N groups need N-1 connections); the other open-net rules
+ * mean at least one.
+ */
+function openConnectionsByNet(violations: DrcViol[]): Map<string, number> {
+  const open = new Map<string, number>();
+  for (const v of violations) {
+    if (!OPEN_NET_RULES.has(v.rule)) continue;
+    const [net] = parseNetPair(v.message);
+    if (!net) continue;
+    const count = v.rule === "UnconnectedNet" && typeof v.actual === "number" ? v.actual - 1 : 1;
+    open.set(net, Math.max(open.get(net) ?? 0, count, 1));
+  }
+  return open;
+}
+
+/** Search budget for routing a named net's open connections. */
+const CONNECT_NET_BUDGET = 150_000;
+
+/** Identity of a piece of copper across a kernel round trip. */
+const copperKey = (c: Trace | Via): string =>
+  "position" in c
+    ? `v:${c.net}:${c.position.x},${c.position.y}:${c.diameter}:${c.drill}:${c.startLayer}:${c.endLayer}`
+    : `t:${c.net}:${c.start.x},${c.start.y}:${c.end.x},${c.end.y}:${c.width}:${c.layer}`;
+
+/**
+ * Route the open connections of `nets` island to island, around the board's
+ * existing copper. Traces and vias already there keep their identity. Leaves
+ * the board alone and returns the reason if it can't, or if the router would
+ * have to move hand-placed copper to do it. Returns null on success.
+ */
+async function connectOpenNets(pcb: Pcb, nets: string[]): Promise<string | null> {
+  const options = {
+    calibrate_rules: false,
+    route_remaining: false,
+    max_rounds: 0,
+    prune_dangling: false,
+    connect_nets: nets,
+    verdict: { budget: CONNECT_NET_BUDGET, max_cluster: 6, allow_blind_vias: false },
+  };
+  const out = await kernelRunFabPrep(pcb, options);
+  if (!out.ok) return `the island router could not run: ${out.message}`;
+  const merge = <T extends Trace | Via>(current: T[], next: T[]): T[] | null => {
+    const nextKeys = new Set(next.map(copperKey));
+    if (current.some((c) => c.source === "manual" && !nextKeys.has(copperKey(c)))) return null;
+    const currentKeys = new Set(current.map(copperKey));
+    const added = next
+      .filter((c) => !currentKeys.has(copperKey(c)))
+      .map((c) => ({ ...c, source: "autoroute" as const }));
+    return [...current.filter((c) => nextKeys.has(copperKey(c))), ...added];
+  };
+  const traces = merge(pcb.traces, out.value.pcb.traces);
+  const vias = merge(pcb.vias, out.value.pcb.vias);
+  if (!traces || !vias) return "routing around the existing copper would have moved hand-placed copper";
+  pcb.traces = traces;
+  pcb.vias = vias;
+  return null;
+}
 
 /** Route nets on a PCB with the kernel autorouter (obstacle-avoiding). */
 export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolContext) {
@@ -3704,9 +3824,11 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
 
   // Receipt: snapshot DRC before the route so the after-diff can attribute
   // exactly what this call fixed and what it introduced.
+  // The same snapshot decides which nets are already done and whether the
+  // route made the board worse, so it is always taken.
   const wantReceipt = Boolean(args.receipt);
-  if (wantReceipt) progress?.(0, undefined, "snapshotting pre-route DRC");
-  const beforeSnap = wantReceipt ? await drcPcb(pcb, "full", 500) : null;
+  progress?.(0, undefined, "snapshotting pre-route DRC");
+  const beforeSnap = await drcPcb(pcb, "full", 500);
 
   // Synthesize a netlist from pad assignments so the kernel ratsnest can
   // compute the unrouted connections (MST per net).
@@ -3772,6 +3894,37 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
   }
   for (const n of manualNets) targetNets.delete(n);
 
+  // A net that closed before this call on copper the router did not lay
+  // (imported from KiCad/Altium/Eagle, carrying no `source`) is finished work.
+  // An unscoped call leaves it alone: the router cannot reproduce a foreign
+  // layout, and laying a fresh one around the zones and vias that remain took
+  // a DRC-clean four-layer board to 309 violations. Naming the net in `nets`
+  // still re-routes it.
+  const alreadyRouted = new Set<string>();
+  if (netsFilter.length === 0 && beforeSnap.success) {
+    const open = openConnectionsByNet(beforeSnap.details ?? []);
+    const autorouted = new Set(
+      [...pcb.traces, ...pcb.vias].filter((c) => c.source === "autoroute").map((c) => c.net),
+    );
+    const withCopper = new Set(
+      [...pcb.traces, ...pcb.vias, ...pcb.zones].map((c) => c.net),
+    );
+    for (const n of targetNets) {
+      if (withCopper.has(n) && !autorouted.has(n) && !open.has(n) && !staleNets.has(n)) {
+        alreadyRouted.add(n);
+      }
+    }
+    for (const n of alreadyRouted) targetNets.delete(n);
+  }
+
+  // Everything this call may touch, so a route that makes the board worse can
+  // be undone whole.
+  const boardBefore = {
+    traces: structuredClone(pcb.traces),
+    vias: structuredClone(pcb.vias),
+    zones: structuredClone(pcb.zones),
+  };
+
   // Connectivity guard: snapshot per-net disjoint copper-group counts before
   // any rip-up so the result can report every net this call left WORSE
   // connected (field report: a scoped re-route took GND from 4 galvanic
@@ -3814,16 +3967,17 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
     }
   }
 
-  let tracesRemoved = 0;
-  let viasRemoved = 0;
+  // Copper this call found on the board. The reported added/removed counts are
+  // taken from it at the end, so a retry or rollback can't inflate them.
+  const originalTraces = pcb.traces.length;
+  const originalVias = pcb.vias.length;
+  const priorTraces = new Set(pcb.traces);
+  const priorVias = new Set(pcb.vias);
+  const zonesBefore = new Set(pcb.zones);
   let zonesAdded = 0;
   if (targetNets.size > 0) {
-    const beforeT = pcb.traces.length;
-    const beforeV = pcb.vias.length;
     pcb.traces = pcb.traces.filter((t) => !targetNets.has(t.net) || t.source === "manual");
     pcb.vias = pcb.vias.filter((v) => !targetNets.has(v.net) || v.source === "manual");
-    tracesRemoved = beforeT - pcb.traces.length;
-    viasRemoved = beforeV - pcb.vias.length;
   }
 
   const rats = await computeRatsnest(pcb, netlist);
@@ -3840,8 +3994,6 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
   // The default "auto" strategy is a single pass, so we forward its value
   // verbatim as the authoritative figure rather than recomputing/rounding.
   const kernelRoutabilities: number[] = [];
-  let tracesAdded = 0;
-  let viasAdded = 0;
 
   // Auto-route the whole board in the kernel: every net is routed against one
   // growing clearance oracle and retried on the back layer with transition vias
@@ -3858,7 +4010,7 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
   // copper stays exactly as authored. An empty effectiveFilter means "route
   // everything", so to subtract preserved nets we make the all-set explicit;
   // with nothing preserved it stays empty (behavior unchanged).
-  const preservedNets = new Set<string>([...lockedNets, ...manualNets]);
+  const preservedNets = new Set<string>([...lockedNets, ...manualNets, ...alreadyRouted]);
   let routeFilter = effectiveFilter;
   if (preservedNets.size > 0) {
     if (effectiveFilter.length > 0) {
@@ -3913,7 +4065,6 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
         source: "autoroute",
       });
       realizedWidths[t.net] = Math.max(realizedWidths[t.net] ?? 0, t.width);
-      tracesAdded++;
     }
     for (const v of result.vias) {
       pcb.vias.push({
@@ -3930,7 +4081,6 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
         source: "autoroute",
         ...(v.via_type ? { viaType: v.via_type } : {}),
       });
-      viasAdded++;
     }
     for (const n of result.routed_nets) routedNets.add(n);
     for (const n of result.unrouted_nets) unroutedNets.add(n);
@@ -3939,7 +4089,10 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
   };
 
   let routedSomething = false;
-  if (strategy === "auto") {
+  if (preservedNets.size > 0 && routeFilter.length === 0) {
+    // Every routable net is preserved. An empty filter means "route everything"
+    // to the kernel, so it must not be sent.
+  } else if (strategy === "auto") {
     progress?.(0, undefined, "routing all nets (negotiated whole-board pass)");
     const result = await routeAll(pcb, width, routeFilter, effort);
     routedSomething =
@@ -3992,7 +4145,6 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
           net: netId,
           source: "autoroute",
         });
-        tracesAdded++;
       }
       routedNets.add(netId);
       fallbackNets.add(netId);
@@ -4007,7 +4159,11 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
   // so a route_nets call can never silently degrade a net's connectivity.
   const connectivityRegressions: Record<
     string,
-    { groups_before: number; groups_after: number; action: "repaired-by-retry" | "rolled_back" }
+    {
+      groups_before: number;
+      groups_after: number;
+      action: "repaired-by-retry" | "repaired-by-island-route" | "rolled_back";
+    }
   > = {};
   if (islandsBefore && copperBefore) {
     progress?.(0, undefined, "verifying net connectivity");
@@ -4039,6 +4195,7 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
         applyRoute(retried);
       }
       const stillWorse = (await worseNets(worse.keys())) ?? worse;
+      const rolledBack: string[] = [];
       for (const [n, afterRoute] of worse) {
         if (!stillWorse.has(n)) {
           connectivityRegressions[n] = {
@@ -4053,33 +4210,116 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
         // (and by the `receipt` after-snapshot below when requested).
         pcb.traces = pcb.traces.filter((t) => t.net !== n);
         pcb.vias = pcb.vias.filter((v) => v.net !== n);
-        for (const t of copperBefore.traces) if (t.net === n) pcb.traces.push(t);
-        for (const v of copperBefore.vias) if (v.net === n) pcb.vias.push(v);
-        connectivityRegressions[n] = {
-          groups_before: before.get(n)!,
-          groups_after: stillWorse.get(n)!,
-          action: "rolled_back",
-        };
+        pcb.zones = pcb.zones.filter((z) => z.net !== n || zonesBefore.has(z));
+        for (const t of copperBefore.traces) {
+          if (t.net !== n) continue;
+          pcb.traces.push(t);
+          priorTraces.add(t);
+        }
+        for (const v of copperBefore.vias) {
+          if (v.net !== n) continue;
+          pcb.vias.push(v);
+          priorVias.add(v);
+        }
+        rolledBack.push(n);
+      }
+      // Restoring a net's own copper can't help when other nets' new copper
+      // cut its pour. Close the gap around what's there, then measure: the
+      // receipt states the group count the board really ended with.
+      if (rolledBack.length > 0) {
+        const open = (await worseNets(rolledBack)) ?? new Map<string, number>();
+        const toConnect = [...open.keys()];
+        if (toConnect.length > 0) await connectOpenNets(pcb, toConnect);
+        const final = (await worseNets(rolledBack)) ?? open;
+        for (const n of rolledBack) {
+          connectivityRegressions[n] = {
+            groups_before: before.get(n)!,
+            groups_after: final.get(n) ?? before.get(n)!,
+            action: final.has(n)
+              ? "rolled_back"
+              : open.has(n)
+                ? "repaired-by-island-route"
+                : "repaired-by-retry",
+          };
+        }
       }
     }
   }
 
+  // The result reports what the board now is, measured by DRC.
+  const keptTraces = pcb.traces.filter((t) => priorTraces.has(t)).length;
+  const keptVias = pcb.vias.filter((v) => priorVias.has(v)).length;
+  const tracesAdded = pcb.traces.length - keptTraces;
+  const viasAdded = pcb.vias.length - keptVias;
+  const tracesRemoved = originalTraces - keptTraces;
+  const viasRemoved = originalVias - keptVias;
+  const addedTraceNets = pcb.traces.filter((t) => !priorTraces.has(t)).map((t) => t.net);
+
+  progress?.(0, undefined, "measuring connectivity with DRC");
+  const finalDrc = await drcPcb(pcb, "full", 20);
+  if (beforeSnap.success && finalDrc.success && routeMadeBoardWorse(beforeSnap, finalDrc)) {
+    pcb.traces = boardBefore.traces;
+    pcb.vias = boardBefore.vias;
+    pcb.zones = boardBefore.zones;
+    const counts = (d: DrcSummary) => ({
+      violations: d.violations,
+      errors: d.errors,
+      by_rule: d.byRule,
+    });
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify({
+            success: false,
+            board_unchanged: true,
+            reason:
+              `Routing would have made the board worse (${beforeSnap.errors} DRC errors before, ` +
+              `${finalDrc.errors} after), so every trace, via and zone was restored.`,
+            drc: { before: counts(beforeSnap), after: counts(finalDrc) },
+            ...(alreadyRouted.size > 0 ? { already_routed_nets: [...alreadyRouted].sort() } : {}),
+            ...docResultPayload(ctx),
+          }),
+        },
+      ],
+      isError: true,
+    };
+  }
+  const openNets = finalDrc.success ? openConnectionsByNet(finalDrc.details ?? []) : null;
+  // A scoped call answers for the nets it was asked about; an unscoped one (or
+  // a scope that matched nothing routable) answers for the whole board.
+  const routableNets = [...netConnections.entries()].filter(([, c]) => c.length >= 2);
+  const scoped = routableNets.filter(([n]) => effectiveFilter.includes(n));
+  const scopeEntries = scoped.length > 0 ? scoped : routableNets;
+  if (openNets) {
+    unroutedNets.clear();
+    for (const [n] of scopeEntries) if (openNets.has(n)) unroutedNets.add(n);
+    for (const n of openNets.keys()) routedNets.delete(n);
+  }
+
   const planeStitched = [...routedNets].filter((n) => planeNets.has(n)).sort();
 
-  // Overall routability in [0, 1]: how close the board is to fully routed. A
-  // single-pass "auto" route forwards the kernel's exact connection-granular
-  // figure verbatim (authoritative — no divergence, no rounding). Tier
-  // strategies run several passes over disjoint net sets with no shared
-  // connection count, so there we fall back to a net-level estimate. Either way
-  // we keep full precision so small boards aren't misrepresented (2 of 3 reads
-  // 0.6667, not 0.67).
+  // Overall routability in [0, 1]: the fraction of the scope's pad-to-pad
+  // connections that DRC finds closed. Only when DRC could not run does it fall
+  // back to the router's own figure, and `routability_basis` says so. Full
+  // precision, so small boards aren't misrepresented (2 of 3 reads 0.6667).
   const attemptedNets = routedNets.size + unroutedNets.size;
-  const routability =
-    kernelRoutabilities.length === 1
-      ? kernelRoutabilities[0]
-      : attemptedNets === 0
-        ? 1
-        : routedNets.size / attemptedNets;
+  let routability: number;
+  if (openNets) {
+    const total = scopeEntries.reduce((n, [, c]) => n + c.length - 1, 0);
+    const open = scopeEntries.reduce(
+      (n, [net, c]) => n + Math.min(openNets.get(net) ?? 0, c.length - 1),
+      0,
+    );
+    routability = total === 0 ? 1 : (total - open) / total;
+  } else {
+    routability =
+      kernelRoutabilities.length === 1
+        ? kernelRoutabilities[0]!
+        : attemptedNets === 0
+          ? 0
+          : routedNets.size / attemptedNets;
+  }
   // Keep one diagnostic per still-unrouted net (the kernel may report several
   // connections for a multi-pin net; the first is the most useful summary).
   const dedupedDiagnostics: RouteDiagnostic[] = [];
@@ -4092,8 +4332,18 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
 
   const warnings: string[] = [];
   if (unroutedNets.size > 0) {
+    const onOpen = addedTraceNets.filter((n) => unroutedNets.has(n)).length;
     warnings.push(
-      `${unroutedNets.size} net(s) could not be routed without shorting and were left unrouted (no copper added) — they need another layer or rip-up rerouting: ${[...unroutedNets].join(", ")}`,
+      `${unroutedNets.size} net(s) are still open (${
+        onOpen > 0
+          ? `${onOpen} of the traces added are on these nets but do not complete them`
+          : "no traces were added on them"
+      }) — they need another layer or rip-up rerouting: ${[...unroutedNets].join(", ")}`,
+    );
+  }
+  if (!finalDrc.success) {
+    warnings.push(
+      `routability is the router's own estimate — DRC could not verify the routed board: ${finalDrc.reason}`,
     );
   }
   if (fallbackNets.size > 0) {
@@ -4119,6 +4369,16 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
     );
   }
 
+  if (alreadyRouted.size > 0) {
+    warnings.push(
+      `${alreadyRouted.size} net(s) were already connected on copper the router did not lay and were left as-is. Name them in \`nets\` to re-route them`,
+    );
+  }
+  if (beforeSnap.success && finalDrc.success && illegalCount(finalDrc) > illegalCount(beforeSnap)) {
+    warnings.push(
+      `routing closed open connections but added illegal copper: ${illegalCount(beforeSnap)} clearance/manufacturing violation(s) before, ${illegalCount(finalDrc)} after — run fix_drc`,
+    );
+  }
   if (guardSkipped) warnings.push(guardSkipped);
   const regressedNets = Object.keys(connectivityRegressions).sort();
   if (regressedNets.length > 0) {
@@ -4126,11 +4386,11 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
       (n) => connectivityRegressions[n]!.action === "rolled_back",
     );
     warnings.push(
-      `connectivity regression on ${regressedNets.length} net(s) — this call left their copper in more disjoint groups than before (${regressedNets
+      `connectivity regression on ${regressedNets.length} net(s) — routing split their copper into more disjoint groups (groups before→final: ${regressedNets
         .map((n) => `${n}: ${connectivityRegressions[n]!.groups_before}→${connectivityRegressions[n]!.groups_after}`)
         .join(", ")}). Regressed nets were re-routed once${
         rolled.length > 0
-          ? `; ${rolled.join(", ")} stayed worse and had their pre-call copper restored (rolled back) — the restored copper may now conflict with newly routed nets, run run_drc`
+          ? `; ${rolled.join(", ")} had their pre-call copper restored (rolled back) and are still worse than before — run run_drc`
           : " and repaired"
       }`,
     );
@@ -4141,7 +4401,7 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
   // diffed against an unverifiable (kernel-rejected) board would be meaningless.
   // But a requested receipt is never SILENTLY dropped: an unverifiable
   // snapshot yields `receipt_error` with the reason instead of nothing.
-  if (wantReceipt && beforeSnap && beforeSnap.success) {
+  if (wantReceipt && beforeSnap.success) {
     const after = await drcPcb(pcb, "full", 500);
     // Only build a receipt when the after-snapshot also verified — an
     // unverifiable (kernel-rejected) board has no byNetPair to diff against.
@@ -4172,7 +4432,7 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
         short_pairs: shortPairs,
       };
     }
-  } else if (wantReceipt && beforeSnap && !beforeSnap.success) {
+  } else if (wantReceipt && !beforeSnap.success) {
     receiptField.receipt_error = `receipt requested but the before-route DRC snapshot could not verify the board: ${beforeSnap.reason}`;
   }
 
@@ -4184,6 +4444,10 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
           success: true,
           nets_routed: routedNets.size,
           routability,
+          routability_basis: openNets ? "drc" : "router_estimate",
+          // Every net DRC finds open, board-wide, including nets outside a
+          // scoped call — the same answer run_drc gives.
+          ...(openNets && openNets.size > 0 ? { open_nets: [...openNets.keys()].sort() } : {}),
           traces_added: tracesAdded,
           // Copper pours the router synthesized for high-current nets: those
           // nets are now carried by a plane and stitched to it, not traced.
@@ -4196,6 +4460,10 @@ export async function routeNets(args: Record<string, unknown>, toolCtx?: ToolCon
           ...(viasRemoved > 0 ? { vias_removed: viasRemoved } : {}),
           ...(staleCleared.length > 0 ? { stale_nets_cleared: staleCleared } : {}),
           ...(lockedNets.size > 0 ? { locked_nets: [...lockedNets] } : {}),
+          ...(alreadyRouted.size > 0 ? { already_routed_nets: [...alreadyRouted].sort() } : {}),
+          ...(beforeSnap.success && finalDrc.success
+            ? { drc: { before: beforeSnap.violations, after: finalDrc.violations } }
+            : {}),
           ...(manualNets.size > 0
             ? { manual_nets_preserved: [...manualNets].sort() }
             : {}),
@@ -5733,13 +6001,33 @@ export async function exportGerber(args: Record<string, unknown>) {
               hint:
                 "Resolve the DRC errors (run run_drc / validate_for_fab for details). " +
                 "To get editable files out of the dirty board now, use export_kicad " +
-                "(native .kicad_pcb/.kicad_sch — no DRC gate) or open_in_browser. " +
+                "(native .kicad_pcb/.kicad_sch — no DRC gate) or open_in_app. " +
                 "Or re-run export_gerber with require_clean_drc:false to force the Gerber bundle anyway.",
             }),
           },
         ],
       };
     }
+  }
+
+  // Same gate as validate_for_fab: a board it calls blocked must not ship.
+  // Deliberately separate from require_clean_drc, which waives DRC only.
+  const unsupported = detectUnsupportedFeatures(pcb, args.allow_blind_vias === true);
+  if (unsupported.length > 0) {
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: JSON.stringify({
+            success: false,
+            blocked: true,
+            reason: unsupported.map((u) => u.detail).join(" "),
+            unsupported_features: unsupported,
+            hint: [...new Set(unsupported.map((u) => u.fix))].join(" "),
+          }),
+        },
+      ],
+    };
   }
 
   const files = await exportFabFiles(pcb);
@@ -5756,14 +6044,23 @@ export async function exportGerber(args: Record<string, unknown>) {
   }
 
   if (outputDir) {
+    // A hosted server's disk is not the caller's: nothing written there could
+    // be collected, so refuse rather than report a write the caller can't use.
+    if (isRemoteDeployment()) {
+      return ecadError(
+        "export_gerber: output_dir is unavailable on a hosted server — nothing was written. " +
+          "Omit output_dir to get the files inline or as an artifact.",
+      );
+    }
     // Node-only path: write the files to disk. Imported dynamically so this
     // module stays loadable in browser bundles (e.g. the HTTP MCP frontend).
     try {
       const fs = await import("node:fs/promises");
+      const { resolve: resolvePath } = await import("node:path");
       const { resolveWithinRoot } = await import("./safe-path.js");
-      // Validate both the directory and each filename against cwd so a
-      // crafted output_dir or file name can't escape the workspace.
-      const dir = resolveWithinRoot(outputDir);
+      // A local server writes where its user says, absolute paths included;
+      // file names still can't climb out of that directory.
+      const dir = resolvePath(outputDir);
       await fs.mkdir(dir, { recursive: true });
       for (const f of files) {
         await fs.writeFile(resolveWithinRoot(f.name, dir), f.content, "utf8");
@@ -5775,17 +6072,19 @@ export async function exportGerber(args: Record<string, unknown>) {
             text: JSON.stringify({
               success: true,
               message: `Wrote ${files.length} fabrication files`,
-              output_dir: outputDir,
+              output_dir: dir,
               files: files.map((f) => ({ name: f.name, bytes: f.content.length })),
             }),
           },
         ],
       };
     } catch (e) {
-      // Sandboxed/hosted servers can't write arbitrary paths — fall through to
-      // the inline/offload decision so the caller still gets the files.
+      // The caller asked for files on disk: success must mean they are there.
       const reason = e instanceof Error ? e.message : String(e);
-      return deliverFabFiles(files, `could not write to '${outputDir}': ${reason}`);
+      return ecadError(
+        `export_gerber: could not write to '${outputDir}': ${reason}. ` +
+          "Pick a writable directory, or omit output_dir to get the files inline or as an artifact.",
+      );
     }
   }
 
@@ -5800,12 +6099,10 @@ export async function exportGerber(args: Record<string, unknown>) {
  * over the default cap, so it offloads by default — the whole point: the fab
  * files stop transiting model context and an order can reference them by id.
  */
-function deliverFabFiles(files: FabFile[], diskFailReason?: string) {
+function deliverFabFiles(files: FabFile[]) {
   const total = bundleBytes(files);
   const cap = maxInlineArtifactBytes();
-  const base = diskFailReason
-    ? `Generated ${files.length} fabrication files (${diskFailReason})`
-    : `Generated ${files.length} fabrication files`;
+  const base = `Generated ${files.length} fabrication files`;
 
   if (total <= cap) {
     return {
@@ -5836,7 +6133,7 @@ function deliverFabFiles(files: FabFile[], diskFailReason?: string) {
           artifact_url: handle.artifact_url,
           manifest: handle.manifest,
           expires_at: handle.expires_at,
-          // The handle quote_manufacturing / place_order accept verbatim, so the
+          // The handle quote_manufacturing accept verbatim, so the
           // fab files reach an order without ever re-entering model context.
           fab_artifact: {
             artifact_id: handle.artifact_id,
@@ -5846,8 +6143,8 @@ function deliverFabFiles(files: FabFile[], diskFailReason?: string) {
           },
           note:
             "Fab files are at artifact_url (the manifest lists each file with bytes + sha256; " +
-            "download one at <artifact_url>/<file>). Pass artifact_id to quote_manufacturing / " +
-            "place_order so the bundle never transits model context.",
+            "download one at <artifact_url>/<file>). Pass artifact_id to " +
+            "quote_manufacturing so the bundle never transits model context.",
         }),
       },
     ],
@@ -5942,7 +6239,7 @@ async function deliverKicadProject(
  * serializes the schematic. The point is a round trip: a human can open the
  * agent's design in KiCad to finish routing the nets the autorouter couldn't
  * close, then re-import. Large outputs respect the inline byte cap — over the
- * cap, the caller is steered to `output_dir` or open_in_browser.
+ * cap, the caller is steered to `output_dir` or open_in_app.
  */
 export async function exportKicad(args: Record<string, unknown>) {
   const { doc, documentId } = resolveDocInput(args);
@@ -6039,7 +6336,7 @@ export async function exportKicad(args: Record<string, unknown>) {
       if (bytes > cap) {
         return ecadError(
           `Could not write to '${outputDir}' (${reason}) and the ${bytes}-byte file is over the ${cap}-byte inline cap. ` +
-            "Use open_in_browser, or a writable output_dir.",
+            "Use open_in_app, or a writable output_dir.",
         );
       }
       const payload = {
@@ -6063,7 +6360,7 @@ export async function exportKicad(args: Record<string, unknown>) {
   if (bytes > cap) {
     return ecadError(
       `KiCad file is ${bytes} bytes — over the ${cap}-byte inline limit. ` +
-        "Pass output_dir to write it to disk, or use open_in_browser.",
+        "Pass output_dir to write it to disk, or use open_in_app.",
     );
   }
   const payload = {
@@ -6111,20 +6408,23 @@ function isThroughVia(via: Via): boolean {
 /** Scan the board for features the Gerber/Excellon export can't faithfully
  *  produce. Heuristic and intentionally narrow — it flags the known-unsupported
  *  set, not "everything that could ever be wrong". Today: blind/buried vias,
- *  which our drill writer collapses to plain through-holes. */
-function detectUnsupportedFeatures(pcb: Pcb): UnsupportedFeature[] {
+ *  which need an HDI process the caller has to confirm. */
+function detectUnsupportedFeatures(pcb: Pcb, allowBlindVias = false): UnsupportedFeature[] {
   const out: UnsupportedFeature[] = [];
 
   const blindBuried = pcb.vias.filter((v) => !isThroughVia(v));
-  if (blindBuried.length > 0) {
+  if (blindBuried.length > 0 && !allowBlindVias) {
     out.push({
       feature: "blind/buried via",
       count: blindBuried.length,
       detail:
-        `${blindBuried.length} via(s) span inner layers (not FCu↔BCu). The Excellon ` +
-        "drill export drills every via straight through, so blind/buried vias would " +
-        "fabricate as through-holes — electrically wrong.",
-      fix: "Re-route these connections with through-vias (FCu↔BCu), or split the board so no via needs controlled depth.",
+        `${blindBuried.length} via(s) span inner layers (not FCu↔BCu), which needs a ` +
+        "blind/buried-capable (HDI) process. The export writes a separate layer-pair " +
+        "drill file per span, but a standard fab drills through vias only: it rejects " +
+        "those files, or drills the vias through and shorts every layer they cross.",
+      fix:
+        "Re-route these connections with through-vias (FCu↔BCu), or confirm an HDI " +
+        "process with allow_blind_vias:true on validate_for_fab and export_gerber.",
     });
   }
 
@@ -6194,6 +6494,12 @@ export async function fabPrep(args: Record<string, unknown>) {
     return ecadError(`fab_prep could not run: ${out.message}`);
   }
   const { report, pcb: fixed } = out.value;
+  const copper = {
+    traces_before: pcb.traces.length,
+    traces_after: fixed.traces.length,
+    vias_before: pcb.vias.length,
+    vias_after: fixed.vias.length,
+  };
 
   if (!dryRun) {
     // The kernel returns a whole board; copy the copper it changed back onto the
@@ -6235,16 +6541,35 @@ export async function fabPrep(args: Record<string, unknown>) {
     initial_verdict: report.initial_verdict,
     rounds: report.rounds,
     pruned: { traces: report.pruned_traces, vias: report.pruned_vias },
+    copper,
     // Cap the offender list: a non-converging run on a dense board can name
     // thousands, and the full list lives in the board's own DRC.
     offenders: report.delta.offenders.slice(0, 25),
     offender_count: report.delta.offenders.length,
     next_action: report.converged
-      ? "export_gerber (the clean-DRC gate will now pass)"
+      ? fabPrepNextStep(fixed, args.allow_blind_vias === true)
       : "resolve the offenders above (fix_drc / route_nets / set_placement), then re-run fab_prep",
     ...docResultPayload(ctx),
   };
   return { content: [{ type: "text" as const, text: JSON.stringify(payload) }] };
+}
+
+/**
+ * The step after a converged fab_prep, stating only what export_gerber will
+ * really do: it has a second gate besides DRC, and fab_prep's own waiver of
+ * blind vias doesn't reach it.
+ */
+export function fabPrepNextStep(pcb: Pcb, allowBlindVias: boolean): string {
+  const unsupported = detectUnsupportedFeatures(pcb, allowBlindVias);
+  if (unsupported.length === 0) {
+    return allowBlindVias
+      ? "export_gerber with allow_blind_vias:true (DRC is clean; this board needs an HDI process)"
+      : "export_gerber (the clean-DRC gate will now pass)";
+  }
+  return (
+    "DRC is clean, but export_gerber will still refuse this board: " +
+    unsupported.map((u) => u.detail).join(" ")
+  );
 }
 
 /** One-sentence statement of what a fab-prep run established. */
@@ -6352,7 +6677,9 @@ export async function validateForFab(args: Record<string, unknown>) {
   }
 
   // 4. Unsupported features — present in the IR but not faithfully fabricable.
-  const unsupported = detectUnsupportedFeatures(pcb);
+  const allowBlindVias = args.allow_blind_vias === true;
+  const unsupported = detectUnsupportedFeatures(pcb, allowBlindVias);
+  const hdiVias = allowBlindVias ? pcb.vias.filter((v) => !isThroughVia(v)).length : 0;
   for (const u of unsupported) {
     blockers.push(`Unsupported feature — ${u.detail}`);
     fixes.push(u.fix);
@@ -6374,6 +6701,13 @@ export async function validateForFab(args: Record<string, unknown>) {
           renderable: renderPayload,
           gerber_exportable: gerberPayload,
           unsupported_features: unsupported,
+          ...(hdiVias > 0
+            ? {
+                process_requirements: [
+                  `${hdiVias} blind/buried via(s): order on a blind/buried-capable (HDI) process, with the layer-pair drill files.`,
+                ],
+              }
+            : {}),
           blockers,
           unverifiable,
           suggested_fixes: [...new Set(fixes)],
@@ -7818,10 +8152,8 @@ export async function addCoilArray(args: Record<string, unknown>) {
   for (let i = 0; i < count; i++) {
     const angleDeg = startAngleDeg + (i * 360) / count;
     const angle = (angleDeg * Math.PI) / 180;
-    const coilCenter = {
-      x: round3(center.x + pitchRadius * Math.cos(angle)),
-      y: round3(center.y + pitchRadius * Math.sin(angle)),
-    };
+    const coilPoint = windPolar(center, pitchRadius, angle);
+    const coilCenter = { x: round3(coilPoint.x), y: round3(coilPoint.y) };
     const coilNet = netSequence?.length ? netSequence[i % netSequence.length] : net;
     const direction = dirFor(i);
     const res = await addCoil({
@@ -10537,9 +10869,12 @@ function diffElementArray(
   before: Array<Zone | Trace | Via>,
   after: Array<Zone | Trace | Via>,
 ): PcbElementChange[] {
+  // Key on MEANING, not serialization: the same zone re-serialized by the
+  // kernel (keys reordered, defaults filled) is not a removal plus an add.
+  const keyOf = canonicalJson;
   const countKeys = (arr: Array<Zone | Trace | Via>) => {
     const m = new Map<string, number>();
-    for (const el of arr) m.set(JSON.stringify(el), (m.get(JSON.stringify(el)) ?? 0) + 1);
+    for (const el of arr) m.set(keyOf(el), (m.get(keyOf(el)) ?? 0) + 1);
     return m;
   };
   const beforeKeys = countKeys(before);
@@ -10553,12 +10888,12 @@ function diffElementArray(
     ...(elementLayer(kind, el) ? { layer: elementLayer(kind, el) } : {}),
   });
   before.forEach((el, i) => {
-    const key = JSON.stringify(el);
+    const key = keyOf(el);
     if ((afterKeys.get(key) ?? 0) > 0) afterKeys.set(key, afterKeys.get(key)! - 1);
     else out.push(describe("removed", el, i));
   });
   after.forEach((el, i) => {
-    const key = JSON.stringify(el);
+    const key = keyOf(el);
     if ((beforeKeys.get(key) ?? 0) > 0) beforeKeys.set(key, beforeKeys.get(key)! - 1);
     else out.push(describe("added", el, i));
   });
@@ -10579,6 +10914,35 @@ function diffPcbElements(before: Pcb | null, after: Pcb | null): PcbElementChang
     ...diffElementArray("via", before.vias ?? [], after.vias ?? []),
     ...diffElementArray("netTie", tieView(before.netTies) as never, tieView(after.netTies) as never),
   ];
+}
+
+/** A CAD part an undo brought back, took away, or changed. */
+interface PartChange {
+  kind: "part";
+  action: "added" | "removed" | "modified";
+  part_id: string;
+  name?: string;
+}
+
+/** What an undo did to the CAD structure: ids that came back or went away. */
+function diffDocumentStructure(before: Document, after: Document) {
+  const diff = (a: string[], b: string[]) => ({
+    removed: a.filter((x) => !b.includes(x)),
+    added: b.filter((x) => !a.includes(x)),
+  });
+  const ids = (d: Document) => ({
+    instances: (d.instances ?? []).map((i) => i.id),
+    joints: (d.joints ?? []).map((j) => j.id),
+    part_defs: Object.keys(d.partDefs ?? {}),
+    nodes: Object.keys(d.nodes),
+  });
+  const [b, a] = [ids(before), ids(after)];
+  return {
+    instances: diff(b.instances, a.instances),
+    joints: diff(b.joints, a.joints),
+    part_defs: diff(b.part_defs, a.part_defs),
+    nodes: diff(b.nodes, a.nodes),
+  };
 }
 
 /** JSON Schema for the undo tool. */
@@ -10611,11 +10975,43 @@ export function undo(args: Record<string, unknown>) {
   const beforePcb = getDocPcb(current);
   const beforePcbCopy = beforePcb ? (JSON.parse(JSON.stringify(beforePcb)) as Pcb) : null;
 
-  const restored = undoLastSnapshot(id);
+  const currentCopy = JSON.parse(JSON.stringify(current)) as Document;
+  const currentJson = JSON.stringify(current);
+  // A snapshot identical to the live document records no change, so it cannot
+  // be the step the caller wants back.
+  let restored = undoLastSnapshot(id);
+  while (restored && JSON.stringify(restored) === currentJson) restored = undoLastSnapshot(id);
   if (!restored) {
-    return ecadError("nothing to undo — no mutation has been recorded for this session");
+    return ecadError(
+      "nothing to undo — no recorded step changed this session's document " +
+        "(simulation and read-only tools record nothing)",
+    );
   }
-  const changed = diffPcbElements(beforePcbCopy, getDocPcb(restored));
+  // Board elements AND CAD parts: a CAD undo used to report `changed: []`
+  // (the diff only looked at copper) while it really restored geometry.
+  // A board is a scene root too; its copper is already reported element-wise.
+  const boardParts = new Set(
+    [currentCopy, restored].flatMap((d) =>
+      d.roots
+        .filter((r) => d.nodes[String(r.root)]?.op.type === "PcbBoard")
+        .map((r) => partIdForRoot(d, r)),
+    ),
+  );
+  const partsAll = diffParts(snapshotParts(currentCopy), snapshotParts(restored));
+  const parts = partsAll && {
+    added: partsAll.added.filter((p) => !boardParts.has(p.part_id)),
+    removed: partsAll.removed.filter((p) => !boardParts.has(p.part_id)),
+    modified: partsAll.modified.filter((p) => !boardParts.has(p.part_id)),
+  };
+  const changed: Array<PcbElementChange | PartChange> = [
+    ...diffPcbElements(beforePcbCopy, getDocPcb(restored)),
+    ...(parts
+      ? (["added", "removed", "modified"] as const).flatMap((action) =>
+          parts[action].map((p) => ({ kind: "part" as const, action, part_id: p.part_id, name: p.name })),
+        )
+      : []),
+  ];
+  const document_changes = diffDocumentStructure(currentCopy, restored);
 
   return {
     content: [
@@ -10626,6 +11022,7 @@ export function undo(args: Record<string, unknown>) {
           undone: true,
           remaining_undos: historyDepth(id),
           changed,
+          document_changes,
           document_id: id,
         }),
       },
@@ -11403,10 +11800,8 @@ export async function addMotorWinding(args: Record<string, unknown>) {
   const coilTraceRanges: Array<[number, number]> = [];
   for (const coil of plan.coils) {
     const angle = (coil.angleDeg * Math.PI) / 180;
-    const coilCenter = {
-      x: round3(center.x + pitchRadius * Math.cos(angle)),
-      y: round3(center.y + pitchRadius * Math.sin(angle)),
-    };
+    const coilPoint = windPolar(center, pitchRadius, angle);
+    const coilCenter = { x: round3(coilPoint.x), y: round3(coilPoint.y) };
     const dir = coil.polarity === 1 ? "ccw" : "cw";
     const beforeTraces = pcb.traces.length;
     const res = await addCoil({
@@ -12889,31 +13284,402 @@ function splitAtRepeatedVertices(
  * cutouts (e.g. a stator's center bore). The result plugs straight into
  * place_components' `outline` parameter.
  */
+/** Fraction of the silhouette an interior void must cover to count as a cavity
+ *  rather than a pocket or a screw boss. */
+const CAVITY_MIN_AREA_FRACTION = 0.25;
+/** Heights sampled when looking for a part's cavity. */
+const CAVITY_Z_SAMPLES = 9;
+
+/** Rasterize the part's cross-section at height `z`: a cell is solid when a
+ *  vertical line through it crosses the mesh an odd number of times below `z`. */
+function rasterizeSection(
+  pos: ArrayLike<number>,
+  idx: ArrayLike<number>,
+  g: { ox: number; oy: number; cell: number; gw: number; gh: number },
+  z: number,
+): Uint8Array {
+  const { ox, oy, cell, gw, gh } = g;
+  const section = new Uint8Array(gw * gh);
+  for (let t = 0; t < idx.length; t += 3) {
+    const [i0, i1, i2] = [idx[t]! * 3, idx[t + 1]! * 3, idx[t + 2]! * 3];
+    const [ax, ay, az] = [pos[i0]!, pos[i0 + 1]!, pos[i0 + 2]!];
+    const [bx, by, bz] = [pos[i1]!, pos[i1 + 1]!, pos[i1 + 2]!];
+    const [cx, cy, cz] = [pos[i2]!, pos[i2 + 1]!, pos[i2 + 2]!];
+    if (Math.min(az, bz, cz) > z) continue;
+    const det = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+    if (Math.abs(det) < 1e-12) continue; // Vertical wall: no crossing.
+    const minI = Math.max(0, Math.floor((Math.min(ax, bx, cx) - ox) / cell));
+    const maxI = Math.min(gw - 1, Math.ceil((Math.max(ax, bx, cx) - ox) / cell));
+    const minJ = Math.max(0, Math.floor((Math.min(ay, by, cy) - oy) / cell));
+    const maxJ = Math.min(gh - 1, Math.ceil((Math.max(ay, by, cy) - oy) / cell));
+    for (let j = minJ; j <= maxJ; j++) {
+      const py = oy + (j + 0.5) * cell;
+      for (let i = minI; i <= maxI; i++) {
+        const px = ox + (i + 0.5) * cell;
+        const l0 = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / det;
+        const l1 = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / det;
+        const l2 = 1 - l0 - l1;
+        // Half-open edges, so a line through a shared edge crosses one triangle.
+        const inside =
+          (l0 > 0 || (l0 === 0 && l1 > 0)) &&
+          (l1 > 0 || (l1 === 0 && l2 > 0)) &&
+          (l2 > 0 || (l2 === 0 && l0 > 0));
+        if (inside && l0 * az + l1 * bz + l2 * cz < z) section[j * gw + i] ^= 1;
+      }
+    }
+  }
+  return section;
+}
+
+/**
+ * The largest interior void of a part: empty space at some height that the
+ * part's silhouette covers. A hole that runs all the way through shows in the
+ * silhouette and is not a cavity. Solid islands inside the void (screw bosses)
+ * come back as cutouts. Null when no void is big enough to hold a board.
+ */
+/** Smallest island inside a cavity that counts as geometry, in grid cells. */
+const CAVITY_MIN_CUTOUT_CELLS = 9;
+
+function findCavity(
+  pos: ArrayLike<number>,
+  idx: ArrayLike<number>,
+  g: { ox: number; oy: number; cell: number; gw: number; gh: number; grid: Uint8Array },
+  toMm: (p: Vec2) => Vec2,
+  eps: number,
+  outerArea: number,
+): { vertices: Vec2[]; cutouts: Vec2[][]; area: number; z: number; section: Uint8Array } | null {
+  let minZ = Infinity;
+  let maxZ = -Infinity;
+  for (let i = 2; i < pos.length; i += 3) {
+    minZ = Math.min(minZ, pos[i]!);
+    maxZ = Math.max(maxZ, pos[i]!);
+  }
+  if (!(maxZ > minZ)) return null;
+  const samples: Array<{ section: Uint8Array; z: number; voidCells: number }> = [];
+  for (let s = 1; s <= CAVITY_Z_SAMPLES; s++) {
+    const z = minZ + ((maxZ - minZ) * s) / (CAVITY_Z_SAMPLES + 1);
+    const section = rasterizeSection(pos, idx, g, z);
+    let voidCells = 0;
+    for (let c = 0; c < section.length; c++) if (g.grid[c] && !section[c]) voidCells++;
+    samples.push({ section, z, voidCells });
+  }
+  // Ties go to the lowest height, as the first sample always has.
+  const best = samples.reduce((a, b) => (b.voidCells > a.voidCells ? b : a));
+  if (best.voidCells === 0) return null;
+  // The void is judged on its own cells, never on a traced hole in the section:
+  // a connector cutout joins the interior to the outside at that height, so the
+  // section has no hole at all. A cell counts when the silhouette covers it and
+  // it is empty through most of the cavity's height, which drops a wall opening
+  // shorter than half the cavity.
+  const cavitySamples = samples.filter((s) => s.voidCells >= best.voidCells * 0.5);
+  const needed = cavitySamples.length / 2;
+  const mask = new Uint8Array(g.gw * g.gh);
+  for (let c = 0; c < mask.length; c++) {
+    if (!g.grid[c] || best.section[c]) continue;
+    let empty = 0;
+    for (const s of cavitySamples) if (!s.section[c]) empty++;
+    if (empty >= needed) mask[c] = 1;
+  }
+  const component = largestComponent(mask, g.gw, g.gh);
+  if (!component) return null;
+  // Empty cells the void surrounds belong to it (a lid slot or a bore that
+  // runs through); solid ones stay out and become cutouts (posts).
+  let covered = 0;
+  let open = 0;
+  const enclosed = enclosedCells(component, g.gw, g.gh);
+  for (let c = 0; c < component.length; c++) {
+    if (enclosed[c] && !best.section[c]) component[c] = 1;
+    if (!component[c]) continue;
+    if (g.grid[c]) covered++;
+    else open++;
+  }
+  // Mostly uncovered means a through-hole with a ledge, not a cavity.
+  if (covered <= open) return null;
+  const loops = traceGridBoundaries(component, g.gw, g.gh)
+    .flatMap(splitAtRepeatedVertices)
+    .map((loop) => {
+      const mm = loop.map(toMm);
+      const simplified = simplifyLoop(mm, eps);
+      return { points: simplified.length >= 3 ? simplified : mm, area: loopSignedArea(mm) };
+    })
+    .filter((l) => l.points.length >= 3 && Math.abs(l.area) > 1e-9);
+  const outer = loops.filter((l) => l.area > 0).sort((a, b) => b.area - a.area)[0];
+  if (!outer) return null;
+  const islandArea = loops.reduce((sum, l) => sum + (l.area < 0 ? -l.area : 0), 0);
+  if (outer.area - islandArea < outerArea * CAVITY_MIN_AREA_FRACTION) return null;
+  // A section traced on the grid leaves specks a cell or two wide where a
+  // triangle edge grazes the plane; a real post in the cavity is far larger.
+  const minCutoutArea = CAVITY_MIN_CUTOUT_CELLS * g.cell * g.cell;
+  const cutouts = loops
+    .filter((l) => l.area <= -minCutoutArea)
+    .map((l) => [...l.points].reverse());
+  return {
+    vertices: outer.points,
+    cutouts,
+    area: outer.area,
+    z: best.z,
+    section: best.section,
+  };
+}
+
+/** Largest 4-connected component of set cells, or null if none are set. */
+function largestComponent(mask: Uint8Array, gw: number, gh: number): Uint8Array | null {
+  const labels = new Int32Array(gw * gh);
+  let bestLabel = 0;
+  let bestSize = 0;
+  let label = 0;
+  for (let start = 0; start < mask.length; start++) {
+    if (!mask[start] || labels[start]) continue;
+    label++;
+    let size = 0;
+    const stack = [start];
+    labels[start] = label;
+    while (stack.length > 0) {
+      const c = stack.pop()!;
+      size++;
+      const i = c % gw;
+      for (const n of [i > 0 ? c - 1 : -1, i < gw - 1 ? c + 1 : -1, c - gw, c + gw]) {
+        if (n < 0 || n >= mask.length || !mask[n] || labels[n]) continue;
+        labels[n] = label;
+        stack.push(n);
+      }
+    }
+    if (size > bestSize) {
+      bestSize = size;
+      bestLabel = label;
+    }
+  }
+  if (bestLabel === 0) return null;
+  const out = new Uint8Array(gw * gh);
+  for (let c = 0; c < out.length; c++) if (labels[c] === bestLabel) out[c] = 1;
+  return out;
+}
+
+/** Unset cells that cannot reach the grid border through unset cells. */
+function enclosedCells(mask: Uint8Array, gw: number, gh: number): Uint8Array {
+  const outside = new Uint8Array(gw * gh);
+  const stack: number[] = [];
+  const seed = (c: number) => {
+    if (mask[c] || outside[c]) return;
+    outside[c] = 1;
+    stack.push(c);
+  };
+  for (let i = 0; i < gw; i++) {
+    seed(i);
+    seed((gh - 1) * gw + i);
+  }
+  for (let j = 0; j < gh; j++) {
+    seed(j * gw);
+    seed(j * gw + gw - 1);
+  }
+  while (stack.length > 0) {
+    const c = stack.pop()!;
+    const i = c % gw;
+    if (i > 0) seed(c - 1);
+    if (i < gw - 1) seed(c + 1);
+    if (c - gw >= 0) seed(c - gw);
+    if (c + gw < mask.length) seed(c + gw);
+  }
+  const out = new Uint8Array(gw * gh);
+  for (let c = 0; c < out.length; c++) out[c] = !mask[c] && !outside[c] ? 1 : 0;
+  return out;
+}
+
+/** Largest axis-aligned rectangle of set cells (histogram method), in cells. */
+function largestRectangle(
+  mask: Uint8Array,
+  gw: number,
+  gh: number,
+): { i0: number; j0: number; i1: number; j1: number; area: number } | null {
+  const heights = new Int32Array(gw + 1);
+  let best: { i0: number; j0: number; i1: number; j1: number; area: number } | null = null;
+  for (let j = 0; j < gh; j++) {
+    for (let i = 0; i < gw; i++) heights[i] = mask[j * gw + i] ? heights[i]! + 1 : 0;
+    const stack: number[] = [];
+    for (let i = 0; i <= gw; i++) {
+      while (stack.length > 0 && heights[stack[stack.length - 1]!]! >= heights[i]!) {
+        const h = heights[stack.pop()!]!;
+        const left = stack.length > 0 ? stack[stack.length - 1]! + 1 : 0;
+        const area = h * (i - left);
+        if (area > 0 && (!best || area > best.area)) {
+          best = { i0: left, j0: j - h + 1, i1: i, j1: j + 1, area };
+        }
+      }
+      stack.push(i);
+    }
+  }
+  return best;
+}
+
+/** Heights where a vertical line at (px, py) crosses the mesh, ascending. */
+function verticalCrossings(
+  pos: ArrayLike<number>,
+  idx: ArrayLike<number>,
+  px: number,
+  py: number,
+): number[] {
+  const zs: number[] = [];
+  for (let t = 0; t < idx.length; t += 3) {
+    const [i0, i1, i2] = [idx[t]! * 3, idx[t + 1]! * 3, idx[t + 2]! * 3];
+    const [ax, ay, az] = [pos[i0]!, pos[i0 + 1]!, pos[i0 + 2]!];
+    const [bx, by, bz] = [pos[i1]!, pos[i1 + 1]!, pos[i1 + 2]!];
+    const [cx, cy, cz] = [pos[i2]!, pos[i2 + 1]!, pos[i2 + 2]!];
+    const det = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+    if (Math.abs(det) < 1e-12) continue;
+    const l0 = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / det;
+    const l1 = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / det;
+    const l2 = 1 - l0 - l1;
+    if (
+      (l0 > 0 || (l0 === 0 && l1 > 0)) &&
+      (l1 > 0 || (l1 === 0 && l2 > 0)) &&
+      (l2 > 0 || (l2 === 0 && l0 > 0))
+    ) {
+      zs.push(l0 * az + l1 * bz + l2 * cz);
+    }
+  }
+  return zs.sort((a, b) => a - b);
+}
+
+/** Share of the void that must have both a floor and a lid for the case to
+ *  read as closed. Below this it is an open tray with a partial cover. */
+const SEALED_MIN_LIDDED_FRACTION = 0.5;
+
+/**
+ * The sealed interior of a closed case, as an axis-aligned cavity box — what
+ * `check_enclosure_fit` needs when the kernel's open-top detector finds
+ * nothing. Same void detection as `board_from_solid`. The box is the largest
+ * rectangle inside the void, never its bounding box, so a non-rectangular
+ * cavity can't claim room it doesn't have; posts are ignored, as they are for
+ * an open tray. The ceiling is the lowest one sampled. Null for a solid part.
+ */
+export function sealedCavityFromMesh(
+  mesh: TriangleMesh,
+): { minX: number; maxX: number; minY: number; maxY: number; floorZ: number; ceilZ: number; hasLid: true } | null {
+  const pos = mesh.positions;
+  const idx = mesh.indices;
+  const g = projectionGrid(pos, idx);
+  if (!g) return null;
+  const { ox, oy, cell, gw, gh, grid } = g;
+  let filled = 0;
+  for (let c = 0; c < grid.length; c++) filled += grid[c]!;
+  const toMm = (p: Vec2) => ({ x: round3(ox + p.x * cell), y: round3(oy + p.y * cell) });
+  const cavity = findCavity(pos, idx, g, toMm, cell * 1.5, filled * cell * cell);
+  if (!cavity) return null;
+
+  const mask = new Uint8Array(gw * gh);
+  for (let j = 0; j < gh; j++) {
+    for (let i = 0; i < gw; i++) {
+      const p = { x: ox + (i + 0.5) * cell, y: oy + (j + 0.5) * cell };
+      if (pointInPolygon(p, cavity.vertices)) mask[j * gw + i] = 1;
+    }
+  }
+  const rect = largestRectangle(mask, gw, gh);
+  if (!rect) return null;
+
+  // Floor and ceiling from columns through the void. Most columns land on the
+  // floor proper, so a post top can't pass for it; the ceiling stays the
+  // tightest one found.
+  const floors = new Map<number, number>();
+  let ceilZ = Infinity;
+  let probed = 0;
+  let lidded = 0;
+  const SAMPLES = 7;
+  for (let a = 0; a < SAMPLES; a++) {
+    for (let b = 0; b < SAMPLES; b++) {
+      const i = Math.min(gw - 1, rect.i0 + Math.floor(((a + 0.5) * (rect.i1 - rect.i0)) / SAMPLES));
+      const j = Math.min(gh - 1, rect.j0 + Math.floor(((b + 0.5) * (rect.j1 - rect.j0)) / SAMPLES));
+      if (cavity.section[j * gw + i]) continue; // a post at this height
+      const zs = verticalCrossings(pos, idx, ox + (i + 0.5) * cell, oy + (j + 0.5) * cell);
+      const above = zs.findIndex((z) => z > cavity.z);
+      probed++;
+      // A column under a lid slot has no lid, one over a floor hole no floor.
+      // Those are openings in the case; enough of them means it isn't closed.
+      if (above <= 0) continue;
+      lidded++;
+      const floor = round3(zs[above - 1]!);
+      floors.set(floor, (floors.get(floor) ?? 0) + 1);
+      ceilZ = Math.min(ceilZ, zs[above]!);
+    }
+  }
+  if (floors.size === 0 || !Number.isFinite(ceilZ) || lidded < probed * SEALED_MIN_LIDDED_FRACTION) {
+    return null;
+  }
+  const floorZ = [...floors.entries()].sort((p, q) => q[1] - p[1] || q[0] - p[0])[0]![0];
+  return {
+    minX: round3(ox + rect.i0 * cell),
+    maxX: round3(ox + rect.i1 * cell),
+    minY: round3(oy + rect.j0 * cell),
+    maxY: round3(oy + rect.j1 * cell),
+    floorZ,
+    ceilZ: round3(ceilZ),
+    hasLid: true,
+  };
+}
+
+/** Occupancy grid of a mesh's XY projection, one padding cell on every side. */
+function projectionGrid(pos: ArrayLike<number>, idx: ArrayLike<number>, resolution?: number) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < pos.length; i += 3) {
+    if (pos[i]! < minX) minX = pos[i]!;
+    if (pos[i]! > maxX) maxX = pos[i]!;
+    if (pos[i + 1]! < minY) minY = pos[i + 1]!;
+    if (pos[i + 1]! > maxY) maxY = pos[i + 1]!;
+  }
+  const extent = Math.max(maxX - minX, maxY - minY);
+  if (!(extent > 0)) return null;
+
+  // Floor the cell size so the grid can never exceed ~4M cells, whatever
+  // `resolution` the caller asks for on however large a part.
+  const cell = Math.min(Math.max(resolution || extent / 400, 0.02, extent / 2000), extent / 8);
+  const ox = minX - cell;
+  const oy = minY - cell;
+  const gw = Math.ceil((maxX - minX) / cell) + 2;
+  const gh = Math.ceil((maxY - minY) / cell) + 2;
+  const grid = new Uint8Array(gw * gh);
+
+  const triCount = idx.length / 3;
+  for (let t = 0; t < triCount; t++) {
+    const i0 = idx[t * 3]! * 3;
+    const i1 = idx[t * 3 + 1]! * 3;
+    const i2 = idx[t * 3 + 2]! * 3;
+    const ax = pos[i0]!;
+    const ay = pos[i0 + 1]!;
+    const bx = pos[i1]!;
+    const by = pos[i1 + 1]!;
+    const cx = pos[i2]!;
+    const cy = pos[i2 + 1]!;
+    const tMinI = Math.max(0, Math.floor((Math.min(ax, bx, cx) - ox) / cell));
+    const tMaxI = Math.min(gw - 1, Math.ceil((Math.max(ax, bx, cx) - ox) / cell));
+    const tMinJ = Math.max(0, Math.floor((Math.min(ay, by, cy) - oy) / cell));
+    const tMaxJ = Math.min(gh - 1, Math.ceil((Math.max(ay, by, cy) - oy) / cell));
+    for (let j = tMinJ; j <= tMaxJ; j++) {
+      for (let i = tMinI; i <= tMaxI; i++) {
+        if (grid[j * gw + i] === 1) continue;
+        const px = ox + (i + 0.5) * cell;
+        const py = oy + (j + 0.5) * cell;
+        if (pointInTriangle2D(px, py, ax, ay, bx, by, cx, cy)) grid[j * gw + i] = 1;
+      }
+    }
+  }
+  return { ox, oy, cell, gw, gh, grid, minX, minY, maxX, maxY };
+}
+
 export function boardFromSolid(args: Record<string, unknown>, engine: Engine) {
   const documentId = String(args.document_id ?? "");
   const doc = getSession(documentId);
   const thickness = (args.thickness as number) || 1.6;
 
-  const scene = engine.evaluate(doc);
-  const visibleRoots = doc.roots.filter((e) => e.visible !== false);
-
-  const candidates: Array<{ rootId: number; id: string; name?: string; mesh: TriangleMesh }> = [];
-  for (let i = 0; i < scene.parts.length && i < visibleRoots.length; i++) {
-    const rootId = visibleRoots[i].root;
-    const node = doc.nodes[String(rootId)];
-    const opType = (node?.op as { type?: string } | undefined)?.type;
-    if (opType === "PcbBoard") continue;
-    const mesh = scene.parts[i].mesh;
-    if (!mesh || mesh.positions.length === 0) continue;
-    candidates.push({ rootId, id: partIdForNode(doc, rootId), name: node?.name ?? undefined, mesh });
-  }
+  const candidates = documentSolids(doc, engine);
 
   if (candidates.length === 0) {
     throw new Error("Document has no solid parts to trace (PcbBoard parts are excluded)");
   }
 
   const partId = args.part_id ? String(args.part_id) : undefined;
-  let part: { rootId: number; id: string; name?: string; mesh: TriangleMesh };
+  let part: DocumentSolid;
   if (partId) {
     const found = findPartCandidate(doc, candidates, partId);
     if (!found) {
@@ -12937,58 +13703,9 @@ export function boardFromSolid(args: Record<string, unknown>, engine: Engine) {
   // Project to XY (Z-up: the board plane) and rasterize.
   const pos = part.mesh.positions;
   const idx = part.mesh.indices;
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (let i = 0; i < pos.length; i += 3) {
-    if (pos[i] < minX) minX = pos[i];
-    if (pos[i] > maxX) maxX = pos[i];
-    if (pos[i + 1] < minY) minY = pos[i + 1];
-    if (pos[i + 1] > maxY) maxY = pos[i + 1];
-  }
-  const extent = Math.max(maxX - minX, maxY - minY);
-  if (!(extent > 0)) throw new Error("Part has no XY extent to trace");
-
-  // Floor the cell size so the grid can never exceed ~4M cells, whatever
-  // `resolution` the caller asks for on however large a part.
-  const cell = Math.min(
-    Math.max((args.resolution as number) || extent / 400, 0.02, extent / 2000),
-    extent / 8,
-  );
-  // One padding cell on every side so the outer boundary always closes.
-  const ox = minX - cell;
-  const oy = minY - cell;
-  const gw = Math.ceil((maxX - minX) / cell) + 2;
-  const gh = Math.ceil((maxY - minY) / cell) + 2;
-  const grid = new Uint8Array(gw * gh);
-
-  const triCount = idx.length / 3;
-  for (let t = 0; t < triCount; t++) {
-    const i0 = idx[t * 3] * 3;
-    const i1 = idx[t * 3 + 1] * 3;
-    const i2 = idx[t * 3 + 2] * 3;
-    const ax = pos[i0];
-    const ay = pos[i0 + 1];
-    const bx = pos[i1];
-    const by = pos[i1 + 1];
-    const cx = pos[i2];
-    const cy = pos[i2 + 1];
-    const tMinI = Math.max(0, Math.floor((Math.min(ax, bx, cx) - ox) / cell));
-    const tMaxI = Math.min(gw - 1, Math.ceil((Math.max(ax, bx, cx) - ox) / cell));
-    const tMinJ = Math.max(0, Math.floor((Math.min(ay, by, cy) - oy) / cell));
-    const tMaxJ = Math.min(gh - 1, Math.ceil((Math.max(ay, by, cy) - oy) / cell));
-    for (let j = tMinJ; j <= tMaxJ; j++) {
-      for (let i = tMinI; i <= tMaxI; i++) {
-        if (grid[j * gw + i] === 1) continue;
-        const px = ox + (i + 0.5) * cell;
-        const py = oy + (j + 0.5) * cell;
-        if (pointInTriangle2D(px, py, ax, ay, bx, by, cx, cy)) {
-          grid[j * gw + i] = 1;
-        }
-      }
-    }
-  }
+  const projection = projectionGrid(pos, idx, args.resolution as number | undefined);
+  if (!projection) throw new Error("Part has no XY extent to trace");
+  const { ox, oy, cell, gw, gh, grid, minX, minY, maxX, maxY } = projection;
 
   const rawLoops = traceGridBoundaries(grid, gw, gh).flatMap(splitAtRepeatedVertices);
   if (rawLoops.length === 0) {
@@ -13026,9 +13743,26 @@ export function boardFromSolid(args: Record<string, unknown>, engine: Engine) {
     .filter((l) => l.area < 0 && pointInPolygon(l.points[0], outer.points))
     .map((l) => [...l.points].reverse());
 
+  const region = String(args.region ?? "auto");
+  if (!["auto", "outer", "cavity"].includes(region)) {
+    throw new Error(`Unknown region "${region}" — use auto, outer, or cavity`);
+  }
+  const silhouette = { vertices: outer.points, cutouts, area: outer.area };
+  const toMm = (p: Vec2) => ({ x: round3(ox + p.x * cell), y: round3(oy + p.y * cell) });
+  const cavity =
+    region === "outer"
+      ? null
+      : findCavity(pos, idx, { ox, oy, cell, gw, gh, grid }, toMm, eps, outer.area);
+  if (region === "cavity" && !cavity) {
+    throw new Error(
+      "Part has no interior cavity — every void in it runs all the way through, so its silhouette already shows them. Use region: \"outer\"",
+    );
+  }
+  const chosen = cavity ?? silhouette;
+  const basis = cavity ? "cavity" : "outer";
   const outline: BoardOutline = {
-    vertices: outer.points,
-    ...(cutouts.length > 0 ? { cutouts } : {}),
+    vertices: chosen.vertices,
+    ...(chosen.cutouts.length > 0 ? { cutouts: chosen.cutouts } : {}),
     thickness,
   };
 
@@ -13040,9 +13774,19 @@ export function boardFromSolid(args: Record<string, unknown>, engine: Engine) {
           success: true,
           part: { part_id: part.id, root_id: part.rootId, ...(part.name ? { name: part.name } : {}) },
           outline,
-          outline_vertices: outer.points.length,
-          cutouts: cutouts.length,
-          area_mm2: Math.round(outer.area * 10) / 10,
+          outline_basis: basis,
+          ...(cavity
+            ? {
+                cavity_z_mm: round3(cavity.z),
+                note: "Outline is the part's interior cavity at the reported height, with no clearance. Inset it for the fit you want; region: \"outer\" returns the silhouette.",
+              }
+            : region === "auto"
+              ? { note: "Outline is the part's outer silhouette; the part has no interior cavity." }
+              : {}),
+          outer_area_mm2: Math.round(outer.area * 10) / 10,
+          outline_vertices: chosen.vertices.length,
+          cutouts: chosen.cutouts.length,
+          area_mm2: Math.round(chosen.area * 10) / 10,
           bbox: { min: { x: round3(minX), y: round3(minY) }, max: { x: round3(maxX), y: round3(maxY) } },
           cell_size_mm: round3(cell),
           ...(warnings.length > 0 ? { warnings } : {}),
@@ -13615,6 +14359,13 @@ export const buildReceiptSchema = {
         "components clear the lid, holes land on standoffs, connectors align) — " +
         "proof the board fits its case, not just that copper passes DRC.",
     },
+    enclosure_part_id: {
+      type: "string",
+      description:
+        "Part id, name, assembly instance, or part def of the enclosure when the " +
+        "enclosure session holds more than one solid (same as check_enclosure_fit). " +
+        "Omitted, the biggest solid that has a cavity is used.",
+    },
     clearance: {
       type: "number",
       description: "Enclosure-fit clearance in mm (default 0.5); only used with enclosure_document_id.",
@@ -13726,6 +14477,20 @@ export async function verifySubstitution(args: Record<string, unknown>) {
   return { content: [{ type: "text" as const, text: JSON.stringify(sub) }] };
 }
 
+/**
+ * Hash of the document a receipt was built on. A receipt's claims measure only
+ * what they measure (DRC on the copper, one clearance pair), so without this a
+ * change those claims don't look at — a parameter, another part — left the
+ * receipt reading Holds on a document it never saw. `source` is excluded: it is
+ * provenance text, rewritten by a save without touching the design.
+ */
+async function documentStateHash(doc: Document): Promise<string> {
+  const { source: _source, ...design } = doc as Document & { source?: unknown };
+  // WebCrypto, not node:crypto: this module stays loadable in browser bundles.
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(design)));
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 /** Build a re-runnable verification Receipt for the session's PCB. When an
  *  `enclosure_document_id` is supplied (and `engine` is available), the Receipt
  *  also carries a cross-domain enclosure-fit verdict — proof the board fits the
@@ -13756,6 +14521,7 @@ export async function buildReceipt(args: Record<string, unknown>, engine?: Engin
         ...(await constraintReceiptClaims(ctx.doc)),
       ],
     };
+    await bindReceiptToDocument(unified, ctx.doc);
     return {
       content: [
         {
@@ -13800,9 +14566,12 @@ export async function buildReceipt(args: Record<string, unknown>, engine?: Engin
       enclosureFitError = "enclosure-fit needs the kernel engine; unavailable in this context";
     } else {
       try {
-        const res = await computeEnclosureFitForBoard(pcb, getSession(enclosureId), engine, {
-          clearance: typeof args.clearance === "number" ? args.clearance : undefined,
-        });
+        const res = await computeEnclosureFitForBoard(
+          pcb,
+          getSession(enclosureId),
+          engine,
+          enclosureFitOptsFromArgs(args),
+        );
         if (res.report) enclosureFit = res.report;
         else enclosureFitError = res.error;
       } catch (e) {
@@ -13830,6 +14599,9 @@ export async function buildReceipt(args: Record<string, unknown>, engine?: Engin
   if ((ctx.doc.constraints ?? []).length > 0) {
     unified.claims.push(...(await constraintReceiptClaims(ctx.doc)));
   }
+
+  await bindReceiptToDocument(unified, ctx.doc);
+  await bindReceiptToDocument(receipt, ctx.doc);
 
   // The receipt rides in structuredContent so the inline viewer renders it
   // as an audit ledger (the only carrier ChatGPT's widget bridge exposes);
@@ -13877,6 +14649,13 @@ export const verifyReceiptSchema = {
   },
   required: ["receipt"],
 } as const;
+
+/** Field carrying a receipt's binding to the document state it was built on. */
+const DOCUMENT_STATE_FIELD = "document_state_sha256";
+
+async function bindReceiptToDocument(receipt: object, doc: Document): Promise<void> {
+  (receipt as Record<string, unknown>)[DOCUMENT_STATE_FIELD] = await documentStateHash(doc);
+}
 
 /** Worst-wins rollup across verification domains. */
 function worstStatus(statuses: ReceiptStatus[]): ReceiptStatus {
@@ -13991,8 +14770,32 @@ export async function verifyReceipt(args: Record<string, unknown>, engine?: Engi
     statuses.push(constraintChecks.status);
   }
 
+  // Hash after the claims ran: re-measuring can normalize the document's specs.
+  const boundHash = [raw, legacy, unified]
+    .map((r) => (r as Record<string, unknown> | undefined)?.[DOCUMENT_STATE_FIELD])
+    .find((h): h is string => typeof h === "string" && h.length > 0);
+  const documentChanged = boundHash !== undefined && boundHash !== (await documentStateHash(ctx.doc));
+  const measuredStatus = worstStatus(statuses);
+  const status: ReceiptStatus = measuredStatus === "Holds" && documentChanged ? "Stale" : measuredStatus;
+  const documentState =
+    boundHash === undefined
+      ? {
+          bound: false,
+          note: "This receipt predates document binding, so Holds covers only the claims it re-measured, not the rest of the document.",
+        }
+      : {
+          bound: true,
+          changed: documentChanged,
+          ...(status === "Stale" && measuredStatus === "Holds"
+            ? {
+                note: "The document changed since this receipt was built, but every claim re-measured unchanged: the edit is outside what the receipt measures. Rebuild the receipt to certify the current document.",
+              }
+            : {}),
+        };
+
   const payload = {
-    status: worstStatus(statuses),
+    status,
+    document_state: documentState,
     ...(boardHash ? { board_hash: boardHash } : {}),
     ...(clearance ? { clearance } : {}),
     ...(constraintChecks ? { constraints: constraintChecks } : {}),
@@ -14110,7 +14913,8 @@ const FIX_DRC_NEVER: Record<string, string> = {
   Clearance:
     "different-net clearance — pushing copper risks new shorts; re-route the involved nets deliberately",
   CourtyardOverlap: "placement decision — fix_drc never moves components (use set_placement)",
-  Keepout: "copper inside a keepout — deliberate design change required",
+  Keepout:
+    "item inside a keepout — move it (set_placement for a component) or change the keepout; a deliberate design change",
   SilkscreenClearance: "silkscreen artwork — cosmetic, not auto-fixable",
   MinTraceWidth:
     "fab-rule break — widen the trace (or change design rules) deliberately",
@@ -14146,6 +14950,24 @@ export const fixDrcSchema = {
   },
   required: ["document_id"],
 };
+
+/** Group a final DRC listing by rule, each with the reason it remains. */
+function remainingViolations(violations: DrcViol[], skipped: DrcFixSkip[]) {
+  const byRule = new Map<string, DrcViol[]>();
+  for (const v of violations) byRule.set(v.rule, [...(byRule.get(v.rule) ?? []), v]);
+  return [...byRule.entries()].map(([rule, list]) => {
+    const known = skipped.filter((s) => s.rule === rule).map((s) => s.reason);
+    return {
+      rule,
+      count: list.length,
+      reasons:
+        known.length > 0
+          ? [...new Set(known)]
+          : [FIX_DRC_NEVER[rule] ?? "fix_drc has no automatic fix for this rule"],
+      sample_message: list[0]!.message,
+    };
+  });
+}
 
 /** Outcome of one verified fix attempt. */
 type FixAttempt = { ok: true; delta: DrcDelta } | { ok: false; reason: string };
@@ -14499,69 +15321,117 @@ export async function fixDrc(args: Record<string, unknown>, toolCtx?: ToolContex
     }
   }
 
-  // -- 4) UnconnectedNet / NetIslands: rip-up + re-route the net --------------
-  const rerouteNets: string[] = [];
-  for (const v of viols) {
-    if (v.rule !== "UnconnectedNet" && v.rule !== "NetIslands") continue;
-    const [net] = parseNetPair(v.message);
-    if (net && !rerouteNets.includes(net)) rerouteNets.push(net);
-  }
-  for (const net of rerouteNets) {
-    if (budget <= 0) break;
-    if (pcb.traces.some((t) => t.net === net && t.source === "manual")) {
-      skip(
-        "UnconnectedNet",
-        `net '${net}' carries hand-placed copper — route_nets preserves it wholesale; delete the manual copper first`,
-      );
-      continue;
-    }
-    if (dryRun) {
-      planned.push({
-        rule: "UnconnectedNet",
-        action: "reroute_net",
-        detail: `rip-up + re-route net '${net}' at effort ${effort}`,
-        net,
-      });
-      budget--;
-      continue;
-    }
-    progress?.(++fixAttempts, undefined, `re-routing net '${net}' (${fixed.length} fix(es) applied so far)`);
+  // -- 4) UnconnectedNet / NetIslands: close the net ---------------------------
+  // Rip-up + re-route first, unless the net carries hand copper, which is never
+  // ripped; then route the open connections around what's there. A fix can free
+  // the channel another net needed, so this repeats until a round closes nothing.
+  const isOpenRule = (rule: string) => rule === "UnconnectedNet" || rule === "NetIslands";
+  const openNetsIn = (list: DrcViol[]): string[] => [
+    ...new Set(
+      list.flatMap((v) => {
+        const [net] = isOpenRule(v.rule) ? parseNetPair(v.message) : [undefined];
+        return net ? [net] : [];
+      }),
+    ),
+  ];
+
+  /** Keep `attempt` only if it closes a fault and introduces nothing. */
+  const tryCloseNet = async (attempt: () => Promise<string | null>): Promise<FixAttempt> => {
     const savedTraces = pcb.traces;
     const savedVias = pcb.vias;
-    const cap = await beginDrcDelta(pcb, "full");
-    const routeArgs: Record<string, unknown> = ctx.documentId
-      ? { document_id: ctx.documentId, nets: [net], effort }
-      : { document: ctx.doc, nets: [net], effort };
-    const routeResult = (await routeNets(routeArgs)) as {
-      content: Array<{ text?: string }>;
-      isError?: boolean;
-    };
-    if (routeResult.isError) {
+    const savedZones = pcb.zones;
+    const restore = () => {
       pcb.traces = savedTraces;
       pcb.vias = savedVias;
-      skip("UnconnectedNet", `re-route of net '${net}' failed — ${routeResult.content[0]?.text ?? "unknown error"}`);
-      continue;
+      pcb.zones = savedZones;
+    };
+    const cap = await beginDrcDelta(pcb, "full");
+    const failure = await attempt();
+    if (failure) {
+      restore();
+      return { ok: false, reason: failure };
     }
     const delta = await cap.finish();
-    if (delta.unverifiable || delta.introduced > 0 || delta.resolved === 0) {
-      pcb.traces = savedTraces;
-      pcb.vias = savedVias;
-      const reason = delta.unverifiable
-        ? `verification failed: ${delta.unverifiable.reason}`
-        : delta.introduced > 0
-          ? `re-route would introduce ${delta.introduced} new violation(s)`
-          : "re-route did not resolve the connectivity fault";
-      skip("UnconnectedNet", `re-route of net '${net}' reverted — ${reason}`);
-      continue;
+    const reason = delta.unverifiable
+      ? `verification failed: ${delta.unverifiable.reason}`
+      : delta.introduced > 0
+        ? `it would introduce ${delta.introduced} new violation(s) (worst: ${delta.sample[0]?.rule ?? "unknown"})`
+        : delta.resolved === 0
+          ? "it did not close the net"
+          : null;
+    if (reason) {
+      restore();
+      return { ok: false, reason };
     }
-    fixed.push({
-      rule: "UnconnectedNet",
-      action: "reroute_net",
-      detail: `re-routed net '${net}' at effort ${effort} (${delta.resolved} violation(s) resolved)`,
-      net,
-    });
-    budget--;
+    return { ok: true, delta };
+  };
+
+  const openFailures = new Map<string, string>();
+  const MAX_CONNECTIVITY_ROUNDS = 4;
+  let openRound = openNetsIn(viols);
+  for (let round = 0; round < MAX_CONNECTIVITY_ROUNDS && openRound.length > 0; round++) {
+    let closedThisRound = 0;
+    for (const net of openRound) {
+      if (budget <= 0) break;
+      const hasManual = pcb.traces.some((t) => t.net === net && t.source === "manual");
+      if (dryRun) {
+        planned.push({
+          rule: "UnconnectedNet",
+          action: hasManual ? "connect_net" : "reroute_net",
+          detail: hasManual
+            ? `route the open connections of net '${net}' around its hand-placed copper`
+            : `rip-up + re-route net '${net}' at effort ${effort}`,
+          net,
+        });
+        budget--;
+        continue;
+      }
+      progress?.(++fixAttempts, undefined, `closing net '${net}' (${fixed.length} fix(es) applied so far)`);
+      const failures: string[] = [];
+      if (!hasManual) {
+        const routeArgs: Record<string, unknown> = ctx.documentId
+          ? { document_id: ctx.documentId, nets: [net], effort }
+          : { document: ctx.doc, nets: [net], effort };
+        const res = await tryCloseNet(async () => {
+          const r = (await routeNets(routeArgs)) as ToolResult;
+          return r.isError ? `route_nets failed: ${r.content[0]?.text ?? "unknown error"}` : null;
+        });
+        if (res.ok) {
+          fixed.push({
+            rule: "UnconnectedNet",
+            action: "reroute_net",
+            detail: `re-routed net '${net}' at effort ${effort} (${res.delta.resolved} violation(s) resolved)`,
+            net,
+          });
+          budget--;
+          closedThisRound++;
+          openFailures.delete(net);
+          continue;
+        }
+        failures.push(`re-route reverted: ${res.reason}`);
+      }
+      const res = await tryCloseNet(() => connectOpenNets(pcb, [net]));
+      if (res.ok) {
+        fixed.push({
+          rule: "UnconnectedNet",
+          action: "connect_net",
+          detail: `routed the open connections of net '${net}' around its existing copper (${res.delta.resolved} violation(s) resolved)`,
+          net,
+        });
+        budget--;
+        closedThisRound++;
+        openFailures.delete(net);
+        continue;
+      }
+      failures.push(`island route reverted: ${res.reason}`);
+      openFailures.set(net, `net '${net}' stays open — ${failures.join("; ")}`);
+    }
+    if (dryRun || closedThisRound === 0 || budget <= 0) break;
+    const now = await drcPcb(pcb, "full", 20);
+    if (!now.success) break;
+    openRound = openNetsIn(now.details ?? []);
   }
+  for (const reason of openFailures.values()) skip("UnconnectedNet", reason);
 
   // -- 5) Everything else: never touched, with the reason on record -----------
   for (const v of viols) {
@@ -14588,6 +15458,13 @@ export async function fixDrc(args: Record<string, unknown>, toolCtx?: ToolContex
     before: brief(before),
     after: after.success ? brief(after) : null,
     ...(after.success ? {} : { unverified_reason: (after as DrcUnverifiable).reason }),
+    // What the board still fails after this call, and why it wasn't fixed.
+    ...(after.success
+      ? {
+          clean: after.violations === 0,
+          remaining: remainingViolations(after.details ?? [], skipped),
+        }
+      : {}),
     fixed,
     ...(dryRun ? { planned } : {}),
     skipped,
@@ -14674,6 +15551,9 @@ export const toolDefs: ToolDef[] = [
       "belonging to the same net. Idempotent: re-running rips up the " +
       "previously autorouted copper on the target nets before routing, so " +
       "a second call replaces the route instead of stacking shorts. " +
+      "Without `nets`, nets already connected on imported copper are left " +
+      "alone (`already_routed_nets`). Fails closed: a route that makes DRC " +
+      "worse restores the board and returns before/after counts. " +
       "Hand-placed copper (add_trace / add_via / coils) is preserved " +
       "automatically; `locked_nets` additionally protects whole nets. A " +
       "net with a copper-pour zone (a plane) is connected by stitching " +
@@ -14721,8 +15601,10 @@ export const toolDefs: ToolDef[] = [
     description:
       "Derive a PCB outline polygon (with cutouts, e.g. a center bore) " +
       "from a solid part in a CAD session by projecting its geometry onto " +
-      "the XY plane. Bridges solid modeling and PCB layout: feed the " +
-      "returned `outline` to place_components.",
+      "the XY plane. For a hollow part (an enclosure) it returns the interior " +
+      "cavity by default; `outline_basis` states which outline came back. " +
+      "Bridges solid modeling and PCB layout: feed the returned `outline` to " +
+      "place_components.",
     inputSchema: boardFromSolidSchema,
     handler: (a, c) =>
       boardFromSolid(a, c.engine) as ToolResult | Promise<ToolResult>,
@@ -14981,7 +15863,8 @@ export const toolDefs: ToolDef[] = [
       "before the last add_zone / add_trace / add_via / delete_* / route_nets " +
       "/ place_components (or a CAD create/update/delete) is restored, without " +
       "re-sending the document. Repeated calls walk further back. Returns a " +
-      "`changed` diff of the board elements the rewind moved.",
+      "`changed` diff of the board elements and CAD parts (kind \"part\") the rewind moved and a " +
+      "`document_changes` diff of instances, joints, part defs and nodes.",
     inputSchema: undoSchema,
     handler: (a) => undo(a) as ToolResult | Promise<ToolResult>,
     behavior: behavior({ writesDoc: true, geometry: true }),
@@ -15151,9 +16034,9 @@ export const toolDefs: ToolDef[] = [
     name: "verify_receipt",
     pack: "ecad",
     description:
-      "Re-run a prior receipt (from build_receipt) against the session's current document and return the verdict \u2014 Holds (unchanged, clean), Stale (changed but claims still hold), or Violated. Covers the PCB Receipt (board hash + DRC diff) and mech.clearance claims (re-measured against current geometry); worst verdict wins. Powers the ledger's Re-run button.",
+      "Re-run a prior receipt (from build_receipt) against the session's current document and return the verdict \u2014 Holds (document unchanged, claims clean), Stale (document changed but the claims still hold), or Violated. The receipt is bound to the document state it was built on, so any edit — even one its claims don't measure — reads Stale, and `document_state` says why. Covers the PCB Receipt (board hash + DRC diff) and mech.clearance claims (re-measured against current geometry); worst verdict wins. Powers the ledger's Re-run button.",
     inputSchema: verifyReceiptSchema,
-    handler: (a) => verifyReceipt(a) as ToolResult | Promise<ToolResult>,
+    handler: (a, c) => verifyReceipt(a, c.engine) as ToolResult | Promise<ToolResult>,
     behavior: behavior({ widgetCallable: true }),
   },
   {

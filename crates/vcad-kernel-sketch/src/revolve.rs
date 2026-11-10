@@ -579,6 +579,11 @@ fn pair_twin_half_edges(topo: &mut Topology, he_map: &HashMap<([i64; 3], [i64; 3
     let mut paired = std::collections::HashSet::new();
 
     for (&(origin_key, dest_key), &he_id) in he_map {
+        // A full-circle rim starts and ends at one vertex; looked up in
+        // reverse it finds itself, and must not become its own twin.
+        if origin_key == dest_key {
+            continue;
+        }
         if paired.contains(&(dest_key, origin_key)) {
             continue;
         }

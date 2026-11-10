@@ -349,7 +349,7 @@ export const createRobotEnvSchema = {
     end_effector_ids: {
       type: "array" as const,
       items: { type: "string" as const },
-      description: "Instance IDs to track as end effectors",
+      description: "Instance IDs to track as end effectors (default: none)",
     },
     dt: {
       type: "number" as const,
@@ -400,7 +400,7 @@ export const createRobotEnvSchema = {
     },
     ...GROUND_SCHEMA_PROPS,
   },
-  required: ["end_effector_ids"],
+  required: [] as string[],
 };
 
 /** JSON Schema for gym_step input */
@@ -420,7 +420,14 @@ export const gymStepSchema = {
       type: "array" as const,
       items: { type: "number" as const },
       description:
-        "Action values for each joint (Nm for torque, degrees/mm for position, deg/s or mm/s for velocity)",
+        "Action values for each actuated joint, in document order (Nm for torque, degrees/mm for position, deg/s or mm/s for velocity). Angles are DEGREES unless `angle_units` is 'rad'.",
+    },
+    angle_units: {
+      type: "string" as const,
+      enum: ["deg", "rad"],
+      description:
+        "Units of the revolute entries of `values` for position/velocity actions (default 'deg'). " +
+        "'rad' converts them to degrees before stepping; slider entries stay mm. Observations are always degrees.",
     },
   },
   required: ["env_id", "action_type", "values"],
@@ -474,7 +481,7 @@ export async function createRobotEnv(input: unknown): Promise<GymResult> {
   const args = input as {
     document_id?: string;
     document?: Document;
-    end_effector_ids: string[];
+    end_effector_ids?: string[];
     dt?: number;
     substeps?: number;
     max_steps?: number;
@@ -507,7 +514,7 @@ export async function createRobotEnv(input: unknown): Promise<GymResult> {
     const { doc, documentId: sessionId, source } = resolveEnvDocument(args);
 
     const env = await PhysicsEnv.create(doc, {
-      endEffectorIds: args.end_effector_ids,
+      endEffectorIds: args.end_effector_ids ?? [],
       dt: args.dt,
       substeps: args.substeps,
       maxSteps: args.max_steps,
@@ -529,7 +536,7 @@ export async function createRobotEnv(input: unknown): Promise<GymResult> {
     envRecords.set(envId, {
       document: doc,
       documentId,
-      endEffectorIds: args.end_effector_ids,
+      endEffectorIds: args.end_effector_ids ?? [],
       trajectory: [],
       rewards: [],
       dones: [],
@@ -567,7 +574,7 @@ export async function createRobotEnv(input: unknown): Promise<GymResult> {
       actuated_joint_ids: env.actuatedJointIds,
       action_dim: env.actionDim,
       observation_dim: env.observationDim,
-      end_effector_ids: args.end_effector_ids,
+      end_effector_ids: args.end_effector_ids ?? [],
       dt: args.dt ?? 1 / 240,
       substeps: args.substeps ?? 4,
       max_steps: args.max_steps ?? 1000,
@@ -604,12 +611,35 @@ export async function createRobotEnv(input: unknown): Promise<GymResult> {
   }
 }
 
+/** Kinds of the joints an action vector indexes: every non-Fixed joint, in
+ *  document order (the kernel's actuated-joint order). */
+function actuatedJointKinds(doc: Document): string[] {
+  return (doc.joints ?? []).map((j) => j.kind.type).filter((t) => t !== "Fixed");
+}
+
+/** Every revolute target is a small non-zero number while the joints span
+ *  well over a radian — the signature of radians sent to a degree API. */
+function looksLikeRadians(values: number[], kinds: string[], doc: Document): boolean {
+  const joints = (doc.joints ?? []).filter((j) => j.kind.type !== "Fixed");
+  let revolute = 0;
+  for (let i = 0; i < values.length; i++) {
+    if (kinds[i] !== "Revolute") continue;
+    revolute++;
+    const v = values[i]!;
+    if (!(Math.abs(v) < 2 * Math.PI)) return false;
+    const limits = (joints[i]?.kind as { limits?: [number, number] | null }).limits;
+    if (limits && limits[1] - limits[0] < 120) return false;
+  }
+  return revolute > 0 && values.some((v, i) => kinds[i] === "Revolute" && v !== 0);
+}
+
 /** Step the simulation with an action */
 export function gymStep(input: unknown): GymResult {
   const args = input as {
     env_id: string;
     action_type: PhysicsActionType;
     values: number[];
+    angle_units?: "deg" | "rad";
   };
 
   const env = simulations.get(args.env_id);
@@ -622,8 +652,36 @@ export function gymStep(input: unknown): GymResult {
     };
   }
 
+  const record0 = envRecords.get(args.env_id);
+  const kinds = record0 ? actuatedJointKinds(record0.document) : null;
+  let values = args.values;
+  let hint: string | undefined;
+  if (args.angle_units === "rad" && args.action_type !== "torque") {
+    if (!kinds || kinds.some((k) => k !== "Revolute" && k !== "Slider") || kinds.length !== values.length) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({
+          error: "angle_units 'rad' needs one value per actuated Revolute/Slider joint; send degrees for this env.",
+        }) }],
+        isError: true,
+      };
+    }
+    values = values.map((v, i) => (kinds[i] === "Revolute" ? (v * 180) / Math.PI : v));
+  } else if (
+    args.angle_units === undefined &&
+    args.action_type === "position" &&
+    record0?.stepCount === 0 &&
+    kinds?.length === values.length &&
+    looksLikeRadians(values, kinds, record0.document)
+  ) {
+    // Acceptance run 8: an agent sent 0.6·sin(t) "radians" and read the
+    // resulting sub-degree swing as a broken servo.
+    hint =
+      "Position targets are DEGREES; every revolute value here is under 2π and the joint " +
+      "range is far wider, which looks like radians. Pass angle_units:'rad' if so.";
+  }
+
   try {
-    const result = env.step(args.action_type, args.values);
+    const result = env.step(args.action_type, values);
 
     // Append to the replay ring buffer. stepCount keeps the monotonic total
     // so the viewer's change token still advances once old entries drop.
@@ -642,6 +700,8 @@ export function gymStep(input: unknown): GymResult {
 
     const labeled = {
       ...result,
+      ...(hint ? { hint } : {}),
+      ...(args.angle_units === "rad" ? { applied_values_deg_mm: values } : {}),
       observation: labelObservation(
         result.observation,
         env.jointIds,
@@ -803,7 +863,7 @@ export const batchCreateEnvsSchema = {
     end_effector_ids: {
       type: "array" as const,
       items: { type: "string" as const },
-      description: "Instance IDs to track as end effectors",
+      description: "Instance IDs to track as end effectors (default: none)",
     },
     dt: {
       type: "number" as const,
@@ -819,7 +879,7 @@ export const batchCreateEnvsSchema = {
     },
     ...GROUND_SCHEMA_PROPS,
   },
-  required: ["n_envs", "end_effector_ids"],
+  required: ["n_envs"],
 };
 
 /** JSON Schema for batch_step input */
@@ -865,7 +925,7 @@ export async function batchCreateEnvs(input: unknown): Promise<GymResult> {
     document_id?: string;
     document?: Document;
     n_envs: number;
-    end_effector_ids: string[];
+    end_effector_ids?: string[];
     dt?: number;
     substeps?: number;
     max_steps?: number;
@@ -893,7 +953,7 @@ export async function batchCreateEnvs(input: unknown): Promise<GymResult> {
     // the inline path registers nothing.
     const { doc, documentId, source } = resolveEnvDocument(args);
     const envOptions = {
-      endEffectorIds: args.end_effector_ids,
+      endEffectorIds: args.end_effector_ids ?? [],
       dt: args.dt,
       substeps: args.substeps,
       maxSteps: args.max_steps,
@@ -932,7 +992,7 @@ export async function batchCreateEnvs(input: unknown): Promise<GymResult> {
       // labeling the single-env path returns per observation.
       joint_ids: envs[0].jointIds,
       actuated_joint_ids: envs[0].actuatedJointIds,
-      end_effector_ids: args.end_effector_ids,
+      end_effector_ids: args.end_effector_ids ?? [],
     };
 
     return {
@@ -1076,7 +1136,10 @@ export const toolDefs: ToolDef[] = [
     pack: "physics",
     description:
       "Step the physics simulation with an action. " +
-      "action_type can be 'torque' (Nm), 'position' (degrees/mm), or 'velocity' (deg/s or mm/s). " +
+      "action_type can be 'torque' (Nm), 'position' (degrees/mm), or 'velocity' (deg/s or mm/s); " +
+      "pass angle_units:'rad' to send revolute targets in radians. Servos are critically damped PD " +
+      "with gains derived from each joint's reflected inertia (omega = 20 rad/s) plus gravity " +
+      "feed-forward on a fixed base; a foot pressed into the ground (ground_enabled) fights them. " +
       "Returns observation (joint positions/velocities, end effector poses, base " +
       "pose+velocity), reward, done flag, and an `info` map with per-step reward " +
       "inputs: base height/tilt, joint-limit violations, termination reason, and " +

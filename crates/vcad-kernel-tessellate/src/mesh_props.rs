@@ -20,6 +20,10 @@ pub struct MeshBBox {
 pub struct MeshProperties {
     /// Enclosed volume (mm³ for mm positions), absolute value.
     pub volume: f64,
+    /// The raw divergence-theorem integral before taking its magnitude:
+    /// positive for an outward-wound solid, negative when the mesh is inside
+    /// out (reversed winding). Same convention as `Solid::signed_volume`.
+    pub signed_volume: f64,
     /// Total surface area (mm²).
     pub area: f64,
     /// Axis-aligned bounding box over all referenced vertices.
@@ -116,6 +120,7 @@ pub fn compute_mesh_properties(positions: &[f32], indices: &[u32]) -> MeshProper
 
     MeshProperties {
         volume: abs_volume,
+        signed_volume: volume,
         area,
         bbox: MeshBBox { min, max },
         center_of_mass,
@@ -194,5 +199,26 @@ mod tests {
         let idx = vec![0, 1, 2, 0, 1, 99]; // second triple out of range
         let p = compute_mesh_properties(&pos, &idx);
         assert_eq!(p.triangles, 1);
+    }
+
+    /// Reversing every triangle's winding keeps |volume| but flips the sign:
+    /// an inside-out mesh is detectable instead of silently reading positive.
+    #[test]
+    fn signed_volume_flags_reversed_winding() {
+        let (positions, indices) = box_mesh([0.0, 0.0, 0.0], [2.0, 3.0, 4.0]);
+        let out = compute_mesh_properties(&positions, &indices);
+        assert!(
+            (out.signed_volume - 24.0).abs() < 1e-9,
+            "{}",
+            out.signed_volume
+        );
+        let flipped: Vec<u32> = indices.chunks(3).flat_map(|t| [t[0], t[2], t[1]]).collect();
+        let inv = compute_mesh_properties(&positions, &flipped);
+        assert!((inv.volume - 24.0).abs() < 1e-9);
+        assert!(
+            (inv.signed_volume + 24.0).abs() < 1e-9,
+            "{}",
+            inv.signed_volume
+        );
     }
 }

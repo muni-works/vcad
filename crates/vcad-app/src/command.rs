@@ -244,6 +244,9 @@ impl DocumentApi {
         if result.is_ok() && !history {
             self.crdt_mut().coalesce_undo_since(depth);
         }
+        if result.is_ok() {
+            self.clear_import_view();
+        }
         result
     }
 
@@ -382,6 +385,9 @@ pub struct EngineResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts-rs", ts(optional))]
     pub created_feature_id: Option<String>,
+    /// What a delete removed, the requested feature and any inputs only it used.
+    #[serde(default)]
+    pub deleted: Vec<crate::document_api::DeletedFeature>,
 }
 
 /// A refused command inside an [`EngineEnvelope`]: the [`CommandError`]
@@ -451,6 +457,7 @@ impl From<Result<ApiResult, CommandError>> for EngineEnvelope {
                     consumed_part_ids: r.consumed_part_ids,
                     warnings: r.warnings,
                     created_feature_id: r.created_feature_id,
+                    deleted: r.deleted,
                 }),
                 error: None,
             },

@@ -14,6 +14,7 @@
 import type { Document } from "@vcad/ir";
 import type { Engine, TriangleMesh } from "@vcad/engine";
 import { transformMesh } from "@vcad/engine";
+import { evaluateIncrementally } from "./document-solids.js";
 
 /** Compact aggregate geometry report attached to mutation results. */
 export interface IntegrityReport {
@@ -249,7 +250,9 @@ export function computeIntegrity(
   // @vcad/engine — the same untyped pattern check_clearance uses.
   let scene: ReturnType<Engine["evaluate"]>;
   try {
-    scene = engine.evaluate(doc);
+    // Part by part: an edit must only re-solve what it touched, or a heavy
+    // document costs its full evaluation on every mutation.
+    scene = evaluateIncrementally(doc, engine);
   } catch {
     return null;
   }

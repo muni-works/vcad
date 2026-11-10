@@ -364,7 +364,7 @@ mod tests {
         );
         // the rollup is decided by the checker, never by omission
         match receipt.overall() {
-            ClaimVerdict::Pass | ClaimVerdict::Fail => {}
+            ClaimVerdict::Pass | ClaimVerdict::Provisional | ClaimVerdict::Fail => {}
             ClaimVerdict::Unverifiable => panic!("real run must be verifiable"),
         }
     }

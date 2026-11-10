@@ -30,6 +30,8 @@ sha2 = "0.10"
 # Pure Rust; also used on wasm by mesh_inline (host-supplied STL bytes).
 stl_io = "0.8"
 rayon = "1.10"
+# `std::time::Instant::now` panics on wasm32; the evaluator reads the clock for its batch budget.
+web-time = "1.1"
 
 [dev-dependencies]
 # Path-only, no version: vcad-loon is publish = false (unpublished loon-lang),

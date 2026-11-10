@@ -36,7 +36,7 @@ final class WindowPresentationTests: XCTestCase {
         for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
             let button = try XCTUnwrap(window.standardWindowButton(type))
             let center = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
-            XCTAssertEqual(center.y, window.frame.height - 26, accuracy: 0.5)
+            XCTAssertEqual(center.y, window.frame.height - Glass.toolbarCenter, accuracy: 0.5)
         }
         XCTAssertTrue(window.isOpaque)
         XCTAssertFalse(window.ignoresMouseEvents)

@@ -30,7 +30,8 @@ import {
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { resolveWithinRoot } from "./safe-path.js";
 import { isRemoteDeployment } from "./remote.js";
-import { registerSession } from "./session.js";
+import { getPcbNodeIds } from "@vcad/core";
+import { getSession, registerSession } from "./session.js";
 import { behavior, type ToolDef } from "./tool-def.js";
 import type { ToolResult } from "./tool-result.js";
 
@@ -41,7 +42,16 @@ interface ImportPcbInput {
   filename?: string;
   content_base64?: string;
   name?: string;
+  document_id?: string;
 }
+
+const intoDocumentProp = {
+  document_id: {
+    type: "string" as const,
+    description:
+      "Insert the board into this open document (e.g. one holding the motor and case) instead of minting a new one. Refused, changing nothing, if the document already has a board.",
+  },
+};
 
 function importError(text: string) {
   return {
@@ -120,22 +130,27 @@ function readSourceBytes(input: ImportPcbInput, label: string): Buffer {
  * Wrap a parsed board as a PcbBoard session document (the same shape
  * place_components produces) so the returned id works with every PCB tool.
  */
-function registerBoard(pcb: Pcb, name: string): string {
-  const doc = createDocument();
-  doc.nodes["1"] = {
-    id: 1,
+function registerBoard(pcb: Pcb, name: string, documentId?: string): string {
+  // Everything that can refuse happens before the first write.
+  const doc = documentId ? getSession(documentId) : createDocument();
+  if (documentId && getPcbNodeIds(doc).length > 0) {
+    throw new Error(`Document ${documentId} already has a board; a document holds one. Nothing was changed.`);
+  }
+  const id = Math.max(0, ...Object.keys(doc.nodes).map(Number)) + 1;
+  doc.nodes[String(id)] = {
+    id,
     name,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     op: { type: "PcbBoard", board: pcb } as any,
   };
-  doc.roots.push({ root: 1, material: "__pcb_fr4__" });
+  doc.roots.push({ root: id, material: "__pcb_fr4__" });
   doc.materials["__pcb_fr4__"] = {
     name: "__pcb_fr4__",
     color: [0.05, 0.35, 0.15],
     roughness: 0.6,
     metallic: 0.0,
   };
-  return registerSession(doc);
+  return documentId ?? registerSession(doc);
 }
 
 /** The summary block every board import returns. */
@@ -169,6 +184,7 @@ function boardName(input: ImportPcbInput): string {
 export const importKicadSchema = {
   type: "object" as const,
   properties: {
+    ...intoDocumentProp,
     filename: {
       type: "string" as const,
       description:
@@ -216,7 +232,12 @@ export async function importKicad(input: unknown) {
     );
   }
 
-  const documentId = registerBoard(pcb, boardName(args));
+  let documentId: string;
+  try {
+    documentId = registerBoard(pcb, boardName(args), args.document_id);
+  } catch (e) {
+    return importError(e instanceof Error ? e.message : String(e));
+  }
   const onlyPlacement = pcb.traces.length === 0 && pcb.vias.length === 0;
   return {
     content: [
@@ -240,6 +261,7 @@ export async function importKicad(input: unknown) {
 export const importAltiumSchema = {
   type: "object" as const,
   properties: {
+    ...intoDocumentProp,
     filename: {
       type: "string" as const,
       description:
@@ -307,7 +329,12 @@ export async function importAltium(input: unknown) {
     );
   }
 
-  const documentId = registerBoard(pcb, boardName(args));
+  let documentId: string;
+  try {
+    documentId = registerBoard(pcb, boardName(args), args.document_id);
+  } catch (e) {
+    return importError(e instanceof Error ? e.message : String(e));
+  }
   const onlyPlacement = pcb.traces.length === 0 && pcb.vias.length === 0;
   return {
     content: [
@@ -407,6 +434,7 @@ export async function importAltiumLibrary(input: unknown) {
 export const importEagleSchema = {
   type: "object" as const,
   properties: {
+    ...intoDocumentProp,
     filename: {
       type: "string" as const,
       description: "Path to a .brd file (Eagle XML, Eagle 6+).",
@@ -461,7 +489,12 @@ export async function importEagle(input: unknown) {
     );
   }
 
-  const documentId = registerBoard(pcb, boardName(args));
+  let documentId: string;
+  try {
+    documentId = registerBoard(pcb, boardName(args), args.document_id);
+  } catch (e) {
+    return importError(e instanceof Error ? e.message : String(e));
+  }
   const onlyPlacement = pcb.traces.length === 0 && pcb.vias.length === 0;
   return {
     content: [

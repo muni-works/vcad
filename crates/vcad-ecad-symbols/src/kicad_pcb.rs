@@ -244,12 +244,18 @@ fn convert_pcb(root: &SExpr<'_>) -> Result<(Pcb, Vec<String>), ParseError> {
                     .and_then(|s| s.parse::<u32>().ok())
                     .unwrap_or(0);
                 let name = c[2].as_str().unwrap_or("").to_string();
-                if idx > 0 {
+                // vcad keys copper by net NAME (`Net.id == Net.name`); the
+                // KiCad index is only a file-local handle resolved through
+                // `net_map`. Keeping the index as the id minted phantom nets
+                // ("1", "23", …) that no copper references.
+                if idx > 0 && !name.is_empty() {
                     net_map.insert(idx, name.clone());
-                    nets.push(Net {
-                        id: idx.to_string(),
-                        name,
-                    });
+                    if !nets.iter().any(|n: &Net| n.id == name) {
+                        nets.push(Net {
+                            id: name.clone(),
+                            name,
+                        });
+                    }
                 }
             }
         }
@@ -1660,6 +1666,11 @@ mod tests {
 
         assert_eq!(pcb.nets.len(), 2);
         assert_eq!(pcb.nets[0].name, "VCC");
+        // Copper is keyed by net name; the KiCad index never becomes an id.
+        for n in &pcb.nets {
+            assert_eq!(n.id, n.name, "net id must be the name, not the index");
+        }
+        assert_eq!(pcb.traces[0].net, "VCC");
         assert_eq!(pcb.outline.thickness, 1.6);
         assert_eq!(pcb.outline.vertices.len(), 4);
         assert_eq!(pcb.footprints.len(), 1);

@@ -9,27 +9,15 @@
  * call — small payloads stay inline; large ones are written HERE and the tool
  * returns a compact { artifact_url, manifest } handle instead. The bytes then
  * ride the artifact channel (the /artifacts/<id> HTTP route), never the model's
- * context. quote_manufacturing / place_order accept the same handle, so an
- * order references the bundle without ever re-sending the files.
+ * context. quote_manufacturing accepts the same handle, so a
+ * quote references the bundle without ever re-sending the files.
  *
- * Backing: an in-process, bounded, TTL'd registry (a warm-instance CACHE)
- * in front of a durable Supabase table (`mcp_artifacts`, migration 033) —
- * the same hydrate-on-miss / persist-after-write model as session-store.ts,
- * and gated by the same env (SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY).
- * Without that env (stdio/local) the in-memory registry alone reproduces the
- * old behavior. WHY: the hosted MCP runs as a serverless function, so a
- * handle minted on one instance was unreadable on every other — the
- * /artifacts URL 404'd from a cold instance and quote_manufacturing rejected
- * a fab_artifact_id minted minutes earlier by export_gerber ("Unknown or
- * expired"). Writes stay SYNC for callers: storeArtifact caches, kicks off a
- * best-effort durable persist, and the entrypoint awaits flushArtifacts()
- * before the instance can freeze (the flushTelemetry idiom). Reads that must
- * work cross-instance go through the async getters, which fall back to the
- * durable row on a warm-cache miss.
+ * Backing: an in-process, bounded, TTL'd registry. The local build has no
+ * durable artifact backend — handles live as long as the server process (the
+ * hosted Supabase `mcp_artifacts` table was retired in vcad 1.0).
  */
 
 import { createHash, randomBytes } from "node:crypto";
-import { sessionFetch } from "../session-store.js";
 
 /** One file handed to the store (Gerber text, an STL/GLB binary, an IR doc). */
 export interface ArtifactInputFile {
@@ -102,23 +90,17 @@ function evict(now: number): void {
   }
 }
 
-/** Public base URL of this deployment, for building shareable artifact links.
- *  Mirrors the live-share link builder. Empty string → links stay relative
+/** Base URL for artifact links: `VCAD_MCP_PUBLIC_URL` (the local HTTP
+ *  transport's own origin) when set, else empty → links stay relative
  *  (`/artifacts/<id>`), which trust-boundary and parseArtifactId both accept. */
 function publicBaseUrl(): string {
   const raw = process.env.VCAD_MCP_PUBLIC_URL;
-  if (raw) {
-    try {
-      return new URL(raw).origin;
-    } catch {
-      // fall through to the durability-gated default
-    }
+  if (!raw) return "";
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return "";
   }
-  // Only a durable store may claim the hosted origin by default: the persisted
-  // row is readable from mcp.vcad.io. A memory-only instance (stdio/local dev)
-  // minting an absolute mcp.vcad.io link hands out a guaranteed 404 — its
-  // bytes exist nowhere that host can see.
-  return isArtifactStoreDurable() ? "https://mcp.vcad.io" : "";
 }
 
 /** The capability URL for an artifact id (possession of the id is the grant). */
@@ -195,13 +177,11 @@ export function buildManifest(files: ArtifactInputFile[]): ManifestEntry[] {
 
 function newArtifactId(): string {
   // Unguessable — the id IS the capability to read the bundle (same model as
-  // live-share session ids).
+  // session ids).
   return `art_${randomBytes(12).toString("base64url")}`;
 }
 
-/** Store a bundle and return its handle (id, url, manifest). Sync for
- *  callers; the durable persist runs in the background and is drained by
- *  flushArtifacts() before a serverless instance can freeze. */
+/** Store a bundle and return its handle (id, url, manifest). */
 export function storeArtifact(files: ArtifactInputFile[]): ArtifactHandle {
   const now = Date.now();
   evict(now);
@@ -227,7 +207,6 @@ export function storeArtifact(files: ArtifactInputFile[]): ArtifactHandle {
     expiresAt,
   };
   registry.set(id, artifact);
-  trackPersist(persistArtifact(artifact));
   return {
     artifact_id: id,
     artifact_url: artifactUrl(id),
@@ -237,9 +216,7 @@ export function storeArtifact(files: ArtifactInputFile[]): ArtifactHandle {
   };
 }
 
-/** Read a stored artifact by id from the WARM CACHE only (expired → absent).
- *  Cross-instance callers want getArtifactAsync, which falls back to the
- *  durable row on a miss. */
+/** Read a stored artifact by id (expired → absent). */
 export function getArtifact(id: string): StoredArtifact | null {
   const a = registry.get(id);
   if (!a) return null;
@@ -250,200 +227,29 @@ export function getArtifact(id: string): StoredArtifact | null {
   return a;
 }
 
-/** Read one file from a stored artifact (warm cache only — see getArtifact). */
+/** Read one file from a stored artifact . */
 export function getArtifactFile(id: string, name: string): StoredFile | null {
   const a = getArtifact(id);
   if (!a) return null;
   return a.files.find((f) => f.name === name) ?? null;
 }
 
-// ─── Durable backend (mcp_artifacts, migration 033) ──────────────────────────
-//
-// Same raw-PostgREST/service-role pattern (and the same injectable
-// `sessionFetch` seam) as session-store.ts. Capability-keyed by the
-// unguessable artifact id alone — RLS is on with no anon/authenticated
-// policies, so only the server ever reads or writes rows. Best-effort
-// throughout: a durable outage degrades to warm-cache-only (the old
-// behavior), never a tool failure.
-
-interface ArtifactRow {
-  artifact_id: string;
-  bytes: number;
-  manifest: ManifestEntry[];
-  /** Files with base64 content — jsonb can't hold raw bytes. */
-  files: Array<{ name: string; content_type: string; b64: string }>;
-  created_at?: string;
-  expires_at: string;
-}
-
-function durableEnv(): { url: string; key: string } | null {
-  const url = (process.env.SUPABASE_URL || "").replace(/\/+$/, "");
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-  return url && key ? { url, key } : null;
-}
-
-/** True when artifact handles survive across serverless instances. Same env
- *  gate as isSessionStoreDurable — the two stores share the backend. */
+/** The local build never has a durable artifact store. */
 export function isArtifactStoreDurable(): boolean {
-  return durableEnv() !== null;
+  return false;
 }
 
 /** Durability state for server_info / the /health endpoint. */
-export function artifactStoreInfo(): {
-  artifact_store: "supabase" | "in-memory";
-} {
-  return { artifact_store: isArtifactStoreDurable() ? "supabase" : "in-memory" };
+export function artifactStoreInfo(): { artifact_store: "in-memory" } {
+  return { artifact_store: "in-memory" };
 }
 
-function durableHeaders(key: string, extra: Record<string, string> = {}): Record<string, string> {
-  return {
-    apikey: key,
-    Authorization: `Bearer ${key}`,
-    "Content-Type": "application/json",
-    ...extra,
-  };
-}
-
-/** In-flight durable persists, drained by flushArtifacts() — the
- *  flushTelemetry idiom: a serverless instance freezes the moment the
- *  response is written, killing any un-awaited fetch. */
-const pendingPersists = new Set<Promise<void>>();
-
-function trackPersist(p: Promise<void>): void {
-  pendingPersists.add(p);
-  void p.finally(() => pendingPersists.delete(p));
-}
-
-/** Await outstanding durable writes (bounded). The HTTP entrypoints call this
- *  before returning, alongside flushTelemetry. */
-export async function flushArtifacts(timeoutMs = 5000): Promise<void> {
-  if (pendingPersists.size === 0) return;
-  const timeout = new Promise<void>((resolve) => {
-    const t = setTimeout(resolve, timeoutMs);
-    // Don't hold the event loop open just for the flush timer.
-    if (typeof t === "object" && "unref" in t) t.unref();
-  });
-  await Promise.race([Promise.allSettled([...pendingPersists]), timeout]);
-}
-
-/** Write-through to the durable table. Best-effort: logs, never throws. */
-async function persistArtifact(a: StoredArtifact): Promise<void> {
-  const env = durableEnv();
-  if (!env) return;
-  try {
-    const row: ArtifactRow = {
-      artifact_id: a.id,
-      bytes: a.bytes,
-      manifest: a.manifest,
-      files: a.files.map((f) => ({
-        name: f.name,
-        content_type: f.contentType,
-        b64: f.buf.toString("base64"),
-      })),
-      expires_at: new Date(a.expiresAt).toISOString(),
-    };
-    const res = await sessionFetch(
-      `${env.url}/rest/v1/mcp_artifacts?on_conflict=artifact_id`,
-      {
-        method: "POST",
-        headers: durableHeaders(env.key, {
-          Prefer: "resolution=merge-duplicates,return=minimal",
-        }),
-        body: JSON.stringify([row]),
-      },
-    );
-    if (!res.ok) {
-      console.error(
-        "[artifact-store] persist failed:",
-        res.status,
-        await res.text().catch(() => ""),
-      );
-    }
-  } catch (err) {
-    console.error("[artifact-store] persist failed:", err);
-  }
-}
-
-/** Best-effort delete of an expired durable row. */
-async function dropDurable(id: string): Promise<void> {
-  const env = durableEnv();
-  if (!env) return;
-  try {
-    await sessionFetch(
-      `${env.url}/rest/v1/mcp_artifacts?artifact_id=eq.${encodeURIComponent(id)}`,
-      { method: "DELETE", headers: durableHeaders(env.key) },
-    );
-  } catch (err) {
-    console.error("[artifact-store] expired-row delete failed:", err);
-  }
-}
-
-/** Fetch a durable row and rehydrate it into the warm cache. Null on miss,
- *  expiry (the row is then deleted), malformed content, or any error. */
-async function loadDurable(id: string): Promise<StoredArtifact | null> {
-  const env = durableEnv();
-  if (!env) return null;
-  try {
-    const res = await sessionFetch(
-      `${env.url}/rest/v1/mcp_artifacts` +
-        `?artifact_id=eq.${encodeURIComponent(id)}` +
-        `&select=artifact_id,bytes,manifest,files,created_at,expires_at&limit=1`,
-      {
-        method: "GET",
-        headers: durableHeaders(env.key, {
-          Accept: "application/vnd.pgrst.object+json",
-        }),
-      },
-    );
-    if (!res.ok) return null; // 406 = zero rows → miss
-    const row = (await res.json()) as ArtifactRow;
-    if (!row || row.artifact_id !== id || !Array.isArray(row.files)) return null;
-    const expiresAt = Date.parse(row.expires_at);
-    if (!Number.isFinite(expiresAt)) return null;
-    if (expiresAt <= Date.now()) {
-      void dropDurable(id);
-      return null;
-    }
-    const files: StoredFile[] = row.files.map((f) => ({
-      name: String(f.name),
-      buf: Buffer.from(String(f.b64 ?? ""), "base64"),
-      contentType: String(f.content_type || guessContentType(String(f.name))),
-    }));
-    const artifact: StoredArtifact = {
-      id,
-      files,
-      manifest: Array.isArray(row.manifest)
-        ? row.manifest
-        : files.map((f) => ({
-            file: f.name,
-            bytes: f.buf.length,
-            sha256: createHash("sha256").update(f.buf).digest("hex"),
-          })),
-      bytes:
-        typeof row.bytes === "number"
-          ? row.bytes
-          : files.reduce((n, f) => n + f.buf.length, 0),
-      createdAt: row.created_at ? Date.parse(row.created_at) : Date.now(),
-      expiresAt,
-    };
-    // Rehydrate the warm cache so subsequent same-instance reads are sync.
-    evict(Date.now());
-    registry.set(id, artifact);
-    return artifact;
-  } catch (err) {
-    console.error("[artifact-store] load failed:", err);
-    return null;
-  }
-}
-
-/** Read an artifact by id: warm cache first, then the durable row. The
- *  cross-instance read path — the /artifacts route and the order tools use
- *  this, so a handle minted on another instance still resolves. */
+/** Async form of getArtifact, kept for the /artifacts route and quote tools. */
 export async function getArtifactAsync(id: string): Promise<StoredArtifact | null> {
-  return getArtifact(id) ?? (await loadDurable(id));
+  return getArtifact(id);
 }
 
-/** Read one file from an artifact (warm cache, then durable). */
+/** Read one file from an artifact . */
 export async function getArtifactFileAsync(
   id: string,
   name: string,
@@ -456,7 +262,7 @@ export async function getArtifactFileAsync(
 /**
  * Resolve a caller-supplied artifact handle — accepts a raw id or a full
  * artifact_url (…/artifacts/<id>[/<file>]) — to the stored bundle, or null if
- * unknown/expired. Used by quote_manufacturing / place_order so the fab files
+ * unknown/expired. Used by quote_manufacturing so the fab files
  * are fetched from the store, never re-sent through model context.
  */
 export function resolveArtifact(handle: string): StoredArtifact | null {
@@ -464,7 +270,7 @@ export function resolveArtifact(handle: string): StoredArtifact | null {
   return id ? getArtifact(id) : null;
 }
 
-/** resolveArtifact with the durable fallback — the cross-instance path. */
+/** Async form of resolveArtifact. */
 export async function resolveArtifactAsync(
   handle: string,
 ): Promise<StoredArtifact | null> {
@@ -493,9 +299,7 @@ export function resolveArtifactRef(handle: string): ArtifactRef | null {
   };
 }
 
-/** resolveArtifactRef with the durable fallback — quote_manufacturing /
- *  place_order use this so a handle minted by export_gerber on ANOTHER
- *  instance still binds to the order. */
+/** Async form of resolveArtifactRef (used by quote_manufacturing). */
 export async function resolveArtifactRefAsync(
   handle: string,
 ): Promise<ArtifactRef | null> {

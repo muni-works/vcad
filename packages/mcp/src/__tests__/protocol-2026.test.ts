@@ -4,8 +4,6 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createSchematic, placeComponents } from "../tools/ecad.js";
 import { createServer } from "../server.js";
-import { InMemoryFabricateStore } from "../fabricate/store.js";
-import type { Order } from "../fabricate/types.js";
 import {
   PROTOCOL_2026,
   TASKS_EXTENSION,
@@ -306,105 +304,6 @@ describe("removed and unimplemented methods", () => {
       createServer: makeServer,
     });
     expect(res.status).toBe(400);
-  });
-});
-
-describe("MRTR (multi round-trip requests)", () => {
-  // `authorize_spend` raises a URL-mode elicitation when the client declares
-  // `elicitation.url` — the one server-initiated request vcad makes. Under
-  // MRTR the first call must terminate with `input_required` carrying the
-  // ElicitRequest, and the retry (same params + inputResponses) completes.
-  async function seedOrder(orderId: string): Promise<void> {
-    const now = new Date().toISOString();
-    const order: Order = {
-      order_id: orderId,
-      document_id: "doc_mrtr",
-      quote_id: `q_${orderId}`,
-      state: "QUOTED",
-      fab: "digitalmetal",
-      fab_order_ref: null,
-      amount_total_minor: 5000,
-      currency: "USD",
-      ship_to: null,
-      events: [{ state: "QUOTED", at: now, note: "quote" }],
-      created_at: now,
-      updated_at: now,
-    };
-    await new InMemoryFabricateStore().saveOrder(order, 4000, "local");
-  }
-
-  function elicitingRequest(
-    id: number,
-    orderId: string,
-    inputResponses?: Record<string, unknown>,
-  ): Record<string, unknown> {
-    const params: Record<string, unknown> = {
-      name: "authorize_spend",
-      arguments: { order_id: orderId },
-      _meta: {
-        ...META,
-        [META_CLIENT_CAPABILITIES]: { elicitation: { url: {} } },
-      },
-    };
-    if (inputResponses) params.inputResponses = inputResponses;
-    return { jsonrpc: "2.0", id, method: "tools/call", params };
-  }
-
-  it("returns input_required with the elicitation, then completes on retry", async () => {
-    process.env.VCAD_FABRICATE_ORDERING = "1";
-    try {
-      await seedOrder("ord_mrtr_1");
-      const first = await call(
-        elicitingRequest(1, "ord_mrtr_1"),
-        headersFor("tools/call", "authorize_spend"),
-      );
-      expect(first.status).toBe(200);
-      const r1 = first.body.result!;
-      expect(r1.resultType).toBe("input_required");
-      const reqs = r1.inputRequests as Record<
-        string,
-        { method: string; params: { mode?: string; url?: string } }
-      >;
-      expect(Object.keys(reqs)).toEqual(["input_1"]);
-      expect(reqs.input_1.method).toBe("elicitation/create");
-      expect(reqs.input_1.params.mode).toBe("url");
-      expect(reqs.input_1.params.url).toMatch(/vcad\.io\/authorize\//);
-
-      // Retry: a NEW request id, original params, plus the gathered responses.
-      const retry = await call(
-        elicitingRequest(2, "ord_mrtr_1", { input_1: { action: "decline" } }),
-        headersFor("tools/call", "authorize_spend"),
-      );
-      expect(retry.status).toBe(200);
-      const r2 = retry.body.result!;
-      expect(r2.resultType).toBe("complete");
-      const out = JSON.parse((r2.content as { text: string }[])[0].text);
-      expect(out.status).toBe("revoked"); // decline revokes — the input landed
-    } finally {
-      delete process.env.VCAD_FABRICATE_ORDERING;
-    }
-  });
-
-  it("never raises input_required for a client without the elicitation capability", async () => {
-    process.env.VCAD_FABRICATE_ORDERING = "1";
-    try {
-      await seedOrder("ord_mrtr_2");
-      const msg = {
-        jsonrpc: "2.0",
-        id: 1,
-        method: "tools/call",
-        params: {
-          name: "authorize_spend",
-          arguments: { order_id: "ord_mrtr_2" },
-          _meta: META, // no elicitation capability declared
-        },
-      };
-      const { body } = await call(msg, headersFor("tools/call", "authorize_spend"));
-      // The tool falls back to its out-of-band approval note.
-      expect(body.result!.resultType).toBe("complete");
-    } finally {
-      delete process.env.VCAD_FABRICATE_ORDERING;
-    }
   });
 });
 

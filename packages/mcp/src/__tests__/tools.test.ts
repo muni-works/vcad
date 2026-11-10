@@ -195,7 +195,10 @@ describe("get_document returns the IR body (issue #278)", () => {
     expect(handle.parts).toBe(60);
     expect(handle.nodes).toBe(60);
     expect(handle.artifact_id).toMatch(/^art_/);
-    expect(handle.artifact_url).toContain(`/artifacts/${handle.artifact_id}`);
+    // No HTTP route on a local server, so the handle points at a file.
+    expect(handle.artifact_url).toBeUndefined();
+    expect(existsSync(handle.path)).toBe(true);
+    unlinkSync(handle.path);
     expect(handle.manifest).toHaveLength(1);
     expect(handle.manifest[0].file).toBe(`${document_id}.vcad`);
 

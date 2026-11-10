@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-09-more-primitives-in-the-app",
+  "version": "undefined",
+  "date": "2026-11-09",
+  "category": "feat",
+  "title": "Sphere, cone, torus, wedge, prism and convex hull",
+  "summary": "The Mac app's Design toolbar now offers every kernel primitive, adds convex hull, and no longer loses torus, wedge or prism parts when opening a document.",
+  "features": ["native-app", "primitives"]
+}

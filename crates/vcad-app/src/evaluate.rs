@@ -259,6 +259,10 @@ fn evaluate_node(doc: &Document, node_id: NodeId) -> Result<Option<Solid>> {
         // build a BRep from a triangle soup.
         CsgOp::MeshImport { .. } => None,
         // These need further processing to become solids
+        CsgOp::SpurGear { .. } => Some(
+            vcad_eval::evaluate::spur_gear_solid(&node.op)
+                .map_err(|e| anyhow::anyhow!("node {node_id}: {e}"))?,
+        ),
         CsgOp::Sketch2D { .. }
         | CsgOp::Extrude { .. }
         | CsgOp::Revolve { .. }

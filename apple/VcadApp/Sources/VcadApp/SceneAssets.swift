@@ -1,5 +1,6 @@
 import RealityKit
 import CoreGraphics
+import Metal
 #if canImport(AppKit)
 import AppKit
 #endif
@@ -90,61 +91,177 @@ enum SceneAssets {
 
     // MARK: reference grid + contact shadow
 
-    /// Pick a round millimeter grid step (1/2/5 decade) so ~10–25 minor
-    /// cells span the part regardless of its size.
+    /// The ground grid's minor step (mm) for a part of the given size.
     static func gridStepMM(forPartSize size: Float) -> Float {
-        guard size.isFinite, size > 0 else { return 10 }
-        let target = size / 12
-        let decade = pow(10, floor(log10(target)))
-        for m in [1 as Float, 2, 5, 10] where m * decade >= target {
-            return m * decade
-        }
-        return 10 * decade
+        GridSpacing.ground(extentMM: size).minor
     }
 
-    /// A 48×48-cell grid atlas: hairline minor lines, brighter major lines
-    /// every 10 cells, and a radial fade so the grid grounds the part without
-    /// stretching to the horizon. Drawn in white; tinted per appearance.
-    static let gridTexture: TextureResource? = makeGridTexture()
-    private static func makeGridTexture() -> TextureResource? {
-        let cells = 48, px = 32
-        let sz = cells * px
-        let cs = CGColorSpaceCreateDeviceRGB()
-        guard let ctx = CGContext(data: nil, width: sz, height: sz, bitsPerComponent: 8,
-                                  bytesPerRow: 0, space: cs,
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-        let center = CGFloat(sz) / 2
-        let maxR = center * 0.98
-        func lineAlpha(_ x: CGFloat, _ y: CGFloat, major: Bool) -> CGFloat {
-            let d = hypot(x - center, y - center)
-            let fade = max(0, 1 - d / maxR)
-            return (major ? 0.72 : 0.34) * fade * fade
+    /// One major cell of grid as a repeating coverage tile: hairline minor
+    /// lines, a slightly heavier major line on the tile edge. Sampled with
+    /// wrap addressing, so a quad of any size draws crisp lines from a 640 px
+    /// texture — no per-line entities, no giant atlas — and mipmaps thin the
+    /// lines out toward the background at distance.
+    private static var gridTiles: [Bool: MaterialParameters.Texture] = [:]
+    static let gridTilePixelsPerMinor = 64
+    static func gridTile(strong: Bool) -> MaterialParameters.Texture? {
+        if let t = gridTiles[strong] { return t }
+        let px = gridTilePixelsPerMinor
+        let sz = px * GridSpacing.majorEvery
+        let boost: Float = strong ? 0.85 : 1
+        let minorA: Float = 0.11 * boost, majorA: Float = 0.26 * boost
+        // Coverage of the nearest line at each texel centre; the tile edge
+        // (texel 0, wrapping) is the major line.
+        var line = [Float](repeating: 0, count: sz)
+        for p in 0..<sz {
+            let t = Float(p) + 0.5
+            let i = Int((t / Float(px)).rounded())
+            let d = abs(t - Float(i * px))
+            let major = i % GridSpacing.majorEvery == 0
+            line[p] = major ? majorA * max(0, min(1, 1.3 - d)) : minorA * max(0, min(1, 1.0 - d))
         }
-        ctx.setLineWidth(1)
-        for i in 0...cells {
-            let major = i % 10 == 0 || i == cells
-            let v = CGFloat(i * px)
-            let steps = 24
-            for sIdx in 0..<steps {
-                let t0 = CGFloat(sIdx) / CGFloat(steps) * CGFloat(sz)
-                let t1 = CGFloat(sIdx + 1) / CGFloat(steps) * CGFloat(sz)
-                let mid = (t0 + t1) / 2
-                let aV = lineAlpha(v, mid, major: major)
-                if aV > 0.003 {
-                    ctx.setStrokeColor(CGColor(gray: 1.0, alpha: aV))
-                    ctx.move(to: CGPoint(x: v, y: t0)); ctx.addLine(to: CGPoint(x: v, y: t1))
-                    ctx.strokePath()
-                }
-                let aH = lineAlpha(mid, v, major: major)
-                if aH > 0.003 {
-                    ctx.setStrokeColor(CGColor(gray: 1.0, alpha: aH))
-                    ctx.move(to: CGPoint(x: t0, y: v)); ctx.addLine(to: CGPoint(x: t1, y: v))
-                    ctx.strokePath()
+        var bytes = [UInt8](repeating: 0, count: sz * sz)
+        for y in 0..<sz {
+            for x in 0..<sz {
+                bytes[y * sz + x] = UInt8((max(line[x], line[y]) * 255).rounded())
+            }
+        }
+        guard let provider = CGDataProvider(data: Data(bytes) as CFData),
+              let img = CGImage(width: sz, height: sz, bitsPerComponent: 8, bitsPerPixel: 8,
+                                bytesPerRow: sz, space: CGColorSpaceCreateDeviceGray(),
+                                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.none.rawValue),
+                                provider: provider, decode: nil, shouldInterpolate: true,
+                                intent: .defaultIntent),
+              let tex = try? TextureResource(image: img, options: .init(semantic: .raw,
+                                                                         mipmapsMode: .allocateAndGenerateAll))
+        else { return nil }
+        let sd = MTLSamplerDescriptor()
+        sd.sAddressMode = .repeat; sd.tAddressMode = .repeat
+        sd.minFilter = .linear; sd.magFilter = .linear; sd.mipFilter = .linear
+        sd.maxAnisotropy = 8
+        let param = MaterialParameters.Texture(tex, sampler: .init(sd))
+        gridTiles[strong] = param
+        return param
+    }
+
+    /// Opacity of the fade ring at radius fraction `r` (0 centre … 1 rim):
+    /// fully drawn through the middle, smoothly to nothing at the rim, so
+    /// there is never a hard horizon.
+    static func gridFade(_ r: Float) -> Float {
+        let u = max(0, min(1, (r - 0.28) / 0.72))
+        return 1 - u * u * (3 - 2 * u)
+    }
+
+    /// Radii (fractions of the half-side) of the fade rings, centre disc first.
+    private static let gridRingRadii: [Float] = [0, 0.28] + (1...16).map { 0.28 + 0.72 * Float($0) / 16 }
+
+    /// A grid in its local XZ plane (normal +Y), centred on a major crossing:
+    /// a disc + fade rings carrying the repeating tile (one material per ring,
+    /// stepping its opacity down), and optional red X / green Y axis strips
+    /// that fade the same way. `scale` maps millimetres to entity units.
+    static func gridEntity(name: String, layout: GridSpacing.Layout, scale: Float,
+                           dark: Bool, axes: Bool, strong: Bool = false) -> Entity? {
+        guard let tile = gridTile(strong: strong), scale > 0 else { return nil }
+        let half = layout.sideMM * scale / 2
+        let majorW = layout.major * scale
+        let segs = 96
+        var pos: [SIMD3<Float>] = [], uv: [SIMD2<Float>] = [], idx: [UInt32] = [], faceMat: [UInt32] = []
+        func vertex(_ r: Float, _ k: Int) -> UInt32 {
+            let a = Float(k) / Float(segs) * 2 * .pi
+            let p = SIMD3<Float>(cos(a) * r * half, 0, sin(a) * r * half)
+            pos.append(p); uv.append(SIMD2(p.x, p.z) / majorW)
+            return UInt32(pos.count - 1)
+        }
+        func tri(_ a: UInt32, _ b: UInt32, _ c: UInt32, _ m: Int) {
+            idx += [a, c, b, a, b, c]   // both faces
+            faceMat += [UInt32(m), UInt32(m)]
+        }
+        let ink = NSColor(white: dark ? 1 : 0, alpha: 1)
+        var materials: [UnlitMaterial] = []
+        let radii = gridRingRadii
+        for ring in 0..<(radii.count - 1) {
+            let r0 = radii[ring], r1 = radii[ring + 1]
+            var m = UnlitMaterial()
+            m.color = .init(tint: ink)
+            m.blending = .transparent(opacity: .init(scale: gridFade((r0 + r1) / 2), texture: tile))
+            materials.append(m)
+            for k in 0..<segs {
+                if r0 == 0 {
+                    pos.append(.zero); uv.append(.zero)
+                    let c = UInt32(pos.count - 1)
+                    tri(c, vertex(r1, k), vertex(r1, k + 1), ring)
+                } else {
+                    let a = vertex(r0, k), b = vertex(r0, k + 1), c = vertex(r1, k), d = vertex(r1, k + 1)
+                    tri(a, c, d, ring); tri(a, d, b, ring)
                 }
             }
         }
-        guard let img = ctx.makeImage() else { return nil }
-        return try? TextureResource(image: img, options: .init(semantic: .color))
+        var md = MeshDescriptor(name: name)
+        md.positions = MeshBuffers.Positions(pos)
+        md.normals = MeshBuffers.Normals(Array(repeating: SIMD3<Float>(0, 1, 0), count: pos.count))
+        md.textureCoordinates = MeshBuffers.TextureCoordinates(uv)
+        md.primitives = .triangles(idx)
+        md.materials = .perFace(faceMat)
+        guard let mesh = try? MeshResource.generate(from: [md]) else { return nil }
+        let grid = ModelEntity(mesh: mesh, materials: materials)
+        grid.name = name
+        if axes, let strips = axisStrips(half: half, width: layout.minor * scale * 0.07, dark: dark) {
+            strips.position.y = layout.minor * scale * 0.002
+            grid.addChild(strips)
+        }
+        return grid
+    }
+
+    /// Red X (along local x) and green Y (along local z) axis strips through
+    /// the centre, segmented so each piece fades with the grid rings.
+    private static func axisStrips(half: Float, width w: Float, dark: Bool) -> Entity? {
+        let n = 24
+        var pos: [SIMD3<Float>] = [], idx: [UInt32] = [], faceMat: [UInt32] = []
+        var materials: [UnlitMaterial] = []
+        let colors = [NSColor(srgbRed: 0.86, green: 0.24, blue: 0.22, alpha: 1),
+                      NSColor(srgbRed: 0.22, green: 0.66, blue: 0.30, alpha: 1)]
+        let peak: Float = dark ? 0.8 : 0.7
+        for (axis, color) in colors.enumerated() {
+            for s in 0..<n {
+                let t0 = -1 + 2 * Float(s) / Float(n), t1 = -1 + 2 * Float(s + 1) / Float(n)
+                var m = UnlitMaterial()
+                m.color = .init(tint: color)
+                m.blending = .transparent(opacity: .init(floatLiteral: peak * gridFade(abs(t0 + t1) / 2)))
+                materials.append(m)
+                func p(_ t: Float, _ o: Float) -> SIMD3<Float> {
+                    axis == 0 ? [t * half, 0, o] : [o, 0, t * half]
+                }
+                let b = UInt32(pos.count)
+                pos += [p(t0, -w / 2), p(t1, -w / 2), p(t1, w / 2), p(t0, w / 2)]
+                idx += [b, b + 2, b + 1, b, b + 3, b + 2, b, b + 1, b + 2, b, b + 2, b + 3]
+                let mi = UInt32(materials.count - 1)
+                faceMat += [mi, mi, mi, mi]
+            }
+        }
+        var md = MeshDescriptor(name: "axes")
+        md.positions = MeshBuffers.Positions(pos)
+        md.normals = MeshBuffers.Normals(Array(repeating: SIMD3<Float>(0, 1, 0), count: pos.count))
+        md.primitives = .triangles(idx)
+        md.materials = .perFace(faceMat)
+        guard let mesh = try? MeshResource.generate(from: [md]) else { return nil }
+        let e = ModelEntity(mesh: mesh, materials: materials)
+        e.name = "gridAxes"
+        return e
+    }
+
+    /// The live sketch-plane grid: on the sketch frame at the snap step
+    /// (coarsened by decades when the snap is too fine to read), with the
+    /// sketch axes through its origin, fading at the edges. Kernel
+    /// coordinates — parent it under the centering entity, like the ink.
+    static func sketchGridEntity(frame: SketchFrame, snapMM: Double, extentMM: Float,
+                                 dark: Bool) -> Entity? {
+        let layout = GridSpacing.sketch(snapMM: Float(snapMM), extentMM: extentMM)
+        guard let e = gridEntity(name: "sketchGrid", layout: layout, scale: 1, dark: dark,
+                                 axes: true, strong: true) else { return nil }
+        let x = simd_normalize(SIMD3<Float>(frame.xDir)), n = simd_normalize(SIMD3<Float>(frame.normal))
+        e.orientation = simd_quatf(simd_float3x3(columns: (x, n, simd_cross(x, n))))
+        // A hair off the plane so a sketch on a face doesn't z-fight the face.
+        e.position = SIMD3<Float>(frame.origin) + n * max(extentMM, 1) * 0.0003
+        return e
     }
 
     /// A soft radial alpha disc (dark centre → clear edge) for the pooled
@@ -168,36 +285,28 @@ enum SceneAssets {
         return try? TextureResource(image: img, options: .init(semantic: .color))
     }
 
-    /// The grounding set for a windowed viewport: a reference grid whose cells
-    /// snap to a round millimetre step, plus a contact shadow under the part.
-    /// Both sit just below the part's lowest point. `dark` tints the grid for
-    /// the appearance it is drawn over.
+    /// The grounding set for a windowed viewport: a quiet reference grid at
+    /// the part's lowest point plus a contact shadow under the part. The grid
+    /// sits on the world origin (so its coloured lines are the real X/Y axes)
+    /// whenever the part is near it; otherwise it centres under the part,
+    /// snapped to a major line, without axes. `dark` picks the line ink.
     @MainActor
     static func groundingEntities(partSizeMM: SIMD3<Float>, sceneSize: Float,
-                                  sceneScale: Float, dark: Bool) -> [Entity] {
+                                  sceneScale: Float, dark: Bool,
+                                  sceneCenter: SIMD3<Float> = .zero,
+                                  viewSpanMM: Float? = nil) -> [Entity] {
         var out: [Entity] = []
         let floorY = -(partSizeMM.z * 0.5 * sceneScale) - 0.004
-        let cellMM = gridStepMM(forPartSize: sceneSize)
-        let cellWorld = cellMM * sceneScale
-        if cellWorld > 1e-5, let gridTex = gridTexture {
-            var gm = UnlitMaterial()
-            gm.color = .init(tint: NSColor(white: dark ? 1.0 : 0.0, alpha: dark ? 0.55 : 0.28),
-                             texture: .init(gridTex))
-            gm.blending = .transparent(opacity: .init(floatLiteral: 1.0))
-            let cells = 48
-            let sizeW = cellWorld * Float(cells)
-            var gd = MeshDescriptor(name: "grid")
-            let h = sizeW / 2
-            gd.positions = MeshBuffers.Positions([[-h, 0, -h], [h, 0, -h], [h, 0, h], [-h, 0, h]])
-            gd.normals = MeshBuffers.Normals([[0, 1, 0], [0, 1, 0], [0, 1, 0], [0, 1, 0]])
-            gd.textureCoordinates = MeshBuffers.TextureCoordinates([[0, 0], [1, 0], [1, 1], [0, 1]])
-            gd.primitives = .triangles([0, 2, 1, 0, 3, 2, 0, 1, 2, 0, 2, 3])
-            if let gmesh = try? MeshResource.generate(from: [gd]) {
-                let grid = ModelEntity(mesh: gmesh, materials: [gm])
-                grid.name = "grid"
-                grid.position = [0, floorY + 0.0008, 0]
-                out.append(grid)
-            }
+        let layout = GridSpacing.ground(extentMM: sceneSize, viewSpanMM: viewSpanMM)
+        let center2 = SIMD2(sceneCenter.x, sceneCenter.y)
+        let placement = GridSpacing.placement(partCenterMM: center2, partExtentMM: sceneSize, layout: layout)
+        if layout.minor * sceneScale > 1e-6,
+           let grid = gridEntity(name: "grid", layout: layout, scale: sceneScale, dark: dark,
+                                 axes: placement.axes) {
+            // Kernel (x, y) → display (x, -z) about the centred part.
+            let d = (placement.centerMM - center2) * sceneScale
+            grid.position = [d.x, floorY + 0.0008, -d.y]
+            out.append(grid)
         }
         if let tex = contactTexture {
             var sm = UnlitMaterial()

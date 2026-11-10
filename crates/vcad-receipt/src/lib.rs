@@ -42,6 +42,10 @@ pub const RECEIPT_SCHEMA: &str = "vcad.receipt/1";
 pub enum ClaimVerdict {
     /// The oracle ran and the claim holds.
     Pass,
+    /// The model says the claim holds, but only on a
+    /// [`ClaimBasis::Predicted`] basis. Nothing has confirmed it, so it is
+    /// never a pass; [`ReceiptClaim::with_basis`] enforces that.
+    Provisional,
     /// The oracle ran and the claim does not hold.
     Fail,
     /// The oracle could not check the claim. Not clean, not failed — unknown.
@@ -260,8 +264,15 @@ impl ReceiptClaim {
     }
 
     /// Mark how this verdict was produced.
+    ///
+    /// A prediction cannot pass: a [`ClaimVerdict::Pass`] marked
+    /// [`ClaimBasis::Predicted`] becomes [`ClaimVerdict::Provisional`] here,
+    /// so every claim family gets the rule from the one place they all call.
     pub fn with_basis(mut self, basis: ClaimBasis) -> Self {
         self.basis = Some(basis);
+        if basis == ClaimBasis::Predicted && self.verdict == ClaimVerdict::Pass {
+            self.verdict = ClaimVerdict::Provisional;
+        }
         self
     }
 
@@ -351,6 +362,9 @@ pub struct ReceiptSummary {
     pub total: u32,
     /// Claims that passed.
     pub passed: u32,
+    /// Claims that hold only on a predicted basis — never counted as passed.
+    #[serde(default)]
+    pub provisional: u32,
     /// Claims that failed.
     pub failed: u32,
     /// Claims that could not be verified.
@@ -359,8 +373,10 @@ pub struct ReceiptSummary {
     #[serde(default)]
     pub predicted_basis: u32,
     /// Fail-closed rollup: `Fail` if anything failed, else `Unverifiable`
-    /// if anything (or everything — zero claims) is unverified, else `Pass`.
-    /// Basis-blind; see [`ReceiptSummary::verdict`] for the basis-aware view.
+    /// if anything (or everything — zero claims) is unverified, else
+    /// `Provisional` if any claim is, else `Pass`. See
+    /// [`ReceiptSummary::verdict`] for the rollup that also covers receipts
+    /// saved before `Provisional` existed.
     pub overall: ClaimVerdict,
     /// Basis-aware rollup ([`DesignReceipt::verdict`]): like `overall`, but
     /// an all-pass receipt leaning on predicted claims reads `Provisional`.
@@ -442,6 +458,13 @@ impl DesignReceipt {
         {
             return ClaimVerdict::Unverifiable;
         }
+        if self
+            .claims
+            .iter()
+            .any(|c| c.verdict == ClaimVerdict::Provisional)
+        {
+            return ClaimVerdict::Provisional;
+        }
         ClaimVerdict::Pass
     }
 
@@ -456,6 +479,9 @@ impl DesignReceipt {
         match self.overall() {
             ClaimVerdict::Fail => ReceiptVerdict::Fail,
             ClaimVerdict::Unverifiable => ReceiptVerdict::Unverifiable,
+            ClaimVerdict::Provisional => ReceiptVerdict::Provisional,
+            // Receipts saved before `Provisional` existed carry
+            // pass + predicted, and still must not read as a pass.
             ClaimVerdict::Pass => {
                 if self
                     .claims
@@ -473,12 +499,14 @@ impl DesignReceipt {
     /// Count claims by verdict and compute the rollup.
     pub fn summary(&self) -> ReceiptSummary {
         let mut passed = 0u32;
+        let mut provisional = 0u32;
         let mut failed = 0u32;
         let mut unverifiable = 0u32;
         let mut predicted_basis = 0u32;
         for c in &self.claims {
             match c.verdict {
                 ClaimVerdict::Pass => passed += 1,
+                ClaimVerdict::Provisional => provisional += 1,
                 ClaimVerdict::Fail => failed += 1,
                 ClaimVerdict::Unverifiable => unverifiable += 1,
             }
@@ -489,6 +517,7 @@ impl DesignReceipt {
         ReceiptSummary {
             total: self.claims.len() as u32,
             passed,
+            provisional,
             failed,
             unverifiable,
             predicted_basis,
@@ -504,6 +533,42 @@ mod tests {
 
     fn oracle() -> OracleRef {
         OracleRef::new("test-oracle", "1")
+    }
+
+    #[test]
+    fn a_predicted_claim_never_reports_pass() {
+        let claim = ReceiptClaim::pass("a", "em", "a", oracle()).with_basis(ClaimBasis::Predicted);
+        assert_eq!(claim.verdict, ClaimVerdict::Provisional);
+        let wire = serde_json::to_value(&claim).unwrap();
+        assert_eq!(wire["verdict"], "provisional");
+        assert_eq!(wire["basis"], "predicted");
+
+        let receipt = DesignReceipt::with_claims(vec![claim]);
+        assert_eq!(receipt.overall(), ClaimVerdict::Provisional);
+        assert_eq!(receipt.verdict(), ReceiptVerdict::Provisional);
+        let summary = receipt.summary();
+        assert_eq!((summary.passed, summary.provisional), (0, 1));
+
+        // A predicted failure is still a failure.
+        let failed = ReceiptClaim::fail("b", "em", "b", oracle()).with_basis(ClaimBasis::Predicted);
+        assert_eq!(failed.verdict, ClaimVerdict::Fail);
+        // Other bases keep their pass.
+        for basis in [ClaimBasis::Verified, ClaimBasis::Measured] {
+            let c = ReceiptClaim::pass("c", "em", "c", oracle()).with_basis(basis);
+            assert_eq!(c.verdict, ClaimVerdict::Pass);
+        }
+    }
+
+    #[test]
+    fn a_saved_pass_on_predicted_basis_still_rolls_up_provisional() {
+        let saved: ReceiptClaim = serde_json::from_value(serde_json::json!({
+            "id": "a", "domain": "em", "description": "a",
+            "oracle": {"id": "o", "version": "1"},
+            "verdict": "pass", "basis": "predicted"
+        }))
+        .unwrap();
+        let receipt = DesignReceipt::with_claims(vec![saved]);
+        assert_eq!(receipt.verdict(), ReceiptVerdict::Provisional);
     }
 
     #[test]
@@ -558,13 +623,12 @@ mod tests {
             ReceiptClaim::pass("b", "mechanical", "first mode ok", oracle())
                 .with_basis(ClaimBasis::Predicted),
         ]);
-        // Basis-blind rollup still reads pass; basis-aware one does not.
-        assert_eq!(r.overall(), ClaimVerdict::Pass);
+        assert_eq!(r.overall(), ClaimVerdict::Provisional);
         assert_eq!(r.verdict(), ReceiptVerdict::Provisional);
         let s = r.summary();
         assert_eq!(s.predicted_basis, 1);
         assert_eq!(s.verdict, ReceiptVerdict::Provisional);
-        assert_eq!(s.overall, ClaimVerdict::Pass);
+        assert_eq!(s.overall, ClaimVerdict::Provisional);
     }
 
     #[test]

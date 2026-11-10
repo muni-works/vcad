@@ -1179,6 +1179,30 @@ impl Solid {
         }
     }
 
+    /// Create an involute spur gear (the `SpurGear` IR node): ISO full-depth
+    /// teeth, base at z = 0, tooth 0 centred on +X, optional centred bore.
+    #[wasm_bindgen(js_name = spurGear)]
+    pub fn spur_gear(
+        module: f64,
+        teeth: u32,
+        pressure_angle_deg: f64,
+        face_width: f64,
+        bore_diameter: f64,
+        backlash: f64,
+    ) -> Result<Solid, JsError> {
+        let op = vcad_ir::CsgOp::SpurGear {
+            module,
+            teeth,
+            pressure_angle_deg,
+            face_width,
+            bore_diameter,
+            backlash,
+        };
+        vcad_eval::evaluate::spur_gear_solid(&op)
+            .map(|inner| Solid { inner })
+            .map_err(|e| JsError::new(&e.to_string()))
+    }
+
     /// Mirror the solid across a plane through `(origin_x, origin_y, origin_z)`
     /// with the given plane normal. Triangle / face winding is automatically
     /// reversed to preserve outward normals.
@@ -1927,6 +1951,19 @@ impl Solid {
     #[wasm_bindgen(js_name = volume)]
     pub fn volume(&self) -> f64 {
         self.inner.volume()
+    }
+
+    /// Signed volume: positive for an outward-facing solid, negative when it
+    /// is inside out.
+    #[wasm_bindgen(js_name = signedVolume)]
+    pub fn signed_volume(&self) -> f64 {
+        self.inner.signed_volume()
+    }
+
+    /// True when the solid's faces point inward (negative signed volume).
+    #[wasm_bindgen(js_name = isInsideOut)]
+    pub fn is_inside_out(&self) -> bool {
+        self.inner.is_inside_out()
     }
 
     /// Compute the surface area of the solid.
@@ -4847,6 +4884,10 @@ fn evaluate_node(doc: &vcad_ir::Document, node_id: vcad_ir::NodeId) -> Result<So
             radius,
             height,
         } => Ok(scope_names(node_id, Solid::prism(*sides, *radius, *height))),
+
+        vcad_ir::CsgOp::SpurGear { .. } => vcad_eval::evaluate::spur_gear_solid(&node.op)
+            .map(|inner| Solid { inner })
+            .map_err(|e| JsError::new(&format!("node {node_id}: {e}"))),
 
         vcad_ir::CsgOp::Empty => Ok(Solid::empty()),
 
@@ -7914,14 +7955,18 @@ pub fn compute_mesh_volume(positions: &[f32], indices: &[u32]) -> f64 {
 /// inconsistently wound meshes), and triangle count.
 ///
 /// Positions are `[x, y, z, ...]` (flat f32), indices are `[i0, i1, i2, ...]`.
-/// Returns `{ volume, area, bbox: { min: {x,y,z}, max: {x,y,z} },
-/// centerOfMass: {x,y,z}, triangles }` in the same units as positions (mm).
+/// Returns `{ volume, signedVolume, insideOut, area, bbox: { min: {x,y,z},
+/// max: {x,y,z} }, centerOfMass: {x,y,z}, triangles }` in the same units as
+/// positions (mm). `volume` is the magnitude; `signedVolume` is negative (and
+/// `insideOut` true) for a mesh wound inside out.
 #[wasm_bindgen(js_name = computeMeshProperties)]
 pub fn compute_mesh_properties_js(positions: &[f32], indices: &[u32]) -> Result<JsValue, JsError> {
     let p = vcad_kernel::compute_mesh_properties(positions, indices);
     let xyz = |v: [f64; 3]| serde_json::json!({ "x": v[0], "y": v[1], "z": v[2] });
     let out = serde_json::json!({
         "volume": p.volume,
+        "signedVolume": p.signed_volume,
+        "insideOut": p.signed_volume < 0.0,
         "area": p.area,
         "bbox": { "min": xyz(p.bbox.min), "max": xyz(p.bbox.max) },
         "centerOfMass": xyz(p.center_of_mass),

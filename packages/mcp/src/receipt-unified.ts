@@ -65,7 +65,9 @@ export function overallVerdict(claims: readonly ReceiptClaim[]): ClaimVerdict {
   if (claims.length === 0 || claims.some((c) => c.verdict === "unverifiable")) {
     return "unverifiable";
   }
-  return "pass";
+  return claims.some((c) => c.verdict === "provisional")
+    ? "provisional"
+    : "pass";
 }
 
 /** The claim's basis, resolving the wire default: absent means verified. */
@@ -85,6 +87,7 @@ export function receiptVerdict(
 ): ReceiptVerdict {
   const overall = overallVerdict(claims);
   if (overall !== "pass") return overall;
+  // Receipts saved before `provisional` existed carry pass + predicted.
   return claims.some((c) => effectiveBasis(c) === "predicted")
     ? "provisional"
     : "pass";
@@ -97,6 +100,7 @@ export function summarize(receipt: DesignReceipt): ReceiptSummary {
   return {
     total: receipt.claims.length,
     passed: count("pass"),
+    provisional: count("provisional"),
     failed: count("fail"),
     unverifiable: count("unverifiable"),
     predicted_basis: receipt.claims.filter(

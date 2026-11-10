@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-09-route-nets-imported-copper",
+  "version": "0.11.0",
+  "date": "2026-11-09",
+  "category": "fix",
+  "title": "route_nets leaves imported routed nets alone",
+  "summary": "An unscoped route_nets keeps finished imported copper, and a route that makes DRC worse restores the board and reports before and after counts.",
+  "features": ["ecad", "routing"],
+  "mcpTools": ["route_nets"]
+}

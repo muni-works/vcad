@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-10-shell-lofted-solids",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "fix",
+  "title": "Shell works on lofted solids",
+  "summary": "Shelling a loft (open top, closed, or both ends open) no longer evaluates to nothing; sloped walls now offset to exactly the wall thickness.",
+  "features": ["shell", "loft", "kernel"]
+}

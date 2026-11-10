@@ -22,6 +22,80 @@ use vcad_kernel_topo::HalfEdgeId;
 
 use crate::split::canonical_arc_points;
 
+/// Give each unpaired full-circle wall rim its planar neighbour as a twin.
+///
+/// A full-turn revolve leaves its wall rims unpaired, and the flat rings
+/// between walls carry a one-vertex outer loop and a sampled inner hole
+/// through the same seam vertex. Pair them the way `make_cylinder` pairs a
+/// wall with its cap, so the freeze below writes one chain to both sides.
+fn pair_cylinder_rims_with_planes(brep: &mut BRepSolid) {
+    let shell = brep.topology.solids[brep.solid_id].outer_shell;
+    let faces = brep.topology.shells[shell].faces.clone();
+    let is_kind = |b: &BRepSolid, f: vcad_kernel_topo::FaceId, cyl: bool| {
+        let any = b.geometry.surfaces[b.topology.faces[f].surface_index].as_any();
+        if cyl {
+            any.is::<CylinderSurface>()
+        } else {
+            any.is::<vcad_kernel_geom::Plane>()
+        }
+    };
+    let mut rims = Vec::new();
+    for &f in faces.iter().filter(|&&f| is_kind(brep, f, true)) {
+        let lp = brep.topology.faces[f].outer_loop;
+        if brep.topology.loop_len(lp) > 4 {
+            continue;
+        }
+        for h in brep.topology.loop_half_edges(lp).collect::<Vec<_>>() {
+            let he = &brep.topology.half_edges[h];
+            let closed = he.next.map(|n| brep.topology.half_edges[n].origin) == Some(he.origin);
+            if closed && he.twin.is_none() {
+                rims.push(h);
+            }
+        }
+    }
+    for rim in rims {
+        let v = brep.topology.half_edges[rim].origin;
+        for &f in faces.iter().filter(|&&f| is_kind(brep, f, false)) {
+            let outer = brep.topology.faces[f].outer_loop;
+            let first = brep.topology.loop_half_edges(outer).next();
+            let single = brep.topology.loop_len(outer) == 1;
+            if let Some(h) = first.filter(|&h| {
+                single
+                    && brep.topology.half_edges[h].origin == v
+                    && brep.topology.half_edges[h].twin.is_none()
+            }) {
+                brep.topology.add_edge(rim, h);
+                break;
+            }
+            let holes = brep.topology.faces[f].inner_loops.clone();
+            let hole = holes.into_iter().find(|&l| {
+                brep.topology.loop_len(l) > 4
+                    && brep
+                        .topology
+                        .loop_half_edges(l)
+                        .all(|h| brep.topology.half_edges[h].twin.is_none())
+                    && brep
+                        .topology
+                        .loop_half_edges(l)
+                        .any(|h| brep.topology.half_edges[h].origin == v)
+            });
+            if let Some(old) = hole {
+                let stale: Vec<_> = brep.topology.loop_half_edges(old).collect();
+                brep.topology.faces[f].inner_loops.retain(|&l| l != old);
+                for h in stale {
+                    brep.topology.half_edges.remove(h);
+                }
+                brep.topology.loops.remove(old);
+                let h = brep.topology.add_half_edge(v);
+                let lp = brep.topology.add_loop(&[h]);
+                brep.topology.add_inner_loop(f, lp);
+                brep.topology.add_edge(rim, h);
+                break;
+            }
+        }
+    }
+}
+
 /// Replace analytic full-circle edges with canonical polyline chains.
 ///
 /// A full-circle edge is a half-edge whose origin and destination are the
@@ -29,6 +103,7 @@ use crate::split::canonical_arc_points;
 /// half-edge and its twin (when present) are rewritten against the same
 /// vertex chain, so the rebuilt edges pair exactly.
 pub(crate) fn freeze_circle_loops(brep: &mut BRepSolid, segments: u32) {
+    pair_cylinder_rims_with_planes(brep);
     let he_ids: Vec<HalfEdgeId> = brep.topology.half_edges.keys().collect();
     let mut done: std::collections::HashSet<HalfEdgeId> = std::collections::HashSet::new();
 
@@ -109,10 +184,17 @@ pub(crate) fn freeze_circle_loops(brep: &mut BRepSolid, segments: u32) {
                 .downcast_ref::<vcad_kernel_geom::Plane>()
                 .is_some()
             {
+                // A hole winds against the face normal.
+                let sign = if face.inner_loops.contains(&lp) {
+                    -1.0
+                } else {
+                    1.0
+                };
                 Some(
                     *surface
                         .normal(vcad_kernel_math::Point2::new(0.0, 0.0))
-                        .as_ref(),
+                        .as_ref()
+                        * sign,
                 )
             } else {
                 None

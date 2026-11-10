@@ -75,7 +75,7 @@ struct AssemblyPanel: View {
                     if !loose.isEmpty {
                         Section("Parts") {
                             ForEach(loose, id: \.offset) { i, r in
-                                Button(g.nodes[r.nodeId]?.name ?? "Part \(i + 1)") { model.insertInstance(ofPart: i) }
+                                Button(model.partDisplayName(i)) { model.insertInstance(ofPart: i) }
                             }
                         }
                     }
@@ -193,6 +193,10 @@ private struct JointDriveRow: View {
     let model: EditorModel
     let joint: [String: Any]
     @State private var editing: JointSpec?
+    /// Only a drag may write an override: AppKit can echo a value back through
+    /// the binding when a pose stream moves the knob, and that echo would then
+    /// outrank every later pose.
+    @State private var dragging = false
 
     var body: some View {
         let id = joint["id"] as? String ?? ""
@@ -217,8 +221,9 @@ private struct JointDriveRow: View {
                 .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
             if driven {
                 Slider(value: Binding(get: { min(max(value, range.lowerBound), range.upperBound) },
-                                      set: { model.dragJoint(id, to: $0) }),
+                                      set: { if dragging { model.dragJoint(id, to: $0) } }),
                        in: range) { editingNow in
+                    dragging = editingNow
                     // Release: in a timeline, the drag stays a pending key
                     // value; otherwise it becomes the authored state.
                     if !editingNow, model.timeline == nil { model.commitJointDrag(id) }

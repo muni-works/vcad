@@ -62,6 +62,12 @@ export interface InspectResult {
   mass_g?: number;
   part_masses?: PartMassInfo[];
   /**
+   * Parts whose mesh encloses NEGATIVE signed volume — faces wound inward
+   * (e.g. an imported mesh with reversed winding). Their `volume_mm3` is the
+   * magnitude; this list says not to trust it as a solid. Absent when none.
+   */
+  inside_out_parts?: Array<{ name: string; signed_volume_mm3: number }>;
+  /**
    * Geometry-integrity violations (e.g. a part whose volume/area pair
    * breaks the isoperimetric bound A³ ≥ 36πV², which no real solid can).
    * Absent when the inspection is clean.
@@ -82,6 +88,10 @@ export interface InspectResult {
  *  before any tool can evaluate a document. */
 export function computeMeshProperties(mesh: TriangleMesh): {
   volume: number;
+  /** Raw divergence integral: negative for an inside-out mesh. Equals
+   *  `volume` on a kernel build that predates the signed field. */
+  signedVolume: number;
+  insideOut: boolean;
   area: number;
   bbox: BoundingBox;
   centroid: { x: number; y: number; z: number };
@@ -93,6 +103,8 @@ export function computeMeshProperties(mesh: TriangleMesh): {
       indices: Uint32Array,
     ) => {
       volume: number;
+      signedVolume?: number;
+      insideOut?: boolean;
       area: number;
       bbox: BoundingBox;
       centerOfMass: { x: number; y: number; z: number };
@@ -115,8 +127,11 @@ export function computeMeshProperties(mesh: TriangleMesh): {
       ? mesh.indices
       : new Uint32Array(mesh.indices),
   );
+  const signedVolume = typeof props.signedVolume === "number" ? props.signedVolume : props.volume;
   return {
     volume: props.volume,
+    signedVolume,
+    insideOut: props.insideOut ?? signedVolume < 0,
     area: props.area,
     bbox: props.bbox,
     centroid: props.centerOfMass,
@@ -167,6 +182,7 @@ export function computeInspection(ir: Document, engine: Engine): InspectResult {
 
   const partMasses: PartMassInfo[] = [];
   const warnings: string[] = [];
+  const insideOut: Array<{ name: string; signed_volume_mm3: number }> = [];
 
   // Find the root nodes to get part names
   const rootNameMap = new Map<number, string>();
@@ -218,6 +234,19 @@ export function computeInspection(ir: Document, engine: Engine): InspectResult {
     const density = material?.density;
 
     const partName = part.name;
+
+    // An inside-out solid (faces wound inward) integrates to NEGATIVE
+    // volume. The magnitude is reported as usual, but never silently: a
+    // reversed-winding import reads as a valid positive volume otherwise.
+    if (props.insideOut && props.volume > 1e-9) {
+      const sv = Math.round(props.signedVolume * 1000) / 1000;
+      insideOut.push({ name: partName, signed_volume_mm3: sv });
+      warnings.push(
+        `part "${partName}" is inside out — its faces point inward (signed volume ${sv} mm³). ` +
+          `volume_mm3 reports the magnitude; flip the mesh winding (or re-export the source) ` +
+          `before trusting it as a solid`,
+      );
+    }
 
     // Isoperimetric impossibility: A³ ≥ 36πV² for any real solid, so a
     // violating (volume, area) pair means the volume integral is corrupt
@@ -293,6 +322,9 @@ export function computeInspection(ir: Document, engine: Engine): InspectResult {
     result.part_masses = partMasses;
   }
 
+  if (insideOut.length > 0) {
+    result.inside_out_parts = insideOut;
+  }
   if (warnings.length > 0) {
     result.warnings = warnings;
   }

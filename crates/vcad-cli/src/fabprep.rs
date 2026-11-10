@@ -84,6 +84,7 @@ pub fn run(args: &FabPrepArgs) -> Result<bool> {
         println!("fab-prep: --allow-blind-vias — the router may emit layer-pair vias");
     }
     let opts = FabPrepOptions {
+        connect_nets: Vec::new(),
         calibrate_rules: args.calibrate_rules,
         route_remaining: !args.skip_routing,
         max_rounds: args.max_rounds,

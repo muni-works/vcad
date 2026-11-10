@@ -1,28 +1,17 @@
 /**
- * continue_document — open an MCP editing session from a vcad.io web document's
- * public share token. The server side of the web app's "Continue in Claude"
- * handoff: the browser mints a share token for the part the user is looking at,
- * hands it to the model in the seed prompt, and the model calls this tool. The
- * geometry never rides the URL — only the opaque token does.
+ * continue_document — open an MCP editing session from an inline "Continue in
+ * Claude" handoff (gzip + base64url of the IR, or VCode). CRDT content is
+ * materialized through the kernel engine's `WasmDocumentEngine.load()`.
  *
- * The web doc's canonical stored content is CRDT state (`{replica_id, ops}`),
- * which has no pre-materialized IR, so we materialize it through the kernel
- * engine's `WasmDocumentEngine.load()` — the same engine `render_view` already
- * boots. Raw-IR content (an MCP-authored or legacy doc) is passed through.
- *
- * The opened session is a NEW `mcp:`-keyed session seeded from the web doc's
- * geometry — continuation in Claude is its own session, exactly like every other
- * MCP-authored document, so it renders at vcad.io without colliding with the
- * original web row. (Streaming edits back into the *same* open web tab is the
- * separate live-mitosis path.)
+ * The hosted share-token path (resolved against vcad.io's Supabase
+ * `documents` table) was removed with the hosted services; a `token` now
+ * fails closed with a clear error.
  */
 import { getKernelWasm } from "@vcad/engine";
 import { fromVCode } from "@vcad/ir";
 import type { Document } from "@vcad/ir";
 import { gunzipSync } from "node:zlib";
-import type { SessionStore } from "../session-store.js";
-import { resolveShareToken } from "../session-store.js";
-import { documents, registerSession } from "./session.js";
+import { registerSession } from "./session.js";
 import { behavior, type ToolDef } from "./tool-def.js";
 import { ok as okJson, errText as err, type ToolResult } from "./tool-result.js";
 
@@ -32,9 +21,8 @@ export const continueDocumentSchema = {
     token: {
       type: "string" as const,
       description:
-        "The vcad.io share token from a 'Continue in Claude' handoff (a UUID). " +
-        "Opens the signed-in user's current part as an editing session you can " +
-        "render, measure, and continue.",
+        "Legacy vcad.io share token. Not available in the local build (hosted " +
+        "services were retired) — returns an error; use `doc`.",
     },
     doc: {
       type: "string" as const,
@@ -80,14 +68,14 @@ function looksLikeCrdt(c: unknown): boolean {
 }
 
 /** Decode an inline `doc` handoff (gzip + base64url of VCode or IR JSON) into
- *  raw content for {@link materialize}. Mirrors the encoding open_in_browser /
+ *  raw content for {@link materialize}. Mirrors the encoding open_in_app /
  *  the web app produce. Throws on a corrupt blob — the caller turns that into a
  *  re-share hint. */
 function decodeInlineDoc(blob: string): unknown {
   const b64 = blob.replace(/-/g, "+").replace(/_/g, "/");
   const buf = Buffer.from(b64, "base64");
   const text = gunzipSync(buf).toString("utf-8").trim();
-  // The web app gzips raw IR JSON; open_in_browser may emit VCode (`#…`).
+  // The web app gzips raw IR JSON; open_in_app may emit VCode (`#…`).
   return text.startsWith("#") ? fromVCode(text) : JSON.parse(text);
 }
 
@@ -117,62 +105,24 @@ async function materialize(content: unknown): Promise<Document | null> {
 
 export async function continueDocument(
   args: Record<string, unknown>,
-  store?: SessionStore,
 ): Promise<ToolText> {
   const token = String(args.token ?? "").trim();
   const inlineDoc = String(args.doc ?? "").trim();
   if (!token && !inlineDoc) {
     return err(
-      "continue_document requires a `token` (a vcad.io share token) or an " +
-        "inline `doc` from the Continue in Claude handoff.",
+      "continue_document requires an inline `doc` from a Continue in Claude " +
+        "handoff.",
     );
   }
 
-  // ── Signed-in handoff: a deterministic, idempotent session keyed off the
-  // token. A re-click — or a re-open on a cold serverless instance — reuses the
-  // SAME session, so the Living Viewport accretes in place, any in-progress
-  // edits survive, and the vcad.io tab can subscribe to this session's durable
-  // row (`mcp:cont_<token>`) by a key it already knows. The token is an
-  // unguessable UUID, so the derived id stays capability-safe.
+  // Share tokens resolved against the hosted Supabase `documents` table,
+  // which the local build does not have. Fail closed with a clear message.
   if (token) {
-    const id = `cont_${token}`;
-    // Warm cache → reuse as-is (preserves the model's edits this session).
-    const cached = documents.get(id);
-    if (cached) return ok(id, cached, "Shared part");
-    // Cold instance → rehydrate the durable session before falling back to the
-    // (older) shared snapshot, so edits aren't lost across an instance flip.
-    if (store) {
-      const existing = await store.load(id);
-      if (existing) {
-        documents.set(id, existing);
-        return ok(id, existing, "Shared part");
-      }
-    }
-    // First open → materialize from the share snapshot.
-    const resolved = await resolveShareToken(token);
-    if (!resolved) {
-      return err(
-        `No shared document for token "${token}". Ask the user to click ` +
-          `"Continue in Claude" again from vcad.io to mint a fresh handoff link.`,
-      );
-    }
-    let doc: Document | null;
-    try {
-      doc = await materialize(resolved.content);
-    } catch (e) {
-      return err(
-        `Could not open the shared document: ${(e as Error).message}. ` +
-          `Ask the user to re-share from vcad.io.`,
-      );
-    }
-    if (!doc) {
-      return err(
-        "The shared document is in a format this build can't open yet " +
-          "(expected CRDT or IR content).",
-      );
-    }
-    documents.set(id, doc);
-    return ok(id, doc, resolved.name);
+    return err(
+      "continue_document `token` handoffs are not available in the local build " +
+        "of vcad MCP (hosted services were retired in vcad 1.0). Pass an inline " +
+        "`doc`, or open the .vcad file with load_document.",
+    );
   }
 
   // ── Accountless inline handoff: no stable key, so a fresh session id.
@@ -182,7 +132,7 @@ export async function continueDocument(
   } catch (e) {
     return err(
       `Couldn't read the inline handoff: ${(e as Error).message}. ` +
-        `Ask the user to click "Continue in Claude" again from vcad.io.`,
+        `Ask the user for a fresh handoff.`,
     );
   }
   let doc: Document | null;
@@ -191,7 +141,7 @@ export async function continueDocument(
   } catch (e) {
     return err(
       `Could not open the shared document: ${(e as Error).message}. ` +
-        `Ask the user to re-share from vcad.io.`,
+        `Ask the user for a fresh handoff.`,
     );
   }
   if (!doc) {
@@ -208,21 +158,19 @@ export const toolDefs: ToolDef[] = [
     name: "continue_document",
     pack: null,
     description:
-      "Open the user's vcad.io part as an editing session from a 'Continue " +
-      "in Claude' handoff (a share `token`, or an inline `doc` for accountless " +
-      "handoffs). The web app hands you this in the starter prompt; call this " +
-      "first, then render_view it and continue the user's work. Returns a " +
-      "`document_id` for subsequent tool calls. The geometry is fetched " +
-      "server-side — never paste it.",
+      "Open a part from an inline 'Continue in Claude' handoff (`doc`: gzip + " +
+      "base64url IR) as an editing session, then render_view it and continue " +
+      "the user's work. Returns a `document_id`. Share-token (`token`) " +
+      "handoffs needed the retired hosted service and return an error.",
     inputSchema: continueDocumentSchema,
-    handler: (a, c) => continueDocument(a, c.sessionStore),
+    handler: (a) => continueDocument(a),
     behavior: behavior({ writesDoc: true, geometry: true, mount: true }),
     annotations: {
-      title: "Continue from vcad.io",
+      title: "Continue Handoff",
       readOnlyHint: true,
       destructiveHint: false,
       idempotentHint: false,
-      openWorldHint: true,
+      openWorldHint: false,
     },
   },
 ];

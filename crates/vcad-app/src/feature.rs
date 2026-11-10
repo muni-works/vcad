@@ -98,6 +98,64 @@ pub enum FeatureInput {
         #[cfg_attr(feature = "ts-rs", ts(optional))]
         segments: Option<u32>,
     },
+    /// Torus primitive, centred at the origin with its axis along Z.
+    Torus {
+        /// Distance from the axis to the tube centre.
+        major_radius: f64,
+        /// Tube radius.
+        minor_radius: f64,
+        /// Tessellation segments.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-rs", ts(optional))]
+        segments: Option<u32>,
+    },
+    /// Right-triangle wedge primitive, corner at the origin.
+    Wedge {
+        /// Width (X).
+        size_x: f64,
+        /// Depth (Y).
+        size_y: f64,
+        /// Height (Z).
+        size_z: f64,
+    },
+    /// Regular polygonal prism along Z.
+    Prism {
+        /// Number of sides (3 or more).
+        sides: u32,
+        /// Circumscribed radius.
+        radius: f64,
+        /// Height along Z.
+        height: f64,
+    },
+    /// Convex hull of parts and/or loose points.
+    Hull {
+        /// Feature IDs of the parts to hull (consumed).
+        inputs: Vec<String>,
+        /// Extra points, flat `[x, y, z, ...]` (mm).
+        #[serde(default)]
+        points: Vec<f64>,
+    },
+    /// The solid a part sweeps while it rotates through an angle range.
+    SweepRotate {
+        /// Input feature ID (consumed).
+        input: String,
+        /// A point on the rotation axis.
+        axis_origin: [f64; 3],
+        /// Rotation axis direction.
+        axis_dir: [f64; 3],
+        /// Start angle, degrees.
+        angle_lo_deg: f64,
+        /// End angle, degrees.
+        angle_hi_deg: f64,
+        /// Angular step, degrees (the kernel picks one when absent).
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-rs", ts(optional))]
+        step_deg: Option<f64>,
+        /// Clearance added around the swept solid, mm.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-rs", ts(optional))]
+        clearance: Option<f64>,
+    },
     /// Boolean operation between two features.
     Boolean {
         /// Union, difference, or intersection.
@@ -449,6 +507,11 @@ impl FeatureInput {
             Self::Cylinder { .. } => "cylinder",
             Self::Sphere { .. } => "sphere",
             Self::Cone { .. } => "cone",
+            Self::Torus { .. } => "torus",
+            Self::Wedge { .. } => "wedge",
+            Self::Prism { .. } => "prism",
+            Self::Hull { .. } => "hull",
+            Self::SweepRotate { .. } => "sweep-rotate",
             Self::Boolean { .. } => "boolean",
             Self::Extrude { .. } => "extrude",
             Self::Revolve { .. } => "revolve",
@@ -524,6 +587,63 @@ impl FeatureInput {
                 p.insert("height".into(), Value::F64(*height));
                 if let Some(s) = segments {
                     p.insert("segments".into(), Value::F64(*s as f64));
+                }
+            }
+            Self::Torus {
+                major_radius,
+                minor_radius,
+                segments,
+            } => {
+                p.insert("major_radius".into(), Value::F64(*major_radius));
+                p.insert("minor_radius".into(), Value::F64(*minor_radius));
+                if let Some(s) = segments {
+                    p.insert("segments".into(), Value::F64(*s as f64));
+                }
+            }
+            Self::Wedge {
+                size_x,
+                size_y,
+                size_z,
+            } => {
+                p.insert("size_x".into(), Value::F64(*size_x));
+                p.insert("size_y".into(), Value::F64(*size_y));
+                p.insert("size_z".into(), Value::F64(*size_z));
+            }
+            Self::Prism {
+                sides,
+                radius,
+                height,
+            } => {
+                p.insert("sides".into(), Value::F64(*sides as f64));
+                p.insert("radius".into(), Value::F64(*radius));
+                p.insert("height".into(), Value::F64(*height));
+            }
+            Self::Hull { inputs, points } => {
+                p.insert("inputs".into(), Value::FeatureRefList(inputs.clone()));
+                p.insert(
+                    "points_json".into(),
+                    Value::String(serde_json::to_string(points).unwrap_or_else(|_| "[]".into())),
+                );
+            }
+            Self::SweepRotate {
+                input,
+                axis_origin,
+                axis_dir,
+                angle_lo_deg,
+                angle_hi_deg,
+                step_deg,
+                clearance,
+            } => {
+                p.insert("input".into(), Value::FeatureRef(input.clone()));
+                p.insert("axis_origin".into(), Value::Vec3(*axis_origin));
+                p.insert("axis_dir".into(), Value::Vec3(*axis_dir));
+                p.insert("angle_lo_deg".into(), Value::F64(*angle_lo_deg));
+                p.insert("angle_hi_deg".into(), Value::F64(*angle_hi_deg));
+                if let Some(v) = step_deg {
+                    p.insert("step_deg".into(), Value::F64(*v));
+                }
+                if let Some(v) = clearance {
+                    p.insert("clearance".into(), Value::F64(*v));
                 }
             }
             Self::Boolean {
@@ -854,6 +974,39 @@ impl FeatureInput {
                 radius_top: get_f64(params, "radius_top").unwrap_or(0.0),
                 height: get_f64(params, "height").unwrap_or(10.0),
                 segments: get_f64(params, "segments").map(|v| v as u32),
+            },
+            "torus" => Self::Torus {
+                major_radius: get_f64(params, "major_radius").unwrap_or(20.0),
+                minor_radius: get_f64(params, "minor_radius").unwrap_or(5.0),
+                segments: get_f64(params, "segments").map(|v| v as u32),
+            },
+            "wedge" => Self::Wedge {
+                size_x: get_f64(params, "size_x").unwrap_or(10.0),
+                size_y: get_f64(params, "size_y").unwrap_or(10.0),
+                size_z: get_f64(params, "size_z").unwrap_or(10.0),
+            },
+            "prism" => Self::Prism {
+                sides: get_f64(params, "sides").map_or(6, |v| v as u32),
+                radius: get_f64(params, "radius").unwrap_or(5.0),
+                height: get_f64(params, "height").unwrap_or(10.0),
+            },
+            "hull" => Self::Hull {
+                inputs: match params.get("inputs") {
+                    Some((Value::FeatureRefList(ids), _)) => ids.clone(),
+                    _ => Vec::new(),
+                },
+                points: get_str(params, "points_json")
+                    .and_then(|j| serde_json::from_str(&j).ok())
+                    .unwrap_or_default(),
+            },
+            "sweep-rotate" => Self::SweepRotate {
+                input: get_str(params, "input").unwrap_or_default(),
+                axis_origin: get_vec3(params, "axis_origin").unwrap_or([0.0, 0.0, 0.0]),
+                axis_dir: get_vec3(params, "axis_dir").unwrap_or([0.0, 0.0, 1.0]),
+                angle_lo_deg: get_f64(params, "angle_lo_deg").unwrap_or(0.0),
+                angle_hi_deg: get_f64(params, "angle_hi_deg").unwrap_or(90.0),
+                step_deg: get_f64(params, "step_deg"),
+                clearance: get_f64(params, "clearance"),
             },
             "boolean" => Self::Boolean {
                 boolean_type: BooleanType::from_str_lossy(

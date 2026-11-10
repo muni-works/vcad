@@ -1,16 +1,13 @@
-import { useEffect, useState } from "react";
-import { fetchPublicDocument, fetchSharedDocument } from "@vcad/auth";
-import { cloudContentToFile } from "@/lib/export-all";
 import {
   DOWNLOAD_URL,
   EXPORT_PATH,
-  appLinkForDocumentText,
   type RetirementRoute,
 } from "@/lib/retirement";
 import { PageMark, RetirementBanner } from "./RetirementBanner";
 
 const NOTICES: Record<Extract<RetirementRoute, { kind: "notice" }>["reason"], string> = {
-  editor: "The web editor has moved to the vcad app for Mac.",
+  editor:
+    "The vcad.io web app has shut down. vcad is now a free app for Mac. Download it, and take your cloud documents with you from the export page.",
   "cli-auth": "The vcad CLI no longer needs a vcad.io sign-in — it runs locally.",
   authorize: "Spend authorization has retired along with vcad.io billing.",
   profile: "Public profiles have retired with vcad.io accounts.",
@@ -39,44 +36,21 @@ function OpenInApp({ appUrl, name }: { appUrl: string; name?: string }) {
   );
 }
 
-/** A public share: fetched while the share RPCs still answer, then handed off. */
-function ShareHandoff({ route }: { route: Extract<RetirementRoute, { kind: "share" }> }) {
-  const [state, setState] = useState<
-    { s: "loading" } | { s: "gone" } | { s: "ready"; name: string; text: string; ext: string }
-  >({ s: "loading" });
-
-  useEffect(() => {
-    const load = route.token
-      ? fetchSharedDocument(route.token)
-      : fetchPublicDocument(route.username!, route.slug!);
-    load
-      .then((doc) => {
-        if (!doc) return setState({ s: "gone" });
-        const { ext, text } = cloudContentToFile(doc.content);
-        setState({ s: "ready", name: doc.name, text, ext });
-      })
-      .catch(() => setState({ s: "gone" }));
-  }, [route]);
-
-  if (state.s === "loading") return <p className="text-xs text-text-muted">Loading shared document…</p>;
-  if (state.s === "gone")
-    return <p className="text-xs text-text">This share has ended. Ask its owner to send you the file.</p>;
-
-  const fileHref = URL.createObjectURL(new Blob([state.text], { type: "application/json" }));
+/** Share links resolved through vcad.io's hosted database, which is gone. */
+function ShareEnded() {
   return (
     <>
-      {state.ext === "vcad" && <OpenInApp appUrl={appLinkForDocumentText(state.text, state.name)} name={state.name} />}
-      <a className={`${button} mt-3`} href={fileHref} download={`${state.name}.${state.ext}`}>
-        Download {state.name}.{state.ext}
-      </a>
+      <p className="mb-3 text-xs text-text">This share has ended. Ask its owner to send you the file.</p>
+      <a className={`${button} mb-2`} href={DOWNLOAD_URL}>Download vcad for Mac</a>
+      <a className="text-xs text-text-muted underline" href={EXPORT_PATH}>Export your own documents</a>
     </>
   );
 }
 
 /**
  * Post-retirement stand-in for every old vcad.io route (see
- * docs/launch/web-retirement.md). Only mounted when
- * VITE_VCAD_RETIREMENT_REDIRECTS is on.
+ * docs/launch/web-retirement.md). Mounted for every
+ * old route in production builds (see retirementRedirectsEnabled).
  */
 export function RetirementPage({ route }: { route: Exclude<RetirementRoute, { kind: "keep" | "export" }> }) {
   return (
@@ -85,7 +59,7 @@ export function RetirementPage({ route }: { route: Exclude<RetirementRoute, { ki
         <PageMark label="vcad 2" />
         <RetirementBanner />
         {route.kind === "handoff" && <OpenInApp appUrl={route.appUrl} name={route.name} />}
-        {route.kind === "share" && <ShareHandoff route={route} />}
+        {route.kind === "share" && <ShareEnded />}
         {route.kind === "notice" && (
           <>
             <p className="mb-3 text-xs text-text">{NOTICES[route.reason]}</p>

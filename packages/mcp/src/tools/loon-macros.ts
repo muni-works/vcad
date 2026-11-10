@@ -14,9 +14,8 @@
  * macros (claims over the parameter range) are the planned next rung.
  *
  * Storage v1: process-warm registry + file persistence under
- * VCAD_MCP_STATE_DIR for local/stdio use. Hosted durability (a per-user
- * mcp_macros table) is a follow-up — the MacroStore seam is already shaped
- * for it.
+ * VCAD_MCP_STATE_DIR. The MacroStore seam is an optional extra backing
+ * store (none in the local build; tests inject one).
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -26,8 +25,7 @@ import { toVCode } from "@vcad/ir";
 import { registerSession } from "./session.js";
 import { resolveWithinRoot } from "./safe-path.js";
 import { behavior, type ToolDef } from "./tool-def.js";
-import { createMacroStore, type MacroStore } from "../macro-store.js";
-import type { AuthUser } from "../oauth.js";
+import type { AuthUser } from "../auth-user.js";
 
 /** One stored macro. */
 export interface LoonMacro {
@@ -66,12 +64,21 @@ const RESERVED = new Set([
   "sheet-jog", "sheet-hem", "sheet-bend-relief",
 ]);
 
-/** Process-warm registry. Hosted instances keep this for their lifetime;
- *  local/stdio instances also persist to disk (see load/persist). */
+/** Optional extra macro backing store, scoped to one user. */
+export interface MacroStore {
+  /** Load one macro by name; null on miss. */
+  load(name: string): Promise<LoonMacro | null>;
+  /** List the user's whole library. */
+  list(): Promise<LoonMacro[]>;
+  /** Upsert a macro. */
+  save(macro: LoonMacro): Promise<void>;
+}
+
+/** Process-warm registry, also persisted to disk (see load/persist). */
 const registry = new Map<string, LoonMacro>();
 let hydrated = false;
 let diskEnabled = true;
-let storeFactory: (user: AuthUser | null) => MacroStore | null = createMacroStore;
+let storeFactory: (user: AuthUser | null) => MacroStore | null = () => null;
 
 function macroDir(): string {
   return join(process.env.VCAD_MCP_STATE_DIR ?? process.cwd(), "loon-macros");
@@ -453,7 +460,7 @@ export function clearMacrosForTest(): void {
   diskEnabled = false;
 }
 
-/** Test seam: swap the durable-store factory (null = no cloud). */
+/** Test seam: swap the extra-store factory (null = none). */
 export function setMacroStoreFactoryForTest(
   f: (user: AuthUser | null) => MacroStore | null,
 ): void {

@@ -1,0 +1,12 @@
+{
+  "id": "2026-11-08-native-hole-bolt-circle",
+  "version": "0.11.0",
+  "date": "2026-11-08",
+  "category": "feat",
+  "title": "Hole tool with counterbore and bolt circle",
+  "summary": "The Mac app can cut clearance, tapped, counterbored and bolt-circle holes on a flat face as one undo step.",
+  "features": [
+    "native",
+    "holes"
+  ]
+}

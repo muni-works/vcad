@@ -5,6 +5,41 @@ web editor retires, and with it cloud sync, accounts, collaboration and
 billing. This doc maps every vcad.io route to its post-retirement behavior and
 says what is built and what is still a switch to flip.
 
+## Status (vcad 1.0, branch chore-drop-hosted-keep-export)
+
+Decision: keep `/export` working; shut down the hosted web app and hosted MCP.
+
+**Removed from the repo:** `services/mcp` (hosted MCP, its Vercel deploy,
+OAuth, live share, Edge Config), `packages/api`, `packages/auth`,
+`packages/hf-space`, the web app's `/api/*` functions (chat, usage, billing /
+Stripe, cli-auth, mcp) and Edge middleware, and the app's sign-up, sync,
+sharing, billing, version history and hosted chat UI. MCP tools that needed
+hosted services are gone (see `packages/mcp/README.md`).
+
+**Still working — the off-ramp:**
+
+- `/export` (`ExportAllPage.tsx`, `lib/export-all.ts`, `lib/export-auth.ts`):
+  sign in to an *existing* account (Google, GitHub, or email magic link with
+  `shouldCreateUser: false`; a session the old app left in localStorage,
+  anonymous ones included, also works) and download every `documents` row as
+  a zip. Read-only `SELECT id, name, content, updated_at` under RLS. The
+  second button exports this browser's IndexedDB documents.
+- Production builds redirect every other old route (the editor at `/`
+  included) to a notice linking the Mac app (`/download` → `/desktop/`) and
+  `/export`. `VITE_VCAD_RETIREMENT_REDIRECTS=0` restores the editor; dev builds
+  default to the editor.
+- `supabase/` (config + migrations) is kept untouched; the live project backs
+  `/export`.
+
+**Live infrastructure** is untouched by this code. Can be turned off: the
+hosted MCP deployment (mcp.vcad.io / services/mcp Vercel project, its Edge
+Config and env), the web app's serverless functions (they no longer exist in
+the build), Stripe webhooks, the HF space. Must stay up: the Supabase project
+(auth + `documents` table, OAuth providers, `https://vcad.io/**` redirect
+allow-list) and the static vcad.io deploy (`/desktop/*` update feed and
+`/export`). The sections below describe the pre-removal plan and are kept for
+history.
+
 ## Release-blocking: the update feed stays up
 
 Every installed copy of the Mac app checks
