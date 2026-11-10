@@ -314,6 +314,9 @@ pub fn manifest_pretty() -> String {
 pub fn read_tool(tool: &str, args: &Value, doc: &DocumentApi) -> Result<String, CommandError> {
     match tool {
         "describe_scene" => Ok(describe_scene(doc)),
+        // Host-only (not in the agent manifest): the Mac app calls it
+        // after `create_cad_loon` loads to fail closed on parts that
+        // cannot be built — or that build to no geometry at all.
         "evaluation_errors" => Ok(evaluation_errors(doc)),
         "inspect" => {
             let id = args
