@@ -394,7 +394,7 @@ struct DrawingWorkspaceView: View {
             // One status pill: the active tool's hint, else the sheet's counts.
             VStack {
                 Spacer()
-                DrawingStatusPill(store: store).padding(.bottom, Glass.inset + 6)
+                DrawingStatusPill(store: store).padding(.bottom, Glass.dockClearance)
             }
         }
         .animation(Motion.panel, value: model.showsTree)

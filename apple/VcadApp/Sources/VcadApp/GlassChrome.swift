@@ -30,8 +30,12 @@ enum Glass {
     static var toolbarCenter: CGFloat { toolbarDrop + toolbarRow / 2 }
     /// Space the row takes from the top of the window.
     static var toolbarHeight: CGFloat { toolbarDrop + toolbarRow }
-    /// Below this toolbar width the dock folds modify and combine tools too,
-    /// so it clears the document title and search field.
+    /// Height of the tool dock's capsule.
+    static let dockHeight: CGFloat = 38
+    /// Space the dock takes from the bottom, for chrome that stacks above it.
+    static var dockClearance: CGFloat { inset + dockHeight + 8 }
+    /// Below this window width the dock folds modify and combine tools too,
+    /// so it clears the side panels.
     static let dockFullWidth: CGFloat = 1080
 }
 
@@ -209,13 +213,31 @@ func glassSpring(_ reduceMotion: Bool) -> Animation {
     reduceMotion ? .easeInOut(duration: 0.15) : .spring(response: 0.38, dampingFraction: 0.82)
 }
 
+// MARK: - Dock host
+
+/// The combined tool dock, centered along the bottom of the window.
+struct DockHost: View {
+    @Bindable var model: EditorModel
+    @State private var width: CGFloat = 1240
+
+    var body: some View {
+        GlassDock(model: model, compact: width < Glass.dockFullWidth)
+            .modifier(ChromeRegion(key: "dock"))
+            .padding(.bottom, Glass.inset)
+            .frame(maxWidth: .infinity)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+    }
+}
+
 // MARK: - Toolbar
 
-/// The title-bar row: window controls (system), sidebar toggle, document name
-/// + Edited, search, inspector toggle. Nothing else.
+/// The title-bar row: window controls (system), sidebar toggle, the status
+/// field, inspector toggle. It says what's true of the document; the dock at
+/// the bottom of the window is how you act on it.
 struct GlassToolbar: View {
     @Bindable var model: EditorModel
     @State private var query = ""
+    @State private var searching = false
     @FocusState private var searchFocused: Bool
     @State private var connectionShown = false
     @State private var toolbarWidth: CGFloat = 1240
@@ -225,10 +247,8 @@ struct GlassToolbar: View {
             iconButton("sidebar.leading", "Show or hide the sidebar", active: model.showsTree) {
                 withAnimation(Motion.panel) { model.showsTree.toggle() }
             }
-            documentTitle
             Spacer(minLength: Theme.Space.m)
             if model.workspace == .manufacture { machineChip }
-            searchField
             iconButton("sidebar.trailing", "Show or hide the inspector", active: model.showsInspector) {
                 withAnimation(Motion.panel) { model.showsInspector.toggle() }
             }
@@ -236,79 +256,105 @@ struct GlassToolbar: View {
         .padding(.leading, model.isWindowed ? 84 : Glass.inset + 6)
         .padding(.trailing, Glass.inset + 6)
         .frame(height: Glass.toolbarRow)
-        // The tool dock lives in the title-bar row, centred on the window.
-        .overlay {
-            if model.workspace != .manufacture {
-                GlassDock(model: model, compact: toolbarWidth < Glass.dockFullWidth).modifier(ChromeRegion(key: "dock"))
-            }
-        }
+        // On the window's center, whatever sits either side of it.
+        .overlay { statusField.modifier(ChromeRegion(key: "statusField")) }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarWidth = $0 }
         .padding(.top, model.isWindowed ? Glass.toolbarDrop : 0)
         .background {
             // ⌘F and ⌘K both land in search.
             Group {
-                Button("") { searchFocused = true }.keyboardShortcut("f", modifiers: .command)
-                Button("") { searchFocused = true }.keyboardShortcut("k", modifiers: .command)
+                Button("") { beginSearch() }.keyboardShortcut("f", modifiers: .command)
+                Button("") { beginSearch() }.keyboardShortcut("k", modifiers: .command)
             }.frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
         }
     }
 
-    /// Keeps a long document name out from under the centred dock.
-    private var titleMaxWidth: CGFloat {
-        let dockHalf: CGFloat = toolbarWidth < Glass.dockFullWidth ? 200 : 320
-        return max(60, toolbarWidth / 2 - dockHalf - 140)
+    /// Shrinks with the window, and is the same size in either state.
+    private var fieldWidth: CGFloat { min(340, max(200, toolbarWidth * 0.3)) }
+
+    /// The second line, only when there's something to say. Most urgent first.
+    private var news: String? {
+        if model.solving {
+            let p = model.solveProgress
+            return p.total > 1 ? "Solving \(p.done) of \(p.total)" : "Solving"
+        }
+        if AgentSession.shared.running { return "Agent working" }
+        return model.documentDirty ? "Edited" : nil
     }
 
-    private var documentTitle: some View {
-        Menu {
-            if model.documentURL != nil {
-                Button("Save") { model.saveDocument() }.disabled(!model.documentDirty)
-                Button("Save As…") { saveAsPanel(model) }
-                Button("Revert to Saved") { model.revertDocument() }.disabled(!model.documentDirty)
-                Divider()
-                Button("Show in Finder") { model.showInFinder() }
-            } else if model.usesDocumentTree {
-                Button("Save…") { saveAsPanel(model) }
-            } else {
-                Text("Sandbox — add geometry to save")
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Text(model.source.label).font(.headline).lineLimit(1).truncationMode(.middle)
-                    .frame(maxWidth: titleMaxWidth, alignment: .leading)
-                if model.documentDirty {
-                    Text("Edited").font(.subheadline).foregroundStyle(.secondary)
+    /// Real progress only: a single-step solve has none to show.
+    private var solveFraction: CGFloat? {
+        let p = model.solveProgress
+        guard model.solving, p.total > 1 else { return nil }
+        return CGFloat(p.done) / CGFloat(p.total)
+    }
+
+    /// The document's name at rest; a click or ⌘F makes the same field search.
+    private var statusField: some View {
+        Group {
+            if searching {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Search tools and features", text: $query)
+                        .textFieldStyle(.plain)
+                        .focused($searchFocused)
+                        .onSubmit { runSearch() }
+                        .onEscape { endSearch() }
                 }
+                .accessibilityLabel("Search tools and features")
+            } else {
+                Button { beginSearch() } label: {
+                    VStack(spacing: 0) {
+                        Text(model.source.label).font(.system(size: 12, weight: .medium))
+                            .lineLimit(1).truncationMode(.middle)
+                        if let news {
+                            Text(news).font(.system(size: 10)).foregroundStyle(.secondary)
+                                .lineLimit(1).truncationMode(.tail).monospacedDigit()
+                                .transition(.opacity)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Capsule())
+                    .animation(Motion.smooth, value: news)
+                }
+                .buttonStyle(.plain)
+                .help("\(model.source.label) — click to search tools and features (⌘F)")
+                .accessibilityLabel([model.source.label, news].compactMap { $0 }.joined(separator: ", "))
+                .accessibilityHint("Search tools and features")
             }
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-        .help("Document")
-        .accessibilityLabel(model.documentDirty ? "\(model.source.label), edited" : model.source.label)
+        .padding(.horizontal, 14)
+        .frame(width: fieldWidth, height: 32)
+        .overlay(alignment: .bottom) {
+            if !searching, let fraction = solveFraction {
+                GeometryReader { geo in
+                    Capsule().fill(Color.accentColor).frame(width: geo.size.width * fraction, height: 2)
+                        .frame(maxHeight: .infinity, alignment: .bottom)
+                }
+                .padding(.horizontal, 16)
+                .animation(Motion.smooth, value: fraction)
+            }
+        }
+        .glassCapsule()
+        .onChange(of: searchFocused) { _, focused in if !focused && query.isEmpty { searching = false } }
+        .popover(isPresented: Binding(get: { searchFocused && !query.isEmpty }, set: { if !$0 { endSearch() } }),
+                 arrowEdge: .bottom) {
+            SearchResults(model: model, query: query) { endSearch() }
+        }
     }
 
-    private var searchField: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Search", text: $query)
-                .textFieldStyle(.plain)
-                .focused($searchFocused)
-                .onSubmit { runSearch() }
-                .onEscape { query = ""; searchFocused = false }
-        }
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .frame(width: toolbarWidth < 900 ? 110 : 150)
-        .glassCapsule()
-        .popover(isPresented: Binding(get: { searchFocused && !query.isEmpty }, set: { if !$0 { searchFocused = false } }),
-                 arrowEdge: .bottom) {
-            SearchResults(model: model, query: query) { query = ""; searchFocused = false }
-        }
-        .help("Search tools and features (⌘F)")
-        .accessibilityLabel("Search tools and features")
+    private func beginSearch() {
+        searching = true
+        // The field has to exist before it can take focus.
+        DispatchQueue.main.async { searchFocused = true }
+    }
+
+    private func endSearch() {
+        query = ""; searchFocused = false; searching = false
     }
 
     private func runSearch() {
         if let first = SearchResults.matches(model: model, query: query).first { first.run() }
-        query = ""; searchFocused = false
+        endSearch()
     }
 
     private var machineChip: some View {
@@ -666,7 +712,7 @@ struct GlassDock: View {
             }
             .disabled(!model.usesDocumentTree)
             dockButton("ellipsis", "All tools", active: ui.paletteOpen) { ui.paletteOpen.toggle() }
-                .popover(isPresented: $ui.paletteOpen, arrowEdge: .bottom) { ToolPalette(model: model) }
+                .popover(isPresented: $ui.paletteOpen, arrowEdge: .top) { ToolPalette(model: model) }
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 6).padding(.vertical, 3)
@@ -751,7 +797,7 @@ struct GlassDock: View {
         .help(name)
         .accessibilityLabel(name)
         .popover(isPresented: Binding(get: { openGroup == name }, set: { if !$0 { openGroup = nil } }),
-                 arrowEdge: .bottom) {
+                 arrowEdge: .top) {
             LazyVGrid(columns: Array(repeating: GridItem(.fixed(72), spacing: 4), count: 4), spacing: 4) {
                 ForEach(tools) { t in
                     Button { openGroup = nil; if t.enabled { t.action() } } label: {

@@ -222,6 +222,10 @@ final class ReleaseWindowController {
     }
 
     func updateDocumentWindow() {
+        defer {
+            // Changing the title or edited state makes AppKit lay the titlebar out again.
+            DispatchQueue.main.async { [weak self] in (self?.window as? KeyableWindow)?.alignTitlebarButtons() }
+        }
         guard let window, let model else { return }
         window.title = model.source.label
         window.isDocumentEdited = model.documentDirty
@@ -751,7 +755,7 @@ struct ReleasedOverlayView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .overlay(alignment: .top) {
-            // Command panel, palette and toasts hang beneath the dock.
+            // Command panel, palette and toasts hang beneath the status field.
             VStack(spacing: Theme.Space.s) {
                 ToastHost()
                 CommandPanelHost(model: model)
@@ -770,13 +774,16 @@ struct ReleasedOverlayView: View {
             }
         }
         .animation(Motion.smooth, value: GlassUI.shared.shortcutsShown)
-        .overlay(alignment: .top) {
-            // History drops down from the dock, in every workspace.
+        .overlay(alignment: .bottom) {
+            if model.workspace != .manufacture { DockHost(model: model) }
+        }
+        .overlay(alignment: .bottom) {
+            // History rises from the dock, in every workspace.
             if GlassUI.shared.historyOpen && model.usesDocumentTree && model.workspace != .manufacture {
                 HistoryFilmstrip(model: model)
                     .modifier(ChromeRegion(key: "history"))
-                    .padding(.top, chromeTop)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .padding(.bottom, Glass.dockClearance)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         .animation(Motion.smooth, value: GlassUI.shared.historyOpen)
@@ -975,24 +982,13 @@ struct ReleasedOverlayView: View {
             // A loon program that failed to compile: where, and a jump there.
             if let d = model.loonDiagnostic {
                 LoonDiagnosticBanner(diagnostic: d, keptLastGood: model.usesDocumentTree)
-                    .padding(.bottom, Theme.Space.l)
+                    .padding(.bottom, studio ? Theme.Space.l : Glass.dockClearance)
                     .transition(.opacity)
                     .modifier(ChromeRegion(key: "loonDiagnostic"))
             }
         }
         .overlay(alignment: .top) {
-            if model.solving {
-                HStack(spacing: Theme.Space.s) {
-                    ProgressView().controlSize(.small)
-                    Text(model.solveProgress.total > 1
-                         ? "Solving \(model.documentName)… \(model.solveProgress.done) of \(model.solveProgress.total)"
-                         : "Solving \(model.documentName)…").font(.callout).monospacedDigit()
-                }
-                .padding(.horizontal, 14).padding(.vertical, 8).pillSurface()
-                .padding(.top, chromeTop)
-                .transition(.opacity)
-                .accessibilityLabel("Solving \(model.documentName)")
-            } else if let p = model.pendingBoolean {
+            if let p = model.pendingBoolean {
                 HStack(spacing: Theme.Space.s) {
                     Image(systemName: p.op.symbol)
                     Text(p.op == .union ? "Click the part to join"
@@ -1060,7 +1056,7 @@ struct ReleasedOverlayView: View {
                         AgentPanel(session: AgentSession.shared, model: model)
                             .modifier(ChromeRegion(key: "agentPanel"))
                     }
-                    if let s = GlassUI.shared.suggestion {
+                    if let s = GlassUI.shared.suggestion, !GlassUI.shared.historyOpen {
                         AgentSuggestionPill(model: model, suggestion: s)
                             .id(s.id)
                             .modifier(ChromeRegion(key: "suggestion"))
@@ -1068,7 +1064,7 @@ struct ReleasedOverlayView: View {
                     }
                 }
             }
-            .padding(.bottom, Glass.inset + 6)
+            .padding(.bottom, Glass.dockClearance)
             .animation(Motion.smooth, value: GlassUI.shared.historyOpen)
             .animation(Motion.smooth, value: GlassUI.shared.suggestion)
             .animation(Motion.smooth, value: model.timeline == nil)

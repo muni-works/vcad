@@ -63,7 +63,7 @@ struct NativeElectronicsView: View {
                         .padding(.horizontal, Glass.inset).padding(.top, Glass.toolbarHeight)
                         VStack {
                             Spacer()
-                            statusPill.padding(.bottom, Glass.inset + 6)
+                            statusPill.padding(.bottom, Glass.dockClearance)
                         }
                     }
                 }

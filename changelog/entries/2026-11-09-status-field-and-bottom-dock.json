@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-09-status-field-and-bottom-dock",
+  "version": "0.11.0",
+  "date": "2026-11-09",
+  "category": "feat",
+  "title": "Status field up top, tool dock at the bottom",
+  "summary": "The Mac app's document name and search share one centered field that reports edits and solves, and every tool moved to one dock along the bottom.",
+  "features": ["app", "ui"]
+}
