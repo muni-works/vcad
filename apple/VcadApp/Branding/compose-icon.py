@@ -3,6 +3,7 @@
 
   python3 compose-icon.py <mark.png> <out-1024.png>
   python3 compose-icon.py --v5 <mark-v3.png> <out-1024.png>   # + sheen/glint
+  python3 compose-icon.py --v5b <mark-v3.png> <out-1024.png>  # bolder star glint
   python3 compose-icon.py --sheet <out.png> <icon1.png> [icon2.png ...]
 
 Plate: 1024 canvas, 824 px continuous-corner rounded rect centred (Apple's
@@ -62,7 +63,7 @@ def vertical_gradient(size, top, bottom):
     return g.resize((size, size))
 
 
-def gradient_glint(mark):
+def gradient_glint(mark, bold=False):
     """v5 surface treatment, in the 1024 mark-render frame (mark-v3).
 
     Sheen: a smooth scalar field over the front face, f = soft ramp along the
@@ -102,17 +103,35 @@ def gradient_glint(mark):
     n = np.array([0.810, 0.587])           # across it
     s = (xx - gx) * u[0] + (yy - gy) * u[1]
     q = (xx - gx) * n[0] + (yy - gy) * n[1]
-    core = np.exp(-(s * s + q * q) / (2 * 3.2 ** 2))
-    streak = np.exp(-(s / 34.0) ** 2) * np.exp(-(q / 1.1) ** 2) * 0.55
-    halo = np.exp(-(s * s + q * q) / (2 * 11.0 ** 2)) * 0.12
-    g = np.clip(core + streak + halo, 0, 1) * a
-    rgb = 1 - (1 - rgb) * (1 - g[..., None] * np.array([1.0, 0.97, 0.92]))
+    rr = s * s + q * q
+    if not bold:
+        core = np.exp(-rr / (2 * 3.2 ** 2))
+        streak = np.exp(-(s / 34.0) ** 2) * np.exp(-(q / 1.1) ** 2) * 0.55
+        halo = np.exp(-rr / (2 * 11.0 ** 2)) * 0.12
+        g = np.clip(core + streak + halo, 0, 1) * a
+        rgb = 1 - (1 - rgb) * (1 - g[..., None] * np.array([1.0, 0.97, 0.92]))
+    else:
+        # v5b: white core, warm falloff, elongated 4-point star, soft bloom.
+        # Measured in the mark frame (scaled ~0.48x into the icon), so a
+        # 160 px streak here is ~80 px at 1024.
+        white = np.exp(-rr / (2 * 6.5 ** 2))
+        warm = np.exp(-rr / (2 * 15.0 ** 2)) * 0.65
+        bloom = np.exp(-rr / (2 * 42.0 ** 2)) * 0.22
+        tang = np.exp(-(np.abs(s) / 80.0) ** 1.4) * np.exp(-(q / 1.6) ** 2) * 0.85
+        cross = np.exp(-(np.abs(q) / 26.0) ** 1.4) * np.exp(-(s / 1.3) ** 2) * 0.40
+        wm = np.array([1.0, 0.78, 0.55])
+        ww = np.array([1.0, 0.98, 0.95])
+        for layer, col in ((bloom, wm), (warm, wm), (tang + cross, ww), (white, ww)):
+            g = np.clip(layer, 0, 1)[..., None] * col
+            rgb = 1 - (1 - rgb) * (1 - g)
+        # let the bloom spill past the silhouette a little
+        a = np.maximum(a, np.clip(bloom * 0.6 + (tang + cross) * 0.9 + white, 0, 1))
 
     out = np.dstack([np.clip(rgb, 0, 1), a]) * 255.0
     return Image.fromarray(out.round().astype(np.uint8), "RGBA")
 
 
-def compose(mark_path, out_path, v5=False):
+def compose(mark_path, out_path, v5=False, bold=False):
     mask = squircle_mask(S, BODY)
     plate = vertical_gradient(S, (30, 31, 36), (10, 10, 11)).convert("RGBA")
 
@@ -130,9 +149,10 @@ def compose(mark_path, out_path, v5=False):
 
     # The mark: trimmed, scaled to ~58% of the body width, optically centred.
     mark = Image.open(mark_path).convert("RGBA")
+    bbox = mark.getbbox()  # framing from the solid, not the glint's bloom
     if v5:
-        mark = gradient_glint(mark)
-    mark = mark.crop(mark.getbbox())
+        mark = gradient_glint(mark, bold)
+    mark = mark.crop(bbox)
     target_w = int(BODY * 0.60)
     mark = mark.resize((target_w, int(mark.height * target_w / mark.width)), Image.LANCZOS)
     x = (S - mark.width) // 2
@@ -179,6 +199,8 @@ def sheet(out_path, icons):
 if __name__ == "__main__":
     if sys.argv[1] == "--sheet":
         sheet(sys.argv[2], sys.argv[3:])
+    elif sys.argv[1] == "--v5b":
+        compose(sys.argv[2], sys.argv[3], v5=True, bold=True)
     elif sys.argv[1] == "--v5":
         compose(sys.argv[2], sys.argv[3], v5=True)
     else:
