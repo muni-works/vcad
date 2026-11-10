@@ -192,6 +192,7 @@ enum Prefs {
     static let soundsKey = "vcad.prefs.sounds"
     static let hapticsKey = "vcad.prefs.haptics"
     static let gridKey = "vcad.prefs.grid"
+    static let sketchGridKey = "vcad.prefs.sketchGrid"
     static let triadKey = "vcad.prefs.triad"
     static let presentationKey = "vcad.prefs.presentation"
     static let labsKey = "vcad.prefs.labs"
@@ -207,6 +208,9 @@ enum Prefs {
     static var haptics: Bool { bool(hapticsKey, default: true) }
     /// Draw the reference grid and contact shadow in the windowed viewport.
     static var showsGrid: Bool { bool(gridKey, default: true) }
+    /// Draw the grid on the active sketch plane while sketching — independent
+    /// of the ground grid, which hides while a sketch is open.
+    static var showsSketchGrid: Bool { bool(sketchGridKey, default: true) }
     /// Draw the orientation triad in the viewport corner.
     static var showsTriad: Bool { bool(triadKey, default: true) }
     /// Open new instances in a window rather than released over the desktop.

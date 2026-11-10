@@ -152,6 +152,8 @@ struct HostWindowHider: NSViewRepresentable {
 struct DocumentCommands: Commands {
     @Bindable var model: EditorModel
     @Bindable var intent: IntentEngine
+    @AppStorage(Prefs.gridKey) private var showsGrid = true
+    @AppStorage(Prefs.sketchGridKey) private var showsSketchGrid = true
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -267,6 +269,10 @@ struct DocumentCommands: Commands {
                 model.setPanels(shown: !model.anyPanelShown)
             }
             .keyboardShortcut("0", modifiers: [.command, .option])
+            Divider()
+            Toggle("Show Grid", isOn: $showsGrid)
+                .keyboardShortcut("g", modifiers: [.command, .option])
+            Toggle("Show Sketch Grid", isOn: $showsSketchGrid)
             Divider()
             Toggle("Zebra Analysis", isOn: $model.zebraMode)
                 .keyboardShortcut("z", modifiers: [.command, .option])

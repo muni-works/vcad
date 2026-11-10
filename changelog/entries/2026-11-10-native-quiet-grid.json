@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-10-native-quiet-grid",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "feat",
+  "title": "Mac app: quiet viewport grid and sketch-plane grid",
+  "summary": "Hairline metric grid that adapts to zoom and fades out, red/green X/Y axes, soft contact shadow; sketches get their own grid at the snap size. View > Show Grid / Show Sketch Grid.",
+  "features": ["native", "viewport", "grid", "sketch"]
+}
