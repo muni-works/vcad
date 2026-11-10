@@ -1,0 +1,14 @@
+; logo.vcad — the vcad mark as a real part (docs/brand-spec.md §1).
+; A filled inverted triangle (apex down), extruded into a triangular prism.
+; Apex angle 63.5° (spec §2): half-width / height = tan(31.75°) = 0.6188.
+; Build: cargo run -p vcad-loon --example loon2vcad -- logo.loon > logo.vcad
+[let h 100.0]
+[let hw [* h 0.6188]]
+[let depth 34.0]
+; Sketch in the XZ plane (vertical), extruded along +Y.
+[let mark
+  [extrude 0 depth 0
+    [sketch 0 0 0  1 0 0  0 0 1
+      #[[polygon #[[- 0 hw] h  hw h  0 0]]]]]]
+[let logo [pipe mark [fillet 2.5]]]
+[root logo "mark"]
