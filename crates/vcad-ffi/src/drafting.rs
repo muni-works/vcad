@@ -841,6 +841,45 @@ mod tests {
         assert_eq!(nice_scale(0.3), (0.2, "1:5".into()));
     }
 
+    /// The drawing-bench heatsink: 50×40×5 base, eight 1.5×36×25 fins along
+    /// X, built the way the app builds it (cube + linear pattern + union).
+    fn heatsink_doc(extra_drawing: &str) -> String {
+        let pitch = (50.0 - 1.5) / 7.0;
+        format!(
+            r#"{{"version":"0.1","nodes":{{
+            "1":{{"id":1,"name":"Base","op":{{"type":"Cube","size":{{"x":50,"y":40,"z":5}}}}}},
+            "2":{{"id":2,"name":null,"op":{{"type":"Cube","size":{{"x":1.5,"y":36,"z":25}}}}}},
+            "3":{{"id":3,"name":null,"op":{{"type":"Translate","child":2,"offset":{{"x":0,"y":2,"z":5}}}}}},
+            "4":{{"id":4,"name":null,"op":{{"type":"LinearPattern","child":3,"direction":{{"x":1,"y":0,"z":0}},"count":8,"spacing":{pitch}}}}},
+            "5":{{"id":5,"name":"Heatsink","op":{{"type":"Union","left":1,"right":4}}}}}},
+            "materials":{{}},"part_materials":{{}},"roots":[{{"root":5,"material":"default"}}]
+            {extra_drawing}}}"#
+        )
+    }
+
+    fn call_doc(doc: &str, req: &str) -> serde_json::Value {
+        let d = CString::new(doc).unwrap();
+        let r = CString::new(req).unwrap();
+        let p = vcad_drawing_sheet_json(d.as_ptr(), r.as_ptr());
+        assert!(!p.is_null(), "{:?}", err::last_error_string());
+        serde_json::from_str(&crate::json::take(p)).unwrap()
+    }
+
+    /// Hidden/visible edges are feature edges, not tessellation diagonals
+    /// (was 1,292 hidden edges in the front view).
+    #[test]
+    fn heatsink_edges_are_feature_edges() {
+        let doc = heatsink_doc("");
+        for view in ["front", "top", "right"] {
+            let v = call_doc(&doc, &format!(r#"{{"view":"{view}"}}"#));
+            let vis = v["visible_edges"].as_u64().unwrap();
+            let hid = v["hidden_edges"].as_u64().unwrap();
+            eprintln!("{view}: visible {vis} hidden {hid}");
+            assert!(hid < 100, "{view}: {hid} hidden edges (was 338 in front)");
+            assert!(vis < 100, "{view}: {vis} visible edges (was 130 in front)");
+        }
+    }
+
     /// Gate: every sample the app ships draws in every orthographic view, and
     /// its DXF holds exactly the LINE records the web export writes for the
     /// same mesh (`projectMesh` → `exportProjectedViewToDxf`).
