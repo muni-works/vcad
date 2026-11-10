@@ -526,9 +526,13 @@ enum DockTools {
             Tool(id: "asm.panel", label: "Joints & Mates", symbol: "link", isActive: m.assembly.showsPanel) {
                 m.assembly.showsPanel.toggle()
             },
-            Tool(id: "asm.check", label: "Check Mates", symbol: "checkmark.seal", isActive: false,
-                 enabled: !m.asmMates.isEmpty, hint: "Add a mate first") {
-                m.assembly.showsPanel = true; m.checkMates()
+            // Was "Check Mates", enabled only once a mate existed — so with six
+            // instances and no mates the dock's check stayed grey and
+            // interference was only reachable from the Analyze menu.
+            Tool(id: "asm.check", label: "Check Interference", symbol: "checkmark.seal",
+                 isActive: AnalysisStore.shared.shown && AnalysisStore.shared.tab == .clearance,
+                 enabled: m.clearanceBodyCount >= 2, hint: "Needs two or more parts") {
+                m.checkInterference()
             },
             Tool(id: "asm.explode", label: "Explode", symbol: "arrow.up.left.and.arrow.down.right",
                  isActive: m.explode > 0, enabled: has) {
