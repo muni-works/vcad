@@ -71,6 +71,11 @@ Every friction point found gets fixed or listed here.
   Finish stays disabled and nothing says why.
 - Part 4: typing into the toolbar's extrude distance after a triple-click
   still went into the previously focused dimension field.
+- Part 4 (retry): with Dimension armed, a click near a corner adds a Fixed
+  constraint instead of measuring the edge; two misses over-constrain the
+  sketch, and vertical rectangle edges were hard to pick at all.
+- Part 4 (retry): a dimension field keeps keyboard focus after Return, so the
+  next viewport clicks only end the edit.
 - File > New Document opens a second app instance rather than a new window or
   document in this one.
 
