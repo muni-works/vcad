@@ -1780,6 +1780,66 @@ impl ConvertCtx {
         Ok((x > 0.0).then_some(x))
     }
 
+    /// A Solid-typed ADT field, with an error naming the loon function and
+    /// argument position when the program passed something else.
+    fn solid_field(&mut self, tag: &str, fields: &[Value], idx: usize) -> Result<NodeId, String> {
+        let v = &fields[idx];
+        if !matches!(v, Value::Adt(..)) {
+            return Err(arg_error(tag, fields.len(), idx, "Solid", v));
+        }
+        self.convert_solid(v)
+    }
+
+    /// A numeric ADT field, with a function/position-naming error.
+    fn num_field(&self, tag: &str, fields: &[Value], idx: usize) -> Result<f64, String> {
+        match &fields[idx] {
+            Value::Float(f) => Ok(*f),
+            Value::Int(i) => Ok(*i as f64),
+            v => Err(arg_error(tag, fields.len(), idx, "number", v)),
+        }
+    }
+
+    fn num_vec3(&self, tag: &str, fields: &[Value], offset: usize) -> Result<Vec3, String> {
+        Ok(Vec3::new(
+            self.num_field(tag, fields, offset)?,
+            self.num_field(tag, fields, offset + 1)?,
+            self.num_field(tag, fields, offset + 2)?,
+        ))
+    }
+
+    /// A primitive dimension: must be finite and strictly positive. The
+    /// kernel would otherwise take `|x|` (a negative cube silently flips
+    /// positive) or build a zero-volume part.
+    fn dim(&self, tag: &str, fields: &[Value], idx: usize, what: &str) -> Result<f64, String> {
+        let x = self.num_field(tag, fields, idx)?;
+        if !x.is_finite() || x <= 0.0 {
+            return Err(format!(
+                "{}: {what} must be a positive finite number, got {x}",
+                user_fn_name(tag)
+            ));
+        }
+        Ok(x)
+    }
+
+    /// Cone radii: each finite and >= 0 (one may be 0 for a point), not both 0.
+    fn cone_radii(&self, tag: &str, fields: &[Value]) -> Result<(f64, f64), String> {
+        let f = user_fn_name(tag);
+        let mut r = [0.0; 2];
+        for (i, what) in ["bottom radius", "top radius"].iter().enumerate() {
+            let x = self.num_field(tag, fields, i)?;
+            if !x.is_finite() || x < 0.0 {
+                return Err(format!("{f}: {what} must be a finite number >= 0, got {x}"));
+            }
+            r[i] = x;
+        }
+        if r[0] == 0.0 && r[1] == 0.0 {
+            return Err(format!(
+                "{f}: at least one radius must be positive, got 0 and 0"
+            ));
+        }
+        Ok((r[0], r[1]))
+    }
+
     fn check_positive(&self, tag: &str, what: &str, x: f64) -> Result<(), String> {
         if x <= 0.0 || x.is_nan() {
             return Err(format!("{tag}: {what} must be positive, got {x}"));
@@ -1910,30 +1970,35 @@ impl ConvertCtx {
             "Cube" => {
                 assert_fields(tag, fields, 3)?;
                 CsgOp::Cube {
-                    size: self.vec3(fields, 0)?,
+                    size: Vec3::new(
+                        self.dim(tag, fields, 0, "x size")?,
+                        self.dim(tag, fields, 1, "y size")?,
+                        self.dim(tag, fields, 2, "z size")?,
+                    ),
                 }
             }
             "Cylinder" => {
                 assert_fields(tag, fields, 2)?;
                 CsgOp::Cylinder {
-                    radius: self.f64_val(&fields[0])?,
-                    height: self.f64_val(&fields[1])?,
+                    radius: self.dim(tag, fields, 0, "radius")?,
+                    height: self.dim(tag, fields, 1, "height")?,
                     segments: 0,
                 }
             }
             "Sphere" => {
                 assert_fields(tag, fields, 1)?;
                 CsgOp::Sphere {
-                    radius: self.f64_val(&fields[0])?,
+                    radius: self.dim(tag, fields, 0, "radius")?,
                     segments: 0,
                 }
             }
             "Cone" => {
                 assert_fields(tag, fields, 3)?;
+                let (radius_bottom, radius_top) = self.cone_radii(tag, fields)?;
                 CsgOp::Cone {
-                    radius_bottom: self.f64_val(&fields[0])?,
-                    radius_top: self.f64_val(&fields[1])?,
-                    height: self.f64_val(&fields[2])?,
+                    radius_bottom,
+                    radius_top,
+                    height: self.dim(tag, fields, 2, "height")?,
                     segments: 0,
                 }
             }
@@ -2015,24 +2080,25 @@ impl ConvertCtx {
             "CylinderN" => {
                 assert_fields(tag, fields, 3)?;
                 CsgOp::Cylinder {
-                    radius: self.f64_val(&fields[0])?,
-                    height: self.f64_val(&fields[1])?,
+                    radius: self.dim(tag, fields, 0, "radius")?,
+                    height: self.dim(tag, fields, 1, "height")?,
                     segments: self.segments_val(tag, &fields[2])?,
                 }
             }
             "SphereN" => {
                 assert_fields(tag, fields, 2)?;
                 CsgOp::Sphere {
-                    radius: self.f64_val(&fields[0])?,
+                    radius: self.dim(tag, fields, 0, "radius")?,
                     segments: self.segments_val(tag, &fields[1])?,
                 }
             }
             "ConeN" => {
                 assert_fields(tag, fields, 4)?;
+                let (radius_bottom, radius_top) = self.cone_radii(tag, fields)?;
                 CsgOp::Cone {
-                    radius_bottom: self.f64_val(&fields[0])?,
-                    radius_top: self.f64_val(&fields[1])?,
-                    height: self.f64_val(&fields[2])?,
+                    radius_bottom,
+                    radius_top,
+                    height: self.dim(tag, fields, 2, "height")?,
                     segments: self.segments_val(tag, &fields[3])?,
                 }
             }
@@ -2092,52 +2158,52 @@ impl ConvertCtx {
             // Booleans
             "Union" => {
                 assert_fields(tag, fields, 2)?;
-                let left = self.convert_solid(&fields[0])?;
-                let right = self.convert_solid(&fields[1])?;
+                let left = self.solid_field(tag, fields, 0)?;
+                let right = self.solid_field(tag, fields, 1)?;
                 CsgOp::Union { left, right }
             }
             "Difference" => {
                 assert_fields(tag, fields, 2)?;
-                let left = self.convert_solid(&fields[0])?;
-                let right = self.convert_solid(&fields[1])?;
+                let left = self.solid_field(tag, fields, 0)?;
+                let right = self.solid_field(tag, fields, 1)?;
                 CsgOp::Difference { left, right }
             }
             "Intersection" => {
                 assert_fields(tag, fields, 2)?;
-                let left = self.convert_solid(&fields[0])?;
-                let right = self.convert_solid(&fields[1])?;
+                let left = self.solid_field(tag, fields, 0)?;
+                let right = self.solid_field(tag, fields, 1)?;
                 CsgOp::Intersection { left, right }
             }
 
             // Transforms
             "Translate" => {
                 assert_fields(tag, fields, 4)?;
-                let child = self.convert_solid(&fields[0])?;
+                let child = self.solid_field(tag, fields, 0)?;
                 CsgOp::Translate {
                     child,
-                    offset: self.vec3(fields, 1)?,
+                    offset: self.num_vec3(tag, fields, 1)?,
                 }
             }
             "Rotate" => {
                 assert_fields(tag, fields, 4)?;
-                let child = self.convert_solid(&fields[0])?;
+                let child = self.solid_field(tag, fields, 0)?;
                 CsgOp::Rotate {
                     child,
-                    angles: self.vec3(fields, 1)?,
+                    angles: self.num_vec3(tag, fields, 1)?,
                 }
             }
             "Scale" => {
                 assert_fields(tag, fields, 4)?;
-                let child = self.convert_solid(&fields[0])?;
+                let child = self.solid_field(tag, fields, 0)?;
                 CsgOp::Scale {
                     child,
-                    factor: self.vec3(fields, 1)?,
+                    factor: self.num_vec3(tag, fields, 1)?,
                 }
             }
             "Mirror" => {
                 // [Mirror solid ox oy oz nx ny nz]
                 assert_fields(tag, fields, 7)?;
-                let child = self.convert_solid(&fields[0])?;
+                let child = self.solid_field(tag, fields, 0)?;
                 CsgOp::Mirror {
                     child,
                     plane_origin: self.vec3(fields, 1)?,
@@ -2169,7 +2235,7 @@ impl ConvertCtx {
             }
             "Shell" => {
                 assert_fields(tag, fields, 2)?;
-                let child = self.convert_solid(&fields[0])?;
+                let child = self.solid_field(tag, fields, 0)?;
                 CsgOp::Shell {
                     child,
                     thickness: self.f64_val(&fields[1])?,
@@ -2177,7 +2243,7 @@ impl ConvertCtx {
             }
             "Fillet" => {
                 assert_fields(tag, fields, 2)?;
-                let child = self.convert_solid(&fields[0])?;
+                let child = self.solid_field(tag, fields, 0)?;
                 CsgOp::Fillet {
                     child,
                     radius: self.f64_val(&fields[1])?,
@@ -2185,7 +2251,7 @@ impl ConvertCtx {
             }
             "Chamfer" => {
                 assert_fields(tag, fields, 2)?;
-                let child = self.convert_solid(&fields[0])?;
+                let child = self.solid_field(tag, fields, 0)?;
                 CsgOp::Chamfer {
                     child,
                     distance: self.f64_val(&fields[1])?,
@@ -2197,7 +2263,7 @@ impl ConvertCtx {
                 // [LinearPattern solid dx dy dz count spacing]
                 assert_fields(tag, fields, 6)?;
                 let mark = self.doc.hardware.len();
-                let child = self.convert_solid(&fields[0])?;
+                let child = self.solid_field(tag, fields, 0)?;
                 let count = self.u32_val(&fields[4])?;
                 self.multiply_hardware(mark, count);
                 CsgOp::LinearPattern {
@@ -2211,7 +2277,7 @@ impl ConvertCtx {
                 // [CircularPattern solid ox oy oz ax ay az count angle]
                 assert_fields(tag, fields, 9)?;
                 let mark = self.doc.hardware.len();
-                let child = self.convert_solid(&fields[0])?;
+                let child = self.solid_field(tag, fields, 0)?;
                 let count = self.u32_val(&fields[7])?;
                 self.multiply_hardware(mark, count);
                 CsgOp::CircularPattern {
@@ -2227,7 +2293,7 @@ impl ConvertCtx {
                 // [SweepRotate solid ox oy oz ax ay az lo hi step clearance]
                 // step 0 = automatic, clearance 0 = none.
                 assert_fields(tag, fields, 11)?;
-                let child = self.convert_solid(&fields[0])?;
+                let child = self.solid_field(tag, fields, 0)?;
                 let step = self.f64_val(&fields[9])?;
                 let clearance = self.f64_val(&fields[10])?;
                 if step < 0.0 || clearance < 0.0 {
@@ -2651,6 +2717,77 @@ fn mesh_units_to_metres(units: &str) -> f64 {
         .iter()
         .find(|(name, _)| *name == units)
         .map_or(1.0, |(_, k)| *k)
+}
+
+/// The loon stdlib function that builds an ADT tag: `LinearPattern` ->
+/// `linear-pattern`, `CylinderN` -> `cylinder-n`.
+fn user_fn_name(tag: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in tag.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if i > 0 {
+                out.push('-');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// A short type word for an error message.
+fn value_kind(v: &Value) -> &str {
+    match v {
+        Value::Int(_) | Value::Float(_) => "number",
+        Value::Str(_) => "string",
+        Value::Bool(_) => "bool",
+        Value::Vec(_) => "vector",
+        Value::Adt(tag, _) => tag.as_str(),
+        _ => "value",
+    }
+}
+
+/// Tags whose stdlib constructor takes the subject solid LAST (`[translate
+/// x y z s]` builds `[Translate s x y z]`).
+fn is_subject_last(tag: &str) -> bool {
+    matches!(
+        tag,
+        "Translate"
+            | "Rotate"
+            | "Scale"
+            | "Mirror"
+            | "Shell"
+            | "Fillet"
+            | "Chamfer"
+            | "LinearPattern"
+            | "CircularPattern"
+            | "SweepRotate"
+    )
+}
+
+/// "translate: argument 4 expected Solid, got number 3" — the 1-based
+/// position is the argument of the stdlib *function*, not the ADT field.
+fn arg_error(tag: &str, n_fields: usize, idx: usize, want: &str, got: &Value) -> String {
+    let f = user_fn_name(tag);
+    let kind = value_kind(got);
+    match tag {
+        "Union" | "Difference" | "Intersection" => {
+            format!("{f}: operand expected {want}, got {kind} {got}")
+        }
+        _ => {
+            let pos = if is_subject_last(tag) {
+                if idx == 0 {
+                    n_fields
+                } else {
+                    idx
+                }
+            } else {
+                idx + 1
+            };
+            format!("{f}: argument {pos} expected {want}, got {kind} {got}")
+        }
+    }
 }
 
 fn assert_fields(tag: &str, fields: &[Value], expected: usize) -> Result<(), String> {
