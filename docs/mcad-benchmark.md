@@ -13,7 +13,7 @@ Every friction point found gets fixed or listed here.
 | 5 | Swept and lofted duct | sweep, loft, shell | Open |
 | 6 | Patterned heatsink | linear pattern, fin spacing | Built: 50 x 40 x 5 base, 8 fins 1.5 x 36 x 25 at 5.5 mm pitch, unioned: 18,640 mm^3 (hand 18,640) |
 | 7 | Gear pair with a mate | involute profile, mates | Open |
-| 8 | Six-part assembly | joints, interference, explode | Open |
+| 8 | Six-part assembly | joints, interference, explode | Built: plate plus cube, cylinder, sphere, cone and wedge as six instances, a revolute joint, explode to 100%, and Clearance & Interference reporting 1 interfering pair (203.5 mm^3 overlap) |
 | 9 | Drawing with GD&T | views, sections, datums, frames | Built on the part 6 heatsink: front view with 50 and 25 mm dimensions, datum A, a position frame to A, Section A-A. Defects below |
 | 10 | CAM on a pocketed plate | toolpaths, stock simulation | Built: 80 x 60 x 10 plate, 40 x 30 x 5 cut pocket, 42,000 mm^3 (hand 42,000); rect-pocket toolpath with a 1/8" endmill verified against the part. Moving the pocket 15 mm makes verification fail, as it should |
 
@@ -43,10 +43,16 @@ Every friction point found gets fixed or listed here.
 - Part 10: removing a CAM operation crashed the app (Swift exclusivity
   conflict reading the row's binding inside removeAll). Fixed.
 - Part 10: Return doesn't commit a CAM number field; only Tab does, so
-  Generate can run with the old value.
+  Generate can run with the old value. Fixed, checked by mouse.
 - Part 10: after editing an operation, the last "Verified against the part"
-  stays on screen until Generate runs again.
+  stays on screen until Generate runs again. Fixed: marked out of date.
 - Drawing workspace with no drawing shows an empty status pill above the dock.
+- Part 8: Insert Instance and the clearance report call parts "Part 1" to
+  "Part 5" instead of their feature names (Box, Cylinder, ...).
+- Part 8: primitives placed by clicking the ground land hundreds of mm from the
+  origin, far apart.
+- Part 8: the Assembly dock's interference button stays disabled; the check is
+  only reachable from Analyze > Clearance & Interference.
 - File > New Document opens a second app instance rather than a new window or
   document in this one.
 
