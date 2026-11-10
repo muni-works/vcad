@@ -273,12 +273,14 @@ struct GlassToolbar: View {
     private var fieldWidth: CGFloat { min(340, max(200, toolbarWidth * 0.3)) }
 
     /// The second line, only when there's something to say. Most urgent first.
-    private var news: String? {
+    private func news(at now: Date) -> String? {
         if model.solving {
             let p = model.solveProgress
             return p.total > 1 ? "Solving \(p.done) of \(p.total)" : "Solving"
         }
         if AgentSession.shared.running { return "Agent working" }
+        // An agent over the live link: it has written in the last few seconds.
+        if let at = model.agentLinkActiveAt, now.timeIntervalSince(at) < 4 { return "Agent working" }
         return model.documentDirty ? "Edited" : nil
     }
 
@@ -304,6 +306,9 @@ struct GlassToolbar: View {
                 .accessibilityLabel("Search tools and features")
             } else {
                 Button { beginSearch() } label: {
+                    // Ticks so a linked agent's "working" fades once it goes quiet.
+                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                    let news = news(at: context.date)
                     VStack(spacing: 0) {
                         Text(model.source.label).font(.system(size: 12, weight: .medium))
                             .lineLimit(1).truncationMode(.middle)
@@ -315,10 +320,11 @@ struct GlassToolbar: View {
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Capsule())
                     .animation(Motion.smooth, value: news)
+                    }
                 }
                 .buttonStyle(.plain)
                 .help("\(model.source.label) — click to search tools and features (⌘F)")
-                .accessibilityLabel([model.source.label, news].compactMap { $0 }.joined(separator: ", "))
+                .accessibilityLabel([model.source.label, news(at: .now)].compactMap { $0 }.joined(separator: ", "))
                 .accessibilityHint("Search tools and features")
             }
         }

@@ -374,11 +374,16 @@ struct DrawingWorkspaceView: View {
             Color(nsColor: .underPageBackgroundColor)
             Group {
                 if let r = store.result {
+                    // Clear of the status field above and the status pill and dock below.
                     DrawingSheetCanvas(result: r, store: store)
+                        .padding(.top, Glass.toolbarHeight)
+                        .padding(.bottom, Glass.dockClearance + 40)
                 } else if let e = store.error {
                     ContentUnavailableView("No Drawing", systemImage: "ruler", description: Text(e))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
                     ProgressView("Projecting views…")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
             HStack(alignment: .top, spacing: 0) {
