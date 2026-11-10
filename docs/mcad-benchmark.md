@@ -32,13 +32,14 @@ Every friction point found gets fixed or listed here.
   sketch onto that face instead of placing a corner. Fixed: armed tools place
   geometry.
 - Part 9: Section A-A is drawn rotated 90 degrees (base on the left, not the
-  bottom).
+  bottom). Fixed.
 - Part 9: the section takes the letter A while datum A exists; section letters
-  should skip datum letters.
-- Part 9: hidden lines include mesh triangle diagonals across flat faces.
+  should skip datum letters. Fixed: one shared alphabet without I, O, Q.
+- Part 9: hidden lines included mesh triangle diagonals across flat faces.
+  Fixed: front view hidden edges 338 to 58.
 - Part 9: new datum and frame symbols land on top of dimension text and
-  geometry.
-- The workspace menu in the bottom dock opens downward, below the window.
+  geometry. Fixed: they slide clear and get a leader.
+- The workspace menu in the bottom dock opened downward, below the window. Fixed: it opens upward.
 - File > New Document opens a second app instance rather than a new window or
   document in this one.
 
