@@ -33,6 +33,28 @@ thread_local! {
     static FOLD_SHEET_METAL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+thread_local! {
+    /// Display chord tolerance (mm) for root meshes; 0 = the fixed segment
+    /// count. Set only by the native viewport's session, so a large cylinder
+    /// isn't drawn as a visible 32-gon; volumes and exports are unaffected.
+    static DISPLAY_CHORD_TOL: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
+}
+
+/// RAII guard: tessellate root meshes with a chord tolerance on this thread
+/// for its lifetime (panic-safe — restored on drop).
+pub struct DisplayChordGuard(f64);
+impl DisplayChordGuard {
+    /// Enable `tol_mm` (≤ 0 disables) until the guard drops.
+    pub fn enable(tol_mm: f64) -> Self {
+        DisplayChordGuard(DISPLAY_CHORD_TOL.with(|t| t.replace(tol_mm.max(0.0))))
+    }
+}
+impl Drop for DisplayChordGuard {
+    fn drop(&mut self) {
+        DISPLAY_CHORD_TOL.with(|t| t.set(self.0));
+    }
+}
+
 /// RAII guard: turn sheet-metal folding on for the current thread and restore it
 /// on drop (panic-safe — the flag never leaks past the call).
 struct FoldGuard(bool);
@@ -122,9 +144,10 @@ fn evaluate_inner(
     // are still valid (salted with what else changes a result).
     let hashes = inc.as_ref().map(|_| {
         let fold = FOLD_SHEET_METAL.with(|f| f.get());
+        let chord = DISPLAY_CHORD_TOL.with(|t| t.get());
         crate::incremental::subtree_hashes(
             &doc.nodes,
-            u64::from(segments) | (u64::from(fold) << 32),
+            (u64::from(segments) | (u64::from(fold) << 32)) ^ chord.to_bits().rotate_left(17),
         )
     });
     let mut cache: HashMap<NodeId, Option<Solid>> = match (inc.as_deref_mut(), &hashes) {
@@ -134,6 +157,7 @@ fn evaluate_inner(
     let fp_settings = FingerprintSettings {
         segments,
         fold_sheet_metal: FOLD_SHEET_METAL.with(|f| f.get()),
+        chord_tol_mm: DISPLAY_CHORD_TOL.with(|t| t.get()),
     };
     let lookup = |root: NodeId| -> (Option<RootKey>, Option<EvaluatedMesh>) {
         let Some(c) = root_cache else {
@@ -718,7 +742,12 @@ fn evaluate_and_mesh(
         match evaluate_node_timed(root, nodes, cache, clock, timings)? {
             Some(s) => {
                 let t_mesh = clock.map(|c| c.now_ms());
-                let tri = s.to_mesh(segments);
+                let chord = DISPLAY_CHORD_TOL.with(|t| t.get());
+                let tri = if chord > 0.0 {
+                    s.to_mesh_with_chord(segments, chord)
+                } else {
+                    s.to_mesh(segments)
+                };
                 let mesh_ms = match (t_mesh, clock) {
                     (Some(t0), Some(c)) => c.now_ms() - t0,
                     _ => 0.0,

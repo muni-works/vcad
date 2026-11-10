@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-08-smooth-curves-in-viewport",
+  "version": "0.11.0",
+  "date": "2026-11-08",
+  "category": "fix",
+  "title": "Large curved parts draw smooth in the Mac app",
+  "summary": "The viewport meshes curved faces to a 0.02 mm chord tolerance instead of a fixed 32 segments, so big cylinders and fillets no longer show facets.",
+  "features": ["native-app", "tessellation", "viewport"]
+}

@@ -7469,7 +7469,36 @@ pub fn tessellate(brep: &BRepSolid, segments: u32) -> TriangleMesh {
 ///
 /// This is the primary tessellation function used by the facade crate.
 pub fn tessellate_brep(brep: &BRepSolid, segments: u32) -> TriangleMesh {
-    let params = TessellationParams::from_segments(segments);
+    tessellate_brep_with(brep, TessellationParams::from_segments(segments))
+}
+
+/// [`tessellate_brep`] with explicit parameters — e.g. a chord tolerance, so
+/// a large cylinder isn't drawn as a visible 32-gon.
+pub fn tessellate_brep_with(brep: &BRepSolid, params: TessellationParams) -> TriangleMesh {
+    // A tolerance is resolved to ONE count for the whole solid. Per-face
+    // counts left cracks: a cylinder's wall went dense while its disc caps
+    // kept the base count, and a cone's small cap disagreed with its rim
+    // (which samples at the larger radius). Half the largest bbox extent
+    // bounds every circle on the solid, so this count satisfies the
+    // tolerance everywhere; the fixed-count path is already watertight.
+    let params = if params.chord_tolerance.is_some() || params.angular_tolerance.is_some() {
+        let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+        for (_, v) in brep.topology.vertices.iter() {
+            let p = [v.point.x, v.point.y, v.point.z];
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+        let r = (0..3).map(|k| hi[k] - lo[k]).fold(0.0_f64, f64::max) * 0.5;
+        if r.is_finite() && r > 0.0 {
+            TessellationParams::from_segments(params.circle_segments_for_radius(r))
+        } else {
+            TessellationParams::from_segments(params.circle_segments)
+        }
+    } else {
+        params
+    };
     let solid = &brep.topology.solids[brep.solid_id];
     let shell = &brep.topology.shells[solid.outer_shell];
 
