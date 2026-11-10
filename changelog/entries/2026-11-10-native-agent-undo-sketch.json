@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-10-native-agent-undo-sketch",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "fix",
+  "title": "Mac app: agent undo refuses while a sketch is open",
+  "summary": "An agent's undo over the app bridge no longer eats the user's sketch strokes: while a sketch is open it refuses with a clear message and changes nothing.",
+  "features": ["native", "undo", "sketch", "agent"],
+  "mcpTools": ["undo"]
+}
