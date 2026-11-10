@@ -121,6 +121,34 @@ struct DrawingGdt: Codable, Equatable, Identifiable {
     private enum CodingKeys: String, CodingKey { case kind, tolerance, datum, at }
 }
 
+/// Identification letters for section views, detail views and datum
+/// features. They share one alphabet so a letter never names two things,
+/// and I, O and Q are never used (ASME Y14.3 for views, Y14.5 for datums).
+enum DrawingLetters {
+    static let alphabet = Array("ABCDEFGHJKLMNPRSTUVWXYZ").map(String.init)
+
+    static func used(sections: [DrawingSectionLine], details: [DrawingDetail], gdt: [DrawingGdt]) -> Set<String> {
+        Set(sections.map(\.label) + details.map(\.label) + gdt.compactMap(\.datum))
+    }
+
+    /// First allowed letter not in `used`; doubles (AA, BB…) once the
+    /// alphabet runs out, as the standards allow.
+    static func next(excluding used: Set<String>) -> String {
+        for n in 1...3 {
+            for c in alphabet where !used.contains(String(repeating: c, count: n)) {
+                return String(repeating: c, count: n)
+            }
+        }
+        return "ZZZ"
+    }
+
+    /// `wanted` if it is allowed and free, otherwise the next free letter.
+    static func resolve(_ wanted: String?, excluding used: Set<String>) -> String {
+        if let w = wanted, alphabet.contains(w), !used.contains(w) { return w }
+        return next(excluding: used)
+    }
+}
+
 /// `DrawingRequest` in drafting.rs.
 private struct DrawingRequestWire: Encodable {
     var view: String
@@ -293,10 +321,16 @@ final class DrawingStore {
         refresh(force: true)
     }
 
+    /// Letters already naming something on the sheet: sections, details and
+    /// datum features (and datums referenced by feature control frames).
+    /// Views and datums share one alphabet so "A" is never both.
+    var usedLetters: Set<String> {
+        DrawingLetters.used(sections: documentSettings.sections ?? [], details: details, gdt: gdt)
+    }
+
     func addSection(atViewX x: Double) {
         guard view.canSection, let b = result?.main.bounds else { return }
-        let used = Set((documentSettings.sections ?? []).map(\.label))
-        let label = nextLetter(excluding: used)
+        let label = DrawingLetters.next(excluding: usedLetters)
         let pad = max(b.max_y - b.min_y, 1) * 0.1
         let line = DrawingSectionLine(id: "section-\(UUID().uuidString.prefix(8))", view: view.rawValue, label: label,
                                       points: [[x, b.min_y - pad], [x, b.max_y + pad]])
@@ -310,19 +344,21 @@ final class DrawingStore {
     func addDetail(at p: DrawingPoint) {
         guard let b = result?.main.bounds else { return }
         let size = max(min(b.max_x - b.min_x, b.max_y - b.min_y) * 0.3, 1)
-        let used = Set(details.map(\.label) + (documentSettings.sections ?? []).map(\.label))
-        details.append(DrawingDetail(label: nextLetter(excluding: used), center: [p.x, p.y], width: size, height: size))
+        details.append(DrawingDetail(label: DrawingLetters.next(excluding: usedLetters), center: [p.x, p.y],
+                                     width: size, height: size))
     }
 
     func addGdt(_ kind: GdtKind, at p: DrawingPoint) {
-        gdt.append(DrawingGdt(kind: kind, tolerance: gdtTolerance,
-                              datum: gdtDatum.isEmpty ? nil : String(gdtDatum.prefix(1)).uppercased(),
-                              at: [p.x, p.y]))
-    }
-
-    private func nextLetter(excluding used: Set<String>) -> String {
-        for c in "ABCDEFGHJKLMNPRSTUVWXYZ" where !used.contains(String(c)) { return String(c) }
-        return "Z"
+        var datum: String? = gdtDatum.isEmpty ? nil : String(gdtDatum.prefix(1)).uppercased()
+        if kind == .datum {
+            // A new datum feature must not reuse a view letter, another
+            // datum's letter, or I/O/Q.
+            let taken = DrawingLetters.used(sections: documentSettings.sections ?? [], details: details,
+                                            gdt: gdt.filter { $0.kind == .datum })
+            datum = DrawingLetters.resolve(datum, excluding: taken)
+            gdtDatum = datum ?? gdtDatum
+        }
+        gdt.append(DrawingGdt(kind: kind, tolerance: gdtTolerance, datum: datum, at: [p.x, p.y]))
     }
 
     // MARK: export

@@ -39,6 +39,7 @@ mod geometry_ref;
 mod layer;
 mod linear;
 mod ordinate;
+pub mod placement;
 mod radial;
 mod render;
 mod style;

@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-10-drawing-hidden-lines-no-diagonals",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "fix",
+  "title": "Drawings no longer show tessellation diagonals",
+  "summary": "Visible and hidden lines in drawing views come from welded feature edges: per-face vertex copies and T-junctions inside flat faces no longer draw every triangle edge.",
+  "features": ["drawing", "drafting"],
+  "mcpTools": []
+}

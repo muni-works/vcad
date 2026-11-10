@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-10-drawing-section-upright",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "fix",
+  "title": "Section views drawn upright at the clicked cut",
+  "summary": "Mac app drawing sections are viewed normal to the cut and keep the parent view's up, and cut at the clicked position instead of its mirror image.",
+  "features": ["drawing", "drafting", "native"],
+  "mcpTools": []
+}
