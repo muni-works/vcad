@@ -532,6 +532,9 @@ final class ReleaseWindowController {
     private func paint(entity name: String, lift: Lift) {
         guard let e = centeringEntity?.findEntity(named: name) as? ModelEntity,
               var m = e.model?.materials.first as? PhysicallyBasedMaterial else { return }
+        // Hover can repaint from the global mouse monitor, with no local event
+        // or SwiftUI update to wake the viewport.
+        RenderGate.wake()
         switch lift {
         case .hover where isSelected(name):
             m.emissiveColor = .init(color: NSColor(red: 1.0, green: 0.68, blue: 0.24, alpha: 1))
@@ -1572,9 +1575,10 @@ struct ReleasedARView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> ARView {
-        let ar = ARView(frame: .zero)
+        let ar = GatedARView(frame: .zero)
         ar.environment.background = .color(.clear)
         ReleaseWindowController.shared.arView = ar
+        RenderGate.install(on: ar)
         let anchor = AnchorEntity(world: .zero)
         let camera = PerspectiveCamera()
         anchor.addChild(camera)
@@ -1616,6 +1620,8 @@ struct ReleasedARView: NSViewRepresentable {
     }
 
     func updateNSView(_ ar: ARView, context: Context) {
+        // Any state the viewport reads changed: let it draw the result.
+        RenderGate.wake()
         // Selecting a part used to rebuild the whole scene: `highlightedParts`
         // was part of `geometryKey`, so a click re-evaluated the document,
         // re-tessellated every part, rebuilt every entity and regenerated every
@@ -2320,6 +2326,7 @@ final class DockIcon {
         guard model.triangleCount > 0 else { return }   // nothing to depict yet
 
         inFlight = true
+        RenderGate.wake(for: 2)  // a paused view never delivers a snapshot
         ar.snapshot(saveToHDR: false) { [weak self] image in
             // Reduce to a CGImage here, in the callback: NSImage is not
             // Sendable, so it must not cross into the main-actor hop.
