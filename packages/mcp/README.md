@@ -11,7 +11,7 @@ npm install -g @vcad/mcp
 Or add to your MCP configuration directly:
 
 ```bash
-claude mcp add vcad --command "npx @vcad/mcp"
+claude mcp add vcad -- npx -y @vcad/mcp
 ```
 
 ## Protocol revisions
