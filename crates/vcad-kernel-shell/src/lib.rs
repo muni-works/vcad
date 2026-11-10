@@ -648,7 +648,10 @@ pub fn shell_brep_open(
         if surface.surface_type() == SurfaceKind::Plane {
             let outer_pts: Vec<Point3> = old.iter().map(|v| topo.vertices[*v].point).collect();
             let inner_pts: Vec<Point3> = old.iter().map(|v| inner_pos[v]).collect();
-            let (a_out, a_in) = (newell(outer_pts.iter().copied()), newell(inner_pts.iter().copied()));
+            let (a_out, a_in) = (
+                newell(outer_pts.iter().copied()),
+                newell(inner_pts.iter().copied()),
+            );
             if a_out.norm() > 1e-12
                 && (a_in.dot(a_out) <= 1e-9 * a_out.dot(a_out)
                     || a_in.norm() < 1e-9 * a_out.norm()

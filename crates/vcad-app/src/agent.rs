@@ -493,8 +493,7 @@ fn inspect(id: &str, doc: &DocumentApi) -> Result<String, CommandError> {
         vcad_eval::evaluate::evaluate_node(part.root_node_id(), &resolved.nodes, &mut cache)
             .map_err(|e| CommandError::Invalid {
                 message: format!("part {id} could not be evaluated: {e}"),
-            })?
-    ;
+            })?;
     let Some(solid) = solid else {
         return Ok(format!("{id}: empty (no volume)"));
     };
