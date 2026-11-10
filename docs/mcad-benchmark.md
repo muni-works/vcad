@@ -10,7 +10,7 @@ Every friction point found gets fixed or listed here.
 | 2 | Flanged bearing housing | revolve, holes, counterbores, circular pattern | Built: 18,981 mm^3 |
 | 3 | Sheet-metal enclosure | flanges, bends, flat pattern | Built: flat 156.4 x 116.4 mm, 15,018 mm^2; folded 22,734 mm^3 |
 | 4 | 3D-print snap-fit case | shell, lip, clips, tolerance | Partial: 60 x 40 x 25 box shelled 2 mm, open top, 13,632 mm^3 (hand 13,632). No lip or clips yet |
-| 5 | Swept and lofted duct | sweep, loft, shell | Partial: loft from 40 x 30 to 20 x 15 over 50 mm, 35,000 mm^3 (frustum 35,000). Shelled 2 mm with the top open: 11,667.0 mm^3 in the app against 11,653.9 closed form (0.11% high; the kernel test matches to 1e-6, so the gap is unexplained). Sweep not tried |
+| 5 | Swept and lofted duct | sweep, loft, shell | Partial: loft from 40 x 30 to 20 x 15 over 50 mm, 35,000 mm^3 (frustum 35,000). Shelled 2 mm with the top open: 11,667.0 mm^3 in the app against 11,653.9 closed form (0.11% high; the kernel test matches to 1e-6, so the gap is unexplained). Sweep: a 3 mm circle swept one helix turn over 50 mm builds a clean tube, 4,338.4 mm^3 against 3,823.6 for a profile centered on the path; the profile placement relative to the path isn't shown, so the gap is unverified |
 | 6 | Patterned heatsink | linear pattern, fin spacing | Built: 50 x 40 x 5 base, 8 fins 1.5 x 36 x 25 at 5.5 mm pitch, unioned: 18,640 mm^3 (hand 18,640) |
 | 7 | Gear pair with a mate | involute profile, mates | Built by mouse with the new Spur Gear tool: 20T and 30T, module 2, 20 degrees, meshed at the 50 mm center distance; Clearance & Interference reports the pair clear by 0.001 mm |
 | 8 | Six-part assembly | joints, interference, explode | Built: plate plus cube, cylinder, sphere, cone and wedge as six instances, a revolute joint, explode to 100%, and Clearance & Interference reporting 1 interfering pair (203.5 mm^3 overlap) |
@@ -61,6 +61,12 @@ Every friction point found gets fixed or listed here.
   of existing geometry.
 - Part 7: the clearance report gives an overlap of 5,425 mm^3 with a depth of
   0.000 mm, which can't both be right.
+- Part 5: Sweep has no field for the helix radius (fixed at 20 mm), labels the
+  turns count "mm", and doesn't show where the profile sits on the path. A
+  profile wider than the radius sweeps into a self-intersecting solid without
+  a warning.
+- Part 5: typing into the sweep fields after a triple-click went into the
+  previously focused sketch field.
 - File > New Document opens a second app instance rather than a new window or
   document in this one.
 
