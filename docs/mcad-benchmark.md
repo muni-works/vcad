@@ -14,7 +14,7 @@ Every friction point found gets fixed or listed here.
 | 6 | Patterned heatsink | linear pattern, fin spacing | Built: 50 x 40 x 5 base, 8 fins 1.5 x 36 x 25 at 5.5 mm pitch, unioned: 18,640 mm^3 (hand 18,640) |
 | 7 | Gear pair with a mate | involute profile, mates | Open |
 | 8 | Six-part assembly | joints, interference, explode | Open |
-| 9 | Drawing with GD&T | views, sections, datums, frames | Open |
+| 9 | Drawing with GD&T | views, sections, datums, frames | Built on the part 6 heatsink: front view with 50 and 25 mm dimensions, datum A, a position frame to A, Section A-A. Defects below |
 | 10 | CAM on a pocketed plate | toolpaths, stock simulation | Open |
 
 ## Known blockers
@@ -31,6 +31,14 @@ Every friction point found gets fixed or listed here.
 - Part 6: with Rectangle armed, a first click on an existing face moves the
   sketch onto that face instead of placing a corner. Fixed: armed tools place
   geometry.
+- Part 9: Section A-A is drawn rotated 90 degrees (base on the left, not the
+  bottom).
+- Part 9: the section takes the letter A while datum A exists; section letters
+  should skip datum letters.
+- Part 9: hidden lines include mesh triangle diagonals across flat faces.
+- Part 9: new datum and frame symbols land on top of dimension text and
+  geometry.
+- The workspace menu in the bottom dock opens downward, below the window.
 - File > New Document opens a second app instance rather than a new window or
   document in this one.
 
