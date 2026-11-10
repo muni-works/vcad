@@ -124,7 +124,13 @@ final class GlassUI {
     /// bound to it. Returns false when nothing is bound (the key beeps on).
     func handleKey(_ ch: Character, model: EditorModel) -> Bool {
         if ch == "?" { shortcutsShown.toggle(); return true }
-        guard !model.sketching, model.activeFeatureOp == nil, !model.showsCommandPalette else { return false }
+        if model.sketching {
+            let key = Character(ch.lowercased())
+            guard let t = SketchToolKind.allCases.first(where: { $0.shortcut == key }) else { return false }
+            model.setSketchTool(t)
+            return true
+        }
+        guard model.activeFeatureOp == nil, !model.showsCommandPalette else { return false }
         let key = Character(ch.lowercased())
         guard let t = DockTools.tools(space, model: model).first(where: { $0.shortcut == key }) else { return false }
         guard t.enabled else { flash("\(t.label) — \(t.hint)", symbol: "exclamationmark.circle"); return true }
@@ -221,10 +227,22 @@ func glassSpring(_ reduceMotion: Bool) -> Animation {
 struct DockHost: View {
     @Bindable var model: EditorModel
     @State private var width: CGFloat = 1240
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        GlassDock(model: model, compact: width < Glass.dockFullWidth)
-            .modifier(ChromeRegion(key: "dock"))
+        // While sketching the dock itself becomes the sketch bar.
+        ZStack {
+            if model.sketching {
+                SketchBar(model: model)
+                    .modifier(ChromeRegion(key: "sketchBar"))
+                    .transition(reduceMotion ? .opacity : .scale(scale: 0.92).combined(with: .opacity))
+            } else {
+                GlassDock(model: model, compact: width < Glass.dockFullWidth)
+                    .modifier(ChromeRegion(key: "dock"))
+                    .transition(reduceMotion ? .opacity : .scale(scale: 0.92).combined(with: .opacity))
+            }
+        }
+            .animation(glassSpring(reduceMotion), value: model.sketching)
             .padding(.bottom, Glass.inset)
             .frame(maxWidth: .infinity)
             .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
@@ -283,6 +301,7 @@ struct GlassToolbar: View {
         if AgentSession.shared.running { return "Agent working" }
         // An agent over the live link: it has written in the last few seconds.
         if let at = model.agentLinkActiveAt, now.timeIntervalSince(at) < 4 { return "Agent working" }
+        if let line = model.sketchStatusLine(at: now) { return line }
         return model.documentDirty ? "Edited" : nil
     }
 
@@ -1583,6 +1602,11 @@ struct ShortcutSheet: View {
         ("Esc", "Cancel / deselect"), ("?", "This sheet"),
     ]
 
+    /// Sketch-mode tool keys, in bar order (live only while sketching).
+    static let sketch: [(key: String, tool: SketchToolKind)] =
+        (SketchBar.primaryTools + SketchBar.overflowTools + [.dimension])
+            .compactMap { t in t.shortcut.map { (String($0).uppercased(), t) } }
+
     var body: some View {
         let tools = DockTools.tools(ui.space, model: model).filter { $0.shortcut != nil }
         VStack(alignment: .leading, spacing: Theme.Space.m) {
@@ -1598,13 +1622,17 @@ struct ShortcutSheet: View {
                     ForEach(tools) { t in row(String(t.shortcut!).uppercased(), t.label, symbol: t.symbol) }
                 }
                 VStack(alignment: .leading, spacing: 6) {
+                    Eyebrow("Sketch")
+                    ForEach(Self.sketch, id: \.key) { row($0.key, $0.tool.label, symbol: $0.tool.symbol) }
+                }
+                VStack(alignment: .leading, spacing: 6) {
                     Eyebrow("Everywhere")
                     ForEach(Self.global, id: \.0) { row($0.0, $0.1) }
                 }
             }
         }
         .padding(18)
-        .frame(width: 520)
+        .frame(width: 700)
         .glassPanel()
         .modifier(ChromeRegion(key: "shortcuts"))
     }

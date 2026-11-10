@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-10-native-sketch-bar",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "feat",
+  "title": "Mac sketch: the dock becomes the sketch bar",
+  "summary": "Sketching swaps the dock for one glass sketch bar: plane chip, tool icons with shortcuts, a feature popover and Done. Hints and DOF move to the status field; a blocked Done says why.",
+  "features": ["sketch", "native-app"]
+}

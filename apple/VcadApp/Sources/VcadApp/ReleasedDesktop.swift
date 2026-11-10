@@ -1031,15 +1031,11 @@ struct ReleasedOverlayView: View {
             // kinematic transport when a timeline is loaded.
             VStack(spacing: 10) {
                 if model.sketching {
-                    SketchHintBar(model: model)
-                        .modifier(ChromeRegion(key: "sketchHint"))
-                    SketchPaletteView(model: model)
-                        .modifier(ChromeRegion(key: "sketchPalette"))
-                        .background {
-                            // Return finishes a multi-click tool (spline).
-                            Button("") { model.sketch?.commitPending(); model.sketchDirty = true; refreshSketchInk(force: true) }
-                                .keyboardShortcut(.return, modifiers: []).opacity(0).frame(width: 0, height: 0)
-                        }
+                    // The sketch bar is the dock now (DockHost); this keeps
+                    // Return finishing a multi-click tool (spline).
+                    Button("") { model.sketch?.commitPending(); model.sketchDirty = true; refreshSketchInk(force: true) }
+                        .keyboardShortcut(.return, modifiers: []).opacity(0).frame(width: 0, height: 0)
+                        .accessibilityHidden(true)
                 } else {
                     if model.assembly.showsTimeline && model.assemblyInstanceCount > 0 {
                         TimelineEditor(model: model)
