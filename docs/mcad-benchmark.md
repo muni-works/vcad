@@ -10,7 +10,7 @@ Every friction point found gets fixed or listed here.
 | 2 | Flanged bearing housing | revolve, holes, counterbores, circular pattern | Built: 18,981 mm^3 |
 | 3 | Sheet-metal enclosure | flanges, bends, flat pattern | Built: flat 156.4 x 116.4 mm, 15,018 mm^2; folded 22,734 mm^3 |
 | 4 | 3D-print snap-fit case | shell, lip, clips, tolerance | Partial: 60 x 40 x 25 box shelled 2 mm, open top, 13,632 mm^3 (hand 13,632). No lip or clips yet |
-| 5 | Swept and lofted duct | sweep, loft, shell | Partial: loft from 40 x 30 to 20 x 15 over 50 mm, 35,000 mm^3 (frustum 35,000). Shell of the loft gives no geometry (below); sweep not tried |
+| 5 | Swept and lofted duct | sweep, loft, shell | Partial: loft from 40 x 30 to 20 x 15 over 50 mm, 35,000 mm^3 (frustum 35,000). Shelled 2 mm with the top open: 11,667.0 mm^3 in the app against 11,653.9 closed form (0.11% high; the kernel test matches to 1e-6, so the gap is unexplained). Sweep not tried |
 | 6 | Patterned heatsink | linear pattern, fin spacing | Built: 50 x 40 x 5 base, 8 fins 1.5 x 36 x 25 at 5.5 mm pitch, unioned: 18,640 mm^3 (hand 18,640) |
 | 7 | Gear pair with a mate | involute profile, mates | Blocked: the app has no gear or involute tool, and a hand-drawn spline would not be a true involute |
 | 8 | Six-part assembly | joints, interference, explode | Built: plate plus cube, cylinder, sphere, cone and wedge as six instances, a revolute joint, explode to 100%, and Clearance & Interference reporting 1 interfering pair (203.5 mm^3 overlap) |
@@ -54,7 +54,7 @@ Every friction point found gets fixed or listed here.
 - Part 8: the Assembly dock's interference button stays disabled; the check is
   only reachable from Analyze > Clearance & Interference.
 - Part 5: Shell (2 mm, top face open, picked correctly at z = 50, normal +Z)
-  on a loft with sloped planar walls evaluates to no geometry.
+  on a loft with sloped planar walls evaluates to no geometry. Fixed: loft cap orientation and shell offsets on sloped walls.
 - Part 5: after Add Section, the previous loft profile isn't shown, so the
   next one is drawn blind.
 - File > New Document opens a second app instance rather than a new window or
