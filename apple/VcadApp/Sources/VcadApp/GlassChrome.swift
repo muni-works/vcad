@@ -72,6 +72,8 @@ enum DockSpace: String, CaseIterable, Identifiable {
         case .fab: "5"
         }
     }
+    /// "⌃⌘1" — the View-menu shortcut, shown in the workspace picker.
+    var shortcutHint: String { "⌃⌘\(String(key.character))" }
 }
 
 @MainActor @Observable
@@ -686,6 +688,41 @@ enum DockItem: Identifiable {
     }
 }
 
+/// The five workspaces, listed in the popover above the dock's workspace
+/// button. Each row shows its ⌃⌘ shortcut (the shortcuts themselves live in
+/// the View menu, so they work with the popover closed); Return/Space on a
+/// focused row and the shortcuts inside the open popover both switch.
+struct WorkspacePicker: View {
+    var current: DockSpace
+    var choose: (DockSpace) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(DockSpace.allCases) { s in
+                Button { choose(s) } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: s.symbol).frame(width: 18)
+                        Text(s.label)
+                        Spacer(minLength: 16)
+                        Text(s.shortcutHint).foregroundStyle(.secondary).monospacedDigit()
+                        Image(systemName: "checkmark").font(.caption.weight(.semibold))
+                            .opacity(s == current ? 1 : 0)
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(s.key, modifiers: [.command, .control])
+                .accessibilityLabel(s.label)
+                .accessibilityHint("Switch workspace, Control-Command-\(String(s.key.character))")
+                .accessibilityAddTraits(s == current ? .isSelected : [])
+            }
+        }
+        .padding(6)
+        .frame(minWidth: 200)
+    }
+}
+
 /// One stable centred capsule: workspace menu | tools | history, palette.
 struct GlassDock: View {
     @Bindable var model: EditorModel
@@ -693,6 +730,7 @@ struct GlassDock: View {
     var compact = false
     @Bindable var ui = GlassUI.shared
     @State private var openGroup: String?
+    @State private var workspacePickerOpen = false
     @Namespace private var morph
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -747,21 +785,28 @@ struct GlassDock: View {
         return t.enabled || t.hint.isEmpty ? t.label + key : "\(t.label)\(key) — \(t.hint)"
     }
 
+    /// The dock sits at the bottom of the window, so the workspace picker
+    /// opens upward. (A `Menu` always drops down — below the window edge.)
+    static let workspacePickerEdge: Edge = .top
+
     private var workspaceMenu: some View {
-        Menu {
-            ForEach(DockSpace.allCases) { s in
-                Button { ui.enter(s, model: model) } label: { Label(s.label, systemImage: s.symbol) }
-            }
-        } label: {
+        Button { workspacePickerOpen.toggle() } label: {
             HStack(spacing: 4) {
                 Text(ui.space.label).font(.callout.weight(.semibold))
-                Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                Image(systemName: "chevron.up").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
             }
             .padding(.horizontal, 10).frame(height: 32).contentShape(Capsule())
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .fixedSize()
         .help("Workspace (⌃⌘1–5)")
         .accessibilityLabel("Workspace, \(ui.space.label)")
+        .accessibilityHint("Shows the five workspaces")
+        .popover(isPresented: $workspacePickerOpen, arrowEdge: Self.workspacePickerEdge) {
+            WorkspacePicker(current: ui.space) { s in
+                workspacePickerOpen = false
+                ui.enter(s, model: model)
+            }
+        }
     }
 
     @ViewBuilder private func toolButton(_ tool: Tool) -> some View {
