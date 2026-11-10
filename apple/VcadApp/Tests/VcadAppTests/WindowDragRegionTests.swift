@@ -31,7 +31,24 @@ final class WindowDragRegionTests: XCTestCase {
         XCTAssertEqual(WindowDragRegion.doubleClickAction(action: nil, legacyMiniaturize: nil), .zoom)
     }
 
-    @MainActor func testDragViewClaimsWindowMoves() {
-        XCTAssertTrue(WindowDragNSView().mouseDownCanMoveWindow)
+    @MainActor func testDragViewIsNotAServerDragRegion() {
+        // A server-side drag region swallowed the press in the real app.
+        XCTAssertFalse(WindowDragNSView().mouseDownCanMoveWindow)
+        XCTAssertTrue(WindowDragNSView().acceptsFirstMouse(for: nil))
+    }
+
+    @MainActor func testDragViewHitTestsItselfInTheEmptyRow() {
+        // The row: a host view with the drag view behind a control.
+        let row = NSView(frame: NSRect(x: 0, y: 0, width: 1000, height: Glass.toolbarHeight))
+        let drag = WindowDragNSView(frame: row.bounds)
+        row.addSubview(drag)
+        let button = NSButton(frame: NSRect(x: 20, y: 10, width: 30, height: 30))
+        row.addSubview(button)
+        // Empty space between the sidebar toggle and the status field.
+        XCTAssertTrue(row.hitTest(NSPoint(x: 200, y: 20)) === drag)
+        XCTAssertTrue(drag.hitTest(NSPoint(x: 200, y: 20)) === drag)
+        // Controls on top still win; outside the row nothing is claimed.
+        XCTAssertTrue(row.hitTest(NSPoint(x: 30, y: 20)) === button)
+        XCTAssertNil(drag.hitTest(NSPoint(x: 200, y: Glass.toolbarHeight + 5)))
     }
 }

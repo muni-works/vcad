@@ -58,14 +58,30 @@ enum WindowDragRegion {
 
 #if os(macOS)
 /// The AppKit view that owns presses in the toolbar row's empty space.
+///
+/// It must NOT report `mouseDownCanMoveWindow = true`: AppKit hands regions
+/// built from such views to the WindowServer as server-side drag regions,
+/// and over this full-size-content window that region swallowed the press —
+/// the click fell through to the desktop (Finder activated) and the drag
+/// moved nothing. Instead the view claims the hit itself, keeps the app
+/// active, and moves the window explicitly with `performDrag(with:)`.
 final class WindowDragNSView: NSView {
-    override var mouseDownCanMoveWindow: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
+    override var isOpaque: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// Always the hit for any point inside the row: never a hole.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard !isHidden, let superview else { return nil }
+        let local = convert(point, from: superview)
+        return bounds.contains(local) ? self : nil
+    }
 
     override func mouseDown(with event: NSEvent) {
         guard let window else { return }
         // Released to the desktop the window is borderless: nothing to move.
         guard window.styleMask.contains(.titled) else { return }
+        if !NSApp.isActive { NSApp.activate() }
         if event.clickCount == 2 {
             switch WindowDragRegion.doubleClickAction() {
             case .zoom: window.zoom(nil)
