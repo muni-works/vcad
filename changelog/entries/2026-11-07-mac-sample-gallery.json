@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-07-mac-sample-gallery",
+  "version": "0.11.0",
+  "date": "2026-11-07",
+  "category": "feat",
+  "title": "Mac app: 13-sample gallery that opens instantly",
+  "summary": "File ▸ Open Sample adds the K1 humanoid, PCB motor and stator, an FPGA board, FEA and CAM parts; bundled meshes open the PCB motor in 0.06 s instead of 10+ s.",
+  "features": ["desktop", "samples", "performance"]
+}

@@ -2173,7 +2173,12 @@ face_a: string,
 /**
  * Name of the other adjacent face.
  */
-face_b: string, };
+face_b: string, 
+/**
+ * Geometric snapshot of the edge at pick time, for fallback
+ * matching when topology changes.
+ */
+hint?: NamedEdgeHint, };
 
 /**
  * An embroidery design for the IR.
@@ -4226,6 +4231,27 @@ cell?: Cell,
  * Free-form label, e.g. source filename or structure name.
  */
 name?: string, };
+
+/**
+ * Geometric snapshot of a picked edge, carried by [`EdgeQuery::Named`].
+ *
+ * Fallback matching tolerances scale with `length`: a candidate must agree
+ * in direction (sign ignored, within ~18°), length (±25%), and midpoint
+ * (within 25% of `length`).
+ */
+export type NamedEdgeHint = { 
+/**
+ * Edge midpoint at pick time (model space, mm).
+ */
+midpoint: Vec3, 
+/**
+ * Unit edge direction at pick time.
+ */
+direction: Vec3, 
+/**
+ * Edge length at pick time (mm).
+ */
+length: number, };
 
 /**
  * A named electrical connection.

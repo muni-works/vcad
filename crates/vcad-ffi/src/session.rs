@@ -109,6 +109,8 @@ pub extern "C" fn vcad_scene_from_json_session(
                 vcad_eval::resolve_mesh_paths(&mut doc, std::path::Path::new(dir));
             }
         }
+        // The viewport: sag-adaptive curves, so an r86 cup isn't a 32-gon.
+        let _chord = vcad_eval::evaluate::DisplayChordGuard::enable(crate::DISPLAY_CHORD_MM);
         match evaluate_document_incremental(&doc, &EvalOptions::default(), &mut session.cache) {
             Ok(scene) => Box::into_raw(Box::new(VcadScene {
                 inner: scene,

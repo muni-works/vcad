@@ -39,6 +39,7 @@ pub use vcad_kernel_fillet;
 pub use vcad_kernel_flow;
 pub use vcad_kernel_geom;
 pub use vcad_kernel_math;
+pub use vcad_kernel_naming;
 #[cfg(feature = "analysis")]
 pub use vcad_kernel_neutronics;
 #[cfg(feature = "analysis")]
@@ -166,7 +167,11 @@ impl std::fmt::Display for NamedEdgeError {
             Self::NoNames => write!(f, "solid carries no persistent face names"),
             Self::BadName(s) => write!(f, "invalid face name '{s}' (expected scope:tag[.n]*)"),
             Self::Ambiguous { count } => {
-                write!(f, "edge reference is ambiguous ({count} candidate edges)")
+                write!(
+                    f,
+                    "edge reference is ambiguous: {count} candidate edges match and nothing \
+                     singles one out (re-pick the edge so the reference carries a geometric hint)"
+                )
             }
             Self::Lost(reason) => write!(f, "edge reference lost: {reason}"),
         }
@@ -222,6 +227,21 @@ pub enum BlendError {
     NamedEdge(NamedEdgeError),
     /// The shell operation could not offset the solid.
     Shell(String),
+    /// The fillet radius / chamfer distance is zero, negative, or not a
+    /// finite number.
+    InvalidSize(f64),
+    /// The radius / setback cannot fit the solid at all: it reaches half
+    /// the solid's thinnest bounding-box extent, where opposing blends
+    /// meet. (A necessary bound, not a sufficient one — smaller features
+    /// can still refuse with a more local reason.)
+    SizeExceedsLimit {
+        /// The operation ("fillet radius" / "chamfer distance").
+        what: &'static str,
+        /// The requested size in mm.
+        size: f64,
+        /// The exclusive upper bound in mm.
+        limit: f64,
+    },
 }
 
 /// A reference to one face of a solid: a persistent name, a geometric
@@ -267,6 +287,14 @@ impl std::fmt::Display for BlendError {
             ),
             Self::NamedEdge(e) => write!(f, "named edge: {e}"),
             Self::Shell(msg) => write!(f, "shell failed: {msg}"),
+            Self::SizeExceedsLimit { what, size, limit } => write!(
+                f,
+                "{what} {size} mm exceeds the {limit:.4} mm limit for this solid \
+                 (half its thinnest extent) — opposing blends would meet"
+            ),
+            Self::InvalidSize(v) => {
+                write!(f, "blend size must be a positive finite number, got {v}")
+            }
         }
     }
 }
@@ -797,9 +825,15 @@ impl Solid {
     /// silently unchamfered solid. Use [`Solid::chamfer_lenient`] for
     /// best-effort behavior with a report.
     pub fn chamfer(&self, distance: f64) -> Result<Solid, BlendError> {
+        if !distance.is_finite() || distance <= 0.0 {
+            return Err(BlendError::InvalidSize(distance));
+        }
         let SolidRepr::BRep(brep) = &self.repr else {
             return Err(self.non_brep_error());
         };
+        if let Some(e) = blend_size_limit(brep, "chamfer distance", distance) {
+            return Err(e);
+        }
         // Same inner-loop hazard as `fillet` — see brep_has_inner_loops.
         let holes = count_inner_loop_faces(brep);
         if holes > 0 {
@@ -878,12 +912,21 @@ impl Solid {
     pub fn fillet_reported(&self, radius: f64) -> (Result<Solid, BlendError>, BlendReport) {
         let mut report = BlendReport::default();
 
+        if !radius.is_finite() || radius <= 0.0 {
+            let e = BlendError::InvalidSize(radius);
+            report.declined = Some(e.clone());
+            return (Err(e), report);
+        }
         let SolidRepr::BRep(brep) = &self.repr else {
             let e = self.non_brep_error();
             report.declined = Some(e.clone());
             return (Err(e), report);
         };
 
+        if let Some(e) = blend_size_limit(brep, "fillet radius", radius) {
+            report.declined = Some(e.clone());
+            return (Err(e), report);
+        }
         // Faces with inner loops (holes from booleans) can't survive
         // the rebuild — refuse rather than fill the holes in.
         let holes = count_inner_loop_faces(brep);
@@ -1038,17 +1081,17 @@ impl Solid {
             let e = decline(&mut report, BlendError::NoKeys);
             return (Err(e), report);
         }
-        // Same inner-loop hazard as `fillet` — see count_inner_loop_faces.
-        let holes = count_inner_loop_faces(brep);
-        if holes > 0 {
-            let e = decline(&mut report, BlendError::InnerLoops { faces: holes });
-            return (Err(e), report);
-        }
-
         // Fast path: whole-solid constant fillet/chamfer already have
         // dedicated pipelines with analytic blend surfaces and corner
-        // patches — use them.
+        // patches — use them. They share `fillet`'s inner-loop hazard (see
+        // count_inner_loop_faces); the per-edge loft below carries holes
+        // and curved faces it doesn't touch through unchanged.
         if matches!(query, vcad_kernel_fillet::EdgeQuery::All) && keys.len() == 1 {
+            let holes = count_inner_loop_faces(brep);
+            if holes > 0 {
+                let e = decline(&mut report, BlendError::InnerLoops { faces: holes });
+                return (Err(e), report);
+            }
             let s = keys[0].section;
             if s.shape >= 1.0 - 1e-12 {
                 return self.fillet_reported(s.size);
@@ -1133,6 +1176,19 @@ impl Solid {
         face_a: &str,
         face_b: &str,
     ) -> Result<(Point3, Point3), NamedEdgeError> {
+        self.resolve_named_edge_hinted(face_a, face_b, None)
+    }
+
+    /// [`Solid::resolve_named_edge`] with an optional geometric snapshot of
+    /// the edge (taken when it was picked). The hint is consulted only when
+    /// the names alone cannot pick exactly one edge, and must then match
+    /// exactly one edge within tolerance — never a nearest-edge guess.
+    pub fn resolve_named_edge_hinted(
+        &self,
+        face_a: &str,
+        face_b: &str,
+        hint: Option<vcad_kernel_naming::EdgeHint>,
+    ) -> Result<(Point3, Point3), NamedEdgeError> {
         let SolidRepr::BRep(brep) = &self.repr else {
             return Err(NamedEdgeError::NoNames);
         };
@@ -1143,7 +1199,8 @@ impl Solid {
             .ok_or_else(|| NamedEdgeError::BadName(face_a.to_string()))?;
         let b = vcad_kernel_naming::FaceName::parse(face_b)
             .ok_or_else(|| NamedEdgeError::BadName(face_b.to_string()))?;
-        let edge_ref = vcad_kernel_naming::EdgeRef::new(a, b);
+        let mut edge_ref = vcad_kernel_naming::EdgeRef::new(a, b);
+        edge_ref.hint = hint;
         match vcad_kernel_naming::resolve_edge(brep, names, &edge_ref) {
             vcad_kernel_naming::EdgeResolution::Resolved { endpoints, .. } => Ok(endpoints),
             vcad_kernel_naming::EdgeResolution::Ambiguous { candidates } => {
@@ -1171,7 +1228,20 @@ impl Solid {
         face_b: &str,
         keys: &[vcad_kernel_fillet::BlendKey],
     ) -> Result<Solid, BlendError> {
-        let (a, b) = self.resolve_named_edge(face_a, face_b)?;
+        self.edge_blend_named_hinted(face_a, face_b, None, keys)
+    }
+
+    /// [`Solid::edge_blend_named`] with the edge's pick-time geometric
+    /// snapshot as a fail-closed fallback (see
+    /// [`Solid::resolve_named_edge_hinted`]).
+    pub fn edge_blend_named_hinted(
+        &self,
+        face_a: &str,
+        face_b: &str,
+        hint: Option<vcad_kernel_naming::EdgeHint>,
+        keys: &[vcad_kernel_fillet::BlendKey],
+    ) -> Result<Solid, BlendError> {
+        let (a, b) = self.resolve_named_edge_hinted(face_a, face_b, hint)?;
         self.edge_blend(&vcad_kernel_fillet::EdgeQuery::Endpoints { a, b }, keys)
     }
 
@@ -1212,34 +1282,50 @@ impl Solid {
         Result<Solid, BlendError>,
         Option<vcad_kernel_shell::ShellError>,
     ) {
-        match &self.repr {
-            SolidRepr::Empty => (Err(BlendError::EmptySolid), None),
+        if !thickness.is_finite() || thickness <= 0.0 {
+            return (
+                Err(BlendError::Shell(
+                    vcad_kernel_shell::ShellError::InvalidThickness(thickness).to_string(),
+                )),
+                None,
+            );
+        }
+        let (repr, degraded) = match &self.repr {
+            SolidRepr::Empty => return (Err(BlendError::EmptySolid), None),
             SolidRepr::BRep(brep) => {
-                let (inner, degraded) =
-                    match vcad_kernel_shell::shell_brep_analytical(brep, thickness, &[]) {
-                        Ok(b) => (b, None),
-                        Err(e) => (vcad_kernel_shell::shell_brep(brep, thickness), Some(e)),
-                    };
-                (
-                    Ok(Solid {
-                        names: None,
-                        provenance: self.provenance.clone(),
-                        repr: SolidRepr::BRep(Box::new(inner)),
-                        segments: self.segments,
-                    }),
-                    degraded,
-                )
+                match vcad_kernel_shell::shell_brep_analytical(brep, thickness, &[]) {
+                    Ok(b) => (SolidRepr::BRep(Box::new(b)), None),
+                    // The thickness itself is impossible: a mesh offset
+                    // would just build the same collapsed / inverted body
+                    // in triangles. Refuse.
+                    Err(e) if e.is_infeasible() => {
+                        return (Err(BlendError::Shell(e.to_string())), None)
+                    }
+                    Err(e) => (
+                        SolidRepr::BRep(Box::new(vcad_kernel_shell::shell_brep(brep, thickness))),
+                        Some(e),
+                    ),
+                }
             }
             SolidRepr::Mesh(mesh) => (
-                Ok(Solid {
-                    names: None,
-                    provenance: self.provenance.clone(),
-                    repr: SolidRepr::Mesh(vcad_kernel_shell::shell_mesh(mesh, thickness)),
-                    segments: self.segments,
-                }),
+                SolidRepr::Mesh(vcad_kernel_shell::shell_mesh(mesh, thickness)),
                 None,
             ),
+        };
+        let out = Solid {
+            names: None,
+            provenance: self.provenance.clone(),
+            repr,
+            segments: self.segments,
+        };
+        // Post-flight, for every path (the mesh offset has no analytic
+        // guard of its own): a shell only ever removes material from
+        // inside the solid. Growing past the input bbox, or a volume that
+        // did not strictly drop, means the offset inverted or collapsed.
+        if let Err(msg) = shell_result_is_valid(self, &out, thickness) {
+            return (Err(BlendError::Shell(msg)), degraded);
         }
+        (Ok(out), degraded)
     }
 
     /// Shell the solid with `open_faces` removed — hollow it inward by
@@ -1821,6 +1907,24 @@ impl Solid {
         }
     }
 
+    /// [`Solid::to_mesh`] with a chord (sag) tolerance in mm: curved faces
+    /// get at least `segments` per circle, more where the chord would
+    /// otherwise stray further than `chord_tol` from the true surface. For
+    /// display — volumes and exports keep the fixed-count [`Solid::to_mesh`].
+    pub fn to_mesh_with_chord(&self, segments: u32, chord_tol: f64) -> TriangleMesh {
+        match &self.repr {
+            SolidRepr::BRep(brep) => {
+                let mut params =
+                    vcad_kernel_tessellate::TessellationParams::from_segments(segments);
+                params.chord_tolerance = Some(chord_tol);
+                let mut mesh = vcad_kernel_tessellate::tessellate_brep_with(brep.as_ref(), params);
+                vcad_kernel_booleans::repair_export_mesh(brep.as_ref(), &mut mesh);
+                mesh
+            }
+            _ => self.to_mesh(segments),
+        }
+    }
+
     /// Run SIMP topology optimization inside this solid's volume.
     ///
     /// The solid's tessellation becomes the design domain (material can
@@ -1916,6 +2020,23 @@ impl Solid {
                 (min, max)
             }
         }
+    }
+
+    /// [`Solid::bounding_box`], or `None` when the solid encloses nothing.
+    ///
+    /// An empty solid has no bounding box: the raw accumulator would come
+    /// back as the `[f64::MAX; 3]` / `[f64::MIN; 3]` sentinel, which callers
+    /// used to print as a real `1.797e308` box. Anything that reports a
+    /// bbox to a person or an agent should go through this and say
+    /// "empty (no volume)" on `None`.
+    pub fn try_bounding_box(&self) -> Option<([f64; 3], [f64; 3])> {
+        if self.is_empty() {
+            return None;
+        }
+        let (lo, hi) = self.bounding_box();
+        let real = (0..3).all(|i| lo[i].is_finite() && hi[i].is_finite() && lo[i] <= hi[i])
+            && lo.iter().chain(hi.iter()).all(|c| c.abs() < f64::MAX);
+        real.then_some((lo, hi))
     }
 
     /// Compute the axis-aligned bounding box as `([min_x, min_y, min_z], [max_x, max_y, max_z])`.
@@ -2466,6 +2587,59 @@ fn fillet_aabb_is_reasonable(input: &BRepSolid, filleted: &BRepSolid, radius: f6
 /// boundary edges relative to the input's bbox diagonal: shipped-good
 /// curved fillets measure ≈1.4×, while broken rebuilds (cracked cap
 /// rims, fillet-of-fillet) measure 2.6–26×.
+/// Up-front bound for whole-solid blends: a size reaching half the
+/// thinnest bbox extent can never fit (opposing blends meet), so refuse
+/// with the number instead of letting the rebuild fail opaquely.
+fn blend_size_limit(brep: &BRepSolid, what: &'static str, size: f64) -> Option<BlendError> {
+    let mut lo = [f64::MAX; 3];
+    let mut hi = [f64::MIN; 3];
+    for (_, v) in &brep.topology.vertices {
+        for (i, c) in [v.point.x, v.point.y, v.point.z].into_iter().enumerate() {
+            lo[i] = lo[i].min(c);
+            hi[i] = hi[i].max(c);
+        }
+    }
+    let limit = (0..3)
+        .map(|i| 0.5 * (hi[i] - lo[i]))
+        .fold(f64::INFINITY, f64::min);
+    // Only meaningful when the vertex box is the real box (planar
+    // solids); a curved solid's vertices can under-report its extent.
+    if !brep_is_all_planar(brep) || !limit.is_finite() || limit <= 0.0 {
+        return None;
+    }
+    (size >= limit).then_some(BlendError::SizeExceedsLimit { what, size, limit })
+}
+
+/// Fail-closed gate for [`Solid::shell_reported`]: the shelled body must
+/// stay inside the input's bounding box and have strictly less (but
+/// positive) volume. Returns the reason when it does not.
+fn shell_result_is_valid(input: &Solid, out: &Solid, thickness: f64) -> Result<(), String> {
+    let (Some((ilo, ihi)), Some((olo, ohi))) = (input.try_bounding_box(), out.try_bounding_box())
+    else {
+        return Err(format!("shell thickness {thickness} mm left no solid"));
+    };
+    let span = (0..3).map(|i| ihi[i] - ilo[i]).fold(0.0_f64, f64::max);
+    let limit = (0..3)
+        .map(|i| 0.5 * (ihi[i] - ilo[i]))
+        .fold(f64::INFINITY, f64::min);
+    let consumed = || {
+        format!(
+            "shell thickness {thickness} mm consumes the solid (must be below {limit:.4} mm, \
+             half its thinnest extent) — the inner wall would collapse or invert"
+        )
+    };
+    // f32 tessellation noise: a part-per-million of the span.
+    let tol = 1e-6 * span.max(1.0);
+    if (0..3).any(|i| olo[i] < ilo[i] - tol || ohi[i] > ihi[i] + tol) {
+        return Err(consumed());
+    }
+    let (vin, vout) = (input.volume(), out.volume());
+    if !vout.is_finite() || vout <= 0.0 || vout >= vin * (1.0 - 1e-6) {
+        return Err(consumed());
+    }
+    Ok(())
+}
+
 fn blend_result_is_valid(input: &BRepSolid, blended: &BRepSolid, strict: bool) -> bool {
     let mesh = tessellate_brep(blended, 32);
     if strict {

@@ -310,6 +310,10 @@ pub fn manifest_pretty() -> String {
 pub fn read_tool(tool: &str, args: &Value, doc: &DocumentApi) -> Result<String, CommandError> {
     match tool {
         "describe_scene" => Ok(describe_scene(doc)),
+        // Host-only (not in the agent manifest): the Mac app calls it
+        // after `create_cad_loon` loads to fail closed on parts that
+        // cannot be built.
+        "evaluation_errors" => Ok(doc.evaluation_errors().join("\n")),
         "inspect" => {
             let id = args
                 .get("part_id")
@@ -374,10 +378,14 @@ pub fn describe_scene(doc: &DocumentApi) -> String {
         let name = v.get("name").and_then(Value::as_str).unwrap_or("");
         let kind = v.get("kind").and_then(Value::as_str).unwrap_or("?");
         let material = part_field(doc, id, "material").unwrap_or_else(|| "default".into());
-        let bbox = doc
-            .part_world_bbox(id)
-            .map(|(lo, hi)| format!("bbox min {} max {}", fmt3(lo), fmt3(hi)))
-            .unwrap_or_else(|| "no geometry".into());
+        let bbox = match doc.part_evaluation(id) {
+            Some(Err(e)) => format!("evaluation failed: {e}"),
+            Some(Ok(Some(solid))) => match solid.try_bounding_box() {
+                Some((lo, hi)) => format!("bbox min {} max {}", fmt3(lo), fmt3(hi)),
+                None => "empty (no volume)".into(),
+            },
+            Some(Ok(None)) | None => "empty (no volume)".into(),
+        };
         out.push_str(&format!(
             "- {id} \"{name}\" [{kind}] material={material} {bbox}\n"
         ));
@@ -415,22 +423,23 @@ fn density(doc: &DocumentApi, material: &str) -> Option<f64> {
 
 fn inspect(id: &str, doc: &DocumentApi) -> Result<String, CommandError> {
     let state = doc.get_state();
-    let part = state
-        .parts
-        .iter()
-        .find(|p| p.id() == id)
-        .ok_or_else(|| CommandError::UnknownId { id: id.to_string() })?;
-    let mut cache = std::collections::HashMap::new();
-    let solid =
-        vcad_eval::evaluate::evaluate_node(part.root_node_id(), &state.document.nodes, &mut cache)
-            .ok()
-            .flatten()
-            .ok_or_else(|| CommandError::Invalid {
-                message: format!("part {id} has no evaluated geometry"),
-            })?;
+    if !state.parts.iter().any(|p| p.id() == id) {
+        return Err(CommandError::UnknownId { id: id.to_string() });
+    }
+    let solid = match doc.part_evaluation(id) {
+        Some(Err(e)) => {
+            return Err(CommandError::Invalid {
+                message: format!("part {id} failed to evaluate: {e}"),
+            })
+        }
+        Some(Ok(Some(s))) => s,
+        Some(Ok(None)) | None => return Ok(format!("{id}: empty (no volume)")),
+    };
+    let Some((lo, hi)) = solid.try_bounding_box() else {
+        return Ok(format!("{id}: empty (no volume)"));
+    };
     let volume = solid.volume();
     let area = solid.surface_area();
-    let (lo, hi) = solid.bounding_box();
     let material = part_field(doc, id, "material");
     let mut out = format!(
         "{id}: volume {volume:.3} mm^3, surface area {area:.3} mm^2, bbox min {} max {}, size {}",
@@ -465,6 +474,121 @@ mod tests {
             serde_json::from_str(&api.apply_tool_envelope(tool, &args.to_string())).unwrap();
         assert_eq!(v["ok"], true, "{tool} {args}: {v}");
         v
+    }
+
+    /// A one-root document: `nodes` is `[(id, name, op)]`, root = last.
+    fn ir_doc(nodes: &[(u64, &str, Value)]) -> DocumentApi {
+        let mut map = serde_json::Map::new();
+        for (id, name, op) in nodes {
+            map.insert(id.to_string(), json!({"id": id, "name": name, "op": op}));
+        }
+        let root = nodes.last().unwrap().0;
+        let doc = json!({"version": "0.1", "nodes": map, "materials": {},
+            "part_materials": {}, "roots": [{"root": root, "material": "default"}]});
+        let mut api = DocumentApi::new(ReplicaId(1));
+        api.import_ir(&doc.to_string());
+        api
+    }
+
+    /// Stable id of the part named `name`.
+    fn part_named(api: &DocumentApi, name: &str) -> String {
+        api.get_state()
+            .parts
+            .iter()
+            .find(|p| serde_json::to_value(p).unwrap()["name"] == name)
+            .unwrap()
+            .id()
+            .to_string()
+    }
+
+    fn cube_op(z: f64) -> Value {
+        json!({"type": "Cube", "size": {"x": 10.0, "y": 10.0, "z": z}})
+    }
+
+    // Fuzz repro: `[fillet 20 [cube 10 10 10]]` showed "no geometry" and
+    // the load reported success. The reason must reach the agent.
+    #[test]
+    fn overfillet_reports_the_kernel_reason() {
+        let api = ir_doc(&[
+            (1, "cube", cube_op(10.0)),
+            (
+                2,
+                "fillet",
+                json!({"type": "Fillet", "child": 1, "radius": 20.0}),
+            ),
+        ]);
+        let errors = api.evaluation_errors();
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(
+            errors[0].contains("fillet") && errors[0].contains("radius"),
+            "{errors:?}"
+        );
+        let scene = read_tool("describe_scene", &json!({}), &api).unwrap();
+        assert!(scene.contains("evaluation failed"), "{scene}");
+        assert!(!scene.contains("no geometry"), "{scene}");
+        let id = part_named(&api, "fillet");
+        let err = read_tool("inspect", &json!({"part_id": id}), &api).unwrap_err();
+        assert!(err.to_string().contains("radius"), "{err}");
+        let text = read_tool("evaluation_errors", &json!({}), &api).unwrap();
+        assert!(text.contains("radius"), "{text}");
+    }
+
+    #[test]
+    fn overshell_reports_an_error_not_a_bigger_part() {
+        let api = ir_doc(&[
+            (1, "cube", cube_op(10.0)),
+            (
+                2,
+                "shell",
+                json!({"type": "Shell", "child": 1, "thickness": 20.0}),
+            ),
+        ]);
+        let errors = api.evaluation_errors();
+        assert!(
+            errors.iter().any(|e| e.contains("consumes the solid")),
+            "{errors:?}"
+        );
+        let ok = ir_doc(&[
+            (1, "cube", cube_op(10.0)),
+            (
+                2,
+                "shell",
+                json!({"type": "Shell", "child": 1, "thickness": 1.0}),
+            ),
+        ]);
+        assert!(ok.evaluation_errors().is_empty());
+        let id = part_named(&ok, "shell");
+        let text = read_tool("inspect", &json!({"part_id": id}), &ok).unwrap();
+        assert!(text.contains("volume 488.000"), "{text}");
+    }
+
+    // Fuzz repro: loon `[difference [cube 10 10 10] [cube 10 10 5]]` is
+    // B − A = empty, and printed a `1.797e308` sentinel bbox.
+    #[test]
+    fn empty_result_says_empty_not_a_sentinel_bbox() {
+        let api = ir_doc(&[
+            (1, "a", cube_op(10.0)),
+            (2, "b", cube_op(5.0)),
+            (
+                3,
+                "difference",
+                json!({"type": "Difference", "left": 2, "right": 1}),
+            ),
+        ]);
+        let scene = read_tool("describe_scene", &json!({}), &api).unwrap();
+        assert!(scene.contains("empty (no volume)"), "{scene}");
+        assert!(!scene.contains("e308"), "{scene}");
+        assert!(
+            scene.contains("\"difference\" [boolean] material=default empty (no volume)"),
+            "{scene}"
+        );
+        let id = part_named(&api, "difference");
+        let text = read_tool("inspect", &json!({"part_id": id}), &api).unwrap();
+        assert!(
+            text.contains("empty (no volume)") && !text.contains("e308"),
+            "{text}"
+        );
+        assert_eq!(api.part_world_bbox(&id), None);
     }
 
     #[test]

@@ -171,6 +171,13 @@ open(path, "w").write(s)
 PY
 plutil -lint "$plist" >/dev/null
 
+# Bake the samples' solved meshes into the bundle (first open = cache hit, not
+# a cold solve). Default on for a release (BAKE_SAMPLES=0 skips), BAKE_SAMPLES=1 for dev builds.
+if [ "${BAKE_SAMPLES:-$release_build}" = 1 ] || [ "${BAKE_SAMPLES:-$release_build}" = true ]; then
+  echo "baking sample meshes…"
+  "$here/scripts/bake-sample-meshes.sh" "$app"
+fi
+
 if [ -z "$sign_identity" ]; then
   codesign --force --deep --sign - "$app" >/dev/null 2>&1 || echo "(codesign skipped)"
   echo "built: $app"

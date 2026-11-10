@@ -232,8 +232,29 @@ pub fn loft_blend_edge_keyed(
     let mut vertex_cache: HashMap<[i64; 3], VertexId> = HashMap::new();
     let mut all_faces: Vec<FaceId> = Vec::new();
 
+    // The blend only touches faces meeting the edge's endpoints in their
+    // outer loop; those must be planar (their corners are re-cut). Every
+    // other face — curved walls, faces with holes — is carried over on its
+    // own surface with its inner loops intact. An endpoint on an inner loop
+    // (an edge of a hole rim) is out of scope: refuse rather than rebuild it
+    // wrong.
+    for (_, f) in &topo.faces {
+        for &lp in &f.inner_loops {
+            let vs = topo.loop_vertices(lp);
+            if vs.contains(&e.v_start) || vs.contains(&e.v_end) {
+                return Err("edge blend loft cannot re-cut an inner (hole) loop".into());
+            }
+        }
+    }
+
     // 1. Rebuild every original face.
     for face in &faces {
+        let original = &topo.faces[face.face_id];
+        let surface = &brep.geometry.surfaces[original.surface_index];
+        let touched = face.vertex_ids.contains(&e.v_start) || face.vertex_ids.contains(&e.v_end);
+        if touched && surface.surface_type() != SurfaceKind::Plane {
+            return Err("edge blend loft needs planar faces at the edge's endpoints".into());
+        }
         let n = face.vertex_ids.len();
         let mut loop_positions: Vec<Point3> = Vec::with_capacity(n);
 
@@ -289,17 +310,39 @@ pub fn loft_blend_edge_keyed(
         if loop_positions.len() < 3 {
             continue;
         }
-        let surf_idx =
-            new_geom.add_surface(Box::new(Plane::from_normal(loop_positions[0], face.normal)));
-        let orientation = topo.faces[face.face_id].orientation;
+        // Planes keep their original definition (and so their pairing with
+        // the face orientation); the old Newell-normal reconstruction is
+        // kept only as the fallback for a non-plane surface that reached
+        // here untouched — which can't happen for curved faces, cloned below.
+        let surf_idx = if surface.surface_type() == SurfaceKind::Plane || !touched {
+            new_geom.add_surface(surface.clone_box())
+        } else {
+            new_geom.add_surface(Box::new(Plane::from_normal(loop_positions[0], face.normal)))
+        };
         add_face(
             &loop_positions,
             surf_idx,
-            orientation,
+            original.orientation,
             &mut vertex_cache,
             &mut new_topo,
             &mut all_faces,
         );
+        let new_face = *all_faces.last().expect("face just added");
+        for &lp in &original.inner_loops {
+            let hes: Vec<_> = topo
+                .loop_vertices(lp)
+                .into_iter()
+                .map(|v| {
+                    let p = topo.vertices[v].point;
+                    let id = *vertex_cache
+                        .entry(crate::topology::quantize(p))
+                        .or_insert_with(|| new_topo.add_vertex(p));
+                    new_topo.add_half_edge(id)
+                })
+                .collect();
+            let inner = new_topo.add_loop(&hes);
+            new_topo.add_inner_loop(new_face, inner);
+        }
     }
 
     // 2. Emit the blend strip as planar triangles over the sample grid,
