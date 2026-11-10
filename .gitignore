@@ -77,3 +77,6 @@ examples/fields/**/tc/*.tc
 
 # k1-trash-reacher ships its print-ready meshes
 !hardware/k1-trash-reacher/stl/*.stl
+
+# launch page kernel copy (packages/app/scripts/copy-launch-kernel.mjs)
+packages/app/public/launch/kernel/

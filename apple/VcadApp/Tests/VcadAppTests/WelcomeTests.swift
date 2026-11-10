@@ -11,7 +11,7 @@ final class WelcomeTests: XCTestCase {
 
     func testManifestListsTutorialAndSamples() throws {
         let samples = SampleLibrary.load(from: samplesDir)
-        XCTAssertEqual(samples.count, 5, "every listed sample's file must exist")
+        XCTAssertEqual(samples.count, 13, "every listed sample's file must exist")
         XCTAssertEqual(samples.filter { $0.tutorial == true }.map(\.file), ["first-part.loon"])
         for s in samples {
             XCTAssertNotNil(NSImage(contentsOf: samplesDir.appendingPathComponent(s.thumbnail)), s.thumbnail)
@@ -37,6 +37,12 @@ final class WelcomeTests: XCTestCase {
             let scene = model.buildScene()
             XCTAssertGreaterThan(scene.partCount, 0, "\(s.file) evaluates to parts")
             XCTAssertGreaterThan(model.triangleCount, 0, "\(s.file) has triangles")
+            if s.assets != nil {
+                // Mesh imports resolve against the copied assets, not the bundle:
+                // the K1's 23 STL links land (a missing mesh still yields the
+                // one placeholder cube, so count triangles, not parts).
+                XCTAssertGreaterThan(model.triangleCount, 100_000, "\(s.file) loads its imported meshes")
+            }
         }
     }
 

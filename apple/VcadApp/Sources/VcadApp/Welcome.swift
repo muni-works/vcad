@@ -17,6 +17,11 @@ struct SampleProject: Decodable, Identifiable, Equatable, Sendable {
     let file: String
     let thumbnail: String
     var tutorial: Bool? = nil
+    /// Files or folders (relative to the samples directory) the document
+    /// reads by relative path — mesh imports — copied beside it on open.
+    var assets: [String]? = nil
+    /// Gallery category, for grouping ("Mechanical", "Electronics", …).
+    var category: String? = nil
 }
 
 enum SampleLibrary {
@@ -61,8 +66,24 @@ enum SampleLibrary {
         let dest = workspace.appendingPathComponent(sample.file)
         if !fm.fileExists(atPath: dest.path) {
             // Read through any symlink (the checkout links repo examples).
+            try fm.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
             let data = try Data(contentsOf: dir.appendingPathComponent(sample.file).resolvingSymlinksInPath())
             try data.write(to: dest, options: .atomic)
+            // The baked mesh bundle (bake-sample-meshes.sh), so the first open
+            // is a cache hit rather than a cold solve (Stirling: 38 s → <0.1 s).
+            func meshBundle(_ u: URL) -> URL { u.deletingPathExtension().appendingPathExtension("vcadmesh") }
+            let bundle = meshBundle(dir.appendingPathComponent(sample.file))
+            if fm.fileExists(atPath: bundle.path) {
+                try? fm.copyItem(at: bundle, to: meshBundle(dest))
+            }
+        }
+        // Assets a sample reads by relative path (mesh imports), copied once
+        // to the same relative place beside the workspace copy.
+        for asset in sample.assets ?? [] {
+            let target = workspace.appendingPathComponent(asset)
+            guard !fm.fileExists(atPath: target.path) else { continue }
+            try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fm.copyItem(at: dir.appendingPathComponent(asset).resolvingSymlinksInPath(), to: target)
         }
         return dest
     }
@@ -149,6 +170,7 @@ struct WelcomeView: View {
                 .buttonStyle(.plain)
             }
             Text("Samples").font(.headline)
+            ScrollView {
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Theme.Space.m, alignment: .top), count: 4),
                       alignment: .leading, spacing: Theme.Space.m) {
                 ForEach(projects) { s in
@@ -165,6 +187,8 @@ struct WelcomeView: View {
                     .accessibilityLabel("Open sample \(s.title)")
                 }
             }
+            }
+            .frame(maxHeight: 440)
             if samples.isEmpty {
                 Text("No samples found in this build.").foregroundStyle(.secondary)
             }
