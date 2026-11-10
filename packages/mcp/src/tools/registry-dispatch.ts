@@ -291,38 +291,100 @@ export interface PartsDiff {
 }
 
 /**
- * Structural snapshot of every part: id → name + a fingerprint of its
- * subtree (node ops, names, and material). Cheap — one JSON.stringify
- * pass over reachable nodes — and exact enough to attribute any
- * mutation to the parts it touched.
+ * JSON with object keys sorted and serde-default fields (absent, `null`,
+ * `false`, `[]`) dropped, so the same IR re-serialized by the kernel — which
+ * emits keys alphabetically and fills defaults — produces the same string.
+ */
+export function canonicalJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(canonicalJson).join(",")}]`;
+  if (v && typeof v === "object") {
+    const entries = Object.entries(v as Record<string, unknown>)
+      .filter(([, x]) => !(x === undefined || x === null || x === false || (Array.isArray(x) && x.length === 0)))
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([k, x]) => `${JSON.stringify(k)}:${canonicalJson(x)}`).join(",")}}`;
+  }
+  return JSON.stringify(v) ?? "null";
+}
+
+/**
+ * Snapshot of every part: id → name + a fingerprint of what its subtree
+ * MEANS — node ops and material, with child references replaced by the
+ * child's own fingerprint and identity transforms (zero Translate/Rotate,
+ * unit Scale) looked through. Node ids and wrapper scaffolding are not part
+ * of a part's identity: the document engine renumbers every node and wraps
+ * each root in Scale/Rotate/Translate when it first materializes a session,
+ * and an untouched board beside the edited part must not read as modified.
  */
 export function snapshotParts(
   doc: import("@vcad/ir").Document,
 ): Map<string, { name?: string; fingerprint: string }> {
   const map = new Map<string, { name?: string; fingerprint: string }>();
+  const memo = new Map<number, string>();
+  const canon = (id: number, depth = 0): string => {
+    const hit = memo.get(id);
+    if (hit !== undefined) return hit;
+    const node = doc.nodes[String(id)];
+    if (!node || depth > 512) return "∅";
+    const op = node.op as import("@vcad/ir").CsgOp & Record<string, unknown>;
+    const v = (x: unknown) => x as { x: number; y: number; z: number } | undefined;
+    const isZero = (q?: { x: number; y: number; z: number }) => !q || (q.x === 0 && q.y === 0 && q.z === 0);
+    const isOne = (q?: { x: number; y: number; z: number }) => !q || (q.x === 1 && q.y === 1 && q.z === 1);
+    let out: string;
+    if (
+      (op.type === "Translate" && isZero(v(op.offset))) ||
+      (op.type === "Rotate" && isZero(v(op.angles))) ||
+      (op.type === "Scale" && isOne(v(op.factor)))
+    ) {
+      out = canon(op.child as number, depth + 1);
+    } else {
+      const refs: Record<string, unknown> = {};
+      switch (op.type) {
+        case "Union":
+        case "Difference":
+        case "Intersection":
+          refs.left = canon(op.left, depth + 1);
+          refs.right = canon(op.right, depth + 1);
+          break;
+        case "Extrude":
+        case "Revolve":
+        case "Sweep":
+          refs.sketch = canon(op.sketch, depth + 1);
+          break;
+        case "Loft":
+          refs.sketches = (op.sketches ?? []).map((c) => canon(c, depth + 1));
+          break;
+        default:
+          if (typeof op.child === "number" && childrenOf(op).length > 0) {
+            refs.child = canon(op.child, depth + 1);
+          }
+      }
+      out = canonicalJson({ ...op, ...refs });
+    }
+    memo.set(id, out);
+    return out;
+  };
   for (const root of doc.roots) {
     const nodeKey = String(root.root);
     const partId = partIdForRoot(doc, root);
-    const pieces: string[] = [
-      `material:${String(root.material ?? "")}:${String(
-        (doc.part_materials as Record<string, unknown> | undefined)?.[nodeKey] ?? "",
-      )}`,
-    ];
-    const stack = [root.root];
-    const seen = new Set<number>();
-    while (stack.length > 0) {
-      const id = stack.pop()!;
-      if (seen.has(id)) continue;
-      seen.add(id);
-      const node = doc.nodes[String(id)];
-      if (!node) continue;
-      pieces.push(`${id}:${node.name ?? ""}:${JSON.stringify(node.op)}`);
-      for (const child of childrenOf(node.op)) stack.push(child);
+    const material = `material:${String(root.material ?? "")}:${String(
+      (doc.part_materials as Record<string, unknown> | undefined)?.[nodeKey] ?? "",
+    )}`;
+    // The display name sits on the root, or — after the engine wraps a root
+    // in transform scaffolding — on the first named node down that chain.
+    let name: string | undefined;
+    for (let id: number | undefined = root.root, hops = 0; id !== undefined && hops < 8; hops++) {
+      const n = doc.nodes[String(id)];
+      if (!n) break;
+      if (n.name) {
+        name = n.name;
+        break;
+      }
+      const op = n.op as { type: string; child?: number };
+      id = op.type === "Translate" || op.type === "Rotate" || op.type === "Scale" ? op.child : undefined;
     }
-    pieces.sort();
     map.set(partId, {
-      name: doc.nodes[nodeKey]?.name ?? undefined,
-      fingerprint: pieces.join("|"),
+      name,
+      fingerprint: `${material}|name:${name ?? ""}|${canon(root.root)}`,
     });
   }
   return map;
@@ -665,6 +727,15 @@ function runMutationViaEngine(
       const rootNode = rootIdx >= 0 ? (next.nodes[String(next.roots[rootIdx]!.root)] as { name?: string | null }) : undefined;
       if (rootNode && !rootNode.name) rootNode.name = p.name;
     }
+    // The engine re-serializes EVERY node through serde, which reorders keys
+    // and fills defaults. An untouched node (an imported board's zones, say)
+    // would then fingerprint as "modified" and its copper diff as removed +
+    // re-added on undo. Keep the caller's own object wherever the engine's
+    // output means the same thing, so only real edits read as changes.
+    for (const [k, node] of Object.entries(next.nodes ?? {})) {
+      const prev = doc.nodes?.[k];
+      if (prev && sameUnderSerdeDefaults(prev, node)) next.nodes[k] = prev;
+    }
     for (const k of Object.keys(doc)) delete (doc as unknown as Record<string, unknown>)[k];
     Object.assign(doc, next);
     // The session IR is now exactly the engine's own output: cache it.
@@ -711,6 +782,36 @@ function runMutationViaEngine(
 /** Execute a mutating registry tool against an open session document.
  *  Every mutation runs through the Rust document engine; there is no
  *  TS-side fallback, so an engine refusal is the tool's answer. */
+/**
+ * Whether two IR values mean the same thing once serde has read them: key
+ * order is irrelevant, and an absent field equals the default serde fills in
+ * for it (`null` for an Option, `[]`/`{}` for a defaulted collection, `false`
+ * for a defaulted flag). Numbers compare exactly — serde_json round-trips f64
+ * losslessly, so any numeric difference is a real edit.
+ */
+export function sameUnderSerdeDefaults(a: unknown, b: unknown): boolean {
+  const isDefault = (v: unknown) =>
+    v === undefined ||
+    v === null ||
+    v === false ||
+    (Array.isArray(v) && v.length === 0) ||
+    (typeof v === "object" && v !== null && !Array.isArray(v) && Object.keys(v).length === 0);
+  if (a === b) return true;
+  if (isDefault(a) && isDefault(b)) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    const bb = b as unknown[];
+    return a.length === bb.length && a.every((x, i) => sameUnderSerdeDefaults(x, bb[i]));
+  }
+  const ao = a as Record<string, unknown>;
+  const bo = b as Record<string, unknown>;
+  for (const k of new Set([...Object.keys(ao), ...Object.keys(bo)])) {
+    if (!sameUnderSerdeDefaults(ao[k], bo[k])) return false;
+  }
+  return true;
+}
+
 export function runMutation(
   toolName: string,
   rawArgs: Record<string, unknown>,

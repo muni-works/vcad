@@ -120,7 +120,7 @@ import { isRemoteDeployment, maxInlineArtifactBytes, maxInlineExportBytes } from
 import type { FabFile } from "@vcad/engine";
 import { behavior, type ToolContext, type ToolDef } from "./tool-def.js";
 import { findPartCandidate, partIdForNode, partIdForRoot } from "./part-ids.js";
-import { diffParts, snapshotParts } from "./registry-dispatch.js";
+import { canonicalJson, diffParts, snapshotParts } from "./registry-dispatch.js";
 import { documentSolids, type DocumentSolid } from "./document-solids.js";
 import type { ToolResult } from "./tool-result.js";
 
@@ -10869,9 +10869,12 @@ function diffElementArray(
   before: Array<Zone | Trace | Via>,
   after: Array<Zone | Trace | Via>,
 ): PcbElementChange[] {
+  // Key on MEANING, not serialization: the same zone re-serialized by the
+  // kernel (keys reordered, defaults filled) is not a removal plus an add.
+  const keyOf = canonicalJson;
   const countKeys = (arr: Array<Zone | Trace | Via>) => {
     const m = new Map<string, number>();
-    for (const el of arr) m.set(JSON.stringify(el), (m.get(JSON.stringify(el)) ?? 0) + 1);
+    for (const el of arr) m.set(keyOf(el), (m.get(keyOf(el)) ?? 0) + 1);
     return m;
   };
   const beforeKeys = countKeys(before);
@@ -10885,12 +10888,12 @@ function diffElementArray(
     ...(elementLayer(kind, el) ? { layer: elementLayer(kind, el) } : {}),
   });
   before.forEach((el, i) => {
-    const key = JSON.stringify(el);
+    const key = keyOf(el);
     if ((afterKeys.get(key) ?? 0) > 0) afterKeys.set(key, afterKeys.get(key)! - 1);
     else out.push(describe("removed", el, i));
   });
   after.forEach((el, i) => {
-    const key = JSON.stringify(el);
+    const key = keyOf(el);
     if ((beforeKeys.get(key) ?? 0) > 0) beforeKeys.set(key, beforeKeys.get(key)! - 1);
     else out.push(describe("added", el, i));
   });

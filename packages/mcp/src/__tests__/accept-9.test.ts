@@ -140,6 +140,44 @@ describe("build_receipt enclosure selection on a multi-part document", () => {
   });
 });
 
+describe("update / undo change reports on a board + case document", () => {
+  it("report only the cutter's part, never phantom board or zone changes", async () => {
+    const call = await connect();
+    const id: string = out(await call("open_document", {})).document_id;
+    expect((await call("create_cad_loon", { document_id: id, mode: "add", source: CASE })).isError).toBeFalsy();
+    const casePart = (out(await call("read", { document_id: id })).parts as Array<{ id: string }>)[0]!.id;
+    await importRails(call, id);
+    const zonesBefore = JSON.stringify(
+      (Object.values(getSession(id).nodes).find((n) => n.op.type === "PcbBoard")!.op as unknown as { board: { zones: unknown[] } }).board.zones,
+    );
+
+    const cutter = Object.entries(getSession(id).nodes).find(([, n]) => {
+      const op = n.op as { type: string; offset?: { x: number } };
+      return op.type === "Translate" && op.offset?.x === 30;
+    })!;
+    const moved = await call("update", {
+      document_id: id,
+      node_id: Number(cutter[0]),
+      params: { offset: { x: 58, y: -1, z: 6 } },
+    });
+    expect(moved.isError, moved.content[0]?.text).toBeFalsy();
+    const changed = out(moved).changed as { added: unknown[]; removed: unknown[]; modified: Array<{ part_id: string; name?: string }> };
+    // Only the case moved its cutter; the board beside it is untouched.
+    expect(changed.modified.map((p) => p.part_id), JSON.stringify(changed)).toEqual([casePart]);
+    expect(changed.added).toEqual([]);
+    expect(changed.removed).toEqual([]);
+
+    const undone = out(await call("undo", { document_id: id }));
+    const zoneChanges = (undone.changed as Array<{ kind: string }>).filter((c) => c.kind !== "part");
+    expect(zoneChanges).toEqual([]);
+    expect(undone.changed).toContainEqual(expect.objectContaining({ kind: "part", action: "modified" }));
+    const zonesAfter = JSON.stringify(
+      (Object.values(getSession(id).nodes).find((n) => n.op.type === "PcbBoard")!.op as unknown as { board: { zones: unknown[] } }).board.zones,
+    );
+    expect(zonesAfter).toBe(zonesBefore);
+  });
+});
+
 describe("inspect_cad on an inside-out solid", () => {
   it("flags reversed winding instead of reporting a silent positive volume", async () => {
     const call = await connect();
