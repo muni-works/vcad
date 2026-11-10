@@ -20,7 +20,8 @@ use vcad_kernel_drafting::{
     sheet_to_pdf, AnnotationLayer, BomRow, BoundingBox2D, DetailViewParams, DrawingSheet,
     HatchPattern, OffsetSectionPlane, OffsetSectionStep, PlacedDetailView, PlacedProjectedView,
     PlacedSectionView, Point2D, ProjectedView, RenderedDimension, RenderedText, SectionPlane,
-    SheetSize, SheetSpec, TextAlignment, TitleBlockFields, ViewDirection, Visibility,
+    SectionView, SheetSize, SheetSpec, TextAlignment, TitleBlockFields, ViewDirection, ViewMatrix,
+    Visibility,
 };
 use vcad_kernel_tessellate::TriangleMesh;
 
@@ -143,47 +144,25 @@ fn view_direction(name: &str) -> ViewDirection {
     }
 }
 
-type Vec3 = [f64; 3];
-
-fn cross(a: Vec3, b: Vec3) -> Vec3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn normalize(a: Vec3) -> Vec3 {
-    let n = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
-    if n > 1e-12 {
-        [a[0] / n, a[1] / n, a[2] / n]
-    } else {
-        a
-    }
-}
-
-/// Orthographic basis `(right, up, forward)`, mirroring the web's `viewBasis`.
-fn view_basis(dir: &str) -> Option<(Vec3, Vec3, Vec3)> {
-    let (forward, world_up): (Vec3, Vec3) = match dir {
-        "front" => ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
-        "back" => ([0.0, -1.0, 0.0], [0.0, 0.0, 1.0]),
-        "top" => ([0.0, 0.0, -1.0], [0.0, 1.0, 0.0]),
-        "bottom" => ([0.0, 0.0, 1.0], [0.0, -1.0, 0.0]),
-        "right" => ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
-        "left" => ([-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
-        _ => return None,
-    };
-    let right = normalize(cross(world_up, forward));
-    let up = normalize(cross(forward, right));
-    Some((right, up, forward))
-}
-
-/// Offset section plane from a cut polyline (port of `sectionPlaneFromLine`).
+/// Offset section plane from a cut polyline drawn on the `dir` view.
+///
+/// The cut is viewed normal to the plane from the parent's right (the
+/// section sits in the strip right of the main view, as a third-angle
+/// right-side view would), upright relative to the parent: the parent's up
+/// stays up. The plane is built in a frame whose U axis is the parent's up,
+/// so offset steps (spans along the cut line) clip on U; the result goes
+/// through [`upright`] before drawing.
+///
+/// The old web port used a basis with `forward` into the scene, which made
+/// `right = -X` in the front view (mirroring the cut position) and used the
+/// viewing direction as the section's up, so the section came out rotated
+/// 90° (base on the left instead of the bottom).
 fn section_plane_from_line(dir: &str, points: &[[f64; 2]]) -> Option<OffsetSectionPlane> {
-    let (right, _up, forward) = view_basis(dir)?;
-    if points.len() < 2 {
+    if dir == "isometric" || points.len() < 2 {
         return None;
     }
+    let vm = ViewMatrix::from_view_direction(view_direction(dir));
+    let (right, toward) = (vm.right, vm.forward);
     let mut steps = Vec::new();
     let mut base_x: Option<f64> = None;
     for w in points.windows(2) {
@@ -197,14 +176,21 @@ fn section_plane_from_line(dir: &str, points: &[[f64; 2]]) -> Option<OffsetSecti
     }
     let base_x = base_x?;
     let all_flat = steps.iter().all(|s| s.offset == 0.0);
+    // normal = parent right, up = toward the parent's viewer ⇒ U = parent up.
     Some(OffsetSectionPlane::new(
         SectionPlane::from_arrays(
-            [right[0] * base_x, right[1] * base_x, right[2] * base_x],
-            right,
-            forward,
+            [right.x * base_x, right.y * base_x, right.z * base_x],
+            [right.x, right.y, right.z],
+            [toward.x, toward.y, toward.z],
         ),
         if all_flat { Vec::new() } else { steps },
     ))
+}
+
+/// Rotate a section from [`section_plane_from_line`]'s frame (U = parent up)
+/// to the drawn orientation (V = parent up), viewed from the parent's right.
+fn upright(view: &SectionView) -> SectionView {
+    view.rotated_ccw()
 }
 
 /// Conventional drawing scale at or below `s` (port of `niceScale`).
@@ -463,11 +449,11 @@ pub fn compose(doc_text: &str, doc: &Document, req: &DrawingRequest) -> Result<C
         let Some(plane) = section_plane_from_line(&dir_name, &section.points) else {
             continue;
         };
-        let sv = offset_section_mesh(
+        let sv = upright(&offset_section_mesh(
             &mesh,
             &plane,
             Some(&HatchPattern::new(3.0, std::f64::consts::FRAC_PI_4)),
-        );
+        ));
         if !sv.bounds.is_valid() {
             continue;
         }
@@ -706,7 +692,7 @@ mod tests {
             "materials":{},"part_materials":{},"roots":[{"root":4,"material":"default"}],
             "drawing":{"titleBlock":{"partName":"Bracket","author":"cam","date":"2026-11-06",
               "scale":"","material":"6061","revision":"B"},
-              "sections":[{"id":"s1","view":"top","label":"A","points":[[-20,-5],[-20,25]]}],
+              "sections":[{"id":"s1","view":"top","label":"A","points":[[20,-5],[20,25]]}],
               "showBom":true}}"#
             .to_string()
     }
@@ -831,11 +817,13 @@ mod tests {
     }
 
     #[test]
-    fn section_plane_matches_web_port() {
+    fn section_plane_follows_the_view_matrix() {
         let p = section_plane_from_line("front", &[[5.0, -1.0], [5.0, 9.0]]).unwrap();
         assert!(p.steps.is_empty());
-        // Same basis as the web: front right axis = worldUp × forward = -X.
-        assert_eq!(p.base.normal, [-1.0, 0.0, 0.0]);
+        // The front view's +x is world +X (ViewMatrix), so a cut at x = 5 is
+        // the plane X = 5 (the web port's basis mirrored it to X = -5).
+        assert_eq!(p.base.normal, [1.0, 0.0, 0.0]);
+        assert_eq!(p.base.origin, [5.0, 0.0, 0.0]);
         assert!(section_plane_from_line("isometric", &[[0.0, 0.0], [0.0, 1.0]]).is_none());
         assert_eq!(nice_scale(3.7), (2.0, "2:1".into()));
         assert_eq!(nice_scale(0.3), (0.2, "1:5".into()));
@@ -878,6 +866,48 @@ mod tests {
             assert!(hid < 100, "{view}: {hid} hidden edges (was 338 in front)");
             assert!(vis < 100, "{view}: {vis} visible edges (was 130 in front)");
         }
+    }
+
+    /// Section A-A cut vertically through the front view of the heatsink is
+    /// a right-side view of the cut: base along the bottom, fin standing up.
+    /// (Was drawn rotated 90°, base on the left.)
+    #[test]
+    fn heatsink_section_is_upright() {
+        // Through fin 3 (x 20.79..22.29).
+        let doc_text = heatsink_doc(
+            r#","drawing":{"sections":[{"id":"s1","view":"front","label":"A","points":[[21.5,-3],[21.5,33]]}]}"#,
+        );
+        let doc = Document::from_json(&doc_text).unwrap();
+        let req = DrawingRequest {
+            view: Some("front".into()),
+            ..Default::default()
+        };
+        let c = compose(&doc_text, &doc, &req).unwrap();
+        assert_eq!(c.sections, 1);
+        let sv = &c.spec.sections[0].view;
+        let b = sv.bounds;
+        let (w, h) = (b.max_x - b.min_x, b.max_y - b.min_y);
+        // Viewed from +X: horizontal = depth (Y, 40), vertical = Z (30).
+        assert!((w - 40.0).abs() < 0.5, "section width {w} (expected 40)");
+        assert!((h - 30.0).abs() < 0.5, "section height {h} (expected 30)");
+        // Upright: the wide part (base, 40) is at the bottom, the narrow fin
+        // (36 wide) on top — not the other way up.
+        let width_at = |y: f64| {
+            let xs: Vec<f64> = sv
+                .curves
+                .iter()
+                .flat_map(|c| c.points.iter())
+                .filter(|p| (p.y - y).abs() < 0.6)
+                .map(|p| p.x)
+                .collect();
+            xs.iter().cloned().fold(f64::MIN, f64::max)
+                - xs.iter().cloned().fold(f64::MAX, f64::min)
+        };
+        let bottom = width_at(b.min_y);
+        let top = width_at(b.max_y);
+        assert!((bottom - 40.0).abs() < 0.5, "bottom width {bottom}");
+        assert!((top - 36.0).abs() < 0.5, "top width {top}");
+        assert!(sv.num_hatch_lines() > 0);
     }
 
     /// Gate: every sample the app ships draws in every orthographic view, and

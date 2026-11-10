@@ -641,6 +641,36 @@ impl SectionView {
     pub fn num_hatch_lines(&self) -> usize {
         self.hatch_lines.len()
     }
+
+    /// The same view rotated 90° counter-clockwise: `(u, v) → (-v, u)`.
+    ///
+    /// Use it to turn a section computed in a frame whose U axis runs along
+    /// the cutting line (so offset steps clip on U) into one whose V axis
+    /// runs along the line — the upright orientation for a cut drawn
+    /// vertically on its parent view.
+    pub fn rotated_ccw(&self) -> Self {
+        let r = |p: Point2D| Point2D::new(-p.y, p.x);
+        let curves = self
+            .curves
+            .iter()
+            .map(|c| SectionCurve::new(c.points.iter().map(|p| r(*p)).collect(), c.is_closed))
+            .collect();
+        let hatch_lines = self
+            .hatch_lines
+            .iter()
+            .map(|(a, b)| (r(*a), r(*b)))
+            .collect();
+        let mut bounds = BoundingBox2D::empty();
+        if self.bounds.is_valid() {
+            bounds.include_point(r(Point2D::new(self.bounds.min_x, self.bounds.min_y)));
+            bounds.include_point(r(Point2D::new(self.bounds.max_x, self.bounds.max_y)));
+        }
+        Self {
+            curves,
+            hatch_lines,
+            bounds,
+        }
+    }
 }
 
 impl Default for SectionView {

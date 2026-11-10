@@ -1376,6 +1376,22 @@ mod tests {
     }
 
     #[test]
+    fn rotated_ccw_turns_u_into_v() {
+        let view = section_mesh(&make_cube(10.0), &SectionPlane::horizontal(5.0), None);
+        let b = view.bounds;
+        let r = view.rotated_ccw();
+        // (u, v) → (-v, u): x span is the old -v span, y span the old u span.
+        assert!((r.bounds.min_x + b.max_y).abs() < 1e-9);
+        assert!((r.bounds.max_x + b.min_y).abs() < 1e-9);
+        assert!((r.bounds.min_y - b.min_x).abs() < 1e-9);
+        assert!((r.bounds.max_y - b.max_x).abs() < 1e-9);
+        assert_eq!(r.curves.len(), view.curves.len());
+        let p = view.curves[0].points[0];
+        let q = r.curves[0].points[0];
+        assert_eq!((q.x, q.y), (-p.y, p.x));
+    }
+
+    #[test]
     fn test_hatch_pattern_default() {
         let pattern = HatchPattern::default();
         assert!((pattern.angle - std::f64::consts::FRAC_PI_4).abs() < 1e-10);
