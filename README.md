@@ -18,8 +18,10 @@ vcad is three things in one repository:
   export parts.
 
 vcad runs entirely on your machine. There are no accounts, no cloud sync, and
-no hosted services: the MCP server runs locally, and the legacy web editor at
-[vcad.io](https://vcad.io) is local-only and retiring in favor of the Mac app.
+no hosted services: the MCP server runs locally, and the hosted web editor at
+[vcad.io](https://vcad.io) has shut down in favor of the Mac app. If you had
+documents in a vcad.io account, sign in at
+[vcad.io/export](https://vcad.io/export) to download them all as `.vcad` files.
 
 ## Prerequisites
 
@@ -136,7 +138,8 @@ kernel WASM artifact rule, adding IR operations, and the changelog format.
 
 ## Export controls
 
-vcad operates no hosted services. It is published open-source software that
+vcad operates no hosted services (beyond the read-only `/export` page for
+existing accounts). It is published open-source software that
 you build and run yourself; users must comply with all export laws that apply
 to them. Details in
 [docs/export-controls.md](docs/export-controls.md).

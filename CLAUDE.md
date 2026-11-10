@@ -4,7 +4,7 @@ Instructions for AI agents working on vcad.
 
 ## Overview
 
-vcad is an open-source parametric CAD system aiming to replace Fusion 360, Onshape, and similar tools. It features a custom BRep kernel written in Rust, a native SwiftUI Mac app (`apple/VcadApp`, the primary product as of vcad 1.0), and AI-native interfaces via MCP. vcad operates **no hosted services**: no hosted MCP server, no accounts, no cloud sync, no share links, no server-side API. The MCP server runs on the user's machine (`npx -y @vcad/mcp`, bring your own agent). The React/Three.js web app (`packages/app`) is a local-only static SPA (IndexedDB documents) and is retiring (see `docs/launch/web-retirement.md`); its static deploy is what serves `packages/app/public/desktop/` — the Mac app's update feed — which must outlive it. Do not add server endpoints, Supabase, or other vcad-operated services back.
+vcad is an open-source parametric CAD system aiming to replace Fusion 360, Onshape, and similar tools. It features a custom BRep kernel written in Rust, a native SwiftUI Mac app (`apple/VcadApp`, the primary product as of vcad 1.0), and AI-native interfaces via MCP. vcad operates **no hosted services** beyond one read-only off-ramp: no hosted MCP server, no new accounts, no cloud sync, no share links, no billing, no server-side API. The MCP server runs on the user's machine (`npx -y @vcad/mcp`, bring your own agent). The hosted web editor is shut down: production builds of `packages/app` render a notice on every old route pointing at the Mac app download (`/download` → `/desktop/`) and `/export` (see `docs/launch/web-retirement.md`; `npm run dev` still opens the local editor). Two things stay up: the static vcad.io deploy, which serves `packages/app/public/desktop/` (the Mac app's update feed, which must outlive everything) and `/export`; and the Supabase project, which `/export` reads. `/export` (`ExportAllPage.tsx`, `lib/export-all.ts`, `lib/export-auth.ts`) lets an existing user sign in and download their `documents` rows as a zip — plain `SELECT`s under RLS, nothing written. Do not add server endpoints, sync/sharing writes, or other vcad-operated services back.
 
 **Site:** https://vcad.io (static: docs, downloads, Mac update feed)
 
@@ -146,8 +146,7 @@ without polling.
 **Durability.** Local runs persist sessions to `~/.vcad/mcp-sessions`
 (override with `VCAD_MCP_SESSION_DIR`, opt out with
 `VCAD_MCP_DISK_SESSIONS=0`), so a restart no longer destroys a long build.
-There is no remote session store (the Supabase backend was removed with the
-hosted server). When
+There is no remote session store (it went with the hosted server). When
 `server_info` reports `durable:false`, session-minting tools say so in their
 result — keep the authoring source rather than treating the server as
 storage.
@@ -161,6 +160,16 @@ same restart. Treat any artifact link handed to a user as short-lived.
 `unshare_session`, `place_order`, `authorize_spend`, `get_order_status`,
 `list_orders`, `get_order_feed`. `continue_document` with a share `token`
 fails closed; pass the inline `doc` instead.
+
+## Supabase (read-only, for /export)
+
+`supabase/` (config + migrations) stays because the live project
+`yteuhwciuxcbjwmabawj` still backs `/export`. Leave the migrations untouched:
+they describe a live schema. The only client is
+`packages/app/src/lib/export-auth.ts` (Google/GitHub OAuth or an email magic
+link for existing users, `shouldCreateUser: false`, redirecting back to
+`/export`) plus `supabaseDocumentFetcher` in `lib/export-all.ts`, which pages
+`documents` (`id, name, content, updated_at`). No writes.
 
 ## Architecture
 
