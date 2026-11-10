@@ -129,3 +129,70 @@ describe("assemble without names", () => {
     expect(new Set(doc.instances!.map((i) => i.name)).size).toBe(3);
   });
 });
+
+describe("gym position tracking on a 2-link leg", () => {
+  /** Base 80×80×20 grounded 30 mm above a foot-clear floor; thigh and shin
+   *  20×20×150 on Y-axis revolutes. Returns a stepping helper. */
+  async function leg() {
+    const call = await connect();
+    const id: string = out(await call("open_document", {})).document_id;
+    await call("create_cad_loon", {
+      document_id: id,
+      mode: "add",
+      source: `[root [cube 80 80 20] "steel"]\n[root [cube 20 20 150] "steel"]\n[root [translate 100 0 0 [cube 20 20 150]] "steel"]`,
+    });
+    const parts = out(await call("describe_scene", { document_id: id })).parts as Array<{ id: string }>;
+    await call("assemble", {
+      document_id: id,
+      instances: [
+        { id: "i0", part: parts[0]!.id, at: { x: -40, y: -40, z: 330 } },
+        { id: "i1", part: parts[1]!.id },
+        { id: "i2", part: parts[2]!.id },
+      ],
+      joints: [
+        { child: "i1", parent: "i0", parent_anchor: { x: 40, y: 40, z: 0 }, child_anchor: { x: 10, y: 10, z: 150 },
+          kind: { type: "Revolute", axis: { x: 0, y: 1, z: 0 }, limits: [-90, 90] } },
+        { child: "i2", parent: "i1", parent_anchor: { x: 10, y: 10, z: 0 }, child_anchor: { x: 110, y: 10, z: 150 },
+          kind: { type: "Revolute", axis: { x: 0, y: 1, z: 0 }, limits: [-120, 10] } },
+      ],
+      ground: "i0",
+    });
+    const env = out(await call("create_robot_env", { document_id: id, ground_enabled: true }));
+    return async (radians: number[], extra: Record<string, unknown> = {}) =>
+      out(await call("gym_step", { env_id: env.env_id, action_type: "position", values: radians, ...extra }));
+  }
+
+  /** Field-report targets (radians) for `secs`; RMS error in degrees after 1 s. */
+  async function rms(step: Awaited<ReturnType<typeof leg>>, send: "deg" | "rad") {
+    const dt = 1 / 240;
+    const sq = [0, 0];
+    let n = 0;
+    let first: Record<string, unknown> | undefined;
+    for (let k = 0; k < 4 / dt; k++) {
+      const t = (k + 1) * dt;
+      const rad = [0.6 * Math.sin(t), -0.8 + 0.5 * Math.sin(t)];
+      const deg = rad.map((x) => (x * 180) / Math.PI);
+      const s = send === "deg" ? await step(deg) : await step(rad, { angle_units: "rad" });
+      first ??= s;
+      if (t <= 1) continue;
+      n++;
+      for (let j = 0; j < 2; j++) sq[j]! += (s.observation.joint_positions[j] - deg[j]!) ** 2;
+    }
+    return { rms: sq.map((x) => Math.sqrt(x / n)), first: first! };
+  }
+
+  it("tracks a ±34° swing in degrees and in radians with angle_units", async () => {
+    for (const send of ["deg", "rad"] as const) {
+      const { rms: e } = await rms(await leg(), send);
+      expect(e[0], `${send} hip`).toBeLessThan(2);
+      expect(e[1], `${send} knee`).toBeLessThan(2);
+    }
+  }, 60000);
+
+  it("flags radians sent to the degree API on the first step", async () => {
+    const step = await leg();
+    const s = await step([0.6 * Math.sin(1 / 240), -0.8]);
+    expect(s.hint).toMatch(/DEGREES.*angle_units/);
+    expect((await step([1, -1])).hint).toBeUndefined();
+  });
+});
