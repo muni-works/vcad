@@ -1,16 +1,18 @@
 import {
   DOWNLOAD_URL,
+  EXPORT_PATH,
   type RetirementRoute,
 } from "@/lib/retirement";
 import { PageMark, RetirementBanner } from "./RetirementBanner";
 
 const NOTICES: Record<Extract<RetirementRoute, { kind: "notice" }>["reason"], string> = {
-  editor: "The web editor has moved to the vcad app for Mac.",
+  editor:
+    "The vcad.io web app has shut down. vcad is now a free app for Mac. Download it, and take your cloud documents with you from the export page.",
   "cli-auth": "The vcad CLI no longer needs a vcad.io sign-in — it runs locally.",
   authorize: "Spend authorization has retired along with vcad.io billing.",
   profile: "Public profiles have retired with vcad.io accounts.",
   "local-doc":
-    "This link pointed at a document saved in your browser. Download it from the web editor's document list, then open it in the app.",
+    "This link pointed at a document saved in your browser. Export it from the export page, then open it in the app.",
   "bad-link": "This shared link could not be read.",
 };
 
@@ -39,17 +41,18 @@ function ShareEnded() {
   return (
     <>
       <p className="mb-3 text-xs text-text">This share has ended. Ask its owner to send you the file.</p>
-      <a className={button} href={DOWNLOAD_URL}>Download vcad for Mac</a>
+      <a className={`${button} mb-2`} href={DOWNLOAD_URL}>Download vcad for Mac</a>
+      <a className="text-xs text-text-muted underline" href={EXPORT_PATH}>Export your own documents</a>
     </>
   );
 }
 
 /**
  * Post-retirement stand-in for every old vcad.io route (see
- * docs/launch/web-retirement.md). Only mounted when
- * VITE_VCAD_RETIREMENT_REDIRECTS is on.
+ * docs/launch/web-retirement.md). Mounted for every
+ * old route in production builds (see retirementRedirectsEnabled).
  */
-export function RetirementPage({ route }: { route: Exclude<RetirementRoute, { kind: "keep" }> }) {
+export function RetirementPage({ route }: { route: Exclude<RetirementRoute, { kind: "keep" | "export" }> }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-bg p-6 font-mono">
       <div className="w-full max-w-lg border border-border bg-surface p-6">
@@ -57,11 +60,11 @@ export function RetirementPage({ route }: { route: Exclude<RetirementRoute, { ki
         <RetirementBanner />
         {route.kind === "handoff" && <OpenInApp appUrl={route.appUrl} name={route.name} />}
         {route.kind === "share" && <ShareEnded />}
-        {route.kind === "export" && <ShareEnded />}
         {route.kind === "notice" && (
           <>
             <p className="mb-3 text-xs text-text">{NOTICES[route.reason]}</p>
-            <a className={button} href={DOWNLOAD_URL}>Download vcad for Mac</a>
+            <a className={`${button} mb-2`} href={DOWNLOAD_URL}>Download vcad for Mac</a>
+            <a className="text-xs text-text-muted underline" href={EXPORT_PATH}>Export your documents</a>
           </>
         )}
       </div>

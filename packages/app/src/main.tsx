@@ -15,8 +15,10 @@ if (import.meta.env.DEV && "serviceWorker" in navigator) {
   });
 }
 import { App } from "./App";
+import { ExportAllPage } from "./components/ExportAllPage";
 import { RetirementPage } from "./components/RetirementPage";
 import {
+  EXPORT_PATH,
   isProtectedPath,
   planRetirementRoute,
   retirementRedirectsEnabled,
@@ -42,19 +44,23 @@ if (import.meta.env.DEV) {
   );
 }
 
-// vcad.io retirement redirects (docs/launch/web-retirement.md). OFF unless the
-// build sets VITE_VCAD_RETIREMENT_REDIRECTS=1; when off this is always null.
-const retirementRoute: Exclude<RetirementRoute, { kind: "keep" }> | null = (() => {
+// Route: `/export` — sign in and download every cloud document. Always live:
+// it is the off-ramp from the retired hosted app.
+const isExport = window.location.pathname.replace(/\/+$/, "") === EXPORT_PATH;
+
+// vcad.io retirement redirects (docs/launch/web-retirement.md). ON in
+// production builds, OFF in dev; null means "render the local editor".
+const retirementRoute: Exclude<RetirementRoute, { kind: "keep" | "export" }> | null = (() => {
   if (!retirementRedirectsEnabled()) return null;
   // Belt and braces: /desktop/* (Sparkle appcast) is static and never redirected.
   if (isProtectedPath(window.location.pathname)) return null;
   const route = planRetirementRoute(window.location);
-  return route.kind === "keep" ? null : route;
+  return route.kind === "keep" || route.kind === "export" ? null : route;
 })();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    {retirementRoute ? <RetirementPage route={retirementRoute} /> : <App />}
+    {isExport ? <ExportAllPage /> : retirementRoute ? <RetirementPage route={retirementRoute} /> : <App />}
   </StrictMode>,
 );
 
