@@ -2000,9 +2000,25 @@ impl Solid {
     }
 
     /// Compute the volume of the solid from its triangle mesh.
+    ///
+    /// This is the magnitude; an inside-out solid reports the same number
+    /// as a correct one. Use [`Solid::signed_volume`] or
+    /// [`Solid::is_inside_out`] to detect inverted orientation.
     pub fn volume(&self) -> f64 {
+        self.signed_volume().abs()
+    }
+
+    /// Signed volume of the solid's triangle mesh: positive when faces point
+    /// outward, negative when the solid is inside out.
+    pub fn signed_volume(&self) -> f64 {
         let mesh = self.to_mesh(self.segments);
-        compute_volume(&mesh)
+        compute_signed_volume(&mesh)
+    }
+
+    /// True when the solid encloses negative volume — its faces point
+    /// inward. A correctly built solid never is.
+    pub fn is_inside_out(&self) -> bool {
+        self.signed_volume() < 0.0
     }
 
     /// Compute the surface area of the solid from its triangle mesh.
@@ -2756,6 +2772,10 @@ pub fn collect_fillet_target_edges(brep: &BRepSolid) -> Vec<vcad_kernel_topo::Ed
 }
 
 fn compute_volume(mesh: &TriangleMesh) -> f64 {
+    compute_signed_volume(mesh).abs()
+}
+
+fn compute_signed_volume(mesh: &TriangleMesh) -> f64 {
     let verts = &mesh.vertices;
     let indices = &mesh.indices;
     let mut vol = 0.0;
@@ -2771,7 +2791,7 @@ fn compute_volume(mesh: &TriangleMesh) -> f64 {
         vol += v0[0] * (v1[1] * v2[2] - v2[1] * v1[2]) - v1[0] * (v0[1] * v2[2] - v2[1] * v0[2])
             + v2[0] * (v0[1] * v1[2] - v1[1] * v0[2]);
     }
-    (vol / 6.0).abs()
+    vol / 6.0
 }
 
 fn compute_surface_area(mesh: &TriangleMesh) -> f64 {
