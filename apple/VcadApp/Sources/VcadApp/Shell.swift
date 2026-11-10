@@ -691,7 +691,7 @@ struct FeatureParamEditors: View {
 
     /// Op types that expose live-editable parameters in the inspector.
     static let editableOps: Set<String> = [
-        "Cube", "Cylinder", "Sphere", "Cone", "Torus", "Wedge", "Prism", "Hull", "SweepRotate",
+        "Cube", "Cylinder", "Sphere", "Cone", "Torus", "Wedge", "Prism", "SpurGear", "Hull", "SweepRotate",
         "EdgeBlend", "Fillet", "Chamfer", "Shell",
         "Translate", "Rotate", "Scale", "Revolve", "LinearPattern", "CircularPattern",
     ]
@@ -732,6 +732,13 @@ struct FeatureParamEditors: View {
             sidesStepper(id, (op["sides"] as? NSNumber)?.intValue ?? 6)
             scalarField(op, id, "Radius", "radius")
             scalarField(op, id, "Height", "height")
+        case "SpurGear":
+            scalarField(op, id, "Module", "module", sens: 0.01, minV: 0.05)
+            teethStepper(id, (op["teeth"] as? NSNumber)?.intValue ?? 20)
+            scalarField(op, id, "Pressure angle", "pressure_angle_deg", unit: "°", sens: 0.1, minV: 10)
+            scalarField(op, id, "Face width", "face_width")
+            scalarField(op, id, "Bore", "bore_diameter", minV: 0)
+            scalarField(op, id, "Backlash", "backlash", sens: 0.005, minV: 0)
         case "Hull":
             HullInputsEditor(model: model, nodeId: id)
         case "SweepRotate":
@@ -807,6 +814,18 @@ struct FeatureParamEditors: View {
         return ScrubField(label: label, value: value, unit: unit, sensitivity: sens, minValue: minV) { v, s in
             model.editBlend(nodeId: id, field: key, value: v, snapshot: s)
             onEdit(s)
+        }
+    }
+
+    private func teethStepper(_ id: Int, _ teeth: Int) -> some View {
+        Stepper(value: Binding(
+            get: { teeth },
+            set: {
+                model.editInt(nodeId: id, key: "teeth", value: max(4, $0), snapshot: true, name: "Change Teeth")
+                onEdit(true)
+            }
+        ), in: 4...400) {
+            KeyValueRow("Teeth", "\(teeth)")
         }
     }
 

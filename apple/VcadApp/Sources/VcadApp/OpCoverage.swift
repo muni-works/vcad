@@ -13,6 +13,7 @@ enum OpCoverage {
         "Torus": ("add.torus", "Design dock: Primitives"),
         "Wedge": ("add.wedge", "Design dock: Primitives"),
         "Prism": ("add.prism", "Design dock: Primitives"),
+        "SpurGear": ("op.spurGear", "All tools: Spur Gear (Mesh with selected gear)"),
         "Union": ("bool.union", "Design dock"),
         "Difference": ("bool.difference", "Design dock"),
         "Intersection": ("bool.intersection", "Design dock"),

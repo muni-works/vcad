@@ -10,7 +10,7 @@ import SwiftUI
 
 /// One modeling operation a dialog can author.
 enum FeatureOp: String, CaseIterable, Identifiable {
-    case fillet, chamfer, shell, hole, linearPattern, circularPattern, mirror, scale, move, rotate, sweepRotate, blend, text, hull, hullPoints
+    case fillet, chamfer, shell, hole, linearPattern, circularPattern, mirror, scale, move, rotate, sweepRotate, blend, text, hull, hullPoints, spurGear
 
     var id: String { rawValue }
     var label: String {
@@ -30,6 +30,7 @@ enum FeatureOp: String, CaseIterable, Identifiable {
         case .blend: "Edge Blend"
         case .hull: "Convex Hull"
         case .hullPoints: "Hull from Points"
+        case .spurGear: "Spur Gear"
         }
     }
     var symbol: String {
@@ -49,14 +50,15 @@ enum FeatureOp: String, CaseIterable, Identifiable {
         case .blend: "circle.bottomrighthalf.pattern.checkered"
         case .hull: "skew"
         case .hullPoints: "point.3.connected.trianglepath.dotted"
+        case .spurGear: "gearshape"
         }
     }
     /// Ops that create a new part instead of transforming the selected one.
-    var createsPart: Bool { [.text, .hullPoints].contains(self) }
+    var createsPart: Bool { [.text, .hullPoints, .spurGear].contains(self) }
     /// Ops shown on the Modify tab.
     static let modifyOps: [FeatureOp] = [.fillet, .chamfer, .shell, .hole, .linearPattern,
                                          .circularPattern, .mirror, .scale, .move, .rotate, .sweepRotate, .blend, .hull]
-    static let createOps: [FeatureOp] = [.text, .hullPoints]
+    static let createOps: [FeatureOp] = [.spurGear, .text, .hullPoints]
 }
 
 /// Axis presets shared by pattern and mirror dialogs.
@@ -243,6 +245,8 @@ struct FeatureOpSheet: View {
     @State private var holeCount = 4
     @State private var holeRadius: Double = 20
     @State private var priorFilter: PickFilter?
+    @State private var gear = SpurGearParams()
+    @State private var gearMesh = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
@@ -341,6 +345,8 @@ struct FeatureOpSheet: View {
             Picker("Align", selection: $alignment) {
                 Text("Left").tag("left"); Text("Center").tag("center"); Text("Right").tag("right")
             }.pickerStyle(.segmented)
+        case .spurGear:
+            gearFields
         case .move:
             vec("Offset", $vec3)
         case .rotate:
@@ -364,6 +370,44 @@ struct FeatureOpSheet: View {
             Text("One x y z per line, at least four, not flat.").font(.caption).foregroundStyle(.secondary)
         case .hull:
             Text(model.multiSelectedParts.count >= 2 ? "\(model.multiSelectedParts.count) parts selected" : "Select two or more parts with ⌘-click.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    /// The gear the new one would mesh with, when the toggle is on.
+    private var gearMate: PlacedSpurGear? { gearMesh ? model.selectedSpurGear : nil }
+
+    @ViewBuilder private var gearFields: some View {
+        let mate = model.selectedSpurGear
+        if let mate {
+            Toggle("Mesh with selected gear", isOn: $gearMesh)
+            if gearMesh {
+                Text("Matches its module (\(SpurGearMath.fmt(mate.module))) and pressure angle, at center distance "
+                     + "\(SpurGearMath.fmt(SpurGearMath.centerDistance(module: mate.module, z1: mate.teeth, z2: gear.teeth))) mm, "
+                     + "tooth into gap.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        if gearMate == nil {
+            num("Module", $gear.module, unit: "mm")
+        }
+        LabeledContent("Teeth") {
+            Stepper("\(gear.teeth)", value: $gear.teeth, in: 4...400)
+        }
+        if gearMate == nil {
+            Picker("Pressure angle", selection: $gear.pressureAngle) {
+                Text("14.5°").tag(14.5); Text("20°").tag(20.0); Text("25°").tag(25.0)
+            }.pickerStyle(.segmented)
+        }
+        num("Face width", $gear.faceWidth, unit: "mm")
+        num("Bore", $gear.bore, unit: "mm")
+        let shown = gearMate.map { m in
+            var g = gear; g.module = m.module; g.pressureAngle = m.pressureAngle; return g
+        } ?? gear
+        if let why = shown.problem {
+            Text(why).font(.caption).foregroundStyle(.red)
+        } else {
+            Text("Pitch ⌀\(SpurGearMath.fmt(shown.pitchDiameter)) · tip ⌀\(SpurGearMath.fmt(shown.tipDiameter)) mm")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
@@ -452,6 +496,8 @@ struct FeatureOpSheet: View {
             }
         case .blend:
             ok = model.applyBlend(fillet: blendShape >= 0.5, size: size, shape: blendShape)
+        case .spurGear:
+            ok = model.addSpurGear(gear, meshWith: gearMate)
         }
         if ok { dismiss() } else { error = model.engineError ?? "\(op.label) failed" }
     }
