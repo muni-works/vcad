@@ -396,21 +396,31 @@ enum DockTools {
     }
 
     private static func design(_ m: EditorModel) -> [Tool] {
+        // The Untitled sandbox isn't a document yet; the first modeling action
+        // promotes it (same shape, real features) instead of disabling the tools.
+        let sandbox = m.source.isSandbox && m.documentJSON == nil
         let doc = m.usesDocumentTree
         let selected = m.selectedPartIndex != nil || m.picking.selectionPart != nil
         var out: [Tool] = []
         out.append(Tool(id: "sketch", label: "Sketch", symbol: "scribble.variable", isActive: m.sketching,
-                        enabled: doc, hint: doc ? "" : "Open a document") { m.enterSketch() })
+                        enabled: doc || sandbox, hint: doc || sandbox ? "" : "Open a document") {
+            if m.promoteSandboxToDocument() { m.enterSketch() }
+        })
         out += m.tools(for: .create).filter { ["shape.cube", "shape.cylinder"].contains($0.id) }
         for op in FeatureOp.modifyOps where [.fillet, .chamfer, .shell, .circularPattern].contains(op) {
             out.append(Tool(id: "op.\(op.rawValue)", label: op.label, symbol: op.symbol,
-                            isActive: m.activeFeatureOp == op, enabled: doc && selected,
-                            hint: selected ? "" : "Select a part first") { m.activeFeatureOp = op })
+                            isActive: m.activeFeatureOp == op, enabled: sandbox || (doc && selected),
+                            hint: sandbox || selected ? "" : "Select a part first") {
+                if m.promoteSandboxToDocument() { m.activeFeatureOp = op }
+            })
         }
         let ready = m.multiSelectedParts.count == 2
-        out.append(Tool(id: "bool.difference", label: "Subtract", symbol: BooleanOp.difference.symbol,
-                        isActive: false, enabled: doc && ready, hint: ready ? "" : "⌘-click 2 parts") {
-            m.combineSelected(.difference)
+        let waiting = m.pendingBoolean?.op == .difference
+        out.append(Tool(id: "bool.difference", label: waiting ? "Subtract — click the part to cut away" : "Subtract",
+                        symbol: BooleanOp.difference.symbol,
+                        isActive: waiting, enabled: doc && (ready || selected || waiting),
+                        hint: ready || selected ? "" : "Select the part to cut from") {
+            if waiting { m.pendingBoolean = nil } else { m.beginCombine(.difference) }
         })
         out.append(Tool(id: "measure", label: "Measure", symbol: "ruler", isActive: m.measuring, enabled: doc) {
             m.measuring.toggle()
@@ -482,11 +492,25 @@ enum DockTools {
                 ec.tool = tool
             }
         }
+        // Schematic gets schematic verbs; Via / Autoroute / DRC are board work.
+        if ec.view == .schematic {
+            let empty = ecRows(ec.schematic(m)["components"]).isEmpty
+            return keyed([
+                mode(.select, "Select", "cursorarrow"),
+                mode(.place, "Place Component", "square.on.square.dashed"),
+                mode(.wire, "Connect Pins", "point.3.connected.trianglepath.dotted"),
+                empty
+                    ? Tool(id: "ec.buildsch", label: "Build Schematic from Board", symbol: "arrow.triangle.branch",
+                           isActive: false) { ec.buildSchematicFromBoard(m) }
+                    : Tool(id: "ec.check", label: "Check Connectivity", symbol: "checkmark.seal", isActive: ec.checking) { ec.check(m) },
+                Tool(id: "ec.simulate", label: "Simulate", symbol: "waveform", isActive: t.sheet == .simulate,
+                     enabled: !empty, hint: "Build or draw a schematic first") { t.sheet = .simulate },
+            ], ["ec.select": "e", "ec.place": "p", "ec.wire": "w", "ec.check": "c", "ec.simulate": "s"])
+        }
         return keyed([
             mode(.select, "Select", "cursorarrow"),
             mode(.place, "Place Component", "square.on.square.dashed"),
-            ec.view == .schematic ? mode(.wire, "Connect Pins", "point.3.connected.trianglepath.dotted")
-                                  : mode(.route, "Route", "point.topleft.down.to.point.bottomright.curvepath", boardOnly: true),
+            mode(.route, "Route", "point.topleft.down.to.point.bottomright.curvepath", boardOnly: true),
             mode(.via, "Via", "smallcircle.filled.circle", boardOnly: true),
             Tool(id: "ec.autoroute", label: "Autoroute", symbol: "wand.and.stars", isActive: t.busy == "Autoroute",
                  enabled: t.busy == nil, hint: "Busy") { t.autoroute(ec, m) },
@@ -531,12 +555,12 @@ enum DockTools {
         let a = AnalysisStore.shared
         return keyed([
             Tool(id: "fab.sheet", label: "Sheet Metal", symbol: "square.3.layers.3d.down.right",
-                 isActive: f.shown && f.tab == .sheet) { f.shown = true; f.tab = .sheet },
+                 isActive: f.shown && f.tab == .sheet) { a.shown = false; f.shown = true; f.tab = .sheet },
             Tool(id: "fab.print", label: "3D Print", symbol: "printer", isActive: f.shown && f.tab == .print) {
-                f.shown = true; f.tab = .print
+                a.shown = false; f.shown = true; f.tab = .print
             },
             Tool(id: "fab.cam", label: "CAM", symbol: "gearshape.2", isActive: f.shown && f.tab == .cam) {
-                f.shown = true; f.tab = .cam
+                a.shown = false; f.shown = true; f.tab = .cam
             },
             Tool(id: "fab.dfm", label: "DFM", symbol: "checkmark.shield", isActive: a.shown && a.tab == .dfm,
                  enabled: m.usesDocumentTree) { a.shown = true; a.tab = .dfm },

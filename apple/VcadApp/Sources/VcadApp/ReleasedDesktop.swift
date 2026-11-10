@@ -627,6 +627,10 @@ extension ReleaseWindowController {
             }
         }
         model.docParamDirty = false      // consumed here; the studio view is hidden
+        // On commit, rebuild so the scene re-normalizes (scale = 0.6 / size)
+        // and re-centres: in-place swaps kept the old size, so a cube resized
+        // 30 → 90 mm overflowed the view and Frame All couldn't fit it.
+        if collisions { model.geometryDirty = true }
     }
 }
 
@@ -920,7 +924,12 @@ struct ReleasedOverlayView: View {
             if !studio {
             // The right rail: the inspector, docked to the screen edge.
             VStack(alignment: .trailing, spacing: Theme.Space.m) {
-                if FabStore.shared.shown && !model.source.isGripper {
+                if AnalysisStore.shared.shown && !model.source.isGripper && model.showsInspector {
+                    // DFM / stress / clearance (AnalysisPanel.swift). Its host was
+                    // dropped in #1055, so the dock's DFM and Stress buttons lit
+                    // up and showed nothing; it takes the rail while active.
+                    AnalysisPanel(model: model).modifier(ChromeRegion(key: "analysis"))
+                } else if FabStore.shared.shown && !model.source.isGripper {
                     // Fab: the inspector IS the active process's settings.
                     if model.showsInspector {
                         FabricatePanel(model: model).modifier(ChromeRegion(key: "inspector"))
@@ -970,6 +979,19 @@ struct ReleasedOverlayView: View {
                 .padding(.top, chromeTop)
                 .transition(.opacity)
                 .accessibilityLabel("Solving \(model.documentName)")
+            } else if let p = model.pendingBoolean {
+                HStack(spacing: Theme.Space.s) {
+                    Image(systemName: p.op.symbol)
+                    Text(p.op == .union ? "Click the part to join"
+                         : p.op == .difference ? "Click the part to cut away"
+                         : "Click the part to intersect with").font(.callout)
+                    Button("Cancel") { model.pendingBoolean = nil }
+                        .buttonStyle(.borderless).keyboardShortcut(.cancelAction)
+                }
+                .padding(.horizontal, 14).padding(.vertical, 8).pillSurface()
+                .padding(.top, chromeTop)
+                .transition(.opacity)
+                .accessibilityElement(children: .combine)
             }
         }
         .overlay {
@@ -983,11 +1005,13 @@ struct ReleasedOverlayView: View {
                 .padding(Theme.Space.l)
                 .modifier(ChromeRegion(key: "fieldHud"))
         }
-        .overlay(alignment: .bottomLeading) {
-            // Orientation triad: which way X, Y and Z point right now.
+        .overlay(alignment: .bottomTrailing) {
+            // Orientation triad: which way X, Y and Z point right now. Bottom
+            // right: the left column's panels (Model, Assembly, Pose) can run
+            // to the bottom and the triad drew over them.
             if Prefs.showsTriad {
                 AxisTriad(azimuth: model.azimuth, elevation: model.elevation)
-                    .padding(.leading, Theme.Space.l)
+                    .padding(.trailing, Theme.Space.l)
                     .padding(.bottom, studio ? (model.cnc.bottomPanelShown ? 340 : 100) : Theme.Space.l)
                     .allowsHitTesting(false)
             }
@@ -1042,7 +1066,7 @@ struct ReleasedOverlayView: View {
             if studio {
                 CNCStudioViewportChrome(model: model)
                     .padding(.leading, model.cnc.leftPanelShown ? Theme.Width.cncOutline + 2 * Theme.Space.m : 0)
-                    .padding(.trailing, model.cnc.rightPanelShown ? Theme.Width.inspector + 2 * Theme.Space.m + 6 : 0)
+                    .padding(.trailing, model.cnc.rightPanelShown ? Theme.Width.toolInspector + 2 * Theme.Space.m + 6 : 0)
                     .padding(.bottom, model.cnc.bottomPanelShown ? 330 : 90)
             }
         }
@@ -1138,22 +1162,7 @@ struct ReleasedOverlayView: View {
     private func refreshTopologyOverlay() {
         guard let centering = ReleaseWindowController.shared.centeringEntity else { return }
         centering.findEntity(named: "topoOverlay")?.removeFromParent()
-        guard model.picking.filter.picksTopology else { return }
-        let (sel, hov) = model.topologyHighlight()
-        let root = Entity(); root.name = "topoOverlay"
-        let w = max(model.displayedSceneSize, 1) * 0.006
-        if let m = EdgeOverlay.ribbonResource(segments: sel, width: w * 1.4, name: "topoSel") {
-            root.addChild(ModelEntity(mesh: m, materials: [UnlitMaterial(
-                color: NSColor(red: 1.0, green: 0.62, blue: 0.12, alpha: 1))]))
-        }
-        if let m = EdgeOverlay.ribbonResource(segments: hov, width: w, name: "topoHover") {
-            root.addChild(ModelEntity(mesh: m, materials: [UnlitMaterial(color: .white)]))
-        }
-        if model.measuring, let span = model.measurement?.span,
-           let m = EdgeOverlay.ribbonResource(segments: [span.0, span.1], width: w, name: "measureSpan") {
-            root.addChild(ModelEntity(mesh: m, materials: [UnlitMaterial(color: .systemTeal)]))
-        }
-        centering.addChild(root)
+        if let root = topologyOverlayEntity(model: model) { centering.addChild(root) }
     }
 
     /// The entity name of the body under a screen point — a root part or an
@@ -1246,8 +1255,11 @@ struct ReleasedOverlayView: View {
         guard model.usesDocumentTree,
               let ar = ReleaseWindowController.shared.arView else { return }
 
-        // Face/edge picking: the click chooses topology, not a body.
-        if model.picking.filter.picksTopology, model.armedShape == nil {
+        // Face/edge picking: the click chooses topology, not a body — unless
+        // a Subtract/Combine is waiting for its tool part. Face mode lingers
+        // after a Shell or Fillet, and it swallowed that click, so the prompt
+        // never completed.
+        if model.picking.filter.picksTopology, model.armedShape == nil, model.pendingBoolean == nil {
             model.picking.select(hit: topologyHit(at: p), additive: additive || model.measuring)
             refreshTopologyOverlay()
             return
@@ -1299,7 +1311,9 @@ struct ReleasedOverlayView: View {
             // Modifiers come from the gesture (.modifiers(.command)), not
             // NSEvent.modifierFlags — that reads hardware key state and misses
             // synthetic events (and some tap orderings).
-            if additive {
+            if model.completePendingBoolean(withPart: stack[depth]) {
+                // the click picked the boolean's tool part
+            } else if additive {
                 model.toggleMultiSelect(part: stack[depth], featureID: fid)
             } else {
                 model.selectFeature(fid)
@@ -1690,6 +1704,10 @@ struct ReleasedARView: NSViewRepresentable {
         ReleaseWindowController.shared.centeringEntity = centering
         // Keep the in-progress sketch ink alive across geometry rebuilds.
         if model.sketching { centering.addChild(buildSketchRoot(model: model)) }
+        // And the face/edge selection highlight: a pick triggers a rebuild,
+        // which used to drop the overlay the pick had just drawn, so picked
+        // edges never showed.
+        if let topo = topologyOverlayEntity(model: model) { centering.addChild(topo) }
         applySectionView(model: model)
         // Transform gizmo on the selected part — same shared builder as the
         // studio; its handle proxies carry collision shapes, so the ARView
@@ -1781,7 +1799,12 @@ struct ReleasedARView: NSViewRepresentable {
 struct ObjectInspectorWindow: View {
     @Bindable var model: EditorModel
     private var title: String {
-        model.selectedFeatureNode?.name ?? model.features.first { $0.id == model.selectedFeatureID }?.name ?? "Inspector"
+        if let n = model.selectedFeatureNode { return n.name }
+        // A document's title comes only from its tree. The sandbox feature list
+        // (Cube / Fillet) outlives promotion to a document (source stays
+        // .sandbox), which titled an empty inspector "Fillet".
+        if model.usesDocumentTree { return "Inspector" }
+        return model.features.first { $0.id == model.selectedFeatureID }?.name ?? "Inspector"
     }
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
@@ -1865,6 +1888,22 @@ struct ObjectInspectorWindow: View {
             } else if let d = node.detail {
                 KeyValueRow("Value", d)
             }
+            // A placed shape: its row edits the position, so its own size
+            // (a cylinder's radius and height) was unreachable from the UI.
+            if let hid = node.heldNodeId, let hop = node.heldOpType,
+               FeatureParamEditors.editableOps.contains(hop) {
+                Divider()
+                Eyebrow(DocumentGraph.label(hop))
+                VStack(alignment: .leading, spacing: 7) {
+                    FeatureParamEditors(model: model,
+                                        node: FeatureNode(id: "held\(hid)", nodeId: hid, name: node.name,
+                                                          opType: hop, symbol: node.symbol, detail: nil,
+                                                          partIndex: node.partIndex, children: [])) { snapshot in
+                        ReleaseWindowController.shared.refreshGeometry(model: model,
+                                                                       collisions: snapshot)
+                    }
+                }
+            }
         } else {
             EmptyPanelState(title: "Nothing selected", systemImage: "cursorarrow.click.2",
                             detail: "Select a feature in the navigator or a part in the viewport.")
@@ -1878,15 +1917,18 @@ struct ObjectInspectorWindow: View {
             KeyValueRow("Shape", model.baseShape.label)
             KeyValueRow("Modifier", model.modifier.label)
             if model.modifier != .none && model.modifierEffective {
-                HStack(spacing: 6) {
+                // Label on its own line, slider flexes: the one-line version
+                // (label + 90 pt slider + field) was wider than the glass
+                // inspector and clipped every row's right edge.
+                VStack(alignment: .leading, spacing: 4) {
                     Text(model.modifier.paramLabel).font(.callout).foregroundStyle(.secondary)
-                    Spacer(minLength: Theme.Space.s)
-                    Slider(value: $model.modifierValue, in: 0...12)
-                        .controlSize(.mini)
-                        .frame(width: 90)
-                        .accessibilityLabel(model.modifier.paramLabel)
-                    ScrubField(label: "", value: model.modifierValue, sensitivity: 0.05, minValue: 0) { v, _ in
-                        model.modifierValue = min(12, max(0, v))
+                    HStack(spacing: 6) {
+                        Slider(value: $model.modifierValue, in: 0...12)
+                            .controlSize(.mini)
+                            .accessibilityLabel(model.modifier.paramLabel)
+                        ScrubField(label: "", value: model.modifierValue, sensitivity: 0.05, minValue: 0) { v, _ in
+                            model.modifierValue = min(12, max(0, v))
+                        }
                     }
                 }
             } else if model.modifier != .none {
@@ -2287,4 +2329,27 @@ func applySectionView(model: EditorModel) {
         root.addChild(ModelEntity(mesh: r, materials: [UnlitMaterial(color: NSColor(red: 1, green: 0.62, blue: 0.12, alpha: 1))]))
     }
     centering.addChild(root)
+}
+
+/// Face/edge highlight ribbons under the kernel frame: selection orange, hover
+/// white, measure span teal. Nil when the pick filter isn't topological.
+/// Shared by the pick refresh and the geometry rebuild, so a rebuild keeps it.
+@MainActor
+func topologyOverlayEntity(model: EditorModel) -> Entity? {
+    guard model.picking.filter.picksTopology else { return nil }
+    let (sel, hov) = model.topologyHighlight()
+    let root = Entity(); root.name = "topoOverlay"
+    let w = max(model.displayedSceneSize, 1) * 0.006
+    if let m = EdgeOverlay.ribbonResource(segments: sel, width: w * 1.4, name: "topoSel") {
+        root.addChild(ModelEntity(mesh: m, materials: [UnlitMaterial(
+            color: NSColor(red: 1.0, green: 0.62, blue: 0.12, alpha: 1))]))
+    }
+    if let m = EdgeOverlay.ribbonResource(segments: hov, width: w, name: "topoHover") {
+        root.addChild(ModelEntity(mesh: m, materials: [UnlitMaterial(color: .white)]))
+    }
+    if model.measuring, let span = model.measurement?.span,
+       let m = EdgeOverlay.ribbonResource(segments: [span.0, span.1], width: w, name: "measureSpan") {
+        root.addChild(ModelEntity(mesh: m, materials: [UnlitMaterial(color: .systemTeal)]))
+    }
+    return root
 }

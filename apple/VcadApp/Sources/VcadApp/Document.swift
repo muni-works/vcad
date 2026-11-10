@@ -306,6 +306,20 @@ struct DocumentGraph {
         return cur
     }
 
+    /// The first non-transform node under a Translate/Rotate/Scale chain, or nil
+    /// when `node` isn't a transform.
+    private func heldShape(_ node: DocNode) -> DocNode? {
+        let transforms: Set<String> = ["Translate", "Rotate", "Scale"]
+        guard transforms.contains(node.opType) else { return nil }
+        var cur = node
+        for _ in 0..<8 {
+            guard let child = (cur.op["child"] as? NSNumber)?.intValue, let next = nodes[child] else { return nil }
+            if !transforms.contains(next.opType) { return next }
+            cur = next
+        }
+        return nil
+    }
+
     private func buildNode(_ rawId: Int, partIndex: Int?, depth: Int, visited: Set<Int>) -> FeatureNode {
         let id = unwrapIdentity(rawId)
         guard let node = nodes[id] else {
@@ -321,15 +335,23 @@ struct DocumentGraph {
                 kids.append(buildNode(ref, partIndex: nil, depth: depth + 1, visited: seen))
             }
         }
+        // A placed part is a transform chain over its shape: name and badge the
+        // row after the shape ("Cylinder", not "Translate"), keep the row bound
+        // to the transform so the inspector still edits its position.
+        let held = heldShape(node)
+        let named = node.name?.isEmpty == false ? node.name! : nil
         return FeatureNode(
             id: "n\(id)",
             nodeId: id,
-            name: node.name?.isEmpty == false ? node.name! : Self.label(node.opType),
+            name: named ?? held.map { $0.name?.isEmpty == false ? $0.name! : Self.label($0.opType) }
+                ?? Self.label(node.opType),
             opType: node.opType,
-            symbol: Self.symbol(node.opType),
+            symbol: Self.symbol(held?.opType ?? node.opType),
             detail: Self.paramSummary(node),
             partIndex: partIndex,
-            children: kids)
+            children: kids,
+            heldNodeId: held?.id,
+            heldOpType: held?.opType)
     }
 
     /// Child node ids an op references, in reading order (operands, then the
@@ -749,5 +771,9 @@ struct FeatureNode: Identifiable {
     let detail: String?
     let partIndex: Int?
     let children: [FeatureNode]
+    /// For a placed part (a transform chain over a shape): the shape's node,
+    /// so the inspector can edit its size as well as its position.
+    var heldNodeId: Int? = nil
+    var heldOpType: String? = nil
     var hasChildren: Bool { !children.isEmpty }
 }
