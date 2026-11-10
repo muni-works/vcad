@@ -10,7 +10,7 @@ import { Engine } from "@vcad/engine";
 import { toolDefs } from "../tools/loon.js";
 import type { ToolContext } from "../tools/tool-def.js";
 import { getSession, registerSession } from "../tools/session-core.js";
-import { openInBrowser } from "../tools/share.js";
+import { openInApp } from "../tools/share.js";
 
 let engine: Engine;
 let ctx: ToolContext;
@@ -38,16 +38,16 @@ describe("create_cad_loon document_id targeting", () => {
     expect(props.document_id).toBeDefined();
   });
 
-  it("open_in_browser resolves a live session by document_id", () => {
+  it("open_in_app resolves a live session by document_id", () => {
     const doc = engine.evalVcadSource("[cube 5 5 5]");
     if (!doc) throw new Error("engine build lacks loon support");
     const id = registerSession(doc);
-    const res = openInBrowser({ document_id: id, name: "cube" });
+    const res = openInApp({ document_id: id, name: "cube" });
     expect(res.content[0].text).toContain("vcad://open?");
   });
 
-  it("open_in_browser without document_id or document is a loud error", () => {
-    expect(() => openInBrowser({})).toThrow(/document_id.*or.*document/);
+  it("open_in_app without document_id or document is a loud error", () => {
+    expect(() => openInApp({})).toThrow(/document_id.*or.*document/);
   });
 
   it("fails loudly on an unknown document_id", async () => {

@@ -25,7 +25,7 @@ import {
   sessionStoreInfo,
   type SessionStore,
 } from "../session-store.js";
-import type { AuthUser } from "../oauth.js";
+import type { AuthUser } from "../auth-user.js";
 import { behavior, type ToolDef } from "./tool-def.js";
 import { ensurePartIds } from "./part-ids.js";
 import {
@@ -98,9 +98,8 @@ export function durabilityWarning(): string | undefined {
     "other warning. Keep the authoring source (the create_cad_loon call, or " +
     "your own record of the edits) so the document can be rebuilt, and " +
     "snapshot long-lived work with checkpoint_document / save_document. To " +
-    "make sessions durable: unset VCAD_MCP_DISK_SESSIONS=0 for local runs " +
-    "(sessions then persist under ~/.vcad/mcp-sessions), or set SUPABASE_URL " +
-    "+ SUPABASE_SERVICE_ROLE_KEY on a hosted deploy."
+    "make sessions durable: unset VCAD_MCP_DISK_SESSIONS=0 " +
+    "(sessions then persist under ~/.vcad/mcp-sessions)."
   );
 }
 
@@ -246,8 +245,7 @@ export function openDocument(args: Record<string, unknown>): {
           // outside the chat transcript (the inline canvas scrolls away).
           live_view:
             "For a live view that stays open while we work, offer the user " +
-            "a shareable watch link (share_session) or a vcad.io deep link " +
-            "(open_in_browser).",
+            "the native app via open_in_app (a vcad:// deep link).",
           ...(durabilityWarning() ? { durability: durabilityWarning() } : {}),
         }),
       },
@@ -817,7 +815,7 @@ export const toolDefs: ToolDef[] = [
     name: "get_document",
     pack: null,
     description:
-      "Return the full IR Document JSON for an open session. Use after a series of mutations to capture the result, or to feed into `export_cad` / `open_in_browser`. A document authored from loon carries that source under `source`, and the result reports `source_stale` when the session no longer matches it (the file changed, or incremental edits moved the session away from it). Very large documents come back as a compact artifact handle instead ({document_id, artifact_url, manifest with sha256, …}) — download the full IR at `artifact_url`, or read it from `path` on a local server.",
+      "Return the full IR Document JSON for an open session. Use after a series of mutations to capture the result, or to feed into `export_cad` / `open_in_app`. A document authored from loon carries that source under `source`, and the result reports `source_stale` when the session no longer matches it (the file changed, or incremental edits moved the session away from it). Very large documents come back as a compact artifact handle instead ({document_id, artifact_url, manifest with sha256, …}) — download the full IR at `artifact_url`, or read it from `path` on a local server.",
     inputSchema: getDocumentSchema,
     handler: (a) => getDocumentTool(a),
     behavior: behavior({ geometry: true, widgetCallable: true, pureJson: true }),

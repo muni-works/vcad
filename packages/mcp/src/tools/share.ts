@@ -1,19 +1,16 @@
 /**
- * open_in_app / open_in_browser — hand a document to the native vcad app.
+ * open_in_app — hand a document to the native vcad app.
  *
- * vcad 2 is a native Mac app; the vcad.io web editor is retiring. These tools
- * emit a `vcad://` deep link (format: docs/launch/vcad-url-scheme.md) that the
+ * vcad 1.0 is a native Mac app; the vcad.io web editor is retired. The tool
+ * emits a `vcad://` deep link (format: docs/launch/vcad-url-scheme.md) that the
  * app registers in its bundle Info.plist, plus the download page as the
- * fallback for machines without the app. `open_in_browser` is the legacy name,
- * kept as an alias so existing agent prompts keep working.
- *
- * Set `VCAD_LEGACY_WEB_LINKS=1` to also emit the old vcad.io `#/new` web link
- * while the web app is still up.
+ * fallback for machines without the app. The old `open_in_browser` tool (a
+ * vcad.io web-editor link) was removed with the hosted services.
  */
 
 import type { Document } from "@vcad/ir";
 import type { Engine } from "@vcad/engine";
-import { fromVCode, toVCode } from "@vcad/ir";
+import { fromVCode } from "@vcad/ir";
 import { gzipSync } from "node:zlib";
 import { behavior, type ToolDef } from "./tool-def.js";
 import { getSession } from "./session-core.js";
@@ -33,31 +30,7 @@ interface ShareInput {
   name?: string;
 }
 
-/** Accept only http(s) URLs whose host is localhost, 127.0.0.1, or a
- *  known vcad deployment. Anything else means the operator's env is
- *  misconfigured; fall back to the canonical https://vcad.io. */
-function validateAppUrl(raw: string): string {
-  try {
-    const url = new URL(raw);
-    if (url.protocol !== "http:" && url.protocol !== "https:") {
-      return "https://vcad.io";
-    }
-    const host = url.hostname;
-    const allowed =
-      host === "localhost" ||
-      host === "127.0.0.1" ||
-      host === "vcad.io" ||
-      host.endsWith(".vcad.io");
-    if (!allowed) return "https://vcad.io";
-    // Drop any trailing slash so the `${baseUrl}/#/new?...` concatenation
-    // yields a well-formed URL.
-    return url.origin;
-  } catch {
-    return "https://vcad.io";
-  }
-}
-
-export const openInBrowserSchema = {
+export const openInAppSchema = {
   type: "object" as const,
   properties: {
     document_id: {
@@ -126,7 +99,7 @@ export interface AppLink {
  * A live session on the local disk store (`~/.vcad/mcp-sessions`, the default
  * for local MCP runs) travels by id — the app reads `<id>.json` from the same
  * directory, so the link stays short however big the model is. Anything else
- * (hosted server, inline document) is embedded as gzip+base64url JSON. JSON
+ * (inline document, disk store off) is embedded as gzip+base64url JSON. JSON
  * rather than VCode: the native app loads `.vcad` JSON directly.
  */
 export function buildAppLink(
@@ -150,23 +123,6 @@ export function buildAppLink(
   }
   if (opts.name) params.set("name", opts.name);
   return { url: `vcad://open?${params.toString()}`, via };
-}
-
-/** The pre-retirement vcad.io `#/new` link (VCode when it fits, else JSON). */
-function legacyWebLink(doc: Document, name?: string): string {
-  let payload: string;
-  try {
-    payload = toVCode(doc);
-  } catch {
-    payload = JSON.stringify(doc);
-  }
-  // VCAD_APP_URL is host-controlled (operator env var), but we still sanitize
-  // so a bad value produces vcad.io rather than a phishing URL.
-  const baseUrl = validateAppUrl(process.env.VCAD_APP_URL || "https://vcad.io");
-  const params = new URLSearchParams();
-  params.set("doc", compressForUrl(payload));
-  if (name) params.set("name", name);
-  return `${baseUrl}/#/new?${params.toString()}`;
 }
 
 export function openInApp(
@@ -202,14 +158,8 @@ export function openInApp(
       ? `(Link carries session id ${document_id}; the app reads it from this machine's session store, so it works on the machine running this MCP server.)`
       : `(Document embedded in the link: ${link.url.length} characters.)`,
   ];
-  if (/^(1|true|on)$/i.test(process.env.VCAD_LEGACY_WEB_LINKS || "")) {
-    lines.push("", `Legacy web link (vcad.io, retiring):\n${legacyWebLink(doc, name)}`);
-  }
   return { content: [{ type: "text", text: lines.join("\n") }] };
 }
-
-/** Legacy name — same behavior as `openInApp`. */
-export const openInBrowser = openInApp;
 
 const DESCRIPTION =
   "Open a CAD document in the native vcad app via a `vcad://` deep link. " +
@@ -222,16 +172,7 @@ export const toolDefs: ToolDef[] = [
     name: "open_in_app",
     pack: null,
     description: DESCRIPTION,
-    inputSchema: openInBrowserSchema,
-    handler: (a, c) => openInApp(a, c.engine),
-    behavior: behavior({}),
-  },
-  {
-    name: "open_in_browser",
-    pack: null,
-    description:
-      "Legacy alias of `open_in_app` (the vcad.io web editor is retiring). " + DESCRIPTION,
-    inputSchema: openInBrowserSchema,
+    inputSchema: openInAppSchema,
     handler: (a, c) => openInApp(a, c.engine),
     behavior: behavior({}),
   },

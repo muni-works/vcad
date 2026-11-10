@@ -43,7 +43,7 @@ function deliver(
         note_delivery:
           `Export is ${bytes.length} bytes — over the ${cap}-byte inline limit; ` +
           "written to the artifact store. Download it at artifact_url, or pass " +
-          "artifact_id to quote_manufacturing / place_order so the bytes never " +
+          "artifact_id to quote_manufacturing so the bytes never " +
           "transit model context.",
         ...extra,
       };
