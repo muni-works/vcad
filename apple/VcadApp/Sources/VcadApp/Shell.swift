@@ -42,6 +42,7 @@ struct EditorView: View {
                     // Pick up documents other instances opened while this one
                     // was already running.
                     model.refreshRecents()
+                    LaunchPerf.once("shell appeared")
                     // The document this instance was launched for: the argument
                     // a spawning instance passed, the VCAD_OPEN dev hook, or a
                     // path on the command line.
@@ -161,6 +162,7 @@ struct DocumentCommands: Commands {
             Button("New Document") { AppInstance.open() }.keyboardShortcut("n")
             Divider()
             Button("Open…") { openPanel(model) }.keyboardShortcut("o")
+            Button("Open Sample…") { WelcomeWindowController.shared.show(model: model) }
             Menu("Open Recent") {
                 ForEach(model.recents, id: \.self) { url in
                     Button(url.deletingPathExtension().lastPathComponent) {
@@ -207,6 +209,11 @@ struct DocumentCommands: Commands {
                 Button("USDZ…") { exportUSDZPanel(model) }
                     .keyboardShortcut("e", modifiers: [.command, .shift]).disabled(!model.canExport)
             }
+            Menu("Export Drawing") {
+                Button("DXF…") { DrawingStore.shared.model = model; DrawingStore.shared.export(.dxf) }
+                Button("PDF…") { DrawingStore.shared.model = model; DrawingStore.shared.export(.pdf) }
+                    .keyboardShortcut("p", modifiers: [.command, .option, .shift])
+            }.disabled(!model.canExportDocument)
             Button("Render Photoreal…") { PhotorealRenderController.shared.show(for: model) }
                 .keyboardShortcut("r", modifiers: [.command, .option, .shift])
                 .disabled(!model.canExportDocument)
@@ -238,18 +245,20 @@ struct DocumentCommands: Commands {
             Button("Show All Parts") { model.showAllParts() }
                 .keyboardShortcut("h", modifiers: [.command, .shift, .option]).disabled(!model.hasHiddenParts)
             Divider()
-            Button("Describe a Part…") { intent.focusRequested = true }
-                .keyboardShortcut("k")
+            if IntentEngine.isAvailable {
+                Button("Describe a Part…") { intent.focusRequested = true }
+                    .keyboardShortcut("k")
+            }
             Button(AgentSession.shared.isOpen ? "Hide Agent" : "Show Agent") { AgentSession.shared.toggle() }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
         }
         CommandGroup(after: .sidebar) {
             Divider()
-            ForEach(Workspace.available.count > 1 ? Workspace.available : []) { ws in
-                Toggle(ws.label, isOn: Binding(
-                    get: { model.workspace == ws },
-                    set: { if $0 { model.workspace = ws } }))
-                    .keyboardShortcut(ws.keyEquivalent, modifiers: [.command, .control])
+            ForEach(DockSpace.allCases) { ds in
+                Toggle(ds.label, isOn: Binding(
+                    get: { GlassUI.shared.space == ds },
+                    set: { if $0 { GlassUI.shared.enter(ds, model: model) } }))
+                    .keyboardShortcut(ds.key, modifiers: [.command, .control])
             }
             Divider()
             Toggle("Model Navigator", isOn: $model.showsTree)
@@ -279,6 +288,40 @@ struct DocumentCommands: Commands {
             }
             .keyboardShortcut("d", modifiers: [.command, .shift])
         }
+        CommandMenu("Tools") {
+            Button("Command Palette…") { model.showsCommandPalette = true }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+            Button("Parameters…") { model.showsParameterTable = true }
+                .keyboardShortcut("p", modifiers: [.command, .option])
+                .disabled(!model.usesDocumentTree)
+            Divider()
+            Toggle("Measure", isOn: $model.measuring)
+                .keyboardShortcut("m", modifiers: [.control])
+                .disabled(!model.usesDocumentTree)
+            Toggle("Section View", isOn: Binding(get: { model.section != nil },
+                                                 set: { model.section = $0 ? SectionPlane() : nil }))
+                .keyboardShortcut("x", modifiers: [.command, .option])
+            Divider()
+            Button("New Sketch") { model.enterSketch() }
+                .keyboardShortcut("s", modifiers: [.control])
+                .disabled(!model.usesDocumentTree || model.sketching)
+            Menu("Feature") {
+                ForEach(FeatureOp.allCases) { op in
+                    Button(op.label + "…") { model.activeFeatureOp = op }
+                }
+            }.disabled(!model.usesDocumentTree)
+        }
+        CommandMenu("Select") {
+            ForEach(PickFilter.allCases) { f in
+                Toggle(f.label, isOn: Binding(
+                    get: { model.picking.filter == f },
+                    set: { if $0 { model.picking.filter = f } }))
+                    .keyboardShortcut(f.shortcut, modifiers: [.control])
+            }
+            Divider()
+            Button("Clear Face/Edge Selection") { model.picking.clear() }
+                .disabled(model.picking.selection.isEmpty)
+        }
         CommandMenu("Camera") {
             Button("Isometric") { model.animateCamera(to: .isometric) }.keyboardShortcut("1")
             Button("Front") { model.animateCamera(to: .front) }.keyboardShortcut("2")
@@ -290,10 +333,13 @@ struct DocumentCommands: Commands {
                 .keyboardShortcut("0", modifiers: [.command, .option]).disabled(!model.hasSelection)
         }
         CommandGroup(replacing: .help) {
+            Button("Keyboard Shortcuts") { GlassUI.shared.shortcutsShown.toggle() }
+                .keyboardShortcut("/", modifiers: .command)
+            Divider()
             Button("Welcome to vcad") { WelcomeWindowController.shared.show(model: model) }
+            Button("Connect Claude…") { ConnectClaude.run() }
             Divider()
             Button("vcad Help") { NSWorkspace.shared.open(URL(string: "https://vcad.io/docs")!) }
-            Button("Keyboard Shortcuts") { NSWorkspace.shared.open(URL(string: "https://vcad.io/docs/native/shortcuts")!) }
             Divider()
             Button("Report an Issue…") { NSWorkspace.shared.open(URL(string: "https://github.com/ecto/vcad/issues/new")!) }
         }
@@ -333,7 +379,7 @@ extension UTType {
 
 @MainActor func openPanel(_ model: EditorModel) {
     let panel = NSOpenPanel()
-    panel.allowedContentTypes = [.vcadDocument, .loonSource, .folder]
+    panel.allowedContentTypes = [.vcadDocument, .loonSource, .folder] + ["step", "stp", "urdf"].compactMap { UTType(filenameExtension: $0) }
     // Several documents at once are several instances, so a multiple selection
     // is a perfectly good thing to ask for.
     panel.allowsMultipleSelection = true
@@ -379,85 +425,6 @@ struct BrandMark: View {
             .font(.system(.body, design: .rounded, weight: .semibold))
             .foregroundStyle(.secondary)
             .padding(.trailing, 2)
-    }
-}
-
-// MARK: - Sketch bars
-
-/// The sketch-mode toolbar: plane · tools · extrude depth · Finish / Cancel.
-/// Replaces the Create/Modify/Combine palette while drawing a profile.
-struct SketchPaletteView: View {
-    @Bindable var model: EditorModel
-    var body: some View {
-        HStack(spacing: Theme.Space.m) {
-            Picker("Sketch plane", selection: Binding(get: { model.sketchPlane }, set: { model.setSketchPlane($0) })) {
-                ForEach(SketchPlane.allCases) { Text($0.label).tag($0) }
-            }
-            .pickerStyle(.segmented).labelsHidden().controlSize(.small).fixedSize()
-            Divider().frame(height: 18)
-            Picker("Sketch tool", selection: Binding(get: { model.sketchTool }, set: { model.setSketchTool($0) })) {
-                ForEach(SketchTool.allCases) { Label($0.label, systemImage: $0.symbol).tag($0) }
-            }
-            .pickerStyle(.segmented).labelsHidden().controlSize(.small).fixedSize()
-            Divider().frame(height: 18)
-            HStack(spacing: 6) {
-                Image(systemName: "arrow.up.to.line").font(.subheadline).foregroundStyle(.secondary)
-                    .help("Extrude depth")
-                ScrubField(label: "", value: model.sketchExtrudeDepth, sensitivity: 0.1, minValue: 0.1) { v, _ in
-                    model.sketchExtrudeDepth = v
-                }.frame(width: 96)
-            }
-            Divider().frame(height: 18)
-            Button { model.finishSketch() } label: { Label("Extrude", systemImage: "checkmark") }
-                .buttonStyle(.borderedProminent).controlSize(.small)
-                .disabled(!model.canFinishSketch)
-                .help("Extrude the closed profile")
-            Button { model.exitSketch() } label: { Image(systemName: "xmark") }
-                .buttonStyle(.bordered).controlSize(.small)
-                .keyboardShortcut(.cancelAction)
-                .help("Cancel sketch (Esc)")
-                .accessibilityLabel("Cancel sketch")
-        }
-        .padding(Theme.Space.s)
-        .panelSurface()
-        .animation(Motion.snappy, value: model.sketchTool)
-        .animation(Motion.snappy, value: model.sketchPlane)
-    }
-}
-
-/// A one-line prompt at the bottom telling the user what to click next.
-struct SketchHintBar: View {
-    let model: EditorModel
-    var body: some View {
-        HStack(spacing: Theme.Space.m) {
-            HStack(spacing: 6) {
-                Image(systemName: "hand.point.up.left")
-                Text(hint)
-            }
-            if let c = model.sketchCursor {
-                Divider().frame(height: 11)
-                Text(String(format: "%.1f, %.1f mm", c.x, c.y))
-                    .monospacedDigit()
-                    .foregroundStyle(model.sketchSnapToStart ? AnyShapeStyle(Color.green) : AnyShapeStyle(.secondary))
-            }
-        }
-        .font(.subheadline)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 14).padding(.vertical, 7)
-        .pillSurface()
-    }
-    private var hint: String {
-        if model.canFinishSketch { return "Profile closed — set a depth and hit Extrude" }
-        switch model.sketchTool {
-        case .line:
-            return model.sketchVerts.isEmpty
-                ? "Line: click to place the first point"
-                : "Line: keep clicking · click the first point to close"
-        case .rectangle:
-            return model.sketchAnchor == nil ? "Rectangle: click the first corner" : "Rectangle: click the opposite corner"
-        case .circle:
-            return model.sketchAnchor == nil ? "Circle: click the center" : "Circle: click to set the radius"
-        }
     }
 }
 
@@ -667,6 +634,15 @@ struct FeatureRowView: View {
             }
         }
         Button { model.renamingFeatureID = node.id } label: { Label("Rename", systemImage: "pencil") }
+        if let pi = node.partIndex, depth == 0 {
+            Button { model.reorderPart(pi, to: pi - 1) } label: { Label("Move Up", systemImage: "arrow.up") }
+                .disabled(pi == 0)
+            Button { model.reorderPart(pi, to: pi + 1) } label: { Label("Move Down", systemImage: "arrow.down") }
+                .disabled(pi >= model.featureNodes.count - 1)
+            Button { model.toggleSuppressed(part: pi) } label: {
+                Label(model.isSuppressed(part: pi) ? "Unsuppress" : "Suppress", systemImage: "nosign")
+            }
+        }
         Button {
             #if os(macOS)
             NSPasteboard.general.clearContents()
@@ -813,13 +789,35 @@ struct ScrubField: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        HStack(spacing: Theme.Space.s) {
+        // Inspector-standard: label, text field, unit, stepper. The label is
+        // still a scrub handle (drag it), the way Xcode's and Keynote's are.
+        HStack(spacing: 4) {
             if !label.isEmpty {
-                Text(label).font(.callout).foregroundStyle(.secondary)
-                Spacer(minLength: Theme.Space.s)
+                Text(label).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                    .contentShape(Rectangle())
+                    .onHover { ($0 ? NSCursor.resizeLeftRight : NSCursor.arrow).set() }
+                    .gesture(scrub)
+                    .help("Drag to scrub (⌥ fine · ⇧ coarse)")
+                Spacer(minLength: 2)
             }
-            if typing != nil { editor } else { pill }
+            TextField(label.isEmpty ? "Value" : label,
+                      text: Binding(get: { typing ?? Self.plain(value) }, set: { typing = $0 }))
+                .textFieldStyle(.roundedBorder)
+                .font(.callout.monospacedDigit())
+                .multilineTextAlignment(.trailing)
+                .frame(width: 52)
+                .focused($focused)
+                .onSubmit { commit() }
+                .onEscape { typing = nil; focused = false }
+                .onChange(of: focused) { _, now in if !now { commit() } }
+            if !unit.isEmpty {
+                Text(unit).font(.callout).foregroundStyle(.secondary).frame(minWidth: 14, alignment: .leading)
+            }
+            Stepper(label, value: Binding(get: { value }, set: { onChange(max(minValue, $0), true) }),
+                    step: sensitivity * 10)
+                .labelsHidden()
         }
+        .controlSize(.small)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label.isEmpty ? "Value" : label)
         .accessibilityValue(formatted)
@@ -829,29 +827,19 @@ struct ScrubField: View {
         }
     }
 
-    private var pill: some View {
-        Text(formatted).font(.callout.monospacedDigit())
-            .padding(.horizontal, Theme.Space.s).padding(.vertical, 3)
-            .frame(minWidth: 70, alignment: .trailing)
-            .controlWell(active: base != nil)
-            .contentShape(Rectangle())
-            .onHover { hovering in
-                #if os(macOS)
-                (hovering ? NSCursor.resizeLeftRight : NSCursor.arrow).set()
-                #endif
+    private var scrub: some Gesture {
+        DragGesture(minimumDistance: 2)
+            .onChanged { v in
+                let first = base == nil
+                let b = base ?? value
+                if base == nil { base = b }
+                onChange(max(minValue, b + Double(v.translation.width) * sensitivity * Self.modifierScale), first)
             }
-            .help("Drag to scrub (⌥ fine · ⇧ coarse) · double-click to type")
-            .onTapGesture(count: 2) { typing = String(format: "%g", value) }
-            .gesture(
-                DragGesture(minimumDistance: 2)
-                    .onChanged { v in
-                        let first = base == nil
-                        let b = base ?? value
-                        if base == nil { base = b }
-                        onChange(max(minValue, b + Double(v.translation.width) * sensitivity * Self.modifierScale), first)
-                    }
-                    .onEnded { _ in base = nil }
-            )
+            .onEnded { _ in base = nil }
+    }
+
+    static func plain(_ v: Double) -> String {
+        abs(v - v.rounded()) < 0.001 ? String(Int(v.rounded())) : String(format: "%.2f", v)
     }
 
     /// ⌥ scrubs at a tenth of the rate, ⇧ at ten times — the Xcode/Motion idiom.
@@ -862,21 +850,6 @@ struct ScrubField: View {
         if flags.contains(.shift) { return 10 }
         #endif
         return 1
-    }
-
-    private var editor: some View {
-        TextField("", text: Binding(get: { typing ?? "" }, set: { typing = $0 }))
-            .textFieldStyle(.plain)
-            .font(.callout.monospacedDigit())
-            .multilineTextAlignment(.trailing)
-            .frame(width: 70)
-            .focused($focused)
-            .onAppear { focused = true }
-            .onSubmit { commit() }
-            .onEscape { typing = nil }
-            .onChange(of: focused) { _, now in if !now { commit() } }
-            .padding(.horizontal, Theme.Space.s).padding(.vertical, 3)
-            .controlWell(active: true)
     }
 
     private func commit() {
@@ -1013,76 +986,6 @@ struct PlaybackBar: View {
 }
 
 // MARK: - Sketch preview overlay (shared by every viewport)
-
-/// Build the in-progress sketch: committed segments + vertex dots in brand
-/// pink, plus a cyan rubber-band from the last point / anchor to the cursor.
-/// Every viewport parents it under its `centering` entity, so kernel coords
-/// line up.
-@MainActor
-func buildSketchRoot(model: EditorModel) -> Entity {
-    let root = Entity(); root.name = "sketchRoot"
-    let ink = NSColor(srgbRed: 0.98, green: 0.15, blue: 0.45, alpha: 1.0)   // brand pink
-    let live = NSColor(srgbRed: 0.55, green: 0.92, blue: 1.0, alpha: 1.0)   // cyan
-    let verts = model.sketchVerts
-
-    func seg(_ a2: SIMD2<Float>, _ b2: SIMD2<Float>, _ color: NSColor) {
-        let a = model.sketchWorld(a2), b = model.sketchWorld(b2)
-        let d = b - a; let len = simd_length(d)
-        guard len > 1e-4 else { return }
-        let e = ModelEntity(mesh: .generateBox(size: SIMD3(len, 0.7, 0.7)),
-                            materials: [UnlitMaterial(color: color)])
-        e.position = (a + b) / 2
-        e.orientation = simd_quatf(from: SIMD3(1, 0, 0), to: d / len)
-        root.addChild(e)
-    }
-    func dot(_ v2: SIMD2<Float>, _ color: NSColor, _ r: Float = 1.1) {
-        let e = ModelEntity(mesh: .generateSphere(radius: r), materials: [UnlitMaterial(color: color)])
-        e.position = model.sketchWorld(v2)
-        root.addChild(e)
-    }
-
-    // Committed profile.
-    if model.sketchTool == .line && !model.sketchClosed {
-        for i in 0..<max(0, verts.count - 1) { seg(verts[i], verts[i + 1], ink) }
-        for v in verts { dot(v, ink) }
-        if let last = verts.last, let c = model.sketchCursor { seg(last, c, live) }
-    } else if !verts.isEmpty {
-        for i in 0..<verts.count { seg(verts[i], verts[(i + 1) % verts.count], ink) }
-        for v in verts { dot(v, ink) }
-    }
-
-    // Two-click rect/circle preview from the anchor to the cursor.
-    if let a = model.sketchAnchor, let c = model.sketchCursor {
-        switch model.sketchTool {
-        case .rectangle:
-            let corners = [a, SIMD2(c.x, a.y), c, SIMD2(a.x, c.y)]
-            for i in 0..<4 { seg(corners[i], corners[(i + 1) % 4], live) }
-        case .circle:
-            let r = simd_distance(a, c)
-            let n = 48
-            let pts = (0..<n).map { i -> SIMD2<Float> in
-                let t = 2 * Float.pi * Float(i) / Float(n)
-                return SIMD2(a.x + r * cos(t), a.y + r * sin(t))
-            }
-            for i in 0..<n { seg(pts[i], pts[(i + 1) % n], live) }
-            dot(a, live)
-        case .line:
-            break
-        }
-    }
-
-    // Landing-point marker: a bright dot where the next click lands, so you
-    // can always see where you're clicking. Turns green + snaps to the first
-    // vertex when a click would close the loop.
-    if let c = model.sketchCursor, !model.sketchClosed {
-        if model.sketchSnapToStart, let f = model.sketchVerts.first {
-            dot(f, NSColor.systemGreen, 1.9)
-        } else {
-            dot(c, live, 1.4)
-        }
-    }
-    return root
-}
 
 // MARK: - Transform gizmo overlay (shared by every viewport)
 

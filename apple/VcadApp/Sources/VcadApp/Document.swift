@@ -284,7 +284,30 @@ struct DocumentGraph {
         }
     }
 
-    private func buildNode(_ id: Int, partIndex: Int?, depth: Int, visited: Set<Int>) -> FeatureNode {
+    /// Follow identity Translate/Rotate/Scale wrappers down to the feature
+    /// they hold. The materializer wraps every feature in a transform chain
+    /// (so moving a part edits its own nodes); left alone, a fresh union
+    /// shows in the tree as "Translate (0, 0, 0)" instead of "Union".
+    private func unwrapIdentity(_ id: Int) -> Int {
+        var cur = id
+        for _ in 0..<8 {
+            guard let op = nodes[cur]?.op, let child = (op["child"] as? NSNumber)?.intValue else { return cur }
+            let type = op["type"] as? String
+            let (key, identity): (String, Double) = switch type {
+            case "Translate": ("offset", 0)
+            case "Rotate": ("angles", 0)
+            case "Scale": ("factor", 1)
+            default: ("", .nan)
+            }
+            guard let v = op[key] as? [String: Any],
+                  ["x", "y", "z"].allSatisfy({ (v[$0] as? NSNumber)?.doubleValue == identity }) else { return cur }
+            cur = child
+        }
+        return cur
+    }
+
+    private func buildNode(_ rawId: Int, partIndex: Int?, depth: Int, visited: Set<Int>) -> FeatureNode {
+        let id = unwrapIdentity(rawId)
         guard let node = nodes[id] else {
             return FeatureNode(id: "missing\(id)", nodeId: id, name: "Missing #\(id)",
                                opType: "Empty", symbol: "questionmark.circle", detail: nil,

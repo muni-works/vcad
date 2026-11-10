@@ -53,6 +53,15 @@ final class KeyableWindow: NSWindow, NSWindowDelegate {
         if event.keyCode == 51 || event.keyCode == 117, event.modifierFlags.intersection([.command, .option, .control]).isEmpty {
             delete(nil); return
         }
+        // A bare letter nothing else wanted: the workspace's tool shortcut.
+        if event.modifierFlags.intersection([.command, .option, .control]).isEmpty,
+           let ch = event.charactersIgnoringModifiers?.first, ch.isLetter || ch == "?" || event.characters == "?" {
+            let key: Character = event.characters == "?" ? "?" : ch
+            let handled = MainActor.assumeIsolated {
+                ReleaseWindowController.shared.editorModel.map { GlassUI.shared.handleKey(key, model: $0) } ?? false
+            }
+            if handled { return }
+        }
         super.keyDown(with: event)
     }
     /// Standard Edit items grey out when there is nothing to act on.
@@ -509,6 +518,20 @@ final class ReleaseWindowController {
         e.model?.materials = [m]
     }
 
+    /// The agent suggestion's shimmer: a violet emissive glow, driven by
+    /// `GlassUI.startShimmer`. Parts that are also selected keep the selection.
+    func glow(parts: Set<Int>, level: Float) {
+        for i in parts where !isSelected("part\(i)") {
+            for name in ["part\(i)", "inst\(i)"] {
+                guard let e = centeringEntity?.findEntity(named: name) as? ModelEntity,
+                      var m = e.model?.materials.first as? PhysicallyBasedMaterial else { continue }
+                m.emissiveColor = .init(color: NSColor(red: 0.62, green: 0.42, blue: 1.0, alpha: 1))
+                m.emissiveIntensity = level
+                e.model?.materials = [m]
+            }
+        }
+    }
+
     private func isSelected(_ name: String) -> Bool {
         if let i = Int(name.dropFirst(4)), name.hasPrefix("part") {
             return model?.highlightedParts.contains(i) ?? false
@@ -653,27 +676,27 @@ struct ReleasedOverlayView: View {
     }
 
     private var studio: Bool { model.workspace == .manufacture }
+    /// Floating chrome starts below the toolbar row.
+    private var chromeTop: CGFloat { Glass.toolbarHeight + (model.isWindowed ? 0 : 20) }
+
+    /// Whether the viewport runs under the toolbar (full-bleed) or the
+    /// workspace's own content starts below it.
+    private var fullBleed: Bool { model.workspace != .manufacture }
 
     var body: some View {
+        ZStack(alignment: .top) {
         VStack(spacing: 0) {
-            if model.isWindowed {
-                WorkspaceHeader(model: model).background(.bar)
-                    .modifier(ChromeRegion(key: "workspaceHeader"))
-                Divider()
-            } else {
-                WorkspaceHeader(model: model).frame(maxWidth: 920).panelSurface()
-                    .modifier(ChromeRegion(key: "workspaceHeader"))
-                    .padding(.horizontal, Theme.Space.l).padding(.vertical, 10)
-            }
+            if !fullBleed { Color.clear.frame(height: Glass.toolbarHeight + (model.isWindowed ? 0 : 20)) }
             switch model.workspace {
             case .electronics:
                 NativeElectronicsView(model: model)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .modifier(ChromeRegion(key: "electronicsWorkspace"))
             case .design:
-                DesignModelingTools(model: model).frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 18).padding(.vertical, Theme.Space.s).background(.bar)
-                    .modifier(ChromeRegion(key: "designCommands"))
                 viewport.frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .drawing:
+                DrawingWorkspaceView(model: model)
+                    .modifier(ChromeRegion(key: "drawingWorkspace"))
             case .manufacture:
                 viewport.frame(maxWidth: .infinity, maxHeight: .infinity)
                     .overlay {
@@ -706,11 +729,58 @@ struct ReleasedOverlayView: View {
                     }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+            toolbar
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .overlay(alignment: .top) {
+            // Command panel, palette and toasts hang beneath the dock.
+            VStack(spacing: Theme.Space.s) {
+                ToastHost()
+                CommandPanelHost(model: model)
+                FloatingPanelHost()
+                PaletteHost(model: model)
+            }
+            .padding(.top, chromeTop)
+            .animation(Motion.smooth, value: model.activeFeatureOp)
+            .animation(Motion.smooth, value: model.showsCommandPalette)
+            .animation(Motion.smooth, value: GlassUI.shared.panel?.id)
+            .animation(Motion.smooth, value: GlassUI.shared.toast?.text)
+        }
+        .overlay {
+            if GlassUI.shared.shortcutsShown {
+                ShortcutSheet(model: model).transition(.scale(scale: 0.97).combined(with: .opacity))
+            }
+        }
+        .animation(Motion.smooth, value: GlassUI.shared.shortcutsShown)
+        .overlay(alignment: .top) {
+            // History drops down from the dock, in every workspace.
+            if GlassUI.shared.historyOpen && model.usesDocumentTree && model.workspace != .manufacture {
+                HistoryFilmstrip(model: model)
+                    .modifier(ChromeRegion(key: "history"))
+                    .padding(.top, chromeTop)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(Motion.smooth, value: GlassUI.shared.historyOpen)
         .ignoresSafeArea(.container, edges: .top)
         .onAppear { ReleaseWindowController.shared.updateDocumentWindow() }
         .onChange(of: model.source) { _, _ in ReleaseWindowController.shared.updateDocumentWindow() }
         .onChange(of: model.documentDirty) { _, _ in ReleaseWindowController.shared.updateDocumentWindow() }
         .onChange(of: model.workspace) { _, _ in ReleaseWindowController.shared.updateCNCWindowMinimum() }
+    }
+
+    @ViewBuilder private var toolbar: some View {
+        if model.isWindowed {
+            GlassToolbar(model: model)
+                .background(fullBleed ? AnyShapeStyle(.clear) : AnyShapeStyle(.bar))
+                .modifier(ChromeRegion(key: "workspaceHeader"))
+        } else {
+            // Released to the desktop: the same row, as a glass capsule.
+            GlassToolbar(model: model).frame(maxWidth: 920).glassCapsule()
+                .modifier(ChromeRegion(key: "workspaceHeader"))
+                .padding(.horizontal, Glass.inset).padding(.top, Glass.inset)
+        }
     }
 
     private var viewport: some View {
@@ -735,7 +805,11 @@ struct ReleasedOverlayView: View {
                 .gesture(marqueeOrOrbitGesture)
                 .simultaneousGesture(zoomGesture)
                 .gesture(SpatialTapGesture(coordinateSpace: .local).modifiers(.command)
-                    .onEnded { value in tapSelect(at: value.location, additive: true) })
+                    .onEnded { value in
+                        if model.sketching, let pt = sketchPlanePoint(at: value.location) {
+                            model.sketchTap(pt, additive: true); refreshSketchInk()
+                        } else { tapSelect(at: value.location, additive: true) }
+                    })
                 .gesture(SpatialTapGesture(coordinateSpace: .local)
                     .onEnded { value in
                         if model.sketching { sketchTap(at: value.location) }
@@ -754,7 +828,21 @@ struct ReleasedOverlayView: View {
                 // ever fire over geometry or chrome: everywhere else the window
                 // is transparent to the mouse and the click goes to the desktop.
                 .contextMenu { partContextMenu }
+                // Drag a .vcad / STEP / URDF / loon file onto the viewport to open it.
+                .dropDestination(for: URL.self) { urls, _ in
+                    guard let url = urls.first else { return false }
+                    AppInstance.opening(url, from: model)
+                    return true
+                }
                 .onContinuousHover(coordinateSpace: .local) { phase in
+                    if !model.sketching, model.picking.filter.picksTopology {
+                        switch phase {
+                        case .active(let p): model.picking.setHovered(topologyHit(at: p)?.ref)
+                        case .ended: model.picking.setHovered(nil)
+                        }
+                        refreshTopologyOverlay()
+                        return
+                    }
                     guard model.sketching else { return }
                     switch phase {
                     case .active(let p):
@@ -779,9 +867,26 @@ struct ReleasedOverlayView: View {
             // NSPanels break SwiftUI hit testing after auto-resize).
             if !studio {
             VStack(alignment: .leading, spacing: Theme.Space.m) {
+                if model.sketching {
+                    SketchConstraintPanel(model: model)
+                        .modifier(ChromeRegion(key: "sketchConstraints"))
+                }
+                if model.measuring {
+                    MeasurePanel(model: model).modifier(ChromeRegion(key: "measure"))
+                }
+                if model.section != nil {
+                    SectionPanel(model: model).modifier(ChromeRegion(key: "section"))
+                }
                 if model.showsTree {
-                    DesignModelNavigator(model: model)
-                        .modifier(ChromeRegion(key: "tree"))
+                    if FabStore.shared.shown {
+                        FabJobsNavigator(model: model).modifier(ChromeRegion(key: "tree"))
+                    } else {
+                        DesignModelNavigator(model: model)
+                            .modifier(ChromeRegion(key: "tree"))
+                    }
+                }
+                if model.assembly.showsPanel {
+                    AssemblyPanel(model: model).modifier(ChromeRegion(key: "assembly"))
                 }
                 // Dynamics, as its own panel: one panel per concern.
                 // Posing first: on a jointed assembly it's the main job, and
@@ -795,7 +900,8 @@ struct ReleasedOverlayView: View {
                         .modifier(ChromeRegion(key: "sim"))
                 }
             }
-            .padding(Theme.Space.l)
+            .padding(.leading, Glass.inset).padding(.bottom, Glass.inset)
+            .padding(.top, chromeTop)
             .animation(Motion.panel, value: model.showsTree)
             }
         }
@@ -814,7 +920,12 @@ struct ReleasedOverlayView: View {
             if !studio {
             // The right rail: the inspector, docked to the screen edge.
             VStack(alignment: .trailing, spacing: Theme.Space.m) {
-                if model.showsInspector {
+                if FabStore.shared.shown && !model.source.isGripper {
+                    // Fab: the inspector IS the active process's settings.
+                    if model.showsInspector {
+                        FabricatePanel(model: model).modifier(ChromeRegion(key: "inspector"))
+                    }
+                } else if model.showsInspector {
                     if model.source.isGripper {
                         ReceiptLedgerWindow(model: model)
                             .modifier(ChromeRegion(key: "inspector"))
@@ -824,7 +935,8 @@ struct ReleasedOverlayView: View {
                     }
                 }
             }
-            .padding(Theme.Space.l)
+            .padding(.trailing, Glass.inset).padding(.bottom, Glass.inset)
+            .padding(.top, chromeTop)
             .animation(Motion.panel, value: model.showsInspector)
             .animation(Motion.panel, value: model.source.isGripper)
             }
@@ -855,23 +967,16 @@ struct ReleasedOverlayView: View {
                          : "Solving \(model.documentName)…").font(.callout).monospacedDigit()
                 }
                 .padding(.horizontal, 14).padding(.vertical, 8).pillSurface()
-                .padding(.top, Theme.Space.l)
+                .padding(.top, chromeTop)
                 .transition(.opacity)
                 .accessibilityLabel("Solving \(model.documentName)")
-            } else if !studio && !model.source.isGripper {
-                DesignBreadcrumb(model: model).padding(.top, Theme.Space.l)
-            }
-        }
-        .overlay(alignment: .bottomTrailing) {
-            if !studio {
-                DesignViewportTools(model: model).padding(Theme.Space.l)
-                    .modifier(ChromeRegion(key: "designViewportTools"))
             }
         }
         .overlay {
             // Labels an agent pinned over the MCP bridge (AgentBridge.swift).
             AgentAnnotationOverlay(model: model)
         }
+        .overlay { if !studio { EditBarOverlay(model: model) } }
         .overlay(alignment: .topLeading) {
             // Decoded compressed scalar field (FieldOverlay.swift).
             FieldHud(store: FieldOverlayStore.shared)
@@ -897,8 +1002,16 @@ struct ReleasedOverlayView: View {
                         .modifier(ChromeRegion(key: "sketchHint"))
                     SketchPaletteView(model: model)
                         .modifier(ChromeRegion(key: "sketchPalette"))
+                        .background {
+                            // Return finishes a multi-click tool (spline).
+                            Button("") { model.sketch?.commitPending(); model.sketchDirty = true; refreshSketchInk(force: true) }
+                                .keyboardShortcut(.return, modifiers: []).opacity(0).frame(width: 0, height: 0)
+                        }
                 } else {
-                    if model.timeline != nil {
+                    if model.assembly.showsTimeline && model.assemblyInstanceCount > 0 {
+                        TimelineEditor(model: model)
+                            .modifier(ChromeRegion(key: "timelineEditor"))
+                    } else if model.timeline != nil {
                         PlaybackBar(model: model)
                             .modifier(ChromeRegion(key: "playback"))
                     }
@@ -910,12 +1023,17 @@ struct ReleasedOverlayView: View {
                         AgentPanel(session: AgentSession.shared, model: model)
                             .modifier(ChromeRegion(key: "agentPanel"))
                     }
-                    CommandBar(engine: intent, model: model)
-                        .modifier(ChromeRegion(key: "composer"))
+                    if let s = GlassUI.shared.suggestion {
+                        AgentSuggestionPill(model: model, suggestion: s)
+                            .id(s.id)
+                            .modifier(ChromeRegion(key: "suggestion"))
+                            .transition(.scale(scale: 0.94).combined(with: .opacity))
+                    }
                 }
             }
-            .padding(.bottom, Theme.Space.l)
-            .animation(Motion.smooth, value: intent.draft.isEmpty)
+            .padding(.bottom, Glass.inset + 6)
+            .animation(Motion.smooth, value: GlassUI.shared.historyOpen)
+            .animation(Motion.smooth, value: GlassUI.shared.suggestion)
             .animation(Motion.smooth, value: model.timeline == nil)
             .animation(Motion.panel, value: model.sketching)
             }
@@ -944,6 +1062,11 @@ struct ReleasedOverlayView: View {
             ReleaseWindowController.shared.sketchModal = shape != nil || model.sketching
             if shape == nil { NSCursor.arrow.set() }
         }
+        .onChange(of: model.section) { _, _ in applySectionView(model: model) }
+        .onChange(of: model.undoStack.count, initial: true) { _, _ in GlassUI.shared.captureThumbnail(model: model) }
+        .onChange(of: model.source) { _, _ in GlassUI.shared.thumbnails = [:]; GlassUI.shared.captureThumbnail(model: model) }
+        .onChange(of: model.picking.revision) { _, _ in refreshTopologyOverlay() }
+        .onChange(of: model.measuring) { _, on in if !on { model.picking.filter = .body }; refreshTopologyOverlay() }
         .onChange(of: model.sketching) { _, on in
             // Sketch is modal over the desktop: own the mouse everywhere while
             // drawing, hand non-chrome/non-part mouse back when done.
@@ -996,6 +1119,43 @@ struct ReleasedOverlayView: View {
         model.sketchDirty = false
     }
 
+    /// The face/edge under a screen point: the nearest part the ray hits,
+    /// picked against its B-rep under the current filter.
+    private func topologyHit(at p: CGPoint) -> TopoHit? {
+        guard let ray = kernelRay(at: p) else { return nil }
+        let parts = ReleaseWindowController.shared.hits(atViewPoint: p).compactMap { hit -> Int? in
+            guard hit.entity.name.hasPrefix("part") else { return nil }
+            return Int(hit.entity.name.dropFirst(4))
+        }
+        for part in parts {
+            if let h = model.pickTopology(part: part, origin: ray.o, dir: ray.d) { return h }
+        }
+        return nil
+    }
+
+    /// Redraw the face/edge highlight ribbons (selection orange, hover white)
+    /// under the kernel frame. Imperative, like the sketch ink.
+    private func refreshTopologyOverlay() {
+        guard let centering = ReleaseWindowController.shared.centeringEntity else { return }
+        centering.findEntity(named: "topoOverlay")?.removeFromParent()
+        guard model.picking.filter.picksTopology else { return }
+        let (sel, hov) = model.topologyHighlight()
+        let root = Entity(); root.name = "topoOverlay"
+        let w = max(model.displayedSceneSize, 1) * 0.006
+        if let m = EdgeOverlay.ribbonResource(segments: sel, width: w * 1.4, name: "topoSel") {
+            root.addChild(ModelEntity(mesh: m, materials: [UnlitMaterial(
+                color: NSColor(red: 1.0, green: 0.62, blue: 0.12, alpha: 1))]))
+        }
+        if let m = EdgeOverlay.ribbonResource(segments: hov, width: w, name: "topoHover") {
+            root.addChild(ModelEntity(mesh: m, materials: [UnlitMaterial(color: .white)]))
+        }
+        if model.measuring, let span = model.measurement?.span,
+           let m = EdgeOverlay.ribbonResource(segments: [span.0, span.1], width: w, name: "measureSpan") {
+            root.addChild(ModelEntity(mesh: m, materials: [UnlitMaterial(color: .systemTeal)]))
+        }
+        centering.addChild(root)
+    }
+
     /// The entity name of the body under a screen point — a root part or an
     /// assembly instance.
     private func bodyName(at p: CGPoint) -> String? {
@@ -1044,6 +1204,9 @@ struct ReleasedOverlayView: View {
         if model.hasHiddenParts {
             Button("Show All Parts") { model.showAllParts() }
         }
+        // The same tools as the dock, as a standard menu.
+        DockContextMenu(model: model)
+        Divider()
         Button("Deselect All") { model.deselectAll() }
             .disabled(model.selectedPartIndex == nil && model.multiSelectedParts.isEmpty)
         Divider()
@@ -1082,6 +1245,13 @@ struct ReleasedOverlayView: View {
         }
         guard model.usesDocumentTree,
               let ar = ReleaseWindowController.shared.arView else { return }
+
+        // Face/edge picking: the click chooses topology, not a body.
+        if model.picking.filter.picksTopology, model.armedShape == nil {
+            model.picking.select(hit: topologyHit(at: p), additive: additive || model.measuring)
+            refreshTopologyOverlay()
+            return
+        }
 
         // An armed palette tool consumes the click: this is a placement, not a
         // selection (BCB: pick the component, then click where it goes).
@@ -1480,11 +1650,35 @@ struct ReleasedARView: NSViewRepresentable {
         coordinator.builtGrounded = grounded
         model.geometryDirty = false
 
+        let buildStarted = Date()
+        defer { GlassUI.shared.lastBuildMillis = Date().timeIntervalSince(buildStarted) * 1000 }
         let scene = model.buildScene()
         // Still solving with nothing landed yet: leave the previous geometry
         // (or nothing) on screen; parts are drawn as they land and the model
         // flips geometryDirty when the kernel is done.
         if scene.solving && scene.meshes.isEmpty { return }
+        // Release-time hook (scripts/bake-sample-meshes.sh): write the solved
+        // document's `.vcadmesh` beside it and quit, so a bundled sample opens
+        // as a root-cache hit instead of a cold kernel walk on first launch.
+        if ProcessInfo.processInfo.environment["VCAD_BAKE_MESH_BUNDLE"] == "1",
+           !scene.solving, case let .document(path, _) = model.source {
+            let n = model.writeMeshBundle(for: URL(fileURLWithPath: path))
+            FileHandle.standardError.write(Data("[vcad] baked \(n) roots for \(path)\n".utf8))
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
+        if LaunchPerf.enabled, !scene.solving, !model.source.isSandbox,
+           scene.partCount > 0 || !scene.instances.isEmpty {
+            LaunchPerf.once("first full scene", " (\(scene.partCount) parts, \(scene.instances.count) instances, \(scene.triangleCount) tris)")
+            if let ar = ReleaseWindowController.shared.arView, let cam = coordinator.camera {
+                let center = lookAt
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    LaunchPerf.startOrbit(ar, camera: cam, center: center, label: (model.source.id as NSString).lastPathComponent)
+                }
+            }
+            if LaunchPerf.exitWhenDone, LaunchPerf.orbitSeconds == 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApp.terminate(nil) }
+            }
+        }
         coordinator.instanceEntities.removeAll(keepingCapacity: true)
         anchor.children.filter { ["geomRoot", "grid", "contactShadow"].contains($0.name) }
             .forEach { $0.removeFromParent() }
@@ -1496,6 +1690,7 @@ struct ReleasedARView: NSViewRepresentable {
         ReleaseWindowController.shared.centeringEntity = centering
         // Keep the in-progress sketch ink alive across geometry rebuilds.
         if model.sketching { centering.addChild(buildSketchRoot(model: model)) }
+        applySectionView(model: model)
         // Transform gizmo on the selected part — same shared builder as the
         // studio; its handle proxies carry collision shapes, so the ARView
         // hitTest (drag start + pass-through) sees them like parts.
@@ -1590,7 +1785,7 @@ struct ObjectInspectorWindow: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.m) {
-            PanelHeader(title: title, onClose: { model.showsInspector = false })
+            PanelHeader(title: title)
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.Space.m) {
                     if model.usesDocumentTree { documentSections } else { sandboxSection }
@@ -1607,7 +1802,7 @@ struct ObjectInspectorWindow: View {
                     }.font(.callout)
                 }
             }.frame(maxHeight: 420).fixedSize(horizontal: false, vertical: true)
-        }.padding(Theme.Space.l).frame(width: Theme.Width.inspector).panelSurface()
+        }.padding(Theme.Space.m).frame(width: Theme.Width.inspector).panelSurface()
     }
 
     // MARK: document (a .vcad's feature tree)
@@ -1775,7 +1970,7 @@ struct ReceiptLedgerWindow: View {
             PanelHeader(title: "Receipt", systemImage: "checklist", onClose: { model.showsInspector = false })
             ReceiptLedger(model: model)
         }
-        .padding(Theme.Space.l).frame(width: Theme.Width.inspector).panelSurface()
+        .padding(Theme.Space.m).frame(width: Theme.Width.inspector).panelSurface()
     }
 }
 
@@ -1794,7 +1989,7 @@ struct SimulationWindow: View {
             PanelHeader(title: "Simulation", systemImage: "atom", onClose: { model.sim.teardown() })
             SimInspector(model: model)
         }
-        .padding(Theme.Space.l).frame(width: Theme.Width.navigator).panelSurface()
+        .padding(Theme.Space.m).frame(width: Theme.Width.navigator).panelSurface()
     }
 }
 
@@ -1832,7 +2027,7 @@ struct AxisTriad: View {
         }
         .frame(width: size, height: size)
         .padding(6)
-        .pillSurface()
+
         .accessibilityLabel("Orientation: X right, Y forward, Z up")
     }
 
@@ -2049,4 +2244,47 @@ final class DockIcon {
                       height: CGFloat(bottom - top + 3) * sy)
             .intersection(CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
     }
+}
+
+
+/// Swap every part's mesh for a copy clipped by the section plane (or put the
+/// originals back), and draw the cut outline. Display-only.
+@MainActor
+func applySectionView(model: EditorModel) {
+    guard let centering = ReleaseWindowController.shared.centeringEntity else { return }
+    centering.findEntity(named: "sectionRoot")?.removeFromParent()
+    func parts(_ e: Entity) -> [ModelEntity] {
+        e.children.flatMap { c -> [ModelEntity] in
+            var out = parts(c)
+            if let m = c as? ModelEntity, c.name.hasPrefix("part") || c.name.hasPrefix("inst") { out.append(m) }
+            return out
+        }
+    }
+    let bodies = parts(centering)
+    guard let sec = model.section else {
+        for b in bodies { b.isEnabled = true }
+        return
+    }
+    let root = Entity(); root.name = "sectionRoot"
+    var outline: [SIMD3<Float>] = []
+    for b in bodies {
+        guard let mesh = b.model?.mesh else { continue }
+        b.isEnabled = false
+        let g = SectionPlane.geometry(of: mesh)
+        // Clip in the kernel frame: transform through the body's pose.
+        let m = b.transformMatrix(relativeTo: centering)
+        let world = g.positions.map { p -> SIMD3<Float> in
+            let v = m * SIMD4(p, 1); return SIMD3(v.x, v.y, v.z)
+        }
+        let (tris, cut) = sec.clip(positions: world, indices: g.indices)
+        outline += cut
+        if let r = SectionPlane.resource(tris, name: b.name + "-section") {
+            root.addChild(ModelEntity(mesh: r, materials: b.model?.materials ?? []))
+        }
+    }
+    let w = max(model.displayedSceneSize, 10) * 0.004
+    if let r = EdgeOverlay.ribbonResource(segments: outline, width: w, name: "sectionOutline") {
+        root.addChild(ModelEntity(mesh: r, materials: [UnlitMaterial(color: NSColor(red: 1, green: 0.62, blue: 0.12, alpha: 1))]))
+    }
+    centering.addChild(root)
 }

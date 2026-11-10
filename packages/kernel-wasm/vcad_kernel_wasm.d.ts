@@ -34,6 +34,33 @@ export class CircuitSim {
 }
 
 /**
+ * Incremental document evaluation: keep one per open document and pass it
+ * every edit of that document. Only nodes whose subtree changed since the
+ * previous `evaluate` are redone, and only changed roots re-tessellated;
+ * the result equals `evaluateDocument` (same scene shape).
+ */
+export class IncrementalEvaluator {
+    free(): void;
+    [Symbol.dispose](): void;
+    /**
+     * Drop everything carried (the next evaluation is cold).
+     */
+    clear(): void;
+    /**
+     * `evaluateDocument`, reusing everything the edit didn't touch.
+     */
+    evaluate(doc_json: string, skip_clash_detection: boolean): any;
+    /**
+     * A fresh evaluator (its first `evaluate` is cold).
+     */
+    constructor();
+    /**
+     * `[reusedSolids, evaluatedSolids, reusedMeshes]` from the last evaluation.
+     */
+    stats(): Uint32Array;
+}
+
+/**
  * A stateful molecular-dynamics environment exposed to JS.
  */
 export class MdSim {
@@ -952,6 +979,15 @@ export class WasmDocumentEngine {
      */
     add_feature(input_json: string): any;
     /**
+     * `apply`, answered with an `EngineDeltaEnvelope` (what changed since
+     * the state before the command) instead of the whole document.
+     */
+    applyDelta(command_json: string): string;
+    /**
+     * `apply_tool`, answered with an `EngineDeltaEnvelope`.
+     */
+    applyToolDelta(tool: string, args_json: string): string;
+    /**
      * Apply a JSON `DocCommand` (see `vcad_app::command`). Returns the
      * shared JSON envelope: `{"ok":true,"result":{…}}` or
      * `{"ok":false,"error":{"kind":…,"message":…}}`. Unlike the per-method
@@ -990,6 +1026,14 @@ export class WasmDocumentEngine {
      * Delete a feature by stable ID.
      */
     delete_feature_by_id(stable_id: string): any;
+    /**
+     * Evaluate this engine's document through `evaluator` without a JSON
+     * round trip: the materialized document never leaves Rust. `overlay_json`
+     * is `{"parameters"?, "bindings"?}` (host-held parameter state, merged
+     * over the document like `mergeParametersIntoDocument`); pass `""` for
+     * none. Returns the same scene shape as `evaluateDocument`.
+     */
+    evaluateIncremental(evaluator: IncrementalEvaluator, overlay_json: string, skip_clash_detection: boolean): any;
     /**
      * Load a legacy v1 JSON document and migrate to CRDT.
      */
@@ -1093,6 +1137,11 @@ export class WasmDocumentEngine {
      * Set visibility on a feature.
      */
     set_visible(stable_id: string, visible: boolean): any;
+    /**
+     * The current state as a full-document envelope (always `ok`) — the
+     * base a host applies deltas to.
+     */
+    stateEnvelope(): string;
     /**
      * Deterministic state fingerprint; matches `vcad_engine_state_hash`.
      */
@@ -1366,6 +1415,13 @@ export function buildGlbBytes(spec_json: string, f32_data: Float32Array, u32_dat
  * can splice into the parent document.
  */
 export function buildPart(path: string, params_json: string): string;
+
+/**
+ * Build a sheet-metal IR document from a `sheet_metal_create` request
+ * (base flange + ordered flanges/hems/jogs/bend relief) via
+ * `vcad_eval::sheet_build`. Returns the document JSON.
+ */
+export function buildSheetMetalDocument(args_json: string): string;
 
 /**
  * Build binary STL bytes from a JSON `StlSpec` plus shared flat data
@@ -2373,6 +2429,14 @@ export function estimate_cost_for_process(process: string, material_name: string
 export function eulerXyzDegToQuat(x_deg: number, y_deg: number, z_deg: number): Float64Array;
 
 /**
+ * Evaluate loon source to a document stamped with its provenance
+ * (`Document.source`: the program, its modules, `base_dir`/`path` when it
+ * came from disk, and the SHA-256 hosts compare against the file) — the
+ * session-minting form of [`eval_vcad_source_with_modules`].
+ */
+export function evalLoonDocument(source: string, modules_json: string, base_dir?: string | null, path?: string | null): string;
+
+/**
  * Evaluate a loon source string and return a JSON-serialized vcad Document.
  *
  * The vcad library (types, constructors) is automatically prepended.
@@ -2684,6 +2748,14 @@ export function importStepBuffer(data: Uint8Array): any;
 export function importStepBufferWithReport(data: Uint8Array): any;
 
 /**
+ * Tessellated STEP import straight to a document: parse, mesh every solid
+ * and build one `ImportedMesh` root per body in Rust, so the meshes never
+ * cross into JS as separate buffers. Returns `{document (JSON string),
+ * report, summary, triangles, vertices}`.
+ */
+export function importStepMeshDocument(data: Uint8Array, part_name: string, material: string, source: string): any;
+
+/**
  * Import a URDF (Unified Robot Description Format) file and return a
  * serialised vcad `Document`.
  *
@@ -2737,6 +2809,15 @@ export function init(): void;
  * This should be called once at application startup.
  */
 export function initGpu(): Promise<boolean>;
+
+/**
+ * Rewrite `MeshImport` nodes to inline `ImportedMesh` geometry from STL
+ * bytes the host read (metres → mm, URDF `<mesh scale>` applied), via
+ * `vcad_eval::mesh_inline`. `keys[i]` is the node id whose STL is
+ * `blobs[i]` (a `Uint8Array`). Returns
+ * `{document, inlined, errors: [[key, reason], ...]}`.
+ */
+export function inlineMeshImports(doc_json: string, keys: string[], blobs: Array<any>): string;
 
 /**
  * Enumerate the B-rep faces of every visible scene root.
@@ -3455,6 +3536,13 @@ export function solveForwardKinematics(doc_json: string): any;
 export function solveSketchSegments(segments_json: string, constraints_json: string): string;
 
 /**
+ * Document for a B-rep STEP import: one lazy `step_import` node per solid
+ * of the file registered under `path` (`vcad_eval::step_doc`). Returns the
+ * document JSON.
+ */
+export function stepImportDocument(path: string, solid_indices: Uint32Array, part_name: string, material: string): string;
+
+/**
  * Whether STEP contents are registered under `path`.
  */
 export function stepSourceRegistered(path: string): boolean;
@@ -3602,6 +3690,7 @@ export interface InitOutput {
     readonly __wbg_get_wasmcamsettings_spindle_rpm: (a: number) => number;
     readonly __wbg_get_wasmcamsettings_stepdown: (a: number) => number;
     readonly __wbg_get_wasmcamsettings_stepover: (a: number) => number;
+    readonly __wbg_incrementalevaluator_free: (a: number, b: number) => void;
     readonly __wbg_mdsim_free: (a: number, b: number) => void;
     readonly __wbg_physicssim_free: (a: number, b: number) => void;
     readonly __wbg_raytracer_free: (a: number, b: number) => void;
@@ -3642,6 +3731,7 @@ export interface InitOutput {
     readonly buildCalibrationReportJson: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly buildGlbBytes: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly buildPart: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly buildSheetMetalDocument: (a: number, b: number) => [number, number, number, number];
     readonly buildStlBytes: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly build_chat_system_prompt: (a: number, b: number, c: number, d: number) => [number, number];
     readonly calibrationDefaultTolerance: (a: number, b: number, c: number) => [number, number, number];
@@ -3742,6 +3832,7 @@ export interface InitOutput {
     readonly estimatePrintCost: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
     readonly estimate_cost_for_process: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
     readonly eulerXyzDegToQuat: (a: number, b: number, c: number) => [number, number];
+    readonly evalLoonDocument: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
     readonly evalVcadSource: (a: number, b: number) => [number, number, number];
     readonly evalVcadSourceParametric: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly evalVcadSourceWithModules: (a: number, b: number, c: number, d: number) => [number, number, number];
@@ -3773,10 +3864,16 @@ export interface InitOutput {
     readonly get_tool_schemas: () => [number, number];
     readonly importStepBuffer: (a: number, b: number) => [number, number, number];
     readonly importStepBufferWithReport: (a: number, b: number) => [number, number, number];
+    readonly importStepMeshDocument: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
     readonly importUrdfBuffer: (a: number, b: number) => [number, number, number, number];
     readonly importUrdfBufferWithOptions: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => [number, number, number, number];
+    readonly incrementalevaluator_clear: (a: number) => void;
+    readonly incrementalevaluator_evaluate: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly incrementalevaluator_new: () => number;
+    readonly incrementalevaluator_stats: (a: number) => [number, number];
     readonly init: () => void;
     readonly initGpu: () => any;
+    readonly inlineMeshImports: (a: number, b: number, c: number, d: number, e: any) => [number, number, number, number];
     readonly inspectDocumentFaces: (a: number, b: number) => [number, number, number, number];
     readonly isCamAvailable: () => number;
     readonly isEcadAvailable: () => number;
@@ -3949,6 +4046,7 @@ export interface InitOutput {
     readonly solveDesignConstraints: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly solveForwardKinematics: (a: number, b: number) => [number, number, number];
     readonly solveSketchSegments: (a: number, b: number, c: number, d: number) => [number, number, number, number];
+    readonly stepImportDocument: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
     readonly stepSourceRegistered: (a: number, b: number) => number;
     readonly textBounds: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
     readonly thermalSolve: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
@@ -3975,6 +4073,8 @@ export interface InitOutput {
     readonly wasmcamsettings_new: () => number;
     readonly wasmdocumentengine_add_feature: (a: number, b: number, c: number) => any;
     readonly wasmdocumentengine_apply: (a: number, b: number, c: number) => [number, number];
+    readonly wasmdocumentengine_applyDelta: (a: number, b: number, c: number) => [number, number];
+    readonly wasmdocumentengine_applyToolDelta: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly wasmdocumentengine_apply_tool: (a: number, b: number, c: number, d: number, e: number) => [number, number];
     readonly wasmdocumentengine_can_redo: (a: number) => number;
     readonly wasmdocumentengine_can_undo: (a: number) => number;
@@ -3982,6 +4082,7 @@ export interface InitOutput {
     readonly wasmdocumentengine_create_feature: (a: number, b: number, c: number, d: number, e: number) => any;
     readonly wasmdocumentengine_delete_feature: (a: number, b: number, c: number) => any;
     readonly wasmdocumentengine_delete_feature_by_id: (a: number, b: number, c: number) => any;
+    readonly wasmdocumentengine_evaluateIncremental: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly wasmdocumentengine_from_v1_json: (a: number, b: number) => [number, number, number];
     readonly wasmdocumentengine_get_document_json: (a: number) => [number, number];
     readonly wasmdocumentengine_get_ops_since: (a: number, b: number, c: number) => [number, number];
@@ -4004,6 +4105,7 @@ export interface InitOutput {
     readonly wasmdocumentengine_set_scale: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
     readonly wasmdocumentengine_set_translation: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
     readonly wasmdocumentengine_set_visible: (a: number, b: number, c: number, d: number) => any;
+    readonly wasmdocumentengine_stateEnvelope: (a: number) => [number, number];
     readonly wasmdocumentengine_stateHash: (a: number) => [number, number];
     readonly wasmdocumentengine_undo: (a: number) => any;
     readonly wasmdocumentengine_update_feature: (a: number, b: number, c: number, d: number, e: number) => any;
@@ -4040,12 +4142,12 @@ export interface InitOutput {
     readonly wasmsketchsession_undo: (a: number) => number;
     readonly writeEmbroideryDst: (a: number, b: number) => [number, number, number, number];
     readonly writeEmbroideryPes: (a: number, b: number) => [number, number, number, number];
-    readonly wasm_bindgen_d8ba3021eaa32f54___convert__closures_____invoke___js_sys_7c82484d4a1d6091___Function_fn_wasm_bindgen_d8ba3021eaa32f54___JsValue_____wasm_bindgen_d8ba3021eaa32f54___sys__Undefined___js_sys_7c82484d4a1d6091___Function_fn_wasm_bindgen_d8ba3021eaa32f54___JsValue_____wasm_bindgen_d8ba3021eaa32f54___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen_d8ba3021eaa32f54___convert__closures_____invoke___wasm_bindgen_d8ba3021eaa32f54___JsValue__core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_d8ba3021eaa32f54___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_d8ba3021eaa32f54___convert__closures_____invoke___wasm_bindgen_d8ba3021eaa32f54___sys__JsNullable_wgpu_f894171a91484cea___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_d8ba3021eaa32f54___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_d8ba3021eaa32f54___convert__closures_____invoke___wasm_bindgen_d8ba3021eaa32f54___sys__JsNullable_wgpu_f894171a91484cea___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_d8ba3021eaa32f54___JsError___true__447: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_d8ba3021eaa32f54___convert__closures_____invoke___wasm_bindgen_d8ba3021eaa32f54___sys__JsNullable_wgpu_f894171a91484cea___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_37ee0ce0c4cd57d5___result__Result_____wasm_bindgen_d8ba3021eaa32f54___JsError___true__448: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_d8ba3021eaa32f54___convert__closures_____invoke___wgpu_f894171a91484cea___backend__webgpu__webgpu_sys__gen_GpuDeviceLostInfo__GpuDeviceLostInfo______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___js_sys_fd485cc146ff22c1___Function_fn_wasm_bindgen_847cf9dc19a95d2a___JsValue_____wasm_bindgen_847cf9dc19a95d2a___sys__Undefined___js_sys_fd485cc146ff22c1___Function_fn_wasm_bindgen_847cf9dc19a95d2a___JsValue_____wasm_bindgen_847cf9dc19a95d2a___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___JsValue__core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___sys__JsNullable_wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___sys__JsNullable_wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true__460: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___sys__JsNullable_wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true__461: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuDeviceLostInfo__GpuDeviceLostInfo______true_: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

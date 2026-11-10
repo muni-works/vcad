@@ -19,7 +19,14 @@ no-builtin-font = ["vcad-kernel/no-builtin-font"]
 
 [dependencies]
 vcad-kernel-cam = { workspace = true }
+vcad-slicer = { workspace = true }
+vcad-slicer-gcode = { workspace = true }
+vcad-slicer-bambu = { workspace = true }
 vcad-kernel = { workspace = true }
+vcad-kernel-drafting = { workspace = true }
+vcad-kernel-naming = { workspace = true }
+vcad-kernel-urdf = { workspace = true }
+vcad-kernel-assembly = { workspace = true }
 vcad-kernel-physics = { workspace = true }
 vcad-sim = { workspace = true }
 serde = { workspace = true }
@@ -34,6 +41,12 @@ vcad-crdt = { workspace = true }
 vcad-ir = { workspace = true }
 vcad-loon = { workspace = true }
 vcad-ecad-pcb = { workspace = true }
+vcad-ecad-symbols = { workspace = true }
+vcad-ecad-schematic = { workspace = true }
+vcad-ecad-export = { workspace = true }
+vcad-ecad-fabprep = { workspace = true }
+vcad-ecad-sim = { workspace = true }
+vcad-kernel-enclosure = { workspace = true }
 vcad-kernel-export = { workspace = true }
 # `vcad render --photoreal`, linked in so the app needs no vcad-render binary.
 vcad-render = { path = "../vcad-render", default-features = false, features = ["photoreal-gpu"] }

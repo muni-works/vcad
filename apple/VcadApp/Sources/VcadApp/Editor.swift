@@ -24,13 +24,14 @@ enum Motion {
 /// The app's workspaces — one exclusive mode at a time, each with its own
 /// panels and its own remembered camera.
 enum Workspace: String, CaseIterable, Identifiable, Codable {
-    case design, electronics, manufacture
+    case design, electronics, manufacture, drawing
     var id: String { rawValue }
     var label: String {
         switch self {
         case .design: return "Design"
         case .electronics: return "Electronics"
         case .manufacture: return "Manufacture"
+        case .drawing: return "Drawing"
         }
     }
     var symbol: String {
@@ -38,15 +39,17 @@ enum Workspace: String, CaseIterable, Identifiable, Codable {
         case .design: return "cube"
         case .electronics: return "cpu"
         case .manufacture: return "wrench.and.screwdriver"
+        case .drawing: return "ruler"
         }
     }
     /// Workspaces the UI offers: Design, plus the Labs ones when enabled.
-    static var available: [Workspace] { Prefs.labs ? allCases : [.design] }
+    static var available: [Workspace] { Prefs.labs ? allCases : [.design, .drawing] }
     var keyEquivalent: KeyEquivalent {
         switch self {
         case .design: return "1"
         case .electronics: return "2"
         case .manufacture: return "3"
+        case .drawing: return "4"
         }
     }
 }
@@ -204,18 +207,6 @@ enum BooleanOp: String, CaseIterable, Identifiable {
 }
 
 /// A 2D sketch drawing tool (mirrors the web app's line/rectangle/circle tools).
-enum SketchTool: String, CaseIterable, Identifiable {
-    case line, rectangle, circle
-    var id: String { rawValue }
-    var label: String { rawValue.capitalized }
-    var symbol: String {
-        switch self {
-        case .line: return "line.diagonal"
-        case .rectangle: return "rectangle"
-        case .circle: return "circle"
-        }
-    }
-}
 
 /// An axis-aligned sketch plane (origin at world 0). Basis vectors place 2D
 /// sketch coords in 3D; `normal` is the extrude direction.
@@ -245,6 +236,9 @@ struct Tool: Identifiable {
     let isActive: Bool
     var enabled: Bool = true
     var hint: String = ""
+    /// A bare-letter key (Fusion/KiCad style) — fires only when nothing else
+    /// handles the key, so it can never steal typing from a field.
+    var shortcut: Character? = nil
     let action: () -> Void
 }
 
@@ -269,6 +263,20 @@ struct GenStats {
 @Observable
 final class EditorModel {
     let cnc = CNCWorkspace()
+    /// Face/edge selection + hover (Picking.swift) — shared with the
+    /// modeling ops and the analysis lanes.
+    let picking = PickingState()
+    /// The feature dialog on screen (FeatureOps.swift), if any.
+    var activeFeatureOp: FeatureOp?
+    /// Measure tool on (Measure.swift): clicks pick points/edges/faces.
+    var measuring = false {
+        didSet { if measuring { picking.filter = .faceOrEdge; picking.clear() } }
+    }
+    /// Section plane (Section.swift); nil = off.
+    var section: SectionPlane?
+    /// Command palette / parameter table sheets.
+    var showsCommandPalette = false
+    var showsParameterTable = false
     var isWindowed = false { didSet { saveLayout() } }
     init() {
         bridgeSimulationToRenderer()
@@ -444,6 +452,8 @@ final class EditorModel {
     /// Instances an agent (over the app's MCP bridge) is pointing at — painted
     /// like a selection so the user sees what the agent means.
     var agentHighlights: Set<Int> = []
+    /// Parts a pending agent suggestion would touch (soft shimmer preview).
+    var agentShimmer: Set<Int> = []
     /// Labels an agent pinned to instances, drawn in the viewport overlay.
     var agentAnnotations: [AgentAnnotation] = []
     /// The tree row that is hot, whichever side the pointer is on. Hovering
@@ -512,6 +522,8 @@ final class EditorModel {
 
     /// The physics simulation model. Inert until `enableSimulation()`.
     let sim = SimController()
+    /// Assembly / joint / keyframe authoring UI state (AssemblyModel.swift).
+    let assembly = AssemblyUIState()
 
     /// Whether the current document can be simulated: an assembly with bodies.
     var canSimulate: Bool { assemblyInstanceCount > 0 && documentJSON != nil }
@@ -946,6 +958,7 @@ final class EditorModel {
     }
     /// Clear all selection — empty-space click or Escape (documents only).
     func deselectAll() {
+        picking.clear()
         multiSelectedParts = []
         selectedInstanceIndex = nil
         selectedFeatureID = nil
@@ -1200,8 +1213,12 @@ final class EditorModel {
         }
         guard dict["schematic"] == nil, dict["pcb"] == nil, !hasBoard else { return nil }
         let engine = DocumentEngine()
+        // An assembly written by the web stores no roots (its parts are the
+        // part defs); the engine materializes one root per def, which is the
+        // same document, not a lossy one.
+        let derivedRoots = count(dict, "roots") == 0 && !(dict["partDefs"] as? [String: Any] ?? [:]).isEmpty
         guard let state = try? engine.loadIR(dict), state.warnings.isEmpty,
-              count(state.document, "roots") == count(dict, "roots"),
+              derivedRoots || count(state.document, "roots") == count(dict, "roots"),
               count(state.document, "instances") == count(dict, "instances"),
               count(state.document, "joints") == count(dict, "joints")
         else { return nil }
@@ -1295,6 +1312,14 @@ final class EditorModel {
     /// rotate-about-center, document parameters, raw node fields): edit the
     /// materialized IR and reload it into the engine. Always snapshot-undone,
     /// since a reload starts the engine's history over.
+    /// Assembly / keyframe authoring (AssemblyModel.swift): an IR edit, one
+    /// undo step. `rebuild` re-evaluates the scene (instances, joints, ground);
+    /// timeline-only edits leave the resident scene and playhead alone.
+    @discardableResult
+    func assemblyEdit(_ name: String, rebuild: Bool, _ mutate: (inout [String: Any]) -> Void) -> Bool {
+        irEdit(name, reeval: rebuild ? .rebuild : .none, mutate) != nil
+    }
+
     @discardableResult
     private func irEdit(_ name: String, gestureStart: Bool = true, reeval: Reeval,
                         base: [String: Any]? = nil,
@@ -1459,6 +1484,66 @@ final class EditorModel {
         selectedFeatureID = featureNodes.last?.id          // the new combined part
     }
 
+    // MARK: feature ops (FeatureOps.swift drives these)
+
+    /// Add any engine feature as one undo step; the new part takes
+    /// `materialFrom`'s material (or the default). Selects the result.
+    @discardableResult
+    func addOp(_ feature: FeatureInput, name: String, materialFrom partId: String? = nil,
+               offset: [Double]? = nil) -> Bool {
+        let mat = partId.flatMap { engineState?.material(ofPart: $0) } ?? engineState?.defaultMaterial
+        guard addFeature(.addFeature(feature: feature, name: name), name: name,
+                         material: mat, offset: offset) != nil else { return false }
+        selectedFeatureID = featureNodes.last?.id
+        return true
+    }
+
+    /// Run a raw engine command (scale, reorder, rename…) as one undo step.
+    @discardableResult
+    func runCommand(_ command: DocCommand, name: String) -> Bool {
+        send(command, name: name, reeval: .rebuild) != nil
+    }
+
+    /// Append IR through `vcad_feature_append` (ops the engine vocabulary
+    /// lacks: per-edge blends, extrude-to-face) and reload, as ONE undo step.
+    /// A feature whose `child` is -1 chains onto the previous one's result.
+    @discardableResult
+    func appendIRFeatures(_ features: [[String: Any]], name: String) -> Bool {
+        guard var doc = documentJSON, !features.isEmpty else { return false }
+        var prev: Int?
+        for var f in features {
+            if (f["child"] as? Int) == -1 { guard let prev else { return false }; f["child"] = prev }
+            guard let docData = try? JSONSerialization.data(withJSONObject: doc),
+                  let fData = try? JSONSerialization.data(withJSONObject: f),
+                  let docStr = String(data: docData, encoding: .utf8),
+                  let fStr = String(data: fData, encoding: .utf8) else { return false }
+            guard let raw = vcad_feature_append(docStr, fStr) else {
+                engineError = SimError.pending() ?? "\(name) failed"
+                return false
+            }
+            let text = String(cString: raw)
+            vcad_string_free(raw)
+            guard let obj = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
+                  let next = obj["document"] as? [String: Any] else { return false }
+            doc = next
+            prev = (obj["node_id"] as? NSNumber)?.intValue
+        }
+        return irEdit(name, reeval: .rebuild, base: doc) { _ in } != nil
+    }
+
+    /// Mutate the IR document directly and reload, as ONE undo step — for
+    /// op families the feature builder lacks (sheet-metal chains).
+    @discardableResult
+    func editIR(_ name: String, _ mutate: (inout [String: Any]) -> Void) -> Bool {
+        irEdit(name, reeval: .rebuild, mutate) != nil
+    }
+
+    /// Root IR node id of a viewport part.
+    func rootNodeId(forPart i: Int) -> Int? {
+        guard let roots = documentJSON?["roots"] as? [[String: Any]], i >= 0, i < roots.count else { return nil }
+        return (roots[i]["root"] as? NSNumber)?.intValue
+    }
+
     /// Tabs available in the tool palette — Combine only applies to documents.
     var availableTabs: [ToolTab] { usesDocumentTree ? [.create, .modify, .combine] : [.create, .modify] }
 
@@ -1474,138 +1559,160 @@ final class EditorModel {
         if let pi = selBefore, pi < featureNodes.count { selectedFeatureID = featureNodes[pi].id }
     }
 
-    // MARK: sketch mode (draw a profile → extrude), a port of the web sketcher
+    // MARK: sketch mode — constraint sketcher (SketchSession.swift) → feature
 
     var sketching = false
     var sketchPlane: SketchPlane = .xy
-    var sketchTool: SketchTool = .rectangle
-    /// The profile polygon, in plane (2D mm) coords. Closed when `sketchClosed`.
-    var sketchVerts: [SIMD2<Float>] = []
-    /// First click for the rectangle/circle two-click tools.
-    var sketchAnchor: SIMD2<Float>?
-    /// True once a closed profile exists (ready to extrude).
-    var sketchClosed = false
-    /// Live cursor on the plane, for rubber-band preview.
-    var sketchCursor: SIMD2<Float>?
+    /// The live constraint sketch, while sketching.
+    var sketch: SketchSession?
+    /// What Finish does with the closed profile.
+    var sketchFinish: SketchFinish = .extrude
     var sketchExtrudeDepth: Double = 10
-    /// Viewport needs to rebuild the sketch preview overlay.
+    var sketchRevolveAngle: Double = 360
+    /// Sweep path along the sketch normal: helix when `sweepTurns > 0`.
+    var sweepHelixRadius: Double = 20
+    var sweepPitch: Double = 10
+    var sweepTurns: Double = 0
+    /// Profiles collected for a loft, in order.
+    var loftProfiles: [[String: Any]] = []
+    /// The planar face a sketch-on-face started from (extrude-to-face target too).
+    var sketchFace: (part: Int, point: SIMD3<Double>, normal: SIMD3<Double>)?
+    /// Viewport needs to rebuild the sketch ink.
     var sketchDirty = false
-    private let sketchCircleSegments = 48
-    /// Click-to-close radius for the line tool (plane mm). Also drives the
-    /// snap-to-close indicator in the preview, so it's not private.
-    let sketchCloseDist: Float = 2.5
+    var sketchOffsetPrompt = false
+    var sketchOffsetDistance: Double = 2
 
-    /// True when the cursor is within snap range of the line tool's first vertex
-    /// (so the preview can flag that clicking will close the loop).
-    var sketchSnapToStart: Bool {
-        guard sketchTool == .line, !sketchClosed, sketchVerts.count >= 3,
-              let f = sketchVerts.first, let c = sketchCursor else { return false }
-        return simd_distance(f, c) < sketchCloseDist
+    var sketchCursor: SIMD2<Float>? {
+        get { sketch?.cursor.map { SIMD2(Float($0.x), Float($0.y)) } }
+        set { sketch?.cursor = newValue.map { SIMD2(Double($0.x), Double($0.y)) }; sketchDirty = true }
+    }
+    var canFinishSketch: Bool {
+        guard let sketch else { return false }
+        return sketchFinish == .loft ? (loftProfiles.count >= 2 || sketch.canFinish) : sketch.canFinish
     }
 
-    var canFinishSketch: Bool { sketchClosed && sketchVerts.count >= 3 }
-
+    /// Start a sketch: on the picked planar face when exactly one is picked,
+    /// else on `sketchPlane`.
     func enterSketch() {
         guard usesDocumentTree else { return }
+        var frame = SketchFrame.principal(sketchPlane)
+        sketchFace = nil
+        if picking.selectedFaces.count == 1, let f = picking.selectedFaces.first,
+           let face = partTopology(f.part)?.face(f.id), face.isPlanar {
+            let c = SIMD3(face.center[0], face.center[1], face.center[2])
+            let n = SIMD3(face.normal[0], face.normal[1], face.normal[2])
+            frame = .onFace(center: c, normal: n)
+            sketchFace = (f.part, c, n)
+        }
+        guard let s = SketchSession(frame: frame) else { engineError = "Sketch solver unavailable"; return }
+        sketch = s
         sketching = true
         hoveredPartIndex = nil; hoverDirty = true
-        resetSketchShape()
-        // Frame the plane head-on so drawing maps 1:1 to the screen.
-        switch sketchPlane {
-        case .xy: azimuth = 0; elevation = 1.45
-        case .xz: azimuth = 0; elevation = 0
-        case .yz: azimuth = .pi / 2; elevation = 0
-        }
+        aimCamera(at: frame)
         sketchDirty = true
     }
     func exitSketch() {
         sketching = false
-        resetSketchShape()
-        sketchDirty = true
-    }
-    func setSketchTool(_ t: SketchTool) {
-        sketchTool = t
-        resetSketchShape()
+        sketch = nil
+        sketchFace = nil
         sketchDirty = true
     }
     func setSketchPlane(_ p: SketchPlane) {
         sketchPlane = p
-        resetSketchShape()
-        switch p {
-        case .xy: azimuth = 0; elevation = 1.45
-        case .xz: azimuth = 0; elevation = 0
-        case .yz: azimuth = .pi / 2; elevation = 0
-        }
+        guard sketching, sketchFace == nil else { return }
+        sketch = SketchSession(frame: .principal(p))
+        aimCamera(at: .principal(p))
         sketchDirty = true
     }
-    private func resetSketchShape() {
-        sketchVerts = []; sketchAnchor = nil; sketchClosed = false; sketchCursor = nil
+    /// Look at the sketch plane head-on.
+    private func aimCamera(at f: SketchFrame) {
+        let n = f.normal
+        elevation = Float(asin(max(-1, min(1, n.z)))).clamped(to: -1.45...1.45)
+        azimuth = abs(n.z) > 0.99 ? 0 : Float(atan2(n.x, -n.y))
     }
+
+    func setSketchTool(_ t: SketchToolKind) { sketch?.tool = t; sketchDirty = true }
 
     /// A tap on the sketch plane (2D plane coords) — drives the active tool.
-    func sketchTap(_ p: SIMD2<Float>) {
-        switch sketchTool {
-        case .line:
-            if sketchClosed { break }
-            if sketchVerts.count >= 3, let f = sketchVerts.first, simd_distance(f, p) < sketchCloseDist {
-                sketchClosed = true
-            } else {
-                sketchVerts.append(p)
-            }
-        case .rectangle:
-            if let a = sketchAnchor {
-                sketchVerts = [a, SIMD2(p.x, a.y), p, SIMD2(a.x, p.y)]
-                sketchClosed = true; sketchAnchor = nil
-            } else {
-                sketchAnchor = p; sketchVerts = []
-            }
-        case .circle:
-            if let c = sketchAnchor {
-                sketchVerts = circlePoints(center: c, radius: simd_distance(c, p))
-                sketchClosed = true; sketchAnchor = nil
-            } else {
-                sketchAnchor = p; sketchVerts = []
-            }
-        }
+    func sketchTap(_ p: SIMD2<Float>, additive: Bool = false) {
+        sketch?.tap(SIMD2(Double(p.x), Double(p.y)), additive: additive)
         sketchDirty = true
-    }
-
-    private func circlePoints(center c: SIMD2<Float>, radius r: Float) -> [SIMD2<Float>] {
-        (0..<sketchCircleSegments).map { i in
-            let a = 2 * Float.pi * Float(i) / Float(sketchCircleSegments)
-            return SIMD2(c.x + r * cos(a), c.y + r * sin(a))
-        }
     }
 
     /// Project a kernel-space ray onto the sketch plane → 2D plane coords.
     func sketchPlanePoint(originKernel o: SIMD3<Float>, dirKernel d: SIMD3<Float>) -> SIMD2<Float>? {
-        let n = sketchPlane.normalF
-        let denom = simd_dot(d, n)
-        guard abs(denom) > 1e-6 else { return nil }
-        let t = -simd_dot(o, n) / denom        // plane passes through origin
-        guard t > 0 else { return nil }
-        let pt = o + t * d
-        return SIMD2(simd_dot(pt, sketchPlane.xDirF), simd_dot(pt, sketchPlane.yDirF))
+        let frame = sketch?.frame ?? .principal(sketchPlane)
+        guard let p = frame.intersect(origin: SIMD3<Double>(o), dir: SIMD3<Double>(d)) else { return nil }
+        return SIMD2(Float(p.x), Float(p.y))
     }
 
-    /// 2D plane coords → 3D kernel coords (for drawing the preview).
+    /// 2D plane coords → 3D kernel coords (for drawing the ink).
     func sketchWorld(_ v: SIMD2<Float>) -> SIMD3<Float> {
-        v.x * sketchPlane.xDirF + v.y * sketchPlane.yDirF
+        let frame = sketch?.frame ?? .principal(sketchPlane)
+        return SIMD3<Float>(frame.world(SIMD2(Double(v.x), Double(v.y))))
     }
 
-    /// Realize the closed profile as a Sketch2D + Extrude, then leave sketch mode.
-    func finishSketch() {
-        guard canFinishSketch, canEditDocument else { return }
-        let verts = sketchVerts.map { (Double($0.x), Double($0.y)) }
-        let n = sketchPlane.normal
-        let dir = (n.0 * sketchExtrudeDepth, n.1 * sketchExtrudeDepth, n.2 * sketchExtrudeDepth)
-        let plane = sketchPlane
-        irEdit("Extrude Sketch", reeval: .rebuild) {
-            DocEdit.addExtrudedProfile(&$0, verts: verts, origin: (0, 0, 0),
-                                       xDir: plane.xDir, yDir: plane.yDir, direction: dir)
+    /// Realize the profile as the chosen feature, then leave sketch mode
+    /// (a loft section stays in sketch mode for the next profile).
+    @discardableResult
+    func finishSketch() -> Bool {
+        guard let sketch, canEditDocument else { return false }
+        let n = sketch.frame.normal
+        func vec(_ v: SIMD3<Double>) -> [String: Double] { ["x": v.x, "y": v.y, "z": v.z] }
+        let dir = vec(n * sketchExtrudeDepth)
+        var feature: [String: Any]
+        switch sketchFinish {
+        case .loft:
+            if sketch.canFinish, let p = sketch.profileJSON() { loftProfiles.append(p) }
+            guard loftProfiles.count >= 2 else {
+                // Next section: a fresh sketch offset along the normal.
+                var f = sketch.frame; f.origin += n * sketchExtrudeDepth
+                self.sketch = SketchSession(frame: f); sketchDirty = true
+                return true
+            }
+            feature = ["kind": "loft", "profiles": loftProfiles, "name": "Loft"]
+        default:
+            guard let profile = sketch.profileJSON() else { engineError = sketch.lastError; return false }
+            switch sketchFinish {
+            case .extrude:
+                feature = ["kind": "extrude", "profile": profile, "direction": dir, "name": "Extrude"]
+            case .cut:
+                guard let target = sketchFace.flatMap({ rootNodeId(forPart: $0.part) })
+                        ?? selectedPartIndex.flatMap({ rootNodeId(forPart: $0) }) else {
+                    engineError = "Select the part to cut"; return false
+                }
+                feature = ["kind": "cut_extrude", "target": target, "profile": profile,
+                           "direction": vec(-n * sketchExtrudeDepth), "name": "Cut"]
+            case .extrudeToFace:
+                guard picking.selectedFaces.count == 1, let f = picking.selectedFaces.first,
+                      let face = partTopology(f.part)?.face(f.id) else {
+                    engineError = "Pick the face to extrude up to"; return false
+                }
+                let fp = SIMD3(face.center[0], face.center[1], face.center[2])
+                let fn = SIMD3(face.normal[0], face.normal[1], face.normal[2])
+                let towards = simd_dot(fp - sketch.frame.origin, n) >= 0 ? n : -n
+                feature = ["kind": "extrude_to_face", "profile": profile, "direction": vec(towards),
+                           "face_point": vec(fp), "face_normal": vec(fn), "name": "Extrude to Face"]
+                if let t = rootNodeId(forPart: f.part) { feature["target"] = t }
+            case .revolve:
+                // Axis: the sketch's own Y axis through its origin.
+                feature = ["kind": "revolve", "profile": profile, "axis_origin": vec(sketch.frame.origin),
+                           "axis_dir": vec(sketch.frame.yDir), "angle_deg": sketchRevolveAngle, "name": "Revolve"]
+            case .sweep:
+                let path: [String: Any] = sweepTurns > 0
+                    ? ["type": "Helix", "radius": sweepHelixRadius, "pitch": sweepPitch,
+                       "height": sweepPitch * sweepTurns, "turns": sweepTurns]
+                    : ["type": "Line", "start": vec(.zero), "end": vec(n * sketchExtrudeDepth)]
+                feature = ["kind": "sweep", "profile": profile, "path": path, "name": "Sweep"]
+            case .loft:
+                return false
+            }
         }
+        guard appendIRFeatures([feature], name: sketchFinish.label) else { return false }
+        loftProfiles = []
         selectedFeatureID = featureNodes.last?.id
         exitSketch()
+        return true
     }
 
     // MARK: transform gizmo (drag a part to translate it — axis + plane handles)
@@ -1973,11 +2080,13 @@ final class EditorModel {
         guard let entry = undoStack.popLast() else { undoGeneration(); return }
         guard let back = step(entry, forward: false) else { return }
         redoStack.append(back)
+        GlassUI.shared.flash("Undo \(entry.name)", symbol: "arrow.uturn.backward")
     }
     func redo() {
         guard let entry = redoStack.popLast() else { return }
         guard let back = step(entry, forward: true) else { return }
         undoStack.append(back)
+        GlassUI.shared.flash("Redo \(entry.name)", symbol: "arrow.uturn.forward")
     }
 
     /// Apply one history entry; returns the entry that reverses it.
@@ -2351,6 +2460,10 @@ final class EditorModel {
                 if event.keyCode == 53 {                       // Escape
                     if self.sketching {
                         self.exitSketch()
+                    } else if GlassUI.shared.shortcutsShown {
+                        GlassUI.shared.shortcutsShown = false
+                    } else if self.activeFeatureOp != nil || self.showsCommandPalette || GlassUI.shared.panel != nil {
+                        // Their own Cancel handles Esc; keep the selection.
                     } else if self.usesDocumentTree, self.renamingFeatureID == nil, self.hasSelection {
                         self.deselectAll()
                     }
@@ -2689,6 +2802,7 @@ final class EditorModel {
     }
 
     func openDocument(_ url: URL) {
+        LaunchPerf.once("open", " (\(url.lastPathComponent))")
         let label = url.deletingPathExtension().lastPathComponent
         // A DXF is an outline to machine, not a document: it lands in
         // Manufacture as contour operations on the current part.
@@ -2730,9 +2844,87 @@ final class EditorModel {
             rememberRecent(url)
             return
         }
+        // STEP / URDF: convert through the kernel into a .vcad beside the
+        // app's import cache, then open that as an ordinary document.
+        if ["step", "stp", "urdf"].contains(url.pathExtension.lowercased()) {
+            guard let converted = importForeign(url) else { return }
+            source = .document(path: converted.path, label: label)
+            rememberRecent(url)
+            return
+        }
         importMeshBundle(for: url)          // instant open when the file shipped with its meshes
         source = .document(path: url.path, label: label)
         rememberRecent(url)
+    }
+
+    /// Convert a STEP or URDF file to a .vcad document in
+    /// ~/Library/Caches/vcad/imports and return its URL (nil + loadError on
+    /// failure). The user saves it wherever they like with Save As.
+    func importForeign(_ url: URL) -> URL? {
+        let ext = url.pathExtension.lowercased()
+        let raw = url.path.withCString { ext == "urdf" ? vcad_import_urdf($0) : vcad_import_step($0) }
+        guard let raw else {
+            loadError = "Couldn't import \(url.lastPathComponent): \(SimError.pending() ?? "unknown error")"
+            return nil
+        }
+        defer { vcad_string_free(raw) }
+        var data = Data(String(cString: raw).utf8)
+        // STEP comes wrapped: {"document": …, "solids": N}.
+        if ext != "urdf",
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let doc = obj["document"],
+           let d = try? JSONSerialization.data(withJSONObject: doc) { data = d }
+        let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("vcad/imports", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let out = dir.appendingPathComponent(url.deletingPathExtension().lastPathComponent + ".vcad")
+        do { try data.write(to: out, options: .atomic) } catch {
+            loadError = "Couldn't write the imported document: \(error.localizedDescription)"
+            return nil
+        }
+        return out
+    }
+
+    // MARK: feature tree edits (FeatureTree.swift)
+
+    /// Move a part to `index` in the tree (engine `reorder`).
+    func reorderPart(_ partIndex: Int, to index: Int) {
+        guard let id = partId(forPart: partIndex), index >= 0, index < featureNodes.count else { return }
+        runCommand(.reorder(id: id, index: index), name: "Reorder")
+    }
+
+    /// Suppressed parts are kept in the document but not built or drawn
+    /// (IR `roots[i].visible = false`, the web's hidden flag).
+    func isSuppressed(part i: Int) -> Bool {
+        guard let roots = documentJSON?["roots"] as? [[String: Any]], i < roots.count else { return false }
+        return (roots[i]["visible"] as? Bool) == false
+    }
+    func toggleSuppressed(part i: Int) {
+        guard let id = partId(forPart: i) else { return }
+        let suppressed = isSuppressed(part: i)
+        runCommand(.setVisible(id: id, visible: suppressed), name: suppressed ? "Unsuppress" : "Suppress")
+    }
+
+    /// Parameter table: add / change / remove named parameters. `value` is a
+    /// number or a formula string (IR `Expr`).
+    func setDocParameter(_ name: String, value: Any, unit: String? = "mm") {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        irEdit("Set \(trimmed)", reeval: .rebuild) { json in
+            var params = json["parameters"] as? [String: Any] ?? [:]
+            var p = params[trimmed] as? [String: Any] ?? [:]
+            p["value"] = value
+            if let unit { p["unit"] = unit }
+            params[trimmed] = p
+            json["parameters"] = params
+        }
+    }
+    func removeDocParameter(_ name: String) {
+        irEdit("Remove \(name)", reeval: .rebuild) { json in
+            var params = json["parameters"] as? [String: Any] ?? [:]
+            params[name] = nil
+            json["parameters"] = params
+        }
     }
 
     /// Add `url` to the recents list.
@@ -2786,9 +2978,21 @@ final class EditorModel {
             if docMode {
                 out.append(Tool(id: "sketch", label: "Sketch", symbol: "scribble.variable",
                                 isActive: false) { [weak self] in self?.enterSketch() })
+                out += FeatureOp.createOps.map { op in
+                    Tool(id: "op.\(op.rawValue)", label: op.label, symbol: op.symbol,
+                         isActive: false) { [weak self] in self?.activeFeatureOp = op }
+                }
             }
             return out
         case .modify:
+            if docMode {
+                let ok = selectedPartIndex != nil || picking.selectionPart != nil
+                return FeatureOp.modifyOps.map { op in
+                    Tool(id: "op.\(op.rawValue)", label: op.label, symbol: op.symbol,
+                         isActive: activeFeatureOp == op, enabled: ok,
+                         hint: ok ? "" : "Select a part first") { [weak self] in self?.activeFeatureOp = op }
+                }
+            }
             return Modifier.allCases.compactMap { mod in
                 if docMode {
                     guard mod != .none else { return nil }     // no "None" tool when authoring
@@ -3140,7 +3344,10 @@ final class EditorModel {
                     }
                     landed += 1
                 }
+                if newParts { LaunchPerf.once("first part landed") }
                 if finished {
+                    LaunchPerf.once("solved", String(format: " (solve %.0f ms, %d parts)",
+                                                     Date().timeIntervalSince(started) * 1000, total))
                     self.evalJob = nil
                     let handle = vcad_eval_finish(job)
                     self.evaluating = nil

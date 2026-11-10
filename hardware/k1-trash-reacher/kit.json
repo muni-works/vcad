@@ -1,0 +1,12 @@
+{
+  "name": "K1 trash reacher kit (PETG)",
+  "plates": [{ "index": 1, "name": "reacher kit" }],
+  "parts": [
+    { "mesh": "stl/pod-lid.stl",      "x": 98,  "y": 128 },
+    { "mesh": "stl/pod.stl",          "x": 210, "y": 60 },
+    { "mesh": "stl/servo-mount.stl",  "x": 212, "y": 190 },
+    { "mesh": "stl/cuff-sleeve.stl",  "x": 32,  "y": 224 },
+    { "mesh": "stl/cuff-collar.stl",  "x": 32,  "y": 32 },
+    { "mesh": "stl/trigger-shoe.stl", "x": 150, "y": 232 }
+  ]
+}

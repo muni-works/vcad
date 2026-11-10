@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-07-native-fabrication",
+  "version": "0.11.0",
+  "date": "2026-11-07",
+  "category": "feat",
+  "title": "Sheet metal, 3D print and multi-tool CAM in the Mac app",
+  "summary": "Fabricate panel: flat pattern from any sheet solid (volume-checked DXF), bend table, cost, nesting; slicing with print prediction and 3MF/G-code; stock-sim verified multi-tool CAM.",
+  "features": ["native-app", "sheet-metal", "3d-print", "cam"]
+}

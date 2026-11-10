@@ -27,6 +27,10 @@ struct VcadApp: App {
             dumpFeatureTree(path: path)
             exit(0)
         }
+        if ProcessInfo.processInfo.environment["VCAD_ANALYSIS_SMOKE"] != nil {
+            // Runs once the main run loop starts; exits the process itself.
+            Task { @MainActor in await analysisSmoke() }
+        }
         if let path = ProcessInfo.processInfo.environment["VCAD_EDIT_SMOKE"] {
             MainActor.assumeIsolated { editSmoke(path: path) }
             exit(0)
@@ -80,6 +84,9 @@ struct VcadApp: App {
         .commands {
             DocumentCommands(model: model, intent: intent)
             FieldCommands()
+            AnalysisCommands()
+            AssemblyCommands(model: model)
+            FabricateCommands()
             UpdateCommands()
         }
 
@@ -267,7 +274,7 @@ private func rgb(_ c: NSColor) -> String {
     m.sketchTap(SIMD2(0, 0))         // corner
     m.sketchTap(SIMD2(40, 40))       // opposite corner
     m.sketchExtrudeDepth = 12
-    emit("[VCAD_SKETCH] profile verts \(m.sketchVerts.count) closed \(m.sketchClosed) canFinish \(m.canFinishSketch)")
+    emit("[VCAD_SKETCH] entities \(m.sketch?.entities.count ?? 0) · \(m.sketch?.stateLabel ?? "-") · canFinish \(m.canFinishSketch)")
     m.finishSketch()
     _ = m.reevalDocumentMeshes()
     emit("[VCAD_SKETCH] extruded → \(m.featureNodes.count) parts (was \(parts0)) · last op '\(m.featureNodes.last?.opType ?? "?")' · bbox \(fmt3(m.sizeMM)) · tris \(m.triangleCount) · sketching \(m.sketching)")
@@ -394,6 +401,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// path that would otherwise replace the document you are looking at.
     func application(_ application: NSApplication, open urls: [URL]) {
         MainActor.assumeIsolated {
+            // `vcad://` deep links (MCP `open_in_app`, retired vcad.io links)
+            // resolve to a file first, then open like any other document.
+            let urls = urls.compactMap { $0.scheme?.lowercased() == "vcad" ? AppInstance.resolveDeepLink($0) : $0 }
+            guard !urls.isEmpty else { return }
             guard let model = AppInstance.currentModel else {
                 // The view has not come up yet (we were launched for these
                 // files): it opens them the moment it attaches.

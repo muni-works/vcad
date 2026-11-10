@@ -49,7 +49,7 @@ pub(crate) fn load_document(json: &str, base_dir: Option<&str>) -> Result<Docume
 }
 
 /// Every root and every posed instance as `(name, mesh)`, in document order.
-fn named_meshes(doc: &Document) -> Result<Vec<(String, EvaluatedMesh)>, String> {
+pub(crate) fn named_meshes(doc: &Document) -> Result<Vec<(String, EvaluatedMesh)>, String> {
     let opts = EvalOptions {
         skip_clash_detection: true,
         mesh_segments: 0,
@@ -229,7 +229,7 @@ pub extern "C" fn vcad_export_document(
     }
 }
 
-fn write_atomic(out: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn write_atomic(out: &Path, bytes: &[u8]) -> Result<(), String> {
     let tmp = out.with_extension(format!(
         "{}.partial",
         out.extension().and_then(|e| e.to_str()).unwrap_or("")

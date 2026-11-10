@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-07-native-agent-fuzz-fixes",
+  "version": "0.11.0",
+  "date": "2026-11-07",
+  "category": "fix",
+  "title": "Mac app: list_parts works, cleaner feature tree",
+  "summary": "Agent list_parts returns part ids in part documents, the feature tree shows features instead of identity transforms, and the retired cloud intent bar is hidden.",
+  "features": ["native", "mcp", "feature-tree"],
+  "mcpTools": ["list_parts"]
+}
