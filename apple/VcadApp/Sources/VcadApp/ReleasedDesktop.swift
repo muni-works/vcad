@@ -1348,15 +1348,40 @@ struct ReleasedOverlayView: View {
     /// there is one, else on the ground plane (kernel z = 0). Falls back to the
     /// origin when the ray misses everything (a camera looking at the horizon).
     private func placementPoint(at p: CGPoint) -> SIMD3<Float>? {
-        if let centering = ReleaseWindowController.shared.centeringEntity,
-           let hit = ReleaseWindowController.shared.hits(atViewPoint: p)
-               .first(where: { $0.entity.name.hasPrefix("part") }) {
+        let ctl = ReleaseWindowController.shared
+        guard let centering = ctl.centeringEntity else { return nil }
+        if let hit = ctl.hits(atViewPoint: p).first(where: { $0.entity.name.hasPrefix("part") }) {
             return centering.convert(position: hit.position, from: nil)
         }
-        guard let ray = kernelRay(at: p), abs(ray.d.z) > 1e-5 else { return nil }
-        let t = -ray.o.z / ray.d.z
-        guard t > 0 else { return nil }
-        return ray.o + ray.d * t
+        // Ground plane: the renderer's own camera, carried into kernel mm
+        // through the centering entity (which undoes the scene scale).
+        var ground: SIMD3<Float>?
+        if let w = PlacementMath.worldRay(viewPoint: p, viewSize: ctl.overlaySize,
+                                          camera: model.cameraPosition, lookAt: model.panOffset) {
+            let o = centering.convert(position: w.o, from: nil)
+            let d = centering.convert(position: w.o + w.d, from: nil) - o
+            ground = PlacementMath.groundHit(origin: o, direction: normalize(d))
+        }
+        // Existing geometry in kernel mm (parts/instances only — not the
+        // gizmo or sketch ink that also live under the centering entity).
+        let bodies = centering.children.filter {
+            $0.name.hasPrefix("part") || $0.name.hasPrefix("inst") || $0.name.hasPrefix("free")
+        }
+        var lo = SIMD3<Float>(repeating: .infinity), hi = -lo
+        for e in bodies {
+            let b = e.visualBounds(relativeTo: centering)
+            lo = simd_min(lo, b.min); hi = simd_max(hi, b.max)
+        }
+        let has = !bodies.isEmpty && lo.x <= hi.x
+        var fallback = SIMD3<Float>(0, 0, 0)
+        if let pi = model.selectedPartIndex, let e = centering.findEntity(named: "part\(pi)") {
+            let b = e.visualBounds(relativeTo: centering)
+            fallback = SIMD3(b.max.x + 10 + 15, b.center.y, 0)   // beside it, not inside it
+        }
+        return PlacementMath.resolve(hit: ground,
+                                     sceneCenter: has ? (lo + hi) / 2 : .zero,
+                                     sceneExtent: has ? simd_reduce_max(hi - lo) : 0,
+                                     fallback: fallback)
     }
 
     private var marqueeOrOrbitGesture: some Gesture {
