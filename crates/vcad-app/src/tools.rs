@@ -342,19 +342,35 @@ fn lower_update(args: &Value, doc: &DocumentApi) -> Result<DocCommand, CommandEr
         .ok_or_else(|| invalid("update requires non-empty `params`".into()))?;
     let node_num = node.parse::<u64>().ok();
     let is_node = |v: &Value| node_num.is_some() && v.as_u64() == node_num;
-    let owner = parts_json(doc)
-        .into_iter()
-        .find(|p| {
-            p.get("id").and_then(Value::as_str) == Some(node.as_str())
-                || p.as_object().is_some_and(|m| {
-                    m.iter().any(|(k, v)| {
-                        k.ends_with("NodeId")
-                            && (is_node(v) || v.as_array().is_some_and(|a| a.iter().any(is_node)))
-                    })
-                })
+    // A host that just imported its IR still speaks that document's node
+    // ids: resolve through the import map to the feature the node became
+    // (an inner cutter's Translate is its OWN feature, not the part that
+    // consumes it). Otherwise node ids are the materialized ones.
+    let imported = node_num
+        .filter(|_| doc.has_import_view())
+        .map(|n| {
+            doc.imported_node_feature(n)
+                .map(str::to_string)
+                .ok_or_else(|| CommandError::UnknownId { id: node.clone() })
         })
-        .and_then(|p| p.get("id").and_then(Value::as_str).map(str::to_string))
-        .ok_or_else(|| CommandError::UnknownId { id: node.clone() })?;
+        .transpose()?;
+    let owner = match imported {
+        Some(owner) => owner,
+        None => parts_json(doc)
+            .into_iter()
+            .find(|p| {
+                p.get("id").and_then(Value::as_str) == Some(node.as_str())
+                    || p.as_object().is_some_and(|m| {
+                        m.iter().any(|(k, v)| {
+                            k.ends_with("NodeId")
+                                && (is_node(v)
+                                    || v.as_array().is_some_and(|a| a.iter().any(is_node)))
+                        })
+                    })
+            })
+            .and_then(|p| p.get("id").and_then(Value::as_str).map(str::to_string))
+            .ok_or_else(|| CommandError::UnknownId { id: node.clone() })?,
+    };
     // The tool speaks in the create shape (`size: {x,y,z}`); features store
     // flat keys (`size_x`, …). Map onto the keys the feature actually has and
     // refuse anything else — writing an unknown key "succeeds" and changes
@@ -1659,6 +1675,92 @@ mod tests {
             feature.params.get("offset"),
             Some((vcad_crdt::Value::Vec3([x, y, z]), _)) if *x == 25.0 && *y == 0.0 && *z == 0.0
         ));
+    }
+
+    /// A case built as `difference(body, translate(cube))`, imported the way
+    /// the MCP server hands its session IR to the engine: node ids are the
+    /// IMPORTED document's. 1 body cube, 2 usb cube, 3 usb translate, 4 case.
+    fn imported_case() -> DocumentApi {
+        let ir = json!({
+            "version": "0.1",
+            "nodes": {
+                "1": {"id": 1, "name": "body", "op": {"type": "Cube", "size": {"x": 80, "y": 50, "z": 20}}},
+                "2": {"id": 2, "name": null, "op": {"type": "Cube", "size": {"x": 10, "y": 6, "z": 4}}},
+                "3": {"id": 3, "name": "usb", "op": {"type": "Translate", "child": 2, "offset": {"x": 30, "y": -1, "z": 6}}},
+                "4": {"id": 4, "name": "case", "op": {"type": "Difference", "left": 1, "right": 3}}
+            },
+            "materials": {},
+            "part_materials": {},
+            "roots": [{"root": 4, "material": "default"}]
+        });
+        let mut api = DocumentApi::new(ReplicaId(0));
+        api.import_ir(&ir.to_string());
+        assert_eq!(api.get_state().document.roots.len(), 1);
+        api
+    }
+
+    fn feature_param(api: &DocumentApi, name: &str, key: &str) -> Option<vcad_crdt::Value> {
+        let ordered = api.crdt().ordered_features();
+        let (_, f) = ordered
+            .iter()
+            .find(|(_, f)| {
+                matches!(f.params.get("name"), Some((vcad_crdt::Value::String(n), _)) if n == name)
+            })
+            .unwrap_or_else(|| panic!("no feature named {name}"));
+        f.params.get(key).map(|(v, _)| v.clone())
+    }
+
+    #[test]
+    fn update_on_an_inner_translate_moves_only_that_cutter() {
+        let mut api = imported_case();
+        let v: Value = serde_json::from_str(&api.apply_tool_envelope(
+            "update",
+            &json!({"node_id": 3, "params": {"offset": {"x": 58, "y": -1, "z": 6}}}).to_string(),
+        ))
+        .unwrap();
+        assert_eq!(v["ok"], true, "{v}");
+        assert!(matches!(
+            feature_param(&api, "usb", "offset"),
+            Some(vcad_crdt::Value::Vec3(o)) if o == [58.0, -1.0, 6.0]
+        ));
+        // The case itself stays where it was.
+        assert!(matches!(
+            feature_param(&api, "case", "offset"),
+            None | Some(vcad_crdt::Value::Vec3([0.0, 0.0, 0.0]))
+        ));
+        let case_id = api
+            .get_state()
+            .parts
+            .iter()
+            .map(|p| serde_json::to_value(p).unwrap())
+            .find(|p| p["name"] == "case")
+            .unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let (lo, _) = api.part_world_bbox(&case_id).unwrap();
+        assert!(lo.iter().all(|c| c.abs() < 1e-6), "case moved: {lo:?}");
+    }
+
+    #[test]
+    fn update_on_an_inner_cube_accepts_the_create_size_shape() {
+        let mut api = imported_case();
+        let v: Value = serde_json::from_str(&api.apply_tool_envelope(
+            "update",
+            &json!({"node_id": 2, "params": {"size": {"x": 12, "y": 7, "z": 5}}}).to_string(),
+        ))
+        .unwrap();
+        assert_eq!(v["ok"], true, "{v}");
+        let get = |k: &str| match feature_param(&api, "usb", k) {
+            Some(vcad_crdt::Value::F64(x)) => x,
+            other => panic!("{k}: {other:?}"),
+        };
+        assert_eq!(
+            (get("size_x"), get("size_y"), get("size_z")),
+            (12.0, 7.0, 5.0)
+        );
+        // After the applied command the host speaks materialized ids again.
+        assert!(!api.has_import_view());
     }
 
     #[test]

@@ -41,6 +41,21 @@ const fail = (why: string): never => {
   throw new Error(`assemble: ${why} Nothing was changed.`);
 };
 
+/** A part's display name: the root's name, else the first name down its
+ *  transform chain (the materializer names the primitive, not the wrapper),
+ *  else the caller's reference unless that is a bare stable id ("0:29"). */
+function readableName(doc: Document, root: number, ref: string, index: number): string {
+  let id: number | undefined = root;
+  for (let depth = 0; id !== undefined && depth < 8; depth++) {
+    const node = doc.nodes[String(id)] as { name?: string | null; op: { type: string; child?: number } } | undefined;
+    if (!node) break;
+    if (node.name) return node.name;
+    if (!["Translate", "Rotate", "Scale"].includes(node.op.type)) break;
+    id = node.op.child;
+  }
+  return /^\d+(:\d+)?$/.test(ref) ? `Part ${index + 1}` : ref;
+}
+
 /**
  * Apply one `assemble` call. Everything is worked out on copies and installed
  * at the end, so a bad joint at the end of the list leaves the document alone.
@@ -70,7 +85,7 @@ export function assembleInto(doc: Document, args: { instances?: InstanceArg[]; j
       return fail(`no part or part definition "${part}".`);
     }
     if (doc.nodes[String(entry.root)]?.op.type === "PcbBoard") fail("a board can't be an assembly instance.");
-    const name = doc.nodes[String(entry.root)]?.name ?? part;
+    const name = readableName(doc, entry.root, part, doc.roots.indexOf(entry));
     let id = name.replace(/\W+/g, "_");
     for (let n = 2; partDefs[id]; n++) id = `${name.replace(/\W+/g, "_")}_${n}`;
     partDefs[id] = { id, name, root: entry.root, defaultMaterial: entry.material };
@@ -80,13 +95,22 @@ export function assembleInto(doc: Document, args: { instances?: InstanceArg[]; j
     return id;
   };
 
+  // Unnamed instances and joints read as their parts, not as ids: the
+  // engine renumbers ids on every rebuild, so an id-named joint showed up in
+  // the Pose panel as "0:29".
+  const uniqueName = (base: string, taken: Array<{ name?: string | null }>): string => {
+    let name = base;
+    for (let n = 2; taken.some((t) => t.name === name); n++) name = `${base} ${n}`;
+    return name;
+  };
   for (const a of instanceArgs) {
     if (!a.id) fail("every instance needs an `id`.");
     if (instances.some((i) => i.id === a.id)) fail(`instance "${a.id}" already exists.`);
+    const partDefId = defFor(a.part);
     instances.push({
       id: a.id,
-      partDefId: defFor(a.part),
-      name: a.name ?? a.id,
+      partDefId,
+      name: a.name ?? uniqueName(partDefs[partDefId]?.name ?? a.id, instances),
       ...(a.material ? { material: a.material } : {}),
       ...(a.transform
         ? { transform: a.transform }
@@ -113,9 +137,11 @@ export function assembleInto(doc: Document, args: { instances?: InstanceArg[]; j
     }
     const id = a.id ?? `joint${ordinal + n + 1}`;
     if (joints.some((j) => j.id === id)) fail(`joint "${id}" already exists.`);
+    const nameOf = (inst: string) => instances.find((i) => i.id === inst)?.name ?? inst;
+    const name = a.name ?? uniqueName(parent ? `${nameOf(parent)} → ${nameOf(child)}` : nameOf(child), joints);
     joints.push({
       id,
-      ...(a.name ? { name: a.name } : {}),
+      name,
       parentInstanceId: parent,
       childInstanceId: child,
       parentAnchor: a.parent_anchor ?? ZERO,
@@ -171,7 +197,7 @@ export const toolDefs: ToolDef[] = [
             properties: {
               id: { type: "string", description: "New instance id." },
               part: { type: "string", description: "Part id, part name, or part definition." },
-              name: { type: "string" },
+              name: { type: "string", description: "Display name. Defaults to the part's name." },
               at: { ...vec3Schema, description: "Translation in mm. Identity when omitted: the part stays where it is." },
               transform: { type: "object", description: "Full {translation, rotation, scale}; overrides `at`." },
               material: { type: "string" },
@@ -185,7 +211,7 @@ export const toolDefs: ToolDef[] = [
             type: "object",
             properties: {
               id: { type: "string" },
-              name: { type: "string" },
+              name: { type: "string", description: "Display name (e.g. \"knee\"). Defaults to \"<parent> → <child>\" from the instance names." },
               parent: { type: ["string", "null"], description: "Parent instance, by id or name; null grounds it to the world." },
               child: { type: "string", description: "Child instance, by id or name." },
               parent_anchor: vec3Schema,

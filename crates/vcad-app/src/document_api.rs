@@ -120,6 +120,11 @@ pub struct DocumentApi {
     stable_ids: StableIdMap,
     name: String,
     dirty: bool,
+    /// Node ids of the last imported IR document → the stable id of the
+    /// feature each became. Valid only until the next applied command:
+    /// a host that imported a session IR (e.g. the MCP server) addresses
+    /// nodes by *those* ids until it adopts the engine's renumbered output.
+    import_nodes: Option<HashMap<vcad_ir::NodeId, String>>,
 }
 
 impl DocumentApi {
@@ -130,6 +135,7 @@ impl DocumentApi {
             stable_ids: StableIdMap::new(),
             name: "Untitled".into(),
             dirty: false,
+            import_nodes: None,
         }
     }
 
@@ -514,6 +520,7 @@ impl DocumentApi {
             stable_ids: StableIdMap::new(),
             name: "Untitled".into(),
             dirty: false,
+            import_nodes: None,
         };
         let _ = replica_id;
         api.stable_ids.rebuild(&api.crdt);
@@ -538,6 +545,7 @@ impl DocumentApi {
         self.crdt = crdt;
         self.stable_ids.rebuild(&self.crdt);
         self.dirty = true;
+        self.import_nodes = None;
         Ok(())
     }
 
@@ -607,13 +615,36 @@ impl DocumentApi {
     /// Import IR JSON into the document.
     pub fn import_ir(&mut self, ir_json: &str) -> ApiResult {
         if let Ok(doc) = serde_json::from_str::<vcad_ir::Document>(ir_json) {
-            let migrated = crate::migrate::migrate_v1(&doc);
+            let (migrated, map) = crate::migrate::migrate_v1_mapped(&doc);
             let ops = migrated.ops_since(&std::collections::BTreeMap::new());
             self.crdt.merge(ops);
             self.stable_ids.rebuild(&self.crdt);
             self.dirty = true;
+            self.import_nodes = Some(
+                map.mappings
+                    .into_iter()
+                    .map(|m| (m.old_node_id, m.feature_id))
+                    .collect(),
+            );
         }
         self.build_result(None)
+    }
+
+    /// The feature an IR node of the last imported document became, while
+    /// that import is still the host's view (see `import_nodes`).
+    pub fn imported_node_feature(&self, node: vcad_ir::NodeId) -> Option<&str> {
+        self.import_nodes.as_ref()?.get(&node).map(String::as_str)
+    }
+
+    /// Whether node ids from the last import are still the host's view.
+    pub fn has_import_view(&self) -> bool {
+        self.import_nodes.is_some()
+    }
+
+    /// Forget the import's node ids: after an applied command the host
+    /// adopts the engine's materialized document and its node ids.
+    pub(crate) fn clear_import_view(&mut self) {
+        self.import_nodes = None;
     }
 
     /// Get the current document state.

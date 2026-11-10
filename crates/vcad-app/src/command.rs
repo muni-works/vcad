@@ -244,6 +244,9 @@ impl DocumentApi {
         if result.is_ok() && !history {
             self.crdt_mut().coalesce_undo_since(depth);
         }
+        if result.is_ok() {
+            self.clear_import_view();
+        }
         result
     }
 

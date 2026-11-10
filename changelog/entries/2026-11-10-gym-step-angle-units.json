@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-10-gym-step-angle-units",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "fix",
+  "title": "gym_step accepts radians and flags radian-looking targets",
+  "summary": "gym_step takes angle_units:'rad' for revolute position/velocity targets, and warns on the first step when degree targets look like radians.",
+  "features": ["mcp", "physics", "gym"],
+  "mcpTools": ["gym_step"]
+}
