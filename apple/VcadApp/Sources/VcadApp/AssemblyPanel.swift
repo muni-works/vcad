@@ -75,7 +75,7 @@ struct AssemblyPanel: View {
                     if !loose.isEmpty {
                         Section("Parts") {
                             ForEach(loose, id: \.offset) { i, r in
-                                Button(g.nodes[r.nodeId]?.name ?? "Part \(i + 1)") { model.insertInstance(ofPart: i) }
+                                Button(model.partDisplayName(i)) { model.insertInstance(ofPart: i) }
                             }
                         }
                     }
