@@ -2205,3 +2205,73 @@ fn sphere_result_implausible(
     };
     v < -slack || v > hi + slack
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f64::consts::TAU;
+    use vcad_kernel_geom::Line3d;
+    use vcad_kernel_primitives::make_cylinder;
+
+    /// The stator board against the back iron in `motor-assembly-v3`: its
+    /// faceted outline is inscribed in the iron's rim, so its walls cut a
+    /// chord off the cap per side. Each chord adds one piece. A sliver whose
+    /// corners landed on the true circle once read as a whole disk, and every
+    /// later chord then doubled the pieces. Few enough chords that a
+    /// regression fails here rather than exhausting memory.
+    #[test]
+    fn rim_chords_add_one_piece_each() {
+        const RADIUS: f64 = 35.0;
+        const SIDES: usize = 64;
+        const CHORDS: usize = 12;
+
+        let mut solid = make_cylinder(RADIUS, 10.0, 64);
+        crate::freeze::freeze_circle_loops(&mut solid, 64);
+        let (cap, _) = solid
+            .topology
+            .faces
+            .iter()
+            .find(|(fid, face)| {
+                split::is_circular_disk_face(&solid, *fid)
+                    && solid.topology.loop_half_edges(face.outer_loop).all(|he| {
+                        let v = solid.topology.half_edges[he].origin;
+                        solid.topology.vertices[v].point.z.abs() < 1e-9
+                    })
+            })
+            .expect("frozen bottom cap");
+
+        // Rounded as the board outline is, so corners sit just off the circle.
+        let corner = |i: usize| {
+            let a = i as f64 * TAU / SIDES as f64;
+            let round = |c: f64| (c * 1e4).round() / 1e4;
+            Point3::new(round(RADIUS * a.cos()), round(RADIUS * a.sin()), 0.0)
+        };
+        let cuts: FaceSplits = (0..CHORDS)
+            .map(|i| {
+                let (p, q) = (corner(i), corner(i + 1));
+                (
+                    ssi::IntersectionCurve::Line(Line3d::from_points(p, q)),
+                    p,
+                    q,
+                )
+            })
+            .collect();
+
+        let before = solid.topology.faces.len();
+        let other = make_cylinder(1.0, 1.0, 64);
+        let mut unsound = false;
+        apply_splits_to_solid(
+            &mut solid,
+            HashMap::from([(cap, cuts)]),
+            64,
+            "A",
+            &other,
+            &mut unsound,
+        );
+        let added = solid.topology.faces.len() - before;
+        assert!(
+            added <= CHORDS,
+            "{CHORDS} chords added {added} faces to the cap"
+        );
+    }
+}

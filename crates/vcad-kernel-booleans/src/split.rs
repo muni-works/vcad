@@ -6123,18 +6123,26 @@ fn is_frozen_ring(brep: &BRepSolid, face_id: FaceId) -> bool {
         let d = *p - center;
         d.dot(y_axis).atan2(d.dot(x_axis))
     };
+    use std::f64::consts::{PI, TAU};
+    let mut swept = 0.0;
     for w in 0..pts.len() {
         let a = ang(&pts[w]);
         let b = ang(&pts[(w + 1) % pts.len()]);
-        let mut d = (b - a).rem_euclid(2.0 * std::f64::consts::PI);
-        if d > std::f64::consts::PI {
-            d = 2.0 * std::f64::consts::PI - d;
+        // Signed step, wrapped into (-π, π].
+        let mut d = (b - a).rem_euclid(TAU);
+        if d > PI {
+            d -= TAU;
         }
-        if d > 0.2 {
+        if d.abs() > 0.2 {
             return false;
         }
+        swept += d;
     }
-    true
+    // Small steps aren't sufficient either: a thin segment cut off the rim
+    // by a short chord has every vertex on the circle and no step above the
+    // limit, but its arc and chord cancel. Read as a disk, each later line
+    // would rebuild it from the whole circle, doubling the pieces per cut.
+    (swept.abs() - TAU).abs() < 1e-6
 }
 
 /// Get the circle parameters of a circular disk face.
