@@ -4861,6 +4861,10 @@ fn evaluate_node(doc: &vcad_ir::Document, node_id: vcad_ir::NodeId) -> Result<So
             height,
         } => Ok(scope_names(node_id, Solid::prism(*sides, *radius, *height))),
 
+        vcad_ir::CsgOp::SpurGear { .. } => vcad_eval::evaluate::spur_gear_solid(&node.op)
+            .map(|inner| Solid { inner })
+            .map_err(|e| JsError::new(&format!("node {node_id}: {e}"))),
+
         vcad_ir::CsgOp::Empty => Ok(Solid::empty()),
 
         vcad_ir::CsgOp::Union { left, right } => {

@@ -272,6 +272,23 @@ fn op_to_loon(op: &CsgOp, doc: &Document) -> OpResult {
             fmt_f64(*height)
         )),
 
+        CsgOp::SpurGear {
+            module,
+            teeth,
+            pressure_angle_deg,
+            face_width,
+            bore_diameter,
+            backlash,
+        } => OpResult::Ok(format!(
+            "[SpurGear {} {}.0 {} {} {} {}]",
+            fmt_f64(*module),
+            teeth,
+            fmt_f64(*pressure_angle_deg),
+            fmt_f64(*face_width),
+            fmt_f64(*bore_diameter),
+            fmt_f64(*backlash)
+        )),
+
         CsgOp::Empty => OpResult::Ok("Empty".to_string()),
 
         CsgOp::Union { left, right } => OpResult::Ok(format!(
