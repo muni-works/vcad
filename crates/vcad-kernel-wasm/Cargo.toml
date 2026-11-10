@@ -23,7 +23,7 @@ vcad-ir = { workspace = true }
 vcad-crdt = { workspace = true }
 vcad-diff = { path = "../vcad-diff" }
 vcad-app = { workspace = true }
-vcad-chat = { path = "../vcad-chat", default-features = false }
+vcad-chat = { path = "../vcad-chat" }
 vcad-eval = { workspace = true }
 vcad-loon = { workspace = true }
 vcad-render = { path = "../vcad-render", default-features = false }
