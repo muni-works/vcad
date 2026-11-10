@@ -1754,6 +1754,36 @@ final class EditorModel {
     }
     var canFinishSketch: Bool { sketch != nil && sketchFinishBlocker == nil }
 
+    /// Done is hovered: the status field says why it can't finish.
+    var sketchDoneHovered = false
+    /// Done was clicked while blocked: the reason stays up until then.
+    var sketchBlockerShownUntil: Date?
+
+    /// The sketch bar's Done. Never silently dead: when the sketch can't
+    /// finish it puts the reason in the status field and authors nothing.
+    @discardableResult
+    func attemptFinishSketch(now: Date = .now) -> Bool {
+        guard sketch != nil else { return false }
+        if sketchFinishBlocker != nil {
+            sketchBlockerShownUntil = now.addingTimeInterval(4)
+            return false
+        }
+        sketchBlockerShownUntil = nil
+        return finishSketch()
+    }
+
+    /// The status field's second line while sketching: the active tool's
+    /// prompt and the degrees of freedom — or, while Done is hovered or just
+    /// clicked, why the sketch can't finish.
+    func sketchStatusLine(at now: Date = .now) -> String? {
+        guard sketching, let s = sketch else { return nil }
+        if let why = sketchFinishBlocker,
+           sketchDoneHovered || (sketchBlockerShownUntil.map { now < $0 } ?? false) {
+            return "Can't finish — \(why)"
+        }
+        return "\(s.tool.hint) · \(s.stateLabel)"
+    }
+
     /// Why Finish is disabled, in words — the button's tooltip and the sketch
     /// status line. Nil when Finish can run.
     var sketchFinishBlocker: String? {

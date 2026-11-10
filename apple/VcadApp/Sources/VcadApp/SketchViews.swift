@@ -1,71 +1,72 @@
 import SwiftUI
 import RealityKit
 
-// Sketch-mode chrome: the toolbar (plane · tools · finish op · Finish/Cancel),
-// the constraint panel (DOF status, constraint glyph list, editable driving
-// dimensions), the hint pill, and the 3D ink.
+// Sketch-mode chrome: the sketch bar (the dock while sketching: plane · tools
+// · feature · Done/Cancel), the constraint panel (DOF status, constraint glyph
+// list, editable driving dimensions), and the 3D ink.
 
-/// The sketch toolbar. Replaces the Create/Modify/Combine palette while sketching.
-struct SketchPaletteView: View {
+/// The sketch bar. While sketching it takes the dock's place — same glass
+/// capsule, same spot: plane | tools | dimension, constrain | feature | Done ✕.
+/// The active tool's prompt and the degrees of freedom live in the status
+/// field's second line (`EditorModel.sketchStatusLine`).
+struct SketchBar: View {
     @Bindable var model: EditorModel
-    var body: some View {
-        HStack(spacing: Theme.Space.m) {
-            if model.sketchFace == nil {
-                Picker("Sketch plane", selection: Binding(get: { model.sketchPlane }, set: { model.setSketchPlane($0) })) {
-                    ForEach(SketchPlane.allCases) { Text($0.label).tag($0) }
-                }
-                .pickerStyle(.segmented).labelsHidden().controlSize(.small).fixedSize()
-            } else {
-                Label("On face", systemImage: "square.on.square").font(.caption).foregroundStyle(.secondary)
-            }
-            Divider().frame(height: 18)
-            if let sketch = model.sketch {
-                Picker("Sketch tool", selection: Binding(get: { sketch.tool }, set: { model.setSketchTool($0) })) {
-                    ForEach(SketchToolKind.allCases) { Label($0.label, systemImage: $0.symbol).tag($0) }
-                }
-                .pickerStyle(.segmented).labelsHidden().controlSize(.small).fixedSize()
-                Toggle("1 mm", isOn: Binding(get: { sketch.gridStep > 0 }, set: { sketch.gridStep = $0 ? 1 : 0 }))
-                    .toggleStyle(.button).controlSize(.small).help("Snap clicks to a 1 mm grid")
-                if sketch.tool == .polygon {
-                    Stepper("\(sketch.polygonSides) sides", value: Binding(get: { sketch.polygonSides }, set: { sketch.polygonSides = $0 }), in: 3...64)
-                        .controlSize(.small).fixedSize()
-                }
-                Menu {
-                    ForEach(SketchConstraintKind.allCases.filter { !$0.isDimension || $0 == .distance || $0 == .angle }) { k in
-                        Button("\(k.glyph)  \(k.label)") { _ = sketch.constrainSelection(k); model.sketchDirty = true }
-                    }
-                    Divider()
-                    Button("Delete Selected") { sketch.deleteSelection(); model.sketchDirty = true }
-                        .disabled(sketch.selection.isEmpty)
-                    Button("Offset Profile…") { model.sketchOffsetPrompt = true }
-                    Button("Remove Last Constraint") { sketch.popConstraint(); model.sketchDirty = true }
-                        .disabled(sketch.constraints.isEmpty)
-                } label: { Label("Constrain", systemImage: "link") }
-                    .menuStyle(.borderlessButton).fixedSize()
-                    .help("Constrain the selected entities")
-            }
-            Divider().frame(height: 18)
-            Picker("Finish", selection: $model.sketchFinish) {
-                ForEach(SketchFinish.allCases) { Label($0.label, systemImage: $0.symbol).tag($0) }
-            }.labelsHidden().controlSize(.small).fixedSize()
-            finishParams
-            Button { model.finishSketch() } label: {
-                Label(model.sketchFinish == .loft && model.loftProfiles.count < 1 ? "Add Section" : "Finish",
-                      systemImage: "checkmark")
-            }
-            .buttonStyle(.borderedProminent).controlSize(.small)
-            .disabled(!model.canFinishSketch)
-            // A disabled button shows no tooltip of its own on macOS: the
-            // reason goes on a wrapper that still receives hover.
-            .padding(2).contentShape(Rectangle())
-            .help(model.sketchFinishBlocker ?? "Finish the sketch as \(model.sketchFinish.label)")
-            Button { model.exitSketch() } label: { Image(systemName: "xmark") }
-                .buttonStyle(.bordered).controlSize(.small)
-                .help("Cancel sketch (Esc)")
-                .accessibilityLabel("Cancel sketch")
+    @State private var planeOpen = false
+    @State private var featureOpen = false
+    @Namespace private var morph
+
+    /// Always on the bar, in order.
+    static let primaryTools: [SketchToolKind] = [.select, .line, .rectangle, .circle, .spline]
+    /// Behind the chevron.
+    static let overflowTools: [SketchToolKind] = [.polygon, .slot, .arc]
+
+    /// "Extrude 10 mm", "Revolve 360°", "Sweep"…
+    static func featureTitle(_ m: EditorModel) -> String {
+        func num(_ v: Double) -> String { v.formatted(.number.precision(.fractionLength(0...2))) }
+        switch m.sketchFinish {
+        case .extrude, .cut: return "\(m.sketchFinish.label) \(num(m.sketchExtrudeDepth)) mm"
+        case .loft: return m.loftProfiles.isEmpty ? "Loft" : "Loft · \(m.loftProfiles.count)"
+        case .revolve: return "Revolve \(num(m.sketchRevolveAngle))°"
+        case .sweep, .extrudeToFace: return m.sketchFinish.label
         }
-        .padding(Theme.Space.s)
-        .panelSurface()
+    }
+
+    /// The primary button: a loft collects its first section before it can finish.
+    static func doneTitle(_ m: EditorModel) -> String {
+        m.sketchFinish == .loft && m.loftProfiles.count < 1 ? "Add Section" : "Done"
+    }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            planeChip
+            divider
+            if let sketch = model.sketch {
+                HStack(spacing: 2) {
+                    ForEach(Self.primaryTools) { toolButton($0, sketch) }
+                    overflowMenu(sketch)
+                    if sketch.tool == .polygon {
+                        Stepper("\(sketch.polygonSides) sides", value: Binding(get: { sketch.polygonSides }, set: { sketch.polygonSides = $0 }), in: 3...64)
+                            .font(.callout).controlSize(.small).fixedSize().padding(.horizontal, 4)
+                    }
+                }
+                divider
+                toolButton(.dimension, sketch)
+                constrainMenu(sketch)
+            }
+            divider
+            featureButton
+            doneButton
+            Button { model.exitSketch() } label: {
+                Image(systemName: "xmark").font(.system(size: 13, weight: .semibold))
+                    .frame(width: 30, height: 32).contentShape(Capsule())
+            }
+            .help("Cancel sketch (Esc)")
+            .accessibilityLabel("Cancel sketch")
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 6).padding(.vertical, 3)
+        .glassCapsule()
+        .fixedSize()
         .alert("Offset profile", isPresented: $model.sketchOffsetPrompt) {
             TextField("Distance (mm, negative = inward)", value: $model.sketchOffsetDistance, format: .number)
             Button("Offset") { model.sketch?.offsetProfile(by: model.sketchOffsetDistance); model.sketchDirty = true }
@@ -73,33 +74,202 @@ struct SketchPaletteView: View {
         }
     }
 
-    @ViewBuilder private var finishParams: some View {
+    private var divider: some View { Divider().frame(height: 22).padding(.horizontal, 4) }
+
+    // MARK: plane
+
+    /// "XY ▾" — or "On face" for a sketch on a picked face. Opens upward:
+    /// the bar sits at the window's bottom edge.
+    @ViewBuilder private var planeChip: some View {
+        if model.sketchFace != nil {
+            Label("On face", systemImage: "square.on.square")
+                .font(.callout.weight(.semibold)).foregroundStyle(.secondary)
+                .padding(.horizontal, 10).frame(height: 32)
+                .help("Sketching on the picked face")
+        } else {
+            Button { planeOpen.toggle() } label: {
+                HStack(spacing: 4) {
+                    Text(model.sketchPlane.label).font(.callout.weight(.semibold))
+                    Image(systemName: "chevron.up").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 10).frame(height: 32).contentShape(Capsule())
+            }
+            .help("Sketch plane")
+            .accessibilityLabel("Sketch plane, \(model.sketchPlane.label)")
+            .popover(isPresented: $planeOpen, arrowEdge: .top) {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach(SketchPlane.allCases) { p in
+                        Button { planeOpen = false; model.setSketchPlane(p) } label: {
+                            HStack {
+                                Image(systemName: "checkmark").opacity(p == model.sketchPlane ? 1 : 0)
+                                Text(p.label)
+                                Spacer()
+                            }
+                            .frame(width: 90).padding(.vertical, 4).contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                    }
+                }.padding(Theme.Space.s)
+            }
+        }
+    }
+
+    // MARK: tools
+
+    private func toolButton(_ t: SketchToolKind, _ sketch: SketchSession) -> some View {
+        let active = sketch.tool == t
+        return Button { model.setSketchTool(t) } label: {
+            Image(systemName: t.symbol).font(.system(size: 16, weight: .medium))
+                .frame(width: 38, height: 32)
+                .background {
+                    if active {
+                        Capsule(style: .continuous).fill(Color.primary.opacity(0.14))
+                            .matchedGeometryEffect(id: "active", in: morph)
+                    }
+                }
+                .contentShape(Capsule())
+        }
+        .help(t.tooltip)
+        .accessibilityLabel(t.label)
+        .accessibilityAddTraits(active ? .isSelected : [])
+    }
+
+    private func overflowMenu(_ sketch: SketchSession) -> some View {
+        let picked = Self.overflowTools.first { $0 == sketch.tool }
+        return Menu {
+            ForEach(Self.overflowTools) { t in
+                Button { model.setSketchTool(t) } label: { Label(t.tooltip, systemImage: t.symbol) }
+            }
+        } label: {
+            Image(systemName: picked?.symbol ?? "chevron.down")
+                .font(.system(size: picked == nil ? 10 : 16, weight: .semibold))
+                .frame(width: picked == nil ? 22 : 38, height: 32)
+                .background {
+                    if picked != nil { Capsule(style: .continuous).fill(Color.primary.opacity(0.14)) }
+                }
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .help("More tools: Polygon, Slot, Arc")
+        .accessibilityLabel("More sketch tools")
+    }
+
+    private func constrainMenu(_ sketch: SketchSession) -> some View {
+        Menu {
+            ForEach(SketchConstraintKind.allCases.filter { !$0.isDimension || $0 == .distance || $0 == .angle }) { k in
+                Button("\(k.glyph)  \(k.label)") { _ = sketch.constrainSelection(k); model.sketchDirty = true }
+            }
+            Divider()
+            Button("Delete Selected") { sketch.deleteSelection(); model.sketchDirty = true }
+                .disabled(sketch.selection.isEmpty)
+            Button("Offset Profile…") { model.sketchOffsetPrompt = true }
+            Button("Remove Last Constraint") { sketch.popConstraint(); model.sketchDirty = true }
+                .disabled(sketch.constraints.isEmpty)
+        } label: {
+            Image(systemName: "link").font(.system(size: 15, weight: .medium)).frame(width: 34, height: 32)
+        }
+        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .help("Constrain the selected entities")
+        .accessibilityLabel("Constrain")
+    }
+
+    // MARK: feature + finish
+
+    private var featureButton: some View {
+        Button { featureOpen.toggle() } label: {
+            HStack(spacing: 5) {
+                Image(systemName: model.sketchFinish.symbol).font(.system(size: 13, weight: .medium))
+                Text(Self.featureTitle(model)).font(.callout).monospacedDigit()
+                Image(systemName: "chevron.up").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10).frame(height: 32)
+            .background(featureOpen ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear), in: Capsule(style: .continuous))
+            .contentShape(Capsule())
+        }
+        .help("Feature to create when the sketch is done")
+        .accessibilityLabel("Finish as \(Self.featureTitle(model))")
+        .popover(isPresented: $featureOpen, arrowEdge: .top) { SketchFeaturePopover(model: model) }
+    }
+
+    private var doneButton: some View {
+        let why = model.sketchFinishBlocker
+        let purpose = "Finish the sketch as \(model.sketchFinish.label)"
+        return Button { model.attemptFinishSketch() } label: {
+            Text(Self.doneTitle(model)).font(.callout.weight(.semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 14).frame(height: 28)
+                .background(Color.accentColor, in: Capsule(style: .continuous))
+                .contentShape(Capsule())
+        }
+        // Never disabled: hovering or clicking a blocked Done says why, in
+        // the status field, and authors nothing.
+        .onHover { model.sketchDoneHovered = $0 }
+        .help(why ?? purpose)
+        .accessibilityLabel(Self.doneTitle(model))
+        .accessibilityHint(why.map { "Can't finish: \($0)" } ?? purpose)
+        .padding(.leading, 4)
+    }
+}
+
+/// The feature button's popover: operation, its parameters, snap.
+struct SketchFeaturePopover: View {
+    @Bindable var model: EditorModel
+
+    /// Grid steps offered under Snap (0 = off).
+    static let snapSteps: [Double] = [0, 0.1, 0.5, 1, 5, 10]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.m) {
+            Picker("Operation", selection: $model.sketchFinish) {
+                ForEach(SketchFinish.allCases) { Label($0.label, systemImage: $0.symbol).tag($0) }
+            }
+            .accessibilityLabel("Finish")
+            params
+            if let sketch = model.sketch {
+                Picker("Snap", selection: Binding(get: { sketch.gridStep }, set: { sketch.gridStep = $0 })) {
+                    ForEach(Self.snapSteps, id: \.self) { s in
+                        Text(s == 0 ? "Off" : "\(s.formatted()) mm").tag(s)
+                    }
+                }
+                .help("Snap clicks to a grid")
+            }
+            if !model.loftProfiles.isEmpty {
+                Text("\(model.loftProfiles.count) loft section\(model.loftProfiles.count == 1 ? "" : "s")")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(Theme.Space.m)
+        .frame(width: 300)
+    }
+
+    @ViewBuilder private var params: some View {
         switch model.sketchFinish {
         case .extrude, .cut, .loft:
-            ScrubField(label: "", value: model.sketchExtrudeDepth, sensitivity: 0.1, minValue: 0.1) { v, _ in
+            ScrubField(label: model.sketchFinish == .loft ? "Spacing" : "Distance", value: model.sketchExtrudeDepth,
+                       sensitivity: 0.1, minValue: 0.1) { v, _ in
                 model.sketchExtrudeDepth = v
-            }.frame(width: 80).help(model.sketchFinish == .loft ? "Section spacing" : "Depth")
-        case .revolve:
-            ScrubField(label: "", value: model.sketchRevolveAngle, sensitivity: 1, minValue: 1) { v, _ in
-                model.sketchRevolveAngle = min(v, 360)
-            }.frame(width: 80).help("Angle (°) about the sketch Y axis")
-        case .sweep:
-            HStack(spacing: 8) {
-                ScrubField(label: "Turns", value: model.sweepTurns, unit: "", sensitivity: 0.05, minValue: 0) { v, _ in
-                    model.sweepTurns = v
-                }.help("Helix turns. 0 sweeps straight along the sketch normal.")
-                ScrubField(label: "Radius", value: model.sweepHelixRadius, sensitivity: 0.1, minValue: 0.1) { v, _ in
-                    model.sweepHelixRadius = v
-                }
-                .disabled(model.sweepTurns <= 0)
-                .help("Helix radius (mm), axis to path. The profile is centred on the path: its centroid starts at "
-                      + "(radius, 0, 0) and climbs world Z. It must stay inside the radius, or the coil self-intersects.")
-                ScrubField(label: "Length", value: model.sweepLength, sensitivity: 0.1, minValue: 0.1) { v, _ in
-                    model.sweepLength = v
-                }.help("Total sweep length (mm): the helix height, or the straight distance. Pitch = length ÷ turns.")
+            }.help(model.sketchFinish == .loft ? "Section spacing" : "Depth")
+            if model.sketchFinish == .loft {
+                Text("Add Section collects this sketch; two or more sections make the loft.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
+        case .revolve:
+            ScrubField(label: "Angle", value: model.sketchRevolveAngle, unit: "°", sensitivity: 1, minValue: 1) { v, _ in
+                model.sketchRevolveAngle = min(v, 360)
+            }.help("Angle (°) about the sketch Y axis")
+        case .sweep:
+            ScrubField(label: "Turns", value: model.sweepTurns, unit: "", sensitivity: 0.05, minValue: 0) { v, _ in
+                model.sweepTurns = v
+            }.help("Helix turns. 0 sweeps straight along the sketch normal.")
+            ScrubField(label: "Radius", value: model.sweepHelixRadius, sensitivity: 0.1, minValue: 0.1) { v, _ in
+                model.sweepHelixRadius = v
+            }
+            .disabled(model.sweepTurns <= 0)
+            .help("Helix radius (mm), axis to path. The profile is centred on the path: its centroid starts at "
+                  + "(radius, 0, 0) and climbs world Z. It must stay inside the radius, or the coil self-intersects.")
+            ScrubField(label: "Length", value: model.sweepLength, sensitivity: 0.1, minValue: 0.1) { v, _ in
+                model.sweepLength = v
+            }.help("Total sweep length (mm): the helix height, or the straight distance. Pitch = length ÷ turns.")
         case .extrudeToFace:
-            Text("pick target face").font(.caption).foregroundStyle(.secondary)
+            Text("Pick the target face").font(.caption).foregroundStyle(.secondary)
         }
     }
 }
@@ -149,38 +319,6 @@ struct SketchConstraintPanel: View {
     }
     private func statusColor(_ s: SketchSession) -> Color {
         s.isOverConstrained ? .red : s.isFullyConstrained ? .green : .orange
-    }
-}
-
-/// One-line prompt for the active tool.
-struct SketchHintBar: View {
-    let model: EditorModel
-    var body: some View {
-        HStack(spacing: Theme.Space.m) {
-            HStack(spacing: 6) {
-                Image(systemName: "hand.point.up.left")
-                Text(model.sketch?.tool.hint ?? "")
-            }
-            if let c = model.sketchCursor {
-                Divider().frame(height: 11)
-                Text(String(format: "%.1f, %.1f mm", c.x + 0, c.y + 0)).monospacedDigit()
-            }
-            if let s = model.sketch {
-                Divider().frame(height: 11)
-                Text(s.stateLabel)
-                // Why Finish is disabled, once there is something to finish.
-                if !s.isEmpty, let why = model.sketchFinishBlocker {
-                    Divider().frame(height: 11)
-                    Label(why, systemImage: "exclamationmark.triangle")
-                        .foregroundStyle(.orange)
-                        .accessibilityLabel("Can't finish: \(why)")
-                }
-            }
-        }
-        .font(.subheadline)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 14).padding(.vertical, 7)
-        .pillSurface()
     }
 }
 

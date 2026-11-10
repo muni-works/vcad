@@ -459,4 +459,94 @@ final class SketchSessionTests: XCTestCase {
         XCTAssertNotNil(m.sketchFace)
         XCTAssertEqual(try XCTUnwrap(m.sketch?.frame).origin.z, 10, accuracy: 1e-6)
     }
+
+    // MARK: sketch bar (the dock while sketching)
+
+    /// Every tool is reachable — five on the bar, three behind the chevron,
+    /// Dimension beside Constrain — and each tooltip names its shortcut.
+    func testSketchBarCarriesEveryTool() {
+        let bar = SketchBar.primaryTools + SketchBar.overflowTools + [.dimension]
+        XCTAssertEqual(SketchBar.primaryTools, [.select, .line, .rectangle, .circle, .spline])
+        XCTAssertEqual(SketchBar.overflowTools, [.polygon, .slot, .arc])
+        XCTAssertEqual(Set(bar), Set(SketchToolKind.allCases))
+        XCTAssertEqual(bar.count, SketchToolKind.allCases.count, "no tool twice")
+        let keys = SketchToolKind.allCases.compactMap(\.shortcut)
+        XCTAssertEqual(keys.count, SketchToolKind.allCases.count)
+        XCTAssertEqual(Set(keys).count, keys.count, "shortcuts are unique")
+        XCTAssertEqual(SketchToolKind.line.tooltip, "Line  L")
+    }
+
+    func testSketchKeysPickTools() throws {
+        let m = try open()
+        m.enterSketch()
+        XCTAssertTrue(GlassUI.shared.handleKey("r", model: m))
+        XCTAssertEqual(m.sketch?.tool, .rectangle)
+        XCTAssertTrue(GlassUI.shared.handleKey("C", model: m))
+        XCTAssertEqual(m.sketch?.tool, .circle)
+        XCTAssertFalse(GlassUI.shared.handleKey("z", model: m), "unbound keys still beep")
+        m.exitSketch()
+    }
+
+    func testFeatureButtonTitle() throws {
+        let m = try open()
+        m.enterSketch()
+        m.sketchFinish = .extrude; m.sketchExtrudeDepth = 10
+        XCTAssertEqual(SketchBar.featureTitle(m), "Extrude 10 mm")
+        m.sketchFinish = .cut; m.sketchExtrudeDepth = 2.5
+        XCTAssertEqual(SketchBar.featureTitle(m), "Cut Extrude 2.5 mm")
+        m.sketchFinish = .revolve; m.sketchRevolveAngle = 180
+        XCTAssertEqual(SketchBar.featureTitle(m), "Revolve 180°")
+        m.sketchFinish = .sweep
+        XCTAssertEqual(SketchBar.featureTitle(m), "Sweep")
+        m.sketchFinish = .loft
+        XCTAssertEqual(SketchBar.doneTitle(m), "Add Section")
+        m.sketchFinish = .extrude
+        XCTAssertEqual(SketchBar.doneTitle(m), "Done")
+    }
+
+    /// The hint pill is gone: the tool prompt and the DOF are the status
+    /// field's second line while sketching, and nothing outside a sketch.
+    func testSketchStatusLine() throws {
+        let m = try open()
+        XCTAssertNil(m.sketchStatusLine())
+        m.enterSketch()
+        m.setSketchTool(.line)
+        let line = try XCTUnwrap(m.sketchStatusLine())
+        XCTAssertTrue(line.hasPrefix(SketchToolKind.line.hint), line)
+        XCTAssertTrue(line.hasSuffix(try XCTUnwrap(m.sketch?.stateLabel)), line)
+        m.exitSketch()
+        XCTAssertNil(m.sketchStatusLine())
+    }
+
+    /// A blocked Done is clickable: it authors nothing, raises no error, and
+    /// puts the reason in the status field — on click (for a while) and on hover.
+    func testDoneWithBlockerSaysWhyAndAuthorsNothing() throws {
+        let m = try open()
+        m.enterSketch(); m.sketchFinish = .extrude
+        m.setSketchTool(.rectangle)
+        m.sketchTap([100, 100]); m.sketchTap([120, 120])
+        m.sketchTap([110, 110]); m.sketchTap([130, 130])
+        let why = try XCTUnwrap(m.sketchFinishBlocker)
+        let before = opTypes(m).count
+        let t0 = Date()
+        XCTAssertFalse(m.sketchStatusLine(at: t0)?.contains(why) ?? true, "not until asked")
+
+        XCTAssertFalse(m.attemptFinishSketch(now: t0))
+        XCTAssertEqual(opTypes(m).count, before, "no feature created")
+        XCTAssertTrue(m.sketching, "still sketching")
+        XCTAssertNil(m.engineError)
+        XCTAssertEqual(m.sketchStatusLine(at: t0.addingTimeInterval(1)), "Can't finish — \(why)")
+        XCTAssertFalse(m.sketchStatusLine(at: t0.addingTimeInterval(10))?.contains(why) ?? true, "fades")
+
+        m.sketchDoneHovered = true
+        XCTAssertEqual(m.sketchStatusLine(at: t0.addingTimeInterval(10)), "Can't finish — \(why)")
+        m.sketchDoneHovered = false
+        m.exitSketch()
+
+        // Unblocked, the same button finishes.
+        m.enterSketch(); m.setSketchTool(.rectangle)
+        m.sketchTap([50, 0]); m.sketchTap([60, 10])
+        XCTAssertTrue(m.attemptFinishSketch(), m.engineError ?? "")
+        XCTAssertGreaterThan(opTypes(m).count, before)
+    }
 }

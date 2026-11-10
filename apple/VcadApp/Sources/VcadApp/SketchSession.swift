@@ -59,6 +59,22 @@ enum SketchToolKind: String, CaseIterable, Identifiable {
         case .dimension: "Dimension"
         }
     }
+    /// Bare-letter key while sketching (Esc also falls back to Select).
+    var shortcut: Character? {
+        switch self {
+        case .select: "s"
+        case .line: "l"
+        case .rectangle: "r"
+        case .polygon: "p"
+        case .slot: "o"
+        case .circle: "c"
+        case .arc: "a"
+        case .spline: "n"
+        case .dimension: "d"
+        }
+    }
+    /// "Line  L".
+    var tooltip: String { shortcut.map { "\(label)  \(String($0).uppercased())" } ?? label }
     var symbol: String {
         switch self {
         case .select: "cursorarrow"
