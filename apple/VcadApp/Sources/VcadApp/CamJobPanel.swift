@@ -158,7 +158,7 @@ struct CamJobPanel: View {
                     HStack {
                         Text("T\(t.number)").font(.caption.monospacedDigit().bold())
                         TextField("name", text: $t.name).font(.caption)
-                        Button { store.tools.removeAll { $0.id == t.id } } label: { Image(systemName: "minus.circle") }
+                        Button { let id = t.id; store.tools.removeAll { $0.id == id } } label: { Image(systemName: "minus.circle") }
                             .buttonStyle(.borderless).disabled(store.tools.count <= 1)
                     }
                     Picker("", selection: $t.kind) {
@@ -196,7 +196,9 @@ struct CamJobPanel: View {
                         Picker("", selection: $op.tool) {
                             ForEach(store.tools) { Text("T\($0.number)").tag($0.number) }
                         }.labelsHidden().frame(width: 64)
-                        Button { store.ops.removeAll { $0.id == op.id } } label: { Image(systemName: "minus.circle") }
+                        // Read the id first: `op` is a binding into `store.ops`, and reading it
+                        // inside removeAll overlaps the mutation (a fatal exclusivity conflict).
+                        Button { let id = op.id; store.ops.removeAll { $0.id == id } } label: { Image(systemName: "minus.circle") }
                             .buttonStyle(.borderless).disabled(store.ops.count <= 1)
                     }
                     HStack {

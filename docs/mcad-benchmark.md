@@ -15,7 +15,7 @@ Every friction point found gets fixed or listed here.
 | 7 | Gear pair with a mate | involute profile, mates | Open |
 | 8 | Six-part assembly | joints, interference, explode | Open |
 | 9 | Drawing with GD&T | views, sections, datums, frames | Built on the part 6 heatsink: front view with 50 and 25 mm dimensions, datum A, a position frame to A, Section A-A. Defects below |
-| 10 | CAM on a pocketed plate | toolpaths, stock simulation | Open |
+| 10 | CAM on a pocketed plate | toolpaths, stock simulation | Built: 80 x 60 x 10 plate, 40 x 30 x 5 cut pocket, 42,000 mm^3 (hand 42,000); rect-pocket toolpath with a 1/8" endmill verified against the part. Moving the pocket 15 mm makes verification fail, as it should |
 
 ## Known blockers
 
@@ -40,6 +40,13 @@ Every friction point found gets fixed or listed here.
 - Part 9: new datum and frame symbols land on top of dimension text and
   geometry. Fixed: they slide clear and get a leader.
 - The workspace menu in the bottom dock opened downward, below the window. Fixed: it opens upward.
+- Part 10: removing a CAM operation crashed the app (Swift exclusivity
+  conflict reading the row's binding inside removeAll). Fixed.
+- Part 10: Return doesn't commit a CAM number field; only Tab does, so
+  Generate can run with the old value.
+- Part 10: after editing an operation, the last "Verified against the part"
+  stays on screen until Generate runs again.
+- Drawing workspace with no drawing shows an empty status pill above the dock.
 - File > New Document opens a second app instance rather than a new window or
   document in this one.
 
