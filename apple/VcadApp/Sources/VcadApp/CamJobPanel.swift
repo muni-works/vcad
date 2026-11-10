@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import CVcadFFI
 
 // Multi-tool CAM job (Fabricate ▸ CAM Job): web ToolLibrary / OperationList /
@@ -66,6 +67,22 @@ final class CamJobStore {
     var busy = false
     var error: String?
     var result: [String: Any]?
+    /// Inputs the current `result` was generated from; any edit since makes it stale.
+    private(set) var resultInputs: String?
+
+    /// Every job input that affects the result (stock, tools, ops, post,
+    /// verify toggle), as a stable fingerprint — ids excluded.
+    var inputsFingerprint: String {
+        let payload: [String: Any] = [
+            "stock": [stockW, stockH, stockD], "clearance": clearance, "post": post,
+            "verify": verifyAgainstModel, "tools": tools.map(\.json), "ops": ops.map(\.json),
+        ]
+        let data = (try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])) ?? Data()
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    /// True when a result is on screen but the inputs changed after it was generated.
+    var isStale: Bool { result != nil && resultInputs != inputsFingerprint }
 
     func loadDefaultLibrary() {
         guard let r = try? FabFFI.take(vcad_cam_tool_library()), let list = r["tools"] as? [[String: Any]] else { return }
@@ -79,6 +96,7 @@ final class CamJobStore {
     func run(_ model: EditorModel) async {
         busy = true; error = nil
         defer { busy = false }
+        let inputs = inputsFingerprint
         var req: [String: Any] = [
             "name": model.documentName.isEmpty ? "vcad job" : model.documentName,
             "stock": ["width": stockW, "height": stockH, "depth": stockD],
@@ -89,8 +107,16 @@ final class CamJobStore {
             guard let doc = model.documentJSON else { error = "No document is open."; return }
             req["target"] = ["doc": doc, "part": model.selectedPartIndex ?? 0]
         }
-        do { result = try await FabFFI.off(req) { try FabFFI.call1(vcad_cam_job, $0) } }
-        catch { self.error = error.localizedDescription; result = nil }
+        do {
+            result = try await FabFFI.off(req) { try FabFFI.call1(vcad_cam_job, $0) }
+            resultInputs = inputs
+        } catch { self.error = error.localizedDescription; result = nil; resultInputs = nil }
+    }
+
+    /// The stock-sim headline; a stale result never claims a pass or fail.
+    static func verdict(pass: Bool, graded: Bool, stale: Bool) -> String {
+        if stale { return pass ? "Last run passed — inputs changed since" : "Last run failed — inputs changed since" }
+        return pass ? (graded ? "Verified against the part" : "No floor breach (ungraded)") : "Verification failed"
     }
 
     func openInManufacture(_ model: EditorModel) {
@@ -131,13 +157,25 @@ struct CamJobPanel: View {
         }
         Toggle("Verify against model", isOn: $store.verifyAgainstModel)
             .help("Grade the simulated stock against the selected part (sitting on the stock bottom, corner at the origin)")
-        Button { Task { await store.run(model) } } label: {
+        Button {
+            // Commit any field still being edited before reading the inputs.
+            NSApp.keyWindow?.makeFirstResponder(nil)
+            Task { await store.run(model) }
+        } label: {
             if store.busy { ProgressView().controlSize(.small) } else { Text("Generate & Verify") }
         }
         .keyboardShortcut(.return, modifiers: [.command])
         .disabled(store.busy)
         if let e = store.error { Text(e).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
-        if let r = store.result { results(r) }
+        if let r = store.result {
+            if store.isStale {
+                Label("Out of date — Generate again", systemImage: "arrow.clockwise")
+                    .font(.caption).foregroundStyle(.orange)
+            }
+            VStack(alignment: .leading, spacing: Theme.Space.xs) { results(r) }
+                .opacity(store.isStale ? 0.4 : 1)
+                .saturation(store.isStale ? 0 : 1)
+        }
     }
 
     private var toolLibrary: some View {
@@ -265,10 +303,11 @@ struct CamJobPanel: View {
     @ViewBuilder private func verification(_ v: [String: Any]) -> some View {
         let pass = (v["pass"] as? Bool) ?? false
         let graded = (v["graded"] as? Bool) ?? false
+        let stale = store.isStale
         Eyebrow("Stock sim")
-        Label(pass ? (graded ? "Verified against the part" : "No floor breach (ungraded)") : "Verification failed",
-              systemImage: pass ? "checkmark.seal" : "xmark.octagon")
-            .font(.caption).foregroundStyle(pass ? .green : .red)
+        Label(CamJobStore.verdict(pass: pass, graded: graded, stale: stale),
+              systemImage: stale ? "clock.arrow.circlepath" : (pass ? "checkmark.seal" : "xmark.octagon"))
+            .font(.caption).foregroundStyle(stale ? Color.secondary : (pass ? Color.green : Color.red))
         Text("removed \(fabFmt(fabNum(v["removedVolumeMm3"]), 0)) of \(fabFmt(fabNum(v["stockVolumeMm3"]), 0)) mm³ · cell \(fabFmt(fabNum(v["resolution"]), 2)) mm")
             .font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
         if let s = v["stock"] as? [String: Any] {
