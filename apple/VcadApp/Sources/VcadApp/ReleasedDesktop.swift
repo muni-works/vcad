@@ -22,21 +22,34 @@ final class KeyableWindow: NSWindow, NSWindowDelegate {
 
     func alignTitlebarButtons() {
         guard styleMask.contains(.titled), !styleMask.contains(.fullScreen) else { return }
-        // The buttons clip to AppKit's titlebar view, so it has to reach the
-        // row's center before they can sit on it.
-        let height = Glass.toolbarCenter * 2
-        if let titlebar = standardWindowButton(.closeButton)?.superview?.superview,
-           titlebar.frame.height != height {
-            titlebar.frame = NSRect(x: titlebar.frame.minX, y: frame.height - height,
-                                    width: titlebar.frame.width, height: height)
-        }
+        // The row's height comes from an empty unified toolbar (see
+        // `installTitlebarToolbar`), never from resizing AppKit's titlebar
+        // container by hand: a container stretched behind AppKit's back left
+        // the whole top row click-through — a press there activated the app
+        // behind the window. Inside the native, taller titlebar the buttons
+        // only need nudging onto the row's center; they no longer clip.
         for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
             guard let button = standardWindowButton(type), let container = button.superview else { continue }
             let center = container.convert(NSPoint(x: 0, y: frame.height - Glass.toolbarCenter), from: nil)
-            let y = center.y - button.frame.height / 2
+            let y = (center.y - button.frame.height / 2).rounded()
+            guard y >= 0, y + button.frame.height <= container.bounds.height else { continue }
             if button.frame.minY != y { button.setFrameOrigin(NSPoint(x: button.frame.minX, y: y)) }
         }
     }
+
+    /// An empty unified toolbar: AppKit then lays out a titlebar tall enough
+    /// for the toolbar row itself, and owns its hit region, drag and
+    /// double-click behavior.
+    func installTitlebarToolbar() {
+        if toolbar == nil {
+            let bar = NSToolbar(identifier: "vcad.titlebar")
+            bar.showsBaselineSeparator = false
+            bar.allowsUserCustomization = false
+            toolbar = bar
+        }
+        toolbarStyle = .unified
+    }
+
     func windowDidResize(_ notification: Notification) { alignTitlebarButtons() }
     func windowDidBecomeKey(_ notification: Notification) { alignTitlebarButtons() }
     /// AppKit lays the titlebar out again on its own schedule.
@@ -195,6 +208,7 @@ final class ReleaseWindowController {
         w.styleMask = windowed ? [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView] : [.borderless]
         w.titlebarAppearsTransparent = windowed
         w.titleVisibility = .hidden
+        if windowed { (w as? KeyableWindow)?.installTitlebarToolbar() } else { w.toolbar = nil }
         updateDocumentWindow()
         w.isOpaque = windowed
         w.backgroundColor = windowed ? .windowBackgroundColor : .clear
