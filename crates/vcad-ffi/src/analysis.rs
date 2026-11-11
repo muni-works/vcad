@@ -5,8 +5,7 @@
 use std::collections::HashMap;
 use std::ffi::c_char;
 
-use vcad_eval::{evaluate_document_with_sheet_metal, EvalOptions, EvaluatedScene};
-use vcad_ir::{Document, NodeId};
+use vcad_ir::Document;
 use vcad_kernel::vcad_kernel_primitives::BRepSolid;
 use vcad_kernel::vcad_kernel_topo::FaceId;
 
@@ -30,13 +29,7 @@ pub(crate) fn parse_request(json: *const c_char) -> Result<serde_json::Value, St
     serde_json::from_str(text).map_err(|e| format!("request: {e}"))
 }
 
-/// Evaluate with the app's kernel-direct evaluator (sheet metal folded).
-pub(crate) fn evaluate(doc: &Document) -> Result<EvaluatedScene, String> {
-    evaluate_document_with_sheet_metal(doc, &EvalOptions::default())
-        .map_err(|e| format!("evaluate: {e}"))
-}
-
-pub(crate) use vcad_receipt_verify::bodies::{part_name, part_roots};
+pub(crate) use vcad_receipt_verify::bodies::{evaluate, part_name, part_roots};
 
 /// `FaceId → shell ordinal` — the face id the viewport tags triangles with
 /// (`vcad_scene_part_face_ids`, `vcad_topology_json`).
