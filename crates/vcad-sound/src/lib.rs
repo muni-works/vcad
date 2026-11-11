@@ -336,7 +336,7 @@ fn tri_mesh(positions: &[f32], indices: &[u32]) -> TriangleMesh {
 /// the solve stays interactive.
 fn pitch_for(mesh: &TriangleMesh, quality: Quality) -> (usize, [f64; 3]) {
     let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
-    for v in mesh.vertices.chunks_exact(3) {
+    for v in mesh.vertices.as_chunks::<3>().0.iter() {
         for a in 0..3 {
             lo[a] = lo[a].min(v[a] as f64);
             hi[a] = hi[a].max(v[a] as f64);
@@ -442,11 +442,15 @@ pub fn part_modes(
 /// triangles.
 fn refine(positions: &[f32], indices: &[u32], max_edge: f64) -> (Vec<f32>, Vec<u32>) {
     let mut pos: Vec<[f32; 3]> = positions
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|c| [c[0], c[1], c[2]])
         .collect();
     let mut tris: Vec<[u32; 3]> = indices
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|t| [t[0], t[1], t[2]])
         .collect();
     let mut mid: HashMap<(u32, u32), u32> = HashMap::new();
@@ -528,7 +532,9 @@ fn to_render_vertices(r: &ModalResult, positions: &[f32]) -> Vec<Vec<f32>> {
         .collect();
     // For each render vertex: (node index, weight) list.
     let weights: Vec<Vec<(usize, f64)>> = positions
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .map(|v| {
             let g = [
                 (v[0] as f64 - lo[0]) / p[0],
@@ -694,7 +700,7 @@ pub fn solve_pitch_lock(
     doc: &Document,
     lock: &PitchLock,
 ) -> Result<(Document, LockReport), SoundError> {
-    if !(lock.target_hz > 0.0) || lock.mode == 0 {
+    if lock.target_hz.is_nan() || lock.target_hz <= 0.0 || lock.mode == 0 {
         return Err(SoundError::Lock(
             "target_hz must be positive and mode ≥ 1".into(),
         ));
@@ -814,7 +820,7 @@ mod tests {
         let pos = &pm.positions;
         let amp_at = |xf: f32| {
             let mut best = (f32::INFINITY, 0.0f32);
-            for (i, v) in pos.chunks_exact(3).enumerate() {
+            for (i, v) in pos.as_chunks::<3>().0.iter().enumerate() {
                 let d = (v[0] - xf).abs();
                 if d < best.0 {
                     best = (d, pm.modes[0].shape[3 * i + 2].abs());
@@ -848,7 +854,9 @@ mod tests {
         .unwrap();
         let pos = &pm.positions;
         let near = |x: f32| {
-            pos.chunks_exact(3)
+            pos.as_chunks::<3>()
+                .0
+                .iter()
                 .enumerate()
                 .min_by(|a, b| {
                     ((a.1[0] - x).abs() + (a.1[2] - 6.0).abs())
