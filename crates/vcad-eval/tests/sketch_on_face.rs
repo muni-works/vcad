@@ -60,11 +60,18 @@ fn boss_follows_the_plate_top_when_the_plate_gets_thicker() {
 
 #[test]
 fn in_plane_placement_is_kept() {
-    let roots = vcad_eval::evaluate_root_solids(&doc(12.0, serde_json::json!({ "name": "n2:end" })))
-        .unwrap();
+    let roots =
+        vcad_eval::evaluate_root_solids(&doc(12.0, serde_json::json!({ "name": "n2:end" })))
+            .unwrap();
     let (min, max) = roots[0].solid.as_ref().unwrap().bounding_box();
-    assert!((min[0] - 30.0).abs() < 1e-9 && (max[0] - 50.0).abs() < 1e-9, "{min:?} {max:?}");
-    assert!((min[1] - 15.0).abs() < 1e-9 && (max[1] - 35.0).abs() < 1e-9, "{min:?} {max:?}");
+    assert!(
+        (min[0] - 30.0).abs() < 1e-9 && (max[0] - 50.0).abs() < 1e-9,
+        "{min:?} {max:?}"
+    );
+    assert!(
+        (min[1] - 15.0).abs() < 1e-9 && (max[1] - 35.0).abs() < 1e-9,
+        "{min:?} {max:?}"
+    );
 }
 
 #[test]
@@ -72,7 +79,10 @@ fn a_face_that_does_not_resolve_fails_closed() {
     let r = vcad_eval::evaluate_root_solids(&doc(8.0, serde_json::json!({ "name": "n2:nope" })));
     let msg = match r {
         Err(e) => e.to_string(),
-        Ok(roots) => panic!("must not evaluate; got solid={:?}", roots[0].solid.is_some()),
+        Ok(roots) => panic!(
+            "must not evaluate; got solid={:?}",
+            roots[0].solid.is_some()
+        ),
     };
     assert!(msg.contains("sketch on face"), "{msg}");
 }

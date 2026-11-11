@@ -767,18 +767,25 @@ mod tests {
             serde_json::json!({"kind": "extrude", "profile": xy_square(0.0, 10.0), "direction": {"x":0,"y":0,"z":4}}),
         );
         let mut boss = xy_square(4.0, 2.0);
-        boss["on_face"] = serde_json::json!({"target": base, "face": {"name": format!("n{base}:end")}});
+        boss["on_face"] =
+            serde_json::json!({"target": base, "face": {"name": format!("n{base}:end")}});
         let (doc, _) = append(
             Some(&doc),
             serde_json::json!({"kind": "extrude", "profile": boss, "direction": {"x":0,"y":0,"z":3}}),
         );
         let parsed = Document::from_json(&doc).unwrap();
         assert!(
-            parsed.nodes.values().any(|n| matches!(n.op, CsgOp::SketchOnFace { target, .. } if target == base)),
+            parsed
+                .nodes
+                .values()
+                .any(|n| matches!(n.op, CsgOp::SketchOnFace { target, .. } if target == base)),
             "a SketchOnFace node targets the base"
         );
         let v = volumes(&doc);
-        assert!(v.iter().any(|v| (v - 48.0).abs() < 0.5), "boss 4x4x3 evaluates: {v:?}");
+        assert!(
+            v.iter().any(|v| (v - 48.0).abs() < 0.5),
+            "boss 4x4x3 evaluates: {v:?}"
+        );
     }
 
     #[test]

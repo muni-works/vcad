@@ -91,7 +91,9 @@ pub fn seed_extrude_names(
         let c = face_centroid(brep, face_id);
         let name = match surface.surface_type() {
             SurfaceKind::Plane => {
-                let Some(p) = surface.as_any().downcast_ref::<Plane>() else { continue };
+                let Some(p) = surface.as_any().downcast_ref::<Plane>() else {
+                    continue;
+                };
                 let n = p.normal_dir.into_inner();
                 if n.dot(axis).abs() > 1.0 - TOL {
                     let h = (c - profile.origin).dot(axis);
@@ -113,7 +115,12 @@ pub fn seed_extrude_names(
                                 && (p.origin - *a).dot(*normal).abs() < TOL
                                 && within_segment(c, *a, *b)
                         }
-                        Swept::Cylinder { center, radius, start, sweep } => {
+                        Swept::Cylinder {
+                            center,
+                            radius,
+                            start,
+                            sweep,
+                        } => {
                             let d = c - *center;
                             let radial = d - axis * d.dot(axis);
                             let r = radial.norm();
@@ -126,10 +133,17 @@ pub fn seed_extrude_names(
                 }
             }
             SurfaceKind::Cylinder => {
-                let Some(cy) = surface.as_any().downcast_ref::<CylinderSurface>() else { continue };
+                let Some(cy) = surface.as_any().downcast_ref::<CylinderSurface>() else {
+                    continue;
+                };
                 let ax = cy.axis.into_inner();
                 unique_wall(&walls, scope, |w| match w {
-                    Swept::Cylinder { center, radius, start, sweep } => {
+                    Swept::Cylinder {
+                        center,
+                        radius,
+                        start,
+                        sweep,
+                    } => {
                         let d = cy.center - *center;
                         ax.dot(axis).abs() > 1.0 - TOL
                             && (cy.radius - radius).abs() < TOL
@@ -185,10 +199,19 @@ fn swept(
         SketchSegment::Line { start, end } => {
             let (a, b) = (to3(*start), to3(*end));
             let n = (b - a).cross(axis);
-            let normal = if n.norm() > 0.0 { n * (1.0 / n.norm()) } else { n };
+            let normal = if n.norm() > 0.0 {
+                n * (1.0 / n.norm())
+            } else {
+                n
+            };
             Swept::Plane { a, b, normal }
         }
-        SketchSegment::Arc { start, end, center, ccw } => {
+        SketchSegment::Arc {
+            start,
+            end,
+            center,
+            ccw,
+        } => {
             let ang = |p: vcad_kernel_math::Point2| (p.y - center.y).atan2(p.x - center.x);
             let (s, e) = (ang(*start), ang(*end));
             let tau = std::f64::consts::TAU;
@@ -199,7 +222,12 @@ fn swept(
             }
             let radius = ((start.x - center.x).powi(2) + (start.y - center.y).powi(2)).sqrt();
             let signed = if *ccw { sweep } else { -sweep };
-            Swept::Cylinder { center: to3(*center), radius, start: s, sweep: signed }
+            Swept::Cylinder {
+                center: to3(*center),
+                radius,
+                start: s,
+                sweep: signed,
+            }
         }
     }
 }
@@ -224,7 +252,10 @@ fn within_arc(c: Point3, center: Point3, profile: &SketchProfile, start: f64, sw
         return true;
     }
     let d = c - center;
-    let (x, y) = (d.dot(profile.x_dir.into_inner()), d.dot(profile.y_dir.into_inner()));
+    let (x, y) = (
+        d.dot(profile.x_dir.into_inner()),
+        d.dot(profile.y_dir.into_inner()),
+    );
     if x * x + y * y < TOL * TOL {
         return false;
     }
@@ -260,7 +291,12 @@ mod tests {
         let mut v: Vec<String> = shell
             .faces
             .iter()
-            .map(|f| map.faces.get(f).map(|n| n.to_string()).unwrap_or_else(|| "?".into()))
+            .map(|f| {
+                map.faces
+                    .get(f)
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "?".into())
+            })
             .collect();
         v.sort();
         v
@@ -271,7 +307,11 @@ mod tests {
     fn normal_of(brep: &BRepSolid, map: &NameMap, name: &str) -> Vec3 {
         let id = map.face_named(&FaceName::parse(name).unwrap()).expect(name);
         let s = brep.geometry.surfaces[brep.topology.faces[id].surface_index].as_ref();
-        s.as_any().downcast_ref::<Plane>().unwrap().normal_dir.into_inner()
+        s.as_any()
+            .downcast_ref::<Plane>()
+            .unwrap()
+            .normal_dir
+            .into_inner()
     }
 
     #[test]
@@ -320,14 +360,26 @@ mod tests {
             center: Point2::new(40.0, 25.0),
             ccw: true,
         };
-        let hole = vec![arc((45.0, 25.0), (35.0, 25.0)), arc((35.0, 25.0), (45.0, 25.0))];
+        let hole = vec![
+            arc((45.0, 25.0), (35.0, 25.0)),
+            arc((35.0, 25.0), (45.0, 25.0)),
+        ];
         let dir = Vec3::new(0.0, 0.0, 8.0);
         let brep = vcad_kernel_sketch::extrude_with_holes(&prof, &[hole.clone()], dir)
             .expect("extrude with a circular hole");
         let map = seed_extrude_names(&brep, &prof, &[hole], dir, "e");
         let names = names_of(&brep, &map);
-        assert!(!names.iter().any(|n| n == "?"), "every face named: {names:?}");
-        assert!(names.iter().any(|n| n.starts_with("e:hole.0.0")), "{names:?}");
-        assert!(names.iter().any(|n| n.starts_with("e:hole.0.1")), "{names:?}");
+        assert!(
+            !names.iter().any(|n| n == "?"),
+            "every face named: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n.starts_with("e:hole.0.0")),
+            "{names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n.starts_with("e:hole.0.1")),
+            "{names:?}"
+        );
     }
 }
