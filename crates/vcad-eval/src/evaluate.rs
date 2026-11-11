@@ -2998,6 +2998,9 @@ fn scope_primitive_names(node_id: NodeId, op: &CsgOp, result: &mut Option<Solid>
             | CsgOp::Wedge { .. }
             | CsgOp::Prism { .. }
             | CsgOp::SpurGear { .. }
+            // Extrudes seed names from their sketch segments (`side.<i>`,
+            // `start`, `end`); scope them to the node like a primitive's.
+            | CsgOp::Extrude { .. }
     );
     if !is_primitive {
         return;

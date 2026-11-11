@@ -1732,7 +1732,9 @@ impl Solid {
     ) -> Result<Self, vcad_kernel_sketch::SketchError> {
         let brep = vcad_kernel_sketch::extrude(&profile, direction)?;
         Ok(Solid {
-            names: None,
+            names: Some(vcad_kernel_naming::seed_extrude_names(
+                &brep, &profile, &[], direction, "extrude",
+            )),
             provenance: Vec::new(),
             repr: SolidRepr::BRep(Box::new(brep)),
             segments: 32,
@@ -1752,7 +1754,9 @@ impl Solid {
     ) -> Result<Self, vcad_kernel_sketch::SketchError> {
         let brep = vcad_kernel_sketch::extrude_with_holes(&profile, holes, direction)?;
         Ok(Solid {
-            names: None,
+            names: Some(vcad_kernel_naming::seed_extrude_names(
+                &brep, &profile, holes, direction, "extrude",
+            )),
             provenance: Vec::new(),
             repr: SolidRepr::BRep(Box::new(brep)),
             segments: 32,
@@ -1783,8 +1787,13 @@ impl Solid {
             ..Default::default()
         };
         let brep = vcad_kernel_sketch::extrude_with_options(&profile, direction, options)?;
+        // Twisted or tapered walls aren't the swept plane/cylinder the
+        // profile namer matches against; leave them unnamed (fail-closed).
+        let plain = twist_angle.abs() < 1e-12 && (scale_end - 1.0).abs() < 1e-12;
         Ok(Solid {
-            names: None,
+            names: plain.then(|| {
+                vcad_kernel_naming::seed_extrude_names(&brep, &profile, &[], direction, "extrude")
+            }),
             provenance: Vec::new(),
             repr: SolidRepr::BRep(Box::new(brep)),
             segments: 32,

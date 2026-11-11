@@ -15,3 +15,4 @@ vcad-kernel-math = { workspace = true }
 vcad-kernel-topo = { workspace = true }
 vcad-kernel-geom = { workspace = true }
 vcad-kernel-primitives = { workspace = true }
+vcad-kernel-sketch = { workspace = true }

@@ -31,6 +31,9 @@
 //! other outcome is reported explicitly as [`EdgeResolution::Ambiguous`] or
 //! [`EdgeResolution::Lost`] — never a silent rebind.
 
+mod profile;
+pub use profile::seed_extrude_names;
+
 use std::collections::HashMap;
 use std::fmt;
 
@@ -695,7 +698,7 @@ pub fn edge_endpoints(brep: &BRepSolid, edge: EdgeId) -> Option<(Point3, Point3)
 }
 
 /// Centroid of a face's outer-loop vertices.
-fn face_centroid(brep: &BRepSolid, face: FaceId) -> Point3 {
+pub(crate) fn face_centroid(brep: &BRepSolid, face: FaceId) -> Point3 {
     let topo = &brep.topology;
     let mut sum = Vec3::new(0.0, 0.0, 0.0);
     let mut n = 0usize;
@@ -713,7 +716,7 @@ fn face_centroid(brep: &BRepSolid, face: FaceId) -> Point3 {
 }
 
 /// Quantize a point for deterministic ordering.
-fn quantize(p: Point3) -> [i64; 3] {
+pub(crate) fn quantize(p: Point3) -> [i64; 3] {
     [
         (p.x / QUANT).round() as i64,
         (p.y / QUANT).round() as i64,
