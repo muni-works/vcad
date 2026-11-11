@@ -278,13 +278,13 @@ pub fn mesh_properties(meshes: &[(Vec<f32>, Vec<u32>)]) -> (f64, f64, BBox, Xyz,
             let i = i as usize * 3;
             [pos[i] as f64, pos[i + 1] as f64, pos[i + 2] as f64]
         };
-        for v in pos.chunks_exact(3) {
+        for v in pos.as_chunks::<3>().0 {
             for k in 0..3 {
                 lo[k] = lo[k].min(v[k] as f64);
                 hi[k] = hi[k].max(v[k] as f64);
             }
         }
-        for t in idx.chunks_exact(3) {
+        for t in idx.as_chunks::<3>().0 {
             let (a, b, d) = (p(t[0]), p(t[1]), p(t[2]));
             let cross = [
                 b[1] * d[2] - b[2] * d[1],
@@ -344,7 +344,7 @@ fn stl_bytes(meshes: &[(Vec<f32>, Vec<u32>)]) -> Vec<u8> {
     out[..15].copy_from_slice(b"vcad-mcp export");
     out.extend_from_slice(&(tris as u32).to_le_bytes());
     for (pos, idx) in meshes {
-        for t in idx.chunks_exact(3) {
+        for t in idx.as_chunks::<3>().0 {
             let v = |i: u32| {
                 let i = i as usize * 3;
                 [pos[i], pos[i + 1], pos[i + 2]]

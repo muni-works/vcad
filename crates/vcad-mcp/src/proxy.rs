@@ -68,6 +68,9 @@ impl RpcError {
     }
 }
 
+/// In-flight upstream requests awaiting a response, by JSON-RPC id.
+type PendingMap = Arc<Mutex<HashMap<u64, Sender<Result<Value, RpcError>>>>>;
+
 struct Call {
     progress: Option<ProgressFn>,
     elicit: Option<ElicitFn>,
@@ -76,7 +79,7 @@ struct Call {
 struct Live {
     child: Child,
     stdin: Arc<Mutex<ChildStdin>>,
-    pending: Arc<Mutex<HashMap<u64, Sender<Result<Value, RpcError>>>>>,
+    pending: PendingMap,
     calls: Arc<Mutex<Vec<(u64, Call)>>>,
     dead: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -145,7 +148,7 @@ impl Proxy {
         })?;
         let stdin = Arc::new(Mutex::new(child.stdin.take().expect("piped")));
         let stdout = child.stdout.take().expect("piped");
-        let pending: Arc<Mutex<HashMap<u64, Sender<Result<Value, RpcError>>>>> = Arc::default();
+        let pending: PendingMap = Arc::default();
         let calls: Arc<Mutex<Vec<(u64, Call)>>> = Arc::default();
         let dead = Arc::new(std::sync::atomic::AtomicBool::new(false));
         {
