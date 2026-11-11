@@ -821,6 +821,12 @@ function evaluateOp(
     case "Sketch2D":
       return Solid.empty();
 
+    // A sketch attached to a named face: like Sketch2D, it is not a solid
+    // itself. (The native evaluator resolves the face; this legacy TS path
+    // only needs the switch to stay exhaustive.)
+    case "SketchOnFace":
+      return Solid.empty();
+
     case "Extrude": {
       const sketchNode = nodes[String(op.sketch)];
       if (!sketchNode) {
