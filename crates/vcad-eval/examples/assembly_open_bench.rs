@@ -65,6 +65,19 @@ fn main() {
     let _preview =
         vcad_eval::evaluate::DisplayPreviewGuard::enable(std::env::var("PREVIEW").is_ok());
     let scene = vcad_eval::evaluate_document(&doc, &opts).expect("evaluate");
+    let empty = scene
+        .parts
+        .iter()
+        .filter(|p| p.mesh.indices.is_empty())
+        .count();
+    println!(
+        "{} failed roots, {} empty parts",
+        scene.failures.len(),
+        empty
+    );
+    for f in scene.failures.iter().take(10) {
+        println!("  fail {}: {}", f.scope, f.error);
+    }
     let tris: usize = scene.parts.iter().map(|p| p.mesh.indices.len() / 3).sum();
     println!(
         "evaluate {:.2}s (first part {:.2}s), {} parts, {} tris, {} clashes",
