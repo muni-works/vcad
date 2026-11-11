@@ -412,6 +412,7 @@ fn materialize_doc_extras(doc: &mut Document, feature: &FeatureState) {
         drawing,
         hardware,
         source,
+        instrument,
     );
 }
 

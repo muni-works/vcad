@@ -778,6 +778,7 @@ pub const DOC_EXTRA_FIELDS: &[&str] = &[
     "drawing",
     "hardware",
     "source",
+    "instrument",
 ];
 
 fn migrate_doc_extras(crdt: &mut CrdtDocument, ctx: &mut MigrationCtx, doc: &Document) {
@@ -1813,6 +1814,23 @@ mod tests {
         })).expect("plain fixture");
         let result = crate::materializer::materialize(&migrate_v1(&doc));
         assert_eq!(result.document.roots.len(), 2);
+    }
+
+    #[test]
+    fn tuned_instrument_metadata_survives_the_crdt_round_trip() {
+        let doc: Document = serde_json::from_value(serde_json::json!({
+            "version": "0.1", "materials": {}, "part_materials": {},
+            "nodes": {"1": {"id": 1, "name": "bar_c6", "op": {"type": "Cube", "size": {"x": 130.0, "y": 25.0, "z": 6.0}}}},
+            "roots": [{"root": 1, "material": "default"}],
+            "instrument": {"kind": "glockenspiel", "tuning": "12-TET", "material": "aluminium_6061", "bars": [{
+                "note": "C6", "part": "bar_c6", "target_hz": 1046.5, "predicted_hz": 1046.5,
+                "tolerance_cents": 5.0, "length_mm": 130.0, "width_mm": 25.0, "thickness_mm": 6.0,
+                "undercut_depth_mm": 2.7, "undercut_span": 0.2, "hole_dia_mm": 4.0, "nodes_mm": [29.0, 101.0],
+                "measurement": {"measured_hz": 1047.0, "cents_error": 0.8, "instrument": "mic"}
+            }]},
+        })).expect("instrument fixture");
+        let out = crate::materializer::materialize(&migrate_v1(&doc)).document;
+        assert_eq!(out.instrument, doc.instrument);
     }
 
     #[test]

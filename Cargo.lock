@@ -5786,6 +5786,7 @@ dependencies = [
  "vcad-eval",
  "vcad-ir 0.11.0",
  "vcad-kernel 0.11.0",
+ "vcad-kernel-acoustics 0.11.0",
  "vcad-kernel-assembly",
  "vcad-kernel-cam 0.11.0",
  "vcad-kernel-drafting",
@@ -5956,6 +5957,7 @@ version = "0.11.0"
 dependencies = [
  "serde",
  "serde_json",
+ "vcad-ir 0.11.0",
  "vcad-receipt 0.11.0",
 ]
 
@@ -7036,6 +7038,7 @@ dependencies = [
  "tempfile",
  "vcad-eval",
  "vcad-ir 0.11.0",
+ "vcad-kernel-acoustics 0.11.0",
  "vcad-loon",
  "vcad-render",
  "vcad-tool-derive 0.11.0",
