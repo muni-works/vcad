@@ -5,8 +5,7 @@
 use std::collections::HashMap;
 use std::ffi::c_char;
 
-use vcad_eval::{evaluate_document_with_sheet_metal, EvalOptions, EvaluatedScene};
-use vcad_ir::{Document, NodeId};
+use vcad_ir::Document;
 use vcad_kernel::vcad_kernel_primitives::BRepSolid;
 use vcad_kernel::vcad_kernel_topo::FaceId;
 
@@ -30,51 +29,7 @@ pub(crate) fn parse_request(json: *const c_char) -> Result<serde_json::Value, St
     serde_json::from_str(text).map_err(|e| format!("request: {e}"))
 }
 
-/// Evaluate with the app's kernel-direct evaluator (sheet metal folded).
-pub(crate) fn evaluate(doc: &Document) -> Result<EvaluatedScene, String> {
-    evaluate_document_with_sheet_metal(doc, &EvalOptions::default())
-        .map_err(|e| format!("evaluate: {e}"))
-}
-
-/// Root node of each evaluated part, when parts line up with the visible
-/// roots (they do on a clean eval; a failed root breaks the alignment, and
-/// then provenance is withheld rather than guessed).
-pub(crate) fn part_roots(doc: &Document, scene: &EvaluatedScene) -> Vec<Option<NodeId>> {
-    let visible: Vec<NodeId> = doc
-        .roots
-        .iter()
-        .filter(|r| r.visible != Some(false))
-        .map(|r| r.root)
-        .collect();
-    if visible.len() == scene.parts.len() {
-        visible.into_iter().map(Some).collect()
-    } else {
-        vec![None; scene.parts.len()]
-    }
-}
-
-/// Display name for part `i`: the first name on its root's chain of
-/// Translate/Rotate/Scale wrappers (a placed primitive's root is an unnamed
-/// Translate over the named feature — the name the Model tree shows), else
-/// `Part i+1`.
-pub(crate) fn part_name(doc: &Document, root: Option<NodeId>, i: usize) -> String {
-    let mut cur = root;
-    for _ in 0..64 {
-        let Some(node) = cur.and_then(|r| doc.nodes.get(&r)) else {
-            break;
-        };
-        if let Some(n) = node.name.as_ref().filter(|n| !n.is_empty()) {
-            return n.clone();
-        }
-        cur = match &node.op {
-            vcad_ir::CsgOp::Translate { child, .. }
-            | vcad_ir::CsgOp::Rotate { child, .. }
-            | vcad_ir::CsgOp::Scale { child, .. } => Some(*child),
-            _ => None,
-        };
-    }
-    format!("Part {}", i + 1)
-}
+pub(crate) use vcad_receipt_verify::bodies::{evaluate, part_name, part_roots};
 
 /// `FaceId → shell ordinal` — the face id the viewport tags triangles with
 /// (`vcad_scene_part_face_ids`, `vcad_topology_json`).
