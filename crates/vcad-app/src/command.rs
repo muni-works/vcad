@@ -778,6 +778,43 @@ mod tests {
         assert_eq!(order(&api), [a, b, f]);
     }
 
+    /// A cut whose sketch is attached to a face (`SketchOnFace`) survives
+    /// import → materialize → evaluate. Import used to embed the
+    /// SketchOnFace op as the extrude's sketch JSON; its node references
+    /// were renumbered away and evaluation failed with "missing node".
+    #[test]
+    fn import_keeps_a_cut_over_an_attached_sketch_evaluable() {
+        let v = |x: f64, y: f64, z: f64| serde_json::json!({ "x": x, "y": y, "z": z });
+        let p = |x: f64, y: f64| serde_json::json!({ "x": x, "y": y });
+        let line = |a, b| serde_json::json!({ "type": "Line", "start": a, "end": b });
+        let doc = serde_json::json!({
+            "version": "0.1",
+            "nodes": {
+                "1": { "id": 1, "name": "box", "op": { "type": "Cube", "size": v(40.0, 40.0, 10.0) } },
+                "2": { "id": 2, "name": "sketch", "op": { "type": "Sketch2D",
+                    "origin": v(15.0, 15.0, 10.0), "x_dir": v(1.0, 0.0, 0.0), "y_dir": v(0.0, 1.0, 0.0),
+                    "segments": [
+                        line(p(0.0, 0.0), p(10.0, 0.0)), line(p(10.0, 0.0), p(10.0, 10.0)),
+                        line(p(10.0, 10.0), p(0.0, 10.0)), line(p(0.0, 10.0), p(0.0, 0.0))
+                    ] } },
+                "3": { "id": 3, "name": "on top", "op": { "type": "SketchOnFace",
+                    "sketch": 2, "target": 1, "face": { "name": "n1:top" } } },
+                "4": { "id": 4, "name": "tool", "op": { "type": "Extrude", "sketch": 3,
+                    "direction": v(0.0, 0.0, -2.0) } },
+                "5": { "id": 5, "name": "Cut", "op": { "type": "Difference", "left": 1, "right": 4 } }
+            },
+            "materials": {},
+            "part_materials": {},
+            "roots": [{ "root": 5, "material": "default" }]
+        });
+        let mut api = api();
+        let r = api.apply(DocCommand::ImportIr { document: doc }).unwrap();
+        assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+        let roots = vcad_eval::evaluate_root_solids(&r.document).expect("imported doc evaluates");
+        let solid = roots[0].solid.as_ref().expect("a solid");
+        assert!((solid.volume() - (16000.0 - 200.0)).abs() < 1e-6, "{}", solid.volume());
+    }
+
     fn steel() -> vcad_ir::MaterialDef {
         serde_json::from_str(r#"{"name":"steel","color":[0.6,0.6,0.65],"metallic":1.0,"roughness":0.4,"density":7850.0}"#)
             .unwrap()
