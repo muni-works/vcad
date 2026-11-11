@@ -34,15 +34,14 @@ struct KernelMesh {
             for i in 0..<v.indices_len { indices[i] = ip[i] }
         }
 
-        var normals: [SIMD3<Float>]
-        if v.normals_len == v.vertices_len, v.normals_len > 0, let np = v.normals {
-            normals = [SIMD3<Float>](repeating: .zero, count: vertexCount)
-            for i in 0..<vertexCount {
-                normals[i] = SIMD3<Float>(np[i * 3], np[i * 3 + 1], np[i * 3 + 2])
-            }
-        } else {
-            (positions, normals, indices) = Self.creasedNormals(positions: positions, indices: indices)
-        }
+        // Always derive display normals from the geometry (crease-split,
+        // planar faces exact). Kernel normals are not trustworthy for every
+        // source: STL imports carry "last face wins" per-vertex normals, so a
+        // hole-rim vertex takes the countersink's normal and every flat-face
+        // sliver touching it shades into a wedge. BRep tessellations are
+        // per-face, so recomputing them changes nothing visible.
+        let normals: [SIMD3<Float>]
+        (positions, normals, indices) = Self.creasedNormals(positions: positions, indices: indices)
 
         var lo = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
         var hi = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
