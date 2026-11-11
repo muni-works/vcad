@@ -1517,6 +1517,39 @@ pub(crate) fn brep_boolean(
             // cylindrical surfaces; route them directly to the cylindrical
             // splitter without going through `trim_curve_to_face`, so the
             // figure-8 stays atomic and the 4-way split happens in one call.
+            // A smaller perpendicular cylinder through a larger one is two
+            // separate closed loops (`ssi::perpendicular_unequal_cylinders`),
+            // not a figure-8: route each to the cylindrical splitter as its
+            // own sampled curve. The splitter tells the cases apart — a loop
+            // winding a face's axis is a profile, one that does not is a
+            // patch — and leaves a face a loop misses whole.
+            if let ssi::IntersectionCurve::TwoSampled(c1, c2) = &curve {
+                let radius = |s: &dyn vcad_kernel_geom::Surface| {
+                    s.as_any()
+                        .downcast_ref::<vcad_kernel_geom::CylinderSurface>()
+                        .map(|c| c.radius)
+                };
+                if let (Some(ra), Some(rb)) = (radius(surf_a.as_ref()), radius(surf_b.as_ref())) {
+                    if (ra - rb).abs() > 1e-6 {
+                        // Both loops lie on both infinite surfaces; only one
+                        // lying on both FACES is a real crossing (the far
+                        // loop of a blind radial hole is not).
+                        let on_both = |c: &Vec<Point3>| {
+                            let step = (c.len() / 16).max(1);
+                            c.iter().step_by(step).any(|p| {
+                                trim::point_in_face(&a, face_a, p)
+                                    && trim::point_in_face(&b, face_b, p)
+                            })
+                        };
+                        for c in [c1, c2].into_iter().filter(|c| on_both(c)) {
+                            let s = ssi::IntersectionCurve::Sampled(c.clone());
+                            results_a.push((s.clone(), Point3::origin(), Point3::origin()));
+                            results_b.push((s, Point3::origin(), Point3::origin()));
+                        }
+                        return Ok(Some((face_a, results_a, face_b, results_b, true)));
+                    }
+                }
+            }
             if let ssi::IntersectionCurve::TwoSampled(_, _) = &curve {
                 debug_bool!(
                     "  TwoSampled: {:?}({:?}) x {:?}({:?})",

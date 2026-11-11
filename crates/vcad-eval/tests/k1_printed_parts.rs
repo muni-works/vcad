@@ -94,10 +94,9 @@ macro_rules! fixture {
 }
 
 // 1: coaxial counterbore + through hole on a half-cylinder (was a wasm trap).
-// The union seam is fixed (1u below); the counterbore entering the curved
-// wall still needs a perpendicular unequal-radius cylinder split.
+// Needs both the union seam (1u) and the counterbore entering the curved
+// wall: a perpendicular unequal-radius cylinder pair (1r).
 #[test]
-#[ignore = "blind radial counterbore into the half-cylinder wall: no perpendicular unequal cyl x cyl split"]
 fn coaxial_counterbore_half_cylinder() {
     assert_closed("i1", include_str!("fixtures/k1/i1_counterbore.loon"));
 }
@@ -105,6 +104,10 @@ fn coaxial_counterbore_half_cylinder() {
 // -0.3000000000000007 and the half-cylinder base is -0.3; that float noise
 // left 132 open edges until booleans snapped it onto one plane.
 fixture!(flange_half_cylinder_union, "i1u_flange_half_union.loon");
+// 1r: a blind radial hole into a cylinder wall. Perpendicular cylinders of
+// unequal radius used to fall to an unordered marching sampler; the hole
+// lost its floor.
+fixture!(blind_radial_hole_in_cylinder, "i1r_radial_hole.loon");
 // 1b: the same hole as a revolve of a profile touching its axis.
 #[test]
 fn revolve_profile_touching_axis() {
