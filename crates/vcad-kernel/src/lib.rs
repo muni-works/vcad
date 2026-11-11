@@ -1764,7 +1764,11 @@ impl Solid {
         let brep = vcad_kernel_sketch::extrude(&profile, direction)?;
         Ok(Solid {
             names: Some(vcad_kernel_naming::seed_extrude_names(
-                &brep, &profile, &[], direction, "extrude",
+                &brep,
+                &profile,
+                &[],
+                direction,
+                "extrude",
             )),
             provenance: Vec::new(),
             repr: SolidRepr::BRep(Box::new(brep)),
@@ -2071,6 +2075,25 @@ impl Solid {
                 let mut mesh = vcad_kernel_tessellate::tessellate_brep_with(brep.as_ref(), params);
                 vcad_kernel_booleans::repair_export_mesh(brep.as_ref(), &mut mesh);
                 mesh
+            }
+            _ => self.to_mesh(segments),
+        }
+    }
+
+    /// A quick display mesh: [`Solid::to_mesh_with_chord`] without the
+    /// export-boundary watertightness repair. The surface looks the same
+    /// (membranes are interior; the repair closes sub-millimetre slits), but
+    /// on a large imported part the repair is most of the cost. For a first
+    /// draw only — never for volumes, slicing or export.
+    pub fn to_preview_mesh(&self, segments: u32, chord_tol: f64) -> TriangleMesh {
+        match &self.repr {
+            SolidRepr::BRep(brep) => {
+                let mut params =
+                    vcad_kernel_tessellate::TessellationParams::from_segments(segments);
+                if chord_tol > 0.0 {
+                    params.chord_tolerance = Some(chord_tol);
+                }
+                vcad_kernel_tessellate::tessellate_brep_with(brep.as_ref(), params)
             }
             _ => self.to_mesh(segments),
         }

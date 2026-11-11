@@ -776,3 +776,48 @@ enum DirectManipDemo {
         FileHandle.standardError.write(Data("[VCAD_SNAPSHOT] done → \(dir)\n".utf8))
     }
 }
+
+// MARK: - Big-assembly open screenshots (VCAD_ASSEMBLY_SNAPSHOT_DIR)
+
+/// `VCAD_ASSEMBLY_SNAPSHOT_DIR=/path VCAD_OPEN=big.step vcad` snaps the
+/// viewport at fixed times while a large assembly opens
+/// (`VCAD_ASSEMBLY_SNAPSHOT_AT`, seconds, default `20,45,80,200`) — parts
+/// streaming in, the preview LOD, the full-quality refine — with the real
+/// seconds since launch in each file name. Reproducible without screen-recording rights.
+@MainActor
+enum AssemblyOpenDemo {
+    static func runIfRequested(_ m: EditorModel) async {
+        guard let dir = ProcessInfo.processInfo.environment["VCAD_ASSEMBLY_SNAPSHOT_DIR"] else { return }
+        let url = URL(fileURLWithPath: dir)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        let t0 = Date()
+        func wait(_ s: Double) async { try? await Task.sleep(nanoseconds: UInt64(s * 1e9)) }
+        func snap(_ name: String) async {
+            let ctl = ReleaseWindowController.shared
+            RenderGate.wake()
+            await wait(0.5)
+            guard let ar = ctl.arView else { return }
+            let label = String(format: "%@-%.1fs", name, Date().timeIntervalSince(t0))
+            await withCheckedContinuation { (k: CheckedContinuation<Void, Never>) in
+                ar.snapshot(saveToHDR: false) { img in
+                    if let img, let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+                       let png = rep.representation(using: .png, properties: [:]) {
+                        try? png.write(to: url.appendingPathComponent(label + ".png"))
+                    }
+                    k.resume()
+                }
+            }
+            FileHandle.standardError.write(Data("[ASSEMBLY_SNAPSHOT] \(label) solved=\(m.solveProgress.done)/\(m.solveProgress.total)\n".utf8))
+        }
+        // Timed, so a busy main thread can't stall the trigger: the file
+        // names carry the real time each frame was taken.
+        let at = (ProcessInfo.processInfo.environment["VCAD_ASSEMBLY_SNAPSHOT_AT"] ?? "20,45,80,200")
+            .split(separator: ",").compactMap { Double($0) }
+        for (i, t) in at.enumerated() {
+            let left = t - Date().timeIntervalSince(t0)
+            if left > 0 { await wait(left) }
+            await snap("\(i + 1)")
+        }
+        FileHandle.standardError.write(Data("[ASSEMBLY_SNAPSHOT] done → \(dir)\n".utf8))
+    }
+}

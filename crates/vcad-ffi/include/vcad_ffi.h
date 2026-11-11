@@ -160,6 +160,12 @@ VcadMeshView vcad_scene_part_mesh(const VcadScene *scene, size_t index);
 typedef struct VcadEvalJob VcadEvalJob;
 VcadEvalJob *vcad_eval_begin(const uint8_t *json, size_t json_len,
                              const uint8_t *base_dir, size_t base_dir_len);
+/* vcad_eval_begin at a level of detail: preview = true tessellates for a quick
+ * first draw (no export repair, no chord tolerance); follow it with a full
+ * job and swap the scene in when that lands. */
+VcadEvalJob *vcad_eval_begin_lod(const uint8_t *json, size_t json_len,
+                                 const uint8_t *base_dir, size_t base_dir_len,
+                                 bool preview);
 bool vcad_eval_progress(const VcadEvalJob *job, size_t *done, size_t *total);
 VcadMeshView vcad_eval_part_mesh(const VcadEvalJob *job, size_t index);
 VcadScene *vcad_eval_finish(VcadEvalJob *job);

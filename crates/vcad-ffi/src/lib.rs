@@ -1376,6 +1376,10 @@ fn viewport_eval(
 
 fn open_opts() -> EvalOptions {
     EvalOptions {
+        // Nothing reads an open scene's clash meshes (the analysis panel
+        // runs its own interference check), and on an assembly the pass is
+        // a B-rep intersection per touching pair — every screw in its hole.
+        skip_clash_detection: true,
         root_cache: root_mesh_cache()
             .map(|c| c as std::rc::Rc<dyn vcad_eval::cache::RootMeshCache>),
         ..Default::default()
@@ -3421,6 +3425,33 @@ pub extern "C" fn vcad_eval_begin(
     base_dir: *const u8,
     base_dir_len: usize,
 ) -> *mut VcadEvalJob {
+    eval_begin(json, json_len, base_dir, base_dir_len, false)
+}
+
+/// [`vcad_eval_begin`] at a chosen level of detail. `preview` tessellates
+/// for a quick first draw: no export-grade watertightness repair and no
+/// display chord tolerance (Voron 2.4: 15 s instead of ~5 min on mew). The
+/// app follows a preview with a full pass and swaps the meshes in when it
+/// lands; preview meshes are cached under their own keys, so they never
+/// stand in for full-quality ones.
+#[no_mangle]
+pub extern "C" fn vcad_eval_begin_lod(
+    json: *const u8,
+    json_len: usize,
+    base_dir: *const u8,
+    base_dir_len: usize,
+    preview: bool,
+) -> *mut VcadEvalJob {
+    eval_begin(json, json_len, base_dir, base_dir_len, preview)
+}
+
+fn eval_begin(
+    json: *const u8,
+    json_len: usize,
+    base_dir: *const u8,
+    base_dir_len: usize,
+    preview: bool,
+) -> *mut VcadEvalJob {
     if json.is_null() {
         return ptr::null_mut();
     }
@@ -3462,7 +3493,15 @@ pub extern "C" fn vcad_eval_begin(
                     p.done = p.done.max(index + 1);
                 }
             }));
-            let result = catch_unwind(AssertUnwindSafe(|| viewport_eval(&doc, &opts)));
+            let result = catch_unwind(AssertUnwindSafe(|| {
+                if preview {
+                    let _p = vcad_eval::evaluate::DisplayPreviewGuard::enable(true);
+                    let _c = vcad_eval::evaluate::DisplayChordGuard::enable(0.0);
+                    evaluate_document(&doc, &opts)
+                } else {
+                    viewport_eval(&doc, &opts)
+                }
+            }));
             let out = match result {
                 Ok(Ok(scene)) => Ok(VcadScene {
                     inner: scene,
