@@ -20,8 +20,8 @@ import SwiftUI
 // through the file watch.
 //
 // Transport: MCP streamable HTTP, JSON responses only (no SSE), at
-// http://127.0.0.1:<port>/mcp. The port and pid land in ~/.vcad/app.json for
-// the stdio shim (apple/VcadApp/scripts/vcad-app-mcp.mjs). Loopback only.
+// http://127.0.0.1:<port>/mcp. The port and pid land in ~/.vcad/instances/<pid>.json
+// (+ the ~/.vcad/app.json "most recent" pointer) for the stdio shim (apple/VcadApp/scripts/vcad-app-mcp.mjs). Loopback only.
 
 /// A label an agent pinned to an instance.
 struct AgentAnnotation: Identifiable, Equatable {
@@ -80,17 +80,54 @@ final class AgentBridge {
         l.start(queue: .main)
     }
 
-    /// ~/.vcad/app.json — how the stdio shim (and anything else) finds us.
+    /// Random per launch; agents compare it across calls to notice a relaunch.
+    let instanceId = UUID().uuidString.lowercased()
+    private let launched: String = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.string(from: Date())
+    }()
+    private var lastRecord: AgentInstanceRecord?
+    private var discoveryTimer: Timer?
+
+    /// This instance as clients see it (discovery file + every response's `_meta`).
+    var record: AgentInstanceRecord? {
+        guard let port else { return nil }
+        return AgentInstanceRecord(pid: Int(ProcessInfo.processInfo.processIdentifier), port: Int(port),
+                                   url: "http://127.0.0.1:\(port)/mcp", instanceId: instanceId, started: launched,
+                                   documentName: model?.documentName, documentPath: model?.documentURL?.path)
+    }
+
+    /// ~/.vcad/instances/<pid>.json (+ the app.json "most recent" pointer) —
+    /// how the stdio shim and @vcad/mcp find us. See AgentDiscovery.swift.
     private func writeDiscovery(port: UInt16) {
-        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".vcad")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let info: [String: Any] = ["port": Int(port), "pid": Int(ProcessInfo.processInfo.processIdentifier),
-                                   "url": "http://127.0.0.1:\(port)/mcp",
-                                   "started": ISO8601DateFormatter().string(from: Date())]
-        if let data = try? JSONSerialization.data(withJSONObject: info, options: [.prettyPrinted, .sortedKeys]) {
-            try? data.write(to: dir.appendingPathComponent("app.json"), options: .atomic)
+        refreshDiscovery()
+        // The open document changes under us; keep the file current so clients
+        // can pick the window by document path.
+        discoveryTimer?.invalidate()
+        discoveryTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
+            MainActor.assumeIsolated { AgentBridge.shared.refreshDiscovery() }
         }
+        #if canImport(AppKit)
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil,
+                                               queue: .main) { _ in
+            AgentDiscovery.remove(pid: Int(ProcessInfo.processInfo.processIdentifier))
+        }
+        #endif
         FileHandle.standardError.write(Data("[vcad] agent bridge on http://127.0.0.1:\(port)/mcp\n".utf8))
+    }
+
+    func refreshDiscovery() {
+        guard let r = record, r != lastRecord else { return }
+        lastRecord = r
+        AgentDiscovery.write(r)
+    }
+
+    /// Names this instance on every response, so an agent can tell which window it is driving.
+    var instanceMeta: [String: Any] {
+        guard let r = record else { return [:] }
+        return ["pid": r.pid, "port": r.port, "instance_id": r.instanceId, "started": r.started,
+                "document": r.documentName ?? NSNull(), "document_path": r.documentPath ?? NSNull()]
     }
 
     // MARK: HTTP (just enough: one request per connection, Content-Length bodies)
@@ -119,7 +156,9 @@ final class AgentBridge {
     private func respond(_ conn: NWConnection, status: String, body: Data = Data(),
                          contentType: String = "application/json") {
         var head = "HTTP/1.1 \(status)\r\nContent-Type: \(contentType)\r\nContent-Length: \(body.count)\r\nConnection: close\r\n"
-        head += "Mcp-Session-Id: vcad-app\r\n\r\n"
+        head += "Mcp-Session-Id: vcad-app\r\n"
+        if let r = record { head += "X-Vcad-Instance: \(r.pid) \(r.instanceId)\r\n" }
+        head += "\r\n"
         var out = Data(head.utf8)
         out.append(body)
         conn.send(content: out, completion: .contentProcessed { _ in conn.cancel() })
@@ -156,6 +195,7 @@ final class AgentBridge {
                                      "resources": ["subscribe": true, "listChanged": false]],
                     "serverInfo": ["name": "vcad-app", "version": "0.2"],
                     "instructions": Self.instructions,
+                    "_meta": ["io.vcad/instance": self.instanceMeta],
                 ])
             case "ping":
                 body = Self.rpcResult(id, [:])
@@ -185,13 +225,31 @@ final class AgentBridge {
                 let name = params["name"] as? String ?? ""
                 let args = params["arguments"] as? [String: Any] ?? [:]
                 // MRTR retry payload: elicitations the client already answered.
-                let result = await self.callTool(name, args, inputResponses: params["inputResponses"])
+                self.refreshDiscovery()
+                let result = Self.stampInstance(await self.callTool(name, args, inputResponses: params["inputResponses"]),
+                                                self.instanceMeta)
                 body = Self.rpcResult(id, result)
             default:
                 body = Self.rpcError(id, -32601, "method not found: \(method)")
             }
             self.respond(conn, status: "200 OK", body: body)
         }
+    }
+
+    /// Adds `_meta["io.vcad/instance"]` and a trailing one-line text block
+    /// ("vcad.app pid 123 · bracket.vcad") to a tool result. Trailing, so
+    /// clients that parse content[0] as JSON are unaffected.
+    static func stampInstance(_ result: [String: Any], _ meta: [String: Any]) -> [String: Any] {
+        guard let pid = meta["pid"] else { return result }
+        var r = result
+        var m = r["_meta"] as? [String: Any] ?? [:]
+        m["io.vcad/instance"] = meta
+        r["_meta"] = m
+        let doc = (meta["document"] as? String) ?? "no document"
+        var content = r["content"] as? [[String: Any]] ?? []
+        content.append(["type": "text", "text": "[vcad.app pid \(pid) · \(doc)]"])
+        r["content"] = content
+        return r
     }
 
     /// "claude-code" → "Claude", "cursor-vscode" → "Cursor".

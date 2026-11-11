@@ -793,6 +793,7 @@ struct ReleasedOverlayView: View {
     /// What the current left-drag does, decided once at its first event from
     /// the navigation scheme (orbit, pan, marquee, gizmo handle, or nothing).
     @State private var leftDragMode: NavigationScheme.Action?
+    @State private var sketchPointDrag = false
     /// Where the last click landed and how far into that point's stack of parts
     /// it selected — clicking the same spot again walks to the part behind.
     @State private var cycleAnchor: CGPoint?
@@ -1065,9 +1066,6 @@ struct ReleasedOverlayView: View {
                     .allowsHitTesting(false)
                     .accessibilityIdentifier("selectionReadout")
             }
-            // Opening a new document: the import / first-solve card, then
-            // the compact pill once geometry is visible.
-            LoadProgressOverlay(model: model, top: chromeTop)
             // Floating panels, hosted in the overlay itself (separate
             // NSPanels break SwiftUI hit testing after auto-resize).
             if !studio {
@@ -1665,6 +1663,17 @@ struct ReleasedOverlayView: View {
                     marquee = (value.startLocation, value.location)
                     return
                 }
+                // Select-tool drag of a sketch point: drag-to-solve.
+                if sketchPointDrag {
+                    if let ray = kernelRay(at: value.location) { model.sketchDrag(ray: ray); refreshSketchInk() }
+                    return
+                }
+                if leftDragMode == nil, model.sketching, let ray = kernelRay(at: value.startLocation),
+                   model.beginSketchDrag(ray: ray) {
+                    sketchPointDrag = true
+                    leftDragMode = NavigationScheme.Action.none
+                    return
+                }
                 if leftDragMode == nil && !model.draggingHandle {
                     let handle = ReleaseWindowController.shared.hits(atViewPoint: value.startLocation)
                         .first(where: { model.gizmoHandle(for: $0.entity.name) != nil })?.entity.name
@@ -1713,6 +1722,11 @@ struct ReleasedOverlayView: View {
                 model.lastDrag = value.translation
             }
             .onEnded { _ in
+                if sketchPointDrag {
+                    sketchPointDrag = false; leftDragMode = nil
+                    model.endSketchDrag(); refreshSketchInk()
+                    return
+                }
                 let mode = leftDragMode
                 leftDragMode = nil
                 if mode == NavigationScheme.Action.none { model.lastDrag = .zero; return }
@@ -2097,6 +2111,7 @@ struct ReleasedARView: NSViewRepresentable {
         if !scene.solving {
             let bounds = ReleaseWindowController.shared.arView?.bounds.size ?? .zero
             let aspect = bounds.height > 0 ? Float(bounds.width / bounds.height) : 1.6
+            model.viewportAspect = aspect
             if let target = model.takeAgentFrameDistance(aspect: aspect) {
                 // Deferred: this runs inside a view update.
                 Task { @MainActor in
@@ -2190,6 +2205,14 @@ struct ReleasedARView: NSViewRepresentable {
             e.transform = Transform(matrix: !isFreeRoot && i < model.instanceTransforms.count
                                     ? model.instanceTransforms[i] : inst.transform)
             e.generateCollisionShapes(recursive: false)
+            // Model edges (B-rep topology, Fusion-style), shared per part def.
+            if !model.zebraMode, let r = inst.edges {
+                let view = ReleaseWindowController.shared.arView
+                let hPx = Float((view?.bounds.height ?? 900) * (view?.window?.backingScaleFactor ?? 2))
+                if let lines = SceneAssets.edgeLineMaterial(viewportHeightPx: hPx) {
+                    e.addChild(ModelEntity(mesh: r, materials: [lines]))
+                }
+            }
             centering.addChild(e)
             if !isFreeRoot { coordinator.instanceEntities.append(e) }
         }

@@ -128,6 +128,7 @@ final class GlassUI {
         if ch == "?" { shortcutsShown.toggle(); return true }
         if model.sketching {
             let key = Character(ch.lowercased())
+            if key == "x" { model.sketch?.toggleConstruction(); model.sketchDirty = true; return true }
             guard let t = SketchToolKind.allCases.first(where: { $0.shortcut == key }) else { return false }
             model.setSketchTool(t)
             return true
@@ -258,11 +259,11 @@ struct DockHost: View {
 /// the bottom of the window is how you act on it.
 struct GlassToolbar: View {
     @Bindable var model: EditorModel
-    @State private var query = ""
-    @State private var searching = false
-    @FocusState private var searchFocused: Bool
     @State private var connectionShown = false
     @State private var toolbarWidth: CGFloat = 1240
+    @State private var progressShown = false
+    @State private var hoveringStatus = false
+    @State private var detailsShown = false
 
     var body: some View {
         HStack(spacing: Theme.Space.m) {
@@ -283,7 +284,7 @@ struct GlassToolbar: View {
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarWidth = $0 }
         .padding(.top, model.isWindowed ? Glass.toolbarDrop : 0)
         .background {
-            // ⌘F and ⌘K both land in search.
+            // ⌘F and ⌘K both open the command palette.
             Group {
                 Button("") { beginSearch() }.keyboardShortcut("f", modifiers: .command)
                 Button("") { beginSearch() }.keyboardShortcut("k", modifiers: .command)
@@ -294,13 +295,9 @@ struct GlassToolbar: View {
     /// Shrinks with the window, and is the same size in either state.
     private var fieldWidth: CGFloat { min(340, max(200, toolbarWidth * 0.3)) }
 
-    /// The second line, only when there's something to say. Most urgent first.
+    /// The second line when no task is running, only when there's something
+    /// to say. Running work comes from `model.progress` (ProgressCenter.swift).
     private func news(at now: Date) -> String? {
-        if model.solving {
-            let p = model.solveProgress
-            return p.total > 1 ? "Solving \(p.done) of \(p.total)" : "Solving"
-        }
-        if AgentSession.shared.running { return "Agent working" }
         // An agent over the live link: it has written in the last few seconds.
         if let at = model.agentLinkActiveAt, now.timeIntervalSince(at) < 4 { return "Agent working" }
         if let line = model.sketchStatusLine(at: now) { return line }
@@ -313,86 +310,145 @@ struct GlassToolbar: View {
             .compactMap { $0 }.filter { $0 > now }.sorted()
     }
 
-    /// Real progress only: a single-step solve has none to show.
-    private var solveFraction: CGFloat? {
-        let p = model.solveProgress
-        guard model.solving, p.total > 1 else { return nil }
-        return CGFloat(p.done) / CGFloat(p.total)
+    /// News expiries, plus a tick a second while a task runs (its ETA).
+    private func statusTicks(after now: Date) -> [Date] {
+        guard shownTask != nil else { return newsExpiries(after: now) }
+        return (1...600).map { now.addingTimeInterval(Double($0)) }
     }
 
-    /// The document's name at rest; a click or ⌘F makes the same field search.
+    /// The task the pill shows, once it has run long enough to be worth
+    /// showing (a cache-hit open or a one-step solve never flashes).
+    private var shownTask: ProgressTask? { progressShown ? model.progress.primary : nil }
+
+    /// A failed or warned open: stays in the pill until dismissed.
+    private var loadOutcome: LoadProgress? {
+        guard let l = model.loading, !l.isRunning else { return nil }
+        return l
+    }
+
+    /// The document's name at rest; a click, ⌘F or ⌘K opens the command palette.
     private var statusField: some View {
         Group {
-            if searching {
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Search tools and features", text: $query)
-                        .textFieldStyle(.plain)
-                        .focused($searchFocused)
-                        .onSubmit { runSearch() }
-                        .onEscape { endSearch() }
-                }
-                .accessibilityLabel("Search tools and features")
-            } else {
-                Button { beginSearch() } label: {
+                Button { statusClicked() } label: {
                     // Ticks only at the moments the line can expire on its own
-                    // (a linked agent going quiet, a sketch blocker timing out);
-                    // everything else re-renders through observation. A
-                    // free-running 1 Hz clock here kept the window compositing.
-                    TimelineView(.explicit(newsExpiries(after: .now))) { context in
-                    let news = news(at: context.date)
-                    VStack(spacing: 0) {
-                        Text(model.source.label).font(.system(size: 12, weight: .medium))
-                            .lineLimit(1).truncationMode(.middle)
-                        if let news {
-                            Text(news).font(.system(size: 10)).foregroundStyle(.secondary)
-                                .lineLimit(1).truncationMode(.tail).monospacedDigit()
-                                .transition(.opacity)
+                    // (a linked agent going quiet, a sketch blocker timing out)
+                    // and once a second while a task runs (ETA); everything
+                    // else re-renders through observation. A free-running
+                    // clock at rest kept the window compositing.
+                    TimelineView(.explicit(statusTicks(after: .now))) { context in
+                        let line = statusLine(at: context.date)
+                        VStack(spacing: 0) {
+                            Text(pillTitle).font(.system(size: 12, weight: .medium))
+                                .lineLimit(1).truncationMode(.middle)
+                            if let line {
+                                Text(line.text).font(.system(size: 10))
+                                    .foregroundStyle(line.tint.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.secondary))
+                                    .lineLimit(1).truncationMode(.middle)
+                                    // Steady digits: monospaced, no rolling transition.
+                                    .monospacedDigit()
+                                    .contentTransition(.identity)
+                            }
                         }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Capsule())
-                    .animation(Motion.smooth, value: news)
+                        .padding(.horizontal, trailingControl ? 14 : 0)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Capsule())
+                        .animation(Motion.smooth, value: line?.text == nil)
                     }
                 }
                 .buttonStyle(.plain)
-                .help("\(model.source.label) — click to search tools and features (⌘F)")
-                .accessibilityLabel([model.source.label, news(at: .now)].compactMap { $0 }.joined(separator: ", "))
-                .accessibilityHint("Search tools and features")
-            }
+                .help(statusHelp)
+                .accessibilityLabel([pillTitle, statusLine(at: .now)?.text].compactMap { $0 }.joined(separator: ", "))
+                .accessibilityHint(shownTask != nil || loadOutcome != nil ? "Show details" : "Opens the command palette")
         }
         .padding(.horizontal, 14)
         .frame(width: fieldWidth, height: 32)
+        .overlay(alignment: .trailing) {
+            trailingButton.padding(.trailing, 8)
+        }
         .overlay(alignment: .bottom) {
-            if !searching, let fraction = solveFraction {
-                GeometryReader { geo in
-                    Capsule().fill(Color.accentColor).frame(width: geo.size.width * fraction, height: 2)
-                        .frame(maxHeight: .infinity, alignment: .bottom)
-                }
-                .padding(.horizontal, 16)
-                .animation(Motion.smooth, value: fraction)
+            if let task = shownTask {
+                PillProgressBar(fraction: task.fraction)
+                    .padding(.horizontal, 16).padding(.bottom, 1)
             }
         }
+        .onHover { hoveringStatus = $0 }
+        .popover(isPresented: $detailsShown, arrowEdge: .bottom) {
+            ProgressDetails(model: model) { detailsShown = false }
+        }
+        .task(id: model.progress.primary?.id) {
+            // Show a task only once it has run for a beat.
+            guard model.progress.primary != nil else { progressShown = false; return }
+            if progressShown { return }
+            try? await Task.sleep(for: .milliseconds(250))
+            withAnimation(Motion.smooth) { progressShown = model.progress.primary != nil }
+        }
+        .onChange(of: model.progress.tasks.count) { _, n in
+            // The list is only for more than one task, and closes with nothing to show.
+            if n == 0 && loadOutcome == nil { detailsShown = false }
+        }
+        .reportsProgress(model.progress, id: "agent", title: "Agent working",
+                         active: AgentSession.shared.running,
+                         cancel: { AgentSession.shared.stop() })
         .glassCapsule()
-        .onChange(of: searchFocused) { _, focused in if !focused && query.isEmpty { searching = false } }
-        .popover(isPresented: Binding(get: { searchFocused && !query.isEmpty }, set: { if !$0 { endSearch() } }),
-                 arrowEdge: .bottom) {
-            SearchResults(model: model, query: query) { endSearch() }
+    }
+
+    /// The document's name — or, while a new file opens, that file's.
+    private var pillTitle: String {
+        if let l = model.loading { return l.url.deletingPathExtension().lastPathComponent }
+        return model.source.label
+    }
+
+    /// The second line: the running task, a failed / warned open, or news.
+    private func statusLine(at now: Date) -> (text: String, tint: Color?)? {
+        if let task = shownTask {
+            let extra = model.progress.tasks.count - 1
+            return (task.line + (extra > 0 ? " · +\(extra)" : ""), nil)
+        }
+        if let outcome = loadOutcome {
+            return (outcome.stageLabel, outcome.isFailed ? .red : .orange)
+        }
+        return news(at: now).map { ($0, nil) }
+    }
+
+    private var statusHelp: String {
+        if let t = shownTask {
+            let detail = [t.stage, t.detailLine(now: .now)].compactMap { $0 }.joined(separator: " · ")
+            return [t.title, detail.isEmpty ? nil : detail, t.cancellable ? "hover for ✕ to cancel" : nil]
+                .compactMap { $0 }.joined(separator: " — ")
+        }
+        if loadOutcome != nil { return "Click for details" }
+        return "\(model.source.label) — click to search commands (⌘K)"
+    }
+
+    /// Running work or an open's outcome: the pill shows details. At rest it searches.
+    private func statusClicked() {
+        if (shownTask != nil && model.progress.tasks.count > 1) || loadOutcome != nil {
+            detailsShown.toggle()
+        } else {
+            beginSearch()
         }
     }
 
+    /// The trailing ✕ (cancel the headlined task) appears on hover.
+    private var trailingControl: Bool {
+        hoveringStatus && (shownTask?.cancellable == true)
+    }
+
+    @ViewBuilder private var trailingButton: some View {
+        if trailingControl, let task = shownTask {
+            Button { model.progress.cancel(task.id) } label: {
+                Image(systemName: "xmark.circle.fill").font(.system(size: 13))
+                    .symbolRenderingMode(.hierarchical).foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Cancel \(task.title.lowercased())")
+            .accessibilityLabel("Cancel \(task.title)")
+            .transition(.opacity)
+        }
+    }
+
+    /// One search for the whole app: the command palette.
     private func beginSearch() {
-        searching = true
-        // The field has to exist before it can take focus.
-        DispatchQueue.main.async { searchFocused = true }
-    }
-
-    private func endSearch() {
-        query = ""; searchFocused = false; searching = false
-    }
-
-    private func runSearch() {
-        if let first = SearchResults.matches(model: model, query: query).first { first.run() }
-        endSearch()
+        model.showsCommandPalette = true
     }
 
     private var machineChip: some View {
@@ -420,65 +476,6 @@ struct GlassToolbar: View {
         .help(help)
         .accessibilityLabel(help)
         .accessibilityAddTraits(active ? .isSelected : [])
-    }
-}
-
-/// Search results: tools of every workspace plus features in the document.
-struct SearchResults: View {
-    @Bindable var model: EditorModel
-    let query: String
-    let dismiss: () -> Void
-
-    struct Hit: Identifiable {
-        let id: String
-        let title: String
-        let subtitle: String
-        let symbol: String
-        let run: () -> Void
-    }
-
-    static func matches(model: EditorModel, query: String) -> [Hit] {
-        let q = query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return [] }
-        var out: [Hit] = []
-        for space in DockSpace.allCases {
-            for t in DockTools.tools(space, model: model) where t.enabled && t.label.localizedCaseInsensitiveContains(q) {
-                out.append(Hit(id: "\(space.rawValue).\(t.id)", title: t.label, subtitle: space.label, symbol: t.symbol) {
-                    GlassUI.shared.enter(space, model: model); t.action()
-                })
-            }
-        }
-        func walk(_ nodes: [FeatureNode]) {
-            for n in nodes {
-                if n.name.localizedCaseInsensitiveContains(q) {
-                    out.append(Hit(id: "feature.\(n.id)", title: n.name, subtitle: "Feature", symbol: n.symbol) {
-                        model.selectedFeatureID = n.id
-                    })
-                }
-                walk(n.children)
-            }
-        }
-        walk(model.featureNodes)
-        return Array(out.prefix(12))
-    }
-
-    var body: some View {
-        let hits = Self.matches(model: model, query: query)
-        VStack(alignment: .leading, spacing: 2) {
-            if hits.isEmpty {
-                Text("No matches").foregroundStyle(.secondary).padding(Theme.Space.s)
-            }
-            ForEach(hits) { h in
-                Button { h.run(); dismiss() } label: {
-                    HStack {
-                        Image(systemName: h.symbol).frame(width: 18)
-                        Text(h.title)
-                        Spacer()
-                        Text(h.subtitle).foregroundStyle(.secondary)
-                    }.padding(.horizontal, Theme.Space.s).padding(.vertical, 5).contentShape(Rectangle())
-                }.buttonStyle(.plain)
-            }
-        }.font(.callout).padding(Theme.Space.s).frame(width: 300)
     }
 }
 

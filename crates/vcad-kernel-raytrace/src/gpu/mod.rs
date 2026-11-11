@@ -44,22 +44,34 @@ pub use kosm_render::gpu::{OfflineOptions, OfflineResult};
 /// pipeline, and the first buffer upload then panics with an "invalid buffer"
 /// error that points nowhere near the cause. Reported as an error here
 /// instead, so callers can say so or fall back to the CPU.
+///
+/// The loss is remembered for the life of the process. `GpuContext` is a
+/// process-wide singleton and a lost device stays lost, but wgpu fires the
+/// lost callback once: a second `brep_pipeline` call would register a fresh
+/// callback on an already-dead device, never hear from it, and walk straight
+/// into the upload panic this check exists to prevent.
 pub fn brep_pipeline(ctx: &GpuContext) -> Result<RayTracePipeline, GpuError> {
     #[cfg(not(target_arch = "wasm32"))]
     {
-        use std::sync::{Arc, Mutex};
-        let lost: Arc<Mutex<Option<String>>> = Arc::default();
-        let sink = lost.clone();
+        use std::sync::Mutex;
+        static LOST: Mutex<Option<String>> = Mutex::new(None);
+        let lost = || LOST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let report = |why: String| {
+            GpuError::InvalidInput(format!(
+                "the GPU device was lost while building the path-tracing pipeline \
+                 ({why}); the driver rejected the tracer shader"
+            ))
+        };
+        if let Some(why) = lost() {
+            return Err(report(why));
+        }
         ctx.device.set_device_lost_callback(move |reason, msg| {
-            *sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("{reason:?}: {msg}"));
+            *LOST.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("{reason:?}: {msg}"));
         });
         let pipeline = RayTracePipeline::new(ctx, &BrepGeometry::module())?;
         let _ = ctx.device.poll(wgpu::PollType::wait_indefinitely());
-        if let Some(why) = lost.lock().unwrap_or_else(|e| e.into_inner()).take() {
-            return Err(GpuError::InvalidInput(format!(
-                "the GPU device was lost while building the path-tracing pipeline \
-                 ({why}); the driver rejected the tracer shader"
-            )));
+        if let Some(why) = lost() {
+            return Err(report(why));
         }
         Ok(pipeline)
     }

@@ -708,9 +708,29 @@ pub extern "C" fn vcad_scene_part_face_ids(
     ids.as_ptr()
 }
 
-/// Extract the `index`-th part's feature edges (boundary + creases sharper
-/// than `angle_deg`) for a wireframe/edge overlay. Returns an owned handle;
-/// read it with [`vcad_edges_view`] and release it with [`vcad_edges_free`].
+/// Model edges of an evaluated mesh, drawn the way Fusion 360 does: every
+/// B-rep topological edge (face boundaries, tangent fillet edges included)
+/// when the mesh carries per-triangle face ids, else boundary + creases
+/// sharper than `angle_deg` (imported / mesh-only parts).
+fn eval_mesh_edges(mesh: &vcad_eval::EvaluatedMesh, angle_deg: f32) -> *mut VcadEdges {
+    let mut m = TriangleMesh::new();
+    m.vertices = mesh.positions.clone();
+    m.indices = mesh.indices.clone();
+    if let Some(ids) = mesh.face_ids.as_ref() {
+        m.face_ids = ids.clone();
+    }
+    let segs = m.topology_edge_segments(angle_deg);
+    let mut flat = Vec::with_capacity(segs.len() * 6);
+    for s in segs {
+        flat.extend_from_slice(&s);
+    }
+    Box::into_raw(Box::new(VcadEdges { inner: flat }))
+}
+
+/// Extract the `index`-th part's model edges for the ink-line overlay: all
+/// B-rep topological edges when the part's mesh is face-tagged, else boundary
+/// and creases sharper than `angle_deg`. Returns an owned handle; read it with
+/// [`vcad_edges_view`] and release it with [`vcad_edges_free`].
 /// Returns null on null scene, out-of-range index, or panic.
 #[no_mangle]
 pub extern "C" fn vcad_scene_part_edges(
@@ -723,22 +743,61 @@ pub extern "C" fn vcad_scene_part_edges(
     }
     catch_unwind(AssertUnwindSafe(|| {
         let s: &VcadScene = unsafe { &*scene };
-        let Some(part) = s.inner.parts.get(index) else {
-            return ptr::null_mut();
-        };
-        // EvaluatedMesh is positions/indices only — rewrap as a kernel
-        // TriangleMesh for the feature-edge extractor.
-        let mut mesh = TriangleMesh::new();
-        mesh.vertices = part.mesh.positions.clone();
-        mesh.indices = part.mesh.indices.clone();
-        let segs = mesh.feature_edge_segments(angle_deg);
-        let mut flat = Vec::with_capacity(segs.len() * 6);
-        for s in segs {
-            flat.extend_from_slice(&s);
+        match s.inner.parts.get(index) {
+            Some(part) => eval_mesh_edges(&part.mesh, angle_deg),
+            None => ptr::null_mut(),
         }
-        Box::into_raw(Box::new(VcadEdges { inner: flat }))
     }))
     .unwrap_or(ptr::null_mut())
+}
+
+/// Same as [`vcad_scene_part_edges`] for the `index`-th assembly instance, in
+/// part-def-LOCAL coordinates (apply the instance transform). Instances of one
+/// part definition share edges; key a cache by
+/// [`vcad_scene_instance_part_def`].
+#[no_mangle]
+pub extern "C" fn vcad_scene_instance_edges(
+    scene: *const VcadScene,
+    index: usize,
+    angle_deg: f32,
+) -> *mut VcadEdges {
+    if scene.is_null() {
+        return ptr::null_mut();
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let s: &VcadScene = unsafe { &*scene };
+        match s.inner.instances.as_ref().and_then(|i| i.get(index)) {
+            Some(inst) => eval_mesh_edges(&inst.mesh, angle_deg),
+            None => ptr::null_mut(),
+        }
+    }))
+    .unwrap_or(ptr::null_mut())
+}
+
+/// Borrow the `index`-th instance's part-definition id (same borrow rules as
+/// [`vcad_scene_instance_id`]).
+#[no_mangle]
+pub extern "C" fn vcad_scene_instance_part_def(
+    scene: *const VcadScene,
+    index: usize,
+    out_len: *mut usize,
+) -> *const u8 {
+    if !out_len.is_null() {
+        unsafe { *out_len = 0 };
+    }
+    if scene.is_null() {
+        return ptr::null();
+    }
+    let s: &VcadScene = unsafe { &*scene };
+    match s.inner.instances.as_ref().and_then(|i| i.get(index)) {
+        Some(inst) => {
+            if !out_len.is_null() {
+                unsafe { *out_len = inst.part_def_id.len() };
+            }
+            inst.part_def_id.as_ptr()
+        }
+        None => ptr::null(),
+    }
 }
 
 // =========================================================================

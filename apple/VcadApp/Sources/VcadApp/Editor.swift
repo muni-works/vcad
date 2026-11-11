@@ -26,6 +26,19 @@ enum Motion {
 enum Workspace: String, CaseIterable, Identifiable, Codable {
     case design, electronics, manufacture, drawing
     var id: String { rawValue }
+    /// The workspace a launch may come back to. Drawing and Electronics don't
+    /// mount the 3D viewport, and a document opened straight into one of them
+    /// first built its viewport only on leaving it — that late first build came
+    /// up wrong (an "Opening" card that never cleared; a model drawn as a huge
+    /// black silhouette around the camera). Those launches start in Design;
+    /// switching into Drawing afterwards is unaffected.
+    static func launchRestorable(_ ws: Workspace) -> Workspace? {
+        guard available.contains(ws) else { return nil }
+        switch ws {
+        case .design, .manufacture: return ws
+        case .drawing, .electronics: return .design
+        }
+    }
     var label: String {
         switch self {
         case .design: return "Design"
@@ -368,7 +381,7 @@ final class EditorModel {
         cnc.rightPanelShown = m.cncRight
         cnc.bottomPanelShown = m.cncBottom
         measurementsShown = m.measurementsShown
-        if let ws = Workspace(rawValue: m.workspace), Workspace.available.contains(ws) { workspace = ws }
+        if let ws = Workspace(rawValue: m.workspace).flatMap(Workspace.launchRestorable) { workspace = ws }
     }
     /// Whether the last session ran in a window (the presentation to restore).
     var remembersWindowed: Bool { LayoutMemory.load().windowed }
@@ -439,7 +452,9 @@ final class EditorModel {
     var loadError: String?
     /// A new document opening (import + first solve): drives the progress
     /// card. Nil for re-solves of the open document.
-    var loading: LoadProgress?
+    var loading: LoadProgress? { didSet { if loading != oldValue { syncProgress() } } }
+    /// Every long-running operation in this window (ProgressCenter.swift).
+    @ObservationIgnored let progress = ProgressCenter()
     /// What was open before `loading` began — Cancel returns to it.
     @ObservationIgnored var loadingPrevious: GeometrySource?
     /// Shown when the first solve lands (STEP faces skipped).
@@ -1954,6 +1969,8 @@ final class EditorModel {
 
     /// A tap on the sketch plane (2D plane coords) — drives the active tool.
     func sketchTap(_ p: SIMD2<Float>, additive: Bool = false) {
+        // Option places freely: no grid, no inference.
+        sketch?.suppressInference = NSEvent.modifierFlags.contains(.option)
         sketch?.tap(SIMD2(Double(p.x), Double(p.y)), additive: additive)
         sketchDirty = true
     }
@@ -1971,13 +1988,25 @@ final class EditorModel {
             let k = simd_distance(raw, q)
             sketch.pickScale = k.isFinite && k > 0 ? k : nil
         }
-        if sketch.tool == .select || sketch.tool == .dimension {
+        if !sketch.tool.draws {
             sketch.tap(raw, additive: additive)
             sketchDirty = true
         } else if let p = sketchPlanePoint(originKernel: ray.o, dirKernel: ray.d) {
             sketchTap(p, additive: additive)
         }
     }
+
+    /// Drag a sketch point in Select: true when a point was under the ray.
+    func beginSketchDrag(ray: (o: SIMD3<Float>, d: SIMD3<Float>)) -> Bool {
+        guard let sketch, sketch.tool == .select,
+              let p = sketch.frame.intersect(origin: SIMD3<Double>(ray.o), dir: SIMD3<Double>(ray.d)) else { return false }
+        return sketch.beginDrag(p)
+    }
+    func sketchDrag(ray: (o: SIMD3<Float>, d: SIMD3<Float>)) {
+        guard let sketch, let p = sketch.frame.intersect(origin: SIMD3<Double>(ray.o), dir: SIMD3<Double>(ray.d)) else { return }
+        sketch.dragTo(p); sketchDirty = true
+    }
+    func endSketchDrag() { sketch?.endDrag(); sketchDirty = true }
 
     /// Spacing of the sketch cursor grid, in mm.
     static let sketchGridStep = 0.5
@@ -2500,7 +2529,7 @@ final class EditorModel {
     /// the remaining indices stay valid while removing.
     func deleteSelectedParts() {
         if sketching {
-            sketch?.deleteSelection()
+            sketch?.deleteSelectionOrConstraint()
             sketchDirty = true
             return
         }
@@ -2839,14 +2868,26 @@ final class EditorModel {
     /// display size, so fixed camera params frame any part well.
     func resetCamera(animated: Bool = false) {
         stopSpin()
+        let d = Self.frameAllDistance(size: sizeMM, aspect: viewportAspect)
         let apply = {
             self.azimuth = .pi / 5
             self.elevation = .pi / 7
-            self.distance = 1.5
+            self.distance = d
             self.panOffset = .zero
         }
         if animated { withAnimation(Motion.smooth) { apply() } } else { apply() }
-        pinchBaseline = 1.5
+        pinchBaseline = d
+    }
+
+    /// Width / height of the 3D viewport, kept current by the viewport.
+    @ObservationIgnored var viewportAspect: Float = 1.6
+
+    /// Frame All / Home: fit the model's bounds in the view (Fusion), not a
+    /// fixed distance — a 240 mm-tall assembly sat in a quarter of the
+    /// viewport (live QA 2026-11-11). No model yet → the old fixed 1.5.
+    static func frameAllDistance(size: SIMD3<Float>, aspect: Float) -> Float {
+        guard size.max() > 0 else { return 1.5 }
+        return fittedDistance(size: size, azimuth: .pi / 5, elevation: .pi / 7, aspect: aspect)
     }
 
     /// Turn the camera to a standard view, animated.
@@ -3376,6 +3417,29 @@ final class EditorModel {
     }
 
     // MARK: open progress (LoadProgress.swift)
+
+    /// Mirror the open (import + first solve) and re-solves into the
+    /// window's progress center. The first solve is part of the "load" task;
+    /// a re-solve of the open document is its own "solve" task.
+    private func syncProgress() {
+        if let load = loading, load.isRunning {
+            progress.report("load", title: load.taskTitle, stage: load.taskStage,
+                            done: load.taskCounts.done, total: load.taskCounts.total,
+                            fraction: load.taskFraction,
+                            cancel: { [weak self] in self?.cancelLoading() })
+        } else {
+            progress.end("load")
+        }
+        if solving, loading?.isRunning != true {
+            let p = solveProgress
+            // All roots landed but still running: the closing pass, uncounted.
+            let finishing = p.total > 1 && p.done >= p.total
+            progress.report("solve", title: "Solving", stage: finishing ? "Finishing" : nil,
+                            done: finishing ? 0 : p.done, total: finishing ? 0 : p.total)
+        } else {
+            progress.end("solve")
+        }
+    }
 
     /// Show the open-progress card for `url`'s first solve (live window only;
     /// a re-solve of the open document never gets one).
@@ -3965,9 +4029,11 @@ final class EditorModel {
     /// smoke hooks and tests keep the synchronous path.
     var evaluatesOffMainThread = false
     /// True while the kernel is evaluating the document off the main thread.
-    var solving = false
+    var solving = false { didSet { if solving != oldValue { syncProgress() } } }
     /// Progress of the background solve: visible roots landed / total.
-    var solveProgress: (done: Int, total: Int) = (0, 0)
+    var solveProgress: (done: Int, total: Int) = (0, 0) {
+        didSet { if solveProgress != oldValue { syncProgress() } }
+    }
     /// The last background evaluation, waiting for the viewport to adopt it.
     @ObservationIgnored private var preparedScene: (data: Data, handle: OpaquePointer)?
     @ObservationIgnored private var evaluating: Data?
@@ -4088,6 +4154,11 @@ final class EditorModel {
                     self.partialMeshes = []; self.partialBounds = nil
                     if let handle {
                         self.preparedScene = (data, handle)
+                        // The open is done once the kernel is: don't wait on the
+                        // viewport adopting the scene (buildScene also calls
+                        // this; the second call is a no-op). Without this the
+                        // header kept "Meshing parts N of N" after the solve.
+                        Task { @MainActor [weak self] in self?.finishFirstSolve(error: nil) }
                         self.preparedIsPreview = preview
                         if preview { self.startRefine(data: data, dir: dir) }
                     } else {
@@ -4300,6 +4371,14 @@ final class EditorModel {
         var hi = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
         var tris = 0
         var centers = [SIMD3<Float>](repeating: .zero, count: count)
+        // One edge resource per part definition: instances of a part share it.
+        var edgeByDef: [String: MeshResource?] = [:]
+        func edgeResource(_ make: () -> OpaquePointer?, name: String) -> MeshResource? {
+            guard let eh = make() else { return nil }
+            defer { vcad_edges_free(eh) }
+            return EdgeOverlay.screenLineResource(segments: EdgeOverlay.segments(fromView: vcad_edges_view(eh)),
+                                                  name: name)
+        }
         for i in 0..<count {
             var m16 = [Double](repeating: 0, count: 16)
             _ = vcad_scene_instance_transform(scene, i, &m16)
@@ -4321,12 +4400,22 @@ final class EditorModel {
                 }
             }
             let matKey = instString(vcad_scene_instance_material, i)
+            let def = instString(vcad_scene_instance_part_def, i)
+            let edges: MeshResource?
+            if !def.isEmpty, let cached = edgeByDef[def] {
+                edges = cached
+            } else {
+                edges = edgeResource({ vcad_scene_instance_edges(scene, i, Self.edgeAngleDeg) },
+                                     name: "instEdges\(i)")
+                if !def.isEmpty { edgeByDef[def] = edges }
+            }
             instances.append(RenderInstance(
                 index: i,
                 id: instString(vcad_scene_instance_id, i),
                 mesh: km.resource(name: "inst\(i)"),
                 material: resolvedMaterial(named: matKey, fallbackIndex: i),
-                transform: world))
+                transform: world,
+                edges: edges))
         }
         // A root no part definition uses (a frozen topology_optimize mesh added
         // to an assembly) has no instance to draw it. Index past the instances
@@ -4342,7 +4431,9 @@ final class EditorModel {
                 id: "root\(root.part)",
                 mesh: km.resource(name: "free\(k)"),
                 material: resolvedMaterial(named: root.material, fallbackIndex: count + k),
-                transform: matrix_identity_float4x4))
+                transform: matrix_identity_float4x4,
+                edges: edgeResource({ vcad_scene_part_edges(scene, root.part, Self.edgeAngleDeg) },
+                                    name: "freeEdges\(k)")))
         }
         guard !instances.isEmpty else {
             clearAssembly()

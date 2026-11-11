@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-11-sketch-inference-smart-dimension",
+  "version": "0.11.0",
+  "date": "2026-11-11",
+  "category": "feat",
+  "title": "Mac sketching: inference, Smart Dimension, trim and fillet",
+  "summary": "The Mac app's sketcher infers constraints while drawing, sizes or pairs with one Smart Dimension tool, colours by solve state, drags to solve, and adds construction, trim, extend, fillet, mirror, patterns and live profile shading.",
+  "features": ["sketch", "constraints", "mac-app"]
+}

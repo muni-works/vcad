@@ -8,10 +8,9 @@
  * A window holding the user's work refuses the session, and every affected
  * call says so. `VCAD_APP=0` opts out.
  */
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 import type { Document } from "@vcad/ir";
+import { describeInstance, listInstances, selectInstance, type InstanceRecord } from "./app-discovery.js";
 import { documents, nextSessionId, runDocumentEnterHooks } from "./tools/session-core.js";
 import { behavior, type ToolDef } from "./tools/tool-def.js";
 
@@ -38,15 +37,41 @@ function documentFolder(documentId: string, document: Document): string | undefi
 
 type Call = (tool: string, args: Record<string, unknown>) => Promise<Record<string, unknown> | null>;
 
+/**
+ * The app this server is linked to, pinned for the process: a window launched
+ * later never steals the link. When the pinned app exits and a different one
+ * is picked up, every shown session is told the app changed instead of
+ * silently pushing into a stranger's window. See app-discovery.ts for the
+ * VCAD_APP_URL / VCAD_APP_PID / VCAD_APP_DOCUMENT selection.
+ */
+let pinned: { url: string; instance: InstanceRecord | null } | null = null;
+let warned = "";
+
 function endpoint(): string | null {
   if (process.env.VCAD_APP === "0") return null;
-  try {
-    const info = JSON.parse(readFileSync(join(homedir(), ".vcad", "app.json"), "utf8"));
-    if (typeof info.pid === "number") process.kill(info.pid, 0);
-    return info.url ?? `http://127.0.0.1:${info.port}/mcp`;
-  } catch {
-    return null;
+  const instances = listInstances();
+  if (pinned && (process.env.VCAD_APP_URL || instances.some((r) => r.pid === pinned?.instance?.pid))) {
+    return pinned.url;
   }
+  const pick = selectInstance({ instances });
+  if (pick.error !== undefined) return null;
+  if (pick.warning && pick.warning !== warned) {
+    warned = pick.warning;
+    process.stderr.write(`[vcad-mcp] ${pick.warning}\n`);
+  }
+  const prev = pinned?.instance;
+  if (prev && pick.instance && prev.instance_id !== pick.instance.instance_id) {
+    appChanged(prev, pick.instance);
+  }
+  pinned = { url: pick.url, instance: pick.instance };
+  return pick.url;
+}
+
+function appChanged(prev: InstanceRecord, next: InstanceRecord): void {
+  const why =
+    `The vcad app changed: ${describeInstance(prev)} is gone, now linked to ${describeInstance(next)} ` +
+    "(it relaunched, or another window took over). Edits stay in this session. To show it there, call show_in_app.";
+  for (const id of links.keys()) loseWindow(id, why);
 }
 
 const callApp: Call = async (tool, args) => {
@@ -473,6 +498,8 @@ export function resetAppLinks(): void {
   pushes.clear();
   lateNotes.clear();
   poseBusy = false;
+  pinned = null;
+  warned = "";
   lastPose = 0;
   pendingRestart = null;
   pendingLatest = null;

@@ -294,6 +294,26 @@ impl TriangleMesh {
     ///
     /// Returns flat segment endpoints `[ax, ay, az, bx, by, bz]` per edge.
     pub fn feature_edge_segments(&self, angle_deg: f32) -> Vec<[f32; 6]> {
+        self.edge_segments(angle_deg, false)
+    }
+
+    /// B-rep topological edges, the way Fusion 360 draws model outlines:
+    /// every mesh edge whose two triangles come from different B-rep faces
+    /// (per [`face_ids`](Self::face_ids)), plus boundary and non-manifold
+    /// edges — including tangent edges such as fillet boundaries, which a
+    /// crease-angle filter misses, and never the tessellation edges inside a
+    /// face. Falls back to [`feature_edge_segments`](Self::feature_edge_segments)
+    /// with `angle_deg` for an untagged mesh, and per edge when either
+    /// triangle's provenance is unknown.
+    pub fn topology_edge_segments(&self, angle_deg: f32) -> Vec<[f32; 6]> {
+        self.edge_segments(angle_deg, true)
+    }
+
+    fn edge_segments(&self, angle_deg: f32, by_face: bool) -> Vec<[f32; 6]> {
+        let tri_count = self.indices.len() / 3;
+        let by_face = by_face
+            && self.face_ids.len() == tri_count
+            && self.face_ids.iter().any(|&f| f != FACE_ID_UNKNOWN);
         let tri_count = self.indices.len() / 3;
         if tri_count == 0 {
             return Vec::new();
@@ -381,6 +401,13 @@ impl TriangleMesh {
         for ((a, b), tris) in &adj {
             let feature = match tris.as_slice() {
                 [_] => true, // boundary
+                [t0, t1]
+                    if by_face
+                        && self.face_ids[*t0 as usize] != FACE_ID_UNKNOWN
+                        && self.face_ids[*t1 as usize] != FACE_ID_UNKNOWN =>
+                {
+                    self.face_ids[*t0 as usize] != self.face_ids[*t1 as usize]
+                }
                 [t0, t1] => {
                     let n0 = normal(*t0 as usize);
                     let n1 = normal(*t1 as usize);
@@ -9009,6 +9036,23 @@ pub fn repair_watertightness(mesh: &mut TriangleMesh) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn topology_edges_follow_face_ids_not_angle() {
+        // Flat quad split in two triangles: no crease anywhere.
+        let mut m = TriangleMesh::new();
+        m.vertices = vec![0., 0., 0., 1., 0., 0., 1., 1., 0., 0., 1., 0.];
+        m.indices = vec![0, 1, 2, 0, 2, 3];
+        // Untagged: crease fallback → only the 4 boundary edges.
+        assert_eq!(m.topology_edge_segments(25.0).len(), 4);
+        // Same face: the diagonal is a tessellation edge, not drawn.
+        m.face_ids = vec![3, 3];
+        assert_eq!(m.topology_edge_segments(25.0).len(), 4);
+        // Two faces meeting tangentially (a fillet boundary): drawn.
+        m.face_ids = vec![3, 4];
+        assert_eq!(m.topology_edge_segments(25.0).len(), 5);
+        assert_eq!(m.feature_edge_segments(25.0).len(), 4);
+    }
+
     use super::*;
     use vcad_kernel_primitives::{make_cone, make_cube, make_cylinder, make_sphere};
 

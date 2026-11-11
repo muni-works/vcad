@@ -45,7 +45,7 @@ With Claude Code: `claude mcp add vcad -- npx -y @vcad/mcp`, or install the
 plugin (server + the vcad skill, versioned together):
 `/plugin marketplace add muni-works/vcad` then `/plugin install vcad@vcad`.
 
-The running Mac app also serves MCP on `127.0.0.1` (port in `~/.vcad/app.json`),
+The running Mac app also serves MCP on `127.0.0.1` (one file per instance in `~/.vcad/instances/`),
 so an agent can drive the same view you are looking at. Tools and protocol
 details: [packages/mcp/README.md](packages/mcp/README.md).
 
