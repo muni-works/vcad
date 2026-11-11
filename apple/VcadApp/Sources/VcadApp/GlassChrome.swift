@@ -1412,14 +1412,17 @@ struct AgentSuggestionPill: View {
     }
 
     private func accept() {
-        do {
-            _ = try AgentEdits.call(suggestion.tool, suggestion.args.mapValues { $0 as Any }, model: model)
+        // The suggested edit runs through the MCP core, exactly as the agent's
+        // own call would have.
+        let tool = suggestion.tool, args = suggestion.args.mapValues { $0 as Any }
+        Task { @MainActor in
+            let r = await AgentCore.shared.call(tool, args)
+            if r["isError"] as? Bool == true {
+                error = ((r["content"] as? [[String: Any]])?.first?["text"] as? String) ?? "edit failed"
+                return
+            }
             ReleaseWindowController.shared.refreshGeometry(model: model)
             dismiss()
-        } catch let e as AgentEdits.Failure {
-            error = e.message
-        } catch {
-            self.error = "\(error)"
         }
     }
 

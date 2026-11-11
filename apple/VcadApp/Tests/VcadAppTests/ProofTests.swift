@@ -1,7 +1,8 @@
 import XCTest
 @testable import VcadApp
 
-/// M2 "proof, not promises", driven exactly as the MCP bridge dispatches it:
+/// M2 "proof, not promises", driven exactly as an agent drives it (through
+/// the Rust MCP core the app hosts):
 /// receipts re-verify on edit (a nudge turns a clearance Violated, undo brings
 /// it back), and elicitation round-trips through the viewport / native sheet
 /// or, for an MRTR client, through `inputResponses`.
@@ -16,7 +17,7 @@ final class ProofTests: XCTestCase {
     }
 
     private func call(_ m: EditorModel, _ name: String, _ args: [String: Any] = [:]) async throws -> [String: Any] {
-        let r = try await AgentTools.call(name, args, model: m)
+        let r = await coreCall(m, name, args)
         XCTAssertNil(r["isError"], "\(name) failed: \(r)")
         return r
     }
@@ -29,7 +30,7 @@ final class ProofTests: XCTestCase {
 
     private func proof(_ m: EditorModel, _ name: String, _ args: [String: Any] = [:],
                        inputs: Any? = nil) async throws -> [String: Any] {
-        let r = try await ProofAgentTools.call(name, args, inputResponses: inputs, model: m)
+        let r = await coreCall(m, name, args, inputResponses: inputs as? [String: Any])
         return try XCTUnwrap(r["structuredContent"] as? [String: Any], "\(name): no structuredContent in \(r)")
     }
 
@@ -175,19 +176,21 @@ final class ProofTests: XCTestCase {
         _ = try await proof(m, "assert_clearance",
                             ["label": "gap", "group_a": ["Box"], "group_b": ["Wedge"], "min_mm": 2])
         let roots = (m.documentJSON?["roots"] as? [Any])?.count
-        let task = Task { JSONBox(value: await ProofAgentTools.confirmDestructive("delete", ["part_id": wedge], inputResponses: nil, model: m)) }
+        let task = Task { JSONBox(value: await coreCall(m, "delete", ["part_id": wedge])) }
         let req = try await waitForRequest()
         XCTAssertTrue(req.destructive)
         XCTAssertTrue(req.message.contains("gap"), req.message)
         ElicitationCenter.shared.respond(.decline)
         let refused = await task.value.value
         XCTAssertEqual(refused?["isError"] as? Bool, true)
+        XCTAssertTrue(resultText(refused ?? [:]).contains("declined"), "\(refused ?? [:])")
         XCTAssertEqual((m.documentJSON?["roots"] as? [Any])?.count, roots, "nothing deleted")
 
-        // Accepting lets the edit through (nil = proceed).
-        let ok = await ProofAgentTools.confirmDestructive("delete", ["part_id": wedge],
-                                                          inputResponses: ["input_1": ["action": "accept"]], model: m)
-        XCTAssertNil(ok)
+        // An MRTR client's accept lets the edit through with no UI.
+        let ok = await coreCall(m, "delete", ["part_id": wedge],
+                                inputResponses: ["input_1": ["action": "accept"]])
+        XCTAssertNil(ok["isError"], "\(ok)")
+        XCTAssertEqual((m.documentJSON?["roots"] as? [Any])?.count, (roots ?? 0) - 1, "deleted")
     }
 
     func testRequestParsesMcpParams() {

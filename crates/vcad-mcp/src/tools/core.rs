@@ -597,6 +597,39 @@ pub fn core_tools(info: InfoSource) -> Vec<ToolDef> {
                         .then(|| ctx.store.current())
                         .flatten()
                 });
+                // Replacing a document keeps its board / schematic.
+                let mut note = None;
+                let doc = match target.as_ref().and_then(|id| ctx.store.load(id).ok()) {
+                    Some(session) => {
+                        let sv = serde_json::to_value(&session).unwrap_or_default();
+                        let mut dv = serde_json::to_value(&doc).unwrap_or_default();
+                        match super::loon_carry::carry_electronics(&sv, &mut dv) {
+                            Ok(Some(n)) => {
+                                note = Some(n);
+                                parse_doc(&dv)?
+                            }
+                            Ok(None) => doc,
+                            Err(e) => return Ok(ToolOutput::error(e)),
+                        }
+                    }
+                    None => doc,
+                };
+                // The live window fails closed: a part the kernel refused
+                // never lands as a silent "no geometry" part.
+                if ctx.store.kind() == crate::store::StoreKind::App {
+                    let scene = evaluate(&doc)?;
+                    if !scene.failures.is_empty() {
+                        let why: Vec<String> = scene
+                            .failures
+                            .iter()
+                            .map(|f| format!("{} (node {}): {}", f.scope, f.node_id, f.error))
+                            .collect();
+                        return Ok(ToolOutput::error(format!(
+                            "loon program loaded but some parts failed to build; document left unchanged:\n{}",
+                            why.join("\n")
+                        )));
+                    }
+                }
                 let id = match target {
                     Some(id) => {
                         ctx.store
@@ -606,7 +639,11 @@ pub fn core_tools(info: InfoSource) -> Vec<ToolDef> {
                     }
                     None => ctx.store.create(doc, None).map_err(store_err)?,
                 };
-                handle(ctx, id)
+                let mut out = handle(ctx, id)?;
+                if let Some(n) = note {
+                    out.content.push(json!({"type": "text", "text": n}));
+                }
+                Ok(out)
             },
         ),
         def(

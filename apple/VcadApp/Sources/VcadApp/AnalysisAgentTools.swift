@@ -10,10 +10,6 @@ import CVcadFFI
 enum AnalysisAgentTools {
     typealias Failure = AgentTools.Failure
 
-    private static func schema(_ props: [String: Any], required: [String] = []) -> [String: Any] {
-        ["type": "object", "properties": props, "required": required]
-    }
-    private static let target: [String: Any] = [
         "type": "object",
         "properties": [
             "faces": ["type": "array", "items": ["type": "integer"],
@@ -22,27 +18,9 @@ enum AnalysisAgentTools {
         ],
     ]
 
-    static let definitions: [[String: Any]] = [
-        ["name": "dfm_check",
-         "description": "Run Design-for-Manufacturing rules on the open document. process: fdm (default), sla, cnc_3axis, injection, sheet_metal, casting_sand, casting_investment. Returns issues with severity, measured vs limit, face ids, and — when the fix can be applied automatically — a patch. Shows in the user's Analysis panel.",
-         "inputSchema": schema(["process": ["type": "string"]])],
-        ["name": "dfm_apply_fix",
-         "description": "Apply the automatic fix for a DFM issue from the latest dfm_check (by issue_id) to the open document — one undo step — then re-run the check and report whether the issue cleared.",
-         "inputSchema": schema(["issue_id": ["type": "string"]], required: ["issue_id"])],
-        ["name": "inspect_faces",
-         "description": "Faces of a part (id, surface kind, centre, normal, area) — the ids analyze_structure loads/supports take.",
-         "inputSchema": schema(["part_index": ["type": "integer"]])],
-        ["name": "analyze_structure",
-         "description": "Static linear-elastic FEA of one part, meshed and solved in-app with a mesh-convergence gate. loads: [{faces|region, force:[Fx,Fy,Fz] N}], supports: [{faces|region, fix?:[bool,bool,bool]}]. material: a preset id (aluminum_6061, steel, stainless_304, titanium, brass, pla, petg, abs, nylon) or omit to infer from the part. Returns max von Mises (MPa), max displacement (mm), safety factor (only when converged), and colours the part by stress in the user's viewport.",
-         "inputSchema": schema(["part_index": ["type": "integer"], "material": ["type": "string"],
-                                "resolution": ["type": "integer", "description": "coarse lattice cells along the longest axis (default 24; the study also solves at 2×)"],
-                                "loads": ["type": "array", "items": target], "supports": ["type": "array", "items": target]],
-                               required: ["loads", "supports"])],
-        ["name": "check_interference",
-         "description": "Minimum clearance and interference (overlap volume, penetration depth) between every pair of parts in the open document; clashes are drawn in red in the user's viewport.",
-         "inputSchema": schema([:])],
-    ]
-    static var toolNames: Set<String> { Set(definitions.compactMap { $0["name"] as? String }) }
+    /// Listed by the MCP core (host_tools.json); executed here because they
+    /// drive the Analysis panel and the viewport overlays.
+    static let toolNames: Set<String> = ["dfm_check", "dfm_apply_fix", "inspect_faces", "analyze_structure", "check_interference"]
 
     static func call(_ name: String, _ a: [String: Any], model m: EditorModel) async throws -> [String: Any] {
         let store = AnalysisStore.shared

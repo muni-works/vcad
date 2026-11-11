@@ -2,7 +2,6 @@
 import AppKit
 #endif
 import Foundation
-import Network
 
 // MCP resources for the live window (MCP-native M1):
 //
@@ -11,8 +10,9 @@ import Network
 //   vcad://doc/view       the viewport camera
 //   ui://vcad/viewer      MCP Apps viewer, rendered from the live viewport
 //
-// Subscriptions: `resources/subscribe`, then `notifications/resources/updated`
-// arrive on the server→client SSE stream (`GET /mcp`, streamable HTTP).
+// Subscriptions are the MCP core's (crates/vcad-mcp): it streams
+// `notifications/resources/updated` to clients (`GET /mcp`, or a modern
+// `subscriptions/listen`); this file tells it what moved.
 // Change detection polls each store's cheap fingerprint at 10 Hz while anyone
 // is subscribed — the app's own edits, the user's clicks and the agent's
 // edits all surface the same way, with no hooks threaded through the editor.
@@ -26,7 +26,6 @@ final class AgentResources {
     var store: (any DocumentStore)?
     private(set) var subscribed: Set<StoreResource> = []
     private var fingerprints: [StoreResource: String] = [:]
-    private var streams: [ObjectIdentifier: NWConnection] = [:]
     private var timer: Timer?
     /// Test seam: every notification sent, in order.
     var sent: [[String: Any]] = []
@@ -58,19 +57,29 @@ final class AgentResources {
         guard let r = StoreResource.parse(uri) else { throw AgentTools.Failure(message: "unknown resource \(uri)") }
         subscribed.insert(r)
         if let store { fingerprints[r] = store.fingerprint(r) }
-        startPolling()
+        startTimer()
     }
 
     func unsubscribe(_ uri: String) {
         guard let r = StoreResource.parse(uri) else { return }
         subscribed.remove(r)
         fingerprints[r] = nil
-        if subscribed.isEmpty { timer?.invalidate(); timer = nil }
+        if subscribed.isEmpty, !followAll { timer?.invalidate(); timer = nil }
     }
 
     // MARK: change detection
 
-    private func startPolling() {
+    /// Follow every resource (the core tracks who subscribed; it forwards
+    /// updates to its clients). Started with the core.
+    private var followAll = false
+
+    func startPolling() {
+        followAll = true
+        if let store { for r in StoreResource.allCases { fingerprints[r] = store.fingerprint(r) } }
+        startTimer()
+    }
+
+    private func startTimer() {
         guard timer == nil else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { _ in
             MainActor.assumeIsolated { AgentResources.shared.poll() }
@@ -80,7 +89,7 @@ final class AgentResources {
     /// Compare fingerprints; notify subscribers of whatever moved.
     func poll() {
         guard let store else { return }
-        for r in StoreResource.allCases where subscribed.contains(r) {
+        for r in StoreResource.allCases where followAll || subscribed.contains(r) {
             let f = store.fingerprint(r)
             if fingerprints[r] != f {
                 fingerprints[r] = f
@@ -90,34 +99,14 @@ final class AgentResources {
         }
     }
 
-    // MARK: SSE
+    // MARK: notifications
 
-    /// Hold `conn` open as a server→client event stream.
-    func attachStream(_ conn: NWConnection) {
-        let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n"
-            + "Connection: keep-alive\r\nMcp-Session-Id: vcad-app\r\n\r\n: vcad\n\n"
-        let id = ObjectIdentifier(conn)
-        streams[id] = conn
-        conn.stateUpdateHandler = { state in
-            switch state {
-            case .failed, .cancelled:
-                MainActor.assumeIsolated { _ = AgentResources.shared.streams.removeValue(forKey: id) }
-            default: break
-            }
-        }
-        conn.send(content: Data(head.utf8), completion: .contentProcessed { _ in })
-    }
-
+    /// Hand a notification to the core, which streams it to every client.
     func notify(_ msg: [String: Any]) {
         sent.append(msg)
         if sent.count > 256 { sent.removeFirst(sent.count - 256) }
-        guard let data = try? JSONSerialization.data(withJSONObject: msg) else { return }
-        let frame = Data("event: message\ndata: ".utf8) + data + Data("\n\n".utf8)
-        for (id, c) in streams {
-            c.send(content: frame, completion: .contentProcessed { err in
-                guard err != nil else { return }
-                MainActor.assumeIsolated { AgentResources.shared.streams[id]?.cancel() }
-            })
+        if let uri = (msg["params"] as? [String: Any])?["uri"] as? String {
+            AgentCore.shared.resourceUpdated(uri)
         }
     }
 }
@@ -129,7 +118,6 @@ enum AgentViewer {
     /// Tools with a live viewer: mutating ones carry `_meta.ui.resourceUri`.
     static let meta: [String: Any] = ["ui": ["resourceUri": AgentResources.viewerURI]]
 
-    static let definitions: [[String: Any]] = [
         ["name": "viewer_frame",
          "description": "The live vcad viewport as a PNG plus the document revision. Used by the vcad viewer app; agents should prefer snapshot.",
          "inputSchema": ["type": "object", "properties": [String: Any]()] as [String: Any]],
@@ -151,7 +139,7 @@ enum AgentViewer {
                          "required": ["radius"]] as [String: Any],
          "_meta": meta],
     ]
-    static var toolNames: Set<String> { Set(definitions.compactMap { $0["name"] as? String }) }
+    static let toolNames: Set<String> = ["viewer_frame", "open_in_app", "select_edges", "fillet_edges"]
 
     static func call(_ name: String, _ a: [String: Any], model m: EditorModel) async throws -> [String: Any] {
         switch name {

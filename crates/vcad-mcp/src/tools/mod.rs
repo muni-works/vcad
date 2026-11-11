@@ -10,6 +10,7 @@ pub mod core;
 pub mod docs;
 pub mod engine;
 pub mod host;
+pub mod loon_carry;
 pub mod proof;
 
 use std::sync::atomic::AtomicBool;

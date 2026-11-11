@@ -17,7 +17,8 @@ After Phase A there is one dispatcher, the Rust core, in both vcad.app (linked t
   elicitation answered in the viewport, link handshake with `@vcad/mcp`). The core owns the
   listing (`crates/vcad-mcp/src/tools/host_tools.json`) and dispatch; the app's Swift executes
   the call. Headless lists them too and answers with an `isError` result that says vcad.app is
-  needed, so the tool list is identical in both modes.
+  needed (or, for the five node also implements, hands the call to node), so
+  the tool list is identical in both modes.
 - **node proxy** — not yet ported; the core spawns `@vcad/mcp` and forwards the call unchanged.
 
 Totals after Phase A: 33 host hook (Swift UI, dispatched by Rust core), 34 native (Rust core), 159 node proxy (226 tools).
@@ -37,7 +38,7 @@ Totals after Phase A: 33 host hook (Swift UI, dispatched by Rust core), 34 nativ
 | `adopt_document` | Swift | AgentEdits.swift |  | host hook (Swift UI, dispatched by Rust core) |
 | `agent_turn` | Swift | AgentTurn.swift |  | host hook (Swift UI, dispatched by Rust core) |
 | `analyze_antenna` | node |  |  | node proxy |
-| `analyze_structure` | Swift, node | AnalysisAgentTools.swift | **yes** | host hook (Swift UI, dispatched by Rust core) |
+| `analyze_structure` | Swift, node | AnalysisAgentTools.swift | **yes** | host hook (Swift UI, dispatched by Rust core); headless: node proxy |
 | `analyze_tolerance_stackup` | node |  |  | node proxy |
 | `animate` | node |  |  | node proxy |
 | `annotate` | Swift | AgentBridge.swift (AgentTools) |  | host hook (Swift UI, dispatched by Rust core) |
@@ -91,8 +92,8 @@ Totals after Phase A: 33 host hook (Swift UI, dispatched by Rust core), 34 nativ
 | `describe_pcb` | node |  |  | node proxy |
 | `describe_scene` | Swift, node | AgentEdits.swift → vcad-ffi `vcad_engine_apply_tool` (vcad-app lowering) | **yes** | native (Rust core) |
 | `design_material` | node |  |  | node proxy |
-| `dfm_apply_fix` | Swift, node | AnalysisAgentTools.swift | **yes** | host hook (Swift UI, dispatched by Rust core) |
-| `dfm_check` | Swift, node | AnalysisAgentTools.swift | **yes** | host hook (Swift UI, dispatched by Rust core) |
+| `dfm_apply_fix` | Swift, node | AnalysisAgentTools.swift | **yes** | host hook (Swift UI, dispatched by Rust core); headless: node proxy |
+| `dfm_check` | Swift, node | AnalysisAgentTools.swift | **yes** | host hook (Swift UI, dispatched by Rust core); headless: node proxy |
 | `dfm_explain` | node |  |  | node proxy |
 | `dfm_suggest_fix` | node |  |  | node proxy |
 | `difference` | Swift | AgentEdits.swift → vcad-ffi `vcad_engine_apply_tool` (vcad-app lowering) |  | native (Rust core) |
@@ -133,7 +134,7 @@ Totals after Phase A: 33 host hook (Swift UI, dispatched by Rust core), 34 nativ
 | `import_urdf` | node |  |  | node proxy |
 | `inspect` | Swift | AgentEdits.swift → vcad-ffi `vcad_engine_apply_tool` (vcad-app lowering) |  | native (Rust core) |
 | `inspect_cad` | Swift, Rust (M0), node | AgentEdits.swift | **yes** | native (Rust core) |
-| `inspect_faces` | Swift, node | AnalysisAgentTools.swift | **yes** | host hook (Swift UI, dispatched by Rust core) |
+| `inspect_faces` | Swift, node | AnalysisAgentTools.swift | **yes** | host hook (Swift UI, dispatched by Rust core); headless: node proxy |
 | `inspect_molecule` | node |  |  | node proxy |
 | `inspect_part` | node |  |  | node proxy |
 | `inspect_schematic` | node |  |  | node proxy |
@@ -156,7 +157,7 @@ Totals after Phase A: 33 host hook (Swift UI, dispatched by Rust core), 34 nativ
 | `minimize_energy` | node |  |  | node proxy |
 | `mirror` | Swift | AgentEdits.swift → vcad-ffi `vcad_engine_apply_tool` (vcad-app lowering) |  | native (Rust core) |
 | `open_document` | Swift, Rust (M0), node | AgentBridge.swift (AgentTools) | **yes** | native (Rust core) |
-| `open_in_app` | Swift, node | AgentResources.swift (AgentViewer) | **yes** | host hook (Swift UI, dispatched by Rust core) |
+| `open_in_app` | Swift, node | AgentResources.swift (AgentViewer) | **yes** | host hook (Swift UI, dispatched by Rust core); headless: node proxy |
 | `optimize_electrodes` | node |  |  | node proxy |
 | `optimize_parameters` | Rust crate (vcad-atoms, unregistered) |  |  | native (Rust core) |
 | `parameter_gradient` | node |  |  | node proxy |
