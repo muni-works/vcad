@@ -64,7 +64,7 @@ func analysisSmoke() async {
         let sup = store.feaSupports[0].faces, ld = store.feaLoads[0].faces
         let faces = store.faces(m)
         let label = { (ids: [UInt32]) in ids.compactMap { id in faces.first { $0.id == id }?.label }.joined(separator: ", ") }
-        check(sup.count == 1 && ld.count == 1 && sup != ld && m.picking.filter == .body,
+        check(sup.count == 1 && ld.count == 1 && sup != ld && m.picking.filter == .standard,
               "fea faces picked in viewport: support [\(label(sup))], load [\(label(ld))]")
         if sup.count == 1, ld.count == 1 {
             let t0 = Date()

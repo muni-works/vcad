@@ -41,6 +41,12 @@ enum PickFilter: String, CaseIterable, Identifiable {
         }
     }
     var picksTopology: Bool { self != .body }
+
+    /// Out of the box the viewport picks like Fusion 360: hovering
+    /// pre-highlights the face or edge under the cursor (edges win within the
+    /// pick tolerance) and a click selects it. Bodies are picked in the
+    /// browser, by double-click, or by switching the Select menu to Body.
+    static let standard: PickFilter = .faceOrEdge
 }
 
 /// A face or edge of one part.
@@ -172,7 +178,7 @@ final class PartTopology {
 @Observable
 final class PickingState {
     /// What a click in the viewport picks.
-    var filter: PickFilter = .body {
+    var filter: PickFilter = .standard {
         didSet { if filter != oldValue, !filter.picksTopology { clear() } }
     }
     /// Chosen faces/edges, in pick order (ops that care about order — the
@@ -344,11 +350,19 @@ extension EditorModel {
         return try? JSONSerialization.data(withJSONObject: doc, options: [.sortedKeys])
     }
 
-    /// Pick a face/edge of `part` along a kernel-space ray. Edge tolerance
-    /// scales with the scene so an edge is grabbable at any zoom.
-    func pickTopology(part: Int, origin: SIMD3<Float>, dir: SIMD3<Float>) -> TopoHit? {
+    /// Pick a face/edge of `part` along a kernel-space ray. With the camera's
+    /// distance (mm) and the viewport height (points), the edge tolerance is
+    /// about 6 px on screen at any zoom; without them it falls back to a
+    /// scene-relative world tolerance.
+    func pickTopology(part: Int, origin: SIMD3<Float>, dir: SIMD3<Float>,
+                      cameraDistance: Float? = nil, viewportHeight: Float? = nil) -> TopoHit? {
         guard let data = pickingDocumentData else { return nil }
-        let tol = max(Double(displayedSceneSize) * 0.02, 0.05)
+        let tol: Double
+        if let d = cameraDistance, let h = viewportHeight, d > 0, h > 0 {
+            tol = SelectionMath.edgePickTolerance(distance: d, viewportHeight: h)
+        } else {
+            tol = max(Double(displayedSceneSize) * 0.02, 0.05)
+        }
         return picking.pick(part: part, document: data, origin: origin, dir: dir, edgeTol: tol)
     }
 
@@ -365,6 +379,37 @@ extension EditorModel {
         let sel = picking.highlightSegments(picking.selection, document: data)
         let hov = picking.hovered.map { picking.highlightSegments([$0], document: data) } ?? []
         return (sel, hov)
+    }
+}
+
+extension EditorModel {
+    /// "2 faces · 1 240 mm²" / "1 edge · 42.0 mm" for the topology selection.
+    func topologySelectionReadout() -> String? {
+        guard picking.filter.picksTopology, !picking.selection.isEmpty,
+              let data = pickingDocumentData else { return nil }
+        var areas: [Double] = [], lengths: [Double] = []
+        for r in picking.selection {
+            guard let t = picking.topology(part: r.part, document: data) else { continue }
+            switch r.kind {
+            case .face: if let f = t.face(r.id) { areas.append(f.area) }
+            case .edge: if let e = t.edge(r.id) { lengths.append(Double(e.length)) }
+            }
+        }
+        return SelectionMath.readout(faceAreas: areas, edgeLengths: lengths)
+    }
+
+    /// Kernel-space centres of the selected faces (centroid) and edges
+    /// (midpoint) — the orbit pivot candidates.
+    func topologySelectionCenters() -> [SIMD3<Float>] {
+        guard picking.filter.picksTopology, !picking.selection.isEmpty,
+              let data = pickingDocumentData else { return [] }
+        return picking.selection.compactMap { r in
+            guard let t = picking.topology(part: r.part, document: data) else { return nil }
+            switch r.kind {
+            case .face: return t.face(r.id)?.centerF
+            case .edge: return t.edge(r.id)?.midpoint
+            }
+        }
     }
 }
 
