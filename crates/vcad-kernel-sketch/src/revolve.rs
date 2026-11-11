@@ -100,7 +100,7 @@ pub fn revolve(
         .normalize();
     for seg in &profile.segments {
         let r = radial(&profile.to_3d(seg.start()));
-        if r.norm() >= tol.linear && r.dot(&reference) < tol.linear {
+        if r.norm() >= tol.linear && r.dot(reference) < tol.linear {
             return Err(SketchError::AxisIntersection);
         }
     }
@@ -547,7 +547,11 @@ where
         return None;
     }
     let last = corners.len() - 1;
-    let plane = Plane::new(corners[0], corners[1] - corners[0], corners[last] - corners[0]);
+    let plane = Plane::new(
+        corners[0],
+        corners[1] - corners[0],
+        corners[last] - corners[0],
+    );
     let surf_idx = geom.add_surface(Box::new(plane));
 
     let vids: Vec<VertexId> = corners
@@ -787,8 +791,7 @@ mod tests {
     #[test]
     fn revolve_rectangle_on_axis_is_solid_cylinder() {
         // Rectangle with one edge on the Z axis → solid cylinder r=5 h=10.
-        let profile =
-            SketchProfile::rectangle(Point3::origin(), Vec3::x(), Vec3::z(), 5.0, 10.0);
+        let profile = SketchProfile::rectangle(Point3::origin(), Vec3::x(), Vec3::z(), 5.0, 10.0);
 
         let solid = revolve(&profile, Point3::origin(), Vec3::z(), 2.0 * PI).unwrap();
         // Axis edge contributes nothing: wall + two discs.
@@ -797,7 +800,10 @@ mod tests {
         let mesh = vcad_kernel_tessellate::tessellate_brep(&solid, 128);
         let vol = compute_mesh_volume(&mesh);
         let expected = PI * 25.0 * 10.0;
-        assert!((vol - expected).abs() < 0.01 * expected, "vol {vol} vs {expected}");
+        assert!(
+            (vol - expected).abs() < 0.01 * expected,
+            "vol {vol} vs {expected}"
+        );
     }
 
     #[test]
@@ -805,7 +811,11 @@ mod tests {
         // Right triangle (0,0)-(4,0)-(0,6) in the XZ plane around Z: cone
         // r=4 h=6 with its apex on the axis.
         use vcad_kernel_math::Point2;
-        let (a, b, c) = (Point2::new(0.0, 0.0), Point2::new(4.0, 0.0), Point2::new(0.0, 6.0));
+        let (a, b, c) = (
+            Point2::new(0.0, 0.0),
+            Point2::new(4.0, 0.0),
+            Point2::new(0.0, 6.0),
+        );
         let line = |start, end| SketchSegment::Line { start, end };
         let profile = SketchProfile::new(
             Point3::origin(),
