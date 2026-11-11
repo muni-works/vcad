@@ -94,14 +94,17 @@ macro_rules! fixture {
 }
 
 // 1: coaxial counterbore + through hole on a half-cylinder (was a wasm trap).
-// Still open off-origin: the half-cylinder's base sits coplanar on the
-// flange top and that union seam leaks (263 open edges, volume changes with
-// z offset). Tracked separately from the break-out fix.
+// The union seam is fixed (1u below); the counterbore entering the curved
+// wall still needs a perpendicular unequal-radius cylinder split.
 #[test]
-#[ignore = "coplanar half-cylinder/flange union seam still open"]
+#[ignore = "blind radial counterbore into the half-cylinder wall: no perpendicular unequal cyl x cyl split"]
 fn coaxial_counterbore_half_cylinder() {
     assert_closed("i1", include_str!("fixtures/k1/i1_counterbore.loon"));
 }
+// 1u: the union under 1 on its own. The flange top is `-8.3 + 8` =
+// -0.3000000000000007 and the half-cylinder base is -0.3; that float noise
+// left 132 open edges until booleans snapped it onto one plane.
+fixture!(flange_half_cylinder_union, "i1u_flange_half_union.loon");
 // 1b: the same hole as a revolve of a profile touching its axis.
 #[test]
 #[ignore = "revolve of a profile touching its axis yields an empty mesh"]

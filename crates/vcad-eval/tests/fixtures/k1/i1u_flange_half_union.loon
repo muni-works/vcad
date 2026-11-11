@@ -1,0 +1,2 @@
+[let half [intersection [translate -15 -15 -0.3 [cube 15 30 31.7]] [translate 0 0 -0.3 [cylinder-n 13.7 31.7 96]]]]
+[root [union [translate 0 0 -8.3 [cylinder-n 25 8 128]] half] "pla"]
