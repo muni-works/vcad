@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-11-local-data-trust",
+  "version": "undefined",
+  "date": "2026-11-11",
+  "category": "feat",
+  "title": "Autosave, crash recovery, and version history",
+  "summary": "The Mac app autosaves every few seconds, offers to restore unsaved work after a crash, and keeps per-document versions you can preview, restore, or duplicate.",
+  "features": ["mac-app", "autosave", "versions", "recovery"]
+}

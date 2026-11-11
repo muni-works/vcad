@@ -215,6 +215,11 @@ struct DocumentCommands: Commands {
                 .disabled(!model.usesDocumentTree)
             Button("Revert to Saved") { model.revertDocument() }
                 .disabled(!model.usesDocumentTree || !model.documentDirty)
+            Button("Save Version…") { VersionBrowserWindow.promptForNamedVersion(model) }
+                .keyboardShortcut("s", modifiers: [.command, .option])
+                .disabled(model.documentURL == nil || !model.usesDocumentTree)
+            Button("Browse Versions…") { VersionBrowserWindow.show(model) }
+                .disabled(!model.usesDocumentTree)
             Button("Show in Finder") { model.showInFinder() }
                 .disabled(model.documentURL == nil)
             Divider()

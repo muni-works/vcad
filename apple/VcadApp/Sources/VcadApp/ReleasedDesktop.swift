@@ -304,6 +304,7 @@ final class ReleaseWindowController {
             model.saveDocument()
             return !model.documentDirty
         case .alertSecondButtonReturn:
+            model.discardAutosave()
             return true
         default:
             return false
@@ -908,6 +909,11 @@ struct ReleasedOverlayView: View {
         .onAppear { ReleaseWindowController.shared.updateDocumentWindow() }
         .onChange(of: model.source) { _, _ in ReleaseWindowController.shared.updateDocumentWindow() }
         .onChange(of: model.documentDirty) { _, _ in ReleaseWindowController.shared.updateDocumentWindow() }
+        .onChange(of: model.saveError) { _, err in
+            guard let err else { return }
+            let a = NSAlert(); a.messageText = "Save failed"; a.informativeText = err; a.alertStyle = .critical
+            a.runModal()
+        }
         .onChange(of: model.workspace) { _, _ in ReleaseWindowController.shared.updateCNCWindowMinimum() }
     }
 
