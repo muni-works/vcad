@@ -201,7 +201,7 @@ pub fn fem_hz_with_mesh(bar: &BarSpec, count: usize, nel: usize) -> Vec<f64> {
 /// Panics if the matrix is not positive definite — the consistent Hermite
 /// mass matrix always is, so a failure here is a caller bug, not an input
 /// condition.
-fn cholesky(a: &[f64], n: usize) -> Vec<f64> {
+pub(crate) fn cholesky(a: &[f64], n: usize) -> Vec<f64> {
     let mut l = vec![0.0_f64; n * n];
     for i in 0..n {
         for j in 0..=i {
@@ -221,7 +221,7 @@ fn cholesky(a: &[f64], n: usize) -> Vec<f64> {
 }
 
 /// C = L⁻¹ K L⁻ᵀ (forward/back substitution, keeps symmetry).
-fn congruence(k: &[f64], l: &[f64], n: usize) -> Vec<f64> {
+pub(crate) fn congruence(k: &[f64], l: &[f64], n: usize) -> Vec<f64> {
     // Y = L⁻¹ K (solve L·Y = K column-wise via forward substitution on rows).
     let mut y = vec![0.0_f64; n * n];
     for c in 0..n {
