@@ -188,7 +188,10 @@ jobs:
           name: nextest-archive-${{ matrix.toolchain }}
       - name: Run Rust tests (shard ${{ matrix.shard }}/4)
         run: |
+          # Extract into ./target: tests that spawn binaries use compile-time
+          # CARGO_BIN_EXE paths, which point at this same checkout's target/.
           cargo nextest run --archive-file nextest-archive.tar.zst --workspace-remap . \
+            --extract-to . --extract-overwrite \
             --profile ci --no-fail-fast --partition count:${{ matrix.shard }}/4
         env:
           # DocCommand property tests (crates/vcad-app/tests/command_algebra.rs):
