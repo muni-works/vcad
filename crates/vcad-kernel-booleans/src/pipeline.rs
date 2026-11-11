@@ -1169,6 +1169,10 @@ pub(crate) fn brep_boolean(
     let mut a = solid_a.clone();
     let mut b = solid_b.clone();
 
+    // Planes the operands share up to float noise become exactly shared
+    // (see crate::snap).
+    crate::snap::snap_coplanar_offsets(&a, &mut b);
+
     // Freeze analytic full-circle edges into canonical polylines so the
     // whole pipeline works on one concrete boundary representation (see
     // crate::freeze). Without this, results that keep an untouched analytic

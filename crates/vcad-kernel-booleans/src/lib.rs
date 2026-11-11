@@ -26,6 +26,7 @@ mod pipeline;
 pub mod recut_log;
 mod repair;
 pub mod sew;
+mod snap;
 pub mod split;
 pub mod ssi;
 pub mod timing;
