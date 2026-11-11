@@ -1436,7 +1436,7 @@ impl Solid {
         };
         let names = match &repr {
             SolidRepr::BRep(b) => self.inherit_names(b),
-            SolidRepr::Mesh(_) => None,
+            _ => None,
         };
         let out = Solid {
             names,

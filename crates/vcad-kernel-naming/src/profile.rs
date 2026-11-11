@@ -103,13 +103,25 @@ pub fn seed_extrude_names(
                         None
                     }
                 } else {
+                    // A line sweeps exactly this plane; an arc the sketch
+                    // kernel faceted (interior hole loops are polygonized)
+                    // sweeps chord planes whose normal points radially and
+                    // whose centroid sits just inside the circle.
                     unique_wall(&walls, scope, |w| match w {
                         Swept::Plane { a, b, normal } => {
                             normal.dot(n).abs() > 1.0 - TOL
                                 && (p.origin - *a).dot(*normal).abs() < TOL
                                 && within_segment(c, *a, *b)
                         }
-                        Swept::Cylinder { .. } => false,
+                        Swept::Cylinder { center, radius, start, sweep } => {
+                            let d = c - *center;
+                            let radial = d - axis * d.dot(axis);
+                            let r = radial.norm();
+                            r > radius * 0.9
+                                && r < radius + TOL
+                                && (radial * (1.0 / r)).dot(n).abs() > 0.99
+                                && within_arc(c, *center, profile, *start, *sweep)
+                        }
                     })
                 }
             }
