@@ -397,15 +397,51 @@ fn evaluate_inner(
                 }
             }
 
+            // A full-quality pass that loses a root (a kernel panic, or an
+            // empty tessellation) must not blank a part the preview LOD drew:
+            // fall back to the cached preview mesh. The failure is still
+            // reported. Seen on Voron 2.4 on Apple silicon: one part panicked
+            // in the refine and vanished when the refined scene swapped in.
+            let preview_fallback = || -> Option<EvaluatedMesh> {
+                let c = root_cache?;
+                if fp_settings.preview {
+                    return None;
+                }
+                let settings = FingerprintSettings {
+                    preview: true,
+                    ..fp_settings.clone()
+                };
+                let key = root_fingerprint(eval_root, &doc.nodes, &settings)?;
+                c.get(&key).filter(|m| !m.indices.is_empty())
+            };
+            let mut from_preview = false;
+            let eval_outcome = match eval_outcome {
+                Ok(m) if m.mesh.indices.is_empty() && m.solid.is_some() => match preview_fallback()
+                {
+                    Some(mesh) => {
+                        from_preview = true;
+                        Ok(MeshedOk {
+                            mesh,
+                            solid: None,
+                            mesh_ms: m.mesh_ms,
+                        })
+                    }
+                    None => Ok(m),
+                },
+                other => other,
+            };
             match eval_outcome {
                 Ok(MeshedOk { mesh, solid, .. }) => {
-                    store(&cache_key, &mesh);
+                    // A stand-in preview mesh never goes in under the full key.
+                    if !from_preview {
+                        store(&cache_key, &mesh);
+                    }
                     if let (Some(_), Some(i), Some(h)) = (&solid, inc.as_deref_mut(), root_hash) {
                         i.put_mesh(eval_root, h, &mesh);
                     }
                     // A peeled root's key names the unplaced shape, which a mesh
                     // bundle cannot stand in for: report none.
-                    let key = (!mesh.indices.is_empty() && placement.is_none())
+                    let key = (!mesh.indices.is_empty() && placement.is_none() && !from_preview)
                         .then(|| cache_key.as_ref().map(|k| k.0.clone()))
                         .flatten();
                     let mesh = place_mesh(mesh, placement.as_ref());
@@ -427,8 +463,11 @@ fn evaluate_inner(
                         node_id: entry.root,
                         error,
                     });
+                    let mesh = preview_fallback()
+                        .map(|m| place_mesh(m, placement.as_ref()))
+                        .unwrap_or_else(EvaluatedMesh::empty);
                     parts.push(EvaluatedPart {
-                        mesh: EvaluatedMesh::empty(),
+                        mesh,
                         material: entry.material.clone(),
                         solid: None,
                     });
