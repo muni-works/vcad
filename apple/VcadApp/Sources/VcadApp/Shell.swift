@@ -135,9 +135,26 @@ struct HostWindowHider: NSViewRepresentable {
             // window was ordered in earlier in this pass.
             w.alphaValue = 0
             w.isRestorable = false
+            // Opening a file (Finder, `open`, Dock) makes SwiftUI order the
+            // WindowGroup window back in — at alpha 0 it is invisible but
+            // still on top, swallowing every click meant for the document
+            // window. Never take mouse events, and send it straight back out
+            // (handing key to the real window) whenever it resurfaces.
+            w.ignoresMouseEvents = true
             w.orderOut(nil)
+            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didBecomeMainNotification] {
+                observers.append(NotificationCenter.default.addObserver(
+                    forName: name, object: w, queue: .main) { _ in
+                    MainActor.assumeIsolated {
+                        w.orderOut(nil)
+                        ReleaseWindowController.shared.window?.makeKeyAndOrderFront(nil)
+                    }
+                })
+            }
             onAttach()
         }
+        // Lives as long as the app's one WindowGroup window; never removed.
+        private var observers: [NSObjectProtocol] = []
     }
 }
 

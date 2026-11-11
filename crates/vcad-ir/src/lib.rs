@@ -2547,6 +2547,13 @@ pub struct ClearanceSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts-rs", ts(optional))]
     pub sweep: Option<Vec<JointSweep>>,
+    /// The measured minimum distance (mm) the last time this assertion was
+    /// accepted. Re-verification compares against it: still holding but
+    /// drifted from the baseline reads Stale; absent means nothing to drift
+    /// from, so a holding assertion reads Holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub baseline_mm: Option<f64>,
 }
 
 /// One axis of a range-of-motion sweep: a joint driven from `from` to `to`

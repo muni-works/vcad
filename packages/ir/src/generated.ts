@@ -693,7 +693,14 @@ allow_contact?: boolean,
  * the pose the assembly happened to be authored in, which is often the
  * one pose that clears.
  */
-sweep?: Array<JointSweep>, };
+sweep?: Array<JointSweep>, 
+/**
+ * The measured minimum distance (mm) the last time this assertion was
+ * accepted. Re-verification compares against it: still holding but
+ * drifted from the baseline reads Stale; absent means nothing to drift
+ * from, so a holding assertion reads Holds.
+ */
+baseline_mm?: number, };
 
 /**
  * One axis of the range-of-motion grid a swept clearance was measured over.

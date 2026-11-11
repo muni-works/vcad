@@ -404,7 +404,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         MainActor.assumeIsolated {
             // `vcad://` deep links (MCP `open_in_app`, retired vcad.io links)
             // resolve to a file first, then open like any other document.
-            let urls = urls.compactMap { $0.scheme?.lowercased() == "vcad" ? AppInstance.resolveDeepLink($0) : $0 }
+            // `vcad://focus` (MCP Apps "Open in vcad") just brings the window up.
+            if urls.contains(where: { $0.scheme?.lowercased() == "vcad" && $0.host?.lowercased() == "focus" }) {
+                AgentViewer.focusWindow()
+            }
+            var urls = urls.compactMap { u -> URL? in
+                guard u.scheme?.lowercased() == "vcad" else { return u }
+                return u.host?.lowercased() == "focus" ? nil : AppInstance.resolveDeepLink(u)
+            }
+            // A link to the document already open focuses it instead of
+            // opening a second copy beside the live one.
+            if let open = AppInstance.currentModel?.documentURL?.standardizedFileURL,
+               urls.contains(where: { $0.standardizedFileURL == open }) {
+                urls.removeAll { $0.standardizedFileURL == open }
+                AgentViewer.focusWindow()
+            }
             guard !urls.isEmpty else { return }
             guard let model = AppInstance.currentModel else {
                 // The view has not come up yet (we were launched for these
