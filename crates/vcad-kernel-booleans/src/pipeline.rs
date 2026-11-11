@@ -1181,6 +1181,8 @@ pub(crate) fn brep_boolean(
     if std::env::var("VCAD_NO_FREEZE").is_err() {
         crate::freeze::freeze_circle_loops(&mut a, segments);
         crate::freeze::freeze_circle_loops(&mut b, segments);
+        crate::freeze::freeze_arc_chains(&mut a, solid_b, segments);
+        crate::freeze::freeze_arc_chains(&mut b, solid_a, segments);
     }
 
     // 1. Find candidate face pairs via AABB filtering

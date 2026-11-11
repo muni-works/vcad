@@ -1,0 +1,16 @@
+; Generic K1 wrist interface. Bolts once to the forearm rib; every attachment pushes onto it.
+; Interface frame I: z=0 base of the male ring, mating face at z=8, tool comes from +z, arm runs to -z.
+; Male ring = the pto_stator_ring geometry (3 keys 45/165/285, 4x 5x3 magnets) with a solid floor.
+; Forearm half = wrist_adapter's D-half rotated 180 about X (rib taps at z = -6.53 / -14 / -21.53).
+[let half [extrude 0 0 31.7 [sketch 0 0 -0.3 1 0 0 0 1 0 #[[line 0 -13.7 0 13.7] [arc 0 13.7 0 -13.7 0 0 true]]]]]
+[let t1 [union [translate -15.6 -3.2 3.33 [cube 11.6 6.4 6.4]] [translate -5 0 6.53 [rotate 0 90 0 [cylinder 1.7 5.6]]]]]
+[let t2 [union [translate -15.6 -3.2 18.33 [cube 11.6 6.4 6.4]] [translate -5 0 21.53 [rotate 0 90 0 [cylinder 1.7 5.6]]]]]
+[let t3 [union [translate -15.6 -3.2 10.8 [cube 8.6 6.4 6.4]] [union [translate -3.4 -4.4 9.6 [cube 4 8.8 8.8]] [translate -8 0 14 [rotate 0 90 0 [cylinder 1.7 5.6]]]]]]
+[let arm [rotate 180 0 0 [pipe half [difference t1] [difference t2] [difference t3]]]]
+[let ring [difference [translate 0 0 3 [cylinder-n 16.8 6 64]] [cylinder-n 25 8 64]]]
+[let m [translate 20.75 0 4.8 [cylinder 2.6 4]]]
+[let mags [union [rotate 0 0 67.5 m] [union [rotate 0 0 157.5 m] [union [rotate 0 0 247.5 m] [rotate 0 0 337.5 m]]]]]
+[let key [translate 24 -4 0 [cube 3.5 8 8]]]
+[let keys [union [rotate 0 0 45 key] [union [rotate 0 0 165 key] [rotate 0 0 285 key]]]]
+[let chan [translate -7.5 5.5 -33 [cube 5 5 43]]]
+[root [pipe [union keys [union arm ring]] [difference mags] [difference chan]] "pla"]
