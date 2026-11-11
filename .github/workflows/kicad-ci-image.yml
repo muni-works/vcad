@@ -1,0 +1,34 @@
+# Mirror the official kicad/kicad image into this repo's GHCR so the
+# "KiCad export verification" CI job never depends on Launchpad or Docker Hub
+# at test time. Run manually when bumping KiCad.
+name: KiCad CI image
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: kicad/kicad tag to mirror
+        default: "9.0"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror kicad/kicad into ghcr.io/muni-works/vcad-ci-kicad
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -eu
+          docker pull "kicad/kicad:$TAG"
+          base=$(docker inspect --format '{{index .RepoDigests 0}}' "kicad/kicad:$TAG")
+          printf 'FROM %s\nLABEL org.opencontainers.image.source=https://github.com/%s\n' "$base" "$GITHUB_REPOSITORY" > Dockerfile
+          img=ghcr.io/muni-works/vcad-ci-kicad
+          docker build -t "$img:$TAG" .
+          docker run --rm "$img:$TAG" kicad-cli version
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker push "$img:$TAG"
+          echo "mirrored $base -> $img:$TAG" >> "$GITHUB_STEP_SUMMARY"

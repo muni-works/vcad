@@ -81,6 +81,14 @@ copyFileSync(
   join(out, "resvg.wasm"),
 );
 
+// The vcad skill rides in the same immutable tarball as the server it
+// describes, so the two cannot drift (skill-drift.test.ts pins the contents).
+mkdirSync(join(out, "skill"), { recursive: true });
+copyFileSync(
+  join(repo, "plugins", "vcad", "skills", "vcad", "SKILL.md"),
+  join(out, "skill", "SKILL.md"),
+);
+
 writeFileSync(
   join(out, "package.json"),
   JSON.stringify(
@@ -95,8 +103,8 @@ writeFileSync(
       engines: { node: ">=20" },
       // Faster native PNG rasterizer when it installs; the bundled WASM one covers the rest.
       optionalDependencies: { "@resvg/resvg-js": "^2" },
-      repository: { type: "git", url: "https://github.com/ecto/vcad" },
-      homepage: "https://vcad.io",
+      repository: { type: "git", url: "https://github.com/muni-works/vcad" },
+      homepage: "https://github.com/muni-works/vcad",
       vcadBuild: { sha, builtAt: buildTime },
     },
     null,
@@ -114,7 +122,7 @@ vcad's MCP server as a self-contained bundle (server + BRep kernel WASM).
 { "mcpServers": { "vcad": { "command": "npx", "args": ["-y", "@vcad/mcp"] } } }
 \`\`\`
 
-Built from ${sha} at ${buildTime}. Source: https://github.com/ecto/vcad
+Or install vcad.app, which registers this server with your agents on first launch.\nThe agent skill ships at \`skill/SKILL.md\`.\n\nBuilt from ${sha} at ${buildTime}. Source: https://github.com/muni-works/vcad
 `,
 );
 

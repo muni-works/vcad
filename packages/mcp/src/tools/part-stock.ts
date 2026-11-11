@@ -199,7 +199,7 @@ export interface StockClientOptions {
 const JLC_SEARCH_URL =
   "https://jlcpcb.com/api/overseas-pcb-order/v1/shoppingCart/smtGood/selectSmtComponentList";
 const LCSC_DETAIL_URL = "https://wmsc.lcsc.com/ftps/wm/product/detail?productCode=";
-const UA = "vcad-mcp parts-stock (+https://vcad.io)";
+const UA = "vcad-mcp parts-stock (+https://github.com/muni-works/vcad)";
 
 interface JlcComponent {
   componentCode: string;
