@@ -117,9 +117,11 @@ fixture!(mixed_facet_counterbore_8x, "i2_mixed8.loon");
 fixture!(counterbore_sliver, "i3a_sliver.loon");
 // 3b: hex prism standing exactly on a disc's top face, unioned.
 fixture!(hex_prism_on_disc_face, "i3b_hexdisc.loon");
-// 4: half-annulus slot grazing a unioned hub.
+// 4: half-annulus slot grazing a unioned hub. The slot itself (box ∩
+// annulus) was the defect: the box side cuts each annular cap through its
+// hole, and that chord used to be refused (4a).
+fixture!(box_cuts_annulus_through_hole, "i4a_box_annulus.loon");
 #[test]
-#[ignore = "half-annulus slot across a hub/disc union seam: 546 open edges"]
 fn slot_across_hub_seam() {
     assert_closed("i4", include_str!("fixtures/k1/i4_slot_hub.loon"));
 }
