@@ -1177,7 +1177,11 @@ child: number,
 /**
  * Wall thickness (inward offset).
  */
-thickness: number, } | { "type": "Fillet", 
+thickness: number, 
+/**
+ * Faces to remove, leaving an opening. Empty = closed shell.
+ */
+open_faces?: Array<FaceRef>, } | { "type": "Fillet", 
 /**
  * Child node to fillet.
  */
@@ -2949,6 +2953,30 @@ export type EnvironmentPreset = "studio" | "warehouse" | "apartment" | "park" | 
 export type Expr = number | string;
 
 /**
+ * A reference to one face of a solid, resolved against the current
+ * topology at evaluation time — used by [`CsgOp::Shell`]'s `open_faces`.
+ *
+ * `name` is a persistent face name (`n1:top`, the same names
+ * [`EdgeQuery::Named`] uses) and wins when it resolves to exactly one face.
+ * Otherwise `point` (+ optional outward `normal`) picks the nearest face
+ * whose normal agrees. Resolution is fail-closed: a reference that matches
+ * no face, or ties between two, is an evaluation error.
+ */
+export type FaceRef = { 
+/**
+ * Persistent face name, e.g. `n1:top`.
+ */
+name?: string, 
+/**
+ * A point on (or near) the face, model space (mm).
+ */
+point?: Vec3, 
+/**
+ * The face's outward normal near `point`, to disambiguate.
+ */
+normal?: Vec3, };
+
+/**
  * Every feature kind and its typed parameters.
  *
  * This is THE schema — encoding, decoding, validation, and the WASM API
@@ -3102,7 +3130,13 @@ input: string,
 /**
  * Wall thickness.
  */
-thickness: number, } | { "type": "LinearPattern", 
+thickness: number, 
+/**
+ * Faces to remove, leaving an opening, as a JSON array of IR
+ * `FaceRef`s (`{name}` and/or `{point, normal}`). Absent = closed
+ * shell.
+ */
+open_faces_json?: string, } | { "type": "LinearPattern", 
 /**
  * Source feature ID.
  */
@@ -4160,7 +4194,45 @@ clearcoatRoughness?: number,
  * one; it is honoured by the photoreal path tracer, which shades the
  * analytic BRep and therefore has the exact parameterisation to hand.
  */
-anisotropy?: number, };
+anisotropy?: number, 
+/**
+ * Constant emissive colour as `[r, g, b]` in linear 0.0..1.0. Emitted
+ * radiance is `emissive * emissive_strength`, modulated per hit by
+ * [`emissive_map`](Self::emissive_map) when one is set. Honoured by
+ * the photoreal path tracer; the drafting views ignore it.
+ */
+emissive?: [number, number, number], 
+/**
+ * Multiplier on the emissive colour (default 1.0). Values above 1 make
+ * a screen read as *lit* rather than merely pale.
+ */
+emissiveStrength?: number, 
+/**
+ * Path to an emissive image (PNG) — a UI screenshot lighting a display,
+ * rendered as part of the product shot. Resolved relative to the source
+ * `.loon` file's directory like `import-mesh` paths.
+ *
+ * Sampled by a world-space planar projection (see
+ * [`emissive_map_origin`](Self::emissive_map_origin)), so emission does
+ * not depend on UVs of tessellated meshes.
+ */
+emissiveMap?: string, 
+/**
+ * World-space position of image pixel (0,0) — the **top-left** corner.
+ */
+emissiveMapOrigin?: [number, number, number], 
+/**
+ * World-space vector spanning the image's full **width**: the top edge
+ * runs from the origin to `origin + u`.
+ */
+emissiveMapU?: [number, number, number], 
+/**
+ * World-space vector spanning the image's full **height**: the left
+ * edge runs from the origin to `origin + v`. Image y runs *down* from
+ * pixel (0,0), so on a face in the XY plane shown upright to a camera
+ * looking along +Y, `u` runs along +X and `v` along −Y.
+ */
+emissiveMapV?: [number, number, number], };
 
 /**
  * A molecular / atomic system: the optional `molecule` domain on a `Document`.

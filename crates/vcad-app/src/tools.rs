@@ -477,6 +477,7 @@ fn lower_create(
         "shell" => add(FeatureInput::Shell {
             input: target(p, parent, kind)?,
             thickness: positive(p, "thickness", kind)?,
+            open_faces_json: open_faces(p)?,
         }),
         "linear_pattern" => add(FeatureInput::LinearPattern {
             input: str_arg(p, "child", kind)?.to_string(),
@@ -874,6 +875,30 @@ fn vec3(v: &Value, key: &str, ctx: &str) -> Result<[f64; 3], CommandError> {
 }
 
 /// Modifier target: `parent_part_id` (on `create`) wins over `child`.
+/// `open_faces` for a shell: an array of IR `FaceRef`s (`{name}` and/or
+/// `{point:{x,y,z}, normal:{x,y,z}}`), validated and stored as JSON.
+fn open_faces(p: &Value) -> Result<Option<String>, CommandError> {
+    let Some(v) = p.get("open_faces").filter(|v| !v.is_null()) else {
+        return Ok(None);
+    };
+    let refs: Vec<vcad_ir::FaceRef> = serde_json::from_value(v.clone()).map_err(|e| {
+        invalid(format!(
+            "shell open_faces must be an array of {{name}} or {{point, normal}} face refs: {e}"
+        ))
+    })?;
+    if refs.iter().any(|r| r.name.is_none() && r.point.is_none()) {
+        return Err(invalid(
+            "shell open_faces: every face ref needs a name or a point".to_string(),
+        ));
+    }
+    if refs.is_empty() {
+        return Ok(None);
+    }
+    serde_json::to_string(&refs)
+        .map(Some)
+        .map_err(|e| invalid(format!("shell open_faces: {e}")))
+}
+
 fn target(p: &Value, parent: Option<&str>, ctx: &str) -> Result<String, CommandError> {
     match parent {
         Some(id) if !id.is_empty() => Ok(id.to_string()),

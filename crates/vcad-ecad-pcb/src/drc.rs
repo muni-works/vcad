@@ -3357,6 +3357,86 @@ pub fn net_islands(pcb: &Pcb, nets: &[String]) -> std::collections::HashMap<Stri
         .collect()
 }
 
+/// One pad of a [`CopperIsland`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct IslandPad {
+    /// Owning footprint reference.
+    pub reference: String,
+    /// Pad number.
+    pub number: String,
+    /// World position of the pad centre.
+    pub position: Vec2,
+    /// Copper layers the pad exists on.
+    pub layers: Vec<PcbLayer>,
+}
+
+/// One galvanic island of a net's realized copper, carrying the copper itself
+/// — the terminal set a router may attach to anywhere.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CopperIsland {
+    /// Pads of the net in this island, in board order.
+    pub pads: Vec<IslandPad>,
+    /// Traces of the net in this island, in board order.
+    pub traces: Vec<vcad_ir::ecad::Trace>,
+    /// Vias of the net in this island, in board order.
+    pub vias: Vec<vcad_ir::ecad::Via>,
+    /// Pour fragments of the net in this island.
+    pub pours: usize,
+}
+
+/// The galvanic islands of `net`'s copper, from the same same-net union-find
+/// over geometric touch (layer masks, via spans, pour fills) that the DRC's
+/// unconnected-net / net-island rules use — so "two islands" here is exactly
+/// what the DRC calls an open net. Islands come back in board order of their
+/// first member, so the result is deterministic for a given board.
+pub fn net_copper_islands(pcb: &Pcb, net: &str) -> Vec<CopperIsland> {
+    let (own, nodes, mut dsu) = net_connectivity(pcb, net);
+    // Node order (build_conn_nodes): own.traces, own.vias, pads, pours.
+    let (nt, nv) = (own.traces.len(), own.vias.len());
+    let pad_of: HashMap<(&str, &str), (Vec2, &Pad)> = own
+        .footprints
+        .iter()
+        .flat_map(|fp| {
+            fp.pads.iter().map(move |p| {
+                (
+                    (fp.reference.as_str(), p.number.as_str()),
+                    (crate::geometry::pad_world_position(fp, p), p),
+                )
+            })
+        })
+        .collect();
+    let mut slot: HashMap<usize, usize> = HashMap::new();
+    let mut out: Vec<CopperIsland> = Vec::new();
+    for (i, node) in nodes.iter().enumerate() {
+        if node.net != net {
+            continue;
+        }
+        let root = dsu.find(i);
+        let k = *slot.entry(root).or_insert_with(|| {
+            out.push(CopperIsland::default());
+            out.len() - 1
+        });
+        let isl = &mut out[k];
+        if i < nt {
+            isl.traces.push(own.traces[i].clone());
+        } else if i < nt + nv {
+            isl.vias.push(own.vias[i - nt].clone());
+        } else if let Some((r, n)) = &node.pad {
+            if let Some((pos, pad)) = pad_of.get(&(r.as_str(), n.as_str())) {
+                isl.pads.push(IslandPad {
+                    reference: r.clone(),
+                    number: n.clone(),
+                    position: *pos,
+                    layers: pad.layers.clone(),
+                });
+            }
+        } else {
+            isl.pours += 1;
+        }
+    }
+    out
+}
+
 /// True if a net name looks like a power/ground rail — the nets whose copper is
 /// expected to be a continuous plane, so a [`build_receipt`](crate) verdict
 /// should check their realized continuity. Conservative + case-insensitive:

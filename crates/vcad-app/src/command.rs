@@ -99,7 +99,7 @@ pub enum DocCommand {
         key: String,
         /// The definition.
         #[cfg_attr(feature = "ts-rs", ts(type = "MaterialDef"))]
-        definition: vcad_ir::MaterialDef,
+        definition: Box<vcad_ir::MaterialDef>,
     },
     /// Show or hide a feature.
     SetVisible {
@@ -720,7 +720,7 @@ mod tests {
         let r = reopened
             .apply(DocCommand::DefineMaterial {
                 key: "abs".into(),
-                definition: abs,
+                definition: Box::new(abs),
             })
             .unwrap();
         let mut keys: Vec<_> = r.document.materials.keys().cloned().collect();

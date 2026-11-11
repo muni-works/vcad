@@ -11664,6 +11664,14 @@
           },
           "description": "DRC rule names whose route-attributable violations are ACCEPTED rather than fixed (e.g. [\"MinTraceWidth\"]). Real fab packages ship with real, named exceptions; the difference between that and a footgun is whether the exception is written down. Waived violations are still counted, still listed, and the waiver is named in the receipt — it stops blocking the verdict, it does not hide anything. An unrecognised rule name refuses the run rather than silently accepting nothing."
         },
+        "allow_incomplete": {
+          "type": "boolean",
+          "description": "Let a geometrically clean board that still has OPEN nets (unconnected, islanded, or an SMD pad unstitched from its plane) converge (default FALSE — such a run fails closed). The opt-in is logged in the receipt and FAB_NOTES says NOT FULLY ROUTED."
+        },
+        "allow_blind_vias": {
+          "type": "boolean",
+          "description": "Let the router emit blind/buried (layer-pair) vias (default FALSE — through vias only, as standard 2/4-layer processes require). A board that already carries blind/buried/micro vias keeps that process."
+        },
         "dry_run": {
           "type": "boolean",
           "description": "Compute the receipt without writing the fixed board back to the session."

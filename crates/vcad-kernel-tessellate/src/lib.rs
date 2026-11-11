@@ -7374,7 +7374,8 @@ fn tessellate_degenerate_cap(
         let iv = match iv.as_slice() {
             [p] => {
                 let ri = (*p - center).norm();
-                if ri <= 1e-12 {
+                // (and never as large as the cap: an open-face shell's offset rim)
+                if ri <= 1e-12 || ri >= r {
                     continue;
                 }
                 let hx = (*p - center).normalize();

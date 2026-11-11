@@ -1357,6 +1357,21 @@ export const fabPrepSchema = {
         "the verdict, it does not hide anything. An unrecognised rule name " +
         "refuses the run rather than silently accepting nothing.",
     },
+    allow_incomplete: {
+      type: "boolean" as const,
+      description:
+        "Let a geometrically clean board that still has OPEN nets (unconnected, " +
+        "islanded, or an SMD pad unstitched from its plane) converge (default " +
+        "FALSE — such a run fails closed). The opt-in is logged in the receipt " +
+        "and FAB_NOTES says NOT FULLY ROUTED.",
+    },
+    allow_blind_vias: {
+      type: "boolean" as const,
+      description:
+        "Let the router emit blind/buried (layer-pair) vias (default FALSE — " +
+        "through vias only, as standard 2/4-layer processes require). A board " +
+        "that already carries blind/buried/micro vias keeps that process.",
+    },
     dry_run: {
       type: "boolean" as const,
       description:
@@ -6166,9 +6181,11 @@ export async function fabPrep(args: Record<string, unknown>) {
     prune_dangling: args.prune_dangling === undefined ? true : Boolean(args.prune_dangling),
     max_rounds: Math.max(0, Math.round(Number(args.max_rounds ?? 8))),
     accept_rules: Array.isArray(args.accept_rules) ? (args.accept_rules as string[]) : [],
+    allow_incomplete: args.allow_incomplete === true,
     verdict: {
       budget: Math.max(1, Math.round(Number(args.budget ?? 5_000_000))),
       max_cluster: Math.max(1, Math.round(Number(args.max_cluster ?? 6))),
+      allow_blind_vias: args.allow_blind_vias === true,
     },
   };
 
@@ -6232,19 +6249,26 @@ export async function fabPrep(args: Record<string, unknown>) {
 
 /** One-sentence statement of what a fab-prep run established. */
 function fabPrepHeadline(report: FabPrepReport): string {
+  const open = report.connectivity.open_nets?.length ?? 0;
   if (!report.converged) {
+    if (report.delta.route_attributable_fixable === 0 && open > 0) {
+      return `NOT FAB-READY — board not fully routed, ${open} net(s) open (${report.blocker ?? "connectivity incomplete"})`;
+    }
     return (
       `NOT FAB-READY — ${report.delta.route_attributable_fixable} route-attributable ` +
       `violation(s) remain (${report.blocker ?? "loop did not converge"})`
     );
   }
+  const incomplete = report.shipped_incomplete
+    ? ` — NOT FULLY ROUTED: ${open} net(s) open (shipped under allow_incomplete)`
+    : "";
   const waived =
     report.delta.route_attributable_accepted > 0
       ? `, ${report.delta.route_attributable_accepted} waived under ${report.accepted_rules.join("+")}`
       : "";
   return (
     `zero route-attributable violations${waived} — ${report.delta.final_total} on the finished ` +
-    `board, ${report.delta.baseline_total} on the same board stripped of all routing`
+    `board, ${report.delta.baseline_total} on the same board stripped of all routing${incomplete}`
   );
 }
 

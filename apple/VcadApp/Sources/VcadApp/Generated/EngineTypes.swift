@@ -1529,7 +1529,8 @@ public enum FeatureInput: Codable, Equatable, Sendable {
     case chamfer(input: String, distance: Double)
     /// - input: Source feature ID.
     /// - thickness: Wall thickness.
-    case shell(input: String, thickness: Double)
+    /// - openFacesJson: Faces to remove, leaving an opening, as a JSON array of IR `FaceRef`s (`{name}` and/or `{point, normal}`). Absent = closed shell.
+    case shell(input: String, thickness: Double, openFacesJson: String? = nil)
     /// - input: Source feature ID.
     /// - direction: Pattern direction vector.
     /// - count: Number of copies.
@@ -1713,7 +1714,8 @@ public enum FeatureInput: Codable, Equatable, Sendable {
         case "Shell":
             self = .shell(
                 input: try c.decode(String.self, forKey: "input"),
-                thickness: try c.decode(Double.self, forKey: "thickness")
+                thickness: try c.decode(Double.self, forKey: "thickness"),
+                openFacesJson: try c.decodeIfPresent(String.self, forKey: "open_faces_json")
             )
         case "LinearPattern":
             self = .linearPattern(
@@ -1888,10 +1890,11 @@ public enum FeatureInput: Codable, Equatable, Sendable {
             try c.encode("Chamfer", forKey: "type")
             try c.encode(input, forKey: "input")
             try c.encode(distance, forKey: "distance")
-        case .shell(let input, let thickness):
+        case .shell(let input, let thickness, let openFacesJson):
             try c.encode("Shell", forKey: "type")
             try c.encode(input, forKey: "input")
             try c.encode(thickness, forKey: "thickness")
+            try c.encodeIfPresent(openFacesJson, forKey: "open_faces_json")
         case .linearPattern(let input, let direction, let count, let spacing):
             try c.encode("LinearPattern", forKey: "type")
             try c.encode(input, forKey: "input")
@@ -2056,8 +2059,34 @@ public struct MaterialDef: Codable, Equatable, Sendable {
     /// one; it is honoured by the photoreal path tracer, which shades the
     /// analytic BRep and therefore has the exact parameterisation to hand.
     public var anisotropy: Double?
+    /// Constant emissive colour as `[r, g, b]` in linear 0.0..1.0. Emitted
+    /// radiance is `emissive * emissive_strength`, modulated per hit by
+    /// [`emissive_map`](Self::emissive_map) when one is set. Honoured by
+    /// the photoreal path tracer; the drafting views ignore it.
+    public var emissive: [Double]?
+    /// Multiplier on the emissive colour (default 1.0). Values above 1 make
+    /// a screen read as *lit* rather than merely pale.
+    public var emissiveStrength: Double?
+    /// Path to an emissive image (PNG) — a UI screenshot lighting a display,
+    /// rendered as part of the product shot. Resolved relative to the source
+    /// `.loon` file's directory like `import-mesh` paths.
+    ///
+    /// Sampled by a world-space planar projection (see
+    /// [`emissive_map_origin`](Self::emissive_map_origin)), so emission does
+    /// not depend on UVs of tessellated meshes.
+    public var emissiveMap: String?
+    /// World-space position of image pixel (0,0) — the **top-left** corner.
+    public var emissiveMapOrigin: [Double]?
+    /// World-space vector spanning the image's full **width**: the top edge
+    /// runs from the origin to `origin + u`.
+    public var emissiveMapU: [Double]?
+    /// World-space vector spanning the image's full **height**: the left
+    /// edge runs from the origin to `origin + v`. Image y runs *down* from
+    /// pixel (0,0), so on a face in the XY plane shown upright to a camera
+    /// looking along +Y, `u` runs along +X and `v` along −Y.
+    public var emissiveMapV: [Double]?
 
-    public init(name: String, color: [Double], metallic: Double, roughness: Double, density: Double? = nil, friction: Double? = nil, transmission: Double? = nil, ior: Double? = nil, thickness: Double? = nil, attenuationDistance: Double? = nil, attenuationColor: [Double]? = nil, clearcoat: Double? = nil, clearcoatRoughness: Double? = nil, anisotropy: Double? = nil) {
+    public init(name: String, color: [Double], metallic: Double, roughness: Double, density: Double? = nil, friction: Double? = nil, transmission: Double? = nil, ior: Double? = nil, thickness: Double? = nil, attenuationDistance: Double? = nil, attenuationColor: [Double]? = nil, clearcoat: Double? = nil, clearcoatRoughness: Double? = nil, anisotropy: Double? = nil, emissive: [Double]? = nil, emissiveStrength: Double? = nil, emissiveMap: String? = nil, emissiveMapOrigin: [Double]? = nil, emissiveMapU: [Double]? = nil, emissiveMapV: [Double]? = nil) {
         self.name = name
         self.color = color
         self.metallic = metallic
@@ -2072,6 +2101,12 @@ public struct MaterialDef: Codable, Equatable, Sendable {
         self.clearcoat = clearcoat
         self.clearcoatRoughness = clearcoatRoughness
         self.anisotropy = anisotropy
+        self.emissive = emissive
+        self.emissiveStrength = emissiveStrength
+        self.emissiveMap = emissiveMap
+        self.emissiveMapOrigin = emissiveMapOrigin
+        self.emissiveMapU = emissiveMapU
+        self.emissiveMapV = emissiveMapV
     }
 
     public init(from decoder: Decoder) throws {
@@ -2090,6 +2125,12 @@ public struct MaterialDef: Codable, Equatable, Sendable {
         clearcoat = try c.decodeIfPresent(Double.self, forKey: "clearcoat")
         clearcoatRoughness = try c.decodeIfPresent(Double.self, forKey: "clearcoatRoughness")
         anisotropy = try c.decodeIfPresent(Double.self, forKey: "anisotropy")
+        emissive = try c.decodeIfPresent([Double].self, forKey: "emissive")
+        emissiveStrength = try c.decodeIfPresent(Double.self, forKey: "emissiveStrength")
+        emissiveMap = try c.decodeIfPresent(String.self, forKey: "emissiveMap")
+        emissiveMapOrigin = try c.decodeIfPresent([Double].self, forKey: "emissiveMapOrigin")
+        emissiveMapU = try c.decodeIfPresent([Double].self, forKey: "emissiveMapU")
+        emissiveMapV = try c.decodeIfPresent([Double].self, forKey: "emissiveMapV")
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -2108,6 +2149,12 @@ public struct MaterialDef: Codable, Equatable, Sendable {
         try c.encodeIfPresent(clearcoat, forKey: "clearcoat")
         try c.encodeIfPresent(clearcoatRoughness, forKey: "clearcoatRoughness")
         try c.encodeIfPresent(anisotropy, forKey: "anisotropy")
+        try c.encodeIfPresent(emissive, forKey: "emissive")
+        try c.encodeIfPresent(emissiveStrength, forKey: "emissiveStrength")
+        try c.encodeIfPresent(emissiveMap, forKey: "emissiveMap")
+        try c.encodeIfPresent(emissiveMapOrigin, forKey: "emissiveMapOrigin")
+        try c.encodeIfPresent(emissiveMapU, forKey: "emissiveMapU")
+        try c.encodeIfPresent(emissiveMapV, forKey: "emissiveMapV")
     }
 }
 

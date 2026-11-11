@@ -658,6 +658,7 @@ impl App {
                         op: CsgOp::Shell {
                             child: selected_id,
                             thickness,
+                            open_faces: Vec::new(),
                         },
                     },
                 );

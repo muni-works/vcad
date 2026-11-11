@@ -17,7 +17,8 @@ import SwiftUI
 //
 // Ids are SESSION handles: any edit that changes the B-rep renumbers them, so
 // the selection is cleared whenever the document's bytes change. Persist a
-// selection through `TopoEdge.selector` (an IR EdgeQuery), never the raw id.
+// selection through `TopoEdge.selector` (an IR EdgeQuery) or
+// `TopoFace.selector` (an IR FaceRef), never the raw id.
 
 /// What a viewport click picks.
 enum PickFilter: String, CaseIterable, Identifiable {
@@ -61,6 +62,15 @@ struct TopoFace: Decodable, Hashable {
     var center: [Double]
     var normal: [Double]
     var area: Double
+    /// Durable IR FaceRef re-finding this face after regeneration: the
+    /// persistent name when the solid carries one, plus a point on the face
+    /// and its outward normal.
+    var selector: JSONValue?
+
+    // A face is its id within the part's topology; JSONValue isn't Hashable,
+    // so identity is by id rather than synthesized over every field.
+    static func == (a: TopoFace, b: TopoFace) -> Bool { a.id == b.id }
+    func hash(into h: inout Hasher) { h.combine(id) }
 
     var centerF: SIMD3<Float> { Self.v(center) }
     var normalF: SIMD3<Float> { Self.v(normal) }

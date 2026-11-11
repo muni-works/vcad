@@ -81,7 +81,31 @@ pub fn summary(report: &FabPrepReport) -> String {
     let mut s = String::new();
     let _ = writeln!(s, "vcad fab-prep — DRC delta report");
     let _ = writeln!(s, "================================\n");
-    let _ = writeln!(s, "VERDICT: {}\n", report.headline());
+    let _ = writeln!(s, "VERDICT: {}", report.headline());
+    let _ = writeln!(s, "connectivity: {}", report.connectivity.status());
+    let _ = writeln!(
+        s,
+        "vias: {}\n",
+        if report.through_vias_only {
+            "through only (standard process)"
+        } else {
+            "blind/buried permitted (declared by the board or --allow-blind-vias)"
+        }
+    );
+    if report.shipped_incomplete {
+        let _ = writeln!(
+            s,
+            "*** NOT FULLY ROUTED — --allow-incomplete was passed. {} remain open and the fab \
+             package was written ANYWAY: {}. ***\n",
+            report.connectivity.status(),
+            report.connectivity.open_nets.join(", ")
+        );
+    } else if report.allow_incomplete_requested {
+        let _ = writeln!(
+            s,
+            "(--allow-incomplete was passed; it did not change the verdict.)\n"
+        );
+    }
     let _ = writeln!(
         s,
         "Baseline = this same board with every trace and via stripped, checked under the same\n\
@@ -223,6 +247,23 @@ pub fn fab_notes(report: &FabPrepReport) -> String {
         commas(report.board.traces),
         commas(report.board.vias),
     );
+
+    if !report.connectivity.complete() {
+        let _ = writeln!(s, "## NOT FULLY ROUTED\n");
+        let _ = writeln!(
+            s,
+            "**connectivity: {}.** These nets are unconnected, islanded, or have an SMD pad that \
+             never reaches its plane: `{}`.{}\n",
+            report.connectivity.status(),
+            report.connectivity.open_nets.join("`, `"),
+            if report.shipped_incomplete {
+                " This package was written only because the caller passed `--allow-incomplete`; \
+                 a board built from it is not the circuit."
+            } else {
+                ""
+            }
+        );
+    }
 
     let _ = writeln!(s, "## DRC status (vs the stripped-board baseline)\n");
     if report.converged {
