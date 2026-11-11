@@ -186,7 +186,15 @@ struct SheetMetalWorkbench: View {
         }
 
         if store.mode == .part {
-            Stepper("Part \(store.part + 1)", value: $store.part, in: 0...max(0, model.partCount - 1))
+            // Pick by name, not "Part 1" on a stepper: a boolean's document
+            // lists its operands too, so the index alone said nothing.
+            Picker("Part", selection: $store.part) {
+                ForEach(0..<max(1, model.partCount), id: \.self) { i in
+                    Text(model.featureNodes.first { $0.partIndex == i }?.name ?? "Part \(i + 1)").tag(i)
+                }
+            }
+            .onAppear { if let pi = model.selectedPartIndex { store.part = pi } }
+            .onChange(of: model.selectedPartIndex) { _, pi in if let pi { store.part = pi } }
             Text("Flattens a constant-thickness solid (extrusion, boolean, STEP) and checks it against the kernel volume.")
                 .font(.caption).foregroundStyle(.secondary)
         } else {

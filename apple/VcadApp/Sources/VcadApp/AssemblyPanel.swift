@@ -204,7 +204,7 @@ private struct JointDriveRow: View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
                 Image(systemName: spec.kind.symbol).foregroundStyle(.secondary).frame(width: 14)
-                Text(spec.name ?? id).font(.caption.weight(.medium)).lineLimit(1).truncationMode(.middle)
+                Text(spec.name ?? id).font(.caption.weight(.medium)).lineLimit(2).fixedSize(horizontal: false, vertical: true).help(spec.name ?? id)
                 Spacer(minLength: 2)
                 if driven {
                     Text(String(format: "%.1f%@", value, spec.kind.unit))
