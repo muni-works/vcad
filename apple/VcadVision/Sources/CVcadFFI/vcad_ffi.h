@@ -162,6 +162,12 @@ VcadMeshView vcad_scene_part_mesh(const VcadScene *scene, size_t index);
 typedef struct VcadEvalJob VcadEvalJob;
 VcadEvalJob *vcad_eval_begin(const uint8_t *json, size_t json_len,
                              const uint8_t *base_dir, size_t base_dir_len);
+/* vcad_eval_begin at a level of detail: preview = true tessellates for a quick
+ * first draw (no export repair, no chord tolerance); follow it with a full
+ * job and swap the scene in when that lands. */
+VcadEvalJob *vcad_eval_begin_lod(const uint8_t *json, size_t json_len,
+                                 const uint8_t *base_dir, size_t base_dir_len,
+                                 bool preview);
 bool vcad_eval_progress(const VcadEvalJob *job, size_t *done, size_t *total);
 VcadMeshView vcad_eval_part_mesh(const VcadEvalJob *job, size_t index);
 VcadScene *vcad_eval_finish(VcadEvalJob *job);
@@ -208,6 +214,8 @@ typedef struct VcadEdgesView {
   size_t floats_len;
 } VcadEdgesView;
 VcadEdges *vcad_scene_part_edges(const VcadScene *scene, size_t index, float angle_deg);
+VcadEdges *vcad_scene_instance_edges(const VcadScene *scene, size_t index, float angle_deg);
+const uint8_t *vcad_scene_instance_part_def(const VcadScene *scene, size_t index, size_t *out_len);
 VcadEdges *vcad_mesh_edges(const VcadMesh *mesh, float angle_deg);
 VcadEdgesView vcad_edges_view(const VcadEdges *edges);
 void vcad_edges_free(VcadEdges *edges);
@@ -831,6 +839,28 @@ char *vcad_pcb_enclosure_for_board(const char *doc_json, const char *pcb_json, c
 char *vcad_schematic_simulate(const char *schematic_json, const char *request_json);
 /* -> {count, violations[]} */
 char *vcad_schematic_erc(const char *schematic_json);
+
+/* --- MCP core hosted by the app (mcp.rs) ---
+ * vcad.app runs the Rust MCP core (crates/vcad-mcp): one dispatcher, the same
+ * tools `vcad mcp` serves headless. The core calls `host` (on its worker
+ * threads, never the caller's) with a JSON request {op, ...} and frees the
+ * malloc'ed (strdup) JSON reply. Ops: front, open, read, apply, release,
+ * documents, undo, open_path, live_resources, read_resource, engine_tool,
+ * host_call, instance_meta -- see crates/vcad-ffi/src/mcp.rs. */
+typedef struct VcadMcpApp VcadMcpApp;
+typedef char *(*vcad_mcp_host_fn)(void *ctx, const char *request_json);
+/* config {name?, version?, instructions?, port?, attempts?, serve_http?,
+ * proxy?, node_cmd?, viewer_uri?}; null + vcad_last_error when no port binds. */
+VcadMcpApp *vcad_mcp_app_start(vcad_mcp_host_fn host, void *ctx, const char *config_json);
+uint16_t vcad_mcp_app_port(const VcadMcpApp *app);
+/* One JSON-RPC message through the dispatcher; owned reply (vcad_string_free)
+ * or null for a notification. Never call on the thread `host` needs. */
+char *vcad_mcp_app_call(const VcadMcpApp *app, const char *msg_json);
+void vcad_mcp_app_resource_updated(const VcadMcpApp *app, const char *uri);
+/* id null = the front window changed. */
+void vcad_mcp_app_document_changed(const VcadMcpApp *app, const char *id);
+/* host_tools.json, owned (vcad_string_free). */
+char *vcad_mcp_host_tools(void);
 
 #ifdef __cplusplus
 }

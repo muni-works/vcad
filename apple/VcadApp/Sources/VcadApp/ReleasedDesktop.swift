@@ -793,6 +793,7 @@ struct ReleasedOverlayView: View {
     /// What the current left-drag does, decided once at its first event from
     /// the navigation scheme (orbit, pan, marquee, gizmo handle, or nothing).
     @State private var leftDragMode: NavigationScheme.Action?
+    @State private var sketchPointDrag = false
     /// Where the last click landed and how far into that point's stack of parts
     /// it selected — clicking the same spot again walks to the part behind.
     @State private var cycleAnchor: CGPoint?
@@ -983,6 +984,8 @@ struct ReleasedOverlayView: View {
                     })
                 .gesture(SpatialTapGesture(coordinateSpace: .local)
                     .onEnded { value in
+                        // A click outside Find closes it (Spotlight), and only that.
+                        if model.showsCommandPalette { model.showsCommandPalette = false; return }
                         if model.sketching { sketchTap(at: value.location) }
                         else { tapSelect(at: value.location, additive: false) }
                     })
@@ -1065,9 +1068,6 @@ struct ReleasedOverlayView: View {
                     .allowsHitTesting(false)
                     .accessibilityIdentifier("selectionReadout")
             }
-            // Opening a new document: the import / first-solve card, then
-            // the compact pill once geometry is visible.
-            LoadProgressOverlay(model: model, top: chromeTop)
             // Floating panels, hosted in the overlay itself (separate
             // NSPanels break SwiftUI hit testing after auto-resize).
             if !studio {
@@ -1665,6 +1665,17 @@ struct ReleasedOverlayView: View {
                     marquee = (value.startLocation, value.location)
                     return
                 }
+                // Select-tool drag of a sketch point: drag-to-solve.
+                if sketchPointDrag {
+                    if let ray = kernelRay(at: value.location) { model.sketchDrag(ray: ray); refreshSketchInk() }
+                    return
+                }
+                if leftDragMode == nil, model.sketching, let ray = kernelRay(at: value.startLocation),
+                   model.beginSketchDrag(ray: ray) {
+                    sketchPointDrag = true
+                    leftDragMode = NavigationScheme.Action.none
+                    return
+                }
                 if leftDragMode == nil && !model.draggingHandle {
                     let handle = ReleaseWindowController.shared.hits(atViewPoint: value.startLocation)
                         .first(where: { model.gizmoHandle(for: $0.entity.name) != nil })?.entity.name
@@ -1713,6 +1724,11 @@ struct ReleasedOverlayView: View {
                 model.lastDrag = value.translation
             }
             .onEnded { _ in
+                if sketchPointDrag {
+                    sketchPointDrag = false; leftDragMode = nil
+                    model.endSketchDrag(); refreshSketchInk()
+                    return
+                }
                 let mode = leftDragMode
                 leftDragMode = nil
                 if mode == NavigationScheme.Action.none { model.lastDrag = .zero; return }
@@ -1870,6 +1886,8 @@ struct ReleasedARView: NSViewRepresentable {
         /// with nothing landed yet may keep the previous geometry only when
         /// it belongs to the same source (an edit re-solving).
         var builtSourceID: String?
+        /// Per-part edge-line meshes, keyed by a hash of their segments.
+        var edgeLineCache: [Int: (key: Int, resource: MeshResource)] = [:]
         var builtGrounded = false
         /// What the ground grid was built from, so a zoom can re-pick its
         /// spacing without a scene rebuild.
@@ -2095,6 +2113,7 @@ struct ReleasedARView: NSViewRepresentable {
         if !scene.solving {
             let bounds = ReleaseWindowController.shared.arView?.bounds.size ?? .zero
             let aspect = bounds.height > 0 ? Float(bounds.width / bounds.height) : 1.6
+            model.viewportAspect = aspect
             if let target = model.takeAgentFrameDistance(aspect: aspect) {
                 // Deferred: this runs inside a view update.
                 Task { @MainActor in
@@ -2188,8 +2207,28 @@ struct ReleasedARView: NSViewRepresentable {
             e.transform = Transform(matrix: !isFreeRoot && i < model.instanceTransforms.count
                                     ? model.instanceTransforms[i] : inst.transform)
             e.generateCollisionShapes(recursive: false)
+            // Model edges (B-rep topology, Fusion-style), shared per part def.
+            if !model.zebraMode, let r = inst.edges {
+                let view = ReleaseWindowController.shared.arView
+                let hPx = Float((view?.bounds.height ?? 900) * (view?.window?.backingScaleFactor ?? 2))
+                if let lines = SceneAssets.edgeLineMaterial(viewportHeightPx: hPx) {
+                    e.addChild(ModelEntity(mesh: r, materials: [lines]))
+                }
+            }
             centering.addChild(e)
             if !isFreeRoot { coordinator.instanceEntities.append(e) }
+        }
+        // One ink material for every part: building a CustomMaterial sets up
+        // a shader pipeline, and doing it per part cost ~0.1 s each — minutes
+        // of main thread on a 1715-part assembly.
+        var edgeLinesMaterial: CustomMaterial??
+        func edgeLines() -> CustomMaterial? {
+            if let made = edgeLinesMaterial { return made }
+            let view = ReleaseWindowController.shared.arView
+            let hPx = Float((view?.bounds.height ?? 900) * (view?.window?.backingScaleFactor ?? 2))
+            let made = SceneAssets.edgeLineMaterial(viewportHeightPx: hPx)
+            edgeLinesMaterial = .some(made)
+            return made
         }
         for (i, item) in scene.meshes.enumerated() {
             var m = PhysicallyBasedMaterial()
@@ -2220,10 +2259,8 @@ struct ReleasedARView: NSViewRepresentable {
             // Feature edges as thin ink lines (the kernel already computes
             // them per part): the crisp CAD read Fusion/Shapr3D have.
             if !model.zebraMode, i < scene.edges.count, !scene.edges[i].isEmpty {
-                let view = ReleaseWindowController.shared.arView
-                let hPx = Float((view?.bounds.height ?? 900) * (view?.window?.backingScaleFactor ?? 2))
-                if let lines = SceneAssets.edgeLineMaterial(viewportHeightPx: hPx),
-                   let r = EdgeOverlay.screenLineResource(segments: scene.edges[i], name: "edges\(i)") {
+                if let lines = edgeLines(),
+                   let r = cachedEdgeLines(coordinator, part: i, segments: scene.edges[i]) {
                     e.addChild(ModelEntity(mesh: r, materials: [lines]))
                 } else if let r = EdgeOverlay.ribbonResource(segments: scene.edges[i],
                                                              width: max(scene.size, 10) * 0.0012,
@@ -2279,12 +2316,40 @@ struct ReleasedARView: NSViewRepresentable {
     /// footprint (a cylinder throws a round pool, an L-bracket an L). Scenes
     /// without per-part triangle data (the sandbox, assemblies) fall back to
     /// the bounding-box footprint.
+    /// A part's screen-line edge mesh, reused across rebuilds while its
+    /// segments are unchanged: rebuilding 1715 parts' edge meshes on every
+    /// redraw held the main thread for tens of seconds.
+    private func cachedEdgeLines(_ c: Coordinator, part i: Int, segments: [SIMD3<Float>]) -> MeshResource? {
+        var h = Hasher()
+        h.combine(segments.count)
+        for p in segments { h.combine(p.x); h.combine(p.y); h.combine(p.z) }
+        let key = h.finalize()
+        if let hit = c.edgeLineCache[i], hit.key == key { return hit.resource }
+        guard let r = EdgeOverlay.screenLineResource(segments: segments, name: "edges\(i)") else { return nil }
+        c.edgeLineCache[i] = (key, r)
+        return r
+    }
+
     private func shadowTriangles(model: EditorModel, lo: SIMD3<Float>, hi: SIMD3<Float>) -> [SIMD3<Float>] {
         var out: [SIMD3<Float>] = []
         if model.usesDocumentTree {
+            // The shadow is a blurred blob: a few hundred thousand triangles
+            // shape it as well as all of them. A big assembly (Voron 2.4:
+            // 15.8M) is sampled with a stride, or every rebuild re-baked it.
+            let total = model.docPartMeshes.enumerated()
+                .filter { model.isPartVisible($0.offset) }.reduce(0) { $0 + $1.element.indices.count / 3 }
+            let stride = max(1, total / 300_000)
             for (i, m) in model.docPartMeshes.enumerated() where model.isPartVisible(i) {
-                out.reserveCapacity(out.count + m.indices.count)
-                for k in m.indices where Int(k) < m.positions.count { out.append(m.positions[Int(k)]) }
+                let n = m.indices.count / 3
+                out.reserveCapacity(out.count + 3 * (n / stride + 1))
+                var t = 0
+                while t < n {
+                    let a = Int(m.indices[3 * t]), b = Int(m.indices[3 * t + 1]), c = Int(m.indices[3 * t + 2])
+                    if a < m.positions.count, b < m.positions.count, c < m.positions.count {
+                        out.append(m.positions[a]); out.append(m.positions[b]); out.append(m.positions[c])
+                    }
+                    t += stride
+                }
             }
         }
         return out.isEmpty ? ContactShadow.boxTriangles(lo: lo, hi: hi) : out

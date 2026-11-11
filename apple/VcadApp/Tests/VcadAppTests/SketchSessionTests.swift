@@ -465,7 +465,7 @@ final class SketchSessionTests: XCTestCase {
     /// Every tool is reachable — five on the bar, three behind the chevron,
     /// Dimension beside Constrain — and each tooltip names its shortcut.
     func testSketchBarCarriesEveryTool() {
-        let bar = SketchBar.primaryTools + SketchBar.overflowTools + [.dimension]
+        let bar = SketchBar.primaryTools + SketchBar.overflowTools + [.dimension] + SketchBar.editTools
         XCTAssertEqual(SketchBar.primaryTools, [.select, .line, .rectangle, .circle, .spline])
         XCTAssertEqual(SketchBar.overflowTools, [.polygon, .slot, .arc])
         XCTAssertEqual(Set(bar), Set(SketchToolKind.allCases))

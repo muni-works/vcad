@@ -105,17 +105,34 @@ fn psnr(a: &Image, b: &Image) -> f64 {
     10.0 * (255.0f64 * 255.0 / mse).log10()
 }
 
-/// Render on the GPU, or `None` when this machine has no adapter.
+/// Render on the GPU, or `None` when this machine cannot run the GPU path.
 ///
-/// The skip is keyed on the specific "no adapter" message the `--gpu` path
-/// produces. Every *other* failure is a real failure and is allowed to
-/// propagate: a test that skipped on any error at all would go green on a
-/// broken shader.
+/// Two conditions skip, both keyed on the exact messages the `--gpu` path
+/// produces, and both the ones `vcad render --photoreal` itself treats as
+/// "no usable GPU, fall back to the CPU":
+///
+/// - no adapter at all (headless CI);
+/// - the driver *loses the device* while compiling the tracer. NVIDIA's Linux
+///   Vulkan driver (580.x, RTX 3090) does this to kosm-render's integrator
+///   regardless of the geometry module — a stub `trace_scene` that always
+///   misses crashes it identically — so it is a driver/kosm-render defect,
+///   not something this crate's scene, framing or tonemap can cause or fix
+///   (muni-works/vcad#967). A device loss is not a validation error: a WGSL
+///   that fails to validate still reaches the panic below.
+///
+/// Every *other* failure is a real failure and is allowed to propagate: a
+/// test that skipped on any error at all would go green on a broken shader.
 fn gpu_png(opts: &RasterOptions, pr: &PhotorealOptions) -> Option<Vec<u8>> {
     match render_photoreal_gpu_png_str(&doc(), opts, pr) {
         Ok(png) => Some(png),
         Err(e) if e.contains("no compatible GPU adapter") => {
             eprintln!("skipped: {e}");
+            None
+        }
+        Err(e)
+            if e.contains("the GPU device was lost while building the path-tracing pipeline") =>
+        {
+            eprintln!("SKIPPED (driver lost the device compiling the tracer, vcad#967): {e}");
             None
         }
         Err(e) => panic!("GPU render failed: {e}"),

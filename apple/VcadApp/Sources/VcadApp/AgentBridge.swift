@@ -8,20 +8,21 @@ import RealityKit
 import simd
 import SwiftUI
 
-// Agent bridge: the app serves MCP on localhost so a Claude session and the
-// user share ONE view — the release-to-desktop viewport. The agent reads what
-// the user is pointing at (selection / hover), drives pose, explode and
-// camera, lights parts and pins labels the user sees, and takes snapshots of
-// exactly what is on screen.
+// Agent bridge: the app hosts vcad's MCP core (AgentCore.swift →
+// crates/vcad-mcp) so a Claude session and the user share ONE view — the
+// release-to-desktop viewport. The agent reads what the user is pointing at
+// (selection / hover), drives pose, explode and camera, lights parts and pins
+// labels the user sees, and takes snapshots of exactly what is on screen.
 //
-// The viewport tools here are read/drive only. Document edits live in
-// AgentEdits.swift: each is one named undo step, applied live. A generated
-// `.loon` stays owned by its generator (view-only); regenerates arrive
-// through the file watch.
+// The core owns the protocol, the 127.0.0.1 endpoint and every tool's listing
+// and dispatch; the viewport tools below are host tools it calls back into
+// (`AgentTools.call`). Document edits are native in the core and land here as
+// one named undo step each (AgentCore `apply` / `engine_tool`).
 //
-// Transport: MCP streamable HTTP, JSON responses only (no SSE), at
-// http://127.0.0.1:<port>/mcp. The port and pid land in ~/.vcad/app.json for
-// the stdio shim (apple/VcadApp/scripts/vcad-app-mcp.mjs). Loopback only.
+// Transport: MCP streamable HTTP at http://127.0.0.1:<port>/mcp (served by the
+// core). The port and pid land in ~/.vcad/instances/<pid>.json (+ the
+// ~/.vcad/app.json "most recent" pointer) for `vcad mcp`, the stdio shim
+// (apple/VcadApp/scripts/vcad-app-mcp.mjs) and @vcad/mcp. Loopback only.
 
 /// A label an agent pinned to an instance.
 struct AgentAnnotation: Identifiable, Equatable {
@@ -36,178 +37,97 @@ final class AgentBridge {
     static let basePort: UInt16 = 47_361
 
     private weak var model: EditorModel?
-    private var listener: NWListener?
     private(set) var port: UInt16?
 
+    /// Host the MCP core (AgentCore.swift → crates/vcad-mcp) on 127.0.0.1 and
+    /// advertise it in ~/.vcad/instances. The core serves the protocol and
+    /// the tools; this class is discovery and the instance stamp.
     func start(model: EditorModel) {
         self.model = model
         AgentResources.shared.store = AppStore(model: model)
-        guard listener == nil else { return }
+        guard port == nil else { return }
         guard ProcessInfo.processInfo.environment["VCAD_AGENT_BRIDGE"] != "0" else { return }
         // VCAD_AGENT_PORT pins the port (a second instance during development
-        // would otherwise share 47361 through endpoint reuse).
+        // would otherwise take the next free one).
         let pinned = ProcessInfo.processInfo.environment["VCAD_AGENT_PORT"].flatMap { UInt16($0) }
-        listen(on: pinned ?? Self.basePort, attemptsLeft: pinned == nil ? 8 : 0)
+        guard let p = AgentCore.shared.start(model: model, port: pinned ?? Self.basePort,
+                                             attempts: pinned == nil ? 8 : 0) else { return }
+        port = p
+        writeDiscovery(port: p)
+        AgentResources.shared.startPolling()
     }
 
-    private func listen(on p: UInt16, attemptsLeft: Int) {
-        let params = NWParameters.tcp
-        params.requiredInterfaceType = .loopback
-        params.allowLocalEndpointReuse = true
-        guard let port = NWEndpoint.Port(rawValue: p),
-              let l = try? NWListener(using: params, on: port) else {
-            if attemptsLeft > 0 { listen(on: p + 1, attemptsLeft: attemptsLeft - 1) }
-            return
-        }
-        l.newConnectionHandler = { conn in
-            MainActor.assumeIsolated { AgentBridge.shared.accept(conn) }
-        }
-        l.stateUpdateHandler = { state in
-            MainActor.assumeIsolated {
-                switch state {
-                case .ready:
-                    AgentBridge.shared.port = p
-                    AgentBridge.shared.writeDiscovery(port: p)
-                case .failed:
-                    AgentBridge.shared.listener?.cancel()
-                    AgentBridge.shared.listener = nil
-                    if attemptsLeft > 0 { AgentBridge.shared.listen(on: p + 1, attemptsLeft: attemptsLeft - 1) }
-                default: break
-                }
-            }
-        }
-        listener = l
-        l.start(queue: .main)
+    /// Random per launch; agents compare it across calls to notice a relaunch.
+    let instanceId = UUID().uuidString.lowercased()
+    private let launched: String = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f.string(from: Date())
+    }()
+    private var lastRecord: AgentInstanceRecord?
+    private var discoveryTimer: Timer?
+
+    /// This instance as clients see it (discovery file + every response's `_meta`).
+    var record: AgentInstanceRecord? {
+        guard let port else { return nil }
+        return AgentInstanceRecord(pid: Int(ProcessInfo.processInfo.processIdentifier), port: Int(port),
+                                   url: "http://127.0.0.1:\(port)/mcp", instanceId: instanceId, started: launched,
+                                   documentName: model?.documentName, documentPath: model?.documentURL?.path)
     }
 
-    /// ~/.vcad/app.json — how the stdio shim (and anything else) finds us.
+    /// ~/.vcad/instances/<pid>.json (+ the app.json "most recent" pointer) —
+    /// how `vcad mcp`, the stdio shim and @vcad/mcp find us. See AgentDiscovery.swift.
     private func writeDiscovery(port: UInt16) {
-        let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".vcad")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let info: [String: Any] = ["port": Int(port), "pid": Int(ProcessInfo.processInfo.processIdentifier),
-                                   "url": "http://127.0.0.1:\(port)/mcp",
-                                   "started": ISO8601DateFormatter().string(from: Date())]
-        if let data = try? JSONSerialization.data(withJSONObject: info, options: [.prettyPrinted, .sortedKeys]) {
-            try? data.write(to: dir.appendingPathComponent("app.json"), options: .atomic)
+        refreshDiscovery()
+        // The open document changes under us; keep the file current so clients
+        // can pick the window by document path.
+        discoveryTimer?.invalidate()
+        discoveryTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { _ in
+            MainActor.assumeIsolated { AgentBridge.shared.refreshDiscovery() }
         }
-        FileHandle.standardError.write(Data("[vcad] agent bridge on http://127.0.0.1:\(port)/mcp\n".utf8))
+        #if canImport(AppKit)
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil,
+                                               queue: .main) { _ in
+            AgentDiscovery.remove(pid: Int(ProcessInfo.processInfo.processIdentifier))
+        }
+        #endif
+        FileHandle.standardError.write(Data("[vcad] MCP core on http://127.0.0.1:\(port)/mcp\n".utf8))
     }
 
-    // MARK: HTTP (just enough: one request per connection, Content-Length bodies)
-
-    private func accept(_ conn: NWConnection) {
-        conn.start(queue: .main)
-        receive(conn, buffer: Data())
+    func refreshDiscovery() {
+        guard let r = record, r != lastRecord else { return }
+        lastRecord = r
+        AgentDiscovery.write(r)
     }
 
-    private func receive(_ conn: NWConnection, buffer: Data) {
-        conn.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { data, _, done, error in
-            MainActor.assumeIsolated {
-                var buf = buffer
-                if let data { buf.append(data) }
-                if let req = HTTPRequest.parse(buf) {
-                    AgentBridge.shared.handle(req, conn)
-                } else if done || error != nil || buf.count > 32 << 20 {
-                    conn.cancel()
-                } else {
-                    AgentBridge.shared.receive(conn, buffer: buf)
-                }
-            }
-        }
+    /// Names this instance on every response, so an agent can tell which window it is driving.
+    var instanceMeta: [String: Any] {
+        refreshDiscovery()
+        guard let r = record else { return [:] }
+        return ["pid": r.pid, "port": r.port, "instance_id": r.instanceId, "started": r.started,
+                "document": r.documentName ?? NSNull(), "document_path": r.documentPath ?? NSNull()]
     }
 
-    private func respond(_ conn: NWConnection, status: String, body: Data = Data(),
-                         contentType: String = "application/json") {
-        var head = "HTTP/1.1 \(status)\r\nContent-Type: \(contentType)\r\nContent-Length: \(body.count)\r\nConnection: close\r\n"
-        head += "Mcp-Session-Id: vcad-app\r\n\r\n"
-        var out = Data(head.utf8)
-        out.append(body)
-        conn.send(content: out, completion: .contentProcessed { _ in conn.cancel() })
-    }
-
-    private func handle(_ req: HTTPRequest, _ conn: NWConnection) {
-        // A browser page must not drive the app: refuse any request carrying a
-        // non-loopback Origin (DNS-rebinding guard, per the MCP transport spec).
-        if let origin = req.headers["origin"], !origin.contains("127.0.0.1"), !origin.contains("localhost") {
-            respond(conn, status: "403 Forbidden"); return
-        }
-        guard req.path.hasPrefix("/mcp") else { respond(conn, status: "404 Not Found"); return }
-        // Server→client stream: resource-update notifications (AgentResources).
-        if req.method == "GET", req.headers["accept"]?.contains("text/event-stream") == true {
-            AgentResources.shared.attachStream(conn); return
-        }
-        guard req.method == "POST" else { respond(conn, status: "405 Method Not Allowed"); return }
-        guard let msg = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any] else {
-            respond(conn, status: "400 Bad Request", body: Self.rpcError(nil, -32700, "parse error")); return
-        }
-        guard let id = msg["id"] else { respond(conn, status: "202 Accepted"); return }   // notification
-        let method = msg["method"] as? String ?? ""
-        let params = msg["params"] as? [String: Any] ?? [:]
-        Task { @MainActor in
-            let body: Data
-            switch method {
-            case "initialize":
-                if let client = (params["clientInfo"] as? [String: Any])?["name"] as? String {
-                    AgentCursor.shared.agentName = Self.displayName(client)
-                }
-                body = Self.rpcResult(id, [
-                    "protocolVersion": (params["protocolVersion"] as? String) ?? "2025-06-18",
-                    "capabilities": ["tools": ["listChanged": false],
-                                     "resources": ["subscribe": true, "listChanged": false]],
-                    "serverInfo": ["name": "vcad-app", "version": "0.2"],
-                    "instructions": Self.instructions,
-                ])
-            case "ping":
-                body = Self.rpcResult(id, [:])
-            case "tools/list":
-                body = Self.rpcResult(id, ["tools": AgentTools.definitions + Self.withViewer(AgentEdits.definitions)
-                                                       + AnalysisAgentTools.definitions
-                                                       + ProofAgentTools.definitions
-                                                       + [AgentTurn.toolDefinition] + AgentViewer.definitions])
-            case "resources/list":
-                body = Self.rpcResult(id, AgentResources.shared.list())
-            case "resources/read", "resources/subscribe", "resources/unsubscribe":
-                let uri = params["uri"] as? String ?? ""
-                do {
-                    switch method {
-                    case "resources/read": body = Self.rpcResult(id, try AgentResources.shared.read(uri))
-                    case "resources/subscribe":
-                        try AgentResources.shared.subscribe(uri); body = Self.rpcResult(id, [:])
-                    default:
-                        AgentResources.shared.unsubscribe(uri); body = Self.rpcResult(id, [:])
-                    }
-                } catch let e as AgentTools.Failure {
-                    body = Self.rpcError(id, -32002, e.message)
-                } catch {
-                    body = Self.rpcError(id, -32603, "\(error)")
-                }
-            case "tools/call":
-                let name = params["name"] as? String ?? ""
-                let args = params["arguments"] as? [String: Any] ?? [:]
-                // MRTR retry payload: elicitations the client already answered.
-                let result = await self.callTool(name, args, inputResponses: params["inputResponses"])
-                body = Self.rpcResult(id, result)
-            default:
-                body = Self.rpcError(id, -32601, "method not found: \(method)")
-            }
-            self.respond(conn, status: "200 OK", body: body)
-        }
+    /// Adds `_meta["io.vcad/instance"]` and a trailing one-line text block
+    /// ("vcad.app pid 123 · bracket.vcad") to a tool result — what the core's
+    /// `instance_meta` stamp does to every result (kept for in-app callers).
+    static func stampInstance(_ result: [String: Any], _ meta: [String: Any]) -> [String: Any] {
+        guard let pid = meta["pid"] else { return result }
+        var r = result
+        var m = r["_meta"] as? [String: Any] ?? [:]
+        m["io.vcad/instance"] = meta
+        r["_meta"] = m
+        let doc = (meta["document"] as? String) ?? "no document"
+        var content = r["content"] as? [[String: Any]] ?? []
+        content.append(["type": "text", "text": "[vcad.app pid \(pid) · \(doc)]"])
+        r["content"] = content
+        return r
     }
 
     /// "claude-code" → "Claude", "cursor-vscode" → "Cursor".
     static func displayName(_ client: String) -> String {
         let first = client.split(whereSeparator: { $0 == "-" || $0 == " " || $0 == "_" }).first.map(String.init) ?? client
         return first.isEmpty ? "Agent" : first.prefix(1).uppercased() + first.dropFirst()
-    }
-
-    /// Mutating tools render in the live viewer (MCP Apps `_meta.ui`).
-    static func withViewer(_ tools: [[String: Any]]) -> [[String: Any]] {
-        tools.map { t in
-            guard let n = t["name"] as? String, !AgentEdits.readEngineTools.contains(n),
-                  !["get_document", "inspect_cad", "list_parameters", "link_status", "attach_document"].contains(n)
-            else { return t }
-            var t = t; t["_meta"] = AgentViewer.meta; return t
-        }
     }
 
     static let instructions = """
@@ -220,67 +140,13 @@ final class AgentBridge {
     set_parameters, and create_cad_loon for a whole program. Build in small steps — each call \
     is one named undo step the user watches land and can ⌘Z one at a time. Read with \
     describe_scene, inspect_cad, list_parameters and get_document. Units are mm, Z is up. \
-    Generated .loon documents and electronics are view-only. \
+    Omit document_id to work on the open window. Generated .loon documents and electronics are view-only. \
     Resources: vcad://doc/selection is what the user picked (subscribe to follow it; "this edge" means \
     it), vcad://doc/current the live document, vcad://doc/view the camera. Before a multi-step change \
     call agent_turn {label:"thickened walls"} so it lands as ONE undo step, and agent_turn {end:true} \
-    after. fillet_edges fillets the user's selected edges.
+    after. fillet_edges fillets the user's selected edges. Receipts (assert_clearance, verify_receipts), \
+    fab_print / fab_mill (dry-run, as tasks) and optimize_parameters run in the same core.
     """
-
-    static func rpcResult(_ id: Any, _ result: [String: Any]) -> Data {
-        (try? JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": id, "result": result])) ?? Data()
-    }
-    static func rpcError(_ id: Any?, _ code: Int, _ message: String) -> Data {
-        (try? JSONSerialization.data(withJSONObject: ["jsonrpc": "2.0", "id": id ?? NSNull(),
-                                                      "error": ["code": code, "message": message]])) ?? Data()
-    }
-
-    // MARK: tools
-
-    private func callTool(_ name: String, _ args: [String: Any], inputResponses: Any? = nil) async -> [String: Any] {
-        guard let model else { return AgentTools.error("The app has no window yet.") }
-        do {
-            // Proof tools (receipts, viewport elicitation) — ProofAgentTools.swift.
-            if ProofAgentTools.toolNames.contains(name) {
-                return try await ProofAgentTools.call(name, args, inputResponses: inputResponses, model: model)
-            }
-            if let refused = await ProofAgentTools.confirmDestructive(name, args, inputResponses: inputResponses,
-                                                                      model: model) {
-                return refused
-            }
-            return try await AgentTools.call(name, args, model: model)
-        } catch let e as AgentTools.Failure {
-            return AgentTools.error(e.message)
-        } catch {
-            return AgentTools.error("\(error)")
-        }
-    }
-}
-
-/// One parsed HTTP request (nil until the whole body has arrived).
-struct HTTPRequest {
-    let method: String
-    let path: String
-    let headers: [String: String]
-    let body: Data
-
-    static func parse(_ buf: Data) -> HTTPRequest? {
-        guard let sep = buf.range(of: Data("\r\n\r\n".utf8)) else { return nil }
-        let head = String(decoding: buf[..<sep.lowerBound], as: UTF8.self)
-        var lines = head.components(separatedBy: "\r\n")
-        let start = lines.removeFirst().split(separator: " ")
-        guard start.count >= 2 else { return nil }
-        var headers: [String: String] = [:]
-        for l in lines {
-            guard let c = l.firstIndex(of: ":") else { continue }
-            headers[l[..<c].lowercased()] = l[l.index(after: c)...].trimmingCharacters(in: .whitespaces)
-        }
-        let len = Int(headers["content-length"] ?? "0") ?? 0
-        let bodyStart = sep.upperBound
-        guard buf.count - bodyStart >= len else { return nil }
-        return HTTPRequest(method: String(start[0]), path: String(start[1]), headers: headers,
-                           body: buf[bodyStart..<(bodyStart + len)])
-    }
 }
 
 @MainActor
@@ -294,84 +160,14 @@ enum AgentTools {
         return text(String(decoding: data, as: UTF8.self))
     }
 
-    private static func schema(_ props: [String: Any], required: [String] = []) -> [String: Any] {
-        ["type": "object", "properties": props, "required": required]
-    }
-    private static let partsProp: [String: Any] = [
-        "type": "array", "items": ["type": "string"],
-        "description": "Instance ids or name fragments (e.g. \"cover-knee_ll\", \"knee_ll\"), or a joint name (\"l_knee_pitch\") for the link it drives.",
+    /// Viewport host tools implemented in `call` (listed by the core's
+    /// host_tools.json; `AgentCoreTests` checks the two agree).
+    static let viewportToolNames: Set<String> = [
+        "app_state", "list_parts", "set_pose", "set_explode", "set_camera", "frame_part", "highlight_parts",
+        "annotate", "clear_annotations", "suggest_edit", "history_seek", "import_board", "press_key",
+        "set_workspace", "select_feature", "app_screenshot", "snapshot", "photoreal",
     ]
 
-    static let definitions: [[String: Any]] = [
-        ["name": "app_state",
-         "description": "What the user is looking at: open document, every driveable joint (value + limits), explode, camera, the user's selection and hover, and your current highlights/labels. Call this first, and again when the user says \"this\".",
-         "inputSchema": schema([:])],
-        ["name": "list_parts",
-         "description": "Part ids in the open document: assembly instances when it is an assembly, otherwise the document's parts (usable as part_id / child in edit tools).",
-         "inputSchema": schema([:])],
-        ["name": "open_document",
-         "description": "Open a .vcad or .loon file in the shared view (read-only; .loon files hot-reload when regenerated).",
-         "inputSchema": schema(["path": ["type": "string"]], required: ["path"])],
-        ["name": "set_pose",
-         "description": "Set joint angles in degrees (clamped to limits), by joint name, e.g. {\"l_knee_pitch\": 60}. reset:true first returns every joint to its authored value.",
-         "inputSchema": schema(["joints": ["type": "object", "additionalProperties": ["type": "number"]],
-                                "reset": ["type": "boolean"],
-                                "base": ["type": "array", "items": ["type": "number"],
-                                         "description": "Floating base pose: x, y, z in metres, then w, x, y, z"],
-                                "restart": ["type": "boolean", "description": "base starts a new episode"],
-                                "link_id": ["type": "string", "description": "Sent by @vcad/mcp: the session this pose belongs to."],
-                                "partial": ["type": "boolean", "description": "Sent by @vcad/mcp for a mirrored stream: skip joints this window doesn't drive."]])],
-        ["name": "set_explode",
-         "description": "Explode amount 0 (assembled) … 1 (fully exploded).",
-         "inputSchema": schema(["amount": ["type": "number"]], required: ["amount"])],
-        ["name": "set_camera",
-         "description": "Orbit the shared camera. azimuth/elevation in degrees (Z-up; azimuth 0 looks from the front), distance in view units (1.5 ≈ whole model).",
-         "inputSchema": schema(["azimuth": ["type": "number"], "elevation": ["type": "number"],
-                                "distance": ["type": "number"]])],
-        ["name": "frame_part",
-         "description": "Point the camera at a part and pull in to fit it.",
-         "inputSchema": schema(["part": ["type": "string"]], required: ["part"])],
-        ["name": "highlight_parts",
-         "description": "Light parts in brand orange so the user sees what you mean. Replaces the previous highlight unless add:true; parts:[] clears.",
-         "inputSchema": schema(["parts": partsProp, "add": ["type": "boolean"]], required: ["parts"])],
-        ["name": "annotate",
-         "description": "Pin a text label to a part, drawn in the user's viewport with a leader to the part. Same part again replaces its label.",
-         "inputSchema": schema(["part": ["type": "string"], "text": ["type": "string"]], required: ["part", "text"])],
-        ["name": "clear_annotations",
-         "description": "Remove your labels (and highlights, with highlights:true).",
-         "inputSchema": schema(["highlights": ["type": "boolean"]])],
-        ["name": "snapshot",
-         "description": "PNG of the shared viewport exactly as the user sees it (geometry, highlights; labels are an overlay and not included).",
-         "inputSchema": schema([:])],
-        ["name": "app_screenshot",
-         "description": "PNG of the whole editor window as the user sees it: toolbar, panels, dock, edit bar, suggestion pill.",
-         "inputSchema": schema([:])],
-        ["name": "set_workspace",
-         "description": "Switch the dock workspace: design, assembly, drawing, electronics or fab. history:true/false opens or closes the history filmstrip.",
-         "inputSchema": schema(["workspace": ["type": "string"], "history": ["type": "boolean"]], required: ["workspace"])],
-        ["name": "select_feature",
-         "description": "Select a feature-tree node by name (case-insensitive substring) — the user sees it selected, and its edit bar opens beside it.",
-         "inputSchema": schema(["name": ["type": "string"]], required: ["name"])],
-        ["name": "history_seek",
-         "description": "Move the history playhead: frame 0 is the document as opened, frame k is after the k-th undo step. Rewinds/replays and rebuilds the viewport; returns the rebuild time.",
-         "inputSchema": schema(["frame": ["type": "integer"]], required: ["frame"])],
-        ["name": "import_board",
-         "description": "Import a KiCad (.kicad_pcb) or Eagle (.brd) board file into the open document and switch to Electronics.",
-         "inputSchema": schema(["path": ["type": "string"]], required: ["path"])],
-        ["name": "press_key",
-         "description": "Press a bare-letter tool shortcut as if typed in the viewport (e.g. \"f\" for Fillet, \"?\" for the shortcut sheet). Returns whether a tool was bound.",
-         "inputSchema": schema(["key": ["type": "string"]], required: ["key"])],
-        ["name": "suggest_edit",
-         "description": "Offer ONE edit as a suggestion pill in the user's viewport instead of applying it: a short question (\"Add 4 M3 counterbores on the motor bolt circle?\") plus the edit tool call it would make. The parts it touches shimmer softly. Nothing changes until the user clicks Add (then it is one named undo step); × dismisses. A new suggestion replaces the old one.",
-         "inputSchema": schema(["text": ["type": "string", "description": "One-line question shown on the pill."],
-                                "tool": ["type": "string", "description": "An edit tool name (create, update, difference, set_parameters, …)."],
-                                "args": ["type": "object", "description": "That tool's arguments."],
-                                "parts": partsProp],
-                               required: ["text", "tool", "args"])],
-        ["name": "photoreal",
-         "description": "Path-trace the current pose/explode from the current camera (the vcad render --photoreal renderer, ~30-60 s). Returns the image and its saved path.",
-         "inputSchema": schema(["spp": ["type": "integer", "description": "samples per pixel, default 64"]])],
-    ]
 
     private static let setPoseArgs: Set<String> = ["joints", "reset", "base", "restart", "link_id", "partial"]
 
@@ -446,12 +242,6 @@ enum AgentTools {
             return json((m.engineState?.parts ?? []).enumerated().map { i, p in
                 ["id": p.id, "index": i, "kind": "part"] as [String: Any]
             })
-        case "open_document":
-            guard let path = a["path"] as? String else { throw Failure(message: "path is required") }
-            let url = URL(fileURLWithPath: (path as NSString).expandingTildeInPath)
-            guard FileManager.default.fileExists(atPath: url.path) else { throw Failure(message: "no file at \(url.path)") }
-            m.openDocument(url)
-            return text("Opened \(url.lastPathComponent). It solves in the background; call app_state to see when instances appear.")
         case "set_pose":
             return try setPose(a, m)
         case "set_explode":
@@ -496,8 +286,7 @@ enum AgentTools {
             return text("Cleared.")
         case "suggest_edit":
             let tool = a["tool"] as? String ?? ""
-            let reads: Set<String> = ["get_document", "inspect_cad", "list_parameters", "undo"]
-            guard AgentEdits.toolNames.contains(tool), !reads.contains(tool), !AgentEdits.readEngineTools.contains(tool) else {
+            guard AgentEdits.suggestableTools.contains(tool) else {
                 throw Failure(message: "suggest_edit needs an edit tool; \(tool) is not one.")
             }
             let args = (a["args"] as? [String: Any] ?? [:]).compactMapValues { $0 as? AnyHashable }
@@ -567,7 +356,7 @@ enum AgentTools {
             return AgentTurn.shared.call(a)
         case _ where AgentViewer.toolNames.contains(name):
             return try await AgentViewer.call(name, a, model: m)
-        case _ where AgentEdits.toolNames.contains(name):
+        case _ where AgentEdits.hostToolNames.contains(name):
             return try AgentEdits.call(name, a, model: m)
         case _ where AnalysisAgentTools.toolNames.contains(name):
             return try await AnalysisAgentTools.call(name, a, model: m)

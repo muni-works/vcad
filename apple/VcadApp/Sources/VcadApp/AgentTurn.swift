@@ -80,13 +80,6 @@ final class AgentTurn {
 // MARK: - tool
 
 extension AgentTurn {
-    static let toolDefinition: [String: Any] = [
-        "name": "agent_turn",
-        "description": "Group your next edits into ONE undo step the user sees as \"Agent: <label>\" (e.g. label \"thickened walls\"). Call at the start of a multi-step change; call again with end:true when done (or it closes after 30 s idle). ⌘Z then rewinds the whole change.",
-        "inputSchema": ["type": "object",
-                        "properties": ["label": ["type": "string", "description": "Past-tense summary, lower case: \"thickened walls\""],
-                                       "end": ["type": "boolean"]] as [String: Any]] as [String: Any],
-    ]
 
     func call(_ a: [String: Any]) -> [String: Any] {
         if a["end"] as? Bool == true {

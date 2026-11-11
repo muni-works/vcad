@@ -52,6 +52,9 @@ struct PrintPose: Identifiable, Equatable {
     let height: Double
     let printTime: Double?
     let grams: Double?
+    /// False when the engine found the posed part overflows the printer's
+    /// build volume (it can't slice). Defaults true when not estimated.
+    var fits = true
 
     /// Short human name from the facet that rests on the plate.
     let name: String
@@ -62,14 +65,22 @@ struct PrintPose: Identifiable, Equatable {
         let name: String
         if down[2] < -0.999 { name = "As modeled" }
         else if down[2] > 0.999 { name = "Flipped" }
-        else if abs(down[2]) < 0.001 { name = "On side" }
+        else if abs(down[2]) < 0.001 {
+            // Every side pose read "On side", so a ranked list of three was
+            // indistinguishable. Name the face that rests on the plate (Z-up,
+            // Y forward: the front face looks down -Y).
+            name = abs(down[0]) >= abs(down[1])
+                ? (down[0] > 0 ? "On right side" : "On left side")
+                : (down[1] > 0 ? "On back" : "On front")
+        }
         else { name = "Tilted" }
         return PrintPose(id: index, rotation: rot.map { $0.map(\.doubleValue) },
                          supportFree: v["supportFree"] as? Bool ?? false,
                          overhangCount: (v["overhangCount"] as? NSNumber)?.intValue ?? 0,
                          supportVolume: fabNum(v["supportVolume"]), height: fabNum(v["height"]),
                          printTime: (v["printTimeSeconds"] as? NSNumber)?.doubleValue,
-                         grams: (v["filamentGrams"] as? NSNumber)?.doubleValue, name: name)
+                         grams: (v["filamentGrams"] as? NSNumber)?.doubleValue,
+                         fits: v["fits"] as? Bool ?? true, name: name)
     }
 }
 
@@ -219,7 +230,7 @@ final class PrintStore {
         WarningGroup.group((analysis?["dfm"] as? [String: Any])?["warnings"] as? [[String: Any]] ?? [])
     }
     var selectedPose: PrintPose? { poses.indices.contains(pose) ? poses[pose] : nil }
-    var bestPose: Int? { poses.firstIndex(where: \.supportFree) }
+    var bestPose: Int? { poses.firstIndex { $0.supportFree && $0.fits } }
 
     private func applyQuality() {
         let p = quality.preset
@@ -280,10 +291,24 @@ final class PrintStore {
         guard let doc else { return }
         analysis = await run(doc, ["op": "analyze", "part": part, "settings": settings])
         let o = await run(doc, ["op": "orient", "settings": settings, "max": 3])
-        poses = ((o?["poses"] as? [[String: Any]]) ?? []).enumerated().compactMap { PrintPose.parse($1, index: $0) }
+        setPoses((o?["poses"] as? [[String: Any]]) ?? [])
         modeledOverhangs = ((o?["modeled"] as? [String: Any])?["overhangCount"] as? NSNumber)?.intValue ?? 0
-        pose = poses.firstIndex { $0.name == "As modeled" } ?? 0
         invalidateSlice()
+    }
+
+    /// Adopt the engine's ranked poses. A pose that overflows the build
+    /// volume sinks to the bottom and is never pre-selected: the K1 PTO
+    /// assembly's top pick laid it on its side (240 mm along Y on a 236 mm
+    /// bed), and Slice then failed with "part is … fits 236 × 236 × 256".
+    func setPoses(_ raw: [[String: Any]]) {
+        let parsed = raw.compactMap { PrintPose.parse($0, index: 0) }
+        let ordered = parsed.filter(\.fits) + parsed.filter { !$0.fits }
+        poses = ordered.enumerated().map { i, p in
+            PrintPose(id: i, rotation: p.rotation, supportFree: p.supportFree, overhangCount: p.overhangCount,
+                      supportVolume: p.supportVolume, height: p.height, printTime: p.printTime, grams: p.grams,
+                      fits: p.fits, name: p.name)
+        }
+        pose = poses.firstIndex { $0.name == "As modeled" && $0.fits } ?? poses.firstIndex(where: \.fits) ?? 0
     }
 
     /// "Orient to fix": the best support-free pose.
@@ -579,7 +604,11 @@ struct PrintWorkbench: View {
                                 .foregroundStyle(store.pose == p.id ? Color.accentColor : .secondary)
                             Text(p.name)
                             Spacer()
-                            Text(p.printTime.map(fabDuration) ?? "\(fabFmt(p.height, 0)) mm").monospacedDigit().foregroundStyle(.secondary)
+                            if p.fits {
+                                Text(p.printTime.map(fabDuration) ?? "\(fabFmt(p.height, 0)) mm tall").monospacedDigit().foregroundStyle(.secondary)
+                            } else {
+                                Text("doesn't fit").foregroundStyle(.red)
+                            }
                             Text(p.supportFree ? "no supports" : "supports").font(.caption)
                                 .foregroundStyle(p.supportFree ? .green : .orange)
                         }

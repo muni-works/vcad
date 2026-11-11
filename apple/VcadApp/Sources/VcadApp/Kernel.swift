@@ -429,6 +429,9 @@ struct RenderInstance {
     var material: ResolvedMaterial
     /// World placement in kernel coordinates (Z-up, mm), column-major.
     var transform: float4x4
+    /// Model-edge ink lines in the mesh's local frame (screen-line layout),
+    /// shared by every instance of one part definition. Nil = none.
+    var edges: MeshResource? = nil
 }
 
 /// Feature-edge overlay support: converts a kernel `VcadEdgesView` into

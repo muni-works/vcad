@@ -43,9 +43,48 @@ fn floating_arm() -> Document {
 }
 
 /// Build the GPU pipeline, or `None` when this machine has no usable adapter.
-fn gpu_or_skip(doc: &Document, n_envs: usize, what: &str) -> Option<BatchSimPipeline> {
+/// One GPU pipeline at a time, across every test in this file.
+///
+/// The harness runs tests on parallel threads, and each `BatchSimPipeline`
+/// owns its own wgpu instance over `Backends::all()`. On NVIDIA's Linux driver
+/// (580.x) dropping one of those instances tears down its EGL/GLES backend,
+/// which takes a driver-global lock that a concurrent Vulkan `queue.submit`
+/// on another thread already holds the other half of: the whole binary
+/// deadlocks at 0% CPU, every thread parked in `libnvidia-glsi`. Holding this
+/// lock for a pipeline's whole life makes creation, stepping and teardown
+/// strictly sequential, which is what the driver needs.
+static GPU_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// A pipeline plus the guard that serialises it. Fields drop in declaration
+/// order, so the pipeline (and its wgpu instance) is gone before the lock is
+/// released.
+struct Gpu {
+    pipeline: BatchSimPipeline,
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+impl std::ops::Deref for Gpu {
+    type Target = BatchSimPipeline;
+    fn deref(&self) -> &BatchSimPipeline {
+        &self.pipeline
+    }
+}
+
+impl std::ops::DerefMut for Gpu {
+    fn deref_mut(&mut self) -> &mut BatchSimPipeline {
+        &mut self.pipeline
+    }
+}
+
+fn gpu_or_skip(doc: &Document, n_envs: usize, what: &str) -> Option<Gpu> {
+    // A test that panicked while holding the lock poisons it; the GPU state is
+    // per-pipeline, so the next test can still run.
+    let guard = GPU_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     match BatchSimPipeline::from_document(doc, n_envs, DT) {
-        Ok(p) => Some(p),
+        Ok(pipeline) => Some(Gpu {
+            pipeline,
+            _guard: guard,
+        }),
         Err(e) => {
             // Loud on purpose — see the module docs.
             eprintln!("SKIP {what}: no usable GPU adapter ({e})");
@@ -84,8 +123,8 @@ fn cpu_reference(doc: &Document, dt: f32, steps: usize) -> State {
 
 #[test]
 fn gpu_matches_cpu_over_a_short_horizon() {
-    // The gate, stated correctly. See `f32_divergence_grows_and_bounds_the_horizon`
-    // for why this is 50 steps and not 400.
+    // The gate, stated correctly. `f32_divergence_grows_and_bounds_the_horizon`
+    // covers the 400-step episode at an f32-sized bound.
     let doc = floating_arm();
     let steps = 50;
 
@@ -125,28 +164,28 @@ fn f32_divergence_grows_and_bounds_the_horizon() {
     //
     // What actually happens, measured on the floating-arm sample in free fall
     // (an undamped chain, so the worst case — nothing removes energy from a
-    // perturbation):
+    // perturbation). Re-measured 2026-11-11 on an RTX 3090 (Vulkan):
     //
-    //     step  50   dq 1.6e-7   <- f32 epsilon, the seed
-    //     step 100   dq 5.3e-7
-    //     step 150   dq 1.7e-6
-    //     step 200   dq 1.5e-5
-    //     step 250   dq 2.4e-4
-    //     step 300   dq 7.8e-3
-    //     step 400   dq 2.1e0    <- no longer the same trajectory
+    //     step   50   dq 1.6e-7   <- f32 epsilon, the seed
+    //     step  400   dq 1.9e-6
+    //     step 1000   dq 1.4e-5
+    //     step 2000   dq 2.1e-4
+    //     step 3000   dq 3.9e-4
     //
-    // Roughly an order of magnitude per 50 steps. The CPU's elbow stays at
-    // exactly zero throughout, which is right — in free fall there is no
-    // relative torque — so this is entirely f32 noise being amplified, not a
-    // modelling difference.
+    // Polynomial growth, not exponential. The first measurement of this curve
+    // (an order of magnitude per 50 steps, 2.1 rad by step 400) predates the
+    // phyz fixes to the GPU multi-DOF joint transform and contact path; it was
+    // integrator error being amplified, and that is gone. The CPU's elbow
+    // stays at exactly zero throughout, which is right — in free fall there is
+    // no relative torque — so what remains is f32 rounding alone.
     //
     // Consequences worth stating plainly:
-    //   - A 400-step episode will NOT match between backends. Any M3 milestone
-    //     phrased as trajectory agreement over an episode is unachievable.
-    //   - A policy must therefore be judged by *behaviour* on each backend
-    //     (does it stand, what does it score) rather than by matching states.
+    //   - Bit-parity is still unavailable: the divergence is nonzero and grows.
+    //   - A 400-step episode now agrees to ~1e-6 rad on this sample, so a
+    //     trajectory-agreement check over an episode is meaningful again, at a
+    //     tolerance stated in f32 terms rather than f64 ones.
     //   - This sample is the pessimistic case. A robot under PD servos has
-    //     damping, which removes the amplification; the K1 is the case that
+    //     damping, which removes amplification; the K1 is the case that
     //     matters and should be measured separately.
     let doc = floating_arm();
     let Some(mut gpu) = gpu_or_skip(&doc, 1, "f32_divergence_grows") else {
@@ -157,11 +196,11 @@ fn f32_divergence_grows_and_bounds_the_horizon() {
     let zero = vec![0.0f64; gpu.action_dim()];
 
     let mut at_50 = 0.0;
-    let mut at_300 = 0.0;
-    for s in 1..=300 {
+    let mut at_400 = 0.0;
+    for s in 1..=400 {
         gpu.batch_step(&zero).expect("gpu step");
         world.step(DT as f32);
-        if s == 50 || s == 300 {
+        if s == 50 || s == 400 {
             let g = gpu.batch_observe();
             let d = g[0]
                 .joint_positions
@@ -172,24 +211,33 @@ fn f32_divergence_grows_and_bounds_the_horizon() {
             if s == 50 {
                 at_50 = d;
             } else {
-                at_300 = d;
+                at_400 = d;
             }
         }
     }
-    eprintln!("f32 divergence: {at_50:.3e} at 50 steps -> {at_300:.3e} at 300");
+    eprintln!("f32 divergence: {at_50:.3e} at 50 steps -> {at_400:.3e} at 400");
 
     assert!(
         at_50 < 1e-5,
-        "the seed should still be f32-sized at 50 steps"
+        "the seed should still be f32-sized at 50 steps ({at_50:.3e})"
     );
-    // Pinned as a *fact*, not a wish: if this ever stops growing, the GPU has
-    // gained f64 or the model has gained damping, and the horizon guidance
-    // above needs revisiting rather than quietly being wrong.
+    // Pinned as a *fact*: if this ever stops growing, the GPU has gained f64
+    // or the model has gained damping, and the guidance above needs
+    // revisiting rather than quietly being wrong.
     assert!(
-        at_300 > at_50 * 100.0,
-        "f32 divergence is expected to amplify on an undamped chain \
-         ({at_50:.3e} -> {at_300:.3e}); if it no longer does, re-measure the \
-         horizon this milestone is planned around"
+        at_400 > at_50,
+        "f32 divergence is expected to grow on an undamped chain \
+         ({at_50:.3e} -> {at_400:.3e}); if it no longer does, re-measure"
+    );
+    // The bound. 1e-4 rad is ~50x the measured 1.9e-6, room for a different
+    // GPU's f32 rounding (FMA contraction, transcendental ulp error) and four
+    // orders below the exponential blow-up this test used to record. A
+    // return to exponential amplification lands far above it.
+    assert!(
+        at_400 < 1e-4,
+        "GPU and CPU have diverged by {at_400:.3e} rad over a 400-step \
+         episode -- past f32 rounding; the GPU integrator is amplifying error \
+         again (it once reached 2.1 rad here)"
     );
 }
 

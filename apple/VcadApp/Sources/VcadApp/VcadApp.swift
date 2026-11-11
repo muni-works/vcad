@@ -80,6 +80,7 @@ struct VcadApp: App {
             EditorView(model: model, intent: intent)
                 .task { FieldOverlayStore.shared.loadFromEnvironment() }
                 .task { await DirectManipDemo.runIfRequested(model) }
+                .task { await AssemblyOpenDemo.runIfRequested(model) }
         }
         .windowStyle(.automatic)
         .commands {

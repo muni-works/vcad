@@ -21,15 +21,19 @@ use crate::store::{CommitMeta, DocumentId, StoreError};
 enum CoreTool {
     /// Report this server's identity, uptime, boot token and store durability. Call FIRST on any preview-shaped complaint: a low uptime_s or changed instance_id means the server restarted.
     ServerInfo,
-    /// Open an editing session for a CAD document. Returns a `document_id` for subsequent calls. Pass `initial` (Document IR) to edit an existing document; omit it for an empty one.
+    /// Open an editing session for a CAD document. Returns a `document_id` for subsequent calls. Pass `initial` (Document IR) to edit an existing document, or `path` to open a .vcad / .loon file (in vcad.app it opens in the shared window; .loon files hot-reload when regenerated); omit both for an empty one.
     OpenDocument {
         /// Document IR to start from.
         initial: Option<Value>,
+        /// A .vcad or .loon file to open.
+        path: Option<String>,
     },
-    /// Return the full IR Document JSON for an open session.
+    /// Return the full IR Document JSON for an open session (omit document_id for the current document — the open vcad.app window; large documents are then summarized unless full is set).
     GetDocument {
-        /// Session id from open_document / create_cad_loon.
-        document_id: String,
+        /// Session id from open_document / create_cad_loon; omit for the current document.
+        document_id: Option<String>,
+        /// Never summarize.
+        full: Option<bool>,
     },
     /// Close a document session. Idempotent — closing an unknown id reports `closed: false`.
     CloseDocument {
@@ -46,6 +50,8 @@ enum CoreTool {
         mode: Option<String>,
         /// Directory `[use …]` modules and relative imports resolve against (local server).
         base_dir: Option<String>,
+        /// Short name for the undo step (vcad.app).
+        name: Option<String>,
     },
     /// Open a `.loon` source file (evaluated on load) or a `.vcad` document from disk into a new session.
     LoadDocument {
@@ -204,21 +210,21 @@ pub struct ExportOut {
     pub bytes: u64,
 }
 
-fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
+pub(crate) fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(Value::as_str)
 }
 
-fn store_err(e: StoreError) -> ToolError {
+pub(crate) fn store_err(e: StoreError) -> ToolError {
     ToolError::InvalidArgs(e.to_string())
 }
 
-fn parse_doc(v: &Value) -> Result<Document, ToolError> {
+pub(crate) fn parse_doc(v: &Value) -> Result<Document, ToolError> {
     crate::store::unwrap_document(v.clone())
         .ok_or_else(|| ToolError::InvalidArgs("not a vcad Document (needs nodes + roots)".into()))
 }
 
 /// Resolve `document_id` | `document` | `ir` to a Document.
-fn resolve_doc(ctx: &ToolCtx, args: &Value) -> Result<Document, ToolError> {
+pub(crate) fn resolve_doc(ctx: &ToolCtx, args: &Value) -> Result<Document, ToolError> {
     if let Some(id) = arg_str(args, "document_id") {
         return ctx.store.load(&DocumentId::from(id)).map_err(store_err);
     }
@@ -227,12 +233,41 @@ fn resolve_doc(ctx: &ToolCtx, args: &Value) -> Result<Document, ToolError> {
             return parse_doc(v);
         }
     }
-    Err(ToolError::InvalidArgs(
-        "pass document_id or an inline document".into(),
-    ))
+    let id = resolve_id(ctx, args)?;
+    ctx.store.load(&id).map_err(store_err)
 }
 
-fn handle(ctx: &ToolCtx, id: DocumentId) -> Result<ToolOutput, ToolError> {
+/// `document_id`, else the store's current document (vcad.app: the front
+/// window; headless: the last one created or edited in this process).
+pub(crate) fn resolve_id(ctx: &ToolCtx, args: &Value) -> Result<DocumentId, ToolError> {
+    if let Some(id) = arg_str(args, "document_id") {
+        return Ok(DocumentId::from(id));
+    }
+    ctx.store.current().ok_or_else(|| {
+        ToolError::InvalidArgs(
+            "pass document_id (from open_document / create_cad_loon) — no document is current"
+                .into(),
+        )
+    })
+}
+
+/// Read a `.vcad` (JSON) or `.loon` (evaluated) file.
+pub(crate) fn read_doc_file(path: &str) -> Result<Document, ToolError> {
+    let p = Path::new(path);
+    let raw =
+        std::fs::read_to_string(p).map_err(|e| ToolError::InvalidArgs(format!("{path}: {e}")))?;
+    if p.extension()
+        .is_some_and(|x| x.eq_ignore_ascii_case("loon"))
+    {
+        eval_loon(&raw, p.parent().and_then(Path::to_str))
+    } else {
+        let v: Value = serde_json::from_str(&raw)
+            .map_err(|e| ToolError::InvalidArgs(format!("{path}: {e}")))?;
+        parse_doc(&v)
+    }
+}
+
+pub(crate) fn handle(ctx: &ToolCtx, id: DocumentId) -> Result<ToolOutput, ToolError> {
     let doc = ctx.store.load(&id).map_err(store_err)?;
     let out = DocumentHandle {
         document_id: id.0,
@@ -245,7 +280,7 @@ fn handle(ctx: &ToolCtx, id: DocumentId) -> Result<ToolOutput, ToolError> {
     ))
 }
 
-fn evaluate(doc: &Document) -> Result<vcad_eval::EvaluatedScene, ToolError> {
+pub(crate) fn evaluate(doc: &Document) -> Result<vcad_eval::EvaluatedScene, ToolError> {
     let opts = vcad_eval::EvalOptions {
         skip_clash_detection: true,
         ..Default::default()
@@ -255,7 +290,10 @@ fn evaluate(doc: &Document) -> Result<vcad_eval::EvaluatedScene, ToolError> {
 }
 
 /// All evaluated triangle soups (root parts + placed instances).
-fn meshes(doc: &Document, scene: &vcad_eval::EvaluatedScene) -> Vec<(Vec<f32>, Vec<u32>)> {
+pub(crate) fn meshes(
+    doc: &Document,
+    scene: &vcad_eval::EvaluatedScene,
+) -> Vec<(Vec<f32>, Vec<u32>)> {
     let placed = vcad_eval::placed_instance_meshes(doc, scene);
     scene
         .parts
@@ -382,9 +420,41 @@ fn export_path(filename: &str) -> PathBuf {
     base.join(p)
 }
 
-fn eval_loon(source: &str, base_dir: Option<&str>) -> Result<Document, ToolError> {
+pub(crate) fn eval_loon(source: &str, base_dir: Option<&str>) -> Result<Document, ToolError> {
     vcad_loon::eval_vcad(source, base_dir.map(Path::new))
         .map_err(|e| ToolError::InvalidArgs(format!("loon error: {e}")))
+}
+
+fn expand_tilde(path: &str) -> PathBuf {
+    match (path.strip_prefix("~/"), std::env::var_os("HOME")) {
+        (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
+        _ => PathBuf::from(path),
+    }
+}
+
+/// A big document's shape without its bulk (`get_document` on the open window).
+fn summarize_doc(v: &Value, bytes: usize) -> Value {
+    let mut out = serde_json::Map::new();
+    if let Some(o) = v.as_object() {
+        for (k, x) in o {
+            let s = match x {
+                Value::Object(m) => json!(format!("{} entries", m.len())),
+                Value::Array(a) => json!(format!("{} items", a.len())),
+                other => other.clone(),
+            };
+            out.insert(k.clone(), s);
+        }
+        if let Some(r) = o.get("roots") {
+            out.insert("roots".into(), r.clone());
+        }
+    }
+    out.insert(
+        "note".into(),
+        json!(format!(
+            "Document is {bytes} bytes; pass full:true for all of it."
+        )),
+    );
+    Value::Object(out)
 }
 
 /// Static server identity used by `server_info`.
@@ -453,6 +523,22 @@ pub fn core_tools(info: InfoSource) -> Vec<ToolDef> {
             "open_document",
             Some(DocumentHandle::output_schema()),
             |ctx, args| {
+                if let Some(path) = arg_str(&args, "path") {
+                    let expanded = expand_tilde(path);
+                    if !expanded.exists() {
+                        return Err(ToolError::InvalidArgs(format!(
+                            "no file at {}",
+                            expanded.display()
+                        )));
+                    }
+                    if let Some(id) = ctx.store.open_path(&expanded).map_err(store_err)? {
+                        return handle(ctx, id);
+                    }
+                    let doc = read_doc_file(&expanded.display().to_string())?;
+                    let name = expanded.file_stem().and_then(|s| s.to_str());
+                    let id = ctx.store.create(doc, name).map_err(store_err)?;
+                    return handle(ctx, id);
+                }
                 let doc = match args.get("initial").filter(|v| v.is_object()) {
                     Some(v) => parse_doc(v)?,
                     None => Document::default(),
@@ -462,11 +548,16 @@ pub fn core_tools(info: InfoSource) -> Vec<ToolDef> {
             },
         ),
         def(&mut e, "get_document", None, |ctx, args| {
-            let id = arg_str(&args, "document_id")
-                .ok_or_else(|| ToolError::InvalidArgs("document_id required".into()))?;
-            let doc = ctx.store.load(&id.into()).map_err(store_err)?;
-            let v =
+            let explicit = arg_str(&args, "document_id").is_some();
+            let id = resolve_id(ctx, &args)?;
+            let doc = ctx.store.load(&id).map_err(store_err)?;
+            let mut v =
                 serde_json::to_value(&doc).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
+            let full = args.get("full").and_then(Value::as_bool) == Some(true);
+            let bytes = v.to_string().len();
+            if !explicit && !full && bytes >= 60_000 {
+                v = summarize_doc(&v, bytes);
+            }
             Ok(ToolOutput {
                 content: vec![json!({"type":"text","text": v.to_string()})],
                 structured: None,
@@ -507,17 +598,65 @@ pub fn core_tools(info: InfoSource) -> Vec<ToolDef> {
                 let source = arg_str(&args, "source")
                     .ok_or_else(|| ToolError::InvalidArgs("source required".into()))?;
                 let doc = eval_loon(source, arg_str(&args, "base_dir"))?;
-                let id = match arg_str(&args, "document_id") {
+                let label = arg_str(&args, "name")
+                    .filter(|n| !n.is_empty())
+                    .map_or_else(|| "create_cad_loon".to_string(), str::to_string);
+                // vcad.app: no id means "the open window" (the user watches it
+                // land as one undo step); headless mints a new session.
+                let target = arg_str(&args, "document_id")
+                    .map(DocumentId::from)
+                    .or_else(|| {
+                        (ctx.store.kind() == crate::store::StoreKind::App)
+                            .then(|| ctx.store.current())
+                            .flatten()
+                    });
+                // Replacing a document keeps its board / schematic.
+                let mut note = None;
+                let doc = match target.as_ref().and_then(|id| ctx.store.load(id).ok()) {
+                    Some(session) => {
+                        let sv = serde_json::to_value(&session).unwrap_or_default();
+                        let mut dv = serde_json::to_value(&doc).unwrap_or_default();
+                        match super::loon_carry::carry_electronics(&sv, &mut dv) {
+                            Ok(Some(n)) => {
+                                note = Some(n);
+                                parse_doc(&dv)?
+                            }
+                            Ok(None) => doc,
+                            Err(e) => return Ok(ToolOutput::error(e)),
+                        }
+                    }
+                    None => doc,
+                };
+                // The live window fails closed: a part the kernel refused
+                // never lands as a silent "no geometry" part.
+                if ctx.store.kind() == crate::store::StoreKind::App {
+                    let scene = evaluate(&doc)?;
+                    if !scene.failures.is_empty() {
+                        let why: Vec<String> = scene
+                            .failures
+                            .iter()
+                            .map(|f| format!("{} (node {}): {}", f.scope, f.node_id, f.error))
+                            .collect();
+                        return Ok(ToolOutput::error(format!(
+                            "loon program loaded but some parts failed to build; document left unchanged:\n{}",
+                            why.join("\n")
+                        )));
+                    }
+                }
+                let id = match target {
                     Some(id) => {
-                        let id = DocumentId::from(id);
                         ctx.store
-                            .commit(&id, doc, CommitMeta::agent("create_cad_loon"))
+                            .commit(&id, doc, CommitMeta::agent(label))
                             .map_err(store_err)?;
                         id
                     }
                     None => ctx.store.create(doc, None).map_err(store_err)?,
                 };
-                handle(ctx, id)
+                let mut out = handle(ctx, id)?;
+                if let Some(n) = note {
+                    out.content.push(json!({"type": "text", "text": n}));
+                }
+                Ok(out)
             },
         ),
         def(
@@ -531,18 +670,7 @@ pub fn core_tools(info: InfoSource) -> Vec<ToolDef> {
                     ));
                 };
                 let p = Path::new(path);
-                let raw = std::fs::read_to_string(p)
-                    .map_err(|e| ToolError::InvalidArgs(format!("{path}: {e}")))?;
-                let doc = if p
-                    .extension()
-                    .is_some_and(|x| x.eq_ignore_ascii_case("loon"))
-                {
-                    eval_loon(&raw, p.parent().and_then(Path::to_str))?
-                } else {
-                    let v: Value = serde_json::from_str(&raw)
-                        .map_err(|e| ToolError::InvalidArgs(format!("{path}: {e}")))?;
-                    parse_doc(&v)?
-                };
+                let doc = read_doc_file(path)?;
                 let name = p.file_stem().and_then(|s| s.to_str());
                 let id = ctx.store.create(doc, name).map_err(store_err)?;
                 handle(ctx, id)

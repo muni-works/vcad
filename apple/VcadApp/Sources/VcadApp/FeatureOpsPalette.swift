@@ -18,26 +18,35 @@ struct PaletteCommand: Identifiable {
 extension EditorModel {
     var paletteCommands: [PaletteCommand] {
         var out: [PaletteCommand] = []
-        let doc = usesDocumentTree
+        // The launch sandbox isn't a document yet, but every menu and toolbar
+        // verb promotes it on use — so the palette must offer them too, or
+        // Find answers "No command matches" for Sketch/Extrude/Fillet.
+        let promotable = source.isSandbox && engine == nil && documentJSON == nil
+        let doc = usesDocumentTree || promotable
         let hasPart = selectedPartIndex != nil || picking.selectionPart != nil
         for shape in BaseShape.allCases {
             out.append(.init(id: "add.\(shape.rawValue)", title: "Add \(shape.label)", symbol: shape.symbol, group: "Add Shape",
-                             enabled: doc) { [weak self] in self?.arm(shape) })
+                             enabled: doc) { [weak self] in
+                if self?.promoteSandboxToDocument(blank: true) == true { self?.arm(shape) }
+            })
         }
         for op in FeatureOp.allCases {
             out.append(.init(id: "op.\(op.rawValue)", title: op.label + "…", symbol: op.symbol, group: "Feature",
-                             enabled: doc && (op.createsPart || hasPart)) { [weak self] in self?.activeFeatureOp = op })
+                             enabled: doc && (op.createsPart || hasPart || promotable)) { [weak self] in
+                if self?.promoteSandboxToDocument() == true { self?.activeFeatureOp = op }
+            })
         }
         out.append(.init(id: "import.photos", title: "Import from Photos (Experimental)…", symbol: "camera.viewfinder", group: "Import") { [weak self] in
             guard let self else { return }
             PhotoImportController.shared.show(for: self)
         })
         out.append(.init(id: "sketch", title: "New Sketch", symbol: "scribble.variable", group: "Sketch", shortcut: "⌃S", enabled: doc) { [weak self] in
-            self?.enterSketch()
+            if self?.promoteSandboxToDocument(blank: true) == true { self?.enterSketch() }
         })
         for f in SketchFinish.allCases {
             out.append(.init(id: "sketch.\(f.rawValue)", title: "Sketch → \(f.label)", symbol: f.symbol, enabled: doc) { [weak self] in
-                self?.sketchFinish = f; self?.enterSketch()
+                self?.sketchFinish = f
+                if self?.promoteSandboxToDocument(blank: true) == true { self?.enterSketch() }
             })
         }
         // Assembly and Fab verbs, so the palette reaches past Design.
@@ -60,14 +69,14 @@ extension EditorModel {
             })
         }
         out.append(.init(id: "measure", title: measuring ? "Stop Measuring" : "Measure", symbol: "ruler", group: "Tools", shortcut: "⌃M", enabled: doc) { [weak self] in
-            self?.measuring.toggle()
+            if self?.promoteSandboxToDocument() == true { self?.measuring.toggle() }
         })
         out.append(.init(id: "section", title: section == nil ? "Section View" : "Close Section View",
                          symbol: "square.split.diagonal", group: "Tools", shortcut: "⌥⌘X") { [weak self] in
             self?.toggleSmartSection()
         })
         out.append(.init(id: "params", title: "Parameters…", symbol: "slider.horizontal.3", group: "Tools", shortcut: "⌥⌘P", enabled: doc) { [weak self] in
-            self?.showsParameterTable = true
+            if self?.promoteSandboxToDocument() == true { self?.showsParameterTable = true }
         })
         out.append(.init(id: "undo", title: "Undo", symbol: "arrow.uturn.backward", group: "Edit", shortcut: "⌘Z", enabled: canUndo) { [weak self] in self?.undo() })
         out.append(.init(id: "redo", title: "Redo", symbol: "arrow.uturn.forward", group: "Edit", shortcut: "⇧⌘Z", enabled: canRedo) { [weak self] in self?.redo() })

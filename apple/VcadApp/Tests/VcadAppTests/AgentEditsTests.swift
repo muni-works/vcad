@@ -1,13 +1,14 @@
 import XCTest
 @testable import VcadApp
 
-/// The MCP write surface (AgentEdits.swift) driven exactly as the bridge
-/// dispatches it: every edit is one named undo step, applied to the live model.
+/// The MCP write surface driven exactly as an agent drives it — through the
+/// Rust core the app hosts: every edit is one named undo step, applied to the
+/// live model.
 @MainActor
 final class AgentEditsTests: XCTestCase {
     private func call(_ m: EditorModel, _ name: String, _ args: [String: Any] = [:]) async throws -> String {
-        let r = try await AgentTools.call(name, args, model: m)
-        let text = ((r["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+        let r = await coreCall(m, name, args)
+        let text = resultText(r)
         XCTAssertNil(r["isError"], "\(name) failed: \(text)")
         return text
     }
@@ -17,49 +18,14 @@ final class AgentEditsTests: XCTestCase {
         return String(text[r.upperBound...].prefix { $0 != ";" && $0 != "." && $0 != " " })
     }
 
-    /// The bridge turns a thrown Failure into an MCP `isError` result.
+    /// A refusal is an MCP `isError` result with a reason.
     private func assertRefused(_ m: EditorModel, _ name: String, _ args: [String: Any]) async {
-        do {
-            _ = try await AgentTools.call(name, args, model: m)
-            XCTFail("\(name) should refuse")
-        } catch let f as AgentTools.Failure {
-            XCTAssertFalse(f.message.isEmpty)
-        } catch { XCTFail("\(error)") }
+        let r = await coreCall(m, name, args)
+        XCTAssertEqual(r["isError"] as? Bool, true, "\(name) should refuse: \(r)")
+        XCTAssertFalse(resultText(r).isEmpty)
     }
 
     private func roots(_ m: EditorModel) -> Int { (m.documentJSON?["roots"] as? [Any])?.count ?? 0 }
-
-    private func boardDocument() -> [String: Any] {
-        ["version": "0.1", "nodes": [
-            "7": ["id": 7, "name": "PCB", "op": ["type": "PcbBoard", "board": ["outline": ["vertices": [] as [Any], "thickness": 1.6]]]],
-            "8": ["id": 8, "name": NSNull(), "op": ["type": "Translate", "child": 7, "offset": ["x": 1, "y": 2, "z": 3]]],
-        ], "roots": [["root": 8, "material": "__pcb_fr4__"]],
-           "materials": ["__pcb_fr4__": ["name": "__pcb_fr4__"]],
-           "schematic": ["components": [] as [Any]]]
-    }
-
-    func testCreateLoonKeepsTheBoardThroughItsChain() throws {
-        var doc: [String: Any] = ["version": "0.1", "materials": [:] as [String: Any],
-                                  "nodes": ["1": ["id": 1, "name": "b", "op": ["type": "Cube", "size": ["x": 1, "y": 1, "z": 1]]]],
-                                  "roots": [["root": 1, "material": "default"]]]
-        let note = try AgentEdits.carryElectronics(from: boardDocument(), into: &doc)
-        XCTAssertEqual(note, "kept the document's PCB board and schematic")
-        let nodes = try XCTUnwrap(doc["nodes"] as? [String: [String: Any]])
-        XCTAssertEqual(nodes.count, 3)
-        let roots = try XCTUnwrap(doc["roots"] as? [[String: Any]])
-        XCTAssertEqual(roots.count, 2)
-        let top = try XCTUnwrap(nodes["\(roots[1]["root"] as! Int)"]?["op"] as? [String: Any])
-        XCTAssertEqual(top["type"] as? String, "Translate")
-        let child = try XCTUnwrap(top["child"] as? Int)
-        XCTAssertEqual((nodes["\(child)"]?["op"] as? [String: Any])?["type"] as? String, "PcbBoard")
-        XCTAssertNotNil(doc["schematic"])
-        XCTAssertNotNil((doc["materials"] as? [String: Any])?["__pcb_fr4__"])
-    }
-
-    func testCreateLoonRefusesAProgramWithItsOwnBoard() {
-        var doc: [String: Any] = ["nodes": ["1": ["id": 1, "op": ["type": "PcbBoard"]]], "roots": [["root": 1]]]
-        XCTAssertThrowsError(try AgentEdits.carryElectronics(from: boardDocument(), into: &doc))
-    }
 
     func testAssemblyInstancesAppearInTheTree() throws {
         let json: [String: Any] = [
@@ -81,15 +47,14 @@ final class AgentEditsTests: XCTestCase {
         XCTAssertEqual(rows[1].nodeId, 2)
     }
 
-    func testToolsAreListedWithSchemas() {
-        let names = Set((AgentTools.definitions + AgentEdits.definitions).compactMap { $0["name"] as? String })
+    func testToolsAreListedWithSchemas() async {
+        let tools = await coreTools(EditorModel())
         for n in ["create", "update", "delete", "set_material", "difference", "set_parameters",
-                  "create_cad_loon", "get_document", "inspect_cad", "describe_scene", "snapshot"] {
-            XCTAssertTrue(names.contains(n), "missing tool \(n)")
+                  "create_cad_loon", "get_document", "inspect_cad", "describe_scene", "snapshot",
+                  "verify_receipts", "fab_print", "optimize_parameters", "agent_turn", "pick_in_viewport"] {
+            XCTAssertNotNil(tools[n], "missing tool \(n)")
         }
-        XCTAssertFalse(names.contains("render_view"), "snapshot covers the viewport")
-        XCTAssertEqual(names.count, (AgentTools.definitions + AgentEdits.definitions).count, "duplicate tool names")
-        for d in AgentEdits.definitions { XCTAssertNotNil(d["inputSchema"] as? [String: Any], "\(d["name"] ?? "")") }
+        for (n, t) in tools { XCTAssertNotNil(t["inputSchema"] as? [String: Any], n) }
     }
 
     /// The gate, headless: an empty window → a filleted bracket with a hole,
@@ -172,12 +137,9 @@ final class AgentEditsTests: XCTestCase {
         let lines = sketch.entities.filter { $0.kind == .line }.count
         XCTAssertEqual(lines, 4)
 
-        do {
-            _ = try await AgentTools.call("undo", [:], model: m)
-            XCTFail("agent undo should refuse while a sketch is open")
-        } catch let f as AgentTools.Failure {
-            XCTAssertTrue(f.message.contains("sketch"), f.message)
-        }
+        let refused = await coreCall(m, "undo")
+        XCTAssertEqual(refused["isError"] as? Bool, true, "agent undo should refuse while a sketch is open")
+        XCTAssertTrue(resultText(refused).contains("sketch"), resultText(refused))
         XCTAssertEqual(sketch.entities.filter { $0.kind == .line }.count, lines, "sketch untouched")
         XCTAssertEqual(m.undoStack.map(\.name), steps, "document history untouched")
         XCTAssertEqual(roots(m), 1)

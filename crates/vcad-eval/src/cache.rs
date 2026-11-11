@@ -36,7 +36,7 @@
 use std::collections::HashMap;
 
 use sha2::{Digest, Sha256};
-use vcad_ir::{Node, NodeId};
+use vcad_ir::{CsgOp, Node, NodeId};
 
 use crate::EvaluatedMesh;
 
@@ -80,6 +80,8 @@ pub struct FingerprintSettings {
     /// 0 = the fixed segment count. Hashed only when set, so existing keys
     /// are unchanged.
     pub chord_tol_mm: f64,
+    /// Preview LOD (no export repair): a different mesh, so a different key.
+    pub preview: bool,
 }
 
 /// Storage for evaluated root meshes, keyed by [`RootKey`].
@@ -123,7 +125,10 @@ pub fn root_fingerprint(
             order.push(id);
             continue;
         }
-        if node.op.reads_external_data() {
+        // An imported STEP solid is keyed by its B-rep's content (see
+        // `step_sources::solid_key`), so identical copies share one mesh.
+        // Every other external read stays uncacheable.
+        if node.op.reads_external_data() && !matches!(node.op, CsgOp::StepImport { .. }) {
             return None;
         }
         stack.push((id, true));
@@ -145,6 +150,9 @@ pub fn root_fingerprint(
         hasher.update(b"chord=");
         hasher.update(settings.chord_tol_mm.to_le_bytes());
     }
+    if settings.preview {
+        hasher.update(b"preview");
+    }
     hasher.update(b"\0");
     for (name, value) in kernel_knobs() {
         hasher.update(name.as_bytes());
@@ -154,6 +162,13 @@ pub fn root_fingerprint(
     }
     hasher.update(b"\0");
     for id in &order {
+        if let CsgOp::StepImport { path, solid_index } = &nodes.get(id)?.op {
+            let key = crate::step_sources::solid_key(path, solid_index.unwrap_or(0) as usize)?;
+            let bytes = format!("step-solid:{key}");
+            hasher.update((bytes.len() as u64).to_le_bytes());
+            hasher.update(bytes.as_bytes());
+            continue;
+        }
         let mut op = nodes.get(id)?.op.clone();
         for slot in op.child_ids_mut() {
             *slot = *index.get(slot)?;
@@ -533,6 +548,7 @@ mod tests {
             segments: 32,
             fold_sheet_metal: false,
             chord_tol_mm: 0.0,
+            preview: false,
         }
     }
 
@@ -614,6 +630,7 @@ mod tests {
                 segments: 16,
                 fold_sheet_metal: false,
                 chord_tol_mm: 0.0,
+                preview: false,
             },
         );
         let kfold = root_fingerprint(
@@ -623,6 +640,7 @@ mod tests {
                 segments: 32,
                 fold_sheet_metal: true,
                 chord_tol_mm: 0.0,
+                preview: false,
             },
         );
         assert_ne!(k32, k16);

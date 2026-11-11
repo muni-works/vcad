@@ -27,6 +27,10 @@ vcad-loon = { workspace = true }
 vcad-eval = { workspace = true }
 vcad-render = { workspace = true, features = ["raster"] }
 vcad-tool-derive = { workspace = true }
+vcad-app = { workspace = true }
+vcad-crdt = { workspace = true }
+vcad-atoms = { workspace = true }
+vcad-receipt-verify = { workspace = true }
 getrandom = "0.2"
 
 [dev-dependencies]

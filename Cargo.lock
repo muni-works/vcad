@@ -5799,6 +5799,7 @@ dependencies = [
  "vcad-kernel-tessellate 0.11.0",
  "vcad-kernel-urdf",
  "vcad-loon",
+ "vcad-mcp",
  "vcad-printcheck",
  "vcad-receipt-verify",
  "vcad-render",
@@ -6830,6 +6831,7 @@ name = "vcad-kernel-tessellate"
 version = "0.11.0"
 dependencies = [
  "earcutr",
+ "rayon",
  "serde",
  "serde_json",
  "tang",
@@ -7034,9 +7036,13 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "vcad-app",
+ "vcad-atoms",
+ "vcad-crdt",
  "vcad-eval",
  "vcad-ir 0.11.0",
  "vcad-loon",
+ "vcad-receipt-verify",
  "vcad-render",
  "vcad-tool-derive 0.11.0",
 ]

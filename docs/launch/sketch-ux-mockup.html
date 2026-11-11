@@ -1,0 +1,86 @@
+<title>vcad Sketch UX</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: single reading column, one canvas mockup, then the design note as labelled sections */
+:root{--bg:#f6f7f9;--fg:#1b1f27;--muted:#5d6675;--line:#d8dce3;--ink:#fa2673;--full:#1b1f27;--under:#2f6fe4;--over:#e0342a;--glyph:#1f9d55;--fill:rgba(47,111,228,.12);--panel:#ffffff;
+--sans:"IBM Plex Sans",system-ui,sans-serif;--mono:"IBM Plex Mono",ui-monospace,monospace}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#14171c;--fg:#e6e9ef;--muted:#9aa3b2;--line:#2b313b;--full:#e6e9ef;--panel:#1c2027;--fill:rgba(90,150,255,.16);color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#14171c;--fg:#e6e9ef;--muted:#9aa3b2;--line:#2b313b;--full:#e6e9ef;--panel:#1c2027;--fill:rgba(90,150,255,.16);color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--sans);line-height:1.55;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:32px}
+main{max-width:760px;margin:0 auto;display:flex;flex-direction:column;gap:28px}
+h1{font-size:1.7rem;margin:0;text-wrap:balance}h2{font-size:1.05rem;margin:0 0 6px}
+p,li{max-width:65ch}ul{margin:0;padding-left:18px}
+.lede{color:var(--muted);margin:4px 0 0}
+.canvas{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow-x:auto}
+svg text{font-family:var(--mono);font-size:11px}
+code,.k{font-family:var(--mono);font-size:.9em}
+.k{border:1px solid var(--line);border-radius:4px;padding:0 5px}
+table{border-collapse:collapse;width:100%}td,th{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+th{font-size:.75rem;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.wrap{overflow-x:auto}
+</style>
+<main>
+<header><h1>vcad Sketch UX</h1><p class="lede">Design note for Fusion-class sketching in the Mac app: inference while drawing, one Smart Dimension, solve-state colour, editing tools and live profiles.</p></header>
+
+<div class="canvas"><svg viewBox="0 0 760 360" width="760" height="360" role="img" aria-label="Sketch canvas mockup">
+<rect x="0" y="0" width="760" height="360" fill="var(--panel)"/>
+<!-- shaded closed profile -->
+<polygon points="120,270 360,270 360,110 120,110" fill="var(--fill)"/>
+<circle cx="240" cy="190" r="34" fill="var(--panel)"/>
+<!-- fully constrained rectangle in fg -->
+<g stroke="var(--full)" stroke-width="2.5" fill="none"><polyline points="120,270 360,270 360,110 120,110 120,270"/></g>
+<circle cx="240" cy="190" r="34" stroke="var(--under)" stroke-width="2.5" fill="none"/>
+<!-- construction line -->
+<line x1="120" y1="190" x2="360" y2="190" stroke="var(--muted)" stroke-width="1.5" stroke-dasharray="6 5"/>
+<!-- glyph chips -->
+<g font-family="var(--mono)"><rect x="232" y="276" width="16" height="16" rx="3" fill="var(--glyph)"/><text x="236" y="288" fill="#fff">H</text>
+<rect x="366" y="182" width="16" height="16" rx="3" fill="var(--glyph)"/><text x="370" y="194" fill="#fff">V</text>
+<rect x="276" y="148" width="16" height="16" rx="3" fill="var(--glyph)"/><text x="279" y="160" fill="#fff">◎</text></g>
+<!-- dimensions -->
+<g stroke="var(--under)" stroke-width="1"><line x1="120" y1="300" x2="360" y2="300"/><line x1="120" y1="292" x2="120" y2="308"/><line x1="360" y1="292" x2="360" y2="308"/></g>
+<rect x="210" y="292" width="60" height="18" rx="4" fill="var(--panel)" stroke="var(--under)"/><text x="221" y="305" fill="var(--under)">60.00</text>
+<!-- in-progress line with inference -->
+<line x1="360" y1="110" x2="560" y2="110" stroke="var(--ink)" stroke-width="2" stroke-dasharray="2 0"/>
+<line x1="560" y1="110" x2="560" y2="270" stroke="#7fd8ff" stroke-width="2" stroke-dasharray="5 4"/>
+<circle cx="560" cy="270" r="5" fill="var(--glyph)"/>
+<line x1="360" y1="270" x2="560" y2="270" stroke="var(--glyph)" stroke-width="1" stroke-dasharray="2 4"/>
+<g><rect x="572" y="232" width="16" height="16" rx="3" fill="var(--glyph)"/><text x="576" y="244" fill="#fff">V</text>
+<rect x="592" y="232" width="16" height="16" rx="3" fill="var(--glyph)"/><text x="595" y="244" fill="#fff">⊥</text>
+<rect x="612" y="232" width="16" height="16" rx="3" fill="var(--glyph)"/><text x="615" y="244" fill="#fff">=</text></g>
+<text x="572" y="290" fill="var(--muted)">160.00 · aligned with corner</text>
+<!-- status pill -->
+<rect x="560" y="20" width="180" height="28" rx="14" fill="var(--panel)" stroke="var(--line)"/><circle cx="578" cy="34" r="5" fill="var(--under)"/><text x="590" y="38" fill="var(--fg)">Under · 3 DOF</text>
+<text x="20" y="340" fill="var(--muted)">black = fully constrained · blue = free to move · red = conflicting · dashed grey = construction · blue fill = closed profile</text>
+</svg></div>
+
+<section><h2>Inference while drawing</h2>
+<p>Every drawing tool runs the cursor through <code>SketchInference.infer</code> before it places a point. It returns the snapped point and the constraints that would be added. Candidates, in priority order: coincident with an existing point, midpoint of a line, on a line, horizontal / vertical from the previous point, perpendicular or parallel to the previous segment, tangent from an arc end, equal length to the previous segment, and alignment with any point's x or y (dotted guide). Each candidate shows as a green glyph by the cursor while hovering. On click the glyphs become real solver constraints and stay drawn beside the geometry. Click a glyph in Select to pick it; Delete removes it. Holding <span class="k">⌘</span> suppresses inference for one click.</p></section>
+
+<section><h2>Smart Dimension</h2>
+<p>One tool (<span class="k">D</span>) decides what to measure from what was clicked: a line gives its length, a circle or arc its radius (diameter for full circles), two points their distance, a point and a line the perpendicular distance, two lines their angle (or distance when parallel). The value is placed at the click and opens an inline field immediately; Return commits and re-solves.</p></section>
+
+<section><h2>Solve state</h2>
+<p>Per-entity colour: an entity whose points are all fully determined draws in the foreground colour, the rest in blue, conflicting constraints in red. A pill shows the state and DOF. Dragging a point in Select pins it to the cursor with a temporary fixed constraint, re-solves on every move, and drops the pin on release, so constraints hold as you drag.</p></section>
+
+<section><h2>Construction and projection</h2>
+<p><span class="k">X</span> toggles construction on the selection: dashed grey, still constrainable, never part of a profile. Project (<span class="k">P</span> on a model edge) brings model edges into the sketch as fixed construction references; this is the one item that needs edge picking through the viewport, so it lands after the pure-logic pieces.</p></section>
+
+<section><h2>Editing tools</h2>
+<div class="wrap"><table><tr><th>Tool</th><th>Key</th><th>Behaviour</th></tr>
+<tr><td>Trim</td><td class="k">T</td><td>Click a segment piece: removes the part between its nearest intersections.</td></tr>
+<tr><td>Extend</td><td class="k">E</td><td>Click near a line end: grows it to the nearest crossing line.</td></tr>
+<tr><td>Fillet</td><td class="k">F</td><td>Click a corner shared by two lines: rounds it with a tangent arc of the set radius.</td></tr>
+<tr><td>Mirror</td><td>menu</td><td>Mirror the selection about a selected line, with symmetric constraints.</td></tr>
+<tr><td>Pattern</td><td>menu</td><td>Linear or circular copies of the selection.</td></tr>
+<tr><td>Offset</td><td>menu</td><td>Existing profile offset, kept.</td></tr></table></div></section>
+
+<section><h2>Live profiles</h2>
+<p>Every closed region from <code>loopRegions()</code> is triangulated (ear clipping, holes bridged) and drawn as a translucent fill under the ink as soon as it closes. A filled sketch is ready for Done → Extrude or press-pull.</p></section>
+
+<section><h2>Tests</h2>
+<ul><li>Inference: H/V, coincident, midpoint, perpendicular, parallel, equal, tangent, and priority between them.</li>
+<li>Smart Dimension: each pick combination maps to the right constraint kind and value.</li>
+<li>Profile fill: triangulation area equals the polygon area, with and without a hole.</li>
+<li>Trim, extend, fillet, mirror geometry helpers.</li></ul></section>
+</main>
