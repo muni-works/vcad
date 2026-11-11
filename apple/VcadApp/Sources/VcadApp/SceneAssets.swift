@@ -264,29 +264,8 @@ enum SceneAssets {
         return e
     }
 
-    /// A soft radial alpha disc (dark centre → clear edge) for the pooled
-    /// contact shadow. Built once and stretched per part.
-    static let contactTexture: TextureResource? = makeContactTexture()
-    private static func makeContactTexture() -> TextureResource? {
-        let s = 256
-        let cs = CGColorSpaceCreateDeviceRGB()
-        guard let ctx = CGContext(data: nil, width: s, height: s, bitsPerComponent: 8,
-                                  bytesPerRow: 0, space: cs,
-                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-        let g = CGGradient(colorsSpace: cs, colors: [
-            CGColor(red: 0, green: 0, blue: 0, alpha: 0.5),
-            CGColor(red: 0, green: 0, blue: 0, alpha: 0.32),
-            CGColor(red: 0, green: 0, blue: 0, alpha: 0.0),
-        ] as CFArray, locations: [0, 0.45, 1])!
-        let c = CGFloat(s) / 2
-        ctx.drawRadialGradient(g, startCenter: CGPoint(x: c, y: c), startRadius: 0,
-                               endCenter: CGPoint(x: c, y: c), endRadius: c, options: [])
-        guard let img = ctx.makeImage() else { return nil }
-        return try? TextureResource(image: img, options: .init(semantic: .color))
-    }
-
-    /// The grounding set for a windowed viewport: a quiet reference grid at
-    /// the part's lowest point plus a contact shadow under the part. The grid
+    /// The grounding grid for a windowed viewport: a quiet reference grid at
+    /// the part's lowest point (the shadow is `contactShadowEntity`). The grid
     /// sits on the world origin (so its coloured lines are the real X/Y axes)
     /// whenever the part is near it; otherwise it centres under the part,
     /// snapped to a major line, without axes. `dark` picks the line ink.
@@ -296,7 +275,7 @@ enum SceneAssets {
                                   sceneCenter: SIMD3<Float> = .zero,
                                   viewSpanMM: Float? = nil) -> [Entity] {
         var out: [Entity] = []
-        let floorY = -(partSizeMM.z * 0.5 * sceneScale) - 0.004
+        let floorY = Self.floorY(partSizeMM: partSizeMM, sceneScale: sceneScale)
         let layout = GridSpacing.ground(extentMM: sceneSize, viewSpanMM: viewSpanMM)
         let center2 = SIMD2(sceneCenter.x, sceneCenter.y)
         let placement = GridSpacing.placement(partCenterMM: center2, partExtentMM: sceneSize, layout: layout)
@@ -305,20 +284,58 @@ enum SceneAssets {
                                  axes: placement.axes) {
             // Kernel (x, y) → display (x, -z) about the centred part.
             let d = (placement.centerMM - center2) * sceneScale
-            grid.position = [d.x, floorY + 0.0008, -d.y]
+            grid.position = [d.x, floorY + 0.0004, -d.y]
             out.append(grid)
         }
-        if let tex = contactTexture {
-            var sm = UnlitMaterial()
-            sm.color = .init(tint: .white, texture: .init(tex))
-            sm.blending = .transparent(opacity: .init(floatLiteral: dark ? 1.0 : 0.6))
-            let fwd = max(0.05, partSizeMM.x * sceneScale * 1.8)
-            let dpt = max(0.05, partSizeMM.y * sceneScale * 1.8)
-            let blob = ModelEntity(mesh: .generatePlane(width: fwd, depth: dpt), materials: [sm])
-            blob.name = "contactShadow"
-            blob.position = [0, floorY + 0.0015, 0]
-            out.append(blob)
-        }
         return out
+    }
+
+    /// Display Y of the floor: the part's lowest point, a hair below so the
+    /// grid never z-fights a bottom face. (It used to sit 0.004 display units
+    /// down — together with the shadow slab, enough to read as a part
+    /// hovering over its floor.)
+    static func floorY(partSizeMM: SIMD3<Float>, sceneScale: Float) -> Float {
+        -(partSizeMM.z * 0.5 * sceneScale) - 0.001
+    }
+
+    /// The grounded contact shadow (see `ContactShadow`): the part's real
+    /// top-down footprint baked into an alpha map, laid on the floor under
+    /// the footprint in the same display frame as the part.
+    ///
+    /// `lo`/`hi` are the shadow-casting bounds in kernel mm and `sceneCenter`
+    /// the kernel point the viewport centres on (the anchor origin), so the
+    /// quad lands under the part wherever it sits. Kernel (x, y, z) maps to
+    /// display (x, z, -y), scaled by `sceneScale`.
+    @MainActor
+    static func contactShadowEntity(triangles: [SIMD3<Float>], lo: SIMD3<Float>, hi: SIMD3<Float>,
+                                    sceneCenter: SIMD3<Float>, sceneScale: Float,
+                                    floorY: Float, dark: Bool) -> Entity? {
+        guard lo.x <= hi.x, let img = ContactShadow.bake(triangles: triangles, lo: lo, hi: hi),
+              let tex = try? TextureResource(image: img, options: .init(semantic: .raw)) else { return nil }
+        let plane = ContactShadow.plane(lo: lo, hi: hi)
+        var m = UnlitMaterial(color: .black)
+        // Opacity comes from the baked map, per texel. (The old blob used a
+        // scalar opacity over a colour texture, which drew the quad as one
+        // flat slab hiding the grid lines in a hard square around the part.)
+        m.blending = .transparent(opacity: .init(scale: dark ? 1.0 : 0.8, texture: .init(tex)))
+        // A decal on the floor: never occlude the grid lines under it, and
+        // never lose a depth test against them.
+        m.writesDepth = false
+        let w = max(1e-4, plane.size.x * sceneScale), d = max(1e-4, plane.size.y * sceneScale)
+        // An explicit quad rather than `generatePlane`, so the UV orientation
+        // is ours: u runs with kernel +X, v with kernel +Y (display −Z), and
+        // v = 1 is the image's top row — the baked map's kernel max Y.
+        var desc = MeshDescriptor(name: "contactShadow")
+        desc.positions = MeshBuffers.Positions([[-w / 2, 0, d / 2], [w / 2, 0, d / 2],
+                                                [w / 2, 0, -d / 2], [-w / 2, 0, -d / 2]])
+        desc.normals = MeshBuffers.Normals([SIMD3<Float>](repeating: [0, 1, 0], count: 4))
+        desc.textureCoordinates = MeshBuffers.TextureCoordinates([[0, 0], [1, 0], [1, 1], [0, 1]])
+        desc.primitives = .triangles([0, 1, 2, 0, 2, 3])
+        guard let mesh = try? MeshResource.generate(from: [desc]) else { return nil }
+        let e = ModelEntity(mesh: mesh, materials: [m])
+        e.name = "contactShadow"
+        let off = (plane.center - SIMD2(sceneCenter.x, sceneCenter.y)) * sceneScale
+        e.position = [off.x, floorY + 0.0008, -off.y]
+        return e
     }
 }
