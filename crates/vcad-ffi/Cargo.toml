@@ -39,7 +39,7 @@ vcad-eval = { workspace = true }
 vcad-app = { workspace = true }
 vcad-crdt = { workspace = true }
 vcad-ir = { workspace = true }
-vcad-receipt = { workspace = true }
+vcad-receipt-verify = { workspace = true }
 vcad-loon = { workspace = true }
 vcad-ecad-pcb = { workspace = true }
 vcad-ecad-symbols = { workspace = true }
