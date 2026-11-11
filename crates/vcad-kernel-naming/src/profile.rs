@@ -301,17 +301,21 @@ mod tests {
     #[test]
     fn circular_hole_wall_is_named_by_loop_and_segment() {
         let prof = plate(80.0, 50.0);
-        let hole = vec![SketchSegment::Arc {
-            start: Point2::new(45.0, 25.0),
-            end: Point2::new(45.0, 25.0),
+        // A circle as two half arcs (the sketch kernel's closed-loop form).
+        let arc = |a: (f64, f64), b: (f64, f64)| SketchSegment::Arc {
+            start: Point2::new(a.0, a.1),
+            end: Point2::new(b.0, b.1),
             center: Point2::new(40.0, 25.0),
             ccw: true,
-        }];
+        };
+        let hole = vec![arc((45.0, 25.0), (35.0, 25.0)), arc((35.0, 25.0), (45.0, 25.0))];
         let dir = Vec3::new(0.0, 0.0, 8.0);
-        let brep = vcad_kernel_sketch::extrude_with_holes(&prof, &[hole.clone()], dir).unwrap();
+        let brep = vcad_kernel_sketch::extrude_with_holes(&prof, &[hole.clone()], dir)
+            .expect("extrude with a circular hole");
         let map = seed_extrude_names(&brep, &prof, &[hole], dir, "e");
         let names = names_of(&brep, &map);
         assert!(!names.iter().any(|n| n == "?"), "every face named: {names:?}");
         assert!(names.iter().any(|n| n.starts_with("e:hole.0.0")), "{names:?}");
+        assert!(names.iter().any(|n| n.starts_with("e:hole.0.1")), "{names:?}");
     }
 }
