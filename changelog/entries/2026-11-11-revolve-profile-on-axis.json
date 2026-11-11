@@ -1,6 +1,6 @@
 {
   "id": "2026-11-11-revolve-profile-on-axis",
-  "version": "undefined",
+  "version": "0.11.0",
   "date": "2026-11-11",
   "category": "fix",
   "title": "Revolve profiles that touch their axis",
