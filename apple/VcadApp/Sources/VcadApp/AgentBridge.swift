@@ -144,7 +144,11 @@ final class AgentBridge {
     Resources: vcad://doc/selection is what the user picked (subscribe to follow it; "this edge" means \
     it), vcad://doc/current the live document, vcad://doc/view the camera. Before a multi-step change \
     call agent_turn {label:"thickened walls"} so it lands as ONE undo step, and agent_turn {end:true} \
-    after. fillet_edges fillets the user's selected edges. Receipts (assert_clearance, verify_receipts), \
+    after. fillet_edges fillets the user's selected edges (a selected face = the edges around it). \
+    Any part argument (part_id, left, right, child, part_ids…) accepts "selection" for what the user \
+    has selected. document_id app_window#N is pinned: if the user opens another document, edits to \
+    the old id are refused. Removing the user's parts or rewriting most of the document waits for \
+    the user's Apply/Reject in the app; a reject means do not retry. Receipts (assert_clearance, verify_receipts), \
     fab_print / fab_mill (dry-run, as tasks) and optimize_parameters run in the same core.
     """
 }

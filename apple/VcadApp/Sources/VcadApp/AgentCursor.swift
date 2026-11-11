@@ -56,6 +56,21 @@ final class AgentCursor {
 
     func hide() { target = nil }
 
+    /// How long the cursor travels ahead of an edit before it lands.
+    static var leadInDelay: Duration = .milliseconds(280)
+
+    /// Before an edit: glide to where it is about to act, labelled with what
+    /// it is doing ("Claude Code · Delete Bracket…"), and give the glide a
+    /// beat on screen. The edit's own `pointAt` lands it afterwards.
+    func leadIn(to t: AgentCursorTarget?, verb: String) async {
+        guard let t, mode == .reconstructed else { return }
+        move(to: t, label: Self.caption(verb, agent: agentName) + "…")
+        #if canImport(AppKit)
+        guard ReleaseWindowController.shared.hostWindow?.isVisible == true else { return }
+        try? await Task.sleep(for: Self.leadInDelay)
+        #endif
+    }
+
     // MARK: v1: reconstruct from what the edit touched
 
     /// What the user was pointing at before an edit (the edit's re-evaluation

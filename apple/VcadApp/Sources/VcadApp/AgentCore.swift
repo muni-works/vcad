@@ -1,5 +1,6 @@
 import CVcadFFI
 import Foundation
+import RealityKit
 
 // vcad.app hosts the Rust MCP core (crates/vcad-mcp, linked through vcad-ffi's
 // mcp.rs): one dispatcher and one tool implementation, the same code
@@ -24,7 +25,10 @@ import Foundation
 // The callback runs on the core's worker threads; each request hops to the
 // main actor and the worker waits for the answer.
 
-/// The id the core uses for the window's document.
+/// The id the core uses for the window's document. The core hands agents
+/// `app_window#<epoch>` (see `AgentCore.documentId`): pinned to the document
+/// the window showed at the time, so an agent can only edit the document it
+/// was pointed at. Bare `app_window` means "whatever the window shows now".
 let agentWindowDocumentId = "app_window"
 
 @MainActor
@@ -164,27 +168,37 @@ final class AgentCore {
         if op == "instance_meta" { return AgentBridge.shared.instanceMeta }
         guard let m = model else { return ["error": "The app has no window yet.", "kind": "unavailable"] }
         let id = r["id"] as? String
+        AgentTurn.shared.epochProvider = { [weak m] in m?.documentEpoch ?? 0 }
         func mine() throws {
-            guard id == agentWindowDocumentId else {
-                throw AgentTools.Failure(message: "Unknown document_id '\(id ?? "")' — this window's document is \(agentWindowDocumentId) (or omit document_id).")
-            }
+            if let refusal = Self.scopeRefusal(id, m) { throw AgentTools.Failure(message: refusal) }
         }
         switch op {
         case "front":
-            return ["id": agentWindowDocumentId, "document": m.documentJSON ?? Self.emptyDocument]
+            return ["id": Self.documentId(m), "document": m.documentJSON ?? Self.emptyDocument]
         case "read":
-            do { try mine() } catch let e as AgentTools.Failure { return ["error": e.message, "kind": "not_found"] }
+            if let refusal = Self.scopeRefusal(id, m) {
+                return ["error": refusal, "kind": Self.isStale(id, m) ? "scope" : "not_found"]
+            }
             return ["document": m.documentJSON ?? Self.emptyDocument]
         case "documents":
-            return ["documents": [["id": agentWindowDocumentId, "name": m.documentName]]]
+            return ["documents": [["id": Self.documentId(m), "name": m.documentName]]]
         case "open", "apply":
             if op == "apply" { try mine() }
             guard let doc = r["document"] as? [String: Any] else { throw AgentTools.Failure(message: "document is required") }
+            if let busy = AgentGhost.shared.pending { throw Self.busy(busy) }
             let label = (r["label"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Edit"
+            let name = "\(AgentCore.agentPrefix): \(label)"
             let oldBoard = m.electronics.board(m)
-            try AgentEdits.edit(m, name: "\(AgentCore.agentPrefix): \(label)") { try $0.loadIR(doc) }
+            let before = Self.partIds(m)
+            let gated = op == "apply" && AgentGhost.shared.enabled && m.agentCanEdit && !before.isEmpty
+            let ghost = gated ? AgentGhost.capture(parts: Array(0..<m.partCount)) : nil
+            let depth = m.undoStack.count
+            try AgentEdits.edit(m, name: name, standalone: gated) { try $0.loadIR(doc) }
             if !oldBoard.isEmpty { m.electronics.revealNewCopper(from: oldBoard, to: m.electronics.board(m)) }
-            return op == "open" ? ["id": agentWindowDocumentId] : [:]
+            if gated, let why = AgentGhost.shared.reason(before: before, after: Self.partIds(m), wholeDocument: true) {
+                try await Self.gate(m, name: name, why: why, ghost: Self.keepOnly(ghost, removed: before, after: Self.partIds(m), m), depth: depth)
+            }
+            return op == "open" ? ["id": Self.documentId(m)] : [:]
         case "release":
             return [:]
         case "undo":
@@ -211,10 +225,17 @@ final class AgentCore {
             return ["result": try AgentResources.shared.read(uri)]
         case "engine_tool":
             try mine()
-            return ["envelope": engineTool(r["tool"] as? String ?? "", r["args"] as? [String: Any] ?? [:], m)]
+            return ["envelope": await engineTool(r["tool"] as? String ?? "", r["args"] as? [String: Any] ?? [:], m)]
         case "host_call":
             let name = r["name"] as? String ?? ""
             let args = r["args"] as? [String: Any] ?? [:]
+            if name == "__client_hello" {
+                AgentCursor.shared.agentName = AgentBridge.displayName(args["name"] as? String ?? "")
+                return ["result": AgentTools.text("ok")]
+            }
+            if let refusal = Self.scopeRefusal(args["document_id"] as? String, m) {
+                return ["result": AgentTools.error(refusal)]
+            }
             let inputs = r["input_responses"] as? [String: Any]
             return ["result": await hostCall(name, args, inputs, m)]
         default:
@@ -230,19 +251,35 @@ final class AgentCore {
 
     /// An engine tool on the window's engine — the same `vcad_app` lowering the
     /// core runs headless — as one named undo step with the agent cursor.
-    private func engineTool(_ tool: String, _ a: [String: Any], _ m: EditorModel) -> [String: Any] {
+    private func engineTool(_ tool: String, _ raw: [String: Any], _ m: EditorModel) async -> [String: Any] {
         func refusal(_ e: Error) -> [String: Any] {
             if let r = e as? DocumentEngine.Refusal { return ["ok": false, "error": ["kind": r.kind, "message": r.message]] }
             if let f = e as? AgentTools.Failure { return ["ok": false, "error": ["kind": "invalid", "message": f.message]] }
             return ["ok": false, "error": ["kind": "invalid", "message": AgentEdits.describe(e)]]
         }
         do {
+            // "this part" / "these parts": selection references → part ids.
+            let a = try AgentSelection.resolve(raw, m)
             if AgentEdits.readEngineTools.contains(tool) {
                 return ["ok": true, "result": ["text": try AgentEdits.readEngine(m, tool, a)]]
             }
+            if let busy = AgentGhost.shared.pending { throw Self.busy(busy) }
             let typed = try JSONDecoder().decode([String: EngineJSON].self, from: JSONSerialization.data(withJSONObject: a))
-            let r = try AgentEdits.edit(m, name: AgentEdits.undoName(tool, a)) {
+            let name = AgentEdits.undoName(tool, a)
+            // The cursor goes where the tool is about to act, first.
+            await AgentCursor.shared.leadIn(to: AgentSelection.target(a, m), verb: name)
+            let ghost = AgentGhost.shared
+            let gated = ghost.enabled && ghost.touchesUserParts(tool, a)
+            let before = Self.partIds(m)
+            let shot = gated ? AgentGhost.capture(parts: Array(0..<m.partCount)) : nil
+            let depth = m.undoStack.count
+            let r = try AgentEdits.edit(m, name: name, standalone: gated) {
                 try $0.applyTool(ToolCall(tool: tool, args: typed))
+            }
+            if let c = r.createdFeatureId { ghost.agentCreated.insert(c) }
+            if gated, let why = ghost.reason(before: before, after: Self.partIds(m)) {
+                try await Self.gate(m, name: name, why: why,
+                                    ghost: Self.keepOnly(shot, removed: before, after: Self.partIds(m), m), depth: depth)
             }
             var result: [String: Any] = ["parts": r.parts.map { _ in [String: Any]() }, "warnings": r.warnings]
             if let c = r.createdFeatureId { result["createdFeatureId"] = c }
@@ -284,4 +321,113 @@ private let agentCoreHost: vcad_mcp_host_fn = { _, request in
 private struct SendablePointer: @unchecked Sendable {
     let pointer: OpaquePointer
     init(_ p: OpaquePointer) { pointer = p }
+}
+
+// MARK: - scope, selection refs, ghost gate
+
+extension AgentCore {
+    /// The window document's pinned id: `app_window#<epoch>`.
+    static func documentId(_ m: EditorModel) -> String { "\(agentWindowDocumentId)#\(m.documentEpoch)" }
+
+    static func isStale(_ id: String?, _ m: EditorModel) -> Bool {
+        guard let id else { return false }
+        return id.hasPrefix(agentWindowDocumentId + "#") && id != documentId(m)
+    }
+
+    /// Nil when `id` names the window's current document (or is omitted /
+    /// bare `app_window`); else why the call must not touch it.
+    static func scopeRefusal(_ id: String?, _ m: EditorModel) -> String? {
+        guard let id, id != agentWindowDocumentId, id != documentId(m) else { return nil }
+        if isStale(id, m) {
+            return "SCOPE: document_id '\(id)' is a document this window no longer shows — the user switched it to \(m.documentName) (\(documentId(m))). Nothing was changed: this agent was pointed at the earlier document. Ask the user before working on the new one."
+        }
+        return "Unknown document_id '\(id)' — this window's document is \(documentId(m)) (or omit document_id)."
+    }
+
+    static func partIds(_ m: EditorModel) -> [String] {
+        (0..<m.partCount).compactMap { m.partId(forPart: $0) }
+    }
+
+    static func busy(_ p: AgentGhost.Pending) -> AgentTools.Failure {
+        AgentTools.Failure(message: "The user is still reviewing your previous edit (\(p.label)) in the app. Wait for that answer before editing again.")
+    }
+
+    /// Keep only the ghost clones of parts the edit removed.
+    static func keepOnly(_ ghost: Entity?, removed before: [String], after: [String], _ m: EditorModel) -> Entity? {
+        guard let ghost else { return nil }
+        for (i, id) in before.enumerated() where after.contains(id) {
+            ghost.findEntity(named: "ghost\(i)")?.removeFromParent()
+        }
+        return ghost.children.isEmpty ? nil : ghost
+    }
+
+    /// Hold the agent's call on the user's Apply / Reject. Reject undoes
+    /// exactly this edit (its own undo entry) and fails the call.
+    static func gate(_ m: EditorModel, name: String, why: String, ghost: Entity?, depth: Int) async throws {
+        let label = name.replacingOccurrences(of: "Claude: ", with: "\(AgentCursor.shared.agentName) wants to: ")
+        let ok = await AgentGhost.shared.review(.init(label: label, summary: why), ghost: ghost)
+        if ok { return }
+        guard m.undoStack.count == depth + 1, m.undoActionName == name || m.undoActionName == AgentTurn.shared.undoName(fallback: name) else {
+            throw AgentTools.Failure(message: "The user rejected \"\(name)\" (\(why)), but edited the document while reviewing, so it could not be rolled back automatically — ask them.")
+        }
+        m.undo()
+        throw AgentTools.Failure(message: "The user rejected \"\(name)\" in the app (\(why)). The document is unchanged. Ask what they want instead of retrying.")
+    }
+}
+
+/// Selection references in tool arguments: "this part", "these parts".
+///
+/// Any part-valued argument may be `"selection"` (also `"$selection"`,
+/// `"vcad://doc/selection"`): it resolves to the part the user has selected
+/// in the viewport — or, in an array (`part_ids`), to every selected part.
+@MainActor
+enum AgentSelection {
+    static let refs: Set<String> = ["selection", "$selection", "@selection", "vcad://doc/selection"]
+    static let partKeys: Set<String> = ["part_id", "child", "left", "right", "node_id", "parent_part_id", "part"]
+
+    static func selectedParts(_ m: EditorModel) -> [Int] {
+        if !m.multiSelectedParts.isEmpty { return m.multiSelectedParts.sorted() }
+        if let i = m.selectedPartIndex ?? m.picking.selectionPart { return [i] }
+        return []
+    }
+
+    static func resolve(_ a: [String: Any], _ m: EditorModel) throws -> [String: Any] {
+        var out = a
+        func ids() throws -> [String] {
+            let ids = selectedParts(m).compactMap { m.partId(forPart: $0) }
+            guard !ids.isEmpty else {
+                throw AgentTools.Failure(message: "\"selection\" was passed, but the user has nothing selected in the viewport. Ask them to click the part, or name it (describe_scene lists ids).")
+            }
+            return ids
+        }
+        for (k, v) in a {
+            if let s = v as? String, refs.contains(s), partKeys.contains(k) {
+                let all = try ids()
+                guard all.count == 1 else {
+                    throw AgentTools.Failure(message: "\"selection\" for \(k) is ambiguous: the user has \(all.count) parts selected (\(all.joined(separator: ", "))).")
+                }
+                out[k] = all[0]
+            } else if let arr = v as? [Any], arr.contains(where: { ($0 as? String).map(refs.contains) ?? false }) {
+                var expanded: [Any] = []
+                for x in arr {
+                    if let s = x as? String, refs.contains(s) { expanded += try ids() } else { expanded.append(x) }
+                }
+                out[k] = expanded
+            }
+        }
+        return out
+    }
+
+    /// Where an edit with these (resolved) args is about to act.
+    static func target(_ a: [String: Any], _ m: EditorModel) -> AgentCursorTarget? {
+        let focus = AgentCursor.focus(m)
+        for k in ["part_id", "child", "left", "node_id", "parent_part_id"] {
+            if let id = a[k] as? String, let i = (0..<m.partCount).first(where: { m.partId(forPart: $0) == id }) {
+                if let p = focus.point, focus.part == i { return .point(p) }
+                return .part(i)
+            }
+        }
+        if let p = focus.point { return .point(p) }
+        return focus.part.map { .part($0) }
+    }
 }

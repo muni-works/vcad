@@ -1197,6 +1197,10 @@ struct ReleasedOverlayView: View {
             // The agent's labeled cursor (AgentCursor.swift).
             AgentCursorOverlay(model: model)
         }
+        .overlay(alignment: .bottom) {
+            // Apply / Reject for a destructive agent edit (AgentGhost.swift).
+            AgentGhostBar()
+        }
         .overlay { if !studio { EditBarOverlay(model: model) } }
         .overlay(alignment: .topLeading) {
             // Decoded compressed scalar field (FieldOverlay.swift).
@@ -2175,6 +2179,8 @@ struct ReleasedARView: NSViewRepresentable {
         // which used to drop the overlay the pick had just drawn, so picked
         // edges never showed.
         if let topo = topologyOverlayEntity(model: model) { centering.addChild(topo) }
+        // An agent edit under review keeps its red ghost across rebuilds.
+        AgentGhost.shared.attachGhost()
         applySectionView(model: model)
         // Transform gizmo on the selected part — same shared builder as the
         // studio; its handle proxies carry collision shapes, so the ARView

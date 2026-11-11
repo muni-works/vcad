@@ -164,6 +164,14 @@ enum AgentViewer {
             throw AgentTools.Failure(message: "radius (mm, > 0) is required")
         }
         let chamfer = a["chamfer"] as? Bool ?? false
+        // "Fillet this face": a picked face means its boundary edges.
+        let facesPicked = m.picking.selectedFaces.count
+        if m.picking.selectedEdges.isEmpty, facesPicked > 0, let part = m.picking.selectionPart,
+           let topo = m.partTopology(part) {
+            let faceIds = Set(m.picking.selectedFaces.map(\.id))
+            let ring = topo.edges.filter { !faceIds.isDisjoint(with: $0.faces) }.map { TopoRef.edge($0.id, part: part) }
+            if !ring.isEmpty { m.picking.setSelection(ring) }
+        }
         let edges = m.picking.selectedEdges.count
         let focus = AgentCursor.focus(m)
         let fallback = "Claude: \(chamfer ? "Chamfer" : "Fillet") \(edges == 0 ? "Part" : "Edges")"
@@ -178,7 +186,9 @@ enum AgentViewer {
             AgentCursor.shared.pointAt(touched: r, verb: AgentTurn.shared.undoName(fallback: fallback),
                                        focus: focus, model: m)
         }
-        let what = edges == 0 ? "every edge of the part" : "\(edges) selected edge\(edges == 1 ? "" : "s")"
+        let what = edges == 0 ? "every edge of the part"
+            : facesPicked > 0 ? "the \(edges) edges around \(facesPicked) selected face\(facesPicked == 1 ? "" : "s")"
+            : "\(edges) selected edge\(edges == 1 ? "" : "s")"
         return ["content": [["type": "text", "text": "\(chamfer ? "Chamfered" : "Filleted") \(what) at \(radius) mm. Undo label: \"\(m.undoActionName ?? fallback)\"."]],
                 "_meta": meta]
     }

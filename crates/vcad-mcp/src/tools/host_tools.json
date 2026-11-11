@@ -249,7 +249,7 @@
         "resourceUri": "ui://vcad/viewer"
       }
     },
-    "description": "Fillet (or chamfer) the edges the user selected in the viewport — read vcad://doc/selection. With nothing selected, every edge of the selected part. One undo step, live.",
+    "description": "Fillet (or chamfer) what the user selected in the viewport — read vcad://doc/selection. Picked edges are filleted; a picked face means the edges around it (\"fillet this face\"). With nothing picked, every edge of the selected part. One undo step, live.",
     "inputSchema": {
       "properties": {
         "chamfer": {
