@@ -532,6 +532,9 @@ final class ReleaseWindowController {
     private func paint(entity name: String, lift: Lift) {
         guard let e = centeringEntity?.findEntity(named: name) as? ModelEntity,
               var m = e.model?.materials.first as? PhysicallyBasedMaterial else { return }
+        // Hover can repaint from the global mouse monitor, with no local event
+        // or SwiftUI update to wake the viewport.
+        RenderGate.wake()
         switch lift {
         case .hover where isSelected(name):
             m.emissiveColor = .init(color: NSColor(red: 1.0, green: 0.68, blue: 0.24, alpha: 1))
@@ -1572,9 +1575,10 @@ struct ReleasedARView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> ARView {
-        let ar = ARView(frame: .zero)
+        let ar = GatedARView(frame: .zero)
         ar.environment.background = .color(.clear)
         ReleaseWindowController.shared.arView = ar
+        RenderGate.install(on: ar)
         let anchor = AnchorEntity(world: .zero)
         let camera = PerspectiveCamera()
         anchor.addChild(camera)
@@ -1616,6 +1620,8 @@ struct ReleasedARView: NSViewRepresentable {
     }
 
     func updateNSView(_ ar: ARView, context: Context) {
+        // Any state the viewport reads changed: let it draw the result.
+        RenderGate.wake()
         // Selecting a part used to rebuild the whole scene: `highlightedParts`
         // was part of `geometryKey`, so a click re-evaluated the document,
         // re-tessellated every part, rebuilt every entity and regenerated every
@@ -1751,6 +1757,28 @@ struct ReleasedARView: NSViewRepresentable {
                     withAnimation(Motion.smooth) { model.distance = target }
                     model.pinchBaseline = target
                 }
+            }
+        }
+        // Release-time hook (scripts/bake-sample-meshes.sh): write the solved
+        // document's `.vcadmesh` beside it and quit, so a bundled sample opens
+        // as a root-cache hit instead of a cold kernel walk on first launch.
+        if ProcessInfo.processInfo.environment["VCAD_BAKE_MESH_BUNDLE"] == "1",
+           !scene.solving, case let .document(path, _) = model.source {
+            let n = model.writeMeshBundle(for: URL(fileURLWithPath: path))
+            FileHandle.standardError.write(Data("[vcad] baked \(n) roots for \(path)\n".utf8))
+            DispatchQueue.main.async { NSApp.terminate(nil) }
+        }
+        if LaunchPerf.enabled, !scene.solving, !model.source.isSandbox,
+           scene.partCount > 0 || !scene.instances.isEmpty {
+            LaunchPerf.once("first full scene", " (\(scene.partCount) parts, \(scene.instances.count) instances, \(scene.triangleCount) tris)")
+            if let ar = ReleaseWindowController.shared.arView, let cam = coordinator.camera {
+                let center = lookAt
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                    LaunchPerf.startOrbit(ar, camera: cam, center: center, label: (model.source.id as NSString).lastPathComponent)
+                }
+            }
+            if LaunchPerf.exitWhenDone, LaunchPerf.orbitSeconds == 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { NSApp.terminate(nil) }
             }
         }
         coordinator.instanceEntities.removeAll(keepingCapacity: true)
@@ -2298,6 +2326,7 @@ final class DockIcon {
         guard model.triangleCount > 0 else { return }   // nothing to depict yet
 
         inFlight = true
+        RenderGate.wake(for: 2)  // a paused view never delivers a snapshot
         ar.snapshot(saveToHDR: false) { [weak self] image in
             // Reduce to a CGImage here, in the callback: NSImage is not
             // Sendable, so it must not cross into the main-actor hop.

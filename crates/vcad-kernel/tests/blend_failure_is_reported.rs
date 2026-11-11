@@ -12,7 +12,7 @@
 //! 3. Multi-edge blends report per edge, not as one boolean.
 //! 4. The lenient variants still exist, but you have to ask for them.
 
-use vcad_kernel::vcad_kernel_fillet::{BlendKey, BlendRefusal, BlendSection, EdgeQuery};
+use vcad_kernel::vcad_kernel_fillet::{BlendKey, BlendSection, EdgeQuery};
 use vcad_kernel::vcad_kernel_math::{Point3, Vec3};
 use vcad_kernel::{BlendError, Solid};
 
@@ -31,31 +31,22 @@ fn fillet_key(size: f64) -> BlendKey {
 /// emphatically *not* a quiet identity operation.
 #[test]
 fn a_radius_too_large_for_the_feature_is_an_error_not_a_noop() {
-    // r = 5 on a 10 mm cube: opposing insets meet at the midplane, so the
-    // trimmed faces collapse. The planar pipeline catches it up front.
-    let err = cube()
-        .fillet(5.0)
-        .expect_err("r=5 cannot fit a 10mm cube — this must not silently succeed");
-    assert_eq!(
-        err,
-        BlendError::Refused(BlendRefusal::RadiusTooLargeForFeature)
-    );
-    // The message names the cause, so a caller (or an agent) can act on
-    // it rather than guessing.
-    let msg = err.to_string();
-    assert!(
-        msg.contains("radius exceeds available edge length"),
-        "reason should be actionable, got: {msg}"
-    );
-
-    // A grossly oversized radius gets past the up-front feasibility check
-    // but produces a shell that gains volume — caught by the post-flight
-    // gate. Different reason, same contract: it is never silent.
-    for r in [6.0, 12.0, 20.0] {
-        assert_eq!(
-            cube().fillet(r).unwrap_err(),
-            BlendError::InvalidResult,
-            "r={r} on a 10mm cube must be reported, not quietly skipped"
+    // r >= 5 on a 10 mm cube: opposing blends meet at the midplane. The
+    // up-front size bound refuses with the number, so a caller (or an
+    // agent) can act on it rather than guessing. (Oversized radii used to
+    // reach the post-flight gate and say only "invalid geometry".)
+    for r in [5.0, 6.0, 12.0, 20.0] {
+        let err = cube()
+            .fillet(r)
+            .expect_err("r>=5 cannot fit a 10mm cube — this must not silently succeed");
+        assert!(
+            matches!(err, BlendError::SizeExceedsLimit { limit, .. } if (limit - 5.0).abs() < 1e-9),
+            "r={r}: {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("fillet radius") && msg.contains("5.0000 mm limit"),
+            "reason should be actionable, got: {msg}"
         );
     }
 }
@@ -72,7 +63,11 @@ fn the_lenient_variant_returns_the_input_but_records_why() {
     assert_eq!(report.applied, 0);
     assert_eq!(
         report.declined,
-        Some(BlendError::Refused(BlendRefusal::RadiusTooLargeForFeature))
+        Some(BlendError::SizeExceedsLimit {
+            what: "fillet radius",
+            size: 5.0,
+            limit: 5.0
+        })
     );
 
     // Unchanged: same volume, same face count as the input.

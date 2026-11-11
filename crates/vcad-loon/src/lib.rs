@@ -67,14 +67,16 @@ pub fn eval_vcad_parametric(
     let run = |env: &HashMap<String, f64>| -> Result<Document, String> {
         let rewritten = params::rewrite(&exprs, env)?;
         let value = run_program(&rewritten, base_dir, provider.clone())?;
-        value_to_document_in(&value, base_dir)
+        value_to_document_in(&value, base_dir).map_err(|e| diag::locate_conversion_error(source, e))
     };
 
     if decls.is_empty() {
         // Nothing declared: run the program as parsed, with no rewrite pass
         // and no AST clone. This is the path every existing model takes.
         let value = run_program(&exprs, base_dir, provider)?;
-        return Ok((value_to_document_in(&value, base_dir)?, Vec::new()));
+        let doc = value_to_document_in(&value, base_dir)
+            .map_err(|e| diag::locate_conversion_error(source, e))?;
+        return Ok((doc, Vec::new()));
     }
 
     let env0 = decls.env()?;
@@ -447,6 +449,151 @@ mod tests {
         let doc = eval_vcad("[cube 10.0 20.0 30.0]", None).unwrap();
         assert_eq!(doc.nodes.len(), 1);
         assert_eq!(doc.roots.len(), 1);
+    }
+
+    fn root_op(doc: &Document) -> &CsgOp {
+        &doc.nodes[&doc.roots[0].root].op
+    }
+
+    #[test]
+    fn scientific_notation_literals_are_numbers() {
+        // ecto/loon#98: these used to lex as `1e` + `6` ("unknown unit: e").
+        let doc = eval_vcad("[cube 1e6 2.5e-3 1E+3]", None).unwrap();
+        match root_op(&doc) {
+            CsgOp::Cube { size } => {
+                assert_eq!((size.x, size.y, size.z), (1e6, 2.5e-3, 1e3));
+            }
+            other => panic!("{other:?}"),
+        }
+        // Unit suffixes keep working.
+        assert!(eval_vcad("[cube 10mm 2cm 5]", None).is_ok());
+    }
+
+    #[test]
+    fn booleans_are_variadic() {
+        let cubes: String = (0..40)
+            .map(|i| format!(" [translate {i} 0 0 [cube 1 1 1]]"))
+            .collect();
+        for op in ["union", "intersection", "difference"] {
+            let doc =
+                eval_vcad(&format!("[{op}{cubes}]"), None).unwrap_or_else(|e| panic!("{op}: {e}"));
+            let booleans = doc
+                .nodes
+                .values()
+                .filter(|n| {
+                    matches!(
+                        n.op,
+                        CsgOp::Union { .. } | CsgOp::Intersection { .. } | CsgOp::Difference { .. }
+                    )
+                })
+                .count();
+            assert_eq!(booleans, 39, "{op}");
+        }
+        // One argument is the identity.
+        let doc = eval_vcad("[union [cube 1 2 3]]", None).unwrap();
+        assert!(matches!(root_op(&doc), CsgOp::Cube { .. }));
+    }
+
+    #[test]
+    fn difference_subtracts_earlier_args_from_the_last() {
+        // [difference A B] = B − A (subject last) — pinned, do not change.
+        let doc = eval_vcad("[difference [sphere 1] [cube 5 5 5]]", None).unwrap();
+        let CsgOp::Difference { left, right } = root_op(&doc) else {
+            panic!("expected Difference");
+        };
+        assert!(matches!(doc.nodes[left].op, CsgOp::Cube { .. }));
+        assert!(matches!(doc.nodes[right].op, CsgOp::Sphere { .. }));
+        // Variadic: [difference a b s] = (s − a) − b.
+        let doc = eval_vcad("[difference [sphere 1] [cylinder 1 2] [cube 5 5 5]]", None).unwrap();
+        let CsgOp::Difference { left, right } = root_op(&doc) else {
+            panic!("expected Difference");
+        };
+        assert!(matches!(doc.nodes[right].op, CsgOp::Cylinder { .. }));
+        let CsgOp::Difference { left: s, right: a } = &doc.nodes[left].op else {
+            panic!("expected nested Difference");
+        };
+        assert!(matches!(doc.nodes[s].op, CsgOp::Cube { .. }));
+        assert!(matches!(doc.nodes[a].op, CsgOp::Sphere { .. }));
+    }
+
+    #[test]
+    fn argument_type_errors_name_function_position_and_location() {
+        let e = eval_vcad("[let a [cube 1 1 1]]\n[translate 1 2 3 3]", None).unwrap_err();
+        assert_eq!(
+            e,
+            "translate: argument 4 expected Solid, got number 3 (line 2, col 1)"
+        );
+        let e = eval_vcad("[cube 1 \"x\" 1]", None).unwrap_err();
+        assert!(
+            e.starts_with("cube: argument 2 expected number, got string"),
+            "{e}"
+        );
+        let e = eval_vcad("[union [cube 1 1 1] -5]", None).unwrap_err();
+        assert!(
+            e.starts_with("union: operand expected Solid, got number -5"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn primitives_reject_non_positive_dimensions() {
+        for (src, want) in [
+            (
+                "[cube -10 10 10]",
+                "cube: x size must be a positive finite number, got -10",
+            ),
+            (
+                "[cube 10 0 10]",
+                "cube: y size must be a positive finite number, got 0",
+            ),
+            (
+                "[cylinder 0 5]",
+                "cylinder: radius must be a positive finite number",
+            ),
+            (
+                "[cylinder 5 -1]",
+                "cylinder: height must be a positive finite number",
+            ),
+            (
+                "[sphere -2]",
+                "sphere: radius must be a positive finite number",
+            ),
+            ("[cone 0 0 5]", "cone: at least one radius must be positive"),
+            (
+                "[cone -1 2 5]",
+                "cone: bottom radius must be a finite number >= 0",
+            ),
+            (
+                "[cone 1 2 0]",
+                "cone: height must be a positive finite number",
+            ),
+            (
+                "[cylinder-n -1 5 16]",
+                "cylinder-n: radius must be a positive finite number",
+            ),
+        ] {
+            let e = eval_vcad(src, None).unwrap_err();
+            assert!(e.starts_with(want), "{src}: {e}");
+        }
+        // A cone may come to a point.
+        assert!(eval_vcad("[cone 5 0 10]", None).is_ok());
+        assert!(eval_vcad("[cone 0 5 10]", None).is_ok());
+    }
+
+    #[test]
+    fn pattern_snake_case_aliases() {
+        let doc = eval_vcad("[linear_pattern 1 0 0 4 10 [cube 1 1 1]]", None).unwrap();
+        assert!(matches!(
+            root_op(&doc),
+            CsgOp::LinearPattern { count: 4, .. }
+        ));
+        let doc = eval_vcad("[circular_pattern 0 0 0 0 0 1 6 360 [cube 1 1 1]]", None).unwrap();
+        assert!(matches!(
+            root_op(&doc),
+            CsgOp::CircularPattern { count: 6, .. }
+        ));
+        // The kebab-case originals still work.
+        assert!(eval_vcad("[linear-pattern 1 0 0 4 10 [cube 1 1 1]]", None).is_ok());
     }
 
     #[test]

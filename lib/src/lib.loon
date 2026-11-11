@@ -318,10 +318,20 @@
 ; Scaled import — extra non-uniform scale on top of :units (default "m").
 [let import-mesh-scaled [fn [sx sy sz path & opts] [MeshImport path sx sy sz opts]]]
 
-; Booleans (subject-last: [pipe body [difference tool]] → subtract tool from body)
-[let union [fn [other s] [Union s other]]]
-[let difference [fn [tool s] [Difference s tool]]]
-[let intersection [fn [other s] [Intersection s other]]]
+; Booleans — variadic (any n >= 1), subject-LAST like every other op here.
+; The LAST argument is the subject; the others are folded onto it in order:
+;   [union a b c s]        = s ∪ a ∪ b ∪ c
+;   [intersection a b s]   = s ∩ a ∩ b
+;   [difference a b s]     = s − a − b       ; NOTE: subject last!
+; so the two-argument [difference A B] means B − A ("subtract A from B"),
+; which reads naturally in a pipe: [pipe body [difference tool]] is
+; body − tool. To write "A minus B" directly, say [difference B A].
+; A single argument is returned unchanged.
+[let fold-subject-last [fn [op args]
+  [fold [take [- [len args] 1] args] [last args] op]]]
+[let union [fn [& args] [fold-subject-last [fn [acc x] [Union acc x]] args]]]
+[let difference [fn [& args] [fold-subject-last [fn [acc x] [Difference acc x]] args]]]
+[let intersection [fn [& args] [fold-subject-last [fn [acc x] [Intersection acc x]] args]]]
 
 ; Convex hull — the smallest convex solid enclosing its inputs.
 ;   [hull a b c]                       hull of the solids together
@@ -451,6 +461,9 @@
   [LinearPattern s dx dy dz count spacing]]]
 [let circular-pattern [fn [ox oy oz ax ay az count angle s]
   [CircularPattern s ox oy oz ax ay az count angle]]]
+; snake_case aliases matching the IR op names (LinearPattern/CircularPattern).
+[let linear_pattern linear-pattern]
+[let circular_pattern circular-pattern]
 
 ; Swept rotation — the union of s rotated about the axis through (ox oy oz)
 ; along (ax ay az) over [lo, hi] degrees (inclusive). A clearance-cut tool:

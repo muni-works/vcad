@@ -618,7 +618,7 @@ pub fn signature_with_index(brep: &BRepSolid, ci: &CanonicalIndex) -> TopologySi
 ///
 /// Only the surface kinds needed by the M0–M2 differentiable-seam milestones
 /// are supported; others return [`FrozenError::UnsupportedSurface`].
-fn invert_uv(surface: &dyn Surface, p: &Point3) -> Result<Point2, FrozenError> {
+pub fn invert_uv(surface: &dyn Surface, p: &Point3) -> Result<Point2, FrozenError> {
     match surface.surface_type() {
         SurfaceKind::Plane => {
             let plane = surface.as_any().downcast_ref::<Plane>().ok_or(
@@ -753,6 +753,21 @@ fn solve3(m: [[f64; 3]; 3], b: [f64; 3]) -> Option<[f64; 3]> {
     Some(out)
 }
 
+/// Smallest sine of the angle between two surfaces' normals for which their
+/// intersection is treated as a transverse curve.
+///
+/// Below this the pair is tangent for tracking purposes. A tangent contact
+/// that geometry construction has nudged off exact tangency (a corner sphere
+/// and a blend cylinder whose centers were rounded through `f32` by a
+/// Boolean sit ~5e-8 apart, so they cross at an angle of ~3e-4 rad) still has
+/// no well-conditioned intersection: the Newton solution's position along
+/// the normal is the offset divided by the sine, so its parameter derivative
+/// is dominated by the rounding, and a central difference of it never
+/// converges. Such pairs fall back to the surface-rank rule (see
+/// [`kind_rank`]), the same as exactly tangent ones. Genuinely transverse
+/// trims (cap rims, Boolean cuts) meet at angles orders of magnitude larger.
+const TANGENT_SIN: f64 = 1e-3;
+
 /// Refine a boundary node onto the intersection of two surfaces: Newton on
 /// `{g_a(x) = 0, g_b(x) = 0, t·(x − anchor) = 0}`, where `t` is the
 /// intersection tangent (`∇g_a × ∇g_b`) at the anchor — the frozen-branch
@@ -765,7 +780,7 @@ pub fn refine_boundary_point(a: &dyn Surface, b: &dyn Surface, anchor: &Point3) 
     let (_, gb0) = vcad_kernel_geom::implicit_form(b, anchor)?;
     let t = ga0.cross(gb0);
     let t_norm = t.norm();
-    if t_norm < 1e-12 * (ga0.norm() * gb0.norm()).max(f64::MIN_POSITIVE) {
+    if t_norm < TANGENT_SIN * (ga0.norm() * gb0.norm()).max(f64::MIN_POSITIVE) {
         return None; // (near-)tangent surfaces: no well-defined curve
     }
     let t = t / t_norm;
