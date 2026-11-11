@@ -735,6 +735,16 @@ char *vcad_fea_materials(void);
  * {pairs:[{a,b,distance_mm,intersecting,overlap_volume_mm3,status,clash?}], ...} */
 char *vcad_clearance(const char *doc_json, const char *request_json);
 
+/* --- Live receipts (receipts.rs) ---
+ * Re-verify every persisted clearance assertion (doc.clearance_specs) ->
+ * {status:"Holds"|"Stale"|"Violated"|null, checks:[{label,claim_id,status,
+ *  subject,required_mm,measured_mm?,baseline_mm?,worst_pair?,points?,reason?}],
+ *  receipt: DesignReceipt} */
+char *vcad_receipts_verify(const char *doc_json);
+/* request (nullable) {"label"?} -> {document, accepted}: re-baseline the
+ * assertions that currently hold (a Violated one is never accepted). */
+char *vcad_receipts_accept(const char *doc_json, const char *request_json);
+
 /* --- Assembly + animation authoring (assembly.rs, animation.rs) ---
  * Owned JSON freed ONLY with vcad_string_free; null + vcad_last_error on
  * failure. Additive, no ABI bump. */

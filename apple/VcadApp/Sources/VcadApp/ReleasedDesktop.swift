@@ -105,7 +105,7 @@ final class KeyableWindow: NSWindow, NSWindowDelegate {
 @MainActor
 final class ReleaseWindowController {
     static let shared = ReleaseWindowController()
-    private var window: NSWindow?
+    private(set) var window: NSWindow?
     private var mainWindow: NSWindow?
     private var savedWindowFrame: NSRect?
     private var mouseMonitors: [Any] = []
@@ -323,15 +323,21 @@ final class ReleaseWindowController {
     /// Projected by hand rather than through `ARView.project`, which answers nil
     /// for a scene camera that isn't the AR session's.
     func viewPoint(forPart i: Int, from camera: SIMD3<Float>, lookAt: SIMD3<Float>) -> CGPoint? {
-        guard let ar = arView, let centering = centeringEntity,
+        guard let centering = centeringEntity,
               let e = centering.findEntity(named: "part\(i)") else { return nil }
+        return viewPoint(forWorld: e.visualBounds(relativeTo: nil).center, from: camera, lookAt: lookAt)
+    }
+
+    /// Any world-space point, projected the same way (the agent cursor).
+    func viewPoint(forWorld w: SIMD3<Float>, from camera: SIMD3<Float>, lookAt: SIMD3<Float>) -> CGPoint? {
+        guard let ar = arView else { return nil }
         let size = ar.bounds.size
         guard size.width > 0, size.height > 0 else { return nil }
 
         let fwd = normalize(lookAt - camera)
         let right = normalize(cross(fwd, SIMD3<Float>(0, 1, 0)))
         let up = cross(right, fwd)
-        let v = e.visualBounds(relativeTo: nil).center - camera
+        let v = w - camera
         let z = dot(v, fwd)
         guard z > 0.0001 else { return nil }                 // behind the camera
         let tanHalf = tan(Float(60) / 2 * .pi / 180)         // PerspectiveCamera default FOV
@@ -1100,6 +1106,11 @@ struct ReleasedOverlayView: View {
                 GripperReceiptPill(model: model)
                     .padding(.top, Theme.Space.l)
                     .modifier(ChromeRegion(key: "gripper"))
+            } else if !studio {
+                // Live receipt badges + viewport elicitation (ReceiptBadges.swift).
+                ProofOverlay(model: model)
+                    .padding(.top, chromeTop + Theme.Space.s)
+                    .modifier(ChromeRegion(key: "proof"))
             }
         }
         .overlay(alignment: .bottom) {
@@ -1130,6 +1141,10 @@ struct ReleasedOverlayView: View {
         .overlay {
             // Labels an agent pinned over the MCP bridge (AgentBridge.swift).
             AgentAnnotationOverlay(model: model)
+        }
+        .overlay {
+            // The agent's labeled cursor (AgentCursor.swift).
+            AgentCursorOverlay(model: model)
         }
         .overlay { if !studio { EditBarOverlay(model: model) } }
         .overlay(alignment: .topLeading) {
@@ -1717,22 +1732,24 @@ struct ReleasedARView: NSViewRepresentable {
         return ar
     }
 
-    /// The studio's key/rim/fill rig. The studio environment is a deliberately
-    /// dark reflection probe — without these lights the floating parts read as
-    /// black silhouettes over the desktop.
+    /// The studio's key/rim/fill rig. The studio environment supplies a soft
+    /// ambient base; these lights add direction. They're kept balanced (key
+    /// only ~1.6x fill) and well under clipping so light albedos — a white or
+    /// pale-orange printed part — keep their shading instead of blowing out to
+    /// white, while faces at different angles still separate.
     private func addLightRig(to anchor: AnchorEntity) {
         let key = DirectionalLight()
-        key.light.intensity = 2300
+        key.light.intensity = 1300
         key.look(at: .zero, from: [0.7, 1.1, 0.85], relativeTo: nil)
         anchor.addChild(key)
 
         let rim = DirectionalLight()
-        rim.light.intensity = 1900
+        rim.light.intensity = 750
         rim.look(at: .zero, from: [-0.9, 0.35, -1.0], relativeTo: nil)
         anchor.addChild(rim)
 
         let fill = DirectionalLight()
-        fill.light.intensity = 900
+        fill.light.intensity = 800
         fill.look(at: .zero, from: [-0.2, 0.5, 1.2], relativeTo: nil)
         anchor.addChild(fill)
     }
@@ -1742,6 +1759,9 @@ struct ReleasedARView: NSViewRepresentable {
     private func applyLighting(_ ar: ARView) {
         ar.environment.lighting.resource =
             model.zebraMode ? SceneAssets.zebraEnvironment : SceneAssets.studioEnvironment
+        // A touch over neutral so dark materials pick up form from the soft
+        // ambient instead of reading as flat black silhouettes.
+        ar.environment.lighting.intensityExponent = model.zebraMode ? 0 : 0.6
     }
 
     func updateNSView(_ ar: ARView, context: Context) {
@@ -1965,6 +1985,7 @@ struct ReleasedARView: NSViewRepresentable {
                 m.baseColor = .init(tint: inst.material.color)
                 m.roughness = .init(floatLiteral: inst.material.roughness)
                 m.metallic = .init(floatLiteral: inst.material.metallic)
+                SceneAssets.studioSoften(&m)
             }
             let e = ModelEntity(mesh: inst.mesh, materials: [m])
             // A free root (see `freeRoots`) stays where it is: it isn't an
@@ -1990,10 +2011,12 @@ struct ReleasedARView: NSViewRepresentable {
                 m.baseColor = .init(tint: r.color)
                 m.roughness = .init(floatLiteral: r.roughness)
                 m.metallic = .init(floatLiteral: r.metallic)
+                SceneAssets.studioSoften(&m)
             } else {
                 m.baseColor = .init(tint: item.color)
                 m.roughness = 0.34
                 m.metallic = 0.55
+                SceneAssets.studioSoften(&m)
             }
             if model.usesDocumentTree, !model.zebraMode, model.highlightedParts.contains(i) {
                 // Brand orange = action: a subtle emissive lift marks selection
@@ -2005,6 +2028,14 @@ struct ReleasedARView: NSViewRepresentable {
             e.name = "part\(i)"
             e.isEnabled = model.isPartVisible(i)
             e.generateCollisionShapes(recursive: false)   // pass-through hit test
+            // Feature edges as thin ink lines (the kernel already computes
+            // them per part): the crisp CAD read Fusion/Shapr3D have.
+            if !model.zebraMode, i < scene.edges.count, !scene.edges[i].isEmpty,
+               let r = EdgeOverlay.ribbonResource(segments: scene.edges[i],
+                                                  width: max(scene.size, 10) * 0.0012,
+                                                  name: "edges\(i)") {
+                e.addChild(ModelEntity(mesh: r, materials: [SceneAssets.edgeMaterial]))
+            }
             centering.addChild(e)
         }
 

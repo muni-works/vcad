@@ -1,0 +1,3 @@
+[let body [union [cylinder-n 25 5 64] [translate 0 0 5 [cylinder-n 11.5 5 48]]]]
+[let slot [intersection [translate 0.3 -26 3 [cube 26 52 4]] [difference [translate 0 0 2.5 [cylinder-n 8.8 5 64]] [translate 0 0 3 [cylinder-n 14 4 64]]]]]
+[root [difference slot body] "pla"]

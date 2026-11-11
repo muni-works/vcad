@@ -16,9 +16,10 @@ use serde_json::Value;
 
 use vcad_kernel::Solid;
 
-use crate::analysis::{evaluate, parse_doc, parse_request, part_name, part_roots};
+use crate::analysis::{evaluate, parse_doc, parse_request};
 use crate::err;
 use crate::json::{guard_ptr, json_out};
+use vcad_receipt_verify::bodies::keyed_bodies;
 
 /// Overlap below this volume (mm³) is contact, not interference.
 pub const CONTACT_VOLUME_MM3: f64 = 1e-6;
@@ -87,61 +88,10 @@ fn bodies(
     doc: &vcad_ir::Document,
     scene: &vcad_eval::EvaluatedScene,
 ) -> Vec<(String, Option<Solid>)> {
-    let roots = part_roots(doc, scene);
-    let root_body = |i: usize| (part_name(doc, roots[i], i), scene.parts[i].solid.clone());
-    let (Some(instances), Some(defs)) = (doc.instances.as_ref(), scene.part_defs.as_ref()) else {
-        return (0..scene.parts.len()).map(root_body).collect();
-    };
-    if instances.is_empty() {
-        return (0..scene.parts.len()).map(root_body).collect();
-    }
-    let world = vcad_eval::solve_forward_kinematics(doc);
-    let mut out: Vec<(String, Option<Solid>)> = instances
-        .iter()
-        .filter_map(|inst| {
-            let def = defs.iter().find(|d| d.id == inst.part_def_id)?;
-            let solid =
-                def.solid
-                    .as_ref()
-                    .map(|s| match world.get(&inst.id).or(inst.transform.as_ref()) {
-                        Some(t) => place(s, t),
-                        None => s.clone(),
-                    });
-            Some((inst.name.clone().unwrap_or_else(|| inst.id.clone()), solid))
-        })
-        .collect();
-    let def_roots: std::collections::HashSet<vcad_ir::NodeId> = doc
-        .part_defs
-        .as_ref()
-        .map(|m| m.values().map(|d| d.root).collect())
-        .unwrap_or_default();
-    out.extend(
-        (0..scene.parts.len())
-            .filter(|&i| roots[i].is_none_or(|r| !def_roots.contains(&r)))
-            .map(root_body),
-    );
-    out
-}
-
-/// Apply `T · Rz · Ry · Rx · S` (the convention `vcad_eval::kinematics`
-/// emits) to a solid. One call per axis so the order is explicit rather than
-/// left to `Solid::rotate`'s composite.
-fn place(s: &Solid, t: &vcad_ir::Transform3D) -> Solid {
-    let (sc, r, tr) = (t.scale, t.rotation, t.translation);
-    let mut out = s.clone();
-    if (sc.x, sc.y, sc.z) != (1.0, 1.0, 1.0) {
-        out = out.scale(sc.x, sc.y, sc.z);
-    }
-    if r.x != 0.0 {
-        out = out.rotate(r.x, 0.0, 0.0);
-    }
-    if r.y != 0.0 {
-        out = out.rotate(0.0, r.y, 0.0);
-    }
-    if r.z != 0.0 {
-        out = out.rotate(0.0, 0.0, r.z);
-    }
-    out.translate(tr.x, tr.y, tr.z)
+    keyed_bodies(doc, scene)
+        .into_iter()
+        .map(|b| (b.name, b.solid))
+        .collect()
 }
 
 /// Measure every pair of bodies (or only `req.pairs: [[a, b], …]`).

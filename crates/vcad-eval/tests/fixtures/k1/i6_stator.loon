@@ -1,0 +1,9 @@
+; Bolts to the RS05 housing face (4 of the 8x M3 on D41.5). Frame: z=0 = RS05 front face.
+; 3 torque keys + 4 pockets for 5x3 mm magnets. Bore D33.6 clears the D30 output disc.
+[let ring [difference [translate 0 0 -1 [cylinder-n 16.8 10 64]] [cylinder-n 25 8 64]]]
+[let t [union [translate 17.85 -2.9 3 [cube 5.8 5.8 6]] [translate 20.75 0 -1 [cylinder 1.7 5]]]]
+[let m [translate 20.75 0 4.8 [cylinder 2.6 4]]]
+[let mags [union [rotate 0 0 67.5 m] [union [rotate 0 0 157.5 m] [union [rotate 0 0 247.5 m] [rotate 0 0 337.5 m]]]]]
+[let key [translate 24 -4 0 [cube 3.5 8 8]]]
+[let keys [union [rotate 0 0 45 key] [union [rotate 0 0 165 key] [rotate 0 0 285 key]]]]
+[root [union keys [pipe ring [difference [rotate 0 0 22.5 t]] [difference [rotate 0 0 112.5 t]] [difference [rotate 0 0 202.5 t]] [difference [rotate 0 0 292.5 t]] [difference mags]]] "pla"]

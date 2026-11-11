@@ -1,0 +1,2 @@
+[let f [fn [x] [cube x x x]]]
+[root [cube 10 10 10] "pla"]

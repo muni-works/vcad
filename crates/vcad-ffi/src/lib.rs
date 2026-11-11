@@ -71,6 +71,7 @@ pub mod import;
 mod json;
 pub mod pcb;
 pub mod print;
+pub mod receipts;
 #[cfg(feature = "recon")]
 pub mod recon;
 pub mod schematic;
