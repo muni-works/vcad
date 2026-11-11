@@ -2188,6 +2188,14 @@ struct ReleasedARView: NSViewRepresentable {
             e.transform = Transform(matrix: !isFreeRoot && i < model.instanceTransforms.count
                                     ? model.instanceTransforms[i] : inst.transform)
             e.generateCollisionShapes(recursive: false)
+            // Model edges (B-rep topology, Fusion-style), shared per part def.
+            if !model.zebraMode, let r = inst.edges {
+                let view = ReleaseWindowController.shared.arView
+                let hPx = Float((view?.bounds.height ?? 900) * (view?.window?.backingScaleFactor ?? 2))
+                if let lines = SceneAssets.edgeLineMaterial(viewportHeightPx: hPx) {
+                    e.addChild(ModelEntity(mesh: r, materials: [lines]))
+                }
+            }
             centering.addChild(e)
             if !isFreeRoot { coordinator.instanceEntities.append(e) }
         }

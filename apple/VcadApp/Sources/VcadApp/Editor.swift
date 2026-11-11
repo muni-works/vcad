@@ -4193,6 +4193,14 @@ final class EditorModel {
         var hi = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
         var tris = 0
         var centers = [SIMD3<Float>](repeating: .zero, count: count)
+        // One edge resource per part definition: instances of a part share it.
+        var edgeByDef: [String: MeshResource?] = [:]
+        func edgeResource(_ make: () -> OpaquePointer?, name: String) -> MeshResource? {
+            guard let eh = make() else { return nil }
+            defer { vcad_edges_free(eh) }
+            return EdgeOverlay.screenLineResource(segments: EdgeOverlay.segments(fromView: vcad_edges_view(eh)),
+                                                  name: name)
+        }
         for i in 0..<count {
             var m16 = [Double](repeating: 0, count: 16)
             _ = vcad_scene_instance_transform(scene, i, &m16)
@@ -4214,12 +4222,22 @@ final class EditorModel {
                 }
             }
             let matKey = instString(vcad_scene_instance_material, i)
+            let def = instString(vcad_scene_instance_part_def, i)
+            let edges: MeshResource?
+            if !def.isEmpty, let cached = edgeByDef[def] {
+                edges = cached
+            } else {
+                edges = edgeResource({ vcad_scene_instance_edges(scene, i, Self.edgeAngleDeg) },
+                                     name: "instEdges\(i)")
+                if !def.isEmpty { edgeByDef[def] = edges }
+            }
             instances.append(RenderInstance(
                 index: i,
                 id: instString(vcad_scene_instance_id, i),
                 mesh: km.resource(name: "inst\(i)"),
                 material: resolvedMaterial(named: matKey, fallbackIndex: i),
-                transform: world))
+                transform: world,
+                edges: edges))
         }
         // A root no part definition uses (a frozen topology_optimize mesh added
         // to an assembly) has no instance to draw it. Index past the instances
@@ -4235,7 +4253,9 @@ final class EditorModel {
                 id: "root\(root.part)",
                 mesh: km.resource(name: "free\(k)"),
                 material: resolvedMaterial(named: root.material, fallbackIndex: count + k),
-                transform: matrix_identity_float4x4))
+                transform: matrix_identity_float4x4,
+                edges: edgeResource({ vcad_scene_part_edges(scene, root.part, Self.edgeAngleDeg) },
+                                    name: "freeEdges\(k)")))
         }
         guard !instances.isEmpty else {
             clearAssembly()
