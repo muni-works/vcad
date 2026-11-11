@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-11-per-instance-agent-discovery",
+  "version": "undefined",
+  "date": "2026-11-11",
+  "category": "fix",
+  "title": "Agents no longer drive the wrong vcad.app window",
+  "summary": "Each vcad.app instance registers its own discovery file; clients pick one via VCAD_APP_PID/URL/DOCUMENT, every bridge result names its window, and a relaunch is reported.",
+  "features": ["agent-bridge", "mcp", "mac-app"]
+}
