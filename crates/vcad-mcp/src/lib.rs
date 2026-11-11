@@ -11,6 +11,7 @@
 #![warn(missing_docs)]
 
 pub mod cli;
+pub mod discovery;
 pub mod protocol;
 pub mod proxy;
 pub mod server;
@@ -53,6 +54,31 @@ pub mod test_support {
                 Ok(ToolOutput::structured(
                     json!({"echo": args, "served_by": "upstream"}),
                 ))
+            }),
+        }
+    }
+
+    /// A document-editing tool only the "upstream" has: sets parameter
+    /// `touched` on `document_id` (the proxy-mirror round trip).
+    pub fn upstream_touch_tool() -> ToolDef {
+        ToolDef {
+            name: "upstream_touch".into(),
+            description: "Set parameter `touched` (proxy test upstream).".into(),
+            input_schema: json!({"type": "object", "properties": {"document_id": {"type": "string"}}, "required": ["document_id"]}),
+            output_schema: None,
+            long_running: false,
+            handler: Arc::new(|ctx, args| {
+                let id = crate::DocumentId::from(args["document_id"].as_str().unwrap_or(""));
+                let mut doc = ctx
+                    .store
+                    .load(&id)
+                    .map_err(|e| crate::ToolError::InvalidArgs(e.to_string()))?;
+                doc.parameters
+                    .insert("touched".into(), vcad_ir::Parameter::literal(1.0));
+                ctx.store
+                    .commit(&id, doc, crate::CommitMeta::agent("upstream_touch"))
+                    .map_err(|e| crate::ToolError::InvalidArgs(e.to_string()))?;
+                Ok(ToolOutput::structured(json!({"touched": id.0})))
             }),
         }
     }

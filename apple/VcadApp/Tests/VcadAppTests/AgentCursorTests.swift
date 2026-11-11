@@ -14,7 +14,7 @@ final class AgentCursorTests: XCTestCase {
 
     @discardableResult
     private func call(_ m: EditorModel, _ name: String, _ args: [String: Any] = [:]) async throws -> String {
-        let r = try await AgentTools.call(name, args, model: m)
+        let r = await coreCall(m, name, args)
         let text = ((r["content"] as? [[String: Any]])?.first { $0["type"] as? String == "text" }?["text"] as? String) ?? ""
         XCTAssertNil(r["isError"], "\(name) failed: \(text)")
         return text
@@ -162,10 +162,10 @@ final class AgentCursorTests: XCTestCase {
         XCTAssertEqual(AgentBridge.displayName("cursor-vscode"), "Cursor")
     }
 
-    func testMutatingToolsAdvertiseTheViewer() {
-        let tools = AgentBridge.withViewer(AgentEdits.definitions)
-        func meta(_ n: String) -> Any? { tools.first { $0["name"] as? String == n }?["_meta"] }
-        XCTAssertNotNil(meta("create"))
-        XCTAssertNil(meta("get_document"))
+    func testMutatingToolsAdvertiseTheViewer() async {
+        let tools = await coreTools(EditorModel())
+        XCTAssertNotNil(tools["create"]?["_meta"])
+        XCTAssertNotNil(tools["fillet_edges"]?["_meta"])
+        XCTAssertNil(tools["get_document"]?["_meta"])
     }
 }

@@ -5,8 +5,14 @@
 //! (both from `vcad-tool-derive`), so `inputSchema` and `outputSchema` come
 //! from Rust types rather than hand-written JSON.
 
+pub mod atoms;
 pub mod core;
+pub mod docs;
+pub mod engine;
+pub mod host;
 pub mod instrument;
+pub mod loon_carry;
+pub mod proof;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -51,6 +57,10 @@ pub struct ToolCtx {
     pub elicit: ElicitFn,
     /// Cooperative cancel flag (set by `tasks/cancel`).
     pub cancel: Arc<AtomicBool>,
+    /// The MRTR `inputResponses` the client sent with this call (`Null` when
+    /// none). Host tools that answer elicitations natively in the app (the
+    /// viewport pick, the native sheet) use a client-provided answer first.
+    pub input_responses: Value,
 }
 
 impl ToolCtx {
@@ -61,6 +71,7 @@ impl ToolCtx {
             progress: Arc::new(|_, _, _| {}),
             elicit: Arc::new(|_| json!({"action": "cancel"})),
             cancel: Arc::new(AtomicBool::new(false)),
+            input_responses: Value::Null,
         }
     }
 }
@@ -202,3 +213,23 @@ pub const LONG_RUNNING_TOOLS: &[&str] = &[
     "homogenize_material",
     "design_material",
 ];
+
+/// Every native tool, in both vcad.app and headless: the M0 core, document
+/// tools, the engine's edit vocabulary, receipts, `vcad-atoms` tasks and the
+/// host tools (executed by the app; headless answers or delegates). Later
+/// entries replace earlier ones of the same name.
+pub fn native_tools(info: core::InfoSource) -> Vec<ToolDef> {
+    let mut by_name: std::collections::BTreeMap<String, ToolDef> = Default::default();
+    for t in core::core_tools(info)
+        .into_iter()
+        .chain(docs::tools())
+        .chain(engine::tools())
+        .chain(proof::tools())
+        .chain(atoms::tools())
+        .chain(host::tools())
+        .chain(instrument::instrument_tools())
+    {
+        by_name.insert(t.name.clone(), t);
+    }
+    by_name.into_values().collect()
+}

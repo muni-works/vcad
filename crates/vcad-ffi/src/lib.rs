@@ -70,6 +70,7 @@ pub mod gym;
 pub mod import;
 pub mod instrument;
 mod json;
+pub mod mcp;
 pub mod pcb;
 pub mod print;
 mod printer;

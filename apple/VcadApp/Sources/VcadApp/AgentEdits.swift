@@ -41,80 +41,34 @@ enum AgentEdits {
     static var engineToolNames: Set<String> { Set(engineTools.compactMap { $0["name"] as? String }) }
     static let readEngineTools: Set<String> = ["describe_scene", "inspect"]
 
-    private static func schema(_ props: [String: Any], required: [String] = []) -> [String: Any] {
-        ["type": "object", "properties": props, "required": required]
+
+    /// Link-handshake host tools this file implements (listed by the core).
+    static let hostToolNames: Set<String> = ["adopt_document", "attach_document", "link_status"]
+
+    /// Edit tools a `suggest_edit` pill may carry (run through the core on Add).
+    static var suggestableTools: Set<String> {
+        engineToolNames.subtracting(readEngineTools).union(["set_parameters", "create_cad_loon"])
     }
-
-    static let ownTools: [[String: Any]] = [
-        ["name": "get_document",
-         "description": "The open document's IR as JSON (nodes, roots, materials, parameters). Large documents are summarized unless full:true.",
-         "inputSchema": schema(["full": ["type": "boolean"]])],
-        ["name": "inspect_cad",
-         "description": "Per-part volume (mm³), surface area (mm²), bounding box and mass (when the material density is known). Omit part_id for every part.",
-         "inputSchema": schema(["part_id": ["type": "string"]])],
-        ["name": "list_parameters",
-         "description": "Document-level named parameters ([defparam …] in loon): value, unit, range, and whether set_parameters can change them (formulas can't).",
-         "inputSchema": schema([:])],
-        ["name": "set_parameters",
-         "description": "Set named document parameters, e.g. {\"wall\": 3.5}. Values clamp to their declared range; every bound dimension updates. One undo step.",
-         "inputSchema": schema(["values": ["type": "object", "additionalProperties": ["type": "number"]]],
-                               required: ["values"])],
-        ["name": "create_cad_loon",
-         "description": "Replace the open document with a loon program (vcad's Lisp CAD language), e.g. [defparam t 5.0 :min 2 :max 12] [pub let plate [fillet 1.0 [cube 40.0 20.0 t]]]. Every [pub let …] becomes a part. Use [defparam name value] for parameters set_parameters can change later. Prefer create/update/… for incremental steps the user can undo one at a time; one undo step.",
-         "inputSchema": schema(["source": ["type": "string", "description": "loon source"],
-                                "name": ["type": "string", "description": "Short name for the undo step"]],
-                               required: ["source"])],
-        ["name": "adopt_document",
-         "description": "Show an MCP session's document in this window as one undo step. Sent by @vcad/mcp after each edit; agents don't call it. A window showing another agent's unedited push moves only for intent \"explicit\", or \"opened\" once that session has been idle 30 s. Refused when the window holds the user's work, or the user edited since the last push.",
-         "inputSchema": schema(["document": ["type": "object"], "link_id": ["type": "string"],
-                                "tool": ["type": "string"],
-                                "intent": ["type": "string", "description": "implicit (default), opened, or explicit: how far this push may displace another session."],
-                                "base_dir": ["type": "string", "description": "Folder the document's relative mesh paths resolve from."]],
-                               required: ["document", "link_id"])],
-        ["name": "attach_document",
-         "description": "Link an MCP session to the document open in this window and return it. Sent by @vcad/mcp's attach_app_document; agents don't call it.",
-         "inputSchema": schema(["link_id": ["type": "string"]], required: ["link_id"])],
-        ["name": "link_status",
-         "description": "Whether the session named by link_id is the one this window is linked to, and if so whether the user has edited since its last push (the document itself when pull is set). linked:false says nothing about other sessions: window_linked reports whether the window has a link at all, reason why this session isn't it.",
-         "inputSchema": schema(["link_id": ["type": "string"], "pull": ["type": "boolean"]], required: ["link_id"])],
-        ["name": "undo",
-         "description": "Undo the last edit in the app (yours or the user's), exactly like ⌘Z.",
-         "inputSchema": schema([:])],
-    ]
-
-    static var definitions: [[String: Any]] { ownTools + engineTools }
-    static var toolNames: Set<String> { Set(ownTools.compactMap { $0["name"] as? String }).union(engineToolNames) }
 
     // MARK: dispatch
 
+    /// The host half of the link handshake (the rest of the edit vocabulary —
+    /// engine tools, loon, parameters, undo, reads — is native in the MCP core,
+    /// crates/vcad-mcp; engine edits come back here via `AgentCore`'s
+    /// `engine_tool` so they run on this window's engine).
     static func call(_ name: String, _ a: [String: Any], model m: EditorModel) throws -> [String: Any] {
         switch name {
-        case "get_document": return try getDocument(a, m)
-        case "inspect_cad": return try inspect(a, m)
-        case "list_parameters": return AgentTools.json(parameters(m))
-        case "set_parameters": return try setParameters(a, m)
-        case "create_cad_loon": return try createLoon(a, m)
         case "adopt_document": return try adoptDocument(a, m)
         case "link_status": return try linkStatus(a, m)
         case "attach_document": return try attachDocument(a, m)
-        case "undo":
-            // ⌘Z mid-sketch is scoped to the sketch's own history. An agent's
-            // undo means the document, so refuse rather than silently eat the
-            // user's sketch strokes (or rewind the document under the sketch).
-            if m.sketchHistory != nil {
-                throw Failure(message: "A sketch is open in the app, and undo there acts on the sketch, not the document. Nothing was undone — ask the user to finish or cancel the sketch, then undo again.")
-            }
-            guard let label = m.undoActionName else { throw Failure(message: "Nothing to undo.") }
-            m.undo()
-            return AgentTools.text("Undid \(label).")
-        case _ where readEngineTools.contains(name):
-            let engine = try editableEngine(m)
-            return AgentTools.text(try read(engine, name, a))
-        case _ where engineToolNames.contains(name):
-            return try engineTool(name, a, m)
         default:
             throw Failure(message: "unknown tool \(name)")
         }
+    }
+
+    /// An engine read tool (`describe_scene`, `inspect`) on the window's engine.
+    static func readEngine(_ m: EditorModel, _ tool: String, _ a: [String: Any]) throws -> String {
+        try read(try editableEngine(m), tool, a)
     }
 
     // MARK: edits
@@ -151,17 +105,6 @@ enum AgentEdits {
         return r
     }
 
-    private static func engineTool(_ name: String, _ a: [String: Any], _ m: EditorModel) throws -> [String: Any] {
-        let typed = try JSONDecoder().decode([String: EngineJSON].self,
-                                             from: JSONSerialization.data(withJSONObject: a))
-        let r = try edit(m, name: undoName(name, a)) { try $0.applyTool(ToolCall(tool: name, args: typed)) }
-        var text = "ok"
-        if let id = r.createdFeatureId { text += "; created part \(id)" }
-        text += "; document has \(r.partCount) part\(r.partCount == 1 ? "" : "s")"
-        if !r.warnings.isEmpty { text += "; warnings: " + r.warnings.joined(separator: "; ") }
-        text += ". Undo label: \"\(undoName(name, a))\"."
-        return AgentTools.text(text)
-    }
 
     /// "Claude: Create Bracket", "Claude: Difference", "Claude: Fillet".
     static func undoName(_ tool: String, _ a: [String: Any]) -> String {
@@ -289,146 +232,6 @@ enum AgentEdits {
         return AgentTools.json(out)
     }
 
-    private static func setParameters(_ a: [String: Any], _ m: EditorModel) throws -> [String: Any] {
-        guard let values = a["values"] as? [String: Any], !values.isEmpty else {
-            throw Failure(message: "values is required, e.g. {\"wall\": 3}")
-        }
-        let params = Dictionary(m.docParameters.map { ($0.name, $0) }, uniquingKeysWith: { a, _ in a })
-        var applied: [String: Double] = [:]
-        var refused: [String] = []
-        for (k, v) in values {
-            guard let p = params[k], let x = (v as? NSNumber)?.doubleValue else { refused.append("\(k) (unknown)"); continue }
-            guard p.isLiteral else { refused.append("\(k) (formula)"); continue }
-            var c = x
-            if let lo = p.min { c = max(lo, c) }
-            if let hi = p.max { c = min(hi, c) }
-            applied[k] = c
-        }
-        guard !applied.isEmpty else {
-            throw Failure(message: "No settable parameter in \(refused.joined(separator: ", ")). Known: \(params.keys.sorted().joined(separator: ", "))")
-        }
-        guard var json = m.documentJSON else { throw Failure(message: "No document is open.") }
-        for (k, v) in applied { DocEdit.setParameter(&json, name: k, value: v) }
-        let name = applied.count == 1 ? "Claude: Set \(applied.keys.first!)" : "Claude: Set Parameters"
-        try edit(m, name: name) { try $0.loadIR(json) }
-        var msg = "Set " + applied.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
-        if !refused.isEmpty { msg += ". Refused: \(refused.joined(separator: ", "))" }
-        return AgentTools.text(msg)
-    }
-
-    private static func createLoon(_ a: [String: Any], _ m: EditorModel) throws -> [String: Any] {
-        guard let source = a["source"] as? String, !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            throw Failure(message: "source is required")
-        }
-        var json = try compileLoon(source)
-        var kept: String?
-        if let session = m.documentJSON { kept = try carryElectronics(from: session, into: &json) }
-        let label = (a["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Loon Program"
-        let r = try edit(m, name: "Claude: \(label)") { engine in
-            let r = try engine.loadIR(json)
-            // Fail closed: a part the kernel refused (an overlarge fillet,
-            // a shell thicker than the solid) used to load as a silent
-            // "no geometry" part. Throwing here restores the snapshot and
-            // hands the agent the kernel's reason.
-            let failed = try engine.agentRead("evaluation_errors", [:])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !failed.isEmpty {
-                throw Failure(message: "loon program loaded but some parts failed to build; document left unchanged:\n\(failed)")
-            }
-            return r
-        }
-        var text = "Loaded; document has \(r.partCount) part\(r.partCount == 1 ? "" : "s")"
-        if let kept { text += "; \(kept)" }
-        if !r.warnings.isEmpty { text += "; warnings: " + r.warnings.joined(separator: "; ") }
-        return AgentTools.text(text + ".")
-    }
-
-    /// Carry the open document's board and schematic into a compiled loon
-    /// document, as the MCP path does (`carryElectronics` in loon.ts): loading
-    /// the program replaces the mechanical parts, not the electronics. A
-    /// program that brings its own board can't be merged and is refused before
-    /// anything changes. Returns a note, or nil when there was nothing to keep.
-    static func carryElectronics(from session: [String: Any], into doc: inout [String: Any]) throws -> String? {
-        let nodes = session["nodes"] as? [String: [String: Any]] ?? [:]
-        let op = { (id: Int) in nodes[String(id)]?["op"] as? [String: Any] }
-        let isBoard = { (n: [String: Any]) in (n["op"] as? [String: Any])?["type"] as? String == "PcbBoard" }
-        let boardIds = nodes.values.filter(isBoard).compactMap { ($0["id"] as? NSNumber)?.intValue }
-        let hasPcb = session["pcb"] != nil
-        let schematic = session["schematic"]
-        guard !boardIds.isEmpty || hasPcb || schematic != nil else { return nil }
-
-        var target = doc["nodes"] as? [String: [String: Any]] ?? [:]
-        let programHasBoard = target.values.contains(where: isBoard) || doc["pcb"] != nil
-        if ((!boardIds.isEmpty || hasPcb) && programHasBoard) || (schematic != nil && doc["schematic"] != nil) {
-            throw Failure(message: "create_cad_loon: this document already holds a board or schematic and the program "
-                + "defines its own, so they can't be merged; nothing was changed. Remove them from the source.")
-        }
-
-        // After the engine materializes a document the scene root is the
-        // Translate above the board; carry that whole chain.
-        func chain(_ root: Int) -> [Int]? {
-            var out: [Int] = []
-            var id: Int? = root
-            while let at = id, let o = op(at), !out.contains(at) {
-                out.append(at)
-                let type = o["type"] as? String
-                if type == "PcbBoard" { return out }
-                id = ["Translate", "Rotate", "Scale"].contains(type ?? "") ? (o["child"] as? NSNumber)?.intValue : nil
-            }
-            return nil
-        }
-        let rootEntries = session["roots"] as? [[String: Any]] ?? []
-        let rooted = rootEntries.compactMap { e -> (entry: [String: Any], chain: [Int])? in
-            guard let r = (e["root"] as? NSNumber)?.intValue, let c = chain(r) else { return nil }
-            return (e, c)
-        }
-        var carried: [Int] = []
-        for id in rooted.flatMap(\.chain) + boardIds where !carried.contains(id) { carried.append(id) }
-
-        var next = (target.keys.compactMap(Int.init).max() ?? -1) + 1
-        var remap: [Int: Int] = [:]
-        for id in carried { remap[id] = next; next += 1 }
-        var targetRoots = doc["roots"] as? [[String: Any]] ?? []
-        var materials = doc["materials"] as? [String: Any] ?? [:]
-        let sessionMaterials = session["materials"] as? [String: Any] ?? [:]
-        func keepMaterial(_ key: String?) {
-            if let key, materials[key] == nil, let m = sessionMaterials[key] { materials[key] = m }
-        }
-        for (entry, c) in rooted {
-            var e = entry
-            e["root"] = remap[c[0]]!
-            targetRoots.append(e)
-            keepMaterial(entry["material"] as? String)
-        }
-        let rootedBoards = Set(rooted.compactMap(\.chain.last))
-        for id in boardIds where !rootedBoards.contains(id) {
-            targetRoots.append(["root": remap[id]!, "material": "__pcb_fr4__"])
-            keepMaterial("__pcb_fr4__")
-        }
-        var partIds = doc["partIds"] as? [String: Any] ?? [:]
-        let sessionPartIds = session["partIds"] as? [String: Any] ?? [:]
-        for old in carried {
-            var node = nodes[String(old)]!
-            let id = remap[old]!
-            node["id"] = id
-            if var o = node["op"] as? [String: Any], let child = (o["child"] as? NSNumber)?.intValue {
-                o["child"] = remap[child]!
-                node["op"] = o
-            }
-            target[String(id)] = node
-            if let stable = sessionPartIds[String(old)] { partIds[String(id)] = stable }
-        }
-        doc["nodes"] = target
-        doc["roots"] = targetRoots
-        doc["materials"] = materials
-        if !partIds.isEmpty { doc["partIds"] = partIds }
-        if let pcb = session["pcb"] { doc["pcb"] = pcb }
-        if let schematic { doc["schematic"] = schematic }
-
-        let what = [boardIds.isEmpty && !hasPcb ? nil : "PCB board", schematic == nil ? nil : "schematic"]
-            .compactMap { $0 }.joined(separator: " and ")
-        return "kept the document's \(what)"
-    }
 
     /// Compile loon source to `.vcad` JSON through a temp file (the FFI takes
     /// a path so `[use]` resolves against a directory).
@@ -456,18 +259,6 @@ enum AgentEdits {
         do { return try engine.agentRead(tool, a) } catch { throw Failure(message: describe(error)) }
     }
 
-    private static func inspect(_ a: [String: Any], _ m: EditorModel) throws -> [String: Any] {
-        let engine = try editableEngine(m)
-        if let id = a["part_id"] as? String, !id.isEmpty {
-            return AgentTools.text(try read(engine, "inspect", ["part_id": id]))
-        }
-        let ids = m.engineState?.parts.map(\.id) ?? []
-        guard !ids.isEmpty else { return AgentTools.text("The document is empty.") }
-        let blocks = ids.map { id in
-            (try? read(engine, "inspect", ["part_id": id])).map { "\(id):\n\($0)" } ?? "\(id): (not measurable)"
-        }
-        return AgentTools.text(blocks.joined(separator: "\n\n"))
-    }
 
     static func parameters(_ m: EditorModel) -> [[String: Any]] {
         m.docParameters.map { p in
@@ -480,24 +271,6 @@ enum AgentEdits {
         }
     }
 
-    private static func getDocument(_ a: [String: Any], _ m: EditorModel) throws -> [String: Any] {
-        guard let doc = m.documentJSON else {
-            return AgentTools.text("Empty document (\(m.documentName)). Create parts with create or create_cad_loon.")
-        }
-        let data = (try? JSONSerialization.data(withJSONObject: doc, options: [.sortedKeys])) ?? Data()
-        if a["full"] as? Bool == true || data.count < 60_000 {
-            return AgentTools.text(String(decoding: data, as: UTF8.self))
-        }
-        var summary: [String: Any] = [:]
-        for (k, v) in doc {
-            if let d = v as? [String: Any] { summary[k] = "\(d.count) entries" }
-            else if let l = v as? [Any] { summary[k] = "\(l.count) items" }
-            else { summary[k] = v }
-        }
-        summary["roots"] = doc["roots"]
-        summary["note"] = "Document is \(data.count) bytes; pass full:true for all of it."
-        return AgentTools.json(summary)
-    }
 
     static func describe(_ error: Error) -> String {
         if let r = error as? DocumentEngine.Refusal { return "\(r.kind): \(r.message)" }

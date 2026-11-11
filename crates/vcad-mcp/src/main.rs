@@ -16,6 +16,7 @@ fn main() {
             ..opts.clone()
         });
         s.register(vcad_mcp::test_support::upstream_echo_tool());
+        s.register(vcad_mcp::test_support::upstream_touch_tool());
         Some(s)
     } else {
         None

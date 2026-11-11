@@ -1,6 +1,8 @@
 //! `vcad mcp`: one entry for every way to run the server.
 //!
-//! Default (stdio): attach to a running vcad.app's socket, else run headless.
+//! Default (stdio): attach to a running vcad.app (per-instance discovery,
+//! `~/.vcad/instances`; `VCAD_APP_PID` / `VCAD_APP_URL` / `VCAD_APP_DOCUMENT`
+//! choose), else a serving unix socket, else run the same core headless.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -75,6 +77,38 @@ pub fn run(opts: McpOptions) -> std::io::Result<()> {
         let server = headless_server(&opts);
         eprintln!("[vcad-mcp] unix socket {}", path.display());
         return transport::run_unix(&server, path);
+    }
+    if !opts.headless && opts.socket.is_none() {
+        // A running vcad.app is the server: same core, the live document.
+        let explicit = ["VCAD_APP_URL", "VCAD_APP_PID"]
+            .iter()
+            .any(|k| std::env::var(k).is_ok_and(|v| !v.is_empty()));
+        match crate::discovery::select_from_env() {
+            Ok(sel) if crate::discovery::reachable(&sel.url) => {
+                if let Some(w) = &sel.warning {
+                    eprintln!("[vcad-mcp] {w}");
+                }
+                eprintln!(
+                    "[vcad-mcp] attached to vcad.app {} at {}",
+                    sel.instance
+                        .as_ref()
+                        .map(|r| r.describe())
+                        .unwrap_or_default(),
+                    sel.url
+                );
+                return crate::discovery::attach_http_stdio(&sel.url);
+            }
+            // An explicitly chosen app that is gone is an error, never a
+            // silent fall back to headless.
+            Ok(sel) if explicit => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotConnected,
+                    format!("vcad.app at {} is not answering", sel.url),
+                ))
+            }
+            Err(e) if explicit => return Err(std::io::Error::new(std::io::ErrorKind::NotFound, e)),
+            _ => {}
+        }
     }
     #[cfg(unix)]
     if !opts.headless {

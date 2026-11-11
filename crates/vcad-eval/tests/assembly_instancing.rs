@@ -178,3 +178,81 @@ fn preview_lod_uses_its_own_cache_keys() {
         "the full pass must not be served the preview meshes"
     );
 }
+
+/// A root the full-quality pass loses (here: a fillet larger than the part,
+/// which the kernel refuses) keeps the mesh its preview drew, and that stand-in
+/// is never stored under the full-quality key. The failure is still reported.
+#[test]
+fn failed_full_pass_falls_back_to_the_preview_mesh() {
+    use vcad_eval::cache::{root_fingerprint, FingerprintSettings};
+    let mut nodes = HashMap::new();
+    nodes.insert(
+        1,
+        Node {
+            id: 1,
+            name: None,
+            op: CsgOp::Cube {
+                size: Vec3 {
+                    x: 10.0,
+                    y: 10.0,
+                    z: 10.0,
+                },
+            },
+        },
+    );
+    nodes.insert(
+        2,
+        Node {
+            id: 2,
+            name: None,
+            op: CsgOp::Fillet {
+                child: 1,
+                radius: 50.0,
+            },
+        },
+    );
+    let d = Document {
+        nodes,
+        roots: vec![SceneEntry {
+            root: 2,
+            material: "default".into(),
+            visible: None,
+        }],
+        ..Default::default()
+    };
+    let cache = Rc::new(Counting::default());
+    // What a preview pass left behind for this root.
+    let preview_key = root_fingerprint(
+        2,
+        &d.nodes,
+        &FingerprintSettings {
+            segments: vcad_eval::DEFAULT_MESH_SEGMENTS,
+            fold_sheet_metal: false,
+            chord_tol_mm: 0.0,
+            preview: true,
+        },
+    )
+    .expect("cacheable");
+    let stand_in = EvaluatedMesh {
+        positions: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        indices: vec![0, 1, 2],
+        ..EvaluatedMesh::empty()
+    };
+    cache.inner.put(&preview_key, &stand_in);
+
+    let opts = EvalOptions {
+        root_cache: Some(cache.clone()),
+        ..Default::default()
+    };
+    let scene = evaluate_document(&d, &opts).expect("evaluates");
+    assert_eq!(scene.failures.len(), 1, "the refusal is still reported");
+    assert_eq!(
+        scene.parts[0].mesh.indices, stand_in.indices,
+        "the preview mesh stands in"
+    );
+    assert!(
+        cache.puts.borrow().is_empty(),
+        "the stand-in never lands under the full key"
+    );
+    assert_eq!(scene.root_keys[0], None);
+}
