@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-11-fusion-model-edges",
+  "version": "1.0.0",
+  "date": "2026-11-11",
+  "category": "feat",
+  "title": "Model edges drawn like Fusion 360",
+  "summary": "The Mac app now outlines every B-rep face boundary, tangent fillet edges included, and draws outlines on assembly instances too. Mesh-only parts keep crease edges.",
+  "features": ["viewport", "edges", "assembly"]
+}
