@@ -729,7 +729,7 @@ fn eval_mesh_edges(mesh: &vcad_eval::EvaluatedMesh, angle_deg: f32) -> *mut Vcad
 
 /// Extract the `index`-th part's model edges for the ink-line overlay: all
 /// B-rep topological edges when the part's mesh is face-tagged, else boundary
-/// + creases sharper than `angle_deg`. Returns an owned handle; read it with
+/// and creases sharper than `angle_deg`. Returns an owned handle; read it with
 /// [`vcad_edges_view`] and release it with [`vcad_edges_free`].
 /// Returns null on null scene, out-of-range index, or panic.
 #[no_mangle]
