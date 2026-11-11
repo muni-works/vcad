@@ -65,12 +65,15 @@ impl DocumentApi {
     pub fn feature_history(&self) -> Vec<HistoryRow> {
         let result = materialize(self.crdt());
         let doc = &result.document;
+        // Each reference is reported on the feature that holds it: a walk
+        // stops at other features' roots (a cut doesn't re-report its tool).
+        let roots: HashSet<NodeId> = result.history.iter().filter_map(|h| h.node).collect();
         result
             .history
             .into_iter()
             .map(|entry| {
                 let broken = match (entry.state, entry.node) {
-                    (HistoryState::Built, Some(node)) => broken_refs(doc, node),
+                    (HistoryState::Built, Some(node)) => broken_refs(doc, node, &roots),
                     _ => Vec::new(),
                 };
                 HistoryRow { entry, broken }
@@ -80,13 +83,13 @@ impl DocumentApi {
 }
 
 /// `SketchOnFace` nodes reachable from `root` whose face doesn't resolve.
-fn broken_refs(doc: &Document, root: NodeId) -> Vec<BrokenRef> {
+fn broken_refs(doc: &Document, root: NodeId, other_roots: &HashSet<NodeId>) -> Vec<BrokenRef> {
     let mut out = Vec::new();
     let mut seen = HashSet::new();
     let mut stack = vec![root];
     let mut cache = HashMap::new();
     while let Some(id) = stack.pop() {
-        if !seen.insert(id) {
+        if !seen.insert(id) || (id != root && other_roots.contains(&id)) {
             continue;
         }
         let Some(node) = doc.nodes.get(&id) else {
@@ -126,7 +129,12 @@ fn check_face_ref(
     let r = vcad_eval::convert::to_face_refs(std::slice::from_ref(face)).pop()?;
     let fid = match solid.resolve_face(r.name.as_deref(), r.point, r.normal) {
         Ok(f) => f,
-        Err(e) => return Some(broken(e.to_string(), rank_faces(&solid, face))),
+        Err(e) => {
+            // `resolve_face` reports through the shell error type.
+            let msg = e.to_string();
+            let msg = msg.strip_prefix("shell failed: ").unwrap_or(&msg).to_string();
+            return Some(broken(msg, rank_faces(&solid, face)));
+        }
     };
     if solid.face_plane(fid).is_none() {
         return Some(broken(
@@ -246,7 +254,7 @@ mod tests {
         let c = add(
             api,
             FeatureInput::Boolean {
-                op: crate::feature::BooleanType::Difference,
+                boolean_type: crate::feature::BooleanType::Difference,
                 input_a: a.clone(),
                 input_b: b.clone(),
             },
@@ -379,8 +387,8 @@ mod tests {
         })
         .unwrap();
         let rows = api.feature_history();
-        assert_eq!(rows.len(), 1);
-        assert!(rows[0].broken.is_empty(), "{:?}", rows[0].broken);
+        assert!(rows.len() >= 2, "{rows:?}");
+        assert!(rows.iter().all(|r| r.broken.is_empty()), "{rows:?}");
     }
 
     #[test]
@@ -392,8 +400,10 @@ mod tests {
         })
         .unwrap();
         let rows = api.feature_history();
-        let broken = &rows[0].broken;
+        let broken: Vec<&BrokenRef> = rows.iter().flat_map(|r| &r.broken).collect();
         assert_eq!(broken.len(), 1, "{rows:?}");
+        // Only the feature holding the reference is flagged.
+        assert_eq!(rows.iter().filter(|r| !r.broken.is_empty()).count(), 1);
         let b = &broken[0];
         assert_eq!(b.kind, "face");
         assert!(b.reference.as_deref().unwrap().ends_with(":roof"));

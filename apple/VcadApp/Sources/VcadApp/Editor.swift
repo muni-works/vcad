@@ -473,7 +473,17 @@ final class EditorModel {
     // comes from the kernel; this is the *operations* view of the same file.
 
     var documentGraph: DocumentGraph?
-    var featureNodes: [FeatureNode] = []
+    var featureNodes: [FeatureNode] = [] {
+        // Every rebuild re-reads the history (suppressed/skipped rows, the
+        // rollback marker, broken references) — HistoryTree.swift.
+        didSet { refreshHistory() }
+    }
+    /// The engine's feature history: one row per modeling feature, built or not.
+    var history: [HistoryRow] = []
+    /// Feature id whose broken-reference card is open in the tree.
+    var repairingFeatureID: String?
+    /// Feature id being dragged in the tree (drop targets validate against it).
+    var draggingFeatureID: String?
     var expandedFeatureIDs: Set<String> = []
     /// Part indices hidden via the eye toggle (empty = all shown).
     var hiddenParts: Set<Int> = []

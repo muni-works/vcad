@@ -61,6 +61,8 @@ pub enum HistoryState {
 pub struct HistoryEntry {
     /// Stable feature id (`"replica:seq"`).
     pub id: String,
+    /// Position among *all* features (what `DocCommand::Reorder` indexes).
+    pub index: usize,
     /// CRDT feature kind (`cube`, `boolean`, `fillet`, `ir-subgraph`, …).
     pub kind: String,
     /// Display name, when the feature has one.
@@ -298,7 +300,7 @@ pub fn materialize(crdt: &CrdtDocument) -> MaterializeResult {
     let mut extras = Vec::new();
     let mut history = Vec::new();
 
-    for (fid, feature) in crdt.ordered_features() {
+    for (index, (fid, feature)) in crdt.ordered_features().into_iter().enumerate() {
         ctx.begin_feature(fid);
         // Non-geometry features: assembly metadata, scene settings.
         match feature.kind.as_str() {
@@ -364,6 +366,7 @@ pub fn materialize(crdt: &CrdtDocument) -> MaterializeResult {
         }
         history.push(HistoryEntry {
             id: fid_str.clone(),
+            index,
             kind: feature.kind.clone(),
             name: get_str(feature, "name").filter(|n| !n.is_empty()),
             state,
