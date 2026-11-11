@@ -264,6 +264,7 @@ fn evaluate_node(doc: &Document, node_id: NodeId) -> Result<Option<Solid>> {
                 .map_err(|e| anyhow::anyhow!("node {node_id}: {e}"))?,
         ),
         CsgOp::Sketch2D { .. }
+        | CsgOp::SketchOnFace { .. }
         | CsgOp::Extrude { .. }
         | CsgOp::Revolve { .. }
         | CsgOp::Text2D { .. }
