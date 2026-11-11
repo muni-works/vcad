@@ -523,6 +523,7 @@ final class ReleaseWindowController {
             hoveredHandle = handle
             model.hoveredGizmoHandle = handle
             model.gizmoDirty = true
+            ReleaseWindowController.shared.rebuildGizmo(model: model)
         }
         if handle != nil {
             setHovered(part: nil, instance: nil)
@@ -548,6 +549,7 @@ final class ReleaseWindowController {
             hoveredHandle = nil
             model.hoveredGizmoHandle = nil
             model.gizmoDirty = true
+            ReleaseWindowController.shared.rebuildGizmo(model: model)
         }
         NSCursor.arrow.set()
     }
@@ -1004,6 +1006,12 @@ struct ReleasedOverlayView: View {
                     }
                     refreshSketchInk()
                 }
+            DimensionLabelOverlay(model: model) { k in
+                let ctl = ReleaseWindowController.shared
+                guard let centering = ctl.centeringEntity else { return nil }
+                return ctl.viewPoint(forWorld: centering.convert(position: k, to: nil),
+                                     from: model.cameraPosition, lookAt: model.panOffset)
+            }
             if let m = marquee {
                 let r = CGRect(x: min(m.start.x, m.current.x), y: min(m.start.y, m.current.y),
                                width: abs(m.current.x - m.start.x),
@@ -1422,7 +1430,27 @@ struct ReleasedOverlayView: View {
         if model.picking.filter.picksTopology, model.armedShape == nil, model.pendingBoolean == nil {
             model.picking.select(hit: topologyHit(at: p), additive: additive || model.measuring)
             refreshTopologyOverlay()
+            ReleaseWindowController.shared.rebuildGizmo(model: model)
             return
+        }
+        // Press-pull drill-down: a click on the already-selected part picks
+        // the planar face under the pointer and shows its pull arrow; a
+        // second click on it goes back to the body.
+        if model.picking.filter == .body, model.armedShape == nil, model.pendingBoolean == nil, !additive {
+            if let pi = model.selectedPartIndex, partIndex(at: p) == pi,
+               let hit = topologyHit(at: p), hit.ref.kind == .face, hit.ref.part == pi,
+               model.partTopology(pi)?.face(hit.ref.id)?.isPlanar == true,
+               model.picking.selection != [hit.ref] {
+                model.picking.select(hit: hit, additive: false)
+                refreshTopologyOverlay()
+                ReleaseWindowController.shared.rebuildGizmo(model: model)
+                return
+            }
+            if !model.picking.selection.isEmpty {
+                model.picking.clear()
+                refreshTopologyOverlay()
+                ReleaseWindowController.shared.rebuildGizmo(model: model)
+            }
         }
 
         // An armed palette tool consumes the click: this is a placement, not a
@@ -1554,6 +1582,7 @@ struct ReleasedOverlayView: View {
                             model.draggingHandle = true
                             NSCursor.closedHand.set()
                             model.beginGizmoDrag(handle: name, ray: ray)
+                            ReleaseWindowController.shared.rebuildGizmo(model: model)
                             model.lastDrag = value.translation
                         }
                         return
@@ -1633,8 +1662,8 @@ struct ReleasedOverlayView: View {
         if final {
             centering.findEntity(named: "gizmoRoot")?.removeFromParent()
             if model.showsGizmo { centering.addChild(buildGizmo(model: model)) }
-        } else if let c = model.gizmoCenterKernel() {
-            centering.findEntity(named: "gizmoRoot")?.position = c + model.gizmoLiveOffset
+        } else if let c = model.gizmoLivePosition() {
+            centering.findEntity(named: "gizmoRoot")?.position = c
         }
     }
 

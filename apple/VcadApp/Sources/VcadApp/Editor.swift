@@ -1302,9 +1302,9 @@ final class EditorModel {
         return engineState?.partId(forRootNode: g.visibleRoots[partIndex].nodeId)
     }
 
-    private enum Reeval { case inPlace, rebuild, none }
+    enum Reeval { case inPlace, rebuild, none }
     /// How an edit lands on the undo stack.
-    private enum UndoMode {
+    enum UndoMode {
         /// The edit is exactly one engine command → one engine history group.
         case step
         /// Snapshot the engine first (compound edits, first event of a gesture).
@@ -1313,7 +1313,7 @@ final class EditorModel {
         case none
     }
 
-    private func pushUndo(_ step: UndoEntry.Step, name: String) {
+    func pushUndo(_ step: UndoEntry.Step, name: String) {
         undoStack.append(UndoEntry(step: step, name: name))
         if undoStack.count > 64 { undoStack.removeFirst() }
         redoStack.removeAll()
@@ -1337,7 +1337,7 @@ final class EditorModel {
         markReeval(reeval)
     }
 
-    private func markReeval(_ reeval: Reeval) {
+    func markReeval(_ reeval: Reeval) {
         switch reeval {
         case .inPlace:
             docParamDirty = true
@@ -1353,7 +1353,7 @@ final class EditorModel {
     /// exactly one command (use a `batch` for several). A refusal leaves the
     /// document and the undo stack untouched and lands in `engineError`.
     @discardableResult
-    private func engineEdit(_ name: String, undo mode: UndoMode, reeval: Reeval,
+    func engineEdit(_ name: String, undo mode: UndoMode, reeval: Reeval,
                             _ body: (DocumentEngine) throws -> DocumentEngine.Result) -> DocumentEngine.Result? {
         guard let engine else { return nil }
         let before = mode == .snapshot ? engine.save() : nil
@@ -1393,7 +1393,7 @@ final class EditorModel {
     }
 
     @discardableResult
-    private func irEdit(_ name: String, gestureStart: Bool = true, reeval: Reeval,
+    func irEdit(_ name: String, gestureStart: Bool = true, reeval: Reeval,
                         base: [String: Any]? = nil,
                         _ mutate: (inout [String: Any]) -> Void) -> DocumentEngine.Result? {
         guard var json = base ?? documentJSON else { return nil }
@@ -2092,6 +2092,11 @@ final class EditorModel {
     var gizmoDirty = false
     /// The handle under the cursor ("gizmoX" / "planeXY" / …), for hover + cursor.
     var hoveredGizmoHandle: String?
+    /// Direct-manipulation drag state (DirectManipulation.swift).
+    @ObservationIgnored var manip = DirectManipState()
+    /// The live on-canvas dimension (value + anchor), shown while dragging
+    /// and briefly after, clickable to type an exact value.
+    var manipLabel: ManipLabel?
     @ObservationIgnored private var gizmoPart: Int?
     @ObservationIgnored private var gizmoActive: GizmoHandle?
     @ObservationIgnored private var gizmoBase: (Double, Double, Double) = (0, 0, 0)
@@ -2122,6 +2127,7 @@ final class EditorModel {
         var isRotate: Bool { if case .rotate = self { return true }; return false }
     }
     func gizmoHandle(for name: String) -> GizmoHandle? {
+        if let h = manipHandle(for: name) { return h }
         switch name {
         case "gizmoX": return .axis(SIMD3(1, 0, 0))
         case "gizmoY": return .axis(SIMD3(0, 1, 0))
@@ -2156,7 +2162,8 @@ final class EditorModel {
 
     /// Show the gizmo for a single selected part (not while sketching/multi-select).
     var showsGizmo: Bool {
-        usesDocumentTree && !sketching && multiSelectedParts.isEmpty && selectedPartIndex != nil
+        usesDocumentTree && !sketching && multiSelectedParts.isEmpty
+            && (selectedPartIndex != nil || pullFace != nil)
     }
     /// Selected part center in kernel coords (gizmo origin).
     func gizmoCenterKernel() -> SIMD3<Float>? {
@@ -2174,6 +2181,7 @@ final class EditorModel {
     var gizmoPlaneSize: Float { gizmoArmLength() * 0.17 }
 
     func beginGizmoDrag(handle name: String, ray: (o: SIMD3<Float>, d: SIMD3<Float>)) {
+        if beginManip(handle: name, ray: ray) { return }
         guard let pi = selectedPartIndex, let engine, let json = documentJSON,
               let c = gizmoCenterKernel(), let h = gizmoHandle(for: name) else { return }
         // The whole drag is one undo step: snapshot now, edit freely after.
@@ -2181,6 +2189,7 @@ final class EditorModel {
         else { pushUndo(.snapshot(engine.save()), name: "Move Part") }
         gizmoPart = pi
         gizmoActive = h
+        manip.activeName = name
         gizmoStartCenter = c
         gizmoWorkJSON = json
         gizmoPartId = nil
@@ -2212,6 +2221,7 @@ final class EditorModel {
         }
     }
     func gizmoDragTo(ray: (o: SIMD3<Float>, d: SIMD3<Float>)) {
+        if manipDragTo(ray: ray) { return }
         guard let pi = gizmoPart, var json = gizmoWorkJSON, let h = gizmoActive else { return }
         switch h {
         case .rotate(let ax):
@@ -2222,8 +2232,9 @@ final class EditorModel {
             if d > .pi { d -= 2 * .pi } else if d < -.pi { d += 2 * .pi }   // unwrap
             gizmoRotAccum += d
             gizmoRotPrev = a
-            DocEdit.setRotateAngle(&json, rotNodeId: rn, axisIndex: gizmoRotAxisIndex,
-                                   degrees: Double(gizmoRotAccum * 180 / .pi))
+            let deg = snapAngle(Double(gizmoRotAccum * 180 / .pi))
+            DocEdit.setRotateAngle(&json, rotNodeId: rn, axisIndex: gizmoRotAxisIndex, degrees: deg)
+            showManipLabel(String(format: "%.1f°", deg), at: gizmoStartCenter)
         default:
             var off = SIMD3<Float>.zero
             switch h {
@@ -2236,7 +2247,9 @@ final class EditorModel {
             case .rotate:
                 break
             }
+            if let pi = gizmoPart { off = snapMove(off, part: pi, handle: h) }
             gizmoLiveOffset = off
+            showManipLabel(moveLabel(off), at: gizmoStartCenter + off)
             let target = [gizmoBase.0 + Double(off.x), gizmoBase.1 + Double(off.y), gizmoBase.2 + Double(off.z)]
             if let id = gizmoPartId {
                 engineEdit("Move Part", undo: .none, reeval: .inPlace) {
@@ -2250,7 +2263,19 @@ final class EditorModel {
         gizmoWorkJSON = json
         irEdit(h.isRotate ? "Rotate Part" : "Move Part", gestureStart: false, reeval: .inPlace, base: json) { _ in }
     }
+    /// Where the gizmo root sits mid-drag: it rides the dragged part, or the
+    /// pulled face.
+    func gizmoLivePosition() -> SIMD3<Float>? {
+        if manip.kind != nil {
+            if pullFace == nil { return gizmoCenterKernel() }
+            return manip.axisOrigin + manip.axisDir * Float(manip.value / manip.gain)
+        }
+        return gizmoCenterKernel().map { $0 + gizmoLiveOffset }
+    }
     func endGizmoDrag() {
+        if endManip() { return }
+        manip.activeName = nil
+        if gizmoPart != nil { fadeManipLabel() }
         gizmoPart = nil
         gizmoActive = nil
         gizmoRotNode = nil
@@ -2265,7 +2290,7 @@ final class EditorModel {
 
     /// Param `t` along the axis line (center + t·axis) closest to the ray — the
     /// standard closest-point-between-two-lines solution (axis is a unit vector).
-    private static func axisParam(rayO: SIMD3<Float>, rayD: SIMD3<Float>,
+    static func axisParam(rayO: SIMD3<Float>, rayD: SIMD3<Float>,
                                   center: SIMD3<Float>, axis: SIMD3<Float>) -> Float {
         let w0 = rayO - center
         let b = simd_dot(rayD, axis)
@@ -2277,7 +2302,7 @@ final class EditorModel {
     }
 
     /// Ray ∩ plane (through `point`, with `normal`) → world point, or nil if ∥.
-    private static func rayPlane(o: SIMD3<Float>, d: SIMD3<Float>,
+    static func rayPlane(o: SIMD3<Float>, d: SIMD3<Float>,
                                  point: SIMD3<Float>, normal: SIMD3<Float>) -> SIMD3<Float>? {
         let denom = simd_dot(d, normal)
         if abs(denom) < 1e-6 { return nil }
