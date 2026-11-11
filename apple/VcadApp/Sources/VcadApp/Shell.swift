@@ -302,14 +302,19 @@ struct DocumentCommands: Commands {
                                                  set: { model.section = $0 ? SectionPlane() : nil }))
                 .keyboardShortcut("x", modifiers: [.command, .option])
             Divider()
-            Button("New Sketch") { model.enterSketch() }
+            Button("New Sketch") { if model.promoteSandboxToDocument() { model.enterSketch() } }
                 .keyboardShortcut("s", modifiers: [.control])
-                .disabled(!model.usesDocumentTree || model.sketching)
+                .disabled(!model.canModel || model.sketching)
             Menu("Feature") {
                 ForEach(FeatureOp.allCases) { op in
-                    Button(op.label + "…") { model.activeFeatureOp = op }
+                    Button(op.label + "…") { if model.promoteSandboxToDocument() { model.activeFeatureOp = op } }
                 }
-            }.disabled(!model.usesDocumentTree)
+            }.disabled(!model.canModel)
+            Menu("Combine") {
+                ForEach([BooleanOp.union, .difference, .intersection], id: \.self) { op in
+                    Button(op.label) { model.beginCombine(op) }
+                }
+            }.disabled(!model.usesDocumentTree || model.selectedPartIndex == nil)
         }
         CommandMenu("Select") {
             ForEach(PickFilter.allCases) { f in
@@ -811,7 +816,7 @@ struct ScrubField: View {
                 .onEscape { typing = nil; focused = false }
                 .onChange(of: focused) { _, now in if !now { commit() } }
             if !unit.isEmpty {
-                Text(unit).font(.callout).foregroundStyle(.secondary).frame(minWidth: 14, alignment: .leading)
+                Text(unit).font(.callout).foregroundStyle(.secondary).lineLimit(1).fixedSize().frame(minWidth: 14, alignment: .leading)
             }
             Stepper(label, value: Binding(get: { value }, set: { onChange(max(minValue, $0), true) }),
                     step: sensitivity * 10)
@@ -833,7 +838,13 @@ struct ScrubField: View {
                 let first = base == nil
                 let b = base ?? value
                 if base == nil { base = b }
-                onChange(max(minValue, b + Double(v.translation.width) * sensitivity * Self.modifierScale), first)
+                // Snap to the stepper's step (1 mm by default; ⌥ 0.1, ⇧ 10) so a
+                // mouse-only edit lands on round numbers (it gave 44.70).
+                let scale = Self.modifierScale
+                let step = sensitivity * 10 * scale
+                let raw = b + Double(v.translation.width) * sensitivity * scale
+                let snapped = step > 0 ? (raw / step).rounded() * step : raw
+                onChange(max(minValue, snapped), first)
             }
             .onEnded { _ in base = nil }
     }
