@@ -225,6 +225,10 @@ pub enum BlendError {
     InvalidResult,
     /// A named-edge reference could not be resolved.
     NamedEdge(NamedEdgeError),
+    /// The blend size does not fit the faces it would trim (e.g. a fillet
+    /// on a cylinder rim at least as large as the cap radius, or the wall
+    /// thickness of a cup rim). The message names the limiting face.
+    DoesNotFit(String),
     /// The shell operation could not offset the solid.
     Shell(String),
     /// The fillet radius / chamfer distance is zero, negative, or not a
@@ -279,13 +283,14 @@ impl std::fmt::Display for BlendError {
             Self::Diverged { radius } => write!(
                 f,
                 "blend geometry diverged — output escapes the input bounding box grown \
-                 by 2·{radius} mm; the radius exceeds the available edge length"
+                 by 2·{radius} mm; the radius does not fit the geometry it rounds"
             ),
             Self::InvalidResult => write!(
                 f,
                 "blend produced invalid geometry (cracked shell or volume gain)"
             ),
             Self::NamedEdge(e) => write!(f, "named edge: {e}"),
+            Self::DoesNotFit(msg) => write!(f, "{msg}"),
             Self::Shell(msg) => write!(f, "shell failed: {msg}"),
             Self::SizeExceedsLimit { what, size, limit } => write!(
                 f,
@@ -676,6 +681,87 @@ impl Solid {
     }
 
     /// Which "this isn't blendable topology" error applies to this solid.
+    /// Route a constant fillet/chamfer `edge_blend` on a body of
+    /// revolution to [`Solid::revolved_blend`]. `None` = not applicable.
+    fn revolved_edge_blend(
+        &self,
+        brep: &BRepSolid,
+        query: &vcad_kernel_fillet::EdgeQuery,
+        keys: &[vcad_kernel_fillet::BlendKey],
+    ) -> Option<(Result<Solid, BlendError>, BlendReport)> {
+        use vcad_kernel_fillet::{EdgeQuery, RevolvedBlendKind, RevolvedEdges};
+        let [key] = keys else {
+            return None;
+        };
+        let s = key.section;
+        let kind = if s.shape >= 1.0 - 1e-12 {
+            RevolvedBlendKind::Fillet(s.size)
+        } else if s.shape <= 1e-12 {
+            RevolvedBlendKind::Chamfer(s.size)
+        } else {
+            return None;
+        };
+        let edges = match query {
+            EdgeQuery::All => RevolvedEdges::All,
+            EdgeQuery::Near { point } => RevolvedEdges::Near(*point),
+            EdgeQuery::Endpoints { a, b } => RevolvedEdges::Through(*a, *b),
+            _ => return None,
+        };
+        self.revolved_blend(brep, edges, kind)
+    }
+
+    /// Exact fillet / chamfer of circular edges on a body of revolution
+    /// (see `vcad_kernel_fillet::blend_revolved`). `None` when `brep` is
+    /// not one, or the edge selection matched no circular edge, so the
+    /// caller falls through to its general pipeline.
+    ///
+    /// Fail-closed twice over: the half-profile must reproduce the input's
+    /// tessellated volume (else it did not describe the input, and we fall
+    /// through), and the blended solid must tessellate watertight to the
+    /// exact Pappus volume of the blended profile (else `InvalidResult`).
+    fn revolved_blend(
+        &self,
+        brep: &BRepSolid,
+        edges: vcad_kernel_fillet::RevolvedEdges,
+        kind: vcad_kernel_fillet::RevolvedBlendKind,
+    ) -> Option<(Result<Solid, BlendError>, BlendReport)> {
+        let mut report = BlendReport::default();
+        let blend = match vcad_kernel_fillet::blend_revolved(brep, edges, kind) {
+            Ok(Some(b)) => b,
+            Ok(None) => return None,
+            Err(r) => {
+                let e = BlendError::DoesNotFit(r.0);
+                report.requested = 1;
+                report.declined = Some(e.clone());
+                return Some((Err(e), report));
+            }
+        };
+        // 32-segment polygons under-read a circle's area by ≤ 0.65 %.
+        let close = |mesh_vol: f64, exact: f64| (mesh_vol - exact).abs() <= 0.02 * exact.abs();
+        if !close(
+            compute_volume(&tessellate_brep(brep, 32)),
+            blend.input_volume,
+        ) {
+            return None;
+        }
+        report.requested = blend.blended;
+        let mesh = tessellate_brep(&blend.solid, 32);
+        if !mesh.boundary_edges().is_empty() || !close(compute_volume(&mesh), blend.output_volume) {
+            report.declined = Some(BlendError::InvalidResult);
+            return Some((Err(BlendError::InvalidResult), report));
+        }
+        report.applied = blend.blended;
+        Some((
+            Ok(Solid {
+                names: None,
+                provenance: self.provenance.clone(),
+                repr: SolidRepr::BRep(Box::new(blend.solid)),
+                segments: self.segments,
+            }),
+            report,
+        ))
+    }
+
     fn non_brep_error(&self) -> BlendError {
         match &self.repr {
             SolidRepr::Empty => BlendError::EmptySolid,
@@ -834,6 +920,14 @@ impl Solid {
         if let Some(e) = blend_size_limit(brep, "chamfer distance", distance) {
             return Err(e);
         }
+        // Bodies of revolution: exact cone-band chamfers on circular edges.
+        if let Some((result, _)) = self.revolved_blend(
+            brep,
+            vcad_kernel_fillet::RevolvedEdges::All,
+            vcad_kernel_fillet::RevolvedBlendKind::Chamfer(distance),
+        ) {
+            return result;
+        }
         // Same inner-loop hazard as `fillet` — see brep_has_inner_loops.
         let holes = count_inner_loop_faces(brep);
         if holes > 0 {
@@ -927,6 +1021,18 @@ impl Solid {
             report.declined = Some(e.clone());
             return (Err(e), report);
         }
+
+        // Bodies of revolution (cylinders, cups, turned parts): every edge
+        // is a closed circle, which the per-edge builders can't trim — round
+        // them as torus bands of the half-profile instead.
+        if let Some(out) = self.revolved_blend(
+            brep,
+            vcad_kernel_fillet::RevolvedEdges::All,
+            vcad_kernel_fillet::RevolvedBlendKind::Fillet(radius),
+        ) {
+            return out;
+        }
+
         // Faces with inner loops (holes from booleans) can't survive
         // the rebuild — refuse rather than fill the holes in.
         let holes = count_inner_loop_faces(brep);
@@ -1080,6 +1186,11 @@ impl Solid {
         if keys.is_empty() {
             let e = decline(&mut report, BlendError::NoKeys);
             return (Err(e), report);
+        }
+        // Circular edges of a body of revolution — picked or all — with a
+        // constant fillet or chamfer section.
+        if let Some(out) = self.revolved_edge_blend(brep, query, keys) {
+            return out;
         }
         // Fast path: whole-solid constant fillet/chamfer already have
         // dedicated pipelines with analytic blend surfaces and corner
@@ -2516,10 +2627,21 @@ fn fillet_aabb_is_reasonable(input: &BRepSolid, filleted: &BRepSolid, radius: f6
     if verts_in.is_empty() {
         return true;
     }
+    // The input's extent is NOT the hull of its topology vertices: a
+    // curved face spans far past its corners. A cylinder has one seam
+    // vertex per rim, both at angle 0, so the vertex box is a line segment
+    // and every correctly blended point on the far side of the rim read as
+    // "diverged". Take the tessellated surface into account too.
+    let mesh_in = tessellate_brep(input, 32);
+    let mesh_pts = mesh_in
+        .vertices
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|c| Point3::new(c[0] as f64, c[1] as f64, c[2] as f64));
     let mut min = [f64::MAX; 3];
     let mut max = [f64::MIN; 3];
-    for (_id, v) in verts_in {
-        let p = v.point;
+    for p in verts_in.iter().map(|(_, v)| v.point).chain(mesh_pts) {
         if p.x < min[0] {
             min[0] = p.x;
         }
@@ -4147,17 +4269,13 @@ mod tests {
         // (plus a small margin from the blend arc). A diverging rolling-ball
         // would push a vertex far outside, so this catches that regression.
         let cyl = Solid::cylinder(10.0, 20.0, 32);
-        // The cap-rim torus blend on a primitive cylinder still diverges,
-        // so the kernel refuses. That refusal is the point: before it was
-        // reportable, this test passed *vacuously* on the untouched
-        // cylinder handed back by the AABB guard.
-        assert_eq!(
-            cyl.fillet(2.0).unwrap_err(),
-            BlendError::Diverged { radius: 2.0 },
-            "cylinder cap fillet must report divergence, not return the input silently"
-        );
+        // The cap rims are closed circles; they round as exact torus bands
+        // of the revolved half-profile (see tests/circular_edge_blend.rs).
+        // This used to be refused as Diverged: the AABB guard measured the
+        // input by its two seam vertices, a line segment.
         let (filleted, report) = cyl.fillet_lenient(2.0);
-        assert!(matches!(report.declined, Some(BlendError::Diverged { .. })));
+        assert_eq!(report.declined, None, "cylinder cap fillet must apply");
+        assert_eq!(report.applied, 2);
         // Whatever comes back must still be bounded — a diverging blend
         // that leaked through the guard is the regression to catch.
         let mesh = filleted.to_mesh(32);

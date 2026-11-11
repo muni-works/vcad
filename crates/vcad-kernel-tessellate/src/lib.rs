@@ -6889,6 +6889,17 @@ fn tessellate_toroidal_face(
         params.circle_segments.max(3) as usize
     };
 
+    // A full-revolution torus band (a revolved fillet arc) is bounded like
+    // a primitive cylinder wall: two rim circles, each a single closed
+    // half-edge on its seam vertex, joined by a seam edge — four half-edges
+    // on two distinct vertices, both at the same u. Its patch is the whole
+    // u turn and the short v arc between the two rims; neither the
+    // two-chain rails nor the loop's own (zero) u span describe it.
+    let seam_band = surface
+        .as_any()
+        .downcast_ref::<vcad_kernel_geom::TorusSurface>()
+        .and_then(|torus| torus_seam_band_range(topo, face, torus));
+
     // Prefer the two-chain path: it takes its u columns from the loop
     // itself, so the rails weld with the neighbouring plane and cylinder
     // faces. Falls through to the grid path for loops it can't split into
@@ -6912,7 +6923,12 @@ fn tessellate_toroidal_face(
             - uv.iter().map(|p| p.1).fold(f64::MAX, f64::min);
         let n_full = params.circle_segments_for_radius(torus.minor_radius.abs().max(1e-6)) as f64;
         let n_v = ((n_full * v_span / (2.0 * PI)).ceil() as usize).max(1);
-        if let Some(mesh) = tessellate_torus_two_chain(torus, &verts, reversed, n_v) {
+        let two_chain = if seam_band.is_none() {
+            tessellate_torus_two_chain(torus, &verts, reversed, n_v)
+        } else {
+            None
+        };
+        if let Some(mesh) = two_chain {
             return mesh;
         }
     }
@@ -6927,10 +6943,12 @@ fn tessellate_toroidal_face(
     // top cap and below the bottom cap. Falls back to the full domain
     // when the face doesn't expose a `TorusSurface` we can invert.
     let ((default_u_min, default_u_max), (default_v_min, default_v_max)) = surface.domain();
-    let (u_min, u_max, v_min, v_max) = if let Some(torus) = surface
+    let (u_min, u_max, v_min, v_max) = if let Some(range) = seam_band {
+        range
+    } else if let Some(torus) = surface
         .as_any()
-        .downcast_ref::<vcad_kernel_geom::TorusSurface>(
-    ) {
+        .downcast_ref::<vcad_kernel_geom::TorusSurface>()
+    {
         let verts: Vec<_> = topo
             .loop_half_edges(face.outer_loop)
             .map(|he| topo.vertices[topo.half_edges[he].origin].point)
@@ -7077,6 +7095,60 @@ fn tessellate_toroidal_face(
     }
 
     mesh
+}
+
+/// `(u_min, u_max, v_min, v_max)` for a full-revolution torus band — a
+/// face whose outer loop is four half-edges on exactly two distinct
+/// vertices that share a u (see `tessellate_toroidal_face`). The v range
+/// runs the short way between the two rims (a blend arc is always under
+/// half a turn). `None` for any other loop.
+fn torus_seam_band_range(
+    topo: &Topology,
+    face: &vcad_kernel_topo::Face,
+    torus: &vcad_kernel_geom::TorusSurface,
+) -> Option<(f64, f64, f64, f64)> {
+    if !face.inner_loops.is_empty() {
+        return None;
+    }
+    let verts: Vec<Point3> = topo
+        .loop_half_edges(face.outer_loop)
+        .map(|he| topo.vertices[topo.half_edges[he].origin].point)
+        .collect();
+    if verts.len() != 4 {
+        return None;
+    }
+    let tol = 1e-9 * (torus.major_radius.abs() + torus.minor_radius.abs()).max(1.0);
+    let mut distinct: Vec<Point3> = Vec::new();
+    for p in &verts {
+        if !distinct.iter().any(|q| (q - p).norm() < tol) {
+            distinct.push(*p);
+        }
+    }
+    if distinct.len() != 2 {
+        return None;
+    }
+    let (ua, va) = torus_uv(torus, &distinct[0]);
+    let (ub, vb) = torus_uv(torus, &distinct[1]);
+    let mut du = (ub - ua).rem_euclid(2.0 * PI);
+    if du > PI {
+        du -= 2.0 * PI;
+    }
+    if du.abs() > 1e-6 {
+        return None;
+    }
+    let mut dv = (vb - va).rem_euclid(2.0 * PI);
+    if dv > PI {
+        dv -= 2.0 * PI;
+    }
+    if dv.abs() < 1e-9 {
+        return None;
+    }
+    let (v_lo, v_hi) = if dv > 0.0 {
+        (va, va + dv)
+    } else {
+        (va + dv, va)
+    };
+    Some((ua, ua + 2.0 * PI, v_lo, v_hi))
 }
 
 /// Tessellate a B-spline or NURBS face.
@@ -7295,20 +7367,23 @@ fn tessellate_degenerate_cap(
             .loop_half_edges(inner_loop)
             .map(|he| brep.topology.vertices[brep.topology.half_edges[he].origin].point)
             .collect();
-        // A single-vertex inner loop is a full circle too — the rim of an
-        // open-face shell of a cylinder (its offset cap circle). It is
-        // concentric with the outer circle by construction, so sample it
-        // on the same angular grid, starting at its own vertex.
+        // A degenerate hole — one closed circle half-edge on its seam
+        // vertex, as a revolved annulus carries — is a full circle about the
+        // cap centre; sample it like the outer rim so it welds with the
+        // wall that shares the rim at any tessellation density.
         let iv = match iv.as_slice() {
-            [c] => {
-                let ri = (*c - center).norm();
+            [p] => {
+                let ri = (*p - center).norm();
+                // (and never as large as the cap: an open-face shell's offset rim)
                 if ri <= 1e-12 || ri >= r {
                     continue;
                 }
+                let hx = (*p - center).normalize();
+                let hy = normal.as_ref().cross(hx);
                 (0..n)
                     .map(|i| {
                         let theta = 2.0 * PI * (i as f64) / (n as f64);
-                        center + ri * (theta.cos() * x_dir + theta.sin() * y_dir)
+                        center + ri * (theta.cos() * hx + theta.sin() * hy)
                     })
                     .collect()
             }

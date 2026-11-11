@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-07-fillet-circular-edges",
+  "version": "0.11.0",
+  "date": "2026-11-07",
+  "category": "fix",
+  "title": "Fillet and chamfer cylinder and cup rims",
+  "summary": "Circular edges (cylinder rims, cup rims made by booleans) now fillet as exact torus bands and chamfer as cone bands; an oversized blend names the face it cannot fit.",
+  "features": ["fillet", "chamfer", "kernel"],
+  "mcpTools": []
+}

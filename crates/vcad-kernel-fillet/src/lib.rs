@@ -15,6 +15,7 @@ mod closest_point;
 mod fillet_curved;
 mod fillet_planar;
 mod fillet_subset;
+mod revolved;
 mod rolling_ball;
 mod topology;
 mod trim;
@@ -30,6 +31,9 @@ pub use fillet_curved::{
     JunctionTrace,
 };
 pub use fillet_planar::{fillet_all_edges, fillet_all_edges_checked};
+pub use revolved::{
+    blend_revolved, RevolvedBlend, RevolvedBlendKind, RevolvedEdges, RevolvedRefusal,
+};
 pub use rolling_ball::rolling_ball_blend;
 
 use vcad_kernel_geom::{CylinderSurface, Surface, SurfaceKind};
