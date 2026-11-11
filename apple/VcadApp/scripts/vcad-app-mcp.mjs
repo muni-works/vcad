@@ -53,3 +53,32 @@ rl.on("line", async (line) => {
     });
   }
 });
+
+// Server→client notifications (resource updates for vcad://doc/*) arrive on
+// the app's SSE stream; forward each event to stdout. Reconnects when the app
+// restarts.
+async function listen() {
+  for (;;) {
+    try {
+      const res = await fetch(endpoint(), { headers: { accept: "text/event-stream" } });
+      const reader = res.body.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf("\n\n")) >= 0) {
+          const ev = buf.slice(0, i);
+          buf = buf.slice(i + 2);
+          const data = ev.split("\n").filter((l) => l.startsWith("data: ")).map((l) => l.slice(6)).join("\n");
+          if (data) process.stdout.write(data + "\n");
+        }
+      }
+    } catch {}
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+listen();
+rl.on("close", () => process.exit(0));

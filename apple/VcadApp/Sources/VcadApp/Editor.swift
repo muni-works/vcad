@@ -1213,8 +1213,14 @@ final class EditorModel {
     @ObservationIgnored var documentJSON: [String: Any]? {
         // Any document swap except an engine delta (`adopt`) invalidates the
         // per-part tessellation cache.
-        didSet { if !adoptingDelta { partMeshCache.removeAll() } }
+        didSet {
+            if !adoptingDelta { partMeshCache.removeAll() }
+            documentRevision &+= 1
+        }
     }
+    /// Bumped on every document swap or edit — the observable signal for
+    /// state derived from `documentJSON` (live receipts re-verify on it).
+    var documentRevision = 0
     /// Tessellated parts by stable part id, reused across edits: an engine
     /// delta drops exactly the parts it added, updated or removed, so an edit
     /// re-tessellates only those.
@@ -4352,6 +4358,24 @@ extension EditorModel {
     /// the snapshot taken before the turn's first edit.
     func agentEndTurn(before: Data, name: String = "Agent Edit") {
         pushUndo(.snapshot(before), name: name)
+    }
+
+    /// Drop undo entries an agent edit pushed above `depth` (AgentTurn.swift).
+    func agentDropUndo(above depth: Int) {
+        if undoStack.count > depth { undoStack.removeSubrange(depth...) }
+    }
+
+    /// Land an agent edit as one snapshot entry: entries the edit pushed
+    /// itself (above `depth`) fold into it. `coalesce` extends the turn's
+    /// existing top entry instead — it already snapshots the turn's start.
+    func agentCommitUndo(before: Data, above depth: Int, coalesce: Bool, name: String) {
+        agentDropUndo(above: depth)
+        if coalesce, let last = undoStack.last, case .snapshot = last.step {
+            undoStack[undoStack.count - 1] = UndoEntry(step: last.step, name: name)
+            redoStack.removeAll()
+        } else {
+            pushUndo(.snapshot(before), name: name)
+        }
     }
 
     /// The agent can work here: an engine document, or a blank canvas that

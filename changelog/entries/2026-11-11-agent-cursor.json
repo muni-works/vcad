@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-11-agent-cursor",
+  "version": "0.11.0",
+  "date": "2026-11-11",
+  "category": "feat",
+  "title": "Agent cursor in the Mac app",
+  "summary": "Agents see your selection through MCP resources, a labeled cursor shows where they edit, and each agent turn is one named undo step.",
+  "features": ["mcp", "native-app", "agent"],
+  "mcpTools": ["agent_turn", "fillet_edges", "select_edges", "viewer_frame", "open_in_app"]
+}
