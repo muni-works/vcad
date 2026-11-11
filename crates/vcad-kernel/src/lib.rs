@@ -1021,6 +1021,7 @@ impl Solid {
             report.declined = Some(e.clone());
             return (Err(e), report);
         }
+
         // Bodies of revolution (cylinders, cups, turned parts): every edge
         // is a closed circle, which the per-edge builders can't trim — round
         // them as torus bands of the half-profile instead.
