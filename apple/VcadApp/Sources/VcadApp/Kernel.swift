@@ -61,12 +61,26 @@ struct KernelMesh {
     /// faces at 90° gets one vertex copy per side instead of one averaged
     /// normal, so flat faces read flat and curved ones stay smooth. Returns
     /// the (possibly grown) vertex arrays alongside the normals.
-    static func creasedNormals(positions: [SIMD3<Float>], indices: [UInt32])
+    static func creasedNormals(positions: [SIMD3<Float>], indices rawIndices: [UInt32])
         -> ([SIMD3<Float>], [SIMD3<Float>], [UInt32]) {
-        let triCount = indices.count / 3
+        let triCount = rawIndices.count / 3
         guard triCount > 0 else {
-            return (positions, [SIMD3<Float>](repeating: [0, 0, 1], count: positions.count), indices)
+            return (positions, [SIMD3<Float>](repeating: [0, 0, 1], count: positions.count), rawIndices)
         }
+        // Weld by position (1 µm grid) so adjacency is seen even when the
+        // source emits unshared vertices (BRep tessellations do): otherwise a
+        // smooth cylinder would shade as flat facets.
+        var canonOf: [SIMD3<Int32>: UInt32] = [:]
+        canonOf.reserveCapacity(positions.count)
+        let canon: [UInt32] = positions.enumerated().map { i, p in
+            let key = SIMD3<Int32>(Int32(clamping: Int((p.x * 1000).rounded())),
+                                   Int32(clamping: Int((p.y * 1000).rounded())),
+                                   Int32(clamping: Int((p.z * 1000).rounded())))
+            if let c = canonOf[key] { return c }
+            canonOf[key] = UInt32(i)
+            return UInt32(i)
+        }
+        let indices = rawIndices.map { Int($0) < canon.count ? canon[Int($0)] : $0 }
         // Area-weighted face normal per triangle (zero for degenerate).
         var faceN = [SIMD3<Float>](repeating: .zero, count: triCount)
         var incident = [[Int]](repeating: [], count: positions.count)
