@@ -72,6 +72,45 @@ enum InstrumentTool {
         /// How it was measured (default "agent-reported strike").
         instrument: Option<String>,
     },
+    /// How a part sounds: its natural frequencies (vibration modes of the real solid, any shape), each named as the nearest note with the offset in cents. Material comes from the part's material key (aluminium, steel, brass, bronze, copper, titanium, PLA, PETG, ABS, nylon, glass, wood). Use before lock_pitch to see what a part rings at.
+    PartSound {
+        /// Session id (default: current document).
+        document_id: Option<String>,
+        /// Part (root) name; default the first part.
+        part: Option<String>,
+        /// Modes to report (default 6).
+        modes: Option<usize>,
+        /// "preview" (fast) or "fine" (converged, default).
+        quality: Option<String>,
+        /// Material override (key or name).
+        material: Option<String>,
+    },
+    /// Lock a part's pitch: solve one document parameter (e.g. a length) so the part's mode `mode` (1 = fundamental) rings at a note or frequency, and store the lock on the document like a constraint. The part must be driven by that parameter (a defparam in loon).
+    LockPitch {
+        /// Session id (default: current document).
+        document_id: Option<String>,
+        /// Part (root) name.
+        part: String,
+        /// Target note, e.g. "G6" (or target_hz).
+        note: Option<String>,
+        /// Target frequency in Hz (instead of note).
+        target_hz: Option<f64>,
+        /// Document parameter to solve.
+        drives: String,
+        /// 1-based mode number (default 1, the fundamental).
+        mode: Option<usize>,
+        /// Tolerance in cents (default 1).
+        tolerance_cents: Option<f64>,
+    },
+    /// Remove a pitch lock from a part (the geometry stays where it is).
+    UnlockPitch {
+        /// Session id (default: current document).
+        document_id: Option<String>,
+        /// Part (root) name.
+        part: String,
+        /// 1-based mode number (default 1).
+        mode: Option<usize>,
+    },
     /// Per-bar receipt for a tuned instrument: target, predicted and measured pitch, cent error and state (predicted | measured_pass | measured_fail), plus the unified receipt (Provisional until every bar is measured).
     InstrumentReceipt {
         /// Session id of the instrument document.
@@ -141,6 +180,19 @@ fn doc_id(args: &Value) -> Result<DocumentId, ToolError> {
     text(args, "document_id")
         .map(DocumentId::from)
         .ok_or_else(|| bad("document_id required"))
+}
+
+/// `document_id`, else the store's current document.
+fn load_doc(ctx: &ToolCtx, args: &Value) -> Result<(DocumentId, vcad_ir::Document), ToolError> {
+    let id = match text(args, "document_id") {
+        Some(id) => DocumentId::from(id),
+        None => ctx
+            .store
+            .current()
+            .ok_or_else(|| bad("no document_id and no current document"))?,
+    };
+    let doc = ctx.store.load(&id).map_err(|e| bad(e.to_string()))?;
+    Ok((id, doc))
 }
 
 fn structured(v: Value) -> Result<ToolOutput, ToolError> {
@@ -291,6 +343,102 @@ pub fn instrument_tools() -> Vec<ToolDef> {
                 "bars": receipt["bars"],
             }))
         }),
+        def(&mut e, "part_sound", |ctx, args| {
+            let (_, doc) = load_doc(ctx, &args)?;
+            let idx = match text(&args, "part") {
+                Some(p) => vcad_sound::part_index(&doc, p)
+                    .ok_or_else(|| bad(format!("no part named {p:?}")))?,
+                None => 0,
+            };
+            let quality = match text(&args, "quality") {
+                Some("preview") => vcad_sound::Quality::Preview,
+                _ => vcad_sound::Quality::Fine,
+            };
+            let scene = vcad_sound::evaluate(&doc).map_err(|e| bad(e.to_string()))?;
+            let pm = vcad_sound::part_modes(
+                &doc,
+                &scene,
+                &vcad_sound::ModesRequest {
+                    part: idx,
+                    modes: args.get("modes").and_then(Value::as_u64).unwrap_or(6) as usize,
+                    quality,
+                    material: text(&args, "material").map(str::to_string),
+                    shapes: false,
+                },
+            )
+            .map_err(|e| bad(e.to_string()))?;
+            let modes: Vec<Value> = pm
+                .modes
+                .iter()
+                .enumerate()
+                .map(|(i, m)| json!({"mode": i + 1, "hz": m.hz, "note": m.note, "cents": m.cents}))
+                .collect();
+            structured(json!({
+                "part": pm.name,
+                "material": pm.material.name,
+                "material_known": pm.material_known,
+                "mass_kg": pm.mass_kg,
+                "rings_at": pm.modes.first().map(|m| format!("{} ({:.1} Hz, {:+.0} c)", m.note, m.hz, m.cents)),
+                "modes": modes,
+                "solver": {"cell_mm": pm.pitch_mm, "dofs": pm.dofs, "ms": pm.ms},
+            }))
+        }),
+        def(&mut e, "lock_pitch", |ctx, args| {
+            let (id, doc) = load_doc(ctx, &args)?;
+            let part = text(&args, "part")
+                .ok_or_else(|| bad("part required"))?
+                .to_string();
+            let note = text(&args, "note").map(str::to_string);
+            let target_hz = match (num(&args, "target_hz"), note.as_deref()) {
+                (Some(hz), _) => hz,
+                (None, Some(n)) => note_to_hz(n).map_err(bad)?,
+                _ => return Err(bad("pass note (e.g. \"G6\") or target_hz")),
+            };
+            let lock = vcad_sound::PitchLock {
+                part: part.clone(),
+                mode: args.get("mode").and_then(Value::as_u64).unwrap_or(1) as usize,
+                target_hz,
+                note,
+                drives: text(&args, "drives")
+                    .ok_or_else(|| bad("drives required"))?
+                    .to_string(),
+                tolerance_cents: num(&args, "tolerance_cents").unwrap_or(1.0),
+            };
+            let (mut solved, report) =
+                vcad_sound::solve_pitch_lock(&doc, &lock).map_err(|e| bad(e.to_string()))?;
+            solved
+                .pitch_locks
+                .retain(|l| !(l.part == lock.part && l.mode == lock.mode));
+            solved.pitch_locks.push(lock.clone());
+            let label = format!(
+                "Lock pitch {} {}",
+                part,
+                lock.note
+                    .clone()
+                    .unwrap_or_else(|| format!("{target_hz:.1} Hz"))
+            );
+            ctx.store
+                .commit(&id, solved, CommitMeta::agent(label))
+                .map_err(|e| bad(e.to_string()))?;
+            structured(json!({"document_id": id.0, "lock": lock, "report": report}))
+        }),
+        def(&mut e, "unlock_pitch", |ctx, args| {
+            let (id, mut doc) = load_doc(ctx, &args)?;
+            let part = text(&args, "part")
+                .ok_or_else(|| bad("part required"))?
+                .to_string();
+            let mode = args.get("mode").and_then(Value::as_u64).unwrap_or(1) as usize;
+            let before = doc.pitch_locks.len();
+            doc.pitch_locks
+                .retain(|l| !(l.part == part && l.mode == mode));
+            let removed = before != doc.pitch_locks.len();
+            if removed {
+                ctx.store
+                    .commit(&id, doc, CommitMeta::agent(format!("Unlock pitch {part}")))
+                    .map_err(|e| bad(e.to_string()))?;
+            }
+            structured(json!({"removed": removed}))
+        }),
         def(&mut e, "instrument_receipt", |ctx, args| {
             let id = doc_id(&args)?;
             let doc = ctx.store.load(&id).map_err(|e| bad(e.to_string()))?;
@@ -324,9 +472,38 @@ mod tests {
                 "design_bar",
                 "design_instrument",
                 "record_strike",
+                "part_sound",
+                "lock_pitch",
+                "unlock_pitch",
                 "instrument_receipt"
             ]
         );
+    }
+
+    #[test]
+    fn part_sound_then_lock_pitch() {
+        let ctx = ToolCtx::basic(Arc::new(HeadlessStore::in_memory()));
+        let doc = vcad_loon::eval_vcad(
+            "[defparam len 120 :unit \"mm\" :min 40 :max 300]\n[let bar [cube len 25 6]]\n[root bar \"aluminum\"]\n",
+            None,
+        )
+        .unwrap();
+        let id = ctx.store.create(doc, None).unwrap();
+        let s =
+            (tool("part_sound").handler)(&ctx, json!({"document_id": id.0, "quality": "preview"}))
+                .unwrap()
+                .structured
+                .unwrap();
+        assert_eq!(s["part"], "bar");
+        let r = (tool("lock_pitch").handler)(
+            &ctx,
+            json!({"document_id": id.0, "part": "bar", "note": "G6", "drives": "len"}),
+        )
+        .unwrap()
+        .structured
+        .unwrap();
+        assert_eq!(r["report"]["converged"], true);
+        assert_eq!(ctx.store.load(&id).unwrap().pitch_locks.len(), 1);
     }
 
     #[test]

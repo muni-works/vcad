@@ -807,6 +807,7 @@ pub const DOC_EXTRA_FIELDS: &[&str] = &[
     "hardware",
     "source",
     "instrument",
+    "pitch_locks",
 ];
 
 fn migrate_doc_extras(crdt: &mut CrdtDocument, ctx: &mut MigrationCtx, doc: &Document) {

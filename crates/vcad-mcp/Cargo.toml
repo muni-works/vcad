@@ -32,6 +32,7 @@ vcad-crdt = { workspace = true }
 vcad-atoms = { workspace = true }
 vcad-receipt-verify = { workspace = true }
 vcad-kernel-acoustics = { workspace = true }
+vcad-sound = { workspace = true }
 getrandom = "0.2"
 
 [dev-dependencies]

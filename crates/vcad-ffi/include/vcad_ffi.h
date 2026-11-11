@@ -800,6 +800,13 @@ char *vcad_cam_tool_library(void);
  * | {"op":"mill","note","out_dir",post?} | {"op":"print","plate":"bars"|"frame",
  * "gcode_path",settings?}. mill/print are DRY RUNS: files only. */
 char *vcad_instrument_call(const char *doc_json, const char *request_json);
+/* --- How parts sound (sound.rs) ---
+ * {"op":"modes","part",modes?,quality?:"preview"|"fine",material?} -> modes
+ *   (hz, note, cents, shape[]) + animation mesh (positions, indices)
+ * | {"op":"lock","part",mode?,"target_hz",note?,"drives",tolerance_cents?}
+ *   -> {document, report} | {"op":"unlock","part",mode?} -> {document}
+ * | {"op":"check"} -> {locks:[{lock,hz,cents,holds}]}. */
+char *vcad_sound_call(const char *doc_json, const char *request_json);
 /* --- Electronics co-design (pcb.rs, schematic.rs) ---
  * Board = IR Pcb JSON (camelCase, as stored under doc.pcb / a PcbBoard node);
  * sheet = IR SchematicSheet JSON. All return owned JSON freed ONLY with

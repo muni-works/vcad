@@ -591,6 +591,7 @@ fn materialize_doc_extras(doc: &mut Document, feature: &FeatureState) {
         hardware,
         source,
         instrument,
+        pitch_locks,
     );
 }
 

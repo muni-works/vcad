@@ -2579,6 +2579,11 @@ pub struct Document {
     #[cfg_attr(feature = "ts-rs", ts(optional))]
     pub instrument: Option<instrument::Instrument>,
 
+    /// Pitch constraints (`vcad-sound`): each holds one mode of one part at a
+    /// target frequency by solving a document parameter.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pitch_locks: Vec<instrument::PitchLock>,
+
     // Feature history (optional, zero-cost when absent)
     /// History state the DAG alone can't carry: suppressed features and the
     /// rollback marker. Written by the document engine's materializer only
@@ -2933,6 +2938,7 @@ impl Default for Document {
             part_ids: None,
             hardware: Vec::new(),
             instrument: None,
+            pitch_locks: Vec::new(),
             history: None,
             source: None,
         }

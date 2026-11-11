@@ -21,7 +21,7 @@ After Phase A there is one dispatcher, the Rust core, in both vcad.app (linked t
   the tool list is identical in both modes.
 - **node proxy** — not yet ported; the core spawns `@vcad/mcp` and forwards the call unchanged.
 
-Totals after Phase A: 33 host hook (Swift UI, dispatched by Rust core), 38 native (Rust core), 159 node proxy (230 tools).
+Totals after Phase A: 33 host hook (Swift UI, dispatched by Rust core), 41 native (Rust core), 159 node proxy (233 tools).
 
 | tool | implementations before | Swift file | duplicated | after Phase A | porting cost (TS-only) |
 |---|---|---|---|---|---|
@@ -154,6 +154,7 @@ Totals after Phase A: 33 host hook (Swift UI, dispatched by Rust core), 38 nativ
 | `list_tool_packs` | node |  |  | node proxy | S — server.ts ~20 lines, pure TS |
 | `load_document` | Rust (M0), node |  | **yes** | native (Rust core) |  |
 | `load_structure` | node |  |  | node proxy | S — atoms.ts ~8 lines, pure TS |
+| `lock_pitch` | — (new) |  |  | native (Rust core) |  |
 | `md_run` | node |  |  | node proxy | S — atoms.ts ~8 lines, pure TS |
 | `measure` | node |  |  | node proxy | S — measure.ts ~9 lines, wraps Rust/WASM |
 | `measure_outer_diameter` | node |  |  | node proxy | S — faces.ts ~9 lines, pure TS |
@@ -164,6 +165,7 @@ Totals after Phase A: 33 host hook (Swift UI, dispatched by Rust core), 38 nativ
 | `optimize_electrodes` | node |  |  | node proxy | S — particle.ts ~27 lines, pure TS |
 | `optimize_parameters` | Rust crate (vcad-atoms, unregistered) |  |  | native (Rust core) |  |
 | `parameter_gradient` | node |  |  | node proxy | S — parameters.ts ~8 lines, pure TS |
+| `part_sound` | — (new) |  |  | native (Rust core) |  |
 | `photoreal` | Swift | AgentBridge.swift (AgentTools) |  | host hook (Swift UI, dispatched by Rust core) |  |
 | `pick_in_viewport` | Swift | ProofAgentTools.swift |  | host hook (Swift UI, dispatched by Rust core) |  |
 | `place` | Swift, node | AgentEdits.swift → vcad-ffi `vcad_engine_apply_tool` (vcad-app lowering) | **yes** | native (Rust core) |  |
@@ -245,6 +247,7 @@ Totals after Phase A: 33 host hook (Swift UI, dispatched by Rust core), 38 nativ
 | `tune_circuit` | node |  |  | node proxy | S — circuit.ts ~79 lines, pure TS |
 | `undo` | Swift, node | AgentEdits.swift | **yes** | native (Rust core) |  |
 | `union` | Swift | AgentEdits.swift → vcad-ffi `vcad_engine_apply_tool` (vcad-app lowering) |  | native (Rust core) |  |
+| `unlock_pitch` | — (new) |  |  | native (Rust core) |  |
 | `update` | Swift, node | AgentEdits.swift → vcad-ffi `vcad_engine_apply_tool` (vcad-app lowering) | **yes** | native (Rust core) |  |
 | `update_schematic` | node |  |  | node proxy | S — ecad.ts ~11 lines, pure TS |
 | `validate_for_fab` | node |  |  | node proxy | S — ecad.ts ~16 lines, pure TS |

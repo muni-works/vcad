@@ -1,0 +1,20 @@
+[package]
+name = "vcad-sound"
+description = "How parts sound: modal analysis of evaluated document parts, strike synthesis data, and pitch-lock constraints"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+vcad-ir = { workspace = true }
+vcad-eval = { workspace = true }
+vcad-kernel-fea = { workspace = true }
+vcad-kernel-tessellate = { workspace = true }
+vcad-kernel-acoustics = { workspace = true }
+
+[dev-dependencies]
+vcad-loon = { workspace = true }

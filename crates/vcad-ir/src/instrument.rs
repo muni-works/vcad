@@ -84,3 +84,37 @@ impl InstrumentBar {
             .map(|m| m.cents_error.abs() <= self.tolerance_cents)
     }
 }
+
+/// A pitch constraint: hold elastic mode `mode` (1 = fundamental) of `part`
+/// at `target_hz` by solving document parameter `drives`. Unlike a sketch
+/// constraint it is solved through the real geometry (evaluate → modal →
+/// Newton), by `vcad-sound`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct PitchLock {
+    /// Part (root node) name.
+    pub part: String,
+    /// 1-based elastic mode number.
+    #[serde(default = "one")]
+    pub mode: usize,
+    /// Target frequency, Hz.
+    pub target_hz: f64,
+    /// Target note label, e.g. `"G6"` (display only; `target_hz` rules).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub note: Option<String>,
+    /// Document parameter the lock solves.
+    pub drives: String,
+    /// Done when within this many cents.
+    #[serde(default = "one_f")]
+    pub tolerance_cents: f64,
+}
+
+fn one() -> usize {
+    1
+}
+
+fn one_f() -> f64 {
+    1.0
+}
