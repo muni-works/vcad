@@ -314,6 +314,10 @@ impl DocumentApi {
                         message: format!("import_ir: {e}"),
                     })
             }
+            DocCommand::Reorder { id, index } => match self.reorder_violation(id, *index) {
+                Some(err) => Err(err),
+                None => Ok(()),
+            },
             _ => Ok(()),
         }
     }
@@ -346,12 +350,7 @@ impl DocumentApi {
             }
             DocCommand::SetVisible { id, visible } => self.set_visible(&id, visible),
             DocCommand::Rename { id, name } => self.rename_feature(&id, &name),
-            DocCommand::Reorder { id, index } => {
-                if let Some(err) = self.reorder_violation(&id, index) {
-                    return Err(err);
-                }
-                self.reorder_feature(&id, index)
-            }
+            DocCommand::Reorder { id, index } => self.reorder_feature(&id, index),
             DocCommand::Duplicate { ids } => self.duplicate_features(&ids),
             DocCommand::SetJointState { id, state } => self.set_joint_state(&id, state),
             DocCommand::ImportIr { document } => self.import_ir(&document.to_string()),
