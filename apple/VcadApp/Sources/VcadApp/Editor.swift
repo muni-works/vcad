@@ -375,6 +375,8 @@ final class EditorModel {
     /// The inspector's Measurements disclosure, remembered across launches.
     var measurementsShown = false { didSet { saveLayout() } }
 
+    /// Save As re-points `source` at the same document: keep the sketch etc.
+    @ObservationIgnored private var sourceRenameOnly = false
     var source: GeometrySource = .sandbox {
         didSet {
             geometryDirty = true
@@ -385,6 +387,7 @@ final class EditorModel {
                 agentLinkBaseDir = nil; agentPoseSurfacedLink = nil
                 agentBaseFirst = nil; agentBaseDelta = nil
                 cameraUserMoved = false; agentFramedSize = nil; agentFramePending = false
+                if !sourceRenameOnly { resetTransientDocumentState() }
             }
             watchDocumentFile()                   // hot reload on regenerate
             loadDocumentTree()                    // parse the DAG for a .vcad
@@ -1844,6 +1847,29 @@ final class EditorModel {
         aimCamera(at: frame)
         sketchDirty = true
     }
+    /// Per-document transient UI state that must not survive a document
+    /// switch: an open sketch (discarded like the sketch bar's ✕ — it was never
+    /// part of the old document's DAG), the armed palette tool, a pending
+    /// boolean, an open feature dialog, measure/section, face/edge picks and
+    /// hover. The workspace is a remembered preference and stays.
+    func resetTransientDocumentState() {
+        if sketching || sketch != nil { exitSketch() }
+        cameraBeforeSketch = nil
+        sketchPlaneChosen = false
+        loftProfiles = []
+        sketchOffsetPrompt = false
+        sketchDoneHovered = false; sketchBlockerShownUntil = nil
+        armedShape = nil
+        pendingBoolean = nil
+        activeFeatureOp = nil
+        measuring = false
+        section = nil
+        picking.clear()
+        selectedInstanceIndex = nil
+        hoveredPartIndex = nil; hoveredInstanceIndex = nil; hoveredInstances = []
+        hoveredFeatureID = nil; hoveredGizmoHandle = nil; hoveredHandle = nil
+        hoverDirty = true
+    }
     func exitSketch() {
         sketching = false
         sketch = nil
@@ -2290,7 +2316,9 @@ final class EditorModel {
         // into) rather than reopening the file we just wrote.
         let keptUndo = undoStack, keptRedo = redoStack
         let keptEngine = engine, keptState = engineState
+        sourceRenameOnly = true
         source = .document(path: url.path, label: url.deletingPathExtension().lastPathComponent)
+        sourceRenameOnly = false
         if let keptEngine, let keptState {
             engine = keptEngine; engineError = nil
             savedHash = keptEngine.stateHash
