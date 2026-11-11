@@ -33,9 +33,13 @@ button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
 .titlebar{height:38px;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--line)}
 .dots i{display:inline-block;width:11px;height:11px;border-radius:50%;margin-right:6px;background:var(--line)}
 .titlebar b{font-weight:600}.titlebar .mute{color:var(--mute)}
-.main{display:grid;grid-template-columns:200px minmax(0,1fr) 260px;min-height:400px}
-.nav,.insp{padding:10px;display:flex;flex-direction:column;gap:2px;min-width:0}
-.nav{border-right:1px solid var(--line)}.insp{border-left:1px solid var(--line);gap:10px}
+/* World fills the window; navigator, inspector and the full-width history strip float over it (Dojo layout). */
+.main{position:relative;height:600px;--strip-h:172px}
+.glass{--fg:#eef0f4;--mute:#a3a9b8;--line:#ffffff24;--win:#ffffff0f;--panel:#ffffff0a;color:var(--fg);
+  background:rgba(14,16,22,.55);-webkit-backdrop-filter:blur(18px) saturate(1.5);backdrop-filter:blur(18px) saturate(1.5);
+  border:1px solid #ffffff1f;border-radius:12px;box-shadow:0 8px 28px #0007;z-index:2}
+.nav,.insp{position:absolute;top:12px;padding:10px;display:flex;flex-direction:column;gap:2px;min-width:0;overflow:auto;max-height:calc(100% - var(--strip-h) - 36px)}
+.nav{left:12px;width:200px}.insp{right:12px;width:260px;gap:10px}
 .lab{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--mute);margin:4px 0}
 .row{display:flex;align-items:center;gap:7px;padding:4px 6px;border-radius:6px;cursor:pointer;white-space:nowrap}
 .row:hover{background:var(--accent-soft)} .row.sel{background:var(--accent);color:#fff}
@@ -43,11 +47,11 @@ button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
 .row.markerRow{height:2px;padding:0;margin:3px 0;background:var(--accent);border-radius:2px;cursor:default}
 .dot{width:8px;height:8px;border-radius:50%;flex:none;display:inline-block}
 .ok{background:var(--ok)}.warn{background:var(--warn)}.bad{background:var(--bad)}.skip{background:var(--skip)}.roll{background:transparent;border:1.5px solid var(--skip)}
-.vp{position:relative;background:radial-gradient(ellipse at 50% 35%,var(--vp2),var(--vp));min-width:0;overflow:hidden}
-.vp svg{width:100%;height:100%;display:block}
-.hud{position:absolute;left:10px;top:10px;display:flex;gap:6px;flex-wrap:wrap}
+.vp{position:absolute;inset:0;background:radial-gradient(ellipse at 50% 35%,var(--vp2),var(--vp));overflow:hidden}
+.vp svg{width:100%;height:calc(100% - var(--strip-h) - 12px);display:block}
+.hud{position:absolute;left:50%;transform:translateX(-50%);top:14px;display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
 .pill{font-size:11px;padding:3px 8px;border-radius:99px;background:#0008;color:#e8eaef;backdrop-filter:blur(6px);font-family:var(--mono)}
-.toast{position:absolute;right:10px;bottom:10px;max-width:290px;background:#000a;color:#eef;padding:8px 10px;border-radius:8px;font-size:12px;line-height:1.4;backdrop-filter:blur(8px)}
+.toast{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(var(--strip-h) + 24px);max-width:290px;background:#000a;color:#eef;padding:8px 10px;border-radius:8px;font-size:12px;line-height:1.4;backdrop-filter:blur(8px)}
 .card{border:1px solid var(--line);border-radius:8px;padding:9px;display:flex;flex-direction:column;gap:6px;background:var(--panel)}
 .card h3{margin:0;font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px}
 .card p{margin:0;color:var(--mute);line-height:1.4;font-size:12px}
@@ -56,7 +60,7 @@ button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
 .acts{display:flex;flex-wrap:wrap;gap:5px}.acts button{font-size:12px;padding:3px 8px}
 input[type=range]{width:100%}
 .ref{font-family:var(--mono);font-size:11px;display:flex;gap:6px;align-items:center}
-.strip{border-top:1px solid var(--line);padding:10px 12px 12px;display:flex;flex-direction:column;gap:6px}
+.strip{position:absolute;left:12px;right:12px;bottom:12px;height:var(--strip-h);padding:8px 12px 10px;display:flex;flex-direction:column;gap:4px}
 .striphead{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .striphead .mute{color:var(--mute);font-size:12px}
 .lane{position:relative;overflow-x:auto;padding:46px 4px 6px}
@@ -81,7 +85,9 @@ input[type=range]{width:100%}
 .notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px}
 .note{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--win)}
 .note b{display:block;margin-bottom:3px}.note p{margin:0;color:var(--mute);line-height:1.45;font-size:12.5px}
-@media (max-width:860px){.main{grid-template-columns:minmax(0,1fr)}.nav{display:none}.insp{border-left:0;border-top:1px solid var(--line)}.vp{height:300px}}
+.lane{padding-top:40px}
+@media (max-width:860px){.main{height:auto;display:flex;flex-direction:column;gap:8px;padding-bottom:8px;background:var(--vp)}.nav{display:none}
+  .vp{position:relative;height:300px}.vp svg{height:100%}.insp,.strip{position:static;width:auto;height:auto;max-height:none;margin:0 8px}.toast{bottom:10px}}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
 
@@ -102,15 +108,14 @@ input[type=range]{width:100%}
   <div class="window">
     <div class="titlebar"><span class="dots"><i></i><i></i><i></i></span><b>bracket.vcad</b><span class="mute" id="tb-state">— edited</span></div>
     <div class="main">
-      <div class="nav" id="nav"></div>
+      <div class="nav glass" id="nav"></div>
       <div class="vp" id="vp">
         <svg id="view" viewBox="0 0 640 400" role="img" aria-label="Model viewport"></svg>
         <div class="hud" id="hud"></div>
         <div class="toast" id="toast" hidden></div>
       </div>
-      <div class="insp" id="insp"></div>
-    </div>
-    <div class="strip">
+      <div class="insp glass" id="insp"></div>
+    <div class="strip glass">
       <div class="striphead">
         <b>History</b>
         <span class="mute" id="stripinfo"></span>
@@ -125,6 +130,7 @@ input[type=range]{width:100%}
         <span><i class="dot bad"></i>broken reference</span><span><i class="dot skip"></i>skipped (input suppressed)</span>
         <span><i class="dot roll"></i>past the marker</span><span>⚡ cached prefix: scrubbing costs no rebuild</span>
       </div>
+    </div>
     </div>
   </div>
 
