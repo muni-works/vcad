@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-11-one-breath-install",
+  "version": "0.11.0",
+  "date": "2026-11-11",
+  "category": "feat",
+  "title": "One-breath agent install + stale-server warning",
+  "summary": "vcad.app connects Claude Code, Claude Desktop, Codex and Cursor in one consent dialog (undo in Settings); a new bundled skill; the MCP server warns when it's older than npm latest.",
+  "features": ["mcp", "mac-app", "skill"],
+  "mcpTools": ["server_info"]
+}
