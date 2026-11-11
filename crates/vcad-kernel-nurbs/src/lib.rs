@@ -267,6 +267,23 @@ impl vcad_kernel_geom::Curve3d for BSplineCurve {
     }
 }
 
+/// Finite-difference stencil `(a, b)` around `t` with half-width `h`, kept
+/// inside `[lo, hi]`. At a domain edge the stencil goes one-sided, and the
+/// caller divides by the ACTUAL span `b - a`: clamping one end while still
+/// dividing by `2h` halved every boundary derivative, and a forward-only
+/// step at the upper edge evaluated the same clamped point twice — a zero
+/// derivative, and a NURBS normal that fell back to +Z along whole edges.
+fn fd_span(t: f64, h: f64, lo: f64, hi: f64) -> (f64, f64) {
+    let h = h.max(f64::MIN_POSITIVE);
+    let a = (t - h).max(lo);
+    let b = (t + h).min(hi);
+    if b > a {
+        (a, b)
+    } else {
+        (t, t + h)
+    }
+}
+
 // =============================================================================
 // B-spline surface
 // =============================================================================
@@ -340,18 +357,16 @@ impl BSplineSurface {
     pub fn deriv_u(&self, u: f64, v: f64) -> Vec3 {
         let ((u_min, u_max), _) = self.parameter_domain();
         let du = (u_max - u_min) * 1e-7;
-        let p0 = self.eval((u - du).max(u_min), v);
-        let p1 = self.eval((u + du).min(u_max), v);
-        (p1 - p0) / (2.0 * du)
+        let (a, b) = fd_span(u, du, u_min, u_max);
+        (self.eval(b, v) - self.eval(a, v)) / (b - a)
     }
 
     /// Partial derivative with respect to v (finite differences).
     pub fn deriv_v(&self, u: f64, v: f64) -> Vec3 {
         let (_, (v_min, v_max)) = self.parameter_domain();
         let dv = (v_max - v_min) * 1e-7;
-        let p0 = self.eval(u, (v - dv).max(v_min));
-        let p1 = self.eval(u, (v + dv).min(v_max));
-        (p1 - p0) / (2.0 * dv)
+        let (a, b) = fd_span(v, dv, v_min, v_max);
+        (self.eval(u, b) - self.eval(u, a)) / (b - a)
     }
 
     /// Promote this B-spline surface to a generic scalar type.
@@ -929,18 +944,7 @@ impl vcad_kernel_geom::Surface for NurbsSurface {
     }
 
     fn normal(&self, uv: Point2) -> Dir3 {
-        // Finite-difference normal
-        let ((u_min, u_max), (v_min, v_max)) = self.parameter_domain();
-        let du = (u_max - u_min) * 1e-6;
-        let dv = (v_max - v_min) * 1e-6;
-
-        let p0 = self.eval(uv.x, uv.y);
-        let pu = self.eval((uv.x + du).min(u_max), uv.y);
-        let pv = self.eval(uv.x, (uv.y + dv).min(v_max));
-
-        let du_vec = (pu - p0) / du;
-        let dv_vec = (pv - p0) / dv;
-        let n = du_vec.cross(dv_vec);
+        let n = self.d_du(uv).cross(self.d_dv(uv));
         if n.norm() < 1e-15 {
             Dir3::new_normalize(Vec3::z())
         } else {
@@ -950,18 +954,14 @@ impl vcad_kernel_geom::Surface for NurbsSurface {
 
     fn d_du(&self, uv: Point2) -> Vec3 {
         let ((u_min, u_max), _) = self.parameter_domain();
-        let du = (u_max - u_min) * 1e-6;
-        let p0 = self.eval(uv.x, uv.y);
-        let pu = self.eval((uv.x + du).min(u_max), uv.y);
-        (pu - p0) / du
+        let (a, b) = fd_span(uv.x, (u_max - u_min) * 1e-7, u_min, u_max);
+        (self.eval(b, uv.y) - self.eval(a, uv.y)) / (b - a)
     }
 
     fn d_dv(&self, uv: Point2) -> Vec3 {
         let (_, (v_min, v_max)) = self.parameter_domain();
-        let dv = (v_max - v_min) * 1e-6;
-        let p0 = self.eval(uv.x, uv.y);
-        let pv = self.eval(uv.x, (uv.y + dv).min(v_max));
-        (pv - p0) / dv
+        let (a, b) = fd_span(uv.y, (v_max - v_min) * 1e-7, v_min, v_max);
+        (self.eval(uv.x, b) - self.eval(uv.x, a)) / (b - a)
     }
 
     fn domain(&self) -> ((f64, f64), (f64, f64)) {
@@ -1005,6 +1005,42 @@ impl vcad_kernel_geom::Surface for NurbsSurface {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Finite-difference derivatives must hold at the domain edges, where
+    /// STEP face boundaries live: a clamped one-sided stencil divided by
+    /// the full 2h halved them (B-spline), and a forward-only stencil at the
+    /// upper edge evaluated one clamped point twice — zero (NURBS), so the
+    /// normal fell back to +Z and closest-point inversion stalled.
+    #[test]
+    fn derivatives_hold_at_domain_edges() {
+        // Flat patch S(u, v) = (10u, -20v, 0): normal -z, so the +Z
+        // fallback cannot pass for it.
+        let pts = vec![
+            Point3::new(0.0, 0.0, 0.0),
+            Point3::new(10.0, 0.0, 0.0),
+            Point3::new(0.0, -20.0, 0.0),
+            Point3::new(10.0, -20.0, 0.0),
+        ];
+        let knots = vec![0.0, 0.0, 1.0, 1.0];
+        let b = BSplineSurface::new(pts.clone(), 2, 2, knots.clone(), knots.clone(), 1, 1);
+        let w: Vec<WeightedPoint> = pts.iter().map(|p| WeightedPoint::new(*p, 2.0)).collect();
+        let n = NurbsSurface::new(w, 2, 2, knots.clone(), knots, 1, 1);
+        use vcad_kernel_geom::Surface;
+        for (u, v) in [(0.0, 0.0), (1.0, 1.0), (1.0, 0.0), (0.5, 1.0)] {
+            let uv = Point2::new(u, v);
+            for s in [&b as &dyn Surface, &n as &dyn Surface] {
+                assert!(
+                    (s.d_du(uv) - Vec3::new(10.0, 0.0, 0.0)).norm() < 1e-6,
+                    "d_du at {uv:?}"
+                );
+                assert!(
+                    (s.d_dv(uv) - Vec3::new(0.0, -20.0, 0.0)).norm() < 1e-6,
+                    "d_dv at {uv:?}"
+                );
+                assert!(s.normal(uv).as_ref().z < -0.999);
+            }
+        }
+    }
 
     // ---- B-spline curve tests ----
 

@@ -1668,6 +1668,10 @@ struct ReleasedARView: NSViewRepresentable {
         var camera: PerspectiveCamera?
         var anchor: AnchorEntity?
         var builtKey = ""
+        /// The `GeometrySource.id` whose geometry is on screen. A solve
+        /// with nothing landed yet may keep the previous geometry only when
+        /// it belongs to the same source (an edit re-solving).
+        var builtSourceID: String?
         var builtGrounded = false
         /// What the ground grid was built from, so a zoom can re-pick its
         /// spacing without a scene rebuild.
@@ -1856,10 +1860,24 @@ struct ReleasedARView: NSViewRepresentable {
         let buildStarted = Date()
         defer { GlassUI.shared.lastBuildMillis = Date().timeIntervalSince(buildStarted) * 1000 }
         let scene = model.buildScene()
-        // Still solving with nothing landed yet: leave the previous geometry
-        // (or nothing) on screen; parts are drawn as they land and the model
-        // flips geometryDirty when the kernel is done.
-        if scene.solving && scene.meshes.isEmpty { return }
+        // Still solving with nothing landed yet: parts are drawn as they land
+        // and the model flips geometryDirty when the kernel is done. Meanwhile
+        // the previous geometry may stay up only if it is THIS source's (an
+        // edit re-solving). A freshly opened document — a double-clicked STEP
+        // file — must not sit behind the last source's geometry: that left
+        // the sandbox's rounded cube on screen for the whole import solve,
+        // reading as the import's result. Clear it; the chrome shows
+        // "Solving".
+        if scene.solving && scene.meshes.isEmpty {
+            if coordinator.builtSourceID != model.source.id {
+                coordinator.instanceEntities.removeAll(keepingCapacity: true)
+                anchor.children.filter { ["geomRoot", "contactShadow"].contains($0.name) }
+                    .forEach { $0.removeFromParent() }
+                coordinator.builtSourceID = nil
+            }
+            return
+        }
+        coordinator.builtSourceID = model.source.id
         if !scene.solving {
             let bounds = ReleaseWindowController.shared.arView?.bounds.size ?? .zero
             let aspect = bounds.height > 0 ? Float(bounds.width / bounds.height) : 1.6
