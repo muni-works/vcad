@@ -61,8 +61,8 @@ pub struct StepFaceBound {
     pub id: u64,
     /// The loop entity ID.
     pub loop_id: u64,
-    /// Whether the bound orientation matches the face orientation (reserved for winding).
-    #[allow(dead_code)]
+    /// `false` when the loop is used reversed (edges in the opposite order,
+    /// each walked the other way).
     pub orientation: bool,
     /// Whether this is an outer bound.
     pub is_outer: bool,

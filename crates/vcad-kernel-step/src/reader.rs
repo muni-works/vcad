@@ -228,6 +228,45 @@ pub struct ReadResult {
     pub solids: Vec<BRepSolid>,
     /// Per-solid import report (skipped faces, approximation notes).
     pub report: StepImportReport,
+    /// Per-solid surface colour (`STYLED_ITEM`), same order as `solids`:
+    /// the solid's own style, else its shell's, else the colour on most of
+    /// its faces. `None` when the file styles nothing on it.
+    pub colors: Vec<Option<[f64; 3]>>,
+    /// Per-solid name, same order as `solids`: the `PRODUCT` it belongs to,
+    /// else the solid entity's own name. `None` when neither is set.
+    pub names: Vec<Option<String>>,
+    /// Every placed copy of every solid, with world transforms through the
+    /// assembly tree (see [`crate::solid_occurrences`]). Empty when the
+    /// product structure can't be read; then each solid sits once at its
+    /// own coordinates.
+    pub occurrences: Vec<crate::SolidOccurrence>,
+}
+
+/// Give every half-edge of a loop-to-be to that loop alone. STEP files
+/// that use one ORIENTED_EDGE direction in two loops (KiCad boards via
+/// OCCT do it on every hole: 124 of 620 in one board) would otherwise have
+/// `add_loop` rewire the shared half-edge's `next` into the second loop,
+/// leaving the first loop's chain cycling without reaching its start — the
+/// loop walk then never ends. A claimed half-edge is replaced by a fresh
+/// copy (same origin, edge and twin) for this loop. Returns how many were
+/// copied.
+fn claim_loop_half_edges(topo: &mut Topology, hes: &mut [HalfEdgeId]) -> usize {
+    let mut seen: HashSet<HalfEdgeId> = HashSet::new();
+    let mut copied = 0;
+    for he in hes.iter_mut() {
+        let taken = topo.half_edges[*he].loop_id.is_some() || !seen.insert(*he);
+        if !taken {
+            continue;
+        }
+        let src = topo.half_edges[*he].clone();
+        let dup = topo.add_half_edge(src.origin);
+        topo.half_edges[dup].twin = src.twin;
+        topo.half_edges[dup].edge = src.edge;
+        seen.insert(dup);
+        *he = dup;
+        copied += 1;
+    }
+    copied
 }
 
 /// Read STEP file from a path.
@@ -394,7 +433,7 @@ pub(crate) fn is_solid_brep_type(type_name: &str) -> bool {
 /// Millimetres per length unit declared in the file's `LENGTH_UNIT` complex
 /// entity: an `SI_UNIT` with an optional prefix, or a `CONVERSION_BASED_UNIT`
 /// named inch/foot. Returns 1.0 (millimetres) when no length unit is declared.
-fn length_unit_mm(file: &StepFile) -> f64 {
+pub(crate) fn length_unit_mm(file: &StepFile) -> f64 {
     let mut ids: Vec<u64> = file
         .entities
         .values()
@@ -612,7 +651,55 @@ impl<'a> StepReader<'a> {
             report.solids.push(solid_report);
         }
 
-        Ok(ReadResult { solids, report })
+        let styled = crate::style::styled_colors(self.file);
+        let occurrences = crate::assembly::solid_occurrences(self.file).unwrap_or_default();
+        let mut colors = Vec::with_capacity(solids.len());
+        let mut names = Vec::with_capacity(solids.len());
+        for r in &report.solids {
+            let id = r.solid_id;
+            let msb = parse_manifold_solid_brep(self.file, id).ok();
+            let shells: Vec<u64> = msb.iter().map(|m| m.outer_shell_id).collect();
+            let faces: Vec<u64> = shells
+                .iter()
+                .filter_map(|&sh| parse_shell(self.file, sh).ok())
+                .flat_map(|sh| sh.face_ids)
+                .collect();
+            colors.push(crate::style::solid_color(&styled, id, &shells, &faces));
+            // The product names the part — unless several solids share one
+            // product (a multi-body part, vcad's own multi-solid export),
+            // where only the solid's own name tells them apart.
+            let product = occurrences
+                .iter()
+                .find(|o| o.solid_id == id)
+                .filter(|o| {
+                    let mut siblings = occurrences
+                        .iter()
+                        .filter(|p| p.part_name == o.part_name)
+                        .map(|p| p.solid_id);
+                    siblings.all(|s| s == id)
+                })
+                .map(|o| o.part_name.clone());
+            let own = self
+                .file
+                .get(id)
+                .and_then(|e| e.args.first())
+                .and_then(|a| a.as_string())
+                .map(str::to_owned);
+            names.push(
+                product
+                    .into_iter()
+                    .chain(own)
+                    .find(|n| !n.trim().is_empty()),
+            );
+        }
+
+        Ok(ReadResult {
+            solids,
+            report,
+            colors,
+            names,
+            occurrences,
+        })
     }
 
     fn check_cancelled(&self) -> Result<(), StepError> {
@@ -797,6 +884,7 @@ impl<'a> StepReader<'a> {
         // Plane surface index -> index of its normal-flipped copy.
         let mut flipped_planes: HashMap<usize, usize> = HashMap::new();
         let mut reoriented_faces = 0usize;
+        let mut reused_half_edges = 0usize;
 
         for &face_id in &step_shell.face_ids {
             self.check_cancelled()?;
@@ -822,17 +910,30 @@ impl<'a> StepReader<'a> {
 
                 // Collect half-edges for this loop.
                 // For subdivided curved edges, expand to the chain of sub-half-edges.
+                //
+                // `FACE_BOUND(…, .F.)` uses its loop reversed: the edges in
+                // the opposite order, each walked the other way. KiCad's
+                // StepUp and OCCT write every bound of a part this way;
+                // ignoring the flag wound each face against its neighbours
+                // (656 doubly-claimed half-edges and an inside-out solid on
+                // a SOIC-8 model).
                 let mut loop_hes = Vec::new();
-                for &oe_id in &loop_.edge_ids {
+                let mut oe_ids = loop_.edge_ids.clone();
+                if !bound.orientation {
+                    oe_ids.reverse();
+                }
+                for &oe_id in &oe_ids {
                     let oe = parse_oriented_edge(self.file, oe_id)?;
-                    let key = (oe.edge_id, oe.orientation);
+                    let key = (oe.edge_id, oe.orientation == bound.orientation);
                     if let Some(chain) = self.subdivided_edges.get(&key) {
                         loop_hes.extend_from_slice(chain);
-                    } else {
-                        let he_id = self.half_edge_map[&key];
+                    } else if let Some(&he_id) = self.half_edge_map.get(&key) {
                         loop_hes.push(he_id);
+                    } else {
+                        return Err(StepError::MissingEntity(oe.edge_id));
                     }
                 }
+                reused_half_edges += claim_loop_half_edges(&mut topo, &mut loop_hes);
 
                 let loop_id = topo.add_loop(&loop_hes);
 
@@ -939,6 +1040,13 @@ impl<'a> StepReader<'a> {
                 topo.add_inner_loop(face_id, inner);
             }
             vcad_face_ids.push(face_id);
+        }
+
+        if reused_half_edges > 0 {
+            solid_report.notes.push(format!(
+                "{reused_half_edges} half-edge{} used by two loops in the same direction (non-manifold or mis-oriented faces in the file); duplicated so each loop stays closed",
+                if reused_half_edges == 1 { "" } else { "s" }
+            ));
         }
 
         if reoriented_faces > 0 {
@@ -1179,6 +1287,135 @@ impl<'a> StepReader<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One face of a cube rewritten to walk its edges the same way as its
+    /// neighbours do (every ORIENTED_EDGE flag flipped, loop reversed): each
+    /// of those half-edges is then claimed by two loops. KiCad boards (via
+    /// OCCT) do this on every hole, and the shared half-edge used to be
+    /// rewired into a `next` cycle that never returned — the import hung.
+    #[test]
+    fn half_edge_used_by_two_loops_does_not_hang() {
+        let cube = vcad_kernel_primitives::make_cube(10.0, 10.0, 10.0);
+        let content =
+            String::from_utf8(crate::writer::write_step_to_buffer(&cube).unwrap()).unwrap();
+        let file = Parser::parse(content.as_bytes()).unwrap();
+        let mut loops = file.entities_of_type("EDGE_LOOP");
+        loops.sort_by_key(|e| e.id);
+        let oes = loops[0].entity_ref_list(1).unwrap();
+        let mut out = String::new();
+        for line in content.lines() {
+            let id: Option<u64> = line
+                .strip_prefix('#')
+                .and_then(|r| r.split(|c: char| !c.is_ascii_digit()).next())
+                .and_then(|n| n.parse().ok());
+            let line = match id {
+                Some(id) if oes.contains(&id) => {
+                    if line.contains(".T.") {
+                        line.replace(".T.", ".F.")
+                    } else {
+                        line.replace(".F.", ".T.")
+                    }
+                }
+                _ => line.to_string(),
+            };
+            out.push_str(&line);
+            out.push('\n');
+        }
+        let r = read_step_from_buffer_with_report(out.as_bytes()).unwrap();
+        assert_eq!(r.solids[0].topology.faces.len(), 6);
+        assert!(
+            r.report.solids[0]
+                .notes
+                .iter()
+                .any(|n| n.contains("used by two loops")),
+            "{:?}",
+            r.report.solids[0].notes
+        );
+        // Every loop walk terminates and closes.
+        let topo = &r.solids[0].topology;
+        for (_, face) in topo.faces.iter() {
+            let n = topo.loop_half_edges(face.outer_loop).count();
+            assert!((3..=64).contains(&n), "loop of {n}");
+        }
+    }
+
+    /// The same cube, one face written the KiCad/OCCT way: its loop listed
+    /// backwards with every edge flipped, and `FACE_OUTER_BOUND(…, .F.)` to
+    /// say "use it reversed". That is the identical face; reading it must
+    /// claim no half-edge twice.
+    #[test]
+    fn reversed_face_bound_is_honoured() {
+        let cube = vcad_kernel_primitives::make_cube(10.0, 10.0, 10.0);
+        let content =
+            String::from_utf8(crate::writer::write_step_to_buffer(&cube).unwrap()).unwrap();
+        let file = Parser::parse(content.as_bytes()).unwrap();
+        let mut bounds = file.entities_of_type("FACE_OUTER_BOUND");
+        bounds.sort_by_key(|e| e.id);
+        let bound_id = bounds[0].id;
+        let loop_id = bounds[0].entity_ref(1).unwrap();
+        let oes = file.get(loop_id).unwrap().entity_ref_list(1).unwrap();
+        let id_of = |line: &str| -> Option<u64> {
+            line.strip_prefix('#')
+                .and_then(|r| r.split(|c: char| !c.is_ascii_digit()).next())
+                .and_then(|n| n.parse().ok())
+        };
+        let mut out = String::new();
+        for line in content.lines() {
+            let line = match id_of(line) {
+                Some(id) if oes.contains(&id) => {
+                    if line.contains(".T.") {
+                        line.replace(".T.", ".F.")
+                    } else {
+                        line.replace(".F.", ".T.")
+                    }
+                }
+                Some(id) if id == loop_id => {
+                    let rev: Vec<String> = oes.iter().rev().map(|o| format!("#{o}")).collect();
+                    format!("#{loop_id} = EDGE_LOOP('',({}));", rev.join(","))
+                }
+                Some(id) if id == bound_id => line.replace(".T.", ".F."),
+                _ => line.to_string(),
+            };
+            out.push_str(&line);
+            out.push('\n');
+        }
+        assert_ne!(out, content);
+        let r = read_step_from_buffer_with_report(out.as_bytes()).unwrap();
+        assert!(
+            !r.report.solids[0]
+                .notes
+                .iter()
+                .any(|n| n.contains("used by two loops")),
+            "{:?}",
+            r.report.solids[0].notes
+        );
+        let topo = &r.solids[0].topology;
+        for (_, face) in topo.faces.iter() {
+            assert_eq!(topo.loop_half_edges(face.outer_loop).count(), 4);
+        }
+    }
+
+    #[test]
+    fn colours_and_names_survive_a_round_trip() {
+        let a = vcad_kernel_primitives::make_cube(10.0, 10.0, 10.0);
+        let b = vcad_kernel_primitives::make_cube(5.0, 5.0, 5.0);
+        let buf = crate::writer::write_step_solids_styled_to_buffer(&[
+            (&a, "red block", Some([0.8, 0.1, 0.2])),
+            (&b, "plain block", None),
+        ])
+        .unwrap();
+        let r = read_step_from_buffer_with_report(&buf).unwrap();
+        assert_eq!(r.solids.len(), 2);
+        assert_eq!(r.colors, vec![Some([0.8, 0.1, 0.2]), None]);
+        assert_eq!(
+            r.names,
+            vec![
+                Some("red block".to_string()),
+                Some("plain block".to_string())
+            ]
+        );
+        assert_eq!(r.occurrences.len(), 2);
+    }
 
     /// An anchor (SDR -> representation) that references no solids must fail
     /// loudly, even when unreachable MANIFOLD_SOLID_BREPs exist in the file —

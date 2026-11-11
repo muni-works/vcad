@@ -166,16 +166,23 @@ pub fn export_step(doc: &Document) -> Result<(Vec<u8>, usize), String> {
             mesh_only.join(", ")
         ));
     }
-    let named: Vec<(&Solid, String)> = roots
+    // A root's material colour rides along as a STEP STYLED_ITEM, so a
+    // coloured import (or a part the user coloured) exports coloured.
+    let color_of = |node: vcad_ir::NodeId| -> Option<[f64; 3]> {
+        let entry = doc.roots.iter().find(|e| e.root == node)?;
+        doc.materials.get(&entry.material).map(|m| m.color)
+    };
+    let named: Vec<(&Solid, String, Option<[f64; 3]>)> = roots
         .iter()
         .enumerate()
         .filter_map(|(i, r)| {
             let name = r.name.clone().unwrap_or_else(|| format!("part_{}", i + 1));
-            r.solid.as_ref().map(|s| (s, name))
+            r.solid.as_ref().map(|s| (s, name, color_of(r.node_id)))
         })
         .collect();
-    let refs: Vec<(&Solid, &str)> = named.iter().map(|(s, n)| (*s, n.as_str())).collect();
-    let bytes = Solid::solids_to_step_buffer(&refs).map_err(|e| format!("STEP: {e}"))?;
+    let refs: Vec<(&Solid, &str, Option<[f64; 3]>)> =
+        named.iter().map(|(s, n, c)| (*s, n.as_str(), *c)).collect();
+    let bytes = Solid::solids_to_step_buffer_styled(&refs).map_err(|e| format!("STEP: {e}"))?;
     Ok((bytes, named.len()))
 }
 

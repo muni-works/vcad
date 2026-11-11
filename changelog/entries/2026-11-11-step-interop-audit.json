@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-11-step-interop-audit",
+  "version": "0.11.0",
+  "date": "2026-11-11",
+  "category": "fix",
+  "title": "STEP import: no hangs, colours, assembly placement",
+  "summary": "KiCad and FreeCAD STEP files no longer hang; reversed face bounds read right; colours, part names and assembly instance poses import and colours export; rational surfaces export.",
+  "features": ["step", "import", "export", "native-app"]
+}

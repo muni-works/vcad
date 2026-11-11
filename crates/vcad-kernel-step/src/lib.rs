@@ -49,11 +49,12 @@ mod error;
 mod pmi;
 mod reader;
 mod reconstruct;
+mod style;
 mod writer;
 
 pub use assembly::{
-    read_step_assembly, read_step_assembly_from_buffer, StepAssembly, StepInstance, StepPart,
-    StepPlacement,
+    read_step_assembly, read_step_assembly_from_buffer, solid_occurrences, SolidOccurrence,
+    StepAssembly, StepInstance, StepPart, StepPlacement,
 };
 pub use error::StepError;
 pub use pmi::{
@@ -66,7 +67,8 @@ pub use reader::{
     StepProgress, StepStage,
 };
 pub use writer::{
-    write_step, write_step_solids, write_step_solids_to_buffer, write_step_to_buffer,
+    write_step, write_step_solids, write_step_solids_styled_to_buffer, write_step_solids_to_buffer,
+    write_step_to_buffer,
 };
 
 // Re-export stepperoni types for downstream consumers

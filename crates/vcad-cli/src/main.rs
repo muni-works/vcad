@@ -2887,7 +2887,6 @@ fn recognize_features(input: &PathBuf, json: bool, min_count: usize) -> Result<(
 
 fn import_step(input: &PathBuf, output: &PathBuf, name: Option<String>) -> Result<()> {
     use std::fs;
-    use vcad_kernel::Solid;
 
     // Derive name from filename if not provided
     let part_name = name.unwrap_or_else(|| {
@@ -2898,60 +2897,30 @@ fn import_step(input: &PathBuf, output: &PathBuf, name: Option<String>) -> Resul
             .to_string()
     });
 
-    // Import the STEP file
-    let (solids, report) = Solid::from_step_all_with_report(input)?;
-
-    if let Some(summary) = report.summary() {
+    // The same document the Mac app builds: one root per placed assembly
+    // occurrence, named after it, coloured from the file's STYLED_ITEMs.
+    let read = vcad_kernel::vcad_kernel_step::read_step_with_report(input)?;
+    if let Some(summary) = read.report.summary() {
         eprintln!(
             "warning: STEP import skipped {} face(s) with unsupported surface types:",
-            report.total_skipped_faces()
+            read.report.total_skipped_faces()
         );
         eprintln!("{summary}");
     }
-
-    if solids.is_empty() {
+    if read.solids.is_empty() {
         anyhow::bail!("No solids found in STEP file");
     }
-
-    // Create a vcad document
-    let mut doc = vcad_ir::Document::new();
-
-    for (i, _solid) in solids.iter().enumerate() {
-        let node_name = if solids.len() == 1 {
-            part_name.clone()
-        } else {
-            format!("{}_{}", part_name, i)
-        };
-
-        let node_id = (i + 1) as u64;
-        doc.nodes.insert(
-            node_id,
-            vcad_ir::Node {
-                id: node_id,
-                name: Some(node_name),
-                op: vcad_ir::CsgOp::StepImport {
-                    path: input.to_string_lossy().into_owned(),
-                    // Each node names its own body. Before `solid_index`
-                    // existed every node here resolved to solid 0, so a
-                    // multi-body STEP became N copies of the first body.
-                    solid_index: if i == 0 { None } else { Some(i as u32) },
-                },
-            },
-        );
-        doc.roots.push(vcad_ir::SceneEntry {
-            root: node_id,
-            material: "default".to_string(),
-            visible: None,
-        });
-    }
+    let doc =
+        vcad_eval::step_doc::step_assembly_document(&read, &input.to_string_lossy(), &part_name);
 
     // Write the document
     let json = doc.to_json()?;
     fs::write(output, json)?;
 
     println!(
-        "Imported {} solid(s) from {} to {}",
-        solids.len(),
+        "Imported {} solid(s), {} placed part(s) from {} to {}",
+        read.solids.len(),
+        doc.roots.len(),
         input.display(),
         output.display()
     );

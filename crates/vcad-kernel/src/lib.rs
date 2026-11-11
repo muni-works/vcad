@@ -2400,6 +2400,24 @@ impl Solid {
         Ok(vcad_kernel_step::write_step_solids_to_buffer(&breps)?)
     }
 
+    /// [`Solid::solids_to_step_buffer`] with an optional sRGB colour per
+    /// solid, written as AP214 `STYLED_ITEM`s.
+    pub fn solids_to_step_buffer_styled(
+        solids: &[(&Solid, &str, Option<[f64; 3]>)],
+    ) -> Result<Vec<u8>, StepExportError> {
+        let mut breps: Vec<(&BRepSolid, &str, Option<[f64; 3]>)> = Vec::with_capacity(solids.len());
+        for (solid, name, color) in solids {
+            match &solid.repr {
+                SolidRepr::BRep(brep) => breps.push((brep.as_ref(), name, *color)),
+                SolidRepr::Mesh(_) => return Err(StepExportError::NotBRep(solid.why_not_brep())),
+                SolidRepr::Empty => return Err(StepExportError::Empty),
+            }
+        }
+        Ok(vcad_kernel_step::write_step_solids_styled_to_buffer(
+            &breps,
+        )?)
+    }
+
     /// Check if this solid can be exported to STEP format.
     ///
     /// Returns `true` if the solid has B-rep data (not converted to mesh-only).

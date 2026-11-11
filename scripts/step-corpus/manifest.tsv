@@ -1,0 +1,24 @@
+# id	claimed_origin	licence	url
+# claimed_origin is what the source project says; the scorecard reports the
+# exporter actually named in each file's HEADER (FILE_NAME originating_system).
+fusion-switchwire-pinion	fusion	GPL-3.0	https://raw.githubusercontent.com/VoronDesign/Voron-Switchwire/92cc013ca2af94e6c09950dbe05c0973ee49aa00/CAD/Pinion.step
+fusion-smallrobotarm-axis3	fusion	GPL-3.0	https://raw.githubusercontent.com/SkyentificGit/SmallRobotArm/cc3e181b607b31967086bc6afacd518a8a67c76f/Fusion360/Axis3%20v181.step
+fusion-opendog-internals	fusion	MIT	https://raw.githubusercontent.com/XRobots/openDogV3/537aa0db8539bf255b072e4a1d7da38d08084ba8/CAD/openDog%20V3_internals_toleranced.stp
+fusion-opendog-remote	fusion	MIT	https://raw.githubusercontent.com/XRobots/openDogV3/537aa0db8539bf255b072e4a1d7da38d08084ba8/CAD/Remote.stp
+onshape-keyframe-ansi	onshape	MIT	https://raw.githubusercontent.com/InkboxSoftware/all-screen-keyboard/114089703c1ed9289cd17c4ad57feb17260d3aa3/3Dmodels/keyFrameANSI.step
+onshape-keycores	onshape	MIT	https://raw.githubusercontent.com/InkboxSoftware/all-screen-keyboard/114089703c1ed9289cd17c4ad57feb17260d3aa3/3Dmodels/AcrylicKeyCores.step
+onshape-koala-casing	onshape	see-repo	https://raw.githubusercontent.com/formatBCE/Koala-Satellite/2f0bac9bf5369484b331ec8aab943c5648a4b103/casing/step/Main%20casing.step
+solidworks-hexy-servo	solidworks	see-repo	https://raw.githubusercontent.com/ArcBotics/Hexy/24f102c8ee4b9c28789e41e2c1284f9aa9e3df9c/Servo/Servo.STEP
+solidworks-hexy-nameplate	solidworks	see-repo	https://raw.githubusercontent.com/ArcBotics/Hexy/24f102c8ee4b9c28789e41e2c1284f9aa9e3df9c/Name_plate/Name_plate.STEP
+solidworks-um2-1546	solidworks	CC-BY-NC-SA-3.0	https://raw.githubusercontent.com/Ultimaker/Ultimaker2ExtendedPlus/2c9bd49dd562e6d5974d0ed5b4fb57d2ee41cb5e/1546-A/1546-A.STEP
+solidworks-um2-2202	solidworks	CC-BY-NC-SA-3.0	https://raw.githubusercontent.com/Ultimaker/Ultimaker2ExtendedPlus/2c9bd49dd562e6d5974d0ed5b4fb57d2ee41cb5e/2202-A.STEP
+freecad-thor-gearplate	freecad	CC-BY-SA-4.0	https://raw.githubusercontent.com/AngelLM/Thor/286b081fe6f056d87c379b884781ef77ff6a0159/step/Art56GearPlate.step
+freecad-thor-body	freecad	CC-BY-SA-4.0	https://raw.githubusercontent.com/AngelLM/Thor/286b081fe6f056d87c379b884781ef77ff6a0159/step/Art2BodyA.step
+freecad-hexapod-frame	freecad	MIT	https://raw.githubusercontent.com/MakeYourPet/hexapod/7d8fc8034d715d1c9373f48281ecfa500c994d8b/STEP/frame.step
+freecad-modulathe-ballnut	freecad	MIT	https://raw.githubusercontent.com/kachurovskiy/modulathe/12fb197bc0caeaf15062fc1c5869d2be6af981cf/v1/step/BallNutMount2M5-3DP.step
+kicad-pxu-board	kicad	CERN-OHL-S-2.0	https://raw.githubusercontent.com/Andr-Zero/PXU/3babf8f81c62e23c391c05d77a477460910bf96d/KiCad/PXU.step
+kicad-nucleo-mb1180	kicad	GPL-3.0	https://raw.githubusercontent.com/mobilinkd/NucleoTNC/9e6f588d306976088d0e34ea733d9600065b7330/PCB/KiCAD/MB1180-fixed.step
+kicad-lib-soic8	kicad	CC-BY-SA-4.0-with-exception	https://gitlab.com/kicad/libraries/kicad-packages3D/-/raw/9.0.0/Package_SO.3dshapes/SOIC-8_3.9x4.9mm_P1.27mm.step
+kicad-lib-usbc	kicad	CC-BY-SA-4.0-with-exception	https://gitlab.com/kicad/libraries/kicad-packages3D/-/raw/9.0.0/Connector_USB.3dshapes/USB_C_Receptacle_GCT_USB4085.step
+lumenpnp-gt2-idler	unknown	see-repo	https://raw.githubusercontent.com/opulo-inc/lumenpnp/64cf68d5b7980f095ef11913065e7f45a1e3e447/src/OTS/GT2-idler.STEP
+solo2-usbc	unknown	see-repo	https://raw.githubusercontent.com/solokeys/solo2-hw/e7d964cb1ce775b1faa1c0bd1e694b6a124aa630/3d/wurth_632712000112_usb-c.step

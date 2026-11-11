@@ -23,7 +23,7 @@ use vcad_kernel_geom::{
     BilinearSurface, ConeSurface, CylinderSurface, Plane, SphereSurface, SurfaceKind, TorusSurface,
 };
 use vcad_kernel_math::{Dir3, Point3, Vec3};
-use vcad_kernel_nurbs::BSplineSurface;
+use vcad_kernel_nurbs::{BSplineSurface, NurbsSurface};
 use vcad_kernel_primitives::BRepSolid;
 use vcad_kernel_topo::{EdgeId, FaceId, HalfEdgeId, LoopId, Orientation, VertexId};
 
@@ -65,6 +65,21 @@ pub fn write_step_to_buffer(solid: &BRepSolid) -> Result<Vec<u8>, StepError> {
 ///
 /// The STEP file contents as bytes.
 pub fn write_step_solids_to_buffer(solids: &[(&BRepSolid, &str)]) -> Result<Vec<u8>, StepError> {
+    let styled: Vec<(&BRepSolid, &str, Option<[f64; 3]>)> =
+        solids.iter().map(|(s, n)| (*s, *n, None)).collect();
+    write_step_solids_styled_to_buffer(&styled)
+}
+
+/// [`write_step_solids_to_buffer`] with an optional surface colour per
+/// solid (sRGB, 0..1). Colours are written the AP214 way every CAD reader
+/// understands — `STYLED_ITEM` on the `MANIFOLD_SOLID_BREP` through
+/// `SURFACE_STYLE_USAGE` … `COLOUR_RGB`, gathered in a
+/// `MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION` — so a body
+/// imported coloured comes back out coloured in Fusion, Onshape, SolidWorks
+/// and FreeCAD.
+pub fn write_step_solids_styled_to_buffer(
+    solids: &[(&BRepSolid, &str, Option<[f64; 3]>)],
+) -> Result<Vec<u8>, StepError> {
     if solids.is_empty() {
         return Err(StepError::InvalidGeometry(
             "no solids to write to STEP".into(),
@@ -73,7 +88,7 @@ pub fn write_step_solids_to_buffer(solids: &[(&BRepSolid, &str)]) -> Result<Vec<
     let mut entities: Vec<String> = Vec::new();
     let mut next_id = 1;
     let mut solid_ids: Vec<u64> = Vec::new();
-    for (solid, name) in solids {
+    for (solid, name, _) in solids {
         let mut writer = StepWriter::with_start_id(solid, next_id);
         solid_ids.push(writer.write_entities(name)?);
         next_id = writer.next_id;
@@ -86,14 +101,106 @@ pub fn write_step_solids_to_buffer(solids: &[(&BRepSolid, &str)]) -> Result<Vec<
     // report "no 3D geometry" even though the MANIFOLD_SOLID_BREPs are in the
     // file. vcad's own reader scans for solids directly, which is why a
     // round-trip through vcad alone cannot catch the omission.
-    write_product_anchor(&mut entities, &mut next_id, &solid_ids);
+    // A lone solid names the product too, so a reader that names parts by
+    // PRODUCT (every CAD tool) shows the body's name, not "vcad_part".
+    let product_name = match solids {
+        [(_, name, _)] if !name.trim().is_empty() => step_string(name),
+        _ => "vcad_part".to_string(),
+    };
+    let ctx = write_product_anchor(&mut entities, &mut next_id, &solid_ids, &product_name);
+    let colors: Vec<(u64, [f64; 3])> = solid_ids
+        .iter()
+        .zip(solids)
+        .filter_map(|(&id, (_, _, c))| c.map(|c| (id, c)))
+        .collect();
+    write_colors(&mut entities, &mut next_id, ctx, &colors);
     assemble_file(&entities)
+}
+
+/// Append one `STYLED_ITEM` chain per coloured solid (one style chain per
+/// distinct colour) and the presentation representation holding them.
+fn write_colors(
+    entities: &mut Vec<String>,
+    next_id: &mut u64,
+    ctx: u64,
+    colors: &[(u64, [f64; 3])],
+) {
+    if colors.is_empty() {
+        return;
+    }
+    let mut id = || {
+        let v = *next_id;
+        *next_id += 1;
+        v
+    };
+    let mut psa_of: Vec<([u64; 3], u64)> = Vec::new();
+    let mut styled = Vec::new();
+    for &(solid, c) in colors {
+        let c = c.map(|v| v.clamp(0.0, 1.0));
+        let k = c.map(|v| (v * 1e6).round() as u64);
+        let psa = match psa_of.iter().find(|(kk, _)| *kk == k) {
+            Some((_, psa)) => *psa,
+            None => {
+                let rgb = id();
+                entities.push(format!(
+                    "#{rgb} = COLOUR_RGB('',{},{},{});",
+                    step_real(c[0]),
+                    step_real(c[1]),
+                    step_real(c[2])
+                ));
+                let fasc = id();
+                entities.push(format!("#{fasc} = FILL_AREA_STYLE_COLOUR('',#{rgb});"));
+                let fas = id();
+                entities.push(format!("#{fas} = FILL_AREA_STYLE('',(#{fasc}));"));
+                let ssfa = id();
+                entities.push(format!("#{ssfa} = SURFACE_STYLE_FILL_AREA(#{fas});"));
+                let sss = id();
+                entities.push(format!("#{sss} = SURFACE_SIDE_STYLE('',(#{ssfa}));"));
+                let ssu = id();
+                entities.push(format!("#{ssu} = SURFACE_STYLE_USAGE(.BOTH.,#{sss});"));
+                let psa = id();
+                entities.push(format!("#{psa} = PRESENTATION_STYLE_ASSIGNMENT((#{ssu}));"));
+                psa_of.push((k, psa));
+                psa
+            }
+        };
+        let si = id();
+        entities.push(format!("#{si} = STYLED_ITEM('color',(#{psa}),#{solid});"));
+        styled.push(format!("#{si}"));
+    }
+    let mdgpr = id();
+    entities.push(format!(
+        "#{mdgpr} = MECHANICAL_DESIGN_GEOMETRIC_PRESENTATION_REPRESENTATION('',({}),#{ctx});",
+        styled.join(",")
+    ));
+}
+
+/// A name made safe for a STEP string literal — quotes stripped, as
+/// `write_solid` does for the solid's own name, so the two stay equal.
+fn step_string(s: &str) -> String {
+    s.replace('\'', "")
+}
+
+/// A STEP REAL literal (always has a decimal point).
+fn step_real(v: f64) -> String {
+    let s = format!("{v}");
+    if s.contains('.') || s.contains('E') || s.contains('e') {
+        s
+    } else {
+        format!("{s}.")
+    }
 }
 
 /// Append the AP214 product structure + representation context that anchor
 /// the solids for conforming importers: SI units (mm), uncertainty, one
 /// PRODUCT, and an ADVANCED_BREP_SHAPE_REPRESENTATION holding every solid.
-fn write_product_anchor(entities: &mut Vec<String>, next_id: &mut u64, solid_ids: &[u64]) {
+/// Returns the geometric representation context's id.
+fn write_product_anchor(
+    entities: &mut Vec<String>,
+    next_id: &mut u64,
+    solid_ids: &[u64],
+    product_name: &str,
+) -> u64 {
     let mut id = || {
         let v = *next_id;
         *next_id += 1;
@@ -113,7 +220,7 @@ fn write_product_anchor(entities: &mut Vec<String>, next_id: &mut u64, solid_ids
     ));
     let prod = id();
     entities.push(format!(
-        "#{prod} = PRODUCT('vcad_part','vcad_part','',(#{pctx}));"
+        "#{prod} = PRODUCT('{product_name}','{product_name}','',(#{pctx}));"
     ));
     let prpc = id();
     entities.push(format!(
@@ -167,6 +274,7 @@ fn write_product_anchor(entities: &mut Vec<String>, next_id: &mut u64, solid_ids
     entities.push(format!(
         "#{sdr} = SHAPE_DEFINITION_REPRESENTATION(#{pds},#{absr});"
     ));
+    ctx
 }
 
 /// Write several named BRepSolids to a single STEP file on disk.
@@ -384,13 +492,19 @@ impl<'a> StepWriter<'a> {
                     )
                 }
                 SurfaceKind::BSpline => {
-                    let bspline = surface
-                        .as_any()
-                        .downcast_ref::<BSplineSurface>()
-                        .ok_or_else(|| {
-                            StepError::InvalidGeometry("failed to downcast BSpline surface".into())
-                        })?;
-                    let entity = self.write_bspline_surface_entity(bspline);
+                    // Rational patches (SolidWorks/Fusion fillets read as
+                    // `NurbsSurface`) share the BSpline kind; they used to
+                    // fail the downcast and abort the whole export.
+                    let any = surface.as_any();
+                    let entity = if let Some(b) = any.downcast_ref::<BSplineSurface>() {
+                        self.write_bspline_surface_entity(b)
+                    } else if let Some(n) = any.downcast_ref::<NurbsSurface>() {
+                        self.write_nurbs_surface_entity(n)
+                    } else {
+                        return Err(StepError::InvalidGeometry(
+                            "unsupported B-spline surface representation".into(),
+                        ));
+                    };
                     self.emit(surf_id, &entity);
                     self.surface_map.insert(idx, surf_id);
                     continue;
@@ -481,6 +595,58 @@ impl<'a> StepWriter<'a> {
             &u_mults,
             &v_knots,
             &v_mults,
+        )
+    }
+
+    /// Write a rational NurbsSurface as the AP214 complex entity
+    /// `(B_SPLINE_SURFACE … B_SPLINE_SURFACE_WITH_KNOTS … RATIONAL_B_SPLINE_SURFACE …)`,
+    /// weights in the same `[u][v]` order as the control points.
+    fn write_nurbs_surface_entity(&mut self, n: &NurbsSurface) -> String {
+        let points: Vec<Point3> = n.control_points.iter().map(|w| w.point).collect();
+        let cp_ids = write_bspline_control_points(&points, n.n_u, n.n_v, &mut |entity_str| {
+            let id = self.alloc_id();
+            self.emit(id, entity_str);
+            id
+        });
+        let rows: Vec<String> = cp_ids
+            .iter()
+            .map(|row| {
+                let r: Vec<String> = row.iter().map(|id| format!("#{id}")).collect();
+                format!("({})", r.join(","))
+            })
+            .collect();
+        let weights: Vec<String> = (0..n.n_u)
+            .map(|u| {
+                let r: Vec<String> = (0..n.n_v)
+                    .map(|v| format!("{:.15E}", n.control_points[v * n.n_u + u].weight))
+                    .collect();
+                format!("({})", r.join(","))
+            })
+            .collect();
+        let (u_knots, u_mults) = compress_knots(&n.knots_u);
+        let (v_knots, v_mults) = compress_knots(&n.knots_v);
+        let join_usize = |v: &[usize]| {
+            v.iter()
+                .map(|m| m.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let join_f = |v: &[f64]| {
+            v.iter()
+                .map(|k| format!("{k:.15E}"))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        format!(
+            "( BOUNDED_SURFACE() B_SPLINE_SURFACE({},{},({}),.UNSPECIFIED.,.U.,.U.,.U.) B_SPLINE_SURFACE_WITH_KNOTS(({}),({}),({}),({}),.UNSPECIFIED.) GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_SURFACE(({})) REPRESENTATION_ITEM('') SURFACE() )",
+            n.degree_u,
+            n.degree_v,
+            rows.join(","),
+            join_usize(&u_mults),
+            join_usize(&v_mults),
+            join_f(&u_knots),
+            join_f(&v_knots),
+            weights.join(","),
         )
     }
 
@@ -1476,6 +1642,52 @@ mod tests {
             !content.contains("PLANE('"),
             "Non-planar bilinear should NOT be written as PLANE"
         );
+    }
+
+    /// A rational patch (quarter-cylinder, weights 1, √½, 1) exports as the
+    /// RATIONAL complex entity and reads back as the same surface. It used
+    /// to abort the export: "failed to downcast BSpline surface".
+    #[test]
+    fn test_roundtrip_rational_surface() {
+        use vcad_kernel_nurbs::WeightedPoint;
+        let w = std::f64::consts::FRAC_1_SQRT_2;
+        let arc = [(10.0, 0.0, 1.0), (10.0, 10.0, w), (0.0, 10.0, 1.0)];
+        let mut cps = Vec::new();
+        for z in [0.0, 20.0] {
+            for (x, y, wt) in arc {
+                cps.push(WeightedPoint::new(Point3::new(x, y, z), wt));
+            }
+        }
+        let k2 = vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0];
+        let k1 = vec![0.0, 0.0, 1.0, 1.0];
+        let nurbs = NurbsSurface::new(cps, 3, 2, k2, k1, 2, 1);
+        let probe =
+            |s: &dyn vcad_kernel_geom::Surface| s.evaluate(vcad_kernel_math::Point2::new(0.5, 0.5));
+        let want = probe(&nurbs);
+        assert!(((want.x.powi(2) + want.y.powi(2)).sqrt() - 10.0).abs() < 1e-9);
+        let corners = [
+            probe_at(&nurbs, 0.0, 0.0),
+            probe_at(&nurbs, 1.0, 0.0),
+            probe_at(&nurbs, 1.0, 1.0),
+            probe_at(&nurbs, 0.0, 1.0),
+        ];
+        let solid = make_single_face_solid(Box::new(nurbs), corners);
+        let buffer = write_step_to_buffer(&solid).unwrap();
+        let text = String::from_utf8_lossy(&buffer);
+        assert!(text.contains("RATIONAL_B_SPLINE_SURFACE"));
+        let solids = read_step_from_buffer(&buffer).unwrap();
+        let back = solids[0]
+            .geometry
+            .surfaces
+            .iter()
+            .find(|s| s.surface_type() == SurfaceKind::BSpline)
+            .expect("rational patch after round trip");
+        let got = probe(back.as_ref());
+        assert!((got - want).norm() < 1e-6, "{got:?} vs {want:?}");
+    }
+
+    fn probe_at(s: &dyn vcad_kernel_geom::Surface, u: f64, v: f64) -> Point3 {
+        s.evaluate(vcad_kernel_math::Point2::new(u, v))
     }
 
     #[test]

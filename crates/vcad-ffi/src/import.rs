@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use serde::Serialize;
-use vcad_ir::{CsgOp, Document, Node, SceneEntry};
+use vcad_ir::Document;
 use vcad_kernel::vcad_kernel_step::{self, StepError, StepProgress, StepStage};
 
 use crate::err;
@@ -56,8 +56,7 @@ fn step_document_with(path: &str, progress: Option<&StepProgress>) -> Result<Ste
         Err(StepError::Cancelled) => return Err("cancelled".into()),
         Err(e) => return Err(format!("{}: {e}", abs.display())),
     };
-    let solids = read.solids;
-    if solids.is_empty() {
+    if read.solids.is_empty() {
         return Err(format!("{}: no solids in file", abs.display()));
     }
     let abs_str = abs.to_string_lossy().into_owned();
@@ -65,31 +64,8 @@ fn step_document_with(path: &str, progress: Option<&StepProgress>) -> Result<Ste
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "step".into());
-    let mut doc = Document::new();
-    for i in 0..solids.len() {
-        let id = i as u64 + 1;
-        let name = if solids.len() == 1 {
-            stem.clone()
-        } else {
-            format!("{stem} #{}", i + 1)
-        };
-        doc.nodes.insert(
-            id,
-            Node {
-                id,
-                name: Some(name),
-                op: CsgOp::StepImport {
-                    path: abs_str.clone(),
-                    solid_index: Some(i as u32),
-                },
-            },
-        );
-        doc.roots.push(SceneEntry {
-            root: id,
-            material: "default".into(),
-            visible: None,
-        });
-    }
+    let doc = vcad_eval::step_doc::step_assembly_document(&read, &abs_str, &stem);
+    let solids = read.solids;
     Ok(StepImported {
         document: doc,
         solids: solids.len(),
@@ -295,6 +271,78 @@ mod tests {
         assert!(scene.failures.is_empty(), "{:?}", scene.failures);
         let v = scene.parts[0].solid.as_ref().unwrap().volume();
         assert!((v - 6000.0).abs() < 1.0, "volume {v}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Colours and body names from the file reach the document: each
+    /// coloured body gets a material with that colour, and the tree shows
+    /// the body's name, not "file #2".
+    #[test]
+    fn import_keeps_colours_and_names() {
+        let dir = std::env::temp_dir().join(format!("vcad-ffi-step-col-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("two.step");
+        let a = vcad_kernel::vcad_kernel_primitives::make_cube(10.0, 10.0, 10.0);
+        let b = vcad_kernel::vcad_kernel_primitives::make_cube(4.0, 4.0, 4.0);
+        let buf = vcad_kernel_step::write_step_solids_styled_to_buffer(&[
+            (&a, "housing", Some([0.2, 0.4, 0.8])),
+            (&b, "insert", None),
+        ])
+        .unwrap();
+        std::fs::write(&path, buf).unwrap();
+        let r = import(path.to_str().unwrap());
+        let doc = Document::from_json(&r["document"].to_string()).unwrap();
+        let names: Vec<String> = doc
+            .roots
+            .iter()
+            .map(|e| doc.nodes[&e.root].name.clone().unwrap_or_default())
+            .collect();
+        assert_eq!(names, vec!["housing", "insert"]);
+        let m = &doc.materials[&doc.roots[0].material];
+        assert_eq!(m.color, [0.2, 0.4, 0.8]);
+        assert_eq!(doc.roots[1].material, "default");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An assembly occurrence's pose becomes Translate(Rotate(StepImport))
+    /// that evaluates to the solid at the right place: a 90° turn about Z
+    /// plus (30, 0, 0) moves a 10×20×5 box to x ∈ [10, 30], y ∈ [0, 10].
+    #[test]
+    fn occurrence_pose_lands_where_the_assembly_puts_it() {
+        let dir = std::env::temp_dir().join(format!("vcad-ffi-step-pose-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("box.step");
+        vcad_kernel::Solid::cube(10.0, 20.0, 5.0)
+            .to_step(&path)
+            .unwrap();
+        let mut read = vcad_kernel_step::read_step_with_report(&path).unwrap();
+        let solid_id = read.report.solids[0].solid_id;
+        read.occurrences = vec![vcad_kernel_step::SolidOccurrence {
+            solid_id,
+            transform: [
+                [0.0, -1.0, 0.0, 30.0],
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            part_name: read.names[0].clone().unwrap_or_default(),
+            instance_name: "box:1".into(),
+        }];
+        let doc = vcad_eval::step_doc::step_assembly_document(&read, path.to_str().unwrap(), "box");
+        let scene = evaluate_document(&doc, &EvalOptions::default()).unwrap();
+        assert!(scene.failures.is_empty(), "{:?}", scene.failures);
+        let v = &scene.parts[0].mesh.positions;
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for p in v.chunks(3) {
+            for k in 0..3 {
+                lo[k] = lo[k].min(p[k]);
+                hi[k] = hi[k].max(p[k]);
+            }
+        }
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-3;
+        assert!(near(lo[0], 10.0) && near(hi[0], 30.0), "x {lo:?} {hi:?}");
+        assert!(near(lo[1], 0.0) && near(hi[1], 10.0), "y {lo:?} {hi:?}");
+        assert_eq!(doc.nodes[&doc.roots[0].root].name.as_deref(), Some("box:1"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
