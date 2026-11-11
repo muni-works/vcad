@@ -25,8 +25,36 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Decides whether the Rust jobs need to run. A PR that touches no Rust or
+  # codegen inputs (Swift-only, TS-only, docs) skips them; the "Rust (stable)"
+  # gate below still reports success, so the required check is satisfied.
+  rust-changes:
+    name: Rust change detection
+    runs-on: ubuntu-latest
+    outputs:
+      run: ${{ steps.diff.outputs.run }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - id: diff
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          base="${{ github.event.pull_request.base.sha }}"
+          changed=$(git diff --name-only "$base"...HEAD)
+          echo "$changed"
+          if echo "$changed" | grep -qE '^(crates/|lib/|Cargo\.(toml|lock)$|rust-toolchain|rustfmt\.toml|clippy\.toml|\.config/|packages/ir/|apple/VcadApp/Sources/VcadApp/Generated/|scripts/|package\.json$|\.github/workflows/ci\.yml$)'; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
   rust:
-    name: Rust (${{ matrix.toolchain }})
+    name: Rust build (${{ matrix.toolchain }})
+    needs: rust-changes
+    if: needs.rust-changes.outputs.run == 'true'
     runs-on: ubuntu-latest
     # A single pathological test (a kernel perf regression, a hang) would
     # otherwise burn the full 6h GitHub job limit — 12 runner-hours per PR
@@ -84,20 +112,18 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: nextest@0.9.122
-      # Separate compilation from execution so timing reports identify the
-      # actual bottleneck. Keep optimized test builds: the numerics tests are
-      # dramatically slower without them.
-      - name: Compile Rust tests
-        run: cargo nextest run --workspace --profile ci --no-run --timings
-      # Schedule tests across binaries instead of serializing entire binaries.
-      # Keep collecting failures across the full workspace, with no retries.
-      - name: Run Rust tests
+      # Compile the tests once into a nextest archive; the rust-test shards
+      # below run it in parallel (compiling is ~16 min, running ~14 min —
+      # sharding cuts the latter to a few). Keep optimized test builds: the
+      # numerics tests are dramatically slower without them.
+      - name: Compile Rust tests (nextest archive)
         id: rust-tests
-        run: cargo nextest run --workspace --profile ci --no-fail-fast
-        env:
-          # DocCommand property tests (crates/vcad-app/tests/command_algebra.rs):
-          # a quick sweep on PRs, a deep one on the nightly schedule.
-          VCAD_ALGEBRA_CASES: ${{ github.event_name == 'schedule' && '20000' || '200' }}
+        run: cargo nextest archive --workspace --profile ci --timings --archive-file nextest-archive.tar.zst
+      - uses: actions/upload-artifact@v7
+        with:
+          name: nextest-archive-${{ matrix.toolchain }}
+          path: nextest-archive.tar.zst
+          retention-days: 1
       # nextest does not execute doctests; retain cargo's coverage explicitly.
       - name: Rust doctests
         if: ${{ !cancelled() && (success() || steps.rust-tests.outcome == 'failure') }}
@@ -131,9 +157,69 @@ jobs:
           name: rust-reports-${{ matrix.toolchain }}
           path: |
             target/cargo-timings/
-            target/nextest/ci/junit.xml
           if-no-files-found: ignore
           retention-days: 7
+
+  # Runs the archived tests in parallel shards. No compilation here.
+  rust-test:
+    name: Rust tests (${{ matrix.toolchain }}, ${{ matrix.shard }}/4)
+    needs: rust
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    continue-on-error: ${{ matrix.toolchain == 'nightly' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: ${{ fromJSON((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && '["stable", "nightly"]' || '["stable"]') }}
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Clone sibling repos
+        run: |
+          git clone --depth 1 https://github.com/ecto/tang.git ../tang
+          git clone --depth 1 https://github.com/ecto/phyz.git ../phyz
+          git clone --depth 1 https://github.com/ecto/loon.git ../loon
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest@0.9.122
+      - uses: actions/download-artifact@v8
+        with:
+          name: nextest-archive-${{ matrix.toolchain }}
+      - name: Run Rust tests (shard ${{ matrix.shard }}/4)
+        run: |
+          # Extract into ./target: tests that spawn binaries use compile-time
+          # CARGO_BIN_EXE paths, which point at this same checkout's target/.
+          cargo nextest run --archive-file nextest-archive.tar.zst --workspace-remap . \
+            --extract-to . --extract-overwrite \
+            --profile ci --no-fail-fast --partition count:${{ matrix.shard }}/4
+        env:
+          # DocCommand property tests (crates/vcad-app/tests/command_algebra.rs):
+          # a quick sweep on PRs, a deep one on the nightly schedule.
+          VCAD_ALGEBRA_CASES: ${{ github.event_name == 'schedule' && '20000' || '200' }}
+      - name: Upload test report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-junit-${{ matrix.toolchain }}-${{ matrix.shard }}
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # The required "Rust (stable)" check: green when the build and every shard
+  # passed, or when the PR changed nothing Rust.
+  rust-gate:
+    name: Rust (stable)
+    needs: [rust-changes, rust, rust-test]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          if [ "${{ needs.rust-changes.outputs.run }}" != "true" ]; then
+            echo "No Rust changes — skipped."; exit 0
+          fi
+          [ "${{ needs.rust.result }}" = "success" ] && [ "${{ needs.rust-test.result }}" = "success" ] || {
+            echo "rust=${{ needs.rust.result }} rust-test=${{ needs.rust-test.result }}"; exit 1; }
 
   # Real-KiCad verification of the .kicad_sch/.kicad_pcb exporters: the
   # ignored tests in vcad-ecad-symbols run kicad-cli (ERC gate + netlist
