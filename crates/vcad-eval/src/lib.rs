@@ -176,6 +176,12 @@ pub enum EvalError {
     #[error("missing node: {0}")]
     MissingNode(vcad_ir::NodeId),
 
+    /// A [`vcad_ir::CsgOp::SketchOnFace`] could not attach: the face didn't
+    /// resolve (fail-closed, never a guessed face), isn't planar, or the
+    /// target produced no solid.
+    #[error("sketch on face failed: {0}")]
+    SketchFace(String),
+
     /// A named edge reference (`EdgeQuery::Named`) failed to resolve —
     /// fail-closed: the blend is not applied to a guessed edge.
     #[error("named edge ('{face_a}' / '{face_b}') failed to resolve: {message}")]

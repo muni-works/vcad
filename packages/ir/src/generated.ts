@@ -746,7 +746,19 @@ detail: string, } | { "kind": "unsupported",
 /**
  * Tool or feature kind.
  */
-tool: string, } | { "kind": "batch", 
+tool: string, } | { "kind": "order_violation", 
+/**
+ * The feature being moved.
+ */
+id: string, 
+/**
+ * The feature it would end up on the wrong side of.
+ */
+conflicts_with: string, 
+/**
+ * Plain-language reason, e.g. "it is built on `3:1`".
+ */
+reason: string, } | { "kind": "batch", 
 /**
  * Index of the failing command.
  */
@@ -1079,7 +1091,19 @@ plane_origin: Vec3,
 /**
  * Normal vector of the mirror plane (need not be unit).
  */
-plane_normal: Vec3, } | { "type": "Sketch2D", 
+plane_normal: Vec3, } | { "type": "SketchOnFace", 
+/**
+ * The [`CsgOp::Sketch2D`] to attach.
+ */
+sketch: number, 
+/**
+ * The node whose solid carries the face.
+ */
+target: number, 
+/**
+ * The face, by persistent name and/or geometric hint.
+ */
+face: FaceRef, } | { "type": "Sketch2D", 
 /**
  * Origin point of the sketch plane in 3D.
  */
@@ -2472,7 +2496,19 @@ detail: string, } | { "kind": "unsupported",
 /**
  * Tool or feature kind.
  */
-tool: string, } | { "kind": "batch", 
+tool: string, } | { "kind": "order_violation", 
+/**
+ * The feature being moved.
+ */
+id: string, 
+/**
+ * The feature it would end up on the wrong side of.
+ */
+conflicts_with: string, 
+/**
+ * Plain-language reason, e.g. "it is built on `3:1`".
+ */
+reason: string, } | { "kind": "batch", 
 /**
  * Index of the failing command.
  */

@@ -57,6 +57,10 @@ fn validate_op(doc: &Document, node_id: NodeId, op: &CsgOp) -> Result<(), EvalEr
         | CsgOp::EdgeBlend { child, .. } => {
             check_ref(doc, *child, || at("child"))?;
         }
+        CsgOp::SketchOnFace { sketch, target, .. } => {
+            check_ref(doc, *sketch, || at("sketch"))?;
+            check_ref(doc, *target, || at("target"))?;
+        }
         CsgOp::Extrude { sketch, .. }
         | CsgOp::Revolve { sketch, .. }
         | CsgOp::Sweep { sketch, .. } => {
@@ -142,6 +146,7 @@ fn csg_op_name(op: &CsgOp) -> &'static str {
         CsgOp::Chamfer { .. } => "Chamfer",
         CsgOp::EdgeBlend { .. } => "EdgeBlend",
         CsgOp::Sketch2D { .. } => "Sketch2D",
+        CsgOp::SketchOnFace { .. } => "SketchOnFace",
         CsgOp::Text2D { .. } => "Text2D",
         CsgOp::Extrude { .. } => "Extrude",
         CsgOp::Revolve { .. } => "Revolve",

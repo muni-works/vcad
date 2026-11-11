@@ -1170,7 +1170,7 @@ fn evaluate_op_timed(
             blend_result(c.map(|s| s.edge_blend(&query, &keys)), "edge blend", *child)
         }
 
-        CsgOp::Sketch2D { .. } => {
+        CsgOp::Sketch2D { .. } | CsgOp::SketchOnFace { .. } => {
             // Sketch nodes don't produce geometry directly.
             // They are consumed by Extrude/Revolve/Sweep/Loft.
             Ok(None)
@@ -1188,7 +1188,7 @@ fn evaluate_op_timed(
             twist_angle,
             scale_end,
         } => {
-            let sketch_node = nodes.get(sketch).ok_or(EvalError::MissingNode(*sketch))?;
+            let sketch_node = attached_sketch(*sketch, nodes, cache, &mut eval_child)?;
 
             let dir = to_vec3(direction);
 
@@ -1258,7 +1258,7 @@ fn evaluate_op_timed(
             axis_dir,
             angle_deg,
         } => {
-            let sketch_node = nodes.get(sketch).ok_or(EvalError::MissingNode(*sketch))?;
+            let sketch_node = attached_sketch(*sketch, nodes, cache, &mut eval_child)?;
 
             let (s_origin, s_x_dir, s_y_dir, segments, holes) = extract_sketch(&sketch_node.op)?;
             reject_holes(holes, "revolve")?;
@@ -1286,7 +1286,7 @@ fn evaluate_op_timed(
             path_segments,
             arc_segments,
         } => {
-            let sketch_node = nodes.get(sketch).ok_or(EvalError::MissingNode(*sketch))?;
+            let sketch_node = attached_sketch(*sketch, nodes, cache, &mut eval_child)?;
 
             let (s_origin, s_x_dir, s_y_dir, segments, holes) = extract_sketch(&sketch_node.op)?;
             reject_holes(holes, "sweep")?;
@@ -1349,9 +1349,7 @@ fn evaluate_op_timed(
         CsgOp::Loft { sketches, closed } => {
             let mut profiles = Vec::with_capacity(sketches.len());
             for sketch_id in sketches {
-                let sketch_node = nodes
-                    .get(sketch_id)
-                    .ok_or(EvalError::MissingNode(*sketch_id))?;
+                let sketch_node = attached_sketch(*sketch_id, nodes, cache, &mut eval_child)?;
                 let (s_origin, s_x_dir, s_y_dir, segments, holes) =
                     extract_sketch(&sketch_node.op)?;
                 reject_holes(holes, "loft")?;
@@ -2018,6 +2016,81 @@ type SketchFields<'a> = (
 );
 
 /// Extract sketch fields from a CsgOp, returning error if not a Sketch2D.
+/// The sketch node a consumer (extrude, revolve, sweep, loft) should read.
+///
+/// A plain [`CsgOp::Sketch2D`] is returned as is. A
+/// [`CsgOp::SketchOnFace`] is resolved: its target is evaluated, the face
+/// reference resolved against that solid (fail-closed), and the sketch
+/// re-framed onto the face's plane — origin projected onto the plane,
+/// `x_dir` projected into it, `y_dir = normal × x_dir` — so the profile keeps
+/// its in-plane placement and follows the face along its normal.
+fn attached_sketch<'a>(
+    id: NodeId,
+    nodes: &'a HashMap<NodeId, vcad_ir::Node>,
+    cache: &mut HashMap<NodeId, Option<Solid>>,
+    eval_child: &mut impl FnMut(
+        NodeId,
+        &mut HashMap<NodeId, Option<Solid>>,
+    ) -> Result<Option<Solid>, EvalError>,
+) -> Result<std::borrow::Cow<'a, vcad_ir::Node>, EvalError> {
+    use std::borrow::Cow;
+    let node = nodes.get(&id).ok_or(EvalError::MissingNode(id))?;
+    let CsgOp::SketchOnFace {
+        sketch,
+        target,
+        face,
+    } = &node.op
+    else {
+        return Ok(Cow::Borrowed(node));
+    };
+    let base = nodes.get(sketch).ok_or(EvalError::MissingNode(*sketch))?;
+    let CsgOp::Sketch2D {
+        origin,
+        x_dir,
+        segments,
+        holes,
+        ..
+    } = &base.op
+    else {
+        return Err(EvalError::InvalidSketchRef);
+    };
+    let solid = eval_child(*target, cache)?
+        .ok_or_else(|| EvalError::SketchFace(format!("target node {target} has no solid")))?;
+    let r = crate::convert::to_face_refs(std::slice::from_ref(face))
+        .pop()
+        .expect("one ref in, one out");
+    let fid = solid
+        .resolve_face(r.name.as_deref(), r.point, r.normal)
+        .map_err(|e| EvalError::SketchFace(e.to_string()))?;
+    let (p, n) = solid
+        .face_plane(fid)
+        .ok_or_else(|| EvalError::SketchFace("the face is not planar".into()))?;
+    let o = to_vec3(origin);
+    let pv = Vec3::new(p.x, p.y, p.z);
+    let o2 = o - n * (o - pv).dot(n);
+    let x = to_vec3(x_dir);
+    let mut x2 = x - n * x.dot(n);
+    if x2.norm() < 1e-9 {
+        // The stored x axis is along the new normal: pick any in-plane axis.
+        let seed = if n.x.abs() < 0.9 { Vec3::new(1.0, 0.0, 0.0) } else { Vec3::new(0.0, 1.0, 0.0) };
+        x2 = seed - n * seed.dot(n);
+    }
+    x2 = x2 * (1.0 / x2.norm());
+    let y2 = n.cross(x2);
+    let v = |a: Vec3| vcad_ir::Vec3 { x: a.x, y: a.y, z: a.z };
+    Ok(Cow::Owned(vcad_ir::Node {
+        id,
+        name: node.name.clone(),
+        op: CsgOp::Sketch2D {
+            origin: v(o2),
+            x_dir: v(x2),
+            y_dir: v(y2),
+            segments: segments.clone(),
+            holes: holes.clone(),
+        },
+    }))
+}
+
 fn extract_sketch(op: &CsgOp) -> Result<SketchFields<'_>, EvalError> {
     match op {
         CsgOp::Sketch2D {
@@ -3061,6 +3134,7 @@ fn op_name(op: &CsgOp) -> String {
         CsgOp::Chamfer { .. } => "Chamfer",
         CsgOp::EdgeBlend { .. } => "EdgeBlend",
         CsgOp::Sketch2D { .. } => "Sketch2D",
+        CsgOp::SketchOnFace { .. } => "SketchOnFace",
         CsgOp::Text2D { .. } => "Text2D",
         CsgOp::Extrude { .. } => "Extrude",
         CsgOp::Revolve { .. } => "Revolve",

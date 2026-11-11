@@ -46,6 +46,7 @@ enum OpCoverage {
     /// `#[tool(hidden)]` ops deliberately left without a modeling command.
     static let hidden: [String: String] = [
         "Empty": "An internal placeholder: it has no geometry to author.",
+        "SketchOnFace": "Created by sketching on a named face; it has no parameters of its own.",
         "ImportedMesh": "Created by File, Open on a mesh; it has no parameters.",
         "StepImport": "Created by File, Open on a STEP file.",
         "MeshImport": "Created by importing a URDF; a path reference until it resolves.",

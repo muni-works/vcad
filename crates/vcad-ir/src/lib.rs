@@ -990,6 +990,29 @@ pub enum CsgOp {
     },
     #[tool(
         category = "sketch_op",
+        ai_hint = "Attach a Sketch2D to a face of another node so it follows that face when upstream geometry changes (e.g. a boss sketch on a plate's top stays on top when the plate gets thicker). Extrude/Revolve the SketchOnFace node instead of the Sketch2D. face is {name} (preferred, e.g. 'n3:end') and/or {point, normal}."
+    )]
+    /// A sketch attached to a face of another solid.
+    ///
+    /// At evaluation the face is resolved against `target`'s current
+    /// topology ([`FaceRef`], fail-closed) and the sketch is re-framed onto
+    /// its plane: the stored origin is projected onto the face plane and the
+    /// stored `x_dir` onto the plane's tangent space, so the profile keeps its
+    /// in-plane placement and moves with the face along its normal.
+    /// Consumers ([`CsgOp::Extrude`], [`CsgOp::Revolve`], …) reference this
+    /// node exactly where they would reference the [`CsgOp::Sketch2D`].
+    SketchOnFace {
+        /// The [`CsgOp::Sketch2D`] to attach.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
+        sketch: NodeId,
+        /// The node whose solid carries the face.
+        #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
+        target: NodeId,
+        /// The face, by persistent name and/or geometric hint.
+        face: FaceRef,
+    },
+    #[tool(
+        category = "sketch_op",
         ai_hint = "Defines a closed 2D profile. Segments are Line{start,end} or Arc{start,end,center,ccw}. Usually used inline with extrude/revolve — prefer creating extrude directly with inline sketch."
     )]
     /// A 2D sketch profile on a plane.
@@ -1528,6 +1551,7 @@ impl CsgOp {
             | CsgOp::Revolve { sketch, .. }
             | CsgOp::Sweep { sketch, .. } => vec![*sketch],
             CsgOp::Loft { sketches, .. } => sketches.clone(),
+            CsgOp::SketchOnFace { sketch, target, .. } => vec![*sketch, *target],
             CsgOp::Hull { children, .. } => children.clone(),
             CsgOp::SheetMetalEdgeFlange { parent, .. }
             | CsgOp::SheetMetalJog { parent, .. }
@@ -1579,6 +1603,7 @@ impl CsgOp {
             | CsgOp::Revolve { sketch, .. }
             | CsgOp::Sweep { sketch, .. } => vec![sketch],
             CsgOp::Loft { sketches, .. } => sketches.iter_mut().collect(),
+            CsgOp::SketchOnFace { sketch, target, .. } => vec![sketch, target],
             CsgOp::Hull { children, .. } => children.iter_mut().collect(),
             CsgOp::SheetMetalEdgeFlange { parent, .. }
             | CsgOp::SheetMetalJog { parent, .. }
@@ -1628,6 +1653,7 @@ impl CsgOp {
             | CsgOp::Prism { .. }
             | CsgOp::SpurGear { .. }
             | CsgOp::Empty
+            | CsgOp::SketchOnFace { .. }
             | CsgOp::Union { .. }
             | CsgOp::Difference { .. }
             | CsgOp::Intersection { .. }

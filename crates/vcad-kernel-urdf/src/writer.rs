@@ -416,6 +416,7 @@ impl<'a> UrdfWriter<'a> {
                 self.node_to_geometry(*child)
             }
             CsgOp::Sketch2D { .. }
+            | CsgOp::SketchOnFace { .. }
             | CsgOp::Text2D { .. }
             | CsgOp::Extrude { .. }
             | CsgOp::Revolve { .. }

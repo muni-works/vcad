@@ -39,6 +39,18 @@ pub struct ProfileIn {
     segments: Vec<SketchSegment2D>,
     #[serde(default)]
     holes: Option<Vec<Vec<SketchSegment2D>>>,
+    /// Attach the sketch to a face of `target`, so it follows that face when
+    /// upstream geometry changes (IR [`CsgOp::SketchOnFace`]). The stored
+    /// frame stays as the placement inside the face's plane.
+    #[serde(default)]
+    on_face: Option<OnFaceIn>,
+}
+
+/// Where an attached sketch lives: a node and a face of its solid.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OnFaceIn {
+    target: NodeId,
+    face: vcad_ir::FaceRef,
 }
 
 fn default_segments() -> u32 {
@@ -251,12 +263,26 @@ impl<'a> Builder<'a> {
         if p.segments.is_empty() {
             return Err("profile has no segments".into());
         }
-        Ok(self.node(CsgOp::Sketch2D {
+        let sketch = self.node(CsgOp::Sketch2D {
             origin: p.origin,
             x_dir: p.x_dir,
             y_dir: p.y_dir,
             segments: p.segments.clone(),
             holes: p.holes.clone(),
+        });
+        let Some(on) = &p.on_face else {
+            return Ok(sketch);
+        };
+        if !self.doc.nodes.contains_key(&on.target) {
+            return Err(format!("node {} is not in the document", on.target));
+        }
+        if on.face.name.is_none() && on.face.point.is_none() {
+            return Err("on_face needs a face name or point".into());
+        }
+        Ok(self.node(CsgOp::SketchOnFace {
+            sketch,
+            target: on.target,
+            face: on.face.clone(),
         }))
     }
 
@@ -732,6 +758,27 @@ mod tests {
         );
         let v = volumes(&doc);
         assert!((v[0] - 2.0 * 3840.0).abs() < 4.0, "{v:?}");
+    }
+
+    #[test]
+    fn profile_on_face_attaches_the_sketch() {
+        let (doc, base) = append(
+            None,
+            serde_json::json!({"kind": "extrude", "profile": xy_square(0.0, 10.0), "direction": {"x":0,"y":0,"z":4}}),
+        );
+        let mut boss = xy_square(4.0, 2.0);
+        boss["on_face"] = serde_json::json!({"target": base, "face": {"name": format!("n{base}:end")}});
+        let (doc, _) = append(
+            Some(&doc),
+            serde_json::json!({"kind": "extrude", "profile": boss, "direction": {"x":0,"y":0,"z":3}}),
+        );
+        let parsed = Document::from_json(&doc).unwrap();
+        assert!(
+            parsed.nodes.values().any(|n| matches!(n.op, CsgOp::SketchOnFace { target, .. } if target == base)),
+            "a SketchOnFace node targets the base"
+        );
+        let v = volumes(&doc);
+        assert!(v.iter().any(|v| (v - 48.0).abs() < 0.5), "boss 4x4x3 evaluates: {v:?}");
     }
 
     #[test]

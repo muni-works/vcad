@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-11-sketch-on-face",
+  "version": "undefined",
+  "date": "2026-11-11",
+  "category": "feat",
+  "title": "Sketches drawn on a face follow that face",
+  "summary": "A sketch drawn on a named face now re-attaches to it on every rebuild, so a boss on a plate's top stays on top when the plate gets thicker. An unresolvable face fails closed.",
+  "features": ["sketch", "naming", "history"]
+}

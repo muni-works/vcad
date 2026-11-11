@@ -406,7 +406,7 @@ struct DocumentGraph {
     static func label(_ t: String) -> String {
         switch t {
         case "Cube": return "Box"
-        case "Sketch2D": return "Sketch"
+        case "Sketch2D", "SketchOnFace": return "Sketch"
         case "LinearPattern": return "Linear Pattern"
         case "CircularPattern": return "Circular Pattern"
         case "PcbBoard": return "PCB Board"
@@ -440,7 +440,7 @@ struct DocumentGraph {
         case "Translate": return "move.3d"
         case "Rotate": return "rotate.3d"
         case "Scale": return "scale.3d"
-        case "Sketch", "Sketch2D": return "scribble.variable"
+        case "Sketch", "Sketch2D", "SketchOnFace": return "scribble.variable"
         case "Extrude": return "arrow.up.to.line"
         case "Revolve": return "arrow.trianglehead.2.clockwise.rotate.90"
         case "LinearPattern": return "rectangle.split.3x1"
