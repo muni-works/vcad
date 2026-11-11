@@ -34,6 +34,18 @@ enum SceneAssets {
 
     /// Equirect of bold horizontal bands: the classic zebra-analysis light box.
     /// Reflected off a chromed surface, stripe kinks expose G1/G2 breaks.
+    /// Viewport-only material softening, Fusion/Shapr3D style: dielectrics get
+    /// a lower specular level and a roughness floor so the key light leaves a
+    /// broad sheen rather than a hard, clipped hotspot. Metals keep their
+    /// roughness (their look *is* the reflection) but still get the floor
+    /// halved so mirror-polished parts don't spark.
+    static func studioSoften(_ m: inout PhysicallyBasedMaterial) {
+        let metal = m.metallic.scale
+        let floor: Float = metal > 0.5 ? 0.22 : 0.42
+        if m.roughness.scale < floor { m.roughness = .init(floatLiteral: floor) }
+        m.specular = .init(floatLiteral: metal > 0.5 ? 0.5 : 0.3)
+    }
+
     private static func makeZebraEnvironment() -> EnvironmentResource? {
         let w = 2048, h = 1024
         let cs = CGColorSpaceCreateDeviceRGB()
@@ -60,11 +72,11 @@ enum SceneAssets {
                                   bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
         let fw = CGFloat(w), fh = CGFloat(h)
         let base = CGGradient(colorsSpace: cs, colors: [
-            CGColor(red: 0.20, green: 0.21, blue: 0.25, alpha: 1),
-            CGColor(red: 0.13, green: 0.14, blue: 0.17, alpha: 1),
-            CGColor(red: 0.07, green: 0.075, blue: 0.09, alpha: 1),
-            CGColor(red: 0.025, green: 0.025, blue: 0.032, alpha: 1),
-            CGColor(red: 0.008, green: 0.008, blue: 0.011, alpha: 1),
+            CGColor(red: 0.30, green: 0.31, blue: 0.34, alpha: 1),
+            CGColor(red: 0.21, green: 0.22, blue: 0.25, alpha: 1),
+            CGColor(red: 0.13, green: 0.135, blue: 0.15, alpha: 1),
+            CGColor(red: 0.07, green: 0.07, blue: 0.08, alpha: 1),
+            CGColor(red: 0.04, green: 0.04, blue: 0.045, alpha: 1),
         ] as CFArray, locations: [0, 0.34, 0.52, 0.74, 1])!
         ctx.drawLinearGradient(base, start: CGPoint(x: 0, y: fh), end: CGPoint(x: 0, y: 0), options: [])
 
