@@ -1095,6 +1095,11 @@ struct ReleasedOverlayView: View {
                 GripperReceiptPill(model: model)
                     .padding(.top, Theme.Space.l)
                     .modifier(ChromeRegion(key: "gripper"))
+            } else if !studio {
+                // Live receipt badges + viewport elicitation (ReceiptBadges.swift).
+                ProofOverlay(model: model)
+                    .padding(.top, chromeTop + Theme.Space.s)
+                    .modifier(ChromeRegion(key: "proof"))
             }
         }
         .overlay(alignment: .bottom) {

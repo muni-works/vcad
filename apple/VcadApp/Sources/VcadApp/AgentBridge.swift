@@ -152,11 +152,13 @@ final class AgentBridge {
                 body = Self.rpcResult(id, [:])
             case "tools/list":
                 body = Self.rpcResult(id, ["tools": AgentTools.definitions + AgentEdits.definitions
-                                                       + AnalysisAgentTools.definitions])
+                                                       + AnalysisAgentTools.definitions
+                                                       + ProofAgentTools.definitions])
             case "tools/call":
                 let name = params["name"] as? String ?? ""
                 let args = params["arguments"] as? [String: Any] ?? [:]
-                let result = await self.callTool(name, args)
+                // MRTR retry payload: elicitations the client already answered.
+                let result = await self.callTool(name, args, inputResponses: params["inputResponses"])
                 body = Self.rpcResult(id, result)
             default:
                 body = Self.rpcError(id, -32601, "method not found: \(method)")
@@ -188,9 +190,17 @@ final class AgentBridge {
 
     // MARK: tools
 
-    private func callTool(_ name: String, _ args: [String: Any]) async -> [String: Any] {
+    private func callTool(_ name: String, _ args: [String: Any], inputResponses: Any? = nil) async -> [String: Any] {
         guard let model else { return AgentTools.error("The app has no window yet.") }
         do {
+            // Proof tools (receipts, viewport elicitation) — ProofAgentTools.swift.
+            if ProofAgentTools.toolNames.contains(name) {
+                return try await ProofAgentTools.call(name, args, inputResponses: inputResponses, model: model)
+            }
+            if let refused = await ProofAgentTools.confirmDestructive(name, args, inputResponses: inputResponses,
+                                                                      model: model) {
+                return refused
+            }
             return try await AgentTools.call(name, args, model: model)
         } catch let e as AgentTools.Failure {
             return AgentTools.error(e.message)

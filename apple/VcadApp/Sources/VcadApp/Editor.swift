@@ -1213,8 +1213,14 @@ final class EditorModel {
     @ObservationIgnored var documentJSON: [String: Any]? {
         // Any document swap except an engine delta (`adopt`) invalidates the
         // per-part tessellation cache.
-        didSet { if !adoptingDelta { partMeshCache.removeAll() } }
+        didSet {
+            if !adoptingDelta { partMeshCache.removeAll() }
+            documentRevision &+= 1
+        }
     }
+    /// Bumped on every document swap or edit — the observable signal for
+    /// state derived from `documentJSON` (live receipts re-verify on it).
+    var documentRevision = 0
     /// Tessellated parts by stable part id, reused across edits: an engine
     /// delta drops exactly the parts it added, updated or removed, so an edit
     /// re-tessellates only those.
