@@ -7,6 +7,8 @@ import XCTest
 func coreCall(_ m: EditorModel, _ name: String, _ args: [String: Any] = [:],
               inputResponses: [String: Any]? = nil) async -> [String: Any] {
     AgentCore.shared.attach(m)
+    // No one is at the window to Apply/Reject a ghost review in tests.
+    if AgentGhost.shared.autoDecision == nil { AgentGhost.shared.autoDecision = true }
     return await AgentCore.shared.call(name, args, inputResponses: inputResponses)
 }
 

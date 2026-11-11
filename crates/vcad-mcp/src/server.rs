@@ -266,6 +266,24 @@ impl Server {
         self.inner.bus.emit(BusEvent::ToolsListChanged);
     }
 
+    /// Tell the host who connected (`clientInfo.name`), so vcad.app labels the
+    /// agent cursor and undo steps with it ("Claude Code · Fillet"). Headless
+    /// has no host; the call is a no-op there.
+    pub fn client_hello(&self, params: &Value) {
+        let Some(name) = params
+            .get("clientInfo")
+            .and_then(|c| c.get("name"))
+            .and_then(Value::as_str)
+            .filter(|n| !n.trim().is_empty())
+        else {
+            return;
+        };
+        let _ = self
+            .inner
+            .store
+            .host_call(CLIENT_HELLO, &json!({ "name": name }), &Value::Null);
+    }
+
     /// The store.
     pub fn store(&self) -> &Arc<dyn DocumentStore> {
         &self.inner.store
@@ -735,6 +753,9 @@ impl Server {
 
         let server_info = self.server_info();
         if method == "server/discover" {
+            if let Some(info) = meta.get(META_CLIENT_INFO) {
+                self.client_hello(&json!({ "clientInfo": info }));
+            }
             let mut caps = self.capabilities();
             caps["extensions"] = json!({ TASKS_EXTENSION: {}, "io.vcad/documents": {} });
             let mut result = json!({
@@ -956,6 +977,9 @@ impl Server {
     }
 }
 
+/// Host-call name carrying `clientInfo` to vcad.app (never listed as a tool).
+pub const CLIENT_HELLO: &str = "__client_hello";
+
 /// `vcad://doc/<segment>` names that are not document ids (M1 owns them).
 pub const RESERVED_DOC_SEGMENTS: &[&str] = &["current", "selection", "view"];
 
@@ -1176,6 +1200,7 @@ impl Connection {
                     // Lenient (HTTP) or clients that skip the notification.
                     st.initialized = true;
                 }
+                self.server.client_hello(&params);
                 let mut result = json!({
                     "protocolVersion": version,
                     "capabilities": self.server.capabilities(),

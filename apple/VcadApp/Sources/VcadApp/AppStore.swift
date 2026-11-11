@@ -27,7 +27,7 @@ enum StoreResource: String, CaseIterable {
         switch self {
         case .document: "The document open in vcad.app (IR JSON). Updates on every edit — yours or the user's."
         case .selection: "What the user has selected in the viewport: parts, faces and edges (with durable selectors). \"This edge\" means this."
-        case .view: "The viewport camera (azimuth/elevation in degrees, distance) and workspace."
+        case .view: "The viewport: camera (azimuth/elevation in degrees, distance), workspace, visible parts, whether the user is sketching (and on which plane), the pick filter, and the window's document_id."
         }
     }
     /// The `vcad://doc/<x>` short forms agents sometimes write.
@@ -117,16 +117,35 @@ final class AppStore: DocumentStore {
             if let t = model.partTopology(r.part) {
                 let sel = r.kind == .edge ? t.edge(r.id)?.selector : t.face(r.id)?.selector
                 if let sel { o["selector"] = sel.any }
+                // Where it is, so "this face" / "here" has a position.
+                if r.kind == .face, let f = t.face(r.id) {
+                    o["center"] = f.center; o["normal"] = f.normal; o["surface"] = f.surface
+                } else if let e = t.edge(r.id) {
+                    let mp = e.midpoint
+                    o["midpoint"] = [Double(mp.x), Double(mp.y), Double(mp.z)]; o["length"] = Double(e.length)
+                }
             }
             return o
         }
         return ["parts": parts, "instances": instances, "topology": topo,
-                "feature": model.selectedFeatureID ?? NSNull()]
+                "feature": model.selectedFeatureID ?? NSNull(),
+                "document_id": AgentCore.documentId(model),
+                // Any part-valued tool argument accepts this literal.
+                "ref": "selection"]
     }
 
     func view() -> [String: Any] {
         var v = AgentTools.camera(model)
         v["workspace"] = "\(model.workspace)"
+        // What the user can see: "the visible ones", "that part on the left".
+        v["visible_parts"] = (0..<model.partCount).filter(model.isPartVisible).map { i -> [String: Any] in
+            ["index": i, "part_id": model.partId(forPart: i) ?? NSNull()]
+        }
+        v["hidden_parts"] = (0..<model.partCount).filter { !model.isPartVisible($0) }.count
+        v["sketching"] = model.sketching
+        if model.sketching { v["sketch_plane"] = "\(model.sketchPlane)" }
+        v["pick_filter"] = "\(model.picking.filter)"
+        v["document_id"] = AgentCore.documentId(model)
         // Round so idle float jitter never reads as a change.
         for k in ["azimuth", "elevation", "distance"] {
             if let x = v[k] as? Double { v[k] = (x * 100).rounded() / 100 }
