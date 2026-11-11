@@ -1712,22 +1712,24 @@ struct ReleasedARView: NSViewRepresentable {
         return ar
     }
 
-    /// The studio's key/rim/fill rig. The studio environment is a deliberately
-    /// dark reflection probe — without these lights the floating parts read as
-    /// black silhouettes over the desktop.
+    /// The studio's key/rim/fill rig. The studio environment supplies a soft
+    /// ambient base; these lights add direction. They're kept balanced (key
+    /// only ~1.6x fill) and well under clipping so light albedos — a white or
+    /// pale-orange printed part — keep their shading instead of blowing out to
+    /// white, while faces at different angles still separate.
     private func addLightRig(to anchor: AnchorEntity) {
         let key = DirectionalLight()
-        key.light.intensity = 2300
+        key.light.intensity = 1300
         key.look(at: .zero, from: [0.7, 1.1, 0.85], relativeTo: nil)
         anchor.addChild(key)
 
         let rim = DirectionalLight()
-        rim.light.intensity = 1900
+        rim.light.intensity = 750
         rim.look(at: .zero, from: [-0.9, 0.35, -1.0], relativeTo: nil)
         anchor.addChild(rim)
 
         let fill = DirectionalLight()
-        fill.light.intensity = 900
+        fill.light.intensity = 800
         fill.look(at: .zero, from: [-0.2, 0.5, 1.2], relativeTo: nil)
         anchor.addChild(fill)
     }
@@ -1737,6 +1739,9 @@ struct ReleasedARView: NSViewRepresentable {
     private func applyLighting(_ ar: ARView) {
         ar.environment.lighting.resource =
             model.zebraMode ? SceneAssets.zebraEnvironment : SceneAssets.studioEnvironment
+        // A touch over neutral so dark materials pick up form from the soft
+        // ambient instead of reading as flat black silhouettes.
+        ar.environment.lighting.intensityExponent = model.zebraMode ? 0 : 0.6
     }
 
     func updateNSView(_ ar: ARView, context: Context) {
@@ -1960,6 +1965,7 @@ struct ReleasedARView: NSViewRepresentable {
                 m.baseColor = .init(tint: inst.material.color)
                 m.roughness = .init(floatLiteral: inst.material.roughness)
                 m.metallic = .init(floatLiteral: inst.material.metallic)
+                SceneAssets.studioSoften(&m)
             }
             let e = ModelEntity(mesh: inst.mesh, materials: [m])
             // A free root (see `freeRoots`) stays where it is: it isn't an
@@ -1985,10 +1991,12 @@ struct ReleasedARView: NSViewRepresentable {
                 m.baseColor = .init(tint: r.color)
                 m.roughness = .init(floatLiteral: r.roughness)
                 m.metallic = .init(floatLiteral: r.metallic)
+                SceneAssets.studioSoften(&m)
             } else {
                 m.baseColor = .init(tint: item.color)
                 m.roughness = 0.34
                 m.metallic = 0.55
+                SceneAssets.studioSoften(&m)
             }
             if model.usesDocumentTree, !model.zebraMode, model.highlightedParts.contains(i) {
                 // Brand orange = action: a subtle emissive lift marks selection
