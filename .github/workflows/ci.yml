@@ -143,6 +143,9 @@ jobs:
   kicad-verify:
     name: KiCad export verification
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@v6
       - name: Clone sibling repos
@@ -150,18 +153,21 @@ jobs:
           git clone --depth 1 https://github.com/ecto/tang.git ../tang
           git clone --depth 1 https://github.com/ecto/phyz.git ../phyz
           git clone --depth 1 https://github.com/ecto/loon.git ../loon
-      - name: Install KiCad 9 (kicad-cli)
+      - name: kicad-cli from the pinned CI image (no Launchpad at test time)
+        env:
+          # Official kicad/kicad 9.0 image mirrored to GHCR once; bump by
+          # re-mirroring and updating this tag. Never fetched from Launchpad.
+          KICAD_IMAGE: ghcr.io/muni-works/vcad-ci-kicad:9.0
         run: |
-          # Launchpad's API resets connections often enough to fail PRs at
-          # random; retry the PPA add + update before giving up.
-          for i in 1 2 3 4 5; do
-            sudo add-apt-repository -y ppa:kicad/kicad-9.0-releases && sudo apt-get update && break
-            [ "$i" = 5 ] && exit 1
-            sleep $((i * 10))
-          done
-          # --no-install-recommends skips the symbol/footprint/3D libraries
-          # (~gigabytes) — the tests embed their own lib_symbols.
-          sudo apt-get install -y --no-install-recommends kicad
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          docker pull -q "$KICAD_IMAGE"
+          # Wrapper: run kicad-cli in the image with /tmp (where the tests
+          # write their exports) and the workspace mounted at the same paths.
+          sudo tee /usr/local/bin/kicad-cli >/dev/null <<EOF
+          #!/bin/sh
+          exec docker run --rm -u "\$(id -u):\$(id -g)" -e HOME=/tmp -v /tmp:/tmp -v "$GITHUB_WORKSPACE:$GITHUB_WORKSPACE" -w "\$PWD" "$KICAD_IMAGE" kicad-cli "\$@"
+          EOF
+          sudo chmod +x /usr/local/bin/kicad-cli
           kicad-cli version
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
