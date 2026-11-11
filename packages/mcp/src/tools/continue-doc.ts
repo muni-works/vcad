@@ -21,7 +21,7 @@ export const continueDocumentSchema = {
     token: {
       type: "string" as const,
       description:
-        "Legacy vcad.io share token. Not available in the local build (hosted " +
+        "Legacy hosted share token. Not available in the local build (hosted " +
         "services were retired) — returns an error; use `doc`.",
     },
     doc: {

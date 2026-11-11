@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
 use crate::entities::{
     curves::{parse_curve, StepCurve},
@@ -274,6 +275,106 @@ pub fn read_step_from_buffer_with_report(data: &[u8]) -> Result<ReadResult, Step
     reader.read_all_solids()
 }
 
+/// Read a STEP file from a path, publishing progress to `progress` as it
+/// goes and stopping with [`StepError::Cancelled`] once
+/// [`StepProgress::cancel`] has been called (checked once per face).
+pub fn read_step_with_progress(
+    path: impl AsRef<Path>,
+    progress: &StepProgress,
+) -> Result<ReadResult, StepError> {
+    progress.set_stage(StepStage::Reading, 0, 0);
+    let data = std::fs::read(path)?;
+    progress.check()?;
+    progress.set_stage(StepStage::Parsing, 0, 0);
+    let step_file = Parser::parse(&data)?;
+    progress.check()?;
+    let mut reader = StepReader::new(&step_file);
+    reader.progress = Some(progress);
+    let r = reader.read_all_solids()?;
+    let total = progress.total.load(Ordering::Relaxed);
+    progress.set_stage(StepStage::Done, total, total);
+    Ok(r)
+}
+
+/// What a progress-reporting STEP read is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum StepStage {
+    /// Reading the file's bytes.
+    Reading = 0,
+    /// Tokenising entities (one pass, no count).
+    Parsing = 1,
+    /// Building B-rep faces: `done` of `total` across every solid.
+    Faces = 2,
+    /// Finished.
+    Done = 3,
+}
+
+impl StepStage {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Reading,
+            1 => Self::Parsing,
+            2 => Self::Faces,
+            _ => Self::Done,
+        }
+    }
+}
+
+/// Lock-free progress + cancel flag shared between a STEP read and whoever
+/// is watching it (another thread polls [`StepProgress::snapshot`]).
+#[derive(Debug, Default)]
+pub struct StepProgress {
+    stage: AtomicU8,
+    done: AtomicUsize,
+    total: AtomicUsize,
+    cancelled: AtomicBool,
+}
+
+impl StepProgress {
+    /// A fresh tracker (stage `Reading`, 0 of 0).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `(stage, done, total)` right now.
+    pub fn snapshot(&self) -> (StepStage, usize, usize) {
+        (
+            StepStage::from_u8(self.stage.load(Ordering::Acquire)),
+            self.done.load(Ordering::Relaxed),
+            self.total.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Ask the read to stop at the next face.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    /// True once [`StepProgress::cancel`] was called.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    fn set_stage(&self, stage: StepStage, done: usize, total: usize) {
+        self.done.store(done, Ordering::Relaxed);
+        self.total.store(total, Ordering::Relaxed);
+        self.stage.store(stage as u8, Ordering::Release);
+    }
+
+    fn check(&self) -> Result<(), StepError> {
+        if self.is_cancelled() {
+            Err(StepError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn tick(&self) {
+        self.done.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// Read a single solid by its `MANIFOLD_SOLID_BREP` entity ID.
 ///
 /// Creates a fresh reader state so maps from other solids don't bleed in.
@@ -368,6 +469,8 @@ pub(crate) struct StepReader<'a> {
     /// Millimetres per file length unit (1.0 when the file declares mm or
     /// declares nothing).
     length_scale: f64,
+    /// Optional progress/cancel sink (see [`read_step_with_progress`]).
+    progress: Option<&'a StepProgress>,
 }
 
 impl<'a> StepReader<'a> {
@@ -380,6 +483,7 @@ impl<'a> StepReader<'a> {
             surface_map: HashMap::new(),
             subdivided_edges: HashMap::new(),
             length_scale: length_unit_mm(file),
+            progress: None,
         }
     }
 
@@ -483,6 +587,16 @@ impl<'a> StepReader<'a> {
             }
         };
 
+        if let Some(p) = self.progress {
+            // Total faces across every solid, so the bar spans the file.
+            let total: usize = solid_ids
+                .iter()
+                .filter_map(|&id| parse_manifold_solid_brep(self.file, id).ok())
+                .filter_map(|s| parse_shell(self.file, s.outer_shell_id).ok())
+                .map(|sh| sh.face_ids.len())
+                .sum();
+            p.set_stage(StepStage::Faces, 0, total);
+        }
         let mut solids = Vec::new();
         let mut report = StepImportReport::default();
         for entity_id in solid_ids {
@@ -499,6 +613,10 @@ impl<'a> StepReader<'a> {
         }
 
         Ok(ReadResult { solids, report })
+    }
+
+    fn check_cancelled(&self) -> Result<(), StepError> {
+        self.progress.map_or(Ok(()), StepProgress::check)
     }
 
     pub(crate) fn read_solid(
@@ -540,6 +658,7 @@ impl<'a> StepReader<'a> {
 
         // First pass: collect all vertices and surfaces
         for &face_id in &step_shell.face_ids {
+            self.check_cancelled()?;
             let step_face = parse_advanced_face(self.file, face_id)?;
 
             // Parse and store surface - skip face if surface type unsupported
@@ -599,6 +718,7 @@ impl<'a> StepReader<'a> {
         // For CIRCLE edges, sample intermediate points along the arc.
         // For B-spline/trimmed-curve edges, sample intermediate points too.
         for &face_id in &step_shell.face_ids {
+            self.check_cancelled()?;
             if skipped_faces.contains(&face_id) {
                 continue;
             }
@@ -679,6 +799,10 @@ impl<'a> StepReader<'a> {
         let mut reoriented_faces = 0usize;
 
         for &face_id in &step_shell.face_ids {
+            self.check_cancelled()?;
+            if let Some(p) = self.progress {
+                p.tick();
+            }
             if skipped_faces.contains(&face_id) {
                 continue;
             }

@@ -1641,10 +1641,15 @@ struct ShortcutSheet: View {
                     Eyebrow("Everywhere")
                     ForEach(Self.global, id: \.0) { row($0.0, $0.1) }
                 }
+                VStack(alignment: .leading, spacing: 6) {
+                    // The camera bindings follow Settings ▸ Navigation.
+                    Eyebrow("Navigation · \(NavigationScheme.current.label)")
+                    ForEach(NavigationScheme.current.summary, id: \.gesture) { row($0.gesture, $0.action) }
+                }
             }
         }
         .padding(18)
-        .frame(width: 700)
+        .frame(width: 900)
         .glassPanel()
         .modifier(ChromeRegion(key: "shortcuts"))
     }

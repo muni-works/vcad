@@ -11,6 +11,7 @@ struct SettingsView: View {
     @AppStorage(Prefs.soundsKey) private var playsSounds = true
     @AppStorage(Prefs.hapticsKey) private var haptics = true
     @AppStorage(Prefs.labsKey) private var labs = false
+    @AppStorage(NavigationScheme.prefsKey) private var navigation = NavigationScheme.default.rawValue
 
     var body: some View {
         TabView {
@@ -30,6 +31,17 @@ struct SettingsView: View {
                     Toggle("Show grid on the sketch plane while sketching", isOn: $showsSketchGrid)
                     Toggle("Show orientation triad", isOn: $showsTriad)
                 }
+                Section {
+                    Picker("Mouse and trackpad:", selection: $navigation) {
+                        ForEach(NavigationScheme.allCases) { Text($0.label).tag($0.rawValue) }
+                    }
+                } header: {
+                    Text("Navigation")
+                } footer: {
+                    Text((NavigationScheme(rawValue: navigation) ?? .default).summary
+                        .map { "\($0.gesture): \($0.action)" }.joined(separator: " · "))
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             .formStyle(.grouped)
             .tabItem { Label("General", systemImage: "gearshape") }
@@ -42,6 +54,10 @@ struct SettingsView: View {
             }
             .formStyle(.grouped)
             .tabItem { Label("Feedback", systemImage: "speaker.wave.2") }
+
+            Form { AgentConnectionsForm() }
+                .formStyle(.grouped)
+                .tabItem { Label("Agents", systemImage: "point.3.connected.trianglepath.dotted") }
 
             Form { AgentSettingsForm() }
                 .formStyle(.grouped)
