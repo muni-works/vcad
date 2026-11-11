@@ -28,7 +28,11 @@ use crate::{SketchError, SketchProfile, SketchSegment};
 /// - `ZeroAxis` if the axis direction is zero
 /// - `InvalidAngle` if angle is not in (0, 2π]
 /// - `ArcNotSupported` if the profile contains arc segments
-/// - `AxisIntersection` if any profile vertex lies on the axis
+/// - `AxisIntersection` if the profile crosses the axis (vertices on both
+///   sides of it). Vertices *on* the axis are supported: an edge lying on
+///   the axis contributes no face, an edge perpendicular to the axis from
+///   it becomes a full disc, and a slanted edge to it becomes a cone with
+///   its apex on the axis.
 ///
 /// # Current Limitations
 ///
@@ -78,14 +82,33 @@ pub fn revolve(
     let tol = Tolerance::DEFAULT;
     let is_full = (angle - 2.0 * PI).abs() < 1e-9;
 
-    // Validate profile doesn't intersect axis
+    // The profile may touch the axis but not cross it: every off-axis
+    // vertex must lie on the same side, measured along the radial
+    // direction of the first off-axis vertex (the profile is planar and
+    // contains the axis direction, so one reference suffices). A profile
+    // entirely on the axis has no area and is rejected too.
+    let radial = |p: &Point3| -> Vec3 {
+        let v = p - axis_origin;
+        v - v.dot(axis.as_ref()) * axis.as_ref()
+    };
+    let reference = profile
+        .segments
+        .iter()
+        .map(|seg| radial(&profile.to_3d(seg.start())))
+        .find(|r| r.norm() >= tol.linear)
+        .ok_or(SketchError::AxisIntersection)?
+        .normalize();
     for seg in &profile.segments {
-        let p = profile.to_3d(seg.start());
-        let dist = point_to_line_distance(&p, &axis_origin, axis.as_ref());
-        if dist < tol.linear {
+        let r = radial(&profile.to_3d(seg.start()));
+        if r.norm() >= tol.linear && r.dot(reference) < tol.linear {
             return Err(SketchError::AxisIntersection);
         }
     }
+    let on_axis: Vec<bool> = profile
+        .segments
+        .iter()
+        .map(|seg| radial(&profile.to_3d(seg.start())).norm() < tol.linear)
+        .collect();
 
     let mut topo = Topology::new();
     let mut geom = GeometryStore::new();
@@ -171,6 +194,11 @@ pub fn revolve(
         let p_start = profile.to_3d(*start);
         let p_end = profile.to_3d(*end);
 
+        // An edge lying on the axis sweeps no area.
+        if on_axis[i] && on_axis[next_i] {
+            continue;
+        }
+
         // Classify the line segment relative to the axis
         let surf_type = classify_line_segment(&p_start, &p_end, &axis_origin, axis.as_ref());
         let (dr, dt) = (rt[next_i].0 - rt[i].0, rt[next_i].1 - rt[i].1);
@@ -217,7 +245,7 @@ pub fn revolve(
                     for j in 0..n_steps {
                         let theta0 = angle * j as f64 / n_steps as f64;
                         let theta1 = angle * (j + 1) as f64 / n_steps as f64;
-                        all_faces.push(build_facet_quad(
+                        all_faces.extend(build_facet_quad(
                             &mut topo,
                             &mut geom,
                             &mut vertex_cache,
@@ -242,7 +270,7 @@ pub fn revolve(
             for j in 0..n_steps {
                 let theta0 = angle * j as f64 / n_steps as f64;
                 let theta1 = angle * (j + 1) as f64 / n_steps as f64;
-                all_faces.push(build_facet_quad(
+                all_faces.extend(build_facet_quad(
                     &mut topo,
                     &mut geom,
                     &mut vertex_cache,
@@ -440,6 +468,11 @@ fn build_full_annular_face(
     let outer_loop = topo.add_loop(&[he_outer]);
     let face_id = topo.add_face(outer_loop, surf_idx, Orientation::Forward);
 
+    // An inner end on the axis makes a full disc: no hole.
+    if rt_a.0.min(rt_b.0) < Tolerance::DEFAULT.linear {
+        return face_id;
+    }
+
     // Dense inner circle through the inner seam vertex.
     const INNER_SEGMENTS: usize = 32;
     let p_inner = topo.vertices[*v_inner].point;
@@ -478,14 +511,23 @@ fn build_facet_quad<F>(
     ccw: bool,
     he_map: &mut HashMap<([i64; 3], [i64; 3]), HalfEdgeId>,
     quantize_pt: F,
-) -> vcad_kernel_topo::FaceId
+) -> Option<vcad_kernel_topo::FaceId>
 where
     F: Fn(Point3) -> [i64; 3],
 {
-    let s0 = rotate_point(p_start, axis_origin, axis, theta0);
-    let s1 = rotate_point(p_start, axis_origin, axis, theta1);
-    let e0 = rotate_point(p_end, axis_origin, axis, theta0);
-    let e1 = rotate_point(p_end, axis_origin, axis, theta1);
+    // Points on the axis are fixed by the rotation; keep them exact so the
+    // quantized vertex keys can't straddle a rounding boundary.
+    let rot = |p: &Point3, theta: f64| {
+        if point_to_line_distance(p, axis_origin, axis) < Tolerance::DEFAULT.linear {
+            *p
+        } else {
+            rotate_point(p, axis_origin, axis, theta)
+        }
+    };
+    let s0 = rot(p_start, theta0);
+    let s1 = rot(p_start, theta1);
+    let e0 = rot(p_end, theta0);
+    let e1 = rot(p_end, theta1);
 
     let corners: [Point3; 4] = if ccw {
         [s0, s1, e1, e0]
@@ -493,10 +535,25 @@ where
         [s0, e0, e1, s1]
     };
 
-    let plane = Plane::new(corners[0], corners[1] - corners[0], corners[3] - corners[0]);
+    // An endpoint on the axis is fixed by the rotation, collapsing the
+    // quad to a triangle (a cone facet with its apex on the axis).
+    let quantize = &quantize_pt;
+    let mut corners: Vec<Point3> = corners.to_vec();
+    corners.dedup_by(|a, b| quantize(*a) == quantize(*b));
+    if corners.len() > 1 && quantize(corners[0]) == quantize(corners[corners.len() - 1]) {
+        corners.pop();
+    }
+    if corners.len() < 3 {
+        return None;
+    }
+    let last = corners.len() - 1;
+    let plane = Plane::new(
+        corners[0],
+        corners[1] - corners[0],
+        corners[last] - corners[0],
+    );
     let surf_idx = geom.add_surface(Box::new(plane));
 
-    let quantize = &quantize_pt;
     let vids: Vec<VertexId> = corners
         .iter()
         .map(|p| {
@@ -520,7 +577,7 @@ where
         }
     }
 
-    face_id
+    Some(face_id)
 }
 
 fn build_side_face<F>(
@@ -713,19 +770,74 @@ mod tests {
     }
 
     #[test]
-    fn test_revolve_axis_intersection_error() {
-        // Profile with a vertex on the Z-axis (x=0, y=0)
-        // Rectangle at origin in XZ plane, one corner at (0,0,0) which is on Z-axis
-        let profile = SketchProfile::rectangle(
-            Point3::origin(), // Origin at (0, 0, 0) which is on Z-axis
-            Vec3::x(),
-            Vec3::z(),
-            5.0,
-            5.0,
-        );
+    fn test_revolve_axis_crossing_error() {
+        // Rectangle straddling the Z axis (x from -2 to 3) crosses it.
+        let profile =
+            SketchProfile::rectangle(Point3::new(-2.0, 0.0, 0.0), Vec3::x(), Vec3::z(), 5.0, 5.0);
 
         let result = revolve(&profile, Point3::origin(), Vec3::z(), PI);
         assert!(matches!(result, Err(SketchError::AxisIntersection)));
+    }
+
+    fn unpaired(solid: &BRepSolid) -> usize {
+        solid
+            .topology
+            .half_edges
+            .values()
+            .filter(|he| he.twin.is_none())
+            .count()
+    }
+
+    #[test]
+    fn revolve_rectangle_on_axis_is_solid_cylinder() {
+        // Rectangle with one edge on the Z axis → solid cylinder r=5 h=10.
+        let profile = SketchProfile::rectangle(Point3::origin(), Vec3::x(), Vec3::z(), 5.0, 10.0);
+
+        let solid = revolve(&profile, Point3::origin(), Vec3::z(), 2.0 * PI).unwrap();
+        // Axis edge contributes nothing: wall + two discs.
+        assert_eq!(solid.topology.faces.len(), 3);
+
+        let mesh = vcad_kernel_tessellate::tessellate_brep(&solid, 128);
+        let vol = compute_mesh_volume(&mesh);
+        let expected = PI * 25.0 * 10.0;
+        assert!(
+            (vol - expected).abs() < 0.01 * expected,
+            "vol {vol} vs {expected}"
+        );
+    }
+
+    #[test]
+    fn revolve_triangle_to_axis_is_cone() {
+        // Right triangle (0,0)-(4,0)-(0,6) in the XZ plane around Z: cone
+        // r=4 h=6 with its apex on the axis.
+        use vcad_kernel_math::Point2;
+        let (a, b, c) = (
+            Point2::new(0.0, 0.0),
+            Point2::new(4.0, 0.0),
+            Point2::new(0.0, 6.0),
+        );
+        let line = |start, end| SketchSegment::Line { start, end };
+        let profile = SketchProfile::new(
+            Point3::origin(),
+            Vec3::x(),
+            Vec3::z(),
+            vec![line(a, b), line(b, c), line(c, a)],
+        )
+        .unwrap();
+
+        for angle in [2.0 * PI, PI / 2.0] {
+            let solid = revolve(&profile, Point3::origin(), Vec3::z(), angle).unwrap();
+            if angle < 2.0 * PI {
+                assert_eq!(unpaired(&solid), 0, "partial cone must be closed");
+            }
+            let mesh = vcad_kernel_tessellate::tessellate_brep(&solid, 128);
+            let vol = compute_mesh_volume(&mesh);
+            let expected = PI * 16.0 * 6.0 / 3.0 * angle / (2.0 * PI);
+            assert!(
+                vol > 0.9 * expected && vol < 1.01 * expected,
+                "angle {angle}: vol {vol} vs {expected}"
+            );
+        }
     }
 
     #[test]

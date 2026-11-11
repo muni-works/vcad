@@ -48,3 +48,14 @@ void edgeLineSurface(realitykit::surface_parameters params)
     params.surface().set_base_color(half3(g));
     params.surface().set_emissive_color(half3(g));
 }
+
+// Coloured variant for selection / hover highlights: the colour comes from
+// the material's base-colour tint, so one shader serves every highlight
+// colour. Same geometry modifier (custom.z unused here).
+[[visible]]
+void edgeLineTintSurface(realitykit::surface_parameters params)
+{
+    half3 c = half3(params.material_constants().base_color_tint());
+    params.surface().set_base_color(c);
+    params.surface().set_emissive_color(c);
+}

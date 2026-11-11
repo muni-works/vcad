@@ -1191,6 +1191,7 @@ pub(crate) fn brep_boolean(
     // 2. For each face pair, compute SSI and collect splits for both A and B.
     // `Ok(None)` means "no splits for this pair"; `Err` aborts the whole
     // boolean with a typed error instead of panicking mid-pipeline.
+    let hole_chords = std::sync::Mutex::new(split::HoleChordSpans::new());
     let compute_ssi =
         |&(face_a, face_b): &(FaceId, FaceId)| -> Result<Option<SsiPairResult>, BooleanError> {
             // Get face data with bounds checking to avoid panics
@@ -1634,6 +1635,34 @@ pub(crate) fn brep_boolean(
                     }
                     out
                 };
+                // A cut through a planar face's hole is only trusted when
+                // the partner face covers the whole chord (see
+                // `split::trust_hole_chords`).
+                if let ssi::IntersectionCurve::Line(l) = single_curve {
+                    let holed =
+                        |s: &BRepSolid, f: FaceId| !s.topology.faces[f].inner_loops.is_empty();
+                    let mut spans: Vec<(Point3, Point3)> = Vec::new();
+                    // The cutter's own extent along the line: a chord lying
+                    // inside it is really cut, hole included.
+                    let mut extent = |cutter: &[trim::TrimmedSegment]| {
+                        for sg in cutter {
+                            spans.push((
+                                evaluate_curve(single_curve, sg.t_start),
+                                evaluate_curve(single_curve, sg.t_end),
+                            ));
+                        }
+                    };
+                    if holed(&a, face_a) {
+                        extent(&segs_b);
+                    }
+                    if holed(&b, face_b) {
+                        extent(&segs_a);
+                    }
+                    if !spans.is_empty() {
+                        let mut set = hole_chords.lock().unwrap_or_else(|e| e.into_inner());
+                        set.entry(split::line_key(l)).or_default().extend(spans);
+                    }
+                }
                 let line_curve = matches!(single_curve, ssi::IntersectionCurve::Line(_));
                 // A wall that merely ENDS on this face's plane (flush
                 // prismatic stack: the other operand's cap sits in the same
@@ -1814,6 +1843,8 @@ pub(crate) fn brep_boolean(
         pairs.iter().map(compute_ssi).collect()
     };
     let split_results: Vec<SsiPairResult> = pair_results?.into_iter().flatten().collect();
+    let hole_chords = hole_chords.into_inner().unwrap_or_else(|e| e.into_inner());
+    split::trust_hole_chords(hole_chords);
 
     // Merge results into HashMaps
     let mut splits_a: HashMap<FaceId, FaceSplits> = HashMap::new();

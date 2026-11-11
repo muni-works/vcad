@@ -1216,6 +1216,7 @@ final class EditorModel {
         didSet {
             if !adoptingDelta { partMeshCache.removeAll() }
             documentRevision &+= 1
+            noteEditForAutosave()
         }
     }
     /// Bumped on every document swap or edit — the observable signal for
@@ -1231,6 +1232,12 @@ final class EditorModel {
     var undoStack: [UndoEntry] = []
     var redoStack: [UndoEntry] = []
     var documentDirty = false
+    /// Last save failure, shown to the user (nil when the last save worked).
+    var saveError: String?
+    /// The version being previewed in the viewport (VersionBrowser), if any.
+    var previewingVersion: DocumentVersion?
+    @ObservationIgnored var autosaver: Autosaver?
+    @ObservationIgnored var autosavePending = false
     /// Engine state hash as last saved (or loaded): undoing back to it clears
     /// the edited state instead of leaving a phantom dot in the title bar.
     @ObservationIgnored private var savedHash: String?
@@ -1295,9 +1302,9 @@ final class EditorModel {
         return engineState?.partId(forRootNode: g.visibleRoots[partIndex].nodeId)
     }
 
-    private enum Reeval { case inPlace, rebuild, none }
+    enum Reeval { case inPlace, rebuild, none }
     /// How an edit lands on the undo stack.
-    private enum UndoMode {
+    enum UndoMode {
         /// The edit is exactly one engine command → one engine history group.
         case step
         /// Snapshot the engine first (compound edits, first event of a gesture).
@@ -1306,7 +1313,7 @@ final class EditorModel {
         case none
     }
 
-    private func pushUndo(_ step: UndoEntry.Step, name: String) {
+    func pushUndo(_ step: UndoEntry.Step, name: String) {
         undoStack.append(UndoEntry(step: step, name: name))
         if undoStack.count > 64 { undoStack.removeFirst() }
         redoStack.removeAll()
@@ -1330,7 +1337,7 @@ final class EditorModel {
         markReeval(reeval)
     }
 
-    private func markReeval(_ reeval: Reeval) {
+    func markReeval(_ reeval: Reeval) {
         switch reeval {
         case .inPlace:
             docParamDirty = true
@@ -1346,7 +1353,7 @@ final class EditorModel {
     /// exactly one command (use a `batch` for several). A refusal leaves the
     /// document and the undo stack untouched and lands in `engineError`.
     @discardableResult
-    private func engineEdit(_ name: String, undo mode: UndoMode, reeval: Reeval,
+    func engineEdit(_ name: String, undo mode: UndoMode, reeval: Reeval,
                             _ body: (DocumentEngine) throws -> DocumentEngine.Result) -> DocumentEngine.Result? {
         guard let engine else { return nil }
         let before = mode == .snapshot ? engine.save() : nil
@@ -1386,7 +1393,7 @@ final class EditorModel {
     }
 
     @discardableResult
-    private func irEdit(_ name: String, gestureStart: Bool = true, reeval: Reeval,
+    func irEdit(_ name: String, gestureStart: Bool = true, reeval: Reeval,
                         base: [String: Any]? = nil,
                         _ mutate: (inout [String: Any]) -> Void) -> DocumentEngine.Result? {
         guard var json = base ?? documentJSON else { return nil }
@@ -2085,6 +2092,11 @@ final class EditorModel {
     var gizmoDirty = false
     /// The handle under the cursor ("gizmoX" / "planeXY" / …), for hover + cursor.
     var hoveredGizmoHandle: String?
+    /// Direct-manipulation drag state (DirectManipulation.swift).
+    @ObservationIgnored var manip = DirectManipState()
+    /// The live on-canvas dimension (value + anchor), shown while dragging
+    /// and briefly after, clickable to type an exact value.
+    var manipLabel: ManipLabel?
     @ObservationIgnored private var gizmoPart: Int?
     @ObservationIgnored private var gizmoActive: GizmoHandle?
     @ObservationIgnored private var gizmoBase: (Double, Double, Double) = (0, 0, 0)
@@ -2115,6 +2127,7 @@ final class EditorModel {
         var isRotate: Bool { if case .rotate = self { return true }; return false }
     }
     func gizmoHandle(for name: String) -> GizmoHandle? {
+        if let h = manipHandle(for: name) { return h }
         switch name {
         case "gizmoX": return .axis(SIMD3(1, 0, 0))
         case "gizmoY": return .axis(SIMD3(0, 1, 0))
@@ -2149,7 +2162,8 @@ final class EditorModel {
 
     /// Show the gizmo for a single selected part (not while sketching/multi-select).
     var showsGizmo: Bool {
-        usesDocumentTree && !sketching && multiSelectedParts.isEmpty && selectedPartIndex != nil
+        usesDocumentTree && !sketching && multiSelectedParts.isEmpty
+            && (selectedPartIndex != nil || pullFace != nil)
     }
     /// Selected part center in kernel coords (gizmo origin).
     func gizmoCenterKernel() -> SIMD3<Float>? {
@@ -2167,6 +2181,7 @@ final class EditorModel {
     var gizmoPlaneSize: Float { gizmoArmLength() * 0.17 }
 
     func beginGizmoDrag(handle name: String, ray: (o: SIMD3<Float>, d: SIMD3<Float>)) {
+        if beginManip(handle: name, ray: ray) { return }
         guard let pi = selectedPartIndex, let engine, let json = documentJSON,
               let c = gizmoCenterKernel(), let h = gizmoHandle(for: name) else { return }
         // The whole drag is one undo step: snapshot now, edit freely after.
@@ -2174,6 +2189,7 @@ final class EditorModel {
         else { pushUndo(.snapshot(engine.save()), name: "Move Part") }
         gizmoPart = pi
         gizmoActive = h
+        manip.activeName = name
         gizmoStartCenter = c
         gizmoWorkJSON = json
         gizmoPartId = nil
@@ -2205,6 +2221,7 @@ final class EditorModel {
         }
     }
     func gizmoDragTo(ray: (o: SIMD3<Float>, d: SIMD3<Float>)) {
+        if manipDragTo(ray: ray) { return }
         guard let pi = gizmoPart, var json = gizmoWorkJSON, let h = gizmoActive else { return }
         switch h {
         case .rotate(let ax):
@@ -2215,8 +2232,9 @@ final class EditorModel {
             if d > .pi { d -= 2 * .pi } else if d < -.pi { d += 2 * .pi }   // unwrap
             gizmoRotAccum += d
             gizmoRotPrev = a
-            DocEdit.setRotateAngle(&json, rotNodeId: rn, axisIndex: gizmoRotAxisIndex,
-                                   degrees: Double(gizmoRotAccum * 180 / .pi))
+            let deg = snapAngle(Double(gizmoRotAccum * 180 / .pi))
+            DocEdit.setRotateAngle(&json, rotNodeId: rn, axisIndex: gizmoRotAxisIndex, degrees: deg)
+            showManipLabel(String(format: "%.1f°", deg), at: gizmoStartCenter)
         default:
             var off = SIMD3<Float>.zero
             switch h {
@@ -2229,7 +2247,9 @@ final class EditorModel {
             case .rotate:
                 break
             }
+            if let pi = gizmoPart { off = snapMove(off, part: pi, handle: h) }
             gizmoLiveOffset = off
+            showManipLabel(moveLabel(off), at: gizmoStartCenter + off)
             let target = [gizmoBase.0 + Double(off.x), gizmoBase.1 + Double(off.y), gizmoBase.2 + Double(off.z)]
             if let id = gizmoPartId {
                 engineEdit("Move Part", undo: .none, reeval: .inPlace) {
@@ -2243,7 +2263,19 @@ final class EditorModel {
         gizmoWorkJSON = json
         irEdit(h.isRotate ? "Rotate Part" : "Move Part", gestureStart: false, reeval: .inPlace, base: json) { _ in }
     }
+    /// Where the gizmo root sits mid-drag: it rides the dragged part, or the
+    /// pulled face.
+    func gizmoLivePosition() -> SIMD3<Float>? {
+        if manip.kind != nil {
+            if pullFace == nil { return gizmoCenterKernel() }
+            return manip.axisOrigin + manip.axisDir * Float(manip.value / manip.gain)
+        }
+        return gizmoCenterKernel().map { $0 + gizmoLiveOffset }
+    }
     func endGizmoDrag() {
+        if endManip() { return }
+        manip.activeName = nil
+        if gizmoPart != nil { fadeManipLabel() }
         gizmoPart = nil
         gizmoActive = nil
         gizmoRotNode = nil
@@ -2258,7 +2290,7 @@ final class EditorModel {
 
     /// Param `t` along the axis line (center + t·axis) closest to the ray — the
     /// standard closest-point-between-two-lines solution (axis is a unit vector).
-    private static func axisParam(rayO: SIMD3<Float>, rayD: SIMD3<Float>,
+    static func axisParam(rayO: SIMD3<Float>, rayD: SIMD3<Float>,
                                   center: SIMD3<Float>, axis: SIMD3<Float>) -> Float {
         let w0 = rayO - center
         let b = simd_dot(rayD, axis)
@@ -2270,7 +2302,7 @@ final class EditorModel {
     }
 
     /// Ray ∩ plane (through `point`, with `normal`) → world point, or nil if ∥.
-    private static func rayPlane(o: SIMD3<Float>, d: SIMD3<Float>,
+    static func rayPlane(o: SIMD3<Float>, d: SIMD3<Float>,
                                  point: SIMD3<Float>, normal: SIMD3<Float>) -> SIMD3<Float>? {
         let denom = simd_dot(d, normal)
         if abs(denom) < 1e-6 { return nil }
@@ -2304,8 +2336,16 @@ final class EditorModel {
         }
         guard case let .document(path, _) = source,
               let json = documentJSON, let data = DocEdit.serializePretty(json) else { return }
-        // Atomic: the file on disk is never half-written if the app dies mid-save.
-        if (try? data.write(to: URL(fileURLWithPath: path), options: .atomic)) != nil {
+        // Atomic + fsynced + verified: the file on disk is never half-written
+        // if the app dies or the disk fills mid-save (LocalHistory.swift).
+        do {
+            try SafeWriter.write(data, to: URL(fileURLWithPath: path))
+        } catch {
+            saveError = "Couldn’t save “\(documentName)”: \(error). The file on disk is unchanged; your work is still autosaved."
+            return
+        }
+        do {
+            didSaveDocument(data, at: URL(fileURLWithPath: path))
             documentDirty = false
             savedSnapshot = DocEdit.serialize(json)
             savedHash = engine?.stateHash
@@ -2317,7 +2357,11 @@ final class EditorModel {
     /// survives, the same as Save As in any Mac app.
     func saveDocumentAs(_ url: URL) {
         guard let json = documentJSON, let data = DocEdit.serializePretty(json) else { return }
-        guard (try? data.write(to: url, options: .atomic)) != nil else { return }
+        do { try SafeWriter.write(data, to: url) } catch {
+            saveError = "Couldn’t save to \(url.lastPathComponent): \(error)"
+            return
+        }
+        didSaveDocument(data, at: url)
         // Keep the engine (and with it the history the undo stack points
         // into) rather than reopening the file we just wrote.
         let keptUndo = undoStack, keptRedo = redoStack
@@ -2347,6 +2391,22 @@ final class EditorModel {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
     #endif
+
+    /// Replace the whole document with `dict` as ONE undoable edit (version
+    /// preview / restore). Engine documents go through the engine so the
+    /// result is evaluated exactly like an opened file; detached documents
+    /// take a JSON undo step.
+    @discardableResult
+    func replaceDocument(with dict: [String: Any], name: String) -> Bool {
+        if engine != nil {
+            return irEdit(name, reeval: .rebuild, base: dict) { _ in } != nil
+        }
+        guard let before = documentJSON.flatMap({ DocEdit.serialize($0) }),
+              let data = DocEdit.serialize(dict) else { return false }
+        pushUndo(.json(before), name: name)
+        restoreJSON(data)
+        return true
+    }
 
     /// Discard edits and reload the document from disk.
     func revertDocument() {
@@ -2748,12 +2808,10 @@ final class EditorModel {
 
     /// Turn the camera to a standard view, animated.
     func animateCamera(to preset: CameraPreset) {
-        stopSpin()
-        cameraUserMoved = true
-        withAnimation(Motion.smooth) {
-            azimuth = preset.azimuth
-            elevation = preset.elevation
-        }
+        var p = cameraPose
+        p.azimuth = preset.azimuth
+        p.elevation = preset.elevation
+        NavigationUI.shared.glide(self, to: p)
     }
 
     #if os(macOS)
@@ -2782,6 +2840,7 @@ final class EditorModel {
     /// A drag started — kill any running momentum and reset velocity tracking.
     func beginOrbit() {
         stopSpin()
+        orbitPivot = orbitPivotProvider?()
         cameraUserMoved = true
         lastOrbitTime = Date()
         azVel = 0; elVel = 0
@@ -2795,13 +2854,29 @@ final class EditorModel {
         lastOrbitTime = now
         let daz = -dx * 0.01
         let before = elevation
+        let o0 = orbitVector
         azimuth += daz
         elevation = max(-1.45, min(1.45, elevation + dy * 0.01))
         let del = elevation - before
+        swingAboutPivot(from: o0)
         if dt > 1e-4, dt < 0.1 {
             azVel = 0.6 * azVel + 0.4 * (daz / dt)
             elVel = 0.6 * elVel + 0.4 * (del / dt)
         }
+    }
+
+    /// Fusion-style orbit about the selection: the view's selection centre in
+    /// world space (part bbox centre, face centroid, edge midpoint), asked
+    /// for at the start of each orbit. Nil → orbit the current target.
+    @ObservationIgnored var orbitPivotProvider: (() -> SIMD3<Float>?)?
+    /// The pivot of the orbit in progress (world space), if any.
+    @ObservationIgnored private(set) var orbitPivot: SIMD3<Float>?
+
+    /// After the orbit angles changed from `o0`, move the target so the camera
+    /// swung about `orbitPivot` rather than about the target.
+    private func swingAboutPivot(from o0: SIMD3<Float>) {
+        guard let p = orbitPivot else { return }
+        panOffset = SelectionMath.panAfterOrbit(pan: panOffset, from: o0, to: orbitVector, pivot: p)
     }
 
     /// Release — coast if the flick was fast enough.
@@ -2815,9 +2890,11 @@ final class EditorModel {
         spinTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(dt), repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
+                let o0 = self.orbitVector
                 self.azimuth += self.azVel * dt
                 let ne = max(-1.45, min(1.45, self.elevation + self.elVel * dt))
                 if ne != self.elevation { self.elevation = ne } else { self.elVel = 0 }
+                self.swingAboutPivot(from: o0)
                 let decay: Float = 0.94
                 self.azVel *= decay; self.elVel *= decay
                 if abs(self.azVel) < 0.05, abs(self.elVel) < 0.05 { self.stopSpin() }
@@ -4388,8 +4465,13 @@ extension EditorModel {
     /// "Open a document" hover hint, and a fresh install could not model
     /// anything. One undo step back to the sandbox. Returns whether the
     /// window now has an editable document.
+    ///
+    /// `silent`: the viewport's face/edge picking needs a B-rep document to
+    /// pick against, so the first pointer move over the demo shape promotes
+    /// it without an undo step, without marking the window dirty, and
+    /// without selecting the body — nothing the user did changed the model.
     @discardableResult
-    func promoteSandboxToDocument(blank: Bool = false) -> Bool {
+    func promoteSandboxToDocument(blank: Bool = false, silent: Bool = false) -> Bool {
         if usesDocumentTree, engine != nil { return true }
         guard source.isSandbox, engine == nil, documentJSON == nil else { return usesDocumentTree }
         // A sketch starts a part from nothing; it shouldn't inherit the demo cube.
@@ -4427,6 +4509,12 @@ extension EditorModel {
                 }
             }
             adopt(r, reeval: .rebuild)
+            if silent {
+                savedHash = e.stateHash
+                documentDirty = false
+                selectedFeatureID = nil
+                return usesDocumentTree
+            }
             pushUndo(.snapshot(before), name: "Start Document")
             if let first = featureNodes.first { selectFeature(first.id) }
             return usesDocumentTree

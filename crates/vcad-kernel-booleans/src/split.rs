@@ -132,6 +132,197 @@ macro_rules! split_dbg {
     };
 }
 
+/// Bit-exact identity of an SSI line (the same `Line3d` value is cloned from
+/// the SSI stage into the split stage).
+pub(crate) fn line_key(l: &vcad_kernel_geom::Line3d) -> [u64; 6] {
+    [
+        l.origin.x.to_bits(),
+        l.origin.y.to_bits(),
+        l.origin.z.to_bits(),
+        l.direction.x.to_bits(),
+        l.direction.y.to_bits(),
+        l.direction.z.to_bits(),
+    ]
+}
+
+/// Spans (world-space endpoints) of SSI lines over which a holed planar
+/// face is covered by its partner face, keyed by [`line_key`].
+pub(crate) type HoleChordSpans = std::collections::HashMap<[u64; 6], Vec<(Point3, Point3)>>;
+
+thread_local! {
+    static HOLE_CHORDS: std::cell::RefCell<HoleChordSpans> =
+        std::cell::RefCell::new(HoleChordSpans::new());
+}
+
+/// Install the current boolean's covered spans: a cut may pass through a
+/// planar face's hole only when its whole chord lies inside one of them.
+pub(crate) fn trust_hole_chords(spans: HoleChordSpans) {
+    HOLE_CHORDS.with(|h| *h.borrow_mut() = spans);
+}
+
+fn hole_chord_trusted(l: &vcad_kernel_geom::Line3d, entry: &Point3, exit: &Point3) -> bool {
+    let tol = 1e-6 * (*exit - *entry).norm().max(1.0);
+    HOLE_CHORDS.with(|h| {
+        h.borrow().get(&line_key(l)).is_some_and(|spans| {
+            spans.iter().any(|(a, b)| {
+                let ab = *b - *a;
+                let len2 = ab.norm_squared();
+                if len2 < 1e-18 {
+                    return false;
+                }
+                let inside = |p: &Point3| {
+                    let t = (*p - *a).dot(ab) / len2;
+                    let off = (*p - (*a + ab * t)).norm();
+                    off <= tol && t * len2.sqrt() >= -tol && (t - 1.0) * len2.sqrt() <= tol
+                };
+                inside(entry) && inside(exit)
+            })
+        })
+    })
+}
+
+/// A straight cut `entry → exit` across a planar face that passes through
+/// the hole `hole` (crossing its polygon exactly twice): returns the two
+/// sub-face loops with the cut side of each replaced by a detour around its
+/// half of the hole. `loop1` closes `exit → entry` and `loop2` closes
+/// `entry → exit` (see `split_face_by_curve`). `None` when the cut does not
+/// cross this hole cleanly.
+fn merge_crossed_hole(
+    hole: &[Point3],
+    entry: &Point3,
+    exit: &Point3,
+    loop1: &[Point3],
+    loop2: &[Point3],
+) -> Option<(Vec<Point3>, Vec<Point3>)> {
+    let m = hole.len();
+    if m < 3 || loop1.len() < 3 || loop2.len() < 3 {
+        return None;
+    }
+    let d = *exit - *entry;
+    let len2 = d.norm_squared();
+    if len2 < 1e-18 {
+        return None;
+    }
+    // Plane normal from the hole polygon (Newell).
+    let mut nrm = vcad_kernel_math::Vec3::zeros();
+    for i in 0..m {
+        let (a, b) = (hole[i], hole[(i + 1) % m]);
+        nrm += vcad_kernel_math::Vec3::new(
+            (a.y - b.y) * (a.z + b.z),
+            (a.z - b.z) * (a.x + b.x),
+            (a.x - b.x) * (a.y + b.y),
+        );
+    }
+    if nrm.norm() < 1e-12 {
+        return None;
+    }
+    let side_dir = nrm.normalize().cross(d);
+    let side = |p: &Point3| (*p - *entry).dot(side_dir);
+    let scale = len2.sqrt();
+    let eps = 1e-9 * scale.max(1.0);
+    // Crossings of the chord with hole edges: (t along chord, edge index, point).
+    let mut hits: Vec<(f64, usize, Point3)> = Vec::new();
+    for i in 0..m {
+        let (a, b) = (hole[i], hole[(i + 1) % m]);
+        let (sa, sb) = (side(&a), side(&b));
+        if sa.abs() <= eps || sb.abs() <= eps {
+            return None; // a hole vertex on the cut: not a clean crossing
+        }
+        if (sa > 0.0) == (sb > 0.0) {
+            continue;
+        }
+        let p = a + (b - a) * (sa / (sa - sb));
+        let t = (p - *entry).dot(d) / len2;
+        if !(1e-9..=1.0 - 1e-9).contains(&t) {
+            return None; // the hole reaches past the cut's ends
+        }
+        hits.push((t, i, p));
+    }
+    if hits.len() != 2 {
+        return None;
+    }
+    hits.sort_by(|x, y| x.0.total_cmp(&y.0));
+    let (_, i1, mut p1) = hits[0];
+    let (_, i2, mut p2) = hits[1];
+    // A frozen circular hole (every vertex equidistant from its centroid)
+    // is bounded by a wall whose own split along this plane lands ON the
+    // circle, not on the polygon's chord a sag below it. Put the crossings
+    // where the wall puts them, so the two sides share vertices exactly
+    // instead of relying on a coordinate-dependent seam weld.
+    {
+        let c = Point3::new(
+            hole.iter().map(|p| p.x).sum::<f64>() / m as f64,
+            hole.iter().map(|p| p.y).sum::<f64>() / m as f64,
+            hole.iter().map(|p| p.z).sum::<f64>() / m as f64,
+        );
+        let radii: Vec<f64> = hole.iter().map(|p| (*p - c).norm()).collect();
+        let r = radii.iter().sum::<f64>() / m as f64;
+        if m >= 8 && radii.iter().all(|&ri| (ri - r).abs() <= 1e-6 * r.max(1.0)) {
+            // |entry + t·d − c|² = r²
+            let f = *entry - c;
+            let (qa, qb, qc) = (len2, 2.0 * f.dot(d), f.norm_squared() - r * r);
+            let disc = qb * qb - 4.0 * qa * qc;
+            if disc > 0.0 {
+                let sq = disc.sqrt();
+                let (t1, t2) = ((-qb - sq) / (2.0 * qa), (-qb + sq) / (2.0 * qa));
+                let (c1, c2) = (*entry + d * t1, *entry + d * t2);
+                if (c1 - p1).norm() < 1e-2 * r && (c2 - p2).norm() < 1e-2 * r {
+                    p1 = c1;
+                    p2 = c2;
+                }
+            }
+        }
+    }
+    // Hole arcs between the crossings, walking the hole's own order.
+    let arc = |from_edge: usize, to_edge: usize| -> Vec<Point3> {
+        let mut out = Vec::new();
+        let mut k = (from_edge + 1) % m;
+        loop {
+            out.push(hole[k]);
+            if k == to_edge {
+                break;
+            }
+            k = (k + 1) % m;
+        }
+        out
+    };
+    let arc_12 = arc(i1, i2); // p1 → … → p2
+    let arc_21 = arc(i2, i1); // p2 → … → p1
+    let interior_side =
+        |lp: &[Point3]| lp.iter().map(side).find(|s| s.abs() > eps).map(f64::signum);
+    let (s1, s2) = (interior_side(loop1)?, interior_side(loop2)?);
+    if s1 == s2 {
+        return None;
+    }
+    let arc_side = |a: &[Point3]| side(&a[0]).signum();
+    // loop1 closes exit → entry: exit, p2, (arc on loop1's side p2 → p1), p1.
+    let detour1: Vec<Point3> = if arc_side(&arc_21) == s1 {
+        arc_21.clone()
+    } else {
+        arc_12.iter().rev().copied().collect()
+    };
+    // loop2 closes entry → exit: entry, p1, (arc on loop2's side p1 → p2), p2.
+    let detour2: Vec<Point3> = if arc_side(&arc_12) == s2 {
+        arc_12.clone()
+    } else {
+        arc_21.iter().rev().copied().collect()
+    };
+    if detour1.iter().any(|p| side(p).signum() != s1)
+        || detour2.iter().any(|p| side(p).signum() != s2)
+    {
+        return None;
+    }
+    let mut l1 = loop1.to_vec();
+    l1.push(p2);
+    l1.extend(detour1);
+    l1.push(p1);
+    let mut l2 = loop2.to_vec();
+    l2.push(p1);
+    l2.extend(detour2);
+    l2.push(p2);
+    Some((l1, l2))
+}
+
 /// Split a face along an intersection curve.
 ///
 /// The curve must already be trimmed to the face's domain. This function:
@@ -494,14 +685,41 @@ pub fn split_face_by_curve(
 
     // Create topology for the two new faces
     // A cut that passes THROUGH an inner loop cannot be resolved by
-    // redistributing the hole to one side — the hole would need to be
-    // split and merged into the sub-faces' outer boundaries. Refuse the
-    // split instead (phantom cuts across holed caps are the common case:
-    // the intersection line of a distant operand plane runs across the
-    // whole face, hole included).
+    // redistributing the hole to one side — the hole is split and each half
+    // merged into a sub-face's outer boundary (`merge_crossed_hole`). Any
+    // other contact with a hole — a cut that grazes it, crosses several, or
+    // curves — is refused: the face stays whole.
+    let mut loop1_points = loop1_points;
+    let mut loop2_points = loop2_points;
+    let mut consumed_hole = None;
+    // Only along a line whose cutter face is known to cover the whole chord
+    // (`trust_hole_chords`): the carrier line of a distant operand plane
+    // also crosses holed faces, and splitting along such a phantom chord
+    // breaks the torr A2 trim.
+    let allow_hole_chord = matches!(curve, IntersectionCurve::Line(l) if hole_chord_trusted(l, entry_point, exit_point));
+    if allow_hole_chord && via.is_empty() && !same_edge_bite {
+        let parent_inner = brep.topology.faces[face_id].inner_loops.clone();
+        let crossed: Vec<_> = parent_inner
+            .iter()
+            .filter_map(|&lp| {
+                let hv: Vec<Point3> = brep
+                    .topology
+                    .loop_half_edges(lp)
+                    .map(|he| brep.topology.vertices[brep.topology.half_edges[he].origin].point)
+                    .collect();
+                merge_crossed_hole(&hv, entry_point, exit_point, &loop1_points, &loop2_points)
+                    .map(|m| (lp, m))
+            })
+            .collect();
+        if let [(lp, (l1, l2))] = crossed.as_slice() {
+            loop1_points = l1.clone();
+            loop2_points = l2.clone();
+            consumed_hole = Some(*lp);
+        }
+    }
     {
         let parent_inner = brep.topology.faces[face_id].inner_loops.clone();
-        for inner in &parent_inner {
+        for inner in parent_inner.iter().filter(|&&l| Some(l) != consumed_hole) {
             let verts: Vec<Point3> = brep
                 .topology
                 .loop_half_edges(*inner)
@@ -546,7 +764,23 @@ pub fn split_face_by_curve(
     // Distribute the parent's inner loops (holes) to whichever sub-face
     // contains them — dropping them silently REFILLS the holes (a phantom
     // line split across an annular cap would otherwise fill in the bore).
-    let parent_inner: Vec<_> = brep.topology.faces[face_id].inner_loops.clone();
+    let parent_inner: Vec<_> = brep.topology.faces[face_id]
+        .inner_loops
+        .iter()
+        .copied()
+        .filter(|&l| Some(l) != consumed_hole)
+        .collect();
+    if let Some(lp) = consumed_hole {
+        // Its halves now live in the sub-faces' outer boundaries.
+        let stale: Vec<_> = brep.topology.loop_half_edges(lp).collect();
+        brep.topology.faces[face_id]
+            .inner_loops
+            .retain(|&l| l != lp);
+        for he in stale {
+            brep.topology.half_edges.remove(he);
+        }
+        brep.topology.loops.remove(lp);
+    }
     if !parent_inner.is_empty() {
         // 2D frame on the parent plane for containment tests.
         let origin = loop1_points[0];
