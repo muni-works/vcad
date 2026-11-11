@@ -96,6 +96,10 @@
             "type": "object"
           },
           "type": "array"
+        },
+        "levels": {
+          "type": "integer",
+          "description": "Mesh-convergence levels (≥2, default 2). Each level doubles the resolution; more levels = a longer, cancellable job."
         }
       },
       "required": [
@@ -104,7 +108,8 @@
       ],
       "type": "object"
     },
-    "name": "analyze_structure"
+    "name": "analyze_structure",
+    "longRunning": true
   },
   {
     "description": "Pin a text label to a part, drawn in the user's viewport with a leader to the part. Same part again replaces its label.",

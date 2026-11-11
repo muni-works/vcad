@@ -742,6 +742,12 @@ char *vcad_dfm_processes(void);
  * {max_von_mises_mpa, max_displacement_mm, safety_factor, converged, study,
  *  field:{dims_zyx, origin_mm, voxel_mm, von_mises_mpa, displacement_mm, mask, ...}} */
 char *vcad_fea_solve(const char *doc_json, const char *request_json);
+/* vcad_fea_solve with a per-step hook (fraction 0..1, level, levels, solving);
+ * the hook returns false to cancel -> NULL, vcad_last_error "FEA study cancelled". */
+typedef bool (*vcad_fea_progress_fn)(void *ctx, double fraction, uint32_t level,
+                                     uint32_t levels, bool solving);
+char *vcad_fea_solve_progress(const char *doc_json, const char *request_json,
+                              vcad_fea_progress_fn progress, void *ctx);
 /* [{id,label,youngs_modulus_mpa,poisson,yield_strength_mpa}] */
 char *vcad_fea_materials(void);
 /* request (nullable) {"pairs"?:[[a,b]], "include_mesh"?} ->

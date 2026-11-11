@@ -93,6 +93,9 @@ pub fn is_shared_method(method: &str) -> bool {
         method,
         "tools/list"
             | "tools/call"
+            | "vcad/jobs/cancel"
+            | "vcad/jobs/progress"
+            | "vcad/jobs/list"
             | "resources/list"
             | "resources/templates/list"
             | "resources/read"

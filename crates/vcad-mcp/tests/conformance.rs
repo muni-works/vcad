@@ -731,3 +731,130 @@ fn unix_socket_transport() {
     let v: Value = serde_json::from_str(&line).unwrap();
     assert_eq!(v["result"]["supportedVersions"][0], PROTOCOL_2026);
 }
+
+/// A long-running tool that reports progress until cancelled.
+fn spin_tool() -> ToolDef {
+    ToolDef {
+        name: "spin".into(),
+        description: "runs until cancelled".into(),
+        input_schema: json!({"type": "object"}),
+        output_schema: None,
+        long_running: true,
+        handler: Arc::new(|ctx, _| {
+            let deadline = Instant::now() + Duration::from_secs(20);
+            let mut i = 0.0;
+            while !ctx.cancel.load(Ordering::Relaxed) && Instant::now() < deadline {
+                (ctx.progress)(i, Some(100.0), Some("spinning".into()));
+                i = (i + 1.0f64).min(99.0);
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok(ToolOutput::error("spin cancelled"))
+        }),
+    }
+}
+
+fn job_events(h: &Harness) -> Arc<Mutex<Vec<Value>>> {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let s2 = seen.clone();
+    h.server.bus().on(Arc::new(move |e| {
+        if let vcad_mcp::tasks::BusEvent::Job(v) = e {
+            s2.lock().unwrap().push(v.clone());
+        }
+    }));
+    seen
+}
+
+fn wait_for(seen: &Arc<Mutex<Vec<Value>>>, f: impl Fn(&Value) -> bool) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if let Some(v) = seen.lock().unwrap().iter().find(|v| f(v)) {
+            return v.clone();
+        }
+        assert!(Instant::now() < deadline, "job event never arrived");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn a_task_is_a_job_and_the_app_cancel_cancels_the_task() {
+    let h = harness();
+    h.server.register(spin_tool());
+    let seen = job_events(&h);
+    let created = h.send(modern(
+        1,
+        "tools/call",
+        json!({"name": "spin", "arguments": {}}),
+    ));
+    let task = created["result"]["taskId"].as_str().unwrap().to_string();
+    let running = wait_for(&seen, |v| {
+        v["state"] == "running" && v.get("fraction").is_some()
+    });
+    assert_eq!(running["jobId"], task.as_str());
+    assert_eq!(running["taskId"], task.as_str());
+    assert_eq!(running["stage"], "spinning");
+    let listed = h.send(modern(2, "vcad/jobs/list", json!({})));
+    assert_eq!(listed["result"]["jobs"][0]["tool"], "spin");
+    // Progress the app reports for work it runs under the job reaches the
+    // agent's Task status too.
+    h.send(modern(
+        9,
+        "vcad/jobs/progress",
+        json!({"jobId": task, "fraction": 0.5, "stage": "Meshing level 2 of 3"}),
+    ));
+    wait_for(&seen, |v| {
+        v["stage"] == "Meshing level 2 of 3" && v["fraction"] == 0.5
+    });
+    // The app's ✕.
+    let c = h.send(modern(3, "vcad/jobs/cancel", json!({"jobId": task})));
+    assert_eq!(c["result"]["cancelled"], task.as_str());
+    let got = poll_task(&h, &task, "cancelled");
+    assert_eq!(got["status"], "cancelled");
+    wait_for(&seen, |v| {
+        v["state"] == "cancelled" && v["jobId"] == task.as_str()
+    });
+}
+
+#[test]
+fn a_synchronous_long_call_is_a_job_and_tasks_cancel_ends_it() {
+    let h = harness();
+    h.server.register(spin_tool());
+    let seen = job_events(&h);
+    h.init_legacy();
+    // A client that did NOT ask for a Task still shows up as a job.
+    let conn = h.conn.clone();
+    let call = std::thread::spawn(move || {
+        conn.handle(
+            legacy(1, "tools/call", json!({"name": "spin", "arguments": {}})),
+            None,
+        )
+    });
+    let running = wait_for(&seen, |v| v["state"] == "running");
+    let id = running["jobId"].as_str().unwrap().to_string();
+    assert!(running.get("taskId").is_none());
+    h.send(legacy(2, "vcad/jobs/cancel", json!({"jobId": id})));
+    let out = call.join().unwrap().body.unwrap();
+    assert_eq!(out["result"]["isError"], true);
+    wait_for(&seen, |v| {
+        v["state"] == "cancelled" && v["jobId"] == id.as_str()
+    });
+    let missing = h.send(legacy(3, "vcad/jobs/cancel", json!({"jobId": id})));
+    assert!(missing["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("No running job"));
+
+    // tasks/cancel from the agent ends the job the same way.
+    let created = h.send(modern(
+        4,
+        "tools/call",
+        json!({"name": "spin", "arguments": {}}),
+    ));
+    let task = created["result"]["taskId"].as_str().unwrap().to_string();
+    wait_for(&seen, |v| {
+        v["state"] == "running" && v["jobId"] == task.as_str()
+    });
+    h.send(modern(5, "tasks/cancel", json!({"taskId": task})));
+    wait_for(&seen, |v| {
+        v["state"] == "cancelled" && v["jobId"] == task.as_str()
+    });
+}

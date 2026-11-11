@@ -253,6 +253,31 @@ fn viewer_hook(viewer_uri: String) -> Arc<dyn Fn(&mut Value) + Send + Sync> {
     })
 }
 
+/// Agent jobs → the app's header progress pill: every `BusEvent::Job` becomes
+/// one `{"op":"job","job":{…}}` host call, in order, on a dedicated thread (a
+/// job event can fire on any worker, including one blocked on the main actor).
+fn forward_jobs(server: &Server, bridge: &Arc<FfiBridge>) {
+    let (tx, rx) = std::sync::mpsc::channel::<Value>();
+    let tx = Mutex::new(tx);
+    server
+        .bus()
+        .on(Arc::new(move |evt: &vcad_mcp::tasks::BusEvent| {
+            if let vcad_mcp::tasks::BusEvent::Job(j) = evt {
+                let _ = tx.lock().unwrap_or_else(|e| e.into_inner()).send(j.clone());
+            }
+        }));
+    let weak = Arc::downgrade(bridge);
+    std::thread::Builder::new()
+        .name("vcad-mcp-jobs".into())
+        .spawn(move || {
+            for job in rx {
+                let Some(b) = weak.upgrade() else { break };
+                b.ask(json!({"op": "job", "job": job}));
+            }
+        })
+        .ok();
+}
+
 /// Start the core over the app's callback. `config_json`:
 /// `{name?, version?, instructions?, port? (first to try, default 47361),
 ///   attempts? (default 8), serve_http? (default true), proxy? (default true),
@@ -315,6 +340,7 @@ pub extern "C" fn vcad_mcp_app_start(
             .to_string(),
     ));
     let server = Server::new(Arc::new(AppStore::with_bridge(bridge.clone())), config);
+    forward_jobs(&server, &bridge);
     let mut port = 0u16;
     if cfg["serve_http"].as_bool() != Some(false) {
         let first = cfg["port"].as_u64().unwrap_or(47_361) as u16;

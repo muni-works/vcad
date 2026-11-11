@@ -259,7 +259,7 @@ fn serve_event_stream(server: &Server, mut out: TcpStream) -> std::io::Result<()
             crate::tasks::BusEvent::ToolsListChanged => {
                 json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
             }
-            crate::tasks::BusEvent::Task(_) => return,
+            crate::tasks::BusEvent::Task(_) | crate::tasks::BusEvent::Job(_) => return,
         };
         let mut w = w2.lock().unwrap_or_else(|e| e.into_inner());
         if w.write_all(format!("event: message\ndata: {msg}\n\n").as_bytes())
