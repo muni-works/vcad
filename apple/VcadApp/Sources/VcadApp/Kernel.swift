@@ -34,14 +34,18 @@ struct KernelMesh {
             for i in 0..<v.indices_len { indices[i] = ip[i] }
         }
 
-        var normals: [SIMD3<Float>]
+        // Kernel normals are exact for BRep tessellations (analytic surface
+        // normals, per-face vertices) — keep them. But STL imports carry
+        // "last face wins" per-vertex normals: a hole-rim vertex takes the
+        // countersink's normal and flat-face slivers shade into wedges. Those
+        // show up as corners pointing far off their own face, so when enough
+        // do, derive crease-split normals from the geometry instead.
+        var normals: [SIMD3<Float>] = []
         if v.normals_len == v.vertices_len, v.normals_len > 0, let np = v.normals {
-            normals = [SIMD3<Float>](repeating: .zero, count: vertexCount)
-            for i in 0..<vertexCount {
-                normals[i] = SIMD3<Float>(np[i * 3], np[i * 3 + 1], np[i * 3 + 2])
-            }
-        } else {
-            normals = Self.synthesizeNormals(positions: positions, indices: indices)
+            normals = (0..<vertexCount).map { SIMD3<Float>(np[$0 * 3], np[$0 * 3 + 1], np[$0 * 3 + 2]) }
+        }
+        if normals.isEmpty || !Self.normalsTrustworthy(normals, positions: positions, indices: indices) {
+            (positions, normals, indices) = Self.creasedNormals(positions: positions, indices: indices)
         }
 
         var lo = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
@@ -53,23 +57,165 @@ struct KernelMesh {
                           minBound: lo, maxBound: hi)
     }
 
-    /// Area-weighted vertex normals from triangle faces.
-    static func synthesizeNormals(positions: [SIMD3<Float>], indices: [UInt32]) -> [SIMD3<Float>] {
-        var normals = [SIMD3<Float>](repeating: .zero, count: positions.count)
-        var i = 0
-        while i + 2 < indices.count {
-            let a = Int(indices[i]), b = Int(indices[i + 1]), c = Int(indices[i + 2])
-            if a < positions.count, b < positions.count, c < positions.count {
-                let faceNormal = cross(positions[b] - positions[a], positions[c] - positions[a])
-                normals[a] += faceNormal; normals[b] += faceNormal; normals[c] += faceNormal
+    /// False when more than 0.5% of triangle corners carry a normal more
+    /// than 60° off their own face — impossible for real smooth/analytic
+    /// normals, typical of per-vertex "last face wins" STL normals.
+    static func normalsTrustworthy(_ normals: [SIMD3<Float>], positions: [SIMD3<Float>],
+                                   indices: [UInt32]) -> Bool {
+        let triCount = indices.count / 3
+        guard triCount > 0 else { return true }
+        var bad = 0, seen = 0
+        for t in 0..<triCount {
+            let a = Int(indices[3 * t]), b = Int(indices[3 * t + 1]), c = Int(indices[3 * t + 2])
+            guard a < positions.count, b < positions.count, c < positions.count,
+                  a < normals.count, b < normals.count, c < normals.count else { continue }
+            let f = cross(positions[b] - positions[a], positions[c] - positions[a])
+            let l = length(f)
+            guard l > 1e-12 else { continue }
+            let fn = f / l
+            for v in [a, b, c] {
+                seen += 1
+                if dot(fn, normals[v]) < 0.5 { bad += 1 }
             }
-            i += 3
         }
-        for j in 0..<normals.count {
-            let len = length(normals[j])
-            normals[j] = len > 1e-6 ? normals[j] / len : SIMD3<Float>(0, 0, 1)
+        return seen == 0 || Double(bad) / Double(seen) <= 0.005
+    }
+
+    /// Crease angle for synthesized normals: faces meeting more sharply than
+    /// this keep their own normal (a hard edge); gentler joins blend smooth.
+    static let creaseAngleDegrees: Float = 30
+
+    /// Normals for a mesh that came without any (imported STL/OBJ), split at
+    /// a crease angle the way Fusion/Blender shade meshes. A corner shared by
+    /// faces at 90° gets one vertex copy per side instead of one averaged
+    /// normal, so flat faces read flat and curved ones stay smooth. Returns
+    /// the (possibly grown) vertex arrays alongside the normals.
+    static func creasedNormals(positions: [SIMD3<Float>], indices rawIndices: [UInt32])
+        -> ([SIMD3<Float>], [SIMD3<Float>], [UInt32]) {
+        let triCount = rawIndices.count / 3
+        guard triCount > 0 else {
+            return (positions, [SIMD3<Float>](repeating: [0, 0, 1], count: positions.count), rawIndices)
         }
-        return normals
+        // Weld by position (1 µm grid) so adjacency is seen even when the
+        // source emits unshared vertices (BRep tessellations do): otherwise a
+        // smooth cylinder would shade as flat facets.
+        var canonOf: [SIMD3<Int32>: UInt32] = [:]
+        canonOf.reserveCapacity(positions.count)
+        let canon: [UInt32] = positions.enumerated().map { i, p in
+            let key = SIMD3<Int32>(Int32(clamping: Int((p.x * 1000).rounded())),
+                                   Int32(clamping: Int((p.y * 1000).rounded())),
+                                   Int32(clamping: Int((p.z * 1000).rounded())))
+            if let c = canonOf[key] { return c }
+            canonOf[key] = UInt32(i)
+            return UInt32(i)
+        }
+        let indices = rawIndices.map { Int($0) < canon.count ? canon[Int($0)] : $0 }
+        // Area-weighted face normal per triangle (zero for degenerate).
+        var faceN = [SIMD3<Float>](repeating: .zero, count: triCount)
+        var incident = [[Int]](repeating: [], count: positions.count)
+        for t in 0..<triCount {
+            let a = Int(indices[3 * t]), b = Int(indices[3 * t + 1]), c = Int(indices[3 * t + 2])
+            guard a < positions.count, b < positions.count, c < positions.count else { continue }
+            faceN[t] = cross(positions[b] - positions[a], positions[c] - positions[a])
+            incident[a].append(t); incident[b].append(t); incident[c].append(t)
+        }
+        let cosCrease = cos(creaseAngleDegrees * .pi / 180)
+        func unit(_ v: SIMD3<Float>) -> SIMD3<Float>? {
+            let l = length(v); return l > 1e-12 ? v / l : nil
+        }
+        // Planar regions: triangles joined edge-to-edge with (near) identical
+        // normals. A region of 3+ triangles (or a squarish 2-triangle quad) is a real flat face and shades
+        // with its exact plane normal — no blending — so the long sliver
+        // triangles CAD exporters fan across flat faces can't smear a tilted
+        // rim/hole normal into wedge-shaped "ears". (Two is not enough: every
+        // facet of a tessellated cylinder is a coplanar quad = 2 triangles,
+        // and those must keep blending smooth.)
+        let unitN = faceN.map { unit($0) }
+        var parent = Array(0..<triCount)
+        func find(_ x: Int) -> Int {
+            var x = x
+            while parent[x] != x { parent[x] = parent[parent[x]]; x = parent[x] }
+            return x
+        }
+        var edgeFace: [UInt64: Int] = [:]
+        for t in 0..<triCount {
+            guard let nt = unitN[t] else { continue }
+            for k in 0..<3 {
+                let a = indices[3 * t + k], b = indices[3 * t + (k + 1) % 3]
+                let key = UInt64(min(a, b)) << 32 | UInt64(max(a, b))
+                if let o = edgeFace[key] {
+                    if let no = unitN[o], dot(no, nt) > 0.9995 {   // ~1.8°: sliver normals are noisy
+                        let ra = find(t), rb = find(o)
+                        if ra != rb { parent[ra] = rb }
+                    }
+                } else {
+                    edgeFace[key] = t
+                }
+            }
+        }
+        var regionSize = [Int](repeating: 0, count: triCount)
+        var regionSum = [SIMD3<Float>](repeating: .zero, count: triCount)
+        var regionTris = [[Int]](repeating: [], count: triCount)
+        for t in 0..<triCount {
+            let r = find(t)
+            regionSize[r] += 1
+            regionSum[r] += faceN[t]           // area-weighted: slivers barely count
+            if regionTris[r].count < 3 { regionTris[r].append(t) }
+        }
+        // A 2-triangle region is a flat face when it is roughly square (a
+        // prong side); a long thin quad is a strip of a curved tessellation
+        // and keeps blending.
+        func isFlatFace(_ r: Int) -> Bool {
+            if regionSize[r] >= 3 { return true }
+            guard regionSize[r] == 2 else { return false }
+            var count: [UInt64: Int] = [:]
+            var len: [UInt64: Float] = [:]
+            for t in regionTris[r] {
+                for k in 0..<3 {
+                    let a = indices[3 * t + k], b = indices[3 * t + (k + 1) % 3]
+                    let key = UInt64(min(a, b)) << 32 | UInt64(max(a, b))
+                    count[key, default: 0] += 1
+                    len[key] = distance(positions[Int(a)], positions[Int(b)])
+                }
+            }
+            let outer = count.filter { $0.value == 1 }.compactMap { len[$0.key] }
+            guard let lo = outer.min(), let hi = outer.max(), lo > 0 else { return false }
+            return hi / lo <= 4
+        }
+        var flat = [Bool](repeating: false, count: triCount)
+        for t in 0..<triCount where find(t) == t { flat[t] = isFlatFace(t) }
+        var outPos: [SIMD3<Float>] = [], outN: [SIMD3<Float>] = []
+        var outIdx = [UInt32](repeating: 0, count: triCount * 3)
+        // Per source vertex: normals already emitted, so corners that land on
+        // the same smoothing group share one output vertex.
+        var emitted = [[(SIMD3<Float>, UInt32)]](repeating: [], count: positions.count)
+        for t in 0..<triCount {
+            let own = unitN[t]
+            let region = find(t)
+            let planar = own != nil && flat[region]
+            for k in 0..<3 {
+                let v = Int(indices[3 * t + k])
+                guard v < positions.count else { outIdx[3 * t + k] = 0; continue }
+                var sum = SIMD3<Float>.zero
+                if planar {
+                    sum = regionSum[region]
+                } else if let own {
+                    for f in incident[v] {
+                        if let fn = unit(faceN[f]), dot(fn, own) >= cosCrease { sum += faceN[f] }
+                    }
+                }
+                let n = unit(sum) ?? own ?? SIMD3<Float>(0, 0, 1)
+                if let hit = emitted[v].first(where: { dot($0.0, n) > 0.9999 }) {
+                    outIdx[3 * t + k] = hit.1
+                } else {
+                    let id = UInt32(outPos.count)
+                    outPos.append(positions[v]); outN.append(n)
+                    emitted[v].append((n, id))
+                    outIdx[3 * t + k] = id
+                }
+            }
+        }
+        return (outPos, outN, outIdx)
     }
 
     func resource(name: String) -> MeshResource {
@@ -306,6 +452,37 @@ enum EdgeOverlay {
 
     /// Build one mesh holding every segment as two crossed quads of the given
     /// world-space width. Returns nil for empty input.
+    /// One quad per segment for the screen-space edge shader
+    /// (`Shaders/EdgeLines.metal`): both endpoints twice, the segment
+    /// direction in the normal and the side (-1/+1) in uv.x. The shader faces
+    /// it to the camera at a constant pixel width.
+    static func screenLineResource(segments: [SIMD3<Float>], name: String) -> MeshResource? {
+        let segCount = segments.count / 2
+        guard segCount > 0 else { return nil }
+        var pos = [SIMD3<Float>](), nrm = [SIMD3<Float>](), uv = [SIMD2<Float>](), idx = [UInt32]()
+        pos.reserveCapacity(segCount * 4); nrm.reserveCapacity(segCount * 4)
+        uv.reserveCapacity(segCount * 4); idx.reserveCapacity(segCount * 12)
+        for s in 0..<segCount {
+            let a = segments[s * 2], b = segments[s * 2 + 1]
+            let d = b - a
+            let len = length(d)
+            guard len > 1e-6 else { continue }
+            let dir = d / len
+            let o = UInt32(pos.count)
+            pos += [a, a, b, b]
+            nrm += [dir, dir, dir, dir]
+            uv += [[-1, 0], [1, 0], [1, 1], [-1, 1]]
+            idx += [o, o + 1, o + 2, o, o + 2, o + 3, o, o + 2, o + 1, o, o + 3, o + 2]
+        }
+        guard !pos.isEmpty else { return nil }
+        var d = MeshDescriptor(name: name)
+        d.positions = MeshBuffers.Positions(pos)
+        d.normals = MeshBuffers.Normals(nrm)
+        d.textureCoordinates = MeshBuffers.TextureCoordinates(uv)
+        d.primitives = .triangles(idx)
+        return try? MeshResource.generate(from: [d])
+    }
+
     static func ribbonResource(segments: [SIMD3<Float>], width: Float, name: String) -> MeshResource? {
         let segCount = segments.count / 2
         guard segCount > 0, width > 0 else { return nil }

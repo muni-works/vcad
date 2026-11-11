@@ -132,16 +132,22 @@ enum AgentEdits {
     static func edit(_ m: EditorModel, name: String,
                      _ body: (DocumentEngine) throws -> DocumentEngine.Result) throws -> DocumentEngine.Result {
         let engine = try editableEngine(m)
-        let before = engine.save()
-        let r: DocumentEngine.Result
-        do {
-            r = try body(engine)
-        } catch {
-            _ = try? engine.restore(before)
-            throw Failure(message: describe(error))
+        let focus = AgentCursor.focus(m)
+        // AgentTurn lands this as its own undo step, or folds it into the
+        // agent's open turn ("Agent: thickened walls").
+        let r = try AgentTurn.shared.perform(m, name: name) { () throws -> DocumentEngine.Result in
+            let before = engine.save()
+            let r: DocumentEngine.Result
+            do {
+                r = try body(engine)
+            } catch {
+                _ = try? engine.restore(before)
+                throw Failure(message: describe(error))
+            }
+            m.agentApplied(r)
+            return r
         }
-        m.agentApplied(r)
-        m.agentEndTurn(before: before, name: name)
+        AgentCursor.shared.pointAt(touched: r, verb: AgentTurn.shared.undoName(fallback: name), focus: focus, model: m)
         return r
     }
 
