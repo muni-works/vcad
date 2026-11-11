@@ -472,6 +472,32 @@ pub enum EdgeQuery {
     },
 }
 
+/// A reference to one face of a solid, resolved against the current
+/// topology at evaluation time — used by [`CsgOp::Shell`]'s `open_faces`.
+///
+/// `name` is a persistent face name (`n1:top`, the same names
+/// [`EdgeQuery::Named`] uses) and wins when it resolves to exactly one face.
+/// Otherwise `point` (+ optional outward `normal`) picks the nearest face
+/// whose normal agrees. Resolution is fail-closed: a reference that matches
+/// no face, or ties between two, is an evaluation error.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct FaceRef {
+    /// Persistent face name, e.g. `n1:top`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub name: Option<String>,
+    /// A point on (or near) the face, model space (mm).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub point: Option<Vec3>,
+    /// The face's outward normal near `point`, to disambiguate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub normal: Option<Vec3>,
+}
+
 /// Geometric snapshot of a picked edge, carried by [`EdgeQuery::Named`].
 ///
 /// Fallback matching tolerances scale with `length`: a candidate must agree
@@ -1057,15 +1083,22 @@ pub enum CsgOp {
     },
     #[tool(
         category = "modifier",
-        ai_hint = "Hollow out a solid. Use parent_part_id. Great for enclosures, cups, containers."
+        ai_hint = "Hollow out a solid. Use parent_part_id. Great for enclosures, cups, containers. open_faces removes faces to leave an opening (e.g. the top of an enclosure): each is {name} or {point, normal} on the face."
     )]
     /// Shell — hollow out a solid by offsetting faces.
+    ///
+    /// With `open_faces`, those faces are removed and become the opening
+    /// (an open-top box); without, the result is a closed hollow.
     Shell {
         /// Child node to shell.
         #[cfg_attr(feature = "ts-rs", ts(type = "number"))]
         child: NodeId,
         /// Wall thickness (inward offset).
         thickness: f64,
+        /// Faces to remove, leaving an opening. Empty = closed shell.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[cfg_attr(feature = "ts-rs", ts(as = "Option<Vec<FaceRef>>", optional))]
+        open_faces: Vec<FaceRef>,
     },
     #[tool(
         category = "modifier",

@@ -452,10 +452,20 @@ fn migrate_node(
             params.insert("distance".to_string(), Value::F64(*distance));
             Some(create(crdt, ctx, "chamfer", params))
         }
-        CsgOp::Shell { child, thickness } => {
+        CsgOp::Shell {
+            child,
+            thickness,
+            open_faces,
+        } => {
             let input = migrate_node(crdt, ctx, doc, *child)?;
             params.insert("input".to_string(), Value::FeatureRef(fid_to_stable(input)));
             params.insert("thickness".to_string(), Value::F64(*thickness));
+            if !open_faces.is_empty() {
+                params.insert(
+                    "open_faces_json".to_string(),
+                    Value::String(serde_json::to_string(open_faces).ok()?),
+                );
+            }
             Some(create(crdt, ctx, "shell", params))
         }
         CsgOp::LinearPattern {

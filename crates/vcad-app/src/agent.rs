@@ -110,7 +110,9 @@ pub fn tools() -> Vec<Value> {
             "create",
             "Create a part. Primitives: cube {size:{x,y,z}}, cylinder {radius, height}, sphere {radius}, \
              cone {radius_bottom, radius_top, height}, tube {start:{x,y,z}, end:{x,y,z}, radius}. \
-             Modifiers on an existing part (pass parent_part_id): fillet {radius}, chamfer {distance}, shell {thickness}.",
+             Modifiers on an existing part (pass parent_part_id): fillet {radius}, chamfer {distance}, \
+             shell {thickness, open_faces?} — open_faces removes faces to leave an opening (an open-top enclosure): \
+             an array of {name} or {point:{x,y,z}, normal:{x,y,z}} on each face, e.g. the top face's center with normal {z:1}.",
             json!({
                 "type": {"type": "string", "enum": CREATE_KINDS},
                 "params": {"type": "object", "description": "Parameters for the chosen type (see description)."},

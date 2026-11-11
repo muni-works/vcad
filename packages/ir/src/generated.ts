@@ -1177,7 +1177,11 @@ child: number,
 /**
  * Wall thickness (inward offset).
  */
-thickness: number, } | { "type": "Fillet", 
+thickness: number, 
+/**
+ * Faces to remove, leaving an opening. Empty = closed shell.
+ */
+open_faces?: Array<FaceRef>, } | { "type": "Fillet", 
 /**
  * Child node to fillet.
  */
@@ -2949,6 +2953,30 @@ export type EnvironmentPreset = "studio" | "warehouse" | "apartment" | "park" | 
 export type Expr = number | string;
 
 /**
+ * A reference to one face of a solid, resolved against the current
+ * topology at evaluation time — used by [`CsgOp::Shell`]'s `open_faces`.
+ *
+ * `name` is a persistent face name (`n1:top`, the same names
+ * [`EdgeQuery::Named`] uses) and wins when it resolves to exactly one face.
+ * Otherwise `point` (+ optional outward `normal`) picks the nearest face
+ * whose normal agrees. Resolution is fail-closed: a reference that matches
+ * no face, or ties between two, is an evaluation error.
+ */
+export type FaceRef = { 
+/**
+ * Persistent face name, e.g. `n1:top`.
+ */
+name?: string, 
+/**
+ * A point on (or near) the face, model space (mm).
+ */
+point?: Vec3, 
+/**
+ * The face's outward normal near `point`, to disambiguate.
+ */
+normal?: Vec3, };
+
+/**
  * Every feature kind and its typed parameters.
  *
  * This is THE schema — encoding, decoding, validation, and the WASM API
@@ -3102,7 +3130,13 @@ input: string,
 /**
  * Wall thickness.
  */
-thickness: number, } | { "type": "LinearPattern", 
+thickness: number, 
+/**
+ * Faces to remove, leaving an opening, as a JSON array of IR
+ * `FaceRef`s (`{name}` and/or `{point, normal}`). Absent = closed
+ * shell.
+ */
+open_faces_json?: string, } | { "type": "LinearPattern", 
 /**
  * Source feature ID.
  */

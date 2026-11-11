@@ -2275,6 +2275,7 @@ impl ConvertCtx {
                 CsgOp::Shell {
                     child,
                     thickness: self.f64_val(&fields[1])?,
+                    open_faces: Vec::new(),
                 }
             }
             "Fillet" => {

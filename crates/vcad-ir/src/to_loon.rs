@@ -348,7 +348,13 @@ fn op_to_loon(op: &CsgOp, doc: &Document) -> OpResult {
             "query-selected edge blend has no loon syntax yet".to_string(),
         ),
 
-        CsgOp::Shell { child, thickness } => OpResult::Ok(format!(
+        CsgOp::Shell { open_faces, .. } if !open_faces.is_empty() => OpResult::Unsupported(
+            "Shell".into(),
+            "open-face shell (open_faces) has no loon syntax yet".into(),
+        ),
+        CsgOp::Shell {
+            child, thickness, ..
+        } => OpResult::Ok(format!(
             "[shell {} {}]",
             fmt_f64(*thickness),
             node_ref(*child, doc)

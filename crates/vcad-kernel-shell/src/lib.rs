@@ -18,7 +18,7 @@
 //! - Each face is offset by translating along its normal
 //! - The resulting inner shell is connected to the outer shell
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use vcad_kernel_geom::{BilinearSurface, GeometryStore, Plane, Surface, SurfaceKind};
 use vcad_kernel_math::{Point3, Vec3};
@@ -37,6 +37,9 @@ pub enum ShellError {
     SelfIntersection(FaceId, FaceId),
     /// A surface type does not support analytical offset.
     UnsupportedSurface(SurfaceKind),
+    /// An open-face shell ([`shell_brep_open`]) was refused: the request
+    /// is malformed, unsupported, or the wall thickness consumes the solid.
+    OpenShell(String),
     /// The wall thickness is zero, negative, or not a finite number.
     InvalidThickness(f64),
     /// The inward offset consumes the solid: the inner wall would meet,
@@ -70,6 +73,7 @@ impl fmt::Display for ShellError {
             ShellError::UnsupportedSurface(kind) => {
                 write!(f, "Unsupported surface type for offset: {:?}", kind)
             }
+            ShellError::OpenShell(msg) => write!(f, "{msg}"),
             ShellError::InvalidThickness(t) => {
                 write!(
                     f,
@@ -410,6 +414,469 @@ pub fn shell_brep_analytical(
     })
 }
 
+/// Shell a B-rep solid with a set of faces removed — the "open the top of
+/// the box" shell every enclosure needs.
+///
+/// The removed (open) faces become the opening. Every remaining face is
+/// offset inward by `thickness`, and each open face is replaced by a planar
+/// *rim* face: the open face's own outline with the offset outline cut out
+/// of it as a hole. The result is one closed, watertight wall.
+///
+/// Supported today: open faces that are planar with a polygonal outline
+/// (any planar-faced solid, including the sampled arcs of extruded rounded
+/// profiles and blended edges) or a full circle (a cylinder's cap); kept
+/// faces that are planar or cylindrical. Fail-closed: anything else — a
+/// non-planar or holed open face, a kept face with holes, two open faces
+/// sharing an edge, a corner with every face open, or a thickness that
+/// collapses a wall — is an [`ShellError::OpenShell`] with the reason,
+/// never a best-effort solid.
+///
+/// The closed shell ([`shell_brep_analytical`] with no open faces) is a
+/// separate path and is unchanged by this one.
+pub fn shell_brep_open(
+    brep: &BRepSolid,
+    thickness: f64,
+    open_face_ids: &[FaceId],
+) -> Result<BRepSolid, ShellError> {
+    let fail = |m: String| Err(ShellError::OpenShell(m));
+    if !thickness.is_finite() || thickness <= 0.0 {
+        return fail(format!(
+            "shell thickness must be a positive finite number, got {thickness}"
+        ));
+    }
+    let topo = &brep.topology;
+    let geom = &brep.geometry;
+    let shell_faces = &topo.shells[topo.solids[brep.solid_id].outer_shell].faces;
+
+    let open_ids: HashSet<FaceId> = open_face_ids.iter().copied().collect();
+    if open_ids.is_empty() {
+        return fail("no faces to open".into());
+    }
+    for &f in &open_ids {
+        if !shell_faces.contains(&f) {
+            return fail("an open face is not part of this solid".into());
+        }
+    }
+    for &f in shell_faces {
+        let face = &topo.faces[f];
+        let kind = geom.surfaces[face.surface_index].surface_type();
+        if open_ids.contains(&f) && kind != SurfaceKind::Plane {
+            return fail(format!(
+                "only planar faces can be opened (picked a {kind:?} face)"
+            ));
+        }
+        if !matches!(kind, SurfaceKind::Plane | SurfaceKind::Cylinder) {
+            return Err(ShellError::UnsupportedSurface(kind));
+        }
+        if !face.inner_loops.is_empty() {
+            return fail(if open_ids.contains(&f) {
+                "an open face with holes in it is not supported yet".into()
+            } else {
+                "shelling a solid whose faces have holes is not supported yet — \
+                 shell first, then cut the holes"
+                    .into()
+            });
+        }
+    }
+
+    // Work on logical faces: coplanar planar faces merged, and vertices
+    // that only subdivide a straight edge dropped. Faceted solids (a
+    // blended edge is a strip of coplanar triangles; its neighbours carry
+    // the strip's sample points) otherwise put vertices closer to a
+    // neighbouring face than the wall thickness, and their offsets fold
+    // through that face.
+    let faces = logical_faces(brep, shell_faces);
+    let is_open: Vec<bool> = faces
+        .iter()
+        .map(|lf| lf.members.iter().any(|m| open_ids.contains(m)))
+        .collect();
+    let n_open = is_open.iter().filter(|o| **o).count();
+    if n_open >= faces.len() {
+        return fail("cannot open every face of the solid".into());
+    }
+
+    let mut vertex_faces: HashMap<VertexId, Vec<usize>> = HashMap::new();
+    for (i, lf) in faces.iter().enumerate() {
+        for &v in &lf.verts {
+            let list = vertex_faces.entry(v).or_default();
+            if !list.contains(&i) {
+                list.push(i);
+            }
+        }
+    }
+
+    // Two open faces sharing an edge would leave a zero-width rim.
+    let edge_keys = |vs: &[VertexId]| {
+        (0..vs.len())
+            .filter(|&i| vs[i] != vs[(i + 1) % vs.len()])
+            .map(|i| {
+                let (a, b) = (vs[i], vs[(i + 1) % vs.len()]);
+                if a < b {
+                    (a, b)
+                } else {
+                    (b, a)
+                }
+            })
+            .collect::<HashSet<_>>()
+    };
+    let open_list: Vec<usize> = (0..faces.len()).filter(|&i| is_open[i]).collect();
+    for (k, &a) in open_list.iter().enumerate() {
+        let ka = edge_keys(&faces[a].verts);
+        for &b in &open_list[k + 1..] {
+            if !ka.is_disjoint(&edge_keys(&faces[b].verts)) {
+                return fail(
+                    "two open faces share an edge — opening adjacent faces is not supported yet"
+                        .into(),
+                );
+            }
+        }
+    }
+
+    // Offset surfaces for the kept faces.
+    let mut offset_surfaces: HashMap<usize, Box<dyn Surface>> = HashMap::new();
+    for (i, lf) in faces.iter().enumerate() {
+        if is_open[i] {
+            continue;
+        }
+        let face = &topo.faces[lf.rep];
+        let surface = &geom.surfaces[face.surface_index];
+        let d = match face.orientation {
+            Orientation::Forward => -thickness,
+            Orientation::Reversed => thickness,
+        };
+        let off = surface.offset(d).ok_or_else(|| {
+            ShellError::OpenShell(format!(
+                "a {:?} face collapses at wall thickness {thickness} — the shell consumes the solid",
+                surface.surface_type()
+            ))
+        })?;
+        offset_surfaces.insert(i, off);
+    }
+
+    // Inner vertex positions: offset every vertex so it sits exactly
+    // `thickness` inside each distinct KEPT face around it. Open faces do
+    // not move — the rim stays in the open face's plane.
+    let mut inner_pos: HashMap<VertexId, Point3> = HashMap::new();
+    for (&v, around) in &vertex_faces {
+        let p = topo.vertices[v].point;
+        let mut normals: Vec<Vec3> = Vec::new();
+        for &i in around {
+            if is_open[i] {
+                continue;
+            }
+            let face = &topo.faces[faces[i].rep];
+            let n = surface_normal_at(geom.surfaces[face.surface_index].as_ref(), p);
+            let n = match face.orientation {
+                Orientation::Forward => n,
+                Orientation::Reversed => -n,
+            };
+            if n.norm() < 1e-12 {
+                continue;
+            }
+            let n = n.normalize();
+            if !normals.iter().any(|m| m.dot(n) > 1.0 - 1e-9) {
+                normals.push(n);
+            }
+        }
+        let d = solve_offset(&normals, thickness).ok_or_else(|| {
+            ShellError::OpenShell(
+                "every face around a corner is open — nothing is left to offset there".into(),
+            )
+        })?;
+        inner_pos.insert(v, p - d);
+    }
+
+    let mut new_topo = Topology::new();
+    let mut new_geom = GeometryStore::new();
+    let mut outer_map: HashMap<VertexId, VertexId> = HashMap::new();
+    let mut inner_map: HashMap<VertexId, VertexId> = HashMap::new();
+    let mut ordered: Vec<VertexId> = vertex_faces.keys().copied().collect();
+    ordered.sort();
+    for &v in &ordered {
+        outer_map.insert(v, new_topo.add_vertex(topo.vertices[v].point));
+        inner_map.insert(v, new_topo.add_vertex(inner_pos[&v]));
+    }
+    let add_loop = |t: &mut Topology, verts: &[VertexId]| {
+        let hes: Vec<HalfEdgeId> = verts.iter().map(|&v| t.add_half_edge(v)).collect();
+        t.add_loop(&hes)
+    };
+
+    let mut all_faces = Vec::new();
+    for (i, lf) in faces.iter().enumerate() {
+        let face = &topo.faces[lf.rep];
+        let old = &lf.verts;
+        let outer: Vec<VertexId> = old.iter().map(|v| outer_map[v]).collect();
+        let inner: Vec<VertexId> = old.iter().map(|v| inner_map[v]).collect();
+        let surface = &geom.surfaces[face.surface_index];
+        if is_open[i] {
+            // Rim: the open face's outline with the offset outline as a
+            // hole. The hole runs in the open face's own vertex order, the
+            // opposite of the kept inner faces next to it, so it twins
+            // with them (inner faces keep the outer winding and carry a
+            // flipped orientation flag — see the closed shell).
+            let s = new_geom.add_surface(surface.clone_box());
+            let lo = add_loop(&mut new_topo, &outer);
+            let li = add_loop(&mut new_topo, &inner);
+            let id = new_topo.add_face(lo, s, face.orientation);
+            new_topo.add_inner_loop(id, li);
+            all_faces.push(id);
+            continue;
+        }
+        let s = new_geom.add_surface(surface.clone_box());
+        let lo = add_loop(&mut new_topo, &outer);
+        all_faces.push(new_topo.add_face(lo, s, face.orientation));
+
+        let s = new_geom.add_surface(offset_surfaces[&i].clone_box());
+        let li = add_loop(&mut new_topo, &inner);
+        let flipped = match face.orientation {
+            Orientation::Forward => Orientation::Reversed,
+            Orientation::Reversed => Orientation::Forward,
+        };
+        all_faces.push(new_topo.add_face(li, s, flipped));
+
+        // A planar wall whose offset outline flipped or vanished means
+        // the thickness consumed it.
+        if surface.surface_type() == SurfaceKind::Plane {
+            let outer_pts: Vec<Point3> = old.iter().map(|v| topo.vertices[*v].point).collect();
+            let inner_pts: Vec<Point3> = old.iter().map(|v| inner_pos[v]).collect();
+            let (a_out, a_in) = (
+                newell(outer_pts.iter().copied()),
+                newell(inner_pts.iter().copied()),
+            );
+            if a_out.norm() > 1e-12
+                && (a_in.dot(a_out) <= 1e-9 * a_out.dot(a_out)
+                    || a_in.norm() < 1e-9 * a_out.norm()
+                    || !offset_polygon_is_simple(&outer_pts, &inner_pts))
+            {
+                return fail(format!(
+                    "wall thickness {thickness} consumes the solid (an offset face collapsed)"
+                ));
+            }
+        }
+    }
+
+    pair_twin_half_edges(&mut new_topo);
+    let shell_id = new_topo.add_shell(all_faces, ShellType::Outer);
+    let solid_id = new_topo.add_solid(shell_id);
+    Ok(BRepSolid {
+        topology: new_topo,
+        geometry: new_geom,
+        solid_id,
+    })
+}
+
+/// One face as the open-face shell sees it: a set of coplanar input faces
+/// merged into a single outline, with straight-edge subdivision vertices
+/// removed.
+struct LogicalFace {
+    /// The input face whose surface and orientation this face carries.
+    rep: FaceId,
+    /// Every input face merged into this one.
+    members: Vec<FaceId>,
+    /// The merged outer loop.
+    verts: Vec<VertexId>,
+}
+
+/// Group coplanar, edge-adjacent planar faces into single faces, then
+/// drop vertices that only subdivide a straight edge between exactly two
+/// faces. A group whose union is not one simple loop stays unmerged.
+fn logical_faces(brep: &BRepSolid, shell_faces: &[FaceId]) -> Vec<LogicalFace> {
+    let topo = &brep.topology;
+    let geom = &brep.geometry;
+    let loops: Vec<Vec<VertexId>> = shell_faces
+        .iter()
+        .map(|&f| topo.loop_vertices(topo.faces[f].outer_loop))
+        .collect();
+    // Plane key per face: (normal incl. orientation, offset), planar only.
+    let plane: Vec<Option<(Vec3, f64)>> = shell_faces
+        .iter()
+        .zip(&loops)
+        .map(|(&f, vs)| {
+            let face = &topo.faces[f];
+            let surf = &geom.surfaces[face.surface_index];
+            if surf.surface_type() != SurfaceKind::Plane || vs.len() < 3 {
+                return None;
+            }
+            let n = *surf
+                .normal(vcad_kernel_math::Point2::new(0.0, 0.0))
+                .as_ref();
+            let n = match face.orientation {
+                Orientation::Forward => n,
+                Orientation::Reversed => -n,
+            };
+            let p = topo.vertices[vs[0]].point;
+            Some((n, n.dot(p - Point3::origin())))
+        })
+        .collect();
+    let scale = topo
+        .vertices
+        .values()
+        .map(|v| v.point.x.abs().max(v.point.y.abs()).max(v.point.z.abs()))
+        .fold(1.0, f64::max);
+    let same_plane = |i: usize, j: usize| match (plane[i], plane[j]) {
+        (Some((a, da)), Some((b, db))) => a.dot(b) > 1.0 - 1e-9 && (da - db).abs() < 1e-9 * scale,
+        _ => false,
+    };
+
+    // Union-find over edge-adjacent coplanar faces.
+    let mut parent: Vec<usize> = (0..shell_faces.len()).collect();
+    fn find(p: &mut [usize], i: usize) -> usize {
+        let mut r = i;
+        while p[r] != r {
+            r = p[r];
+        }
+        let mut i = i;
+        while p[i] != r {
+            let next = p[i];
+            p[i] = r;
+            i = next;
+        }
+        r
+    }
+    let mut by_edge: HashMap<(VertexId, VertexId), usize> = HashMap::new();
+    for (i, vs) in loops.iter().enumerate() {
+        for k in 0..vs.len() {
+            let (a, b) = (vs[k], vs[(k + 1) % vs.len()]);
+            if a == b {
+                continue;
+            }
+            if let Some(&j) = by_edge.get(&(b, a)) {
+                if same_plane(i, j) {
+                    let (ri, rj) = (find(&mut parent, i), find(&mut parent, j));
+                    parent[ri] = rj;
+                }
+            }
+            by_edge.insert((a, b), i);
+        }
+    }
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    let mut group_of: HashMap<usize, usize> = HashMap::new();
+    for i in 0..shell_faces.len() {
+        let r = find(&mut parent, i);
+        let g = *group_of.entry(r).or_insert_with(|| {
+            groups.push(Vec::new());
+            groups.len() - 1
+        });
+        groups[g].push(i);
+    }
+
+    let mut out: Vec<LogicalFace> = Vec::new();
+    for g in groups {
+        if g.len() == 1 {
+            out.push(LogicalFace {
+                rep: shell_faces[g[0]],
+                members: vec![shell_faces[g[0]]],
+                verts: loops[g[0]].clone(),
+            });
+            continue;
+        }
+        match merge_loops(g.iter().map(|&i| loops[i].as_slice())) {
+            Some(verts) => out.push(LogicalFace {
+                rep: shell_faces[g[0]],
+                members: g.iter().map(|&i| shell_faces[i]).collect(),
+                verts,
+            }),
+            None => out.extend(g.iter().map(|&i| LogicalFace {
+                rep: shell_faces[i],
+                members: vec![shell_faces[i]],
+                verts: loops[i].clone(),
+            })),
+        }
+    }
+
+    // Drop straight-edge subdivision vertices: in exactly two faces,
+    // visited once in each, and collinear with its neighbours in both.
+    let mut count: HashMap<VertexId, usize> = HashMap::new();
+    for lf in &out {
+        for &v in &lf.verts {
+            *count.entry(v).or_default() += 1;
+        }
+    }
+    let collinear = |vs: &[VertexId], k: usize| {
+        let n = vs.len();
+        let (a, b, c) = (vs[(k + n - 1) % n], vs[k], vs[(k + 1) % n]);
+        let (pa, pb, pc) = (
+            topo.vertices[a].point,
+            topo.vertices[b].point,
+            topo.vertices[c].point,
+        );
+        let (u, w) = (pb - pa, pc - pb);
+        let (lu, lw) = (u.norm(), w.norm());
+        lu > 1e-12 && lw > 1e-12 && u.dot(w) / (lu * lw) > 1.0 - 1e-12
+    };
+    let removable: HashSet<VertexId> = count
+        .iter()
+        .filter(|(_, c)| **c == 2)
+        .map(|(v, _)| *v)
+        .filter(|v| {
+            out.iter()
+                .all(|lf| match lf.verts.iter().position(|x| x == v) {
+                    None => true,
+                    Some(k) => lf.verts.len() > 3 && collinear(&lf.verts, k),
+                })
+        })
+        .collect();
+    for lf in &mut out {
+        let kept: Vec<VertexId> = lf
+            .verts
+            .iter()
+            .copied()
+            .filter(|v| !removable.contains(v))
+            .collect();
+        if kept.len() >= 3 {
+            lf.verts = kept;
+        }
+    }
+    out
+}
+
+/// Union of face loops sharing edges: cancel each interior edge against
+/// its reverse and chain what is left. `None` unless the result is one
+/// simple loop.
+fn merge_loops<'a>(loops: impl Iterator<Item = &'a [VertexId]>) -> Option<Vec<VertexId>> {
+    let mut edges: HashSet<(VertexId, VertexId)> = HashSet::new();
+    for vs in loops {
+        for k in 0..vs.len() {
+            let (a, b) = (vs[k], vs[(k + 1) % vs.len()]);
+            if a == b {
+                return None;
+            }
+            if !edges.remove(&(b, a)) && !edges.insert((a, b)) {
+                return None;
+            }
+        }
+    }
+    let mut next: HashMap<VertexId, VertexId> = HashMap::new();
+    for &(a, b) in &edges {
+        if next.insert(a, b).is_some() {
+            return None; // pinch vertex
+        }
+    }
+    let &(start, _) = edges.iter().min()?;
+    let mut verts = vec![start];
+    let mut cur = next[&start];
+    while cur != start {
+        if verts.len() > edges.len() {
+            return None;
+        }
+        verts.push(cur);
+        cur = *next.get(&cur)?;
+    }
+    (verts.len() == edges.len()).then_some(verts)
+}
+
+/// True when every offset edge kept its direction — a wall thinner than
+/// the thickness makes some edge of the offset outline run backwards.
+fn offset_polygon_is_simple(outer: &[Point3], inner: &[Point3]) -> bool {
+    let n = outer.len();
+    (0..n).all(|k| {
+        let (a, b) = (outer[k], outer[(k + 1) % n]);
+        let (c, d) = (inner[k], inner[(k + 1) % n]);
+        let (e, f) = (b - a, d - c);
+        e.norm() < 1e-12 || f.norm() < 1e-12 || e.dot(f) > 0.0
+    })
+}
+
 /// Axis-aligned bounds of a point set (`[MAX; 3]`/`[MIN; 3]` when empty).
 fn vertex_aabb(points: impl Iterator<Item = Point3>) -> ([f64; 3], [f64; 3]) {
     let mut lo = [f64::MAX; 3];
@@ -435,6 +902,69 @@ fn newell(points: impl Iterator<Item = Point3>) -> Vec3 {
         n.z += (a.x - b.x) * (a.y + b.y);
     }
     n
+}
+
+/// The displacement `d` with `n · d = t` for every (distinct, unit) normal:
+/// the point `t` inside each face at once. Exact for up to three
+/// independent faces; least-squares (minimum norm) beyond, or when the
+/// normals are dependent. `None` with no normals.
+fn solve_offset(normals: &[Vec3], t: f64) -> Option<Vec3> {
+    match normals {
+        [] => None,
+        [n] => Some(*n * t),
+        [a, b] => {
+            // d = α(a + b) by symmetry; a·d = α(1 + a·b) = t.
+            let c = a.dot(*b);
+            if 1.0 + c < 1e-12 {
+                return Some(*a * t); // opposite faces: degenerate
+            }
+            Some((*a + *b) * (t / (1.0 + c)))
+        }
+        _ => {
+            // Normal equations: (Σ n nᵀ) d = t Σ n, solved by Cramer's rule.
+            let mut m = [[0.0f64; 3]; 3];
+            let mut rhs = [0.0f64; 3];
+            for n in normals {
+                let a = [n.x, n.y, n.z];
+                for r in 0..3 {
+                    for c in 0..3 {
+                        m[r][c] += a[r] * a[c];
+                    }
+                    rhs[r] += a[r] * t;
+                }
+            }
+            let det3 = |m: &[[f64; 3]; 3]| {
+                m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1])
+                    - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0])
+                    + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+            };
+            let det = det3(&m);
+            if det.abs() > 1e-9 {
+                let mut out = [0.0; 3];
+                for (k, o) in out.iter_mut().enumerate() {
+                    let mut mk = m;
+                    for r in 0..3 {
+                        mk[r][k] = rhs[r];
+                    }
+                    *o = det3(&mk) / det;
+                }
+                return Some(Vec3::new(out[0], out[1], out[2]));
+            }
+            // Rank 2 (all normals in one plane): solve in the span of the
+            // two most different normals.
+            let (mut best, mut pair) = (2.0, (0, 1));
+            for i in 0..normals.len() {
+                for j in i + 1..normals.len() {
+                    let c = normals[i].dot(normals[j]).abs();
+                    if c < best {
+                        best = c;
+                        pair = (i, j);
+                    }
+                }
+            }
+            solve_offset(&[normals[pair.0], normals[pair.1]], t)
+        }
+    }
 }
 
 /// Outward normal of `surface` at the 3D point `p`.

@@ -505,6 +505,7 @@ impl<'a> Builder<'a> {
                 self.node(CsgOp::Shell {
                     child,
                     thickness: *thickness,
+                    open_faces: Vec::new(),
                 })
             }
             Feature::Boolean { op, left, right } => {

@@ -686,15 +686,40 @@ fn materialize_feature(
                 translate_id,
             ))
         }
-        FeatureInput::Shell { input, thickness } => {
+        FeatureInput::Shell {
+            input,
+            thickness,
+            open_faces_json,
+        } => {
             let child = ctx.feature_root_or_warn(&input, "shell", &id_str)?;
+            // A malformed list is not silently a closed shell: keep the
+            // raw text as a name-only reference, which fails closed at
+            // evaluation with a "not a face name" error.
+            let open_faces: Vec<vcad_ir::FaceRef> = match open_faces_json.as_deref() {
+                None | Some("") => Vec::new(),
+                Some(j) => serde_json::from_str(j).unwrap_or_else(|_| {
+                    vec![vcad_ir::FaceRef {
+                        name: Some(j.to_string()),
+                        ..Default::default()
+                    }]
+                }),
+            };
 
             let shell_id = ctx.alloc();
             let scale_id = ctx.alloc();
             let rotate_id = ctx.alloc();
             let translate_id = ctx.alloc();
 
-            insert_node(doc, shell_id, &name, CsgOp::Shell { child, thickness });
+            insert_node(
+                doc,
+                shell_id,
+                &name,
+                CsgOp::Shell {
+                    child,
+                    thickness,
+                    open_faces,
+                },
+            );
             insert_transform_chain(
                 doc,
                 ctx,

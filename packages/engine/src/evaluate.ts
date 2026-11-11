@@ -910,6 +910,16 @@ function evaluateOp(
 
     case "Shell": {
       const child = evaluateNode(op.child, nodes, Solid, cache, depth + 1);
+      if (op.open_faces && op.open_faces.length > 0) {
+        // Open-face shell: the picked faces become the opening. Fail closed
+        // on a kernel build that predates it rather than silently closing.
+        const shellOpen = (child as { shellOpen?: (t: number, faces: string) => typeof child })
+          .shellOpen;
+        if (typeof shellOpen !== "function") {
+          throw new Error("shell: this kernel build cannot open faces (rebuild kernel-wasm)");
+        }
+        return shellOpen.call(child, op.thickness, JSON.stringify(op.open_faces));
+      }
       return child.shell(op.thickness);
     }
 

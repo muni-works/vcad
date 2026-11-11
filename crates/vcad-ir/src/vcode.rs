@@ -2061,6 +2061,7 @@ where
             Ok(CsgOp::Shell {
                 child: parse_u64(parts[1], line_num)?,
                 thickness: parse_f64(parts[2], line_num)?,
+                open_faces: Vec::new(),
             })
         }
 
@@ -2544,7 +2545,17 @@ fn format_op(
             ))
         }
 
-        CsgOp::Shell { child, thickness } => {
+        CsgOp::Shell {
+            child,
+            thickness,
+            open_faces,
+        } => {
+            if !open_faces.is_empty() {
+                return Err(VCodeParseError {
+                    line: 0,
+                    message: "SH cannot encode open_faces (open shell)".to_string(),
+                });
+            }
             let c = id_map.get(child).ok_or_else(|| VCodeParseError {
                 line: 0,
                 message: format!("unknown node {}", child),
@@ -3215,7 +3226,9 @@ mod tests {
         let doc = from_vcode(compact).unwrap();
 
         match &doc.nodes[&1].op {
-            CsgOp::Shell { child, thickness } => {
+            CsgOp::Shell {
+                child, thickness, ..
+            } => {
                 assert_eq!(*child, 0);
                 assert_eq!(*thickness, 2.0);
             }
