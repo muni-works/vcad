@@ -423,6 +423,37 @@ enum EdgeOverlay {
 
     /// Build one mesh holding every segment as two crossed quads of the given
     /// world-space width. Returns nil for empty input.
+    /// One quad per segment for the screen-space edge shader
+    /// (`Shaders/EdgeLines.metal`): both endpoints twice, the segment
+    /// direction in the normal and the side (-1/+1) in uv.x. The shader faces
+    /// it to the camera at a constant pixel width.
+    static func screenLineResource(segments: [SIMD3<Float>], name: String) -> MeshResource? {
+        let segCount = segments.count / 2
+        guard segCount > 0 else { return nil }
+        var pos = [SIMD3<Float>](), nrm = [SIMD3<Float>](), uv = [SIMD2<Float>](), idx = [UInt32]()
+        pos.reserveCapacity(segCount * 4); nrm.reserveCapacity(segCount * 4)
+        uv.reserveCapacity(segCount * 4); idx.reserveCapacity(segCount * 12)
+        for s in 0..<segCount {
+            let a = segments[s * 2], b = segments[s * 2 + 1]
+            let d = b - a
+            let len = length(d)
+            guard len > 1e-6 else { continue }
+            let dir = d / len
+            let o = UInt32(pos.count)
+            pos += [a, a, b, b]
+            nrm += [dir, dir, dir, dir]
+            uv += [[-1, 0], [1, 0], [1, 1], [-1, 1]]
+            idx += [o, o + 1, o + 2, o, o + 2, o + 3, o, o + 2, o + 1, o, o + 3, o + 2]
+        }
+        guard !pos.isEmpty else { return nil }
+        var d = MeshDescriptor(name: name)
+        d.positions = MeshBuffers.Positions(pos)
+        d.normals = MeshBuffers.Normals(nrm)
+        d.textureCoordinates = MeshBuffers.TextureCoordinates(uv)
+        d.primitives = .triangles(idx)
+        return try? MeshResource.generate(from: [d])
+    }
+
     static func ribbonResource(segments: [SIMD3<Float>], width: Float, name: String) -> MeshResource? {
         let segCount = segments.count / 2
         guard segCount > 0, width > 0 else { return nil }
