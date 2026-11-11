@@ -5,7 +5,7 @@ use crate::error::StepError;
 use stepperoni::{StepFile, StepValue};
 use vcad_kernel_geom::{Circle3d, Curve3d, Line3d};
 use vcad_kernel_math::{Dir3, Point3, Vec3};
-use vcad_kernel_nurbs::BSplineCurve;
+use vcad_kernel_nurbs::{BSplineCurve, NurbsCurve, WeightedPoint};
 
 /// Hard caps for B-spline curve parsing (DoS defence, matching surface limits).
 const MAX_BSPLINE_CURVE_KNOTS: usize = 100_000;
@@ -34,6 +34,8 @@ pub enum StepCurve {
     Circle(Circle3d),
     /// A B-spline curve with explicit knots.
     BSpline(BSplineCurve),
+    /// A rational B-spline curve (`RATIONAL_B_SPLINE_CURVE` complex entity).
+    Nurbs(NurbsCurve),
     /// A trimmed segment of another curve with explicit parameter bounds.
     Trimmed(TrimmedStepCurve),
 }
@@ -65,6 +67,7 @@ impl StepCurve {
             }
             StepCurve::Circle(c) => c.evaluate(t),
             StepCurve::BSpline(b) => b.eval(t),
+            StepCurve::Nurbs(n) => n.eval(t),
             StepCurve::Trimmed(tc) => tc.basis.evaluate(t),
         }
     }
@@ -75,6 +78,7 @@ impl StepCurve {
             StepCurve::Line(_) => (0.0, f64::MAX),
             StepCurve::Circle(_) => (0.0, std::f64::consts::TAU),
             StepCurve::BSpline(b) => b.parameter_domain(),
+            StepCurve::Nurbs(n) => n.parameter_domain(),
             StepCurve::Trimmed(tc) => (tc.trim1, tc.trim2),
         }
     }
@@ -125,60 +129,74 @@ pub fn parse_circle(file: &StepFile, id: u64) -> Result<Circle3d, StepError> {
     }
 }
 
-/// Parse a `B_SPLINE_CURVE_WITH_KNOTS` entity.
+/// Parse a `B_SPLINE_CURVE_WITH_KNOTS` entity, or the complex form combining
+/// `B_SPLINE_CURVE` + `B_SPLINE_CURVE_WITH_KNOTS` (+ `RATIONAL_B_SPLINE_CURVE`).
 ///
 /// STEP syntax:
 /// ```text
 /// B_SPLINE_CURVE_WITH_KNOTS(name, degree, control_points_list,
 ///     curve_form, closed, self_intersect,
 ///     knot_multiplicities, knots, knot_spec)
+///
+/// (BOUNDED_CURVE() B_SPLINE_CURVE(degree, control_points, form, closed, si)
+///  B_SPLINE_CURVE_WITH_KNOTS(mults, knots, spec) ... RATIONAL_B_SPLINE_CURVE(weights) ...)
 /// ```
-pub fn parse_bspline_curve(file: &StepFile, id: u64) -> Result<BSplineCurve, StepError> {
+///
+/// Complex-entity partials carry only their own attributes (no leading
+/// `name`; see [`super::surfaces::complex_partial`]). Non-rational curves (and
+/// rational ones whose weights are all 1) come back as [`StepCurve::BSpline`],
+/// genuinely rational ones as [`StepCurve::Nurbs`].
+pub fn parse_bspline_curve_any(file: &StepFile, id: u64) -> Result<StepCurve, StepError> {
     let entity = file.get(id).ok_or(StepError::MissingEntity(id))?;
+    let bad = |what: &str| StepError::UnsupportedEntity(format!("B_SPLINE_CURVE #{id} ({what})"));
 
-    let (degree, cp_ids, mults, knot_vals) = match entity.type_name.as_str() {
-        "B_SPLINE_CURVE_WITH_KNOTS" => {
-            let degree = entity.integer(1)? as usize;
-            let cp_ids: Vec<u64> = entity.entity_ref_list(2)?;
-            let mults = entity.list(6)?.to_vec();
-            let knot_vals = entity.list(7)?.to_vec();
-            (degree, cp_ids, mults, knot_vals)
-        }
+    #[allow(clippy::type_complexity)]
+    let (degree, cp_ids, mults, knot_vals, weights): (
+        i64,
+        Vec<u64>,
+        &[StepValue],
+        &[StepValue],
+        Option<&[StepValue]>,
+    ) = match entity.type_name.as_str() {
+        "B_SPLINE_CURVE_WITH_KNOTS" => (
+            entity.integer(1)?,
+            entity.entity_ref_list(2)?,
+            entity.list(6)?,
+            entity.list(7)?,
+            None,
+        ),
         other => {
-            // Try complex entity form: look for B_SPLINE_CURVE and B_SPLINE_CURVE_WITH_KNOTS typed args
-            let mut base: Option<(usize, Vec<u64>)> = None;
-            let mut knots: Option<(Vec<StepValue>, Vec<StepValue>)> = None;
-
-            for arg in &entity.args {
-                if let StepValue::Typed { type_name, args } = arg {
-                    if type_name == "B_SPLINE_CURVE" && args.len() >= 3 {
-                        let deg = args.get(1).and_then(|v| v.as_integer()).unwrap_or(0) as usize;
-                        if let Some(StepValue::List(cps)) = args.get(2) {
-                            let ids: Vec<u64> =
-                                cps.iter().filter_map(|v| v.as_entity_ref()).collect();
-                            base = Some((deg, ids));
-                        }
-                    } else if type_name == "B_SPLINE_CURVE_WITH_KNOTS" && args.len() >= 5 {
-                        if let (Some(StepValue::List(m)), Some(StepValue::List(k))) =
-                            (args.get(1), args.get(2))
-                        {
-                            knots = Some((m.clone(), k.clone()));
-                        }
-                    }
-                }
-            }
-
-            match (base, knots) {
-                (Some((deg, ids)), Some((m, k))) => (deg, ids, m, k),
-                _ => {
-                    return Err(StepError::UnsupportedEntity(format!(
-                        "B_SPLINE_CURVE (unsupported form: {})",
-                        other
-                    )));
-                }
-            }
+            let partial = |name: &str| super::surfaces::complex_partial(&entity.args, name);
+            let base = partial("B_SPLINE_CURVE")
+                .ok_or_else(|| bad(&format!("unsupported form: {other}")))?;
+            let knots = partial("B_SPLINE_CURVE_WITH_KNOTS")
+                .ok_or_else(|| bad(&format!("unsupported form: {other}")))?;
+            let degree = base
+                .first()
+                .and_then(|v| v.as_integer())
+                .ok_or_else(|| bad("degree"))?;
+            let cps = super::surfaces::list_at(base, 1)
+                .ok_or_else(|| bad("control points"))?
+                .iter()
+                .map(|v| v.as_entity_ref().ok_or_else(|| bad("control point")))
+                .collect::<Result<Vec<_>, _>>()?;
+            let weights = match partial("RATIONAL_B_SPLINE_CURVE") {
+                Some(r) => Some(super::surfaces::list_at(r, 0).ok_or_else(|| bad("weights"))?),
+                None => None,
+            };
+            (
+                degree,
+                cps,
+                super::surfaces::list_at(knots, 0).ok_or_else(|| bad("multiplicities"))?,
+                super::surfaces::list_at(knots, 1).ok_or_else(|| bad("knots"))?,
+                weights,
+            )
         }
     };
+    if degree < 1 {
+        return Err(bad("degree < 1"));
+    }
+    let degree = degree as usize;
 
     if cp_ids.len() > MAX_BSPLINE_CURVE_CPS {
         return Err(StepError::UnsupportedEntity(format!(
@@ -192,7 +210,7 @@ pub fn parse_bspline_curve(file: &StepFile, id: u64) -> Result<BSplineCurve, Ste
         control_points.push(parse_cartesian_point(file, *pt_id)?);
     }
 
-    let expanded = expand_curve_knots(&knot_vals, &mults)?;
+    let expanded = expand_curve_knots(knot_vals, mults)?;
 
     let expected = control_points.len() + degree + 1;
     if expanded.len() != expected {
@@ -207,7 +225,43 @@ pub fn parse_bspline_curve(file: &StepFile, id: u64) -> Result<BSplineCurve, Ste
         )));
     }
 
-    Ok(BSplineCurve::new(control_points, expanded, degree))
+    if let Some(ws) = weights {
+        if ws.len() != control_points.len() {
+            return Err(bad("weight count mismatch"));
+        }
+        let ws = ws
+            .iter()
+            .map(|w| match w.as_real() {
+                Some(w) if w.is_finite() && w > 0.0 => Ok(w),
+                _ => Err(bad("non-positive weight")),
+            })
+            .collect::<Result<Vec<f64>, _>>()?;
+        if ws.iter().any(|&w| (w - 1.0).abs() > 1e-12) {
+            let wpts = control_points
+                .into_iter()
+                .zip(ws)
+                .map(|(p, w)| WeightedPoint::new(p, w))
+                .collect();
+            return Ok(StepCurve::Nurbs(NurbsCurve::new(wpts, expanded, degree)));
+        }
+    }
+    Ok(StepCurve::BSpline(BSplineCurve::new(
+        control_points,
+        expanded,
+        degree,
+    )))
+}
+
+/// Parse a non-rational B-spline curve (see [`parse_bspline_curve_any`]).
+/// Genuinely rational curves are rejected as unsupported here.
+#[cfg(test)]
+pub fn parse_bspline_curve(file: &StepFile, id: u64) -> Result<BSplineCurve, StepError> {
+    match parse_bspline_curve_any(file, id)? {
+        StepCurve::BSpline(b) => Ok(b),
+        _ => Err(StepError::UnsupportedEntity(format!(
+            "B_SPLINE_CURVE #{id} is rational"
+        ))),
+    }
 }
 
 /// Expand a knot vector by multiplicities (shared with surface parsing).
@@ -329,8 +383,8 @@ pub fn parse_curve(file: &StepFile, id: u64) -> Result<StepCurve, StepError> {
     match entity.type_name.as_str() {
         "LINE" => Ok(StepCurve::Line(parse_line(file, id)?)),
         "CIRCLE" => Ok(StepCurve::Circle(parse_circle(file, id)?)),
-        "B_SPLINE_CURVE_WITH_KNOTS" | "B_SPLINE_CURVE" => {
-            Ok(StepCurve::BSpline(parse_bspline_curve(file, id)?))
+        "B_SPLINE_CURVE_WITH_KNOTS" | "B_SPLINE_CURVE" | "BOUNDED_CURVE" => {
+            parse_bspline_curve_any(file, id)
         }
         "TRIMMED_CURVE" => Ok(StepCurve::Trimmed(parse_trimmed_curve(file, id)?)),
         // ELLIPSE: treat as unsupported for now — callers skip and fall back to straight-line edge
@@ -432,6 +486,38 @@ END-ISO-10303-21;
         let circle = parse_circle(&file, 5).unwrap();
         assert!((circle.radius - 5.0).abs() < 1e-10);
         assert!(circle.center.x.abs() < 1e-10);
+    }
+
+    /// A rational quarter circle in complex-entity form: the partials carry
+    /// no leading name (`B_SPLINE_CURVE(2, ...)`), and the weights live in
+    /// their own `RATIONAL_B_SPLINE_CURVE` partial. Both used to be lost,
+    /// turning the edge into a straight chord.
+    #[test]
+    fn test_parse_rational_complex_curve() {
+        let input = r#"
+ISO-10303-21;
+HEADER;
+ENDSEC;
+DATA;
+#1 = CARTESIAN_POINT('', (1.0, 0.0, 0.0));
+#2 = CARTESIAN_POINT('', (1.0, 1.0, 0.0));
+#3 = CARTESIAN_POINT('', (0.0, 1.0, 0.0));
+#4 = ( BOUNDED_CURVE ( ) B_SPLINE_CURVE ( 2, ( #1, #2, #3 ), .CIRCULAR_ARC., .F., .F. )
+ B_SPLINE_CURVE_WITH_KNOTS ( ( 3, 3 ), ( 0.0, 1.0 ), .UNSPECIFIED. )
+ CURVE ( ) GEOMETRIC_REPRESENTATION_ITEM ( )
+ RATIONAL_B_SPLINE_CURVE ( ( 1.0, 0.7071067811865476, 1.0 ) )
+ REPRESENTATION_ITEM ( '' ) );
+ENDSEC;
+END-ISO-10303-21;
+"#;
+        let file = parse_step(input);
+        let curve = parse_curve(&file, 4).unwrap();
+        assert!(matches!(curve, StepCurve::Nurbs(_)), "got {curve:?}");
+        for i in 0..=8 {
+            let p = curve.evaluate(i as f64 / 8.0);
+            let r = (p.x * p.x + p.y * p.y).sqrt();
+            assert!((r - 1.0).abs() < 1e-9, "point {p:?} off the unit circle");
+        }
     }
 
     #[test]
