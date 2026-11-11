@@ -20,7 +20,10 @@
 //!   split into several pieces get a deterministic sibling ordinal appended
 //!   (`cube:top.0`, `cube:top.1`, ordered by quantized centroid).
 //! - Edges are named by their two adjacent faces ([`EdgeRef`]) — an edge
-//!   reference survives a rebuild as long as both faces resolve.
+//!   reference survives a rebuild as long as both faces resolve. A name
+//!   whose face a later boolean split resolves through its lineage (every
+//!   fragment `name.k…`), so the edge is found on whichever fragment still
+//!   meets the other face.
 //!
 //! Resolution ([`resolve_edge`]) is **fail-closed**: an edge reference
 //! resolves to exactly one edge by name, or falls back to geometric matching
@@ -137,6 +140,36 @@ impl NameMap {
             return None;
         }
         Some(*first.0)
+    }
+
+    /// Faces descended from `name`: the face carrying exactly that name if
+    /// there is one, otherwise every split fragment whose name extends it
+    /// (same scope and tag, `name.path` as a prefix of its path). Empty when
+    /// neither exists.
+    pub fn lineage(&self, name: &FaceName) -> Vec<FaceId> {
+        if let Some(face) = self.face_named(name) {
+            return vec![face];
+        }
+        if self.faces.values().any(|n| n == name) {
+            // Several faces carry the exact name: not a lineage, a clash.
+            // Return them all so the edge search sees the ambiguity.
+            return self
+                .faces
+                .iter()
+                .filter(|(_, n)| *n == name)
+                .map(|(f, _)| *f)
+                .collect();
+        }
+        self.faces
+            .iter()
+            .filter(|(_, n)| {
+                n.scope == name.scope
+                    && n.tag == name.tag
+                    && n.path.len() > name.path.len()
+                    && n.path.starts_with(&name.path)
+            })
+            .map(|(f, _)| *f)
+            .collect()
     }
 
     /// Rewrite every name's scope — used by DAG evaluators to replace the
@@ -517,75 +550,91 @@ pub enum EdgeResolution {
 
 /// Resolve an edge reference against `brep` + its name map.
 ///
-/// Name resolution first: find the unique faces carrying `face_a` / `face_b`
-/// and the unique manifold edge adjacent to both. When that fails and the
-/// reference carries an [`EdgeHint`], fall back to geometric matching:
-/// candidates must agree with the hint in direction (within ~18°), length
-/// (±25%), and midpoint (within 25% of the recorded length). Exactly one
-/// candidate resolves; zero is [`EdgeResolution::Lost`]; several are
-/// [`EdgeResolution::Ambiguous`].
+/// Name resolution first. Each referenced face name selects a *lineage*:
+/// the face carrying exactly that name, or — when a later boolean split it
+/// — every fragment descended from it (`n1:top` → `n1:top.0`, `n1:top.1`).
+/// The candidates are the manifold edges with one face in each lineage:
+///
+/// - exactly one → resolved by name (a split face's edge resolves to the
+///   one fragment that still meets the other face);
+/// - several (two faces meeting along more than one edge, e.g. either side
+///   of a slot) → the [`EdgeHint`] must single one out among them, else
+///   [`EdgeResolution::Ambiguous`];
+/// - none → fall back to geometric matching against the hint over every
+///   edge: direction (within ~18°), length (±25%), and midpoint (within 25%
+///   of the recorded length). Exactly one candidate resolves; zero is
+///   [`EdgeResolution::Lost`]; several are [`EdgeResolution::Ambiguous`].
+///
+/// Never a nearest-edge guess: every fallback has to match within those
+/// tolerances, and every other outcome is reported.
 pub fn resolve_edge(brep: &BRepSolid, names: &NameMap, edge_ref: &EdgeRef) -> EdgeResolution {
-    // --- primary: by name -------------------------------------------------
-    let fa = names.face_named(&edge_ref.face_a);
-    let fb = names.face_named(&edge_ref.face_b);
-    if let (Some(fa), Some(fb)) = (fa, fb) {
-        let mut hits: Vec<EdgeId> = Vec::new();
+    // --- primary: by name (with split lineage) ----------------------------
+    let fa = names.lineage(&edge_ref.face_a);
+    let fb = names.lineage(&edge_ref.face_b);
+    let mut hits: Vec<EdgeId> = Vec::new();
+    if !fa.is_empty() && !fb.is_empty() {
         for (edge_id, _) in &brep.topology.edges {
             if let Some((x, y)) = edge_faces(brep, edge_id) {
-                if (x == fa && y == fb) || (x == fb && y == fa) {
+                if (fa.contains(&x) && fb.contains(&y)) || (fa.contains(&y) && fb.contains(&x)) {
                     hits.push(edge_id);
                 }
             }
         }
-        match hits.as_slice() {
-            [edge] => {
-                if let Some(endpoints) = edge_endpoints(brep, *edge) {
-                    return EdgeResolution::Resolved {
-                        edge: *edge,
-                        endpoints,
-                        method: ResolveMethod::ByName,
-                    };
-                }
+    }
+    match hits.as_slice() {
+        [edge] => {
+            if let Some(endpoints) = edge_endpoints(brep, *edge) {
+                return EdgeResolution::Resolved {
+                    edge: *edge,
+                    endpoints,
+                    method: ResolveMethod::ByName,
+                };
             }
-            [] => {} // faces exist but no longer share an edge — try fallback
-            _ => {
-                // Two faces sharing several edges (e.g. through a slot):
-                // names alone cannot pick one — fall through to the hint.
-                if edge_ref.hint.is_none() {
-                    return EdgeResolution::Ambiguous { candidates: hits };
-                }
-            }
+        }
+        [] => {} // faces missing, or no longer meeting — try the hint
+        _ => {
+            // The faces meet along several edges: names alone cannot pick
+            // one. The hint may, but only among these candidates.
+            let Some(hint) = &edge_ref.hint else {
+                return EdgeResolution::Ambiguous { candidates: hits };
+            };
+            let matched: Vec<EdgeId> = hits
+                .iter()
+                .copied()
+                .filter(|&e| hint_matches(brep, e, hint))
+                .collect();
+            return match matched.as_slice() {
+                [edge] => EdgeResolution::Resolved {
+                    edge: *edge,
+                    endpoints: edge_endpoints(brep, *edge).expect("candidate had endpoints"),
+                    method: ResolveMethod::ByGeometry,
+                },
+                _ => EdgeResolution::Ambiguous { candidates: hits },
+            };
         }
     }
 
     // --- fallback: by geometry -------------------------------------------
+    let why = match (fa.is_empty(), fb.is_empty()) {
+        (true, _) => format!("no face named '{}' on this solid", edge_ref.face_a),
+        (_, true) => format!("no face named '{}' on this solid", edge_ref.face_b),
+        _ => format!(
+            "no edge between faces '{}' and '{}'",
+            edge_ref.face_a, edge_ref.face_b
+        ),
+    };
     let Some(hint) = &edge_ref.hint else {
         return EdgeResolution::Lost {
-            reason: format!(
-                "no edge between faces '{}' and '{}', and the reference has no geometric hint",
-                edge_ref.face_a, edge_ref.face_b
-            ),
+            reason: format!("{why}, and the reference has no geometric hint"),
         };
     };
-    let tol = hint.length * 0.25;
-    let mut candidates: Vec<EdgeId> = Vec::new();
-    for (edge_id, _) in &brep.topology.edges {
-        let Some((a, b)) = edge_endpoints(brep, edge_id) else {
-            continue;
-        };
-        let ev = b - a;
-        let len = ev.norm();
-        if len < 1e-12 || (len - hint.length).abs() > tol {
-            continue;
-        }
-        if (ev / len).dot(hint.direction).abs() < 0.95 {
-            continue;
-        }
-        if (a + ev * 0.5 - hint.midpoint).norm() > tol {
-            continue;
-        }
-        candidates.push(edge_id);
-    }
+    let candidates: Vec<EdgeId> = brep
+        .topology
+        .edges
+        .iter()
+        .map(|(id, _)| id)
+        .filter(|&e| hint_matches(brep, e, hint))
+        .collect();
     match candidates.as_slice() {
         [edge] => {
             let endpoints = edge_endpoints(brep, *edge).expect("candidate had endpoints");
@@ -596,13 +645,24 @@ pub fn resolve_edge(brep: &BRepSolid, names: &NameMap, edge_ref: &EdgeRef) -> Ed
             }
         }
         [] => EdgeResolution::Lost {
-            reason: format!(
-                "no edge between faces '{}' and '{}', and no edge matches the geometric hint",
-                edge_ref.face_a, edge_ref.face_b
-            ),
+            reason: format!("{why}, and no edge matches the geometric hint"),
         },
         _ => EdgeResolution::Ambiguous { candidates },
     }
+}
+
+/// Whether `edge` agrees with `hint` within the fallback tolerances.
+fn hint_matches(brep: &BRepSolid, edge: EdgeId, hint: &EdgeHint) -> bool {
+    let Some((a, b)) = edge_endpoints(brep, edge) else {
+        return false;
+    };
+    let tol = hint.length * 0.25;
+    let ev = b - a;
+    let len = ev.norm();
+    len >= 1e-12
+        && (len - hint.length).abs() <= tol
+        && (ev / len).dot(hint.direction).abs() >= 0.95
+        && (a + ev * 0.5 - hint.midpoint).norm() <= tol
 }
 
 // =============================================================================

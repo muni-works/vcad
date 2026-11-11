@@ -10,90 +10,123 @@ struct NativeElectronicsView: View {
     @State private var navigatorTab = "Parts"
     var body: some View {
         @Bindable var ec = ec
-        VStack(spacing: 0) {
-            commands.padding(.horizontal, 16).padding(.vertical, 8).background(.bar)
-            Divider()
+        ZStack(alignment: .top) {
+            Color(nsColor: .underPageBackgroundColor)
             if ec.board(model).isEmpty {
+                // An invitation, not a wall of disabled tools: one action here
+                // and the same one first in the dock.
                 ContentUnavailableView {
-                    Label("Electronics", systemImage: "cpu")
+                    Label("Start a circuit board", systemImage: "cpu")
                 } description: {
-                    Text(ec.message ?? "Create a circuit board in this document, or open a vcad document containing a PCB.")
+                    Text(ec.message ?? "Create a board in this document, or import one from KiCad or Eagle.")
                 } actions: {
-                    Button("Create circuit board") { ec.createBoard(model) }.buttonStyle(.borderedProminent)
-                    Button("Import KiCad board…") { ec.tools.importBoard(ec, model) }
-                    Button("Open document…") { open() }
+                    Button("Create Board") { ec.createBoard(model) }
+                    Button("Import KiCad Board…") { ec.tools.importBoard(ec, model) }
                 }
+                .frame(maxHeight: .infinity)
             } else {
                 GeometryReader { geometry in
                     ZStack(alignment: .top) {
                         Group {
                             if ec.view == .spatial { ElectronicsBoardPreview(board: ec.board(model)) }
+                            else if ec.view == .schematic, ecRows(ec.schematic(model)["components"]).isEmpty {
+                                // A board with no schematic (KiCad .kicad_pcb import) used
+                                // to show a blank canvas with no explanation.
+                                ContentUnavailableView {
+                                    Label("No schematic yet", systemImage: "point.3.connected.trianglepath.dotted")
+                                } description: {
+                                    Text("This board came without a schematic. Build one from the board's parts and nets, then rearrange it.")
+                                } actions: {
+                                    Button("Build Schematic from Board") { ec.buildSchematicFromBoard(model) }
+                                        .disabled(ecRows(ec.board(model)["footprints"]).isEmpty)
+                                }
+                            }
                             else { ElectronicsCanvas(model: model) }
                         }
-                        .padding(.horizontal, Theme.Width.inspector + 2 * Theme.Space.l)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        HStack(alignment: .top, spacing: Theme.Space.l) {
-                            navigator.padding(Theme.Space.l).frame(width: Theme.Width.navigator)
-                                .frame(maxHeight: min(470, geometry.size.height - 32))
-                                .panelSurface()
+                        HStack(alignment: .top, spacing: 0) {
+                            if model.showsTree {
+                                navigator.padding(Theme.Space.m).frame(width: Theme.Width.navigator)
+                                    .frame(maxHeight: min(470, geometry.size.height - Glass.toolbarHeight - 90))
+                                    .panelSurface()
+                                    .modifier(ChromeRegion(key: "ecNavigator"))
+                            }
                             Spacer(minLength: 0)
-                            inspector.padding(Theme.Space.l).frame(width: Theme.Width.inspector)
-                                .frame(maxHeight: min(600, geometry.size.height - 32))
-                                .panelSurface()
-                        }.padding(Theme.Space.l)
+                            if model.showsInspector {
+                                inspector.padding(Theme.Space.m).frame(width: Theme.Width.inspector)
+                                    .frame(maxHeight: min(600, geometry.size.height - Glass.toolbarHeight - 90))
+                                    .panelSurface()
+                                    .modifier(ChromeRegion(key: "ecInspector"))
+                            }
+                        }
+                        .padding(.horizontal, Glass.inset).padding(.top, Glass.toolbarHeight)
+                        VStack {
+                            Spacer()
+                            statusPill.padding(.bottom, Glass.inset + 6)
+                        }
                     }
                 }
-                Divider()
-                HStack {
-                    Text(ec.tools.error ?? ec.tools.status ?? ec.message ?? (ec.view == .spatial ? "3D layout preview · simplified component bodies" : ec.tool == .wire ? "Select two pins to connect their net" : ec.tool == .route ? "Click to route · Escape ends the route" : ec.tool == .place ? "Click to place \(ec.componentKind.lowercased())" : "Select a component to edit its properties"))
-                        .lineLimit(1)
-                    Spacer()
-                    Text("mm").foregroundStyle(.secondary)
-                }.font(.caption).padding(10)
             }
         }
-        .background(Color(nsColor: .windowBackgroundColor))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .onChange(of: ec.boardID) { _, _ in ec.selectedRef = nil; ec.selectedTrace = nil; ec.selectedVia = nil; ec.routeStart = nil }
         .onChange(of: model.source) { _, _ in ec.selectedRef = nil; ec.selectedTrace = nil; ec.routeStart = nil; ec.pendingPin = nil }
-        .sheet(isPresented: $ec.checking) {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Connectivity Checks").font(.title2)
-                Text("Checks duplicate references, missing net assignments and trace metadata. This is not a clearance DRC or electrical simulation.").font(.callout).foregroundStyle(.secondary)
-                List(ec.issues.isEmpty ? ["No issues found by these checks."] : ec.issues, id: \.self) { Text($0) }.frame(height: 240)
-                Button("Done") { ec.checking = false }.keyboardShortcut(.defaultAction)
-            }.padding(24).frame(width: 500)
+        .onChange(of: ec.checking) { _, on in
+            guard on else { return }
+            GlassUI.shared.present("Connectivity", symbol: "link", width: 480, onClose: { ec.checking = false }) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Checks duplicate references, missing net assignments and trace metadata. This is not a clearance DRC or electrical simulation.").font(.callout).foregroundStyle(.secondary)
+                    ForEach(ec.issues.isEmpty ? ["No issues found by these checks."] : ec.issues, id: \.self) { Text($0).font(.callout) }
+                }
+            }
         }
-        .sheet(item: Binding(get: { ec.tools.sheet }, set: { ec.tools.sheet = $0 })) { kind in
-            ElectronicsToolSheet(model: model, kind: kind)
+        .onChange(of: ec.tools.sheet) { _, kind in
+            guard let kind else { if GlassUI.shared.panel?.title == Self.title(for: nil) { GlassUI.shared.panel = nil }; return }
+            GlassUI.shared.present(Self.title(for: kind), symbol: "cpu", width: 600, onClose: { ec.tools.sheet = nil }) {
+                ElectronicsToolSheet(model: model, kind: kind)
+            }
         }
         .alert("Document error", isPresented: Binding(get: { fileError != nil }, set: { if !$0 { fileError = nil } })) { Button("OK") { fileError = nil } } message: { Text(fileError ?? "") }
         .background {
             Button("") { ec.routeStart = nil; ec.pendingPin = nil; ec.tool = .select }.keyboardShortcut(.cancelAction).frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
         }
     }
-    private var commands: some View {
-        @Bindable var ec = ec
-        return HStack(spacing: 12) {
-            Picker("Electronics view", selection: $ec.view) { ForEach(ElectronicsView.allCases, id: \.self) { Text($0.rawValue).tag($0) } }.pickerStyle(.segmented).frame(width: 235)
-            if ec.view != .spatial {
-                Picker("Tool", selection: $ec.tool) {
-                    Text("Select").tag(ElectronicsTool.select)
-                    Text("Place").tag(ElectronicsTool.place)
-                    if ec.view == .schematic { Text("Connect pins").tag(ElectronicsTool.wire) }
-                    else { Text("Route").tag(ElectronicsTool.route); Text("Via").tag(ElectronicsTool.via) }
-                }.pickerStyle(.segmented).labelsHidden().frame(width: 245)
+    static func title(for kind: ElectronicsTools.Sheet?) -> String {
+        switch kind {
+        case .drc: "Design Rule Check"
+        case .length: "Diff Pair / Length Tuning"
+        case .stackup: "Layer Stack"
+        case .simulate: "Simulate"
+        case .enclosure: "Enclosure Fit"
+        case nil: ""
+        }
+    }
+
+    /// One glass pill: what the tool wants, then the board's counts as numbers.
+    private var statusPill: some View {
+        HStack(spacing: 8) {
+            if let busy = ec.tools.busy { ProgressView().controlSize(.mini); Text("\(busy)…") }
+            Text(ec.tools.error ?? ec.tools.status ?? ec.message ?? (ec.view == .spatial ? "3D layout preview" : ec.tool == .wire ? "Select two pins to connect their net" : ec.tool == .route ? "Click to route · Esc ends the route" : ec.tool == .place ? "Click to place \(ec.componentKind.lowercased())" : ec.selectedRef ?? "Select a component"))
+                .lineLimit(1)
+            Text("·").foregroundStyle(.secondary)
+            Text("\(ecRows(ec.board(model)["nets"]).count) nets").monospacedDigit()
+            if let r = ec.tools.drc {
+                let n = Int(ecNumber(r["route_attributable"]))
+                Text("·").foregroundStyle(.secondary)
+                Text(n == 0 ? "DRC clean" : "DRC \(n)").monospacedDigit()
             }
-            Spacer(minLength: 0)
-            Button("Undo", systemImage: "arrow.uturn.backward") { model.undo() }.labelStyle(.iconOnly).disabled(!model.canUndo)
-            Button("Redo", systemImage: "arrow.uturn.forward") { model.redo() }.labelStyle(.iconOnly).disabled(!model.canRedo)
-            ElectronicsToolMenus(model: model)
-            Button("Check Connectivity") { ec.check(model) }.disabled(ec.board(model).isEmpty)
-        }.controlSize(.small)
+        }
+        .font(.callout)
+        .padding(.horizontal, 12).padding(.vertical, 6)
+        .glassCapsule()
+        .modifier(ChromeRegion(key: "ecStatus"))
     }
     private var navigator: some View {
         @Bindable var ec = ec
         return VStack(alignment: .leading, spacing: 12) {
-            PanelHeader(title: "Circuit", systemImage: "cpu")
+            Picker("View", selection: $ec.view) { ForEach(ElectronicsView.allCases, id: \.self) { Text($0 == .spatial ? "3D" : $0.rawValue).tag($0) } }
+                .pickerStyle(.segmented).labelsHidden()
+                .help("Schematic, board, or 3D")
             TextField("Search parts or nets", text: $search).textFieldStyle(.roundedBorder)
             Picker("Navigator", selection: $navigatorTab) {
                 ForEach(["Parts", "Nets", "Layers"], id: \.self) { Text($0) }
@@ -102,8 +135,10 @@ struct NativeElectronicsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
                     if navigatorTab == "Parts" {
-                        ForEach(ecRows(ec.board(model)["footprints"]).indices, id: \.self) { i in
-                            let row = ecRows(ec.board(model)["footprints"])[i]
+                        // The list follows the view: symbols in Schematic, footprints on the board.
+                        let parts = ecRows(ec.view == .schematic ? ec.schematic(model)["components"] : ec.board(model)["footprints"])
+                        ForEach(parts.indices, id: \.self) { i in
+                            let row = parts[i]
                             let ref = row["ref"] as? String ?? "?"
                             let value = row["value"] as? String ?? ""
                             if search.isEmpty || (ref + value).localizedCaseInsensitiveContains(search) {
@@ -138,15 +173,23 @@ struct NativeElectronicsView: View {
             Button(ec.view == .schematic ? "Show in Board" : "Show in Schematic", systemImage: "arrow.left.arrow.right") {
                 ec.view = ec.view == .schematic ? .board : .schematic
             }
-            Text("\(counted(ecRows(ec.board(model)["footprints"]).count, "component")) · \(counted(ecRows(ec.board(model)["traces"]).count, "trace"))")
-                .font(.caption).foregroundStyle(.secondary)
+            Group {
+                if ec.view == .schematic {
+                    Text("\(counted(ecRows(ec.schematic(model)["components"]).count, "symbol")) · \(counted((ec.schematic(model)["nets"] as? [String: [String]])?.count ?? 0, "net"))")
+                } else {
+                    Text("\(counted(ecRows(ec.board(model)["footprints"]).count, "component")) · \(counted(ecRows(ec.board(model)["traces"]).count, "trace"))")
+                }
+            }
+            .font(.caption).foregroundStyle(.secondary)
         }.controlSize(.small)
     }
     private var inspector: some View {
         @Bindable var ec = ec
         return ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                PanelHeader(title: ec.tool == .route ? "Route" : ec.tool == .place ? "Place component" : ec.selectedRef ?? "Circuit board")
+                PanelHeader(title: ec.tool == .route ? "Route" : ec.tool == .place ? "Place component"
+                            : ec.tool == .wire ? "Connect pins"
+                            : ec.selectedRef ?? (ec.view == .schematic ? "Schematic" : "Circuit board"))
                 if ec.tool == .select, let ref = ec.selectedRef,
                    let component = ecRows((ec.view == .schematic ? ec.schematic(model)["components"] : ec.board(model)["footprints"])).first(where: { $0["ref"] as? String == ref }) {
                     HStack {
@@ -210,15 +253,84 @@ extension Dictionary where Key == String, Value == Any {
     var ecID: String { self["id"] as? String ?? "" }
 }
 
+extension ElectronicsWorkspace {
+    /// Derive a schematic from the board for documents that only have one
+    /// (KiCad .kicad_pcb import carries no schematic): a symbol per footprint
+    /// with a pin per pad, nets from the pads' net assignments, laid out on a
+    /// grid with ICs and connectors first. One undo step.
+    func buildSchematicFromBoard(_ model: EditorModel) {
+        let footprints = ecRows(board(model)["footprints"])
+        guard !footprints.isEmpty else { return }
+        func rank(_ ref: String) -> Int {
+            switch ref.prefix(while: \.isLetter) {
+            case "U", "IC": 0
+            case "J", "P", "CN", "USB": 1
+            case "Y", "X", "Q", "D", "LED", "SW": 2
+            default: 3
+            }
+        }
+        let ordered = footprints.sorted {
+            let a = $0["ref"] as? String ?? "", b = $1["ref"] as? String ?? ""
+            return (rank(a), a.count, a) < (rank(b), b.count, b)
+        }
+        var components: [ECObject] = []
+        var nets: [String: [String]] = [:]
+        var x = 0.0, y = 0.0, rowHeight = 0.0
+        let rowWidth = 220.0
+        for fp in ordered {
+            let ref = fp["ref"] as? String ?? "?"
+            var seen = Set<String>()
+            var pins: [ECObject] = []
+            for pad in ecRows(fp["pads"]) {
+                let number = pad["number"] as? String ?? ""
+                guard !number.isEmpty, seen.insert(number).inserted else { continue }
+                pins.append(["number": number, "name": number, "pin_type": "Passive", "position": ["x": 0.0, "y": 0.0]])
+                if let net = pad["net"] as? String, !net.isEmpty { nets[net, default: []].append("\(ref).\(number)") }
+            }
+            let probe: ECObject = ["pins": pins, "position": ["x": 0.0, "y": 0.0], "rotation": 0.0]
+            let body = ElectronicsCanvas.symbolBody(probe)
+            let w = body.width + 24, h = body.height + 14
+            if x + w > rowWidth { x = 0; y += rowHeight; rowHeight = 0 }
+            components.append(["ref": ref, "value": fp["value"] as? String ?? "",
+                               "footprintId": fp["footprintName"] as? String ?? "",
+                               "position": ["x": x + w / 2, "y": y + h / 2], "rotation": 0.0, "pins": pins])
+            x += w; rowHeight = max(rowHeight, h)
+        }
+        model.editElectronics(name: "Build Schematic from Board") { doc in
+            doc["schematic"] = ["title": "Schematic (from board)", "components": components, "wires": [ECObject](),
+                                "junctions": [ECObject](), "labels": [ECObject](), "nets": nets]
+        }
+        view = .schematic
+    }
+}
+
 struct ElectronicsCanvas: View {
     @Bindable var model: EditorModel
     private var ec: ElectronicsWorkspace { model.electronics }
     @State private var pointer: CGPoint?
     private func transform(_ size: CGSize) -> (CGFloat, CGPoint) {
-        let vertices = ecRows((ec.board(model)["outline"] as? ECObject)?["vertices"]).map { ecPoint($0) }
+        // Fit what this view draws: the schematic's symbols, or the board outline.
+        // Fitting the schematic to the board outline left real sheets (which run
+        // to x ≈ 190 mm) half off-screen.
+        let vertices: [CGPoint]
+        if ec.view == .schematic, !ecRows(ec.schematic(model)["components"]).isEmpty {
+            vertices = ecRows(ec.schematic(model)["components"]).flatMap { c -> [CGPoint] in
+                let b = Self.symbolBody(c).insetBy(dx: -6, dy: -6)
+                return [CGPoint(x: b.minX, y: b.minY), CGPoint(x: b.maxX, y: b.maxY)].map { Self.world(local: $0, in: c) }
+            }
+            let minX = vertices.map(\.x).min() ?? 0, maxX = vertices.map(\.x).max() ?? 80
+            let minY = vertices.map(\.y).min() ?? 0, maxY = vertices.map(\.y).max() ?? 50
+            let scale = max(0.1, min((size.width - 60) / max(1, maxX - minX), (size.height - 160) / max(1, maxY - minY))) * ec.zoom
+            return (scale, CGPoint(x: size.width / 2 - (minX + maxX) / 2 * scale, y: size.height / 2 - (minY + maxY) / 2 * scale))
+        }
+        vertices = ecRows((ec.board(model)["outline"] as? ECObject)?["vertices"]).map { ecPoint($0) }
         let minX = min(0, vertices.map(\.x).min() ?? 0), maxX = max(80, vertices.map(\.x).max() ?? 80)
         let minY = min(0, vertices.map(\.y).min() ?? 0), maxY = max(50, vertices.map(\.y).max() ?? 50)
-        let scale = max(0.1, min((size.width - 60) / (maxX - minX), (size.height - 60) / (maxY - minY))) * ec.zoom
+        // Leave room for the floating navigator/inspector and the toolbar +
+        // status pill: the board used to fill the window and run under them.
+        let usableW = max(120, size.width - 2 * (Theme.Width.inspector + 2 * Glass.inset) - 40)
+        let usableH = max(120, size.height - Glass.toolbarHeight - 90)
+        let scale = max(0.1, min(usableW / (maxX - minX), usableH / (maxY - minY))) * ec.zoom
         return (scale, CGPoint(x: size.width / 2 - (minX + maxX) / 2 * scale, y: size.height / 2 - (minY + maxY) / 2 * scale))
     }
     var body: some View {
@@ -259,13 +371,62 @@ struct ElectronicsCanvas: View {
                     }
                 } else {
                     for wire in ecRows(ec.schematic(model)["wires"]) { line(ecPoint(wire["start"]), ecPoint(wire["end"]), .green) }
+                    // Small nets: wires between nearest pins (a chain, not a star from
+                    // the first pin). Power and large nets: a net label at each pin,
+                    // the way a schematic draws GND/VBUS, instead of lines across the sheet.
                     let nets = ec.schematic(model)["nets"] as? [String: [String]] ?? [:]
+                    let pins = Self.pinTable(ec.schematic(model))
                     for (name, refs) in nets {
-                        let points = refs.compactMap { pinPosition($0) }
-                        if let first = points.first { for next in points.dropFirst() { line(first, next, name == ec.activeNet ? .orange : .green) } }
+                        let points = refs.compactMap { pins[$0] }
+                        let color: Color = name == ec.activeNet ? .orange : .green
+                        if points.count > 4 || Self.isPowerNet(name) {
+                            for (p, side) in points {
+                                let tip = CGPoint(x: p.x + side * 3, y: p.y)
+                                line(p, tip, color.opacity(0.8), 1)
+                                context.draw(Text(name).font(.system(size: 9, weight: .medium)).foregroundStyle(color),
+                                             at: screen(tip), anchor: side < 0 ? .trailing : .leading)
+                            }
+                        } else {
+                            var remaining = points.map(\.0)
+                            guard var cur = remaining.first else { continue }
+                            remaining.removeFirst()
+                            while !remaining.isEmpty {
+                                let i = remaining.indices.min { hypot(remaining[$0].x - cur.x, remaining[$0].y - cur.y) < hypot(remaining[$1].x - cur.x, remaining[$1].y - cur.y) }!
+                                line(cur, remaining[i], color, 1.2)
+                                cur = remaining.remove(at: i)
+                            }
+                        }
                     }
                 }
-                let components = ecRows(ec.view == .schematic ? ec.schematic(model)["components"] : board["footprints"])
+                if ec.view == .schematic {
+                    // Symbols: a body sized to the pins, numbered pin stubs, labels above.
+                    for f in ecRows(ec.schematic(model)["components"]) {
+                        let ref = f["ref"] as? String ?? "?", body = Self.symbolBody(f)
+                        let corners = [CGPoint(x: body.minX, y: body.minY), CGPoint(x: body.maxX, y: body.minY),
+                                       CGPoint(x: body.maxX, y: body.maxY), CGPoint(x: body.minX, y: body.maxY)]
+                            .map { screen(Self.world(local: $0, in: f)) }
+                        var outline = Path(); outline.addLines(corners); outline.closeSubpath()
+                        let selected = ref == ec.selectedRef
+                        context.fill(outline, with: .color(selected ? .accentColor.opacity(0.25) : .secondary.opacity(0.12)))
+                        context.stroke(outline, with: .color(selected ? .accentColor : .primary.opacity(0.8)), lineWidth: 1)
+                        let top = screen(Self.world(local: CGPoint(x: 0, y: body.minY), in: f))
+                        context.draw(Text(ref).font(.caption.weight(.semibold)), at: CGPoint(x: top.x, y: top.y - 14))
+                        context.draw(Text(f["value"] as? String ?? "").font(.caption2).foregroundStyle(.secondary),
+                                     at: CGPoint(x: top.x, y: top.y - 3), anchor: .bottom)
+                        for (pin, local) in Self.symbolPins(f) {
+                            let edge = CGPoint(x: local.x < 0 ? max(local.x, body.minX) : min(local.x, body.maxX), y: local.y)
+                            line(Self.world(local: edge, in: f), Self.world(local: local, in: f), .green, 1)
+                            let pp = screen(Self.world(local: local, in: f)), r = max(2, scale * 0.35)
+                            context.fill(Path(ellipseIn: CGRect(x: pp.x - r, y: pp.y - r, width: 2 * r, height: 2 * r)), with: .color(.green))
+                            if scale > 6 {
+                                context.draw(Text(pin["number"] as? String ?? "").font(.system(size: 9)).foregroundStyle(.secondary),
+                                             at: CGPoint(x: pp.x + (local.x < 0 ? 4 : -4), y: pp.y - 6),
+                                             anchor: local.x < 0 ? .leading : .trailing)
+                            }
+                        }
+                    }
+                }
+                let components = ec.view == .schematic ? [] : ecRows(board["footprints"])
                 for f in components {
                     let ref = f["ref"] as? String ?? "?", p = ecPoint(f["position"]), center = screen(p)
                     let rect = CGRect(x: center.x - 3 * scale, y: center.y - 1.5 * scale, width: 6 * scale, height: 3 * scale)
@@ -325,20 +486,79 @@ struct ElectronicsCanvas: View {
         }
     }
     static func world(_ item: ECObject, in component: ECObject) -> CGPoint {
-        let p = ecPoint(item["position"]), origin = ecPoint(component["position"]), radians = ecNumber(component["rotation"]) * .pi / 180
+        world(local: ecPoint(item["position"]), in: component)
+    }
+    static func world(local p: CGPoint, in component: ECObject) -> CGPoint {
+        let origin = ecPoint(component["position"]), radians = ecNumber(component["rotation"]) * .pi / 180
         let x = component["mirror"] as? Bool == true ? -p.x : p.x
         return CGPoint(x: origin.x + x * cos(radians) - p.y * sin(radians), y: origin.y + x * sin(radians) + p.y * cos(radians))
     }
+
+    /// A schematic symbol's pins in component-local mm. Uses the pins' own
+    /// positions when the sheet carries them; imported and generated sheets
+    /// often put every pin at (0, 0), which stacked them on one point and
+    /// collapsed every net line, so those get a readable layout instead:
+    /// two-pin parts horizontal, everything else split left/right on a
+    /// 2.54 mm pitch.
+    static func symbolPins(_ component: ECObject) -> [(pin: ECObject, local: CGPoint)] {
+        let pins = ecRows(component["pins"])
+        if pins.contains(where: { let p = ecPoint($0["position"]); return p.x != 0 || p.y != 0 }) {
+            return pins.map { ($0, ecPoint($0["position"])) }
+        }
+        if pins.count <= 2 {
+            return pins.enumerated().map { i, pin in (pin, CGPoint(x: i == 0 ? -3.81 : 3.81, y: 0)) }
+        }
+        let left = (pins.count + 1) / 2, pitch = 2.54
+        return pins.enumerated().map { i, pin in
+            let onLeft = i < left
+            let row = onLeft ? i : i - left
+            let rows = onLeft ? left : pins.count - left
+            let y = (CGFloat(row) - CGFloat(rows - 1) / 2) * pitch
+            return (pin, CGPoint(x: onLeft ? -10.16 : 10.16, y: y))
+        }
+    }
+
+    /// "REF.PIN" → (world position, outward side: -1 left / +1 right) for every
+    /// pin on the sheet, built once per draw.
+    static func pinTable(_ sheet: ECObject) -> [String: (CGPoint, CGFloat)] {
+        var out: [String: (CGPoint, CGFloat)] = [:]
+        for c in ecRows(sheet["components"]) {
+            let ref = c["ref"] as? String ?? ""
+            for (pin, local) in symbolPins(c) {
+                out["\(ref).\(pin["number"] as? String ?? "")"] = (world(local: local, in: c), local.x < 0 ? -1 : 1)
+            }
+        }
+        return out
+    }
+
+    static func isPowerNet(_ name: String) -> Bool {
+        let n = name.uppercased()
+        return n.contains("GND") || n.hasPrefix("VBUS") || n.hasPrefix("VCC") || n.hasPrefix("VDD")
+            || n.hasPrefix("+") || n.hasPrefix("3V3") || n.hasPrefix("5V") || n.hasPrefix("1V")
+    }
+
+    /// The symbol body in component-local mm, sized to its pins.
+    static func symbolBody(_ component: ECObject) -> CGRect {
+        let n = ecRows(component["pins"]).count
+        if n <= 2 { return CGRect(x: -2.54, y: -1.0, width: 5.08, height: 2.0) }
+        let rows = CGFloat((n + 1) / 2)
+        let h = rows * 2.54 + 2.54
+        return CGRect(x: -7.62, y: -h / 2, width: 15.24, height: h)
+    }
+
     private func pinPosition(_ ref: String) -> CGPoint? {
         for component in ecRows(ec.schematic(model)["components"]) {
-            for pin in ecRows(component["pins"]) where "\(component["ref"] as? String ?? "").\(pin["number"] as? String ?? "")" == ref { return Self.world(pin, in: component) }
+            let cref = component["ref"] as? String ?? ""
+            for (pin, local) in Self.symbolPins(component) where "\(cref).\(pin["number"] as? String ?? "")" == ref {
+                return Self.world(local: local, in: component)
+            }
         }
         return nil
     }
     private func nearestPin(_ p: CGPoint, distance: CGFloat) -> String? {
         for component in ecRows(ec.schematic(model)["components"]) {
-            for pin in ecRows(component["pins"]) {
-                let q = Self.world(pin, in: component)
+            for (pin, local) in Self.symbolPins(component) {
+                let q = Self.world(local: local, in: component)
                 if hypot(p.x - q.x, p.y - q.y) < distance { return "\(component["ref"] as? String ?? "").\(pin["number"] as? String ?? "")" }
             }
         }

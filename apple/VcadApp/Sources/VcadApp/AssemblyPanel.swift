@@ -39,14 +39,20 @@ struct AssemblyPanel: View {
                 Spacer()
             }
         }
-        .padding(Theme.Space.l).frame(width: Theme.Width.navigator).panelSurface()
-        .sheet(item: Binding(get: { newJoint.map(SheetBox.init) }, set: { newJoint = $0?.spec })) { box in
-            JointEditorSheet(model: model, title: "Add Joint", spec: box.spec) { spec in
-                model.addJoint(spec) != nil
+        .padding(Theme.Space.m).frame(width: Theme.Width.navigator).panelSurface()
+        .onChange(of: newJoint != nil) { _, open in
+            guard open, let spec = newJoint else { return }
+            GlassUI.shared.present("Add Joint", symbol: "link", width: 420, onClose: { newJoint = nil }) {
+                JointEditorSheet(model: model, title: "Add Joint", spec: spec) { spec in
+                    model.addJoint(spec) != nil
+                }
             }
         }
-        .sheet(item: Binding(get: { newMate.map(MateBox.init) }, set: { newMate = $0?.spec })) { box in
-            MateEditorSheet(model: model, spec: box.spec)
+        .onChange(of: newMate != nil) { _, open in
+            guard open, let spec = newMate else { return }
+            GlassUI.shared.present("Add Mate", symbol: "link.badge.plus", width: 380, onClose: { newMate = nil }) {
+                MateEditorSheet(model: model, spec: spec)
+            }
         }
     }
 
@@ -198,7 +204,7 @@ private struct JointDriveRow: View {
         VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 4) {
                 Image(systemName: spec.kind.symbol).foregroundStyle(.secondary).frame(width: 14)
-                Text(spec.name ?? id).font(.caption.weight(.medium)).lineLimit(1).truncationMode(.middle)
+                Text(spec.name ?? id).font(.caption.weight(.medium)).lineLimit(2).fixedSize(horizontal: false, vertical: true).help(spec.name ?? id)
                 Spacer(minLength: 2)
                 if driven {
                     Text(String(format: "%.1f%@", value, spec.kind.unit))
@@ -232,8 +238,12 @@ private struct JointDriveRow: View {
             }
             Button("Delete", role: .destructive) { model.deleteJoint(id) }
         }
-        .sheet(item: Binding(get: { editing.map { EditBox(id: id, spec: $0) } }, set: { editing = $0?.spec })) { box in
-            JointEditorSheet(model: model, title: "Edit Joint", spec: box.spec) { model.updateJoint(box.id, $0) }
+        .onChange(of: editing != nil) { _, open in
+            guard open, let spec = editing else { return }
+            let jid = id
+            GlassUI.shared.present("Edit Joint", symbol: "link", width: 420, onClose: { editing = nil }) {
+                JointEditorSheet(model: model, title: "Edit Joint", spec: spec) { model.updateJoint(jid, $0) }
+            }
         }
     }
 
@@ -244,7 +254,7 @@ private struct JointDriveRow: View {
 private struct MateEditorSheet: View {
     let model: EditorModel
     @State var spec: MateSpec
-    @Environment(\.dismiss) private var dismiss
+    private func dismiss() { GlassUI.shared.closePanel() }
 
     var body: some View {
         let ids = model.asmInstances.compactMap { $0["id"] as? String }
@@ -264,12 +274,14 @@ private struct MateEditorSheet: View {
             }
         }
         .formStyle(.grouped)
-        .frame(width: 360)
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Add") { if model.addMate(spec) != nil { dismiss() } }
-            }
+        .scrollContentBackground(.hidden)
+        .scrollDisabled(true)
+        .safeAreaInset(edge: .bottom) {
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Add") { if model.addMate(spec) != nil { dismiss() } }.keyboardShortcut(.defaultAction)
+            }.padding(.horizontal, Theme.Space.l)
         }
     }
 }

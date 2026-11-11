@@ -843,3 +843,40 @@ fn m10_gauss_newton_hessian_matches_full_hessian_near_optimum() {
         "relative Frobenius {rel_frob:.3e} exceeds noise band"
     );
 }
+
+/// The seam's d²V/dr² is the second derivative of the **frozen-plan** mesh
+/// volume, so its sharpest oracle is a same-plan stencil. (A difference of
+/// fresh captures used to settle at ~-40.72: the corner-sphere/blend-cylinder
+/// contact arcs, a hair off tangency, were captured as ill-conditioned
+/// two-surface Boundary nodes. With those bound to the sphere, fresh captures
+/// agree at large steps too, but stay jittery below h ~ 1e-3.) Every node is
+/// linear in r, so the seam's node accelerations are zero and it must match a
+/// 5-point same-plan stencil to roundoff.
+#[test]
+fn m10_rounded_cube_second_derivative_matches_same_plan_stencil() {
+    use vcad_kernel_tessellate::frozen::evaluate_plan;
+    let params = TessellationParams {
+        circle_segments: 16,
+        height_segments: 2,
+        ..Default::default()
+    };
+    let r0 = 1.5;
+    let (_, _, ddv) = second_order_volume(&build_rc, &rc_seeding, r0, &params);
+    let plan = capture_plan(&build_rc(r0), &params).expect("capture");
+    let v = |d: f64| {
+        evaluate_plan(&build_rc(r0 + d), &plan)
+            .expect("same plan")
+            .volume()
+    };
+    // h: large enough to clear volume roundoff (ε·V/h² ≈ 2e-6), small
+    // enough for the plan's correspondence tolerance.
+    let h = 3e-4;
+    let five =
+        (-v(2.0 * h) + 16.0 * v(h) - 30.0 * v(0.0) + 16.0 * v(-h) - v(-2.0 * h)) / (12.0 * h * h);
+    let rel = (ddv - five).abs() / five.abs();
+    eprintln!("rounded cube same-plan d²V/dr²: seam {ddv:.6} vs 5-point {five:.6} (rel {rel:.3e})");
+    assert!(
+        rel < 1e-5,
+        "seam {ddv} vs same-plan stencil {five} (rel {rel:.3e})"
+    );
+}

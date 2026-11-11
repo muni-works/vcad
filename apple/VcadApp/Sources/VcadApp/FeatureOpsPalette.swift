@@ -61,7 +61,7 @@ extension EditorModel {
 
 struct CommandPaletteSheet: View {
     @Bindable var model: EditorModel
-    @Environment(\.dismiss) private var dismiss
+    private func dismiss() { model.showsCommandPalette = false }
     @State private var query = ""
     @FocusState private var focused: Bool
 
@@ -101,6 +101,7 @@ struct CommandPaletteSheet: View {
         }
         .frame(width: 460)
         .onAppear { focused = true }
+        .onExitCommand { dismiss() }
     }
 
     private func run(_ c: PaletteCommand?) {

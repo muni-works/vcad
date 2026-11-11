@@ -5,34 +5,106 @@
     "subtitle": "A drilled plate, explained line by line. Edit it, save, watch it rebuild.",
     "file": "first-part.loon",
     "thumbnail": "first-part.jpg",
-    "tutorial": true
+    "tutorial": true,
+    "category": "Tutorial"
   },
   {
     "id": "stirling-engine",
     "title": "Stirling engine",
     "subtitle": "Ten parts in cast iron, steel, brass and aluminum, with a flywheel on a revolute joint.",
     "file": "stirling-engine.vcad",
-    "thumbnail": "stirling-engine.jpg"
+    "thumbnail": "stirling-engine.jpg",
+    "category": "Mechanical"
+  },
+  {
+    "id": "k1-humanoid",
+    "title": "K1 humanoid",
+    "subtitle": "A 22-DOF humanoid on 24 imported meshes. Simulate it standing in phyz, or pose any joint.",
+    "file": "k1/k1-humanoid.vcad",
+    "thumbnail": "k1-humanoid.jpg",
+    "category": "Robotics",
+    "assets": [
+      "third_party/booster-k1"
+    ]
+  },
+  {
+    "id": "pcb-motor",
+    "title": "PCB axial-flux motor",
+    "subtitle": "A printed-coil stator board between two rotors, with clearance checks between board and magnets.",
+    "file": "pcb-motor.vcad",
+    "thumbnail": "pcb-motor.jpg",
+    "category": "Electronics"
+  },
+  {
+    "id": "pcb-stator",
+    "title": "PCB motor stator",
+    "subtitle": "The six-layer coil board itself: schematic, copper and the board solid in one file.",
+    "file": "pcb-stator.vcad",
+    "thumbnail": "pcb-stator.jpg",
+    "category": "Electronics"
+  },
+  {
+    "id": "fpga-board",
+    "title": "FPGA dev board",
+    "subtitle": "iCE40 + RP2040, designed entirely by an agent through the MCP tools. DRC-clean, fab files included.",
+    "file": "fpga-board.vcad",
+    "thumbnail": "fpga-board.jpg",
+    "category": "Electronics"
+  },
+  {
+    "id": "l-bracket",
+    "title": "L bracket",
+    "subtitle": "A mounting bracket to load in Analyze: fix the base, push on the flange, read the stress.",
+    "file": "l-bracket.vcad",
+    "thumbnail": "l-bracket.jpg",
+    "category": "Analysis"
+  },
+  {
+    "id": "motor-flange",
+    "title": "Motor flange",
+    "subtitle": "Bolt circle, bore and pilot: a 2.5D part ready for Manufacture toolpaths.",
+    "file": "motor-flange.vcad",
+    "thumbnail": "motor-flange.jpg",
+    "category": "Manufacture"
+  },
+  {
+    "id": "snap-cap",
+    "title": "Snap-fit cap",
+    "subtitle": "A cap that snaps over a bottle-neck bead, with the fit checked as clearance.",
+    "file": "snap-cap.vcad",
+    "thumbnail": "snap-cap.jpg",
+    "category": "Mechanical"
   },
   {
     "id": "robot-arm",
     "title": "Two-axis robot arm",
     "subtitle": "Two revolute joints on a base. Pose it, or simulate it.",
     "file": "robot-arm.vcad",
-    "thumbnail": "robot-arm.jpg"
+    "thumbnail": "robot-arm.jpg",
+    "category": "Robotics"
+  },
+  {
+    "id": "ribbed-plate",
+    "title": "Ribbed plate",
+    "subtitle": "A stiffened plate: a good first DFM check for thin ribs.",
+    "file": "ribbed-plate.vcad",
+    "thumbnail": "ribbed-plate.jpg",
+    "category": "Analysis"
   },
   {
     "id": "sensor-mast",
     "title": "Sensor mast",
     "subtitle": "A pocketed, drilled base plate carrying a mast and sensor housings.",
     "file": "sensor-mast.vcad",
-    "thumbnail": "sensor-mast.jpg"
+    "thumbnail": "sensor-mast.jpg",
+    "category": "Mechanical"
   },
   {
     "id": "pulley",
     "title": "Pulley",
     "subtitle": "Flanges, a groove and a bore, built from booleans in the feature tree.",
     "file": "pulley.vcad",
-    "thumbnail": "pulley.jpg"
+    "thumbnail": "pulley.jpg",
+    "category": "Mechanical"
   }
 ]

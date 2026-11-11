@@ -454,12 +454,39 @@ pub enum EdgeQuery {
     /// propagate them with deterministic split ordinals. Unlike the
     /// geometric queries, resolution is fail-closed: an ambiguous or lost
     /// reference is an evaluation error, never a nearest-edge guess.
+    ///
+    /// `hint` is a geometric snapshot of the edge taken when it was picked.
+    /// It is consulted only when the names alone cannot pick exactly one
+    /// edge (the faces no longer meet, or meet along several edges), and it
+    /// must then match exactly one edge or resolution still fails closed.
     Named {
         /// Name of one adjacent face.
         face_a: String,
         /// Name of the other adjacent face.
         face_b: String,
+        /// Geometric snapshot of the edge at pick time, for fallback
+        /// matching when topology changes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-rs", ts(optional))]
+        hint: Option<NamedEdgeHint>,
     },
+}
+
+/// Geometric snapshot of a picked edge, carried by [`EdgeQuery::Named`].
+///
+/// Fallback matching tolerances scale with `length`: a candidate must agree
+/// in direction (sign ignored, within ~18°), length (±25%), and midpoint
+/// (within 25% of `length`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct NamedEdgeHint {
+    /// Edge midpoint at pick time (model space, mm).
+    pub midpoint: Vec3,
+    /// Unit edge direction at pick time.
+    pub direction: Vec3,
+    /// Edge length at pick time (mm).
+    pub length: f64,
 }
 
 /// A blend-profile keyframe along an edge.

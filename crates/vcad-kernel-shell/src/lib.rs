@@ -37,6 +37,28 @@ pub enum ShellError {
     SelfIntersection(FaceId, FaceId),
     /// A surface type does not support analytical offset.
     UnsupportedSurface(SurfaceKind),
+    /// The wall thickness is zero, negative, or not a finite number.
+    InvalidThickness(f64),
+    /// The inward offset consumes the solid: the inner wall would meet,
+    /// pass through, or invert past itself, so no hollow body exists.
+    ThicknessConsumesSolid {
+        /// The requested wall thickness in mm.
+        thickness: f64,
+        /// Half the smallest extent of the solid's bounding box — an
+        /// upper bound on any thickness that can work.
+        limit: f64,
+    },
+}
+
+impl ShellError {
+    /// `true` when the error means the requested thickness cannot produce
+    /// a hollow solid at all — as opposed to "the analytic path cannot
+    /// represent this surface", where a mesh approximation is legitimate.
+    /// Falling back to the mesh offset on these would just build the same
+    /// impossible body in triangles (inverted or turned inside out).
+    pub fn is_infeasible(&self) -> bool {
+        !matches!(self, ShellError::UnsupportedSurface(_))
+    }
 }
 
 impl fmt::Display for ShellError {
@@ -48,6 +70,17 @@ impl fmt::Display for ShellError {
             ShellError::UnsupportedSurface(kind) => {
                 write!(f, "Unsupported surface type for offset: {:?}", kind)
             }
+            ShellError::InvalidThickness(t) => {
+                write!(
+                    f,
+                    "shell thickness must be a positive finite number, got {t}"
+                )
+            }
+            ShellError::ThicknessConsumesSolid { thickness, limit } => write!(
+                f,
+                "shell thickness {thickness} mm consumes the solid (must be below {limit:.4} mm, \
+                 half its thinnest extent) — the inner wall would collapse or invert"
+            ),
         }
     }
 }
@@ -101,10 +134,21 @@ pub fn shell_brep_analytical(
     thickness: f64,
     open_face_ids: &[FaceId],
 ) -> Result<BRepSolid, ShellError> {
+    if !thickness.is_finite() || thickness <= 0.0 {
+        return Err(ShellError::InvalidThickness(thickness));
+    }
     let topo = &brep.topology;
     let geom = &brep.geometry;
     let solid = &topo.solids[brep.solid_id];
     let shell = &topo.shells[solid.outer_shell];
+    let all_planar = shell
+        .faces
+        .iter()
+        .all(|&f| geom.surfaces[topo.faces[f].surface_index].surface_type() == SurfaceKind::Plane);
+    let (outer_min, outer_max) = vertex_aabb(topo.vertices.iter().map(|(_, v)| v.point));
+    let limit = (0..3)
+        .map(|i| 0.5 * (outer_max[i] - outer_min[i]))
+        .fold(f64::INFINITY, f64::min);
 
     // Step 1: Compute offset surfaces for all non-open faces
     // The offset direction is opposite to the face normal (inward).
@@ -161,6 +205,87 @@ pub fn shell_brep_analytical(
         let inner_pos = compute_offset_vertex(topo, geom, old_vid, &offset_surfaces, thickness);
         let new_vid = new_topo.add_vertex(inner_pos);
         inner_vertex_map.insert(old_vid, new_vid);
+    }
+
+    // Step 2b': fail closed when the offset consumes the solid. For an
+    // all-planar body the vertex AABB is the exact AABB, and every point of
+    // a valid inward offset lies at least `thickness` inside it — an inner
+    // vertex outside that shrunken box means the walls crossed (e.g. a
+    // 10 mm cube shelled by 20 mm put its "inner" box at -10..20, growing
+    // the solid). Every inner face must also keep its outer face's
+    // orientation and a non-zero area, which catches the exact-collapse
+    // case (thickness = half the extent → every inner face is a point).
+    let consumed = ShellError::ThicknessConsumesSolid { thickness, limit };
+    if all_planar {
+        let span = (0..3)
+            .map(|i| outer_max[i] - outer_min[i])
+            .fold(0.0_f64, f64::max);
+        let tol = 1e-9 * span.max(1.0);
+        // An open face's inner vertices sit on the (un-offset) open plane,
+        // so with openings only plain containment is required.
+        //
+        // The inset carries 10 % slack: compute_offset_vertex is not exact
+        // at corners where more than three planes meet (a chamfered box's
+        // corner lands ~2 % shy of the true offset), and the gross failure
+        // this guards against overshoots by whole thicknesses. The edge
+        // direction check below covers the near-limit cases.
+        let inset = if open_face_ids.is_empty() {
+            0.9 * thickness
+        } else {
+            0.0
+        };
+        for &nv in inner_vertex_map.values() {
+            let p = new_topo.vertices[nv].point;
+            let p = [p.x, p.y, p.z];
+            for i in 0..3 {
+                if p[i] < outer_min[i] + inset - tol || p[i] > outer_max[i] - inset + tol {
+                    return Err(consumed);
+                }
+            }
+        }
+        // Every inner edge must keep its outer edge's direction: an inward
+        // offset shrinks edges, and one that reaches zero length or flips
+        // means opposing walls met (a 10 mm cube shelled by >= 5 mm inverts
+        // its inner box uniformly, which the area check alone can't see).
+        for &face_id in &shell.faces {
+            if open_face_ids.contains(&face_id) {
+                continue;
+            }
+            let verts = topo.loop_vertices(topo.faces[face_id].outer_loop);
+            for k in 0..verts.len() {
+                let (a, b) = (verts[k], verts[(k + 1) % verts.len()]);
+                let outer_e = topo.vertices[b].point - topo.vertices[a].point;
+                if outer_e.norm() <= tol {
+                    continue;
+                }
+                let inner_e = new_topo.vertices[inner_vertex_map[&b]].point
+                    - new_topo.vertices[inner_vertex_map[&a]].point;
+                if inner_e.dot(outer_e) <= tol * outer_e.norm() {
+                    return Err(ShellError::ThicknessConsumesSolid { thickness, limit });
+                }
+            }
+        }
+        for &face_id in &shell.faces {
+            if open_face_ids.contains(&face_id) {
+                continue;
+            }
+            let verts = topo.loop_vertices(topo.faces[face_id].outer_loop);
+            let outer_n = newell(verts.iter().map(|v| topo.vertices[*v].point));
+            let inner_n = newell(
+                verts
+                    .iter()
+                    .map(|v| new_topo.vertices[inner_vertex_map[v]].point),
+            );
+            let outer_area = outer_n.norm();
+            if outer_area <= tol * tol {
+                continue;
+            }
+            // Same direction and a non-vanishing area (relative to the
+            // outer face, so the gate is scale-free).
+            if inner_n.dot(outer_n) <= 1e-12 * outer_area * outer_area {
+                return Err(consumed);
+            }
+        }
     }
 
     // Step 2c: Copy outer faces (all faces, including open ones)
@@ -283,6 +408,33 @@ pub fn shell_brep_analytical(
         geometry: new_geom,
         solid_id,
     })
+}
+
+/// Axis-aligned bounds of a point set (`[MAX; 3]`/`[MIN; 3]` when empty).
+fn vertex_aabb(points: impl Iterator<Item = Point3>) -> ([f64; 3], [f64; 3]) {
+    let mut lo = [f64::MAX; 3];
+    let mut hi = [f64::MIN; 3];
+    for p in points {
+        for (i, c) in [p.x, p.y, p.z].into_iter().enumerate() {
+            lo[i] = lo[i].min(c);
+            hi[i] = hi[i].max(c);
+        }
+    }
+    (lo, hi)
+}
+
+/// Newell area vector of a polygon (twice the area, along its normal).
+fn newell(points: impl Iterator<Item = Point3>) -> Vec3 {
+    let pts: Vec<Point3> = points.collect();
+    let mut n = Vec3::new(0.0, 0.0, 0.0);
+    for i in 0..pts.len() {
+        let a = pts[i];
+        let b = pts[(i + 1) % pts.len()];
+        n.x += (a.y - b.y) * (a.z + b.z);
+        n.y += (a.z - b.z) * (a.x + b.x);
+        n.z += (a.x - b.x) * (a.y + b.y);
+    }
+    n
 }
 
 /// Outward normal of `surface` at the 3D point `p`.
@@ -734,6 +886,33 @@ mod tests {
             12,
             "should have 12 surfaces"
         );
+    }
+
+    #[test]
+    fn overshell_is_refused_not_grown() {
+        // Fuzz repro: `[shell 20 [cube 10 10 10]]` offset OUTWARD and
+        // reported 28000 mm³ with a (-10..20) bbox.
+        let cube = vcad_kernel_primitives::make_cube(10.0, 10.0, 10.0);
+        for t in [5.0, 5.01, 6.0, 20.0] {
+            let err = shell_brep_analytical(&cube, t, &[]).unwrap_err();
+            assert!(
+                matches!(err, ShellError::ThicknessConsumesSolid { .. }),
+                "t={t}: {err}"
+            );
+            assert!(err.is_infeasible());
+        }
+        for t in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let err = shell_brep_analytical(&cube, t, &[]).unwrap_err();
+            assert!(
+                matches!(err, ShellError::InvalidThickness(_)),
+                "t={t}: {err}"
+            );
+        }
+        // Just under the limit is a real (very thin-cavity) shell.
+        let ok = shell_brep_analytical(&cube, 4.9, &[]).unwrap();
+        let vol = compute_volume(&vcad_kernel_tessellate::tessellate_brep(&ok, 32));
+        let expected = 1000.0 - 0.2f64.powi(3);
+        assert!((vol - expected).abs() < 1e-3, "{vol}");
     }
 
     #[test]

@@ -29,7 +29,7 @@ struct AnalysisPanel: View {
             }
             .frame(maxHeight: 520).fixedSize(horizontal: false, vertical: true)
         }
-        .padding(Theme.Space.l).frame(width: Theme.Width.inspector).panelSurface()
+        .padding(Theme.Space.m).frame(width: Theme.Width.toolInspector).panelSurface()
         .accessibilityIdentifier("analysis-panel")
     }
 }

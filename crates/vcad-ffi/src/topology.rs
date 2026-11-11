@@ -189,6 +189,14 @@ fn analyze(solid: &Solid) -> Result<(Topo, &BRepSolid), String> {
                 if fa == fb {
                     continue; // seam
                 }
+                // Two fragments of ONE surface: the boolean's imprint of an
+                // untrimmed intersection circle (a cup's outer wall split at
+                // its floor height). Smooth and invisible — not an edge the
+                // user can mean, and a fillet on it can only be refused —
+                // but within a pick tolerance of the real rim next to it.
+                if topo.faces[fa].surface_index == topo.faces[fb].surface_index {
+                    continue;
+                }
                 let (Some(&oa), Some(&ob)) = (face_ordinal.get(&fa), face_ordinal.get(&fb)) else {
                     continue;
                 };
@@ -213,11 +221,22 @@ fn analyze(solid: &Solid) -> Result<(Topo, &BRepSolid), String> {
                 }
                 let selector = solid.names().and_then(|names| {
                     let r = vcad_kernel_naming::EdgeRef::capture(brep, names, eid)?;
-                    Some(serde_json::json!({
+                    let mut sel = serde_json::json!({
                         "type": "Named",
                         "face_a": r.face_a.to_string(),
                         "face_b": r.face_b.to_string(),
-                    }))
+                    });
+                    // Pick-time geometry: the fail-closed fallback when a
+                    // later edit changes the topology under the names.
+                    if let Some(h) = r.hint {
+                        let v = |p: [f64; 3]| serde_json::json!({"x": p[0], "y": p[1], "z": p[2]});
+                        sel["hint"] = serde_json::json!({
+                            "midpoint": v([h.midpoint.x, h.midpoint.y, h.midpoint.z]),
+                            "direction": v([h.direction.x, h.direction.y, h.direction.z]),
+                            "length": h.length,
+                        });
+                    }
+                    Some(sel)
                 });
                 let id = edges.len() as u32;
                 edges.push(EdgeRec {
@@ -728,5 +747,168 @@ mod tests {
         assert!((hit.point[2] - 2.0).abs() < 1e-3, "{hit:?}");
         vcad_solid_free(open);
         vcad_solid_free(s);
+    }
+
+    /// The native app's exact flow for "pick an edge of a boolean result,
+    /// fillet it": engine document → evaluated scene → picked edge's
+    /// `selector` → `vcad_feature_append` edge_blend → `vcad_engine_load_ir`
+    /// round trip → evaluate. The round trip re-materializes the subgraph
+    /// with fresh node ids, so the selector's `n<id>:` scopes must follow.
+    fn app_pick_and_blend(
+        edge_a: [f64; 3],
+        edge_b: [f64; 3],
+        shape: f64,
+        keep_hint: bool,
+        build: impl FnOnce(&mut vcad_app::DocumentApi) -> vcad_app::document_api::ApiResult,
+    ) -> (f64, f64, serde_json::Value) {
+        use vcad_eval::{evaluate_document, EvalOptions};
+        let mut api = vcad_app::DocumentApi::new(vcad_crdt::ReplicaId(7));
+        let built = build(&mut api);
+        let doc0 = built.document.clone();
+        let eval = |doc: &vcad_ir::Document| {
+            let scene = evaluate_document(doc, &EvalOptions::default()).unwrap();
+            assert!(scene.failures.is_empty(), "{:?}", scene.failures);
+            assert_eq!(scene.parts.len(), 1);
+            scene.parts[0].solid.clone().expect("part has a solid")
+        };
+        let solid = eval(&doc0);
+        let v0 = solid.volume();
+        let (topo, _) = analyze(&solid).unwrap();
+        let close = |p: [f64; 3], q: [f64; 3]| (0..3).all(|i| (p[i] - q[i]).abs() < 1e-6);
+        let edge = topo
+            .edges
+            .iter()
+            .find(|e| {
+                (close(e.entry.a, edge_a) && close(e.entry.b, edge_b))
+                    || (close(e.entry.a, edge_b) && close(e.entry.b, edge_a))
+            })
+            .expect("picked edge exists");
+        let selector = edge
+            .entry
+            .selector
+            .clone()
+            .expect("edge has a durable selector");
+        let mut blend_selector = selector.clone();
+        if !keep_hint {
+            // Names only: proves the round trip keeps them resolvable,
+            // without the geometric fallback papering over a lost scope.
+            blend_selector.as_object_mut().unwrap().remove("hint");
+        }
+        let root = doc0.roots[0].root;
+        let feature = serde_json::json!({
+            "kind": "edge_blend", "child": root, "edges": blend_selector,
+            "size": 2.0, "shape": shape,
+        });
+        let mut doc1 = doc0.clone();
+        crate::features::append_feature(&mut doc1, &feature.to_string()).unwrap();
+        let ir = serde_json::to_string(&doc1).unwrap();
+        let api = vcad_app::DocumentApi::from_ir(&ir, vcad_crdt::ReplicaId(7)).unwrap();
+        let doc2 = api.get_state().document;
+        (v0, eval(&doc2).volume(), selector)
+    }
+
+    fn block_minus_hole(api: &mut vcad_app::DocumentApi) -> vcad_app::document_api::ApiResult {
+        use vcad_app::feature::{BooleanType, FeatureInput};
+        let block = api
+            .add_feature(FeatureInput::Cube {
+                size_x: 40.0,
+                size_y: 30.0,
+                size_z: 10.0,
+            })
+            .created_feature_id
+            .unwrap();
+        let hole = api
+            .add_feature(FeatureInput::Cylinder {
+                radius: 4.0,
+                height: 20.0,
+                segments: None,
+            })
+            .created_feature_id
+            .unwrap();
+        api.set_translation(&hole, [20.0, 15.0, -5.0]);
+        api.add_feature(FeatureInput::Boolean {
+            boolean_type: BooleanType::Difference,
+            input_a: block,
+            input_b: hole,
+        })
+    }
+
+    /// Regression: the dogfood repro. Fillet r=2 on the vertical x=40/y=0
+    /// edge of Difference(Block 40×30×10, Hole r=4) failed with "edge
+    /// reference lost: no edge between faces 'n…:front' and 'n…:right'".
+    #[test]
+    fn app_fillet_on_boolean_result_edge_resolves() {
+        for keep_hint in [false, true] {
+            let (v0, v1, sel) = app_pick_and_blend(
+                [40.0, 0.0, 0.0],
+                [40.0, 0.0, 10.0],
+                1.0,
+                keep_hint,
+                block_minus_hole,
+            );
+            assert!((v0 - 11497.5).abs() < 1.0, "base volume {v0}");
+            let expected = (1.0 - std::f64::consts::PI / 4.0) * 4.0 * 10.0; // 8.58
+            assert!(
+                ((v0 - v1) - expected).abs() < 0.05,
+                "fillet removed {} mm³, expected {expected} ({sel})",
+                v0 - v1
+            );
+            assert!(
+                sel.get("hint").is_some(),
+                "picked edges carry a geometric hint: {sel}"
+            );
+        }
+    }
+
+    #[test]
+    fn app_chamfer_on_boolean_result_edge_resolves() {
+        let (v0, v1, _) = app_pick_and_blend(
+            [40.0, 0.0, 0.0],
+            [40.0, 0.0, 10.0],
+            0.0,
+            true,
+            block_minus_hole,
+        );
+        // 2 mm × 2 mm chamfer leg over a 10 mm edge: ½·2·2·10 = 20 mm³.
+        assert!(
+            ((v0 - v1) - 20.0).abs() < 0.05,
+            "chamfer removed {}",
+            v0 - v1
+        );
+    }
+
+    /// A cup's boolean leaves imprint seams between fragments of one surface
+    /// (its outer wall split at the floor height). They sit within a pick
+    /// tolerance of the real bottom rim, and a fillet on one can only be
+    /// refused — so the report never offers them.
+    #[test]
+    fn cup_offers_no_same_surface_seams() {
+        let mut outer = vcad_kernel::Solid::cylinder(86.0, 40.0, 0);
+        outer.set_name_scope("n2");
+        let mut inner = vcad_kernel::Solid::cylinder(84.0, 40.0, 0);
+        inner.set_name_scope("n1");
+        let cup = outer.difference(&inner.translate(0.0, 0.0, 2.0));
+        let (topo, brep) = analyze(&cup).unwrap();
+        let mut rim = 0;
+        for e in &topo.edges {
+            let (Some(fa), Some(fb)) = brep.topology.edge_faces(e.kernel) else {
+                continue;
+            };
+            assert_ne!(
+                brep.topology.faces[fa].surface_index, brep.topology.faces[fb].surface_index,
+                "same-surface seam offered: {:?}",
+                e.entry.selector
+            );
+            let sel = e
+                .entry
+                .selector
+                .as_ref()
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            if sel.contains("n2:bottom") && sel.contains("n2:side") {
+                rim += 1;
+            }
+        }
+        assert!(rim > 0, "the real bottom rim is still offered");
     }
 }

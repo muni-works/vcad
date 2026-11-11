@@ -236,6 +236,9 @@ struct Tool: Identifiable {
     let isActive: Bool
     var enabled: Bool = true
     var hint: String = ""
+    /// A bare-letter key (Fusion/KiCad style) — fires only when nothing else
+    /// handles the key, so it can never steal typing from a field.
+    var shortcut: Character? = nil
     let action: () -> Void
 }
 
@@ -449,6 +452,8 @@ final class EditorModel {
     /// Instances an agent (over the app's MCP bridge) is pointing at — painted
     /// like a selection so the user sees what the agent means.
     var agentHighlights: Set<Int> = []
+    /// Parts a pending agent suggestion would touch (soft shimmer preview).
+    var agentShimmer: Set<Int> = []
     /// Labels an agent pinned to instances, drawn in the viewport overlay.
     var agentAnnotations: [AgentAnnotation] = []
     /// The tree row that is hot, whichever side the pointer is on. Hovering
@@ -1463,6 +1468,36 @@ final class EditorModel {
         selectionDirty = true
     }
 
+    /// A boolean waiting for its second part: the selected part is the target,
+    /// the next part clicked is the tool (Fusion's target/tool idiom). ⌘-click
+    /// multi-select still works, but nothing on screen taught it.
+    var pendingBoolean: (op: BooleanOp, target: Int)?
+
+    /// Modeling is possible: a document, or the Untitled sandbox that the first
+    /// modeling action promotes.
+    var canModel: Bool { usesDocumentTree || (source.isSandbox && documentJSON == nil) }
+
+    /// Start a boolean: two parts already selected combine now; one selected
+    /// waits for a click on the other.
+    func beginCombine(_ op: BooleanOp) {
+        if multiSelectedParts.count == 2 { combineSelected(op); return }
+        guard let target = selectedPartIndex else { return }
+        pendingBoolean = (op, target)
+    }
+
+    /// The click that completes a pending boolean. Returns whether it consumed
+    /// the click.
+    func completePendingBoolean(withPart pi: Int) -> Bool {
+        guard let p = pendingBoolean else { return false }
+        // Clicking the target again is a miss, not a cancel: keep waiting
+        // (Cancel / Esc in the prompt pill ends it).
+        guard pi != p.target else { return true }
+        pendingBoolean = nil
+        multiSelectedParts = [p.target, pi]
+        combineSelected(p.op)
+        return true
+    }
+
     /// Combine the two ⌘-selected parts with a boolean op (first = base).
     func combineSelected(_ op: BooleanOp) {
         guard multiSelectedParts.count == 2,
@@ -1523,7 +1558,25 @@ final class EditorModel {
             doc = next
             prev = (obj["node_id"] as? NSNumber)?.intValue
         }
-        return irEdit(name, reeval: .rebuild, base: doc) { _ in } != nil
+        guard irEdit(name, reeval: .rebuild, base: doc) { _ in } != nil else { return false }
+        // A feature the kernel can't build (a fillet whose edge reference no
+        // longer resolves, an over-size radius) was committed anyway and the
+        // whole part vanished with no message. Check, and take it back.
+        if let failed = newEvaluationErrors(), !failed.isEmpty {
+            undo()
+            redoStack.removeAll()
+            engineError = "\(name) couldn't be built, so it was undone:\n\(failed)"
+            return false
+        }
+        return true
+    }
+
+    /// The kernel's per-part build failures for the current document, or nil
+    /// when this kernel build can't report them.
+    func newEvaluationErrors() -> String? {
+        guard let engine else { return nil }
+        return (try? engine.agentRead("evaluation_errors", [:]))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Mutate the IR document directly and reload, as ONE undo step — for
@@ -2075,11 +2128,13 @@ final class EditorModel {
         guard let entry = undoStack.popLast() else { undoGeneration(); return }
         guard let back = step(entry, forward: false) else { return }
         redoStack.append(back)
+        GlassUI.shared.flash("Undo \(entry.name)", symbol: "arrow.uturn.backward")
     }
     func redo() {
         guard let entry = redoStack.popLast() else { return }
         guard let back = step(entry, forward: true) else { return }
         undoStack.append(back)
+        GlassUI.shared.flash("Redo \(entry.name)", symbol: "arrow.uturn.forward")
     }
 
     /// Apply one history entry; returns the entry that reverses it.
@@ -2453,6 +2508,10 @@ final class EditorModel {
                 if event.keyCode == 53 {                       // Escape
                     if self.sketching {
                         self.exitSketch()
+                    } else if GlassUI.shared.shortcutsShown {
+                        GlassUI.shared.shortcutsShown = false
+                    } else if self.activeFeatureOp != nil || self.showsCommandPalette || GlassUI.shared.panel != nil {
+                        // Their own Cancel handles Esc; keep the selection.
                     } else if self.usesDocumentTree, self.renamingFeatureID == nil, self.hasSelection {
                         self.deselectAll()
                     }
@@ -2791,6 +2850,7 @@ final class EditorModel {
     }
 
     func openDocument(_ url: URL) {
+        LaunchPerf.once("open", " (\(url.lastPathComponent))")
         let label = url.deletingPathExtension().lastPathComponent
         // A DXF is an outline to machine, not a document: it lands in
         // Manufacture as contour operations on the current part.
@@ -3332,7 +3392,10 @@ final class EditorModel {
                     }
                     landed += 1
                 }
+                if newParts { LaunchPerf.once("first part landed") }
                 if finished {
+                    LaunchPerf.once("solved", String(format: " (solve %.0f ms, %d parts)",
+                                                     Date().timeIntervalSince(started) * 1000, total))
                     self.evalJob = nil
                     let handle = vcad_eval_finish(job)
                     self.evaluating = nil
@@ -3683,6 +3746,58 @@ extension EditorModel {
     /// The agent can work here: an engine document, or a blank canvas that
     /// can be given one.
     var agentCanEdit: Bool { engine != nil || (source.isSandbox && documentJSON == nil) }
+
+    /// Turn the Untitled sandbox (a primitive + one modifier, not a document)
+    /// into a real engine document holding the same shape, so the modeling
+    /// tools work. Without this every Design tool sat disabled behind an
+    /// "Open a document" hover hint, and a fresh install could not model
+    /// anything. One undo step back to the sandbox. Returns whether the
+    /// window now has an editable document.
+    @discardableResult
+    func promoteSandboxToDocument() -> Bool {
+        if usesDocumentTree, engine != nil { return true }
+        guard source.isSandbox, engine == nil, documentJSON == nil else { return usesDocumentTree }
+        let applies = modifierApplies && modifierEffective
+        let (shape, mod, amount) = (baseShape, modifier, modifierValue)
+        guard let e = agentEnsureEngine() else { return false }
+        let before = e.save()
+        func call(_ tool: String, _ args: [String: Any]) throws -> DocumentEngine.Result {
+            let typed = try JSONDecoder().decode([String: EngineJSON].self,
+                                                 from: JSONSerialization.data(withJSONObject: args))
+            return try e.applyTool(ToolCall(tool: tool, args: typed))
+        }
+        do {
+            let primitive: [String: Any] = switch shape {
+            case .cube: ["type": "cube", "name": "Cube", "params": ["size": ["x": 30, "y": 30, "z": 30]]]
+            case .cylinder: ["type": "cylinder", "name": "Cylinder", "params": ["radius": 15, "height": 30]]
+            case .sphere: ["type": "sphere", "name": "Sphere", "params": ["radius": 15]]
+            }
+            var r = try call("create", primitive)
+            if applies, let base = r.createdFeatureId {
+                let primitiveOnly = e.save()
+                switch mod {
+                case .fillet: r = try call("create", ["type": "fillet", "name": "Fillet", "parent_part_id": base, "params": ["radius": amount]])
+                case .chamfer: r = try call("create", ["type": "chamfer", "name": "Chamfer", "parent_part_id": base, "params": ["distance": amount]])
+                case .none: break
+                }
+                // The kernel can refuse the demo's modifier (a fillet on a
+                // cylinder's circular edges diverges); keep the plain primitive
+                // rather than promote to a part that doesn't build and vanishes.
+                if let failed = (try? e.agentRead("evaluation_errors", [:]))?
+                    .trimmingCharacters(in: .whitespacesAndNewlines), !failed.isEmpty {
+                    r = try e.restore(primitiveOnly)
+                }
+            }
+            adopt(r, reeval: .rebuild)
+            pushUndo(.snapshot(before), name: "Start Document")
+            if let first = featureNodes.first { selectFeature(first.id) }
+            return usesDocumentTree
+        } catch {
+            _ = try? e.restore(before)
+            engineError = "Couldn't start a document from the sketch pad: \(error)"
+            return false
+        }
+    }
 
     /// The engine the agent edits. A blank canvas (Untitled, nothing in it)
     /// gets an empty engine document on first use; Save then goes to Save As

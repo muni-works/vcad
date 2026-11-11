@@ -50,9 +50,8 @@ struct ElectronicsToolSheet: View {
             case .enclosure: EnclosureFitPanel(model: model)
             }
             if let e = ec.tools.error { Text(e).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
-            HStack { Spacer(); Button("Done") { ec.tools.sheet = nil }.keyboardShortcut(.defaultAction) }
+            HStack { Spacer(); Button("Done") { GlassUI.shared.closePanel() }.keyboardShortcut(.defaultAction) }
         }
-        .padding(24).frame(width: 620)
     }
 }
 
@@ -69,7 +68,6 @@ struct DrcPanel: View {
     private var t: ElectronicsTools { model.electronics.tools }
     var body: some View {
         let r = t.drc ?? [:], clean = r["clean"] as? Bool ?? false
-        Text("Design Rule Check").font(.title2)
         Text("Route-attributable counts only what routing introduced, measured against the same board with every trace and via removed. Gerber export requires it to be zero.")
             .font(.callout).foregroundStyle(.secondary)
         HStack(spacing: 28) {
@@ -105,7 +103,6 @@ struct LengthTuningPanel: View {
     private var t: ElectronicsTools { model.electronics.tools }
     var body: some View {
         @Bindable var t = t
-        Text("Length Tuning").font(.title2)
         Text("Select nets to match; shorter nets get clearance-checked meanders up to the target (default: the longest selected).")
             .font(.callout).foregroundStyle(.secondary)
         List(t.lengths, id: \.0) { row in
@@ -144,7 +141,6 @@ struct LayerStackPanel: View {
     var body: some View {
         let layers = ecRows((ec.board(model)["stackup"] as? ECObject)?["layers"])
         let copper = layers.filter { ($0["layer"] as? String ?? "").hasSuffix("Cu") }
-        Text("Layer Stack").font(.title2)
         Text("\(copper.count) copper layers · board \(String(format: "%.2f", ecNumber((ec.board(model)["outline"] as? ECObject)?["thickness"], 1.6))) mm")
             .foregroundStyle(.secondary)
         Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
@@ -203,7 +199,6 @@ struct EnclosureFitPanel: View {
     var body: some View {
         @Bindable var t = t
         let parts = t.partNames(model)
-        Text("Board ↔ Enclosure").font(.title2)
         Text("Checks the board against the enclosure's cavity: wall clearance, lid clearance, mounting holes over standoffs, and connectors at wall openings.")
             .font(.callout).foregroundStyle(.secondary)
         HStack {
@@ -239,7 +234,6 @@ struct SimulationPanel: View {
     var body: some View {
         @Bindable var t = t
         let nets = ((model.electronics.schematic(model)["nets"] as? [String: Any]) ?? [:]).keys.sorted()
-        Text("Circuit Simulation").font(.title2)
         Text("DC operating point (and an optional transient) of the schematic. Parts map by reference: R, C, L, V (source, value in volts), I, D. Connectors and test points are left open.")
             .font(.callout).foregroundStyle(.secondary)
         HStack {

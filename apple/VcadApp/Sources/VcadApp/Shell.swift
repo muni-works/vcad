@@ -42,6 +42,7 @@ struct EditorView: View {
                     // Pick up documents other instances opened while this one
                     // was already running.
                     model.refreshRecents()
+                    LaunchPerf.once("shell appeared")
                     // The document this instance was launched for: the argument
                     // a spawning instance passed, the VCAD_OPEN dev hook, or a
                     // path on the command line.
@@ -161,6 +162,7 @@ struct DocumentCommands: Commands {
             Button("New Document") { AppInstance.open() }.keyboardShortcut("n")
             Divider()
             Button("Open…") { openPanel(model) }.keyboardShortcut("o")
+            Button("Open Sample…") { WelcomeWindowController.shared.show(model: model) }
             Menu("Open Recent") {
                 ForEach(model.recents, id: \.self) { url in
                     Button(url.deletingPathExtension().lastPathComponent) {
@@ -243,18 +245,20 @@ struct DocumentCommands: Commands {
             Button("Show All Parts") { model.showAllParts() }
                 .keyboardShortcut("h", modifiers: [.command, .shift, .option]).disabled(!model.hasHiddenParts)
             Divider()
-            Button("Describe a Part…") { intent.focusRequested = true }
-                .keyboardShortcut("k")
+            if IntentEngine.isAvailable {
+                Button("Describe a Part…") { intent.focusRequested = true }
+                    .keyboardShortcut("k")
+            }
             Button(AgentSession.shared.isOpen ? "Hide Agent" : "Show Agent") { AgentSession.shared.toggle() }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
         }
         CommandGroup(after: .sidebar) {
             Divider()
-            ForEach(Workspace.available.count > 1 ? Workspace.available : []) { ws in
-                Toggle(ws.label, isOn: Binding(
-                    get: { model.workspace == ws },
-                    set: { if $0 { model.workspace = ws } }))
-                    .keyboardShortcut(ws.keyEquivalent, modifiers: [.command, .control])
+            ForEach(DockSpace.allCases) { ds in
+                Toggle(ds.label, isOn: Binding(
+                    get: { GlassUI.shared.space == ds },
+                    set: { if $0 { GlassUI.shared.enter(ds, model: model) } }))
+                    .keyboardShortcut(ds.key, modifiers: [.command, .control])
             }
             Divider()
             Toggle("Model Navigator", isOn: $model.showsTree)
@@ -298,14 +302,19 @@ struct DocumentCommands: Commands {
                                                  set: { model.section = $0 ? SectionPlane() : nil }))
                 .keyboardShortcut("x", modifiers: [.command, .option])
             Divider()
-            Button("New Sketch") { model.enterSketch() }
+            Button("New Sketch") { if model.promoteSandboxToDocument() { model.enterSketch() } }
                 .keyboardShortcut("s", modifiers: [.control])
-                .disabled(!model.usesDocumentTree || model.sketching)
+                .disabled(!model.canModel || model.sketching)
             Menu("Feature") {
                 ForEach(FeatureOp.allCases) { op in
-                    Button(op.label + "…") { model.activeFeatureOp = op }
+                    Button(op.label + "…") { if model.promoteSandboxToDocument() { model.activeFeatureOp = op } }
                 }
-            }.disabled(!model.usesDocumentTree)
+            }.disabled(!model.canModel)
+            Menu("Combine") {
+                ForEach([BooleanOp.union, .difference, .intersection], id: \.self) { op in
+                    Button(op.label) { model.beginCombine(op) }
+                }
+            }.disabled(!model.usesDocumentTree || model.selectedPartIndex == nil)
         }
         CommandMenu("Select") {
             ForEach(PickFilter.allCases) { f in
@@ -329,11 +338,13 @@ struct DocumentCommands: Commands {
                 .keyboardShortcut("0", modifiers: [.command, .option]).disabled(!model.hasSelection)
         }
         CommandGroup(replacing: .help) {
+            Button("Keyboard Shortcuts") { GlassUI.shared.shortcutsShown.toggle() }
+                .keyboardShortcut("/", modifiers: .command)
+            Divider()
             Button("Welcome to vcad") { WelcomeWindowController.shared.show(model: model) }
             Button("Connect Claude…") { ConnectClaude.run() }
             Divider()
             Button("vcad Help") { NSWorkspace.shared.open(URL(string: "https://vcad.io/docs")!) }
-            Button("Keyboard Shortcuts") { NSWorkspace.shared.open(URL(string: "https://vcad.io/docs/native/shortcuts")!) }
             Divider()
             Button("Report an Issue…") { NSWorkspace.shared.open(URL(string: "https://github.com/ecto/vcad/issues/new")!) }
         }
@@ -783,13 +794,35 @@ struct ScrubField: View {
     @FocusState private var focused: Bool
 
     var body: some View {
-        HStack(spacing: Theme.Space.s) {
+        // Inspector-standard: label, text field, unit, stepper. The label is
+        // still a scrub handle (drag it), the way Xcode's and Keynote's are.
+        HStack(spacing: 4) {
             if !label.isEmpty {
-                Text(label).font(.callout).foregroundStyle(.secondary)
-                Spacer(minLength: Theme.Space.s)
+                Text(label).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+                    .contentShape(Rectangle())
+                    .onHover { ($0 ? NSCursor.resizeLeftRight : NSCursor.arrow).set() }
+                    .gesture(scrub)
+                    .help("Drag to scrub (⌥ fine · ⇧ coarse)")
+                Spacer(minLength: 2)
             }
-            if typing != nil { editor } else { pill }
+            TextField(label.isEmpty ? "Value" : label,
+                      text: Binding(get: { typing ?? Self.plain(value) }, set: { typing = $0 }))
+                .textFieldStyle(.roundedBorder)
+                .font(.callout.monospacedDigit())
+                .multilineTextAlignment(.trailing)
+                .frame(width: 52)
+                .focused($focused)
+                .onSubmit { commit() }
+                .onEscape { typing = nil; focused = false }
+                .onChange(of: focused) { _, now in if !now { commit() } }
+            if !unit.isEmpty {
+                Text(unit).font(.callout).foregroundStyle(.secondary).lineLimit(1).fixedSize().frame(minWidth: 14, alignment: .leading)
+            }
+            Stepper(label, value: Binding(get: { value }, set: { onChange(max(minValue, $0), true) }),
+                    step: sensitivity * 10)
+                .labelsHidden()
         }
+        .controlSize(.small)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(label.isEmpty ? "Value" : label)
         .accessibilityValue(formatted)
@@ -799,29 +832,25 @@ struct ScrubField: View {
         }
     }
 
-    private var pill: some View {
-        Text(formatted).font(.callout.monospacedDigit())
-            .padding(.horizontal, Theme.Space.s).padding(.vertical, 3)
-            .frame(minWidth: 70, alignment: .trailing)
-            .controlWell(active: base != nil)
-            .contentShape(Rectangle())
-            .onHover { hovering in
-                #if os(macOS)
-                (hovering ? NSCursor.resizeLeftRight : NSCursor.arrow).set()
-                #endif
+    private var scrub: some Gesture {
+        DragGesture(minimumDistance: 2)
+            .onChanged { v in
+                let first = base == nil
+                let b = base ?? value
+                if base == nil { base = b }
+                // Snap to the stepper's step (1 mm by default; ⌥ 0.1, ⇧ 10) so a
+                // mouse-only edit lands on round numbers (it gave 44.70).
+                let scale = Self.modifierScale
+                let step = sensitivity * 10 * scale
+                let raw = b + Double(v.translation.width) * sensitivity * scale
+                let snapped = step > 0 ? (raw / step).rounded() * step : raw
+                onChange(max(minValue, snapped), first)
             }
-            .help("Drag to scrub (⌥ fine · ⇧ coarse) · double-click to type")
-            .onTapGesture(count: 2) { typing = String(format: "%g", value) }
-            .gesture(
-                DragGesture(minimumDistance: 2)
-                    .onChanged { v in
-                        let first = base == nil
-                        let b = base ?? value
-                        if base == nil { base = b }
-                        onChange(max(minValue, b + Double(v.translation.width) * sensitivity * Self.modifierScale), first)
-                    }
-                    .onEnded { _ in base = nil }
-            )
+            .onEnded { _ in base = nil }
+    }
+
+    static func plain(_ v: Double) -> String {
+        abs(v - v.rounded()) < 0.001 ? String(Int(v.rounded())) : String(format: "%.2f", v)
     }
 
     /// ⌥ scrubs at a tenth of the rate, ⇧ at ten times — the Xcode/Motion idiom.
@@ -832,21 +861,6 @@ struct ScrubField: View {
         if flags.contains(.shift) { return 10 }
         #endif
         return 1
-    }
-
-    private var editor: some View {
-        TextField("", text: Binding(get: { typing ?? "" }, set: { typing = $0 }))
-            .textFieldStyle(.plain)
-            .font(.callout.monospacedDigit())
-            .multilineTextAlignment(.trailing)
-            .frame(width: 70)
-            .focused($focused)
-            .onAppear { focused = true }
-            .onSubmit { commit() }
-            .onEscape { typing = nil }
-            .onChange(of: focused) { _, now in if !now { commit() } }
-            .padding(.horizontal, Theme.Space.s).padding(.vertical, 3)
-            .controlWell(active: true)
     }
 
     private func commit() {
