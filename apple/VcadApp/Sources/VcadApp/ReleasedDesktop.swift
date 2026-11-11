@@ -323,15 +323,21 @@ final class ReleaseWindowController {
     /// Projected by hand rather than through `ARView.project`, which answers nil
     /// for a scene camera that isn't the AR session's.
     func viewPoint(forPart i: Int, from camera: SIMD3<Float>, lookAt: SIMD3<Float>) -> CGPoint? {
-        guard let ar = arView, let centering = centeringEntity,
+        guard let centering = centeringEntity,
               let e = centering.findEntity(named: "part\(i)") else { return nil }
+        return viewPoint(forWorld: e.visualBounds(relativeTo: nil).center, from: camera, lookAt: lookAt)
+    }
+
+    /// Any world-space point, projected the same way (the agent cursor).
+    func viewPoint(forWorld w: SIMD3<Float>, from camera: SIMD3<Float>, lookAt: SIMD3<Float>) -> CGPoint? {
+        guard let ar = arView else { return nil }
         let size = ar.bounds.size
         guard size.width > 0, size.height > 0 else { return nil }
 
         let fwd = normalize(lookAt - camera)
         let right = normalize(cross(fwd, SIMD3<Float>(0, 1, 0)))
         let up = cross(right, fwd)
-        let v = e.visualBounds(relativeTo: nil).center - camera
+        let v = w - camera
         let z = dot(v, fwd)
         guard z > 0.0001 else { return nil }                 // behind the camera
         let tanHalf = tan(Float(60) / 2 * .pi / 180)         // PerspectiveCamera default FOV
@@ -1125,6 +1131,10 @@ struct ReleasedOverlayView: View {
         .overlay {
             // Labels an agent pinned over the MCP bridge (AgentBridge.swift).
             AgentAnnotationOverlay(model: model)
+        }
+        .overlay {
+            // The agent's labeled cursor (AgentCursor.swift).
+            AgentCursorOverlay(model: model)
         }
         .overlay { if !studio { EditBarOverlay(model: model) } }
         .overlay(alignment: .topLeading) {
