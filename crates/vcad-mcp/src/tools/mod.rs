@@ -5,7 +5,7 @@
 //! (both from `vcad-tool-derive`), so `inputSchema` and `outputSchema` come
 //! from Rust types rather than hand-written JSON.
 
-// (core tools land next)
+pub mod core;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
