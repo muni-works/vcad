@@ -87,7 +87,7 @@ pub fn carry_electronics(session: &Value, doc: &mut Value) -> Result<Option<Stri
         .as_object()
         .cloned()
         .unwrap_or_default();
-    let mut keep_material = |key: Option<&str>, materials: &mut Map<String, Value>| {
+    let keep_material = |key: Option<&str>, materials: &mut Map<String, Value>| {
         if let Some(k) = key {
             if !materials.contains_key(k) {
                 if let Some(m) = session_materials.get(k) {

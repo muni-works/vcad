@@ -23,6 +23,9 @@ use crate::tools::{ElicitFn, ProgressFn, ToolCtx, ToolDef, ToolError, LONG_RUNNI
 /// Outbound message sink (notifications, server→client requests).
 pub type Sink = Arc<dyn Fn(Value) + Send + Sync>;
 
+/// Rewrites one `tools/list` entry in place.
+pub type ListingHook = Arc<dyn Fn(&mut Value) + Send + Sync>;
+
 /// Server configuration.
 #[derive(Clone)]
 pub struct ServerConfig {
@@ -39,7 +42,7 @@ pub struct ServerConfig {
     pub instance_meta: Option<Arc<dyn Fn() -> Value + Send + Sync>>,
     /// Rewrites each `tools/list` entry (vcad.app adds the live viewer's
     /// `_meta.ui` to tools that change the document).
-    pub listing_hook: Option<Arc<dyn Fn(&mut Value) + Send + Sync>>,
+    pub listing_hook: Option<ListingHook>,
 }
 
 impl Default for ServerConfig {
