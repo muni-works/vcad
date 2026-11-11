@@ -105,7 +105,7 @@ final class KeyableWindow: NSWindow, NSWindowDelegate {
 @MainActor
 final class ReleaseWindowController {
     static let shared = ReleaseWindowController()
-    private var window: NSWindow?
+    private(set) var window: NSWindow?
     private var mainWindow: NSWindow?
     private var savedWindowFrame: NSRect?
     private var mouseMonitors: [Any] = []
