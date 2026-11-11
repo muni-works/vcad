@@ -54,7 +54,11 @@ fn report_output(doc: &vcad_ir::Document, prefix: Option<String>) -> Result<Tool
     let mut out = ToolOutput::structured(v);
     if let Some(p) = prefix {
         if let Some(Value::Object(t)) = out.content.first_mut() {
-            let body = t.get("text").and_then(Value::as_str).unwrap_or("").to_string();
+            let body = t
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             t.insert("text".into(), json!(format!("{p}\n{body}")));
         }
     }
@@ -78,7 +82,11 @@ fn def(
 }
 
 fn strings(v: &Value) -> Option<Vec<String>> {
-    let a: Vec<String> = v.as_array()?.iter().filter_map(|x| x.as_str().map(str::to_string)).collect();
+    let a: Vec<String> = v
+        .as_array()?
+        .iter()
+        .filter_map(|x| x.as_str().map(str::to_string))
+        .collect();
     (!a.is_empty()).then_some(a)
 }
 

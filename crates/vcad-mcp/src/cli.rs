@@ -106,9 +106,7 @@ pub fn run(opts: McpOptions) -> std::io::Result<()> {
                     format!("vcad.app at {} is not answering", sel.url),
                 ))
             }
-            Err(e) if explicit => {
-                return Err(std::io::Error::new(std::io::ErrorKind::NotFound, e))
-            }
+            Err(e) if explicit => return Err(std::io::Error::new(std::io::ErrorKind::NotFound, e)),
             _ => {}
         }
     }

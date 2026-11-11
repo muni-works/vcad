@@ -157,10 +157,11 @@ pub fn select(
         return Err("no running vcad.app found (~/.vcad/instances is empty)".into());
     };
     if let Some(wanted) = env("VCAD_APP_DOCUMENT").filter(|d| !d.is_empty()) {
-        if let Some(r) = instances
-            .iter()
-            .find(|r| r.document_path.as_deref().is_some_and(|p| same_path(p, &wanted)))
-        {
+        if let Some(r) = instances.iter().find(|r| {
+            r.document_path
+                .as_deref()
+                .is_some_and(|p| same_path(p, &wanted))
+        }) {
             return Ok(Selection {
                 url: r.url(),
                 instance: Some(r.clone()),
@@ -318,9 +319,15 @@ mod tests {
         assert!(select(&all, |k| (k == "VCAD_APP_PID").then(|| "9".into()))
             .unwrap_err()
             .contains("no running vcad.app with that pid"));
-        let s = select(&all, |k| (k == "VCAD_APP_DOCUMENT").then(|| "/tmp/b.vcad".into())).unwrap();
+        let s = select(&all, |k| {
+            (k == "VCAD_APP_DOCUMENT").then(|| "/tmp/b.vcad".into())
+        })
+        .unwrap();
         assert_eq!(s.instance, Some(b));
-        let s = select(&all, |k| (k == "VCAD_APP_URL").then(|| "http://127.0.0.1:1/mcp".into())).unwrap();
+        let s = select(&all, |k| {
+            (k == "VCAD_APP_URL").then(|| "http://127.0.0.1:1/mcp".into())
+        })
+        .unwrap();
         assert_eq!(s.url, "http://127.0.0.1:1/mcp");
         assert!(select(&[], none).is_err());
         assert!(select(&[a], none).unwrap().warning.is_none());
@@ -330,10 +337,20 @@ mod tests {
     fn lists_only_live_newest_first() {
         let dir = tempfile::tempdir().unwrap();
         let me = std::process::id() as i64;
-        let w = |name: &str, v: Value| std::fs::write(dir.path().join(name), v.to_string()).unwrap();
-        w("a.json", serde_json::json!({"pid": me, "port": 1, "started": "2026-01-01"}));
-        w("b.json", serde_json::json!({"pid": me, "port": 2, "started": "2026-02-01"}));
-        w("dead.json", serde_json::json!({"pid": 999_999_999, "port": 3, "started": "2027-01-01"}));
+        let w =
+            |name: &str, v: Value| std::fs::write(dir.path().join(name), v.to_string()).unwrap();
+        w(
+            "a.json",
+            serde_json::json!({"pid": me, "port": 1, "started": "2026-01-01"}),
+        );
+        w(
+            "b.json",
+            serde_json::json!({"pid": me, "port": 2, "started": "2026-02-01"}),
+        );
+        w(
+            "dead.json",
+            serde_json::json!({"pid": 999_999_999, "port": 3, "started": "2027-01-01"}),
+        );
         let l = list_instances(dir.path());
         assert_eq!(l.iter().map(|r| r.port).collect::<Vec<_>>(), vec![2, 1]);
     }

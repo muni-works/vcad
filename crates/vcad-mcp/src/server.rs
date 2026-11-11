@@ -355,7 +355,10 @@ impl Server {
         let Some(obj) = out.as_object_mut() else {
             return;
         };
-        let line = match (meta.get("pid"), meta.get("document").and_then(Value::as_str)) {
+        let line = match (
+            meta.get("pid"),
+            meta.get("document").and_then(Value::as_str),
+        ) {
             (Some(pid), doc) => Some(format!(
                 "[vcad.app pid {pid} · {}]",
                 doc.unwrap_or("no document")
@@ -369,7 +372,8 @@ impl Server {
         {
             m.insert("io.vcad/instance".into(), meta);
         }
-        if let (Some(line), Some(c)) = (line, obj.get_mut("content").and_then(Value::as_array_mut)) {
+        if let (Some(line), Some(c)) = (line, obj.get_mut("content").and_then(Value::as_array_mut))
+        {
             c.push(json!({"type": "text", "text": line}));
         }
     }
@@ -432,12 +436,11 @@ impl Server {
                 }
             }
         }
-        let mut v = result
-            .map_err(|e| RpcErr {
-                code: e.code,
-                message: e.message,
-                data: e.data,
-            })?;
+        let mut v = result.map_err(|e| RpcErr {
+            code: e.code,
+            message: e.message,
+            data: e.data,
+        })?;
         if let Some(obj) = v.as_object_mut() {
             let meta = obj.entry("_meta").or_insert_with(|| json!({}));
             if let Some(m) = meta.as_object_mut() {

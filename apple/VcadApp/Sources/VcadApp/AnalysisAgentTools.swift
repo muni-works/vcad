@@ -10,14 +10,6 @@ import CVcadFFI
 enum AnalysisAgentTools {
     typealias Failure = AgentTools.Failure
 
-        "type": "object",
-        "properties": [
-            "faces": ["type": "array", "items": ["type": "integer"],
-                      "description": "Face ids on the part (from inspect_faces)."],
-            "region": ["type": "object", "description": "Axis-aligned box {min:[x,y,z], max:[x,y,z]} in mm; nodes inside are selected."],
-        ],
-    ]
-
     /// Listed by the MCP core (host_tools.json); executed here because they
     /// drive the Analysis panel and the viewport overlays.
     static let toolNames: Set<String> = ["dfm_check", "dfm_apply_fix", "inspect_faces", "analyze_structure", "check_interference"]

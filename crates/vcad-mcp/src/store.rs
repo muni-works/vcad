@@ -168,7 +168,9 @@ pub trait DocumentStore: Send + Sync {
     /// Undo the last commit to `id`; returns the undone step's label.
     /// App: exactly ⌘Z. Headless: the native commit history of this process.
     fn undo(&self, _id: &DocumentId) -> Result<String, StoreError> {
-        Err(StoreError::Unavailable("this store keeps no undo history".into()))
+        Err(StoreError::Unavailable(
+            "this store keeps no undo history".into(),
+        ))
     }
     /// Open a file (`.vcad` / `.loon`) the store's own way. `Ok(None)` means
     /// "not handled here": the caller loads the file and calls [`Self::create`].
@@ -629,7 +631,9 @@ pub trait AppBridge: Send + Sync {
     fn watch(&self, listener: StoreListener);
     /// ⌘Z on a window; returns the undone step's label.
     fn undo(&self, _id: &DocumentId) -> Result<String, StoreError> {
-        Err(StoreError::Unavailable("undo not supported by this app".into()))
+        Err(StoreError::Unavailable(
+            "undo not supported by this app".into(),
+        ))
     }
     /// Open a file in a window (see [`DocumentStore::open_path`]).
     fn open_path(&self, _path: &std::path::Path) -> Result<Option<DocumentId>, StoreError> {

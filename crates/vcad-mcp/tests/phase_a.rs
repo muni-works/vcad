@@ -60,7 +60,9 @@ impl AppBridge for FakeApp {
     fn apply(&self, id: &DocumentId, doc: Document, meta: &CommitMeta) -> Result<(), StoreError> {
         {
             let mut docs = self.docs.lock().unwrap();
-            let e = docs.get_mut(id).ok_or_else(|| StoreError::NotFound(id.clone()))?;
+            let e = docs
+                .get_mut(id)
+                .ok_or_else(|| StoreError::NotFound(id.clone()))?;
             let prev = std::mem::replace(&mut e.0, doc);
             e.1.push((prev, meta.label.clone()));
         }
@@ -77,7 +79,10 @@ impl AppBridge for FakeApp {
             .lock()
             .unwrap()
             .keys()
-            .map(|id| DocumentSummary { id: id.clone(), name: None })
+            .map(|id| DocumentSummary {
+                id: id.clone(),
+                name: None,
+            })
             .collect()
     }
     fn watch(&self, listener: StoreListener) {
@@ -85,20 +90,31 @@ impl AppBridge for FakeApp {
     }
     fn undo(&self, id: &DocumentId) -> Result<String, StoreError> {
         let mut docs = self.docs.lock().unwrap();
-        let e = docs.get_mut(id).ok_or_else(|| StoreError::NotFound(id.clone()))?;
-        let (prev, label) = e.1.pop().ok_or_else(|| StoreError::Unavailable("Nothing to undo".into()))?;
+        let e = docs
+            .get_mut(id)
+            .ok_or_else(|| StoreError::NotFound(id.clone()))?;
+        let (prev, label) =
+            e.1.pop()
+                .ok_or_else(|| StoreError::Unavailable("Nothing to undo".into()))?;
         e.0 = prev;
         Ok(label)
     }
     fn live_resources(&self) -> Vec<Value> {
-        vec![json!({"uri": "vcad://doc/selection", "name": "Selection", "mimeType": "application/json"})]
+        vec![
+            json!({"uri": "vcad://doc/selection", "name": "Selection", "mimeType": "application/json"}),
+        ]
     }
     fn read_live_resource(&self, uri: &str) -> Option<Result<Value, StoreError>> {
         (uri == "vcad://doc/selection").then(|| {
             Ok(json!({"contents": [{"uri": uri, "mimeType": "application/json", "text": "{\"edges\":[]}"}]}))
         })
     }
-    fn host_call(&self, name: &str, args: &Value, input_responses: &Value) -> Option<Result<Value, StoreError>> {
+    fn host_call(
+        &self,
+        name: &str,
+        args: &Value,
+        input_responses: &Value,
+    ) -> Option<Result<Value, StoreError>> {
         self.host_calls
             .lock()
             .unwrap()
@@ -106,7 +122,9 @@ impl AppBridge for FakeApp {
         if name == vcad_mcp::tools::host::CONFIRM_DESTRUCTIVE {
             return Some(Ok(json!({"action": self.confirm.lock().unwrap().clone()})));
         }
-        Some(Ok(json!({"content": [{"type": "text", "text": format!("host:{name}")}]})))
+        Some(Ok(
+            json!({"content": [{"type": "text", "text": format!("host:{name}")}]}),
+        ))
     }
 }
 
@@ -120,9 +138,15 @@ struct H {
 impl H {
     fn new(server: Server) -> Self {
         let conn = Connection::new(server, Arc::new(|_| {}));
-        let h = H { conn, next: Mutex::new(1) };
+        let h = H {
+            conn,
+            next: Mutex::new(1),
+        };
         h.send("initialize", json!({"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "t", "version": "1"}}));
-        h.conn.handle(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}), None);
+        h.conn.handle(
+            json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            None,
+        );
         h
     }
     fn send(&self, method: &str, params: Value) -> Value {
@@ -132,7 +156,10 @@ impl H {
             *n
         };
         self.conn
-            .handle(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}), None)
+            .handle(
+                json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}),
+                None,
+            )
             .body
             .expect("body")
     }
@@ -156,12 +183,21 @@ impl H {
 }
 
 fn no_proxy() -> ServerConfig {
-    ServerConfig { proxy: None, ..ServerConfig::default() }
+    ServerConfig {
+        proxy: None,
+        ..ServerConfig::default()
+    }
 }
 
 fn headless() -> (H, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
-    (H::new(Server::new(Arc::new(HeadlessStore::new(dir.path())), no_proxy())), dir)
+    (
+        H::new(Server::new(
+            Arc::new(HeadlessStore::new(dir.path())),
+            no_proxy(),
+        )),
+        dir,
+    )
 }
 
 fn app() -> (H, Arc<FakeApp>) {
@@ -187,7 +223,9 @@ fn inventory() -> Vec<(String, String)> {
 fn node_fixture() -> BTreeSet<String> {
     let raw = include_str!("../../../packages/mcp/src/__tests__/tool-surface.fixture.json");
     let v: Vec<Value> = serde_json::from_str(raw).unwrap();
-    v.iter().map(|t| t["name"].as_str().unwrap().to_string()).collect()
+    v.iter()
+        .map(|t| t["name"].as_str().unwrap().to_string())
+        .collect()
 }
 
 // ── Parity ───────────────────────────────────────────────────────────
@@ -215,11 +253,20 @@ fn tool_parity_app_and_headless() {
     let (ap, _fake) = app();
     let hl_tools = hl.tool_names();
     let ap_tools = ap.tool_names();
-    assert_eq!(hl_tools, ap_tools, "app and headless must list the same native tools");
+    assert_eq!(
+        hl_tools, ap_tools,
+        "app and headless must list the same native tools"
+    );
     let unlisted: Vec<_> = native.difference(&hl_tools).collect();
-    assert!(unlisted.is_empty(), "inventory says native/host but not listed: {unlisted:?}");
+    assert!(
+        unlisted.is_empty(),
+        "inventory says native/host but not listed: {unlisted:?}"
+    );
     let undocumented: Vec<_> = hl_tools.difference(&native).collect();
-    assert!(undocumented.is_empty(), "listed but missing from the inventory: {undocumented:?}");
+    assert!(
+        undocumented.is_empty(),
+        "listed but missing from the inventory: {undocumented:?}"
+    );
 
     // Callable: every tool answers through both stores — a result (possibly a
     // tool-level isError for missing args) or, headless with no node, a clear
@@ -250,7 +297,10 @@ fn host_tools_dispatch_to_the_app_and_explain_headless() {
     );
     assert!(r.get("result").is_some(), "{r}");
     let calls = fake.host_calls.lock().unwrap();
-    let (_, args, inputs) = calls.iter().find(|(n, _, _)| n == "pick_in_viewport").unwrap();
+    let (_, args, inputs) = calls
+        .iter()
+        .find(|(n, _, _)| n == "pick_in_viewport")
+        .unwrap();
     assert_eq!(args["kind"], "edge");
     assert_eq!(inputs["input_1"]["action"], "accept");
     drop(calls);
@@ -258,7 +308,10 @@ fn host_tools_dispatch_to_the_app_and_explain_headless() {
     let (hl, _d) = headless();
     let r = hl.call("set_camera", json!({}));
     assert_eq!(r["result"]["isError"], json!(true));
-    assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("vcad.app"));
+    assert!(r["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("vcad.app"));
 }
 
 // ── AppStore round trip ──────────────────────────────────────────────
@@ -269,12 +322,27 @@ fn app_store_edit_round_trip() {
     let front = fake.front.lock().unwrap().clone().unwrap();
 
     // Engine edits land in the open window, one named step each.
-    let r = ap.ok("create", json!({"type": "cube", "name": "Block", "params": {"size": {"x": 20, "y": 10, "z": 4}}}));
+    let r = ap.ok(
+        "create",
+        json!({"type": "cube", "name": "Block", "params": {"size": {"x": 20, "y": 10, "z": 4}}}),
+    );
     assert_eq!(r["structuredContent"]["document_id"], front.0);
-    let block = r["structuredContent"]["created_part_id"].as_str().unwrap().to_string();
-    let r = ap.ok("create", json!({"type": "cylinder", "params": {"radius": 2, "height": 20}}));
-    let pin = r["structuredContent"]["created_part_id"].as_str().unwrap().to_string();
-    ap.ok("difference", json!({"left": block, "right": pin, "name": "Hole"}));
+    let block = r["structuredContent"]["created_part_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let r = ap.ok(
+        "create",
+        json!({"type": "cylinder", "params": {"radius": 2, "height": 20}}),
+    );
+    let pin = r["structuredContent"]["created_part_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ap.ok(
+        "difference",
+        json!({"left": block, "right": pin, "name": "Hole"}),
+    );
     assert_eq!(
         *fake.applied.lock().unwrap(),
         vec!["Create Block", "Create Cylinder", "Difference Hole"]
@@ -283,13 +351,19 @@ fn app_store_edit_round_trip() {
     assert!(!doc.roots.is_empty());
 
     // Reads see the live document (no document_id = the front window).
-    let text = ap.ok("describe_scene", json!({}))["content"][0]["text"].as_str().unwrap().to_string();
+    let text = ap.ok("describe_scene", json!({}))["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
     assert!(!text.is_empty());
     let got = ap.ok("get_document", json!({}));
     let got: Value = serde_json::from_str(got["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(got["roots"], serde_json::to_value(&doc).unwrap()["roots"]);
     let r = ap.send("resources/read", json!({"uri": "vcad://doc/current"}));
-    assert!(r["result"]["contents"][0]["text"].as_str().unwrap().contains("nodes"));
+    assert!(r["result"]["contents"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("nodes"));
     let r = ap.send("resources/read", json!({"uri": "vcad://doc/selection"}));
     assert_eq!(r["result"]["contents"][0]["text"], "{\"edges\":[]}");
 
@@ -301,7 +375,10 @@ fn app_store_edit_round_trip() {
     let params = ap.ok("list_parameters", json!({}));
     assert_eq!(params["structuredContent"]["parameters"][0]["name"], "t");
     let r = ap.ok("set_parameters", json!({"values": {"t": 99}}));
-    assert_eq!(r["structuredContent"]["applied"]["t"], 12.0, "clamped to :max");
+    assert_eq!(
+        r["structuredContent"]["applied"]["t"], 12.0,
+        "clamped to :max"
+    );
     assert_eq!(fake.applied.lock().unwrap().last().unwrap(), "Set t");
 
     // Receipts persist on the live document.
@@ -319,15 +396,28 @@ fn app_store_edit_round_trip() {
 fn delete_on_a_receipted_document_asks_the_user() {
     let (ap, fake) = app();
     ap.ok("create_cad_loon", json!({"source": "[pub let a [cube 10.0 10.0 10.0]] [pub let b [translate 30.0 0.0 0.0 [cube 10.0 10.0 10.0]]]"}));
-    ap.ok("assert_clearance", json!({"label": "gap", "group_a": ["a"], "group_b": ["b"], "min_mm": 5}));
-    let before = fake.read(&fake.front.lock().unwrap().clone().unwrap()).unwrap();
+    ap.ok(
+        "assert_clearance",
+        json!({"label": "gap", "group_a": ["a"], "group_b": ["b"], "min_mm": 5}),
+    );
+    let before = fake
+        .read(&fake.front.lock().unwrap().clone().unwrap())
+        .unwrap();
     assert_eq!(before.clearance_specs.len(), 1);
     *fake.confirm.lock().unwrap() = "decline".into();
     let r = ap.call("delete", json!({"part_id": "a"}));
     assert_eq!(r["result"]["isError"], json!(true), "{r}");
-    assert!(r["result"]["content"][0]["text"].as_str().unwrap().contains("declined"));
-    let after = fake.read(&fake.front.lock().unwrap().clone().unwrap()).unwrap();
-    assert_eq!(serde_json::to_value(&before).unwrap(), serde_json::to_value(&after).unwrap());
+    assert!(r["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("declined"));
+    let after = fake
+        .read(&fake.front.lock().unwrap().clone().unwrap())
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(&before).unwrap(),
+        serde_json::to_value(&after).unwrap()
+    );
 }
 
 #[test]
@@ -339,7 +429,10 @@ fn instance_meta_stamps_every_result() {
     let h = H::new(Server::new(Arc::new(AppStore::with_bridge(fake)), cfg));
     let r = h.ok("server_info", json!({}));
     assert_eq!(r["_meta"]["io.vcad/instance"]["pid"], 42);
-    let last = r["content"].as_array().unwrap().last().unwrap()["text"].as_str().unwrap().to_string();
+    let last = r["content"].as_array().unwrap().last().unwrap()["text"]
+        .as_str()
+        .unwrap()
+        .to_string();
     assert_eq!(last, "[vcad.app pid 42 · bracket.vcad]");
 }
 
@@ -347,11 +440,20 @@ fn instance_meta_stamps_every_result() {
 fn headless_engine_edits_and_undo() {
     let (hl, _d) = headless();
     let r = hl.ok("create", json!({"type": "sphere", "params": {"radius": 3}}));
-    let id = r["structuredContent"]["document_id"].as_str().unwrap().to_string();
+    let id = r["structuredContent"]["document_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let r = hl.ok("inspect_cad", json!({"document_id": id}));
     assert!(r["structuredContent"]["volume"].as_f64().unwrap() > 100.0);
-    hl.ok("create", json!({"document_id": id, "type": "cube", "params": {"size": {"x": 1, "y": 1, "z": 1}}}));
-    assert_eq!(hl.ok("undo", json!({"document_id": id}))["structuredContent"]["undone"], "Create Cube");
+    hl.ok(
+        "create",
+        json!({"document_id": id, "type": "cube", "params": {"size": {"x": 1, "y": 1, "z": 1}}}),
+    );
+    assert_eq!(
+        hl.ok("undo", json!({"document_id": id}))["structuredContent"]["undone"],
+        "Create Cube"
+    );
 }
 
 #[test]
@@ -370,13 +472,23 @@ fn proxied_tools_edit_the_live_app_document() {
         }),
         ..ServerConfig::default()
     };
-    let h = H::new(Server::new(Arc::new(AppStore::with_bridge(fake.clone())), cfg));
+    let h = H::new(Server::new(
+        Arc::new(AppStore::with_bridge(fake.clone())),
+        cfg,
+    ));
     assert!(h.tool_names().contains("upstream_touch"));
     // No document_id: the core names the front window and mirrors it to node.
     let r = h.ok("upstream_touch", json!({}));
     assert_eq!(r["_meta"]["io.vcad/servedBy"], "node-proxy");
-    assert_eq!(fake.applied.lock().unwrap().last().unwrap(), "upstream_touch");
-    assert!(fake.read(&front).unwrap().parameters.contains_key("touched"));
+    assert_eq!(
+        fake.applied.lock().unwrap().last().unwrap(),
+        "upstream_touch"
+    );
+    assert!(fake
+        .read(&front)
+        .unwrap()
+        .parameters
+        .contains_key("touched"));
     // Tools that take no document are forwarded untouched.
     let r = h.ok("upstream_echo", json!({"x": 1}));
     assert!(r["structuredContent"]["echo"].get("document_id").is_none());

@@ -35,8 +35,8 @@ use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 use vcad_ir::Document;
 use vcad_mcp::{
-    AppBridge, AppStore, CommitMeta, Connection, DocumentId, DocumentSummary, Server,
-    ServerConfig, StoreError, StoreEvent, StoreListener,
+    AppBridge, AppStore, CommitMeta, Connection, DocumentId, DocumentSummary, Server, ServerConfig,
+    StoreError, StoreEvent, StoreListener,
 };
 
 /// The app's callback: `request` JSON in, `malloc`ed reply JSON out.
@@ -62,7 +62,9 @@ impl FfiBridge {
             return json!({"error": "vcad.app returned nothing", "kind": "unavailable"});
         }
         // SAFETY: the host returns a NUL-terminated malloc'ed string.
-        let text = unsafe { CStr::from_ptr(raw) }.to_string_lossy().into_owned();
+        let text = unsafe { CStr::from_ptr(raw) }
+            .to_string_lossy()
+            .into_owned();
         unsafe { free(raw as *mut c_void) };
         serde_json::from_str(&text).unwrap_or_else(|e| json!({"error": format!("bad reply: {e}")}))
     }
@@ -80,7 +82,11 @@ impl FfiBridge {
     }
 
     fn emit(&self, e: StoreEvent) {
-        let ls: Vec<StoreListener> = self.listeners.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let ls: Vec<StoreListener> = self
+            .listeners
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         for l in ls {
             l(&e);
         }
@@ -88,6 +94,17 @@ impl FfiBridge {
 }
 
 fn doc_of(v: &Value) -> Result<Document, StoreError> {
+    // An empty window (no document yet, or a bare `{nodes:{}, roots:[]}`) is
+    // the empty document — never "no window".
+    let empty = |k: &str| {
+        v.get(k).map_or(true, |x| {
+            x.as_object().map_or(false, |o| o.is_empty())
+                || x.as_array().map_or(false, |a| a.is_empty())
+        })
+    };
+    if v.is_null() || (empty("nodes") && empty("roots")) {
+        return Ok(Document::default());
+    }
     vcad_mcp::store::unwrap_document(v.clone())
         .ok_or_else(|| StoreError::Io("vcad.app returned a non-document".into()))
 }
@@ -98,7 +115,10 @@ fn opt(v: &Value) -> Option<Result<Value, StoreError>> {
             v["error"].as_str().unwrap_or("error").to_string(),
         )));
     }
-    v.get("result").or_else(|| v.get("envelope")).cloned().map(Ok)
+    v.get("result")
+        .or_else(|| v.get("envelope"))
+        .cloned()
+        .map(Ok)
 }
 
 impl AppBridge for FfiBridge {
@@ -127,7 +147,8 @@ impl AppBridge for FfiBridge {
         Ok(())
     }
     fn release(&self, id: &DocumentId) -> Result<(), StoreError> {
-        self.checked(json!({"op": "release", "id": id.0}), Some(id)).map(|_| ())
+        self.checked(json!({"op": "release", "id": id.0}), Some(id))
+            .map(|_| ())
     }
     fn documents(&self) -> Vec<DocumentSummary> {
         self.ask(json!({"op": "documents"}))["documents"]
@@ -145,7 +166,10 @@ impl AppBridge for FfiBridge {
             .unwrap_or_default()
     }
     fn watch(&self, listener: StoreListener) {
-        self.listeners.lock().unwrap_or_else(|e| e.into_inner()).push(listener);
+        self.listeners
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(listener);
     }
     fn undo(&self, id: &DocumentId) -> Result<String, StoreError> {
         let r = self.ask(json!({"op": "undo", "id": id.0}));
@@ -156,7 +180,10 @@ impl AppBridge for FfiBridge {
         Ok(r["label"].as_str().unwrap_or("").to_string())
     }
     fn open_path(&self, path: &std::path::Path) -> Result<Option<DocumentId>, StoreError> {
-        let r = self.checked(json!({"op": "open_path", "path": path.display().to_string()}), None)?;
+        let r = self.checked(
+            json!({"op": "open_path", "path": path.display().to_string()}),
+            None,
+        )?;
         Ok(r["id"].as_str().map(DocumentId::from))
     }
     fn live_resources(&self) -> Vec<Value> {
@@ -210,7 +237,12 @@ fn viewer_hook(viewer_uri: String) -> Arc<dyn Fn(&mut Value) + Send + Sync> {
         .map(|t| t.name)
         .filter(|n| !engine_reads.contains(&n.as_str()))
         .collect();
-    let extra = ["set_parameters", "create_cad_loon", "adopt_document", "undo"];
+    let extra = [
+        "set_parameters",
+        "create_cad_loon",
+        "adopt_document",
+        "undo",
+    ];
     Arc::new(move |t: &mut Value| {
         let name = t["name"].as_str().unwrap_or("").to_string();
         if let Some(m) = vcad_mcp::tools::host::listing_meta(&name) {
@@ -277,7 +309,10 @@ pub extern "C" fn vcad_mcp_app_start(
             .unwrap_or_else(|| json!({}))
     }));
     config.listing_hook = Some(viewer_hook(
-        cfg["viewer_uri"].as_str().unwrap_or("ui://vcad/viewer").to_string(),
+        cfg["viewer_uri"]
+            .as_str()
+            .unwrap_or("ui://vcad/viewer")
+            .to_string(),
     ));
     let server = Server::new(Arc::new(AppStore::with_bridge(bridge.clone())), config);
     let mut port = 0u16;
@@ -307,7 +342,11 @@ pub extern "C" fn vcad_mcp_app_start(
             .spawn(move || vcad_mcp::transport::serve_http(&s2, l))
             .ok();
     }
-    Box::into_raw(Box::new(VcadMcpApp { server, bridge, port }))
+    Box::into_raw(Box::new(VcadMcpApp {
+        server,
+        bridge,
+        port,
+    }))
 }
 
 /// The bound loopback port (0 when not serving HTTP).
@@ -324,18 +363,22 @@ pub extern "C" fn vcad_mcp_app_port(app: *const VcadMcpApp) -> u16 {
 /// `vcad_string_free` — or null for a notification. Must not be called on the
 /// thread the host callback needs (the app's main thread).
 #[no_mangle]
-pub extern "C" fn vcad_mcp_app_call(app: *const VcadMcpApp, msg_json: *const c_char) -> *mut c_char {
+pub extern "C" fn vcad_mcp_app_call(
+    app: *const VcadMcpApp,
+    msg_json: *const c_char,
+) -> *mut c_char {
     if app.is_null() || msg_json.is_null() {
         return std::ptr::null_mut();
     }
     let app = unsafe { &*app };
-    let msg: Value = match serde_json::from_str(&unsafe { CStr::from_ptr(msg_json) }.to_string_lossy()) {
-        Ok(v) => v,
-        Err(e) => {
-            crate::err::set_error(format!("vcad_mcp_app_call: {e}"));
-            return std::ptr::null_mut();
-        }
-    };
+    let msg: Value =
+        match serde_json::from_str(&unsafe { CStr::from_ptr(msg_json) }.to_string_lossy()) {
+            Ok(v) => v,
+            Err(e) => {
+                crate::err::set_error(format!("vcad_mcp_app_call: {e}"));
+                return std::ptr::null_mut();
+            }
+        };
     let conn = Connection::one_shot(app.server.clone(), Arc::new(|_| {}));
     match conn.handle(msg, None).body {
         Some(b) => CString::new(b.to_string()).map_or(std::ptr::null_mut(), CString::into_raw),
@@ -350,7 +393,9 @@ pub extern "C" fn vcad_mcp_app_resource_updated(app: *const VcadMcpApp, uri: *co
     if app.is_null() || uri.is_null() {
         return;
     }
-    let uri = unsafe { CStr::from_ptr(uri) }.to_string_lossy().into_owned();
+    let uri = unsafe { CStr::from_ptr(uri) }
+        .to_string_lossy()
+        .into_owned();
     unsafe { &*app }
         .server
         .bus()
@@ -369,7 +414,8 @@ pub extern "C" fn vcad_mcp_app_document_changed(app: *const VcadMcpApp, id: *con
         app.bridge.emit(StoreEvent::CurrentChanged(None));
     } else {
         let id = unsafe { CStr::from_ptr(id) }.to_string_lossy().into_owned();
-        app.bridge.emit(StoreEvent::Changed(DocumentId::from(id.as_str())));
+        app.bridge
+            .emit(StoreEvent::Changed(DocumentId::from(id.as_str())));
     }
 }
 
@@ -377,7 +423,8 @@ pub extern "C" fn vcad_mcp_app_document_changed(app: *const VcadMcpApp, id: *con
 /// `vcad_string_free`. The app checks its own implementations against these.
 #[no_mangle]
 pub extern "C" fn vcad_mcp_host_tools() -> *mut c_char {
-    CString::new(vcad_mcp::tools::host::HOST_TOOLS_JSON).map_or(std::ptr::null_mut(), CString::into_raw)
+    CString::new(vcad_mcp::tools::host::HOST_TOOLS_JSON)
+        .map_or(std::ptr::null_mut(), CString::into_raw)
 }
 
 #[cfg(test)]
@@ -394,7 +441,8 @@ mod tests {
 
     extern "C" fn host(ctx: *mut c_void, req: *const c_char) -> *mut c_char {
         let app = unsafe { &*(ctx as *const App) };
-        let req: Value = serde_json::from_str(&unsafe { CStr::from_ptr(req) }.to_string_lossy()).unwrap();
+        let req: Value =
+            serde_json::from_str(&unsafe { CStr::from_ptr(req) }.to_string_lossy()).unwrap();
         let op = req["op"].as_str().unwrap().to_string();
         app.ops.lock().unwrap().push(op.clone());
         let mut d = app.doc.lock().unwrap();
@@ -414,7 +462,9 @@ mod tests {
                 None => json!({"error": "Nothing to undo"}),
             },
             "documents" => json!({"documents": [{"id": "doc_1_AAAAxyz", "name": "Untitled"}]}),
-            "host_call" => json!({"result": {"content": [{"type": "text", "text": format!("host:{}", req["name"].as_str().unwrap())}]}}),
+            "host_call" => {
+                json!({"result": {"content": [{"type": "text", "text": format!("host:{}", req["name"].as_str().unwrap())}]}})
+            }
             "instance_meta" => json!({"pid": 7, "document": "Untitled"}),
             _ => json!({}),
         };
@@ -431,7 +481,9 @@ mod tests {
         let c = CString::new(msg.to_string()).unwrap();
         let raw = vcad_mcp_app_call(app, c.as_ptr());
         assert!(!raw.is_null());
-        let s = unsafe { CStr::from_ptr(raw) }.to_string_lossy().into_owned();
+        let s = unsafe { CStr::from_ptr(raw) }
+            .to_string_lossy()
+            .into_owned();
         crate::json::vcad_string_free(raw);
         serde_json::from_str(&s).unwrap()
     }
@@ -445,19 +497,36 @@ mod tests {
         assert!(!app.is_null());
         assert_eq!(vcad_mcp_app_port(app), 0);
 
-        let r = call(app, "create", json!({"type": "cube", "name": "Block", "params": {"size": {"x": 1, "y": 2, "z": 3}}}));
+        let r = call(
+            app,
+            "create",
+            json!({"type": "cube", "name": "Block", "params": {"size": {"x": 1, "y": 2, "z": 3}}}),
+        );
         assert_ne!(r["result"]["isError"], json!(true), "{r}");
         assert_eq!(r["result"]["_meta"]["io.vcad/instance"]["pid"], 7);
-        let labels: Vec<String> = state.doc.lock().unwrap().1.iter().map(|(_, l)| l.clone()).collect();
+        let labels: Vec<String> = state
+            .doc
+            .lock()
+            .unwrap()
+            .1
+            .iter()
+            .map(|(_, l)| l.clone())
+            .collect();
         assert_eq!(labels, vec!["Create Block"]);
-        assert!(!state.doc.lock().unwrap().0["roots"].as_array().unwrap().is_empty());
+        assert!(!state.doc.lock().unwrap().0["roots"]
+            .as_array()
+            .unwrap()
+            .is_empty());
 
         let r = call(app, "set_camera", json!({"azimuth": 10}));
         assert_eq!(r["result"]["content"][0]["text"], "host:set_camera");
 
         let r = call(app, "undo", json!({}));
         assert_eq!(r["result"]["structuredContent"]["undone"], "Create Block");
-        assert!(state.doc.lock().unwrap().0["roots"].as_array().unwrap().is_empty());
+        assert!(state.doc.lock().unwrap().0["roots"]
+            .as_array()
+            .unwrap()
+            .is_empty());
 
         // The engine tools asked the app first (engine_tool), then fell back.
         let ops = state.ops.lock().unwrap().clone();
@@ -466,7 +535,8 @@ mod tests {
         // Listing carries the viewer on mutating tools only.
         let msg = CString::new(r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#).unwrap();
         let raw = vcad_mcp_app_call(app, msg.as_ptr());
-        let list: Value = serde_json::from_str(&unsafe { CStr::from_ptr(raw) }.to_string_lossy()).unwrap();
+        let list: Value =
+            serde_json::from_str(&unsafe { CStr::from_ptr(raw) }.to_string_lossy()).unwrap();
         crate::json::vcad_string_free(raw);
         let by: BTreeMap<String, Value> = list["result"]["tools"]
             .as_array()

@@ -272,7 +272,10 @@ fn serve_event_stream(server: &Server, mut out: TcpStream) -> std::io::Result<()
     while alive.load(std::sync::atomic::Ordering::Relaxed) {
         std::thread::sleep(Duration::from_secs(15));
         let mut g = w.lock().unwrap_or_else(|e| e.into_inner());
-        if g.write_all(b": keepalive\n\n").and_then(|_| g.flush()).is_err() {
+        if g.write_all(b": keepalive\n\n")
+            .and_then(|_| g.flush())
+            .is_err()
+        {
             break;
         }
     }

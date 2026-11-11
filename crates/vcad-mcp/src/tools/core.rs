@@ -245,7 +245,8 @@ pub(crate) fn resolve_id(ctx: &ToolCtx, args: &Value) -> Result<DocumentId, Tool
     }
     ctx.store.current().ok_or_else(|| {
         ToolError::InvalidArgs(
-            "pass document_id (from open_document / create_cad_loon) — no document is current".into(),
+            "pass document_id (from open_document / create_cad_loon) — no document is current"
+                .into(),
         )
     })
 }
@@ -253,9 +254,11 @@ pub(crate) fn resolve_id(ctx: &ToolCtx, args: &Value) -> Result<DocumentId, Tool
 /// Read a `.vcad` (JSON) or `.loon` (evaluated) file.
 pub(crate) fn read_doc_file(path: &str) -> Result<Document, ToolError> {
     let p = Path::new(path);
-    let raw = std::fs::read_to_string(p)
-        .map_err(|e| ToolError::InvalidArgs(format!("{path}: {e}")))?;
-    if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("loon")) {
+    let raw =
+        std::fs::read_to_string(p).map_err(|e| ToolError::InvalidArgs(format!("{path}: {e}")))?;
+    if p.extension()
+        .is_some_and(|x| x.eq_ignore_ascii_case("loon"))
+    {
         eval_loon(&raw, p.parent().and_then(Path::to_str))
     } else {
         let v: Value = serde_json::from_str(&raw)
@@ -287,7 +290,10 @@ pub(crate) fn evaluate(doc: &Document) -> Result<vcad_eval::EvaluatedScene, Tool
 }
 
 /// All evaluated triangle soups (root parts + placed instances).
-pub(crate) fn meshes(doc: &Document, scene: &vcad_eval::EvaluatedScene) -> Vec<(Vec<f32>, Vec<u32>)> {
+pub(crate) fn meshes(
+    doc: &Document,
+    scene: &vcad_eval::EvaluatedScene,
+) -> Vec<(Vec<f32>, Vec<u32>)> {
     let placed = vcad_eval::placed_instance_meshes(doc, scene);
     scene
         .parts
@@ -444,7 +450,9 @@ fn summarize_doc(v: &Value, bytes: usize) -> Value {
     }
     out.insert(
         "note".into(),
-        json!(format!("Document is {bytes} bytes; pass full:true for all of it.")),
+        json!(format!(
+            "Document is {bytes} bytes; pass full:true for all of it."
+        )),
     );
     Value::Object(out)
 }
@@ -518,7 +526,10 @@ pub fn core_tools(info: InfoSource) -> Vec<ToolDef> {
                 if let Some(path) = arg_str(&args, "path") {
                     let expanded = expand_tilde(path);
                     if !expanded.exists() {
-                        return Err(ToolError::InvalidArgs(format!("no file at {}", expanded.display())));
+                        return Err(ToolError::InvalidArgs(format!(
+                            "no file at {}",
+                            expanded.display()
+                        )));
                     }
                     if let Some(id) = ctx.store.open_path(&expanded).map_err(store_err)? {
                         return handle(ctx, id);
@@ -592,11 +603,13 @@ pub fn core_tools(info: InfoSource) -> Vec<ToolDef> {
                     .map_or_else(|| "create_cad_loon".to_string(), str::to_string);
                 // vcad.app: no id means "the open window" (the user watches it
                 // land as one undo step); headless mints a new session.
-                let target = arg_str(&args, "document_id").map(DocumentId::from).or_else(|| {
-                    (ctx.store.kind() == crate::store::StoreKind::App)
-                        .then(|| ctx.store.current())
-                        .flatten()
-                });
+                let target = arg_str(&args, "document_id")
+                    .map(DocumentId::from)
+                    .or_else(|| {
+                        (ctx.store.kind() == crate::store::StoreKind::App)
+                            .then(|| ctx.store.current())
+                            .flatten()
+                    });
                 // Replacing a document keeps its board / schematic.
                 let mut note = None;
                 let doc = match target.as_ref().and_then(|id| ctx.store.load(id).ok()) {

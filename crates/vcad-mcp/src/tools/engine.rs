@@ -45,7 +45,10 @@ pub fn undo_label(tool: &str, args: &Value) -> String {
         })
         .collect::<Vec<_>>()
         .join(" ");
-    let name = args.get("name").and_then(Value::as_str).filter(|n| !n.is_empty());
+    let name = args
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|n| !n.is_empty());
     if tool == "create" {
         let label = name.map(str::to_string).unwrap_or_else(|| {
             args.get("type")
@@ -100,7 +103,10 @@ fn engine_args(args: &Value) -> Value {
 fn envelope_error(env: &Value) -> String {
     let e = &env["error"];
     let kind = e.get("kind").and_then(Value::as_str).unwrap_or("error");
-    let msg = e.get("message").and_then(Value::as_str).unwrap_or("refused");
+    let msg = e
+        .get("message")
+        .and_then(Value::as_str)
+        .unwrap_or("refused");
     format!("{kind}: {msg}")
 }
 
@@ -108,7 +114,11 @@ fn envelope_error(env: &Value) -> String {
 /// confirms (natively, or via the client's MRTR answer). Headless proceeds.
 fn confirm_delete(ctx: &ToolCtx, doc: &Document, args: &Value) -> Option<ToolOutput> {
     let part = args["part_id"].as_str().unwrap_or("a part");
-    let labels: Vec<&str> = doc.clearance_specs.iter().map(|s| s.label.as_str()).collect();
+    let labels: Vec<&str> = doc
+        .clearance_specs
+        .iter()
+        .map(|s| s.label.as_str())
+        .collect();
     let n = labels.len();
     let req = json!({
         "part_id": part,
@@ -118,9 +128,9 @@ fn confirm_delete(ctx: &ToolCtx, doc: &Document, args: &Value) -> Option<ToolOut
             labels.join(", ")
         ),
     });
-    let answer = ctx
-        .store
-        .host_call(super::host::CONFIRM_DESTRUCTIVE, &req, &ctx.input_responses)?;
+    let answer =
+        ctx.store
+            .host_call(super::host::CONFIRM_DESTRUCTIVE, &req, &ctx.input_responses)?;
     let action = answer
         .ok()
         .and_then(|v| v["action"].as_str().map(str::to_string))
@@ -128,21 +138,29 @@ fn confirm_delete(ctx: &ToolCtx, doc: &Document, args: &Value) -> Option<ToolOut
     (action != "accept").then(|| {
         ToolOutput::error(format!(
             "The user {} deleting {part} — nothing changed.",
-            if action == "decline" { "declined" } else { "cancelled" }
+            if action == "decline" {
+                "declined"
+            } else {
+                "cancelled"
+            }
         ))
     })
 }
 
 fn run(ctx: &ToolCtx, name: &str, args: Value) -> Result<ToolOutput, ToolError> {
     if args.get("document").is_some_and(Value::is_object) {
-        return Err(ToolError::Delegate("inline document is served by node".into()));
+        return Err(ToolError::Delegate(
+            "inline document is served by node".into(),
+        ));
     }
     if name == "describe_scene"
         && ["joint_state", "part_ids", "limit"]
             .iter()
             .any(|k| args.get(*k).is_some())
     {
-        return Err(ToolError::Delegate(format!("{name}: filters are served by node")));
+        return Err(ToolError::Delegate(format!(
+            "{name}: filters are served by node"
+        )));
     }
     let headless = ctx.store.kind() == StoreKind::Headless;
     let id = target(ctx, &args)?;
@@ -187,9 +205,10 @@ fn run(ctx: &ToolCtx, name: &str, args: Value) -> Result<ToolOutput, ToolError> 
     }
     let result = &env["result"];
     if !committed {
-        let new_doc: Document = serde_json::from_value(result["document"].clone()).map_err(|e| {
-            ToolError::InvalidArgs(format!("engine produced an invalid document: {e}"))
-        })?;
+        let new_doc: Document =
+            serde_json::from_value(result["document"].clone()).map_err(|e| {
+                ToolError::InvalidArgs(format!("engine produced an invalid document: {e}"))
+            })?;
         remember(&id, &new_doc, None);
         ctx.store
             .commit(&id, new_doc, CommitMeta::agent(label.clone()))
@@ -199,7 +218,11 @@ fn run(ctx: &ToolCtx, name: &str, args: Value) -> Result<ToolOutput, ToolError> 
     let created = result["createdFeatureId"].as_str().map(str::to_string);
     let warnings: Vec<String> = result["warnings"]
         .as_array()
-        .map(|w| w.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+        .map(|w| {
+            w.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
         .unwrap_or_default();
     let mut text = "ok".to_string();
     if let Some(c) = &created {
@@ -344,8 +367,14 @@ mod tests {
 
     #[test]
     fn labels() {
-        assert_eq!(undo_label("create", &json!({"name": "Bracket"})), "Create Bracket");
-        assert_eq!(undo_label("create", &json!({"type": "cube"})), "Create Cube");
+        assert_eq!(
+            undo_label("create", &json!({"name": "Bracket"})),
+            "Create Bracket"
+        );
+        assert_eq!(
+            undo_label("create", &json!({"type": "cube"})),
+            "Create Cube"
+        );
         assert_eq!(undo_label("linear_pattern", &json!({})), "Linear Pattern");
     }
 
@@ -353,7 +382,11 @@ mod tests {
     fn create_then_update_round_trips_through_ir() {
         let store: Arc<dyn DocumentStore> = Arc::new(HeadlessStore::in_memory());
         let ctx = ToolCtx::basic(store.clone());
-        let out = call(&ctx, "create", json!({"type": "cube", "name": "Block", "params": {"size": {"x": 10, "y": 20, "z": 5}}}));
+        let out = call(
+            &ctx,
+            "create",
+            json!({"type": "cube", "name": "Block", "params": {"size": {"x": 10, "y": 20, "z": 5}}}),
+        );
         assert!(!out.is_error, "{:?}", out.content);
         let s = out.structured.unwrap();
         let id = DocumentId::from(s["document_id"].as_str().unwrap());
@@ -361,14 +394,25 @@ mod tests {
         assert_eq!(s["parts"], 1);
         // A second call loads the committed IR into a fresh engine and must
         // still find the part by the id the first call returned.
-        let out = call(&ctx, "create", json!({"type": "cylinder", "params": {"radius": 2, "height": 30}}));
+        let out = call(
+            &ctx,
+            "create",
+            json!({"type": "cylinder", "params": {"radius": 2, "height": 30}}),
+        );
         assert!(!out.is_error, "{:?}", out.content);
-        let cyl = out.structured.unwrap()["created_part_id"].as_str().unwrap().to_string();
+        let cyl = out.structured.unwrap()["created_part_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
         let out = call(&ctx, "difference", json!({"left": part, "right": cyl}));
         assert!(!out.is_error, "{:?}", out.content);
         // Both inputs consumed by the boolean (parts lists every feature).
         let s = out.structured.unwrap();
-        assert_eq!(s["consumed_part_ids"].as_array().map(Vec::len), Some(2), "{s}");
+        assert_eq!(
+            s["consumed_part_ids"].as_array().map(Vec::len),
+            Some(2),
+            "{s}"
+        );
         let doc = store.load(&id).unwrap();
         assert!(!doc.roots.is_empty());
         let out = call(&ctx, "describe_scene", json!({}));

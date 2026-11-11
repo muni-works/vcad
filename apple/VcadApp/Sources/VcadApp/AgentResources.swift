@@ -117,28 +117,6 @@ final class AgentResources {
 enum AgentViewer {
     /// Tools with a live viewer: mutating ones carry `_meta.ui.resourceUri`.
     static let meta: [String: Any] = ["ui": ["resourceUri": AgentResources.viewerURI]]
-
-        ["name": "viewer_frame",
-         "description": "The live vcad viewport as a PNG plus the document revision. Used by the vcad viewer app; agents should prefer snapshot.",
-         "inputSchema": ["type": "object", "properties": [String: Any]()] as [String: Any]],
-        ["name": "open_in_app",
-         "description": "Bring the vcad window showing this document to the front. Focuses the existing window — never opens a copy.",
-         "inputSchema": ["type": "object", "properties": [String: Any]()] as [String: Any]],
-        ["name": "select_edges",
-         "description": "Select edges in the user's viewport, as if they clicked them: part index plus edge ids (from vcad://doc/selection or describe_scene), or edge:\"longest\". The v2 agent-cursor seam (agent drives selection); also what demo scripts use in place of a click.",
-         "inputSchema": ["type": "object",
-                         "properties": ["part": ["type": "integer"],
-                                        "edges": ["type": "array", "items": ["type": "integer"]],
-                                        "edge": ["type": "string", "enum": ["longest"]]] as [String: Any],
-                         "required": ["part"]] as [String: Any]],
-        ["name": "fillet_edges",
-         "description": "Fillet (or chamfer) the edges the user selected in the viewport — read vcad://doc/selection. With nothing selected, every edge of the selected part. One undo step, live.",
-         "inputSchema": ["type": "object",
-                         "properties": ["radius": ["type": "number", "description": "mm"],
-                                        "chamfer": ["type": "boolean"]] as [String: Any],
-                         "required": ["radius"]] as [String: Any],
-         "_meta": meta],
-    ]
     static let toolNames: Set<String> = ["viewer_frame", "open_in_app", "select_edges", "fillet_edges"]
 
     static func call(_ name: String, _ a: [String: Any], model m: EditorModel) async throws -> [String: Any] {

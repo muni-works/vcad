@@ -61,12 +61,21 @@ pub fn carry_electronics(session: &Value, doc: &mut Value) -> Result<Option<Stri
         .filter_map(|e| Some((e.clone(), chain(e["root"].as_i64()?)?)))
         .collect();
     let mut carried: Vec<i64> = Vec::new();
-    for id in rooted.iter().flat_map(|(_, c)| c.iter().copied()).chain(board_ids.iter().copied()) {
+    for id in rooted
+        .iter()
+        .flat_map(|(_, c)| c.iter().copied())
+        .chain(board_ids.iter().copied())
+    {
         if !carried.contains(&id) {
             carried.push(id);
         }
     }
-    let mut next = target.keys().filter_map(|k| k.parse::<i64>().ok()).max().unwrap_or(-1) + 1;
+    let mut next = target
+        .keys()
+        .filter_map(|k| k.parse::<i64>().ok())
+        .max()
+        .unwrap_or(-1)
+        + 1;
     let mut remap = std::collections::HashMap::new();
     for id in &carried {
         remap.insert(*id, next);
@@ -74,7 +83,10 @@ pub fn carry_electronics(session: &Value, doc: &mut Value) -> Result<Option<Stri
     }
     let mut roots = doc["roots"].as_array().cloned().unwrap_or_default();
     let mut materials = doc["materials"].as_object().cloned().unwrap_or_default();
-    let session_materials = session["materials"].as_object().cloned().unwrap_or_default();
+    let session_materials = session["materials"]
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
     let mut keep_material = |key: Option<&str>, materials: &mut Map<String, Value>| {
         if let Some(k) = key {
             if !materials.contains_key(k) {
@@ -90,7 +102,10 @@ pub fn carry_electronics(session: &Value, doc: &mut Value) -> Result<Option<Stri
         roots.push(e);
         keep_material(entry["material"].as_str(), &mut materials);
     }
-    let rooted_boards: Vec<i64> = rooted.iter().filter_map(|(_, c)| c.last().copied()).collect();
+    let rooted_boards: Vec<i64> = rooted
+        .iter()
+        .filter_map(|(_, c)| c.last().copied())
+        .collect();
     for id in &board_ids {
         if !rooted_boards.contains(id) {
             roots.push(json!({"root": remap[id], "material": "__pcb_fr4__"}));
@@ -100,7 +115,9 @@ pub fn carry_electronics(session: &Value, doc: &mut Value) -> Result<Option<Stri
     let mut part_ids = doc["partIds"].as_object().cloned().unwrap_or_default();
     let session_part_ids = session["partIds"].as_object().cloned().unwrap_or_default();
     for old in &carried {
-        let Some(mut n) = node(*old).cloned() else { continue };
+        let Some(mut n) = node(*old).cloned() else {
+            continue;
+        };
         let id = remap[old];
         n["id"] = json!(id);
         if let Some(child) = n.pointer("/op/child").and_then(Value::as_i64) {
@@ -151,7 +168,8 @@ mod tests {
             "materials": {"fr4": {"name": "FR4"}},
             "pcb": {"layers": 2}
         });
-        let mut doc = json!({"nodes": {"0": {"id": 0, "op": {"type": "Cube"}}}, "roots": [{"root": 0}]});
+        let mut doc =
+            json!({"nodes": {"0": {"id": 0, "op": {"type": "Cube"}}}, "roots": [{"root": 0}]});
         let note = carry_electronics(&session, &mut doc).unwrap().unwrap();
         assert_eq!(note, "kept the document's PCB board");
         assert_eq!(doc["roots"].as_array().unwrap().len(), 2);
@@ -163,6 +181,10 @@ mod tests {
         let mut again = doc.clone();
         assert!(carry_electronics(&session, &mut again).is_err());
         let mut plain = json!({"nodes": {}, "roots": []});
-        assert!(carry_electronics(&json!({"nodes": {}, "roots": []}), &mut plain).unwrap().is_none());
+        assert!(
+            carry_electronics(&json!({"nodes": {}, "roots": []}), &mut plain)
+                .unwrap()
+                .is_none()
+        );
     }
 }
