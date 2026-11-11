@@ -534,7 +534,9 @@ fn jacobi_vectors(mut a: Vec<f64>, n: usize) -> (Vec<f64>, Vec<Vec<f64>>) {
         }
     }
     let vals = (0..n).map(|i| a[i * n + i]).collect();
-    let vecs = (0..n).map(|c| (0..n).map(|r| v[r * n + c]).collect()).collect();
+    let vecs = (0..n)
+        .map(|c| (0..n).map(|r| v[r * n + c]).collect())
+        .collect();
     (vals, vecs)
 }
 
@@ -556,7 +558,9 @@ fn lowest_modes(k: &[f64], m: &[f64], n: usize, want: usize) -> (Vec<f64>, Vec<V
                 col[2 * i] = match c {
                     0 => 1.0,
                     1 => xi - 0.5,
-                    _ => (c as f64 * std::f64::consts::PI * xi).cos() + 0.05 * (c as f64 * xi).sin(),
+                    _ => {
+                        (c as f64 * std::f64::consts::PI * xi).cos() + 0.05 * (c as f64 * xi).sin()
+                    }
                 };
             }
             col
@@ -780,7 +784,8 @@ pub fn tune_bar(t: &TuneTarget) -> Result<TunedBar, String> {
     const MAX_DEPTH: f64 = 0.75; // fraction of thickness
 
     // Initial length from closed form (f ∝ 1/L²).
-    let l_cf = 100.0 * (closed_form_plain_f1(t.material, t.thickness_mm, 100.0) / t.target_hz).sqrt();
+    let l_cf =
+        100.0 * (closed_form_plain_f1(t.material, t.thickness_mm, 100.0) / t.target_hz).sqrt();
     let mut u = [l_cf.ln(), if ratio.is_some() { 0.3 } else { 0.0 }];
     let mut node_frac = vec![0.2242, 0.7758];
     let mut history = Vec::new();
@@ -899,7 +904,9 @@ pub fn tune_bar(t: &TuneTarget) -> Result<TunedBar, String> {
         .map(|(f, n)| (f * length - n).abs())
         .fold(0.0_f64, f64::max);
     if hole_err > 0.25 {
-        notes.push(format!("peg holes sit {hole_err:.2} mm off the nodal lines"));
+        notes.push(format!(
+            "peg holes sit {hole_err:.2} mm off the nodal lines"
+        ));
     }
     Ok(TunedBar {
         note: t.note.clone(),
@@ -932,7 +939,11 @@ fn midi_of(note: &str) -> Result<i32, String> {
 }
 
 fn name_of(midi: i32) -> String {
-    format!("{}{}", SHARP_NAMES[midi.rem_euclid(12) as usize], midi.div_euclid(12) - 1)
+    format!(
+        "{}{}",
+        SHARP_NAMES[midi.rem_euclid(12) as usize],
+        midi.div_euclid(12) - 1
+    )
 }
 
 /// The eight notes of a major scale from `tonic` (e.g. "C6" → C6 … C7).
@@ -958,7 +969,10 @@ pub const RECEIPT_DOMAIN: &str = "acoustics";
 
 /// Oracle for bar predictions.
 pub fn oracle() -> vcad_receipt::OracleRef {
-    vcad_receipt::OracleRef::new("vcad-kernel-acoustics/instrument", env!("CARGO_PKG_VERSION"))
+    vcad_receipt::OracleRef::new(
+        "vcad-kernel-acoustics/instrument",
+        env!("CARGO_PKG_VERSION"),
+    )
 }
 
 /// Claim id for a bar's fundamental.
@@ -972,7 +986,12 @@ pub fn claim_label(note: &str, hz: f64) -> String {
 }
 
 /// A bar's predicted-pitch claim: Provisional (predictions never Pass).
-pub fn predicted_claim(note: &str, target_hz: f64, predicted_hz: f64, part: &str) -> vcad_receipt::ReceiptClaim {
+pub fn predicted_claim(
+    note: &str,
+    target_hz: f64,
+    predicted_hz: f64,
+    part: &str,
+) -> vcad_receipt::ReceiptClaim {
     let err = cents(predicted_hz, target_hz);
     vcad_receipt::ReceiptClaim::pass(
         claim_id(note),
@@ -1000,10 +1019,7 @@ pub fn measured_claim(
     instrument: &str,
 ) -> vcad_receipt::ReceiptClaim {
     let err = cents(measured_hz, target_hz);
-    let desc = format!(
-        "{} measured {measured_hz:.1} Hz ({err:+.1} cents)",
-        note
-    );
+    let desc = format!("{} measured {measured_hz:.1} Hz ({err:+.1} cents)", note);
     let base = if err.abs() <= tolerance_cents {
         vcad_receipt::ReceiptClaim::pass(claim_id(note), RECEIPT_DOMAIN, desc, oracle())
     } else {
@@ -1121,7 +1137,12 @@ pub fn bar_loon(bar: &TunedBar, origin: [f64; 3]) -> String {
             ));
         }
     }
-    let body = format!("[cube {} {} {}]", f(g.length_mm), f(g.width_mm), f(g.thickness_mm));
+    let body = format!(
+        "[cube {} {} {}]",
+        f(g.length_mm),
+        f(g.width_mm),
+        f(g.thickness_mm)
+    );
     let cut = match tools.len() {
         0 => body,
         _ => {
@@ -1132,7 +1153,12 @@ pub fn bar_loon(bar: &TunedBar, origin: [f64; 3]) -> String {
             format!("[difference {tool} {body}]")
         }
     };
-    format!("[translate {} {} {} {cut}]", f(origin[0]), f(origin[1]), f(origin[2]))
+    format!(
+        "[translate {} {} {} {cut}]",
+        f(origin[0]),
+        f(origin[1]),
+        f(origin[2])
+    )
 }
 
 /// Design a major-scale instrument: tune every bar, lay them out
@@ -1152,7 +1178,10 @@ pub fn design_instrument(spec: &InstrumentSpec) -> Result<Instrument, String> {
     let z_bar = spec.plate_mm + spec.standoff_mm;
     let peg_dia = (spec.bar.hole_dia_mm - 0.6).max(1.0);
     let collar_r = spec.bar.hole_dia_mm / 2.0 + 3.0;
-    let l_max = tuned.iter().map(|b| b.geometry.length_mm).fold(0.0, f64::max);
+    let l_max = tuned
+        .iter()
+        .map(|b| b.geometry.length_mm)
+        .fold(0.0, f64::max);
     let margin = 8.0;
 
     let mut out = String::new();
@@ -1220,7 +1249,11 @@ pub fn design_instrument(spec: &InstrumentSpec) -> Result<Instrument, String> {
         .fold(plate, |acc, p| format!("[union {acc} {p}]"));
     out.push_str(&format!("\n[let frame {frame}]\n\n"));
     for p in &placed {
-        out.push_str(&format!("[root {} \"{}\"]\n", p.part, spec.bar.material.loon_key()));
+        out.push_str(&format!(
+            "[root {} \"{}\"]\n",
+            p.part,
+            spec.bar.material.loon_key()
+        ));
     }
     out.push_str("[root frame \"frame\"]\n");
 
@@ -1276,9 +1309,18 @@ mod tests {
 
     #[test]
     fn plain_bar_nodes_at_classic_fractions() {
-        let r = modal(&plain(180.0), BarMaterial::Aluminium6061, 1, &ModelOptions::euler_bernoulli());
+        let r = modal(
+            &plain(180.0),
+            BarMaterial::Aluminium6061,
+            1,
+            &ModelOptions::euler_bernoulli(),
+        );
         assert_eq!(r.nodes_mm.len(), 2);
-        assert!((r.nodes_mm[0] / 180.0 - 0.22416).abs() < 2e-4, "{:?}", r.nodes_mm);
+        assert!(
+            (r.nodes_mm[0] / 180.0 - 0.22416).abs() < 2e-4,
+            "{:?}",
+            r.nodes_mm
+        );
         assert!((r.nodes_mm[1] / 180.0 - 0.77584).abs() < 2e-4);
     }
 
@@ -1349,9 +1391,17 @@ mod tests {
             let b = tune_bar(&t).unwrap();
             assert!(b.converged, "{note}: {:?}", b.notes);
             assert!(b.cents_error.abs() < 0.1, "{note}: {} cents", b.cents_error);
-            assert!(b.history.len() < 25, "{note}: {} iterations", b.history.len());
+            assert!(
+                b.history.len() < 25,
+                "{note}: {} iterations",
+                b.history.len()
+            );
             if b.notes.iter().all(|n| !n.contains("unreachable")) {
-                assert!((b.overtone_ratio - 4.0).abs() < 0.02, "{note}: ratio {}", b.overtone_ratio);
+                assert!(
+                    (b.overtone_ratio - 4.0).abs() < 0.02,
+                    "{note}: ratio {}",
+                    b.overtone_ratio
+                );
             }
             // Holes are on the nodes.
             for (h, n) in b.geometry.holes_mm.iter().zip(&b.nodes_mm) {
@@ -1362,11 +1412,19 @@ mod tests {
 
     #[test]
     fn plain_tuning_for_every_material() {
-        for m in [BarMaterial::Aluminium6061, BarMaterial::Brass, BarMaterial::Pla] {
+        for m in [
+            BarMaterial::Aluminium6061,
+            BarMaterial::Brass,
+            BarMaterial::Pla,
+        ] {
             let mut t = TuneTarget::for_note("A5", m).unwrap();
             t.overtone_ratio = None;
             let b = tune_bar(&t).unwrap();
-            assert!(b.converged && b.cents_error.abs() < 0.1, "{m:?}: {}", b.cents_error);
+            assert!(
+                b.converged && b.cents_error.abs() < 0.1,
+                "{m:?}: {}",
+                b.cents_error
+            );
             assert_eq!(b.geometry.undercut_depth_mm, 0.0);
             // Plain bar ratio sits at or below Euler–Bernoulli's 2.756: shear
             // and rotary inertia pull f₂ down more than f₁ (most for the
@@ -1393,7 +1451,11 @@ mod tests {
 
     #[test]
     fn match_bar_picks_nearest_within_window() {
-        let targets: Vec<f64> = major_scale("C6").unwrap().iter().map(|n| note_to_hz(n).unwrap()).collect();
+        let targets: Vec<f64> = major_scale("C6")
+            .unwrap()
+            .iter()
+            .map(|n| note_to_hz(n).unwrap())
+            .collect();
         let (i, c) = match_bar(1320.0 * 1.001, &targets, 60.0).unwrap();
         assert_eq!(i, 2); // E6 = 1318.5
         assert!(c > 0.0);

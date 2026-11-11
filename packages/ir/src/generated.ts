@@ -4188,9 +4188,25 @@ tolerance_cents: number,
  */
 length_mm: number, 
 /**
- * Undercut depth, mm.
+ * Bar width, mm.
+ */
+width_mm: number, 
+/**
+ * Bar thickness, mm.
+ */
+thickness_mm: number, 
+/**
+ * Undercut depth from the underside, mm.
  */
 undercut_depth_mm: number, 
+/**
+ * Undercut span as a fraction of length, centred.
+ */
+undercut_span: number, 
+/**
+ * Peg hole diameter, mm.
+ */
+hole_dia_mm: number, 
 /**
  * Fundamental's nodal points, mm from the bar's x=0 end.
  */

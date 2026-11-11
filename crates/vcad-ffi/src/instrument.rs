@@ -26,12 +26,15 @@ use crate::err;
 use crate::json::{borrow_str, guard_ptr, into_c};
 
 fn meta(doc: &Document) -> Result<&vcad_ir::instrument::Instrument, String> {
-    doc.instrument
-        .as_ref()
-        .ok_or_else(|| "instrument: this document has no tuned instrument (run design_instrument)".into())
+    doc.instrument.as_ref().ok_or_else(|| {
+        "instrument: this document has no tuned instrument (run design_instrument)".into()
+    })
 }
 
-fn bar<'a>(doc: &'a Document, note: &str) -> Result<&'a vcad_ir::instrument::InstrumentBar, String> {
+fn bar<'a>(
+    doc: &'a Document,
+    note: &str,
+) -> Result<&'a vcad_ir::instrument::InstrumentBar, String> {
     meta(doc)?
         .bars
         .iter()
@@ -70,7 +73,10 @@ pub(crate) fn call(doc: &mut Document, req: &Value) -> Result<Value, String> {
             let label = str_arg(req, "instrument").unwrap_or("vcad.app Tune (microphone)");
             let at = str_arg(req, "measured_at").map(str::to_string);
             let note = str_arg(req, "note");
-            let m = doc.instrument.as_mut().ok_or("instrument: none on this document")?;
+            let m = doc
+                .instrument
+                .as_mut()
+                .ok_or("instrument: none on this document")?;
             let idx = instrument_doc::record_strike(m, hz, note, label, at)?;
             let bar = m.bars[idx].clone();
             let receipt = instrument_doc::receipt_json(m);
@@ -211,7 +217,8 @@ mod tests {
     fn print_dry_run_slices_both_plates() {
         let mut d = doc(BarMaterial::Pla);
         for plate in ["bars", "frame"] {
-            let path = std::env::temp_dir().join(format!("vcad-glock-{plate}-{}.gcode", std::process::id()));
+            let path = std::env::temp_dir()
+                .join(format!("vcad-glock-{plate}-{}.gcode", std::process::id()));
             let r = call(
                 &mut d,
                 &json!({"op": "print", "plate": plate, "gcode_path": path.to_str().unwrap(),

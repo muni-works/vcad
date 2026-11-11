@@ -331,6 +331,9 @@ struct FabricateCommands: Commands {
             Button("Fabricate Panel") { FabStore.shared.shown.toggle() }
                 .keyboardShortcut("f", modifiers: [.command, .option])
             Divider()
+            Button("Tune Instrument (Microphone)") { TuneStore.shared.shown.toggle() }
+                .keyboardShortcut("t", modifiers: [.command, .option])
+            Divider()
             ForEach(FabTab.allCases) { tab in
                 Button(tab == .sheet ? "Sheet Metal: Flat Pattern" : tab == .print ? "3D Print: Slice & Export" : "CAM Job: Tools & Verify") {
                     FabStore.shared.shown = true; FabStore.shared.tab = tab

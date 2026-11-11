@@ -5,9 +5,7 @@
 use serde_json::{json, Value};
 use vcad_ir::instrument::{BarMeasurement, Instrument as IrInstrument, InstrumentBar};
 
-use crate::instrument::{
-    match_bar, measured_claim, predicted_claim, BarMaterial, Instrument,
-};
+use crate::instrument::{match_bar, measured_claim, predicted_claim, BarMaterial, Instrument};
 use crate::strike::cents;
 
 /// Default window for matching a strike to a bar (a diatonic neighbour is
@@ -163,7 +161,12 @@ pub fn cam_jobs(bar: &InstrumentBar, post: &str) -> Vec<Value> {
             "depth": t, "stepdown": 0.5, "stepover": 1.0
         }));
     }
-    let (x0, y0, x1, y1) = (margin, margin, margin + bar.length_mm, margin + bar.width_mm);
+    let (x0, y0, x1, y1) = (
+        margin,
+        margin,
+        margin + bar.length_mm,
+        margin + bar.width_mm,
+    );
     ops.push(json!({
         "kind": "contour_outside", "name": "bar outline", "tool": 1,
         "contour": [[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
@@ -232,7 +235,9 @@ mod tests {
     use vcad_receipt::ReceiptVerdict;
 
     fn meta() -> IrInstrument {
-        let inst = design_instrument(&InstrumentSpec::new("C6", BarMaterial::Aluminium6061).unwrap()).unwrap();
+        let inst =
+            design_instrument(&InstrumentSpec::new("C6", BarMaterial::Aluminium6061).unwrap())
+                .unwrap();
         metadata(&inst)
     }
 
@@ -265,7 +270,10 @@ mod tests {
         let err = record_strike(&mut m, 3000.0, None, "test", None).unwrap_err();
         assert!(err.contains("not within"));
         assert!(record_strike(&mut m, 1046.0, Some("Q9"), "t", None).is_err());
-        assert_eq!(record_strike(&mut m, 1046.0, Some("bar_c6"), "t", None).unwrap(), 0);
+        assert_eq!(
+            record_strike(&mut m, 1046.0, Some("bar_c6"), "t", None).unwrap(),
+            0
+        );
     }
 
     #[test]

@@ -261,10 +261,9 @@ pub fn instrument_tools() -> Vec<ToolDef> {
             let id = doc_id(&args)?;
             let hz = num(&args, "measured_hz").ok_or_else(|| bad("measured_hz required"))?;
             let mut doc = ctx.store.load(&id).map_err(|e| bad(e.to_string()))?;
-            let meta = doc
-                .instrument
-                .as_mut()
-                .ok_or_else(|| bad("this document has no tuned instrument (run design_instrument)"))?;
+            let meta = doc.instrument.as_mut().ok_or_else(|| {
+                bad("this document has no tuned instrument (run design_instrument)")
+            })?;
             let idx = instrument_doc::record_strike(
                 meta,
                 hz,
@@ -276,7 +275,11 @@ pub fn instrument_tools() -> Vec<ToolDef> {
             let bar = meta.bars[idx].clone();
             let receipt = instrument_doc::receipt_json(meta);
             ctx.store
-                .commit(&id, doc, CommitMeta::agent(format!("record_strike {}", bar.note)))
+                .commit(
+                    &id,
+                    doc,
+                    CommitMeta::agent(format!("record_strike {}", bar.note)),
+                )
                 .map_err(|e| bad(e.to_string()))?;
             structured(json!({
                 "note": bar.note,
@@ -317,7 +320,12 @@ mod tests {
         let names: Vec<String> = instrument_tools().into_iter().map(|t| t.name).collect();
         assert_eq!(
             names,
-            ["design_bar", "design_instrument", "record_strike", "instrument_receipt"]
+            [
+                "design_bar",
+                "design_instrument",
+                "record_strike",
+                "instrument_receipt"
+            ]
         );
     }
 
@@ -340,10 +348,13 @@ mod tests {
         let id = s["document_id"].as_str().unwrap().to_string();
         let doc = ctx.store.load(&DocumentId::from(id.as_str())).unwrap();
         assert_eq!(doc.roots.len(), 9);
-        let r = (tool("record_strike").handler)(&ctx, json!({"document_id": id, "measured_hz": 1568.9}))
-            .unwrap()
-            .structured
-            .unwrap();
+        let r = (tool("record_strike").handler)(
+            &ctx,
+            json!({"document_id": id, "measured_hz": 1568.9}),
+        )
+        .unwrap()
+        .structured
+        .unwrap();
         assert_eq!(r["note"], "G6");
         assert_eq!(r["pass"], true);
         assert_eq!(r["claim"]["basis"], "measured");

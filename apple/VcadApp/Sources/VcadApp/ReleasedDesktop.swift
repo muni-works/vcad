@@ -1131,6 +1131,9 @@ struct ReleasedOverlayView: View {
                     // dropped in #1055, so the dock's DFM and Stress buttons lit
                     // up and showed nothing; it takes the rail while active.
                     AnalysisPanel(model: model).modifier(ChromeRegion(key: "analysis"))
+                } else if TuneStore.shared.shown && !model.source.isGripper {
+                    // Tune: strike the bars, the mic closes their receipts.
+                    TunePanel(model: model).modifier(ChromeRegion(key: "inspector"))
                 } else if FabStore.shared.shown && !model.source.isGripper {
                     // Fab: the inspector IS the active process's settings.
                     if model.showsInspector {
