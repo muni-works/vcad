@@ -2095,6 +2095,7 @@ struct ReleasedARView: NSViewRepresentable {
         if !scene.solving {
             let bounds = ReleaseWindowController.shared.arView?.bounds.size ?? .zero
             let aspect = bounds.height > 0 ? Float(bounds.width / bounds.height) : 1.6
+            model.viewportAspect = aspect
             if let target = model.takeAgentFrameDistance(aspect: aspect) {
                 // Deferred: this runs inside a view update.
                 Task { @MainActor in

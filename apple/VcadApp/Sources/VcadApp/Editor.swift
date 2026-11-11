@@ -26,6 +26,19 @@ enum Motion {
 enum Workspace: String, CaseIterable, Identifiable, Codable {
     case design, electronics, manufacture, drawing
     var id: String { rawValue }
+    /// The workspace a launch may come back to. Drawing and Electronics don't
+    /// mount the 3D viewport, and a document opened straight into one of them
+    /// first built its viewport only on leaving it — that late first build came
+    /// up wrong (an "Opening" card that never cleared; a model drawn as a huge
+    /// black silhouette around the camera). Those launches start in Design;
+    /// switching into Drawing afterwards is unaffected.
+    static func launchRestorable(_ ws: Workspace) -> Workspace? {
+        guard available.contains(ws) else { return nil }
+        switch ws {
+        case .design, .manufacture: return ws
+        case .drawing, .electronics: return .design
+        }
+    }
     var label: String {
         switch self {
         case .design: return "Design"
@@ -368,7 +381,7 @@ final class EditorModel {
         cnc.rightPanelShown = m.cncRight
         cnc.bottomPanelShown = m.cncBottom
         measurementsShown = m.measurementsShown
-        if let ws = Workspace(rawValue: m.workspace), Workspace.available.contains(ws) { workspace = ws }
+        if let ws = Workspace(rawValue: m.workspace).flatMap(Workspace.launchRestorable) { workspace = ws }
     }
     /// Whether the last session ran in a window (the presentation to restore).
     var remembersWindowed: Bool { LayoutMemory.load().windowed }
@@ -2815,14 +2828,26 @@ final class EditorModel {
     /// display size, so fixed camera params frame any part well.
     func resetCamera(animated: Bool = false) {
         stopSpin()
+        let d = Self.frameAllDistance(size: sizeMM, aspect: viewportAspect)
         let apply = {
             self.azimuth = .pi / 5
             self.elevation = .pi / 7
-            self.distance = 1.5
+            self.distance = d
             self.panOffset = .zero
         }
         if animated { withAnimation(Motion.smooth) { apply() } } else { apply() }
-        pinchBaseline = 1.5
+        pinchBaseline = d
+    }
+
+    /// Width / height of the 3D viewport, kept current by the viewport.
+    @ObservationIgnored var viewportAspect: Float = 1.6
+
+    /// Frame All / Home: fit the model's bounds in the view (Fusion), not a
+    /// fixed distance — a 240 mm-tall assembly sat in a quarter of the
+    /// viewport (live QA 2026-11-11). No model yet → the old fixed 1.5.
+    static func frameAllDistance(size: SIMD3<Float>, aspect: Float) -> Float {
+        guard size.max() > 0 else { return 1.5 }
+        return fittedDistance(size: size, azimuth: .pi / 5, elevation: .pi / 7, aspect: aspect)
     }
 
     /// Turn the camera to a standard view, animated.
