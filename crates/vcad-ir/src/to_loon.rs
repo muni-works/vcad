@@ -360,6 +360,11 @@ fn op_to_loon(op: &CsgOp, doc: &Document) -> OpResult {
             node_ref(*child, doc)
         )),
 
+        CsgOp::SketchOnFace { .. } => OpResult::Unsupported(
+            "SketchOnFace".to_string(),
+            "sketch attached to a face has no loon syntax yet".to_string(),
+        ),
+
         CsgOp::EdgeBlend { .. } => OpResult::Unsupported(
             "EdgeBlend".to_string(),
             "query-selected edge blend has no loon syntax yet".to_string(),

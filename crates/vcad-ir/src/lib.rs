@@ -1603,6 +1603,7 @@ impl CsgOp {
             | CsgOp::Revolve { sketch, .. }
             | CsgOp::Sweep { sketch, .. } => vec![sketch],
             CsgOp::Loft { sketches, .. } => sketches.iter_mut().collect(),
+            CsgOp::SketchOnFace { sketch, target, .. } => vec![sketch, target],
             CsgOp::Hull { children, .. } => children.iter_mut().collect(),
             CsgOp::SheetMetalEdgeFlange { parent, .. }
             | CsgOp::SheetMetalJog { parent, .. }
@@ -1652,6 +1653,7 @@ impl CsgOp {
             | CsgOp::Prism { .. }
             | CsgOp::SpurGear { .. }
             | CsgOp::Empty
+            | CsgOp::SketchOnFace { .. }
             | CsgOp::Union { .. }
             | CsgOp::Difference { .. }
             | CsgOp::Intersection { .. }

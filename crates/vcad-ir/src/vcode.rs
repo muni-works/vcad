@@ -2733,6 +2733,11 @@ fn format_op(
             ))
         }
 
+        CsgOp::SketchOnFace { .. } => Err(VCodeParseError {
+            line: 0,
+            message: "sketch on face not supported in VCode format".to_string(),
+        }),
+
         CsgOp::StepImport { .. } => Err(VCodeParseError {
             line: 0,
             message: "STEP import not supported in VCode format".to_string(),
