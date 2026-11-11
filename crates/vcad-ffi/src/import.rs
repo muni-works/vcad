@@ -65,12 +65,23 @@ fn step_document_with(path: &str, progress: Option<&StepProgress>) -> Result<Ste
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "step".into());
     let doc = vcad_eval::step_doc::step_assembly_document(&read, &abs_str, &stem);
-    let solids = read.solids;
+    let n_solids = read.solids.len();
+    let skipped_faces = read.report.total_skipped_faces();
+    let warnings = read.report.summary();
+    // Hand the parse to the evaluator: every `StepImport` node names this
+    // file, and opening the document would otherwise parse it again.
+    vcad_eval::step_sources::prime_file(
+        &abs_str,
+        read.solids
+            .into_iter()
+            .map(vcad_kernel::Solid::from_brep)
+            .collect(),
+    );
     Ok(StepImported {
         document: doc,
-        solids: solids.len(),
-        skipped_faces: read.report.total_skipped_faces(),
-        warnings: read.report.summary(),
+        solids: n_solids,
+        skipped_faces,
+        warnings,
     })
 }
 

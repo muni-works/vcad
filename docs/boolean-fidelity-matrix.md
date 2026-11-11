@@ -6,13 +6,13 @@ Each cell reports what the *representation* of the result is, not whether the ge
 
 **Coverage gap: NURBS operands are not exercised.** No modeling operation in the kernel produces a B-spline face — `loft` emits ruled planar faces (`LoftMode::Smooth` is unimplemented), and the only practical source of `SurfaceKind::BSpline` is STEP import. Booleans against imported NURBS geometry are therefore uncharacterised here.
 
-**17 of 102 cells degrade**; 0 produce the wrong solid rather than a coarse one.
+**15 of 102 cells degrade**; 0 produce the wrong solid rather than a coarse one.
 
 ## Degradations by cause
 
 | cause | cells |
 |---|---|
-| `boolean-fallback` | 17 |
+| `boolean-fallback` | 15 |
 
 ## generic-overlap
 
@@ -52,7 +52,7 @@ Each cell reports what the *representation* of the result is, not whether the ge
 
 | operands | arrangement | union | difference | intersection |
 |---|---|---|---|---|
-| cylinder × cylinder | cross-drill exiting a cylinder's round wall | ⚠️ soup<br>`boolean-fallback` | ⚠️ soup<br>`boolean-fallback` | ⚠️ soup<br>`boolean-fallback` |
+| cylinder × cylinder | cross-drill exiting a cylinder's round wall | ✅ analytic | ✅ analytic | ⚠️ soup<br>`boolean-fallback` |
 | sphere × cylinder | drill straight through a sphere | ✅ analytic | ⚠️ soup<br>`boolean-fallback` | ⚠️ soup<br>`boolean-fallback` |
 | cone × cylinder | cross-drill exiting a cone's slant wall | ✅ analytic | ⚠️ soup<br>`boolean-fallback` | ⚠️ soup<br>`boolean-fallback` |
 | torus × cylinder | drill through a torus tube | ⚠️ soup<br>`boolean-fallback` | ✅ analytic | ✅ analytic |

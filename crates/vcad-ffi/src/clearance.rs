@@ -15,6 +15,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use vcad_kernel::Solid;
+use vcad_kernel_tessellate::{mesh_clearance, TriangleMesh};
 
 use crate::analysis::{evaluate, parse_doc, parse_request};
 use crate::err;
@@ -23,6 +24,33 @@ use vcad_receipt_verify::bodies::keyed_bodies;
 
 /// Overlap below this volume (mm³) is contact, not interference.
 pub const CONTACT_VOLUME_MM3: f64 = 1e-6;
+
+/// Above this many parts, unlisted pairs go through an AABB broadphase and
+/// only near pairs are measured exactly (small documents keep every pair).
+pub const BROADPHASE_MIN_PARTS: usize = 64;
+/// Broadphase reach (mm) when the request gives no `near_mm`.
+pub const DEFAULT_NEAR_MM: f64 = 5.0;
+
+fn mesh_aabb(m: &TriangleMesh) -> Option<([f64; 3], [f64; 3])> {
+    let mut lo = [f64::MAX; 3];
+    let mut hi = [f64::MIN; 3];
+    for (i, &c) in m.vertices.iter().enumerate() {
+        let k = i % 3;
+        lo[k] = lo[k].min(c as f64);
+        hi[k] = hi[k].max(c as f64);
+    }
+    (lo[0] <= hi[0]).then_some((lo, hi))
+}
+
+/// Lower bound on the distance between two boxes (0 when they overlap).
+fn aabb_gap(a: &([f64; 3], [f64; 3]), b: &([f64; 3], [f64; 3])) -> f64 {
+    let mut d2 = 0.0;
+    for k in 0..3 {
+        let g = (b.0[k] - a.1[k]).max(a.0[k] - b.1[k]).max(0.0);
+        d2 += g * g;
+    }
+    d2.sqrt()
+}
 
 /// The interference solid as a drawable mesh.
 #[derive(Debug, Clone, Serialize)]
@@ -125,12 +153,43 @@ pub fn check(doc: &vcad_ir::Document, req: &Value) -> Result<ClearanceReport, St
         .filter(|(_, s)| s.as_ref().is_none_or(|s| s.is_empty()))
         .map(|(i, _)| names[i].clone())
         .collect();
+    // Tessellate each part once. `Solid::clearance` meshes both operands on
+    // every call, so the all-pairs loop used to re-tessellate every part
+    // 2·(n−1) times — minutes on a 24-link robot, a hang on a printer.
+    let meshes: Vec<Option<TriangleMesh>> = solids
+        .iter()
+        .map(|s| {
+            s.as_ref()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_mesh(s.segments()))
+        })
+        .collect();
+    let boxes: Vec<Option<([f64; 3], [f64; 3])>> = meshes
+        .iter()
+        .map(|m| m.as_ref().and_then(mesh_aabb))
+        .collect();
+    // Broadphase: in a big assembly the far pairs are noise (a frame rail
+    // vs a hotend screw), and exact distance on all n² of them never ends.
+    // Only pairs whose boxes come within `near_mm` get the exact check.
+    let broadphase = req["pairs"].is_null() && names.len() > BROADPHASE_MIN_PARTS;
+    let near_mm = req["near_mm"].as_f64().unwrap_or(DEFAULT_NEAR_MM);
     let mut out = Vec::new();
     for (a, b) in pairs {
         let (Some(sa), Some(sb)) = (solids[a].as_ref(), solids[b].as_ref()) else {
             continue;
         };
-        let Some(c) = sa.clearance(sb) else { continue };
+        let (Some(ma), Some(mb)) = (meshes[a].as_ref(), meshes[b].as_ref()) else {
+            continue;
+        };
+        if broadphase {
+            match (boxes[a], boxes[b]) {
+                (Some(ba), Some(bb)) if aabb_gap(&ba, &bb) <= near_mm => {}
+                _ => continue,
+            }
+        }
+        let Some(c) = mesh_clearance(ma, mb) else {
+            continue;
+        };
         let (overlap, clash) = if c.intersecting {
             let x = sa.intersection(sb);
             let v = x.volume().max(0.0);
@@ -238,6 +297,34 @@ mod tests {
         assert!(p.distance_mm <= 0.0, "{}", p.distance_mm);
         assert!(p.clash.as_ref().is_some_and(|m| !m.indices.is_empty()));
         assert_eq!(r.interference_count, 1);
+    }
+
+    #[test]
+    fn large_assembly_broadphase_keeps_near_pairs_only() {
+        // A row of 70 cubes 12 mm apart (2 mm gaps) plus one far cube that
+        // overlaps the last row cube's neighbour-free space at x = 5000.
+        let mut src = String::new();
+        for i in 0..70 {
+            src.push_str(&format!(
+                "[root [translate {} 0 0 [cube 10 10 10]] \"steel\"]\n",
+                i * 12
+            ));
+        }
+        src.push_str("[root [translate 5000 0 0 [cube 10 10 10]] \"steel\"]\n");
+        src.push_str("[root [translate 5005 0 0 [cube 10 10 10]] \"steel\"]\n");
+        let d = doc(&src);
+        let r = check(&d, &json!({})).unwrap();
+        assert_eq!(r.parts.len(), 72);
+        // 69 neighbour gaps + the one far interfering pair; never all 2556.
+        assert_eq!(r.pairs.len(), 70, "{}", r.pairs.len());
+        assert_eq!(r.interference_count, 1);
+        assert!((r.min_clearance_mm.unwrap() - 2.0).abs() < 1e-3);
+        // A wider reach pulls in the next ring of pairs (14 mm apart).
+        let wide = check(&d, &json!({"near_mm": 15.0, "include_mesh": false})).unwrap();
+        assert_eq!(wide.pairs.len(), 70 + 68);
+        // Explicit pairs bypass the broadphase.
+        let one = check(&d, &json!({"pairs": [[0, 71]]})).unwrap();
+        assert_eq!(one.pairs.len(), 1);
     }
 
     #[test]

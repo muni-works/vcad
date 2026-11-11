@@ -183,6 +183,17 @@ pub enum CommandError {
         /// Tool or feature kind.
         tool: String,
     },
+    /// A reorder would put a feature before one of its inputs, or after a
+    /// feature built on it. Refused so the feature is never silently dropped.
+    #[error("can't move `{id}` there: {reason}")]
+    OrderViolation {
+        /// The feature being moved.
+        id: String,
+        /// The feature it would end up on the wrong side of.
+        conflicts_with: String,
+        /// Plain-language reason, e.g. "it is built on `3:1`".
+        reason: String,
+    },
     /// A command inside a batch failed.
     #[error("batch command {index} failed: {source}")]
     Batch {
@@ -303,6 +314,10 @@ impl DocumentApi {
                         message: format!("import_ir: {e}"),
                     })
             }
+            DocCommand::Reorder { id, index } => match self.reorder_violation(id, *index) {
+                Some(err) => Err(err),
+                None => Ok(()),
+            },
             _ => Ok(()),
         }
     }
@@ -684,6 +699,83 @@ mod tests {
             .map(|(fid, _)| api.stable_ids().stable_id(*fid).unwrap().to_string())
             .collect();
         assert_eq!(order, [ids[1].clone(), ids[0].clone(), ids[2].clone()]);
+    }
+
+    /// cube A, cube B, fillet(A) — ids in that order.
+    fn cube_cube_fillet(api: &mut DocumentApi) -> [String; 3] {
+        let mut add = |f: FeatureInput| {
+            api.apply(DocCommand::AddFeature { feature: f, name: None })
+                .unwrap()
+                .created_feature_id
+                .unwrap()
+        };
+        let a = add(cube());
+        let b = add(cube());
+        let f = add(FeatureInput::Fillet { input: a.clone(), radius: 1.0 });
+        [a, b, f]
+    }
+
+    fn order(api: &DocumentApi) -> Vec<String> {
+        api.crdt()
+            .ordered_features()
+            .iter()
+            .map(|(fid, _)| api.stable_ids().stable_id(*fid).unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn reorder_refuses_moving_a_feature_above_its_input() {
+        let mut api = api();
+        let [a, b, f] = cube_cube_fillet(&mut api);
+        let err = api
+            .apply(DocCommand::Reorder { id: f.clone(), index: 0 })
+            .unwrap_err();
+        assert!(
+            matches!(&err, CommandError::OrderViolation { id, conflicts_with, .. } if *id == f && *conflicts_with == a),
+            "{err:?}"
+        );
+        assert_eq!(order(&api), [a, b, f], "a refused move must not mutate");
+    }
+
+    #[test]
+    fn reorder_refuses_moving_an_input_below_its_consumer() {
+        let mut api = api();
+        let [a, b, f] = cube_cube_fillet(&mut api);
+        let err = api
+            .apply(DocCommand::Reorder { id: a.clone(), index: 2 })
+            .unwrap_err();
+        assert!(
+            matches!(&err, CommandError::OrderViolation { conflicts_with, .. } if *conflicts_with == f),
+            "{err:?}"
+        );
+        assert_eq!(order(&api), [a, b, f]);
+    }
+
+    #[test]
+    fn reorder_allows_moves_that_keep_inputs_ahead() {
+        let mut api = api();
+        let [a, b, f] = cube_cube_fillet(&mut api);
+        // B depends on nothing and nothing depends on it: it can go anywhere.
+        api.apply(DocCommand::Reorder { id: b.clone(), index: 2 }).unwrap();
+        assert_eq!(order(&api), [a.clone(), f.clone(), b.clone()]);
+        api.apply(DocCommand::Reorder { id: b.clone(), index: 0 }).unwrap();
+        assert_eq!(order(&api), [b, a, f]);
+    }
+
+    #[test]
+    fn reorder_violation_inside_a_batch_rolls_back() {
+        let mut api = api();
+        let [a, b, f] = cube_cube_fillet(&mut api);
+        let err = api
+            .apply(DocCommand::Batch {
+                commands: vec![
+                    DocCommand::Reorder { id: b.clone(), index: 0 },
+                    DocCommand::Reorder { id: f.clone(), index: 0 },
+                ],
+            })
+            .unwrap_err();
+        assert!(matches!(err, CommandError::Batch { .. }), "{err:?}");
+        assert_eq!(order(&api), [a, b, f]);
     }
 
     fn steel() -> vcad_ir::MaterialDef {

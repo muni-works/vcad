@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-11-assembly-export-clearance-step-cache",
+  "version": "undefined",
+  "date": "2026-11-11",
+  "category": "fix",
+  "title": "Assembly export, interference and big STEP opens fixed",
+  "summary": "Assembly GLB/STL no longer duplicates every part at the origin, STEP exports posed instances, interference scales to big assemblies, and STEP assemblies parse once.",
+  "features": ["assembly", "export", "step", "clearance"]
+}

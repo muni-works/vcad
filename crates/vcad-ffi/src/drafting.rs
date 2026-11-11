@@ -17,7 +17,8 @@ use vcad_eval::EvaluatedMesh;
 use vcad_ir::{Document, DrawingSectionLine, DrawingSettings, DrawingTitleBlock};
 use vcad_kernel_drafting::dimension::placement::{obstacles_of, place_clear, Obstacle};
 use vcad_kernel_drafting::{
-    compose_sheet, create_detail_view, offset_section_mesh, project_mesh, projected_view_to_dxf,
+    center_mark, compose_sheet, create_detail_view, detect_circles, diameter_text, group_circles,
+    leader_callout_at, offset_section_mesh, project_mesh, projected_view_to_dxf, sheet_to_dxf,
     sheet_to_pdf, AnnotationLayer, BomRow, BoundingBox2D, DetailViewParams, DrawingSheet,
     HatchPattern, OffsetSectionPlane, OffsetSectionStep, PlacedDetailView, PlacedProjectedView,
     PlacedSectionView, Point2D, ProjectedView, RenderedDimension, RenderedText, SectionPlane,
@@ -33,6 +34,8 @@ use crate::json::{borrow_str, guard_ptr, json_out};
 pub const VCAD_DRAWING_DXF: u32 = 0;
 /// PDF of the composed sheet.
 pub const VCAD_DRAWING_PDF: u32 = 1;
+/// DXF of the whole composed sheet in model mm (views at true size).
+pub const VCAD_DRAWING_SHEET_DXF: u32 = 2;
 
 /// A detail view request (magnified region of the main view).
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -48,6 +51,9 @@ pub struct DetailRequest {
     pub width: f64,
     /// Region height in view mm.
     pub height: f64,
+    /// Parent view (default: the main view).
+    #[serde(default)]
+    pub view: Option<String>,
 }
 
 fn two() -> f64 {
@@ -67,6 +73,12 @@ pub struct GdtRequest {
     pub datum: Option<String>,
     /// Anchor in view coordinates (mm).
     pub at: [f64; 2],
+    /// View the anchor is on (default: the main view).
+    #[serde(default)]
+    pub view: Option<String>,
+    /// Id for selection (persisted frames carry one).
+    #[serde(default)]
+    pub id: Option<String>,
 }
 
 /// What to draw. Section lines, title block and BOM come from the document's
@@ -100,6 +112,8 @@ pub struct DrawingRequest {
 /// the sheet into view coordinates (placing details, sections, GD&T).
 #[derive(Debug, Clone, Serialize)]
 pub struct ViewPlacement {
+    /// View name (`front`, `top`, `right`, `isometric`, …).
+    pub name: String,
     /// Sheet position of the view-bounds center (mm).
     pub sheet_center: [f64; 2],
     /// View-bounds center in view coordinates.
@@ -131,6 +145,14 @@ pub struct DrawingResult {
     pub dxf_entities: usize,
     /// Section views that resolved to geometry.
     pub sections: usize,
+    /// Every placed view's mapping (the main view first).
+    pub views: Vec<ViewPlacement>,
+    /// Selectable annotations (dimensions, callouts, GD&T).
+    pub dimensions: Vec<DimensionHandle>,
+    /// Circular features recognized across the views.
+    pub circles: usize,
+    /// Sheet size name ("A4", "A3", …).
+    pub sheet_size: String,
 }
 
 fn view_direction(name: &str) -> ViewDirection {
@@ -337,12 +359,108 @@ pub struct Composed {
     pub view: ProjectedView,
     /// Main view placement.
     pub main: ViewPlacement,
+    /// All view placements.
+    pub views: Vec<ViewPlacement>,
+    /// Selectable annotations.
+    pub handles: Vec<DimensionHandle>,
+    /// Circular features recognized.
+    pub circles: usize,
     /// Resolved section count.
     pub sections: usize,
 }
 
-/// Compose the drawing for `doc` (layout = `buildDrawingSheetSpec`, plus
-/// detail views and GD&T, which the web sheet does not place yet).
+/// Views of the standard (third-angle) layout, main view first.
+const STANDARD_VIEWS: [&str; 4] = ["front", "top", "right", "isometric"];
+
+/// Gap between views in the standard layout (sheet mm): room for a
+/// dimension at 10 mm and a caption at 18 mm.
+const VIEW_GAP: f64 = 30.0;
+
+/// Sheet size from a settings string (`auto`/unknown → `None`).
+fn sheet_size_named(name: &str) -> Option<SheetSize> {
+    match name.to_lowercase().as_str() {
+        "a4" => Some(SheetSize::A4),
+        "a3" => Some(SheetSize::A3),
+        "a2" => Some(SheetSize::A2),
+        "a1" => Some(SheetSize::A1),
+        "a0" => Some(SheetSize::A0),
+        "letter" => Some(SheetSize::Letter),
+        _ => None,
+    }
+}
+
+fn sheet_size_name(size: SheetSize) -> String {
+    match size {
+        SheetSize::A4 => "A4",
+        SheetSize::A3 => "A3",
+        SheetSize::A2 => "A2",
+        SheetSize::A1 => "A1",
+        SheetSize::A0 => "A0",
+        SheetSize::Letter => "Letter",
+        SheetSize::Custom { .. } => "Custom",
+    }
+    .into()
+}
+
+/// One annotation on the sheet with an id the app can select, move or delete.
+#[derive(Debug, Clone, Serialize)]
+pub struct DimensionHandle {
+    /// Stable id (`auto:front:width`, or a user dimension's id).
+    pub id: String,
+    /// View it belongs to.
+    pub view: String,
+    /// Generated from the model (deleting hides it) vs. user-placed.
+    pub auto: bool,
+    /// Sheet-space bounds (mm), for hit testing.
+    pub min: [f64; 2],
+    /// Sheet-space bounds (mm).
+    pub max: [f64; 2],
+    /// Current offset (view mm) for linear dimensions; dragging edits this.
+    pub offset: f64,
+    /// `horizontal`, `vertical`, `aligned`, `callout`, `centerline`, or `gdt`.
+    pub kind: String,
+}
+
+/// A view queued for placement.
+struct ViewJob {
+    name: String,
+    view: ProjectedView,
+}
+
+/// A section/detail queued for the side column.
+enum SideJob {
+    Section {
+        sv: SectionView,
+        label: String,
+        cut: RenderedDimension,
+        parent: String,
+    },
+    Detail {
+        req: DetailRequest,
+        parent: String,
+    },
+}
+
+/// Linear dimension rendered in view coordinates.
+fn linear_dim(kind: &str, a: [f64; 2], b: [f64; 2], offset: f64) -> Option<RenderedDimension> {
+    let (pa, pb) = (Point2D::new(a[0], a[1]), Point2D::new(b[0], b[1]));
+    let mut layer = AnnotationLayer::new();
+    match kind {
+        "vertical" => layer.add_vertical_dimension(pa, pb, offset),
+        "aligned" => layer.add_aligned_dimension(pa, pb, offset),
+        _ => layer.add_horizontal_dimension(pa, pb, offset),
+    };
+    layer.render_all(None).into_iter().next()
+}
+
+/// Compose the drawing for `doc`.
+///
+/// `view: "standard"` lays out front / top / right / isometric (third-angle)
+/// and picks the sheet size and scale; any other view is a single-view sheet
+/// (the web layout). Either way the sheet carries automatic dimensions (overall
+/// size, hole callouts with locations, center marks), the user's dimensions,
+/// section and detail views, GD&T, title block and BOM — all regenerated from
+/// the document, so editing the model updates the drawing.
 pub fn compose(doc_text: &str, doc: &Document, req: &DrawingRequest) -> Result<Composed, String> {
     let meshes: Vec<EvaluatedMesh> = cached_meshes(doc_text, doc)?
         .into_iter()
@@ -354,8 +472,27 @@ pub fn compose(doc_text: &str, doc: &Document, req: &DrawingRequest) -> Result<C
         .clone()
         .unwrap_or_else(|| "front".into())
         .to_lowercase();
-    let view = project_mesh(&mesh, view_direction(&dir_name));
-    if !view.bounds.is_valid() {
+    let standard = dir_name == "standard";
+
+    let names: Vec<&str> = if standard {
+        STANDARD_VIEWS.to_vec()
+    } else {
+        vec![dir_name.as_str()]
+    };
+    let mut jobs: Vec<ViewJob> = Vec::new();
+    for n in &names {
+        let mut v = project_mesh(&mesh, view_direction(n));
+        if *n == "isometric" && standard {
+            // Pictorial views are drawn without hidden lines.
+            v.edges.retain(|e| e.visibility == Visibility::Visible);
+        }
+        jobs.push(ViewJob {
+            name: n.to_string(),
+            view: v,
+        });
+    }
+    let main_name = jobs[0].name.clone();
+    if !jobs[0].view.bounds.is_valid() {
         return Err("nothing to draw: the projection is empty".into());
     }
 
@@ -364,90 +501,15 @@ pub fn compose(doc_text: &str, doc: &Document, req: &DrawingRequest) -> Result<C
         .clone()
         .or_else(|| doc.drawing.clone())
         .unwrap_or_default();
-    let sections: Vec<&DrawingSectionLine> = drawing
-        .sections
-        .iter()
-        .flatten()
-        .filter(|s| s.view == dir_name)
-        .collect();
-    let has_side = !sections.is_empty() || !req.details.is_empty();
+    let ortho = |n: &str| n != "isometric" && jobs.iter().any(|j| j.name == n);
 
-    // A4 landscape; reserve a right strip for sections/details.
-    // With a title block or BOM in the bottom-right corner, a full-width main
-    // view is lifted and shortened so its caption clears them (the web
-    // layout let them collide).
-    let corner = drawing.title_block.is_some() || drawing.show_bom == Some(true);
-    let (box_w, box_h, sheet_center) = match (has_side, corner) {
-        (true, _) => (140.0, 130.0, [85.0, 120.0]),
-        (false, true) => (200.0, 85.0, [120.0, 148.0]),
-        (false, false) => (200.0, 130.0, [120.0, 120.0]),
-    };
-    let b = view.bounds;
-    let vw = if b.width() > 0.0 { b.width() } else { 1.0 };
-    let vh = if b.height() > 0.0 { b.height() } else { 1.0 };
-    let (s, scale_note) = nice_scale((box_w / vw).min(box_h / vh));
-    let main = ViewPlacement {
-        sheet_center,
-        view_center: [(b.min_x + b.max_x) / 2.0, (b.min_y + b.max_y) / 2.0],
-        scale: s,
-        scale_note: scale_note.clone(),
-        bounds: b,
-    };
-
-    let mut shown = view.clone();
-    if req.show_hidden == Some(false) {
-        shown.edges.retain(|e| e.visibility == Visibility::Visible);
-    }
-    let mut spec = SheetSpec {
-        size: Some(SheetSize::A4),
-        views: vec![PlacedProjectedView {
-            view: shown,
-            center: sheet_center,
-            scale: s,
-            label: Some(format!("{} VIEW  ({scale_note})", dir_name.to_uppercase())),
-        }],
-        ..Default::default()
-    };
-
-    if req.show_dimensions != Some(false) {
-        let mut layer = AnnotationLayer::new();
-        layer.add_horizontal_dimension(
-            Point2D::new(b.min_x, b.min_y),
-            Point2D::new(b.max_x, b.min_y),
-            -10.0 / s,
-        );
-        layer.add_vertical_dimension(
-            Point2D::new(b.max_x, b.min_y),
-            Point2D::new(b.max_x, b.max_y),
-            10.0 / s,
-        );
-        for rd in layer.render_all(None) {
-            spec.annotations.push(dimension_to_sheet(&rd, &main));
+    // Side items: sections (on any placed ortho view), then details.
+    let mut side: Vec<SideJob> = Vec::new();
+    for section in drawing.sections.iter().flatten() {
+        if !ortho(&section.view) {
+            continue;
         }
-    }
-
-    // Right strip: sections first, then details, stacked downward.
-    // Stack top-down from just under the border, each item sized by its own
-    // height plus room for its caption (the web's fixed 160/65 mm pitch let a
-    // tall section run off the sheet).
-    // The title block + BOM own the bottom-right corner; anything that won't
-    // fit above them flows into the free strip under the main view.
-    let floor = if corner { 92.0 } else { 20.0 };
-    let mut side_top = 195.0;
-    let mut low_x = 30.0;
-    let mut place = |w: f64, h: f64| -> [f64; 2] {
-        if side_top - h - 14.0 >= floor {
-            let c = [225.0, side_top - h / 2.0];
-            side_top -= h + 26.0;
-            return c;
-        }
-        let c = [low_x + w / 2.0, 50.0];
-        low_x += w + 14.0;
-        c
-    };
-    let mut resolved = 0;
-    for section in &sections {
-        let Some(plane) = section_plane_from_line(&dir_name, &section.points) else {
+        let Some(plane) = section_plane_from_line(&section.view, &section.points) else {
             continue;
         };
         let sv = upright(&offset_section_mesh(
@@ -458,75 +520,541 @@ pub fn compose(doc_text: &str, doc: &Document, req: &DrawingRequest) -> Result<C
         if !sv.bounds.is_valid() {
             continue;
         }
-        resolved += 1;
-        let at = place(
-            (sv.bounds.max_x - sv.bounds.min_x) * s,
-            (sv.bounds.max_y - sv.bounds.min_y) * s,
-        );
-        spec.sections.push(PlacedSectionView {
-            view: sv,
-            center: at,
-            scale: s,
-            label: Some(format!("SECTION {0}-{0}  ({scale_note})", section.label)),
+        side.push(SideJob::Section {
+            sv,
+            label: section.label.clone(),
+            cut: cut_line(section),
+            parent: section.view.clone(),
         });
-        spec.annotations
-            .push(dimension_to_sheet(&cut_line(section), &main));
     }
+    let mut details: Vec<DetailRequest> = drawing
+        .details
+        .iter()
+        .flatten()
+        .map(|d| DetailRequest {
+            label: d.label.clone(),
+            center: d.center,
+            scale: d.scale,
+            width: d.width,
+            height: d.height,
+            view: d.view.clone(),
+        })
+        .collect();
+    details.extend(req.details.iter().cloned());
+    for d in details {
+        let parent = d.view.clone().unwrap_or_else(|| main_name.clone());
+        if jobs.iter().any(|j| j.name == parent) {
+            side.push(SideJob::Detail { req: d, parent });
+        }
+    }
+    let corner = drawing.title_block.is_some() || drawing.show_bom == Some(true);
 
-    for d in &req.details {
-        let params = DetailViewParams::new(
-            Point2D::new(d.center[0], d.center[1]),
-            d.scale * s,
-            d.width,
-            d.height,
-            d.label.clone(),
-        );
-        let dv = create_detail_view(&view, &params);
-        // Callout circle on the main view, in sheet coordinates.
-        let c = main.to_sheet(Point2D::new(d.center[0], d.center[1]));
-        let r = d.width.max(d.height) / 2.0 * s;
-        let mut callout = RenderedDimension::new();
-        callout.arcs.push(vcad_kernel_drafting::RenderedArc::new(
-            c,
-            r,
-            0.0,
-            std::f64::consts::TAU,
-        ));
-        callout.texts.push(RenderedText::new(
-            Point2D::new(c.x + r * 0.75 + 2.0, c.y + r * 0.75 + 2.0),
-            d.label.clone(),
-            4.0,
-        ));
-        spec.annotations.push(callout);
-        let ratio = d.scale * s;
-        let note = if ratio >= 1.0 {
-            format!("{}:1", (ratio * 100.0).round() / 100.0)
-        } else {
-            format!("1:{}", (1.0 / ratio).round())
+    // ---- layout: scale, sheet, view centers ------------------------------
+    let side_size = |j: &SideJob| -> (f64, f64) {
+        match j {
+            SideJob::Section { sv, .. } => (sv.bounds.width(), sv.bounds.height()),
+            SideJob::Detail { req, .. } => (req.width * req.scale, req.height * req.scale),
+        }
+    };
+    let dims = |n: &str| -> (f64, f64) {
+        jobs.iter()
+            .find(|j| j.name == n)
+            .map(|j| {
+                (
+                    j.view.bounds.width().max(1e-6),
+                    j.view.bounds.height().max(1e-6),
+                )
+            })
+            .unwrap_or((0.0, 0.0))
+    };
+    let mut centers: Vec<[f64; 2]> = Vec::new();
+    let mut iso_scale: Option<(f64, String)> = None;
+    let mut side_centers: Vec<[f64; 2]> = Vec::new();
+    let (size, s, scale_note) = if standard {
+        let (fw, fh) = dims("front");
+        let (_, th) = dims("top");
+        let (rw, _) = dims("right");
+        let (iw, ih) = dims("isometric");
+        let side_w = side.iter().map(|j| side_size(j).0).fold(0.0, f64::max);
+        let side_h: f64 = side.iter().map(|j| side_size(j).1).sum();
+        let n_side = side.len() as f64;
+        let fit = |size: SheetSize| -> (f64, String, [f64; 4]) {
+            let (w, h) = size.dimensions_mm();
+            let x0 = 10.0 + 18.0;
+            let y0 = 10.0 + if corner { 50.0 } else { 22.0 };
+            let (aw, ah) = (w - 10.0 - 12.0 - x0, h - 10.0 - 12.0 - y0);
+            let cols = if side.is_empty() { 1.0 } else { 2.0 };
+            // The isometric gets its own scale (fit into the leftover
+            // corner), so a tall part's pictorial doesn't shrink the views.
+            let mut sm =
+                ((aw - VIEW_GAP * cols) / (fw + rw + side_w)).min((ah - VIEW_GAP) / (fh + th));
+            if !side.is_empty() {
+                sm = sm.min((ah - VIEW_GAP * (n_side - 1.0)) / side_h.max(1e-6));
+            }
+            let (s, note) = nice_scale(sm.min(10.0));
+            (s, note, [x0, y0, aw, ah])
         };
-        let at = place(
-            dv.bounds.max_x - dv.bounds.min_x,
-            dv.bounds.max_y - dv.bounds.min_y,
-        );
-        spec.details.push(PlacedDetailView {
-            view: dv,
-            center: at,
-            label: Some(format!("DETAIL {}  ({note})", d.label)),
+        let size = drawing
+            .sheet_size
+            .as_deref()
+            .and_then(sheet_size_named)
+            .unwrap_or_else(|| {
+                [SheetSize::A4, SheetSize::A3, SheetSize::A2, SheetSize::A1]
+                    .into_iter()
+                    .find(|sz| fit(*sz).0 >= 0.5)
+                    .unwrap_or(SheetSize::A1)
+            });
+        let (s, note, [x0, y0, aw, ah]) = fit(size);
+        let side_room = if side.is_empty() {
+            0.0
+        } else {
+            VIEW_GAP + side_w * s
+        };
+        let cell_w = (aw - fw * s - VIEW_GAP - side_room).max(rw * s);
+        let cell_h = (ah - fh * s - VIEW_GAP).max(th * s);
+        let (si, iso_note) = nice_scale(s.min(cell_w / iw.max(1e-6)).min(cell_h / ih.max(1e-6)));
+        iso_scale = Some((si, iso_note));
+        let c2 = (rw * s).max(iw * si);
+        let r2 = (th * s).max(ih * si);
+        let used_w = fw * s + VIEW_GAP + c2 + side_room;
+        let used_h = fh * s + VIEW_GAP + r2;
+        let ox = x0 + (aw - used_w).max(0.0) / 2.0;
+        let oy = y0 + (ah - used_h).max(0.0) / 2.0;
+        let fx = ox + fw * s / 2.0;
+        let fy = oy + fh * s / 2.0;
+        let top_y = oy + fh * s + VIEW_GAP + r2 / 2.0;
+        let rx = ox + fw * s + VIEW_GAP + c2 / 2.0;
+        for j in &jobs {
+            centers.push(match j.name.as_str() {
+                "front" => [fx, fy],
+                "top" => [fx, oy + fh * s + VIEW_GAP + th * s / 2.0],
+                "right" => [ox + fw * s + VIEW_GAP + rw * s / 2.0, fy],
+                _ => [rx, top_y],
+            });
+        }
+        let sx = ox + fw * s + VIEW_GAP + c2 + VIEW_GAP + side_w * s / 2.0;
+        let mut top = oy + used_h.max(side_h * s + VIEW_GAP * (n_side - 1.0));
+        for j in &side {
+            let h = side_size(j).1 * s;
+            side_centers.push([sx, top - h / 2.0]);
+            top -= h + VIEW_GAP;
+        }
+        let _ = (rx, top_y);
+        (size, s, note)
+    } else {
+        // Single view on A4 landscape (the web layout): reserve a right strip
+        // for sections/details; with a title block or BOM in the corner, a
+        // full-width main view is lifted and shortened so its caption clears.
+        let has_side = !side.is_empty();
+        let (box_w, box_h, sheet_center) = match (has_side, corner) {
+            (true, _) => (140.0, 130.0, [85.0, 120.0]),
+            (false, true) => (200.0, 85.0, [120.0, 148.0]),
+            (false, false) => (200.0, 130.0, [120.0, 120.0]),
+        };
+        let (vw, vh) = dims(&main_name);
+        let (s, note) = nice_scale((box_w / vw).min(box_h / vh));
+        centers.push(sheet_center);
+        // Stack top-down from under the border; what won't fit above the
+        // title block flows into the strip under the main view.
+        let floor = if corner { 92.0 } else { 20.0 };
+        let mut side_top = 195.0;
+        let mut low_x = 30.0;
+        for j in &side {
+            let (w, h) = side_size(j);
+            let (w, h) = (w * s, h * s);
+            if side_top - h - 14.0 >= floor {
+                side_centers.push([225.0, side_top - h / 2.0]);
+                side_top -= h + 26.0;
+            } else {
+                side_centers.push([low_x + w / 2.0, 50.0]);
+                low_x += w + 14.0;
+            }
+        }
+        (SheetSize::A4, s, note)
+    };
+
+    let placements: Vec<ViewPlacement> = jobs
+        .iter()
+        .zip(&centers)
+        .map(|(j, c)| {
+            let b = j.view.bounds;
+            let (vs, vn) = match (&iso_scale, j.name.as_str()) {
+                (Some((si, n)), "isometric") => (*si, n.clone()),
+                _ => (s, scale_note.clone()),
+            };
+            ViewPlacement {
+                name: j.name.clone(),
+                sheet_center: *c,
+                view_center: [(b.min_x + b.max_x) / 2.0, (b.min_y + b.max_y) / 2.0],
+                scale: vs,
+                scale_note: vn,
+                bounds: b,
+            }
+        })
+        .collect();
+    let place_of = |n: &str| placements.iter().find(|p| p.name == n);
+    let main = placements[0].clone();
+
+    let mut spec = SheetSpec {
+        size: Some(size),
+        ..Default::default()
+    };
+    for (j, p) in jobs.iter().zip(&placements) {
+        let mut shown = j.view.clone();
+        if req.show_hidden == Some(false) {
+            shown.edges.retain(|e| e.visibility == Visibility::Visible);
+        }
+        let label = if standard && p.scale != s {
+            format!("{}  ({})", j.name.to_uppercase(), p.scale_note)
+        } else if standard {
+            j.name.to_uppercase()
+        } else {
+            format!("{} VIEW  ({scale_note})", j.name.to_uppercase())
+        };
+        spec.views.push(PlacedProjectedView {
+            view: shown,
+            center: p.sheet_center,
+            scale: p.scale,
+            label: Some(label),
         });
     }
 
-    // GD&T: placed directly at the anchor's sheet position so frame boxes
-    // and text stay readable at any view scale.
-    // Each symbol is kept clear of the part outline, dimensions, cut lines,
-    // callouts and earlier symbols: one placed on top of something slides
-    // outward and gets a leader back to the clicked point.
+    // ---- automatic + user dimensions -------------------------------------
+    let hidden: std::collections::HashSet<&str> = drawing
+        .hidden_dimensions
+        .iter()
+        .flatten()
+        .map(String::as_str)
+        .collect();
+    let offsets = drawing.dimension_offsets.clone().unwrap_or_default();
+    let mut handles: Vec<DimensionHandle> = Vec::new();
+    let push_dim = |spec: &mut SheetSpec,
+                    handles: &mut Vec<DimensionHandle>,
+                    rd: RenderedDimension,
+                    id: String,
+                    view: &str,
+                    auto: bool,
+                    kind: &str,
+                    offset: f64| {
+        if let Some((lo, hi)) = rd.bounds() {
+            handles.push(DimensionHandle {
+                id,
+                view: view.to_string(),
+                auto,
+                min: [lo.x, lo.y],
+                max: [hi.x, hi.y],
+                offset,
+                kind: kind.to_string(),
+            });
+        }
+        spec.annotations.push(rd);
+    };
+    let mut circle_count = 0;
+    let single_part = doc.roots.len() <= 1 && doc.instances.as_ref().is_none_or(|i| i.len() <= 1);
+    let show_dims = req.show_dimensions != Some(false);
+    let callouts = drawing.hole_callouts != Some(false);
+    let marks = drawing.center_marks != Some(false);
+    for (j, p) in jobs.iter().zip(&placements) {
+        if j.name == "isometric" {
+            continue;
+        }
+        let b = j.view.bounds;
+        let auto = |id_tail: &str, kind: &str, a: [f64; 2], c: [f64; 2], default: f64| {
+            let id = format!("auto:{}:{id_tail}", j.name);
+            if hidden.contains(id.as_str()) {
+                return None;
+            }
+            let off = offsets.get(&id).copied().unwrap_or(default);
+            linear_dim(kind, a, c, off)
+                .map(|rd| (dimension_to_sheet(&rd, p), id, kind.to_string(), off))
+        };
+        let mut queued = Vec::new();
+        if show_dims {
+            // Overall size: width + height on the main view (single view:
+            // the one view); depth on the right view (standard layout).
+            let (want_w, want_h) = match (standard, j.name.as_str()) {
+                (false, _) | (true, "front") => (true, true),
+                (true, "right") => (true, false),
+                _ => (false, false),
+            };
+            let tail_w = if standard && j.name == "right" {
+                "depth"
+            } else {
+                "width"
+            };
+            if want_w {
+                queued.extend(auto(
+                    tail_w,
+                    "horizontal",
+                    [b.min_x, b.min_y],
+                    [b.max_x, b.min_y],
+                    -10.0 / s,
+                ));
+            }
+            if want_h {
+                queued.extend(auto(
+                    "height",
+                    "vertical",
+                    [b.max_x, b.min_y],
+                    [b.max_x, b.max_y],
+                    10.0 / s,
+                ));
+            }
+        }
+        let circles = detect_circles(&j.view);
+        circle_count += circles.len();
+        if marks {
+            for c in &circles {
+                let sc = p.to_sheet(c.center);
+                spec.center_lines.push(center_mark(sc, c.radius * s));
+            }
+        }
+        if show_dims && callouts && !circles.is_empty() {
+            // Locations: baseline dims from the view's lower-left corner to
+            // each distinct hole x / y (skipped when there are too many to
+            // read — the callout still gives the size).
+            let mut xs: Vec<f64> = Vec::new();
+            let mut ys: Vec<f64> = Vec::new();
+            for c in &circles {
+                let near = |v: &Vec<f64>, x: f64| {
+                    v.iter()
+                        .any(|o| (o - x).abs() < 1e-3 * b.width().max(b.height()))
+                };
+                if !near(&xs, c.center.x) && (c.center.x - b.min_x).abs() > 1e-6 {
+                    xs.push(c.center.x);
+                }
+                if !near(&ys, c.center.y) && (c.center.y - b.min_y).abs() > 1e-6 {
+                    ys.push(c.center.y);
+                }
+            }
+            xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            ys.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let full = circles.len() == 1
+                && (circles[0].radius * 2.0 - b.width()).abs() < 0.02 * b.width();
+            // Locations read only on a single part; on an assembly they'd
+            // dimension one part's holes from another part's corner.
+            if single_part && !full && xs.len() <= 4 && ys.len() <= 4 {
+                for (i, x) in xs.iter().enumerate() {
+                    queued.extend(auto(
+                        &format!("hx{i}"),
+                        "horizontal",
+                        [b.min_x, b.max_y],
+                        [*x, b.max_y],
+                        (10.0 + 7.0 * i as f64) / s,
+                    ));
+                }
+                for (i, y) in ys.iter().enumerate() {
+                    queued.extend(auto(
+                        &format!("hy{i}"),
+                        "vertical",
+                        [b.min_x, b.min_y],
+                        [b.min_x, *y],
+                        -(10.0 + 7.0 * i as f64) / s,
+                    ));
+                }
+            }
+        }
+        for (rd, id, kind, off) in queued {
+            push_dim(&mut spec, &mut handles, rd, id, &j.name, true, &kind, off);
+        }
+        if show_dims && callouts {
+            // At most four callouts per view (most-repeated sizes first, then
+            // smallest — holes before outlines), one per diagonal so the
+            // leaders fan out instead of stacking.
+            let mut groups = group_circles(&circles);
+            groups.sort_by(|a, b| {
+                b.circles.len().cmp(&a.circles.len()).then(
+                    a.diameter
+                        .partial_cmp(&b.diameter)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
+            });
+            groups.truncate(4);
+            groups.sort_by(|a, b| {
+                a.diameter
+                    .partial_cmp(&b.diameter)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            const DIAGONALS: [f64; 4] = [0.25, 0.75, -0.25, -0.75];
+            for (gi, g) in groups.iter().enumerate() {
+                let id = format!("auto:{}:hole{gi}", j.name);
+                if hidden.contains(id.as_str()) {
+                    continue;
+                }
+                let angle = DIAGONALS[gi] * std::f64::consts::PI;
+                // The member furthest along the leader's direction, so the
+                // leader leaves the pattern rather than crossing it.
+                let c = *g
+                    .circles
+                    .iter()
+                    .max_by(|a, b| {
+                        let k = |c: &&vcad_kernel_drafting::CircleFeature| {
+                            c.center.x * angle.cos() + c.center.y * angle.sin()
+                        };
+                        k(a).partial_cmp(&k(b)).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .unwrap_or(&g.circles[0]);
+                let len = offsets.get(&id).copied().unwrap_or(6.0);
+                let rd = leader_callout_at(
+                    p.to_sheet(c.center),
+                    c.radius * s,
+                    &diameter_text(g),
+                    len,
+                    angle,
+                );
+                push_dim(
+                    &mut spec,
+                    &mut handles,
+                    rd,
+                    id,
+                    &j.name,
+                    true,
+                    "callout",
+                    len,
+                );
+            }
+        }
+    }
+    for d in drawing.dimensions.iter().flatten() {
+        let Some(p) = place_of(&d.view) else { continue };
+        if d.kind == "centerline" {
+            // Thin dash-dot line between the two points, 3 mm past each end.
+            let (pa, pb) = (
+                p.to_sheet(Point2D::new(d.a[0], d.a[1])),
+                p.to_sheet(Point2D::new(d.b[0], d.b[1])),
+            );
+            let len = pa.distance(&pb);
+            if len < 1e-9 {
+                continue;
+            }
+            let (ux, uy) = ((pb.x - pa.x) / len, (pb.y - pa.y) / len);
+            let mut rd = RenderedDimension::new();
+            rd.add_line(
+                Point2D::new(pa.x - 3.0 * ux, pa.y - 3.0 * uy),
+                Point2D::new(pb.x + 3.0 * ux, pb.y + 3.0 * uy),
+            );
+            if let Some((lo, hi)) = rd.bounds() {
+                handles.push(DimensionHandle {
+                    id: d.id.clone(),
+                    view: d.view.clone(),
+                    auto: false,
+                    min: [lo.x - 1.0, lo.y - 1.0],
+                    max: [hi.x + 1.0, hi.y + 1.0],
+                    offset: 0.0,
+                    kind: "centerline".into(),
+                });
+            }
+            spec.center_lines.push(rd);
+            continue;
+        }
+        if let Some(rd) = linear_dim(&d.kind, d.a, d.b, d.offset) {
+            let rd = dimension_to_sheet(&rd, p);
+            push_dim(
+                &mut spec,
+                &mut handles,
+                rd,
+                d.id.clone(),
+                &d.view,
+                false,
+                &d.kind,
+                d.offset,
+            );
+        }
+    }
+
+    // ---- sections and details --------------------------------------------
+    let mut resolved = 0;
+    for (j, at) in side.iter().zip(&side_centers) {
+        match j {
+            SideJob::Section {
+                sv,
+                label,
+                cut,
+                parent,
+            } => {
+                resolved += 1;
+                spec.sections.push(PlacedSectionView {
+                    view: sv.clone(),
+                    center: *at,
+                    scale: s,
+                    label: Some(format!("SECTION {0}-{0}  ({scale_note})", label)),
+                });
+                if let Some(p) = place_of(parent) {
+                    spec.annotations.push(dimension_to_sheet(cut, p));
+                }
+            }
+            SideJob::Detail { req: d, parent } => {
+                let Some(p) = place_of(parent) else { continue };
+                let Some(pj) = jobs.iter().find(|j| &j.name == parent) else {
+                    continue;
+                };
+                let params = DetailViewParams::new(
+                    Point2D::new(d.center[0], d.center[1]),
+                    d.scale * s,
+                    d.width,
+                    d.height,
+                    d.label.clone(),
+                );
+                let dv = create_detail_view(&pj.view, &params);
+                let c = p.to_sheet(Point2D::new(d.center[0], d.center[1]));
+                let r = d.width.max(d.height) / 2.0 * s;
+                let mut callout = RenderedDimension::new();
+                callout.arcs.push(vcad_kernel_drafting::RenderedArc::new(
+                    c,
+                    r,
+                    0.0,
+                    std::f64::consts::TAU,
+                ));
+                callout.texts.push(RenderedText::new(
+                    Point2D::new(c.x + r * 0.75 + 2.0, c.y + r * 0.75 + 2.0),
+                    d.label.clone(),
+                    4.0,
+                ));
+                spec.annotations.push(callout);
+                let ratio = d.scale * s;
+                let note = if ratio >= 1.0 {
+                    format!("{}:1", (ratio * 100.0).round() / 100.0)
+                } else {
+                    format!("1:{}", (1.0 / ratio).round())
+                };
+                spec.details.push(PlacedDetailView {
+                    view: dv,
+                    center: *at,
+                    label: Some(format!("DETAIL {}  ({note})", d.label)),
+                });
+            }
+        }
+    }
+
+    // ---- GD&T ------------------------------------------------------------
+    // Placed at the anchor's sheet position so frames stay readable at any
+    // scale, kept clear of outlines, dimensions, cut lines, callouts and
+    // earlier symbols (sliding outward with a leader back to the anchor).
     let mut obstacles: Vec<Obstacle> = spec.annotations.iter().flat_map(obstacles_of).collect();
-    let lo = main.to_sheet(Point2D::new(b.min_x, b.min_y));
-    let hi = main.to_sheet(Point2D::new(b.max_x, b.max_y));
-    obstacles.push(Obstacle::Rect((lo, hi)));
-    for g in &req.gdt {
-        let mut gdt = AnnotationLayer::new();
-        let at = main.to_sheet(Point2D::new(g.at[0], g.at[1]));
+    for p in &placements {
+        let lo = p.to_sheet(Point2D::new(p.bounds.min_x, p.bounds.min_y));
+        let hi = p.to_sheet(Point2D::new(p.bounds.max_x, p.bounds.max_y));
+        obstacles.push(Obstacle::Rect((lo, hi)));
+    }
+    let mut gdt: Vec<GdtRequest> = drawing
+        .gdt
+        .iter()
+        .flatten()
+        .map(|g| GdtRequest {
+            kind: g.kind.clone(),
+            tolerance: g.tolerance,
+            datum: g.datum.clone(),
+            at: g.at,
+            view: g.view.clone(),
+            id: Some(g.id.clone()),
+        })
+        .collect();
+    gdt.extend(req.gdt.iter().cloned());
+    for g in &gdt {
+        let view = g.view.clone().unwrap_or_else(|| main_name.clone());
+        let Some(p) = place_of(&view) else { continue };
+        let mut layer = AnnotationLayer::new();
+        let at = p.to_sheet(Point2D::new(g.at[0], g.at[1]));
         let datum = g
             .datum
             .as_deref()
@@ -534,28 +1062,49 @@ pub fn compose(doc_text: &str, doc: &Document, req: &DrawingRequest) -> Result<C
             .unwrap_or('A');
         match g.kind.as_str() {
             "flatness" => {
-                gdt.add_flatness_tolerance(g.tolerance, at);
+                layer.add_flatness_tolerance(g.tolerance, at);
             }
             "position" => {
-                gdt.add_position_tolerance(g.tolerance, at, datum);
+                layer.add_position_tolerance(g.tolerance, at, datum);
             }
             "perpendicularity" => {
-                gdt.add_perpendicularity_tolerance(g.tolerance, at, datum);
+                layer.add_perpendicularity_tolerance(g.tolerance, at, datum);
             }
             "datum" => {
-                gdt.add_datum_symbol(datum, at);
+                layer.add_datum_symbol(datum, at);
             }
             other => return Err(format!("unknown GD&T kind `{other}`")),
         }
-        for rd in gdt.render_all(None) {
+        for rd in layer.render_all(None) {
             let placed = place_clear(&rd, at, &obstacles, 1.0);
             obstacles.extend(obstacles_of(&placed));
+            if let (Some(id), Some((lo, hi))) = (&g.id, placed.bounds()) {
+                handles.push(DimensionHandle {
+                    id: id.clone(),
+                    view: view.clone(),
+                    auto: false,
+                    min: [lo.x, lo.y],
+                    max: [hi.x, hi.y],
+                    offset: 0.0,
+                    kind: "gdt".into(),
+                });
+            }
             spec.annotations.push(placed);
         }
     }
 
     if let Some(tb) = &drawing.title_block {
-        spec.title_block = Some(kernel_title_block(tb, &scale_note));
+        let mut fields = kernel_title_block(tb, &scale_note);
+        if fields.material.is_empty() {
+            // One material across the parts → it's the drawing's material.
+            let mut mats: Vec<&String> = doc.part_materials.values().collect();
+            mats.sort();
+            mats.dedup();
+            if let [m] = mats.as_slice() {
+                fields.material = (*m).clone();
+            }
+        }
+        spec.title_block = Some(fields);
     }
     if drawing.show_bom == Some(true) {
         let materials = &doc.part_materials;
@@ -583,10 +1132,14 @@ pub fn compose(doc_text: &str, doc: &Document, req: &DrawingRequest) -> Result<C
         }
     }
 
+    let view = jobs.swap_remove(0).view;
     Ok(Composed {
         spec,
         view,
         main,
+        views: placements,
+        handles,
+        circles: circle_count,
         sections: resolved,
     })
 }
@@ -632,6 +1185,7 @@ pub extern "C" fn vcad_drawing_sheet_json(
         };
         let sheet = compose_sheet(&c.spec);
         let (width, height) = sheet.size.dimensions_mm();
+        let sheet_size = sheet_size_name(sheet.size);
         let result = DrawingResult {
             width,
             height,
@@ -641,6 +1195,10 @@ pub extern "C" fn vcad_drawing_sheet_json(
             dxf_entities: c.view.edges.len(),
             sections: c.sections,
             main: c.main,
+            views: c.views,
+            dimensions: c.handles,
+            circles: c.circles,
+            sheet_size,
         };
         json_out(&result)
     })
@@ -664,6 +1222,11 @@ pub extern "C" fn vcad_drawing_export(
         let c = err::ctx("drawing", || compose(&text, &doc, &req))?;
         let (bytes, n) = match format {
             VCAD_DRAWING_DXF => (projected_view_to_dxf(&c.view), c.view.edges.len() as i64),
+            VCAD_DRAWING_SHEET_DXF => {
+                let sheet = compose_sheet(&c.spec);
+                let n = (sheet.lines.len() + sheet.arcs.len() + sheet.texts.len()) as i64;
+                (sheet_to_dxf(&sheet, 1.0 / c.main.scale), n)
+            }
             VCAD_DRAWING_PDF => {
                 let pdf = sheet_to_pdf(&compose_sheet(&c.spec));
                 let n = pdf.len() as i64;
@@ -1073,5 +1636,139 @@ mod tests {
             }
         }
         assert!(checked >= 8, "only {checked} sample views checked");
+    }
+
+    fn texts_of(v: &serde_json::Value) -> Vec<String> {
+        v["sheet"]["texts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t["text"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn handle_ids(v: &serde_json::Value) -> Vec<String> {
+        v["dimensions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["id"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn standard_layout_places_four_views_with_auto_annotations() {
+        let v = call(r#"{"view":"standard"}"#);
+        let views: Vec<&str> = v["views"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(views, ["front", "top", "right", "isometric"]);
+        assert_eq!(v["sheet_size"], "A4");
+        // Third-angle: top above front, right to the right of front.
+        let c = |i: usize, k: usize| v["views"][i]["sheet_center"][k].as_f64().unwrap();
+        assert!((c(0, 0) - c(1, 0)).abs() < 1e-9 && c(1, 1) > c(0, 1));
+        assert!((c(0, 1) - c(2, 1)).abs() < 1e-9 && c(2, 0) > c(0, 0));
+        let texts = texts_of(&v);
+        assert!(texts.iter().any(|t| t == "⌀8"), "hole callout: {texts:?}");
+        assert!(texts.iter().any(|t| t.contains("SECTION A-A")), "{texts:?}");
+        let ids = handle_ids(&v);
+        for want in [
+            "auto:front:width",
+            "auto:front:height",
+            "auto:right:depth",
+            "auto:top:hole0",
+        ] {
+            assert!(ids.iter().any(|i| i == want), "{want} in {ids:?}");
+        }
+        assert!(v["circles"].as_u64().unwrap() >= 1);
+        let center = v["sheet"]["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|l| l["class"] == "center")
+            .count();
+        assert!(center >= 2, "center mark lines: {center}");
+    }
+
+    #[test]
+    fn dimensions_hide_move_and_user_add() {
+        let doc = cube_doc().replace(
+            r#""showBom":true"#,
+            r#""showBom":true,"hiddenDimensions":["auto:front:height"],
+               "dimensionOffsets":{"auto:front:width":-30},
+               "dimensions":[{"id":"u1","view":"front","kind":"horizontal","a":[0,0],"b":[20,0],"offset":-20}],
+               "gdt":[{"id":"g1","kind":"datum","datum":"B","at":[0,0]}]"#,
+        );
+        let v = call_doc(&doc, r#"{"view":"standard"}"#);
+        let ids = handle_ids(&v);
+        assert!(!ids.iter().any(|i| i == "auto:front:height"), "{ids:?}");
+        assert!(
+            ids.iter().any(|i| i == "u1") && ids.iter().any(|i| i == "g1"),
+            "{ids:?}"
+        );
+        let w = v["dimensions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|d| d["id"] == "auto:front:width")
+            .unwrap();
+        assert_eq!(w["offset"], -30.0);
+        assert!(
+            texts_of(&v).iter().any(|t| t.starts_with("20")),
+            "user dim value"
+        );
+    }
+
+    #[test]
+    fn drawing_follows_model_edits() {
+        let a = call_doc(&cube_doc(), r#"{"view":"standard"}"#);
+        let doc = cube_doc().replace(r#""x":40,"y":20,"z":10"#, r#""x":64,"y":20,"z":10"#);
+        let b = call_doc(&doc, r#"{"view":"standard"}"#);
+        assert!(texts_of(&a).iter().any(|t| t.starts_with("40")));
+        assert!(
+            texts_of(&b).iter().any(|t| t.starts_with("64")),
+            "{:?}",
+            texts_of(&b)
+        );
+    }
+
+    #[test]
+    fn sheet_dxf_is_true_scale() {
+        let d = CString::new(cube_doc()).unwrap();
+        let r = CString::new(r#"{"view":"standard"}"#).unwrap();
+        let dir = std::env::temp_dir().join(format!("vcad-sheet-dxf-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sheet.dxf");
+        let out = CString::new(path.to_str().unwrap()).unwrap();
+        let n = vcad_drawing_export(d.as_ptr(), r.as_ptr(), out.as_ptr(), VCAD_DRAWING_SHEET_DXF);
+        assert!(n > 0, "{:?}", err::last_error_string());
+        let text = std::fs::read_to_string(&path).unwrap();
+        // Find the longest VISIBLE line: the 40 mm block edge, at true size.
+        let lines: Vec<&str> = text.lines().collect();
+        let mut longest: f64 = 0.0;
+        for i in 0..lines.len() {
+            if lines[i] == "LINE" && lines.get(i + 2) == Some(&"VISIBLE") {
+                let f = |k: usize| lines[i + k].trim().parse::<f64>().unwrap();
+                let len = ((f(8) - f(4)).powi(2) + (f(10) - f(6)).powi(2)).sqrt();
+                longest = longest.max(len);
+            }
+        }
+        assert!(
+            (longest - 40.0).abs() < 0.05,
+            "longest visible edge {longest}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn big_part_picks_bigger_sheet() {
+        let doc = cube_doc().replace(r#""x":40,"y":20,"z":10"#, r#""x":400,"y":200,"z":100"#);
+        let v = call_doc(&doc, r#"{"view":"standard"}"#);
+        assert_ne!(v["sheet_size"], "A4");
+        let s = v["main"]["scale"].as_f64().unwrap();
+        assert!(s >= 0.5, "readable scale {s}");
     }
 }

@@ -71,6 +71,7 @@ pub mod import;
 mod json;
 pub mod pcb;
 pub mod print;
+mod printer;
 pub mod receipts;
 pub mod schematic;
 pub mod sensitivity;

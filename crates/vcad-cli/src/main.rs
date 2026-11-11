@@ -3515,7 +3515,8 @@ fn run_print_command(
         .and_then(|s| s.to_str())
         .unwrap_or("part")
         .to_string();
-    let job = print_job::prepare(&stem, vertices, indices, print_job::filament(profile)?)?;
+    let fil = print_job::filament(profile)?;
+    let job = print_job::prepare(&stem, vertices, indices, fil.clone())?;
     let out = output.unwrap_or_else(|| input.with_file_name(format!("{stem}.gcode.3mf")));
     std::fs::write(&out, &job.archive)?;
     println!(
@@ -3523,9 +3524,9 @@ fn run_print_command(
         out.display(),
         job.layers,
         (job.lint.total_s / 60.0).ceil(),
-        job.filament.kind,
-        job.filament.nozzle,
-        job.filament.bed,
+        fil.kind,
+        fil.nozzle,
+        fil.bed,
         if job.printcheck.ok { "ok" } else { "FAILED" }
     );
     let name = out

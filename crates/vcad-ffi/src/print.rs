@@ -80,7 +80,7 @@ impl Settings {
         Ok(())
     }
 
-    fn slice_settings(&self) -> SliceSettings {
+    pub(crate) fn slice_settings(&self) -> SliceSettings {
         SliceSettings {
             layer_height: self.layer_height,
             first_layer_height: self.first_layer_height,
@@ -102,6 +102,18 @@ impl Settings {
 }
 
 fn profile_id(name: &str) -> String {
+    // The short ids `printer()` and the app use for the common printers, so
+    // a listed id round-trips (`bambu_p1s`, not `bambu_lab_p1s`).
+    match name {
+        "Bambu Lab X1 Carbon" => return "bambu_x1c".into(),
+        "Bambu Lab P1S" => return "bambu_p1s".into(),
+        "Bambu Lab A1" => return "bambu_a1".into(),
+        "Bambu Lab A1 Mini" => return "bambu_a1_mini".into(),
+        "Creality Ender 3" => return "ender3".into(),
+        "Prusa MK4" => return "prusa_mk4".into(),
+        "Voron 2.4 (350mm)" => return "voron_24".into(),
+        _ => {}
+    }
     name.to_lowercase()
         .replace(' ', "_")
         .replace(['(', ')'], "")
@@ -179,7 +191,7 @@ pub(crate) fn bed_mesh(doc: &Document, bed: Option<(f64, f64)>) -> Result<Triang
     })
 }
 
-fn settings_of(req: &Value) -> Result<Settings, String> {
+pub(crate) fn settings_of(req: &Value) -> Result<Settings, String> {
     let s: Settings = match req.get("settings") {
         Some(v) if !v.is_null() => {
             serde_json::from_value(v.clone()).map_err(|e| format!("settings: {e}"))?
@@ -260,7 +272,15 @@ fn rings<'a, I: IntoIterator<Item = &'a [vcad_kernel_math::Point2]>>(it: I) -> V
 fn slice(doc: &Document, req: &Value) -> Result<Value, String> {
     let settings = settings_of(req)?;
     let profile = printer(&settings.printer);
-    let mesh = bed_mesh(doc, Some((profile.bed_x, profile.bed_y)))?;
+    let mut mesh = bed_mesh(doc, Some((profile.bed_x, profile.bed_y)))?;
+    // Preview the pose the user picked in Orient.
+    if let Some(r) = crate::printer::rotation_of(req)? {
+        vcad_slicer::orient::rotate_mesh(&mut mesh, &r);
+        let mut v = mesh.vertices.clone();
+        if vcad_slicer_bambu::job::center_on_plate(&mut v, &profile).is_ok() {
+            mesh.vertices = v;
+        }
+    }
     let result =
         vcad_slicer::slice(&mesh, &settings.slice_settings()).map_err(|e| e.to_string())?;
     let stats = &result.stats;
@@ -413,7 +433,13 @@ pub(crate) fn call(doc: Option<&Document>, req: &Value) -> Result<Value, String>
     if op == "profiles" {
         return Ok(profiles());
     }
+    if let Some(r) = crate::printer::call_nodoc(op, req) {
+        return r;
+    }
     let doc = doc.ok_or("print: this op needs a document")?;
+    if let Some(r) = crate::printer::call_doc(op, doc, req) {
+        return r;
+    }
     match op {
         "analyze" => analyze(doc, req),
         "slice" => slice(doc, req),
@@ -467,7 +493,14 @@ mod tests {
     #[test]
     fn profiles_list_printers() {
         let v = call(None, &json!({"op":"profiles"})).unwrap();
-        assert!(v["profiles"].as_array().unwrap().len() >= 5);
+        let list = v["profiles"].as_array().unwrap();
+        assert!(list.len() >= 5);
+        // Every listed id resolves back to the same profile.
+        for p in list {
+            let id = p["id"].as_str().unwrap();
+            assert_eq!(printer(id).name, p["name"].as_str().unwrap(), "{id}");
+        }
+        assert!(list.iter().any(|p| p["id"] == "bambu_p1s"));
     }
 
     /// Gate: a part is analysed, sliced (time + filament predicted), and
