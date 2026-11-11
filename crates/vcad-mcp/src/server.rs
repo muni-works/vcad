@@ -15,9 +15,9 @@ use serde_json::{json, Map, Value};
 
 use crate::protocol::*;
 use crate::proxy::{Proxy, ProxyConfig};
-use crate::store::{DocumentId, DocumentStore, StoreEvent, StoreKind};
+use crate::store::{CommitMeta, DocumentId, DocumentStore, StoreEvent, StoreKind};
 use crate::tasks::{Bus, BusEvent, TaskStore};
-use crate::tools::core::{core_tools, InfoSource};
+use crate::tools::core::InfoSource;
 use crate::tools::{ElicitFn, ProgressFn, ToolCtx, ToolDef, ToolError, LONG_RUNNING_TOOLS};
 
 /// Outbound message sink (notifications, server→client requests).
@@ -34,6 +34,12 @@ pub struct ServerConfig {
     pub instructions: Option<String>,
     /// Node upstream for unported tools; `None` = native only.
     pub proxy: Option<ProxyConfig>,
+    /// Names the serving instance on every tool result (vcad.app: pid, port,
+    /// open document). `None` headless.
+    pub instance_meta: Option<Arc<dyn Fn() -> Value + Send + Sync>>,
+    /// Rewrites each `tools/list` entry (vcad.app adds the live viewer's
+    /// `_meta.ui` to tools that change the document).
+    pub listing_hook: Option<Arc<dyn Fn(&mut Value) + Send + Sync>>,
 }
 
 impl Default for ServerConfig {
@@ -46,6 +52,8 @@ impl Default for ServerConfig {
                     .into(),
             ),
             proxy: ProxyConfig::from_env(),
+            instance_meta: None,
+            listing_hook: None,
         }
     }
 }
@@ -137,6 +145,10 @@ struct Inner {
     tasks: Arc<TaskStore>,
     config: ServerConfig,
     instance_id: String,
+    /// vcad.app: the session dir node sees. Before a proxied call the app's
+    /// document is written here; after it, node's result is committed back
+    /// to the live window as one undo step.
+    mirror: Option<Arc<crate::store::HeadlessStore>>,
 }
 
 /// The MCP server. Cheap to clone.
@@ -163,10 +175,26 @@ impl Server {
         let bus = Arc::new(Bus::default());
         let tasks = Arc::new(TaskStore::new(bus.clone()));
         let instance_id = format!("{}-{}", crate::store::boot_token(), std::process::id());
-        // Share the session dir with the node upstream.
-        if let (Some(p), Some(dir)) = (config.proxy.as_mut(), store.location()) {
-            p.env
-                .push(("VCAD_MCP_SESSION_DIR".into(), dir.display().to_string()));
+        // Share the session dir with the node upstream (the app has none of
+        // its own: give node a mirror dir the core keeps in step).
+        let mut mirror = None;
+        if let Some(p) = config.proxy.as_mut() {
+            let dir = store.location().or_else(|| {
+                (store.kind() == StoreKind::App).then(|| {
+                    crate::store::vcad_home()
+                        .join("app-proxy")
+                        .join(std::process::id().to_string())
+                })
+            });
+            if let Some(dir) = dir {
+                if store.location().is_none() {
+                    mirror = Some(Arc::new(crate::store::HeadlessStore::new(dir.clone())));
+                }
+                p.env
+                    .push(("VCAD_MCP_SESSION_DIR".into(), dir.display().to_string()));
+            }
+            // The core writes session files between node's calls.
+            p.env.push(("VCAD_MCP_PROXIED".into(), "1".into()));
         }
         let proxy = config.proxy.clone().map(|c| Arc::new(Proxy::new(c)));
         if let Some(p) = &proxy {
@@ -187,7 +215,7 @@ impl Server {
             started: Instant::now(),
             instance_id: instance_id.clone(),
         };
-        let tools = core_tools(info)
+        let tools = crate::tools::native_tools(info)
             .into_iter()
             .map(|t| (t.name.clone(), t))
             .collect();
@@ -220,6 +248,7 @@ impl Server {
                 tasks,
                 config,
                 instance_id,
+                mirror,
             }),
         }
     }
@@ -282,6 +311,14 @@ impl Server {
                 }
             }
         }
+        if let Some(h) = &self.inner.config.listing_hook {
+            list.iter_mut().for_each(|t| h(t));
+        }
+        list.sort_by(|a, b| {
+            a.get("name")
+                .and_then(Value::as_str)
+                .cmp(&b.get("name").and_then(Value::as_str))
+        });
         json!({ "tools": list })
     }
 
@@ -295,7 +332,49 @@ impl Server {
             .unwrap_or_else(|| LONG_RUNNING_TOOLS.contains(&name))
     }
 
-    fn call_tool(&self, params: &Value, ctx: ToolCtx) -> Result<Value, RpcErr> {
+    fn call_tool(&self, params: &Value, mut ctx: ToolCtx) -> Result<Value, RpcErr> {
+        // Legacy clients may still send MRTR answers inline.
+        if ctx.input_responses.is_null() {
+            if let Some(v) = params.get("inputResponses").filter(|v| v.is_object()) {
+                ctx.input_responses = v.clone();
+            }
+        }
+        let mut out = self.call_tool_inner(params, ctx)?;
+        self.stamp_instance(&mut out);
+        Ok(out)
+    }
+
+    /// `ServerConfig::instance_meta`: name the serving instance on every tool
+    /// result (`_meta["io.vcad/instance"]` + one trailing text line), so an
+    /// agent can tell which vcad.app window it is driving.
+    fn stamp_instance(&self, out: &mut Value) {
+        let Some(f) = &self.inner.config.instance_meta else {
+            return;
+        };
+        let meta = f();
+        let Some(obj) = out.as_object_mut() else {
+            return;
+        };
+        let line = match (meta.get("pid"), meta.get("document").and_then(Value::as_str)) {
+            (Some(pid), doc) => Some(format!(
+                "[vcad.app pid {pid} · {}]",
+                doc.unwrap_or("no document")
+            )),
+            _ => None,
+        };
+        if let Some(m) = obj
+            .entry("_meta")
+            .or_insert_with(|| json!({}))
+            .as_object_mut()
+        {
+            m.insert("io.vcad/instance".into(), meta);
+        }
+        if let (Some(line), Some(c)) = (line, obj.get_mut("content").and_then(Value::as_array_mut)) {
+            c.push(json!({"type": "text", "text": line}));
+        }
+    }
+
+    fn call_tool_inner(&self, params: &Value, ctx: ToolCtx) -> Result<Value, RpcErr> {
         let name = params
             .get("name")
             .and_then(Value::as_str)
@@ -338,13 +417,22 @@ impl Server {
                 None => RpcErr::new(ERR_INVALID_PARAMS, format!("Unknown tool '{name}'")),
             });
         };
-        let mut v = proxy
-            .call_tool(
-                name,
-                args,
-                Some(ctx.progress.clone()),
-                Some(ctx.elicit.clone()),
-            )
+        let mut args = args;
+        let mirrored = self.mirror_in(name, &mut args);
+        let result = proxy.call_tool(
+            name,
+            args,
+            Some(ctx.progress.clone()),
+            Some(ctx.elicit.clone()),
+        );
+        if let (Some((id, before)), Some(m)) = (mirrored, &self.inner.mirror) {
+            if let Ok(after) = m.load(&id) {
+                if serde_json::to_string(&after).ok() != Some(before) {
+                    let _ = self.inner.store.commit(&id, after, CommitMeta::agent(name));
+                }
+            }
+        }
+        let mut v = result
             .map_err(|e| RpcErr {
                 code: e.code,
                 message: e.message,
@@ -359,6 +447,31 @@ impl Server {
         Ok(v)
     }
 
+    /// vcad.app + proxied call: write the target document (named, else the
+    /// front window) into node's session dir and name it in the arguments.
+    fn mirror_in(&self, name: &str, args: &mut Value) -> Option<(DocumentId, String)> {
+        let m = self.inner.mirror.as_ref()?;
+        // Only tools that take a session document.
+        let takes_doc = self.inner.proxy.as_ref()?.list_tools()?.iter().any(|t| {
+            t.get("name").and_then(Value::as_str) == Some(name)
+                && t.pointer("/inputSchema/properties/document_id").is_some()
+        });
+        if !takes_doc {
+            return None;
+        }
+        let id = match args.get("document_id").and_then(Value::as_str) {
+            Some(id) => DocumentId::from(id),
+            None => self.inner.store.current()?,
+        };
+        let doc = self.inner.store.load(&id).ok()?;
+        let before = serde_json::to_string(&doc).ok()?;
+        m.put(&id, doc).ok()?;
+        if let Some(o) = args.as_object_mut() {
+            o.entry("document_id").or_insert_with(|| json!(id.0));
+        }
+        Some((id, before))
+    }
+
     fn resources_list(&self) -> Value {
         let mut res = vec![json!({
             "uri": "vcad://doc/current",
@@ -366,6 +479,7 @@ impl Server {
             "description": "The document the user (app) or the last tool call is working on.",
             "mimeType": "application/vnd.vcad+json",
         })];
+        res.extend(self.inner.store.live_resources());
         if let Ok(docs) = self.inner.store.list() {
             for d in docs {
                 res.push(json!({
@@ -380,6 +494,9 @@ impl Server {
 
     fn resources_read(&self, params: &Value) -> Result<Value, RpcErr> {
         let uri = params.get("uri").and_then(Value::as_str).unwrap_or("");
+        if let Some(r) = self.inner.store.read_live_resource(uri) {
+            return r.map_err(|e| RpcErr::new(LEGACY_RESOURCE_NOT_FOUND, e.to_string()));
+        }
         let not_found = || RpcErr {
             code: LEGACY_RESOURCE_NOT_FOUND,
             message: format!("Resource not found: {uri}"),
@@ -459,11 +576,18 @@ impl Server {
                 })
             }
         };
+        let input_responses = match mode {
+            ElicitMode::Mrtr { responses, .. } if !responses.is_empty() => {
+                Value::Object(responses.clone())
+            }
+            _ => Value::Null,
+        };
         ToolCtx {
             store: self.inner.store.clone(),
             progress,
             elicit,
             cancel: Arc::new(Default::default()),
+            input_responses,
         }
     }
 
@@ -679,6 +803,7 @@ impl Server {
                 }),
                 elicit: Arc::new(move |params| tasks2.elicit(&tid2, params)),
                 cancel,
+                input_responses: Value::Null,
             };
             let server = self.clone();
             std::thread::spawn(move || match server.call_tool(&forwarded, ctx) {

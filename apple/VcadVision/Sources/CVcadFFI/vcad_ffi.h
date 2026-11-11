@@ -834,6 +834,28 @@ char *vcad_schematic_simulate(const char *schematic_json, const char *request_js
 /* -> {count, violations[]} */
 char *vcad_schematic_erc(const char *schematic_json);
 
+/* --- MCP core hosted by the app (mcp.rs) ---
+ * vcad.app runs the Rust MCP core (crates/vcad-mcp): one dispatcher, the same
+ * tools `vcad mcp` serves headless. The core calls `host` (on its worker
+ * threads, never the caller's) with a JSON request {op, ...} and frees the
+ * malloc'ed (strdup) JSON reply. Ops: front, open, read, apply, release,
+ * documents, undo, open_path, live_resources, read_resource, engine_tool,
+ * host_call, instance_meta -- see crates/vcad-ffi/src/mcp.rs. */
+typedef struct VcadMcpApp VcadMcpApp;
+typedef char *(*vcad_mcp_host_fn)(void *ctx, const char *request_json);
+/* config {name?, version?, instructions?, port?, attempts?, serve_http?,
+ * proxy?, node_cmd?, viewer_uri?}; null + vcad_last_error when no port binds. */
+VcadMcpApp *vcad_mcp_app_start(vcad_mcp_host_fn host, void *ctx, const char *config_json);
+uint16_t vcad_mcp_app_port(const VcadMcpApp *app);
+/* One JSON-RPC message through the dispatcher; owned reply (vcad_string_free)
+ * or null for a notification. Never call on the thread `host` needs. */
+char *vcad_mcp_app_call(const VcadMcpApp *app, const char *msg_json);
+void vcad_mcp_app_resource_updated(const VcadMcpApp *app, const char *uri);
+/* id null = the front window changed. */
+void vcad_mcp_app_document_changed(const VcadMcpApp *app, const char *id);
+/* host_tools.json, owned (vcad_string_free). */
+char *vcad_mcp_host_tools(void);
+
 #ifdef __cplusplus
 }
 #endif

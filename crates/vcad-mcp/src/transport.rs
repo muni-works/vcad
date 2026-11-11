@@ -242,6 +242,44 @@ fn origin_ok(headers: &Headers) -> bool {
     }
 }
 
+/// Streamable-HTTP `GET /mcp`: a server→client event stream of
+/// `notifications/resources/updated` and `notifications/tools/list_changed`
+/// for clients on the legacy era (vcad.app's agents, `vcad mcp`'s attach).
+fn serve_event_stream(server: &Server, mut out: TcpStream) -> std::io::Result<()> {
+    out.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nMcp-Session-Id: vcad\r\n\r\n: vcad\n\n")?;
+    out.flush()?;
+    let w = Arc::new(Mutex::new(out));
+    let alive = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let (w2, alive2) = (w.clone(), alive.clone());
+    let id = server.bus().on(Arc::new(move |evt: &crate::tasks::BusEvent| {
+        let msg = match evt {
+            crate::tasks::BusEvent::ResourceUpdated(uri) => json!({
+                "jsonrpc": "2.0", "method": "notifications/resources/updated", "params": {"uri": uri}
+            }),
+            crate::tasks::BusEvent::ToolsListChanged => {
+                json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+            }
+            crate::tasks::BusEvent::Task(_) => return,
+        };
+        let mut w = w2.lock().unwrap_or_else(|e| e.into_inner());
+        if w.write_all(format!("event: message\ndata: {msg}\n\n").as_bytes())
+            .and_then(|_| w.flush())
+            .is_err()
+        {
+            alive2.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+    }));
+    while alive.load(std::sync::atomic::Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_secs(15));
+        let mut g = w.lock().unwrap_or_else(|e| e.into_inner());
+        if g.write_all(b": keepalive\n\n").and_then(|_| g.flush()).is_err() {
+            break;
+        }
+    }
+    server.bus().off(id);
+    Ok(())
+}
+
 fn handle_http(server: &Server, stream: TcpStream) -> std::io::Result<()> {
     let mut out = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
@@ -263,6 +301,14 @@ fn handle_http(server: &Server, stream: TcpStream) -> std::io::Result<()> {
             &[],
             Some(&json!({"error": "not found; POST /mcp"})),
         );
+    }
+    if req.method == "GET"
+        && req
+            .headers
+            .get("accept")
+            .is_some_and(|a| a.contains("text/event-stream"))
+    {
+        return serve_event_stream(server, out);
     }
     match req.method.as_str() {
         "POST" => {}
