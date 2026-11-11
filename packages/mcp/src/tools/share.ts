@@ -19,7 +19,7 @@ import * as os from "node:os";
 import * as nodePath from "node:path";
 
 /** Where users without the native app get it. */
-export const VCAD_DOWNLOAD_URL = "https://vcad.io/download";
+export const VCAD_DOWNLOAD_URL = "https://github.com/muni-works/vcad/releases/latest";
 
 /** Session ids the app will look up on disk: no separators, no dots. */
 const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;

@@ -72,7 +72,7 @@
   {
     "name": "save_document",
     "title": "Save Document",
-    "description": "Persist a live session under a name so it can be reopened with load_document. On the hosted server the save is durable: a signed-in user's save goes to their vcad.io account under the (normalized) name; an anonymous save returns an unguessable `saved_…` key to reopen with. On a local/stdio server it writes `<name>.vcad` under VCAD_MCP_STATE_DIR (or the working directory) — plus `<name>.loon` when the document knows the source it was authored from, so the file and the session can't diverge without someone choosing it.",
+    "description": "Persist a live session under a name so it can be reopened with load_document. It writes `<name>.vcad` under VCAD_MCP_STATE_DIR (or the working directory) — plus `<name>.loon` when the document knows the source it was authored from, so the file and the session can't diverge without someone choosing it.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -190,7 +190,7 @@
       "properties": {
         "token": {
           "type": "string",
-          "description": "Legacy vcad.io share token. Not available in the local build (hosted services were retired) — returns an error; use `doc`."
+          "description": "Legacy hosted share token. Not available in the local build (hosted services were retired) — returns an error; use `doc`."
         },
         "doc": {
           "type": "string",
@@ -247,7 +247,7 @@
   {
     "name": "server_info",
     "title": "Server Info",
-    "description": "Report the running build's identity: version, git sha (if stamped), tool count, enabled packs, whether the kernel WASM loaded, and whether sessions are durable (`durable` — saved to the local disk store and survive a restart, vs. in-memory only). Call this to confirm a tool exists in THIS build before assuming a stale or version-skewed deploy, and to check durable:true before relying on checkpoints across a long session.",
+    "description": "Report the running build's identity: version, git sha (if stamped), tool count, enabled packs, whether the kernel WASM loaded, and whether sessions are durable (`durable` — saved to the local disk store and survive a restart, vs. in-memory only). Call this to confirm a tool exists in THIS build before assuming a stale or version-skewed deploy, and to check durable:true before relying on checkpoints across a long session. `update` compares this build with the newest @vcad/mcp on npm; when `update.state` is \"stale\", tell the user and suggest restarting the agent.",
     "inputSchema": {
       "type": "object",
       "properties": {}
