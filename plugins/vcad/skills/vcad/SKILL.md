@@ -81,6 +81,28 @@ Call `server_info` first.
   Tell the user and suggest restarting their agent (or updating vcad.app).
 - `durable: false` → sessions won't survive a restart; keep the loon source.
 
+## More than one vcad.app
+
+Each running vcad.app registers itself in `~/.vcad/instances/<pid>.json`
+(pid, port, open document, launch time); `~/.vcad/app.json` only points at
+the newest. Every app-bridge result ends with `[vcad.app pid N · document]`
+and carries `_meta["io.vcad/instance"]`: check it names the window you mean.
+A `⚠ vcad.app CHANGED` notice means the app relaunched or another window took
+over — re-read `app_state` before trusting earlier state.
+
+Pick the window explicitly when more than one runs:
+
+- `VCAD_APP_PID=<pid>` — that instance; fails loudly if it's gone.
+- `VCAD_APP_URL=http://127.0.0.1:<port>/mcp` — that endpoint, verbatim.
+- `VCAD_APP_DOCUMENT=<path>` — the instance with that file open.
+- otherwise the newest, with a warning listing the others. The choice is
+  pinned for the client's lifetime; a later launch never steals it.
+- `VCAD_APP=0` — `@vcad/mcp` doesn't link to any app.
+
+**Never `pkill`/`killall` vcad.app by pattern.** Other sessions may be driving
+other windows, and to them it looks like a crash. Quit only an instance you
+launched, by its pid (`kill <pid>`, from `~/.vcad/instances/`).
+
 ## Ground rules
 
 - vcad has no hosted services. Never send the user to a website to view,

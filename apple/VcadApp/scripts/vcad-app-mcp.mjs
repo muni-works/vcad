@@ -1,26 +1,52 @@
 #!/usr/bin/env node
 // stdio ↔ HTTP shim for the vcad desktop app's agent bridge.
 //
-// The app serves MCP on http://127.0.0.1:<port>/mcp and writes the port to
-// ~/.vcad/app.json. MCP clients that only speak stdio point here:
+// The app serves MCP on http://127.0.0.1:<port>/mcp and registers itself in
+// ~/.vcad/instances/<pid>.json. MCP clients that only speak stdio point here:
 //
 //   { "command": "node", "args": ["/path/to/vcad/apple/VcadApp/scripts/vcad-app-mcp.mjs"] }
 //
 // Each newline-delimited JSON-RPC message on stdin is POSTed to the app; the
-// JSON response (if any — notifications get 202) is written to stdout. The
-// port file is re-read on every request, so relaunching the app needs no
-// client restart.
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+// JSON response (if any — notifications get 202) is written to stdout.
+//
+// Which app: VCAD_APP_URL, else VCAD_APP_PID, else the instance whose open
+// document is VCAD_APP_DOCUMENT, else the newest (warning on stderr and in the
+// next tool result when several run). The choice is pinned for this process:
+// another window launching later never steals it. If the pinned app exits we
+// re-pick, and the first result from a different instance says so loudly.
 import { createInterface } from "node:readline";
+import { listInstances, relaunchTracker, selectInstance } from "./vcad-app-discovery.mjs";
 
-const discovery = join(homedir(), ".vcad", "app.json");
+let pinned = null; // {url, instance}
+let pendingNote = null;
+const noticeChange = relaunchTracker();
 
 function endpoint() {
-  if (process.env.VCAD_APP_URL) return process.env.VCAD_APP_URL;
-  const info = JSON.parse(readFileSync(discovery, "utf8"));
-  return info.url ?? `http://127.0.0.1:${info.port}/mcp`;
+  if (pinned && (process.env.VCAD_APP_URL || listInstances().some((r) => r.pid === pinned.instance?.pid))) {
+    return pinned.url;
+  }
+  const pick = selectInstance({ instances: listInstances() });
+  if (pick.error) throw new Error(pick.error);
+  if (pick.warning) {
+    process.stderr.write(`[vcad-app-mcp] ${pick.warning}\n`);
+    pendingNote = pick.warning;
+  }
+  pinned = pick;
+  return pick.url;
+}
+
+/** Prepend a notice (relaunch / ambiguity) to a tool result the agent will read. */
+function annotate(body) {
+  const meta = body?.result?._meta?.["io.vcad/instance"];
+  const notes = [noticeChange(meta), pendingNote].filter(Boolean);
+  pendingNote = null;
+  if (!notes.length) return body;
+  if (Array.isArray(body.result?.content)) {
+    body.result.content.unshift({ type: "text", text: `⚠ ${notes.join(" ")}` });
+  } else {
+    process.stderr.write(`[vcad-app-mcp] ${notes.join(" ")}\n`);
+  }
+  return body;
 }
 
 function reply(obj) {
@@ -43,13 +69,13 @@ rl.on("line", async (line) => {
       body: line,
     });
     if (res.status === 202 || msg.id === undefined) return;
-    reply(await res.json());
+    reply(annotate(await res.json()));
   } catch (e) {
     if (msg.id === undefined) return;
     reply({
       jsonrpc: "2.0",
       id: msg.id,
-      error: { code: -32000, message: `vcad app not reachable (${e.message}). Is vcad.app running? (${discovery})` },
+      error: { code: -32000, message: `vcad app not reachable (${e.message}). Is vcad.app running? (~/.vcad/instances)` },
     });
   }
 });
