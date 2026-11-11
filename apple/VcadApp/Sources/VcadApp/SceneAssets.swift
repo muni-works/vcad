@@ -32,6 +32,28 @@ enum SceneAssets {
     /// lines over the shaded surfaces, the classic CAD look.
     static let edgeMaterial = UnlitMaterial(color: NSColor(white: 0.09, alpha: 1.0))
 
+    /// The compiled viewport shaders (`Shaders/*.metal` → vcad.metallib,
+    /// built by bundle.sh). nil in `swift test`/dev runs without it.
+    private static let shaderLibrary: MTLLibrary? = {
+        guard let url = Bundle.main.url(forResource: "vcad", withExtension: "metallib"),
+              let device = MTLCreateSystemDefaultDevice() else { return nil }
+        return try? device.makeLibrary(URL: url)
+    }()
+
+    /// Screen-space, antialiased ink lines (constant pixel width, never
+    /// z-fighting the surface). nil when the shader library is missing —
+    /// callers fall back to `edgeMaterial` ribbons.
+    static func edgeLineMaterial(viewportHeightPx: Float, widthPx: Float = 1.25) -> CustomMaterial? {
+        guard let lib = shaderLibrary else { return nil }
+        let geo = CustomMaterial.GeometryModifier(named: "edgeLineGeometry", in: lib)
+        let surf = CustomMaterial.SurfaceShader(named: "edgeLineSurface", in: lib)
+        guard var m = try? CustomMaterial(surfaceShader: surf, geometryModifier: geo, lightingModel: .unlit)
+        else { return nil }
+        let pxPerUnit = 2 * tan(Float(60) / 2 * .pi / 180) / max(viewportHeightPx, 1)  // PerspectiveCamera FOV
+        m.custom.value = SIMD4(pxPerUnit, widthPx, 0.09, 0.0015)
+        return m
+    }
+
     /// Equirect of bold horizontal bands: the classic zebra-analysis light box.
     /// Reflected off a chromed surface, stripe kinks expose G1/G2 breaks.
     /// Viewport-only material softening, Fusion/Shapr3D style: dielectrics get

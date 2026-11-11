@@ -2025,11 +2025,17 @@ struct ReleasedARView: NSViewRepresentable {
             e.generateCollisionShapes(recursive: false)   // pass-through hit test
             // Feature edges as thin ink lines (the kernel already computes
             // them per part): the crisp CAD read Fusion/Shapr3D have.
-            if !model.zebraMode, i < scene.edges.count, !scene.edges[i].isEmpty,
-               let r = EdgeOverlay.ribbonResource(segments: scene.edges[i],
-                                                  width: max(scene.size, 10) * 0.0012,
-                                                  name: "edges\(i)") {
-                e.addChild(ModelEntity(mesh: r, materials: [SceneAssets.edgeMaterial]))
+            if !model.zebraMode, i < scene.edges.count, !scene.edges[i].isEmpty {
+                let view = ReleaseWindowController.shared.arView
+                let hPx = Float((view?.bounds.height ?? 900) * (view?.window?.backingScaleFactor ?? 2))
+                if let lines = SceneAssets.edgeLineMaterial(viewportHeightPx: hPx),
+                   let r = EdgeOverlay.screenLineResource(segments: scene.edges[i], name: "edges\(i)") {
+                    e.addChild(ModelEntity(mesh: r, materials: [lines]))
+                } else if let r = EdgeOverlay.ribbonResource(segments: scene.edges[i],
+                                                             width: max(scene.size, 10) * 0.0012,
+                                                             name: "edges\(i)") {
+                    e.addChild(ModelEntity(mesh: r, materials: [SceneAssets.edgeMaterial]))
+                }
             }
             centering.addChild(e)
         }
