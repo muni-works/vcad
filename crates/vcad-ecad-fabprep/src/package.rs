@@ -265,6 +265,50 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A default four-layer board that needs a layer change ships ONE drill
+    /// file: through vias only, never `drill-F_Cu-In1_Cu.drl` and friends.
+    #[test]
+    fn a_default_four_layer_board_ships_a_single_drill_file() {
+        let mut pcb = crate::test_support::walled_board();
+        let outcome = run_fab_prep(&mut pcb, &FabPrepOptions::default());
+        assert!(outcome.report.converged, "{:?}", outcome.report.blocker);
+        assert!(!pcb.vias.is_empty(), "the fixture must need a via");
+
+        let dir = tmpdir("through-only");
+        let written = write_fab_package(&dir, &pcb, &outcome, None).expect("package");
+        let drills: Vec<&String> = written.iter().filter(|w| w.ends_with(".drl")).collect();
+        assert!(
+            drills
+                .iter()
+                .all(|d| *d == "drill.drl" || d.contains("NPTH")),
+            "layer-pair drill file on a standard process: {drills:?}"
+        );
+        assert!(drills.iter().any(|d| *d == "drill.drl"), "{drills:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An incomplete board writes no fabrication files.
+    #[test]
+    fn an_incomplete_board_writes_no_fab_files() {
+        let mut pcb = test_board();
+        with_smd_pad(&mut pcb, "R1", "1", 2.0, 2.0, "OPEN");
+        with_smd_pad(&mut pcb, "R1", "2", 8.0, 8.0, "OPEN");
+        let outcome = run_fab_prep(
+            &mut pcb,
+            &FabPrepOptions {
+                route_remaining: false,
+                ..Default::default()
+            },
+        );
+        let dir = tmpdir("incomplete");
+        let err = write_fab_package(&dir, &pcb, &outcome, None).expect_err("must refuse");
+        assert!(matches!(err, PackageError::NotConverged(_)), "{err}");
+        assert!(!dir.join("drill.drl").exists());
+        let notes = std::fs::read_to_string(dir.join("FAB_NOTES.md")).unwrap();
+        assert!(notes.contains("NOT FULLY ROUTED"), "{notes}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_failed_run_is_refused_but_still_leaves_the_evidence() {
         let mut pcb = test_board();

@@ -152,3 +152,157 @@ pub fn with_trace(pcb: &mut Pcb, net: &str, x0: f64, y0: f64, x1: f64, y1: f64) 
         source: None,
     });
 }
+
+/// An empty `w`×`h` mm FOUR-layer board (F.Cu, In1, In2, B.Cu) with ordinary
+/// JLC-class rules — the standard process, through vias only.
+pub fn four_layer_board(w: f64, h: f64) -> Pcb {
+    let mut pcb = test_board();
+    pcb.outline.vertices = vec![
+        Vec2::new(0.0, 0.0),
+        Vec2::new(w, 0.0),
+        Vec2::new(w, h),
+        Vec2::new(0.0, h),
+    ];
+    pcb.stackup.layers = [
+        PcbLayer::FCu,
+        PcbLayer::In1Cu,
+        PcbLayer::In2Cu,
+        PcbLayer::BCu,
+    ]
+    .into_iter()
+    .map(|layer| StackupLayer {
+        role: None,
+        role_inferred: false,
+        layer,
+        copper_thickness: Some(0.035),
+        dielectric_thickness: Some(0.2),
+        dielectric_er: Some(4.5),
+        material: Some("FR4".into()),
+    })
+    .collect();
+    pcb
+}
+
+/// Three 0603-ish resistors on F.Cu wired in a triangle (`N1`, `N2`, `N3`),
+/// with no copper at all — the smallest SMD board that reproduced the
+/// terminal-pinning bug.
+pub fn three_resistor_board() -> Pcb {
+    let mut pcb = four_layer_board(20.0, 20.0);
+    with_smd_pad(&mut pcb, "R1", "1", 4.0, 4.0, "N3");
+    with_smd_pad(&mut pcb, "R1", "2", 5.6, 4.0, "N1");
+    with_smd_pad(&mut pcb, "R2", "1", 12.0, 4.0, "N1");
+    with_smd_pad(&mut pcb, "R2", "2", 13.6, 4.0, "N2");
+    with_smd_pad(&mut pcb, "R3", "1", 12.0, 14.0, "N3");
+    with_smd_pad(&mut pcb, "R3", "2", 13.6, 14.0, "N2");
+    pcb
+}
+
+/// A four-layer board whose one connection (`SIG`, F.Cu pad to F.Cu pad) is
+/// cut on F.Cu by a full-height wall of another net (`WALL`, itself a
+/// legitimately connected pad-to-pad trace). The only way across is down
+/// through a via and back — so a router that does not pin terminals to the
+/// pad's layer starts the trace on an inner layer, floating.
+pub fn walled_board() -> Pcb {
+    let mut pcb = four_layer_board(20.0, 20.0);
+    with_smd_pad(&mut pcb, "R1", "1", 4.0, 10.0, "SIG");
+    with_smd_pad(&mut pcb, "R2", "1", 16.0, 10.0, "SIG");
+    with_smd_pad(&mut pcb, "W1", "1", 10.0, 0.8, "WALL");
+    with_smd_pad(&mut pcb, "W2", "1", 10.0, 19.2, "WALL");
+    with_trace(&mut pcb, "WALL", 10.0, 0.8, 10.0, 19.2);
+    pcb
+}
+
+/// Every trace end that sits on a pad of its net is on one of that pad's
+/// copper layers, or on a via of the net at that point. Returns the
+/// offending `(net, layer, x, y)` tuples.
+pub fn floating_pad_attachments(pcb: &Pcb) -> Vec<(String, PcbLayer, f64, f64)> {
+    let mut bad = Vec::new();
+    for t in &pcb.traces {
+        for p in [t.start, t.end] {
+            for fp in &pcb.footprints {
+                for pad in &fp.pads {
+                    if pad.net.as_deref() != Some(t.net.as_str()) {
+                        continue;
+                    }
+                    let w = vcad_ecad_pcb::geometry::pad_world_position(fp, pad);
+                    // On the pad (0.5 mm square pads in these fixtures).
+                    if (w.x - p.x).abs() > 0.25 || (w.y - p.y).abs() > 0.25 {
+                        continue;
+                    }
+                    if pad.layers.contains(&t.layer) {
+                        continue;
+                    }
+                    let via_here = pcb.vias.iter().any(|v| {
+                        v.net == t.net
+                            && ((v.position.x - p.x).powi(2) + (v.position.y - p.y).powi(2)).sqrt()
+                                <= v.diameter / 2.0
+                            && t.layer.spanned_by(v.start_layer, v.end_layer)
+                            && pad
+                                .layers
+                                .iter()
+                                .any(|l| l.spanned_by(v.start_layer, v.end_layer))
+                    });
+                    if !via_here {
+                        bad.push((t.net.clone(), t.layer, p.x, p.y));
+                    }
+                }
+            }
+        }
+    }
+    bad
+}
+
+/// A fine-pitch pad (`SIG`, U1.1 on F.Cu) walled in on its own layer by a
+/// closed ring of foreign copper (`WALL`) — except for a diagonal slot exactly
+/// as wide as one trace plus clearance, through which a hand-placed fan-out
+/// runs: a fixed F.Cu stub from the pad to a through via in open space. The
+/// other end of `SIG` (R2.1) is a free pad across the board.
+///
+/// The slot is legal for the fixed stub but far too tight for the router's
+/// axis-aligned grid, so a router that starts only at the pad proves it
+/// walled in; a router that starts anywhere on the pad's copper island starts
+/// at the via and routes.
+pub fn fanout_board() -> Pcb {
+    let mut pcb = four_layer_board(20.0, 20.0);
+    let (cx, cy, h) = (5.0, 10.0, 0.55);
+    with_smd_pad(&mut pcb, "U1", "1", cx, cy, "SIG");
+    with_smd_pad(&mut pcb, "R2", "1", 15.0, cy, "SIG");
+    // The wall: left, bottom, and the top/right sides stopping short of the
+    // top-right corner where the fan-out leaves on the diagonal.
+    let gap = 0.03;
+    for (x0, y0, x1, y1) in [
+        (cx - h, cy - h, cx - h, cy + h),
+        (cx - h, cy - h, cx + h, cy - h),
+        (cx - h, cy + h, cx - gap, cy + h),
+        (cx + h, cy - h, cx + h, cy - gap),
+    ] {
+        with_trace(&mut pcb, "WALL", x0, y0, x1, y1);
+    }
+    // The fan-out: stub on the diagonal, through via in open space.
+    let (vx, vy) = (cx + 1.5, cy + 1.5);
+    with_trace(&mut pcb, "SIG", cx, cy, vx, vy);
+    pcb.vias.push(vcad_ir::ecad::Via {
+        position: Vec2::new(vx, vy),
+        diameter: 0.6,
+        drill: 0.3,
+        start_layer: PcbLayer::FCu,
+        end_layer: PcbLayer::BCu,
+        net: "SIG".into(),
+        source: None,
+        via_type: None,
+    });
+    pcb
+}
+
+/// One net (`N`) already split into two islands by existing copper: A1–A2
+/// joined by a trace on the left, B1–B2 joined by a trace on the right.
+pub fn split_island_board() -> Pcb {
+    let mut pcb = four_layer_board(20.0, 20.0);
+    with_smd_pad(&mut pcb, "A1", "1", 3.0, 6.0, "N");
+    with_smd_pad(&mut pcb, "A2", "1", 3.0, 12.0, "N");
+    with_smd_pad(&mut pcb, "B1", "1", 15.0, 6.0, "N");
+    with_smd_pad(&mut pcb, "B2", "1", 15.0, 12.0, "N");
+    with_trace(&mut pcb, "N", 3.0, 6.0, 3.0, 12.0);
+    with_trace(&mut pcb, "N", 15.0, 6.0, 15.0, 12.0);
+    pcb
+}

@@ -37,6 +37,10 @@ pub struct FabPrepArgs {
     /// DRC rules whose route-attributable violations are accepted rather than
     /// fixed. Logged in the receipt; an unknown name refuses the run.
     pub accept: Vec<String>,
+    /// Ship a geometrically clean board with open nets (opt-in, logged).
+    pub allow_incomplete: bool,
+    /// Permit blind/buried vias on a board that does not declare them.
+    pub allow_blind_vias: bool,
 }
 
 /// Run the pipeline and write the package. Returns `Ok(false)` when the run did
@@ -70,15 +74,26 @@ pub fn run(args: &FabPrepArgs) -> Result<bool> {
         );
     }
 
+    if args.allow_incomplete {
+        println!(
+            "fab-prep: --allow-incomplete — a board with OPEN NETS may be written as a fab \
+             package; the receipt and FAB_NOTES.md will say NOT FULLY ROUTED"
+        );
+    }
+    if args.allow_blind_vias {
+        println!("fab-prep: --allow-blind-vias — the router may emit layer-pair vias");
+    }
     let opts = FabPrepOptions {
         calibrate_rules: args.calibrate_rules,
         route_remaining: !args.skip_routing,
         max_rounds: args.max_rounds,
         prune_dangling: !args.skip_prune,
         accept_rules: args.accept.clone(),
+        allow_incomplete: args.allow_incomplete,
         verdict: VerdictOptions {
             budget: args.budget,
             max_cluster: args.max_cluster,
+            allow_blind_vias: args.allow_blind_vias,
         },
     };
     let outcome = run_fab_prep(&mut pcb, &opts);

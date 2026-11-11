@@ -93,6 +93,13 @@ pub struct FabPrepOptions {
     /// unrecognised name here is an error rather than a silent no-op.
     #[serde(default)]
     pub accept_rules: Vec<String>,
+    /// Let a board that is geometrically clean but **not fully connected**
+    /// (some net still unconnected, islanded, or an SMD pad unstitched from
+    /// its plane) converge and ship. **Off by default** — without it such a
+    /// run fails closed. When it changes the verdict the receipt says so
+    /// loudly and `FAB_NOTES.md` is headed "NOT FULLY ROUTED".
+    #[serde(default)]
+    pub allow_incomplete: bool,
 }
 
 impl Default for FabPrepOptions {
@@ -104,6 +111,7 @@ impl Default for FabPrepOptions {
             verdict: VerdictOptions::default(),
             prune_dangling: true,
             accept_rules: Vec::new(),
+            allow_incomplete: false,
         }
     }
 }
@@ -180,12 +188,19 @@ impl BoardStats {
 /// perfectly on clearance, width, hole-to-hole and shorts. Watching connectivity
 /// across the run is what turns "the violations went away" back into "the board
 /// got better".
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Connectivity {
     /// Unconnected-net + net-island violations on the board as given.
     pub on_arrival: usize,
     /// The same count on the finished board.
     pub on_completion: usize,
+    /// Nets still open on the finished board — any net with an
+    /// unconnected-net, net-island or unstitched-pad violation. Empty means
+    /// the netlist is fully realized in copper. A pour net counts as connected
+    /// only when every one of its pads touches the pour or reaches it through
+    /// copper (the DRC's connectivity union-find includes the pour).
+    #[serde(default)]
+    pub open_nets: Vec<String>,
 }
 
 impl Connectivity {
@@ -193,6 +208,51 @@ impl Connectivity {
     pub fn regression(&self) -> usize {
         self.on_completion.saturating_sub(self.on_arrival)
     }
+
+    /// True when every net is fully connected.
+    pub fn complete(&self) -> bool {
+        self.open_nets.is_empty()
+    }
+
+    /// `complete` or `N nets open` — the verdict's connectivity line.
+    pub fn status(&self) -> String {
+        match self.open_nets.len() {
+            0 => "complete".to_string(),
+            1 => "1 net open".to_string(),
+            n => format!("{n} nets open"),
+        }
+    }
+}
+
+/// Nets a DRC result shows as not realized in copper: every net named by an
+/// unconnected-net, net-island or unstitched-pad violation, sorted.
+///
+/// Shared with the Mac app's autoroute/DRC panel so "unrouted" means the same
+/// thing everywhere.
+pub fn open_nets(violations: &[vcad_ecad_pcb::drc::DrcViolation]) -> Vec<String> {
+    use vcad_ecad_pcb::drc::DrcRuleType;
+    let nets: BTreeSet<String> = violations
+        .iter()
+        .filter(|v| {
+            matches!(
+                v.rule,
+                DrcRuleType::UnconnectedNet | DrcRuleType::NetIslands | DrcRuleType::UnstitchedPad
+            )
+        })
+        .flat_map(|v| {
+            let named = delta::nets_in_message(&v.message);
+            if named.is_empty() {
+                // Never let an unattributable open net vanish from the count.
+                vec![format!(
+                    "<unnamed @ {:.3},{:.3}>",
+                    v.position.x, v.position.y
+                )]
+            } else {
+                named
+            }
+        })
+        .collect();
+    nets.into_iter().collect()
 }
 
 /// Unconnected-net and net-island violations in a DRC result — "the netlist is
@@ -235,6 +295,16 @@ pub struct FabPrepReport {
     /// Rules the caller waived, resolved to canonical names. Their violations
     /// are still counted and still listed — they just do not block the verdict.
     pub accepted_rules: Vec<String>,
+    /// Whether the caller passed `allow_incomplete` at all.
+    #[serde(default)]
+    pub allow_incomplete_requested: bool,
+    /// True when the board converged ONLY because the caller opted in to
+    /// shipping it with open nets — the board is NOT FULLY ROUTED.
+    #[serde(default)]
+    pub shipped_incomplete: bool,
+    /// Whether the router was restricted to through vias.
+    #[serde(default)]
+    pub through_vias_only: bool,
     /// Baseline vs final, per rule.
     pub delta: DrcDelta,
     /// The finished board's shape.
@@ -249,10 +319,24 @@ impl FabPrepReport {
                 0 => String::new(),
                 n => format!(", {n} waived under {}", self.accepted_rules.join("+")),
             };
+            let incomplete = if self.shipped_incomplete {
+                format!(
+                    " — NOT FULLY ROUTED: {} (shipped under --allow-incomplete)",
+                    self.connectivity.status()
+                )
+            } else {
+                String::new()
+            };
             format!(
                 "zero route-attributable violations{waived} ({} on the finished board, {} on the \
-                 same board stripped of all routing)",
+                 same board stripped of all routing){incomplete}",
                 self.delta.final_total, self.delta.baseline_total
+            )
+        } else if self.delta.route_attributable_fixable == 0 && !self.connectivity.complete() {
+            format!(
+                "NOT CONVERGED — board not fully routed, {} ({})",
+                self.connectivity.status(),
+                self.blocker.as_deref().unwrap_or("connectivity incomplete")
             )
         } else {
             format!(
@@ -294,6 +378,9 @@ fn refused(pcb: &Pcb, opts: &FabPrepOptions, why: String) -> FabPrepOutcome {
             pruned_vias: 0,
             connectivity: Connectivity::default(),
             accepted_rules: Vec::new(),
+            allow_incomplete_requested: opts.allow_incomplete,
+            shipped_incomplete: false,
+            through_vias_only: false,
             delta: DrcDelta::compute(&[], &[], &BTreeSet::new()),
             board: BoardStats::of(pcb),
         },
@@ -336,6 +423,15 @@ pub fn run_fab_prep(pcb: &mut Pcb, opts: &FabPrepOptions) -> FabPrepOutcome {
         );
     }
 
+    // 0b. Via policy, fixed once from the board as it ARRIVED: a strip in the
+    //     fix loop can remove the very vias that declared a blind/buried
+    //     process, and the policy must not flip mid-run.
+    let mut vopts = opts.verdict;
+    vopts.allow_blind_vias |= verdict::declares_blind_vias(pcb);
+    if !vopts.allow_blind_vias {
+        log::info!("fab-prep: via policy = through vias only (standard process)");
+    }
+
     // 1. Rule calibration, before anything is measured — the baseline and the
     //    final must be judged under identical rules or the delta is fiction.
     let calibration = if opts.calibrate_rules {
@@ -367,7 +463,7 @@ pub fn run_fab_prep(pcb: &mut Pcb, opts: &FabPrepOptions) -> FabPrepOutcome {
 
     // 3. Route or certify whatever the board arrived unrouted.
     let initial_verdict = opts.route_remaining.then(|| {
-        let v = verdict::route_remaining(pcb, opts.verdict);
+        let v = verdict::route_remaining(pcb, vopts);
         log::info!(
             "fab-prep: verdict ladder routed {} / proved-infeasible {} / unknown {}",
             v.routed,
@@ -493,7 +589,7 @@ pub fn run_fab_prep(pcb: &mut Pcb, opts: &FabPrepOptions) -> FabPrepOutcome {
             round + 1,
             offending.len()
         );
-        let verdict = verdict::route_remaining(pcb, opts.verdict);
+        let verdict = verdict::route_remaining(pcb, vopts);
         rounds.push(RoundSummary {
             round: round + 1,
             attributable_before: attributable,
@@ -538,13 +634,36 @@ pub fn run_fab_prep(pcb: &mut Pcb, opts: &FabPrepOptions) -> FabPrepOutcome {
     let connectivity = Connectivity {
         on_arrival: entry_connectivity,
         on_completion: connectivity_count(&violations),
+        open_nets: open_nets(&violations),
     };
     // The prune runs after the loop's last check, so re-derive convergence from
     // the numbers actually being reported rather than trusting the loop's flag.
-    let converged =
+    let geometric =
         converged && delta.route_attributable_fixable == 0 && connectivity.regression() == 0;
+    // Geometrically clean is not fab-ready: a board with open nets is not the
+    // circuit. Fail closed unless the caller explicitly opted in.
+    let shipped_incomplete = geometric && !connectivity.complete() && opts.allow_incomplete;
+    let converged = geometric && (connectivity.complete() || opts.allow_incomplete);
+    if shipped_incomplete {
+        log::warn!(
+            "fab-prep: --allow-incomplete — shipping a board that is NOT FULLY ROUTED ({})",
+            connectivity.status()
+        );
+    }
     if converged {
         blocker = None;
+    } else if geometric {
+        const SHOWN: usize = 12;
+        let mut names =
+            connectivity.open_nets[..connectivity.open_nets.len().min(SHOWN)].join(", ");
+        if connectivity.open_nets.len() > SHOWN {
+            names.push_str(&format!(", +{} more", connectivity.open_nets.len() - SHOWN));
+        }
+        blocker = Some(format!(
+            "connectivity: {} (unconnected, islanded or unstitched: {names}) — the board is \
+             geometrically clean but not fully routed; pass --allow-incomplete to ship it anyway",
+            connectivity.status()
+        ));
     } else if blocker.is_none() {
         blocker = Some(if connectivity.regression() > 0 {
             format!(
@@ -573,6 +692,9 @@ pub fn run_fab_prep(pcb: &mut Pcb, opts: &FabPrepOptions) -> FabPrepOutcome {
             pruned_vias,
             connectivity,
             accepted_rules: accepted.iter().cloned().collect(),
+            allow_incomplete_requested: opts.allow_incomplete,
+            shipped_incomplete,
+            through_vias_only: !vopts.allow_blind_vias,
             delta,
             board: BoardStats::of(pcb),
         },
@@ -743,6 +865,7 @@ mod tests {
                 verdict: VerdictOptions {
                     budget: 1,
                     max_cluster: 6,
+                    ..Default::default()
                 },
                 ..Default::default()
             },
@@ -900,5 +1023,276 @@ mod tests {
         assert!(report2.calibration_requested);
         assert_eq!(report2.calibration.applied.len(), 2);
         assert_eq!(pcb2.rules.min_drill, 0.12);
+    }
+
+    // ---- bug 2: terminal pinning -----------------------------------------
+
+    /// The 3-resistor regression: every SMD board used to fail closed because
+    /// the opening pass started F.Cu pads' traces on inner layers with no via,
+    /// and the prune deleted them. It must route, converge, and land zero
+    /// violations of any kind.
+    #[test]
+    fn three_resistor_board_converges_with_zero_violations() {
+        let mut pcb = crate::test_support::three_resistor_board();
+        let out = run_fab_prep(&mut pcb, &FabPrepOptions::default());
+        let r = &out.report;
+        assert!(
+            r.converged,
+            "{:?}\n{:?}\n{}",
+            r.blocker,
+            r.initial_verdict,
+            render::summary(r)
+        );
+        assert!(r.connectivity.complete(), "{:?}", r.connectivity);
+        assert_eq!(r.delta.final_total, 0, "{:#?}", out.violations);
+        assert_eq!(r.pruned_traces, 0, "nothing routed may be floating");
+        assert_eq!(r.initial_verdict.as_ref().map(|v| v.routed), Some(3));
+        assert!(crate::test_support::floating_pad_attachments(&pcb).is_empty());
+    }
+
+    /// A connection that must change layers to get past a wall: the F.Cu pad
+    /// is attached on F.Cu (or through a via at the pad), never on an inner
+    /// layer with nothing joining it to the pad.
+    #[test]
+    fn an_fcu_pad_is_never_attached_on_another_layer_without_a_via() {
+        let mut pcb = crate::test_support::walled_board();
+        let v = verdict::route_remaining(&mut pcb, VerdictOptions::default());
+        assert_eq!(v.routed, 1, "{v:?}");
+        assert!(
+            !pcb.vias.is_empty(),
+            "crossing the wall needs a layer change"
+        );
+        assert_eq!(
+            crate::test_support::floating_pad_attachments(&pcb),
+            vec![],
+            "trace starts on a layer the pad is not on, with no via"
+        );
+        let report = run_fab_prep(&mut pcb, &FabPrepOptions::default()).report;
+        assert!(report.converged, "{:?}", report.blocker);
+        assert_eq!(report.pruned_traces, 0);
+    }
+
+    // ---- island terminals -------------------------------------------------
+
+    /// SIG's copper islands after a run.
+    fn islands_of(pcb: &Pcb, net: &str) -> usize {
+        vcad_ecad_pcb::drc::net_copper_islands(pcb, net)
+            .iter()
+            .filter(|i| !i.pads.is_empty())
+            .count()
+    }
+
+    /// A pad walled in on its own layer, with a fixed fan-out stub to a free
+    /// via, routes FROM THE FAN-OUT: the connection's source is the pad's
+    /// whole copper island, not the buried pad. Starting only at the pad, the
+    /// router proves it walled in.
+    #[test]
+    fn a_walled_pad_with_fanout_routes_from_its_via() {
+        let mut pcb = crate::test_support::fanout_board();
+        let before_traces = pcb.traces.len();
+        let v = verdict::route_remaining(&mut pcb, VerdictOptions::default());
+        assert_eq!(v.connections, 1, "{v:?}");
+        assert_eq!(v.routed, 1, "{v:?}");
+        assert_eq!(islands_of(&pcb, "SIG"), 1, "SIG must end as one island");
+        // Nothing new lands inside the wall: the route left from the fan-out.
+        let pad = vcad_ir::Vec2::new(5.0, 10.0);
+        for t in &pcb.traces[before_traces..] {
+            for p in [t.start, t.end] {
+                assert!(
+                    (p.x - pad.x).hypot(p.y - pad.y) > 0.6,
+                    "new copper at ({:.2}, {:.2}) inside the wall",
+                    p.x,
+                    p.y
+                );
+            }
+        }
+        let report = run_fab_prep(&mut pcb, &FabPrepOptions::default()).report;
+        assert!(report.connectivity.complete(), "{:?}", report.connectivity);
+    }
+
+    /// A net already split into two islands by existing copper is joined by
+    /// ONE island-to-island connection, not one per pad pair.
+    #[test]
+    fn a_split_net_routes_island_to_island_once() {
+        let pcb = crate::test_support::split_island_board();
+        let layers: Vec<vcad_ir::ecad::PcbLayer> =
+            pcb.stackup.layers.iter().map(|l| l.layer).collect();
+        let conns =
+            vcad_ecad_pcb::router::islands::island_connections(&pcb, &layers, &Default::default());
+        assert_eq!(conns.len(), 1, "{conns:?}");
+        assert_eq!(conns[0].terminals.from.len(), 3, "2 pads + 1 trace");
+        assert_eq!(conns[0].terminals.to.len(), 3, "2 pads + 1 trace");
+        let mut pcb = pcb;
+        let v = verdict::route_remaining(&mut pcb, VerdictOptions::default());
+        assert_eq!((v.connections, v.routed), (1, 1), "{v:?}");
+        assert_eq!(islands_of(&pcb, "N"), 1);
+    }
+
+    /// Same board in, same copper and the same summary out.
+    #[test]
+    fn island_routing_is_deterministic() {
+        let run = |mut pcb: Pcb| {
+            let v = verdict::route_remaining(&mut pcb, VerdictOptions::default());
+            (
+                serde_json::to_string(&pcb.traces).unwrap(),
+                serde_json::to_string(&pcb.vias).unwrap(),
+                v,
+            )
+        };
+        for board in [
+            crate::test_support::fanout_board(),
+            crate::test_support::split_island_board(),
+            crate::test_support::three_resistor_board(),
+        ] {
+            assert_eq!(run(board.clone()), run(board));
+        }
+    }
+
+    // ---- bug 3: through vias by default ----------------------------------
+
+    /// A default four-layer board routes with through vias only — JLC's
+    /// standard 4-layer process cannot build anything else.
+    #[test]
+    fn a_default_four_layer_board_gets_only_through_vias() {
+        let mut pcb = crate::test_support::walled_board();
+        let report = run_fab_prep(&mut pcb, &FabPrepOptions::default()).report;
+        assert!(report.converged, "{:?}", report.blocker);
+        assert!(report.through_vias_only);
+        assert!(!pcb.vias.is_empty());
+        for v in &pcb.vias {
+            let span = (v.start_layer, v.end_layer);
+            assert!(
+                span == (vcad_ir::ecad::PcbLayer::FCu, vcad_ir::ecad::PcbLayer::BCu)
+                    || span == (vcad_ir::ecad::PcbLayer::BCu, vcad_ir::ecad::PcbLayer::FCu),
+                "layer-pair via emitted on a standard process: {v:?}"
+            );
+            assert_ne!(v.via_type, Some(vcad_ir::ecad::ViaType::Blind));
+            assert_ne!(v.via_type, Some(vcad_ir::ecad::ViaType::Micro));
+        }
+    }
+
+    /// A board that already carries a blind via has declared the process.
+    #[test]
+    fn a_board_with_blind_vias_declares_the_process() {
+        let mut pcb = crate::test_support::walled_board();
+        assert!(!verdict::declares_blind_vias(&pcb));
+        pcb.vias.push(vcad_ir::ecad::Via {
+            via_type: Some(vcad_ir::ecad::ViaType::Blind),
+            position: vcad_ir::Vec2::new(1.0, 1.0),
+            diameter: 0.6,
+            drill: 0.3,
+            start_layer: vcad_ir::ecad::PcbLayer::FCu,
+            end_layer: vcad_ir::ecad::PcbLayer::In1Cu,
+            net: "X".into(),
+            source: None,
+        });
+        assert!(verdict::declares_blind_vias(&pcb));
+    }
+
+    // ---- bug 1: fail closed on an incomplete board -----------------------
+
+    /// Geometrically clean, but a net is still open: the run must fail closed
+    /// and say so, not converge on "zero route-attributable violations".
+    #[test]
+    fn an_incomplete_board_fails_closed() {
+        let mut pcb = test_board();
+        with_smd_pad(&mut pcb, "R1", "1", 2.0, 2.0, "A");
+        with_smd_pad(&mut pcb, "R1", "2", 8.0, 2.0, "A");
+        with_trace(&mut pcb, "A", 2.0, 2.0, 8.0, 2.0);
+        with_smd_pad(&mut pcb, "R2", "1", 2.0, 8.0, "OPEN");
+        with_smd_pad(&mut pcb, "R2", "2", 8.0, 8.0, "OPEN");
+        let opts = FabPrepOptions {
+            route_remaining: false,
+            ..Default::default()
+        };
+
+        let report = run_fab_prep(&mut pcb.clone(), &opts).report;
+        assert!(!report.converged, "an open net must never pass");
+        assert_eq!(report.delta.route_attributable_fixable, 0);
+        assert_eq!(report.connectivity.open_nets, vec!["OPEN".to_string()]);
+        assert_eq!(report.connectivity.status(), "1 net open");
+        assert!(
+            report.headline().contains("not fully routed"),
+            "{}",
+            report.headline()
+        );
+        assert!(
+            report
+                .blocker
+                .as_deref()
+                .is_some_and(|b| b.contains("--allow-incomplete")),
+            "{:?}",
+            report.blocker
+        );
+        assert!(render::summary(&report).contains("connectivity: 1 net open"));
+        assert!(render::fab_notes(&report).contains("NOT FULLY ROUTED"));
+
+        // The explicit opt-in ships it — loudly.
+        let report = run_fab_prep(
+            &mut pcb,
+            &FabPrepOptions {
+                allow_incomplete: true,
+                ..opts
+            },
+        )
+        .report;
+        assert!(report.converged, "{:?}", report.blocker);
+        assert!(report.shipped_incomplete && report.allow_incomplete_requested);
+        assert!(report.headline().contains("NOT FULLY ROUTED"));
+        assert!(render::summary(&report).contains("*** NOT FULLY ROUTED"));
+        assert!(render::fab_notes(&report).contains("## NOT FULLY ROUTED"));
+    }
+
+    /// A complete board says so on the verdict's connectivity line.
+    #[test]
+    fn a_complete_board_reports_connectivity_complete() {
+        let mut pcb = test_board();
+        with_smd_pad(&mut pcb, "R1", "1", 2.0, 2.0, "A");
+        with_smd_pad(&mut pcb, "R1", "2", 8.0, 2.0, "A");
+        with_trace(&mut pcb, "A", 2.0, 2.0, 8.0, 2.0);
+        let report = run_fab_prep(
+            &mut pcb,
+            &FabPrepOptions {
+                route_remaining: false,
+                ..Default::default()
+            },
+        )
+        .report;
+        assert!(report.converged);
+        assert!(!report.shipped_incomplete);
+        assert!(render::summary(&report).contains("connectivity: complete"));
+        assert!(!render::fab_notes(&report).contains("NOT FULLY ROUTED"));
+    }
+
+    /// A pour net is connected only when every pad reaches the pour: an F.Cu
+    /// SMD pad on a B.Cu plane's net with no via is open.
+    #[test]
+    fn a_pour_net_pad_that_never_reaches_the_pour_is_open() {
+        let mut pcb = test_board();
+        with_smd_pad(&mut pcb, "C1", "1", 3.0, 3.0, "GND");
+        with_smd_pad(&mut pcb, "C2", "1", 7.0, 7.0, "GND");
+        pcb.zones.push(
+            serde_json::from_value(serde_json::json!({
+                "outline": [{"x":0.5,"y":0.5},{"x":9.5,"y":0.5},{"x":9.5,"y":9.5},{"x":0.5,"y":9.5}],
+                "net": "GND",
+                "layer": "BCu",
+                "clearance": 0.2,
+            }))
+            .expect("zone"),
+        );
+        let report = run_fab_prep(
+            &mut pcb,
+            &FabPrepOptions {
+                route_remaining: false,
+                ..Default::default()
+            },
+        )
+        .report;
+        assert!(
+            report.connectivity.open_nets.iter().any(|n| n == "GND"),
+            "{:?}",
+            report.connectivity
+        );
+        assert!(!report.converged);
     }
 }

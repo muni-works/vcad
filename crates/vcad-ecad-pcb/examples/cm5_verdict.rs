@@ -194,18 +194,6 @@ fn cluster(rats: &[vcad_ecad_pcb::ratsnest::RatsnestLine], max_cluster: usize) -
     clusters
 }
 
-/// Distance from `p` to the segment `a`–`b` (centreline, mm).
-fn point_on_segment(p: Vec2, a: Vec2, b: Vec2) -> f64 {
-    let (dx, dy) = (b.x - a.x, b.y - a.y);
-    let len2 = dx * dx + dy * dy;
-    let t = if len2 < 1e-18 {
-        0.0
-    } else {
-        (((p.x - a.x) * dx + (p.y - a.y) * dy) / len2).clamp(0.0, 1.0)
-    };
-    ((p.x - a.x - t * dx).powi(2) + (p.y - a.y - t * dy).powi(2)).sqrt()
-}
-
 /// Board state plus the running verdict tally.
 struct Driver {
     pcb: Pcb,
@@ -273,50 +261,8 @@ impl Driver {
     /// else is dangling: nothing joins it to the group, and the board gains a
     /// net island instead of a connection.
     fn terminal_layers(&self, conn: &Conn) -> TerminalLayers {
-        let at = |p: Vec2| -> Vec<PcbLayer> {
-            let mut out: Vec<PcbLayer> = Vec::new();
-            for fp in &self.pcb.footprints {
-                for pad in &fp.pads {
-                    if pad.net.as_deref() != Some(conn.net.as_str()) {
-                        continue;
-                    }
-                    let w = vcad_ecad_pcb::geometry::pad_world_position(fp, pad);
-                    if (w.x - p.x).abs() < 1e-3 && (w.y - p.y).abs() < 1e-3 {
-                        out.extend(pad.layers.iter().filter(|l| self.layers.contains(l)));
-                    }
-                }
-            }
-            for trace in &self.pcb.traces {
-                if trace.net != conn.net {
-                    continue;
-                }
-                if point_on_segment(p, trace.start, trace.end) <= trace.width / 2.0 + 1e-3 {
-                    out.push(trace.layer);
-                }
-            }
-            for via in &self.pcb.vias {
-                if via.net != conn.net {
-                    continue;
-                }
-                let d = ((via.position.x - p.x).powi(2) + (via.position.y - p.y).powi(2)).sqrt();
-                if d <= via.diameter / 2.0 + 1e-3 {
-                    out.extend(self.span(via.start_layer, via.end_layer));
-                }
-            }
-            out.retain(|l| l.is_copper());
-            out.sort_by_key(|l| {
-                self.layers
-                    .iter()
-                    .position(|s| s == l)
-                    .unwrap_or(usize::MAX)
-            });
-            out.dedup();
-            out
-        };
-        TerminalLayers {
-            from: at(conn.from),
-            to: at(conn.to),
-        }
+        // Shared with the fab-prep verdict ladder so the two cannot drift.
+        TerminalLayers::for_connection(&self.pcb, &self.layers, &conn.net, conn.from, conn.to)
     }
 
     /// The via geometry this driver commits — handed to the router so its

@@ -80,7 +80,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
-use vcad_ir::ecad::PcbLayer;
+use vcad_ir::ecad::{Pcb, PcbLayer};
 use vcad_ir::Vec2;
 
 use crate::session::RouteSession;
@@ -104,6 +104,153 @@ pub struct TerminalLayers {
     pub from: Vec<PcbLayer>,
     /// Layers the `to` terminal may attach on.
     pub to: Vec<PcbLayer>,
+}
+
+impl TerminalLayers {
+    /// Pin both terminals of the connection `net: from → to` on `pcb` to the
+    /// layers that are electrically live there — see [`live_layers`].
+    ///
+    /// This is the one implementation every window-router caller shares (the
+    /// fab-prep verdict ladder, the Mac app's autoroute, the CM5 example
+    /// driver). Calling the router with `&[]` instead lets it start an F.Cu
+    /// SMD pad's trace on In1/In2/B.Cu with no via back to the pad; the prune
+    /// then deletes it as floating copper.
+    pub fn for_connection(pcb: &Pcb, layers: &[PcbLayer], net: &str, from: Vec2, to: Vec2) -> Self {
+        Self {
+            from: live_layers(pcb, layers, net, from),
+            to: live_layers(pcb, layers, net, to),
+        }
+    }
+}
+
+/// One piece of copper a connection terminal may attach to.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Anchor {
+    /// A pad or via centred at `at`, attachable on `layers` (empty = any
+    /// searched layer). A pad that cannot be reached directly on its own
+    /// layer may escape through a stub-plus-via dog-bone, exactly as a
+    /// pinned terminal does.
+    Point {
+        /// Copper centre.
+        at: Vec2,
+        /// Layers the copper exists on.
+        layers: Vec<PcbLayer>,
+    },
+    /// A trace segment: attachable at any point along it, on its own layer.
+    Segment {
+        /// Segment start.
+        a: Vec2,
+        /// Segment end.
+        b: Vec2,
+        /// The trace's copper layer.
+        layer: PcbLayer,
+    },
+}
+
+/// A connection's two terminal SETS: every piece of copper already
+/// electrically joined to each end — the net's two copper islands.
+///
+/// Routing island-to-island from any point on either island is what lets a
+/// hand-placed fan-out (a stub from a walled-in fine-pitch pad to a via in
+/// open space) do its job: the search starts at the free via instead of
+/// proving the buried pad unreachable. A side with exactly one
+/// [`Anchor::Point`] is a plain pinned terminal and behaves exactly as
+/// [`TerminalLayers`] does.
+#[derive(Debug, Clone, Default)]
+pub struct IslandTerminals {
+    /// Copper of the `from` island.
+    pub from: Vec<Anchor>,
+    /// Copper of the `to` island.
+    pub to: Vec<Anchor>,
+    /// Human-readable description of the `from` island for certificates,
+    /// e.g. `"island of net X (3 pads, 2 traces, 1 via)"`. Empty = describe
+    /// it by its anchor point.
+    pub from_label: String,
+    /// Description of the `to` island, as `from_label`.
+    pub to_label: String,
+}
+
+impl IslandTerminals {
+    /// A plain point-to-point connection pinned per [`TerminalLayers`].
+    pub fn pinned(from: Vec2, to: Vec2, pins: Option<&TerminalLayers>) -> Self {
+        Self {
+            from: vec![Anchor::Point {
+                at: from,
+                layers: pins.map(|p| p.from.clone()).unwrap_or_default(),
+            }],
+            to: vec![Anchor::Point {
+                at: to,
+                layers: pins.map(|p| p.to.clone()).unwrap_or_default(),
+            }],
+            from_label: String::new(),
+            to_label: String::new(),
+        }
+    }
+}
+
+/// The copper layers (restricted to `layers`, returned in `layers` order) that
+/// are electrically live for `net` at point `p`: the layers of any pad of the
+/// net centred there, of any trace of the net passing through it, and every
+/// layer spanned by a via of the net covering it.
+///
+/// A ratsnest endpoint is always one of those three, so a stub that starts on
+/// any other layer is dangling — nothing joins it to the group, and the board
+/// gains a net island instead of a connection. Empty when nothing of the net
+/// is there (the router then treats the terminal as unconstrained).
+pub fn live_layers(pcb: &Pcb, layers: &[PcbLayer], net: &str, p: Vec2) -> Vec<PcbLayer> {
+    let mut out: Vec<PcbLayer> = Vec::new();
+    for fp in &pcb.footprints {
+        for pad in &fp.pads {
+            if pad.net.as_deref() != Some(net) {
+                continue;
+            }
+            let w = crate::geometry::pad_world_position(fp, pad);
+            if (w.x - p.x).abs() < 1e-3 && (w.y - p.y).abs() < 1e-3 {
+                out.extend(pad.layers.iter().filter(|l| layers.contains(l)));
+            }
+        }
+    }
+    for t in &pcb.traces {
+        if t.net != net || !layers.contains(&t.layer) {
+            continue;
+        }
+        if point_segment_dist(p, t.start, t.end) <= t.width / 2.0 + 1e-3 {
+            out.push(t.layer);
+        }
+    }
+    for v in &pcb.vias {
+        if v.net != net {
+            continue;
+        }
+        if dist(v.position, p) <= v.diameter / 2.0 + 1e-3 {
+            out.extend(
+                layers
+                    .iter()
+                    .copied()
+                    .filter(|l| l.spanned_by(v.start_layer, v.end_layer)),
+            );
+        }
+    }
+    out.sort_by_key(|l| layers.iter().position(|s| s == l).unwrap_or(usize::MAX));
+    out.dedup();
+    out
+}
+
+/// Distance from `p` to the segment `a`–`b`.
+fn point_segment_dist(p: Vec2, a: Vec2, b: Vec2) -> f64 {
+    dist(p, closest_on_segment(p, a, b))
+}
+
+/// The point of segment `a`–`b` nearest to `p`.
+pub fn closest_on_segment(p: Vec2, a: Vec2, b: Vec2) -> Vec2 {
+    let (dx, dy) = (b.x - a.x, b.y - a.y);
+    let len2 = dx * dx + dy * dy;
+    let t = if len2 < 1e-18 {
+        0.0
+    } else {
+        (((p.x - a.x) * dx + (p.y - a.y) * dy) / len2).clamp(0.0, 1.0)
+    };
+    Vec2::new(a.x + t * dx, a.y + t * dy)
 }
 
 /// The via the caller will actually commit for a layer change.
@@ -263,6 +410,37 @@ pub fn route_window_complete_pinned(
     via: Option<ViaClass>,
     limits: WindowBudget,
 ) -> CompleteOutcome {
+    let islands: Vec<IslandTerminals> = conns
+        .iter()
+        .enumerate()
+        .map(|(ci, (_, f, t))| IslandTerminals::pinned(*f, *t, terminals.get(ci)))
+        .collect();
+    route_window_complete_islands(session, window, layers, conns, &islands, width, via, limits)
+}
+
+/// [`route_window_complete_pinned`] with each connection's terminals given as
+/// whole copper islands (see [`IslandTerminals`]): the search is
+/// multi-source / multi-target, starting from any grid node legally
+/// attachable to any copper of the `from` island and ending on any node
+/// attachable to the `to` island. `conns[i].1/.2` are only representative
+/// points (certificates, ordering); `islands[i]` decides attachment, and must
+/// be as long as `conns`.
+///
+/// Completeness is unchanged: the DFS enumerates every source of each set and
+/// accepts any target, the max-flow pre-pass bounds through per-connection
+/// super-terminals, and BFS reachability for k = 1 runs from the whole source
+/// set — so a proof still means no routing from ANY attachment exists.
+#[allow(clippy::too_many_arguments)]
+pub fn route_window_complete_islands(
+    session: &RouteSession,
+    window: (Vec2, Vec2),
+    layers: &[PcbLayer],
+    conns: &[(String, Vec2, Vec2)],
+    islands: &[IslandTerminals],
+    width: f64,
+    via: Option<ViaClass>,
+    limits: WindowBudget,
+) -> CompleteOutcome {
     let budget = limits.expansions;
     if conns.is_empty() {
         return CompleteOutcome::Routed(Vec::new());
@@ -345,31 +523,55 @@ pub fn route_window_complete_pinned(
     }
 
     // --- Terminals -------------------------------------------------------
-    // Each terminal snaps to its nearest cell; the endpoint may attach on
-    // any layer whose node is free (pad-side via permitted, as in the 3D
-    // maze router). For the joint model we pick the first free layer for
-    // determinism; the connector from the exact endpoint to the cell centre
-    // must itself probe legal.
-    let mut terms: Vec<(usize, usize)> = Vec::with_capacity(conns.len()); // (src node, dst node)
+    // Each terminal side resolves to a SET of attachment nodes. A side that is
+    // one point (a plain pad terminal) snaps to its nearest legal cell, as it
+    // always has; a side that is a whole copper island (pads + traces + vias
+    // already joined to it) contributes every node legally attachable to any
+    // of that copper, on the layers that copper occupies. The connector from
+    // the exact copper point to the cell centre is probed either way.
     /// Per-connection escape layers: `Some(pad layer)` when that terminal
     /// reaches the grid through a stub-plus-via dog-bone rather than landing on
     /// the pad's own layer.
     type Escape = (Option<PcbLayer>, Option<PcbLayer>);
-    let mut escapes: Vec<Escape> = Vec::with_capacity(conns.len());
+    /// One attachment: grid node, exact copper point it joins, dog-bone layer.
+    type Attach = (usize, Vec2, Option<PcbLayer>);
+    // (source set, target set), each sorted by node and deduplicated.
+    let mut terms: Vec<(Vec<usize>, Vec<usize>)> = Vec::with_capacity(conns.len());
+    // Per connection: the attachment record of every node in each set.
+    let mut metas: Vec<(HashMap<usize, Attach>, HashMap<usize, Attach>)> =
+        Vec::with_capacity(conns.len());
+    // Nodes already taken as another connection's (single) terminal. Two
+    // neighbouring pads of different nets (an 0603's two ends, 1.6 mm apart)
+    // both reach for the free cell between them once each is pinned to its own
+    // layer; without this the second one lands on the first's node and the
+    // window is "proved" infeasible by a collision the attachment step
+    // invented. Island sets skip claimed nodes too, but claim nothing
+    // themselves: any one of their nodes is optional, and the search's own
+    // node-disjointness arbitrates between them.
+    let mut claimed: HashSet<usize> = HashSet::new();
+    // Reach measured in millimetres, not cells: a dog-bone escape lands
+    // within about a millimetre of its pad whatever the pitch happens to be.
+    let attach_ring = ((1.0 / grid.pitch).ceil() as i64).clamp(2, 4);
     for (ci, (net, from, to)) in conns.iter().enumerate() {
         let clr = clearances[ci];
-        let pinned = terminals.get(ci);
-        // Attachment candidates: cells in rings around the snapped one, nearest
-        // first. A pad on a fine-pitch part often has its own nearest cell
-        // centre buried in a neighbour's clearance while a cell one step out is
-        // free; since the pad-to-cell connector is probed exactly either way,
-        // reaching for that cell is not a cheat — and it is what lets the stub
-        // stay on the pad's own layer instead of surfacing on an inner one with
-        // nothing joining it to the pad.
-        // Reach measured in millimetres, not cells: a dog-bone escape lands
-        // within about a millimetre of its pad whatever the pitch happens to be.
-        let attach_ring = ((1.0 / grid.pitch).ceil() as i64).clamp(2, 4);
-        let attach = |p: Vec2, allowed: &[PcbLayer]| -> Option<(usize, Option<PcbLayer>)> {
+        let stub_ok = |p: Vec2, c: Vec2, layer: PcbLayer| {
+            session
+                .probe(&CopperGeom::Segment { a: p, b: c, half_w }, layer, net, clr)
+                .legal
+        };
+        // Attachment candidates for a point of copper: cells in rings around
+        // the snapped one, nearest first. A pad on a fine-pitch part often has
+        // its own nearest cell centre buried in a neighbour's clearance while a
+        // cell one step out is free; since the pad-to-cell connector is probed
+        // exactly either way, reaching for that cell is not a cheat — and it is
+        // what lets the stub stay on the pad's own layer instead of surfacing
+        // on an inner one with nothing joining it to the pad. `all = false`
+        // returns only the first (the pinned-terminal behaviour).
+        let attach_point = |p: Vec2,
+                            allowed: &[PcbLayer],
+                            claimed: &HashSet<usize>,
+                            all: bool|
+         -> Vec<(usize, Option<PcbLayer>)> {
             let base = grid.snap(p);
             let (bx, by) = ((base % grid.nx) as i64, (base / grid.nx) as i64);
             let mut cands: Vec<(i64, usize)> = Vec::new();
@@ -383,23 +585,23 @@ pub fn route_window_complete_pinned(
                 }
             }
             cands.sort_unstable();
-            let stub_ok = |p: Vec2, c: Vec2, layer: PcbLayer| {
-                session
-                    .probe(&CopperGeom::Segment { a: p, b: c, half_w }, layer, net, clr)
-                    .legal
-            };
-            // First choice: land directly on a layer the pad is on. Nothing to
-            // join, nothing to drill.
-            let direct = cands.iter().find_map(|&(_, cell)| {
+            // First choice: land directly on a layer the copper is on. Nothing
+            // to join, nothing to drill.
+            let mut direct: Vec<(usize, Option<PcbLayer>)> = Vec::new();
+            'cells: for &(_, cell) in &cands {
                 let c = grid.world(cell);
-                (0..nl)
-                    .filter(|&li| allowed.is_empty() || allowed.contains(&layers[li]))
-                    .find_map(|li| {
-                        (free[li * plane + cell] && stub_ok(p, c, layers[li]))
-                            .then_some((li * plane + cell, None))
-                    })
-            });
-            if direct.is_some() || allowed.is_empty() {
+                for li in (0..nl).filter(|&li| allowed.is_empty() || allowed.contains(&layers[li]))
+                {
+                    let node = li * plane + cell;
+                    if free[node] && !claimed.contains(&node) && stub_ok(p, c, layers[li]) {
+                        direct.push((node, None));
+                        if !all {
+                            break 'cells;
+                        }
+                    }
+                }
+            }
+            if !direct.is_empty() || allowed.is_empty() {
                 return direct;
             }
             // Otherwise escape like a real router does: a stub on the pad's own
@@ -407,19 +609,25 @@ pub fn route_window_complete_pinned(
             // wants. The whole barrel is probed — pad copper on every layer it
             // spans plus the hole-to-hole rule — so the escape is legal by the
             // same oracle that will judge the committed board, not by assumption.
-            cands.iter().find_map(|&(_, cell)| {
+            let Some(pad_li) = (0..nl).find(|&li| allowed.contains(&layers[li])) else {
+                return Vec::new();
+            };
+            let mut escaped: Vec<(usize, Option<PcbLayer>)> = Vec::new();
+            for &(_, cell) in &cands {
                 let c = grid.world(cell);
                 if dist(p, c) < 1e-6 {
                     // Pad centre on the cell centre leaves no stub to carry the
                     // layer change; take another cell.
-                    return None;
+                    continue;
                 }
-                let pad_li = (0..nl).find(|&li| allowed.contains(&layers[li]))?;
                 if !stub_ok(p, c, layers[pad_li]) || !barrel_ok(c) {
-                    return None;
+                    continue;
                 }
-                (0..nl).find_map(|li| {
-                    if li == pad_li || !free[li * plane + cell] {
+                let hit = (0..nl).find_map(|li| {
+                    if li == pad_li
+                        || !free[li * plane + cell]
+                        || claimed.contains(&(li * plane + cell))
+                    {
                         return None;
                     }
                     let span = if li < pad_li {
@@ -434,22 +642,92 @@ pub fn route_window_complete_pinned(
                     span.clone()
                         .all(|s| session.probe(&barrel, layers[s], net, clr).legal)
                         .then_some((li * plane + cell, Some(layers[pad_li])))
-                })
-            })
-        };
-        let (from_pins, to_pins) = pinned
-            .map(|t| (t.from.as_slice(), t.to.as_slice()))
-            .unwrap_or((&[], &[]));
-        match (attach(*from, from_pins), attach(*to, to_pins)) {
-            (Some((s, se)), Some((t, te))) => {
-                terms.push((s, t));
-                escapes.push((se, te));
+                });
+                if let Some(h) = hit {
+                    escaped.push(h);
+                    if !all {
+                        break;
+                    }
+                }
             }
-            (s, _) => {
+            escaped
+        };
+        // Attachment candidates along a trace: every cell within the attach
+        // reach of the segment, joined by a probed stub from the nearest point
+        // of the trace, on the trace's own layer.
+        let attach_segment =
+            |a: Vec2, b: Vec2, layer: PcbLayer, claimed: &HashSet<usize>| -> Vec<Attach> {
+                let Some(li) = layers.iter().position(|l| *l == layer) else {
+                    return Vec::new();
+                };
+                let reach = attach_ring as f64 * grid.pitch;
+                let (lo, hi) = (
+                    Vec2::new(a.x.min(b.x) - reach, a.y.min(b.y) - reach),
+                    Vec2::new(a.x.max(b.x) + reach, a.y.max(b.y) + reach),
+                );
+                let (c0, c1) = (grid.snap(lo), grid.snap(hi));
+                let (x0, y0, x1, y1) = (c0 % grid.nx, c0 / grid.nx, c1 % grid.nx, c1 / grid.nx);
+                let mut out = Vec::new();
+                for y in y0..=y1 {
+                    for x in x0..=x1 {
+                        let cell = y * grid.nx + x;
+                        let node = li * plane + cell;
+                        if !free[node] || claimed.contains(&node) {
+                            continue;
+                        }
+                        let c = grid.world(cell);
+                        let q = closest_on_segment(c, a, b);
+                        if dist(q, c) <= reach && stub_ok(q, c, layer) {
+                            out.push((node, q, None));
+                        }
+                    }
+                }
+                out
+            };
+        let isl = &islands[ci];
+        // Resolve one side to its attachment set.
+        let resolve = |anchors: &[Anchor], claimed: &HashSet<usize>| -> Vec<Attach> {
+            if let [Anchor::Point {
+                at,
+                layers: allowed,
+            }] = anchors
+            {
+                return attach_point(*at, allowed, claimed, false)
+                    .into_iter()
+                    .map(|(n, e)| (n, *at, e))
+                    .collect();
+            }
+            let mut out: Vec<Attach> = Vec::new();
+            for anchor in anchors {
+                match anchor {
+                    Anchor::Point {
+                        at,
+                        layers: allowed,
+                    } => out.extend(
+                        attach_point(*at, allowed, claimed, true)
+                            .into_iter()
+                            .map(|(n, e)| (n, *at, e)),
+                    ),
+                    Anchor::Segment { a, b, layer } => {
+                        out.extend(attach_segment(*a, *b, *layer, claimed))
+                    }
+                }
+            }
+            out
+        };
+        let src = resolve(&isl.from, &claimed);
+        let dst = resolve(&isl.to, &claimed);
+        if src.is_empty() || dst.is_empty() {
+            let (stuck_anchors, label, stuck) = if src.is_empty() {
+                (&isl.from, &isl.from_label, *from)
+            } else {
+                (&isl.to, &isl.to_label, *to)
+            };
+            if let ([Anchor::Point { layers: pins, .. }], true) =
+                (stuck_anchors.as_slice(), label.is_empty())
+            {
                 // Name the copper that walls the pad in: the cut here is the
                 // ring of blockers around the terminal itself.
-                let stuck = if s.is_none() { *from } else { *to };
-                let pins = if s.is_none() { from_pins } else { to_pins };
                 let on = if pins.is_empty() {
                     format!("all {nl} copper layers")
                 } else {
@@ -483,22 +761,83 @@ pub fn route_window_complete_pinned(
                     ),
                 };
             }
+            // A whole island with no legal attachment anywhere: every piece of
+            // its copper inside the window is walled in.
+            let mut census = BTreeMap::new();
+            for anchor in stuck_anchors {
+                let (p, on): (Vec2, Vec<PcbLayer>) = match anchor {
+                    Anchor::Point { at, layers: l } if l.is_empty() => (*at, layers.to_vec()),
+                    Anchor::Point { at, layers: l } => (*at, l.clone()),
+                    Anchor::Segment { a, b, layer } => (
+                        Vec2::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0),
+                        vec![*layer],
+                    ),
+                };
+                let geom = CopperGeom::Segment {
+                    a: p,
+                    b: grid.world(grid.snap(p)),
+                    half_w,
+                };
+                census_add(&mut census, session, &geom, &on, &[(net.as_str(), clr)]);
+            }
+            let label = if label.is_empty() {
+                format!("terminal island of net {net}")
+            } else {
+                label.clone()
+            };
+            return CompleteOutcome::ProvedInfeasible {
+                reason: format!(
+                    "{label} near ({:.2}, {:.2}) has no legal attachment — none of its {} \
+                     piece(s) of copper reaches a clearance-free grid node on the layers it \
+                     occupies; walled in by {} at the current rules and grid pitch {:.3} mm",
+                    stuck.x,
+                    stuck.y,
+                    stuck_anchors.len(),
+                    name_census(&census),
+                    grid.pitch
+                ),
+            };
         }
+        if let [only] = src.as_slice() {
+            claimed.insert(only.0);
+        }
+        if let [only] = dst.as_slice() {
+            claimed.insert(only.0);
+        }
+        let index = |set: Vec<Attach>| -> (Vec<usize>, HashMap<usize, Attach>) {
+            let mut meta: HashMap<usize, Attach> = HashMap::new();
+            let mut nodes = Vec::with_capacity(set.len());
+            for a in set {
+                if let std::collections::hash_map::Entry::Vacant(e) = meta.entry(a.0) {
+                    nodes.push(a.0);
+                    e.insert(a);
+                }
+            }
+            nodes.sort_unstable();
+            (nodes, meta)
+        };
+        let (sn, sm) = index(src);
+        let (tn, tm) = index(dst);
+        terms.push((sn, tn));
+        metas.push((sm, tm));
     }
-    // Two DIFFERENT-net connections snapping onto the same node can never be
-    // node-disjoint — a genuine infeasibility at this pitch. Two connections
-    // of the SAME net sharing a cell is not: same-net copper may legally
-    // share space, but this model's per-connection node-disjointness can't
-    // express that, so the honest answer is unknown, never a proof. A single
-    // connection whose OWN two terminals snap into one cell is neither: it is
-    // simply shorter than the pitch, and its path is that one node.
+    // Two DIFFERENT-net connections whose only terminal node is the same can
+    // never be node-disjoint — a genuine infeasibility at this pitch. Two
+    // connections of the SAME net sharing a cell is not: same-net copper may
+    // legally share space, but this model's per-connection node-disjointness
+    // can't express that, so the honest answer is unknown, never a proof. A
+    // single connection whose OWN two terminals snap into one cell is neither:
+    // it is simply shorter than the pitch, and its path is that one node. Only
+    // single-node sides are forced; an island set with alternatives is left to
+    // the search.
     {
         let mut seen: HashMap<usize, (&str, usize)> = HashMap::new();
-        for (ci, &(s, t)) in terms.iter().enumerate() {
-            for node in [s, t] {
-                match seen.get(&node) {
+        for (ci, (s, t)) in terms.iter().enumerate() {
+            for set in [s, t] {
+                let [node] = set.as_slice() else { continue };
+                match seen.get(node) {
                     None => {
-                        seen.insert(node, (conns[ci].0.as_str(), ci));
+                        seen.insert(*node, (conns[ci].0.as_str(), ci));
                     }
                     Some(&(_, cj)) if cj == ci => {}
                     Some(&(other, _)) if other != conns[ci].0 => {
@@ -519,12 +858,20 @@ pub fn route_window_complete_pinned(
     // An escape barrel occupies its cell on every layer it spans, so those
     // nodes are no longer free for anyone. Terminal nodes are exempt: they are
     // already reserved one-per-connection by node disjointness, and blanking
-    // one here would make its own connection unroutable.
+    // one here would make its own connection unroutable. Only a forced (single
+    // node) side commits its barrel up front; an island set's escape is one
+    // option among several, and the commit-time oracle judges it if chosen.
     {
-        let terminal: HashSet<usize> = terms.iter().flat_map(|&(s, t)| [s, t]).collect();
-        for (ci, &(se, te)) in escapes.iter().enumerate() {
-            for (escape, node) in [(se, terms[ci].0), (te, terms[ci].1)] {
-                let Some(pad_layer) = escape else { continue };
+        let terminal: HashSet<usize> = terms
+            .iter()
+            .flat_map(|(s, t)| s.iter().chain(t.iter()).copied())
+            .collect();
+        for (ci, (s, t)) in terms.iter().enumerate() {
+            for (set, meta) in [(s, &metas[ci].0), (t, &metas[ci].1)] {
+                let [node] = set.as_slice() else { continue };
+                let Some(pad_layer) = meta[node].2 else {
+                    continue;
+                };
                 let (cell, attach_li) = (node % plane, node / plane);
                 let pad_li = layers.iter().position(|l| *l == pad_layer).unwrap_or(0);
                 let span = if attach_li < pad_li {
@@ -541,6 +888,85 @@ pub fn route_window_complete_pinned(
             }
         }
     }
+    // A path may touch its net's existing copper only where it attaches: a
+    // second contact with copper of the net that is NOT one of its own
+    // terminals — typically a sibling connection of the net committed earlier
+    // in the pass, which the session no longer treats as an obstacle —
+    // short-circuits everything between the two touch points (the DRC's
+    // same-net-bypass rule), fatal to a sense trace or a coil. Nodes and edges
+    // touching such copper are off limits. For every OTHER net in the window
+    // that copper is foreign and already blocked, so blanking it globally
+    // costs nobody a legal route.
+    let mut forbidden: Vec<(CopperGeom, PcbLayer)> = Vec::new();
+    {
+        let reach = grid.pitch * 2.0 + via_r;
+        let (wlo, whi) = (
+            [window.0.x - reach, window.0.y - reach],
+            [window.1.x + reach, window.1.y + reach],
+        );
+        // One connection per net per window (the caller's clustering rule),
+        // so each net's terminals are its one connection's islands.
+        let mut seen_nets: HashSet<&str> = HashSet::new();
+        for (ci, (net, _, _)) in conns.iter().enumerate() {
+            let isl = &islands[ci];
+            let terminal: Vec<CopperGeom> = isl
+                .from
+                .iter()
+                .chain(isl.to.iter())
+                .map(|a| match a {
+                    Anchor::Point { at, .. } => CopperGeom::Disc {
+                        center: *at,
+                        r: 0.0,
+                    },
+                    Anchor::Segment { a, b, .. } => CopperGeom::Segment {
+                        a: *a,
+                        b: *b,
+                        half_w: 0.0,
+                    },
+                })
+                .collect();
+            if !seen_nets.insert(net.as_str()) {
+                continue;
+            }
+            session.for_each_of_net(net, |g, lo, hi, layer| {
+                if hi[0] < wlo[0] || lo[0] > whi[0] || hi[1] < wlo[1] || lo[1] > whi[1] {
+                    return;
+                }
+                if terminal.iter().any(|t| g.distance_to(t) <= 1e-6) {
+                    return;
+                }
+                forbidden.push((*g, layer));
+            });
+        }
+    }
+    let attach_nodes: HashSet<usize> = terms
+        .iter()
+        .flat_map(|(s, t)| s.iter().chain(t.iter()).copied())
+        .collect();
+    let touches_own = |geom: &CopperGeom, layer: PcbLayer| -> bool {
+        forbidden
+            .iter()
+            .any(|(g, l)| *l == layer && geom.distance_to(g) <= 1e-9)
+    };
+    if !forbidden.is_empty() {
+        for (li, &layer) in layers.iter().enumerate() {
+            for cell in 0..plane {
+                let node = li * plane + cell;
+                if !free[node] || attach_nodes.contains(&node) {
+                    continue;
+                }
+                let p = grid.world(cell);
+                if touches_own(&CopperGeom::Segment { a: p, b: p, half_w }, layer) {
+                    free[node] = false;
+                }
+            }
+        }
+    }
+    // The exact copper endpoints and dog-bone layers of a found node path.
+    let ends = |ci: usize, path: &[usize]| -> (Vec2, Vec2, Escape) {
+        let (s, t) = (&metas[ci].0[&path[0]], &metas[ci].1[&path[path.len() - 1]]);
+        (s.1, t.1, (s.2, t.2))
+    };
     let free = free;
 
     // --- Edge legality (lazy, memoized) ----------------------------------
@@ -582,6 +1008,27 @@ pub fn route_window_complete_pinned(
                         && session.probe(&disc, layers[lb], net, clr).legal
                 })
         };
+        // Same-net touch (see `touches_own`); an edge leaving an attachment
+        // node starts on that copper by design.
+        let ok = ok
+            && (attach_nodes.contains(&a)
+                || attach_nodes.contains(&b)
+                || if la == lb {
+                    !touches_own(
+                        &CopperGeom::Segment {
+                            a: grid.world(ca),
+                            b: grid.world(cb),
+                            half_w,
+                        },
+                        layers[la],
+                    )
+                } else {
+                    let disc = CopperGeom::Disc {
+                        center: grid.world(ca),
+                        r: via_r,
+                    };
+                    !touches_own(&disc, layers[la]) && !touches_own(&disc, layers[lb])
+                });
         edge_memo.insert(key, ok);
         ok
     };
@@ -620,18 +1067,21 @@ pub fn route_window_complete_pinned(
     // budget can trip, so a lone connection never comes back unknown — the
     // exhaustive DFS is only ever needed to decide genuinely joint instances.
     if conns.len() == 1 {
-        let (s, t) = terms[0];
+        let (s, t) = (&terms[0].0, &terms[0].1);
         let empty = BitSet::new(n_nodes);
         return match bfs_path(s, t, &free, &empty, &neighbors, &mut edge_ok) {
-            Ok(path) => CompleteOutcome::Routed(vec![emit_segments(
-                &grid, plane, layers, conns[0].1, conns[0].2, escapes[0], &path,
-            )]),
+            Ok(path) => {
+                let (f, to, esc) = ends(0, &path);
+                CompleteOutcome::Routed(vec![emit_segments(
+                    &grid, plane, layers, f, to, esc, &path,
+                )])
+            }
             Err(reached_from) => {
                 // Report the tighter pocket. The graph is undirected, so either
                 // terminal's reachable component certifies the severance; the
                 // one enclosed by fewer nodes names a small, checkable cut
                 // instead of "everything but this corner".
-                let reached_to = bfs_path(t, usize::MAX, &free, &empty, &neighbors, &mut edge_ok)
+                let reached_to = bfs_path(t, &[], &free, &empty, &neighbors, &mut edge_ok)
                     .err()
                     .unwrap_or_default();
                 let live = |r: &Vec<bool>| r.iter().filter(|v| **v).count();
@@ -656,7 +1106,7 @@ pub fn route_window_complete_pinned(
                         &free,
                         &reached,
                         &neighbors,
-                        terms[0],
+                        (terms[0].0[0], terms[0].1[0]),
                         from_side,
                     ),
                 }
@@ -665,7 +1115,7 @@ pub fn route_window_complete_pinned(
     }
 
     // --- Max-flow necessary-condition pre-pass ---------------------------
-    let (flow, cut_cells) = max_node_disjoint_flow(&free, plane, grid.nx, nl, &terms, &neighbors);
+    let (flow, cut_cells) = max_node_disjoint_flow(&free, &terms, &neighbors);
     if flow < conns.len() {
         let names: Vec<&str> = conns.iter().map(|(n, _, _)| n.as_str()).collect();
         let mut reason = format!(
@@ -705,13 +1155,13 @@ pub fn route_window_complete_pinned(
             // does not say where the wall is, or whose copper it is, is not
             // much of a certificate.
             let mut reached = vec![false; n_nodes];
-            for &(s, _) in &terms {
+            for s in terms.iter().flat_map(|(s, _)| s.iter().copied()) {
                 if !free[s] || reached[s] {
                     continue;
                 }
                 if let Err(seen) = bfs_path(
-                    s,
-                    usize::MAX,
+                    &[s],
+                    &[],
                     &free,
                     &BitSet::new(n_nodes),
                     &neighbors,
@@ -762,15 +1212,8 @@ pub fn route_window_complete_pinned(
                     .iter()
                     .enumerate()
                     .map(|(ci, path)| {
-                        emit_segments(
-                            &grid,
-                            plane,
-                            layers,
-                            conns[ci].1,
-                            conns[ci].2,
-                            escapes[ci],
-                            path,
-                        )
+                        let (f, to, esc) = ends(ci, path);
+                        emit_segments(&grid, plane, layers, f, to, esc, path)
                     })
                     .collect(),
             );
@@ -796,15 +1239,8 @@ pub fn route_window_complete_pinned(
             let paths = std::mem::take(&mut search.paths);
             let mut out = Vec::with_capacity(conns.len());
             for (ci, path) in paths.iter().enumerate() {
-                out.push(emit_segments(
-                    &grid,
-                    plane,
-                    layers,
-                    conns[ci].1,
-                    conns[ci].2,
-                    escapes[ci],
-                    path,
-                ));
+                let (f, to, esc) = ends(ci, path);
+                out.push(emit_segments(&grid, plane, layers, f, to, esc, path));
             }
             CompleteOutcome::Routed(out)
         }
@@ -840,7 +1276,7 @@ enum Step {
 
 struct Search<'a> {
     free: &'a [bool],
-    terms: &'a [(usize, usize)],
+    terms: &'a [(Vec<usize>, Vec<usize>)],
     plane: usize,
     nx: usize,
     /// Nodes occupied by committed paths of earlier nets AND the current
@@ -866,40 +1302,49 @@ impl Search<'_> {
         if self.memo.contains(&key) {
             return Step::Exhausted;
         }
-        let (s, t) = self.terms[i];
-        if self.occ.get(s) || self.occ.get(t) || !self.free[s] || !self.free[t] {
-            self.memo.insert(key);
-            return Step::Exhausted;
+        let terms = self.terms;
+        let (srcs, dsts) = (&terms[i].0, &terms[i].1);
+        // Every source of the set is a distinct root of the enumeration: a
+        // proof must have tried them all.
+        for &s in srcs {
+            if self.occ.get(s) || !self.free[s] {
+                continue;
+            }
+            self.occ.set(s);
+            self.paths[i].push(s);
+            let r = self.dfs_path(i, s, dsts);
+            if r == Step::Found {
+                // Keep the committed path/occupancy intact for reconstruction.
+                return r;
+            }
+            self.paths[i].pop();
+            self.occ.clear(s);
+            if r == Step::Tripped {
+                return r;
+            }
         }
-        self.occ.set(s);
-        self.paths[i].push(s);
-        let r = self.dfs_path(i, s, t);
-        if r == Step::Found {
-            // Keep the committed path/occupancy intact for reconstruction.
-            return r;
-        }
-        self.paths[i].pop();
-        self.occ.clear(s);
-        if r == Step::Exhausted {
-            self.memo.insert(key);
-        }
-        r
+        self.memo.insert(key);
+        Step::Exhausted
     }
 
     /// Enumerate all simple extensions of the current path of net `i` from
-    /// `cur` to `t`, recursing into `solve(i + 1)` at every completion.
-    fn dfs_path(&mut self, i: usize, cur: usize, t: usize) -> Step {
+    /// `cur` to any node of the sorted target set `t`, recursing into
+    /// `solve(i + 1)` at every completion. A path stops at the first target it
+    /// touches: any continuation to another target occupies a superset of its
+    /// nodes, so it can never succeed where the shorter one failed.
+    fn dfs_path(&mut self, i: usize, cur: usize, t: &[usize]) -> Step {
         self.expansions += 1;
         if self.expansions > self.budget {
             return Step::Tripped;
         }
-        if cur == t {
+        if t.binary_search(&cur).is_ok() {
             return self.solve(i + 1);
         }
+        let t_rep = t[0];
         // Order neighbors by goal distance so the first completed path is
         // near-shortest (shortest-first flavor without a separate k-shortest
         // machinery; the enumeration is exhaustive either way).
-        let (tx, ty, tl) = self.coords(t);
+        let (tx, ty, tl) = self.coords(t_rep);
         let mut nbs = (self.neighbors)(cur);
         nbs.sort_by(|&a, &b| {
             let da = self.dist2(a, tx, ty, tl);
@@ -1017,32 +1462,35 @@ struct Topology<'a> {
     half_w: f64,
 }
 
-/// Shortest path (fewest nodes) from `start` to `goal` over free, unoccupied
-/// nodes joined by legal edges.
+/// Shortest path (fewest nodes) from any node of `starts` to any node of the
+/// sorted set `goals` over free, unoccupied nodes joined by legal edges — a
+/// multi-source / multi-target BFS.
 ///
-/// On failure the reachable set is returned — the exhausted component that *is*
-/// the infeasibility proof for a single connection. Passing `usize::MAX` as
-/// `goal` asks for that set outright.
+/// On failure the reachable set (from ALL starts) is returned — the exhausted
+/// component that *is* the infeasibility proof for a single connection.
+/// Passing an empty `goals` asks for that set outright.
 fn bfs_path(
-    start: usize,
-    goal: usize,
+    starts: &[usize],
+    goals: &[usize],
     free: &[bool],
     occ: &BitSet,
     neighbors: &dyn Fn(usize) -> Vec<usize>,
     edge_ok: &mut dyn FnMut(usize, usize) -> bool,
 ) -> Result<Vec<usize>, Vec<bool>> {
     let mut seen = vec![false; free.len()];
-    if !free[start] || occ.get(start) {
-        return Err(seen);
-    }
     let mut prev = vec![usize::MAX; free.len()];
-    seen[start] = true;
-    let mut q = VecDeque::from([start]);
+    let mut q = VecDeque::new();
+    for &start in starts {
+        if free[start] && !occ.get(start) && !seen[start] {
+            seen[start] = true;
+            q.push_back(start);
+        }
+    }
     while let Some(u) = q.pop_front() {
-        if u == goal {
+        if goals.binary_search(&u).is_ok() {
             let mut path = vec![u];
             let mut cur = u;
-            while cur != start {
+            while prev[cur] != usize::MAX {
                 cur = prev[cur];
                 path.push(cur);
             }
@@ -1068,7 +1516,7 @@ fn bfs_path(
 /// did not work"; it is never evidence of infeasibility.
 fn sequential_bfs(
     order: &[usize],
-    terms: &[(usize, usize)],
+    terms: &[(Vec<usize>, Vec<usize>)],
     free: &[bool],
     n_nodes: usize,
     neighbors: &dyn Fn(usize) -> Vec<usize>,
@@ -1077,10 +1525,7 @@ fn sequential_bfs(
     let mut occ = BitSet::new(n_nodes);
     let mut paths = vec![Vec::new(); terms.len()];
     for &i in order {
-        let (s, t) = terms[i];
-        if occ.get(t) {
-            return None;
-        }
+        let (s, t) = (&terms[i].0, &terms[i].1);
         let path = bfs_path(s, t, free, &occ, neighbors, edge_ok).ok()?;
         for &node in &path {
             occ.set(node);
@@ -1093,11 +1538,12 @@ fn sequential_bfs(
 /// Deterministic connection orders for the witness attempt: as given, longest
 /// terminal span first (the constrained nets pick their corridor before the
 /// short ones fill it), then shortest first.
-fn attempt_orders(terms: &[(usize, usize)], nx: usize, plane: usize) -> Vec<Vec<usize>> {
-    let span = |&(s, t): &(usize, usize)| {
+fn attempt_orders(terms: &[(Vec<usize>, Vec<usize>)], nx: usize, plane: usize) -> Vec<Vec<usize>> {
+    // Span between representative (lowest-index) nodes of each set.
+    let span = |(s, t): &(Vec<usize>, Vec<usize>)| {
         let coords = |n: usize| ((n % plane) % nx, (n % plane) / nx, n / plane);
-        let (sx, sy, sl) = coords(s);
-        let (tx, ty, tl) = coords(t);
+        let (sx, sy, sl) = coords(s[0]);
+        let (tx, ty, tl) = coords(t[0]);
         sx.abs_diff(tx) + sy.abs_diff(ty) + sl.abs_diff(tl)
     };
     let identity: Vec<usize> = (0..terms.len()).collect();
@@ -1296,17 +1742,18 @@ fn severed_reason(
 /// for) the paired joint routing.
 fn max_node_disjoint_flow(
     free: &[bool],
-    plane: usize,
-    _nx: usize,
-    nl: usize,
-    terms: &[(usize, usize)],
+    terms: &[(Vec<usize>, Vec<usize>)],
     neighbors: &dyn Fn(usize) -> Vec<usize>,
 ) -> (usize, Vec<usize>) {
-    let n = plane * nl;
-    // Node split: in(v) = 2v, out(v) = 2v+1; S = 2n, T = 2n+1.
+    let n = free.len();
+    // Node split: in(v) = 2v, out(v) = 2v+1; S = 2n, T = 2n+1. Each connection
+    // gets a unit-capacity super-source and super-sink fanning out to its
+    // whole terminal set, so an island contributes ONE unit of flow however
+    // many attachment nodes it has.
     let s = 2 * n;
     let t = 2 * n + 1;
-    let mut g = FlowGraph::new(2 * n + 2);
+    let k = terms.len();
+    let mut g = FlowGraph::new(2 * n + 2 + 2 * k);
     for (v, &f) in free.iter().enumerate().take(n) {
         if f {
             g.add_edge(2 * v, 2 * v + 1, 1);
@@ -1322,9 +1769,16 @@ fn max_node_disjoint_flow(
             }
         }
     }
-    for &(src, dst) in terms {
-        g.add_edge(s, 2 * src, 1);
-        g.add_edge(2 * dst + 1, t, 1);
+    for (ci, (srcs, dsts)) in terms.iter().enumerate() {
+        let (a, b) = (2 * n + 2 + 2 * ci, 2 * n + 3 + 2 * ci);
+        g.add_edge(s, a, 1);
+        g.add_edge(b, t, 1);
+        for &src in srcs {
+            g.add_edge(a, 2 * src, 1);
+        }
+        for &dst in dsts {
+            g.add_edge(2 * dst + 1, b, 1);
+        }
     }
     let flow = g.max_flow(s, t);
     if flow >= terms.len() {

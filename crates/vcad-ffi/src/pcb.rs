@@ -102,8 +102,12 @@ pub struct DrcReport {
     pub route_attributable: usize,
     /// Of those, the ones the strip-and-re-route loop can fix.
     pub route_fixable: usize,
-    /// Unrouted connections (pad pairs on one net not joined by copper).
+    /// Nets still open — unconnected, islanded, or an SMD pad unstitched from
+    /// its plane (`vcad_ecad_fabprep::open_nets`). Zero means the netlist is
+    /// fully realized in copper.
     pub unrouted: usize,
+    /// The open nets by name (sorted).
+    pub open_nets: Vec<String>,
     /// True when `route_attributable == 0`.
     pub clean: bool,
     /// Findings, routing-attributable offenders first, capped.
@@ -123,10 +127,11 @@ pub fn drc_report(pcb: &Pcb, accepted: &BTreeSet<String>) -> DrcReport {
     let attributable = delta
         .route_attributable_total
         .saturating_sub(delta.route_attributable_accepted);
-    let unrouted = final_
-        .iter()
-        .filter(|v| vcad_ecad_fabprep::delta::rule_name(&v.rule).contains("unrouted"))
-        .count();
+    // Was `rule_name(..).contains("unrouted")` — but rule names are the Debug
+    // spelling (`UnconnectedNet`, `NetIslands`), so that never matched and the
+    // app reported "0 unrouted" on every board.
+    let open_nets = vcad_ecad_fabprep::open_nets(&final_);
+    let unrouted = open_nets.len();
     let offender_msgs: BTreeSet<&str> =
         delta.offenders.iter().map(|o| o.message.as_str()).collect();
     let mut findings: Vec<Finding> = final_
@@ -147,6 +152,7 @@ pub fn drc_report(pcb: &Pcb, accepted: &BTreeSet<String>) -> DrcReport {
         route_attributable: attributable,
         route_fixable: delta.route_attributable_fixable,
         unrouted,
+        open_nets,
         clean: attributable == 0,
         findings,
         rules: delta.rules,
@@ -237,6 +243,10 @@ fn verdict_opts(req: &Value) -> VerdictOptions {
     if let Some(c) = req.get("max_cluster").and_then(Value::as_u64) {
         v.max_cluster = c as usize;
     }
+    v.allow_blind_vias = req
+        .get("allow_blind_vias")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     v
 }
 
@@ -274,6 +284,10 @@ fn fab_opts(req: &Value) -> FabPrepOptions {
         o.max_rounds = r as usize;
     }
     o.accept_rules = accepted_rules(req).into_iter().collect();
+    o.allow_incomplete = req
+        .get("allow_incomplete")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     o.verdict = verdict_opts(req);
     o
 }
@@ -321,6 +335,20 @@ pub fn export_gerbers(pcb: &Pcb, dir: &Path, req: &Value) -> Result<Value, Strin
             "refused: {} route-attributable DRC violation(s) ({} total, {} on the unrouted floor) — \
              run Fix DRC first; no fabrication files were written",
             drc.route_attributable, drc.total, drc.baseline_total
+        ));
+    }
+    // Geometrically clean is not the circuit: refuse a board with open nets
+    // unless the caller explicitly opts in (same contract as fab-prep).
+    let allow_incomplete = req
+        .get("allow_incomplete")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if drc.unrouted > 0 && !allow_incomplete {
+        return Err(format!(
+            "refused: board NOT FULLY ROUTED — {} net(s) open ({}) — route them first, or pass \
+             allow_incomplete; no fabrication files were written",
+            drc.unrouted,
+            drc.open_nets.join(", ")
         ));
     }
     std::fs::create_dir_all(dir).map_err(|e| format!("mkdir {}: {e}", dir.display()))?;
@@ -851,7 +879,15 @@ mod tests {
 
         // Export (gated).
         let dir = std::env::temp_dir().join(format!("vcad-ffi-gerber-{}", std::process::id()));
-        let out = export_gerbers(&fixed, &dir, &json!({})).unwrap();
+        // The ice-viz fixture is geometrically clean but not fully connected
+        // under the kernel DRC (13 open nets, incl. GND/VBUS), so the default
+        // export must refuse it; the explicit opt-in still ships.
+        if after.unrouted > 0 {
+            let e = export_gerbers(&fixed, &dir, &json!({})).unwrap_err();
+            assert!(e.contains("NOT FULLY ROUTED"), "{e}");
+            assert!(!dir.exists());
+        }
+        let out = export_gerbers(&fixed, &dir, &json!({"allow_incomplete": true})).unwrap();
         let files: Vec<String> = serde_json::from_value(out["files"].clone()).unwrap();
         assert!(
             files
@@ -889,6 +925,52 @@ mod tests {
         let e = export_gerbers(&pcb, &dir, &json!({})).unwrap_err();
         assert!(e.starts_with("refused"), "{e}");
         assert!(!dir.exists());
+    }
+
+    /// The app's "unrouted" count used to match the substring "unrouted"
+    /// against Debug rule names (`UnconnectedNet`), so it read 0 on every
+    /// board. It must count the nets that are actually open — and export must
+    /// refuse a board with any.
+    #[test]
+    fn unrouted_counts_open_nets_and_blocks_export() {
+        use vcad_ir::ecad::{Footprint, Pad, PadShape, PadType, PcbLayer};
+        let mut pcb: Pcb = serde_json::from_value(empty_board_json()).unwrap();
+        let pad = |n: &str, x: f64| Pad {
+            number: n.into(),
+            pad_type: PadType::SMD,
+            shape: PadShape::Rect {
+                width: 0.8,
+                height: 0.8,
+            },
+            position: vcad_ir::Vec2::new(x, 0.0),
+            rotation: 0.0,
+            drill: None,
+            net: Some("SIG".into()),
+            layers: vec![PcbLayer::FCu],
+        };
+        pcb.footprints.push(Footprint {
+            reference: "R1".into(),
+            value: "1k".into(),
+            footprint_name: "R".into(),
+            position: vcad_ir::Vec2::new(20.0, 20.0),
+            rotation: 0.0,
+            front: true,
+            pads: vec![pad("1", 0.0), pad("2", 10.0)],
+            graphics: vec![],
+            model_3d: None,
+            properties: Default::default(),
+        });
+        let r = drc_report(&pcb, &BTreeSet::new());
+        assert_eq!(r.unrouted, 1, "{:?}", r.findings);
+        assert_eq!(r.open_nets, vec!["SIG".to_string()]);
+        let dir = std::env::temp_dir().join(format!("vcad-ffi-open-{}", std::process::id()));
+        let e = export_gerbers(&pcb, &dir, &json!({})).unwrap_err();
+        assert!(e.contains("NOT FULLY ROUTED"), "{e}");
+        assert!(!dir.exists());
+
+        // Autoroute's status now carries the true remaining count.
+        let routed = autoroute(pcb, &json!({}));
+        assert_eq!(routed["drc"]["unrouted"], json!(0), "{}", routed["verdict"]);
     }
 
     #[test]
