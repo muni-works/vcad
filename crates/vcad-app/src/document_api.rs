@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use vcad_crdt::{CrdtDocument, FeatureId, FractionalIndex, ReplicaId, Value};
 use vcad_ir::Document;
 
-use crate::feature::FeatureInput;
 use crate::command::CommandError;
+use crate::feature::FeatureInput;
 use crate::materializer::{feature_input_ids, materialize, MaterializeResult};
 use crate::part_info::PartInfo;
 
@@ -143,18 +143,51 @@ impl DocumentApi {
     /// Add a feature with typed input.
     pub fn add_feature(&mut self, input: FeatureInput) -> ApiResult {
         let (kind, params) = input.to_crdt_params();
-
-        let ordered = self.crdt.ordered_features();
-        let position = if let Some(last) = ordered.last() {
-            FractionalIndex::between(Some(&last.1.position), None)
-        } else {
-            FractionalIndex::between(None, None)
-        };
-
+        let position = self.append_position();
         let (fid, _cs) = self.crdt.create_feature(kind, position, params);
+        self.advance_marker_to(fid);
         let stable_id = self.stable_ids.insert(fid);
         self.dirty = true;
         self.build_result(Some(stable_id))
+    }
+
+    /// Where a new feature goes: the end of the history, or — while the
+    /// history is rolled back — right after the marker, so it is built.
+    fn append_position(&self) -> FractionalIndex {
+        let ordered = self.crdt.ordered_features();
+        let marker = ordered.iter().position(|(_, f)| {
+            matches!(
+                f.params.get(crate::materializer::ROLLBACK_MARKER),
+                Some((Value::Bool(true), _))
+            )
+        });
+        match marker {
+            Some(i) => FractionalIndex::between(
+                Some(&ordered[i].1.position),
+                ordered.get(i + 1).map(|(_, f)| &f.position),
+            ),
+            None => match ordered.last() {
+                Some(last) => FractionalIndex::between(Some(&last.1.position), None),
+                None => FractionalIndex::between(None, None),
+            },
+        }
+    }
+
+    /// Move the rollback marker (if set) onto `fid`, a feature just
+    /// inserted at it, so it stays the last built step.
+    fn advance_marker_to(&mut self, fid: FeatureId) {
+        let key = crate::materializer::ROLLBACK_MARKER;
+        let Some(old) = self
+            .crdt
+            .ordered_features()
+            .iter()
+            .find(|(id, f)| *id != fid && matches!(f.params.get(key), Some((Value::Bool(true), _))))
+            .map(|(id, _)| *id)
+        else {
+            return;
+        };
+        self.crdt.set_param(old, key, Value::Bool(false));
+        self.crdt.set_param(fid, key, Value::Bool(true));
     }
 
     /// Create a feature from a raw kind + params map, for features that have no
@@ -164,14 +197,10 @@ impl DocumentApi {
     /// transformed (`set_translation`/`set_rotation`/`set_scale`), updated, or
     /// deleted by id. Without this a board would be unmovable.
     pub fn create_feature_raw(&mut self, kind: &str, params: HashMap<String, Value>) -> ApiResult {
-        let ordered = self.crdt.ordered_features();
-        let position = if let Some(last) = ordered.last() {
-            FractionalIndex::between(Some(&last.1.position), None)
-        } else {
-            FractionalIndex::between(None, None)
-        };
-
-        let (fid, _cs) = self.crdt.create_feature(kind, position, params);
+        let (fid, _cs) = self
+            .crdt
+            .create_feature(kind, self.append_position(), params);
+        self.advance_marker_to(fid);
         let stable_id = self.stable_ids.insert(fid);
         self.dirty = true;
         self.build_result(Some(stable_id))
@@ -433,7 +462,10 @@ impl DocumentApi {
         };
         let inputs = feature_input_ids(me);
         // An input that would land after the moved feature.
-        if let Some((id, _)) = rest[idx..].iter().find(|(id, _)| inputs.contains(&sid(*id))) {
+        if let Some((id, _)) = rest[idx..]
+            .iter()
+            .find(|(id, _)| inputs.contains(&sid(*id)))
+        {
             let other = sid(*id);
             return Some(CommandError::OrderViolation {
                 id: stable_id.to_string(),

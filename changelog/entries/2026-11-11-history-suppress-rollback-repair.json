@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-11-history-suppress-rollback-repair",
+  "version": "0.11.0",
+  "date": "2026-11-11",
+  "category": "feat",
+  "title": "Suppress, roll back, drag-reorder and repair history",
+  "summary": "Features can be truly suppressed (dependents skip), the history rolled back to any feature, rows dragged with legal-drop checks, and lost sketch faces re-picked from ranked candidates.",
+  "features": ["feature-tree", "history", "persistent-naming"]
+}

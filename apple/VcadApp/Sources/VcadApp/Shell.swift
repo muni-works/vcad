@@ -498,8 +498,15 @@ struct FeatureTreeView: View {
                     EmptyPanelState(title: "No features yet", systemImage: "cube.transparent",
                                     detail: "Add a primitive or sketch a profile to start.")
                 } else {
-                    ForEach(model.featureNodes) { node in
-                        FeatureRowView(model: model, node: node, depth: 0)
+                    ForEach(model.historyTreeItems) { item in
+                        switch item {
+                        case .node(let node, let row):
+                            FeatureRowView(model: model, node: node, depth: 0, historyRow: row)
+                        case .ghost(let row):
+                            GhostFeatureRow(model: model, row: row)
+                        case .marker:
+                            RollbackMarkerRow(model: model)
+                        }
                     }
                 }
             } else {
@@ -554,7 +561,12 @@ struct FeatureRowView: View {
     @Bindable var model: EditorModel
     let node: FeatureNode
     let depth: Int
+    /// The engine's history row for a top-level part (state, references).
+    var historyRow: HistoryRow? = nil
     @State private var hovering = false
+
+    private var brokenRows: [HistoryRow] { historyRow.map { model.brokenRows(under: $0) } ?? [] }
+    private var broken: Bool { !brokenRows.isEmpty }
 
     private var expanded: Bool { model.expandedFeatureIDs.contains(node.id) }
     private var selected: Bool {
@@ -581,6 +593,9 @@ struct FeatureRowView: View {
                 // Addressable by the ScrollViewReader that keeps the selected
                 // row in view when the selection comes from the viewport.
                 .id(node.id)
+            if let h = historyRow, broken, model.repairingFeatureID == h.id {
+                BrokenReferenceCard(model: model, rows: brokenRows)
+            }
             if expanded {
                 ForEach(node.children) { child in
                     FeatureRowView(model: model, node: child, depth: depth + 1)
@@ -622,6 +637,14 @@ struct FeatureRowView: View {
                 }
             }
             Spacer(minLength: 0)
+            if let h = historyRow, broken {
+                Button { model.repairingFeatureID = model.repairingFeatureID == h.id ? nil : h.id } label: {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.red)
+                }
+                .buttonStyle(.plain)
+                .help("A reference this feature is built on no longer resolves — click to repair")
+                .accessibilityLabel("Broken reference, repair")
+            }
             if let pi = node.partIndex { eyeButton(pi) }
         }
         .padding(.leading, CGFloat(depth) * Theme.Space.m + Theme.Space.xs)
@@ -647,6 +670,7 @@ struct FeatureRowView: View {
             guard model.renamingFeatureID != node.id else { return }
             model.selectFeature(node.id)
         })
+        .modifier(HistoryRowDrag(model: model, id: depth == 0 ? historyRow?.id : nil))
         .contextMenu { menu }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(node.detail.map { "\(node.name), \($0)" } ?? node.name)
@@ -696,6 +720,24 @@ struct FeatureRowView: View {
                 .disabled(pi == 0)
             Button { model.reorderPart(pi, to: pi + 1) } label: { Label("Move Down", systemImage: "arrow.down") }
                 .disabled(pi >= model.featureNodes.count - 1)
+            if let h = historyRow {
+                Button { model.setFeatureSuppressed(h.id, true) } label: {
+                    Label("Suppress", systemImage: "nosign")
+                }
+                .help("Keep the feature but don't build it; features built on it are skipped")
+                Button { model.rollBack(after: h.id) } label: {
+                    Label("Roll Back to Here", systemImage: "backward.end")
+                }
+                .disabled(h.marker)
+                if model.isRolledBack {
+                    Button { model.rollBack(after: nil) } label: { Label("Roll to End", systemImage: "forward.end.alt") }
+                }
+                if broken {
+                    Button { model.repairingFeatureID = h.id } label: {
+                        Label("Repair Reference…", systemImage: "exclamationmark.triangle")
+                    }
+                }
+            }
             Button { model.toggleSuppressed(part: pi) } label: {
                 Label(model.isSuppressed(part: pi) ? "Show in Document" : "Hide in Document",
                       systemImage: model.isSuppressed(part: pi) ? "eye" : "eye.slash")
