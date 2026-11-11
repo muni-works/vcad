@@ -32,8 +32,42 @@ enum SceneAssets {
     /// lines over the shaded surfaces, the classic CAD look.
     static let edgeMaterial = UnlitMaterial(color: NSColor(white: 0.09, alpha: 1.0))
 
+    /// The compiled viewport shaders (`Shaders/*.metal` → vcad.metallib,
+    /// built by bundle.sh). nil in `swift test`/dev runs without it.
+    private static let shaderLibrary: MTLLibrary? = {
+        guard let url = Bundle.main.url(forResource: "vcad", withExtension: "metallib"),
+              let device = MTLCreateSystemDefaultDevice() else { return nil }
+        return try? device.makeLibrary(URL: url)
+    }()
+
+    /// Screen-space, antialiased ink lines (constant pixel width, never
+    /// z-fighting the surface). nil when the shader library is missing —
+    /// callers fall back to `edgeMaterial` ribbons.
+    static func edgeLineMaterial(viewportHeightPx: Float, widthPx: Float = 1.25) -> CustomMaterial? {
+        guard let lib = shaderLibrary else { return nil }
+        let geo = CustomMaterial.GeometryModifier(named: "edgeLineGeometry", in: lib)
+        let surf = CustomMaterial.SurfaceShader(named: "edgeLineSurface", in: lib)
+        guard var m = try? CustomMaterial(surfaceShader: surf, geometryModifier: geo, lightingModel: .unlit)
+        else { return nil }
+        let pxPerUnit = 2 * tan(Float(60) / 2 * .pi / 180) / max(viewportHeightPx, 1)  // PerspectiveCamera FOV
+        m.custom.value = SIMD4(pxPerUnit, widthPx, 0.09, 0.0015)
+        return m
+    }
+
     /// Equirect of bold horizontal bands: the classic zebra-analysis light box.
     /// Reflected off a chromed surface, stripe kinks expose G1/G2 breaks.
+    /// Viewport-only material softening, Fusion/Shapr3D style: dielectrics get
+    /// a lower specular level and a roughness floor so the key light leaves a
+    /// broad sheen rather than a hard, clipped hotspot. Metals keep their
+    /// roughness (their look *is* the reflection) but still get the floor
+    /// halved so mirror-polished parts don't spark.
+    static func studioSoften(_ m: inout PhysicallyBasedMaterial) {
+        let metal = m.metallic.scale
+        let floor: Float = metal > 0.5 ? 0.22 : 0.42
+        if m.roughness.scale < floor { m.roughness = .init(floatLiteral: floor) }
+        m.specular = .init(floatLiteral: metal > 0.5 ? 0.5 : 0.3)
+    }
+
     private static func makeZebraEnvironment() -> EnvironmentResource? {
         let w = 2048, h = 1024
         let cs = CGColorSpaceCreateDeviceRGB()
@@ -60,11 +94,11 @@ enum SceneAssets {
                                   bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
         let fw = CGFloat(w), fh = CGFloat(h)
         let base = CGGradient(colorsSpace: cs, colors: [
-            CGColor(red: 0.20, green: 0.21, blue: 0.25, alpha: 1),
-            CGColor(red: 0.13, green: 0.14, blue: 0.17, alpha: 1),
-            CGColor(red: 0.07, green: 0.075, blue: 0.09, alpha: 1),
-            CGColor(red: 0.025, green: 0.025, blue: 0.032, alpha: 1),
-            CGColor(red: 0.008, green: 0.008, blue: 0.011, alpha: 1),
+            CGColor(red: 0.30, green: 0.31, blue: 0.34, alpha: 1),
+            CGColor(red: 0.21, green: 0.22, blue: 0.25, alpha: 1),
+            CGColor(red: 0.13, green: 0.135, blue: 0.15, alpha: 1),
+            CGColor(red: 0.07, green: 0.07, blue: 0.08, alpha: 1),
+            CGColor(red: 0.04, green: 0.04, blue: 0.045, alpha: 1),
         ] as CFArray, locations: [0, 0.34, 0.52, 0.74, 1])!
         ctx.drawLinearGradient(base, start: CGPoint(x: 0, y: fh), end: CGPoint(x: 0, y: 0), options: [])
 
@@ -102,13 +136,13 @@ enum SceneAssets {
     /// texture — no per-line entities, no giant atlas — and mipmaps thin the
     /// lines out toward the background at distance.
     private static var gridTiles: [Bool: MaterialParameters.Texture] = [:]
-    static let gridTilePixelsPerMinor = 64
+    static let gridTilePixelsPerMinor = 192
     static func gridTile(strong: Bool) -> MaterialParameters.Texture? {
         if let t = gridTiles[strong] { return t }
         let px = gridTilePixelsPerMinor
         let sz = px * GridSpacing.majorEvery
         let boost: Float = strong ? 0.85 : 1
-        let minorA: Float = 0.11 * boost, majorA: Float = 0.26 * boost
+        let minorA: Float = 0.16 * boost, majorA: Float = 0.34 * boost
         // Coverage of the nearest line at each texel centre; the tile edge
         // (texel 0, wrapping) is the major line.
         var line = [Float](repeating: 0, count: sz)
@@ -117,7 +151,7 @@ enum SceneAssets {
             let i = Int((t / Float(px)).rounded())
             let d = abs(t - Float(i * px))
             let major = i % GridSpacing.majorEvery == 0
-            line[p] = major ? majorA * max(0, min(1, 1.3 - d)) : minorA * max(0, min(1, 1.0 - d))
+            line[p] = major ? majorA * max(0, min(1, 1.0 - d)) : minorA * max(0, min(1, 0.75 - d))
         }
         var bytes = [UInt8](repeating: 0, count: sz * sz)
         for y in 0..<sz {
@@ -204,7 +238,7 @@ enum SceneAssets {
         guard let mesh = try? MeshResource.generate(from: [md]) else { return nil }
         let grid = ModelEntity(mesh: mesh, materials: materials)
         grid.name = name
-        if axes, let strips = axisStrips(half: half, width: layout.minor * scale * 0.07, dark: dark) {
+        if axes, let strips = axisStrips(half: half, width: layout.minor * scale * 0.025, dark: dark) {
             strips.position.y = layout.minor * scale * 0.002
             grid.addChild(strips)
         }

@@ -128,26 +128,35 @@ struct ContactShadow {
     /// Fill the triangles, Gaussian-blur, read back as grey bytes (row 0 = top).
     private static func layer(_ pts: [SIMD2<Float>], plane: Plane, blurPx: Float) -> [UInt8]? {
         let n = pixels
-        guard let ctx = CGContext(data: nil, width: n, height: n, bitsPerComponent: 8, bytesPerRow: n,
-                                  space: CGColorSpaceCreateDeviceGray(),
-                                  bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
-        ctx.setFillColor(gray: 0, alpha: 1)
-        ctx.fill(CGRect(x: 0, y: 0, width: n, height: n))
-        ctx.setFillColor(gray: 1, alpha: 1)
-        ctx.setShouldAntialias(true)
-        let path = CGMutablePath()
+        // Rasterize the triangles ourselves: one CGPath holding every
+        // triangle made CoreGraphics resolve all the edge crossings between
+        // overlapping triangles (~O(n²)) — a minute-long main-thread hang on
+        // a 100k-triangle import. Plain edge-function coverage per triangle
+        // costs its pixel area; the Gaussian blur below supplies the AA.
+        var mask = [UInt8](repeating: 0, count: n * n)
         var i = 0
         while i + 2 < pts.count {
             let a = pixel(pts[i], plane: plane), b = pixel(pts[i + 1], plane: plane), c = pixel(pts[i + 2], plane: plane)
-            path.move(to: CGPoint(x: CGFloat(a.x), y: CGFloat(a.y)))
-            path.addLine(to: CGPoint(x: CGFloat(b.x), y: CGFloat(b.y)))
-            path.addLine(to: CGPoint(x: CGFloat(c.x), y: CGFloat(c.y)))
-            path.closeSubpath()
             i += 3
+            let area = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+            if abs(area) < 1e-9 { continue }
+            let s: Float = area > 0 ? 1 : -1
+            let x0 = max(0, Int((min(a.x, b.x, c.x)).rounded(.down))), x1 = min(n - 1, Int((max(a.x, b.x, c.x)).rounded(.up)))
+            let y0 = max(0, Int((min(a.y, b.y, c.y)).rounded(.down))), y1 = min(n - 1, Int((max(a.y, b.y, c.y)).rounded(.up)))
+            if x0 > x1 || y0 > y1 { continue }
+            for y in y0...y1 {
+                let py = Float(y) + 0.5
+                let row = (n - 1 - y) * n          // CG y-up → memory row 0 = top
+                for x in x0...x1 {
+                    let px = Float(x) + 0.5
+                    let w0 = s * ((b.x - a.x) * (py - a.y) - (b.y - a.y) * (px - a.x))
+                    let w1 = s * ((c.x - b.x) * (py - b.y) - (c.y - b.y) * (px - b.x))
+                    let w2 = s * ((a.x - c.x) * (py - c.y) - (a.y - c.y) * (px - c.x))
+                    if w0 >= 0, w1 >= 0, w2 >= 0 { mask[row + x] = 255 }
+                }
+            }
         }
-        ctx.addPath(path)
-        ctx.fillPath(using: .winding)
-        guard let img = ctx.makeImage() else { return nil }
+        guard let img = grey(mask) else { return nil }
         let ci = CIImage(cgImage: img).clampedToExtent()
             .applyingGaussianBlur(sigma: Double(blurPx))
             .cropped(to: CGRect(x: 0, y: 0, width: n, height: n))
