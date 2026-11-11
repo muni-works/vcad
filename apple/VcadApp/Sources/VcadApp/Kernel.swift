@@ -34,14 +34,19 @@ struct KernelMesh {
             for i in 0..<v.indices_len { indices[i] = ip[i] }
         }
 
-        // Always derive display normals from the geometry (crease-split,
-        // planar faces exact). Kernel normals are not trustworthy for every
-        // source: STL imports carry "last face wins" per-vertex normals, so a
-        // hole-rim vertex takes the countersink's normal and every flat-face
-        // sliver touching it shades into a wedge. BRep tessellations are
-        // per-face, so recomputing them changes nothing visible.
-        let normals: [SIMD3<Float>]
-        (positions, normals, indices) = Self.creasedNormals(positions: positions, indices: indices)
+        // Kernel normals are exact for BRep tessellations (analytic surface
+        // normals, per-face vertices) — keep them. But STL imports carry
+        // "last face wins" per-vertex normals: a hole-rim vertex takes the
+        // countersink's normal and flat-face slivers shade into wedges. Those
+        // show up as corners pointing far off their own face, so when enough
+        // do, derive crease-split normals from the geometry instead.
+        var normals: [SIMD3<Float>] = []
+        if v.normals_len == v.vertices_len, v.normals_len > 0, let np = v.normals {
+            normals = (0..<vertexCount).map { SIMD3<Float>(np[$0 * 3], np[$0 * 3 + 1], np[$0 * 3 + 2]) }
+        }
+        if normals.isEmpty || !Self.normalsTrustworthy(normals, positions: positions, indices: indices) {
+            (positions, normals, indices) = Self.creasedNormals(positions: positions, indices: indices)
+        }
 
         var lo = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
         var hi = SIMD3<Float>(repeating: -.greatestFiniteMagnitude)
@@ -50,6 +55,30 @@ struct KernelMesh {
 
         return KernelMesh(positions: positions, normals: normals, indices: indices,
                           minBound: lo, maxBound: hi)
+    }
+
+    /// False when more than 0.5% of triangle corners carry a normal more
+    /// than 60° off their own face — impossible for real smooth/analytic
+    /// normals, typical of per-vertex "last face wins" STL normals.
+    static func normalsTrustworthy(_ normals: [SIMD3<Float>], positions: [SIMD3<Float>],
+                                   indices: [UInt32]) -> Bool {
+        let triCount = indices.count / 3
+        guard triCount > 0 else { return true }
+        var bad = 0, seen = 0
+        for t in 0..<triCount {
+            let a = Int(indices[3 * t]), b = Int(indices[3 * t + 1]), c = Int(indices[3 * t + 2])
+            guard a < positions.count, b < positions.count, c < positions.count,
+                  a < normals.count, b < normals.count, c < normals.count else { continue }
+            let f = cross(positions[b] - positions[a], positions[c] - positions[a])
+            let l = length(f)
+            guard l > 1e-12 else { continue }
+            let fn = f / l
+            for v in [a, b, c] {
+                seen += 1
+                if dot(fn, normals[v]) < 0.5 { bad += 1 }
+            }
+        }
+        return seen == 0 || Double(bad) / Double(seen) <= 0.005
     }
 
     /// Crease angle for synthesized normals: faces meeting more sharply than
