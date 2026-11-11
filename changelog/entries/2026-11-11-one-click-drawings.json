@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-11-one-click-drawings",
+  "version": "0.11.0",
+  "date": "2026-11-11",
+  "category": "feat",
+  "title": "One-click drawings with automatic dimensions",
+  "summary": "Drawing workspace lays out front/top/right/iso on an auto-sized sheet with hole callouts, center marks and editable dimensions; exports vector PDF and true-scale DXF.",
+  "features": ["drawings", "drafting", "native-app", "gdt"],
+  "mcpTools": []
+}

@@ -1832,6 +1832,7 @@ fn materialize_drawing_settings(doc: &mut Document, feature: &FeatureState) {
         title_block,
         sections,
         show_bom,
+        annotations,
     }) = FeatureInput::from_crdt_params(&feature.kind, &feature.params)
     else {
         return;
@@ -1846,6 +1847,19 @@ fn materialize_drawing_settings(doc: &mut Document, feature: &FeatureState) {
     }
     if let Some(json) = show_bom {
         drawing.show_bom = serde_json::from_str(&json).ok();
+    }
+    if let Some(extra) = annotations
+        .as_deref()
+        .and_then(|j| serde_json::from_str::<vcad_ir::DrawingSettings>(j).ok())
+    {
+        drawing.sheet_size = extra.sheet_size;
+        drawing.dimensions = extra.dimensions;
+        drawing.hidden_dimensions = extra.hidden_dimensions;
+        drawing.dimension_offsets = extra.dimension_offsets;
+        drawing.details = extra.details;
+        drawing.gdt = extra.gdt;
+        drawing.center_marks = extra.center_marks;
+        drawing.hole_callouts = extra.hole_callouts;
     }
     doc.drawing = Some(drawing);
 }

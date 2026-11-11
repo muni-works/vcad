@@ -40,6 +40,7 @@ pub mod detail;
 pub mod dimension;
 pub mod dxf;
 pub mod edge_extract;
+pub mod features;
 pub mod hidden_line;
 pub mod pdf;
 pub mod projection;
@@ -58,10 +59,14 @@ pub use dimension::{
     LinearDimensionType, MaterialCondition, OrdinateDimension, RadialDimension, RenderedArc,
     RenderedArrow, RenderedDimension, RenderedText, TextAlignment, TextPlacement, ToleranceMode,
 };
-pub use dxf::{dxf_entity_count, projected_view_to_dxf};
+pub use dxf::{dxf_entity_count, projected_view_to_dxf, sheet_to_dxf};
 pub use edge_extract::{
     extract_drawing_edges, extract_edges, extract_sharp_edges, extract_silhouette_edges,
     DEFAULT_SHARP_ANGLE,
+};
+pub use features::{
+    center_mark, detect_circles, diameter_text, format_mm, group_circles, leader_callout,
+    leader_callout_at, CircleFeature, CircleGroup,
 };
 pub use hidden_line::{project_mesh, project_mesh_with_options};
 pub use pdf::sheet_to_pdf;

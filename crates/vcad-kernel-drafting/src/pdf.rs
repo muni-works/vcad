@@ -51,6 +51,7 @@ fn escape_pdf_text(text: &str) -> String {
             '⌀' | 'Ø' => out.push_str("\\330"), // Ø in WinAnsiEncoding
             '°' => out.push_str("\\260"),
             '±' => out.push_str("\\261"),
+            '×' => out.push_str("\\327"),
             _ => out.push('?'),
         }
     }
