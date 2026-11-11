@@ -812,6 +812,52 @@ fn parallel_cylinders(a: &CylinderSurface, b: &CylinderSurface) -> IntersectionC
     )
 }
 
+/// Perpendicular cylinders of unequal radius where the smaller one passes
+/// wholly through the larger (a radial hole or boss: `d + r ≤ R`, with `d`
+/// the distance between the axes). The intersection is two closed loops,
+/// one where the small cylinder enters the big one and one where it leaves.
+/// On the small cylinder, with `e1` along the big axis and `e2` along the
+/// common perpendicular, `p(φ) = c + r·cosφ·e1 + r·sinφ·e2 ± s(φ)·axis`,
+/// where `(d + r·sinφ)² + s² = R²`.
+///
+/// The marching sampler this replaces returned an unordered point cloud,
+/// which no splitter can follow: a blind radial hole into a cylinder lost
+/// its floor and fell back to a mesh boolean (the K1 counterbore).
+/// Partial overlaps (`d + r > R`) keep the old path.
+fn perpendicular_unequal_cylinders(
+    a: &CylinderSurface,
+    b: &CylinderSurface,
+) -> Option<IntersectionCurve> {
+    let (big, small) = if a.radius > b.radius { (a, b) } else { (b, a) };
+    let (rr, r) = (big.radius, small.radius);
+    let ax_big = *big.axis.as_ref();
+    let ax_small = *small.axis.as_ref();
+    let e2 = ax_big.cross(ax_small);
+    let e2 = e2 / e2.norm();
+    // Signed offset of the small axis from the big one along e2, and the
+    // point on the small axis closest to the big axis.
+    let delta = small.center - big.center;
+    let d = delta.dot(e2);
+    let s0 = -delta.dot(ax_small);
+    let c = small.center + s0 * ax_small;
+    if d.abs() + r > rr - 1e-9 * rr {
+        return None;
+    }
+    let n = ellipse_samples(r);
+    let mut plus = Vec::with_capacity(n + 1);
+    let mut minus = Vec::with_capacity(n + 1);
+    for i in 0..=n {
+        let phi = 2.0 * std::f64::consts::PI * i as f64 / n as f64;
+        let (sin_p, cos_p) = phi.sin_cos();
+        let lateral = d + r * sin_p;
+        let s = (rr * rr - lateral * lateral).max(0.0).sqrt();
+        let ring = c + r * cos_p * ax_big + r * sin_p * e2;
+        plus.push(ring + s * ax_small);
+        minus.push(ring - s * ax_small);
+    }
+    Some(IntersectionCurve::TwoSampled(plus, minus))
+}
+
 #[allow(clippy::similar_names)]
 fn cylinder_cylinder(a: &CylinderSurface, b: &CylinderSurface) -> IntersectionCurve {
     use vcad_kernel_math::Vec3;
@@ -829,6 +875,11 @@ fn cylinder_cylinder(a: &CylinderSurface, b: &CylinderSurface) -> IntersectionCu
     // Only the perpendicular intersecting equal-radii case has a clean
     // analytic form. Everything else: fall through to the marching sampler
     // with a denser grid than the catch-all.
+    if dot_ab.abs() <= 1e-6 && (a.radius - b.radius).abs() > 1e-6 {
+        if let Some(curve) = perpendicular_unequal_cylinders(a, b) {
+            return curve;
+        }
+    }
     if dot_ab.abs() > 1e-6 || (a.radius - b.radius).abs() > 1e-6 {
         return marching_ssi(a as &dyn Surface, b as &dyn Surface, 64);
     }
