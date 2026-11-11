@@ -125,10 +125,11 @@ final class TuneStore {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
         case .authorized: start()
         case .notDetermined:
-            AVCaptureDevice.requestAccess(for: .audio) { granted in
-                Task { @MainActor in
-                    if granted { self.start() } else { self.mic = .denied }
-                }
+            Task {
+                // The completion runs on an arbitrary queue: await it rather
+                // than hand AVFoundation a main-actor-isolated closure.
+                let granted = await Self.requestMic()
+                if granted { self.start() } else { self.mic = .denied }
             }
         default:
             mic = .denied
@@ -143,14 +144,7 @@ final class TuneStore {
             error = "No microphone input is available."; mic = .idle; return
         }
         box.detector = StrikeDetector(sampleRate: format.sampleRate)
-        let box = self.box
-        input.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in
-            guard let ch = buffer.floatChannelData?[0], let det = box.detector else { return }
-            let hits = det.process(UnsafeBufferPointer(start: ch, count: Int(buffer.frameLength)))
-            for h in hits {
-                Task { @MainActor in TuneStore.shared.heard(h) }
-            }
-        }
+        input.installTap(onBus: 0, bufferSize: 2048, format: format, block: Self.tapBlock(box))
         do {
             try engine.start()
             self.engine = engine
@@ -160,6 +154,25 @@ final class TuneStore {
             input.removeTap(onBus: 0)
             self.error = "Microphone failed to start: \(error.localizedDescription)"
             mic = .idle
+        }
+    }
+
+    nonisolated private static func requestMic() async -> Bool {
+        await withCheckedContinuation { c in
+            AVCaptureDevice.requestAccess(for: .audio) { c.resume(returning: $0) }
+        }
+    }
+
+    /// The tap runs on the audio render thread. Built outside the main actor
+    /// so Swift 6 doesn't infer main-actor isolation for it (which traps the
+    /// first time audio arrives).
+    nonisolated private static func tapBlock(_ box: DetectorBox) -> AVAudioNodeTapBlock {
+        { buffer, _ in
+            guard let ch = buffer.floatChannelData?[0], let det = box.detector else { return }
+            let hits = det.process(UnsafeBufferPointer(start: ch, count: Int(buffer.frameLength)))
+            for h in hits {
+                Task { @MainActor in TuneStore.shared.heard(h) }
+            }
         }
     }
 
@@ -180,9 +193,16 @@ final class TuneStore {
             last = TuneDetection(hz: e.hz, note: name, cents: c, bar: nil)
             return
         }
+        // The lowest peak can be room noise (speech, hum): take the lowest
+        // candidate that lands on a bar, and ignore strikes that match none.
+        let targets = report?.bars.map(\.targetHz) ?? []
+        let onBar = { (hz: Double) in targets.contains { abs(PitchDetector.cents(hz, $0)) <= 60 } }
+        guard let hz = ([e.hz] + e.alternates).first(where: onBar) else { return }
+        let (barName, barCents) = PitchDetector.nearestNote(hz)
         do {
-            try record(hz: e.hz, note: nil, m)
-            last = TuneDetection(hz: e.hz, note: name, cents: c, bar: lastRecorded)
+            try record(hz: hz, note: nil, m)
+            last = TuneDetection(hz: hz, note: barName, cents: barCents, bar: lastRecorded)
+            return
         } catch {
             last = TuneDetection(hz: e.hz, note: name, cents: c, bar: nil)
             self.error = "\(error)"

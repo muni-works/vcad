@@ -23,6 +23,9 @@ struct PitchEstimate: Equatable, Sendable {
     let db: Double
     /// Peak over the spectrum's median, dB.
     let snrDb: Double
+    /// Other qualifying peaks above `hz` (ascending, Hz) — when the lowest
+    /// peak is room noise, a caller that knows the targets can pick one.
+    var alternates: [Double] = []
 }
 
 enum PitchDetector {
@@ -78,12 +81,24 @@ enum PitchDetector {
         let band = Array(db[k0...k1]).sorted()
         let median = band[band.count / 2]
         guard top - median >= minSnrDb else { return nil }
-        guard let k = peaks.first(where: { db[$0] >= top - relDb && db[$0] - median >= minSnrDb }) else { return nil }
+        let qualifying = peaks.filter { db[$0] >= top - relDb && db[$0] - median >= minSnrDb }
+        guard let k = qualifying.first else { return nil }
 
-        let (a, b, c) = (db[k - 1], db[k], db[k + 1])
-        let denom = a - 2 * b + c
-        let p = denom == 0 ? 0 : 0.5 * (a - c) / denom
-        return PitchEstimate(hz: (Double(k) + p) * binHz, db: b - 0.25 * (a - c) * p, snrDb: b - median)
+        func refine(_ k: Int) -> (hz: Double, db: Double) {
+            let (a, b, c) = (db[k - 1], db[k], db[k + 1])
+            let denom = a - 2 * b + c
+            let p = denom == 0 ? 0 : 0.5 * (a - c) / denom
+            return ((Double(k) + p) * binHz, b - 0.25 * (a - c) * p)
+        }
+        let f = refine(k)
+        return PitchEstimate(hz: f.hz, db: f.db, snrDb: db[k] - median,
+                             alternates: qualifying.dropFirst().prefix(8).map { refine($0).hz })
+    }
+
+    /// Strongest peak (and its SNR) for debug logs.
+    static func debugPeaks(_ samples: [Float], sampleRate: Double) -> String {
+        guard let e = fundamental(samples, sampleRate: sampleRate, relDb: 0, minSnrDb: 0) else { return "none" }
+        return String(format: "strongest %.1f Hz snr %.0f", e.hz, e.snrDb)
     }
 
     /// Nearest 12-TET note (A4 = 440) and the offset in cents.
@@ -101,6 +116,8 @@ enum PitchDetector {
 /// Live stream → one pitch estimate per strike. Not thread-safe: feed it from
 /// one thread (the audio tap).
 final class StrikeDetector {
+    /// `VCAD_TUNE_DEBUG=1`: log onsets and estimates to stderr.
+    static let debug = ProcessInfo.processInfo.environment["VCAD_TUNE_DEBUG"] != nil
     let sampleRate: Double
     let windowSamples: Int
     private let holdoffSamples: Int
@@ -148,7 +165,12 @@ final class StrikeDetector {
                     let window = Array(cap.prefix(windowSamples))
                     capture = nil
                     quiet = refractorySamples
-                    if let e = PitchDetector.fundamental(window, sampleRate: sampleRate) { out.append(e) }
+                    let e = PitchDetector.fundamental(window, sampleRate: sampleRate)
+                    if Self.debug {
+                        let peaks = PitchDetector.debugPeaks(window, sampleRate: sampleRate)
+                        FileHandle.standardError.write(Data("[tune] strike → \(e.map { String(format: "%.2f Hz snr %.0f", $0.hz, $0.snrDb) } ?? "rejected") peaks \(peaks)\n".utf8))
+                    }
+                    if let e { out.append(e) }
                 } else {
                     capture = cap
                 }
@@ -164,6 +186,9 @@ final class StrikeDetector {
             }
             // A strike is loud over the floor AND a sudden jump: a decaying
             // ring-down is loud but never jumps, so it can't re-trigger.
+            if Self.debug && rms > max(minRms, floorRms * onsetRatio) {
+                FileHandle.standardError.write(Data(String(format: "[tune] loud rms %.4f floor %.4f prev %.4f\n", rms, floorRms, previous).utf8))
+            }
             if floorRms > 0 && rms > max(minRms, floorRms * onsetRatio) && rms > 2.5 * previous {
                 capture = []
                 skip = holdoffSamples

@@ -108,21 +108,20 @@ const KUHN: [[usize; 4]; 6] = [
     [0, 5, 1, 7],
 ];
 
-/// Fill the interior of a closed triangle mesh with linear tets.
-///
-/// `resolution` is the lattice cell count along the longest bounding-box
-/// axis, clamped to `[2, 256]`.
-///
-/// Each axis gets a whole number of cells that spans the bounding box
-/// exactly. A single cubic pitch cannot do that: a 10 mm section at a
-/// 4.17 mm pitch would mesh as 2 cells, 8.33 mm deep, which is 42% too
-/// flexible in bending, and rounding up instead puts the top nodes outside
-/// the part and out of reach of any load or support region drawn on its
-/// faces. Either error changes with each refinement, which reads as a
-/// failure to converge. An axis under half a nominal pitch keeps that
-/// pitch, so its cell center falls outside the part and it reports
-/// [`MeshError::NoInteriorCells`] instead of inflating one cell to fit.
-pub fn tet_fill(mesh: &TriangleMesh, resolution: usize) -> Result<TetMesh, MeshError> {
+/// The active-cell lattice shared by [`tet_fill`] and [`hex_fill`].
+struct Voxels {
+    min: [f64; 3],
+    n: [usize; 3],
+    pitch: [f64; 3],
+    h: f64,
+    active: Vec<bool>,
+}
+
+fn voxelize(
+    mesh: &TriangleMesh,
+    resolution: usize,
+    max_pitch: Option<[f64; 3]>,
+) -> Result<Voxels, MeshError> {
     let nv = mesh.num_vertices();
     if nv == 0 {
         return Err(MeshError::EmptyMesh);
@@ -140,17 +139,24 @@ pub fn tet_fill(mesh: &TriangleMesh, resolution: usize) -> Result<TetMesh, MeshE
     let longest = size[0].max(size[1]).max(size[2]).max(1e-9);
     let resolution = resolution.clamp(2, 256);
     let h = longest / resolution as f64;
-    let axis = |extent: f64| -> (usize, f64) {
-        let n = (extent / h).round() as usize;
+    let axis = |extent: f64, a: usize| -> (usize, f64) {
+        // An optional per-axis cap (a thin direction still gets enough
+        // cells through it); rounded up so the cap is never exceeded.
+        let ha = max_pitch.map_or(h, |m| h.min(m[a].max(1e-9)));
+        let n = if ha < h {
+            (extent / ha).ceil() as usize
+        } else {
+            (extent / ha).round() as usize
+        };
         if n == 0 {
-            (1, h)
+            (1, ha)
         } else {
             (n, extent / n as f64)
         }
     };
-    let (nx, px) = axis(size[0]);
-    let (ny, py) = axis(size[1]);
-    let (nz, pz) = axis(size[2]);
+    let (nx, px) = axis(size[0], 0);
+    let (ny, py) = axis(size[1], 1);
+    let (nz, pz) = axis(size[2], 2);
 
     // Gather triangles as f64 for the parity test.
     let tris: Vec<[[f64; 3]; 3]> = (0..mesh.num_triangles())
@@ -171,7 +177,7 @@ pub fn tet_fill(mesh: &TriangleMesh, resolution: usize) -> Result<TetMesh, MeshE
     // edges, where parity is ambiguous.
     let mut active = vec![false; nx * ny * nz];
     let eidx = |ix: usize, iy: usize, iz: usize| (iz * ny + iy) * nx + ix;
-    let jitter = h * 0.01371;
+    let jitter = if max_pitch.is_some() { px.min(py) } else { h } * 0.01371;
     for iy in 0..ny {
         for ix in 0..nx {
             let cx = min[0] + (ix as f64 + 0.5) * px + jitter;
@@ -203,6 +209,38 @@ pub fn tet_fill(mesh: &TriangleMesh, resolution: usize) -> Result<TetMesh, MeshE
     if !active.iter().any(|a| *a) {
         return Err(MeshError::NoInteriorCells);
     }
+    Ok(Voxels {
+        min,
+        n: [nx, ny, nz],
+        pitch: [px, py, pz],
+        h,
+        active,
+    })
+}
+
+/// Fill the interior of a closed triangle mesh with linear tets.
+///
+/// `resolution` is the lattice cell count along the longest bounding-box
+/// axis, clamped to `[2, 256]`.
+///
+/// Each axis gets a whole number of cells that spans the bounding box
+/// exactly. A single cubic pitch cannot do that: a 10 mm section at a
+/// 4.17 mm pitch would mesh as 2 cells, 8.33 mm deep, which is 42% too
+/// flexible in bending, and rounding up instead puts the top nodes outside
+/// the part and out of reach of any load or support region drawn on its
+/// faces. Either error changes with each refinement, which reads as a
+/// failure to converge. An axis under half a nominal pitch keeps that
+/// pitch, so its cell center falls outside the part and it reports
+/// [`MeshError::NoInteriorCells`] instead of inflating one cell to fit.
+pub fn tet_fill(mesh: &TriangleMesh, resolution: usize) -> Result<TetMesh, MeshError> {
+    let Voxels {
+        min,
+        n: [nx, ny, nz],
+        pitch: [px, py, pz],
+        h,
+        active,
+    } = voxelize(mesh, resolution, None)?;
+    let eidx = |ix: usize, iy: usize, iz: usize| (iz * ny + iy) * nx + ix;
 
     // Compact lattice nodes used by active cells and emit tets.
     let nxp = nx + 1;
@@ -248,6 +286,84 @@ pub fn tet_fill(mesh: &TriangleMesh, resolution: usize) -> Result<TetMesh, MeshE
         h,
         pitch: [px, py, pz],
         grid: [nx, ny, nz],
+    })
+}
+
+/// A trilinear hexahedral mesh on a uniform lattice: every cell is the same
+/// axis-aligned brick of size `pitch`.
+#[derive(Debug, Clone)]
+pub struct HexMesh {
+    /// Node positions, mm.
+    pub nodes: Vec<[f64; 3]>,
+    /// Cells as 8 node indices, corner `c` at offset `(c&1, c>>1&1, c>>2&1)`.
+    pub cells: Vec<[u32; 8]>,
+    /// Nominal lattice pitch, mm.
+    pub h: f64,
+    /// Cell size along each axis, mm.
+    pub pitch: [f64; 3],
+    /// Lattice cell counts per axis.
+    pub grid: [usize; 3],
+}
+
+impl HexMesh {
+    /// Total mesh volume, mm³.
+    pub fn volume(&self) -> f64 {
+        self.cells.len() as f64 * self.pitch[0] * self.pitch[1] * self.pitch[2]
+    }
+}
+
+/// Fill the interior of a closed triangle mesh with lattice bricks (the
+/// same active cells [`tet_fill`] splits into tets). `resolution` is the
+/// cell count along the longest axis, clamped to `[2, 256]`.
+pub fn hex_fill(mesh: &TriangleMesh, resolution: usize) -> Result<HexMesh, MeshError> {
+    hex_fill_pitch(mesh, resolution, None)
+}
+
+/// [`hex_fill`], optionally with a maximum cell size per axis (mm) so a
+/// thin direction still gets enough cells through it.
+pub fn hex_fill_pitch(
+    mesh: &TriangleMesh,
+    resolution: usize,
+    max_pitch: Option<[f64; 3]>,
+) -> Result<HexMesh, MeshError> {
+    let v = voxelize(mesh, resolution, max_pitch)?;
+    let [nx, ny, nz] = v.n;
+    let eidx = |ix: usize, iy: usize, iz: usize| (iz * ny + iy) * nx + ix;
+    let (nxp, nyp) = (nx + 1, ny + 1);
+    let nidx = |ix: usize, iy: usize, iz: usize| (iz * nyp + iy) * nxp + ix;
+    let mut node_map = vec![u32::MAX; nxp * nyp * (nz + 1)];
+    let mut nodes: Vec<[f64; 3]> = Vec::new();
+    let mut cells = Vec::new();
+    for iz in 0..nz {
+        for iy in 0..ny {
+            for ix in 0..nx {
+                if !v.active[eidx(ix, iy, iz)] {
+                    continue;
+                }
+                let mut corner = [0u32; 8];
+                for (c, slot) in corner.iter_mut().enumerate() {
+                    let (dx, dy, dz) = (c & 1, (c >> 1) & 1, (c >> 2) & 1);
+                    let gi = nidx(ix + dx, iy + dy, iz + dz);
+                    if node_map[gi] == u32::MAX {
+                        node_map[gi] = nodes.len() as u32;
+                        nodes.push([
+                            v.min[0] + (ix + dx) as f64 * v.pitch[0],
+                            v.min[1] + (iy + dy) as f64 * v.pitch[1],
+                            v.min[2] + (iz + dz) as f64 * v.pitch[2],
+                        ]);
+                    }
+                    *slot = node_map[gi];
+                }
+                cells.push(corner);
+            }
+        }
+    }
+    Ok(HexMesh {
+        nodes,
+        cells,
+        h: v.h,
+        pitch: v.pitch,
+        grid: v.n,
     })
 }
 

@@ -43,6 +43,19 @@ final class TuneTests: XCTestCase {
         XCTAssertEqual(PitchDetector.cents(e.hz, 880), 0, accuracy: 0.5)
     }
 
+    /// Live-mic regression: a room sound (speech / hum at ~214 Hz) under an
+    /// E6 strike is the lowest peak; the bar must still be among the
+    /// candidates so TuneStore can pick it.
+    func testRoomHumBelowTheStrikeKeepsTheBarAsACandidate() throws {
+        let f = 1318.51
+        var x = bar(f, noise: 0.002)
+        for i in x.indices { x[i] += Float(0.4 * sin(2 * .pi * 214.0 * Double(i) / fs)) }
+        let e = try XCTUnwrap(PitchDetector.fundamental(x, sampleRate: fs))
+        XCTAssertEqual(e.hz, 214, accuracy: 1, "the hum is the lowest peak")
+        let match = try XCTUnwrap(e.alternates.first { abs(PitchDetector.cents($0, f)) < 60 })
+        XCTAssertEqual(PitchDetector.cents(match, f), 0, accuracy: 0.5)
+    }
+
     func testNoiseAloneIsRejected() {
         var rng: UInt64 = 7
         let x: [Float] = (0..<8192).map { _ in
