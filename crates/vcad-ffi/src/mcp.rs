@@ -97,9 +97,9 @@ fn doc_of(v: &Value) -> Result<Document, StoreError> {
     // An empty window (no document yet, or a bare `{nodes:{}, roots:[]}`) is
     // the empty document — never "no window".
     let empty = |k: &str| {
-        v.get(k).map_or(true, |x| {
-            x.as_object().map_or(false, |o| o.is_empty())
-                || x.as_array().map_or(false, |a| a.is_empty())
+        v.get(k).is_none_or(|x| {
+            x.as_object().is_some_and(|o| o.is_empty())
+                || x.as_array().is_some_and(|a| a.is_empty())
         })
     };
     if v.is_null() || (empty("nodes") && empty("roots")) {
