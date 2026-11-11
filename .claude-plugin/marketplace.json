@@ -1,0 +1,11 @@
+{
+  "name": "vcad",
+  "owner": { "name": "vcad", "url": "https://github.com/muni-works/vcad" },
+  "plugins": [
+    {
+      "name": "vcad",
+      "source": "./plugins/vcad",
+      "description": "vcad MCP server + skill (loon authoring, verify with inspect/render/receipts, live edits in vcad.app)."
+    }
+  ]
+}

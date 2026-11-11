@@ -59,6 +59,10 @@ The CLI is useful for CI/CD pipelines (convert on commit), batch processing (exp
 
 The MCP (Model Context Protocol) server lets AI assistants create, inspect, and export CAD geometry through tool calls. It works with any MCP-compatible client, including Claude Desktop and Cursor.
 
+<Callout type="info" title="Easiest: the Mac app">
+Install vcad.app. On first launch it detects Claude Code, Claude Desktop, Codex and Cursor and registers vcad with them in one consent dialog (undo in Settings ▸ Agents). The manual configs below are for machines without the app.
+</Callout>
+
 ### Claude Desktop
 
 Add this block to your Claude Desktop configuration file (`~/Library/Application Support/Claude/claude_desktop_config.json` on macOS):
@@ -68,7 +72,7 @@ Add this block to your Claude Desktop configuration file (`~/Library/Application
   "mcpServers": {
     "vcad": {
       "command": "npx",
-      "args": ["@vcad/mcp"]
+      "args": ["-y", "@vcad/mcp"]
     }
   }
 }
@@ -85,7 +89,7 @@ Add the server to your Cursor MCP settings (`.cursor/mcp.json` in your project r
   "mcpServers": {
     "vcad": {
       "command": "npx",
-      "args": ["@vcad/mcp"]
+      "args": ["-y", "@vcad/mcp"]
     }
   }
 }
@@ -109,7 +113,7 @@ The MCP server runs on Node.js 18+. The `npx` command downloads and runs the pac
 
 ### Other MCP Clients
 
-Any MCP-compatible client can connect to the vcad server. The transport is stdio by default: launch the process with `npx @vcad/mcp` and communicate over stdin/stdout using the MCP JSON protocol. See the [MCP specification](https://modelcontextprotocol.io) for details on building custom integrations.
+Any MCP-compatible client can connect to the vcad server. The transport is stdio by default: launch the process with `npx -y @vcad/mcp` and communicate over stdin/stdout using the MCP JSON protocol. See the [MCP specification](https://modelcontextprotocol.io) for details on building custom integrations.
 
 ---
 
