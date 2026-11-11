@@ -37,3 +37,22 @@ final class CreasedNormalsTests: XCTestCase {
         XCTAssertGreaterThan(shared.x, 0.01, "shared edge normal should lean toward the fold")
     }
 }
+
+final class PlanarRegionNormalsTests: XCTestCase {
+    /// A flat face (two triangles) meeting a gentle 10° facet must keep its
+    /// exact plane normal at the shared edge — no tilt smeared across it.
+    func testFlatFaceStaysExactlyFlatNextToGentleFacet() {
+        let s = sin(Float(10) * .pi / 180), c = cos(Float(10) * .pi / 180)
+        let p: [SIMD3<Float>] = [[0,0,0],[0,1,0],[4,0,0],[4,1,0],[4 + c,0,-s],[4 + c,1,-s],[2,0.5,0]]
+        // Flat face as a 4-triangle fan around a centre vertex + one 10°
+        // facet (a 2-triangle quad, so it still blends) off its right edge.
+        let i: [UInt32] = [6,0,2, 6,2,3, 6,3,1, 6,1,0,  2,4,5, 2,5,3]
+        let (pos, n, idx) = KernelMesh.creasedNormals(positions: p, indices: i)
+        for t in 0..<4 {
+            for k in 0..<3 {
+                let v = n[Int(idx[3*t+k])]
+                XCTAssertEqual(v.z, 1, accuracy: 1e-6, "flat face corner tilted: \(v) at \(pos[Int(idx[3*t+k])])")
+            }
+        }
+    }
+}

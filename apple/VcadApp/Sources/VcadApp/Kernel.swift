@@ -81,18 +81,53 @@ struct KernelMesh {
         func unit(_ v: SIMD3<Float>) -> SIMD3<Float>? {
             let l = length(v); return l > 1e-12 ? v / l : nil
         }
+        // Planar regions: triangles joined edge-to-edge with (near) identical
+        // normals. A region of 3+ triangles is a real flat face and shades
+        // with its exact plane normal — no blending — so the long sliver
+        // triangles CAD exporters fan across flat faces can't smear a tilted
+        // rim/hole normal into wedge-shaped "ears". (Two is not enough: every
+        // facet of a tessellated cylinder is a coplanar quad = 2 triangles,
+        // and those must keep blending smooth.)
+        let unitN = faceN.map { unit($0) }
+        var parent = Array(0..<triCount)
+        func find(_ x: Int) -> Int {
+            var x = x
+            while parent[x] != x { parent[x] = parent[parent[x]]; x = parent[x] }
+            return x
+        }
+        var edgeFace: [UInt64: Int] = [:]
+        for t in 0..<triCount {
+            guard let nt = unitN[t] else { continue }
+            for k in 0..<3 {
+                let a = indices[3 * t + k], b = indices[3 * t + (k + 1) % 3]
+                let key = UInt64(min(a, b)) << 32 | UInt64(max(a, b))
+                if let o = edgeFace[key] {
+                    if let no = unitN[o], dot(no, nt) > 0.99995 {
+                        let ra = find(t), rb = find(o)
+                        if ra != rb { parent[ra] = rb }
+                    }
+                } else {
+                    edgeFace[key] = t
+                }
+            }
+        }
+        var regionSize = [Int](repeating: 0, count: triCount)
+        for t in 0..<triCount { regionSize[find(t)] += 1 }
         var outPos: [SIMD3<Float>] = [], outN: [SIMD3<Float>] = []
         var outIdx = [UInt32](repeating: 0, count: triCount * 3)
         // Per source vertex: normals already emitted, so corners that land on
         // the same smoothing group share one output vertex.
         var emitted = [[(SIMD3<Float>, UInt32)]](repeating: [], count: positions.count)
         for t in 0..<triCount {
-            let own = unit(faceN[t])
+            let own = unitN[t]
+            let planar = own != nil && regionSize[find(t)] >= 3
             for k in 0..<3 {
                 let v = Int(indices[3 * t + k])
                 guard v < positions.count else { outIdx[3 * t + k] = 0; continue }
                 var sum = SIMD3<Float>.zero
-                if let own {
+                if planar {
+                    sum = own!
+                } else if let own {
                     for f in incident[v] {
                         if let fn = unit(faceN[f]), dot(fn, own) >= cosCrease { sum += faceN[f] }
                     }
