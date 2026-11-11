@@ -73,7 +73,11 @@ if [ -f "$here/Samples/samples.json" ]; then
   cp -RL "$here/Samples/." "$app/Contents/Resources/samples/"
 fi
 
-# App + document icons, drawn by the app's own icon script when missing.
+# App + document icons: the committed brand icons (Branding/make-icns.sh from
+# the irys-rendered mark), else drawn by the app's own icon script.
+for icon in AppIcon DocumentIcon; do
+  [ -f "$here/Branding/$icon.icns" ] && mkdir -p "$here/dist" && cp "$here/Branding/$icon.icns" "$here/dist/"
+done
 if [ ! -f "$here/dist/AppIcon.icns" ]; then
   swift "$here/make-icon.swift" "$here/dist" >/dev/null 2>&1 || echo "(icon generation skipped)"
 fi
