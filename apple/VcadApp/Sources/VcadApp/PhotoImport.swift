@@ -27,8 +27,12 @@ enum PhotoImportCopy {
         "Recovers plates and blocks: a base with sharp, filleted or chamfered corners, and holes, counterbores, slots, bosses and hole patterns on top."
     static let evidence =
         "Tested on synthetic renders only: with three views, 15 of 20 parts came back within 1 mm and 10 of 20 within 0.5 mm. It has not yet been tested on real photos — check every dimension before you make anything."
-    static let sigmaCaveat =
-        "± is the fit's own estimate (Cramér–Rao). It ran optimistic by about 2× in tests, and it cannot see a wrong shape: a missed hole or a wrong-sized plate can still show small ±."
+    /// Shown on every result. Neither the fit's ± nor its residual check can
+    /// tell a right answer from a wrong one: on 100 held-out parts the check
+    /// caught 4 of 37 wrong answers, because most wrong shapes still explain
+    /// the photos well. So no result is ever presented as confident.
+    static let resultCaveat =
+        "This is a best guess and can be wrong even when it matches the photos closely: a missed hole or a wrong-sized plate looks no different here. Measure every dimension against the part before you make anything."
     /// Fewer than `PhotoImportFiles.minimum` photos: refused, not attempted.
     static func tooFew(_ n: Int) -> String {
         "Choose at least \(PhotoImportFiles.minimum) photos, each with the AprilTag in frame (you chose \(n)). One photo is not reliable: in tests 6 of 20 parts came back within 1 mm from one photo, 15 of 20 from three."
@@ -72,6 +76,8 @@ struct ReconResult: Sendable {
     let warnings: [String]
     let lowConfidence: Bool
     let seconds: Double
+    /// Photos the fit used.
+    let photoCount: Int
 
     init(json: Data) throws {
         guard let obj = try JSONSerialization.jsonObject(with: json) as? [String: Any],
@@ -87,6 +93,7 @@ struct ReconResult: Sendable {
         warnings = obj["warnings"] as? [String] ?? []
         lowConfidence = obj["low_confidence"] as? Bool ?? true
         seconds = (obj["seconds"] as? NSNumber)?.doubleValue ?? 0
+        photoCount = (obj["photos"] as? [Any])?.count ?? 0
     }
 }
 
@@ -466,44 +473,36 @@ struct PhotoImportSheet: View {
             if controller.running {
                 Button("Cancel") { controller.cancel() }.keyboardShortcut(.cancelAction)
             } else if let r = controller.result, controller.phase == .done {
-                Button(r.lowConfidence ? "Open Anyway" : "Open as Document") { controller.openResult() }
+                Button("Open as Document") { controller.openResult() }
                     .keyboardShortcut(.defaultAction)
             }
         }
     }
 }
 
-/// The fitted dimensions and their uncertainty.
+/// The fitted dimensions. No per-dimension ± or confidence flag is shown:
+/// both looked like a correctness signal and neither is one.
 private struct ResultTable: View {
     let result: ReconResult
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if result.lowConfidence {
-                Label("Low confidence: some dimensions aren't pinned by these photos.", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.orange).font(.callout)
-                ForEach(result.warnings, id: \.self) {
-                    Text("• \($0)").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                }
-            } else {
-                Text(String(format: "Reconstructed in %.0f s. Each dimension opens as a named parameter.", result.seconds))
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+            Label(PhotoImportCopy.resultCaveat, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange).font(.callout)
+                .fixedSize(horizontal: false, vertical: true)
+            Text(String(format: "Reconstructed in %.0f s from %d photos. Each dimension opens as a named parameter.", result.seconds, result.photoCount))
+                .font(.caption).foregroundStyle(.secondary)
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 3) {
                 GridRow {
-                    Text("Parameter").bold(); Text("Value").bold(); Text("± σ").bold()
+                    Text("Parameter").bold(); Text("Value").bold()
                 }.font(.caption)
                 ForEach(result.dimensions) { d in
                     GridRow {
                         Text(d.parameter).font(.caption.monospaced())
                         Text(d.valueText).font(.caption.monospacedDigit())
-                        Text(d.sigmaText).font(.caption.monospacedDigit())
-                            .foregroundStyle(d.uncertain ? .orange : .secondary)
                     }
                 }
             }
-            Text(PhotoImportCopy.sigmaCaveat)
-                .font(.caption2).foregroundStyle(.secondary)
         }
     }
 }
