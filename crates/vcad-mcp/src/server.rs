@@ -189,6 +189,7 @@ impl Server {
         };
         let tools = core_tools(info)
             .into_iter()
+            .chain(crate::tools::instrument::instrument_tools())
             .map(|t| (t.name.clone(), t))
             .collect();
         // Store changes → resource updates.

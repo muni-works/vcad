@@ -16,6 +16,7 @@ pub mod ecad;
 pub mod expr_parser;
 pub mod file_io;
 pub mod gear;
+pub mod instrument;
 pub mod mates;
 pub mod molecule;
 pub mod parameters;
@@ -2569,6 +2570,14 @@ pub struct Document {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts-rs", ts(optional))]
     pub source: Option<DocumentSource>,
+
+    // Tuned instrument (optional, zero-cost when absent)
+    /// Tuned-bar metadata for an instrument document (`design_instrument`):
+    /// per-bar target, predicted and measured pitch — the receipt the Tune
+    /// panel flips from predicted to measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub instrument: Option<instrument::Instrument>,
 }
 
 /// One off-the-shelf hardware item required by the modeled geometry.
@@ -2889,6 +2898,7 @@ impl Default for Document {
             timeline: None,
             part_ids: None,
             hardware: Vec::new(),
+            instrument: None,
             source: None,
         }
     }

@@ -1054,7 +1054,7 @@ impl InstrumentSpec {
         Ok(InstrumentSpec {
             tonic: tonic.to_string(),
             bar: TuneTarget::for_note(tonic, material)?,
-            gap_mm: 6.0,
+            gap_mm: 4.0,
             standoff_mm: 5.0,
             plate_mm: 6.0,
         })
@@ -1153,7 +1153,7 @@ pub fn design_instrument(spec: &InstrumentSpec) -> Result<Instrument, String> {
     let peg_dia = (spec.bar.hole_dia_mm - 0.6).max(1.0);
     let collar_r = spec.bar.hole_dia_mm / 2.0 + 3.0;
     let l_max = tuned.iter().map(|b| b.geometry.length_mm).fold(0.0, f64::max);
-    let margin = 12.0;
+    let margin = 8.0;
 
     let mut out = String::new();
     out.push_str(&format!(

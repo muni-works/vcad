@@ -13,6 +13,7 @@ repository.workspace = true
 [dependencies]
 serde = { workspace = true }
 vcad-receipt = { workspace = true }
+vcad-ir = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }

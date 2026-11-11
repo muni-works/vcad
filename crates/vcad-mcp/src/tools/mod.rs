@@ -6,6 +6,7 @@
 //! from Rust types rather than hand-written JSON.
 
 pub mod core;
+pub mod instrument;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;

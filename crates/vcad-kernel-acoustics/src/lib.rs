@@ -64,6 +64,7 @@ pub mod complex;
 pub mod fom;
 pub mod helmholtz;
 pub mod instrument;
+pub mod instrument_doc;
 pub mod linalg;
 pub mod lumped;
 pub mod medium;

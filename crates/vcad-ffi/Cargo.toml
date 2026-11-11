@@ -22,6 +22,7 @@ no-builtin-font = ["vcad-kernel/no-builtin-font"]
 
 [dependencies]
 vcad-kernel-cam = { workspace = true }
+vcad-kernel-acoustics = { workspace = true }
 vcad-slicer = { workspace = true }
 vcad-slicer-gcode = { workspace = true }
 vcad-slicer-bambu = { workspace = true }

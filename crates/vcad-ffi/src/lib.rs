@@ -68,6 +68,7 @@ pub mod fea;
 pub mod features;
 pub mod gym;
 pub mod import;
+pub mod instrument;
 mod json;
 pub mod pcb;
 pub mod print;

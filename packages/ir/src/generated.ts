@@ -295,6 +295,27 @@ top: [number, number, number],
 bottom: [number, number, number], } | { "type": "Transparent" };
 
 /**
+ * A measured strike.
+ */
+export type BarMeasurement = { 
+/**
+ * Detected fundamental, Hz.
+ */
+measured_hz: number, 
+/**
+ * Measured vs target, cents.
+ */
+cents_error: number, 
+/**
+ * How it was measured, e.g. `"vcad.app Tune (mic, FFT + parabolic peak)"`.
+ */
+instrument: string, 
+/**
+ * ISO-8601 timestamp.
+ */
+measured_at?: string, };
+
+/**
  * One recorded quantity in an [`AnalysisBaseline`].
  */
 export type BaselineQuantity = { 
@@ -2022,7 +2043,13 @@ hardware?: Array<HardwareLine>,
  * from one. Lets a document say what made it, so a session and the file
  * it came from can be compared instead of silently drifting apart.
  */
-source?: DocumentSource, };
+source?: DocumentSource, 
+/**
+ * Tuned-bar metadata for an instrument document (`design_instrument`):
+ * per-bar target, predicted and measured pitch — the receipt the Tune
+ * panel flips from predicted to measured.
+ */
+instrument?: Instrument, };
 
 /**
  * A patch from one materialized IR document to the next.
@@ -4110,6 +4137,68 @@ material?: string,
  * place it is written down.
  */
 explode?: Vec3, };
+
+/**
+ * A tuned instrument on the document.
+ */
+export type Instrument = { 
+/**
+ * Instrument kind, e.g. `"glockenspiel"`.
+ */
+kind: string, 
+/**
+ * Tuning reference, e.g. `"12-TET, A4 = 440 Hz"`.
+ */
+tuning: string, 
+/**
+ * Bar stock id (`aluminium_6061`, `brass`, `pla`).
+ */
+material: string, 
+/**
+ * Bars, low to high.
+ */
+bars: Array<InstrumentBar>, };
+
+/**
+ * One tuned bar.
+ */
+export type InstrumentBar = { 
+/**
+ * Note name, e.g. `"C6"`.
+ */
+note: string, 
+/**
+ * Scene root / part name of the bar.
+ */
+part: string, 
+/**
+ * Target fundamental, Hz.
+ */
+target_hz: number, 
+/**
+ * Solver-predicted fundamental, Hz.
+ */
+predicted_hz: number, 
+/**
+ * Acceptance tolerance, cents.
+ */
+tolerance_cents: number, 
+/**
+ * Bar length, mm.
+ */
+length_mm: number, 
+/**
+ * Undercut depth, mm.
+ */
+undercut_depth_mm: number, 
+/**
+ * Fundamental's nodal points, mm from the bar's x=0 end.
+ */
+nodes_mm: Array<number>, 
+/**
+ * The latest strike measurement, if any.
+ */
+measurement?: BarMeasurement, };
 
 /**
  * IPC-7351 land-pattern fillet goals (mm) used to size pads from terminals.
