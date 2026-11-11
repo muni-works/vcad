@@ -11,7 +11,8 @@ use vcad_crdt::{CrdtDocument, FeatureId, FractionalIndex, ReplicaId, Value};
 use vcad_ir::Document;
 
 use crate::feature::FeatureInput;
-use crate::materializer::{materialize, MaterializeResult};
+use crate::command::CommandError;
+use crate::materializer::{feature_input_ids, materialize, MaterializeResult};
 use crate::part_info::PartInfo;
 
 /// Bidirectional mapping between stable string IDs and CRDT FeatureIds.
@@ -412,6 +413,47 @@ impl DocumentApi {
     /// Rename a feature.
     pub fn rename_feature(&mut self, stable_id: &str, name: &str) -> ApiResult {
         self.set_str_param(stable_id, "name", name)
+    }
+
+    /// Why moving `stable_id` to `new_index` would break the history, if it
+    /// would: the feature has to stay after every input it is built on, and
+    /// before every feature built on it. `None` when the move is legal (or
+    /// the id is unknown — the caller reports that separately).
+    pub fn reorder_violation(&self, stable_id: &str, new_index: u32) -> Option<CommandError> {
+        let fid = self.stable_ids.resolve(stable_id)?;
+        let ordered = self.crdt.ordered_features();
+        let me = ordered.iter().find(|(id, _)| *id == fid)?.1;
+        let rest: Vec<_> = ordered.iter().filter(|(id, _)| *id != fid).collect();
+        let idx = (new_index as usize).min(rest.len());
+        let sid = |id: FeatureId| {
+            self.stable_ids
+                .stable_id(id)
+                .map(str::to_string)
+                .unwrap_or_else(|| crate::materializer::fid_to_string(id))
+        };
+        let inputs = feature_input_ids(me);
+        // An input that would land after the moved feature.
+        if let Some((id, _)) = rest[idx..].iter().find(|(id, _)| inputs.contains(&sid(*id))) {
+            let other = sid(*id);
+            return Some(CommandError::OrderViolation {
+                id: stable_id.to_string(),
+                reason: format!("it is built on `{other}`, so it has to stay after it"),
+                conflicts_with: other,
+            });
+        }
+        // A consumer that would land before it.
+        if let Some((id, _)) = rest[..idx]
+            .iter()
+            .find(|(_, f)| feature_input_ids(f).iter().any(|i| i == stable_id))
+        {
+            let other = sid(*id);
+            return Some(CommandError::OrderViolation {
+                id: stable_id.to_string(),
+                reason: format!("`{other}` is built on it, so it has to stay before `{other}`"),
+                conflicts_with: other,
+            });
+        }
+        None
     }
 
     /// Reorder a feature to a new position.
