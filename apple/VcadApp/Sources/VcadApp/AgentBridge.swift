@@ -41,6 +41,7 @@ final class AgentBridge {
 
     func start(model: EditorModel) {
         self.model = model
+        AgentResources.shared.store = AppStore(model: model)
         guard listener == nil else { return }
         guard ProcessInfo.processInfo.environment["VCAD_AGENT_BRIDGE"] != "0" else { return }
         // VCAD_AGENT_PORT pins the port (a second instance during development
@@ -131,6 +132,10 @@ final class AgentBridge {
             respond(conn, status: "403 Forbidden"); return
         }
         guard req.path.hasPrefix("/mcp") else { respond(conn, status: "404 Not Found"); return }
+        // Server→client stream: resource-update notifications (AgentResources).
+        if req.method == "GET", req.headers["accept"]?.contains("text/event-stream") == true {
+            AgentResources.shared.attachStream(conn); return
+        }
         guard req.method == "POST" else { respond(conn, status: "405 Method Not Allowed"); return }
         guard let msg = (try? JSONSerialization.jsonObject(with: req.body)) as? [String: Any] else {
             respond(conn, status: "400 Bad Request", body: Self.rpcError(nil, -32700, "parse error")); return
@@ -142,18 +147,40 @@ final class AgentBridge {
             let body: Data
             switch method {
             case "initialize":
+                if let client = (params["clientInfo"] as? [String: Any])?["name"] as? String {
+                    AgentCursor.shared.agentName = Self.displayName(client)
+                }
                 body = Self.rpcResult(id, [
                     "protocolVersion": (params["protocolVersion"] as? String) ?? "2025-06-18",
-                    "capabilities": ["tools": ["listChanged": false]],
+                    "capabilities": ["tools": ["listChanged": false],
+                                     "resources": ["subscribe": true, "listChanged": false]],
                     "serverInfo": ["name": "vcad-app", "version": "0.2"],
                     "instructions": Self.instructions,
                 ])
             case "ping":
                 body = Self.rpcResult(id, [:])
             case "tools/list":
-                body = Self.rpcResult(id, ["tools": AgentTools.definitions + AgentEdits.definitions
+                body = Self.rpcResult(id, ["tools": AgentTools.definitions + Self.withViewer(AgentEdits.definitions)
                                                        + AnalysisAgentTools.definitions
-                                                       + ProofAgentTools.definitions])
+                                                       + ProofAgentTools.definitions
+                                                       + [AgentTurn.toolDefinition] + AgentViewer.definitions])
+            case "resources/list":
+                body = Self.rpcResult(id, AgentResources.shared.list())
+            case "resources/read", "resources/subscribe", "resources/unsubscribe":
+                let uri = params["uri"] as? String ?? ""
+                do {
+                    switch method {
+                    case "resources/read": body = Self.rpcResult(id, try AgentResources.shared.read(uri))
+                    case "resources/subscribe":
+                        try AgentResources.shared.subscribe(uri); body = Self.rpcResult(id, [:])
+                    default:
+                        AgentResources.shared.unsubscribe(uri); body = Self.rpcResult(id, [:])
+                    }
+                } catch let e as AgentTools.Failure {
+                    body = Self.rpcError(id, -32002, e.message)
+                } catch {
+                    body = Self.rpcError(id, -32603, "\(error)")
+                }
             case "tools/call":
                 let name = params["name"] as? String ?? ""
                 let args = params["arguments"] as? [String: Any] ?? [:]
@@ -167,6 +194,22 @@ final class AgentBridge {
         }
     }
 
+    /// "claude-code" → "Claude", "cursor-vscode" → "Cursor".
+    static func displayName(_ client: String) -> String {
+        let first = client.split(whereSeparator: { $0 == "-" || $0 == " " || $0 == "_" }).first.map(String.init) ?? client
+        return first.isEmpty ? "Agent" : first.prefix(1).uppercased() + first.dropFirst()
+    }
+
+    /// Mutating tools render in the live viewer (MCP Apps `_meta.ui`).
+    static func withViewer(_ tools: [[String: Any]]) -> [[String: Any]] {
+        tools.map { t in
+            guard let n = t["name"] as? String, !AgentEdits.readEngineTools.contains(n),
+                  !["get_document", "inspect_cad", "list_parameters", "link_status", "attach_document"].contains(n)
+            else { return t }
+            var t = t; t["_meta"] = AgentViewer.meta; return t
+        }
+    }
+
     static let instructions = """
     You are sharing the user's live vcad desktop viewport. Call app_state first: it says what is \
     open, the joint pose, explode, camera, and what the user has selected or is hovering — when \
@@ -177,7 +220,11 @@ final class AgentBridge {
     set_parameters, and create_cad_loon for a whole program. Build in small steps — each call \
     is one named undo step the user watches land and can ⌘Z one at a time. Read with \
     describe_scene, inspect_cad, list_parameters and get_document. Units are mm, Z is up. \
-    Generated .loon documents and electronics are view-only.
+    Generated .loon documents and electronics are view-only. \
+    Resources: vcad://doc/selection is what the user picked (subscribe to follow it; "this edge" means \
+    it), vcad://doc/current the live document, vcad://doc/view the camera. Before a multi-step change \
+    call agent_turn {label:"thickened walls"} so it lands as ONE undo step, and agent_turn {end:true} \
+    after. fillet_edges fillets the user's selected edges.
     """
 
     static func rpcResult(_ id: Any, _ result: [String: Any]) -> Data {
@@ -516,6 +563,10 @@ enum AgentTools {
                 content.insert(["type": "image", "data": png.base64EncodedString(), "mimeType": "image/png"], at: 0)
             }
             return ["content": content]
+        case "agent_turn":
+            return AgentTurn.shared.call(a)
+        case _ where AgentViewer.toolNames.contains(name):
+            return try await AgentViewer.call(name, a, model: m)
         case _ where AgentEdits.toolNames.contains(name):
             return try AgentEdits.call(name, a, model: m)
         case _ where AnalysisAgentTools.toolNames.contains(name):

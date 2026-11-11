@@ -4360,6 +4360,24 @@ extension EditorModel {
         pushUndo(.snapshot(before), name: name)
     }
 
+    /// Drop undo entries an agent edit pushed above `depth` (AgentTurn.swift).
+    func agentDropUndo(above depth: Int) {
+        if undoStack.count > depth { undoStack.removeSubrange(depth...) }
+    }
+
+    /// Land an agent edit as one snapshot entry: entries the edit pushed
+    /// itself (above `depth`) fold into it. `coalesce` extends the turn's
+    /// existing top entry instead — it already snapshots the turn's start.
+    func agentCommitUndo(before: Data, above depth: Int, coalesce: Bool, name: String) {
+        agentDropUndo(above: depth)
+        if coalesce, let last = undoStack.last, case .snapshot = last.step {
+            undoStack[undoStack.count - 1] = UndoEntry(step: last.step, name: name)
+            redoStack.removeAll()
+        } else {
+            pushUndo(.snapshot(before), name: name)
+        }
+    }
+
     /// The agent can work here: an engine document, or a blank canvas that
     /// can be given one.
     var agentCanEdit: Bool { engine != nil || (source.isSandbox && documentJSON == nil) }

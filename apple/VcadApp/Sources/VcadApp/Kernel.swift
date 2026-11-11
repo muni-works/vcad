@@ -41,7 +41,7 @@ struct KernelMesh {
                 normals[i] = SIMD3<Float>(np[i * 3], np[i * 3 + 1], np[i * 3 + 2])
             }
         } else {
-            normals = Self.synthesizeNormals(positions: positions, indices: indices)
+            (positions, normals, indices) = Self.creasedNormals(positions: positions, indices: indices)
         }
 
         var lo = SIMD3<Float>(repeating: .greatestFiniteMagnitude)
@@ -53,23 +53,97 @@ struct KernelMesh {
                           minBound: lo, maxBound: hi)
     }
 
-    /// Area-weighted vertex normals from triangle faces.
-    static func synthesizeNormals(positions: [SIMD3<Float>], indices: [UInt32]) -> [SIMD3<Float>] {
-        var normals = [SIMD3<Float>](repeating: .zero, count: positions.count)
-        var i = 0
-        while i + 2 < indices.count {
-            let a = Int(indices[i]), b = Int(indices[i + 1]), c = Int(indices[i + 2])
-            if a < positions.count, b < positions.count, c < positions.count {
-                let faceNormal = cross(positions[b] - positions[a], positions[c] - positions[a])
-                normals[a] += faceNormal; normals[b] += faceNormal; normals[c] += faceNormal
+    /// Crease angle for synthesized normals: faces meeting more sharply than
+    /// this keep their own normal (a hard edge); gentler joins blend smooth.
+    static let creaseAngleDegrees: Float = 30
+
+    /// Normals for a mesh that came without any (imported STL/OBJ), split at
+    /// a crease angle the way Fusion/Blender shade meshes. A corner shared by
+    /// faces at 90° gets one vertex copy per side instead of one averaged
+    /// normal, so flat faces read flat and curved ones stay smooth. Returns
+    /// the (possibly grown) vertex arrays alongside the normals.
+    static func creasedNormals(positions: [SIMD3<Float>], indices: [UInt32])
+        -> ([SIMD3<Float>], [SIMD3<Float>], [UInt32]) {
+        let triCount = indices.count / 3
+        guard triCount > 0 else {
+            return (positions, [SIMD3<Float>](repeating: [0, 0, 1], count: positions.count), indices)
+        }
+        // Area-weighted face normal per triangle (zero for degenerate).
+        var faceN = [SIMD3<Float>](repeating: .zero, count: triCount)
+        var incident = [[Int]](repeating: [], count: positions.count)
+        for t in 0..<triCount {
+            let a = Int(indices[3 * t]), b = Int(indices[3 * t + 1]), c = Int(indices[3 * t + 2])
+            guard a < positions.count, b < positions.count, c < positions.count else { continue }
+            faceN[t] = cross(positions[b] - positions[a], positions[c] - positions[a])
+            incident[a].append(t); incident[b].append(t); incident[c].append(t)
+        }
+        let cosCrease = cos(creaseAngleDegrees * .pi / 180)
+        func unit(_ v: SIMD3<Float>) -> SIMD3<Float>? {
+            let l = length(v); return l > 1e-12 ? v / l : nil
+        }
+        // Planar regions: triangles joined edge-to-edge with (near) identical
+        // normals. A region of 3+ triangles is a real flat face and shades
+        // with its exact plane normal — no blending — so the long sliver
+        // triangles CAD exporters fan across flat faces can't smear a tilted
+        // rim/hole normal into wedge-shaped "ears". (Two is not enough: every
+        // facet of a tessellated cylinder is a coplanar quad = 2 triangles,
+        // and those must keep blending smooth.)
+        let unitN = faceN.map { unit($0) }
+        var parent = Array(0..<triCount)
+        func find(_ x: Int) -> Int {
+            var x = x
+            while parent[x] != x { parent[x] = parent[parent[x]]; x = parent[x] }
+            return x
+        }
+        var edgeFace: [UInt64: Int] = [:]
+        for t in 0..<triCount {
+            guard let nt = unitN[t] else { continue }
+            for k in 0..<3 {
+                let a = indices[3 * t + k], b = indices[3 * t + (k + 1) % 3]
+                let key = UInt64(min(a, b)) << 32 | UInt64(max(a, b))
+                if let o = edgeFace[key] {
+                    if let no = unitN[o], dot(no, nt) > 0.99995 {
+                        let ra = find(t), rb = find(o)
+                        if ra != rb { parent[ra] = rb }
+                    }
+                } else {
+                    edgeFace[key] = t
+                }
             }
-            i += 3
         }
-        for j in 0..<normals.count {
-            let len = length(normals[j])
-            normals[j] = len > 1e-6 ? normals[j] / len : SIMD3<Float>(0, 0, 1)
+        var regionSize = [Int](repeating: 0, count: triCount)
+        for t in 0..<triCount { regionSize[find(t)] += 1 }
+        var outPos: [SIMD3<Float>] = [], outN: [SIMD3<Float>] = []
+        var outIdx = [UInt32](repeating: 0, count: triCount * 3)
+        // Per source vertex: normals already emitted, so corners that land on
+        // the same smoothing group share one output vertex.
+        var emitted = [[(SIMD3<Float>, UInt32)]](repeating: [], count: positions.count)
+        for t in 0..<triCount {
+            let own = unitN[t]
+            let planar = own != nil && regionSize[find(t)] >= 3
+            for k in 0..<3 {
+                let v = Int(indices[3 * t + k])
+                guard v < positions.count else { outIdx[3 * t + k] = 0; continue }
+                var sum = SIMD3<Float>.zero
+                if planar {
+                    sum = own!
+                } else if let own {
+                    for f in incident[v] {
+                        if let fn = unit(faceN[f]), dot(fn, own) >= cosCrease { sum += faceN[f] }
+                    }
+                }
+                let n = unit(sum) ?? own ?? SIMD3<Float>(0, 0, 1)
+                if let hit = emitted[v].first(where: { dot($0.0, n) > 0.9999 }) {
+                    outIdx[3 * t + k] = hit.1
+                } else {
+                    let id = UInt32(outPos.count)
+                    outPos.append(positions[v]); outN.append(n)
+                    emitted[v].append((n, id))
+                    outIdx[3 * t + k] = id
+                }
+            }
         }
-        return normals
+        return (outPos, outN, outIdx)
     }
 
     func resource(name: String) -> MeshResource {
