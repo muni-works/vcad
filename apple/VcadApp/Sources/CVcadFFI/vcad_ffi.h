@@ -671,6 +671,11 @@ char *vcad_import_urdf(const char *path);
  * document's `drawing` settings. */
 #define VCAD_DRAWING_DXF 0
 #define VCAD_DRAWING_PDF 1
+
+/**
+ * DXF of the whole composed sheet in model mm (views at true size).
+ */
+#define VCAD_DRAWING_SHEET_DXF 2
 /* Composed A4 sheet: {"width","height","sheet":{lines,arcs,polygons,texts},
  * "main":{sheet_center,view_center,scale,scale_note,bounds},
  * "visible_edges","hidden_edges","dxf_entities","sections"}. Free with

@@ -32,6 +32,9 @@ pub struct SheetSpec {
     /// Pre-rendered annotations (dimensions, cut lines, GD&T) in sheet mm.
     #[serde(default)]
     pub annotations: Vec<RenderedDimension>,
+    /// Center marks and center lines in sheet mm (thin dash-dot).
+    #[serde(default)]
+    pub center_lines: Vec<RenderedDimension>,
     /// Title block fields; omitted → no title block.
     #[serde(default)]
     pub title_block: Option<TitleBlockFields>,
@@ -123,6 +126,9 @@ pub fn compose_sheet(spec: &SheetSpec) -> DrawingSheet {
 
     for rd in &spec.annotations {
         sheet.add_annotation(rd, LineClass::Dimension, Point2D::new(0.0, 0.0));
+    }
+    for rd in &spec.center_lines {
+        sheet.add_annotation(rd, LineClass::Center, Point2D::new(0.0, 0.0));
     }
 
     let title_block_height = if let Some(fields) = spec.title_block.clone() {

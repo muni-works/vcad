@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-11-arc-extrude-boolean-tearing",
+  "version": "0.11.0",
+  "date": "2026-11-11",
+  "category": "fix",
+  "title": "No more tearing when cutting into extruded arc walls",
+  "summary": "Booleans that split the curved wall of an arc-bearing sketch extrude no longer tear the wall away from its caps; results stay watertight.",
+  "features": ["booleans", "extrude"]
+}

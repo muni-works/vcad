@@ -30,7 +30,7 @@ enum SceneAssets {
 
     /// Near-black unlit material for the feature-edge overlay — reads as ink
     /// lines over the shaded surfaces, the classic CAD look.
-    static let edgeMaterial = UnlitMaterial(color: NSColor(white: 0.09, alpha: 1.0))
+    static let edgeMaterial = UnlitMaterial(color: NSColor(white: 0.02, alpha: 1.0))
 
     /// The compiled viewport shaders (`Shaders/*.metal` → vcad.metallib,
     /// built by bundle.sh). nil in `swift test`/dev runs without it.
@@ -43,14 +43,30 @@ enum SceneAssets {
     /// Screen-space, antialiased ink lines (constant pixel width, never
     /// z-fighting the surface). nil when the shader library is missing —
     /// callers fall back to `edgeMaterial` ribbons.
-    static func edgeLineMaterial(viewportHeightPx: Float, widthPx: Float = 1.25) -> CustomMaterial? {
+    static func edgeLineMaterial(viewportHeightPx: Float, widthPx: Float = 1.5) -> CustomMaterial? {
         guard let lib = shaderLibrary else { return nil }
         let geo = CustomMaterial.GeometryModifier(named: "edgeLineGeometry", in: lib)
         let surf = CustomMaterial.SurfaceShader(named: "edgeLineSurface", in: lib)
         guard var m = try? CustomMaterial(surfaceShader: surf, geometryModifier: geo, lightingModel: .unlit)
         else { return nil }
         let pxPerUnit = 2 * tan(Float(60) / 2 * .pi / 180) / max(viewportHeightPx, 1)  // PerspectiveCamera FOV
-        m.custom.value = SIMD4(pxPerUnit, widthPx, 0.09, 0.0015)
+        m.custom.value = SIMD4(pxPerUnit, widthPx, 0.02, 0.0015)
+        return m
+    }
+
+    /// Coloured screen-space lines for selection/hover edge highlights:
+    /// thicker than the ink and pulled further toward the camera so they sit
+    /// on top of the ink lines they trace. nil without the shader library.
+    static func highlightLineMaterial(viewportHeightPx: Float, widthPx: Float,
+                                      color: NSColor) -> CustomMaterial? {
+        guard let lib = shaderLibrary else { return nil }
+        let geo = CustomMaterial.GeometryModifier(named: "edgeLineGeometry", in: lib)
+        let surf = CustomMaterial.SurfaceShader(named: "edgeLineTintSurface", in: lib)
+        guard var m = try? CustomMaterial(surfaceShader: surf, geometryModifier: geo, lightingModel: .unlit)
+        else { return nil }
+        let pxPerUnit = 2 * tan(Float(60) / 2 * .pi / 180) / max(viewportHeightPx, 1)
+        m.custom.value = SIMD4(pxPerUnit, widthPx, 0, 0.003)
+        m.baseColor = .init(tint: color)
         return m
     }
 

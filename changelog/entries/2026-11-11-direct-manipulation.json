@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-11-direct-manipulation",
+  "version": "undefined",
+  "date": "2026-11-11",
+  "category": "feat",
+  "title": "Direct manipulation: press-pull, handles, live dimensions",
+  "summary": "Mac app: press-pull planar faces into real features, drag on-canvas handles for extrude/fillet/shell, type exact values into a live dimension, and a redesigned hairline gizmo.",
+  "features": ["mac-app", "viewport", "gizmo", "press-pull"]
+}

@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-11-revolve-profile-on-axis",
+  "version": "0.11.0",
+  "date": "2026-11-11",
+  "category": "fix",
+  "title": "Revolve profiles that touch their axis",
+  "summary": "Sketch revolve now accepts profiles with vertices on the axis: axis edges add no face, perpendicular edges become full discs, slanted edges become cones with an apex.",
+  "features": ["revolve", "sketch"]
+}

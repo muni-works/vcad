@@ -1,0 +1,1 @@
+[root [intersection [translate 0.3 -26 2 [cube 26 52 6]] [difference [translate 0 0 2.5 [cylinder-n 8.8 5 64]] [translate 0 0 3 [cylinder-n 14 4 64]]]] "pla"]

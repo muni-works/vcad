@@ -2249,3 +2249,241 @@ mod frozen_chain_tests {
         );
     }
 }
+
+/// Split a cylindrical band face by a closed loop lying wholly inside it
+/// that does NOT wind around the axis — where a smaller perpendicular
+/// cylinder enters this one (a radial hole or boss). Returns `None` when
+/// the face is outside the band family or the loop is not contained in it.
+///
+/// The loop's u-extremes `P_a`, `P_b` cut it into a lower and an upper
+/// chain. The face becomes the lens between them (the patch) plus the bands
+/// below and above it and the remainder to either side; every face that
+/// borders `P_a`/`P_b` carries them as loop vertices, so no T-junction is
+/// left where the side bands meet the lens.
+pub(crate) fn split_cylindrical_face_by_patch(
+    brep: &mut BRepSolid,
+    face_id: FaceId,
+    points: &[Point3],
+) -> Option<SplitResult> {
+    let (cyl, band) = parse_band(brep, face_id)?;
+    if points.len() < 8 {
+        return None;
+    }
+    // Loop points on the surface (a loop from another cylinder sits on this
+    // one to SSI accuracy).
+    let tol_r = 1e-6 * cyl.radius.max(1.0);
+    let mut uv: Vec<(f64, f64)> = Vec::with_capacity(points.len());
+    for p in points {
+        let d = *p - cyl.center;
+        let radial = d - d.dot(cyl.axis.as_ref()) * *cyl.axis.as_ref();
+        if (radial.norm() - cyl.radius).abs() > tol_r {
+            return None;
+        }
+        uv.push(uv_of(p, &cyl));
+    }
+    // Drop a duplicated closing sample.
+    if uv.len() > 1 {
+        let (f, l) = (uv[0], uv[uv.len() - 1]);
+        if (f.0 - l.0).abs() < U_EPS && (f.1 - l.1).abs() < 1e-12 {
+            uv.pop();
+        }
+    }
+    // Unwrap u along the loop; a non-winding loop returns to its start.
+    let mut us = vec![uv[0].0];
+    for w in uv.windows(2) {
+        let mut du = (w[1].0 - w[0].0).rem_euclid(2.0 * PI);
+        if du > PI {
+            du -= 2.0 * PI;
+        }
+        us.push(us[us.len() - 1] + du);
+    }
+    let close = {
+        let mut du = (uv[0].0 - uv[uv.len() - 1].0).rem_euclid(2.0 * PI);
+        if du > PI {
+            du -= 2.0 * PI;
+        }
+        us[us.len() - 1] + du - us[0]
+    };
+    if close.abs() > 1e-6 {
+        return None;
+    }
+    // Shift the loop's u-range into the band's interval.
+    let (u_start, u_end) = (band.u_start(), band.u_end());
+    let lo_u = us.iter().copied().fold(f64::MAX, f64::min);
+    let shift = u_start + (lo_u - u_start).rem_euclid(2.0 * PI) - lo_u;
+    let pts: Vec<(f64, f64)> = us
+        .iter()
+        .zip(&uv)
+        .map(|(&u, &(_, v))| (u + shift, v))
+        .collect();
+    let n = pts.len();
+    let ia = (0..n)
+        .min_by(|&i, &j| pts[i].0.total_cmp(&pts[j].0))
+        .unwrap();
+    let ib = (0..n)
+        .max_by(|&i, &j| pts[i].0.total_cmp(&pts[j].0))
+        .unwrap();
+    let (ua, ub) = (pts[ia].0, pts[ib].0);
+    let margin = 1e-6;
+    // A loop wholly outside this face (the far loop of a through-cylinder,
+    // or one landing on a sibling face) is a legitimate no-op.
+    let u_top = if band.full_wrap {
+        u_start + 4.0 * PI
+    } else {
+        u_end
+    };
+    let lo_unrolled = {
+        let mut out = band.lo.clone();
+        if band.full_wrap {
+            out.extend(band.lo.iter().skip(1).map(|&(u, v)| (u + 2.0 * PI, v)));
+        }
+        out
+    };
+    let hi_unrolled = {
+        let mut out = band.hi.clone();
+        if band.full_wrap {
+            out.extend(band.hi.iter().skip(1).map(|&(u, v)| (u + 2.0 * PI, v)));
+        }
+        out
+    };
+    let lo_at = |u: f64| chain_interp(&lo_unrolled, u);
+    let hi_at = |u: f64| chain_interp(&hi_unrolled, u);
+    let inside = |&(u, v): &(f64, f64)| u > u_start && u < u_top && v > lo_at(u) && v < hi_at(u);
+    if !pts.iter().any(inside) {
+        return Some(SplitResult {
+            sub_faces: vec![face_id],
+        });
+    }
+    if ua < u_start + margin || ub > u_top - margin || ub - ua < 1e-6 || ub - ua > PI {
+        return None;
+    }
+    // The two halves, each from P_a to P_b.
+    let walk = |step: isize| -> Chain {
+        let mut out = Vec::new();
+        let mut i = ia as isize;
+        loop {
+            out.push(pts[i as usize]);
+            if i as usize == ib {
+                break;
+            }
+            i = (i + step).rem_euclid(n as isize);
+        }
+        out
+    };
+    let (h1, h2) = (walk(1), walk(-1));
+    let monotone = |c: &Chain| c.windows(2).all(|w| w[1].0 > w[0].0 - U_EPS);
+    if !monotone(&h1) || !monotone(&h2) {
+        return None;
+    }
+    let mean = |c: &Chain| c.iter().map(|p| p.1).sum::<f64>() / c.len() as f64;
+    let (lower, upper) = if mean(&h1) <= mean(&h2) {
+        (h1, h2)
+    } else {
+        (h2, h1)
+    };
+    // Contained strictly between the band's chains.
+    for &(u, v) in lower.iter().chain(&upper) {
+        if v <= lo_at(u) + margin || v >= hi_at(u) - margin {
+            return None;
+        }
+    }
+    if lower.len() < 2 || upper.len() < 2 {
+        return None;
+    }
+    let (pa, pb) = (lower[0], lower[lower.len() - 1]);
+
+    // Faces as (u, v) polygons, counterclockwise in (u, v) like
+    // `realize_bands` (lower chain ascending, upper chain descending).
+    // Faces as (u, v) polygons, counterclockwise in (u, v) like
+    // `realize_bands`. Boundaries between them run from EXISTING chain
+    // nodes to the pinch points: interpolating new rim vertices would leave
+    // T-junctions against the cap faces sharing those rims.
+    let lo_c = &lo_unrolled;
+    let hi_c = &hi_unrolled;
+    let last_le = |c: &Chain, u: f64| c.iter().rposition(|p| p.0 <= u + U_EPS);
+    let first_ge = |c: &Chain, u: f64| c.iter().position(|p| p.0 >= u - U_EPS);
+    let (Some(la), Some(ha), Some(lb), Some(hb)) = (
+        last_le(lo_c, ua),
+        last_le(hi_c, ua),
+        first_ge(lo_c, ub),
+        first_ge(hi_c, ub),
+    ) else {
+        return None;
+    };
+    let rev = |c: &[(f64, f64)]| c.iter().rev().copied().collect::<Chain>();
+    let mut polys: Vec<Chain> = Vec::new();
+    // Patch.
+    polys.push([lower.clone(), rev(&upper)[1..upper.len() - 1].to_vec()].concat());
+    // Below the patch.
+    polys.push([lo_c[la..=lb].to_vec(), rev(&lower)].concat());
+    // Above the patch.
+    polys.push([upper.clone(), rev(&hi_c[ha..=hb])].concat());
+    if band.full_wrap {
+        // lo/hi nodes from L_b round to L_a one turn on.
+        let wrap = |c: &Chain, from: usize, to_u: f64| -> Option<Chain> {
+            let to = c.iter().rposition(|p| p.0 <= to_u + U_EPS)?;
+            (to >= from).then(|| c[from..=to].to_vec())
+        };
+        let (Some(lo_side), Some(hi_side)) = (
+            wrap(lo_c, lb, lo_c[la].0 + 2.0 * PI),
+            wrap(hi_c, hb, hi_c[ha].0 + 2.0 * PI),
+        ) else {
+            return None;
+        };
+        let mut side = lo_side;
+        side.push((pa.0 + 2.0 * PI, pa.1));
+        side.extend(rev(&hi_side));
+        side.push(pb);
+        polys.push(side);
+    } else {
+        let mut left = lo_c[..=la].to_vec();
+        left.push(pa);
+        left.extend(rev(&hi_c[..=ha]));
+        polys.push(left);
+        let mut right = lo_c[lb..].to_vec();
+        right.extend(rev(&hi_c[hb..]));
+        right.push(pb);
+        polys.push(right);
+    }
+
+    let surface_index = brep.topology.faces[face_id].surface_index;
+    let orientation = brep.topology.faces[face_id].orientation;
+    let shell = brep.topology.faces[face_id].shell;
+    let mut new_faces = Vec::with_capacity(polys.len());
+    for poly in &polys {
+        let mut loop_pts: Vec<Point3> = poly.iter().map(|&(u, v)| point_at(&cyl, u, v)).collect();
+        loop_pts.dedup_by(|a, b| (*a - *b).norm() < 1e-12);
+        if loop_pts.len() > 1 && (loop_pts[0] - loop_pts[loop_pts.len() - 1]).norm() < 1e-12 {
+            loop_pts.pop();
+        }
+        if loop_pts.len() < 3 {
+            continue;
+        }
+        let hes: Vec<_> = loop_pts
+            .iter()
+            .map(|p| {
+                let vid = crate::split::find_or_create_vertex(brep, p, 1e-9);
+                brep.topology.add_half_edge(vid)
+            })
+            .collect();
+        let loop_id = brep.topology.add_loop(&hes);
+        new_faces.push(brep.topology.add_face(loop_id, surface_index, orientation));
+    }
+    band_dbg!("patch split {face_id:?} → {} faces", new_faces.len());
+    if new_faces.len() < 2 {
+        return None;
+    }
+    if let Some(shell_id) = shell {
+        for &f in &new_faces {
+            brep.topology.shells[shell_id].faces.push(f);
+            brep.topology.faces[f].shell = Some(shell_id);
+        }
+        brep.topology.shells[shell_id]
+            .faces
+            .retain(|&f| f != face_id);
+    }
+    brep.topology.faces.remove(face_id);
+    Some(SplitResult {
+        sub_faces: new_faces,
+    })
+}

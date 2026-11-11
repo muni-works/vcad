@@ -2329,6 +2329,109 @@ pub struct DrawingSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts-rs", ts(optional))]
     pub show_bom: Option<bool>,
+    /// Sheet size: `auto` (default — smallest sheet that holds the views at
+    /// a readable scale), `a4`, `a3`, `a2`, `a1`, `a0`, or `letter`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub sheet_size: Option<String>,
+    /// User-added dimensions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub dimensions: Option<Vec<DrawingDimension>>,
+    /// Ids of automatic dimensions the user deleted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub hidden_dimensions: Option<Vec<String>>,
+    /// Offset overrides (view mm) for automatic dimensions the user moved,
+    /// keyed by dimension id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub dimension_offsets: Option<HashMap<String, f64>>,
+    /// Detail views (magnified callouts of a region of a view).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub details: Option<Vec<DrawingDetailSpec>>,
+    /// GD&T feature control frames and datum tags.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub gdt: Option<Vec<DrawingGdtSpec>>,
+    /// Center marks on circular features (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub center_marks: Option<bool>,
+    /// Automatic hole / diameter callouts (default true).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub hole_callouts: Option<bool>,
+}
+
+/// A user-placed linear dimension between two points of a drawing view.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct DrawingDimension {
+    /// Unique id within the drawing.
+    pub id: String,
+    /// View the dimension lives on ("front", "top", "right", …).
+    pub view: String,
+    /// `horizontal`, `vertical`, `aligned`, or `centerline` (a thin
+    /// dash-dot line between the points, no value).
+    pub kind: String,
+    /// First point (view mm).
+    pub a: [f64; 2],
+    /// Second point (view mm).
+    pub b: [f64; 2],
+    /// Dimension-line offset from the measured points (view mm, signed).
+    #[serde(default)]
+    pub offset: f64,
+}
+
+/// A detail view: a magnified window onto a region of a drawing view.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct DrawingDetailSpec {
+    /// Detail label letter ("B" → "DETAIL B").
+    pub label: String,
+    /// Parent view (default: the main view).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub view: Option<String>,
+    /// Region center (view mm).
+    pub center: [f64; 2],
+    /// Magnification relative to the parent view.
+    pub scale: f64,
+    /// Region width (view mm).
+    pub width: f64,
+    /// Region height (view mm).
+    pub height: f64,
+}
+
+/// A GD&T annotation: feature control frame or datum tag.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct DrawingGdtSpec {
+    /// Unique id within the drawing.
+    pub id: String,
+    /// View the frame is attached to (default: the main view).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub view: Option<String>,
+    /// `flatness`, `position`, `perpendicularity`, or `datum`.
+    pub kind: String,
+    /// Tolerance zone (mm); ignored for `datum`.
+    #[serde(default)]
+    pub tolerance: f64,
+    /// Datum letter (reference, or the tag letter for `datum`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub datum: Option<String>,
+    /// Anchor (view mm).
+    pub at: [f64; 2],
 }
 
 /// A vcad document — the `.vcad` file format.
