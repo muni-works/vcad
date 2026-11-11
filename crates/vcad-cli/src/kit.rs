@@ -164,6 +164,18 @@ type LoadedPart = (Vec<[f64; 3]>, Vec<[usize; 3]>, f64, f64);
 /// Read an STL and recentre it: XY on its bounding-box centre, z likewise, so
 /// placement is "put the part's centre here" and the z-drop is a single add.
 fn load_part(path: &Path) -> Result<LoadedPart> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if ext != "stl" {
+        bail!(
+            "{}: a kit part's mesh must be an STL (got .{ext}); export it first, e.g. `vcad export {} part.stl`",
+            path.display(),
+            path.display()
+        );
+    }
     let file = std::fs::File::open(path)
         .with_context(|| format!("opening part mesh {}", path.display()))?;
     let mut reader = std::io::BufReader::new(file);
@@ -250,6 +262,13 @@ fn check_layout(parts: &[Placed], spec: &KitSpec) -> Result<()> {
     let (w, d, m) = (spec.bed.width, spec.bed.depth, spec.bed.margin);
 
     for p in parts {
+        // Plates are numbered from 1 (Bambu/Orca crash on plater_id 0).
+        if p.plate == 0 {
+            problems.push(format!(
+                "{} is on plate 0; plates are numbered from 1",
+                p.name
+            ));
+        }
         let r = p.radius + m;
         if p.x - r < 0.0 || p.x + r > w || p.y - r < 0.0 || p.y + r > d {
             problems.push(format!(
@@ -847,5 +866,33 @@ mod tests {
         assert!(main.contains("1 0 0 0 1 0 0 0 1 370 50 3"), "{main}");
         let cfg = read_entry(&bytes, "Metadata/model_settings.config");
         assert_eq!(cfg.matches("<plate>").count(), 2);
+    }
+
+    #[test]
+    fn plate_zero_is_rejected() {
+        let dir = Dir::new("plate0");
+        write_box_stl(&dir.path("cube.stl"), 10.0, 10.0, 10.0, 0.0);
+        let spec = dir.path("kit.json");
+        std::fs::write(
+            &spec,
+            r#"{"parts":[{"name":"c","mesh":"cube.stl","plate":0,"x":128,"y":128}]}"#,
+        )
+        .unwrap();
+        let err = run(&KitArgs {
+            spec,
+            output: Some(dir.path("kit.3mf")),
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("plates are numbered from 1"), "{err}");
+    }
+
+    #[test]
+    fn non_stl_mesh_says_so() {
+        let dir = Dir::new("loonmesh");
+        let loon = dir.path("part.loon");
+        std::fs::write(&loon, "[cube 10 10 10]").unwrap();
+        let err = load_part(&loon).unwrap_err().to_string();
+        assert!(err.contains("must be an STL"), "{err}");
     }
 }
