@@ -4,15 +4,19 @@ MCP (Model Context Protocol) server for vcad CAD operations. Enables AI assistan
 
 ## Installation
 
-```bash
-npm install -g @vcad/mcp
-```
+Two supported channels, nothing else:
 
-Or add to your MCP configuration directly:
+- **vcad.app** (Mac) — first launch registers vcad with Claude Code, Claude
+  Desktop, Codex and Cursor in one consent dialog; undo in Settings ▸ Agents.
+- **npm** — `{ "command": "npx", "args": ["-y", "@vcad/mcp"] }`, e.g.
+  `claude mcp add vcad -- npx -y @vcad/mcp`.
 
-```bash
-claude mcp add vcad -- npx -y @vcad/mcp
-```
+The agent skill lives in [`plugins/vcad`](../../plugins/vcad) (a Claude Code
+plugin) and ships inside both the app and the npm tarball (`skill/SKILL.md`).
+
+`server_info.update` compares the running build with the newest `@vcad/mcp`
+on npm; a stale server says so in `server_info` and on its first tool result
+(opt out with `VCAD_MCP_NO_UPDATE_CHECK=1`).
 
 ## Protocol revisions
 
@@ -258,7 +262,7 @@ vcad does not operate a hosted MCP server. The server runs on your machine,
 with your own agent: `npx -y @vcad/mcp` (stdio), or `vcad-mcp-http` for a
 local Streamable-HTTP endpoint (binds `127.0.0.1:8080` by default; `HOST` /
 `PORT` override). Sessions persist to `~/.vcad/mcp-sessions`. The former
-hosted endpoint (mcp.vcad.io), OAuth sign-in, live share links, cloud session
+hosted endpoint, OAuth sign-in, live share links, cloud session
 and artifact stores, and ordering/spend tools were removed in vcad 1.0.
 
 ## ChatGPT (OpenAI Apps SDK)
@@ -303,6 +307,6 @@ npm run build -w @vcad/mcp
 # Test
 npm test -w @vcad/mcp
 
-# Run locally
-node packages/mcp/dist/index.js
+# Run your checkout (self-rebuilding launcher; never point a config at dist/)
+node packages/mcp/scripts/serve.mjs
 ```

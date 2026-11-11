@@ -4351,6 +4351,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "vcad-atoms"
+version = "0.11.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "vcad-eval",
+ "vcad-ir",
+ "vcad-kernel",
+ "vcad-kernel-cam",
+ "vcad-kernel-diff",
+ "vcad-kernel-stocksim",
+ "vcad-kernel-tessellate",
+ "vcad-slicer",
+ "vcad-slicer-gcode",
+]
+
+[[package]]
 name = "vcad-chat"
 version = "0.11.0"
 dependencies = [

@@ -1,0 +1,33 @@
+[package]
+name = "vcad-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "vcad's MCP server core: dual-era (2026-07-28 + legacy) framing, DocumentStore, native tools, node proxy"
+# vcad-loon (loon authoring) is publish = false-equivalent (git loon); keep
+# this crate in-workspace until it is.
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+# Standalone server binary: same entry as `vcad mcp`. Also serves as the
+# upstream in the proxy round-trip test (`VCAD_MCP_TEST_UPSTREAM=1`).
+[[bin]]
+name = "vcad-mcp"
+path = "src/main.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+vcad-ir = { workspace = true }
+vcad-loon = { workspace = true }
+vcad-eval = { workspace = true }
+vcad-render = { workspace = true, features = ["raster"] }
+vcad-tool-derive = { workspace = true }
+getrandom = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
