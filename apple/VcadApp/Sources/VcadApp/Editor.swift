@@ -342,6 +342,7 @@ final class EditorModel {
     var workspace: Workspace = .design {
         didSet {
             guard workspace != oldValue else { return }
+            showsCommandPalette = false
             savedCameras[oldValue] = CameraState(azimuth: azimuth, elevation: elevation,
                                                  distance: distance, pan: panOffset)
             electronicsShown = workspace == .electronics
@@ -1861,6 +1862,7 @@ final class EditorModel {
     @ObservationIgnored private var cameraBeforeSketch: CameraState?
     func enterSketch() {
         guard usesDocumentTree else { return }
+        showsCommandPalette = false
         sketchPlaneChosen = false
         var frame = SketchFrame.principal(sketchPlane)
         sketchFace = nil
@@ -3000,7 +3002,11 @@ final class EditorModel {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 if event.keyCode == 53 {                       // Escape
-                    if self.sketching {
+                    if self.showsCommandPalette {
+                        // Its field's own Esc only fires while it holds focus;
+                        // after a viewport click it doesn't, and Find stuck open.
+                        self.showsCommandPalette = false
+                    } else if self.sketching {
                         // Escape backs out one step: the stroke, then the tool. It never
                         // discards drawn geometry; the toolbar's X does that.
                         if let k = self.sketch, k.hasInProgress { k.cancelPending() }
@@ -3011,7 +3017,7 @@ final class EditorModel {
                     } else if self.activeFeatureOp != nil {
                         // A focused number field swallows the panel's own Esc shortcut.
                         self.activeFeatureOp = nil
-                    } else if self.showsCommandPalette || GlassUI.shared.panel != nil {
+                    } else if GlassUI.shared.panel != nil {
                         // Their own Cancel handles Esc; keep the selection.
                     } else if self.usesDocumentTree, self.renamingFeatureID == nil, self.hasSelection {
                         self.deselectAll()

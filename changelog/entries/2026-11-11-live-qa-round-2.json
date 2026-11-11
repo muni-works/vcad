@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-11-live-qa-round-2",
+  "version": "0.11.0",
+  "date": "2026-11-11",
+  "category": "fix",
+  "title": "Mac app: Find works on a new file; print orient fits bed",
+  "summary": "Find offers Sketch/Extrude/Fillet before the first edit and closes on click-outside, Esc, or a mode switch; Orient never defaults to a pose that overflows the printer.",
+  "features": ["mac-app", "command-palette", "3d-print"]
+}
