@@ -7923,7 +7923,7 @@ fn tessellate_revolved_trimmed(
         .iter()
         .any(|&h| (h - h_lo).abs() > tol && (h - h_hi).abs() > tol);
     // Angular coverage: the largest gap between the loop's vertex angles.
-    let partial = {
+    let gap = {
         let r = perpendicular_unit(axis);
         let y = axis.cross(r);
         let mut ang: Vec<f64> = all
@@ -7944,21 +7944,68 @@ fn tessellate_revolved_trimmed(
                     .zip(ang.last())
                     .map_or(2.0 * PI, |(a, b)| a + 2.0 * PI - b),
             );
-        gap > PI / 2.0
+        gap
     };
+    let partial = gap > PI / 2.0;
     if !(wavy_trim || (cone && partial)) {
         return None;
     }
     let pad = 0.05 * span.abs().max(1e-6);
     let (v0, v1) = ((h_lo - pad) * v_scale, (h_hi + pad) * v_scale);
     let (v0, v1) = if v0 <= v1 { (v0, v1) } else { (v1, v0) };
-    tessellate_trimmed_region(
+    let mesh = tessellate_trimmed_region(
         surface.as_ref(),
         ((0.0, 2.0 * PI), (v0, v1)),
         &loops,
         params,
         reversed,
-    )
+    )?;
+    // A cylinder does have a partial-face grid path; it only goes wrong
+    // when the trim cuts well inside the (angle, height) rectangle it
+    // fills — a SolidWorks boss face read 3-14x its true area. A fillet
+    // blend that nearly fills its rectangle keeps that path: its sphere /
+    // torus corner neighbours sample the shared rims on the grid path's
+    // schedule, not the loop's, and the trimmed mesh left them cracked
+    // open (an arc-extrude fillet failed its validity check).
+    let blend_neighbour = std::iter::once(face.outer_loop)
+        .chain(face.inner_loops.iter().copied())
+        .flat_map(|l| topo.loop_half_edges(l))
+        .filter_map(|he| topo.half_edges[he].twin)
+        .filter_map(|tw| topo.half_edges[tw].loop_id)
+        .filter_map(|l| topo.loops[l].face)
+        .any(|f| {
+            matches!(
+                geom.surfaces[topo.faces[f].surface_index].surface_type(),
+                SurfaceKind::Sphere | SurfaceKind::Torus
+            )
+        });
+    if !cone && blend_neighbour {
+        let radius = all
+            .iter()
+            .map(|p| {
+                let d = *p - origin;
+                (d - axis * d.dot(axis)).norm()
+            })
+            .fold(0.0f64, f64::max);
+        let rect = radius * (2.0 * PI - gap).max(0.0) * span.abs();
+        let p = |i: u32| {
+            let k = i as usize * 3;
+            Vec3::new(
+                mesh.vertices[k] as f64,
+                mesh.vertices[k + 1] as f64,
+                mesh.vertices[k + 2] as f64,
+            )
+        };
+        let area: f64 = mesh
+            .indices
+            .chunks(3)
+            .map(|t| 0.5 * (p(t[1]) - p(t[0])).cross(p(t[2]) - p(t[0])).norm())
+            .sum();
+        if area > 0.8 * rect {
+            return None;
+        }
+    }
+    Some(mesh)
 }
 
 /// Any unit vector perpendicular to `v`.
