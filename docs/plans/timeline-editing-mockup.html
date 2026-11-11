@@ -1,0 +1,185 @@
+<title>vcad Timeline Editing</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: viewport fills the window; feature tree (= the history) and inspector float over it as glass cards. */
+:root{
+  --bg:#eceef2; --line:#d9dce3; --fg:#1d1f24; --mute:#6b7080; --win:#f7f8fa;
+  --accent:#0a6cff; --accent-soft:#0a6cff26; --ok:#1f9d55; --bad:#d93a3a;
+  --vp:#20242c; --vp2:#2a2f39; --solid:#c9d2e0; --solid2:#9eabbf; --solid3:#7f8ca3;
+  --mono: ui-monospace,"SF Mono",Menlo,monospace; --sans:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#15171b;--line:#363a44;--fg:#e8eaef;--mute:#9aa0ae;--win:#1e2026;--accent:#4d94ff;--accent-soft:#4d94ff33;--ok:#3ccf7a;--bad:#ff6363;--vp:#111318;--vp2:#1a1d24;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#15171b;--line:#363a44;--fg:#e8eaef;--mute:#9aa0ae;--win:#1e2026;--accent:#4d94ff;--accent-soft:#4d94ff33;--ok:#3ccf7a;--bad:#ff6363;--vp:#111318;--vp2:#1a1d24;color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:13px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:20px}
+.wrap{max-width:1100px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+h1{font-size:20px;margin:0;font-weight:650;text-wrap:balance}
+.sub{color:var(--mute);margin:2px 0 0;max-width:72ch;line-height:1.45}
+button{font:inherit;color:inherit;background:var(--win);border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer}
+button:hover:not(:disabled){border-color:var(--accent)} button:disabled{opacity:.4;cursor:default}
+button:focus-visible,input:focus-visible,.row:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.window{background:var(--win);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:0 10px 40px #0002}
+.titlebar{height:40px;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--line)}
+.dots i{display:inline-block;width:11px;height:11px;border-radius:50%;margin-right:6px;background:var(--line)}
+.titlebar .sp{flex:1}
+.main{position:relative;height:540px}
+.vp{position:absolute;inset:0;background:radial-gradient(ellipse at 50% 35%,var(--vp2),var(--vp))}
+.vp svg{width:100%;height:100%;display:block}
+.glass{--fg:#eef0f4;--mute:#a3a9b8;--line:#ffffff24;--win:#ffffff10;color:var(--fg);background:rgba(14,16,22,.55);-webkit-backdrop-filter:blur(18px) saturate(1.5);backdrop-filter:blur(18px) saturate(1.5);border:1px solid #ffffff1f;border-radius:12px;box-shadow:0 8px 28px #0007}
+.tree{position:absolute;left:12px;top:12px;width:220px;padding:8px;display:flex;flex-direction:column;gap:1px}
+.insp{position:absolute;right:12px;top:12px;width:270px;padding:12px;display:flex;flex-direction:column;gap:10px}
+.lab{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--mute);margin:2px 4px 4px}
+.row{display:flex;align-items:center;gap:7px;padding:5px 7px;border-radius:6px;cursor:pointer;white-space:nowrap}
+.row:hover{background:#ffffff12} .row.sel{background:var(--accent);color:#fff}
+.row.flash{animation:fl .6s ease-out}@keyframes fl{from{background:#ffffff38}}
+.row svg{width:14px;height:14px;flex:none}
+.badge{margin-left:auto;font-size:10px;font-weight:700;background:var(--bad);color:#fff;border-radius:99px;padding:1px 6px}
+.row.broken span{color:#ffb3b3}.row.sel.broken span{color:#fff}
+.dim{opacity:.5}
+h3{margin:0;font-size:14px;font-weight:600;display:flex;gap:7px;align-items:center}
+h3 svg{width:16px;height:16px;flex:none}
+.insp p{margin:0;color:var(--mute);line-height:1.45;font-size:12px}
+.field{display:grid;grid-template-columns:1fr 72px;gap:8px;align-items:center}
+.field input[type=number]{width:72px;font:inherit;font-family:var(--mono);background:#ffffff14;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:3px 6px;text-align:right}
+.field input[type=range]{grid-column:1/-1}
+.acts{display:flex;gap:6px;flex-wrap:wrap}
+.err{border:1px solid var(--bad);border-radius:8px;padding:9px;display:flex;flex-direction:column;gap:7px;background:#d93a3a1f}
+.err b{color:#ffb3b3}
+.toast{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);padding:7px 12px;font-size:12px;border-radius:99px;white-space:nowrap;max-width:calc(100% - 24px);overflow:hidden;text-overflow:ellipsis}
+.toast.bad{border-color:var(--bad)}
+.kbd{font-family:var(--mono);font-size:11px;color:var(--mute)}
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px}
+.note{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--win)}
+.note b{display:block;margin-bottom:3px}.note p{margin:0;color:var(--mute);line-height:1.45;font-size:12.5px}
+.note.cut{border-style:dashed}
+@media (max-width:820px){.main{height:auto;display:flex;flex-direction:column;gap:8px;padding:8px;background:var(--vp)}.vp{position:relative;height:280px;border-radius:8px}.tree,.insp{position:static;width:auto}.toast{position:static;transform:none;white-space:normal}}
+@media (prefers-reduced-motion:reduce){.row.flash{animation:none}}
+</style>
+
+<div class="wrap">
+  <div>
+    <h1>History, simplified</h1>
+    <p class="sub">The feature tree is the history. Click any feature, change it in the inspector, and everything after it rebuilds. Undo and redo work as they do today, one named step per edit. If a later feature loses what it was attached to, it gets a red badge and a one-click fix. There is no separate timeline, rollback marker or drag reorder.</p>
+  </div>
+
+  <div class="window">
+    <div class="titlebar">
+      <span class="dots"><i></i><i></i><i></i></span><b>bracket.vcad</b>
+      <span class="sp"></span>
+      <button id="undo" title="Undo (⌘Z)">↶ Undo</button>
+      <button id="redo" title="Redo (⇧⌘Z)">↷ Redo</button>
+    </div>
+    <div class="main">
+      <div class="vp"><svg id="view" viewBox="0 0 640 380" role="img" aria-label="Model viewport"></svg></div>
+      <div class="tree glass" id="tree" role="tree" aria-label="Features"></div>
+      <div class="insp glass" id="insp"></div>
+      <div class="toast glass" id="toast" hidden></div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <div class="note"><b>Try it</b><p>Select Extrude1 and change the thickness: everything rebuilds. Select Sketch2 and drag the boss past x = 90: Fillet1 breaks. Then press Undo, or use the fix on the error card.</p></div>
+    <div class="note"><b>What makes it safe</b><p>Faces get stable names from the feature that made them, so the fillet follows the boss when the sketch changes. When there's no unambiguous match, vcad stops and says so instead of guessing.</p></div>
+    <div class="note"><b>Move Up / Move Down</b><p>These stay, but a move that would put a feature before its input is refused with the reason. Today that move goes through and the feature silently disappears.</p></div>
+    <div class="note cut"><b>Left out on purpose</b><p>Timeline strip, rollback marker, drag reorder, live ghost previews, thumbnails. Add them later only if people ask to insert features mid-history.</p></div>
+  </div>
+</div>
+
+<script>
+const I={
+ sketch:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 12l8-8 2 2-8 8H2z"/></svg>',
+ extrude:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 10l5 3 5-3M3 10V5l5-3 5 3v5M8 13V8"/></svg>',
+ hole:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2"/></svg>',
+ fillet:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 13V8a5 5 0 015-5h5"/></svg>',
+ chamfer:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 13V7l4-4h6"/></svg>',
+ cut:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="2.5" width="11" height="11" rx="1"/><circle cx="5.5" cy="5.5" r="1"/><circle cx="10.5" cy="10.5" r="1"/></svg>'};
+// features: deps, editable params, ms
+const FEAT={
+ Sketch1:{k:'sketch',deps:[],d:'Plate outline on XY',p:[['w','Width',40,120,'mm'],['h','Depth',30,80,'mm']]},
+ Extrude1:{k:'extrude',deps:['Sketch1'],d:'Plate',p:[['t','Thickness',3,20,'mm']]},
+ Sketch2:{k:'sketch',deps:['Extrude1'],d:'Boss circle on Extrude1 › top',p:[['bx','Boss centre X',10,110,'mm']]},
+ Extrude2:{k:'extrude',deps:['Sketch2'],d:'Boss, joined',p:[['bh','Height',5,40,'mm']]},
+ Hole1:{k:'hole',deps:['Extrude2'],d:'Thru hole on Extrude2 › top',p:[['hd','Diameter',2,16,'mm']]},
+ Fillet1:{k:'fillet',deps:['Extrude2','Extrude1'],d:'Boss base edge (Extrude2 side × Extrude1 top)',p:[['fr','Radius',0.5,6,'mm']]},
+ Sketch3:{k:'sketch',deps:['Extrude1'],d:'Mounting holes on Extrude1 › top',p:[]},
+ Cut1:{k:'cut',deps:['Sketch3'],d:'Thru-all cut',p:[]},
+ Chamfer1:{k:'chamfer',deps:['Extrude1'],d:'Vertical plate edges',p:[['cd','Distance',0.5,4,'mm']]}};
+const MS={Sketch1:2,Extrude1:9,Sketch2:2,Extrude2:14,Hole1:21,Fillet1:38,Sketch3:2,Cut1:26,Chamfer1:17};
+const init=()=>({order:Object.keys(FEAT),v:{w:80,h:50,t:8,bx:40,bh:20,hd:8,fr:3,cd:1}});
+let S=init(),sel='Extrude1',undo=[],redo=[],toast=null,flash=new Set();
+const clone=o=>JSON.parse(JSON.stringify(o));
+const broken=()=>{const b={};if(S.v.bx-10>=S.v.w)b.Fillet1='Its edge is gone: the boss no longer touches the plate top, so Extrude2 side and Extrude1 top share no edge.';return b;};
+
+function commit(label,fn,from){
+  undo.push({label,s:clone(S)});redo=[];fn();
+  const i=S.order.indexOf(from??sel),after=S.order.slice(i+1);
+  flash=new Set([from??sel,...after]);
+  const ms=[from??sel,...after].reduce((a,id)=>a+MS[id],0),b=broken();
+  toast=Object.keys(b).length?{t:`${label}. Rebuilt ${after.length+1} features. ${Object.keys(b).join(', ')} needs attention.`,bad:true}:{t:`${label}. Rebuilt ${after.length+1} features in ${ms} ms.`};
+  render();
+}
+function doUndo(){const e=undo.pop();if(!e)return;redo.push({label:e.label,s:clone(S)});S=e.s;toast={t:`Undid ${e.label}`};flash=new Set();render();}
+function doRedo(){const e=redo.pop();if(!e)return;undo.push({label:e.label,s:clone(S)});S=e.s;toast={t:`Redid ${e.label}`};flash=new Set();render();}
+function move(id,dir){
+  const i=S.order.indexOf(id),j=i+dir,other=S.order[j];if(!other)return;
+  if(dir<0&&FEAT[id].deps.includes(other)){toast={t:`Can’t move ${id} above ${other}: it’s built on ${other}.`,bad:true};render();return;}
+  if(dir>0&&FEAT[other].deps.includes(id)){toast={t:`Can’t move ${id} below ${other}: ${other} is built on it.`,bad:true};render();return;}
+  commit(`Move ${id} ${dir<0?'Up':'Down'}`,()=>{S.order.splice(i,1);S.order.splice(j,0,id);},S.order[Math.min(i,j)]);
+}
+
+// iso view
+const K=2.9,OX=300,OY=150,P=(x,y,z)=>[OX+(x-y)*.866*K,OY+(x+y)*.5*K-z*K];
+const pts=a=>a.map(p=>P(...p).map(v=>v.toFixed(1)).join(',')).join(' ');
+const ell=(cx,cy,z,r,a)=>{const[X,Y]=P(cx,cy,z);return `<ellipse cx="${X.toFixed(1)}" cy="${Y.toFixed(1)}" rx="${(r*1.2247*K).toFixed(1)}" ry="${(r*.7071*K).toFixed(1)}" ${a}/>`;};
+function draw(){
+  const v=S.v,b=broken();let s='';
+  for(let i=-20;i<=130;i+=10)s+=`<polyline points="${pts([[i,-20,0],[i,90,0]])}" stroke="#ffffff10"/>`;
+  for(let j=-20;j<=90;j+=10)s+=`<polyline points="${pts([[-20,j,0],[130,j,0]])}" stroke="#ffffff10"/>`;
+  const W=v.w,D=v.h,T=v.t,c=v.cd;
+  s+=`<polygon points="${pts([[W,0,0],[W,D,0],[W,D,T],[W,0,T]])}" fill="var(--solid2)" stroke="#0004"/>`;
+  s+=`<polygon points="${pts([[0,D,0],[W,D,0],[W,D,T],[0,D,T]])}" fill="var(--solid3)" stroke="#0004"/>`;
+  s+=`<polygon points="${pts([[c,0,T],[W-c,0,T],[W,c,T],[W,D-c,T],[W-c,D,T],[c,D,T],[0,D-c,T],[0,c,T]])}" fill="var(--solid)" stroke="#0004"/>`;
+  [[8,8],[W-8,8],[8,D-8],[W-8,D-8]].forEach(([a,q])=>s+=ell(a,q,T,2.6,'fill="#1b1f27"'));
+  const x=v.bx,y=D/2,r=10,top=T+v.bh,[a]=P(x,y,T),rx=r*1.2247*K,ry=r*.7071*K,[,yb]=P(x,y,T),[,yt]=P(x,y,top);
+  if(!b.Fillet1)s+=ell(x,y,T,r+v.fr,'fill="var(--solid)" stroke="#0003"');
+  const z0=b.Fillet1?0:T,[,yb0]=P(x,y,z0);
+  s+=`<path d="M${a-rx},${yt} L${a-rx},${b.Fillet1?yb0:yb} A${rx},${ry} 0 0 0 ${a+rx},${b.Fillet1?yb0:yb} L${a+rx},${yt} Z" fill="var(--solid2)" stroke="#0004"/>`+ell(x,y,top,r,'fill="var(--solid)" stroke="#0004"')+ell(x,y,top,v.hd/2,'fill="#1b1f27"');
+  if(b.Fillet1){s+=ell(Math.min(x,W+r),y,T,r,'fill="none" stroke="var(--bad)" stroke-width="2.5" stroke-dasharray="5 4"');const[X,Y]=P(Math.min(x,W+r),y,T);s+=`<text x="${X-46}" y="${Y+34}" fill="#ff9b9b" font-size="11" font-family="ui-monospace,monospace">Fillet1: edge lost</text>`;}
+  if(sel==='Sketch2'){s+=ell(x,y,T,r,'fill="#4d94ff33" stroke="#4d94ff" stroke-width="2"');}
+  document.getElementById('view').innerHTML=s;
+}
+function render(){
+  draw();const b=broken();
+  let t='<div class="lab">History</div>';
+  S.order.forEach(id=>{t+=`<div class="row ${id===sel?'sel':''} ${b[id]?'broken':''} ${flash.has(id)?'flash':''}" role="treeitem" tabindex="0" data-id="${id}" aria-selected="${id===sel}">${I[FEAT[id].k]}<span>${id}</span>${b[id]?'<span class="badge" aria-label="broken">!</span>':''}</div>`;});
+  const tr=document.getElementById('tree');tr.innerHTML=t;
+  tr.querySelectorAll('.row').forEach(r=>{r.onclick=()=>{sel=r.dataset.id;toast=null;flash=new Set();render();};r.onkeydown=e=>{if(e.key==='Enter')r.click();}});
+  const f=FEAT[sel];let h=`<h3>${I[f.k]}${sel}</h3><p>${f.d}</p>`;
+  f.p.forEach(([k,lab,mn,mx,u])=>{h+=`<div class="field"><label for="f-${k}">${lab} (${u})</label><input type="number" id="f-${k}" min="${mn}" max="${mx}" step="${k==='fr'||k==='cd'?0.5:1}" value="${S.v[k]}"><input type="range" id="r-${k}" min="${mn}" max="${mx}" step="${k==='fr'||k==='cd'?0.5:1}" value="${S.v[k]}" aria-label="${lab}"></div>`;});
+  if(!f.p.length)h+='<p>No editable values in this mockup.</p>';
+  if(b[sel])h+=`<div class="err"><b>Fillet1 can’t find its edge</b><p style="color:var(--fg)">${b[sel]}</p><div class="acts"><button data-a="repick">Re-pick edge</button><button data-a="del">Delete Fillet1</button><button data-a="undo">Undo ${undo.at(-1)?.label??''}</button></div></div>`;
+  h+=`<div class="acts"><button data-a="up">Move Up</button><button data-a="down">Move Down</button></div>`;
+  const ins=document.getElementById('insp');ins.innerHTML=h;
+  f.p.forEach(([k,lab])=>{
+    let start=null;
+    const num=document.getElementById('f-'+k),rng=document.getElementById('r-'+k);
+    num.onchange=()=>commit(`Set ${sel} ${lab} to ${num.value}`,()=>{S.v[k]=+num.value;});
+    rng.onpointerdown=()=>{start=clone(S);};
+    rng.oninput=()=>{S.v[k]=+rng.value;num.value=rng.value;flash=new Set();toast=null;draw();
+      const bb=broken();document.querySelectorAll('.row').forEach(r=>{r.classList.toggle('broken',!!bb[r.dataset.id]);});};
+    rng.onchange=()=>{const val=+rng.value;if(start){S=start;start=null;}commit(`Set ${sel} ${lab} to ${val}`,()=>{S.v[k]=val;});};
+  });
+  ins.querySelectorAll('button[data-a]').forEach(bt=>bt.onclick=()=>{const a=bt.dataset.a;
+    if(a==='up')move(sel,-1);if(a==='down')move(sel,1);if(a==='undo')doUndo();
+    if(a==='repick'){toast={t:'Click an edge in the viewport to attach Fillet1 to it.'};render();}
+    if(a==='del'){toast={t:'Fillet1 deleted. Undo brings it back.'};commit('Delete Fillet1',()=>{S.v.bx=Math.min(S.v.bx,S.v.w);});}});
+  const ud=document.getElementById('undo'),rd=document.getElementById('redo');
+  ud.disabled=!undo.length;rd.disabled=!redo.length;
+  ud.textContent=undo.length?`↶ Undo ${undo.at(-1).label.replace(/ to .*/,'')}`:'↶ Undo';
+  rd.textContent=redo.length?`↷ Redo ${redo.at(-1).label.replace(/ to .*/,'')}`:'↷ Redo';
+  const tt=document.getElementById('toast');tt.hidden=!toast;if(toast){tt.textContent=toast.t;tt.classList.toggle('bad',!!toast.bad);}
+}
+document.getElementById('undo').onclick=doUndo;document.getElementById('redo').onclick=doRedo;
+addEventListener('keydown',e=>{if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='z'&&e.target.tagName!=='INPUT'){e.preventDefault();e.shiftKey?doRedo():doUndo();}});
+render();
+</script>
