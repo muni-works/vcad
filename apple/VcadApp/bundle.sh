@@ -66,6 +66,11 @@ ditto "$bin_dir/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
 # The agent bridge's stdio MCP shim ("Connect Claude…" points clients here).
 cp "$here/scripts/vcad-app-mcp.mjs" "$app/Contents/Resources/"
 
+# The vcad agent skill — the same file the npm tarball and the Claude Code
+# plugin ship (plugins/vcad), installed into ~/.claude/skills on consent.
+mkdir -p "$app/Contents/Resources/vcad-skill"
+cp "$here/../../plugins/vcad/skills/vcad/SKILL.md" "$app/Contents/Resources/vcad-skill/SKILL.md"
+
 # Sample projects for the welcome window (symlinks in the checkout are
 # copied as the files they point at).
 if [ -f "$here/Samples/samples.json" ]; then

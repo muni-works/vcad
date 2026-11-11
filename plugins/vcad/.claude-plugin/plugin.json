@@ -1,0 +1,8 @@
+{
+  "name": "vcad",
+  "description": "Parametric CAD for agents: the vcad MCP server plus the skill that teaches the loon → verify → live-edit flow. Local only, no accounts.",
+  "author": { "name": "vcad", "url": "https://github.com/muni-works/vcad" },
+  "repository": "https://github.com/muni-works/vcad",
+  "license": "MIT",
+  "keywords": ["cad", "3d", "mcp", "loon", "manufacturing"]
+}

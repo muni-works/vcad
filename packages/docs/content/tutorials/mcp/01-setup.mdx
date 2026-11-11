@@ -14,6 +14,10 @@ The MCP server runs as a local process that exposes vcad's geometry engine as a 
 
 The server includes the full WASM kernel, so geometry evaluation happens locally. No data leaves your machine.
 
+<Callout type="info" title="Easiest: the Mac app">
+Install vcad.app. On first launch it detects Claude Code, Claude Desktop, Codex and Cursor and registers vcad with them in one consent dialog (undo in Settings ▸ Agents). The manual configs below are for machines without the app.
+</Callout>
+
 ## Claude Desktop
 
 Edit the Claude Desktop configuration file. On macOS it lives at `~/Library/Application Support/Claude/claude_desktop_config.json`; on Windows at `%APPDATA%\Claude\claude_desktop_config.json`.
@@ -25,7 +29,7 @@ Add the vcad server to the `mcpServers` object:
   "mcpServers": {
     "vcad": {
       "command": "npx",
-      "args": ["@vcad/mcp"]
+      "args": ["-y", "@vcad/mcp"]
     }
   }
 }
@@ -42,7 +46,7 @@ Cursor uses the same configuration format. Open Settings, navigate to the MCP se
   "mcpServers": {
     "vcad": {
       "command": "npx",
-      "args": ["@vcad/mcp"]
+      "args": ["-y", "@vcad/mcp"]
     }
   }
 }
@@ -59,7 +63,7 @@ If you use Claude Code (the CLI), add the server to your project's `.mcp.json` o
   "mcpServers": {
     "vcad": {
       "command": "npx",
-      "args": ["@vcad/mcp"]
+      "args": ["-y", "@vcad/mcp"]
     }
   }
 }
@@ -74,7 +78,7 @@ The quickest test is to ask the AI to create something simple. In Claude Desktop
 Claude should call the `create_cad_document` tool with a cube primitive and return a confirmation that includes the IR document. If it also calls `inspect_cad`, you'll see volume (27000 mm3), bounding box, and triangle count in the response.
 
 <Callout type="tip" title="Debugging connection issues">
-If the AI says it doesn't have CAD tools, the server likely failed to start. Run `npx @vcad/mcp` directly in a terminal to check for errors. The most common issue is a missing or outdated Node.js installation.
+If the AI says it doesn't have CAD tools, the server likely failed to start. Run `npx -y @vcad/mcp` directly in a terminal to check for errors. The most common issue is a missing or outdated Node.js installation.
 </Callout>
 
 ## Available Tools
