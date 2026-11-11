@@ -234,179 +234,208 @@ pub fn parse_toroidal_surface(file: &StepFile, id: u64) -> Result<TorusSurface, 
     }
 }
 
-/// Parse a B_SPLINE_SURFACE_WITH_KNOTS entity or complex entity containing one.
+/// The list at argument `i`, if that argument is a list.
+pub(crate) fn list_at(args: &[StepValue], i: usize) -> Option<&[StepValue]> {
+    match args.get(i) {
+        Some(StepValue::List(l)) => Some(l.as_slice()),
+        _ => None,
+    }
+}
+
+/// Arguments of one partial entity inside a complex entity, with the
+/// inherited `name` attribute stripped when present.
+///
+/// In a simple entity `B_SPLINE_SURFACE_WITH_KNOTS('NONE', 3, 3, ...)` every
+/// attribute — including the `name` inherited from `REPRESENTATION_ITEM` —
+/// sits in one list. In the complex form each partial carries only its *own*
+/// attributes (`B_SPLINE_SURFACE(3, 2, (...), ...)`, the name lives in the
+/// separate `REPRESENTATION_ITEM('')` partial). Some writers still put a name
+/// first, so detect it instead of assuming either layout.
+pub(crate) fn complex_partial<'v>(
+    args: &'v [StepValue],
+    type_name: &str,
+) -> Option<&'v [StepValue]> {
+    args.iter().find_map(|arg| match arg {
+        StepValue::Typed { type_name: t, args } if t == type_name => Some(match args.first() {
+            Some(StepValue::String(_)) => &args[1..],
+            _ => args.as_slice(),
+        }),
+        _ => None,
+    })
+}
+
+/// Parse a B-spline surface entity: `B_SPLINE_SURFACE_WITH_KNOTS`, or the
+/// complex form that combines `B_SPLINE_SURFACE`, `B_SPLINE_SURFACE_WITH_KNOTS`
+/// and optionally `RATIONAL_B_SPLINE_SURFACE` partials.
 ///
 /// STEP syntax:
 /// ```text
 /// B_SPLINE_SURFACE_WITH_KNOTS(name, u_degree, v_degree, control_points,
 ///     surface_form, u_closed, v_closed, self_intersect,
 ///     u_multiplicities, v_multiplicities, u_knots, v_knots, knot_spec)
+///
+/// (BOUNDED_SURFACE() B_SPLINE_SURFACE(u_degree, v_degree, control_points, ...)
+///  B_SPLINE_SURFACE_WITH_KNOTS(u_mults, v_mults, u_knots, v_knots, spec)
+///  ... RATIONAL_B_SPLINE_SURFACE(weights) ...)
 /// ```
 ///
-/// Often appears as complex entity:
-/// ```text
-/// (BOUNDED_SURFACE() B_SPLINE_SURFACE(name, u_degree, v_degree, control_points, ...)
-///  B_SPLINE_SURFACE_WITH_KNOTS(name, ..., u_mults, v_mults, u_knots, v_knots, ...))
-/// ```
-pub fn parse_bspline_surface(file: &StepFile, id: u64) -> Result<BSplineSurface, StepError> {
+/// `control_points` is `LIST [u] OF LIST [v]`: the OUTER index is u. vcad's
+/// surfaces store `points[v * n_u + u]`, so the grid is transposed on the way
+/// in. Rational surfaces come back as [`StepSurface::Nurbs`], others as
+/// [`StepSurface::BSpline`].
+pub fn parse_bspline_surface(file: &StepFile, id: u64) -> Result<StepSurface, StepError> {
     let entity = file.get(id).ok_or(StepError::MissingEntity(id))?;
 
-    // For complex entities, we need to find B_SPLINE_SURFACE and B_SPLINE_SURFACE_WITH_KNOTS data
-    // The args may contain Typed variants with the actual surface data
+    let bad = |what: &str| StepError::UnsupportedEntity(format!("B_SPLINE_SURFACE #{id} ({what})"));
 
-    // Extract degrees, control points from B_SPLINE_SURFACE portion
-    // Extract knot data from B_SPLINE_SURFACE_WITH_KNOTS portion
-
-    // Try to find B_SPLINE_SURFACE_WITH_KNOTS data (has the full info)
-    let (u_degree, v_degree, control_points_list, u_mults, v_mults, u_knots, v_knots) =
+    let (u_degree, v_degree, cp_rows, u_mults, v_mults, u_knots, v_knots, weights) =
         if entity.type_name == "B_SPLINE_SURFACE_WITH_KNOTS" {
-            // Simple entity - all data in args
-            let u_degree = entity.integer(1)? as usize;
-            let v_degree = entity.integer(2)? as usize;
-            let cp_list = entity.list(3)?.to_vec();
-            let u_mults = entity.list(8)?.to_vec();
-            let v_mults = entity.list(9)?.to_vec();
-            let u_knots = entity.list(10)?.to_vec();
-            let v_knots = entity.list(11)?.to_vec();
             (
-                u_degree, v_degree, cp_list, u_mults, v_mults, u_knots, v_knots,
+                entity.integer(1)?,
+                entity.integer(2)?,
+                entity.list(3)?,
+                entity.list(8)?,
+                entity.list(9)?,
+                entity.list(10)?,
+                entity.list(11)?,
+                None,
             )
         } else {
-            // Complex entity - look for B_SPLINE_SURFACE and B_SPLINE_SURFACE_WITH_KNOTS in args
-            let mut bspline_data: Option<(&Vec<StepValue>, usize, usize)> = None;
-            #[allow(clippy::type_complexity)]
-            let mut knots_data: Option<(
-                &Vec<StepValue>,
-                &Vec<StepValue>,
-                &Vec<StepValue>,
-                &Vec<StepValue>,
-            )> = None;
-
-            for arg in &entity.args {
-                if let StepValue::Typed { type_name, args } = arg {
-                    if type_name == "B_SPLINE_SURFACE" && args.len() >= 4 {
-                        let u_deg = args.get(1).and_then(|v| v.as_integer()).unwrap_or(0) as usize;
-                        let v_deg = args.get(2).and_then(|v| v.as_integer()).unwrap_or(0) as usize;
-                        if let Some(StepValue::List(cp)) = args.get(3) {
-                            bspline_data = Some((cp, u_deg, v_deg));
-                        }
-                    } else if type_name == "B_SPLINE_SURFACE_WITH_KNOTS" && args.len() >= 5 {
-                        // Args: name, u_mults, v_mults, u_knots, v_knots, knot_spec
-                        // (indices may vary depending on whether it includes inherited attrs)
-                        if let (
-                            Some(StepValue::List(um)),
-                            Some(StepValue::List(vm)),
-                            Some(StepValue::List(uk)),
-                            Some(StepValue::List(vk)),
-                        ) = (args.get(1), args.get(2), args.get(3), args.get(4))
-                        {
-                            knots_data = Some((um, vm, uk, vk));
-                        }
-                    }
-                }
-            }
-
-            match (bspline_data, knots_data) {
-                (Some((cp_list, u_deg, v_deg)), Some((u_mults, v_mults, u_knots, v_knots))) => (
-                    u_deg,
-                    v_deg,
-                    cp_list.clone(),
-                    u_mults.clone(),
-                    v_mults.clone(),
-                    u_knots.clone(),
-                    v_knots.clone(),
-                ),
-                _ => {
-                    // Can't extract B-spline data - treat as unsupported
-                    return Err(StepError::UnsupportedEntity(format!(
-                        "B_SPLINE_SURFACE (complex entity #{})",
-                        id
-                    )));
-                }
-            }
+            let base = complex_partial(&entity.args, "B_SPLINE_SURFACE")
+                .ok_or_else(|| bad("complex entity without B_SPLINE_SURFACE"))?;
+            let knots = complex_partial(&entity.args, "B_SPLINE_SURFACE_WITH_KNOTS")
+                .ok_or_else(|| bad("complex entity without knots"))?;
+            let int = |i: usize, what: &str| {
+                base.get(i)
+                    .and_then(|v| v.as_integer())
+                    .ok_or_else(|| bad(what))
+            };
+            let weights = match complex_partial(&entity.args, "RATIONAL_B_SPLINE_SURFACE") {
+                Some(r) => Some(list_at(r, 0).ok_or_else(|| bad("weights"))?),
+                None => None,
+            };
+            (
+                int(0, "u degree")?,
+                int(1, "v degree")?,
+                list_at(base, 2).ok_or_else(|| bad("control points"))?,
+                list_at(knots, 0).ok_or_else(|| bad("u multiplicities"))?,
+                list_at(knots, 1).ok_or_else(|| bad("v multiplicities"))?,
+                list_at(knots, 2).ok_or_else(|| bad("u knots"))?,
+                list_at(knots, 3).ok_or_else(|| bad("v knots"))?,
+                weights,
+            )
         };
+    if u_degree < 1 || v_degree < 1 {
+        return Err(bad("degree < 1"));
+    }
+    let (u_degree, v_degree) = (u_degree as usize, v_degree as usize);
 
-    // Parse control points - it's a 2D list of entity refs
-    let mut control_points = Vec::new();
-    let mut n_v = 0;
-    let mut n_u = 0;
+    // control_points[u][v]
+    let n_u = cp_rows.len();
+    let n_v = match cp_rows.first() {
+        Some(StepValue::List(row)) => row.len(),
+        _ => return Err(bad("empty control-point grid")),
+    };
+    let expected_cp = n_u
+        .checked_mul(n_v)
+        .ok_or_else(|| bad("control-point grid n_u*n_v overflows usize"))?;
+    if expected_cp > MAX_BSPLINE_GRID {
+        return Err(bad(&format!(
+            "grid {expected_cp} exceeds cap {MAX_BSPLINE_GRID}"
+        )));
+    }
+    // ragged grids are rejected below by the length check on each row
+    let mut grid: Vec<Vec<Point3>> = Vec::with_capacity(n_u);
+    for row in cp_rows {
+        let StepValue::List(row) = row else {
+            return Err(bad("control-point row is not a list"));
+        };
+        if row.len() != n_v {
+            return Err(bad("ragged control-point grid"));
+        }
+        let mut pts = Vec::with_capacity(n_v);
+        for v in row {
+            let pt_id = v
+                .as_entity_ref()
+                .ok_or_else(|| bad("control point is not a reference"))?;
+            pts.push(parse_cartesian_point(file, pt_id)?);
+        }
+        grid.push(pts);
+    }
 
-    for row in &control_points_list {
-        if let StepValue::List(row_points) = row {
-            n_v += 1;
-            let mut row_count = 0;
-            for pt_ref in row_points {
-                if let Some(pt_id) = pt_ref.as_entity_ref() {
-                    let pt = parse_cartesian_point(file, pt_id)?;
-                    control_points.push(pt);
-                    row_count += 1;
+    let mut weight_grid: Option<Vec<Vec<f64>>> = None;
+    if let Some(rows) = weights {
+        if rows.len() != n_u {
+            return Err(bad("weight grid shape mismatch"));
+        }
+        let mut wg = Vec::with_capacity(n_u);
+        for row in rows {
+            let StepValue::List(row) = row else {
+                return Err(bad("weight row is not a list"));
+            };
+            if row.len() != n_v {
+                return Err(bad("weight grid shape mismatch"));
+            }
+            let mut ws = Vec::with_capacity(n_v);
+            for w in row {
+                let w = w.as_real().ok_or_else(|| bad("weight is not a number"))?;
+                if !(w.is_finite() && w > 0.0) {
+                    return Err(bad("non-positive weight"));
                 }
+                ws.push(w);
             }
-            if n_v == 1 {
-                n_u = row_count;
-            }
+            wg.push(ws);
+        }
+        weight_grid = Some(wg);
+    }
+
+    let knots_u = expand_knots(u_knots, u_mults)?;
+    let knots_v = expand_knots(v_knots, v_mults)?;
+    let expected_u = n_u + u_degree + 1;
+    let expected_v = n_v + v_degree + 1;
+    if knots_u.len() != expected_u || knots_v.len() != expected_v {
+        return Err(bad(&format!(
+            "invalid knot vector: u={}/{expected_u} v={}/{expected_v}",
+            knots_u.len(),
+            knots_v.len()
+        )));
+    }
+    // Knot vectors must be non-decreasing; the constructors assert this.
+    if !is_non_decreasing(&knots_u) || !is_non_decreasing(&knots_v) {
+        return Err(bad("non-monotonic knot vector"));
+    }
+
+    // Transpose STEP's [u][v] into vcad's row-major [v][u].
+    let mut control_points = Vec::with_capacity(expected_cp);
+    for j in 0..n_v {
+        for row in &grid {
+            control_points.push(row[j]);
         }
     }
 
-    // Expand knots according to multiplicities
-    let expanded_u_knots = expand_knots(&u_knots, &u_mults)?;
-    let expanded_v_knots = expand_knots(&v_knots, &v_mults)?;
-
-    // Validate knot vectors before constructing (BSplineSurface::new panics on invalid)
-    let expected_u_knots = n_u + u_degree + 1;
-    let expected_v_knots = n_v + v_degree + 1;
-
-    if expanded_u_knots.len() != expected_u_knots || expanded_v_knots.len() != expected_v_knots {
-        return Err(StepError::UnsupportedEntity(format!(
-            "B_SPLINE_SURFACE #{} (invalid knot vector: u={}/{} v={}/{})",
-            id,
-            expanded_u_knots.len(),
-            expected_u_knots,
-            expanded_v_knots.len(),
-            expected_v_knots
-        )));
-    }
-
-    // Guard against attacker-controlled sizes before calling BSplineSurface::new
-    // (which asserts on mismatched dimensions and invalid knot vectors).
-    let expected_cp = n_u.checked_mul(n_v).ok_or_else(|| {
-        StepError::UnsupportedEntity(format!(
-            "B_SPLINE_SURFACE #{} (control-point grid n_u*n_v overflows usize)",
-            id
-        ))
-    })?;
-    if expected_cp > MAX_BSPLINE_GRID {
-        return Err(StepError::UnsupportedEntity(format!(
-            "B_SPLINE_SURFACE #{} (grid {} exceeds cap {})",
-            id, expected_cp, MAX_BSPLINE_GRID
-        )));
-    }
-    if control_points.len() != expected_cp {
-        return Err(StepError::UnsupportedEntity(format!(
-            "B_SPLINE_SURFACE #{} (control point mismatch: {} != {}x{})",
-            id,
-            control_points.len(),
+    match weight_grid {
+        // All-unit weights are an ordinary B-spline; keep the cheaper type.
+        Some(wg) if wg.iter().flatten().any(|&w| (w - 1.0).abs() > 1e-12) => {
+            let mut wpts = Vec::with_capacity(expected_cp);
+            for j in 0..n_v {
+                for (i, row) in grid.iter().enumerate() {
+                    wpts.push(WeightedPoint::new(row[j], wg[i][j]));
+                }
+            }
+            Ok(StepSurface::Nurbs(NurbsSurface::new(
+                wpts, n_u, n_v, knots_u, knots_v, u_degree, v_degree,
+            )))
+        }
+        _ => Ok(StepSurface::BSpline(BSplineSurface::new(
+            control_points,
             n_u,
-            n_v
-        )));
+            n_v,
+            knots_u,
+            knots_v,
+            u_degree,
+            v_degree,
+        ))),
     }
-    // Knot vectors must be non-decreasing; BSplineSurface::new asserts this.
-    if !is_non_decreasing(&expanded_u_knots) || !is_non_decreasing(&expanded_v_knots) {
-        return Err(StepError::UnsupportedEntity(format!(
-            "B_SPLINE_SURFACE #{} (non-monotonic knot vector)",
-            id
-        )));
-    }
-
-    Ok(BSplineSurface::new(
-        control_points,
-        n_u,
-        n_v,
-        expanded_u_knots,
-        expanded_v_knots,
-        u_degree,
-        v_degree,
-    ))
 }
 
 /// Expand knot vector by multiplicities.
@@ -526,10 +555,14 @@ pub fn write_bspline_control_points(
     n_v: usize,
     emit: &mut impl FnMut(&str) -> u64,
 ) -> Vec<Vec<u64>> {
-    let mut rows = Vec::with_capacity(n_v);
-    for v_idx in 0..n_v {
-        let mut row_ids = Vec::with_capacity(n_u);
-        for u_idx in 0..n_u {
+    // STEP's control_points_list is `[u][v]` (outer index u); vcad stores
+    // `points[v * n_u + u]`. This used to write `[v][u]`, matching a reader
+    // with the same mistake — and every other CAD system read vcad's
+    // B-spline faces transposed.
+    let mut rows = Vec::with_capacity(n_u);
+    for u_idx in 0..n_u {
+        let mut row_ids = Vec::with_capacity(n_v);
+        for v_idx in 0..n_v {
             let pt = &points[v_idx * n_u + u_idx];
             let entity = write_cartesian_point(pt, "");
             let id = emit(&entity);
@@ -602,10 +635,7 @@ fn parse_surface_inner(
             false,
         )),
         "TOROIDAL_SURFACE" => Ok((StepSurface::Torus(parse_toroidal_surface(file, id)?), false)),
-        "B_SPLINE_SURFACE_WITH_KNOTS" => Ok((
-            StepSurface::BSpline(parse_bspline_surface(file, id)?),
-            false,
-        )),
+        "B_SPLINE_SURFACE_WITH_KNOTS" => Ok((parse_bspline_surface(file, id)?, false)),
         "SURFACE_OF_REVOLUTION" => parse_surface_of_revolution(file, id),
         "SURFACE_OF_LINEAR_EXTRUSION" => parse_surface_of_linear_extrusion(file, id),
         "OFFSET_SURFACE" => parse_offset_surface(file, id, depth),
@@ -617,10 +647,7 @@ fn parse_surface_inner(
                     if type_name == "B_SPLINE_SURFACE_WITH_KNOTS" || type_name == "B_SPLINE_SURFACE")
             });
             if has_bspline {
-                Ok((
-                    StepSurface::BSpline(parse_bspline_surface(file, id)?),
-                    false,
-                ))
+                Ok((parse_bspline_surface(file, id)?, false))
             } else {
                 Err(StepError::UnsupportedEntity(entity.type_name.clone()))
             }
@@ -1158,6 +1185,7 @@ fn profile_to_nurbs(curve: &StepCurve, id: u64) -> Result<(NurbsCurve, bool), St
             );
             Ok((profile, sense_flipped))
         }
+        StepCurve::Nurbs(nurbs) => Ok((nurbs.clone(), sense_flipped)),
         // `resolve()` never returns a Trimmed variant.
         StepCurve::Trimmed(_) => Err(StepError::UnsupportedEntity(format!(
             "swept surface #{id}: unresolvable trimmed profile"
@@ -1176,6 +1204,12 @@ fn curve_tangent(curve: &StepCurve, t: f64) -> Vec3 {
                 * circle.radius
         }
         StepCurve::BSpline(bspline) => bspline.tangent(t),
+        StepCurve::Nurbs(nurbs) => {
+            let (t0, t1) = nurbs.parameter_domain();
+            let h = (t1 - t0) * 1e-6;
+            let (a, b) = ((t - h).max(t0), (t + h).min(t1));
+            (nurbs.eval(b) - nurbs.eval(a)) / (b - a).max(f64::MIN_POSITIVE)
+        }
         StepCurve::Trimmed(tc) => {
             let tangent = curve_tangent(&tc.basis, t);
             if tc.sense_agreement {
@@ -1217,8 +1251,8 @@ fn curve_sample_ts(curve: &StepCurve) -> Vec<f64> {
             vec![0.5 * len, len, -len, 2.0 * len]
         }
         StepCurve::Circle(_) => vec![FRAC_PI_4, FRAC_PI_2, 0.75 * PI],
-        StepCurve::BSpline(bspline) => {
-            let (t0, t1) = bspline.parameter_domain();
+        StepCurve::BSpline(_) | StepCurve::Nurbs(_) => {
+            let (t0, t1) = curve.domain();
             vec![
                 0.5 * (t0 + t1),
                 t0 + 0.75 * (t1 - t0),
@@ -1325,6 +1359,42 @@ pub fn write_toroidal_surface(
 
 #[cfg(test)]
 mod tests {
+    /// `control_points_list` is `LIST [u] OF LIST [v]`. With 2 points in u
+    /// and 3 in v (degrees 1 and 2) only the right reading has valid knot
+    /// vectors; reading `[v][u]` rejected this patch, and transposed every
+    /// square one (same shape, mirrored parameterization, flipped normal).
+    #[test]
+    fn test_bspline_surface_control_grid_is_u_major() {
+        let input = r#"
+ISO-10303-21;
+HEADER;
+ENDSEC;
+DATA;
+#1 = CARTESIAN_POINT('', (0.0, 0.0, 0.0));
+#2 = CARTESIAN_POINT('', (0.0, 10.0, 0.0));
+#3 = CARTESIAN_POINT('', (0.0, 20.0, 0.0));
+#4 = CARTESIAN_POINT('', (10.0, 0.0, 0.0));
+#5 = CARTESIAN_POINT('', (10.0, 10.0, 0.0));
+#6 = CARTESIAN_POINT('', (10.0, 20.0, 0.0));
+#10 = B_SPLINE_SURFACE_WITH_KNOTS('', 1, 2, ((#1, #2, #3), (#4, #5, #6)),
+     .UNSPECIFIED., .F., .F., .F., (2, 2), (3, 3), (0.0, 1.0), (0.0, 1.0), .UNSPECIFIED.);
+ENDSEC;
+END-ISO-10303-21;
+"#;
+        let file = parse_step(input);
+        let StepSurface::BSpline(s) = parse_bspline_surface(&file, 10).unwrap() else {
+            panic!("expected a non-rational B-spline");
+        };
+        assert_eq!((s.n_u, s.n_v, s.degree_u, s.degree_v), (2, 3, 1, 2));
+        use vcad_kernel_geom::Surface;
+        let at = |u: f64, v: f64| s.evaluate(vcad_kernel_math::Point2::new(u, v));
+        // u runs along the outer list (x), v along the inner one (y).
+        assert!((at(1.0, 0.0) - Point3::new(10.0, 0.0, 0.0)).norm() < 1e-9);
+        assert!((at(0.0, 1.0) - Point3::new(0.0, 20.0, 0.0)).norm() < 1e-9);
+        // STEP's normal ∂u × ∂v is +z for this patch.
+        assert!(s.normal(vcad_kernel_math::Point2::new(0.5, 0.5)).as_ref().z > 0.99);
+    }
+
     use super::*;
     use stepperoni::Parser;
     use vcad_kernel_math::Point3;
@@ -1923,7 +1993,9 @@ END-ISO-10303-21;
                         let u = u0 + (u1 - u0) * i as f64 / 8.0;
                         let v = v0 + (v1 - v0) * j as f64 / 8.0;
                         let p = b.eval(u, v);
-                        assert!((p.z - 2.0).abs() < 1e-8, "z at ({u},{v}): {}", p.z);
+                        // Rows are u: ∂u = +y, ∂v = +x, so the STEP normal
+                        // ∂u × ∂v is -z and a +2 offset lands at z = -2.
+                        assert!((p.z + 2.0).abs() < 1e-8, "z at ({u},{v}): {}", p.z);
                     }
                 }
             }

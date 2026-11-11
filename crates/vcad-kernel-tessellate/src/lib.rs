@@ -4208,6 +4208,9 @@ fn tessellate_cylindrical_face(
             return mesh;
         }
     }
+    if let Some(mesh) = tessellate_revolved_trimmed(topo, geom, face_id, params, reversed) {
+        return mesh;
+    }
 
     verts.extend(borrowed_ring);
     // A seamless full-circle wall from a foreign STEP file (Onshape writes
@@ -5329,6 +5332,181 @@ fn delaunay_flip(
     }
 }
 
+/// Flip away sliver triangles (CCW in `uv`) by their longest edge.
+///
+/// Along a straight run of boundary samples (an iso-parameter edge) earcut
+/// may keep every sample yet still connect two non-neighbours, leaving a
+/// sliver whose long side runs along the boundary. That side counts as
+/// interior, so bisection would split it — exactly onto the sample already
+/// sitting there, duplicating it. Flipping the long side over to the
+/// opposite vertex removes the sliver. A collinear run of k samples is a
+/// fan of k slivers, and each pass can only peel the one next to a proper
+/// triangle, hence the generous pass budget. Boundary edges never flip.
+fn flip_sliver_triangles(
+    tris: &mut [[u32; 3]],
+    uv: &[(f64, f64)],
+    boundary: &std::collections::HashSet<(u32, u32)>,
+) {
+    use std::collections::HashMap;
+    let key = |a: u32, b: u32| if a < b { (a, b) } else { (b, a) };
+    let p = |v: u32| uv[v as usize];
+    let orient = |a: u32, b: u32, c: u32| {
+        let (a, b, c) = (p(a), p(b), p(c));
+        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+    };
+    let len2 = |a: u32, b: u32| {
+        let (a, b) = (p(a), p(b));
+        (a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)
+    };
+    for _ in 0..256 {
+        let mut edges: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+        for (t, tri) in tris.iter().enumerate() {
+            for k in 0..3 {
+                edges
+                    .entry(key(tri[k], tri[(k + 1) % 3]))
+                    .or_default()
+                    .push(t);
+            }
+        }
+        let mut touched = vec![false; tris.len()];
+        let mut changed = false;
+        for t in 0..tris.len() {
+            if touched[t] {
+                continue;
+            }
+            let tri = tris[t];
+            let r = (0..3)
+                .max_by(|&i, &j| {
+                    len2(tri[i], tri[(i + 1) % 3])
+                        .partial_cmp(&len2(tri[j], tri[(j + 1) % 3]))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .unwrap_or(0);
+            let (a, b, c) = (tri[r], tri[(r + 1) % 3], tri[(r + 2) % 3]);
+            let l2 = len2(a, b);
+            // Height under ~1/2000 of the base: a sliver, not a triangle.
+            if l2 == 0.0 || orient(a, b, c).abs() > 1e-3 * l2 {
+                continue;
+            }
+            let e = key(a, b);
+            if boundary.contains(&e) {
+                continue;
+            }
+            let Some(&o) = edges.get(&e).and_then(|ts| ts.iter().find(|&&o| o != t)) else {
+                continue;
+            };
+            if touched[o] {
+                continue;
+            }
+            let Some(&d) = tris[o].iter().find(|&&v| v != a && v != b) else {
+                continue;
+            };
+            let ok = |t: [u32; 3]| orient(t[0], t[1], t[2]) > 0.0;
+            let (n0, n1) = if ok([a, c, d]) && ok([c, b, d]) {
+                ([a, c, d], [c, b, d])
+            } else if ok([a, d, c]) && ok([c, d, b]) {
+                ([a, d, c], [c, d, b])
+            } else {
+                continue;
+            };
+            tris[t] = n0;
+            tris[o] = n1;
+            touched[t] = true;
+            touched[o] = true;
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+    }
+}
+
+/// Put back the boundary vertices earcut dropped.
+///
+/// Earcut filters collinear points out of its input polygon, so a straight
+/// run of boundary samples comes back as one long triangle edge from the
+/// first to the last. On a B-spline face that is the norm, not the
+/// exception: an edge lying on an iso-parameter line (a seam, an end
+/// circle) maps to a straight parameter-space segment. The neighbour face
+/// still has every sample, so the dropped ones were open T-junctions; and
+/// bisecting the long edge put vertices back ON the boundary line, whose
+/// lifted triangles lay flat across the end cap (measured: 226 mm² of
+/// inside-out area on one shaft patch).
+///
+/// Each dropped vertex lies on the edge joining its nearest kept loop
+/// neighbours; the one triangle on that edge is split at it, in loop order.
+fn reinsert_dropped_boundary(tris: &mut Vec<[u32; 3]>, uv: &[(f64, f64)], loop_lens: &[usize]) {
+    let n_total: usize = loop_lens.iter().sum();
+    let mut used = vec![false; n_total];
+    for t in tris.iter() {
+        for &v in t {
+            if (v as usize) < n_total {
+                used[v as usize] = true;
+            }
+        }
+    }
+    let mut base = 0usize;
+    for &n in loop_lens {
+        let idx = |i: usize| (base + i % n) as u32;
+        // Start the walk at a kept vertex so every gap has both ends.
+        if let Some(start) = (0..n).find(|&i| used[base + i]) {
+            let mut prev = idx(start);
+            let mut i = 1;
+            while i <= n {
+                let v = idx(start + i);
+                if used[v as usize] {
+                    prev = v;
+                    i += 1;
+                    continue;
+                }
+                // Next kept vertex after this gap.
+                let Some(k) = (i + 1..=n).find(|&k| used[idx(start + k) as usize]) else {
+                    break;
+                };
+                let next = idx(start + k);
+                // Only a vertex lying ON prev–next was dropped for being
+                // collinear; earcut also drops spikes (collinear but past an
+                // end), and splitting the edge at one of those would fold.
+                let (pa, pb, pv) = (uv[prev as usize], uv[next as usize], uv[v as usize]);
+                let (dx, dy) = (pb.0 - pa.0, pb.1 - pa.1);
+                let l2 = dx * dx + dy * dy;
+                let t = ((pv.0 - pa.0) * dx + (pv.1 - pa.1) * dy) / l2.max(1e-300);
+                let off = ((pv.0 - pa.0) * dy - (pv.1 - pa.1) * dx).abs() / l2.sqrt().max(1e-300);
+                if !(t > 1e-9 && t < 1.0 - 1e-9 && off <= 1e-6 * l2.sqrt()) {
+                    prev = v;
+                    i += 1;
+                    continue;
+                }
+                // The triangle holding edge prev–next (either direction).
+                let Some(t) = tris.iter().position(|t| {
+                    (0..3).any(|r| {
+                        let (x, y) = (t[r], t[(r + 1) % 3]);
+                        (x == prev && y == next) || (x == next && y == prev)
+                    })
+                }) else {
+                    prev = v;
+                    i += 1;
+                    continue;
+                };
+                let tri = tris[t];
+                let r = (0..3)
+                    .find(|&r| {
+                        let (x, y) = (tri[r], tri[(r + 1) % 3]);
+                        (x == prev && y == next) || (x == next && y == prev)
+                    })
+                    .unwrap_or(0);
+                let (x, y, z) = (tri[r], tri[(r + 1) % 3], tri[(r + 2) % 3]);
+                tris[t] = [x, v, z];
+                tris.push([v, y, z]);
+                used[v as usize] = true;
+                prev = v;
+                i += 1;
+            }
+        }
+        base += n;
+    }
+}
+
 /// Tessellate a spherical patch bounded by `loops` (outer first, then
 /// holes), keeping every boundary vertex exactly as given so the patch
 /// welds to its neighbours.
@@ -6125,6 +6303,9 @@ fn tessellate_conical_face(
         if let Some(mesh) = tessellate_cone_sector_two_chain(cone, &verts, reversed) {
             return mesh;
         }
+    }
+    if let Some(mesh) = tessellate_revolved_trimmed(topo, geom, face_id, params, reversed) {
+        return mesh;
     }
 
     // Project vertices onto axis to get v parameter range (distance from apex).
@@ -7151,9 +7332,650 @@ fn torus_seam_band_range(
     Some((ua, ua + 2.0 * PI, v_lo, v_hi))
 }
 
+/// Tessellate a trimmed face of any parametric surface inside its boundary
+/// loops (B-spline/NURBS faces, and analytic faces whose trim the analytic
+/// paths cannot represent). `domain` is the parameter box to search: the
+/// surface's own for bounded surfaces, a box around the loops for unbounded
+/// ones (a cylinder's v runs to ±1e10).
+///
+/// Each loop vertex is inverted to the surface's (u, v); the resulting
+/// parameter-space polygon (outer + holes) is earcut, seeded with interior
+/// grid points, refined by conforming bisection of interior edges that are
+/// long or sag off the surface, and flipped toward Delaunay — the same
+/// scheme as [`tessellate_spherical_region`], with surface inversion in
+/// place of the stereographic projection. Every boundary vertex is kept
+/// exactly, so the patch welds to its neighbours.
+///
+/// `None` when the loops do not invert cleanly onto the surface (a loop
+/// crossing a periodic seam, a vertex off the surface) or the parameter
+/// polygon is degenerate, leaving the caller its untrimmed fallback.
+fn tessellate_trimmed_region(
+    surface: &dyn vcad_kernel_geom::Surface,
+    domain: ((f64, f64), (f64, f64)),
+    loops: &[Vec<Point3>],
+    params: &TessellationParams,
+    reversed: bool,
+) -> Option<TriangleMesh> {
+    use std::collections::{HashMap, HashSet};
+    let outer = loops.first()?;
+    if outer.len() < 3 {
+        return None;
+    }
+    let ((u0, u1), (v0, v1)) = domain;
+    if !(u1 > u0 && v1 > v0) {
+        return None;
+    }
+
+    // Size of the face, from its boundary.
+    let (mut lo, mut hi) = (outer[0], outer[0]);
+    for p in loops.iter().flatten() {
+        lo = Point3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+        hi = Point3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+    }
+    let diag = (hi - lo).norm();
+    if diag.is_nan() || diag <= 1e-9 {
+        return None;
+    }
+    // Relative to the face, with an absolute floor: STEP writers place
+    // boundary vertices to their modelling tolerance (~1e-3 mm), so a
+    // millimetre-sized face cannot demand sub-micron inversion.
+    let tol = (1e-4 * diag).max(1e-3);
+
+    let grid = vcad_kernel_geom::surface_sample_grid(surface, domain, 24);
+
+    // Work in parameter space scaled to (roughly) model units: a patch whose
+    // u spans 0.01 while v spans 1 is wildly anisotropic, and Delaunay flips
+    // in raw (u, v) then keep re-creating edges that are long in 3D — the
+    // bisection never converges. Scale each axis by the mean |∂S| along it.
+    let mean_len = |f: &dyn Fn(Point2) -> Vec3| {
+        grid.iter().map(|g| f(g.0).norm()).sum::<f64>() / grid.len() as f64
+    };
+    let ku = mean_len(&|w| surface.d_du(w)).max(1e-12);
+    let kv = mean_len(&|w| surface.d_dv(w)).max(1e-12);
+
+    // Whether the surface closes on itself in u / v (a periodic seam).
+    let closed_in = |axis: usize| -> bool {
+        (0..=8).all(|i| {
+            let t = i as f64 / 8.0;
+            let (a, b) = if axis == 0 {
+                let v = v0 + (v1 - v0) * t;
+                (Point2::new(u0, v), Point2::new(u1, v))
+            } else {
+                let u = u0 + (u1 - u0) * t;
+                (Point2::new(u, v0), Point2::new(u, v1))
+            };
+            (surface.evaluate(a) - surface.evaluate(b)).norm() <= 10.0 * tol
+        })
+    };
+    let closed = (closed_in(0), closed_in(1));
+
+    // Invert every loop vertex into (scaled) parameter space.
+    let mut raw: Vec<Vec<(Point3, (f64, f64))>> = Vec::with_capacity(loops.len());
+    for l in loops {
+        let mut guess: Option<Point2> = None;
+        let mut l2 = Vec::with_capacity(l.len());
+        for p in l {
+            let (w, d) =
+                vcad_kernel_geom::invert_surface_point(surface, domain, p, guess, &grid, tol);
+            if d > 10.0 * tol {
+                return None;
+            }
+            guess = Some(w);
+            l2.push((*p, (w.x * ku, w.y * kv)));
+        }
+        // A straight model-space edge need not be straight in parameter
+        // space (a rational patch, a skewed one): its two end samples alone
+        // would trim along the wrong curve — 15% too much area on a weighted
+        // patch. Where a segment's parameter midpoint lifts off the model
+        // chord, follow the chord with inverted intermediate points. They
+        // lie on the neighbour's edge, so the welder heals the T-junctions.
+        let mut dense = Vec::with_capacity(l2.len());
+        let n = l2.len();
+        for i in 0..n {
+            let (pa, wa) = l2[i];
+            let (pb, wb) = l2[(i + 1) % n];
+            dense.push((pa, wa));
+            // A jump across half the domain is a periodic seam crossing
+            // (unwrapped below), not a curved image of a straight edge.
+            if (closed.0 && (wb.0 - wa.0).abs() > 0.5 * ku * (u1 - u0))
+                || (closed.1 && (wb.1 - wa.1).abs() > 0.5 * kv * (v1 - v0))
+            {
+                continue;
+            }
+            let len = (pb - pa).norm();
+            // Probe off-centre too: a symmetric distortion can put the
+            // midpoint exactly on the chord.
+            let off = [0.25, 0.5, 0.75]
+                .iter()
+                .map(|&t| {
+                    let w = Point2::new(
+                        (wa.0 + (wb.0 - wa.0) * t) / ku,
+                        (wa.1 + (wb.1 - wa.1) * t) / kv,
+                    );
+                    (surface.evaluate(w) - (pa + (pb - pa) * t)).norm()
+                })
+                .fold(0.0f64, f64::max);
+            if off <= (10.0 * tol).max(0.02 * len) {
+                continue;
+            }
+            // Only a segment whose chord lies ON the surface is a straight
+            // edge; a chord of a sampled curved edge sags off it and stays
+            // as it is.
+            let k = 16usize;
+            let mut g = Some(Point2::new(wa.0 / ku, wa.1 / kv));
+            let mut extra = Vec::with_capacity(k - 1);
+            for j in 1..k {
+                let p = pa + (pb - pa) * (j as f64 / k as f64);
+                let (w, d) =
+                    vcad_kernel_geom::invert_surface_point(surface, domain, &p, g, &grid, tol);
+                if d > 0.1 * tol {
+                    extra.clear();
+                    break;
+                }
+                g = Some(w);
+                extra.push((p, (w.x * ku, w.y * kv)));
+            }
+            dense.extend(extra);
+        }
+        raw.push(dense);
+    }
+
+    // Periodic seams. A surface closed in u (or v) — a revolved profile, a
+    // tube — puts the seam inside faces: a loop that crosses it jumps a whole
+    // period between neighbouring samples, and a band that runs all the way
+    // round has two loops that each wind once. Unwrap each loop into a
+    // continuous polyline; lifting wraps the parameter back into the domain.
+    let period = (ku * (u1 - u0), kv * (v1 - v0));
+    // Back to the surface's own parameters, wrapping across a closed seam.
+    let unscale = |w: (f64, f64)| {
+        let (mut u, mut v) = (w.0 / ku, w.1 / kv);
+        if closed.0 {
+            u = u0 + (u - u0).rem_euclid(u1 - u0);
+        }
+        if closed.1 {
+            v = v0 + (v - v0).rem_euclid(v1 - v0);
+        }
+        Point2::new(u, v)
+    };
+    let mut winding: Vec<(i64, i64)> = Vec::with_capacity(raw.len());
+    for l in &mut raw {
+        let (mut su, mut sv) = (0.0, 0.0);
+        let mut prev = l[0].1;
+        for (k, item) in l.iter_mut().enumerate() {
+            let (mut a, mut b) = item.1;
+            if k > 0 {
+                a += su;
+                b += sv;
+                if closed.0 && (a - prev.0).abs() > 0.5 * period.0 {
+                    let s = -(a - prev.0).signum() * period.0;
+                    su += s;
+                    a += s;
+                }
+                if closed.1 && (b - prev.1).abs() > 0.5 * period.1 {
+                    let s = -(b - prev.1).signum() * period.1;
+                    sv += s;
+                    b += s;
+                }
+            }
+            item.1 = (a, b);
+            prev = (a, b);
+        }
+        // Closing segment: the net shift back to the first vertex.
+        let first = l[0].1;
+        let wu = if closed.0 {
+            ((prev.0 - first.0) / period.0).round() as i64
+        } else {
+            0
+        };
+        let wv = if closed.1 {
+            ((prev.1 - first.1) / period.1).round() as i64
+        } else {
+            0
+        };
+        winding.push((wu, wv));
+    }
+
+    // Assemble the polygon loops. Non-winding loops stand as they are. Two
+    // loops winding once in opposite senses bound a band: cut it along the
+    // seam into one strip — the first loop's run, its start re-entered one
+    // period on, then the second loop's run from the vertex nearest that
+    // cut, back down to its own start minus the period.
+    let winders: Vec<usize> = (0..raw.len()).filter(|&i| winding[i] != (0, 0)).collect();
+    let mut final_loops: Vec<Vec<(Point3, (f64, f64))>> = Vec::with_capacity(raw.len());
+    match winders.as_slice() {
+        [] => final_loops = raw,
+        &[ia, ib]
+            if winding[ia].0 == -winding[ib].0
+                && winding[ia].1 == -winding[ib].1
+                && (winding[ia].0.abs() + winding[ia].1.abs()) == 1 =>
+        {
+            let (wu, wv) = winding[ia];
+            let shift = (wu as f64 * period.0, wv as f64 * period.1);
+            let a = &raw[ia];
+            let b = &raw[ib];
+            let mut strip: Vec<(Point3, (f64, f64))> = a.clone();
+            let a0 = a[0];
+            let cut = (a0.1 .0 + shift.0, a0.1 .1 + shift.1);
+            strip.push((a0.0, cut));
+            // B's vertex nearest the cut position along the seam's cross axis,
+            // with B shifted so that vertex lands on the cut side.
+            let across = |w: (f64, f64)| if wu != 0 { w.0 } else { w.1 };
+            let per_across = if wu != 0 { period.0 } else { period.1 };
+            let j = (0..b.len())
+                .min_by(|&x, &y| {
+                    let dx = (across(b[x].1) - across(cut)).rem_euclid(per_across);
+                    let dy = (across(b[y].1) - across(cut)).rem_euclid(per_across);
+                    let dx = dx.min(per_across - dx);
+                    let dy = dy.min(per_across - dy);
+                    dx.partial_cmp(&dy).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .unwrap_or(0);
+            let k = ((across(cut) - across(b[j].1)) / per_across).round();
+            let off = if wu != 0 {
+                (k * period.0, 0.0)
+            } else {
+                (0.0, k * period.1)
+            };
+            // Re-run B from j, continuing its unwrapped walk past the end.
+            let n = b.len();
+            for step in 0..=n {
+                let idx = (j + step) % n;
+                let wrapped = j + step >= n;
+                let (mut x, mut y) = b[idx].1;
+                x += off.0 + if wrapped { -shift.0 } else { 0.0 };
+                y += off.1 + if wrapped { -shift.1 } else { 0.0 };
+                strip.push((b[idx].0, (x, y)));
+            }
+            final_loops.push(strip);
+            for (i, l) in raw.into_iter().enumerate() {
+                if i != ia && i != ib {
+                    final_loops.push(l);
+                }
+            }
+        }
+        _ => {
+            return None;
+        }
+    }
+
+    let mut pts: Vec<Point3> = Vec::new();
+    let mut uv: Vec<(f64, f64)> = Vec::new();
+    let mut loops_2d: Vec<Vec<(f64, f64)>> = Vec::new();
+    for l in &final_loops {
+        loops_2d.push(l.iter().map(|x| x.1).collect());
+        pts.extend(l.iter().map(|x| x.0));
+        uv.extend(l.iter().map(|x| x.1));
+    }
+
+    let mut tris: Vec<[u32; 3]> = triangulate_polygon_2d(&loops_2d[0], &loops_2d[1..])?;
+    let orient = |uv: &[(f64, f64)], t: &[u32; 3]| -> f64 {
+        let (a, b, c) = (uv[t[0] as usize], uv[t[1] as usize], uv[t[2] as usize]);
+        (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+    };
+    for t in &mut tris {
+        if orient(&uv, t) < 0.0 {
+            t.swap(1, 2);
+        }
+    }
+    let loop_lens: Vec<usize> = loops_2d.iter().map(Vec::len).collect();
+    reinsert_dropped_boundary(&mut tris, &uv, &loop_lens);
+    // Earcut of a self-overlapping polygon still emits triangles; a genuine
+    // trimmed region's triangulation covers exactly outer minus holes.
+    let region_area = polygon_area_2d(&loops_2d[0]).abs()
+        - loops_2d[1..]
+            .iter()
+            .map(|h| polygon_area_2d(h).abs())
+            .sum::<f64>();
+    // Unsigned: an inverted triangle must count against the check, not
+    // cancel against its overlap.
+    let tri_area: f64 = tris.iter().map(|t| 0.5 * orient(&uv, t).abs()).sum();
+    if region_area.is_nan()
+        || region_area <= 0.0
+        || (tri_area - region_area).abs() > 1e-3 * region_area.max(1e-300)
+    {
+        return None;
+    }
+
+    let key = |a: u32, b: u32| if a < b { (a, b) } else { (b, a) };
+    let mut boundary: HashSet<(u32, u32)> = HashSet::new();
+    let mut base = 0u32;
+    for l in &loops_2d {
+        let n = l.len() as u32;
+        for i in 0..n {
+            boundary.insert(key(base + i, base + (i + 1) % n));
+        }
+        base += n;
+    }
+    let edge_map = |tris: &[[u32; 3]]| -> HashMap<(u32, u32), Vec<usize>> {
+        let mut m: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
+        for (t, tri) in tris.iter().enumerate() {
+            for k in 0..3 {
+                m.entry(key(tri[k], tri[(k + 1) % 3])).or_default().push(t);
+            }
+        }
+        m
+    };
+    let lift = |w: (f64, f64)| surface.evaluate(unscale(w));
+    flip_sliver_triangles(&mut tris, &uv, &boundary);
+
+    // Target edge length (triangle quality only — a flat stretch needs no
+    // density) and sag; curvature is the angular criterion's job below.
+    let segs = params.circle_segments.max(8) as f64;
+    let target = diag / 16.0;
+    let sag_tol = params
+        .chord_tolerance
+        .unwrap_or(f64::INFINITY)
+        .min(diag / (8.0 * segs));
+    // Angular criterion, matching what `circle_segments` buys a circle: an
+    // edge spanning angle θ on radius r sags ≈ L·θ/8, so splitting when
+    // sag > L·(2π/segs)/8 gives curved patches the density of a circle of
+    // their own curvature — independent of how big the face is.
+    let sag_per_len = 2.0 * PI / segs / 8.0;
+
+    // Seed interior points on a parameter grid at roughly the target
+    // spacing, keeping clear of the boundary.
+    let n_boundary = pts.len();
+    let (mut ulo, mut uhi, mut vlo, mut vhi) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
+    for &(a, b) in &loops_2d[0] {
+        ulo = ulo.min(a);
+        uhi = uhi.max(a);
+        vlo = vlo.min(b);
+        vhi = vhi.max(b);
+    }
+    let len_u = (lift(((ulo + uhi) / 2.0, vlo)) - lift(((ulo + uhi) / 2.0, vhi))).norm()
+        + (lift((ulo, (vlo + vhi) / 2.0)) - lift((uhi, (vlo + vhi) / 2.0))).norm();
+    let k = ((len_u / 2.0 / target).ceil() as usize).clamp(2, 48);
+    for j in 1..k {
+        for i in 1..k {
+            let w = (
+                ulo + (uhi - ulo) * i as f64 / k as f64,
+                vlo + (vhi - vlo) * j as f64 / k as f64,
+            );
+            let p = lift(w);
+            if pts[..n_boundary]
+                .iter()
+                .any(|b| (*b - p).norm() < 0.5 * target)
+            {
+                continue;
+            }
+            let Some(t) = tris.iter().position(|t| {
+                let (a, b, c) = (uv[t[0] as usize], uv[t[1] as usize], uv[t[2] as usize]);
+                let o = |p: (f64, f64), q: (f64, f64)| {
+                    (q.0 - p.0) * (w.1 - p.1) - (q.1 - p.1) * (w.0 - p.0)
+                };
+                o(a, b) > 0.0 && o(b, c) > 0.0 && o(c, a) > 0.0
+            }) else {
+                continue;
+            };
+            let [a, b, c] = tris[t];
+            let m = pts.len() as u32;
+            pts.push(p);
+            uv.push(w);
+            tris[t] = [a, b, m];
+            tris.push([b, c, m]);
+            tris.push([c, a, m]);
+        }
+    }
+    delaunay_flip(&mut tris, &uv, &boundary);
+
+    // Conforming bisection of interior edges that are long or sag. Each pass
+    // at most halves the longest edges, so a bounded number of passes is
+    // enough for any sane surface; the uv floor stops a sag that will not
+    // shrink (a vertex inverted onto the wrong sheet of a folded patch) from
+    // bisecting forever.
+    let max_tris = 20_000;
+    let uv_floor = 1e-4 * ((uhi - ulo).abs() + (vhi - vlo).abs());
+    for _pass in 0..16 {
+        let edges = edge_map(&tris);
+        let mut split: Vec<((u32, u32), f64)> = edges
+            .iter()
+            .filter(|(e, ts)| ts.len() == 2 && !boundary.contains(e))
+            // An edge that is the long side of a sliver lies along a
+            // straight boundary run; its midpoint would land on a sample
+            // already there.
+            .filter(|(e, ts)| {
+                let (ua, ub) = (uv[e.0 as usize], uv[e.1 as usize]);
+                let l2 = (ua.0 - ub.0).powi(2) + (ua.1 - ub.1).powi(2);
+                ts.iter().all(|&t| orient(&uv, &tris[t]).abs() > 1e-3 * l2)
+            })
+            .filter_map(|(e, _)| {
+                let (pa, pb) = (pts[e.0 as usize], pts[e.1 as usize]);
+                let len = (pa - pb).norm();
+                let (ua, ub) = (uv[e.0 as usize], uv[e.1 as usize]);
+                let mid = lift((0.5 * (ua.0 + ub.0), 0.5 * (ua.1 + ub.1)));
+                let chord_mid = Point3::new(
+                    0.5 * (pa.x + pb.x),
+                    0.5 * (pa.y + pb.y),
+                    0.5 * (pa.z + pb.z),
+                );
+                let sag = (mid - chord_mid).norm();
+                let uv_len = (ua.0 - ub.0).abs() + (ua.1 - ub.1).abs();
+                (uv_len > uv_floor
+                    && (len > 1.5 * target || sag > sag_tol || sag > sag_per_len * len))
+                    .then_some((*e, len))
+            })
+            .collect();
+        if split.is_empty() || tris.len() > max_tris {
+            break;
+        }
+        split.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let mut touched = vec![false; tris.len()];
+        for ((a, b), _) in split {
+            let ts = &edges[&(a, b)];
+            if ts.iter().any(|&t| touched[t]) {
+                continue;
+            }
+            let (ua, ub) = (uv[a as usize], uv[b as usize]);
+            let mid = (0.5 * (ua.0 + ub.0), 0.5 * (ua.1 + ub.1));
+            let m = pts.len() as u32;
+            uv.push(mid);
+            pts.push(lift(mid));
+            for &t in ts {
+                touched[t] = true;
+                let tri = tris[t];
+                let r = (0..3)
+                    .find(|&k| key(tri[k], tri[(k + 1) % 3]) == (a, b))
+                    .unwrap_or(0);
+                let (x, y, z) = (tri[r], tri[(r + 1) % 3], tri[(r + 2) % 3]);
+                tris[t] = [x, m, z];
+                tris.push([m, y, z]);
+                touched.push(true);
+            }
+        }
+    }
+    // One Delaunay pass at the end, not one per bisection pass: each is a
+    // full edge-map rebuild per sweep, and per pass they dominated (38 s for
+    // this part at 128 segments).
+    delaunay_flip(&mut tris, &uv, &boundary);
+
+    // Triangles are CCW in (u, v); whether that winds along the surface's
+    // reported normal is voted over every triangle, each sampled at its
+    // centroid. One sample is not enough: a vertex on a collapsed (pole)
+    // edge has ∂u × ∂v = 0, and the fallback normal there is arbitrary —
+    // it flipped whole fillet patches inside out.
+    let vote: f64 = tris
+        .iter()
+        .map(|t| {
+            let (a, b, c) = (pts[t[0] as usize], pts[t[1] as usize], pts[t[2] as usize]);
+            let (wa, wb, wc) = (uv[t[0] as usize], uv[t[1] as usize], uv[t[2] as usize]);
+            let w = ((wa.0 + wb.0 + wc.0) / 3.0, (wa.1 + wb.1 + wc.1) / 3.0);
+            (b - a)
+                .cross(c - a)
+                .dot(surface.normal(unscale(w)).as_ref())
+        })
+        .sum();
+    let ccw_along_normal = vote >= 0.0;
+    let flip = ccw_along_normal == reversed;
+
+    let mut mesh = TriangleMesh::new();
+    for (p, w) in pts.iter().zip(&uv) {
+        mesh.vertices
+            .extend_from_slice(&[p.x as f32, p.y as f32, p.z as f32]);
+        let n = *surface.normal(unscale(*w)).as_ref();
+        let n = if reversed { -n } else { n };
+        mesh.normals
+            .extend_from_slice(&[n.x as f32, n.y as f32, n.z as f32]);
+    }
+    // Several parameter points can lift to one model point: a collapsed
+    // (pole) boundary edge, a cone apex, the two copies of a band's seam
+    // cut. Triangles spanning only such copies have no area, yet their
+    // edges pile onto real ones — dozens of four-way "non-manifold" edges
+    // that sent the export repair into a multi-second membrane search on a
+    // mesh with nothing to repair. Merge coincident vertices and drop the
+    // triangles that collapse.
+    let mut canon: Vec<u32> = (0..pts.len() as u32).collect();
+    {
+        let q = |p: &Point3| {
+            let s = 1e-9 * diag.max(1.0);
+            [
+                (p.x / s).round() as i64,
+                (p.y / s).round() as i64,
+                (p.z / s).round() as i64,
+            ]
+        };
+        let mut first: HashMap<[i64; 3], u32> = HashMap::new();
+        for (i, p) in pts.iter().enumerate() {
+            canon[i] = *first.entry(q(p)).or_insert(i as u32);
+        }
+    }
+    for t in &tris {
+        let [a, b, c] = t.map(|v| canon[v as usize]);
+        if a == b || b == c || a == c {
+            continue;
+        }
+        if flip {
+            mesh.indices.extend_from_slice(&[a, c, b]);
+        } else {
+            mesh.indices.extend_from_slice(&[a, b, c]);
+        }
+    }
+    Some(mesh)
+}
+
+/// A face's boundary loops as point lists (outer first, then holes with at
+/// least three points), coincident neighbours merged.
+fn face_loop_points(topo: &Topology, face_id: FaceId) -> Vec<Vec<Point3>> {
+    let face = &topo.faces[face_id];
+    let loop_points = |l| {
+        let mut pts: Vec<Point3> = topo
+            .loop_half_edges(l)
+            .map(|he| topo.vertices[topo.half_edges[he].origin].point)
+            .collect();
+        // Coincident neighbours (a collapsed pole edge) are one polygon vertex.
+        pts.dedup_by(|a, b| (*a - *b).norm() < 1e-12);
+        while pts.len() > 1 && (pts[0] - pts[pts.len() - 1]).norm() < 1e-12 {
+            pts.pop();
+        }
+        pts
+    };
+    std::iter::once(loop_points(face.outer_loop))
+        .chain(
+            face.inner_loops
+                .iter()
+                .map(|&l| loop_points(l))
+                .filter(|l| l.len() >= 3),
+        )
+        .collect()
+}
+
+/// Generic trimmed tessellation for a cylinder or cone face whose boundary
+/// the analytic grid paths cannot represent: a trim that is not at constant
+/// height (an intersection curve, a blade edge), or — for a cone, whose grid
+/// path only knows full turns — any face that does not go all the way round.
+///
+/// Those paths assume a rectangle in (angle, height); fed a SolidWorks
+/// blade sliver they painted a full 360° band, doubling the face. `None`
+/// leaves the caller its own path (always, for faces that do fit it).
+fn tessellate_revolved_trimmed(
+    topo: &Topology,
+    geom: &GeometryStore,
+    face_id: FaceId,
+    params: &TessellationParams,
+    reversed: bool,
+) -> Option<TriangleMesh> {
+    let face = &topo.faces[face_id];
+    let surface = &geom.surfaces[face.surface_index];
+    let any = surface.as_any();
+    // (point on axis, axis, height → v scale, is cone)
+    let (origin, axis, v_scale, cone) =
+        if let Some(c) = any.downcast_ref::<vcad_kernel_geom::CylinderSurface>() {
+            (c.center, *c.axis.as_ref(), 1.0, false)
+        } else {
+            let c = any.downcast_ref::<vcad_kernel_geom::ConeSurface>()?;
+            let cos = c.half_angle.cos();
+            if cos.abs() < 1e-9 {
+                return None;
+            }
+            (c.apex, *c.axis.as_ref(), 1.0 / cos, true)
+        };
+    let loops = face_loop_points(topo, face_id);
+    let all: Vec<Point3> = loops.iter().flatten().copied().collect();
+    if loops.first().is_none_or(|l| l.len() < 3) {
+        return None;
+    }
+    let heights: Vec<f64> = all.iter().map(|p| (*p - origin).dot(axis)).collect();
+    let (h_lo, h_hi) = heights
+        .iter()
+        .fold((f64::MAX, f64::MIN), |(lo, hi), &h| (lo.min(h), hi.max(h)));
+    let span = h_hi - h_lo;
+    let tol = 1e-6 * span.abs().max(1.0);
+    let wavy_trim = heights
+        .iter()
+        .any(|&h| (h - h_lo).abs() > tol && (h - h_hi).abs() > tol);
+    // Angular coverage: the largest gap between the loop's vertex angles.
+    let partial = {
+        let r = perpendicular_unit(axis);
+        let y = axis.cross(r);
+        let mut ang: Vec<f64> = all
+            .iter()
+            .filter_map(|p| {
+                let d = *p - origin;
+                let d = d - axis * d.dot(axis);
+                (d.norm() > 1e-9).then(|| d.dot(y).atan2(d.dot(r)))
+            })
+            .collect();
+        ang.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let gap = ang
+            .windows(2)
+            .map(|w| w[1] - w[0])
+            .fold(0.0f64, f64::max)
+            .max(
+                ang.first()
+                    .zip(ang.last())
+                    .map_or(2.0 * PI, |(a, b)| a + 2.0 * PI - b),
+            );
+        gap > PI / 2.0
+    };
+    if !(wavy_trim || (cone && partial)) {
+        return None;
+    }
+    let pad = 0.05 * span.abs().max(1e-6);
+    let (v0, v1) = ((h_lo - pad) * v_scale, (h_hi + pad) * v_scale);
+    let (v0, v1) = if v0 <= v1 { (v0, v1) } else { (v1, v0) };
+    tessellate_trimmed_region(
+        surface.as_ref(),
+        ((0.0, 2.0 * PI), (v0, v1)),
+        &loops,
+        params,
+        reversed,
+    )
+}
+
+/// Any unit vector perpendicular to `v`.
+fn perpendicular_unit(v: Vec3) -> Vec3 {
+    let a = if v.x.abs() < 0.9 {
+        Vec3::new(1.0, 0.0, 0.0)
+    } else {
+        Vec3::new(0.0, 1.0, 0.0)
+    };
+    (a - v * a.dot(v)).normalize()
+}
+
 /// Tessellate a B-spline or NURBS face.
 ///
-/// Uses adaptive UV grid sampling.
+/// Trimmed to its boundary loops via [`tessellate_trimmed_region`]; only
+/// when the loops cannot be mapped into parameter space does it fall back
+/// to sampling the whole (untrimmed) surface domain.
 fn tessellate_bspline_face(
     topo: &Topology,
     geom: &GeometryStore,
@@ -7163,6 +7985,13 @@ fn tessellate_bspline_face(
 ) -> TriangleMesh {
     let face = &topo.faces[face_id];
     let surface = &geom.surfaces[face.surface_index];
+
+    let loops = face_loop_points(topo, face_id);
+    if let Some(mesh) =
+        tessellate_trimmed_region(surface.as_ref(), surface.domain(), &loops, params, reversed)
+    {
+        return mesh;
+    }
 
     // Use higher resolution for B-splines since they can be complex
     let n_u = (params.circle_segments * 2).max(16) as usize;
