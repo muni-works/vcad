@@ -351,7 +351,7 @@ Honesty: the luminance edge-stopping weight is scaled by the estimator's own var
        angles rel. to pattern: 0.000, 45.000, 90.000, ...
        first hole at 202.500 deg absolute (placement-dependent)
   ```
-- **Drafting** — `vcad-kernel-drafting` generates shop-ready 2D drawings: orthographic projections with hidden-line removal, full and offset (stepped) section views with hatching and cutting-plane callouts, detail views with scale bubbles, dimensions, GD&T annotations, title block / revision table / BOM entities, and deterministic PDF + DXF sheet export with ANSI/ISO line weights.
+- **Drafting** — `vcad-kernel-drafting` generates shop-ready 2D drawings: orthographic projections with hidden-line removal, full and offset (stepped) section views with hatching and cutting-plane callouts, detail views with scale bubbles, dimensions, GD&T annotations, title block / revision table / BOM entities, and deterministic PDF + DXF sheet export with ANSI/ISO line weights. Circular features (holes, bosses, shafts seen end-on) are recognized straight from the projected edge loops — so they work on frozen meshes and imported STEP too — and drive center marks and grouped `N× ⌀D` callouts; the whole composed sheet also exports as a DXF in model millimetres (views at true size, one layer per line class).
 
 ## Simulation and Analysis
 

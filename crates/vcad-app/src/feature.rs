@@ -445,6 +445,10 @@ pub enum FeatureInput {
         #[serde(skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "ts-rs", ts(optional))]
         show_bom: Option<String>,
+        /// Annotations (JSON-serialized `DrawingSettings` subset: sheet size, dimensions, details, GD&T, toggles).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-rs", ts(optional))]
+        annotations: Option<String>,
     },
     /// Atomic / molecular system (the `molecule` document domain).
     Molecule {
@@ -906,7 +910,11 @@ impl FeatureInput {
                 title_block,
                 sections,
                 show_bom,
+                annotations,
             } => {
+                if let Some(v) = annotations {
+                    p.insert("annotations".into(), Value::String(v.clone()));
+                }
                 if let Some(v) = title_block {
                     p.insert("title_block".into(), Value::String(v.clone()));
                 }
@@ -1126,6 +1134,7 @@ impl FeatureInput {
                 title_block: get_str(params, "title_block"),
                 sections: get_str(params, "sections"),
                 show_bom: get_str(params, "show_bom"),
+                annotations: get_str(params, "annotations"),
             },
             "scene-settings" => Self::SceneSettings {
                 environment: get_str(params, "environment"),
