@@ -3,7 +3,7 @@
 //! lives in `printer_cmd::run_print_job`.
 
 use anyhow::{bail, Result};
-use vcad_slicer_gcode::{GcodeSettings, LintLimits, LintReport, PrinterProfile};
+use vcad_slicer_gcode::{GcodeSettings, PrinterProfile};
 
 /// Filament preset for the P1S (M1 values: conservative speeds come from
 /// `GcodeSettings::default()`; full Bambu-derived profiles are M2).
@@ -38,163 +38,43 @@ pub fn filament(name: &str) -> Result<Filament> {
     })
 }
 
+pub use vcad_slicer_bambu::job::Job;
+
 /// Translate in place so the XY bbox centre sits on the plate centre and
 /// the lowest point is at Z = 0. Refuses parts that don't fit.
+#[cfg(test)]
 pub fn center_on_plate(vertices: &mut [f32], printer: &PrinterProfile) -> Result<()> {
-    if vertices.len() < 9 {
-        bail!("empty mesh");
-    }
-    let mut lo = [f32::INFINITY; 3];
-    let mut hi = [f32::NEG_INFINITY; 3];
-    for v in vertices.as_chunks::<3>().0 {
-        for k in 0..3 {
-            lo[k] = lo[k].min(v[k]);
-            hi[k] = hi[k].max(v[k]);
-        }
-    }
-    let size = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
-    // Keep a 10 mm margin clear of the purge line at the front edge.
-    let (bx, by, bz) = (
-        printer.bed_x as f32,
-        printer.bed_y as f32,
-        printer.bed_z as f32,
-    );
-    if size[0] > bx - 20.0 || size[1] > by - 20.0 || size[2] > bz {
-        bail!(
-            "part is {:.1} × {:.1} × {:.1} mm; the {} fits {:.0} × {:.0} × {:.0}",
-            size[0],
-            size[1],
-            size[2],
-            printer.name,
-            bx - 20.0,
-            by - 20.0,
-            bz
-        );
-    }
-    let d = [
-        bx / 2.0 - (lo[0] + hi[0]) / 2.0,
-        by / 2.0 - (lo[1] + hi[1]) / 2.0,
-        -lo[2],
-    ];
-    for v in vertices.as_chunks_mut::<3>().0 {
-        for k in 0..3 {
-            v[k] += d[k];
-        }
-    }
-    Ok(())
-}
-
-/// A prepared, checked job.
-pub struct Job {
-    /// The `.gcode.3mf` bytes.
-    pub archive: Vec<u8>,
-    /// Linter verdict on the embedded G-code (always clean in a returned Job).
-    pub lint: LintReport,
-    /// printcheck verdict on the centred part.
-    pub printcheck: vcad_printcheck::Report,
-    /// Layer count.
-    pub layers: usize,
-    /// Filament used.
-    pub filament: Filament,
+    vcad_slicer_bambu::job::center_on_plate(vertices, printer).map_err(anyhow::Error::msg)
 }
 
 /// Centre, slice, generate, lint, printcheck and package one part.
 pub fn prepare(
     name: &str,
-    mut vertices: Vec<f32>,
+    vertices: Vec<f32>,
     indices: Vec<u32>,
     filament: Filament,
 ) -> Result<Job> {
     let printer = PrinterProfile::bambu_p1s();
-    center_on_plate(&mut vertices, &printer)?;
-
-    let pc_mesh = vcad_printcheck::Mesh {
-        tris: indices
-            .as_chunks::<3>()
-            .0
-            .iter()
-            .map(|t| {
-                let p = |i: u32| {
-                    let i = i as usize * 3;
-                    [
-                        vertices[i] as f64,
-                        vertices[i + 1] as f64,
-                        vertices[i + 2] as f64,
-                    ]
-                };
-                [p(t[0]), p(t[1]), p(t[2])]
-            })
-            .collect(),
-    };
-    let printcheck = vcad_printcheck::check_mesh(
-        &pc_mesh,
-        name.to_string(),
-        &vcad_printcheck::Options::default(),
-    );
-
-    let mesh = vcad_kernel_tessellate::TriangleMesh {
-        vertices: vertices.clone(),
-        indices: indices.clone(),
-        normals: Vec::new(),
-        face_kinds: Vec::new(),
-        face_ids: Vec::new(),
-    };
-    let settings = vcad_slicer::SliceSettings {
-        layer_height: 0.2,
-        first_layer_height: 0.2,
-        wall_count: 2,
-        infill_density: 0.15,
-        ..Default::default()
-    };
-    let result = vcad_slicer::slice(&mesh, &settings)?;
-    if result.layers.is_empty() {
-        bail!("slicer produced no layers");
-    }
-    let limits = LintLimits::for_printer(&printer);
-    let gcode = vcad_slicer_gcode::generate_gcode(
-        &result,
-        GcodeSettings {
+    let spec = vcad_slicer_bambu::job::JobSpec {
+        name: name.to_string(),
+        slice: vcad_slicer::SliceSettings {
+            layer_height: 0.2,
+            first_layer_height: 0.2,
+            wall_count: 2,
+            infill_density: 0.15,
+            ..Default::default()
+        },
+        gcode: GcodeSettings {
             printer,
             print_temp: filament.nozzle,
             bed_temp: filament.bed,
             fan_speed: filament.fan,
             ..Default::default()
         },
-    );
-    let lint = vcad_slicer_gcode::lint(&gcode, &limits);
-    if !lint.ok() {
-        let shown: Vec<String> = lint
-            .findings
-            .iter()
-            .take(10)
-            .map(|f| format!("  line {}: {}", f.line, f.message))
-            .collect();
-        bail!(
-            "G-code linter refused ({} findings):\n{}",
-            lint.findings.len(),
-            shown.join("\n")
-        );
-    }
-
-    let mut model = vcad_slicer_bambu::ThreeMfModel::new(name.to_string(), vertices, indices)
-        .with_gcode(gcode.into_bytes())
-        .with_printer_model("C12");
-    model.settings = vcad_slicer_bambu::PrintSettings {
-        layer_height: settings.layer_height,
-        first_layer_height: settings.first_layer_height,
-        wall_count: settings.wall_count,
-        infill_density: settings.infill_density,
-        print_temp: filament.nozzle,
-        bed_temp: filament.bed,
         filament_type: filament.kind.into(),
+        printer_model_id: Some("C12".into()),
     };
-    Ok(Job {
-        archive: model.to_bytes()?,
-        lint,
-        printcheck,
-        layers: result.layers.len(),
-        filament,
-    })
+    vcad_slicer_bambu::job::prepare(vertices, indices, &spec).map_err(anyhow::Error::msg)
 }
 
 #[cfg(test)]

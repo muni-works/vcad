@@ -13,6 +13,8 @@ network = ["dep:tokio", "dep:rumqttc", "dep:rustls", "dep:rustls022", "dep:webpk
 [dependencies]
 vcad-slicer = { path = "../vcad-slicer", version = "0.11.0" }
 vcad-slicer-gcode = { path = "../vcad-slicer-gcode", version = "0.11.0" }
+vcad-printcheck = { path = "../vcad-printcheck", version = "0.11.0" }
+vcad-kernel-tessellate = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
