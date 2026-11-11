@@ -87,8 +87,40 @@ fn bodies(
     doc: &vcad_ir::Document,
     scene: &vcad_eval::EvaluatedScene,
 ) -> Vec<(String, Option<Solid>)> {
+    keyed_bodies(doc, scene)
+        .into_iter()
+        .map(|b| (b.name, b.solid))
+        .collect()
+}
+
+/// A drawn body plus every id a persisted assertion may use to name it:
+/// the stringified root node id (plain parts), the instance id (assembly
+/// instances), and the display name.
+pub(crate) struct KeyedBody {
+    /// Ids that select this body (root node id / instance id, then name).
+    pub keys: Vec<String>,
+    /// Display name.
+    pub name: String,
+    /// The posed solid, when it evaluated.
+    pub solid: Option<Solid>,
+}
+
+/// [`bodies`], keeping the ids assertions refer to.
+pub(crate) fn keyed_bodies(
+    doc: &vcad_ir::Document,
+    scene: &vcad_eval::EvaluatedScene,
+) -> Vec<KeyedBody> {
     let roots = part_roots(doc, scene);
-    let root_body = |i: usize| (part_name(doc, roots[i], i), scene.parts[i].solid.clone());
+    let root_body = |i: usize| {
+        let name = part_name(doc, roots[i], i);
+        let mut keys: Vec<String> = roots[i].iter().map(|r| r.to_string()).collect();
+        keys.push(name.clone());
+        KeyedBody {
+            keys,
+            name,
+            solid: scene.parts[i].solid.clone(),
+        }
+    };
     let (Some(instances), Some(defs)) = (doc.instances.as_ref(), scene.part_defs.as_ref()) else {
         return (0..scene.parts.len()).map(root_body).collect();
     };
@@ -96,7 +128,7 @@ fn bodies(
         return (0..scene.parts.len()).map(root_body).collect();
     }
     let world = vcad_eval::solve_forward_kinematics(doc);
-    let mut out: Vec<(String, Option<Solid>)> = instances
+    let mut out: Vec<KeyedBody> = instances
         .iter()
         .filter_map(|inst| {
             let def = defs.iter().find(|d| d.id == inst.part_def_id)?;
@@ -107,7 +139,12 @@ fn bodies(
                         Some(t) => place(s, t),
                         None => s.clone(),
                     });
-            Some((inst.name.clone().unwrap_or_else(|| inst.id.clone()), solid))
+            let name = inst.name.clone().unwrap_or_else(|| inst.id.clone());
+            Some(KeyedBody {
+                keys: vec![inst.id.clone(), name.clone()],
+                name,
+                solid,
+            })
         })
         .collect();
     let def_roots: std::collections::HashSet<vcad_ir::NodeId> = doc

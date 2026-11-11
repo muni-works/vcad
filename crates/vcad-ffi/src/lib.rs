@@ -59,6 +59,7 @@ pub mod assembly;
 mod cam;
 pub mod cam_job;
 pub mod clearance;
+pub mod receipts;
 pub mod dfm;
 pub mod drafting;
 pub mod engine;
