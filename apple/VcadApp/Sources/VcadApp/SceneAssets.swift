@@ -114,13 +114,13 @@ enum SceneAssets {
     /// texture — no per-line entities, no giant atlas — and mipmaps thin the
     /// lines out toward the background at distance.
     private static var gridTiles: [Bool: MaterialParameters.Texture] = [:]
-    static let gridTilePixelsPerMinor = 64
+    static let gridTilePixelsPerMinor = 192
     static func gridTile(strong: Bool) -> MaterialParameters.Texture? {
         if let t = gridTiles[strong] { return t }
         let px = gridTilePixelsPerMinor
         let sz = px * GridSpacing.majorEvery
         let boost: Float = strong ? 0.85 : 1
-        let minorA: Float = 0.11 * boost, majorA: Float = 0.26 * boost
+        let minorA: Float = 0.16 * boost, majorA: Float = 0.34 * boost
         // Coverage of the nearest line at each texel centre; the tile edge
         // (texel 0, wrapping) is the major line.
         var line = [Float](repeating: 0, count: sz)
@@ -129,7 +129,7 @@ enum SceneAssets {
             let i = Int((t / Float(px)).rounded())
             let d = abs(t - Float(i * px))
             let major = i % GridSpacing.majorEvery == 0
-            line[p] = major ? majorA * max(0, min(1, 1.3 - d)) : minorA * max(0, min(1, 1.0 - d))
+            line[p] = major ? majorA * max(0, min(1, 1.0 - d)) : minorA * max(0, min(1, 0.75 - d))
         }
         var bytes = [UInt8](repeating: 0, count: sz * sz)
         for y in 0..<sz {
@@ -216,7 +216,7 @@ enum SceneAssets {
         guard let mesh = try? MeshResource.generate(from: [md]) else { return nil }
         let grid = ModelEntity(mesh: mesh, materials: materials)
         grid.name = name
-        if axes, let strips = axisStrips(half: half, width: layout.minor * scale * 0.07, dark: dark) {
+        if axes, let strips = axisStrips(half: half, width: layout.minor * scale * 0.025, dark: dark) {
             strips.position.y = layout.minor * scale * 0.002
             grid.addChild(strips)
         }
