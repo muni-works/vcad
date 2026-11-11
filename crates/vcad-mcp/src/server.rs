@@ -266,7 +266,6 @@ impl Server {
         self.inner.bus.emit(BusEvent::ToolsListChanged);
     }
 
-    /// The store.
     /// Tell the host who connected (`clientInfo.name`), so vcad.app labels the
     /// agent cursor and undo steps with it ("Claude Code · Fillet"). Headless
     /// has no host; the call is a no-op there.
@@ -285,6 +284,7 @@ impl Server {
             .host_call(CLIENT_HELLO, &json!({ "name": name }), &Value::Null);
     }
 
+    /// The store.
     pub fn store(&self) -> &Arc<dyn DocumentStore> {
         &self.inner.store
     }
@@ -977,10 +977,10 @@ impl Server {
     }
 }
 
-/// `vcad://doc/<segment>` names that are not document ids (M1 owns them).
 /// Host-call name carrying `clientInfo` to vcad.app (never listed as a tool).
 pub const CLIENT_HELLO: &str = "__client_hello";
 
+/// `vcad://doc/<segment>` names that are not document ids (M1 owns them).
 pub const RESERVED_DOC_SEGMENTS: &[&str] = &["current", "selection", "view"];
 
 fn decorate_cache(result: &mut Value, method: &str) {
