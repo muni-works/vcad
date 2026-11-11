@@ -87,4 +87,22 @@ final class NavigationSchemeTests: XCTestCase {
                              distance: 2, newDistance: 0.5)
         XCTAssertEqual(simd_distance(t, [1, 2, 3]), 0, accuracy: 1e-6)
     }
+
+    /// Orbiting with a selection swings the camera about the selection's
+    /// centre (Fusion); with none, the target stays put.
+    @MainActor
+    func testOrbitPivotsAboutSelection() {
+        let m = EditorModel()
+        m.panOffset = .zero
+        m.orbitPivotProvider = { nil }
+        m.beginOrbit(); m.orbitDrag(dx: 40, dy: 20); m.stopSpin()
+        XCTAssertEqual(simd_length(m.panOffset), 0, accuracy: 1e-6, "no selection: keep the current pivot")
+
+        let pivot = SIMD3<Float>(0.3, 0.1, -0.2)
+        m.orbitPivotProvider = { pivot }
+        let d0 = simd_distance(m.cameraPosition, pivot)
+        m.beginOrbit(); m.orbitDrag(dx: -60, dy: 15); m.stopSpin()
+        XCTAssertGreaterThan(simd_length(m.panOffset), 1e-3, "target moved: orbit was about the selection")
+        XCTAssertEqual(simd_distance(m.cameraPosition, pivot), d0, accuracy: 1e-4)
+    }
 }

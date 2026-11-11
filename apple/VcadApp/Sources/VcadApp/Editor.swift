@@ -2782,6 +2782,7 @@ final class EditorModel {
     /// A drag started — kill any running momentum and reset velocity tracking.
     func beginOrbit() {
         stopSpin()
+        orbitPivot = orbitPivotProvider?()
         cameraUserMoved = true
         lastOrbitTime = Date()
         azVel = 0; elVel = 0
@@ -2795,13 +2796,29 @@ final class EditorModel {
         lastOrbitTime = now
         let daz = -dx * 0.01
         let before = elevation
+        let o0 = orbitVector
         azimuth += daz
         elevation = max(-1.45, min(1.45, elevation + dy * 0.01))
         let del = elevation - before
+        swingAboutPivot(from: o0)
         if dt > 1e-4, dt < 0.1 {
             azVel = 0.6 * azVel + 0.4 * (daz / dt)
             elVel = 0.6 * elVel + 0.4 * (del / dt)
         }
+    }
+
+    /// Fusion-style orbit about the selection: the view's selection centre in
+    /// world space (part bbox centre, face centroid, edge midpoint), asked
+    /// for at the start of each orbit. Nil → orbit the current target.
+    @ObservationIgnored var orbitPivotProvider: (() -> SIMD3<Float>?)?
+    /// The pivot of the orbit in progress (world space), if any.
+    @ObservationIgnored private(set) var orbitPivot: SIMD3<Float>?
+
+    /// After the orbit angles changed from `o0`, move the target so the camera
+    /// swung about `orbitPivot` rather than about the target.
+    private func swingAboutPivot(from o0: SIMD3<Float>) {
+        guard let p = orbitPivot else { return }
+        panOffset = SelectionMath.panAfterOrbit(pan: panOffset, from: o0, to: orbitVector, pivot: p)
     }
 
     /// Release — coast if the flick was fast enough.
@@ -2815,9 +2832,11 @@ final class EditorModel {
         spinTimer = Timer.scheduledTimer(withTimeInterval: TimeInterval(dt), repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
+                let o0 = self.orbitVector
                 self.azimuth += self.azVel * dt
                 let ne = max(-1.45, min(1.45, self.elevation + self.elVel * dt))
                 if ne != self.elevation { self.elevation = ne } else { self.elVel = 0 }
+                self.swingAboutPivot(from: o0)
                 let decay: Float = 0.94
                 self.azVel *= decay; self.elVel *= decay
                 if abs(self.azVel) < 0.05, abs(self.elVel) < 0.05 { self.stopSpin() }
