@@ -5052,6 +5052,10 @@ fn evaluate_node(doc: &vcad_ir::Document, node_id: vcad_ir::NodeId) -> Result<So
             })
         }
 
+        vcad_ir::CsgOp::SketchOnFace { .. } => Err(JsError::new(
+            "SketchOnFace is not supported by this evaluator yet; use evaluate_document",
+        )),
+
         vcad_ir::CsgOp::Sketch2D { .. } => {
             // Sketch2D nodes cannot be evaluated directly - they must be used with Extrude/Revolve
             Err(JsError::new(
