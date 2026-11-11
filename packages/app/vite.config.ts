@@ -378,11 +378,12 @@ export default defineConfig(({ mode }) => {
       sourcemap: true,
       rollupOptions: {
         output: {
-          manualChunks: {
-            three: ["three"],
-            "three-fiber": ["@react-three/fiber"],
-            "three-drei": ["@react-three/drei"],
-            "three-postprocessing": ["@react-three/postprocessing"],
+          // Vite 8 (rolldown) only accepts the function form.
+          manualChunks(id: string) {
+            if (id.includes("/node_modules/three/")) return "three";
+            if (id.includes("/node_modules/@react-three/fiber/")) return "three-fiber";
+            if (id.includes("/node_modules/@react-three/drei/")) return "three-drei";
+            if (id.includes("/node_modules/@react-three/postprocessing/")) return "three-postprocessing";
           },
         },
       },
