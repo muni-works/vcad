@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Build AppIcon.icns and DocumentIcon.icns from a chosen 1024 px icon PNG.
-# Not wired into bundle.sh yet (bundle.sh still draws the old icon via
-# make-icon.swift when dist/AppIcon.icns is missing). To adopt, run this
-# with the chosen variant; bundle.sh copies dist/*.icns into the app.
+# bundle.sh copies Branding/AppIcon.icns + DocumentIcon.icns into the app;
+# make-icon.swift is only the fallback. To change the icon, run this
+# with the chosen variant and out-dir Branding, then commit the .icns files.
 #
 #   apple/VcadApp/Branding/make-icns.sh icon-variants/vcad-icon-v1-1024.png [out-dir]
 #
