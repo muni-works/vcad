@@ -20,6 +20,8 @@ struct SketchBar: View {
     static let primaryTools: [SketchToolKind] = [.select, .line, .rectangle, .circle, .spline]
     /// Behind the chevron.
     static let overflowTools: [SketchToolKind] = [.polygon, .slot, .arc]
+    /// Editing tools, beside Smart Dimension.
+    static let editTools: [SketchToolKind] = [.trim, .extend, .fillet]
 
     /// "Extrude 10 mm", "Revolve 360°", "Sweep"…
     static func featureTitle(_ m: EditorModel) -> String {
@@ -52,6 +54,13 @@ struct SketchBar: View {
                 }
                 divider
                 toolButton(.dimension, sketch)
+                ForEach(Self.editTools) { toolButton($0, sketch) }
+                if sketch.tool == .fillet {
+                    TextField("R", value: Binding(get: { sketch.filletRadius }, set: { sketch.filletRadius = max($0, 0.01) }),
+                              format: .number.precision(.fractionLength(0...2)))
+                        .frame(width: 44).textFieldStyle(.roundedBorder).controlSize(.small)
+                        .help("Fillet radius (mm)")
+                }
                 constrainMenu(sketch)
             }
             divider
@@ -159,8 +168,22 @@ struct SketchBar: View {
                 Button("\(k.glyph)  \(k.label)") { _ = sketch.constrainSelection(k); model.sketchDirty = true }
             }
             Divider()
-            Button("Delete Selected") { sketch.deleteSelection(); model.sketchDirty = true }
+            Button("Delete Selected") { sketch.deleteSelectionOrConstraint(); model.sketchDirty = true }
+                .disabled(sketch.selection.isEmpty && sketch.selectedConstraint == nil)
+            Button("Toggle Construction  X") { sketch.toggleConstruction(); model.sketchDirty = true }
                 .disabled(sketch.selection.isEmpty)
+            Button("Mirror (line picked last)") { sketch.mirrorSelection(); model.sketchDirty = true }
+                .disabled(sketch.selection.count < 2)
+            Menu("Circular Pattern") {
+                ForEach([2, 3, 4, 6, 8, 12], id: \.self) { n in
+                    Button("\(n)×") { sketch.circularPattern(count: n); model.sketchDirty = true }
+                }
+            }.disabled(sketch.selection.isEmpty)
+            Menu("Linear Pattern (along X)") {
+                ForEach([2, 3, 4, 6], id: \.self) { n in
+                    Button("\(n)× · 10 mm") { sketch.linearPattern(count: n, step: SIMD2(10, 0)); model.sketchDirty = true }
+                }
+            }.disabled(sketch.selection.isEmpty)
             Button("Offset Profile…") { model.sketchOffsetPrompt = true }
             Button("Remove Last Constraint") { sketch.popConstraint(); model.sketchDirty = true }
                 .disabled(sketch.constraints.isEmpty)
@@ -284,6 +307,10 @@ struct SketchConstraintPanel: View {
                 HStack {
                     Circle().fill(statusColor(sketch)).frame(width: 8, height: 8)
                     Text(sketch.stateLabel).font(.caption.weight(.semibold))
+                    Spacer()
+                    if !sketch.isFullyConstrained && !sketch.isOverConstrained {
+                        Text("\(sketch.dof) DOF").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
                 }
                 if sketch.constraints.isEmpty {
                     Text("No constraints").font(.caption).foregroundStyle(.secondary)
@@ -341,7 +368,7 @@ struct SketchConstraintPanel: View {
         window?.makeFirstResponder(nil) ?? false
     }
     private func statusColor(_ s: SketchSession) -> Color {
-        s.isOverConstrained ? .red : s.isFullyConstrained ? .green : .orange
+        s.isOverConstrained ? .red : s.isFullyConstrained ? .primary : .blue
     }
 }
 
@@ -351,7 +378,12 @@ struct SketchConstraintPanel: View {
 func buildSketchRoot(model: EditorModel) -> Entity {
     let root = Entity(); root.name = "sketchRoot"
     guard let sketch = model.sketch else { return root }
-    let ink = NSColor(srgbRed: 0.98, green: 0.15, blue: 0.45, alpha: 1.0)
+    // Solve-state colour: blue while free to move, the foreground colour
+    // once fully constrained, red when over-constrained.
+    let under = NSColor(srgbRed: 0.24, green: 0.52, blue: 1.0, alpha: 1.0)
+    let full = NSColor(white: 0.92, alpha: 1)
+    let over = NSColor(srgbRed: 0.95, green: 0.22, blue: 0.18, alpha: 1.0)
+    let ink = sketch.isOverConstrained ? over : sketch.isFullyConstrained ? full : under
     let live = NSColor(srgbRed: 0.55, green: 0.92, blue: 1.0, alpha: 1.0)
     let sel = NSColor(red: 1.0, green: 0.62, blue: 0.12, alpha: 1)
     let frame = sketch.frame
@@ -367,43 +399,104 @@ func buildSketchRoot(model: EditorModel) -> Entity {
         e.position = w(p); root.addChild(e)
     }
 
+    // Live profile shading: every closed region, translucent, under the ink.
+    let fill = sketch.profileFill()
+    if fill.count >= 3 {
+        var d = MeshDescriptor(name: "profileFill")
+        let lift = SIMD3<Float>(frame.normal) * width * 0.05
+        d.positions = MeshBuffers.Positions(fill.map { w($0) - lift })
+        let n = UInt32(fill.count)
+        // Both windings: visible from either side of the plane.
+        d.primitives = .triangles(Array(0..<n) + stride(from: 0, to: n, by: 3).flatMap { [$0, $0 + 2, $0 + 1] })
+        if let m = try? MeshResource.generate(from: [d]) {
+            var mat = UnlitMaterial(color: NSColor(srgbRed: 0.24, green: 0.52, blue: 1.0, alpha: 1))
+            mat.blending = .transparent(opacity: 0.16)
+            root.addChild(ModelEntity(mesh: m, materials: [mat]))
+        }
+    }
+
     // The sketch-plane grid (every plane, at the snap step) is its own
     // entity — see syncSketchGrid — so a cursor move doesn't rebuild it.
 
     let (geometry, preview, points) = sketch.ink()
     ribbon(geometry, ink)
+    ribbon(sketch.constructionInk(dash: Double(width) * 3), NSColor(white: 0.6, alpha: 1), 0.7)
     ribbon(preview, live)
     for p in points { dot(p, ink, width * 1.2) }
 
-    // Selection: re-ink selected entities thicker in orange.
-    for h in sketch.selection {
-        guard let e = sketch.entity(h) else { continue }
+    // Entities of conflicting constraints: re-inked red.
+    let culprits = Set(sketch.constraints.filter { sketch.conflicting.contains($0.index) }.flatMap(\.entities))
+    func reink(_ h: UInt32, _ color: NSColor, _ scale: Float) {
+        guard let e = sketch.entity(h) else { return }
         switch e.kind {
-        case .point: if let p = sketch.point(h) { dot(p, sel, width * 2) }
+        case .point: if let p = sketch.point(h) { dot(p, color, width * scale) }
         case .line:
-            if let a = sketch.point(e.points[0]), let b = sketch.point(e.points[1]) { ribbon([a, b], sel, 2) }
+            if let a = sketch.point(e.points[0]), let b = sketch.point(e.points[1]) { ribbon([a, b], color, scale) }
         case .circle, .arc:
             if let c = sketch.point(e.points.last ?? 0), let r = sketch.radii[h] {
-                ribbon(SketchSession.ring(c, r, 0, 2 * .pi, 64), sel, 2)
+                ribbon(SketchSession.ring(c, r, 0, 2 * .pi, 64), color, scale)
             }
         }
     }
+    for h in culprits { reink(h, over, 1.5) }
+    // Selection: re-ink selected entities thicker in orange.
+    for h in sketch.selection { reink(h, sel, 2) }
+    if let a = sketch.dimensionAnchor { reink(a, sel, 2) }
 
-    // Constraint glyphs: a small colored chip beside each constrained entity
-    // (dimensions blue, geometric green); the panel names them.
+    // Constraint glyphs: a chip with its symbol beside the constrained
+    // entity (dimensions blue, geometric green, conflicting red, picked
+    // orange). Click one in Select, then Delete, to remove it.
     for c in sketch.constraints {
         guard let a = sketch.glyphAnchor(c) else { continue }
-        let color: NSColor = c.kind.isDimension ? .systemBlue : .systemGreen
-        let chip = ModelEntity(mesh: .generateBox(size: width * 3, cornerRadius: width),
-                               materials: [UnlitMaterial(color: color)])
-        chip.position = w(a)
-        root.addChild(chip)
+        let color: NSColor = sketch.selectedConstraint == c.index ? sel
+            : sketch.conflicting.contains(c.index) ? over : c.kind.isDimension ? .systemBlue : .systemGreen
+        glyphChip(c.kind.glyph, at: w(a), color: color, size: width * 3, normal: SIMD3<Float>(frame.normal), into: root)
+    }
+    // Live inference glyphs beside the cursor.
+    if let inf = sketch.cursorInference, let c = sketch.cursor {
+        for (i, g) in inf.inferred.enumerated() {
+            let off = SIMD2<Double>(Double(width) * (4 + 3.6 * Double(i)), -Double(width) * 4)
+            glyphChip(g.glyph, at: w(inf.point + off), color: .systemGreen, size: width * 3,
+                      normal: SIMD3<Float>(frame.normal), into: root)
+        }
+        if inf.snapped != nil || !inf.inferred.isEmpty { dot(inf.point, .systemGreen, width * 2.2) }
+        _ = c
     }
 
     // Landing marker: snapped point in green, else the cursor.
-    if let c = sketch.cursor, sketch.tool != .select {
+    if let c = sketch.cursor, sketch.tool.draws, sketch.cursorInference?.inferred.isEmpty ?? true {
         if let h = sketch.snapPoint(c), let p = sketch.point(h) { dot(p, .systemGreen, width * 2.2) }
         else { dot(c, live, width * 1.6) }
     }
     return root
+}
+
+/// One constraint glyph: a rounded chip with its symbol in white, facing
+/// out of the sketch plane. Text meshes are cached per symbol.
+@MainActor
+private func glyphChip(_ glyph: String, at p: SIMD3<Float>, color: NSColor, size: Float, normal: SIMD3<Float>, into root: Entity) {
+    let chip = ModelEntity(mesh: .generateBox(width: size, height: size, depth: size * 0.2, cornerRadius: size * 0.25),
+                           materials: [UnlitMaterial(color: color)])
+    chip.position = p
+    chip.orientation = simd_quatf(from: SIMD3<Float>(0, 0, 1), to: simd_normalize(normal))
+    if let text = GlyphText.mesh(glyph) {
+        let t = ModelEntity(mesh: text, materials: [UnlitMaterial(color: .white)])
+        let b = text.bounds
+        let k = size * 0.7 / max(b.extents.x, b.extents.y, 1e-4)
+        t.scale = SIMD3(repeating: k)
+        t.position = SIMD3(-b.center.x * k, -b.center.y * k, size * 0.11)
+        chip.addChild(t)
+    }
+    root.addChild(chip)
+}
+
+@MainActor
+private enum GlyphText {
+    static var cache: [String: MeshResource] = [:]
+    static func mesh(_ g: String) -> MeshResource? {
+        if let m = cache[g] { return m }
+        let m = MeshResource.generateText(g, extrusionDepth: 0.01, font: .systemFont(ofSize: 1, weight: .bold))
+        cache[g] = m
+        return m
+    }
 }

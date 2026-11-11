@@ -793,6 +793,7 @@ struct ReleasedOverlayView: View {
     /// What the current left-drag does, decided once at its first event from
     /// the navigation scheme (orbit, pan, marquee, gizmo handle, or nothing).
     @State private var leftDragMode: NavigationScheme.Action?
+    @State private var sketchPointDrag = false
     /// Where the last click landed and how far into that point's stack of parts
     /// it selected — clicking the same spot again walks to the part behind.
     @State private var cycleAnchor: CGPoint?
@@ -1665,6 +1666,17 @@ struct ReleasedOverlayView: View {
                     marquee = (value.startLocation, value.location)
                     return
                 }
+                // Select-tool drag of a sketch point: drag-to-solve.
+                if sketchPointDrag {
+                    if let ray = kernelRay(at: value.location) { model.sketchDrag(ray: ray); refreshSketchInk() }
+                    return
+                }
+                if leftDragMode == nil, model.sketching, let ray = kernelRay(at: value.startLocation),
+                   model.beginSketchDrag(ray: ray) {
+                    sketchPointDrag = true
+                    leftDragMode = NavigationScheme.Action.none
+                    return
+                }
                 if leftDragMode == nil && !model.draggingHandle {
                     let handle = ReleaseWindowController.shared.hits(atViewPoint: value.startLocation)
                         .first(where: { model.gizmoHandle(for: $0.entity.name) != nil })?.entity.name
@@ -1713,6 +1725,11 @@ struct ReleasedOverlayView: View {
                 model.lastDrag = value.translation
             }
             .onEnded { _ in
+                if sketchPointDrag {
+                    sketchPointDrag = false; leftDragMode = nil
+                    model.endSketchDrag(); refreshSketchInk()
+                    return
+                }
                 let mode = leftDragMode
                 leftDragMode = nil
                 if mode == NavigationScheme.Action.none { model.lastDrag = .zero; return }

@@ -1967,6 +1967,8 @@ final class EditorModel {
 
     /// A tap on the sketch plane (2D plane coords) — drives the active tool.
     func sketchTap(_ p: SIMD2<Float>, additive: Bool = false) {
+        // Option places freely: no grid, no inference.
+        sketch?.suppressInference = NSEvent.modifierFlags.contains(.option)
         sketch?.tap(SIMD2(Double(p.x), Double(p.y)), additive: additive)
         sketchDirty = true
     }
@@ -1984,13 +1986,25 @@ final class EditorModel {
             let k = simd_distance(raw, q)
             sketch.pickScale = k.isFinite && k > 0 ? k : nil
         }
-        if sketch.tool == .select || sketch.tool == .dimension {
+        if !sketch.tool.draws {
             sketch.tap(raw, additive: additive)
             sketchDirty = true
         } else if let p = sketchPlanePoint(originKernel: ray.o, dirKernel: ray.d) {
             sketchTap(p, additive: additive)
         }
     }
+
+    /// Drag a sketch point in Select: true when a point was under the ray.
+    func beginSketchDrag(ray: (o: SIMD3<Float>, d: SIMD3<Float>)) -> Bool {
+        guard let sketch, sketch.tool == .select,
+              let p = sketch.frame.intersect(origin: SIMD3<Double>(ray.o), dir: SIMD3<Double>(ray.d)) else { return false }
+        return sketch.beginDrag(p)
+    }
+    func sketchDrag(ray: (o: SIMD3<Float>, d: SIMD3<Float>)) {
+        guard let sketch, let p = sketch.frame.intersect(origin: SIMD3<Double>(ray.o), dir: SIMD3<Double>(ray.d)) else { return }
+        sketch.dragTo(p); sketchDirty = true
+    }
+    func endSketchDrag() { sketch?.endDrag(); sketchDirty = true }
 
     /// Spacing of the sketch cursor grid, in mm.
     static let sketchGridStep = 0.5
@@ -2513,7 +2527,7 @@ final class EditorModel {
     /// the remaining indices stay valid while removing.
     func deleteSelectedParts() {
         if sketching {
-            sketch?.deleteSelection()
+            sketch?.deleteSelectionOrConstraint()
             sketchDirty = true
             return
         }
