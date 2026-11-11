@@ -93,6 +93,7 @@ members = [
     "crates/vcad-embroidery-dst",
     "crates/vcad-ffi",
     "crates/vcad-tool-derive",
+    "crates/vcad-mcp",
     "crates/vcad-i18n",
     "crates/vcad-torture",
     "mecheval/graders",
@@ -190,6 +191,7 @@ default-members = [
     "crates/vcad-embroidery-dst",
     "crates/vcad-ffi",
     "crates/vcad-tool-derive",
+    "crates/vcad-mcp",
     "crates/vcad-i18n",
     "crates/vcad-torture",
     "mecheval/graders",
@@ -328,6 +330,7 @@ vcad-embroidery = { path = "crates/vcad-embroidery", version = "0.11.0" }
 vcad-embroidery-pes = { path = "crates/vcad-embroidery-pes", version = "0.11.0" }
 vcad-embroidery-dst = { path = "crates/vcad-embroidery-dst", version = "0.11.0" }
 vcad-tool-derive = { path = "crates/vcad-tool-derive", version = "0.11.0" }
+vcad-mcp = { path = "crates/vcad-mcp", version = "0.11.0" }
 vcad-gdsii = { path = "crates/vcad-gdsii", version = "0.11.0" }
 vcad-process = { path = "crates/vcad-process", version = "0.11.0" }
 
