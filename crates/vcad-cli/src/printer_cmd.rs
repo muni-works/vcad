@@ -220,7 +220,7 @@ pub fn run_print<L: PrinterLink>(
         .and_then(|n| n.to_str())
         .context("file name is not UTF-8")?
         .to_string();
-    let ticket = link::print_gated(link, &name, &archive, plate, &inputs)?;
+    let ticket = link::print_gated(link, &name, &archive, plate, &inputs, &[])?;
     println!(
         "print started: {name} plate {} (md5 {}). Stop is on the printer touchscreen.",
         ticket.plate_index() + 1,
@@ -275,7 +275,7 @@ pub fn run_print_job<L: PrinterLink>(
         vcad_slicer_bambu::gate::check(&job.archive, 0, &inputs)?;
         return Ok(PrintOutcome::DryRunGatesPass);
     }
-    link::print_gated(link, name, &job.archive, 0, &inputs)?;
+    link::print_gated(link, name, &job.archive, 0, &inputs, &[])?;
     Ok(PrintOutcome::Sent)
 }
 

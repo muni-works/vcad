@@ -1,0 +1,250 @@
+<title>vcad Print Flow</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* layout: macOS window — viewport left, floating inspector right; a quiet stepper, one primary action per step, hairlines instead of boxes */
+:root{
+  --bg:#111214; --vp1:#2a2b2f; --vp2:#18191c; --panel:rgba(40,41,46,.82); --hair:rgba(255,255,255,.07); --fill:rgba(255,255,255,.055);
+  --fg:#f2f2f5; --dim:#8e8f99; --faint:#5d5e66; --accent:#0a84ff; --ok:#30d158; --warn:#ff9f0a; --bad:#ff453a;
+  --ui:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace;
+  color-scheme:dark;
+}
+[hidden]{display:none!important}
+body{background:var(--bg);color:var(--fg);font-family:var(--ui);padding-block:24px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.intro{max-width:1100px;margin:0 auto 14px;color:var(--dim);font-size:13px;line-height:1.5}
+.intro h1{color:var(--fg);font-size:18px;font-weight:600;margin:0 0 2px}
+.win{position:relative;max-width:1100px;margin:0 auto;height:680px;border-radius:14px;overflow:hidden;border:1px solid var(--hair);background:radial-gradient(120% 90% at 40% 75%,var(--vp1),var(--vp2))}
+canvas#cv{position:absolute;inset:0;width:100%;height:100%}
+.chip{position:absolute;left:18px;top:16px;font-size:12px;color:var(--dim);display:flex;gap:6px;align-items:center}
+.chip .d{width:6px;height:6px;border-radius:50%;background:var(--warn)}
+.chip.ok .d{background:var(--ok)}
+.cam{position:absolute;left:18px;bottom:18px;width:190px;aspect-ratio:16/10;border-radius:10px;overflow:hidden;border:1px solid var(--hair);background:linear-gradient(170deg,#3a3a3a,#121212)}
+.cam b{position:absolute;left:8px;top:6px;font:600 10px var(--ui);letter-spacing:.05em;display:flex;gap:5px;align-items:center}
+.cam b::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--bad)}
+.cam i{position:absolute;bottom:20%;left:28%;right:28%;height:0;background:#d6a66f;border-radius:2px 2px 0 0}
+
+/* inspector */
+.insp{position:absolute;top:12px;right:12px;bottom:12px;width:300px;background:var(--panel);backdrop-filter:blur(30px) saturate(1.5);-webkit-backdrop-filter:blur(30px) saturate(1.5);border:1px solid var(--hair);border-radius:12px;display:flex;flex-direction:column;overflow:hidden}
+.head{padding:14px 16px 10px;display:flex;flex-direction:column;gap:12px}
+.title{display:flex;justify-content:space-between;align-items:baseline}
+.title h2{margin:0;font-size:13px;font-weight:600}
+.title span{font-size:11px;color:var(--dim)}
+/* Apple pass: native segmented control, grouped inset form rows, popup buttons, push buttons */
+.stepper{display:flex;background:rgba(0,0,0,.25);border-radius:7px;padding:2px;box-shadow:inset 0 0 0 .5px rgba(255,255,255,.08)}
+.stepper button{flex:1;background:none;border:0;border-radius:5px;padding:3px 0;cursor:pointer;color:var(--dim);font:13px var(--ui)}
+.stepper button.done{color:var(--fg)}
+.stepper button.on{background:#636366;color:#fff;box-shadow:0 1px 2px rgba(0,0,0,.35)}
+.sec{background:rgba(255,255,255,.045);border-radius:9px;padding:2px 10px;gap:0!important;box-shadow:inset 0 0 0 .5px rgba(255,255,255,.06)}
+.sec>*{padding:6px 0}
+.sec>*+*{border-top:.5px solid rgba(255,255,255,.09)}
+.sec>.lbl{border-top:0}
+.lbl{font:600 11px var(--ui)!important;color:var(--dim)}
+.kv,.issue{font-size:13px!important}
+.pop{background:rgba(255,255,255,.1)!important;border-radius:5px!important;padding:1px 6px 1px 8px!important;box-shadow:0 .5px 1px rgba(0,0,0,.4),inset 0 .5px 0 rgba(255,255,255,.12);font-size:13px!important}
+.pop::after{content:" ⌃⌄"!important;font-size:9px;letter-spacing:-2px;vertical-align:1px}
+.primary{width:auto!important;padding:4px 16px!important;border-radius:6px!important;font:13px var(--ui)!important;background:linear-gradient(#2f8dff,#0a6fe8)!important;box-shadow:0 .5px 1px rgba(0,0,0,.4),inset 0 .5px 0 rgba(255,255,255,.25)}
+.ghost{padding:4px 12px!important;border-radius:6px!important;font-size:13px!important;background:rgba(255,255,255,.12)!important;box-shadow:0 .5px 1px rgba(0,0,0,.4)}
+.foot{flex-direction:row!important;justify-content:space-between;align-items:center}
+.menu{background:rgba(255,255,255,.12);border:0;border-radius:6px;padding:4px 10px;color:var(--fg);font:13px var(--ui);cursor:pointer;box-shadow:0 .5px 1px rgba(0,0,0,.4)}
+.menu::after{content:" ⌄";color:var(--dim)}
+.pose.on{border-color:var(--accent)!important;background:rgba(10,132,255,.12)!important}
+.scroll{flex:1;overflow:auto;padding:4px 16px 16px;display:flex;flex-direction:column;gap:18px}
+.sec{display:flex;flex-direction:column;gap:8px}
+.lbl{font-size:11px;color:var(--dim)}
+.kv{display:flex;justify-content:space-between;align-items:center;font-size:12.5px;min-height:22px}
+.kv .v{color:var(--dim);font-family:var(--mono);font-size:11.5px;font-variant-numeric:tabular-nums}
+.pop{appearance:none;background:none;border:0;color:var(--fg);font:12.5px var(--ui);cursor:pointer;padding:2px 6px;margin-right:-6px;border-radius:5px}
+.pop:hover{background:var(--fill)}
+.pop::after{content:" ⌄";color:var(--dim)}
+.issue{display:flex;gap:10px;font-size:12.5px;line-height:1.4}
+.issue .d{flex:none;width:6px;height:6px;border-radius:50%;background:var(--warn);margin-top:6px}
+.issue.ok .d{background:var(--ok)}
+.issue small{display:block;color:var(--dim);font-size:11.5px}
+.link{background:none;border:0;color:var(--accent);font:12.5px var(--ui);cursor:pointer;padding:0}
+.poses{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+.pose{background:none;border:1px solid transparent;border-radius:8px;padding:6px 2px;cursor:pointer;color:var(--fg);font:11px var(--ui);display:flex;flex-direction:column;align-items:center;gap:2px}
+.pose canvas{width:64px;height:42px}
+.pose span{color:var(--dim);font-family:var(--mono);font-size:10.5px}
+.pose.on{background:var(--fill);border-color:var(--hair)}
+.seg{display:flex;background:var(--fill);border-radius:7px;padding:2px}
+.seg button{flex:1;background:none;border:0;border-radius:5px;padding:4px 0;color:var(--dim);font:12px var(--ui);cursor:pointer}
+.seg button.on{background:rgba(255,255,255,.12);color:var(--fg)}
+.sub{font-size:11.5px;color:var(--dim)}
+.nums{display:grid;grid-template-columns:repeat(3,1fr)}
+.nums div{font-size:11px;color:var(--dim)}
+.nums b{display:block;color:var(--fg);font:500 17px var(--ui);font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.sw{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.3)}
+.track{height:3px;background:var(--hair);border-radius:2px;overflow:hidden}
+.track i{display:block;height:100%;width:0;background:var(--accent);transition:width .12s linear}
+details summary{font-size:11.5px;color:var(--dim);cursor:pointer;list-style:none}
+details summary::before{content:"› ";}
+details[open] summary::before{content:"⌄ ";}
+.foot{padding:12px 16px 14px;border-top:1px solid var(--hair);display:flex;flex-direction:column;gap:8px}
+.primary{width:100%;border:0;border-radius:8px;padding:8px;background:var(--accent);color:#fff;font:600 13px var(--ui);cursor:pointer}
+.row2{display:flex;gap:8px}
+.ghost{flex:1;border:0;border-radius:8px;padding:7px;background:var(--fill);color:var(--fg);font:12.5px var(--ui);cursor:pointer}
+.ghost.bad{color:var(--bad)}
+.exp{display:flex;justify-content:center;gap:14px}
+.exp button{background:none;border:0;color:var(--dim);font:11.5px var(--ui);cursor:pointer;padding:0}
+.exp button:hover{color:var(--fg)}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.sheet{position:absolute;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-start;justify-content:center;padding:60px 16px}
+.sheet .card{width:340px;max-width:100%;background:#2c2d32;border:1px solid var(--hair);border-radius:12px;padding:18px;display:flex;flex-direction:column;gap:10px;font-size:12.5px;line-height:1.45}
+.sheet h3{margin:0;font-size:13px}
+.sheet .acts{display:flex;justify-content:flex-end;gap:8px;margin-top:4px}
+.sheet .acts button{border:0;border-radius:6px;padding:5px 14px;font:12.5px var(--ui);cursor:pointer;background:var(--fill);color:var(--fg)}
+.sheet .acts .p{background:var(--accent);color:#fff}
+.notes{max-width:1100px;margin:16px auto 0;color:var(--dim);font-size:13px;line-height:1.6}
+.notes b{color:var(--fg);font-weight:600}
+@media (max-width:700px){.win{height:auto;min-height:0;display:flex;flex-direction:column}canvas#cv{position:relative;height:320px}.insp{position:relative;inset:auto;width:auto;margin:12px}.cam{display:none}}
+</style>
+
+<div class="intro">
+  <h1>Print flow, inspector version</h1>
+  Same four steps as before, quieter. Click the stepper or the main button. Example part: <code>wrist_interface</code>.
+</div>
+
+<div class="win">
+  <canvas id="cv"></canvas>
+  <div class="chip" id="chip"></div>
+  <div class="cam" id="cam" hidden><b>P1S-shop</b><i id="camPart"></i></div>
+  <aside class="insp">
+    <div class="head">
+      <div class="title"><h2>3D Print</h2><span>wrist_interface</span></div>
+      <nav class="stepper" id="stepper"><button data-s="0">Orient</button><button data-s="1">Slice</button><button data-s="2">Printer</button><button data-s="3">Print</button></nav>
+    </div>
+    <div class="scroll" id="body"></div>
+    <div class="foot" id="foot"></div>
+  </aside>
+  <div class="sheet" id="pair" hidden>
+    <div class="card">
+      <h3>Add P1S</h3>
+      <div style="color:var(--dim)">Enter the 8-digit access code shown on the printer under Settings ▸ Network.</div>
+      <div class="kv">Access code<span class="v" style="background:rgba(255,255,255,.08);padding:3px 8px;border-radius:5px;min-width:90px">••••••••</span></div>
+      <div class="kv">Name<span class="v">P1S-shop</span></div>
+      <div class="acts"><button id="pairNo">Cancel</button><button class="p" id="pairYes">Connect</button></div>
+    </div>
+  </div>
+  <div class="sheet" id="sheet" hidden>
+    <div class="card">
+      <h3>Print on P1S-shop?</h3>
+      <div style="color:var(--dim)">The sliced job uses the AMS slots shown in the panel. The bed looks clear on the camera. vcad uploads over your local network and starts the job.</div>
+      <div class="acts"><button id="no">Cancel</button><button class="p" id="yes">Print</button></div>
+    </div>
+  </div>
+</div>
+
+<div class="notes">
+  <b>Elegance pass:</b> no boxed cards or orange warning list. Sections are separated by space, with a hairline only above the footer. The stepper is four thin progress segments. Each step has one blue button, always in the same place at the bottom. Export is a quiet line of text links under it, on every step. Printability is a single sentence with a dot and a fix link, and the faces are tinted on the part. Slice settings come down to a material, a quality control, and an "Advanced" disclosure that holds today's full controls.
+</div>
+
+<script>
+const S={step:0,pose:0,q:'Standard',sliced:false,pct:0,paused:false,t:null,printer:'none',found:0,
+  parts:[{n:'Wrist ring',slot:0},{n:'Bracket',slot:0}],pick:null};
+const SLOTS=[{n:'PLA Basic',c:'#1b1b1d',pct:82},{n:'PLA Basic',c:'#e5484d',pct:40},{n:'PLA Matte',c:'#ececec',pct:12},{n:'empty',c:'transparent',pct:0}];
+const poses=[{n:'As modeled',time:'49m',g:15.9,faces:8,sup:'21.8 mm'},{n:'Rim down',time:'41m',g:13.2,faces:0},{n:'On side',time:'58m',g:16.4,faces:2,sup:'4.1 mm'}];
+const Q={Fast:'0.28 mm · 2 walls · 10%',Standard:'0.20 mm · 3 walls · 15%',Strong:'0.16 mm · 5 walls · 40% gyroid'};
+const $=id=>document.getElementById(id);
+const cv=$('cv'),cx=cv.getContext('2d');
+
+function part(c,w,h,pose,prog,k,tint,cxp){
+  const base=h*0.66,X=cxp??w/2,W='#ff9f0a';
+  const P=c.createLinearGradient(0,base-180*k,0,base);P.addColorStop(0,'#f0c48e');P.addColorStop(1,'#d9a86e');
+  const P2=c.createLinearGradient(X-150*k,0,X+150*k,0);P2.addColorStop(0,'#8a5f34');P2.addColorStop(.35,'#c8935a');P2.addColorStop(.6,'#e3b27a');P2.addColorStop(1,'#9c6c3c');
+  c.save();c.filter=`blur(${14*k}px)`;c.fillStyle='rgba(0,0,0,.45)';c.beginPath();c.ellipse(X,base+4*k,(pose===0?60:160)*k,(pose===0?20:48)*k,0,0,7);c.fill();c.restore();
+  const disc=(y,hh,col,top)=>{c.fillStyle=col;c.fillRect(X-150*k,base+y-hh,300*k,hh);c.fillStyle=top;c.beginPath();c.ellipse(X,base+y-hh,150*k,44*k,0,0,7);c.fill();};
+  if(pose===1){const dh=24*k*Math.min(1,prog/.2),bh=118*k*Math.max(0,(prog-.2)/.8);
+    c.fillStyle=P;c.beginPath();c.ellipse(X,base,150*k,44*k,0,0,7);c.fill();disc(0,dh,P2,P);
+    if(bh>0){c.fillStyle=P2;c.fillRect(X-38*k,base-dh-bh,76*k,bh);c.fillStyle=P;c.fillRect(X-38*k,base-dh-bh,76*k,6*k);}}
+  else if(pose===0){c.fillStyle=P2;c.fillRect(X-38*k,base-128*k,76*k,128*k);disc(-128*k,24*k,P2,P);
+    if(tint){c.fillStyle='rgba(255,159,10,.55)';c.beginPath();c.ellipse(X,base-128*k,150*k,44*k,0,0,Math.PI);c.lineTo(X-150*k,base-152*k);c.ellipse(X,base-152*k,150*k,44*k,Math.PI,Math.PI,0,true);c.fill();c.fillStyle=P;c.beginPath();c.ellipse(X,base-152*k,150*k,44*k,0,0,7);c.fill();}}
+  else{c.fillStyle=P2;c.fillRect(X-150*k,base-58*k,300*k,58*k);c.fillStyle=P;c.fillRect(X-150*k,base-64*k,300*k,6*k);if(tint){c.fillStyle=W;c.fillRect(X+108*k,base-58*k,42*k,10*k);}}
+}
+function draw(){
+  const r=cv.getBoundingClientRect(),d=devicePixelRatio||1;cv.width=r.width*d;cv.height=r.height*d;cx.setTransform(d,0,0,d,0,0);
+  const w=r.width,h=r.height,narrow=w<700,X=narrow?w/2:(w-312)/2;
+  cx.save();cx.translate(X,h*.66);cx.transform(1,.3,-1,.3,0,0);cx.fillStyle='rgba(255,255,255,.035)';cx.fillRect(-190,-190,380,380);
+  cx.strokeStyle='rgba(255,255,255,.05)';for(let i=-190;i<=190;i+=38){cx.beginPath();cx.moveTo(i,-190);cx.lineTo(i,190);cx.stroke();cx.beginPath();cx.moveTo(-190,i);cx.lineTo(190,i);cx.stroke();}cx.restore();
+  const printing=S.step===3;
+  part(cx,w,h,S.pose,printing?S.pct/100:1,Math.min(1,(narrow?w:w-312)/560),!printing,X);
+}
+function thumbs(){document.querySelectorAll('.pose canvas').forEach((c,i)=>{c.width=128;c.height=84;part(c.getContext('2d'),128,84,i,1,.3,true);});}
+
+const exportLinks=`<button class="menu" title=".gcode.3mf · G-code · 3MF project">Export</button>`;
+function render(){
+  [...$('stepper').children].forEach((b,i)=>b.className=i===S.step?'on':i<S.step?'done':'');
+  const p=poses[S.pose];let b='',f='';
+  if(S.step===0){
+    b=`<div class="sec">${p.faces?`<div class="issue"><span class="d"></span><div>${p.faces} faces overhang the plate<small>Needs a ${p.sup} support column. Tinted on the part.</small><button class="link" data-act="fix">Orient to fix</button></div></div>`
+      :`<div class="issue ok"><span class="d"></span><div>Prints with no supports<small>Rim sits flat. Holes print vertical and stay round.</small></div></div>`}</div>
+    <div class="sec"><div class="lbl">Orientation</div><div class="poses">${poses.map((x,i)=>`<button class="pose ${i===S.pose?'on':''}" data-pose="${i}"><canvas></canvas>${x.n}<span style="color:${x.faces?'var(--warn)':'var(--ok)'}">${x.time}</span></button>`).join('')}</div>
+    <div class="sub">Ranked by support volume, then print time.</div></div>`;
+    f=`<button class="primary" data-go="1">Continue</button>`;
+  }else if(S.step===1){
+    const multi=S.parts.some(x=>x.slot!==S.parts[0].slot);
+    b=`<div class="sec"><div class="lbl">Filament</div>${S.parts.map((x,i)=>`<div class="kv"><span><span class="sw" style="background:${SLOTS[x.slot].c}"></span>${x.n}</span><button class="pop" data-part="${i}">${x.slot+1} · ${SLOTS[x.slot].n}</button></div>`).join('')}
+      ${S.pick!==null?`<div style="display:flex;gap:6px;flex-wrap:wrap">${SLOTS.slice(0,3).map((t,j)=>`<button class="ghost" style="flex:none" data-slot="${j}"><span class="sw" style="background:${t.c}"></span>${j+1}</button>`).join('')}</div>`:''}</div>
+    <div class="sec"><div class="lbl">Quality</div><div class="seg">${Object.keys(Q).map(k=>`<button class="${k===S.q?'on':''}" data-q="${k}">${k}</button>`).join('')}</div>
+      <div class="sub">${Q[S.q]} · supports ${p.faces?'auto':'off'}${multi?' · purge tower':''}</div>
+      <details><summary>Advanced</summary><div class="sub" style="margin-top:6px">Layer height, walls, infill, pattern, supports, temperatures, flush volumes.</div></details></div>
+    ${S.sliced?`<div class="sec"><div class="nums"><div><b>${multi?'1h 12m':p.time}</b>time</div><div><b>${multi?(p.g+4.1).toFixed(1):p.g} g</b>filament</div><div><b>${multi?'38':'0'}</b>color changes</div></div>
+      ${multi?`<div class="kv">Purge waste<span class="v">4.1 g · tower 22 × 22 mm</span></div>`:''}
+      <div class="issue ok"><span class="d"></span><div>Ready to print<small>Fits the bed · G-code lint clean · printcheck passed</small></div></div></div>`:''}`;
+    f=S.sliced?`<button class="primary" data-go="2">Continue</button>`:`<button class="primary" data-act="slice">Slice</button>`;
+  }else if(S.step===2){
+    const used=[...new Set(S.parts.map(x=>x.slot))];
+    if(S.printer==='none'){
+      b=`<div class="sec"><div class="issue"><span class="d" style="background:var(--dim)"></span><div>No printer yet<small>vcad talks to Bambu printers directly on your network. No cloud account.</small></div></div></div>
+      <div class="sec"><div class="lbl">On this network</div>${S.found?`<div class="kv"><span>P1S · 01P00A…4F2</span><button class="pop" data-act="pair" style="">Add</button></div>`:`<div class="kv"><span class="sub">Searching…</span></div>`}
+      <div class="kv"><button class="link" data-act="manual">Enter IP address…</button></div></div>
+      <div class="sub">On the printer: Settings ▸ Network ▸ turn on LAN Only and Developer Mode. The access code is on the same screen.</div>`;
+      f=`<button class="primary" disabled style="opacity:.4">Print…</button>`;
+    }else{
+      b=`<div class="sec"><div class="kv">Printer<button class="pop">P1S-shop</button></div>
+      <div class="kv">Status<span class="v" style="color:var(--ok)">Idle, ready</span></div>
+      <div class="kv">Nozzle<span class="v">0.4 hardened · 27°</span></div>
+      <div class="kv">Bed<span class="v">Textured PEI · 26°</span></div></div>
+    <div class="sec"><div class="lbl">AMS</div>${SLOTS.map((t,j)=>`<div class="kv"><span><span class="sw" style="background:${t.c}"></span>${j+1} · ${t.n}${used.includes(j)?' <span class="sub">· this job</span>':''}</span><span class="v">${t.pct?t.pct+'%':'—'}</span></div>`).join('')}</div>
+    ${used.includes(2)?`<div class="issue"><span class="d"></span><div>Slot 3 may run out<small>Job needs ≈ 6 g, slot shows 12%. Refill or pick another slot.</small></div></div>`:`<div class="issue ok"><span class="d"></span><div>Job matches this printer<small>Filament in slot${used.length>1?'s':''} ${used.map(x=>x+1).join(', ')} · 0.4 nozzle · plate type · bed clear</small></div></div>`}`;
+      f=`<button class="primary" data-act="send">Print…</button>`;
+    }
+  }else{
+    const left=Math.max(0,Math.round(41*(1-S.pct/100))),done=S.pct>=100;
+    b=`<div class="sec"><div class="lbl">${done?'Finished':S.paused?'Paused':'Printing on P1S-shop'}</div><div class="track"><i style="width:${S.pct}%"></i></div>
+      <div class="nums"><div><b>${Math.round(S.pct)}%</b>done</div><div><b>${left}m</b>left</div><div><b>${Math.round(S.pct*2.05)}</b>of 205 layers</div></div></div>
+    <div class="sec"><div class="kv">Nozzle / bed<span class="v">220° / 60°</span></div>
+      <div class="kv">Finishes<span class="v">${new Date(Date.now()+left*6e4).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})}</span></div></div>
+    <div class="sub">Also listed under Jobs, so you can keep modeling. Closing this panel doesn't stop the print.</div>`;
+    f=done?`<button class="primary" data-s="0">Print another</button>`:`<div class="row2"><button class="ghost" data-act="pause">${S.paused?'Resume':'Pause'}</button><button class="ghost bad" data-act="stop">Stop…</button></div>`;
+  }
+  $('body').innerHTML=b;$('foot').innerHTML=(S.step<3?exportLinks:'<span></span>')+f;
+  const c=$('chip');c.className='chip'+(p.faces&&S.step<3?'':' ok');
+  c.innerHTML=`<span class="d"></span>${S.step===3?`Layer ${Math.round(S.pct*2.05)} of 205`:p.faces?`${p.faces} faces need support`:'No supports needed'}`;
+  $('cam').hidden=S.step<2;$('camPart').style.height=(S.step===3?S.pct*.28:0)+'%';
+  thumbs();draw();
+}
+document.addEventListener('click',e=>{
+  const t=e.target.closest('button');if(!t)return;const a=t.dataset.act;
+  if(t.dataset.s){S.step=+t.dataset.s;if(S.step<3){clearInterval(S.t);}}
+  else if(t.dataset.go){S.step=+t.dataset.go;}
+  else if(t.dataset.pose){S.pose=+t.dataset.pose;S.sliced=false;}
+  else if(t.dataset.q){S.q=t.dataset.q;S.sliced=false;}
+  else if(a==='fix'){S.pose=1;S.sliced=false;}
+  else if(a==='slice'){S.sliced=true;}
+  else if(a==='send'){$('sheet').hidden=false;return;}
+  else if(a==='pair'||a==='manual'){$('pair').hidden=false;return;}
+  else if(t.id==='pairNo'){$('pair').hidden=true;return;}
+  else if(t.id==='pairYes'){$('pair').hidden=true;S.printer='ready';}
+  else if(t.dataset.part){S.pick=S.pick===+t.dataset.part?null:+t.dataset.part;}
+  else if(t.dataset.slot){S.parts[S.pick].slot=+t.dataset.slot;S.pick=null;S.sliced=false;}
+  else if(t.id==='no'){$('sheet').hidden=true;return;}
+  else if(t.id==='yes'){$('sheet').hidden=true;S.step=3;S.pct=0;S.paused=false;clearInterval(S.t);
+    S.t=setInterval(()=>{if(S.paused)return;S.pct=Math.min(100,S.pct+.6);if(S.pct>=100)clearInterval(S.t);render();},100);}
+  else if(a==='pause'){S.paused=!S.paused;}
+  else if(a==='stop'){clearInterval(S.t);S.pct=0;S.step=2;}
+  else return;
+  render();
+});
+addEventListener('resize',draw);
+render();setTimeout(()=>{S.found=1;if(S.step===2)render();},1500);
+</script>
