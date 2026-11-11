@@ -222,7 +222,7 @@ vcad.io/            the story — nine frames (§9), unchanged; gains 4 quiet �
   /kernel           the specs shrine — ops, formats, tolerances, honest benchmarks; dense mono
   /pricing          free to design · 3% when you make · team
   /changelog        rev table          /company    the title block, expanded
-app.vcad.io works · docs.vcad.io teaches · mcp.vcad.io serves agents
+vcad.app works · the docs teach · `npx -y @vcad/mcp` serves agents
 ```
 
 Nav (7 items total): Design · Prove · Make · Agents · Pricing · [Open in Claude]
