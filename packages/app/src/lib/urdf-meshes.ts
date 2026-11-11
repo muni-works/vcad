@@ -93,6 +93,7 @@ async function parseCollada(
 ): Promise<LoadedMesh> {
   const text = new TextDecoder().decode(buf);
   const dae = colladaLoader.parse(text, url.slice(0, url.lastIndexOf("/") + 1));
+  if (!dae) throw new Error(`Failed to parse COLLADA mesh: ${url}`);
   // Drop the loader's up-axis correction so descendant `matrixWorld`s are
   // expressed in the DAE's native frame.
   dae.scene.matrix.identity();
