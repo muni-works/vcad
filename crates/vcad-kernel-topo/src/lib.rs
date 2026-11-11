@@ -344,6 +344,7 @@ impl Topology {
             start,
             current: Some(start),
             started: false,
+            remaining: self.half_edges.len(),
         }
     }
 
@@ -420,6 +421,10 @@ pub struct LoopHalfEdgeIter<'a> {
     start: HalfEdgeId,
     current: Option<HalfEdgeId>,
     started: bool,
+    /// Steps left before giving up: a `next` chain that cycles without
+    /// returning to `start` (a half-edge wired into two loops) would
+    /// otherwise spin forever. No real loop is longer than the arena.
+    remaining: usize,
 }
 
 impl<'a> Iterator for LoopHalfEdgeIter<'a> {
@@ -427,10 +432,11 @@ impl<'a> Iterator for LoopHalfEdgeIter<'a> {
 
     fn next(&mut self) -> Option<HalfEdgeId> {
         let current = self.current?;
-        if self.started && current == self.start {
+        if (self.started && current == self.start) || self.remaining == 0 {
             return None;
         }
         self.started = true;
+        self.remaining -= 1;
         self.current = self.topo.half_edges[current].next;
         Some(current)
     }
@@ -471,6 +477,23 @@ mod tests {
         let v = topo.add_vertex(Point3::new(1.0, 2.0, 3.0));
         assert_eq!(topo.vertices[v].point, Point3::new(1.0, 2.0, 3.0));
         assert!(topo.vertices[v].half_edge.is_none());
+    }
+
+    /// A half-edge wired into a second loop leaves the first loop's chain
+    /// cycling without its start; the walk must still end.
+    #[test]
+    fn loop_walk_terminates_on_a_broken_chain() {
+        let mut topo = Topology::new();
+        let v: Vec<_> = (0..4)
+            .map(|i| topo.add_vertex(Point3::new(i as f64, 0.0, 0.0)))
+            .collect();
+        let h: Vec<_> = v.iter().map(|&x| topo.add_half_edge(x)).collect();
+        let first = topo.add_loop(&[h[0], h[1], h[2]]);
+        // h[1] reused: h[1].next now points into the second loop, which
+        // never returns to h[0].
+        topo.add_loop(&[h[1], h[3]]);
+        let n = topo.loop_half_edges(first).count();
+        assert!(n <= topo.half_edges.len(), "walked {n}");
     }
 
     #[test]

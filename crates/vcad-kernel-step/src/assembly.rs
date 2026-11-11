@@ -4,7 +4,7 @@
 //! parent-child relationships, and `REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION`
 //! transforms to build a [`StepAssembly`] containing named parts and instances.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use crate::entities::{parse_any_axis_placement, EntityArgs};
@@ -146,20 +146,160 @@ pub fn read_step_assembly_from_buffer(data: &[u8]) -> Result<StepAssembly, StepE
     reader.read()
 }
 
+/// One placed copy of a solid: which `MANIFOLD_SOLID_BREP` it is and where
+/// the assembly puts it.
+#[derive(Debug, Clone)]
+pub struct SolidOccurrence {
+    /// STEP entity id of the solid (matches `SolidImportReport::solid_id`).
+    pub solid_id: u64,
+    /// Local-to-world transform, row-major (`m[r][c]`, translation in the
+    /// last column), in millimetres.
+    pub transform: [[f64; 4]; 4],
+    /// `PRODUCT` name of the part the solid belongs to.
+    pub part_name: String,
+    /// Name of the innermost assembly occurrence placing it (the part name
+    /// when the file has no assembly).
+    pub instance_name: String,
+}
+
+const IDENTITY: [[f64; 4]; 4] = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+];
+
+fn mat_mul(a: &[[f64; 4]; 4], b: &[[f64; 4]; 4]) -> [[f64; 4]; 4] {
+    let mut m = [[0.0; 4]; 4];
+    for (r, row) in m.iter_mut().enumerate() {
+        for (c, v) in row.iter_mut().enumerate() {
+            *v = (0..4).map(|k| a[r][k] * b[k][c]).sum();
+        }
+    }
+    m
+}
+
+/// Row-major local transform of a placement, its origin scaled to mm.
+fn placement_matrix(p: &StepPlacement, scale: f64) -> [[f64; 4]; 4] {
+    let (x, y, z, o) = (p.x_axis, p.y_axis(), p.z_axis, p.origin);
+    [
+        [x[0], y[0], z[0], o[0] * scale],
+        [x[1], y[1], z[1], o[1] * scale],
+        [x[2], y[2], z[2], o[2] * scale],
+        [0.0, 0.0, 0.0, 1.0],
+    ]
+}
+
+/// Every placed copy of every solid in a parsed STEP file, with world
+/// transforms composed through nested sub-assemblies. Structure only: no
+/// B-rep is built, so this is cheap next to the flat read. A solid that
+/// several assembly occurrences use appears once per occurrence (a KiCad
+/// board's resistors, an assembly's screws).
+pub fn solid_occurrences(file: &StepFile) -> Result<Vec<SolidOccurrence>, StepError> {
+    let reader = AssemblyReader {
+        file,
+        geometry: false,
+    };
+    let (asm, part_solids) = reader.read_structure()?;
+    let scale = crate::reader::length_unit_mm(file);
+    let part_idx: HashMap<&str, usize> = asm
+        .parts
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.id.as_str(), i))
+        .collect();
+    let mut children: HashMap<&str, Vec<&StepInstance>> = HashMap::new();
+    let mut is_child: HashSet<&str> = HashSet::new();
+    let mut flat_roots: Vec<&StepInstance> = Vec::new();
+    for inst in &asm.instances {
+        match &inst.parent_id {
+            Some(parent) => {
+                children.entry(parent.as_str()).or_default().push(inst);
+                is_child.insert(inst.part_id.as_str());
+            }
+            None => flat_roots.push(inst),
+        }
+    }
+    for v in children.values_mut() {
+        v.sort_by(|a, b| a.id.cmp(&b.id));
+    }
+
+    let mut out = Vec::new();
+    // (part index, world transform, instance name, depth)
+    let mut stack: Vec<(usize, [[f64; 4]; 4], String, usize)> = Vec::new();
+    for inst in &flat_roots {
+        if let Some(&i) = part_idx.get(inst.part_id.as_str()) {
+            let m = placement_matrix(&inst.transform, scale);
+            stack.push((i, m, inst.name.clone(), 0));
+        }
+    }
+    if !children.is_empty() {
+        for (i, p) in asm.parts.iter().enumerate() {
+            if !is_child.contains(p.id.as_str()) {
+                stack.push((i, IDENTITY, p.name.clone(), 0));
+            }
+        }
+    }
+    stack.reverse();
+    while let Some((i, world, inst_name, depth)) = stack.pop() {
+        let part = &asm.parts[i];
+        for &solid_id in &part_solids[i] {
+            out.push(SolidOccurrence {
+                solid_id,
+                transform: world,
+                part_name: part.name.clone(),
+                instance_name: if inst_name.is_empty() {
+                    part.name.clone()
+                } else {
+                    inst_name.clone()
+                },
+            });
+        }
+        // A malformed file can make a part its own ancestor; real
+        // assemblies are nowhere near this deep.
+        if depth >= 32 {
+            continue;
+        }
+        if let Some(kids) = children.get(part.id.as_str()) {
+            for inst in kids.iter().rev() {
+                if let Some(&k) = part_idx.get(inst.part_id.as_str()) {
+                    let m = mat_mul(&world, &placement_matrix(&inst.transform, scale));
+                    stack.push((k, m, inst.name.clone(), depth + 1));
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // Internal assembly reader
 // ---------------------------------------------------------------------------
 
 struct AssemblyReader<'a> {
     file: &'a StepFile,
+    /// Build each part's B-rep solids. Off for [`solid_occurrences`], which
+    /// only needs the structure (solid entity ids and placements) — reading
+    /// every solid a second time doubled the import cost of an assembly.
+    geometry: bool,
 }
 
 impl<'a> AssemblyReader<'a> {
     fn new(file: &'a StepFile) -> Self {
-        Self { file }
+        Self {
+            file,
+            geometry: true,
+        }
     }
 
     fn read(self) -> Result<StepAssembly, StepError> {
+        self.read_structure().map(|(asm, _)| asm)
+    }
+
+    /// The assembly plus, per part (same order as `parts`), the STEP entity
+    /// ids of its solids.
+    fn read_structure(self) -> Result<(StepAssembly, Vec<Vec<u64>>), StepError> {
+        let mut part_solid_ids: Vec<Vec<u64>> = Vec::new();
         // ---------------------------------------------------------------
         // Step 1: gather product names
         // PRODUCT(name, id, description, (contexts))
@@ -353,16 +493,20 @@ impl<'a> AssemblyReader<'a> {
                         name: name.clone(),
                         solids: vec![],
                     });
+                    part_solid_ids.push(Vec::new());
                     pd_to_part_idx.insert(pd_id, idx);
                     continue;
                 }
 
                 let mut solids = Vec::new();
-                for solid_id in solid_ids {
-                    if let Ok(s) = read_solid_from_file(self.file, solid_id) {
-                        solids.push(s);
+                if self.geometry {
+                    for &solid_id in &solid_ids {
+                        if let Ok(s) = read_solid_from_file(self.file, solid_id) {
+                            solids.push(s);
+                        }
                     }
                 }
+                part_solid_ids.push(solid_ids);
                 let idx = parts.len();
                 parts.push(StepPart {
                     id: pd_id.to_string(),
@@ -383,9 +527,13 @@ impl<'a> AssemblyReader<'a> {
                     .and_then(|v| v.as_string())
                     .unwrap_or("")
                     .to_owned();
-                let solid = match read_solid_from_file(self.file, e.id) {
-                    Ok(s) => s,
-                    Err(_) => continue,
+                let solids = if self.geometry {
+                    match read_solid_from_file(self.file, e.id) {
+                        Ok(s) => vec![s],
+                        Err(_) => continue,
+                    }
+                } else {
+                    Vec::new()
                 };
                 let idx = parts.len();
                 parts.push(StepPart {
@@ -395,8 +543,9 @@ impl<'a> AssemblyReader<'a> {
                     } else {
                         name
                     },
-                    solids: vec![solid],
+                    solids,
                 });
+                part_solid_ids.push(vec![e.id]);
                 // Store e.id as "pd_id" even though it's actually a MANIFOLD_SOLID_BREP id,
                 // so we can look it up later.
                 pd_to_part_idx.insert(e.id, idx);
@@ -571,7 +720,7 @@ impl<'a> AssemblyReader<'a> {
 
         let _ = nauo_counter;
 
-        Ok(StepAssembly { parts, instances })
+        Ok((StepAssembly { parts, instances }, part_solid_ids))
     }
 
     /// Search for a transform between parent and child shape representations.
@@ -808,6 +957,35 @@ END-ISO-10303-21;
         assert!((inst.transform.origin[0] - 20.0).abs() < 1e-6);
         assert!(inst.transform.origin[1].abs() < 1e-6);
         assert!(inst.transform.origin[2].abs() < 1e-6);
+    }
+
+    #[test]
+    fn occurrences_place_each_instance_in_world() {
+        let file = Parser::parse(ASSEMBLY_STEP.as_bytes()).unwrap();
+        let occ = solid_occurrences(&file).unwrap();
+        assert_eq!(occ.len(), 1);
+        assert_eq!(occ[0].solid_id, 280);
+        assert_eq!(occ[0].part_name, "Child");
+        assert_eq!(occ[0].instance_name, "child_instance");
+        assert!((occ[0].transform[0][3] - 20.0).abs() < 1e-9);
+
+        // A second placement of the same child (30 mm along Y, turned 90°
+        // about Z) is a second occurrence of the SAME solid.
+        let extra = "#400 = CARTESIAN_POINT('', (0.0, 30.0, 0.0));\n\
+#401 = DIRECTION('', (0.0, 0.0, 1.0));\n\
+#402 = DIRECTION('', (0.0, 1.0, 0.0));\n\
+#403 = AXIS2_PLACEMENT_3D('', #400, #401, #402);\n\
+#410 = ITEM_DEFINED_TRANSFORMATION('', '', #403, #307);\n\
+#411 = SHAPE_REPRESENTATION('', (#403), #290);\n\
+#420 = REPRESENTATION_RELATIONSHIP_WITH_TRANSFORMATION('', '', #293, #291, #410);\n\
+#430 = NEXT_ASSEMBLY_USAGE_OCCURRENCE('U2', 'second', '', #31, #32, $);\n";
+        let two = ASSEMBLY_STEP.replace("ENDSEC;\nEND-ISO", &format!("{extra}ENDSEC;\nEND-ISO"));
+        let file = Parser::parse(two.as_bytes()).unwrap();
+        let occ = solid_occurrences(&file).unwrap();
+        assert_eq!(occ.len(), 2, "{occ:?}");
+        assert!(occ.iter().all(|o| o.solid_id == 280));
+        let names: Vec<&str> = occ.iter().map(|o| o.instance_name.as_str()).collect();
+        assert!(names.contains(&"child_instance") && names.contains(&"second"));
     }
 
     #[test]

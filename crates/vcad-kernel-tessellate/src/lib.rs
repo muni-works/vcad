@@ -5282,53 +5282,84 @@ fn delaunay_flip(
             - (bdx * bdx + bdy * bdy) * (adx * cdy - cdx * ady)
             + (cdx * cdx + cdy * cdy) * (adx * bdy - bdx * ady)
     };
-    for _ in 0..100 {
-        let mut edges: HashMap<(u32, u32), Vec<usize>> = HashMap::new();
-        for (t, tri) in tris.iter().enumerate() {
-            for k in 0..3 {
-                edges
-                    .entry(key(tri[k], tri[(k + 1) % 3]))
-                    .or_default()
-                    .push(t);
-            }
+    // Edge → incident triangles, kept up to date across flips, and a work
+    // stack of edges to (re)check. Rebuilding the map once per sweep cost
+    // O(sweeps × edges): a bisected 20k-triangle B-spline face needs ~100
+    // sweeps to settle, which made a 385-face FreeCAD part take minutes.
+    // The stack only revisits the four edges around each flip.
+    let mut edges: HashMap<(u32, u32), Vec<usize>> = HashMap::with_capacity(tris.len() * 2);
+    for (t, tri) in tris.iter().enumerate() {
+        for k in 0..3 {
+            edges
+                .entry(key(tri[k], tri[(k + 1) % 3]))
+                .or_default()
+                .push(t);
         }
-        let mut touched = vec![false; tris.len()];
-        let mut flipped = false;
-        for (e, ts) in &edges {
-            if ts.len() != 2 || boundary.contains(e) || touched[ts[0]] || touched[ts[1]] {
-                continue;
-            }
-            let (t0, t1) = (tris[ts[0]], tris[ts[1]]);
-            // t0 = (a, b, c) CCW with the shared edge a→b; d opposite in t1.
-            let r = (0..3)
-                .find(|&k| key(t0[k], t0[(k + 1) % 3]) == *e)
-                .unwrap_or(0);
-            let (a, b, c) = (t0[r], t0[(r + 1) % 3], t0[(r + 2) % 3]);
-            let Some(&d) = t1.iter().find(|&&v| v != a && v != b) else {
-                continue;
-            };
-            let p = |v: u32| uv[v as usize];
-            let scale = {
-                let s = (p(a).0 - p(c).0).abs() + (p(a).1 - p(c).1).abs();
-                s.powi(4).max(1e-300)
-            };
-            if in_circle(p(a), p(b), p(c), p(d)) <= 1e-12 * scale {
-                continue;
-            }
-            let n0 = [c, a, d];
-            let n1 = [d, b, c];
-            if orient(&n0) <= 0.0 || orient(&n1) <= 0.0 {
-                continue;
-            }
-            tris[ts[0]] = n0;
-            tris[ts[1]] = n1;
-            touched[ts[0]] = true;
-            touched[ts[1]] = true;
-            flipped = true;
-        }
-        if !flipped {
+    }
+    let mut stack: Vec<(u32, u32)> = edges.keys().copied().collect();
+    stack.sort_unstable(); // deterministic result regardless of hash order
+                           // Bound the work: a near-degenerate configuration must not spin.
+    let mut budget = 50 * tris.len() + 1000;
+    while let Some(e) = stack.pop() {
+        if budget == 0 {
             break;
         }
+        budget -= 1;
+        let Some(ts) = edges.get(&e) else { continue };
+        if ts.len() != 2 || boundary.contains(&e) {
+            continue;
+        }
+        let (i0, i1) = (ts[0], ts[1]);
+        let (t0, t1) = (tris[i0], tris[i1]);
+        // t0 = (a, b, c) CCW with the shared edge a→b; d opposite in t1.
+        let Some(r) = (0..3).find(|&k| key(t0[k], t0[(k + 1) % 3]) == e) else {
+            continue;
+        };
+        let (a, b, c) = (t0[r], t0[(r + 1) % 3], t0[(r + 2) % 3]);
+        let Some(&d) = t1.iter().find(|&&v| v != a && v != b) else {
+            continue;
+        };
+        let p = |v: u32| uv[v as usize];
+        // The tolerance must not depend on which diagonal is current, or
+        // four co-circular points (every cell of the seed grid) flip back
+        // and forth. Scale by the quad's extent, which both diagonals share.
+        let scale = {
+            let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+            for q in [p(a), p(b), p(c), p(d)] {
+                lo = [lo[0].min(q.0), lo[1].min(q.1)];
+                hi = [hi[0].max(q.0), hi[1].max(q.1)];
+            }
+            ((hi[0] - lo[0]) + (hi[1] - lo[1])).powi(4).max(1e-300)
+        };
+        if in_circle(p(a), p(b), p(c), p(d)) <= 1e-10 * scale {
+            continue;
+        }
+        let n0 = [c, a, d];
+        let n1 = [d, b, c];
+        if orient(&n0) <= 0.0 || orient(&n1) <= 0.0 {
+            continue;
+        }
+        tris[i0] = n0;
+        tris[i1] = n1;
+        // Re-point the adjacency: a-b disappears, c-d appears; b-c moves
+        // from t0 to t1 and a-d from t1 to t0.
+        edges.remove(&e);
+        edges.insert(key(c, d), vec![i0, i1]);
+        if let Some(v) = edges.get_mut(&key(b, c)) {
+            for t in v.iter_mut() {
+                if *t == i0 {
+                    *t = i1;
+                }
+            }
+        }
+        if let Some(v) = edges.get_mut(&key(a, d)) {
+            for t in v.iter_mut() {
+                if *t == i1 {
+                    *t = i0;
+                }
+            }
+        }
+        stack.extend([key(a, c), key(b, c), key(a, d), key(b, d)]);
     }
 }
 
@@ -7723,7 +7754,13 @@ fn tessellate_trimmed_region(
     // enough for any sane surface; the uv floor stops a sag that will not
     // shrink (a vertex inverted onto the wrong sheet of a folded patch) from
     // bisecting forever.
-    let max_tris = 20_000;
+    // Budget the interior by the boundary. A long thin strip (a thread's
+    // helical flank: 0.09 mm wide, several turns) is already resolved by
+    // its boundary samples, but its sag test keeps failing across turns, so
+    // a flat 20k cap let every such face hit it: 5.3M triangles and a
+    // minute for a 385-face FreeCAD ball-nut mount. A big smooth patch with
+    // a short boundary still gets the room a circle-density grid needs.
+    let max_tris = (24 * n_boundary).clamp(2_000, 20_000);
     let uv_floor = 1e-4 * ((uhi - ulo).abs() + (vhi - vlo).abs());
     for _pass in 0..16 {
         let edges = edge_map(&tris);
@@ -9876,6 +9913,67 @@ mod face_id_tests {
                 .map(|t| mesh.face_kinds[t])
                 .collect();
             assert_eq!(kinds.len(), 1, "face {id} spans kinds {kinds:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod delaunay_flip_tests {
+    use super::*;
+
+    /// A regular grid split all one way is a field of co-circular quads.
+    /// The flip tolerance used to depend on the current diagonal, so every
+    /// quad flipped back and forth until the sweep cap — the bulk of a
+    /// minute-long tessellation of a FreeCAD part. Now the triangulation is
+    /// left as is (both diagonals are equally Delaunay) and stays valid.
+    #[test]
+    fn cocircular_grid_settles_without_flipping_back_and_forth() {
+        let n = 60u32;
+        let mut uv = Vec::new();
+        for j in 0..=n {
+            for i in 0..=n {
+                uv.push((i as f64, j as f64));
+            }
+        }
+        let at = |i: u32, j: u32| j * (n + 1) + i;
+        let mut tris = Vec::new();
+        for j in 0..n {
+            for i in 0..n {
+                tris.push([at(i, j), at(i + 1, j), at(i + 1, j + 1)]);
+                tris.push([at(i, j), at(i + 1, j + 1), at(i, j + 1)]);
+            }
+        }
+        let before = tris.clone();
+        let t = std::time::Instant::now();
+        delaunay_flip(&mut tris, &uv, &std::collections::HashSet::new());
+        assert!(t.elapsed().as_secs_f64() < 2.0, "{:?}", t.elapsed());
+        assert_eq!(tris, before, "co-circular quads must not flip");
+    }
+
+    /// A skinny fan from one corner is far from Delaunay; flipping must fix
+    /// it and keep every triangle counter-clockwise.
+    #[test]
+    fn fan_is_flipped_toward_delaunay() {
+        let n = 40usize;
+        let mut uv = vec![(0.0, 0.0)];
+        for i in 0..=n {
+            let a = std::f64::consts::FRAC_PI_2 * i as f64 / n as f64;
+            uv.push((a.cos() * 10.0, a.sin() * 10.0));
+        }
+        uv.push((3.0, 3.0));
+        let c = (uv.len() - 1) as u32;
+        // Triangulate (origin, arc..., interior point) crudely: fan around c.
+        let mut tris = Vec::new();
+        tris.push([0, 1, c]);
+        for i in 1..=n as u32 {
+            tris.push([i, i + 1, c]);
+        }
+        tris.push([n as u32 + 1, 0, c]);
+        delaunay_flip(&mut tris, &uv, &std::collections::HashSet::new());
+        for t in &tris {
+            let (a, b, cc) = (uv[t[0] as usize], uv[t[1] as usize], uv[t[2] as usize]);
+            let o = (b.0 - a.0) * (cc.1 - a.1) - (b.1 - a.1) * (cc.0 - a.0);
+            assert!(o > 0.0, "inverted {t:?}");
         }
     }
 }
