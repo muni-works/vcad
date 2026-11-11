@@ -136,6 +136,17 @@ enum AgentViewer {
         case "select_edges":
             let part = (a["part"] as? NSNumber)?.intValue ?? 0
             guard let topo = m.partTopology(part) else { throw AgentTools.Failure(message: "part \(part) has no B-rep") }
+            if let which = a["face"] as? String {
+                let byZ = topo.faces.sorted { $0.center[2] < $1.center[2] }
+                guard let f = which == "bottom" ? byZ.first : byZ.last else {
+                    throw AgentTools.Failure(message: "part \(part) has no faces")
+                }
+                m.selectParts([part])
+                m.picking.filter = .face
+                m.picking.setSelection([TopoRef(part: part, kind: .face, id: f.id)])
+                AgentCursor.shared.move(to: .point(f.centerF), label: "\(AgentCursor.shared.agentName) · selecting")
+                return AgentTools.text("Selected the \(which) face (\(f.id)) on part \(part).")
+            }
             var ids = (a["edges"] as? [NSNumber])?.map { UInt32($0.intValue) } ?? []
             if a["edge"] as? String == "longest", let e = topo.edges.max(by: { $0.length < $1.length }) { ids = [e.id] }
             guard !ids.isEmpty, ids.allSatisfy({ topo.edge($0) != nil }) else {
@@ -187,7 +198,7 @@ enum AgentViewer {
                                        focus: focus, model: m)
         }
         let what = edges == 0 ? "every edge of the part"
-            : facesPicked > 0 ? "the \(edges) edges around \(facesPicked) selected face\(facesPicked == 1 ? "" : "s")"
+            : facesPicked > 0 ? "the \(edges == 1 ? "edge" : "\(edges) edges") around \(facesPicked) selected face\(facesPicked == 1 ? "" : "s")"
             : "\(edges) selected edge\(edges == 1 ? "" : "s")"
         return ["content": [["type": "text", "text": "\(chamfer ? "Chamfered" : "Filleted") \(what) at \(radius) mm. Undo label: \"\(m.undoActionName ?? fallback)\"."]],
                 "_meta": meta]

@@ -91,7 +91,7 @@ final class AgentLiveDocTests: XCTestCase {
         m.picking.setSelection([TopoRef(part: 0, kind: .face, id: top.id)])
         let (text, err) = await call(m, "fillet_edges", ["radius": 2])
         XCTAssertFalse(err, text)
-        XCTAssertTrue(text.contains("edges around 1 selected face") || text.contains("1 edges around"), text)
+        XCTAssertTrue(text.contains("the edge around 1 selected face"), text)
     }
 
     // MARK: scope

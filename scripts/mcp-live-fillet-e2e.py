@@ -87,6 +87,36 @@ class Client:
         return json.loads(r["contents"][0]["text"])
 
 
+def snap(c, out, name):
+    """Save the live viewport (the app's own snapshot tool) as <out>/<name>.png."""
+    if not out:
+        return
+    import base64
+    os.makedirs(out, exist_ok=True)
+    try:
+        # An occluded / off-Space window renders no frames, so the viewport
+        # snapshot can't complete; don't let proof-taking hang the check.
+        r = c.rpc("tools/call", {"name": "snapshot", "arguments": {}}, timeout=15)
+    except TimeoutError:
+        step(f"snapshot {name}: viewport not rendering (window hidden?) — skipped")
+        return
+    for block in r.get("content", []):
+        if block.get("type") == "image":
+            path = os.path.join(out, name + ".png")
+            with open(path, "wb") as f:
+                f.write(base64.b64decode(block["data"]))
+            step(f"snapshot → {path}")
+            return
+    step(f"snapshot unavailable: {r}")
+
+
+def hook(a, name):
+    """Run --on-step CMD NAME (e.g. a window capture) at each proof point."""
+    if a.on_step:
+        subprocess.run(a.on_step + [name], check=False)
+    time.sleep(a.pause)
+
+
 def step(msg):
     print(f"[e2e] {msg}", flush=True)
 
@@ -97,6 +127,13 @@ def main():
     ap.add_argument("--pid", help="vcad.app instance to target")
     ap.add_argument("--radius", type=float, default=2.0)
     ap.add_argument("--timeout", type=float, default=180, help="seconds to wait for the face click")
+    ap.add_argument("--select", choices=["click", "tool"], default="click",
+                    help="click: wait for a person to click the top face; tool: select it with "
+                         "select_edges {face:'top'} (unattended runs)")
+    ap.add_argument("--on-step", nargs="+", help="command run with the step name at each proof point")
+    ap.add_argument("--pause", type=float, default=0, help="seconds to hold at each proof point")
+    ap.add_argument("--save-doc", help="write the final live document (IR JSON) here")
+    ap.add_argument("--out", help="directory for viewport snapshots (before/selected/after PNGs)")
     a = ap.parse_args()
 
     env = dict(os.environ)
@@ -119,17 +156,25 @@ def main():
     step(f"create → {text[:100]}")
 
     c.rpc("resources/subscribe", {"uri": "vcad://doc/selection"})
-    step("subscribed to vcad://doc/selection — click the TOP FACE of 'E2E Post' in vcad.app now")
+    if a.select == "tool":
+        step("selecting the top face via select_edges (unattended)")
+        part = c.resource("vcad://doc/view")["visible_parts"][-1]["index"]
+        c.tool("select_edges", {"part": part, "face": "top"})
+    else:
+        step("subscribed to vcad://doc/selection — click the TOP FACE of 'E2E Post' in vcad.app now")
 
     deadline = time.time() + a.timeout
     face = None
     notified = False
     while time.time() < deadline and face is None:
+        # Drain every queued notification (view/doc updates arrive too).
         try:
             n = c.notes.get(timeout=1.0)
-            if n.get("method") == "notifications/resources/updated" and \
-                    n.get("params", {}).get("uri") == "vcad://doc/selection":
-                notified = True
+            while True:
+                if n.get("method") == "notifications/resources/updated" and \
+                        n.get("params", {}).get("uri") == "vcad://doc/selection":
+                    notified = True
+                n = c.notes.get_nowait()
         except queue.Empty:
             pass
         sel = c.resource("vcad://doc/selection")
@@ -142,15 +187,22 @@ def main():
     step(f"user picked face {face['id']} on part {face['part']} at {face.get('center')} "
          f"(update notification: {'yes' if notified else 'no, read on poll'})")
 
+    snap(c, a.out, "1-selected")
+    hook(a, "1-selected")
     doc_id = c.resource("vcad://doc/view").get("document_id")
     c.tool("agent_turn", {"label": "rounded the face"})
     text = c.tool("fillet_edges", {"radius": a.radius, "document_id": doc_id})
     c.tool("agent_turn", {"end": True})
     step(f"fillet_edges → {text}")
 
+    snap(c, a.out, "2-filleted")
+    hook(a, "2-filleted")
     doc = c.resource("vcad://doc/current")
     blob = json.dumps(doc.get("document"))
     ok = "EdgeBlend" in blob or "Fillet" in blob or "edge_blend" in blob
+    if a.save_doc:
+        with open(a.save_doc, "w") as f:
+            json.dump(doc.get("document"), f, indent=1)
     step(f"document after: revision {doc.get('revision')}, fillet present: {ok}")
     if "Agent: rounded the face" not in text:
         step("FAIL: undo label is not the turn's")
