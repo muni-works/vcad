@@ -208,6 +208,8 @@ typedef struct VcadEdgesView {
   size_t floats_len;
 } VcadEdgesView;
 VcadEdges *vcad_scene_part_edges(const VcadScene *scene, size_t index, float angle_deg);
+VcadEdges *vcad_scene_instance_edges(const VcadScene *scene, size_t index, float angle_deg);
+const uint8_t *vcad_scene_instance_part_def(const VcadScene *scene, size_t index, size_t *out_len);
 VcadEdges *vcad_mesh_edges(const VcadMesh *mesh, float angle_deg);
 VcadEdgesView vcad_edges_view(const VcadEdges *edges);
 void vcad_edges_free(VcadEdges *edges);
