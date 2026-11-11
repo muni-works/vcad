@@ -788,6 +788,41 @@ mod tests {
         assert_eq!(count(&call(r#"{"view":"front","show_hidden":false}"#)), 0);
     }
 
+    /// Dogfood repro: a 60×40×10 plate, all edges filleted r=3, Ø8
+    /// through-hole. The front view used to draw every mesh edge
+    /// (4,506 visible + 6,374 hidden); it must draw feature edges only.
+    #[test]
+    fn filleted_plate_front_view_draws_feature_edges_not_mesh() {
+        let doc = vcad_loon::eval_vcad(
+            "[difference [translate 30 20 -1 [cylinder 4 12]] [fillet 3 [cube 60 40 10]]]",
+            None,
+        )
+        .expect("loon");
+        let meshes: Vec<EvaluatedMesh> = crate::export::named_meshes(&doc)
+            .expect("evaluate")
+            .into_iter()
+            .map(|(_, m)| m)
+            .collect();
+        let view = project_mesh(&combine(&meshes), ViewDirection::Front);
+        let (vis, hid) = (view.num_visible(), view.num_hidden());
+        eprintln!("plate front view: {vis} visible, {hid} hidden");
+        assert!(vis + hid < 200, "{vis} visible + {hid} hidden");
+        assert!(hid >= 2, "the hole shows as hidden lines");
+
+        // No triangle diagonals: away from the rounded corners (|x|,|z|
+        // within 3 of the outline), every drawn edge is axis-aligned.
+        for e in &view.edges {
+            let (dx, dz) = (e.end.x - e.start.x, e.end.y - e.start.y);
+            let (mx, mz) = ((e.start.x + e.end.x) / 2.0, (e.start.y + e.end.y) / 2.0);
+            let interior = mx > 3.5 && mx < 56.5 && mz > 0.5 && mz < 9.5;
+            let axis_aligned = dx.abs() < 1e-3 || dz.abs() < 1e-3;
+            assert!(
+                !interior || axis_aligned,
+                "diagonal across a flat face: {e:?}"
+            );
+        }
+    }
+
     #[test]
     fn dxf_matches_web_writer_and_pdf_writes() {
         let dir = std::env::temp_dir().join(format!("vcad-drawing-{}", std::process::id()));

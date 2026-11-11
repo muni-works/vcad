@@ -318,7 +318,19 @@ enum AgentEdits {
         var kept: String?
         if let session = m.documentJSON { kept = try carryElectronics(from: session, into: &json) }
         let label = (a["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "Loon Program"
-        let r = try edit(m, name: "Claude: \(label)") { try $0.loadIR(json) }
+        let r = try edit(m, name: "Claude: \(label)") { engine in
+            let r = try engine.loadIR(json)
+            // Fail closed: a part the kernel refused (an overlarge fillet,
+            // a shell thicker than the solid) used to load as a silent
+            // "no geometry" part. Throwing here restores the snapshot and
+            // hands the agent the kernel's reason.
+            let failed = try engine.agentRead("evaluation_errors", [:])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !failed.isEmpty {
+                throw Failure(message: "loon program loaded but some parts failed to build; document left unchanged:\n\(failed)")
+            }
+            return r
+        }
         var text = "Loaded; document has \(r.partCount) part\(r.partCount == 1 ? "" : "s")"
         if let kept { text += "; \(kept)" }
         if !r.warnings.isEmpty { text += "; warnings: " + r.warnings.joined(separator: "; ") }

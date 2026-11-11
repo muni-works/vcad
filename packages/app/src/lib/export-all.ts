@@ -87,7 +87,7 @@ export function safeFileName(name: string): string {
  * Cloud `content` → the bytes of the file the app would have saved.
  *
  * `documents.content` already holds the on-disk payload (see
- * `vcadFileToCloudContent` in @vcad/auth): CRDT JSON (a v0.4 `.vcad`), a raw IR
+ * `vcadFileToCloudContent` below): CRDT JSON (a v0.4 `.vcad`), a raw IR
  * Document (a v0.1 `.vcad`), or a `{loonSource}` envelope — which unwraps to a
  * `.loon` source file, the form both the web and native apps open directly.
  */
@@ -97,6 +97,32 @@ export function cloudContentToFile(content: unknown): { ext: "vcad" | "loon"; te
     if (typeof loon === "string") return { ext: "loon", text: loon };
   }
   return { ext: "vcad", text: JSON.stringify(content ?? null) };
+}
+
+/**
+ * A local (IndexedDB) `VcadFile` → the same payload the old sync wrote to
+ * `documents.content`, so browser documents export like cloud ones:
+ * CRDT JSON, a `{loonSource}` envelope, or the raw IR Document.
+ */
+export function vcadFileToCloudContent(document: unknown): unknown {
+  if (!document || typeof document !== "object") return document;
+  const obj = document as Record<string, unknown>;
+  if (obj.kind === "crdt") {
+    const bytes = obj.crdtBytes;
+    // IDB without typed-array support stores a plain number array.
+    const u8 = bytes instanceof Uint8Array ? bytes : Array.isArray(bytes) ? new Uint8Array(bytes as number[]) : null;
+    if (!u8) return null;
+    try {
+      return JSON.parse(new TextDecoder().decode(u8));
+    } catch {
+      return null;
+    }
+  }
+  if (obj.kind === "loon") return { loonSource: obj.loonSource };
+  if (obj.kind === "legacy") return obj.document ?? null;
+  // Untagged shape from before the tagged-union migration.
+  if (typeof obj.document === "object") return obj.document;
+  return document;
 }
 
 /**

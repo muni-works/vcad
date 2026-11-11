@@ -41,6 +41,10 @@ pub enum StepError {
     /// Empty file or no solids found.
     #[error("No solids found in STEP file")]
     NoSolids,
+
+    /// The read was cancelled through its [`crate::StepProgress`].
+    #[error("cancelled")]
+    Cancelled,
 }
 
 impl StepError {

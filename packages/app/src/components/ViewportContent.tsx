@@ -35,7 +35,6 @@ import { InspectedTriangleMarker } from "./TriangleInspector";
 import { ClashMesh } from "./ClashMesh";
 import { ClearanceIndicatorOverlay } from "./ClearanceIndicatorOverlay";
 import { PreviewMesh } from "./PreviewMesh";
-import { VersionGhostOverlay } from "./VersionGhostOverlay";
 import { SketchPlane3D } from "./SketchPlane3D";
 import { PlaneGizmo } from "./PlaneGizmo";
 import { TransformGizmo } from "./TransformGizmo";
@@ -88,7 +87,6 @@ import { PostProcessingBoundary } from "./PostProcessingBoundary";
 import { useXRPresenting } from "@/stores/xr-store";
 import { XRSceneTransform } from "./xr/XRSceneTransform";
 import { XRGestures } from "./xr/XRGestures";
-import { XRPresence } from "./xr/XRPresence";
 
 // Reused per-frame in the participant-sync hook (Lock + Follow).
 const _syncGoalPos = new Vector3();
@@ -2059,8 +2057,6 @@ export function ViewportContent({
           {/* Extrusion preview (semi-transparent) */}
           {previewMesh && <PreviewMesh mesh={previewMesh} />}
 
-          {/* Version timeline before/after ghosts (red removed / green added) */}
-          <VersionGhostOverlay />
 
           {/* 3D Sketch plane (when sketch mode is active) */}
           {sketchActive && <SketchPlane3D />}
@@ -2081,10 +2077,6 @@ export function ViewportContent({
           {/* Decoded compressed scalar field (tang-compress), z-slice */}
           <CompressedFieldSlice />
 
-          {/* XR presence — broadcasts local headset/hand pose and renders
-              remote peers. No-op outside XR / outside cloud-sync. Inside the
-              rotation+scale group so its avatars are in scene-local space. */}
-          <XRPresence />
           </group>
           </XRSceneTransform>
 

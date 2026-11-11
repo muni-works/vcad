@@ -15,8 +15,8 @@ import {
   type LoonMacro,
 } from "../tools/loon-macros.js";
 import { createCadLoon } from "../tools/loon.js";
-import type { MacroStore } from "../macro-store.js";
-import type { AuthUser } from "../oauth.js";
+import type { MacroStore } from "../tools/loon-macros.js";
+import type { AuthUser } from "../auth-user.js";
 
 /** In-memory MacroStore double — the durable tier without Supabase. */
 class FakeMacroStore implements MacroStore {

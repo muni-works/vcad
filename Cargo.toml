@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/vcad-ir",
     "crates/vcad-receipt",
+    "crates/vcad-atoms",
     "crates/vcad-parts",
     "crates/vcad-printcheck",
     "crates/vcad-kernel-math",
@@ -92,6 +93,7 @@ members = [
     "crates/vcad-embroidery-dst",
     "crates/vcad-ffi",
     "crates/vcad-tool-derive",
+    "crates/vcad-mcp",
     "crates/vcad-i18n",
     "crates/vcad-torture",
     "mecheval/graders",
@@ -100,6 +102,7 @@ members = [
 default-members = [
     "crates/vcad-ir",
     "crates/vcad-receipt",
+    "crates/vcad-atoms",
     "crates/vcad-parts",
     "crates/vcad-printcheck",
     "crates/vcad-kernel-math",
@@ -188,6 +191,7 @@ default-members = [
     "crates/vcad-embroidery-dst",
     "crates/vcad-ffi",
     "crates/vcad-tool-derive",
+    "crates/vcad-mcp",
     "crates/vcad-i18n",
     "crates/vcad-torture",
     "mecheval/graders",
@@ -245,6 +249,7 @@ opencascade = { version = "0.2" }
 # run `npm run version:sync`.
 vcad-ir = { path = "crates/vcad-ir", version = "0.11.0" }
 vcad-receipt = { path = "crates/vcad-receipt", version = "0.11.0" }
+vcad-atoms = { path = "crates/vcad-atoms", version = "0.11.0" }
 vcad-parts = { path = "crates/vcad-parts", version = "0.11.0" }
 vcad-printcheck = { path = "crates/vcad-printcheck", version = "0.11.0" }
 vcad-kernel = { path = "crates/vcad-kernel", version = "0.11.0" }
@@ -329,6 +334,7 @@ vcad-embroidery = { path = "crates/vcad-embroidery", version = "0.11.0" }
 vcad-embroidery-pes = { path = "crates/vcad-embroidery-pes", version = "0.11.0" }
 vcad-embroidery-dst = { path = "crates/vcad-embroidery-dst", version = "0.11.0" }
 vcad-tool-derive = { path = "crates/vcad-tool-derive", version = "0.11.0" }
+vcad-mcp = { path = "crates/vcad-mcp", version = "0.11.0" }
 vcad-gdsii = { path = "crates/vcad-gdsii", version = "0.11.0" }
 vcad-process = { path = "crates/vcad-process", version = "0.11.0" }
 
@@ -405,4 +411,4 @@ clipper-sys = { path = "third_party/clipper-sys" }
 kosm-render = { git = "https://github.com/ecto/kosm", rev = "59b1d03ec45cf9e9a04ccbbbef0bcc06d8f559d4" }
 # loon-lang 0.7.0 on crates.io is published from this rev; the patch keeps
 # local checkouts and CI on exactly that source.
-loon-lang = { git = "https://github.com/ecto/loon", rev = "c12ef566613995f913012c79773bab825950566f" }
+loon-lang = { git = "https://github.com/ecto/loon", rev = "7b78f05e65900dfe21d93e9cc315dd261d099013" }

@@ -644,6 +644,20 @@ char *vcad_feature_append(const char *doc_json, const char *feature_json);
 /* --- Import (import.rs) --- */
 /* {"document": <StepImport nodes, one root per solid>, "solids": N} */
 char *vcad_import_step(const char *path);
+/* Cancellable STEP import job: start -> poll (stage, done of total) ->
+ * [cancel] -> finish (joins the thread, frees the job, returns the same JSON
+ * as vcad_import_step plus "skipped_faces" and "warnings"; null +
+ * last error "import step: cancelled" after a cancel). Always finish. */
+typedef struct VcadStepImportJob VcadStepImportJob;
+#define VCAD_STEP_STAGE_READING 0
+#define VCAD_STEP_STAGE_PARSING 1
+#define VCAD_STEP_STAGE_FACES 2
+#define VCAD_STEP_STAGE_DONE 3
+VcadStepImportJob *vcad_import_step_start(const char *path);
+bool vcad_import_step_poll(const VcadStepImportJob *job, uint32_t *stage,
+                           size_t *done, size_t *total);
+void vcad_import_step_cancel(const VcadStepImportJob *job);
+char *vcad_import_step_finish(VcadStepImportJob *job);
 /* IR assembly document JSON. */
 char *vcad_import_urdf(const char *path);
 

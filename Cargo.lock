@@ -2699,7 +2699,7 @@ dependencies = [
 [[package]]
 name = "loon-lang"
 version = "0.7.0"
-source = "git+https://github.com/ecto/loon?rev=c12ef566613995f913012c79773bab825950566f#c12ef566613995f913012c79773bab825950566f"
+source = "git+https://github.com/ecto/loon?rev=7b78f05e65900dfe21d93e9cc315dd261d099013#7b78f05e65900dfe21d93e9cc315dd261d099013"
 dependencies = [
  "codespan-reporting 0.11.1",
  "dirs-next",
@@ -5548,6 +5548,23 @@ dependencies = [
  "vcad-ir 0.11.0",
  "vcad-kernel 0.11.0",
  "vcad-kernel-math 0.11.0",
+]
+
+[[package]]
+name = "vcad-atoms"
+version = "0.11.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "vcad-eval",
+ "vcad-ir",
+ "vcad-kernel",
+ "vcad-kernel-cam",
+ "vcad-kernel-diff",
+ "vcad-kernel-stocksim",
+ "vcad-kernel-tessellate",
+ "vcad-slicer",
+ "vcad-slicer-gcode",
 ]
 
 [[package]]

@@ -307,6 +307,12 @@ struct GlassToolbar: View {
         return model.documentDirty ? "Edited" : nil
     }
 
+    /// When `news(at:)` changes with nothing but the clock moving.
+    private func newsExpiries(after now: Date) -> [Date] {
+        [model.agentLinkActiveAt.map { $0.addingTimeInterval(4) }, model.sketchBlockerShownUntil]
+            .compactMap { $0 }.filter { $0 > now }.sorted()
+    }
+
     /// Real progress only: a single-step solve has none to show.
     private var solveFraction: CGFloat? {
         let p = model.solveProgress
@@ -329,8 +335,11 @@ struct GlassToolbar: View {
                 .accessibilityLabel("Search tools and features")
             } else {
                 Button { beginSearch() } label: {
-                    // Ticks so a linked agent's "working" fades once it goes quiet.
-                    TimelineView(.periodic(from: .now, by: 1)) { context in
+                    // Ticks only at the moments the line can expire on its own
+                    // (a linked agent going quiet, a sketch blocker timing out);
+                    // everything else re-renders through observation. A
+                    // free-running 1 Hz clock here kept the window compositing.
+                    TimelineView(.explicit(newsExpiries(after: .now))) { context in
                     let news = news(at: context.date)
                     VStack(spacing: 0) {
                         Text(model.source.label).font(.system(size: 12, weight: .medium))
@@ -1391,6 +1400,7 @@ extension GlassUI {
             }
             try? await Task.sleep(for: .milliseconds(80))
             guard model.undoStack.count == frame, let ar = ReleaseWindowController.shared.arView else { return }
+            RenderGate.wake(for: 2)  // a paused view never delivers a snapshot
             ar.snapshot(saveToHDR: false) { img in
                 guard let img else { return }
                 let thumb = NSImage(size: NSSize(width: 96, height: 60))
@@ -1631,10 +1641,15 @@ struct ShortcutSheet: View {
                     Eyebrow("Everywhere")
                     ForEach(Self.global, id: \.0) { row($0.0, $0.1) }
                 }
+                VStack(alignment: .leading, spacing: 6) {
+                    // The camera bindings follow Settings ▸ Navigation.
+                    Eyebrow("Navigation · \(NavigationScheme.current.label)")
+                    ForEach(NavigationScheme.current.summary, id: \.gesture) { row($0.gesture, $0.action) }
+                }
             }
         }
         .padding(18)
-        .frame(width: 700)
+        .frame(width: 900)
         .glassPanel()
         .modifier(ChromeRegion(key: "shortcuts"))
     }

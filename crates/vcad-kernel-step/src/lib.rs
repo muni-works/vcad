@@ -61,8 +61,9 @@ pub use pmi::{
     StepTolerance,
 };
 pub use reader::{
-    read_step, read_step_from_buffer, read_step_from_buffer_with_report, read_step_with_report,
-    ReadResult, SkippedFace, SolidImportReport, StepImportReport,
+    read_step, read_step_from_buffer, read_step_from_buffer_with_report, read_step_with_progress,
+    read_step_with_report, ReadResult, SkippedFace, SolidImportReport, StepImportReport,
+    StepProgress, StepStage,
 };
 pub use writer::{
     write_step, write_step_solids, write_step_solids_to_buffer, write_step_to_buffer,

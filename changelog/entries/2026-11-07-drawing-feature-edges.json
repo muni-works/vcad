@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-07-drawing-feature-edges",
+  "version": "undefined",
+  "date": "2026-11-07",
+  "category": "fix",
+  "title": "Drawings show feature edges, not the triangle mesh",
+  "summary": "2D drawing views and DXF export now draw creases, outlines and silhouettes merged into single lines, instead of thousands of tessellation edges and diagonals.",
+  "features": ["drafting", "dxf"]
+}

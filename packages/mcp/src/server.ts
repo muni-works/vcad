@@ -54,21 +54,18 @@ import { previewVersion, previewGlbFor, PREVIEW_MAX_BASE64 } from "./tools/previ
 import {
   createSessionStore,
   createSessionEventStore,
-  createShareStore,
   createPackStore,
   sessionStoreInfo,
-  warnIfSessionStoreNotDurable,
   isSessionStoreDurable,
 } from "./session-store.js";
-// Re-exported so the Vercel entry (services/mcp/entry.ts) and standalone
-// /health (http.ts) report the same durability state as server_info.
+// Re-exported so the standalone /health (http.ts) reports the same durability
+// state as server_info.
 export { sessionStoreInfo } from "./session-store.js";
 import { createFabricateStore } from "./fabricate/store.js";
-import type { AuthUser } from "./oauth.js";
+import type { AuthUser } from "./auth-user.js";
 
-/** Per-connection context threaded from the transport entry point — the
- *  authenticated user when the request carried a valid Bearer access token,
- *  otherwise null (stdio, anonymous HTTP, or OAuth disabled). */
+/** Per-connection context threaded from the transport entry point. The local
+ *  build has no accounts, so `user` is always null. */
 export interface ServerContext {
   user: AuthUser | null;
   /** Stateless HTTP handles each request on a fresh Server, so the client
@@ -93,23 +90,14 @@ import {
   enrichErrorResult,
   enrichSuccessResult,
 } from "./tools/next-actions.js";
-// Runtime config read from Vercel Edge Config so warm instances reflect a flag
-// flip or a fresh deploy WITHOUT a redeploy (see edge-config.ts).
-import { getStaleness } from "./edge-config.js";
-// Re-exported so the Vercel entry point (services/mcp/entry.ts) serves the live
-// window and the artifact channel through the same handlers as the standalone
-// server (http.ts).
-export { handleLiveRequest } from "./live-route.js";
 export { handleArtifactRequest } from "./artifact-route.js";
-// MCP 2026-07-28 dual-era front end, re-exported for the transport entries
-// (http.ts here; services/mcp/entry.ts on Vercel) so both route modern
-// requests identically.
+// MCP 2026-07-28 dual-era front end, re-exported for the transport entries.
 export {
   isModernMessage,
   handleModernRequest,
   listenClosureResponse,
 } from "./protocol-2026.js";
-export { flushArtifacts, artifactStoreInfo } from "./tools/artifact-store.js";
+export { artifactStoreInfo } from "./tools/artifact-store.js";
 import {
   getViewerHtml,
   VIEWER_RESOURCE_URI,
@@ -119,9 +107,7 @@ import {
   OPENAI_APP_MIME_TYPE,
   OPENAI_WIDGET_CSP,
 } from "./viewer.js";
-import { fireToolAlert } from "./notify.js";
 import { checkCommerceBoundary } from "./trust-boundary.js";
-import { configureTelemetry, flushTelemetry } from "./telemetry.js";
 import { artifactStoreInfo as artifactStoreInfoLocal } from "./tools/artifact-store.js";
 
 // ── ToolDef registry: one record per tool, contributed by its module ────────
@@ -141,11 +127,9 @@ import { toolDefs as batchEditToolDefs } from "./tools/batch-edit.js";
 import { toolDefs as checkpointToolDefs } from "./tools/checkpoint.js";
 import { toolDefs as continueDocToolDefs } from "./tools/continue-doc.js";
 import { toolDefs as orderToolDefs } from "./tools/order.js";
-import { toolDefs as orderingToolDefs } from "./tools/ordering.js";
 import { toolDefs as bomToolDefs } from "./tools/bom.js";
 import { toolDefs as mechPartsToolDefs } from "./tools/mech-parts.js";
 import { toolDefs as partStockToolDefs } from "./tools/part-stock.js";
-import { toolDefs as liveShareToolDefs } from "./tools/live-share.js";
 import { toolDefs as partsToolDefs } from "./tools/parts.js";
 import { toolDefs as previewToolDefs } from "./tools/preview.js";
 import { toolDefs as loonToolDefs } from "./tools/loon.js";
@@ -195,16 +179,12 @@ import { toolDefs as changelogToolDefs } from "./tools/changelog.js";
 import { toolDefs as ecadToolDefs } from "./tools/ecad.js";
 import { toolDefs as enclosureToolDefs } from "./tools/enclosure.js";
 import { toolDefs as simReplayToolDefs } from "./tools/sim-replay.js";
-import { toolDefs as orderFeedToolDefs } from "./tools/order-feed.js";
 import { toolDefs as animateToolDefs } from "./tools/animate.js";
+import { getUpdateStatus, startUpdateCheck, takeResultWarning } from "./version-check.js";
 
 setParameterAssetResolver((doc, base_dir, engine) => {
   resolveLoonAssets(doc, { base_dir }, engine);
 });
-
-// Re-exported so the Vercel transport entry can drain in-flight PostHog
-// captures before a serverless instance freezes (see services/mcp/entry.ts).
-export { flushTelemetry };
 
 /** Build-time injected version. esbuild's `--define:__VCAD_VERSION__` (see
  *  services/mcp/build.sh) replaces this with the package.json version literal
@@ -214,8 +194,8 @@ export { flushTelemetry };
 declare const __VCAD_VERSION__: string | undefined;
 
 /** Build-time injected commit + timestamp. esbuild's `--define:__VCAD_BUILD_SHA__`
- *  / `__VCAD_BUILD_TIME__` (see services/mcp/build.sh) replace these with the
- *  string literals from VERCEL_GIT_COMMIT_SHA at bundle time. Undefined in the
+ *  / `__VCAD_BUILD_TIME__` (see scripts/build-npm.mjs) replace these with
+ *  string literals at bundle time. Undefined in the
  *  normal tsc `dist/` build — `typeof` guards against the ReferenceError. */
 declare const __VCAD_BUILD_SHA__: string | undefined;
 declare const __VCAD_BUILD_TIME__: string | undefined;
@@ -224,7 +204,7 @@ declare const __VCAD_BUILD_TIME__: string | undefined;
  *  advertised version always matches the running build (no hardcoded literal to
  *  drift). */
 const PKG_VERSION: string = (() => {
-  // Bundled hosted build: the version is baked in via esbuild define, since the
+  // Bundled npm build: the version is baked in via esbuild define, since the
   // require path below resolves to a nonexistent sibling of the single bundle.
   if (typeof __VCAD_VERSION__ === "string" && __VCAD_VERSION__) {
     return __VCAD_VERSION__;
@@ -237,13 +217,12 @@ const PKG_VERSION: string = (() => {
   }
 })();
 
-/** Exact commit, baked at build time. The runtime env fallbacks
- *  (VERCEL_GIT_COMMIT_SHA, then the legacy VCAD_BUILD_SHA) only fire for
- *  non-bundled runs; on the hosted serverless build the define wins. "unknown"
+/** Exact commit, baked at build time. The runtime env fallback
+ *  (VCAD_BUILD_SHA) only fires for non-bundled runs; in the npm bundle the
+ *  define wins. "unknown"
  *  means neither was available — itself a useful signal. */
 const BUILD_SHA: string =
   (typeof __VCAD_BUILD_SHA__ === "string" && __VCAD_BUILD_SHA__) ||
-  process.env.VERCEL_GIT_COMMIT_SHA ||
   process.env.VCAD_BUILD_SHA ||
   "unknown";
 const BUILD_TIME: string =
@@ -287,17 +266,7 @@ export function getBuildInfo(): {
   };
 }
 
-// Stamp every telemetry event with the running build identity (version, commit,
-// instance) — set once at module load.
-configureTelemetry(getBuildInfo());
 
-// Boot-time durability self-check (fires once per cold start, on every entry
-// point that imports this module — Vercel function, standalone HTTP, stdio). A
-// production deploy without a durable session store keeps sessions in-memory
-// only, so a redeploy drops every open board. Make that loud at boot; the same
-// state is observable over the wire via server_info / /health (durable:false).
-// No-op on stdio/local or when durable.
-warnIfSessionStoreNotDurable();
 
 /** Kernel WASM exports this server depends on; checked at startup so a stale or
  *  incomplete dist surfaces as a clear boot error rather than an opaque
@@ -346,11 +315,9 @@ const STATIC_TOOL_DEFS: readonly ToolDef[] = [
   ...checkpointToolDefs,
   ...continueDocToolDefs,
   ...orderToolDefs,
-  ...orderingToolDefs,
   ...bomToolDefs,
   ...mechPartsToolDefs,
   ...partStockToolDefs,
-  ...liveShareToolDefs,
   ...partsToolDefs,
   ...previewToolDefs,
   ...loonToolDefs,
@@ -396,7 +363,6 @@ const STATIC_TOOL_DEFS: readonly ToolDef[] = [
   ...ecadToolDefs,
   ...enclosureToolDefs,
   ...simReplayToolDefs,
-  ...orderFeedToolDefs,
   ...animateToolDefs,
 ];
 
@@ -424,11 +390,6 @@ const LIST_TOOL_ORDER: readonly string[] = [
   "set_tool_packs",
   // ── vcad Fabricate ─────────────────────────────────────────
   "quote_manufacturing",
-  "get_order_status",
-  "list_orders",
-  "authorize_spend",
-  "place_order",
-  "get_order_feed",
   // ── Project BOM ────────────────────────────────────────────
   "bom_create",
   "bom_add_line",
@@ -436,9 +397,6 @@ const LIST_TOOL_ORDER: readonly string[] = [
   "search_mechanical_parts",
   "check_part_stock",
   "bom_check_stock",
-  // ── Live review window ─────────────────────────────────────
-  "share_session",
-  "unshare_session",
   // ── Stdlib parts library ───────────────────────────────────
   "search_parts",
   "place_part",
@@ -531,7 +489,6 @@ const LIST_TOOL_ORDER: readonly string[] = [
   "import_altium_library",
   "import_eagle",
   "open_in_app",
-  "open_in_browser",
   // ── Physics gym ────────────────────────────────────────────
   "create_robot_env",
   "gym_step",
@@ -792,29 +749,15 @@ export async function createServer(
     });
   }
 
-  // Durable session store for THIS connection's user. With a signed-in user +
-  // a Supabase service-role key it persists sessions to the cloud `documents`
-  // table — so a cold serverless instance rehydrates the board instead of
-  // throwing "Unknown document_id", and the work shows up at vcad.io.
-  // Otherwise an in-memory no-op store reproduces today's behavior. Held in a
-  // closure (not a module global) so concurrent connections on one warm
-  // instance can't clobber each other's binding.
+  // Session store for THIS connection: the local disk store (in-memory when
+  // VCAD_MCP_DISK_SESSIONS=0). Held in a closure, not a module global.
   const sessionStore = createSessionStore(context.user);
 
-  // The event spine for THIS connection. Every kernel mutation appends one row
-  // (state = fold(log)); the sessionStore's content write is the derived
-  // materialization. No-op without Supabase env, so stdio/local is unchanged.
+  // Event log for THIS connection — a no-op in the local build.
   const eventStore = createSessionEventStore(context.user);
 
-  // vcad Fabricate store (quotes + orders). Cloud-backed for a signed-in user
-  // with the Supabase service-role key, else in-memory (local stdio). Held in
-  // the connection closure like sessionStore so concurrent connections can't
-  // clobber each other.
+  // vcad Fabricate store (quotes) — in-memory, per connection.
   const fabricateStore = createFabricateStore(context.user);
-
-  // Live-window share gate (live_shares). Created per connection like the
-  // others. No-op without Supabase env.
-  const shareStore = createShareStore();
 
   // Everything a tool handler may need, threaded per connection.
   //
@@ -833,7 +776,6 @@ export async function createServer(
     sessionStore,
     eventStore,
     fabricateStore,
-    shareStore,
     elicit: {
       urlSupported: () => {
         const caps = server.getClientCapabilities() as
@@ -980,6 +922,9 @@ export async function createServer(
     `[mcp] vcad ${VERSION_WITH_BUILD} (instance ${INSTANCE_ID}) — ${dispatchableTools.size} kernel tools; kernel WASM ${kernelWasmLoaded ? "ok" : "UNAVAILABLE"}`,
   );
 
+  // Stale-server check against the npm registry; fire-and-forget, offline-safe.
+  if (!process.env.VITEST) void startUpdateCheck(PKG_VERSION);
+
   // ── server_info: reports THIS connection's build/runtime state ────────────
   // Defined here (not in a module) because it closes over per-connection boot
   // state; still a plain ToolDef so it dispatches through the shared pipeline.
@@ -989,17 +934,16 @@ export async function createServer(
     description:
       "Report the running build's identity: version, git sha (if stamped), " +
       "tool count, enabled packs, whether the kernel WASM loaded, and whether " +
-      "sessions are durable (`durable` — survive a redeploy/cold start, vs. " +
+      "sessions are durable (`durable` — saved to the local disk store and " +
+      "survive a restart, vs. " +
       "in-memory only). Call this to confirm a tool exists in THIS build " +
       "before assuming a stale or version-skewed deploy, and to check " +
-      "durable:true before relying on checkpoints across a long session.",
+      "durable:true before relying on checkpoints across a long session. " +
+      "`update` compares this build with the newest @vcad/mcp on npm; when " +
+      "`update.state` is \"stale\", tell the user and suggest restarting the agent.",
     inputSchema: serverInfoSchema,
     handler: async (): Promise<ToolResult> => {
       const buildInfo = getBuildInfo();
-      // expected_build_sha/is_stale come from Edge Config (per-request,
-      // TTL-cached): on a warm instance pinned behind a fresh deploy this
-      // flips to is_stale:true so the agent knows to reconnect.
-      const staleness = await getStaleness(buildInfo.build_sha);
       return {
         content: [
           {
@@ -1008,7 +952,6 @@ export async function createServer(
               ...buildInfo,
               ...sessionStoreInfo(),
               ...artifactStoreInfoLocal(),
-              ...staleness,
               kernel_wasm: kernelWasmLoaded ? "ok" : "unavailable",
               ...(kernelWasmMissing.length > 0
                 ? { kernel_wasm_missing_exports: kernelWasmMissing }
@@ -1016,6 +959,7 @@ export async function createServer(
               kernel_tool_count: dispatchableTools.size,
               disabled_tool_count: disabledTools.size,
               packs: packsSummary(),
+              update: getUpdateStatus(),
             }),
           },
         ],
@@ -1231,26 +1175,7 @@ export async function createServer(
       .filter((t) => !disabledTools.has(t.name as string));
   };
 
-  // Connect-time staleness: surface it in the `initialize` instructions so a
-  // client learns at handshake — before any tool call — whether this instance
-  // is behind the latest deployment. createServer runs per request on
-  // serverless, so the Edge Config read is effectively per-connection (and
-  // TTL-cached). When nothing is published (Edge Config unset), is_stale is
-  // false and no banner is added — identical to the pre-Edge-Config world.
-  let instructions = buildInstructions(kernelPrompt);
-  try {
-    const connectStaleness = await getStaleness(BUILD_SHA);
-    if (connectStaleness.is_stale) {
-      const want = connectStaleness.expected_build_sha?.slice(0, 7) ?? "newer";
-      instructions +=
-        `\n\n⚠️ STALE BUILD: this instance is ${SHORT_SHA} but the latest ` +
-        `deployment is ${want}. You may be pinned to a draining warm instance — ` +
-        `if a just-shipped tool or flag seems missing, reconnect to land on the ` +
-        `new build (or verify with \`server_info\` / \`curl https://mcp.vcad.io/health\`).`;
-    }
-  } catch {
-    // staleness is advisory; never block a connection on it
-  }
+  const instructions = buildInstructions(kernelPrompt);
 
   const server = new Server(
     {
@@ -1375,9 +1300,7 @@ export async function createServer(
    * Stamp the running build/runtime identity onto EVERY tool result's `_meta`,
    * not just `server_info`. Warm-instance staleness and version skew then show
    * up inline on any call: two results with different instance_id/build_sha mean
-   * old instances are still draining behind a fresh deploy, and `is_stale` flags
-   * the instance you're pinned to as behind the latest deployment (compared to
-   * `expected_build_sha` from Edge Config). Merges under a namespaced key so it
+   * the server restarted between them. Merges under a namespaced key so it
    * never clobbers another extension's `_meta`; best-effort — a stamp failure
    * must never turn a successful call into an error.
    */
@@ -1385,7 +1308,6 @@ export async function createServer(
     if (!result || typeof result !== "object") return;
     try {
       const info = getBuildInfo();
-      const { expected_build_sha, is_stale } = await getStaleness(info.build_sha);
       result._meta = {
         ...result._meta,
         "io.vcad/build": {
@@ -1393,8 +1315,6 @@ export async function createServer(
           instance_id: info.instance_id,
           version_full: info.version_full,
           uptime_s: info.uptime_s,
-          expected_build_sha,
-          is_stale,
           // Restart detection without polling: boot_token changes iff the
           // process serving these calls restarted, and session_durable says
           // whether that restart cost the caller their open documents. A
@@ -1402,8 +1322,13 @@ export async function createServer(
           // very next call, instead of when a dead document_id finally fails.
           boot_token: currentBootToken(),
           session_durable: isSessionStoreDurable(),
+          update: getUpdateStatus().state,
         },
       };
+      const warning = takeResultWarning();
+      if (warning && Array.isArray(result.content)) {
+        result.content = [...result.content, { type: "text", text: warning }];
+      }
     } catch {
       // identity stamping is observability, never load-bearing
     }
@@ -1453,7 +1378,6 @@ export async function createServer(
         ],
         isError: true,
       };
-      fireToolAlert(name, args, disabledResult);
       await stampResultMeta(disabledResult);
       return disabledResult;
     }
@@ -1511,7 +1435,6 @@ export async function createServer(
           content: [{ type: "text", text: `Unknown tool: ${name}` }],
           isError: true,
         };
-        fireToolAlert(name, args, unknownResult);
         return unknownResult;
       }
 
@@ -1527,7 +1450,6 @@ export async function createServer(
           ],
           isError: true,
         };
-        fireToolAlert(name, args, rejection);
         return rejection;
       }
 
@@ -1542,7 +1464,6 @@ export async function createServer(
           content: [{ type: "text", text: boundary.reason ?? "TRUST_BOUNDARY: refused" }],
           isError: true,
         };
-        fireToolAlert(name, args, refusal);
         return refusal;
       }
 
@@ -1584,7 +1505,6 @@ export async function createServer(
         }
       }
 
-      fireToolAlert(name, args, result);
       return result;
     };
 
@@ -1723,7 +1643,6 @@ export async function createServer(
       // recover in one turn instead of flailing — the verified loop's
       // error side. (The success side rides on the `changed` diff.)
       const errorResult = buildErrorResult(name, args, message, { kernelTrap });
-      fireToolAlert(name, args, errorResult);
       return errorResult;
     }
     });

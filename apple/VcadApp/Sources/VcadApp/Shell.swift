@@ -42,6 +42,7 @@ struct EditorView: View {
                     // Pick up documents other instances opened while this one
                     // was already running.
                     model.refreshRecents()
+                    LaunchPerf.once("shell appeared")
                     // The document this instance was launched for: the argument
                     // a spawning instance passed, the VCAD_OPEN dev hook, or a
                     // path on the command line.
@@ -163,6 +164,7 @@ struct DocumentCommands: Commands {
             Button("New Document") { AppInstance.open() }.keyboardShortcut("n")
             Divider()
             Button("Open…") { openPanel(model) }.keyboardShortcut("o")
+            Button("Open Sample…") { WelcomeWindowController.shared.show(model: model) }
             Menu("Open Recent") {
                 ForEach(model.recents, id: \.self) { url in
                     Button(url.deletingPathExtension().lastPathComponent) {
@@ -352,7 +354,7 @@ struct DocumentCommands: Commands {
                 .keyboardShortcut("/", modifiers: .command)
             Divider()
             Button("Welcome to vcad") { WelcomeWindowController.shared.show(model: model) }
-            Button("Connect Claude…") { ConnectClaude.run() }
+            Button("Connect Agents…") { AgentInstallPrompt.run() }
             Divider()
             Button("vcad Help") { NSWorkspace.shared.open(URL(string: "https://vcad.io/docs")!) }
             Divider()

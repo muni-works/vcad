@@ -581,18 +581,53 @@ impl DocumentApi {
 
     /// World-space bounding box `(min, max)` of a part, by evaluating its
     /// root node with the full `vcad-eval` evaluator (transforms included).
-    /// `None` for an unknown id or a part that produces no solid.
+    /// `None` for an unknown id, a part that failed to evaluate, or one
+    /// whose solid is empty (no sentinel `±f64::MAX` box ever escapes).
+    /// Use [`DocumentApi::part_evaluation`] to tell those apart.
     pub fn part_world_bbox(&self, stable_id: &str) -> Option<([f64; 3], [f64; 3])> {
+        self.part_evaluation(stable_id)?.ok()??.try_bounding_box()
+    }
+
+    /// Evaluate one part's root. `None` for an unknown id; `Some(Err)` with
+    /// the evaluator's reason when the part failed (an overlarge fillet, an
+    /// impossible shell, …); `Some(Ok(None))` when it produced no solid.
+    pub fn part_evaluation(
+        &self,
+        stable_id: &str,
+    ) -> Option<Result<Option<vcad_kernel::Solid>, String>> {
         let state = self.get_state();
         let part = state.parts.iter().find(|p| p.id() == stable_id)?;
         let mut cache = HashMap::new();
-        let solid = vcad_eval::evaluate::evaluate_node(
-            part.root_node_id(),
-            &state.document.nodes,
-            &mut cache,
+        Some(
+            vcad_eval::evaluate::evaluate_node(
+                part.root_node_id(),
+                &state.document.nodes,
+                &mut cache,
+            )
+            .map_err(|e| e.to_string()),
         )
-        .ok()??;
-        Some(solid.bounding_box())
+    }
+
+    /// One line per part whose geometry failed to evaluate, `"<id>
+    /// \"<name>\": <reason>"`. Empty when every part evaluates. Loading a
+    /// document never fails on these (the user may be mid-fix), so a caller
+    /// that wants fail-closed loading — the agent's `create_cad_loon` —
+    /// checks this after the load.
+    pub fn evaluation_errors(&self) -> Vec<String> {
+        let state = self.get_state();
+        state
+            .parts
+            .iter()
+            .filter_map(|part| {
+                let id = part.id();
+                let err = self.part_evaluation(id)?.err()?;
+                let name = serde_json::to_value(part)
+                    .ok()
+                    .and_then(|v| v.get("name").and_then(|n| n.as_str()).map(String::from))
+                    .unwrap_or_default();
+                Some(format!("{id} \"{name}\": {err}"))
+            })
+            .collect()
     }
 
     /// Deterministic fingerprint of the materialized state (IR document +

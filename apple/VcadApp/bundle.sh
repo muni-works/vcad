@@ -66,6 +66,11 @@ ditto "$bin_dir/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
 # The agent bridge's stdio MCP shim ("Connect Claude…" points clients here).
 cp "$here/scripts/vcad-app-mcp.mjs" "$app/Contents/Resources/"
 
+# The vcad agent skill — the same file the npm tarball and the Claude Code
+# plugin ship (plugins/vcad), installed into ~/.claude/skills on consent.
+mkdir -p "$app/Contents/Resources/vcad-skill"
+cp "$here/../../plugins/vcad/skills/vcad/SKILL.md" "$app/Contents/Resources/vcad-skill/SKILL.md"
+
 # Sample projects for the welcome window (symlinks in the checkout are
 # copied as the files they point at).
 if [ -f "$here/Samples/samples.json" ]; then
@@ -73,7 +78,11 @@ if [ -f "$here/Samples/samples.json" ]; then
   cp -RL "$here/Samples/." "$app/Contents/Resources/samples/"
 fi
 
-# App + document icons, drawn by the app's own icon script when missing.
+# App + document icons: the committed brand icons (Branding/make-icns.sh from
+# the irys-rendered mark), else drawn by the app's own icon script.
+for icon in AppIcon DocumentIcon; do
+  [ -f "$here/Branding/$icon.icns" ] && mkdir -p "$here/dist" && cp "$here/Branding/$icon.icns" "$here/dist/"
+done
 if [ ! -f "$here/dist/AppIcon.icns" ]; then
   swift "$here/make-icon.swift" "$here/dist" >/dev/null 2>&1 || echo "(icon generation skipped)"
 fi
@@ -122,10 +131,29 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
       <key>LSItemContentTypes</key><array><string>io.vcad.document</string></array>
     </dict>
     <dict>
+      <key>CFBundleTypeName</key><string>STEP Model</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Default</string>
+      <key>LSItemContentTypes</key><array><string>io.vcad.step</string><string>com.shapr3d.step</string><string>com.shapr3d.stp</string></array>
+    </dict>
+    <dict>
       <key>CFBundleTypeName</key><string>loon Source</string>
       <key>CFBundleTypeRole</key><string>Viewer</string>
       <key>LSHandlerRank</key><string>Alternate</string>
       <key>LSItemContentTypes</key><array><string>io.vcad.loon</string></array>
+    </dict>
+  </array>
+  <key>UTImportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key><string>io.vcad.step</string>
+      <key>UTTypeDescription</key><string>STEP Model</string>
+      <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key><array><string>step</string><string>stp</string></array>
+        <key>public.mime-type</key><array><string>model/step</string><string>application/step</string></array>
+      </dict>
     </dict>
   </array>
   <key>UTExportedTypeDeclarations</key>
@@ -170,6 +198,13 @@ s = (s.replace("@VERSION@", version).replace("@BUILD@", build)
 open(path, "w").write(s)
 PY
 plutil -lint "$plist" >/dev/null
+
+# Bake the samples' solved meshes into the bundle (first open = cache hit, not
+# a cold solve). Default on for a release (BAKE_SAMPLES=0 skips), BAKE_SAMPLES=1 for dev builds.
+if [ "${BAKE_SAMPLES:-$release_build}" = 1 ] || [ "${BAKE_SAMPLES:-$release_build}" = true ]; then
+  echo "baking sample meshes…"
+  "$here/scripts/bake-sample-meshes.sh" "$app"
+fi
 
 if [ -z "$sign_identity" ]; then
   codesign --force --deep --sign - "$app" >/dev/null 2>&1 || echo "(codesign skipped)"

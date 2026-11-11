@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-10-step-bspline-import",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "fix",
+  "title": "STEP files with B-spline surfaces import whole",
+  "summary": "Rational and non-square B-spline faces no longer drop out of STEP imports, curved faces are trimmed to their edges, and opening such a file no longer shows the sample cube while it solves.",
+  "features": ["step", "import", "tessellation", "native", "mac"]
+}

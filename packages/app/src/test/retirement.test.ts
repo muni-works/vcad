@@ -18,7 +18,9 @@ const docOf = (appUrl: string) => {
 
 describe("retirement flag", () => {
   it("defaults off", () => {
-    expect(retirementRedirectsEnabled({})).toBe(false);
+    expect(retirementRedirectsEnabled({})).toBe(true);
+    expect(retirementRedirectsEnabled({ DEV: true })).toBe(false);
+    expect(retirementRedirectsEnabled({ DEV: true, VITE_VCAD_RETIREMENT_REDIRECTS: "1" })).toBe(true);
     expect(retirementRedirectsEnabled({ VITE_VCAD_RETIREMENT_REDIRECTS: "0" })).toBe(false);
     expect(retirementRedirectsEnabled({ VITE_VCAD_RETIREMENT_REDIRECTS: "1" })).toBe(true);
   });

@@ -199,12 +199,18 @@ fn row_rhs_column(
             let rows = crate::tangency_rows(plane_normal, s, &[seed], x)?;
             Ok(rows[index].rhs)
         }
+        RowSource::Carry { surface, direction } => {
+            let s = brep.geometry.surfaces[surface].as_ref();
+            crate::seam::carry_rhs(s, &[seed], x, direction)
+        }
     }
 }
 
 fn source_surface(source: &RowSource) -> usize {
     match *source {
-        RowSource::Constraint { surface } | RowSource::Tangency { surface, .. } => surface,
+        RowSource::Constraint { surface }
+        | RowSource::Tangency { surface, .. }
+        | RowSource::Carry { surface, .. } => surface,
     }
 }
 

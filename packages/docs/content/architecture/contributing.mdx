@@ -12,7 +12,7 @@ This page covers everything you need to build, test, and contribute to vcad. The
 
 **Node.js.** Version 20 or newer. The TypeScript workspace spans all packages under `packages/`. Use npm (not yarn or pnpm) as the package manager.
 
-**Optional tools.** `cargo-watch` for auto-rebuilding on file changes. `supabase` CLI for database migrations. `gh` CLI for GitHub operations.
+**Optional tools.** `cargo-watch` for auto-rebuilding on file changes. `gh` CLI for GitHub operations.
 
 ## Building
 
@@ -99,17 +99,6 @@ The changelog lives in `changelog/entries/` (one JSON file per entry — no mark
 ## PR Process
 
 Branch from `main` with a descriptive branch name (`feat/fillet-chamfer`, `fix/boolean-edge-case`). Write clear commit messages. Ensure the CI suite passes: all tests green, clippy clean, formatting correct. Keep PRs focused on a single feature or fix. Reviewers will check for correctness, test coverage, documentation, and adherence to project conventions.
-
-## Database Migrations
-
-Cloud sync uses Supabase (Postgres + Auth). Migrations live in `supabase/migrations/`. To add a migration:
-
-1. Create `supabase/migrations/NNN_description.sql`.
-2. Test locally with `supabase db reset` if running local Supabase.
-3. Preview changes with `supabase db push --dry-run`.
-4. Deploy with `supabase db push`.
-
-Never commit Supabase secrets or OAuth configuration -- those are managed in the Supabase dashboard.
 
 ## Related Pages
 

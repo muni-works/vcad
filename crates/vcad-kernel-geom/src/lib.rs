@@ -73,6 +73,97 @@ pub trait Surface: Send + Sync + std::fmt::Debug {
     }
 }
 
+/// A `(n+1)²` grid of `(uv, point)` samples over `domain`, the coarse seed
+/// set for [`invert_surface_point`].
+pub fn surface_sample_grid(
+    surface: &dyn Surface,
+    domain: ((f64, f64), (f64, f64)),
+    n: usize,
+) -> Vec<(Point2, Point3)> {
+    let ((u0, u1), (v0, v1)) = domain;
+    let n = n.max(1);
+    let mut grid = Vec::with_capacity((n + 1) * (n + 1));
+    for j in 0..=n {
+        for i in 0..=n {
+            let uv = Point2::new(
+                u0 + (u1 - u0) * i as f64 / n as f64,
+                v0 + (v1 - v0) * j as f64 / n as f64,
+            );
+            grid.push((uv, surface.evaluate(uv)));
+        }
+    }
+    grid
+}
+
+/// Closest-point inversion of `p` onto a parametric surface: `(uv, distance)`.
+///
+/// Gauss-Newton on `|S(u,v) - p|²` from `guess` (the previous boundary
+/// point's parameters — loops are densely sampled, so that is almost always
+/// in the right basin) and, when that does not land, from the few nearest
+/// samples of a coarse `grid` (see [`surface_sample_grid`]). Parameters are
+/// clamped to `domain`.
+pub fn invert_surface_point(
+    surface: &dyn Surface,
+    domain: ((f64, f64), (f64, f64)),
+    p: &Point3,
+    guess: Option<Point2>,
+    grid: &[(Point2, Point3)],
+    tol: f64,
+) -> (Point2, f64) {
+    let ((u0, u1), (v0, v1)) = domain;
+    let newton = |mut uv: Point2| -> (Point2, f64) {
+        for _ in 0..30 {
+            let s = surface.evaluate(uv);
+            let r = s - p;
+            let (su, sv) = (surface.d_du(uv), surface.d_dv(uv));
+            let (a, b, c) = (su.dot(su), su.dot(sv), sv.dot(sv));
+            let (g0, g1) = (r.dot(su), r.dot(sv));
+            let det = a * c - b * b;
+            if det.is_nan() || det.abs() <= 1e-300 {
+                break;
+            }
+            let du = -(c * g0 - b * g1) / det;
+            let dv = -(a * g1 - b * g0) / det;
+            let next = Point2::new((uv.x + du).clamp(u0, u1), (uv.y + dv).clamp(v0, v1));
+            let step = (next - uv).norm();
+            uv = next;
+            if step < 1e-14 * (1.0 + (u1 - u0).abs() + (v1 - v0).abs()) {
+                break;
+            }
+        }
+        (uv, (surface.evaluate(uv) - p).norm())
+    };
+    let mut best = (Point2::new(u0, v0), f64::INFINITY);
+    if let Some(g) = guess {
+        best = newton(g);
+        if best.1 <= tol {
+            return best;
+        }
+    }
+    // A few nearest grid samples, not just one: on a strongly curved patch
+    // the nearest sample can sit in a neighbouring basin.
+    let mut order: Vec<(f64, Point2)> = grid
+        .iter()
+        .map(|g| ((g.1 - p).norm_squared(), g.0))
+        .collect();
+    let k = order.len().min(4);
+    if k > 0 {
+        order.select_nth_unstable_by(k - 1, |a, b| {
+            a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+    for &(_, start) in &order[..k] {
+        let cand = newton(start);
+        if cand.1 < best.1 {
+            best = cand;
+            if best.1 <= tol {
+                break;
+            }
+        }
+    }
+    best
+}
+
 impl Clone for Box<dyn Surface> {
     fn clone(&self) -> Self {
         self.clone_box()

@@ -2,6 +2,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
 use crate::entities::{
     curves::{parse_curve, StepCurve},
@@ -40,6 +41,73 @@ const MAX_EDGES_PER_LOOP: usize = 100_000;
 /// Works in 3D — the magnitude of the cross-product sum gives twice the area.
 fn loop_area_3d(topo: &Topology, loop_id: LoopId) -> f64 {
     loop_newell_normal(topo, loop_id).norm() * 0.5
+}
+
+/// Signed area of a loop pulled back into a surface's (u, v) parameters:
+/// positive when the loop winds counter-clockwise about `∂u × ∂v`.
+///
+/// `None` when the answer is not trustworthy: a vertex that does not invert
+/// onto the surface, a loop that crosses a periodic seam (its parameter
+/// polygon would wrap), or a degenerate polygon.
+fn loop_winding_in_uv(
+    topo: &Topology,
+    loop_id: LoopId,
+    surface: &dyn vcad_kernel_geom::Surface,
+) -> Option<f64> {
+    use vcad_kernel_math::Point2;
+    let mut pts: Vec<vcad_kernel_math::Point3> = topo
+        .loop_half_edges(loop_id)
+        .map(|he| topo.vertices[topo.half_edges[he].origin].point)
+        .collect();
+    pts.dedup_by(|a, b| (*a - *b).norm() < 1e-12);
+    if pts.len() < 3 {
+        return None;
+    }
+    let (mut lo, mut hi) = (pts[0], pts[0]);
+    for p in &pts {
+        lo = vcad_kernel_math::Point3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+        hi = vcad_kernel_math::Point3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+    }
+    let tol = (1e-4 * (hi - lo).norm()).max(1e-3);
+    let domain = surface.domain();
+    let ((u0, u1), (v0, v1)) = domain;
+    let grid = vcad_kernel_geom::surface_sample_grid(surface, domain, 16);
+    let mut guess: Option<Point2> = None;
+    let mut uv = Vec::with_capacity(pts.len());
+    for p in &pts {
+        let (w, d) = vcad_kernel_geom::invert_surface_point(surface, domain, p, guess, &grid, tol);
+        if d > 10.0 * tol {
+            return None;
+        }
+        guess = Some(w);
+        uv.push(w);
+    }
+    // A seam crossing shows as a half-domain jump; only a closed direction
+    // can do that, and there the polygon's sign would be meaningless.
+    let closed =
+        |a: Point2, b: Point2| (surface.evaluate(a) - surface.evaluate(b)).norm() <= 10.0 * tol;
+    let closed_u = closed(
+        Point2::new(u0, 0.5 * (v0 + v1)),
+        Point2::new(u1, 0.5 * (v0 + v1)),
+    );
+    let closed_v = closed(
+        Point2::new(0.5 * (u0 + u1), v0),
+        Point2::new(0.5 * (u0 + u1), v1),
+    );
+    let n = uv.len();
+    let mut area = 0.0;
+    for i in 0..n {
+        let (a, b) = (uv[i], uv[(i + 1) % n]);
+        if (closed_u && (a.x - b.x).abs() > 0.5 * (u1 - u0))
+            || (closed_v && (a.y - b.y).abs() > 0.5 * (v1 - v0))
+        {
+            return None;
+        }
+        area += a.x * b.y - b.x * a.y;
+    }
+    let area = 0.5 * area;
+    let box_area = (u1 - u0).abs() * (v1 - v0).abs();
+    (area.is_finite() && area.abs() > 1e-9 * box_area.max(1e-300)).then_some(area)
 }
 
 /// Newell's normal of a loop: its direction follows the loop's winding
@@ -207,6 +275,106 @@ pub fn read_step_from_buffer_with_report(data: &[u8]) -> Result<ReadResult, Step
     reader.read_all_solids()
 }
 
+/// Read a STEP file from a path, publishing progress to `progress` as it
+/// goes and stopping with [`StepError::Cancelled`] once
+/// [`StepProgress::cancel`] has been called (checked once per face).
+pub fn read_step_with_progress(
+    path: impl AsRef<Path>,
+    progress: &StepProgress,
+) -> Result<ReadResult, StepError> {
+    progress.set_stage(StepStage::Reading, 0, 0);
+    let data = std::fs::read(path)?;
+    progress.check()?;
+    progress.set_stage(StepStage::Parsing, 0, 0);
+    let step_file = Parser::parse(&data)?;
+    progress.check()?;
+    let mut reader = StepReader::new(&step_file);
+    reader.progress = Some(progress);
+    let r = reader.read_all_solids()?;
+    let total = progress.total.load(Ordering::Relaxed);
+    progress.set_stage(StepStage::Done, total, total);
+    Ok(r)
+}
+
+/// What a progress-reporting STEP read is doing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum StepStage {
+    /// Reading the file's bytes.
+    Reading = 0,
+    /// Tokenising entities (one pass, no count).
+    Parsing = 1,
+    /// Building B-rep faces: `done` of `total` across every solid.
+    Faces = 2,
+    /// Finished.
+    Done = 3,
+}
+
+impl StepStage {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Reading,
+            1 => Self::Parsing,
+            2 => Self::Faces,
+            _ => Self::Done,
+        }
+    }
+}
+
+/// Lock-free progress + cancel flag shared between a STEP read and whoever
+/// is watching it (another thread polls [`StepProgress::snapshot`]).
+#[derive(Debug, Default)]
+pub struct StepProgress {
+    stage: AtomicU8,
+    done: AtomicUsize,
+    total: AtomicUsize,
+    cancelled: AtomicBool,
+}
+
+impl StepProgress {
+    /// A fresh tracker (stage `Reading`, 0 of 0).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// `(stage, done, total)` right now.
+    pub fn snapshot(&self) -> (StepStage, usize, usize) {
+        (
+            StepStage::from_u8(self.stage.load(Ordering::Acquire)),
+            self.done.load(Ordering::Relaxed),
+            self.total.load(Ordering::Relaxed),
+        )
+    }
+
+    /// Ask the read to stop at the next face.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    /// True once [`StepProgress::cancel`] was called.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    fn set_stage(&self, stage: StepStage, done: usize, total: usize) {
+        self.done.store(done, Ordering::Relaxed);
+        self.total.store(total, Ordering::Relaxed);
+        self.stage.store(stage as u8, Ordering::Release);
+    }
+
+    fn check(&self) -> Result<(), StepError> {
+        if self.is_cancelled() {
+            Err(StepError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn tick(&self) {
+        self.done.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 /// Read a single solid by its `MANIFOLD_SOLID_BREP` entity ID.
 ///
 /// Creates a fresh reader state so maps from other solids don't bleed in.
@@ -301,6 +469,8 @@ pub(crate) struct StepReader<'a> {
     /// Millimetres per file length unit (1.0 when the file declares mm or
     /// declares nothing).
     length_scale: f64,
+    /// Optional progress/cancel sink (see [`read_step_with_progress`]).
+    progress: Option<&'a StepProgress>,
 }
 
 impl<'a> StepReader<'a> {
@@ -313,6 +483,7 @@ impl<'a> StepReader<'a> {
             surface_map: HashMap::new(),
             subdivided_edges: HashMap::new(),
             length_scale: length_unit_mm(file),
+            progress: None,
         }
     }
 
@@ -416,6 +587,16 @@ impl<'a> StepReader<'a> {
             }
         };
 
+        if let Some(p) = self.progress {
+            // Total faces across every solid, so the bar spans the file.
+            let total: usize = solid_ids
+                .iter()
+                .filter_map(|&id| parse_manifold_solid_brep(self.file, id).ok())
+                .filter_map(|s| parse_shell(self.file, s.outer_shell_id).ok())
+                .map(|sh| sh.face_ids.len())
+                .sum();
+            p.set_stage(StepStage::Faces, 0, total);
+        }
         let mut solids = Vec::new();
         let mut report = StepImportReport::default();
         for entity_id in solid_ids {
@@ -432,6 +613,10 @@ impl<'a> StepReader<'a> {
         }
 
         Ok(ReadResult { solids, report })
+    }
+
+    fn check_cancelled(&self) -> Result<(), StepError> {
+        self.progress.map_or(Ok(()), StepProgress::check)
     }
 
     pub(crate) fn read_solid(
@@ -473,6 +658,7 @@ impl<'a> StepReader<'a> {
 
         // First pass: collect all vertices and surfaces
         for &face_id in &step_shell.face_ids {
+            self.check_cancelled()?;
             let step_face = parse_advanced_face(self.file, face_id)?;
 
             // Parse and store surface - skip face if surface type unsupported
@@ -532,6 +718,7 @@ impl<'a> StepReader<'a> {
         // For CIRCLE edges, sample intermediate points along the arc.
         // For B-spline/trimmed-curve edges, sample intermediate points too.
         for &face_id in &step_shell.face_ids {
+            self.check_cancelled()?;
             if skipped_faces.contains(&face_id) {
                 continue;
             }
@@ -569,6 +756,7 @@ impl<'a> StepReader<'a> {
                         &curve,
                         Some(StepCurve::Circle(_))
                             | Some(StepCurve::BSpline(_))
+                            | Some(StepCurve::Nurbs(_))
                             | Some(StepCurve::Trimmed(_))
                     );
 
@@ -608,8 +796,13 @@ impl<'a> StepReader<'a> {
         let mut vcad_face_ids = Vec::new();
         // Plane surface index -> index of its normal-flipped copy.
         let mut flipped_planes: HashMap<usize, usize> = HashMap::new();
+        let mut reoriented_faces = 0usize;
 
         for &face_id in &step_shell.face_ids {
+            self.check_cancelled()?;
+            if let Some(p) = self.progress {
+                p.tick();
+            }
             if skipped_faces.contains(&face_id) {
                 continue;
             }
@@ -716,11 +909,43 @@ impl<'a> StepReader<'a> {
                 };
             }
 
+            // A B-spline face's `same_sense` is checked against its own
+            // boundary. Conforming STEP winds the outer loop counter-
+            // clockwise about the FACE normal, and the loops are what the
+            // neighbouring faces agree on (every edge is used once each way).
+            // SolidWorks has been seen writing `same_sense` backwards on a
+            // handful of fillet patches (411080037.STEP: 8 of 113), whose
+            // meshes then faced into the solid against all their neighbours
+            // — OCCT's reader repairs the same faces. Where the loop's
+            // parameter-space winding is unambiguous, it decides.
+            if geom.surfaces[surface_idx].surface_type() == vcad_kernel_geom::SurfaceKind::BSpline {
+                if let Some(area) =
+                    loop_winding_in_uv(&topo, outer, geom.surfaces[surface_idx].as_ref())
+                {
+                    let loop_says_forward = area > 0.0;
+                    if loop_says_forward != (orientation == Orientation::Forward) {
+                        orientation = if loop_says_forward {
+                            Orientation::Forward
+                        } else {
+                            Orientation::Reversed
+                        };
+                        reoriented_faces += 1;
+                    }
+                }
+            }
+
             let face_id = topo.add_face(outer, surface_idx, orientation);
             for inner in inner_loops {
                 topo.add_inner_loop(face_id, inner);
             }
             vcad_face_ids.push(face_id);
+        }
+
+        if reoriented_faces > 0 {
+            solid_report.notes.push(format!(
+                "{reoriented_faces} B-spline face{} oriented by its boundary loop: same_sense contradicted the loop winding",
+                if reoriented_faces == 1 { "" } else { "s" }
+            ));
         }
 
         // Create shell and solid
@@ -841,7 +1066,9 @@ impl<'a> StepReader<'a> {
             StepCurve::Circle(circle) => {
                 self.sample_circle_arc(topo, circle, curve, edge, oe, start_v, end_v)
             }
-            StepCurve::BSpline(_) => self.sample_bspline(topo, curve, edge, oe, start_v, end_v),
+            StepCurve::BSpline(_) | StepCurve::Nurbs(_) => {
+                self.sample_bspline(topo, curve, edge, oe, start_v, end_v)
+            }
             // Line or other simple curves don't need intermediate points
             _ => vec![],
         }

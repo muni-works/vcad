@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-10-fusion-nav-contact-shadow",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "feat",
+  "title": "Fusion 360 mouse controls; grounded contact shadow",
+  "summary": "The Mac app defaults to Fusion 360 navigation (middle-drag pan, Shift orbit, zoom at cursor; classic in Settings), and parts cast a footprint-shaped contact shadow.",
+  "features": ["native", "mac", "viewport", "navigation"]
+}

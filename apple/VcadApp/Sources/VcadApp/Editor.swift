@@ -375,6 +375,8 @@ final class EditorModel {
     /// The inspector's Measurements disclosure, remembered across launches.
     var measurementsShown = false { didSet { saveLayout() } }
 
+    /// Save As re-points `source` at the same document: keep the sketch etc.
+    @ObservationIgnored private var sourceRenameOnly = false
     var source: GeometrySource = .sandbox {
         didSet {
             geometryDirty = true
@@ -385,6 +387,7 @@ final class EditorModel {
                 agentLinkBaseDir = nil; agentPoseSurfacedLink = nil
                 agentBaseFirst = nil; agentBaseDelta = nil
                 cameraUserMoved = false; agentFramedSize = nil; agentFramePending = false
+                if !sourceRenameOnly { resetTransientDocumentState() }
             }
             watchDocumentFile()                   // hot reload on regenerate
             loadDocumentTree()                    // parse the DAG for a .vcad
@@ -434,6 +437,15 @@ final class EditorModel {
     // Picking.
     /// Why the last evaluation produced nothing, when it produced nothing.
     var loadError: String?
+    /// A new document opening (import + first solve): drives the progress
+    /// card. Nil for re-solves of the open document.
+    var loading: LoadProgress?
+    /// What was open before `loading` began — Cancel returns to it.
+    @ObservationIgnored var loadingPrevious: GeometrySource?
+    /// Shown when the first solve lands (STEP faces skipped).
+    @ObservationIgnored var pendingLoadWarning: LoadProgress.Phase?
+    @ObservationIgnored private var stepJob: OpaquePointer?
+    @ObservationIgnored private var stepPoll: Task<Void, Never>?
     var pickPoint: SIMD3<Float>?
     var pickInfo: String?
     var pickDirty = false
@@ -1835,6 +1847,29 @@ final class EditorModel {
         aimCamera(at: frame)
         sketchDirty = true
     }
+    /// Per-document transient UI state that must not survive a document
+    /// switch: an open sketch (discarded like the sketch bar's ✕ — it was never
+    /// part of the old document's DAG), the armed palette tool, a pending
+    /// boolean, an open feature dialog, measure/section, face/edge picks and
+    /// hover. The workspace is a remembered preference and stays.
+    func resetTransientDocumentState() {
+        if sketching || sketch != nil { exitSketch() }
+        cameraBeforeSketch = nil
+        sketchPlaneChosen = false
+        loftProfiles = []
+        sketchOffsetPrompt = false
+        sketchDoneHovered = false; sketchBlockerShownUntil = nil
+        armedShape = nil
+        pendingBoolean = nil
+        activeFeatureOp = nil
+        measuring = false
+        section = nil
+        picking.clear()
+        selectedInstanceIndex = nil
+        hoveredPartIndex = nil; hoveredInstanceIndex = nil; hoveredInstances = []
+        hoveredFeatureID = nil; hoveredGizmoHandle = nil; hoveredHandle = nil
+        hoverDirty = true
+    }
     func exitSketch() {
         sketching = false
         sketch = nil
@@ -2281,7 +2316,9 @@ final class EditorModel {
         // into) rather than reopening the file we just wrote.
         let keptUndo = undoStack, keptRedo = redoStack
         let keptEngine = engine, keptState = engineState
+        sourceRenameOnly = true
         source = .document(path: url.path, label: url.deletingPathExtension().lastPathComponent)
+        sourceRenameOnly = false
         if let keptEngine, let keptState {
             engine = keptEngine; engineError = nil
             savedHash = keptEngine.stateHash
@@ -3148,6 +3185,7 @@ final class EditorModel {
     }
 
     func openDocument(_ url: URL) {
+        LaunchPerf.once("open", " (\(url.lastPathComponent))")
         let label = url.deletingPathExtension().lastPathComponent
         // A DXF is an outline to machine, not a document: it lands in
         // Manufacture as contour operations on the current part.
@@ -3185,21 +3223,173 @@ final class EditorModel {
             return
         }
         if url.pathExtension.lowercased() == "loon" {
+            beginFirstSolve(url)
             source = .document(path: url.path, label: label)
             rememberRecent(url)
+            return
+        }
+        // STEP in the live window: imported on the kernel's thread with a
+        // progress card (Cancel returns to whatever was open before).
+        if evaluatesOffMainThread, ["step", "stp"].contains(url.pathExtension.lowercased()) {
+            beginStepImport(url)
             return
         }
         // STEP / URDF: convert through the kernel into a .vcad beside the
         // app's import cache, then open that as an ordinary document.
         if ["step", "stp", "urdf"].contains(url.pathExtension.lowercased()) {
             guard let converted = importForeign(url) else { return }
+            beginFirstSolve(url)
             source = .document(path: converted.path, label: label)
             rememberRecent(url)
             return
         }
         importMeshBundle(for: url)          // instant open when the file shipped with its meshes
+        beginFirstSolve(url)
         source = .document(path: url.path, label: label)
         rememberRecent(url)
+    }
+
+    // MARK: open progress (LoadProgress.swift)
+
+    /// Show the open-progress card for `url`'s first solve (live window only;
+    /// a re-solve of the open document never gets one).
+    private func beginFirstSolve(_ url: URL) {
+        guard evaluatesOffMainThread else { return }
+        if loading == nil || loading?.url != url {
+            stopStepImport()
+            loadingPrevious = source
+            loading = LoadProgress(url: url, phase: .evaluating(done: 0, total: 0))
+        } else {
+            loading?.phase = .evaluating(done: 0, total: 0)
+        }
+    }
+
+    /// Start a cancellable STEP import; the document switches when it lands.
+    func beginStepImport(_ url: URL) {
+        stopStepImport()
+        if loading?.isEvaluating == true { abandonEvaluation() }
+        let job = url.path.withCString { vcad_import_step_start($0) }
+        guard let job else {
+            loadError = "Couldn't import \(url.lastPathComponent): \(SimError.pending() ?? "unknown error")"
+            loading = LoadProgress(url: url, phase: LoadProgress.failure(loadError, fallback: "Import failed"))
+            return
+        }
+        if loading == nil || loading?.isFailed == true || loading?.url != url { loadingPrevious = source }
+        loading = LoadProgress(url: url)
+        stepJob = job
+        geometryDirty = true             // the stage drops the previous model
+        let label = url.deletingPathExtension().lastPathComponent
+        stepPoll = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.stepJob == job else { return }
+                var stage: UInt32 = 0, done = 0, total = 0
+                let finished = vcad_import_step_poll(job, &stage, &done, &total)
+                let phase = LoadProgress.importPhase(stage: stage, done: done, total: total)
+                if !finished, self.loading?.phase != phase, self.loading?.isImporting == true {
+                    self.loading?.phase = phase
+                }
+                if finished {
+                    self.stepJob = nil
+                    let raw = vcad_import_step_finish(job)     // joins the thread
+                    guard let raw else {
+                        let err = SimError.pending()
+                        if err?.contains("cancelled") == true { return }
+                        self.loading?.phase = LoadProgress.failure(err.map { "Couldn't import \(url.lastPathComponent): \($0)" },
+                                                                   fallback: "Couldn't import \(url.lastPathComponent)")
+                        self.geometryDirty = true
+                        return
+                    }
+                    let text = String(cString: raw)
+                    vcad_string_free(raw)
+                    guard let written = self.writeImportedStep(text, from: url) else {
+                        self.loading?.phase = LoadProgress.failure(self.loadError, fallback: "Couldn't write the imported document")
+                        self.geometryDirty = true
+                        return
+                    }
+                    self.pendingLoadWarning = written.warning
+                    self.loading?.phase = .evaluating(done: 0, total: 0)
+                    self.source = .document(path: written.url.path, label: label)
+                    self.rememberRecent(url)
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(80))
+            }
+        }
+    }
+
+    /// Cancel the in-flight import or first solve and go back to what was
+    /// open before (or the empty sandbox).
+    func cancelLoading() {
+        guard let load = loading, load.isRunning else { return }
+        let previous = loadingPrevious ?? .sandbox
+        loading = nil
+        pendingLoadWarning = nil
+        loadingPrevious = nil
+        if load.isImporting {
+            stopStepImport()
+            geometryDirty = true         // redraw the document we never left
+        } else {
+            abandonEvaluation()
+            if source != previous { source = previous } else { geometryDirty = true }
+        }
+    }
+
+    /// Run the failed open again.
+    func retryLoading() {
+        guard let url = loading?.url else { return }
+        let previous = loadingPrevious
+        loading = nil
+        loadError = nil
+        openDocument(url)
+        if loadingPrevious == nil || loadingPrevious == source { loadingPrevious = previous }
+    }
+
+    /// Close the failure / warning card. A failed import leaves the previous
+    /// document as it was; a failed solve leaves the new document open.
+    func dismissLoading() {
+        loading = nil
+        loadingPrevious = nil
+        pendingLoadWarning = nil
+        geometryDirty = true
+    }
+
+    /// Cancel the STEP job (if any) and join its thread off the main actor.
+    private func stopStepImport() {
+        stepPoll?.cancel(); stepPoll = nil
+        guard let job = stepJob else { return }
+        stepJob = nil
+        vcad_import_step_cancel(job)
+        let token = UInt(bitPattern: job)
+        Task.detached(priority: .utility) {
+            guard let j = OpaquePointer(bitPattern: token) else { return }
+            if let raw = vcad_import_step_finish(j) { vcad_string_free(raw) }
+        }
+    }
+
+    /// Drop the in-flight background evaluation (the kernel thread finishes
+    /// on its own and its result is discarded).
+    private func abandonEvaluation() {
+        evalPoll?.cancel(); evalPoll = nil
+        if let job = evalJob { vcad_eval_abandon(job); evalJob = nil }
+        evaluating = nil
+        solving = false
+        solveProgress = (0, 0)
+        partialMeshes = []; partialBounds = nil
+    }
+
+    /// The first solve landed (or failed): fold the card away, or keep it up
+    /// with what went wrong.
+    private func finishFirstSolve(error: String?) {
+        guard loading?.isEvaluating == true else { return }
+        if let error {
+            loading?.phase = LoadProgress.failure(error, fallback: "Couldn't open")
+        } else if let w = pendingLoadWarning {
+            loading?.phase = w
+        } else {
+            loading = nil
+            loadingPrevious = nil
+        }
+        pendingLoadWarning = nil
     }
 
     /// Convert a STEP or URDF file to a .vcad document in
@@ -3213,12 +3403,28 @@ final class EditorModel {
             return nil
         }
         defer { vcad_string_free(raw) }
-        var data = Data(String(cString: raw).utf8)
-        // STEP comes wrapped: {"document": …, "solids": N}.
-        if ext != "urdf",
-           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let text = String(cString: raw)
+        if ext == "urdf" { return writeImported(Data(text.utf8), from: url) }
+        return writeImportedStep(text, from: url)?.url
+    }
+
+    /// Unwrap a STEP import result (`{"document", "solids", "skipped_faces",
+    /// "warnings"?}`), write the document, and say whether faces were dropped.
+    func writeImportedStep(_ text: String, from url: URL) -> (url: URL, warning: LoadProgress.Phase?)? {
+        var data = Data(text.utf8)
+        var warning: LoadProgress.Phase?
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let doc = obj["document"],
-           let d = try? JSONSerialization.data(withJSONObject: doc) { data = d }
+           let d = try? JSONSerialization.data(withJSONObject: doc) {
+            data = d
+            warning = LoadProgress.importWarning(skippedFaces: obj["skipped_faces"] as? Int ?? 0,
+                                                 report: obj["warnings"] as? String)
+        }
+        guard let out = writeImported(data, from: url) else { return nil }
+        return (out, warning)
+    }
+
+    private func writeImported(_ data: Data, from url: URL) -> URL? {
         let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("vcad/imports", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -3431,12 +3637,21 @@ final class EditorModel {
     // MARK: scene building
 
     func buildScene() -> RenderScene {
+        let scene: RenderScene
         switch source {
-        case .sandbox: return documentJSON == nil ? sandboxScene() : documentScene(path: "")
-        case .document(let path, _): return documentScene(path: path)
-        case .generated(let loon, _): return generatedScene(loon: loon)
-        case .gripper: return gripperScene()
+        case .sandbox: scene = documentJSON == nil ? sandboxScene() : documentScene(path: "")
+        case .document(let path, _): scene = documentScene(path: path)
+        case .generated(let loon, _): scene = generatedScene(loon: loon)
+        case .gripper: scene = gripperScene()
         }
+        // The first solve's result is on screen (or the document refused):
+        // the open-progress card is done. Deferred: this runs inside a view
+        // update, which must not mutate observed state.
+        if !scene.solving, loading?.isEvaluating == true {
+            let err = scene.meshes.isEmpty ? loadError : nil
+            Task { @MainActor [weak self] in self?.finishFirstSolve(error: err) }
+        }
+        return scene
     }
 
     /// Validate a generated loon program; if it evaluates to geometry, switch the
@@ -3675,6 +3890,8 @@ final class EditorModel {
         guard let job else {
             solving = false; evaluating = nil
             loadError = SimError.pending() ?? "The kernel could not read this document"
+            let err = loadError
+            Task { @MainActor [weak self] in self?.finishFirstSolve(error: err) }
             return
         }
         evalJob = job
@@ -3686,6 +3903,9 @@ final class EditorModel {
                 let finished = vcad_eval_progress(job, &done, &total)
                 if total > 0, done != self.solveProgress.done || total != self.solveProgress.total {
                     self.solveProgress = (done, total)
+                    if self.loading?.isEvaluating == true {
+                        self.loading?.phase = .evaluating(done: done, total: total)
+                    }
                 }
                 // Draw newly landed parts now rather than after the last one.
                 var newParts = false
@@ -3701,7 +3921,15 @@ final class EditorModel {
                     }
                     landed += 1
                 }
+                if newParts {
+                    LaunchPerf.once("first part landed")
+                    if self.loading?.isEvaluating == true, self.loading?.landedGeometry == false {
+                        self.loading?.landedGeometry = true
+                    }
+                }
                 if finished {
+                    LaunchPerf.once("solved", String(format: " (solve %.0f ms, %d parts)",
+                                                     Date().timeIntervalSince(started) * 1000, total))
                     self.evalJob = nil
                     let handle = vcad_eval_finish(job)
                     self.evaluating = nil
@@ -3711,6 +3939,7 @@ final class EditorModel {
                         self.preparedScene = (data, handle)
                     } else {
                         self.loadError = SimError.pending() ?? "The kernel could not evaluate this document"
+                        self.finishFirstSolve(error: self.loadError)
                     }
                     self.solveMillis = Date().timeIntervalSince(started) * 1000
                     self.geometryDirty = true                // the viewport adopts it

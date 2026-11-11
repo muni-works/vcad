@@ -231,6 +231,21 @@ pub enum BlendError {
     DoesNotFit(String),
     /// The shell operation could not offset the solid.
     Shell(String),
+    /// The fillet radius / chamfer distance is zero, negative, or not a
+    /// finite number.
+    InvalidSize(f64),
+    /// The radius / setback cannot fit the solid at all: it reaches half
+    /// the solid's thinnest bounding-box extent, where opposing blends
+    /// meet. (A necessary bound, not a sufficient one — smaller features
+    /// can still refuse with a more local reason.)
+    SizeExceedsLimit {
+        /// The operation ("fillet radius" / "chamfer distance").
+        what: &'static str,
+        /// The requested size in mm.
+        size: f64,
+        /// The exclusive upper bound in mm.
+        limit: f64,
+    },
 }
 
 /// A reference to one face of a solid: a persistent name, a geometric
@@ -277,6 +292,14 @@ impl std::fmt::Display for BlendError {
             Self::NamedEdge(e) => write!(f, "named edge: {e}"),
             Self::DoesNotFit(msg) => write!(f, "{msg}"),
             Self::Shell(msg) => write!(f, "shell failed: {msg}"),
+            Self::SizeExceedsLimit { what, size, limit } => write!(
+                f,
+                "{what} {size} mm exceeds the {limit:.4} mm limit for this solid \
+                 (half its thinnest extent) — opposing blends would meet"
+            ),
+            Self::InvalidSize(v) => {
+                write!(f, "blend size must be a positive finite number, got {v}")
+            }
         }
     }
 }
@@ -888,9 +911,15 @@ impl Solid {
     /// silently unchamfered solid. Use [`Solid::chamfer_lenient`] for
     /// best-effort behavior with a report.
     pub fn chamfer(&self, distance: f64) -> Result<Solid, BlendError> {
+        if !distance.is_finite() || distance <= 0.0 {
+            return Err(BlendError::InvalidSize(distance));
+        }
         let SolidRepr::BRep(brep) = &self.repr else {
             return Err(self.non_brep_error());
         };
+        if let Some(e) = blend_size_limit(brep, "chamfer distance", distance) {
+            return Err(e);
+        }
         // Bodies of revolution: exact cone-band chamfers on circular edges.
         if let Some((result, _)) = self.revolved_blend(
             brep,
@@ -977,11 +1006,21 @@ impl Solid {
     pub fn fillet_reported(&self, radius: f64) -> (Result<Solid, BlendError>, BlendReport) {
         let mut report = BlendReport::default();
 
+        if !radius.is_finite() || radius <= 0.0 {
+            let e = BlendError::InvalidSize(radius);
+            report.declined = Some(e.clone());
+            return (Err(e), report);
+        }
         let SolidRepr::BRep(brep) = &self.repr else {
             let e = self.non_brep_error();
             report.declined = Some(e.clone());
             return (Err(e), report);
         };
+
+        if let Some(e) = blend_size_limit(brep, "fillet radius", radius) {
+            report.declined = Some(e.clone());
+            return (Err(e), report);
+        }
 
         // Bodies of revolution (cylinders, cups, turned parts): every edge
         // is a closed circle, which the per-edge builders can't trim — round
@@ -1354,34 +1393,50 @@ impl Solid {
         Result<Solid, BlendError>,
         Option<vcad_kernel_shell::ShellError>,
     ) {
-        match &self.repr {
-            SolidRepr::Empty => (Err(BlendError::EmptySolid), None),
+        if !thickness.is_finite() || thickness <= 0.0 {
+            return (
+                Err(BlendError::Shell(
+                    vcad_kernel_shell::ShellError::InvalidThickness(thickness).to_string(),
+                )),
+                None,
+            );
+        }
+        let (repr, degraded) = match &self.repr {
+            SolidRepr::Empty => return (Err(BlendError::EmptySolid), None),
             SolidRepr::BRep(brep) => {
-                let (inner, degraded) =
-                    match vcad_kernel_shell::shell_brep_analytical(brep, thickness, &[]) {
-                        Ok(b) => (b, None),
-                        Err(e) => (vcad_kernel_shell::shell_brep(brep, thickness), Some(e)),
-                    };
-                (
-                    Ok(Solid {
-                        names: None,
-                        provenance: self.provenance.clone(),
-                        repr: SolidRepr::BRep(Box::new(inner)),
-                        segments: self.segments,
-                    }),
-                    degraded,
-                )
+                match vcad_kernel_shell::shell_brep_analytical(brep, thickness, &[]) {
+                    Ok(b) => (SolidRepr::BRep(Box::new(b)), None),
+                    // The thickness itself is impossible: a mesh offset
+                    // would just build the same collapsed / inverted body
+                    // in triangles. Refuse.
+                    Err(e) if e.is_infeasible() => {
+                        return (Err(BlendError::Shell(e.to_string())), None)
+                    }
+                    Err(e) => (
+                        SolidRepr::BRep(Box::new(vcad_kernel_shell::shell_brep(brep, thickness))),
+                        Some(e),
+                    ),
+                }
             }
             SolidRepr::Mesh(mesh) => (
-                Ok(Solid {
-                    names: None,
-                    provenance: self.provenance.clone(),
-                    repr: SolidRepr::Mesh(vcad_kernel_shell::shell_mesh(mesh, thickness)),
-                    segments: self.segments,
-                }),
+                SolidRepr::Mesh(vcad_kernel_shell::shell_mesh(mesh, thickness)),
                 None,
             ),
+        };
+        let out = Solid {
+            names: None,
+            provenance: self.provenance.clone(),
+            repr,
+            segments: self.segments,
+        };
+        // Post-flight, for every path (the mesh offset has no analytic
+        // guard of its own): a shell only ever removes material from
+        // inside the solid. Growing past the input bbox, or a volume that
+        // did not strictly drop, means the offset inverted or collapsed.
+        if let Err(msg) = shell_result_is_valid(self, &out, thickness) {
+            return (Err(BlendError::Shell(msg)), degraded);
         }
+        (Ok(out), degraded)
     }
 
     /// Shell the solid with `open_faces` removed — hollow it inward by
@@ -2094,6 +2149,23 @@ impl Solid {
         }
     }
 
+    /// [`Solid::bounding_box`], or `None` when the solid encloses nothing.
+    ///
+    /// An empty solid has no bounding box: the raw accumulator would come
+    /// back as the `[f64::MAX; 3]` / `[f64::MIN; 3]` sentinel, which callers
+    /// used to print as a real `1.797e308` box. Anything that reports a
+    /// bbox to a person or an agent should go through this and say
+    /// "empty (no volume)" on `None`.
+    pub fn try_bounding_box(&self) -> Option<([f64; 3], [f64; 3])> {
+        if self.is_empty() {
+            return None;
+        }
+        let (lo, hi) = self.bounding_box();
+        let real = (0..3).all(|i| lo[i].is_finite() && hi[i].is_finite() && lo[i] <= hi[i])
+            && lo.iter().chain(hi.iter()).all(|c| c.abs() < f64::MAX);
+        real.then_some((lo, hi))
+    }
+
     /// Compute the axis-aligned bounding box as `([min_x, min_y, min_z], [max_x, max_y, max_z])`.
     pub fn bounding_box(&self) -> ([f64; 3], [f64; 3]) {
         match &self.repr {
@@ -2653,6 +2725,59 @@ fn fillet_aabb_is_reasonable(input: &BRepSolid, filleted: &BRepSolid, radius: f6
 /// boundary edges relative to the input's bbox diagonal: shipped-good
 /// curved fillets measure ≈1.4×, while broken rebuilds (cracked cap
 /// rims, fillet-of-fillet) measure 2.6–26×.
+/// Up-front bound for whole-solid blends: a size reaching half the
+/// thinnest bbox extent can never fit (opposing blends meet), so refuse
+/// with the number instead of letting the rebuild fail opaquely.
+fn blend_size_limit(brep: &BRepSolid, what: &'static str, size: f64) -> Option<BlendError> {
+    let mut lo = [f64::MAX; 3];
+    let mut hi = [f64::MIN; 3];
+    for (_, v) in &brep.topology.vertices {
+        for (i, c) in [v.point.x, v.point.y, v.point.z].into_iter().enumerate() {
+            lo[i] = lo[i].min(c);
+            hi[i] = hi[i].max(c);
+        }
+    }
+    let limit = (0..3)
+        .map(|i| 0.5 * (hi[i] - lo[i]))
+        .fold(f64::INFINITY, f64::min);
+    // Only meaningful when the vertex box is the real box (planar
+    // solids); a curved solid's vertices can under-report its extent.
+    if !brep_is_all_planar(brep) || !limit.is_finite() || limit <= 0.0 {
+        return None;
+    }
+    (size >= limit).then_some(BlendError::SizeExceedsLimit { what, size, limit })
+}
+
+/// Fail-closed gate for [`Solid::shell_reported`]: the shelled body must
+/// stay inside the input's bounding box and have strictly less (but
+/// positive) volume. Returns the reason when it does not.
+fn shell_result_is_valid(input: &Solid, out: &Solid, thickness: f64) -> Result<(), String> {
+    let (Some((ilo, ihi)), Some((olo, ohi))) = (input.try_bounding_box(), out.try_bounding_box())
+    else {
+        return Err(format!("shell thickness {thickness} mm left no solid"));
+    };
+    let span = (0..3).map(|i| ihi[i] - ilo[i]).fold(0.0_f64, f64::max);
+    let limit = (0..3)
+        .map(|i| 0.5 * (ihi[i] - ilo[i]))
+        .fold(f64::INFINITY, f64::min);
+    let consumed = || {
+        format!(
+            "shell thickness {thickness} mm consumes the solid (must be below {limit:.4} mm, \
+             half its thinnest extent) — the inner wall would collapse or invert"
+        )
+    };
+    // f32 tessellation noise: a part-per-million of the span.
+    let tol = 1e-6 * span.max(1.0);
+    if (0..3).any(|i| olo[i] < ilo[i] - tol || ohi[i] > ihi[i] + tol) {
+        return Err(consumed());
+    }
+    let (vin, vout) = (input.volume(), out.volume());
+    if !vout.is_finite() || vout <= 0.0 || vout >= vin * (1.0 - 1e-6) {
+        return Err(consumed());
+    }
+    Ok(())
+}
+
 fn blend_result_is_valid(input: &BRepSolid, blended: &BRepSolid, strict: bool) -> bool {
     let mesh = tessellate_brep(blended, 32);
     if strict {
