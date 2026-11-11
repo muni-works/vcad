@@ -1761,6 +1761,10 @@ final class EditorModel {
     var loftProfiles: [[String: Any]] = []
     /// The planar face a sketch-on-face started from (extrude-to-face target too).
     var sketchFace: (part: Int, point: SIMD3<Double>, normal: SIMD3<Double>)?
+    /// The picked face's durable IR FaceRef, when it carries a persistent
+    /// name: the finished sketch attaches to it (IR `SketchOnFace`) so it
+    /// follows the face when earlier features change.
+    @ObservationIgnored var sketchFaceRef: Any?
     /// Viewport needs to rebuild the sketch ink.
     var sketchDirty = false
     var sketchOffsetPrompt = false
@@ -1838,12 +1842,16 @@ final class EditorModel {
         sketchPlaneChosen = false
         var frame = SketchFrame.principal(sketchPlane)
         sketchFace = nil
+        sketchFaceRef = nil
         if picking.selectedFaces.count == 1, let f = picking.selectedFaces.first,
            let face = partTopology(f.part)?.face(f.id), face.isPlanar {
             let c = SIMD3(face.center[0], face.center[1], face.center[2])
             let n = SIMD3(face.normal[0], face.normal[1], face.normal[2])
             frame = .onFace(center: c, normal: n)
             sketchFace = (f.part, c, n)
+            sketchFaceRef = face.selector.map(\.any).flatMap { ref in
+                ((ref as? [String: Any])?["name"] as? String) != nil ? ref : nil
+            }
         }
         guard let s = SketchSession(frame: frame) else { engineError = "Sketch solver unavailable"; return }
         if sketch == nil { cameraBeforeSketch = CameraState(azimuth: azimuth, elevation: elevation, distance: distance, pan: panOffset) }
@@ -1984,6 +1992,17 @@ final class EditorModel {
         return SIMD3<Float>(frame.world(SIMD2(Double(v.x), Double(v.y))))
     }
 
+    /// `profile` attached to the sketched-on face (`on_face`), when that face
+    /// has a persistent name — so the feature re-resolves its plane on every
+    /// rebuild instead of freezing it where the face was.
+    private func attachedToSketchFace(_ profile: [String: Any]) -> [String: Any] {
+        guard let ref = sketchFaceRef, let part = sketchFace?.part,
+              let target = rootNodeId(forPart: part) else { return profile }
+        var p = profile
+        p["on_face"] = ["target": target, "face": ref]
+        return p
+    }
+
     /// Realize the profile as the chosen feature, then leave sketch mode
     /// (a loft section stays in sketch mode for the next profile).
     @discardableResult
@@ -2008,11 +2027,11 @@ final class EditorModel {
                     engineError = "Select the part to cut"; return false
                 }
                 features = profiles.enumerated().map { i, p in
-                    ["kind": "cut_extrude", "target": i == 0 ? target : -1, "profile": p,
+                    ["kind": "cut_extrude", "target": i == 0 ? target : -1, "profile": attachedToSketchFace(p),
                      "direction": vec(-n * sketchExtrudeDepth), "name": "Cut"]
                 }
             } else {
-                features = profiles.map { ["kind": "extrude", "profile": $0, "direction": dir, "name": "Extrude"] }
+                features = profiles.map { ["kind": "extrude", "profile": attachedToSketchFace($0), "direction": dir, "name": "Extrude"] }
             }
             guard appendIRFeatures(features, name: sketchFinish.label) else { return false }
             selectedFeatureID = featureNodes.last?.id
@@ -2034,13 +2053,13 @@ final class EditorModel {
             guard let profile = sketch.profileJSON() else { engineError = sketch.lastError; return false }
             switch sketchFinish {
             case .extrude:
-                feature = ["kind": "extrude", "profile": profile, "direction": dir, "name": "Extrude"]
+                feature = ["kind": "extrude", "profile": attachedToSketchFace(profile), "direction": dir, "name": "Extrude"]
             case .cut:
                 guard let target = sketchFace.flatMap({ rootNodeId(forPart: $0.part) })
                         ?? selectedPartIndex.flatMap({ rootNodeId(forPart: $0) }) else {
                     engineError = "Select the part to cut"; return false
                 }
-                feature = ["kind": "cut_extrude", "target": target, "profile": profile,
+                feature = ["kind": "cut_extrude", "target": target, "profile": attachedToSketchFace(profile),
                            "direction": vec(-n * sketchExtrudeDepth), "name": "Cut"]
             case .extrudeToFace:
                 guard picking.selectedFaces.count == 1, let f = picking.selectedFaces.first,
