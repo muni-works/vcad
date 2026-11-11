@@ -145,19 +145,40 @@ pub(crate) fn line_key(l: &vcad_kernel_geom::Line3d) -> [u64; 6] {
     ]
 }
 
+/// Spans (world-space endpoints) of SSI lines over which a holed planar
+/// face is covered by its partner face, keyed by [`line_key`].
+pub(crate) type HoleChordSpans = std::collections::HashMap<[u64; 6], Vec<(Point3, Point3)>>;
+
 thread_local! {
-    static HOLE_CHORDS: std::cell::RefCell<std::collections::HashSet<[u64; 6]>> =
-        std::cell::RefCell::new(std::collections::HashSet::new());
+    static HOLE_CHORDS: std::cell::RefCell<HoleChordSpans> =
+        std::cell::RefCell::new(HoleChordSpans::new());
 }
 
-/// Install the current boolean's lines along which a cut may pass through a
-/// planar face's hole: those whose partner face covers the whole chord.
-pub(crate) fn trust_hole_chords(lines: std::collections::HashSet<[u64; 6]>) {
-    HOLE_CHORDS.with(|h| *h.borrow_mut() = lines);
+/// Install the current boolean's covered spans: a cut may pass through a
+/// planar face's hole only when its whole chord lies inside one of them.
+pub(crate) fn trust_hole_chords(spans: HoleChordSpans) {
+    HOLE_CHORDS.with(|h| *h.borrow_mut() = spans);
 }
 
-fn hole_chord_trusted(l: &vcad_kernel_geom::Line3d) -> bool {
-    HOLE_CHORDS.with(|h| h.borrow().contains(&line_key(l)))
+fn hole_chord_trusted(l: &vcad_kernel_geom::Line3d, entry: &Point3, exit: &Point3) -> bool {
+    let tol = 1e-6 * (*exit - *entry).norm().max(1.0);
+    HOLE_CHORDS.with(|h| {
+        h.borrow().get(&line_key(l)).is_some_and(|spans| {
+            spans.iter().any(|(a, b)| {
+                let ab = *b - *a;
+                let len2 = ab.norm_squared();
+                if len2 < 1e-18 {
+                    return false;
+                }
+                let inside = |p: &Point3| {
+                    let t = (*p - *a).dot(ab) / len2;
+                    let off = (*p - (*a + ab * t)).norm();
+                    off <= tol && t * len2.sqrt() >= -tol && (t - 1.0) * len2.sqrt() <= tol
+                };
+                inside(entry) && inside(exit)
+            })
+        })
+    })
 }
 
 /// A straight cut `entry → exit` across a planar face that passes through
@@ -675,7 +696,7 @@ pub fn split_face_by_curve(
     // (`trust_hole_chords`): the carrier line of a distant operand plane
     // also crosses holed faces, and splitting along such a phantom chord
     // breaks the torr A2 trim.
-    let allow_hole_chord = matches!(curve, IntersectionCurve::Line(l) if hole_chord_trusted(l));
+    let allow_hole_chord = matches!(curve, IntersectionCurve::Line(l) if hole_chord_trusted(l, entry_point, exit_point));
     if allow_hole_chord && via.is_empty() && !same_edge_bite {
         let parent_inner = brep.topology.faces[face_id].inner_loops.clone();
         let crossed: Vec<_> = parent_inner
