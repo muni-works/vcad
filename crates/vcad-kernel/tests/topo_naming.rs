@@ -114,9 +114,18 @@ fn unresolvable_references_fail_closed() {
     let cube = Solid::cube(10.0, 10.0, 10.0);
     assert!(cube.resolve_named_edge("cube:top", "cube:nope").is_err());
     assert!(cube.resolve_named_edge("garbage", "cube:top").is_err());
-    // A name map is dropped by ops without a propagation rule.
+    // A fillet keeps the faces it trims under their names, but the edge it
+    // rounded away no longer exists: the two faces now meet a blend face,
+    // not each other, so the reference is lost rather than rebound.
     let filleted = cube.fillet(1.0).expect("r=1 fits a 10mm cube");
-    assert!(filleted.names().is_none());
+    let kept: Vec<String> = filleted
+        .names()
+        .expect("fillet propagates names")
+        .faces
+        .values()
+        .map(|n| n.to_string())
+        .collect();
+    assert!(kept.contains(&"cube:top".to_string()), "{kept:?}");
     assert!(filleted
         .resolve_named_edge("cube:top", "cube:right")
         .is_err());
