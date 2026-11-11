@@ -5,6 +5,9 @@ import XCTest
 /// receipts re-verify on edit (a nudge turns a clearance Violated, undo brings
 /// it back), and elicitation round-trips through the viewport / native sheet
 /// or, for an MRTR client, through `inputResponses`.
+/// Tool results are plain JSON dictionaries; box them across the Task boundary.
+private struct JSONBox: @unchecked Sendable { let value: [String: Any]? }
+
 @MainActor
 final class ProofTests: XCTestCase {
     override func tearDown() async throws {
@@ -108,7 +111,7 @@ final class ProofTests: XCTestCase {
     /// viewport, presses Use, and the tool returns the pick.
     func testPickInViewportRoundTrip() async throws {
         let (m, _) = try await twoBoxes()
-        let task = Task { try await self.proof(m, "pick_in_viewport", ["message": "Which edge should I fillet?", "kind": "edge"]) }
+        let task = Task { JSONBox(value: try await self.proof(m, "pick_in_viewport", ["message": "Which edge should I fillet?", "kind": "edge"])) }
         let req = try await waitForRequest()
         XCTAssertEqual(req.pick, .edge)
         XCTAssertEqual(m.picking.filter, .edge, "the viewport is armed for edges")
@@ -118,7 +121,8 @@ final class ProofTests: XCTestCase {
         XCTAssertTrue(ElicitationCenter.shared.canAccept)
         ElicitationCenter.shared.respond(.accept)
 
-        let out = try await task.value
+        let boxed = try await task.value
+        let out = try XCTUnwrap(boxed.value)
         XCTAssertEqual(out["action"] as? String, "accept")
         let sel = try XCTUnwrap((out["content"] as? [String: Any])?["selection"] as? [[String: Any]])
         XCTAssertEqual(sel.count, 1)
@@ -136,7 +140,8 @@ final class ProofTests: XCTestCase {
                                      "properties": ["material": ["type": "string", "enum": ["pla", "petg", "aluminum_6061"]],
                                                     "infill": ["type": "integer"]],
                                      "required": ["material"]]
-        let task = Task { try await self.proof(m, "ask_user", ["message": "Which material?", "requested_schema": schema]) }
+        let box = JSONBox(value: schema)
+        let task = Task { JSONBox(value: try await self.proof(m, "ask_user", ["message": "Which material?", "requested_schema": box.value!])) }
         let req = try await waitForRequest()
         XCTAssertNil(req.pick)
         XCTAssertTrue(ElicitationCenter.shared.showsSheet)
@@ -144,7 +149,8 @@ final class ProofTests: XCTestCase {
         ElicitationCenter.shared.values["material"] = "petg"
         ElicitationCenter.shared.values["infill"] = "20"
         ElicitationCenter.shared.respond(.accept)
-        let out = try await task.value
+        let boxed = try await task.value
+        let out = try XCTUnwrap(boxed.value)
         XCTAssertEqual(out["action"] as? String, "accept")
         let content = try XCTUnwrap(out["content"] as? [String: Any])
         XCTAssertEqual(content["material"] as? String, "petg")
@@ -169,12 +175,12 @@ final class ProofTests: XCTestCase {
         _ = try await proof(m, "assert_clearance",
                             ["label": "gap", "group_a": ["Box"], "group_b": ["Wedge"], "min_mm": 2])
         let roots = (m.documentJSON?["roots"] as? [Any])?.count
-        let task = Task { await ProofAgentTools.confirmDestructive("delete", ["part_id": wedge], inputResponses: nil, model: m) }
+        let task = Task { JSONBox(value: await ProofAgentTools.confirmDestructive("delete", ["part_id": wedge], inputResponses: nil, model: m)) }
         let req = try await waitForRequest()
         XCTAssertTrue(req.destructive)
         XCTAssertTrue(req.message.contains("gap"), req.message)
         ElicitationCenter.shared.respond(.decline)
-        let refused = await task.value
+        let refused = await task.value.value
         XCTAssertEqual(refused?["isError"] as? Bool, true)
         XCTAssertEqual((m.documentJSON?["roots"] as? [Any])?.count, roots, "nothing deleted")
 

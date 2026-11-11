@@ -141,6 +141,7 @@ final class ReceiptStore {
     func settle() async { await task?.value }
 
     /// Verify the model's document now and wait for it.
+    @discardableResult
     func refresh(_ m: EditorModel) async -> ReceiptReport? {
         documentChanged(m.documentJSON)
         await settle()

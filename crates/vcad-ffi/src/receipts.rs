@@ -366,7 +366,10 @@ mod tests {
         assert_eq!(r.status, Some(ReceiptStatus::Holds));
         let c = &r.checks[0];
         assert!((c.measured_mm.unwrap() - 3.0).abs() < 1e-3, "{c:?}");
-        assert_eq!(c.worst_pair.as_ref().unwrap(), &["Box".to_string(), "Wedge".into()]);
+        assert_eq!(
+            c.worst_pair.as_ref().unwrap(),
+            &["Box".to_string(), "Wedge".into()]
+        );
         let claim = &r.receipt.claims[0];
         assert_eq!(claim.id, "mech.clearance.gap");
         assert_eq!(claim.verdict, vcad_receipt::ClaimVerdict::Pass);
@@ -388,8 +391,15 @@ mod tests {
         nudge(&mut d, 11.0); // 1 mm gap < 2 mm required
         let r = verify(&d).unwrap();
         assert_eq!(r.status, Some(ReceiptStatus::Violated), "{r:#?}");
-        assert!(r.checks[0].reason.as_ref().unwrap().contains("below the required"));
-        assert_eq!(r.receipt.claims[0].verdict, vcad_receipt::ClaimVerdict::Fail);
+        assert!(r.checks[0]
+            .reason
+            .as_ref()
+            .unwrap()
+            .contains("below the required"));
+        assert_eq!(
+            r.receipt.claims[0].verdict,
+            vcad_receipt::ClaimVerdict::Fail
+        );
         // Accepting never launders a violation.
         assert_eq!(accept(&mut d, None).unwrap(), 0);
 
@@ -411,7 +421,10 @@ mod tests {
         d.clearance_specs[0].group_b = vec!["ghost".into()];
         let r = verify(&d).unwrap();
         assert_eq!(r.status, Some(ReceiptStatus::Violated));
-        assert_eq!(r.receipt.claims[0].verdict, vcad_receipt::ClaimVerdict::Unverifiable);
+        assert_eq!(
+            r.receipt.claims[0].verdict,
+            vcad_receipt::ClaimVerdict::Unverifiable
+        );
     }
 
     #[test]

@@ -93,7 +93,9 @@ struct ElicitField: Identifiable {
 enum ElicitAction: String { case accept, decline, cancel }
 
 /// The answer to an `elicitation/create`.
-struct ElicitResponse {
+/// Values are plain JSON (strings, numbers, bools, arrays, dicts), built and
+/// read on the main actor; only handed across the continuation boundary.
+struct ElicitResponse: @unchecked Sendable {
     var action: ElicitAction
     var content: [String: Any]? = nil
 
@@ -255,10 +257,6 @@ final class ElicitationCenter {
     }
 }
 
-extension Array {
-    subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
-}
-
 // MARK: - Views
 
 /// Top-of-viewport banner while a pick elicitation is live: the question, a
@@ -273,7 +271,7 @@ struct ElicitationBanner: View {
                 Image(systemName: "cursorarrow.click.2").foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(r.message).font(.callout.weight(.medium))
-                    Text(n == 0 ? "Click \(r.multiple ? "one or more" : "a") \(pick.noun)\(r.multiple ? "s" : "") in the viewport"
+                    Text(n == 0 ? "Click \(r.multiple ? "one or more" : (pick == .edge ? "an" : "a")) \(pick.noun)\(r.multiple ? "s" : "") in the viewport"
                                : "\(n) \(pick.noun)\(n == 1 ? "" : "s") picked")
                         .font(.caption).foregroundStyle(.secondary)
                 }
