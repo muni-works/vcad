@@ -73,7 +73,11 @@ if [ -f "$here/Samples/samples.json" ]; then
   cp -RL "$here/Samples/." "$app/Contents/Resources/samples/"
 fi
 
-# App + document icons, drawn by the app's own icon script when missing.
+# App + document icons: the committed brand icons (Branding/make-icns.sh from
+# the irys-rendered mark), else drawn by the app's own icon script.
+for icon in AppIcon DocumentIcon; do
+  [ -f "$here/Branding/$icon.icns" ] && mkdir -p "$here/dist" && cp "$here/Branding/$icon.icns" "$here/dist/"
+done
 if [ ! -f "$here/dist/AppIcon.icns" ]; then
   swift "$here/make-icon.swift" "$here/dist" >/dev/null 2>&1 || echo "(icon generation skipped)"
 fi
@@ -122,10 +126,29 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
       <key>LSItemContentTypes</key><array><string>io.vcad.document</string></array>
     </dict>
     <dict>
+      <key>CFBundleTypeName</key><string>STEP Model</string>
+      <key>CFBundleTypeRole</key><string>Viewer</string>
+      <key>LSHandlerRank</key><string>Default</string>
+      <key>LSItemContentTypes</key><array><string>io.vcad.step</string><string>com.shapr3d.step</string><string>com.shapr3d.stp</string></array>
+    </dict>
+    <dict>
       <key>CFBundleTypeName</key><string>loon Source</string>
       <key>CFBundleTypeRole</key><string>Viewer</string>
       <key>LSHandlerRank</key><string>Alternate</string>
       <key>LSItemContentTypes</key><array><string>io.vcad.loon</string></array>
+    </dict>
+  </array>
+  <key>UTImportedTypeDeclarations</key>
+  <array>
+    <dict>
+      <key>UTTypeIdentifier</key><string>io.vcad.step</string>
+      <key>UTTypeDescription</key><string>STEP Model</string>
+      <key>UTTypeConformsTo</key><array><string>public.data</string></array>
+      <key>UTTypeTagSpecification</key>
+      <dict>
+        <key>public.filename-extension</key><array><string>step</string><string>stp</string></array>
+        <key>public.mime-type</key><array><string>model/step</string><string>application/step</string></array>
+      </dict>
     </dict>
   </array>
   <key>UTExportedTypeDeclarations</key>
