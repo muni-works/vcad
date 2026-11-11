@@ -1420,10 +1420,7 @@ fn export_file(
     // Fail closed: every root failing (warned above) must not leave an empty
     // file and exit 0 — that reads as a successful export of nothing.
     if meshes.iter().all(|m| m.indices.is_empty()) {
-        anyhow::bail!(
-            "{} produced no geometry; nothing exported",
-            input.display()
-        );
+        anyhow::bail!("{} produced no geometry; nothing exported", input.display());
     }
 
     match ext.to_lowercase().as_str() {
