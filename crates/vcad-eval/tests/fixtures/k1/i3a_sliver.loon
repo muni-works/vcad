@@ -1,0 +1,2 @@
+[let disc [cylinder-n 20 8 64]]
+[root [pipe disc [difference [translate 10 0 -1 [cylinder-n 1.7 4.2 24]]] [difference [translate 10 0 3 [cylinder-n 3 6 40]]]] "pla"]

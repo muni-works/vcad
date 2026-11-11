@@ -9,7 +9,7 @@
 
 use vcad_kernel_math::{Point2, Point3, Vec3};
 use vcad_kernel_primitives::BRepSolid;
-use vcad_kernel_topo::{FaceId, HalfEdgeId, Orientation};
+use vcad_kernel_topo::{FaceId, HalfEdgeId, LoopId, Orientation};
 
 use crate::ssi::IntersectionCurve;
 
@@ -1277,8 +1277,14 @@ pub fn split_planar_face_by_circle(
                         raw_circle_verts
                     };
 
+                    let merged =
+                        merge_circle_with_crossing_hole(brep, face_id, circle, &circle_verts);
+                    let disk_verts: Vec<Point3> = match &merged {
+                        Some((_, lune, _)) => lune.clone(),
+                        None => circle_verts.clone(),
+                    };
                     // Create inner disk face (will be classified as "inside" and removed)
-                    let inner_verts: Vec<_> = circle_verts
+                    let inner_verts: Vec<_> = disk_verts
                         .iter()
                         .map(|p| find_or_create_vertex(brep, p, tolerance))
                         .collect();
@@ -1323,7 +1329,16 @@ pub fn split_planar_face_by_circle(
                     // Inner loops wind opposite to the outer convention: the
                     // disk loop is CCW around the surface normal, so the hole
                     // is its reverse (CW).
-                    let hole_verts: Vec<Point3> = circle_verts.iter().rev().cloned().collect();
+                    let hole_verts: Vec<Point3> = match &merged {
+                        Some((crossed, _, union)) => {
+                            let crossed = *crossed;
+                            brep.topology.faces[face_id]
+                                .inner_loops
+                                .retain(|&l| l != crossed);
+                            union.iter().rev().cloned().collect()
+                        }
+                        None => circle_verts.iter().rev().cloned().collect(),
+                    };
 
                     let hole_vert_ids: Vec<_> = hole_verts
                         .iter()
@@ -1336,8 +1351,13 @@ pub fn split_planar_face_by_circle(
                     let hole_loop = brep.topology.add_loop(&hole_hes);
                     brep.topology.faces[face_id].inner_loops.push(hole_loop);
 
-                    // Add twin edges between inner disk and hole
-                    for i in 0..segments as usize {
+                    // Add twin edges between inner disk and hole (a merged
+                    // lune/union pair shares only its arc; sewing pairs it).
+                    for i in 0..if merged.is_some() {
+                        0
+                    } else {
+                        segments as usize
+                    } {
                         let inner_he = inner_hes[i];
                         let outer_he = hole_hes[(segments as usize - 1 - i) % segments as usize];
                         brep.topology.add_edge(inner_he, outer_he);
@@ -1434,6 +1454,15 @@ pub fn split_planar_face_by_circle(
             .collect()
     };
 
+    // Every sample already inside (or on) an existing hole: the circle was
+    // imprinted earlier — typically merged into a hole it broke out of —
+    // and splitting again would push it as a second, overlapping hole.
+    if circle_samples_within_a_hole(brep, face_id, circle, &raw_circle_verts) {
+        return SplitResult {
+            sub_faces: vec![face_id],
+        };
+    }
+
     // Compute the face's 2D coordinate system using the plane surface normal
     // instead of deriving from vertices, which can produce inconsistent normals
     // for rotated/non-axis-aligned faces depending on vertex ordering.
@@ -1492,9 +1521,14 @@ pub fn split_planar_face_by_circle(
         raw_circle_verts.iter().rev().cloned().collect()
     };
 
+    let merged = merge_circle_with_crossing_hole(brep, face_id, circle, &circle_verts);
+    let disk_verts: Vec<Point3> = match &merged {
+        Some((_, lune, _)) => lune.clone(),
+        None => circle_verts.clone(),
+    };
     // Create inner face (disk) - uses circle vertices as its outer loop
     let tolerance = 1e-6;
-    let inner_verts: Vec<_> = circle_verts
+    let inner_verts: Vec<_> = disk_verts
         .iter()
         .map(|p| find_or_create_vertex(brep, p, tolerance))
         .collect();
@@ -1511,7 +1545,10 @@ pub fn split_planar_face_by_circle(
 
     // Create outer face (polygon with hole): the outer loop stays the same;
     // the circle joins as an inner loop with opposite winding to the outer.
-    let inner_loop_verts: Vec<Point3> = circle_verts.iter().rev().cloned().collect();
+    let inner_loop_verts: Vec<Point3> = match &merged {
+        Some((_, _, union)) => union.iter().rev().cloned().collect(),
+        None => circle_verts.iter().rev().cloned().collect(),
+    };
 
     let outer_inner_verts: Vec<_> = inner_loop_verts
         .iter()
@@ -1548,6 +1585,9 @@ pub fn split_planar_face_by_circle(
     // otherwise it belongs to the outer face (polygon with hole).
     let existing_inner_loops = brep.topology.faces[face_id].inner_loops.clone();
     for existing_loop in existing_inner_loops {
+        if matches!(&merged, Some((crossed, _, _)) if *crossed == existing_loop) {
+            continue; // absorbed into the merged hole
+        }
         // Re-create the inner loop with new half-edges for the target face
         let loop_verts_existing: Vec<Point3> = brep
             .topology
@@ -1590,7 +1630,11 @@ pub fn split_planar_face_by_circle(
 
     // Add twin edges between inner face circle and outer face hole
     // (they share the same physical edges but with opposite orientation)
-    for i in 0..segments as usize {
+    for i in 0..if merged.is_some() {
+        0
+    } else {
+        segments as usize
+    } {
         let inner_he = inner_hes[i];
         // The outer hole is reversed, so we need to match edges correctly
         // inner_hes[i] corresponds to outer_inner_hes[segments - 1 - i]
@@ -2035,6 +2079,216 @@ fn loop_vs_circle(
 }
 
 /// Point-in-polygon test using ray casting (2D version).
+/// A cutting circle that crosses one of the face's existing holes (a
+/// counterbore breaking out into a bore): the face's material is the outer
+/// loop minus the hole, so the new boundary is `hole ∪ circle` and the disk
+/// sub-face is `circle − hole` (a lune). Pushing the full circle as a second
+/// hole instead leaves two overlapping inner loops, which tessellate with a
+/// gap at the cusp (3 open edges once the part sits away from the origin).
+///
+/// `disk` is the sampled circle wound like the face's outer loop. Returns the
+/// crossed hole, the lune (outer winding) and the union (outer winding; the
+/// caller reverses it for the hole). `None` unless exactly one hole is
+/// crossed cleanly at two points.
+fn merge_circle_with_crossing_hole(
+    brep: &BRepSolid,
+    face_id: FaceId,
+    circle: &vcad_kernel_geom::Circle3d,
+    disk: &[Point3],
+) -> Option<(LoopId, Vec<Point3>, Vec<Point3>)> {
+    let eps = 1e-6;
+    let normal = circle.x_dir.into_inner().cross(circle.y_dir.into_inner());
+    let (ux, uy) = (circle.x_dir.into_inner(), circle.y_dir.into_inner());
+    let p2 = |p: &Point3| {
+        let d = *p - circle.center;
+        (d.dot(ux), d.dot(uy))
+    };
+    let dist = |p: &Point3| {
+        let d = *p - circle.center;
+        (d - d.dot(normal) * normal).norm()
+    };
+    let r = circle.radius;
+    let mut found = None;
+    for &lp in &brep.topology.faces[face_id].inner_loops {
+        let mut h: Vec<Point3> = brep
+            .topology
+            .loop_half_edges(lp)
+            .map(|he| brep.topology.vertices[brep.topology.half_edges[he].origin].point)
+            .collect();
+        if h.len() < 3 {
+            continue;
+        }
+        let any_in = h.iter().any(|p| dist(p) < r - eps);
+        let any_out = h.iter().any(|p| dist(p) > r + eps);
+        if !(any_in && any_out) {
+            continue;
+        }
+        if found.is_some() {
+            return None; // crosses two holes: not handled here
+        }
+        // Only a circular hole (a bore): its own SSI circle is fully cut, so
+        // `hole ∪ circle` is the final opening. A non-circular hole (a slot
+        // whose tool is trimmed by other faces) may only take part of this
+        // circle; leave that to the regular splitters.
+        let c = h.iter().fold(Vec3::zeros(), |acc, p| acc + p.to_vec()) / h.len() as f64;
+        let radii: Vec<f64> = h.iter().map(|p| (p.to_vec() - c).norm()).collect();
+        let (rmin, rmax) = radii
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(lo, hi), &r| (lo.min(r), hi.max(r)));
+        if rmax - rmin > 1e-3 * rmax.max(1.0) {
+            continue;
+        }
+        // A hole some coplanar sibling face still fills is a split boundary
+        // from this same boolean, not an opening: the disk on the other side
+        // is classified later, so the circle cannot be merged into it.
+        let surface = brep.topology.faces[face_id].surface_index;
+        let hole2: Vec<(f64, f64)> = h.iter().map(&p2).collect();
+        let strictly_inside = |p: &Point3| {
+            let (x, y) = p2(p);
+            point_in_polygon_2d(x, y, &hole2)
+                && (0..hole2.len()).all(|k| {
+                    let (a, b) = (hole2[k], hole2[(k + 1) % hole2.len()]);
+                    point_to_segment_dist_2d(x, y, a.0, a.1, b.0, b.1) > 1e-6
+                })
+        };
+        let filled = brep.topology.faces.iter().any(|(fid, f)| {
+            fid != face_id
+                && f.surface_index == surface
+                && brep.topology.loop_half_edges(f.outer_loop).any(|he| {
+                    strictly_inside(
+                        &brep.topology.vertices[brep.topology.half_edges[he].origin].point,
+                    )
+                })
+        });
+        if filled {
+            continue;
+        }
+        h.reverse(); // inner winding -> outer winding
+        found = Some((lp, h));
+    }
+    let (lp, h) = found?;
+    let n = h.len();
+    // 1 = outside the circle, -1 = inside, 0 = on it.
+    let side = |p: &Point3| {
+        let d = dist(p);
+        if d > r + eps {
+            1
+        } else if d < r - eps {
+            -1
+        } else {
+            0
+        }
+    };
+    let sides: Vec<i32> = h.iter().map(side).collect();
+    // Rotate so index 0 is the first outside vertex after a non-outside one.
+    let start = (0..n).find(|&i| sides[i] == 1 && sides[(i + n - 1) % n] != 1)?;
+    let hr: Vec<Point3> = (0..n).map(|k| h[(start + k) % n]).collect();
+    let sr: Vec<i32> = (0..n).map(|k| sides[(start + k) % n]).collect();
+    // Expect: out-run, [on], in-run, [on].
+    let out_end = sr.iter().position(|&s| s != 1)?;
+    let in_start = (out_end..n).find(|&i| sr[i] == -1)?;
+    let in_end = (in_start..n).find(|&i| sr[i] != -1).unwrap_or(n);
+    if sr[out_end..in_start].iter().any(|&s| s != 0)
+        || sr[in_end..].iter().any(|&s| s != 0)
+        || sr[out_end..in_start].len() > 1
+        || sr[in_end..].len() > 1
+    {
+        return None;
+    }
+    let crossing = |a: Point3, b: Point3| -> Point3 {
+        // Point on segment a->b at distance r from the axis.
+        let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
+        let inside_a = dist(&a) < r;
+        for _ in 0..80 {
+            let m = 0.5 * (lo + hi);
+            let q = a + m * (b - a);
+            if (dist(&q) < r) == inside_a {
+                lo = m;
+            } else {
+                hi = m;
+            }
+        }
+        a + 0.5 * (lo + hi) * (b - a)
+    };
+    // X_s: hole enters the circle; X_e: hole leaves it.
+    let xs = if in_start > out_end {
+        hr[out_end]
+    } else {
+        crossing(hr[out_end - 1], hr[in_start])
+    };
+    let xe = if in_end < n {
+        hr[in_end]
+    } else {
+        crossing(hr[n - 1], hr[0])
+    };
+    let hout = &hr[..out_end];
+    let hin = &hr[in_start..in_end];
+    // Circle samples outside the hole, as one cyclic run.
+    let hole2: Vec<(f64, f64)> = h.iter().map(&p2).collect();
+    let m = disk.len();
+    let outside: Vec<bool> = disk
+        .iter()
+        .map(|p| {
+            let (x, y) = p2(p);
+            !point_in_polygon_2d(x, y, &hole2) && (*p - xs).norm() > eps && (*p - xe).norm() > eps
+        })
+        .collect();
+    let c0 = (0..m).find(|&i| outside[i] && !outside[(i + m - 1) % m])?;
+    let cout: Vec<Point3> = (0..m)
+        .map(|k| (c0 + k) % m)
+        .take_while(|&i| outside[i])
+        .map(|i| disk[i])
+        .collect();
+    if cout.is_empty() || outside.iter().filter(|&&o| o).count() != cout.len() {
+        return None;
+    }
+    // Same winding: the outside arc runs from X_s to X_e.
+    if (cout[0] - xs).norm() > (cout[0] - xe).norm() {
+        return None;
+    }
+    let mut union = vec![xs];
+    union.extend_from_slice(&cout);
+    union.push(xe);
+    union.extend_from_slice(hout);
+    let mut lune = vec![xs];
+    lune.extend_from_slice(&cout);
+    lune.push(xe);
+    lune.extend(hin.iter().rev().copied());
+    Some((lp, lune, union))
+}
+
+/// True when every point of `samples` lies inside, or within 1e-6 of the
+/// boundary of, one single inner loop of the face.
+fn circle_samples_within_a_hole(
+    brep: &BRepSolid,
+    face_id: FaceId,
+    circle: &vcad_kernel_geom::Circle3d,
+    samples: &[Point3],
+) -> bool {
+    let (ux, uy) = (circle.x_dir.into_inner(), circle.y_dir.into_inner());
+    let p2 = |p: &Point3| {
+        let d = *p - circle.center;
+        (d.dot(ux), d.dot(uy))
+    };
+    brep.topology.faces[face_id].inner_loops.iter().any(|&lp| {
+        let poly: Vec<(f64, f64)> = brep
+            .topology
+            .loop_half_edges(lp)
+            .map(|he| p2(&brep.topology.vertices[brep.topology.half_edges[he].origin].point))
+            .collect();
+        let n = poly.len();
+        n >= 3
+            && samples.iter().all(|p| {
+                let (x, y) = p2(p);
+                point_in_polygon_2d(x, y, &poly)
+                    || (0..n).any(|i| {
+                        let (a, b) = (poly[i], poly[(i + 1) % n]);
+                        point_to_segment_dist_2d(x, y, a.0, a.1, b.0, b.1) < 1e-6
+                    })
+            })
+    })
+}
+
 fn point_in_polygon_2d(px: f64, py: f64, polygon: &[(f64, f64)]) -> bool {
     let mut inside = false;
     let n = polygon.len();

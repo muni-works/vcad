@@ -744,12 +744,9 @@ fn sphere_sphere(a: &SphereSurface, b: &SphereSurface) -> IntersectionCurve {
 /// Intersection of two cylinders.
 ///
 /// Cases handled analytically:
-/// - **Coaxial / parallel axes** → `Empty`. Coaxial cylinders are handled by
-///   coincident-face logic in classification; for parallel-but-distinct axes
-///   the SSI is either two parallel line generators or empty, but our
-///   downstream consumers only call this for face pairs whose AABBs already
-///   overlap, and parallel-axis cylinders that overlap will normally also
-///   share planar caps that drive the trimming.
+/// - **Coaxial** → `Empty` (coincident-face logic in classification).
+/// - **Parallel, distinct axes** → 0, 1 or 2 shared generators, see
+///   [`parallel_cylinders`].
 /// - **Perpendicular intersecting axes, equal radii** → two ellipses
 ///   (the Steinmetz curves). Emitted as `TwoSampled`. Each ellipse is a
 ///   closed polyline that, on cylinder A's surface, traces
@@ -760,6 +757,61 @@ fn sphere_sphere(a: &SphereSurface, b: &SphereSurface) -> IntersectionCurve {
 /// All other cylinder × cylinder geometries (skew axes, non-perpendicular
 /// intersecting, perpendicular with unequal radii) fall through to
 /// `marching_ssi`.
+/// Two cylinders with parallel, distinct axes: the circle–circle intersection
+/// of their cross-sections, extruded along the shared axis direction. A
+/// counterbore breaking out into an off-axis bore is this case; returning
+/// `Empty` here silently dropped the break-out generators, and the
+/// difference came back as the unmodified target.
+///
+/// Tolerances are relative to the radii, not absolute coordinates, so the
+/// answer does not change when both cylinders are translated.
+fn parallel_cylinders(a: &CylinderSurface, b: &CylinderSurface) -> IntersectionCurve {
+    let axis = *a.axis.as_ref();
+    let delta = b.center - a.center;
+    // Component of the centre offset perpendicular to the axis.
+    let perp = delta - delta.dot(axis) * axis;
+    let d = perp.norm();
+    let (ra, rb) = (a.radius, b.radius);
+    let tol = 1e-9 * ra.max(rb).max(1.0);
+    if d < tol {
+        return IntersectionCurve::Empty; // coaxial
+    }
+    if d > ra + rb + tol || d < (ra - rb).abs() - tol {
+        return IntersectionCurve::Empty;
+    }
+    let u = perp / d;
+    let w = axis.cross(u);
+    let along = (ra * ra - rb * rb + d * d) / (2.0 * d);
+    let h2 = ra * ra - along * along;
+    let base = a.center + along * u;
+    // Tangent or near-tangent contact (a fillet hugging a bore): the walls
+    // touch along a generator but do not cross, so there is nothing to cut.
+    // Splitting along sliver-close generators only manufactures slivers.
+    let h = h2.max(0.0).sqrt();
+    let depth = (ra + rb - d).min(d - (ra - rb).abs());
+    if depth < 1e-3 * ra.min(rb) {
+        return IntersectionCurve::Empty;
+    }
+    let (p1, p2) = (base + h * w, base - h * w);
+    // Deterministic order, independent of axis sign.
+    let key = |p: &Point3| (p.x, p.y, p.z);
+    let (p1, p2) = if key(&p1) <= key(&p2) {
+        (p1, p2)
+    } else {
+        (p2, p1)
+    };
+    IntersectionCurve::TwoLines(
+        Line3d {
+            origin: p1,
+            direction: axis,
+        },
+        Line3d {
+            origin: p2,
+            direction: axis,
+        },
+    )
+}
+
 #[allow(clippy::similar_names)]
 fn cylinder_cylinder(a: &CylinderSurface, b: &CylinderSurface) -> IntersectionCurve {
     use vcad_kernel_math::Vec3;
@@ -768,9 +820,10 @@ fn cylinder_cylinder(a: &CylinderSurface, b: &CylinderSurface) -> IntersectionCu
     let axis_b = b.axis.as_ref();
     let dot_ab = axis_a.dot(*axis_b);
 
-    // Coaxial or parallel axes — bail out (handled elsewhere or unsupported).
+    // Parallel axes: coaxial is handled by coincident-face logic; distinct
+    // parallel axes meet in 0, 1 or 2 shared generators.
     if (1.0 - dot_ab.abs()).abs() < 1e-9 {
-        return IntersectionCurve::Empty;
+        return parallel_cylinders(a, b);
     }
 
     // Only the perpendicular intersecting equal-radii case has a clean

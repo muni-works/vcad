@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-11-counterbore-breakout",
+  "version": "0.11.0",
+  "date": "2026-11-11",
+  "category": "fix",
+  "title": "Counterbores breaking into a bore cut correctly",
+  "summary": "A counterbore or hole breaking out into a parallel bore was silently dropped or left an open mesh away from the origin; it now cuts analytically and closed.",
+  "features": ["booleans", "kernel"]
+}

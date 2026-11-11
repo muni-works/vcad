@@ -1,0 +1,3 @@
+[let ring [difference [translate 0 0 -1 [cylinder-n 18.5 10 96]] [cylinder-n 25 8 96]]]
+[let t [union [translate 20.75 0 -1 [cylinder-n 1.7 10 24]] [translate 20.75 0 3 [cylinder-n 2.9 6 40]]]]
+[root [pipe ring [difference [rotate 0 0 0 t]] [difference [rotate 0 0 45 t]] [difference [rotate 0 0 90 t]] [difference [rotate 0 0 135 t]] [difference [rotate 0 0 180 t]] [difference [rotate 0 0 225 t]] [difference [rotate 0 0 270 t]] [difference [rotate 0 0 315 t]]] "pla"]
