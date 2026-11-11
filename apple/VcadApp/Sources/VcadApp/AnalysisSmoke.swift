@@ -109,8 +109,7 @@ func analysisSmoke() async {
             let t = ((out["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
             check(t.contains("\"issue_cleared\" : true") || t.contains("\"issue_cleared\":true"), "agent dfm_apply_fix clears it")
         }
-        let listed = (AgentTools.definitions + AgentEdits.definitions + AnalysisAgentTools.definitions)
-            .compactMap { $0["name"] as? String }
+        let listed = AgentCore.hostDefinitions.compactMap { $0["name"] as? String }
         check(["dfm_check", "dfm_apply_fix", "analyze_structure", "check_interference", "inspect_faces"].allSatisfy(listed.contains),
               "analysis tools listed")
     }

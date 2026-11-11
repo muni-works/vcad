@@ -1,0 +1,638 @@
+[
+  {
+    "description": "Show an MCP session's document in this window as one undo step. Sent by @vcad/mcp after each edit; agents don't call it. A window showing another agent's unedited push moves only for intent \"explicit\", or \"opened\" once that session has been idle 30 s. Refused when the window holds the user's work, or the user edited since the last push.",
+    "inputSchema": {
+      "properties": {
+        "base_dir": {
+          "description": "Folder the document's relative mesh paths resolve from.",
+          "type": "string"
+        },
+        "document": {
+          "type": "object"
+        },
+        "intent": {
+          "description": "implicit (default), opened, or explicit: how far this push may displace another session.",
+          "type": "string"
+        },
+        "link_id": {
+          "type": "string"
+        },
+        "tool": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "document",
+        "link_id"
+      ],
+      "type": "object"
+    },
+    "name": "adopt_document"
+  },
+  {
+    "description": "Group your next edits into ONE undo step the user sees as \"Agent: <label>\" (e.g. label \"thickened walls\"). Call at the start of a multi-step change; call again with end:true when done (or it closes after 30 s idle). ⌘Z then rewinds the whole change.",
+    "inputSchema": {
+      "properties": {
+        "end": {
+          "type": "boolean"
+        },
+        "label": {
+          "description": "Past-tense summary, lower case: \"thickened walls\"",
+          "type": "string"
+        }
+      },
+      "type": "object"
+    },
+    "name": "agent_turn"
+  },
+  {
+    "description": "Static linear-elastic FEA of one part, meshed and solved in-app with a mesh-convergence gate. loads: [{faces|region, force:[Fx,Fy,Fz] N}], supports: [{faces|region, fix?:[bool,bool,bool]}]. material: a preset id (aluminum_6061, steel, stainless_304, titanium, brass, pla, petg, abs, nylon) or omit to infer from the part. Returns max von Mises (MPa), max displacement (mm), safety factor (only when converged), and colours the part by stress in the user's viewport.",
+    "inputSchema": {
+      "properties": {
+        "loads": {
+          "items": {
+            "properties": {
+              "faces": {
+                "description": "Face ids on the part (from inspect_faces).",
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "region": {
+                "description": "Axis-aligned box {min:[x,y,z], max:[x,y,z]} in mm; nodes inside are selected.",
+                "type": "object"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "material": {
+          "type": "string"
+        },
+        "part_index": {
+          "type": "integer"
+        },
+        "resolution": {
+          "description": "coarse lattice cells along the longest axis (default 24; the study also solves at 2×)",
+          "type": "integer"
+        },
+        "supports": {
+          "items": {
+            "properties": {
+              "faces": {
+                "description": "Face ids on the part (from inspect_faces).",
+                "items": {
+                  "type": "integer"
+                },
+                "type": "array"
+              },
+              "region": {
+                "description": "Axis-aligned box {min:[x,y,z], max:[x,y,z]} in mm; nodes inside are selected.",
+                "type": "object"
+              }
+            },
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "loads",
+        "supports"
+      ],
+      "type": "object"
+    },
+    "name": "analyze_structure"
+  },
+  {
+    "description": "Pin a text label to a part, drawn in the user's viewport with a leader to the part. Same part again replaces its label.",
+    "inputSchema": {
+      "properties": {
+        "part": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "part",
+        "text"
+      ],
+      "type": "object"
+    },
+    "name": "annotate"
+  },
+  {
+    "description": "PNG of the whole editor window as the user sees it: toolbar, panels, dock, edit bar, suggestion pill.",
+    "inputSchema": {
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "app_screenshot"
+  },
+  {
+    "description": "What the user is looking at: open document, every driveable joint (value + limits), explode, camera, the user's selection and hover, and your current highlights/labels. Call this first, and again when the user says \"this\".",
+    "inputSchema": {
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "app_state"
+  },
+  {
+    "description": "Ask the user a question with a native sheet (MCP elicitation). requested_schema is an MCP elicitation schema: a flat object of string (optionally enum + enumNames) / number / integer / boolean properties — e.g. a material choice. destructive: true styles it as a confirm before a destructive edit. Returns {action, content}.",
+    "inputSchema": {
+      "properties": {
+        "destructive": {
+          "type": "boolean"
+        },
+        "message": {
+          "type": "string"
+        },
+        "requested_schema": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "message"
+      ],
+      "type": "object"
+    },
+    "name": "ask_user",
+    "outputSchema": {
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "content": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Link an MCP session to the document open in this window and return it. Sent by @vcad/mcp's attach_app_document; agents don't call it.",
+    "inputSchema": {
+      "properties": {
+        "link_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "link_id"
+      ],
+      "type": "object"
+    },
+    "name": "attach_document"
+  },
+  {
+    "description": "Minimum clearance and interference (overlap volume, penetration depth) between every pair of parts in the open document; clashes are drawn in red in the user's viewport.",
+    "inputSchema": {
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "check_interference"
+  },
+  {
+    "description": "Remove your labels (and highlights, with highlights:true).",
+    "inputSchema": {
+      "properties": {
+        "highlights": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "clear_annotations"
+  },
+  {
+    "description": "Apply the automatic fix for a DFM issue from the latest dfm_check (by issue_id) to the open document — one undo step — then re-run the check and report whether the issue cleared.",
+    "inputSchema": {
+      "properties": {
+        "issue_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "issue_id"
+      ],
+      "type": "object"
+    },
+    "name": "dfm_apply_fix"
+  },
+  {
+    "description": "Run Design-for-Manufacturing rules on the open document. process: fdm (default), sla, cnc_3axis, injection, sheet_metal, casting_sand, casting_investment. Returns issues with severity, measured vs limit, face ids, and — when the fix can be applied automatically — a patch. Shows in the user's Analysis panel.",
+    "inputSchema": {
+      "properties": {
+        "process": {
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "dfm_check"
+  },
+  {
+    "_meta": {
+      "ui": {
+        "resourceUri": "ui://vcad/viewer"
+      }
+    },
+    "description": "Fillet (or chamfer) the edges the user selected in the viewport — read vcad://doc/selection. With nothing selected, every edge of the selected part. One undo step, live.",
+    "inputSchema": {
+      "properties": {
+        "chamfer": {
+          "type": "boolean"
+        },
+        "radius": {
+          "description": "mm",
+          "type": "number"
+        }
+      },
+      "required": [
+        "radius"
+      ],
+      "type": "object"
+    },
+    "name": "fillet_edges"
+  },
+  {
+    "description": "Point the camera at a part and pull in to fit it.",
+    "inputSchema": {
+      "properties": {
+        "part": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "part"
+      ],
+      "type": "object"
+    },
+    "name": "frame_part"
+  },
+  {
+    "description": "Light parts in brand orange so the user sees what you mean. Replaces the previous highlight unless add:true; parts:[] clears.",
+    "inputSchema": {
+      "properties": {
+        "add": {
+          "type": "boolean"
+        },
+        "parts": {
+          "description": "Instance ids or name fragments (e.g. \"cover-knee_ll\", \"knee_ll\"), or a joint name (\"l_knee_pitch\") for the link it drives.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "parts"
+      ],
+      "type": "object"
+    },
+    "name": "highlight_parts"
+  },
+  {
+    "description": "Move the history playhead: frame 0 is the document as opened, frame k is after the k-th undo step. Rewinds/replays and rebuilds the viewport; returns the rebuild time.",
+    "inputSchema": {
+      "properties": {
+        "frame": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "frame"
+      ],
+      "type": "object"
+    },
+    "name": "history_seek"
+  },
+  {
+    "description": "Import a KiCad (.kicad_pcb) or Eagle (.brd) board file into the open document and switch to Electronics.",
+    "inputSchema": {
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    },
+    "name": "import_board"
+  },
+  {
+    "description": "Faces of a part (id, surface kind, centre, normal, area) — the ids analyze_structure loads/supports take.",
+    "inputSchema": {
+      "properties": {
+        "part_index": {
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "inspect_faces"
+  },
+  {
+    "description": "Whether the session named by link_id is the one this window is linked to, and if so whether the user has edited since its last push (the document itself when pull is set). linked:false says nothing about other sessions: window_linked reports whether the window has a link at all, reason why this session isn't it.",
+    "inputSchema": {
+      "properties": {
+        "link_id": {
+          "type": "string"
+        },
+        "pull": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "link_id"
+      ],
+      "type": "object"
+    },
+    "name": "link_status"
+  },
+  {
+    "description": "Part ids in the open document: assembly instances when it is an assembly, otherwise the document's parts (usable as part_id / child in edit tools).",
+    "inputSchema": {
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "list_parts"
+  },
+  {
+    "description": "Bring the vcad window showing this document to the front. Focuses the existing window — never opens a copy.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "open_in_app"
+  },
+  {
+    "description": "Path-trace the current pose/explode from the current camera (the vcad render --photoreal renderer, ~30-60 s). Returns the image and its saved path.",
+    "inputSchema": {
+      "properties": {
+        "spp": {
+          "description": "samples per pixel, default 64",
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "photoreal"
+  },
+  {
+    "description": "Ask the user to pick geometry by clicking it in the viewport (MCP elicitation answered natively). kind: edge | face | part; multiple allows several. Blocks until the user answers. Returns {action: accept|decline|cancel, content: {selection: [{kind, part, id, selector?}]}} — selector is a durable IR EdgeQuery/FaceRef to use in edits; ids are session handles.",
+    "inputSchema": {
+      "properties": {
+        "kind": {
+          "enum": [
+            "edge",
+            "face",
+            "part"
+          ],
+          "type": "string"
+        },
+        "message": {
+          "description": "The question, e.g. \"Which edge should I fillet?\"",
+          "type": "string"
+        },
+        "multiple": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "message",
+        "kind"
+      ],
+      "type": "object"
+    },
+    "name": "pick_in_viewport",
+    "outputSchema": {
+      "properties": {
+        "action": {
+          "type": "string"
+        },
+        "content": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Press a bare-letter tool shortcut as if typed in the viewport (e.g. \"f\" for Fillet, \"?\" for the shortcut sheet). Returns whether a tool was bound.",
+    "inputSchema": {
+      "properties": {
+        "key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
+    "name": "press_key"
+  },
+  {
+    "description": "Select edges in the user's viewport, as if they clicked them: part index plus edge ids (from vcad://doc/selection or describe_scene), or edge:\"longest\". The v2 agent-cursor seam (agent drives selection); also what demo scripts use in place of a click.",
+    "inputSchema": {
+      "properties": {
+        "edge": {
+          "enum": [
+            "longest"
+          ],
+          "type": "string"
+        },
+        "edges": {
+          "items": {
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "part": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "part"
+      ],
+      "type": "object"
+    },
+    "name": "select_edges"
+  },
+  {
+    "description": "Select a feature-tree node by name (case-insensitive substring) — the user sees it selected, and its edit bar opens beside it.",
+    "inputSchema": {
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "type": "object"
+    },
+    "name": "select_feature"
+  },
+  {
+    "description": "Orbit the shared camera. azimuth/elevation in degrees (Z-up; azimuth 0 looks from the front), distance in view units (1.5 ≈ whole model).",
+    "inputSchema": {
+      "properties": {
+        "azimuth": {
+          "type": "number"
+        },
+        "distance": {
+          "type": "number"
+        },
+        "elevation": {
+          "type": "number"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "set_camera"
+  },
+  {
+    "description": "Explode amount 0 (assembled) … 1 (fully exploded).",
+    "inputSchema": {
+      "properties": {
+        "amount": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "amount"
+      ],
+      "type": "object"
+    },
+    "name": "set_explode"
+  },
+  {
+    "description": "Set joint angles in degrees (clamped to limits), by joint name, e.g. {\"l_knee_pitch\": 60}. reset:true first returns every joint to its authored value.",
+    "inputSchema": {
+      "properties": {
+        "base": {
+          "description": "Floating base pose: x, y, z in metres, then w, x, y, z",
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        "joints": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "type": "object"
+        },
+        "link_id": {
+          "description": "Sent by @vcad/mcp: the session this pose belongs to.",
+          "type": "string"
+        },
+        "partial": {
+          "description": "Sent by @vcad/mcp for a mirrored stream: skip joints this window doesn't drive.",
+          "type": "boolean"
+        },
+        "reset": {
+          "type": "boolean"
+        },
+        "restart": {
+          "description": "base starts a new episode",
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "type": "object"
+    },
+    "name": "set_pose"
+  },
+  {
+    "description": "Switch the dock workspace: design, assembly, drawing, electronics or fab. history:true/false opens or closes the history filmstrip.",
+    "inputSchema": {
+      "properties": {
+        "history": {
+          "type": "boolean"
+        },
+        "workspace": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspace"
+      ],
+      "type": "object"
+    },
+    "name": "set_workspace"
+  },
+  {
+    "description": "PNG of the shared viewport exactly as the user sees it (geometry, highlights; labels are an overlay and not included).",
+    "inputSchema": {
+      "properties": {},
+      "required": [],
+      "type": "object"
+    },
+    "name": "snapshot"
+  },
+  {
+    "description": "Offer ONE edit as a suggestion pill in the user's viewport instead of applying it: a short question (\"Add 4 M3 counterbores on the motor bolt circle?\") plus the edit tool call it would make. The parts it touches shimmer softly. Nothing changes until the user clicks Add (then it is one named undo step); × dismisses. A new suggestion replaces the old one.",
+    "inputSchema": {
+      "properties": {
+        "args": {
+          "description": "That tool's arguments.",
+          "type": "object"
+        },
+        "parts": {
+          "description": "Instance ids or name fragments (e.g. \"cover-knee_ll\", \"knee_ll\"), or a joint name (\"l_knee_pitch\") for the link it drives.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "text": {
+          "description": "One-line question shown on the pill.",
+          "type": "string"
+        },
+        "tool": {
+          "description": "An edit tool name (create, update, difference, set_parameters, …).",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "tool",
+        "args"
+      ],
+      "type": "object"
+    },
+    "name": "suggest_edit"
+  },
+  {
+    "description": "The live vcad viewport as a PNG plus the document revision. Used by the vcad viewer app; agents should prefer snapshot.",
+    "inputSchema": {
+      "properties": {},
+      "type": "object"
+    },
+    "name": "viewer_frame"
+  }
+]

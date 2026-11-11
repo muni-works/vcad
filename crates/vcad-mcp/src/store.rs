@@ -165,6 +165,54 @@ pub trait DocumentStore: Send + Sync {
     fn location(&self) -> Option<PathBuf> {
         None
     }
+    /// Undo the last commit to `id`; returns the undone step's label.
+    /// App: exactly ⌘Z. Headless: the native commit history of this process.
+    fn undo(&self, _id: &DocumentId) -> Result<String, StoreError> {
+        Err(StoreError::Unavailable(
+            "this store keeps no undo history".into(),
+        ))
+    }
+    /// Open a file (`.vcad` / `.loon`) the store's own way. `Ok(None)` means
+    /// "not handled here": the caller loads the file and calls [`Self::create`].
+    /// App: the file opens in the window (loon files keep hot-reloading).
+    fn open_path(&self, _path: &std::path::Path) -> Result<Option<DocumentId>, StoreError> {
+        Ok(None)
+    }
+    /// Extra live resources beyond `vcad://doc/*` documents (`resources/list`
+    /// entries). App: `vcad://doc/selection`, `vcad://doc/view`, the viewer.
+    fn live_resources(&self) -> Vec<serde_json::Value> {
+        Vec::new()
+    }
+    /// Read a live resource (`resources/read` result), `None` when unknown.
+    fn read_live_resource(&self, _uri: &str) -> Option<Result<serde_json::Value, StoreError>> {
+        None
+    }
+    /// Apply one of the engine's agent tools (`vcad_app` lowering) on the
+    /// store's own live engine, when it keeps one: vcad.app does, so feature
+    /// history, the agent cursor and named undo stay exactly the app's.
+    /// Returns the engine envelope (`{"ok":true,"result":…}` /
+    /// `{"ok":false,"error":…}`). `None`: the caller runs the tool itself.
+    fn engine_tool(
+        &self,
+        _id: &DocumentId,
+        _tool: &str,
+        _args: &serde_json::Value,
+        _label: &str,
+    ) -> Option<Result<serde_json::Value, StoreError>> {
+        None
+    }
+    /// Run a host tool — one that needs the app's viewport, panels or user
+    /// (`tools/host_tools.json`). `input_responses` is the MRTR
+    /// `inputResponses` the client already gave. `None`: no host here
+    /// (headless); the caller reports that vcad.app is needed.
+    fn host_call(
+        &self,
+        _name: &str,
+        _args: &serde_json::Value,
+        _input_responses: &serde_json::Value,
+    ) -> Option<Result<serde_json::Value, StoreError>> {
+        None
+    }
 }
 
 // ─── Session ids (compatible with the node server) ───────────────────────────
@@ -292,7 +340,11 @@ pub struct HeadlessStore {
     mem: Mutex<std::collections::BTreeMap<DocumentId, (Document, Option<String>)>>,
     current: Mutex<Option<DocumentId>>,
     listeners: Mutex<Vec<StoreListener>>,
+    history: Mutex<std::collections::BTreeMap<DocumentId, Vec<(Document, String)>>>,
 }
+
+/// Undo steps kept per headless document.
+const HEADLESS_UNDO_DEPTH: usize = 64;
 
 impl HeadlessStore {
     /// Disk-backed store rooted at `dir`.
@@ -302,6 +354,7 @@ impl HeadlessStore {
             mem: Mutex::new(Default::default()),
             current: Mutex::new(None),
             listeners: Mutex::new(Vec::new()),
+            history: Mutex::new(Default::default()),
         }
     }
 
@@ -312,6 +365,7 @@ impl HeadlessStore {
             mem: Mutex::new(Default::default()),
             current: Mutex::new(None),
             listeners: Mutex::new(Vec::new()),
+            history: Mutex::new(Default::default()),
         }
     }
 
@@ -322,6 +376,71 @@ impl HeadlessStore {
         } else {
             Self::in_memory()
         }
+    }
+
+    /// Write `doc` under an existing id (no history, no NotFound check) —
+    /// the core mirroring an app document for the node upstream.
+    pub fn put(&self, id: &DocumentId, doc: Document) -> Result<(), StoreError> {
+        if let Some(path) = self.path_for(id)? {
+            Self::write_file(&path, &doc)?;
+        }
+        self.mem
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.clone(), (doc, None));
+        Ok(())
+    }
+
+    fn write_doc(&self, id: &DocumentId, doc: Document) -> Result<(), StoreError> {
+        match self.path_for(id)? {
+            Some(path) => {
+                if !path.exists()
+                    && !self
+                        .mem
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .contains_key(id)
+                {
+                    return Err(StoreError::NotFound(id.clone()));
+                }
+                Self::write_file(&path, &doc)?;
+                let mut mem = self.mem.lock().unwrap_or_else(|e| e.into_inner());
+                let name = mem.get(id).and_then(|(_, n)| n.clone());
+                mem.insert(id.clone(), (doc, name));
+            }
+            None => {
+                let mut mem = self.mem.lock().unwrap_or_else(|e| e.into_inner());
+                let entry = mem
+                    .get_mut(id)
+                    .ok_or_else(|| StoreError::NotFound(id.clone()))?;
+                entry.0 = doc;
+            }
+        }
+        self.set_current(id);
+        self.emit(StoreEvent::Changed(id.clone()));
+        Ok(())
+    }
+
+    fn close_doc(&self, id: &DocumentId) -> Result<(), StoreError> {
+        if let Some(path) = self.path_for(id)? {
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(StoreError::Io(e.to_string())),
+            }
+        }
+        self.mem
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
+        {
+            let mut cur = self.current.lock().unwrap_or_else(|e| e.into_inner());
+            if cur.as_ref() == Some(id) {
+                *cur = None;
+            }
+        }
+        self.emit(StoreEvent::Closed(id.clone()));
+        Ok(())
     }
 
     fn path_for(&self, id: &DocumentId) -> Result<Option<PathBuf>, StoreError> {
@@ -408,56 +527,41 @@ impl DocumentStore for HeadlessStore {
         }
     }
 
-    fn commit(&self, id: &DocumentId, doc: Document, _meta: CommitMeta) -> Result<(), StoreError> {
-        match self.path_for(id)? {
-            Some(path) => {
-                if !path.exists()
-                    && !self
-                        .mem
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .contains_key(id)
-                {
-                    return Err(StoreError::NotFound(id.clone()));
-                }
-                Self::write_file(&path, &doc)?;
-                let mut mem = self.mem.lock().unwrap_or_else(|e| e.into_inner());
-                let name = mem.get(id).and_then(|(_, n)| n.clone());
-                mem.insert(id.clone(), (doc, name));
-            }
-            None => {
-                let mut mem = self.mem.lock().unwrap_or_else(|e| e.into_inner());
-                let entry = mem
-                    .get_mut(id)
-                    .ok_or_else(|| StoreError::NotFound(id.clone()))?;
-                entry.0 = doc;
+    fn commit(&self, id: &DocumentId, doc: Document, meta: CommitMeta) -> Result<(), StoreError> {
+        let before = self.load(id).ok();
+        self.write_doc(id, doc)?;
+        if let Some(prev) = before {
+            let mut h = self.history.lock().unwrap_or_else(|e| e.into_inner());
+            let steps = h.entry(id.clone()).or_default();
+            steps.push((prev, meta.label));
+            if steps.len() > HEADLESS_UNDO_DEPTH {
+                steps.remove(0);
             }
         }
-        self.set_current(id);
-        self.emit(StoreEvent::Changed(id.clone()));
         Ok(())
     }
 
+    fn undo(&self, id: &DocumentId) -> Result<String, StoreError> {
+        let step = self
+            .history
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get_mut(id)
+            .and_then(Vec::pop);
+        let Some((prev, label)) = step else {
+            self.load(id)?;
+            return Err(StoreError::Unavailable("nothing to undo".into()));
+        };
+        self.write_doc(id, prev)?;
+        Ok(label)
+    }
+
     fn close(&self, id: &DocumentId) -> Result<(), StoreError> {
-        if let Some(path) = self.path_for(id)? {
-            match std::fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(StoreError::Io(e.to_string())),
-            }
-        }
-        self.mem
+        self.history
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(id);
-        {
-            let mut cur = self.current.lock().unwrap_or_else(|e| e.into_inner());
-            if cur.as_ref() == Some(id) {
-                *cur = None;
-            }
-        }
-        self.emit(StoreEvent::Closed(id.clone()));
-        Ok(())
+        self.close_doc(id)
     }
 
     fn list(&self) -> Result<Vec<DocumentSummary>, StoreError> {
@@ -504,9 +608,9 @@ impl DocumentStore for HeadlessStore {
     }
 }
 
-// ─── AppStore (stub; M1 implements) ──────────────────────────────────────────
+// ─── AppStore (the live vcad.app document, via vcad-ffi) ──────────────────────────────────────────
 
-/// Backend hooks the app supplies (M1 implements this over `vcad-ffi`).
+/// Backend hooks the app supplies (`vcad-ffi`'s `mcp` module, over C callbacks into Swift).
 ///
 /// Kept separate from [`DocumentStore`] so the app can plug in without this
 /// crate depending on the FFI layer.
@@ -525,6 +629,44 @@ pub trait AppBridge: Send + Sync {
     fn documents(&self) -> Vec<DocumentSummary>;
     /// Subscribe to app-side changes (user edits, window focus).
     fn watch(&self, listener: StoreListener);
+    /// ⌘Z on a window; returns the undone step's label.
+    fn undo(&self, _id: &DocumentId) -> Result<String, StoreError> {
+        Err(StoreError::Unavailable(
+            "undo not supported by this app".into(),
+        ))
+    }
+    /// Open a file in a window (see [`DocumentStore::open_path`]).
+    fn open_path(&self, _path: &std::path::Path) -> Result<Option<DocumentId>, StoreError> {
+        Ok(None)
+    }
+    /// Live resources (selection, view, viewer) — `resources/list` entries.
+    fn live_resources(&self) -> Vec<serde_json::Value> {
+        Vec::new()
+    }
+    /// Read a live resource.
+    fn read_live_resource(&self, _uri: &str) -> Option<Result<serde_json::Value, StoreError>> {
+        None
+    }
+    /// Apply an engine tool on the window's live engine (see
+    /// [`DocumentStore::engine_tool`]).
+    fn engine_tool(
+        &self,
+        _id: &DocumentId,
+        _tool: &str,
+        _args: &serde_json::Value,
+        _label: &str,
+    ) -> Option<Result<serde_json::Value, StoreError>> {
+        None
+    }
+    /// Run a host tool in the app (see [`DocumentStore::host_call`]).
+    fn host_call(
+        &self,
+        _name: &str,
+        _args: &serde_json::Value,
+        _input_responses: &serde_json::Value,
+    ) -> Option<Result<serde_json::Value, StoreError>> {
+        None
+    }
 }
 
 /// The live document in vcad.app. Without a bridge (M0) every call reports
@@ -583,6 +725,38 @@ impl DocumentStore for AppStore {
         if let Some(b) = &self.bridge {
             b.watch(listener);
         }
+    }
+    fn undo(&self, id: &DocumentId) -> Result<String, StoreError> {
+        self.bridge()?.undo(id)
+    }
+    fn open_path(&self, path: &std::path::Path) -> Result<Option<DocumentId>, StoreError> {
+        self.bridge()?.open_path(path)
+    }
+    fn live_resources(&self) -> Vec<serde_json::Value> {
+        self.bridge
+            .as_ref()
+            .map(|b| b.live_resources())
+            .unwrap_or_default()
+    }
+    fn read_live_resource(&self, uri: &str) -> Option<Result<serde_json::Value, StoreError>> {
+        self.bridge.as_ref()?.read_live_resource(uri)
+    }
+    fn host_call(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+        input_responses: &serde_json::Value,
+    ) -> Option<Result<serde_json::Value, StoreError>> {
+        self.bridge.as_ref()?.host_call(name, args, input_responses)
+    }
+    fn engine_tool(
+        &self,
+        id: &DocumentId,
+        tool: &str,
+        args: &serde_json::Value,
+        label: &str,
+    ) -> Option<Result<serde_json::Value, StoreError>> {
+        self.bridge.as_ref()?.engine_tool(id, tool, args, label)
     }
 }
 

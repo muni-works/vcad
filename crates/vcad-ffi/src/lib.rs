@@ -69,6 +69,7 @@ pub mod features;
 pub mod gym;
 pub mod import;
 mod json;
+pub mod mcp;
 pub mod pcb;
 pub mod print;
 mod printer;

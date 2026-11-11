@@ -174,8 +174,19 @@ export async function hydrateSession(
   store: SessionStore,
   documentId: string,
 ): Promise<boolean> {
-  if (documents.has(documentId)) return true;
+  // Under the Rust core (`vcad mcp` / vcad.app proxying unported tools to
+  // this server), the core writes the shared session file between our calls:
+  // the file is authoritative, so re-read it instead of trusting the cache.
+  const proxied = process.env.VCAD_MCP_PROXIED === "1";
+  if (documents.has(documentId) && !proxied) return true;
   const doc = await store.load(documentId);
+  if (doc && proxied && documents.has(documentId)) {
+    if (JSON.stringify(documents.get(documentId)) !== JSON.stringify(doc)) {
+      documents.set(documentId, doc);
+      runDocumentEnterHooks(doc);
+    }
+    return true;
+  }
   if (doc) {
     documents.set(documentId, doc);
     // A rehydrated session predates this process, so any file-backed node

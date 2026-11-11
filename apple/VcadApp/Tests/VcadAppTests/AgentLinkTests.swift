@@ -2,7 +2,8 @@ import XCTest
 import simd
 @testable import VcadApp
 
-/// The live link to `@vcad/mcp`, driven exactly as the bridge dispatches it.
+/// The live link to `@vcad/mcp`, driven exactly as an agent drives it (through
+/// the Rust MCP core the app hosts).
 @MainActor
 final class AgentLinkTests: XCTestCase {
     private static let repoRoot = URL(fileURLWithPath: #filePath)
@@ -14,8 +15,8 @@ final class AgentLinkTests: XCTestCase {
     }
 
     private func call(_ m: EditorModel, _ name: String, _ args: [String: Any] = [:]) async throws -> [String: Any] {
-        let r = try await AgentTools.call(name, args, model: m)
-        let text = ((r["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+        let r = await coreCall(m, name, args)
+        let text = resultText(r)
         XCTAssertNil(r["isError"], "\(name) failed: \(text)")
         return (try? JSONSerialization.jsonObject(with: Data(text.utf8))) as? [String: Any] ?? ["text": text]
     }
