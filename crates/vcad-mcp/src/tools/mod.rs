@@ -60,6 +60,9 @@ pub struct ToolCtx {
     /// none). Host tools that answer elicitations natively in the app (the
     /// viewport pick, the native sheet) use a client-provided answer first.
     pub input_responses: Value,
+    /// The running job's id when this call is a long-running job
+    /// ([`crate::jobs`]); host tools pass it to the app as `_vcad_job`.
+    pub job_id: Option<String>,
 }
 
 impl ToolCtx {
@@ -71,6 +74,7 @@ impl ToolCtx {
             elicit: Arc::new(|_| json!({"action": "cancel"})),
             cancel: Arc::new(AtomicBool::new(false)),
             input_responses: Value::Null,
+            job_id: None,
         }
     }
 }

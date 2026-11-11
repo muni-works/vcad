@@ -187,6 +187,9 @@ final class AgentCore {
             return op == "open" ? ["id": agentWindowDocumentId] : [:]
         case "release":
             return [:]
+        case "job":
+            AgentJobs.shared.handle(r["job"] as? [String: Any] ?? [:], progress: m.progress)
+            return [:]
         case "undo":
             try mine()
             // ⌘Z mid-sketch is scoped to the sketch's own history. An agent's

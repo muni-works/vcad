@@ -31,6 +31,9 @@ pub const NODE_ALSO: &[&str] = &[
 /// receipts: the app confirms in-app (or takes the MRTR answer).
 pub const CONFIRM_DESTRUCTIVE: &str = "__confirm_destructive";
 
+/// Argument carrying the job id into a long-running host tool.
+pub const JOB_ARG: &str = "_vcad_job";
+
 /// Parsed definitions.
 pub fn definitions() -> Vec<Value> {
     serde_json::from_str(HOST_TOOLS_JSON).expect("host_tools.json is valid JSON")
@@ -53,7 +56,12 @@ pub fn output_from_result(v: &Value) -> ToolOutput {
     }
 }
 
-fn run(ctx: &ToolCtx, name: &str, args: Value) -> Result<ToolOutput, ToolError> {
+fn run(ctx: &ToolCtx, name: &str, mut args: Value) -> Result<ToolOutput, ToolError> {
+    // A long-running host tool learns its job id: the app reports progress
+    // (`vcad/jobs/progress`) and watches for cancel under it.
+    if let (Some(j), Some(o)) = (&ctx.job_id, args.as_object_mut()) {
+        o.insert(JOB_ARG.into(), json!(j));
+    }
     match ctx.store.host_call(name, &args, &ctx.input_responses) {
         Some(Ok(v)) => Ok(output_from_result(&v)),
         Some(Err(e)) => Ok(ToolOutput::error(e.to_string())),
@@ -81,7 +89,7 @@ pub fn tools() -> Vec<ToolDef> {
                     .cloned()
                     .unwrap_or_else(|| json!({"type": "object", "properties": {}})),
                 output_schema: d.get("outputSchema").cloned(),
-                long_running: false,
+                long_running: d["longRunning"].as_bool().unwrap_or(false),
                 handler: Arc::new(move |ctx, args| run(ctx, &n2, args)),
             })
         })

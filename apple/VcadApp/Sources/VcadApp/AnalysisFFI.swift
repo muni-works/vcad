@@ -33,6 +33,21 @@ enum AnalysisFFI {
         return String(decoding: UnsafeBufferPointer(start: e, count: len), as: UTF8.self)
     }
 
+    /// `vcad_fea_solve` as a job: `step(fraction, level, levels, solving)` runs
+    /// before each mesh and solve; returning false cancels the study.
+    static func feaSolve(doc: Data, request: Data,
+                         step: @escaping (Double, Int, Int, Bool) -> Bool) throws -> Data {
+        final class Box { let step: (Double, Int, Int, Bool) -> Bool; init(_ s: @escaping (Double, Int, Int, Bool) -> Bool) { step = s } }
+        let box = Unmanaged.passRetained(Box(step))
+        defer { box.release() }
+        let hook: vcad_fea_progress_fn = { ctx, f, level, levels, solving in
+            guard let ctx else { return true }
+            return Unmanaged<Box>.fromOpaque(ctx).takeUnretainedValue().step(f, Int(level), Int(levels), solving)
+        }
+        let ctx = box.toOpaque()
+        return try call({ d, r in vcad_fea_solve_progress(d, r, hook, ctx) }, doc: doc, request: request)
+    }
+
     static func encode(_ obj: Any) throws -> Data {
         try JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys])
     }

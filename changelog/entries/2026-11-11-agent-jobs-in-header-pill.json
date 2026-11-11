@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-11-agent-jobs-in-header-pill",
+  "version": "0.11.0",
+  "date": "2026-11-11",
+  "category": "feat",
+  "title": "Agent jobs show in the header pill and cancel both ways",
+  "summary": "Long-running agent tool calls (FEA, fab dry runs, optimize) appear in vcad.app's progress pill with stage and fraction; ✕ cancels the agent's MCP Task, and tasks/cancel ends the pill entry.",
+  "features": ["mcp", "agent", "progress", "fea"],
+  "mcpTools": ["analyze_structure", "fab_print", "fab_mill", "optimize_parameters"]
+}
