@@ -19,9 +19,12 @@ use vcad_mcp::{
 
 // ── Fake vcad.app ────────────────────────────────────────────────────
 
+/// A window: its document and its undo history `(previous, label)`.
+type Window = (Document, Vec<(Document, String)>);
+
 #[derive(Default)]
 struct FakeApp {
-    docs: Mutex<BTreeMap<DocumentId, (Document, Vec<(Document, String)>)>>,
+    docs: Mutex<BTreeMap<DocumentId, Window>>,
     front: Mutex<Option<DocumentId>>,
     applied: Mutex<Vec<String>>,
     host_calls: Mutex<Vec<(String, Value, Value)>>,
