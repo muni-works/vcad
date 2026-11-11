@@ -661,6 +661,41 @@ char *vcad_import_step_finish(VcadStepImportJob *job);
 /* IR assembly document JSON. */
 char *vcad_import_urdf(const char *path);
 
+/* --- Image to CAD, EXPERIMENTAL (recon.rs, feature "recon", via irys-recon).
+ * request_json {"photos": [paths], "tag_mm": 50, "sensor_w_mm": null}; every
+ * photo must show a tag36h11 AprilTag and carry an EXIF focal length.
+ * vcad_recon_check: fast pre-flight -> [{name, size, tag_id, rms_px,
+ * focal_px, focal_exif_px}]. vcad_recon_photos: the reconstruction (minutes,
+ * blocking, not interruptible; call off the main thread) -> {"document",
+ * "program", "dimensions": [{name, parameter, value, sigma, unit}], "weak",
+ * "low_confidence", "warnings", "photos", "seconds"}. Null + vcad_last_error
+ * (a plain, user-facing reason) on failure. Free with vcad_string_free. */
+char *vcad_recon_check(const char *request_json);
+char *vcad_recon_photos(const char *request_json);
+
+/* Cancellable reconstruction job. vcad_recon_start (same request) -> handle,
+ * or NULL + vcad_last_error for a malformed request. vcad_recon_poll copies
+ * progress (any thread, non-blocking): returns 1 done, 0 running, -1 null.
+ * stage: 0 starting, 1 calibrate, 2 appearance, 3 search, 4 finalists,
+ * 5 polish; step is 1-based of `of`. vcad_recon_cancel (any thread) stops it
+ * within one LM iteration. vcad_recon_finish blocks (call off the main
+ * thread) -> the vcad_recon_photos JSON, or NULL + vcad_last_error, which is
+ * exactly "cancelled" after a cancel; free with vcad_string_free.
+ * vcad_recon_job_free cancels, joins and frees. */
+typedef struct VcadReconJob VcadReconJob;
+typedef struct {
+    int32_t stage;
+    uint32_t step;
+    uint32_t of;
+    uint8_t done;
+    uint8_t cancelled;
+} VcadReconProgress;
+VcadReconJob *vcad_recon_start(const char *request_json);
+int32_t vcad_recon_poll(const VcadReconJob *job, VcadReconProgress *out);
+void vcad_recon_cancel(const VcadReconJob *job);
+char *vcad_recon_finish(VcadReconJob *job);
+void vcad_recon_job_free(VcadReconJob *job);
+
 /* --- Drawings (drafting.rs): 2D shop drawings on vcad-kernel-drafting.
  * request_json (NULL/"" = defaults): {"view": front|back|top|bottom|left|
  * right|isometric, "show_hidden": bool, "show_dimensions": bool,

@@ -73,6 +73,8 @@ pub mod pcb;
 pub mod print;
 mod printer;
 pub mod receipts;
+#[cfg(feature = "recon")]
+pub mod recon;
 pub mod schematic;
 pub mod sensitivity;
 pub mod session;

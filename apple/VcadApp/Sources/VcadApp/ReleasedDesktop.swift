@@ -1000,8 +1000,13 @@ struct ReleasedOverlayView: View {
                 // is transparent to the mouse and the click goes to the desktop.
                 .contextMenu { partContextMenu }
                 // Drag a .vcad / STEP / URDF / loon file onto the viewport to open it.
+                // Photos (JPEG/PNG/HEIC) go to the experimental Import from Photos.
                 .dropDestination(for: URL.self) { urls, _ in
                     guard let url = urls.first else { return false }
+                    if urls.allSatisfy(PhotoImportFiles.isPhoto) {
+                        PhotoImportController.shared.begin(urls, model: model)
+                        return true
+                    }
                     AppInstance.opening(url, from: model)
                     return true
                 }

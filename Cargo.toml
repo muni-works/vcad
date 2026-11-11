@@ -222,7 +222,11 @@ thiserror = "2"
 # onto its in-repo crate, and a consumer that wants a development kosm-render
 # does the same in an untracked .cargo/config.toml.
 kosm-render = "0.2"
-tang = { version = "0.2.1" }
+# irys-recon (image to CAD) is not on crates.io (publish = false): pinned by
+# rev to a commit on ecto/irys main. Only vcad-ffi links it (the Mac app's
+# experimental "Import from Photos").
+irys-recon = { git = "https://github.com/ecto/irys", rev = "74aa00985a7405db7fd857462e451299a1390bd9" }
+tang ={ version = "0.2.1" }
 tang-la = { version = "0.1.1" }
 tang-expr = { version = "0.2" }
 tang-optim = { version = "0.2.0" }

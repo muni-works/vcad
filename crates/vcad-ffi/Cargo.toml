@@ -12,7 +12,10 @@ name = "vcad_ffi"
 crate-type = ["staticlib", "rlib"]
 
 [features]
-default = ["no-builtin-font"]
+default = ["no-builtin-font", "recon"]
+# Experimental image to CAD (irys-recon): photos with a tag36h11 AprilTag in
+# frame -> an editable, parametric document (`vcad_recon_*`).
+recon = ["dep:irys-recon"]
 # A native CAD app doesn't render with the kernel's builtin font — keep it out
 # of the static lib rather than paying ~27 KB for an unused embed.
 no-builtin-font = ["vcad-kernel/no-builtin-font"]
@@ -53,3 +56,8 @@ vcad-kernel-export = { workspace = true }
 # `vcad render --photoreal`, linked in so the app needs no vcad-render binary.
 vcad-render = { path = "../vcad-render", default-features = false, features = ["photoreal-gpu"] }
 serde_json = { workspace = true }
+irys-recon = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Draws the tag36h11 test photos (recon tests).
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }

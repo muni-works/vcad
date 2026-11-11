@@ -28,6 +28,10 @@ extension EditorModel {
             out.append(.init(id: "op.\(op.rawValue)", title: op.label + "…", symbol: op.symbol, group: "Feature",
                              enabled: doc && (op.createsPart || hasPart)) { [weak self] in self?.activeFeatureOp = op })
         }
+        out.append(.init(id: "import.photos", title: "Import from Photos (Experimental)…", symbol: "camera.viewfinder", group: "Import") { [weak self] in
+            guard let self else { return }
+            PhotoImportController.shared.show(for: self)
+        })
         out.append(.init(id: "sketch", title: "New Sketch", symbol: "scribble.variable", group: "Sketch", shortcut: "⌃S", enabled: doc) { [weak self] in
             self?.enterSketch()
         })
