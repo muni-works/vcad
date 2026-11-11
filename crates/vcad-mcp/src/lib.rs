@@ -12,6 +12,7 @@
 
 pub mod cli;
 pub mod discovery;
+pub mod jobs;
 pub mod protocol;
 pub mod proxy;
 pub mod server;

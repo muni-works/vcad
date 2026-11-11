@@ -83,13 +83,13 @@ enum AgentEdits {
     /// One edit = one undo step named after it. `body` mutates the engine; a
     /// failure restores the snapshot so the document is exactly as before.
     @discardableResult
-    static func edit(_ m: EditorModel, name: String,
+    static func edit(_ m: EditorModel, name: String, standalone: Bool = false,
                      _ body: (DocumentEngine) throws -> DocumentEngine.Result) throws -> DocumentEngine.Result {
         let engine = try editableEngine(m)
         let focus = AgentCursor.focus(m)
         // AgentTurn lands this as its own undo step, or folds it into the
         // agent's open turn ("Agent: thickened walls").
-        let r = try AgentTurn.shared.perform(m, name: name) { () throws -> DocumentEngine.Result in
+        let r = try AgentTurn.shared.perform(m, name: name, standalone: standalone) { () throws -> DocumentEngine.Result in
             let before = engine.save()
             let r: DocumentEngine.Result
             do {

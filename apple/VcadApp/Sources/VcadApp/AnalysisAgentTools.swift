@@ -86,7 +86,7 @@ enum AnalysisAgentTools {
         var req: [String: Any] = [
             "part_index": a["part_index"] as? Int ?? 0,
             "resolution": a["resolution"] as? Int ?? 24,
-            "levels": 2,
+            "levels": max(2, min(4, a["levels"] as? Int ?? 2)),
             "loads": a["loads"] ?? [],
             "supports": a["supports"] ?? [],
             "fields": true,
@@ -94,8 +94,22 @@ enum AnalysisAgentTools {
         if let mat = a["material"] as? String, !mat.isEmpty { req["material"] = mat }
         let body = try AnalysisFFI.encode(req)
         store.shown = true; store.tab = .fea; store.feaBusy = true
+        // Run as the core's job (`_vcad_job`): each mesh/solve step reports to
+        // the header pill and the agent's Task; a ✕ there (or tasks/cancel)
+        // stops the study at the next step.
+        let job = a["_vcad_job"] as? String
+        let cancelled = AgentJobs.shared.cancelled
         let r = await Task.detached {
-            Result { try JSONDecoder().decode(FeaResult.self, from: try AnalysisFFI.call(vcad_fea_solve, doc: data, request: body)) }
+            Result {
+                let out = try AnalysisFFI.feaSolve(doc: data, request: body) { f, level, levels, solving in
+                    guard let job else { return true }
+                    if cancelled.contains(job) { return false }
+                    AgentJobs.report(job, fraction: f,
+                                     stage: "\(solving ? "Solving" : "Meshing") level \(level + 1) of \(levels)")
+                    return true
+                }
+                return try JSONDecoder().decode(FeaResult.self, from: out)
+            }
         }.value
         store.feaBusy = false
         switch r {

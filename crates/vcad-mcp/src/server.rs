@@ -146,6 +146,7 @@ struct Inner {
     proxy: Option<Arc<Proxy>>,
     bus: Arc<Bus>,
     tasks: Arc<TaskStore>,
+    jobs: Arc<crate::jobs::Jobs>,
     config: ServerConfig,
     instance_id: String,
     /// vcad.app: the session dir node sees. Before a proxied call the app's
@@ -247,6 +248,7 @@ impl Server {
                 store,
                 tools: RwLock::new(tools),
                 proxy,
+                jobs: Arc::new(crate::jobs::Jobs::new(bus.clone())),
                 bus,
                 tasks,
                 config,
@@ -264,6 +266,24 @@ impl Server {
             .unwrap_or_else(|e| e.into_inner())
             .insert(tool.name.clone(), tool);
         self.inner.bus.emit(BusEvent::ToolsListChanged);
+    }
+
+    /// Tell the host who connected (`clientInfo.name`), so vcad.app labels the
+    /// agent cursor and undo steps with it ("Claude Code · Fillet"). Headless
+    /// has no host; the call is a no-op there.
+    pub fn client_hello(&self, params: &Value) {
+        let Some(name) = params
+            .get("clientInfo")
+            .and_then(|c| c.get("name"))
+            .and_then(Value::as_str)
+            .filter(|n| !n.trim().is_empty())
+        else {
+            return;
+        };
+        let _ = self
+            .inner
+            .store
+            .host_call(CLIENT_HELLO, &json!({ "name": name }), &Value::Null);
     }
 
     /// The store.
@@ -342,9 +362,81 @@ impl Server {
                 ctx.input_responses = v.clone();
             }
         }
-        let mut out = self.call_tool_inner(params, ctx)?;
+        let name = params.get("name").and_then(Value::as_str).unwrap_or("");
+        let job = if self.is_long_running(name) {
+            let jobs = self.inner.jobs.clone();
+            // The job id is only known after start; the wrapper reads it late.
+            let slot: Arc<Mutex<String>> = Arc::default();
+            let (inner, s2, j2) = (ctx.progress.clone(), slot.clone(), jobs.clone());
+            let wrapped: ProgressFn = Arc::new(move |p, total, message| {
+                let jid = s2.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                j2.progress(&jid, crate::jobs::fraction(p, total), message.clone());
+                inner(p, total, message);
+            });
+            let id = jobs.start_with_sink(
+                name,
+                ctx.job_id.as_deref(),
+                ctx.cancel.clone(),
+                Some(wrapped.clone()),
+            );
+            *slot.lock().unwrap_or_else(|e| e.into_inner()) = id.clone();
+            ctx.progress = wrapped;
+            ctx.job_id = Some(id.clone());
+            Some((jobs, id))
+        } else {
+            None
+        };
+        let res = self.call_tool_inner(params, ctx);
+        if let Some((jobs, id)) = job {
+            let failed = match &res {
+                Ok(v) => v["isError"].as_bool().unwrap_or(false),
+                Err(_) => true,
+            };
+            jobs.finish(&id, if failed { "failed" } else { "completed" });
+        }
+        let mut out = res?;
         self.stamp_instance(&mut out);
         Ok(out)
+    }
+
+    /// The job registry (the app's progress pill reads its bus events).
+    pub fn jobs(&self) -> &Arc<crate::jobs::Jobs> {
+        &self.inner.jobs
+    }
+
+    /// `vcad/jobs/*`: cancel (the app's ✕ — also cancels the MCP Task),
+    /// progress from a host-executed job, list.
+    fn job_method(&self, method: &str, params: &Value) -> Result<Value, RpcErr> {
+        let id = params.get("jobId").and_then(Value::as_str).unwrap_or("");
+        match method {
+            crate::jobs::METHOD_LIST => Ok(self.inner.jobs.list()),
+            crate::jobs::METHOD_PROGRESS => {
+                self.inner.jobs.host_progress(
+                    id,
+                    params.get("fraction").and_then(Value::as_f64),
+                    params
+                        .get("stage")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                );
+                Ok(json!({}))
+            }
+            _ => match self.inner.jobs.cancel(id) {
+                None => Err(RpcErr::new(
+                    ERR_INVALID_PARAMS,
+                    format!("No running job '{id}'"),
+                )),
+                Some(is_task) => {
+                    if is_task {
+                        let _ = self
+                            .inner
+                            .tasks
+                            .handle("tasks/cancel", &json!({ "taskId": id }));
+                    }
+                    Ok(json!({ "cancelled": id }))
+                }
+            },
+        }
     }
 
     /// `ServerConfig::instance_meta`: name the serving instance on every tool
@@ -528,6 +620,7 @@ impl Server {
         match method {
             "tools/list" => Ok(self.tools_list()),
             "tools/call" => self.call_tool(params, ctx),
+            m if crate::jobs::is_job_method(m) => self.job_method(m, params),
             "resources/list" => Ok(self.resources_list()),
             "resources/templates/list" => Ok(json!({ "resourceTemplates": [{
                 "uriTemplate": "vcad://doc/{document_id}",
@@ -594,6 +687,7 @@ impl Server {
             elicit,
             cancel: Arc::new(Default::default()),
             input_responses,
+            job_id: None,
         }
     }
 
@@ -696,6 +790,18 @@ impl Server {
             }
         }
 
+        if crate::jobs::is_job_method(method) {
+            return match self.job_method(method, &params) {
+                Ok(r) => Outcome::body(200, result_response(&id, r)),
+                Err(e) => Outcome::body(200, error_response(&id, e.code, &e.message, None)),
+            };
+        }
+        if method == "tasks/cancel" {
+            // Cancelling the Task cancels its job (the app's pill hears it).
+            if let Some(t) = params.get("taskId").and_then(Value::as_str) {
+                self.inner.jobs.cancel(t);
+            }
+        }
         if matches!(method, "tasks/get" | "tasks/update" | "tasks/cancel") {
             return match self.inner.tasks.handle(method, &params) {
                 Ok(r) => Outcome::body(200, result_response(&id, r)),
@@ -735,6 +841,9 @@ impl Server {
 
         let server_info = self.server_info();
         if method == "server/discover" {
+            if let Some(info) = meta.get(META_CLIENT_INFO) {
+                self.client_hello(&json!({ "clientInfo": info }));
+            }
             let mut caps = self.capabilities();
             caps["extensions"] = json!({ TASKS_EXTENSION: {}, "io.vcad/documents": {} });
             let mut result = json!({
@@ -796,6 +905,7 @@ impl Server {
                 store: self.inner.store.clone(),
                 progress: Arc::new(move |p, total, message| {
                     let counter = match total {
+                        Some(t) if t > 0.0 => format!(" ({:.0}%)", 100.0 * p / t),
                         Some(t) => format!(" ({p}/{t})"),
                         None => format!(" ({p})"),
                     };
@@ -810,6 +920,7 @@ impl Server {
                 elicit: Arc::new(move |params| tasks2.elicit(&tid2, params)),
                 cancel,
                 input_responses: Value::Null,
+                job_id: Some(task_id.clone()),
             };
             let server = self.clone();
             std::thread::spawn(move || match server.call_tool(&forwarded, ctx) {
@@ -955,6 +1066,9 @@ impl Server {
         }
     }
 }
+
+/// Host-call name carrying `clientInfo` to vcad.app (never listed as a tool).
+pub const CLIENT_HELLO: &str = "__client_hello";
 
 /// `vcad://doc/<segment>` names that are not document ids (M1 owns them).
 pub const RESERVED_DOC_SEGMENTS: &[&str] = &["current", "selection", "view"];
@@ -1176,6 +1290,7 @@ impl Connection {
                     // Lenient (HTTP) or clients that skip the notification.
                     st.initialized = true;
                 }
+                self.server.client_hello(&params);
                 let mut result = json!({
                     "protocolVersion": version,
                     "capabilities": self.server.capabilities(),

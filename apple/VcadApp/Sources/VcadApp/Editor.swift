@@ -391,10 +391,16 @@ final class EditorModel {
 
     /// Save As re-points `source` at the same document: keep the sketch etc.
     @ObservationIgnored private var sourceRenameOnly = false
+    /// Bumped whenever the window switches to a different document. MCP
+    /// document ids carry it (`app_window#3`), so an agent pointed at one
+    /// document can never edit the next one the user opens.
+    private(set) var documentEpoch = 0
+
     var source: GeometrySource = .sandbox {
         didSet {
             geometryDirty = true
             if source.id != oldValue.id {
+                documentEpoch &+= 1
                 jointPose = [:]; explode = 0
                 // A different document is not the one any session was linked to.
                 agentLinkID = nil; agentLinkRevision = nil; agentLinkOwned = false
@@ -489,7 +495,17 @@ final class EditorModel {
     // comes from the kernel; this is the *operations* view of the same file.
 
     var documentGraph: DocumentGraph?
-    var featureNodes: [FeatureNode] = []
+    var featureNodes: [FeatureNode] = [] {
+        // Every rebuild re-reads the history (suppressed/skipped rows, the
+        // rollback marker, broken references) — HistoryTree.swift.
+        didSet { refreshHistory() }
+    }
+    /// The engine's feature history: one row per modeling feature, built or not.
+    var history: [HistoryRow] = []
+    /// Feature id whose broken-reference card is open in the tree.
+    var repairingFeatureID: String?
+    /// Feature id being dragged in the tree (drop targets validate against it).
+    var draggingFeatureID: String?
     var expandedFeatureIDs: Set<String> = []
     /// Part indices hidden via the eye toggle (empty = all shown).
     var hiddenParts: Set<Int> = []
@@ -3347,7 +3363,11 @@ final class EditorModel {
 
     var documentName: String { source.label }
 
-    func newDocument() { source = .sandbox }
+    func newDocument() {
+        // Sandbox → sandbox keeps `source.id`, but it is still a new document.
+        if source.isSandbox { documentEpoch &+= 1 }
+        source = .sandbox
+    }
 
     /// True when this instance holds nothing worth keeping on screen: a fresh
     /// sandbox nobody has touched. Opening a document into one of these reuses

@@ -593,12 +593,23 @@ pub fn app_convergence(levels: usize) -> fea::convergence::ConvergenceOptions {
 
 /// Mesh and solve.
 pub fn solve(doc: &vcad_ir::Document, req: &SolveReq) -> Result<SolveResult, String> {
+    solve_with(doc, req, &mut |_| true)
+}
+
+/// Mesh and solve, reporting each study step; `on_step` returning `false`
+/// cancels (the error is `"FEA study cancelled"`).
+pub fn solve_with(
+    doc: &vcad_ir::Document,
+    req: &SolveReq,
+    on_step: &mut dyn FnMut(fea::convergence::StudyStep) -> bool,
+) -> Result<SolveResult, String> {
     let (spec, mesh, head) = prepare(doc, req)?;
-    let (study, fields) = fea::convergence::analyze_converged_fields(
+    let (study, fields) = fea::convergence::analyze_converged_fields_with(
         &mesh,
         &spec,
         &app_convergence(req.levels),
         &fea::solve::SolveOptions::default(),
+        on_step,
     )
     .map_err(|e| e.to_string())?;
     let fine = study.finest().clone();
@@ -654,6 +665,54 @@ pub extern "C" fn vcad_fea_solve(
             let req: SolveReq = serde_json::from_value(parse_request(request_json)?)
                 .map_err(|e| format!("request: {e}"))?;
             solve(&doc, &req)
+        };
+        match run() {
+            Ok(r) => json_out(&r),
+            Err(e) => {
+                err::set_error(e);
+                ptr::null_mut()
+            }
+        }
+    })
+}
+
+/// Progress hook for [`vcad_fea_solve_progress`]: `(ctx, fraction 0…1,
+/// level, levels, solving)`; return `false` to cancel.
+pub type VcadFeaProgressFn = extern "C" fn(
+    ctx: *mut std::ffi::c_void,
+    fraction: f64,
+    level: u32,
+    levels: u32,
+    solving: bool,
+) -> bool;
+
+/// [`vcad_fea_solve`] with a per-step progress hook that can cancel (a
+/// cancelled study returns null with `vcad_last_error` = "FEA study
+/// cancelled"). The hook runs on the calling thread.
+#[no_mangle]
+pub extern "C" fn vcad_fea_solve_progress(
+    doc_json: *const c_char,
+    request_json: *const c_char,
+    progress: Option<VcadFeaProgressFn>,
+    ctx: *mut std::ffi::c_void,
+) -> *mut c_char {
+    err::clear_error();
+    let ctx = ctx as usize;
+    guard_ptr("vcad_fea_solve_progress", || {
+        let run = || -> Result<SolveResult, String> {
+            let doc = parse_doc("document", doc_json)?;
+            let req: SolveReq = serde_json::from_value(parse_request(request_json)?)
+                .map_err(|e| format!("request: {e}"))?;
+            solve_with(&doc, &req, &mut |s| match progress {
+                Some(f) => f(
+                    ctx as *mut std::ffi::c_void,
+                    s.fraction(),
+                    s.level as u32,
+                    s.levels as u32,
+                    s.solving,
+                ),
+                None => true,
+            })
         };
         match run() {
             Ok(r) => json_out(&r),

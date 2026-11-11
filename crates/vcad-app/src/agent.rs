@@ -318,6 +318,13 @@ pub fn read_tool(tool: &str, args: &Value, doc: &DocumentApi) -> Result<String, 
         // after `create_cad_loon` loads to fail closed on parts that
         // cannot be built — or that build to no geometry at all.
         "evaluation_errors" => Ok(evaluation_errors(doc)),
+        // Host-only: the feature tree's rows (state per feature, broken
+        // references with re-pick candidates) as JSON.
+        "feature_history" => {
+            serde_json::to_string(&doc.feature_history()).map_err(|e| CommandError::Invalid {
+                message: e.to_string(),
+            })
+        }
         "inspect" => {
             let id = args
                 .get("part_id")

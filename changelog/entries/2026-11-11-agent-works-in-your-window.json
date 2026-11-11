@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-11-agent-works-in-your-window",
+  "version": "undefined",
+  "date": "2026-11-11",
+  "category": "feat",
+  "title": "The agent works in your window",
+  "summary": "Agents can say \"this part\" (selection references), see what you see (view resource), get pinned to one document, and wait for your Apply/Reject before deleting your parts.",
+  "features": ["mcp", "agent", "mac-app"],
+  "mcpTools": ["fillet_edges", "select_edges", "agent_turn"]
+}

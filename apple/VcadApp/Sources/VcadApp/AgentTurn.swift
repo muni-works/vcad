@@ -23,10 +23,16 @@ final class AgentTurn {
     private var afterHash: String?
     /// The undo entry name this turn owns once it has pushed one.
     private var entryName: String?
+    /// The window document this turn was opened on (`EditorModel.documentEpoch`).
+    /// A turn never follows the user into another document.
+    private(set) var epoch: Int?
 
     var now: () -> Date = Date.init
+    /// The window's current `documentEpoch` (set by AgentCore).
+    var epochProvider: (() -> Int)?
 
-    func begin(_ label: String) {
+    func begin(_ label: String, epoch: Int? = nil) {
+        self.epoch = epoch
         let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
         self.label = trimmed.isEmpty ? "Edit" : trimmed
         lastActivity = now()
@@ -35,7 +41,7 @@ final class AgentTurn {
     }
 
     func end() {
-        label = nil; lastActivity = nil; afterHash = nil; entryName = nil
+        label = nil; lastActivity = nil; afterHash = nil; entryName = nil; epoch = nil
     }
 
     var isOpen: Bool {
@@ -50,9 +56,15 @@ final class AgentTurn {
     }
 
     /// Run `body` (which may push undo entries of its own, or none) and land
-    /// everything it changed as this turn's single undo entry.
+    /// everything it changed as this turn's single undo entry. `standalone`:
+    /// never fold into the turn's entry (a ghost-reviewed edit must be
+    /// rejectable on its own).
     @discardableResult
-    func perform<T>(_ m: EditorModel, name fallback: String, _ body: () throws -> T) throws -> T {
+    func perform<T>(_ m: EditorModel, name fallback: String, standalone: Bool = false,
+                    _ body: () throws -> T) throws -> T {
+        if isOpen, let e = epoch, e != m.documentEpoch {
+            throw AgentTools.Failure(message: "SCOPE: the user switched this window to a different document (\(m.documentName)) during your turn \"\(label ?? "")\". Nothing was changed — this agent was pointed at the earlier document. Ask the user before editing the new one.")
+        }
         guard let engine = m.agentEnsureEngine() else {
             throw AgentTools.Failure(message: "The open document is view-only (\(m.documentName)).")
         }
@@ -65,7 +77,7 @@ final class AgentTurn {
         // the hash only decides whether the turn's entry can absorb it.
         let hashAfter = engine.stateHash
         let name = undoName(fallback: fallback)
-        let continuing = isOpen && entryName == name && afterHash == hashBefore
+        let continuing = !standalone && isOpen && entryName == name && afterHash == hashBefore
             && m.undoActionName == name
         m.agentCommitUndo(before: before, above: depth, coalesce: continuing, name: name)
         if isOpen {
@@ -87,7 +99,7 @@ extension AgentTurn {
             end()
             return AgentTools.text(was.map { "Turn \"\($0)\" closed." } ?? "No turn was open.")
         }
-        begin(a["label"] as? String ?? "Edit")
+        begin(a["label"] as? String ?? "Edit", epoch: epochProvider?())
         return AgentTools.text("Turn open: your edits land as one undo step \"Agent: \(label ?? "")\".")
     }
 }

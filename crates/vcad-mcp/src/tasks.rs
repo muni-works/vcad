@@ -19,6 +19,8 @@ pub enum BusEvent {
     Task(Value),
     /// A resource's content changed.
     ResourceUpdated(String),
+    /// An agent job started, progressed or ended ([`crate::jobs`]).
+    Job(Value),
 }
 
 type Listener = Arc<dyn Fn(&BusEvent) + Send + Sync>;

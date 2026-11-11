@@ -1,6 +1,7 @@
 # Timeline editing — plan
 
-Status: design (no implementation). Mockup: https://claude.ai/artifact/AxJj23u4pbAtBaRcpGKtHq
+Status: A–D merged (#1121, #1125, #1127); E–H (suppress, rollback marker, broken-reference
+repair, drag reorder) in the PR that adds this line. Mockup: https://claude.ai/artifact/AxJj23u4pbAtBaRcpGKtHq
 (source: [`timeline-editing-mockup.html`](timeline-editing-mockup.html)).
 
 ## Decision: the minimal version first
@@ -27,6 +28,30 @@ in §2–§9 below as the roadmap for that later phase.
 | B | Naming for sketch solids | §4.1 + feature-scoped prefixes + `resolve_face` (was M3) | 6 |
 | C | Naming through blends/shell/pattern/mirror | §4.2–4.3 + torture corpus v1 (was M4) | 5 |
 | D | Per-edge fillet/chamfer + sketch-on-face | §3.5, with Re-pick using existing viewport picking (was M5, minus candidate ranking) | 2–3 |
+
+### Next milestones (after D)
+
+Users asked for the deferred pieces, so they come next, smallest first and in the full
+design's order (M0 remainder → M1 → M7 → M8), without the history strip: everything lives in
+the navigator tree.
+
+| # | Milestone | Scope | Days | State |
+|---|---|---|---|---|
+| E | Real suppress (M0 rest) | `suppressed` param; materializer doesn't build it, dependents are **skipped** (grey, with the input that caused it), a skipped consumer stops consuming so its inputs draw again; tree ghost rows; Suppress/Unsuppress | 1 | done |
+| F | Rollback marker (M1, no strip) | `rollback_marker` param on the last built feature; later features are kept, not built; new features insert at the marker and carry it; marker row with ↑/↓/End; Roll Back to Here | 1 | done |
+| G | Broken references (M7, faces) | `feature_history` read tool resolves every `SketchOnFace` ref; a lost one badges the visible row (bubbled up from consumed inputs) and opens a card with the resolver's message and the target's planar faces ranked by tag/normal/point hint; Re-pick rewrites the ref (name + point/normal hint) as one undo step | 1.5 | done |
+| H | Drag reorder (M8, tree) | drag a row onto another; the drop line is green or red with the dependency reason before the drop (`reorderProblem` mirrors `reorder_violation`); the engine still refuses illegal moves | 0.5 | done |
+
+How E/F persist: the app round-trips through IR (every IR edit reloads the engine, files are
+IR), and an unbuilt feature has no scene root. So the materializer still emits its nodes —
+orphans nothing evaluates — and writes `Document.history { order, suppressed, rollback }`
+(root node ids) only when suppress or the marker is in use. Import migrates `order` first, so
+history order and stable ids survive, then restores the flags. No new `DocCommand`s: both are
+`SetParam`.
+
+Still open from the full design: edge references in the repair card (a lost per-edge blend is
+detected as an evaluation error but has no candidate list yet), viewport highlight of
+candidates, the history strip, prefix snapshots, live ghost previews.
 
 ---
 

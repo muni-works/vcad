@@ -2578,6 +2578,40 @@ pub struct Document {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts-rs", ts(optional))]
     pub instrument: Option<instrument::Instrument>,
+
+    // Feature history (optional, zero-cost when absent)
+    /// History state the DAG alone can't carry: suppressed features and the
+    /// rollback marker. Written by the document engine's materializer only
+    /// when one of those is in use, and honored on import so they survive an
+    /// IR round trip. Evaluators ignore it — features that aren't built have
+    /// nodes in `nodes` but no scene root reaches them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub history: Option<FeatureHistory>,
+}
+
+/// Feature-history state carried by a [`Document`] (see [`Document::history`]).
+///
+/// Features are named by their root node (the top of the feature's transform
+/// chain), which is what import maps back to features.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct FeatureHistory {
+    /// Every modeling feature's root node, in history order — including
+    /// features that aren't built (suppressed, skipped, past the marker), so
+    /// import restores the order instead of appending them at the end.
+    #[cfg_attr(feature = "ts-rs", ts(type = "number[]"))]
+    pub order: Vec<NodeId>,
+    /// Root nodes of suppressed features.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "ts-rs", ts(type = "number[]"))]
+    pub suppressed: Vec<NodeId>,
+    /// Rollback marker: the history is built up to and including this
+    /// feature; later features are kept but not built.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional, type = "number"))]
+    pub rollback: Option<NodeId>,
 }
 
 /// One off-the-shelf hardware item required by the modeled geometry.
@@ -2899,6 +2933,7 @@ impl Default for Document {
             part_ids: None,
             hardware: Vec::new(),
             instrument: None,
+            history: None,
             source: None,
         }
     }

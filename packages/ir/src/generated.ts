@@ -2049,7 +2049,15 @@ source?: DocumentSource,
  * per-bar target, predicted and measured pitch — the receipt the Tune
  * panel flips from predicted to measured.
  */
-instrument?: Instrument, };
+instrument?: Instrument, 
+/**
+ * History state the DAG alone can't carry: suppressed features and the
+ * rollback marker. Written by the document engine's materializer only
+ * when one of those is in use, and honored on import so they survive an
+ * IR round trip. Evaluators ignore it — features that aren't built have
+ * nodes in `nodes` but no scene root reaches them.
+ */
+history?: FeatureHistory, };
 
 /**
  * A patch from one materialized IR document to the next.
@@ -3340,6 +3348,29 @@ point?: Vec3,
  * The face's outward normal near `point`, to disambiguate.
  */
 normal?: Vec3, };
+
+/**
+ * Feature-history state carried by a [`Document`] (see [`Document::history`]).
+ *
+ * Features are named by their root node (the top of the feature's transform
+ * chain), which is what import maps back to features.
+ */
+export type FeatureHistory = { 
+/**
+ * Every modeling feature's root node, in history order — including
+ * features that aren't built (suppressed, skipped, past the marker), so
+ * import restores the order instead of appending them at the end.
+ */
+order: number[], 
+/**
+ * Root nodes of suppressed features.
+ */
+suppressed: number[], 
+/**
+ * Rollback marker: the history is built up to and including this
+ * feature; later features are kept but not built.
+ */
+rollback?: number, };
 
 /**
  * Every feature kind and its typed parameters.

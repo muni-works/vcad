@@ -74,6 +74,8 @@ pub enum ConvergenceError {
     /// what costs the caller an afternoon, so the route travels with the
     /// error.
     ThinWalled(Box<ThinWallDiagnosis>),
+    /// The caller's progress hook asked to stop (a cancelled job).
+    Cancelled,
 }
 
 impl std::fmt::Display for ConvergenceError {
@@ -82,6 +84,7 @@ impl std::fmt::Display for ConvergenceError {
             ConvergenceError::Mesh(e) => write!(f, "{e}"),
             ConvergenceError::Solve(e) => write!(f, "{e}"),
             ConvergenceError::InvalidOptions(m) => write!(f, "invalid convergence options: {m}"),
+            ConvergenceError::Cancelled => write!(f, "FEA study cancelled"),
             ConvergenceError::ThinWalled(d) => write!(
                 f,
                 "{}",
@@ -176,6 +179,45 @@ pub fn analyze_converged_fields(
     conv: &ConvergenceOptions,
     solve_opts: &SolveOptions,
 ) -> Result<(ConvergedAnalysis, NodeFields), ConvergenceError> {
+    analyze_converged_fields_with(surface, spec, conv, solve_opts, &mut |_| true)
+}
+
+/// One step of a refinement study, reported to the progress hook of
+/// [`analyze_converged_fields_with`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StudyStep {
+    /// Level about to run (0-based).
+    pub level: usize,
+    /// Total levels.
+    pub levels: usize,
+    /// Lattice resolution of this level.
+    pub resolution: usize,
+    /// `true` when meshing is done and the solve is about to start.
+    pub solving: bool,
+}
+
+impl StudyStep {
+    /// Overall fraction done when this step starts (mesh ≈ 20 %, solve ≈ 80 %
+    /// of a level; finer levels cost ~8× the previous, so weight by cells).
+    pub fn fraction(&self) -> f64 {
+        let w = |k: usize| 8f64.powi(k as i32);
+        let total: f64 = (0..self.levels).map(w).sum();
+        let before: f64 = (0..self.level).map(w).sum();
+        let within = if self.solving { 0.2 } else { 0.0 };
+        (before + within * w(self.level)) / total
+    }
+}
+
+/// [`analyze_converged_fields`] with a hook called before each level's mesh
+/// and solve. Returning `false` stops the study with
+/// [`ConvergenceError::Cancelled`] — the cancel point for a running job.
+pub fn analyze_converged_fields_with(
+    surface: &TriangleMesh,
+    spec: &FeaSpec,
+    conv: &ConvergenceOptions,
+    solve_opts: &SolveOptions,
+    on_step: &mut dyn FnMut(StudyStep) -> bool,
+) -> Result<(ConvergedAnalysis, NodeFields), ConvergenceError> {
     if conv.levels < 2 {
         return Err(ConvergenceError::InvalidOptions(
             "levels must be >= 2 (one solve is an anecdote, not a study)".into(),
@@ -201,6 +243,15 @@ pub fn analyze_converged_fields(
     let mut finest_fields = None;
     for k in 0..conv.levels {
         let res = (spec.resolution << k).min(256);
+        let step = |solving| StudyStep {
+            level: k,
+            levels: conv.levels,
+            resolution: res,
+            solving,
+        };
+        if !on_step(step(false)) {
+            return Err(ConvergenceError::Cancelled);
+        }
         // When the lattice cannot even be built, the thin-wall diagnosis is
         // the useful error — not "no interior cells".
         let tm = tet_fill(surface, res).map_err(|e| {
@@ -210,6 +261,9 @@ pub fn analyze_converged_fields(
                 ConvergenceError::Mesh(e)
             }
         })?;
+        if !on_step(step(true)) {
+            return Err(ConvergenceError::Cancelled);
+        }
         let full = solve_static_full(&tm, spec, solve_opts)?;
         levels.push(full.summary);
         finest_fields = Some(full.fields);

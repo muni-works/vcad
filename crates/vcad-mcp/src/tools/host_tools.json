@@ -96,6 +96,10 @@
             "type": "object"
           },
           "type": "array"
+        },
+        "levels": {
+          "type": "integer",
+          "description": "Mesh-convergence levels (≥2, default 2). Each level doubles the resolution; more levels = a longer, cancellable job."
         }
       },
       "required": [
@@ -104,7 +108,8 @@
       ],
       "type": "object"
     },
-    "name": "analyze_structure"
+    "name": "analyze_structure",
+    "longRunning": true
   },
   {
     "description": "Pin a text label to a part, drawn in the user's viewport with a leader to the part. Same part again replaces its label.",
@@ -249,7 +254,7 @@
         "resourceUri": "ui://vcad/viewer"
       }
     },
-    "description": "Fillet (or chamfer) the edges the user selected in the viewport — read vcad://doc/selection. With nothing selected, every edge of the selected part. One undo step, live.",
+    "description": "Fillet (or chamfer) what the user selected in the viewport — read vcad://doc/selection. Picked edges are filleted; a picked face means the edges around it (\"fillet this face\"). With nothing picked, every edge of the selected part. One undo step, live.",
     "inputSchema": {
       "properties": {
         "chamfer": {
@@ -454,12 +459,20 @@
     "name": "press_key"
   },
   {
-    "description": "Select edges in the user's viewport, as if they clicked them: part index plus edge ids (from vcad://doc/selection or describe_scene), or edge:\"longest\". The v2 agent-cursor seam (agent drives selection); also what demo scripts use in place of a click.",
+    "description": "Select edges in the user's viewport, as if they clicked them: part index plus edge ids (from vcad://doc/selection or describe_scene), or edge:\"longest\", or face:\"top\"|\"bottom\" to select a face. The v2 agent-cursor seam (agent drives selection); also what demo scripts use in place of a click.",
     "inputSchema": {
       "properties": {
         "edge": {
           "enum": [
             "longest"
+          ],
+          "type": "string"
+        },
+        "face": {
+          "description": "Select a face instead of edges: the highest (top) or lowest (bottom) one.",
+          "enum": [
+            "top",
+            "bottom"
           ],
           "type": "string"
         },

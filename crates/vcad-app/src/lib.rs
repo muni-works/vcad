@@ -17,6 +17,7 @@ pub mod ecad_tools;
 pub mod engine;
 pub mod evaluate;
 pub mod feature;
+pub mod history;
 pub mod keybinding;
 pub mod materializer;
 pub mod migrate;
