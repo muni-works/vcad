@@ -141,6 +141,15 @@ fn parse_request(json: &str) -> Result<Request, String> {
     Ok(r)
 }
 
+/// The photo's name as the user picked it: HEIC is transcoded to a `.jpg`
+/// beside the import cache, so show the stem, not the transcode's extension.
+fn photo_label(name: &str) -> &str {
+    Path::new(name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(name)
+}
+
 fn load(path: &str) -> Result<v1::Photo, String> {
     v1::load(Path::new(path)).map_err(|e| format!("Couldn't read the photo: {e}"))
 }
@@ -162,8 +171,8 @@ fn check_photo(p: &v1::Photo, r: &Request) -> Result<PhotoCheck, String> {
     let c = v1::calibrate(p, r.tag_mm, r.sensor_w_mm).map_err(|e| {
         if e.contains("no tag36h11") {
             format!(
-                "No AprilTag found in {}. Print a tag36h11 tag (id 0, {} mm), lay it flat beside the part, and keep it whole, sharp and in frame.",
-                p.name, r.tag_mm
+                "No AprilTag found in {}. Lay a printed tag36h11 tag ({} mm, any id) flat beside the part, and keep it whole, sharp and in frame.",
+                photo_label(&p.name), r.tag_mm
             )
         } else {
             format!("{}: couldn't solve the camera from the tag ({e}).", p.name)
