@@ -618,7 +618,7 @@ export async function getPreviewGlb(
             detail:
               `Model too large for inline preview (${mb} MB of GLB, ` +
               `budget ${(PREVIEW_MAX_BASE64 / 1_000_000).toFixed(1)} MB) — ` +
-              "open it in vcad.io or use export_cad for the full geometry.",
+              "open it in the vcad app (open_in_app) or use export_cad for the full geometry.",
           }),
         },
       ],
