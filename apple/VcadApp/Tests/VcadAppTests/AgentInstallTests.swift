@@ -63,6 +63,15 @@ final class AgentInstallTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), original)
     }
 
+    func testVcadCliEntryCountsAsOurs() throws {
+        XCTAssertTrue(AgentInstall.isOurs(command: "/opt/homebrew/bin/vcad", args: ["mcp"]))
+        XCTAssertFalse(AgentInstall.isOurs(command: "/opt/homebrew/bin/vcad", args: ["export"]))
+        let cli = ServerEntry(command: "/opt/homebrew/bin/vcad", args: ["mcp"], env: [:])
+        XCTAssertEqual(try AgentInstall.install(.claudeCode, entry: cli, home: home), .added)
+        XCTAssertEqual(AgentInstall.status(.claudeCode, home: home), .connected)
+        XCTAssertTrue(try AgentInstall.uninstall(.claudeCode, home: home))
+    }
+
     func testCodexForeignTable() throws {
         let url = AgentKind.codex.config(home: home)
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)

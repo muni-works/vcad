@@ -111,7 +111,35 @@ enum AgentInstall {
     static func isOurs(command: String?, args: [String]) -> Bool {
         guard let command else { return false }
         let base = (command as NSString).lastPathComponent
-        return base == "npx" && args == ["-y", "@vcad/mcp"]
+        return (base == "npx" && args == ["-y", "@vcad/mcp"]) || (base == "vcad" && args == ["mcp"])
+    }
+
+    /// The `vcad mcp` CLI (M0, muni-works/vcad#1099): attaches to the running
+    /// app over ~/.vcad/vcad.sock and falls back to headless. Preferred over
+    /// npx when present. A `vcad` on disk only counts if `vcad mcp --help`
+    /// succeeds, so an older CLI without the subcommand is skipped.
+    static func cliEntry(home: URL = AgentInstall.home) -> ServerEntry? {
+        let fm = FileManager.default
+        var candidates: [String] = []
+        if let bundled = Bundle.main.url(forAuxiliaryExecutable: "vcad-cli")?.path { candidates.append(bundled) }
+        candidates += ["/opt/homebrew/bin/vcad", "/usr/local/bin/vcad", "\(home.path)/.cargo/bin/vcad"]
+        for c in candidates where fm.isExecutableFile(atPath: c) {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: c)
+            p.arguments = ["mcp", "--help"]
+            p.standardOutput = FileHandle.nullDevice
+            p.standardError = FileHandle.nullDevice
+            guard (try? p.run()) != nil else { continue }
+            p.waitUntilExit()
+            if p.terminationStatus == 0 { return ServerEntry(command: c, args: ["mcp"], env: [:]) }
+        }
+        return nil
+    }
+
+    /// What to register: `vcad mcp` when available, else npx.
+    static func preferredEntry() -> ServerEntry? {
+        if let cli = cliEntry() { return cli }
+        return npxPath().map { serverEntry(npx: $0) }
     }
 
     /// Absolute `npx`: common install locations, then the login shell's PATH.

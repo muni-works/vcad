@@ -92,11 +92,10 @@ enum AgentInstallPrompt {
     @MainActor
     @discardableResult
     static func connect(_ agents: [AgentKind], quiet: Bool = false) -> [String] {
-        guard let npx = AgentInstall.npxPath() else {
+        guard let entry = AgentInstall.preferredEntry() else {
             report(["vcad's agent server runs through Node.js, which isn't installed. Install it from nodejs.org or with `brew install node`, then use Help ▸ Connect Agents…."], ok: false)
             return []
         }
-        let entry = AgentInstall.serverEntry(npx: npx)
         var lines: [String] = []
         var ok = true
         for a in agents {
@@ -162,7 +161,7 @@ struct AgentConnectionsForm: View {
         } header: {
             Text("Agents using vcad")
         } footer: {
-            Text("vcad registers itself as an MCP server (npx -y @vcad/mcp) in each agent's config. Disconnect removes only what vcad added; a vcad entry you wrote yourself is never touched. Each file is backed up once to <file>.vcad-backup.")
+            Text("vcad registers itself as an MCP server (`vcad mcp` when installed, else npx -y @vcad/mcp) in each agent's config. Disconnect removes only what vcad added; a vcad entry you wrote yourself is never touched. Each file is backed up once to <file>.vcad-backup.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .onAppear(perform: refresh)
