@@ -1,0 +1,382 @@
+<title>vcad Timeline Editing</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Layout: a macOS document window (navigator | viewport | inspector) over a history strip, with a scenario rail above. */
+:root{
+  --bg:#eceef2; --win:#f7f8fa; --panel:#ffffffcc; --line:#d9dce3; --fg:#1d1f24; --mute:#6b7080;
+  --accent:#0a6cff; --accent-soft:#0a6cff1f; --ok:#1f9d55; --warn:#c98a00; --bad:#d93a3a; --skip:#8b90a0;
+  --vp:#20242c; --vp2:#2a2f39; --solid:#c9d2e0; --solid2:#9eabbf; --solid3:#7f8ca3; --ghost:#9fb7ff;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#15171b; --win:#1e2026; --panel:#262931cc; --line:#363a44; --fg:#e8eaef; --mute:#9aa0ae;
+  --accent:#4d94ff; --accent-soft:#4d94ff26; --ok:#3ccf7a; --warn:#f0b429; --bad:#ff6363; --skip:#7c8292;
+  --vp:#111318; --vp2:#1a1d24; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#15171b; --win:#1e2026; --panel:#262931cc; --line:#363a44; --fg:#e8eaef; --mute:#9aa0ae;
+  --accent:#4d94ff; --accent-soft:#4d94ff26; --ok:#3ccf7a; --warn:#f0b429; --bad:#ff6363; --skip:#7c8292;
+  --vp:#111318; --vp2:#1a1d24; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:var(--sans);font-size:13px;
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:20px}
+.wrap{max-width:1180px;margin:0 auto;display:flex;flex-direction:column;gap:14px}
+h1{font-size:20px;margin:0;font-weight:650;letter-spacing:-.01em;text-wrap:balance}
+.sub{color:var(--mute);margin:2px 0 0;max-width:70ch;line-height:1.45}
+.scen{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.scen span{color:var(--mute);font-size:11px;text-transform:uppercase;letter-spacing:.06em;margin-right:4px}
+button{font:inherit;color:inherit;background:var(--win);border:1px solid var(--line);border-radius:6px;padding:4px 10px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button:focus-visible,.chip:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.window{background:var(--win);border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:0 10px 40px #0002}
+.titlebar{height:38px;display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid var(--line)}
+.dots i{display:inline-block;width:11px;height:11px;border-radius:50%;margin-right:6px;background:var(--line)}
+.titlebar b{font-weight:600}.titlebar .mute{color:var(--mute)}
+.main{display:grid;grid-template-columns:200px minmax(0,1fr) 260px;min-height:400px}
+.nav,.insp{padding:10px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.nav{border-right:1px solid var(--line)}.insp{border-left:1px solid var(--line);gap:10px}
+.lab{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em;color:var(--mute);margin:4px 0}
+.row{display:flex;align-items:center;gap:7px;padding:4px 6px;border-radius:6px;cursor:pointer;white-space:nowrap}
+.row:hover{background:var(--accent-soft)} .row.sel{background:var(--accent);color:#fff}
+.row.after{opacity:.42}.row .st{margin-left:auto}
+.row.markerRow{height:2px;padding:0;margin:3px 0;background:var(--accent);border-radius:2px;cursor:default}
+.dot{width:8px;height:8px;border-radius:50%;flex:none;display:inline-block}
+.ok{background:var(--ok)}.warn{background:var(--warn)}.bad{background:var(--bad)}.skip{background:var(--skip)}.roll{background:transparent;border:1.5px solid var(--skip)}
+.vp{position:relative;background:radial-gradient(ellipse at 50% 35%,var(--vp2),var(--vp));min-width:0;overflow:hidden}
+.vp svg{width:100%;height:100%;display:block}
+.hud{position:absolute;left:10px;top:10px;display:flex;gap:6px;flex-wrap:wrap}
+.pill{font-size:11px;padding:3px 8px;border-radius:99px;background:#0008;color:#e8eaef;backdrop-filter:blur(6px);font-family:var(--mono)}
+.toast{position:absolute;right:10px;bottom:10px;max-width:290px;background:#000a;color:#eef;padding:8px 10px;border-radius:8px;font-size:12px;line-height:1.4;backdrop-filter:blur(8px)}
+.card{border:1px solid var(--line);border-radius:8px;padding:9px;display:flex;flex-direction:column;gap:6px;background:var(--panel)}
+.card h3{margin:0;font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px}
+.card p{margin:0;color:var(--mute);line-height:1.4;font-size:12px}
+.card.badc{border-color:var(--bad)}.card.warnc{border-color:var(--warn)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:3px 10px;font-size:12px}.kv dt{color:var(--mute)}.kv dd{margin:0;font-family:var(--mono);font-size:11.5px;overflow-wrap:anywhere}
+.acts{display:flex;flex-wrap:wrap;gap:5px}.acts button{font-size:12px;padding:3px 8px}
+input[type=range]{width:100%}
+.ref{font-family:var(--mono);font-size:11px;display:flex;gap:6px;align-items:center}
+.strip{border-top:1px solid var(--line);padding:10px 12px 12px;display:flex;flex-direction:column;gap:6px}
+.striphead{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.striphead .mute{color:var(--mute);font-size:12px}
+.lane{position:relative;overflow-x:auto;padding:46px 4px 6px}
+.chips{display:flex;align-items:stretch;gap:0;position:relative;min-width:max-content}
+.gap{width:14px;flex:none;position:relative}
+.gap.drop-ok::after,.gap.drop-bad::after{content:"";position:absolute;inset:-4px 4px;border-radius:3px}
+.gap.drop-ok::after{background:var(--ok)}.gap.drop-bad::after{background:var(--bad);opacity:.35}
+.chip{width:92px;flex:none;border:1px solid var(--line);border-radius:8px;padding:6px 7px;background:var(--win);cursor:grab;display:flex;flex-direction:column;gap:3px;position:relative;user-select:none}
+.chip .t{display:flex;align-items:center;gap:5px;font-weight:600;font-size:12px}
+.chip .m{font-family:var(--mono);font-size:10px;color:var(--mute);display:flex;justify-content:space-between}
+.chip.sel{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-soft)}
+.chip.after{opacity:.45;border-style:dashed}
+.chip.supp{opacity:.55}.chip.supp .t span{text-decoration:line-through}
+.chip.isbad{border-color:var(--bad)}.chip.iswarn{border-color:var(--warn)}
+.chip.dep{box-shadow:0 0 0 2px var(--accent)}
+.chip svg{width:14px;height:14px;flex:none}
+.marker{position:absolute;top:-6px;bottom:-6px;width:3px;background:var(--accent);border-radius:2px;cursor:ew-resize;z-index:3}
+.marker::before{content:"";position:absolute;top:-8px;left:-6px;width:15px;height:10px;background:var(--accent);clip-path:polygon(0 0,100% 0,50% 100%)}
+.arcs{position:absolute;left:0;top:0;pointer-events:none;overflow:visible}
+.legend{display:flex;gap:12px;flex-wrap:wrap;color:var(--mute);font-size:11.5px}
+.legend span{display:flex;align-items:center;gap:5px}
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px}
+.note{border:1px solid var(--line);border-radius:10px;padding:10px 12px;background:var(--win)}
+.note b{display:block;margin-bottom:3px}.note p{margin:0;color:var(--mute);line-height:1.45;font-size:12.5px}
+@media (max-width:860px){.main{grid-template-columns:minmax(0,1fr)}.nav{display:none}.insp{border-left:0;border-top:1px solid var(--line)}.vp{height:300px}}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+
+<div class="wrap">
+  <div>
+    <h1>Timeline editing in vcad</h1>
+    <p class="sub">Drag the blue marker to roll back. Click a feature to edit it, drag a chip to reorder, or try the scenarios. Each chip shows its rebuild state, eval time and cache state. The viewport shows features past the marker as ghosts, so you can see what an edit will do before you commit it.</p>
+  </div>
+  <div class="scen" role="group" aria-label="Scenarios">
+    <span>Scenarios</span>
+    <button id="s-edit">Edit mid-history sketch</button>
+    <button id="s-break">Break a reference</button>
+    <button id="s-supp">Suppress the boss</button>
+    <button id="s-reorder">Try an illegal reorder</button>
+    <button id="s-reset">Reset</button>
+  </div>
+
+  <div class="window">
+    <div class="titlebar"><span class="dots"><i></i><i></i><i></i></span><b>bracket.vcad</b><span class="mute" id="tb-state">— edited</span></div>
+    <div class="main">
+      <div class="nav" id="nav"></div>
+      <div class="vp" id="vp">
+        <svg id="view" viewBox="0 0 640 400" role="img" aria-label="Model viewport"></svg>
+        <div class="hud" id="hud"></div>
+        <div class="toast" id="toast" hidden></div>
+      </div>
+      <div class="insp" id="insp"></div>
+    </div>
+    <div class="strip">
+      <div class="striphead">
+        <b>History</b>
+        <span class="mute" id="stripinfo"></span>
+        <label class="mute" style="margin-left:auto;display:flex;gap:5px;align-items:center"><input type="checkbox" id="ghosts" checked> Ghost features past the marker</label>
+      </div>
+      <div class="lane" id="lane">
+        <svg class="arcs" id="arcs"></svg>
+        <div class="chips" id="chips"></div>
+      </div>
+      <div class="legend">
+        <span><i class="dot ok"></i>built</span><span><i class="dot warn"></i>re-resolved, review</span>
+        <span><i class="dot bad"></i>broken reference</span><span><i class="dot skip"></i>skipped (input suppressed)</span>
+        <span><i class="dot roll"></i>past the marker</span><span>⚡ cached prefix: scrubbing costs no rebuild</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <div class="note"><b>Live downstream preview</b><p>While you drag a sketch dimension, every downstream feature keeps re-resolving in the background. A fillet turns amber or red as you drag, before you commit, not after.</p></div>
+    <div class="note"><b>Legal drops only</b><p>Reordering shows green gaps where the feature can go and red where it would come before its own inputs. The tooltip names the feature it depends on.</p></div>
+    <div class="note"><b>Errors that say what to do</b><p>A broken reference names the lost edge, explains in geometry terms why it is gone, and offers a fix: re-pick from ranked candidates, accept a split, suppress, or undo the edit that caused it.</p></div>
+    <div class="note"><b>Suppress is not an error</b><p>Features that depend on a suppressed feature are shown grey as skipped, with the reason. They come back unchanged when you unsuppress.</p></div>
+  </div>
+</div>
+
+<script>
+const ICON={
+ sketch:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 12l8-8 2 2-8 8H2z"/></svg>',
+ extrude:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 10l5 3 5-3M3 10V5l5-3 5 3v5M8 13V8"/></svg>',
+ hole:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="2"/></svg>',
+ fillet:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 13V8a5 5 0 015-5h5"/></svg>',
+ chamfer:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 13V7l4-4h6"/></svg>',
+ cut:'<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2.5" y="2.5" width="11" height="11" rx="1"/><circle cx="5.5" cy="5.5" r="1"/><circle cx="10.5" cy="10.5" r="1"/></svg>'};
+
+const BASE=[
+ {id:'Sketch1',kind:'sketch',deps:[],ms:2,desc:'Plate outline, 80 × 50 on XY'},
+ {id:'Extrude1',kind:'extrude',deps:['Sketch1'],ms:9,desc:'Plate, 8 mm'},
+ {id:'Sketch2',kind:'sketch',deps:['Extrude1'],ms:2,desc:'Boss circle on Extrude1 › top',ref:'Extrude1:top'},
+ {id:'Extrude2',kind:'extrude',deps:['Sketch2'],ms:14,desc:'Boss, 20 mm, join'},
+ {id:'Hole1',kind:'hole',deps:['Extrude2'],ms:21,desc:'Ø8 thru, on Extrude2 › top',ref:'Extrude2:top'},
+ {id:'Fillet1',kind:'fillet',deps:['Extrude2','Extrude1'],ms:38,desc:'R3 on boss base edge',ref:'Extrude2:side × Extrude1:top'},
+ {id:'Sketch3',kind:'sketch',deps:['Extrude1'],ms:2,desc:'4 mounting holes on Extrude1 › top',ref:'Extrude1:top'},
+ {id:'Cut1',kind:'cut',deps:['Sketch3'],ms:26,desc:'Thru-all cut'},
+ {id:'Chamfer1',kind:'chamfer',deps:['Extrude1'],ms:17,desc:'1 mm on 4 vertical plate edges',ref:'Extrude1:side.* × Extrude1:side.*'}];
+
+let S;
+function reset(){S={order:BASE.map(f=>f.id),marker:BASE.length,supp:new Set(),bossX:40,editing:null,sel:'Fillet1',drag:null,dropMsg:null,toast:null,cached:new Set(BASE.map(f=>f.id))};}
+reset();
+const F=id=>BASE.find(f=>f.id===id);
+const dependents=id=>BASE.filter(f=>f.deps.includes(id)).map(f=>f.id);
+
+// --- evaluation model -----------------------------------------------------
+function evaluate(){
+  const st={},built=new Set();
+  S.order.forEach((id,i)=>{
+    const f=F(id);
+    if(i>=S.marker){st[id]={s:'roll',why:'Past the rollback marker — not built.'};return;}
+    if(S.supp.has(id)){st[id]={s:'supp',why:'Suppressed. Kept in the document, not built.'};return;}
+    const missing=f.deps.filter(d=>!built.has(d));
+    if(missing.length){
+      const d=missing[0],di=S.order.indexOf(d);
+      if(S.supp.has(d)||(st[d]&&(st[d].s==='supp'||st[d].s==='skip')))
+        st[id]={s:'skip',why:`Skipped: its input ${d} is suppressed. Unsuppress ${d} to bring it back.`};
+      else if(di>i) st[id]={s:'bad',why:`${id} sits before ${d}, which it needs.`};
+      else st[id]={s:'skip',why:`Skipped: ${d} is past the marker.`};
+      return;}
+    if(id==='Fillet1'){
+      const x=S.bossX, r=10;
+      if(x-r>=80){st[id]={s:'bad',code:'lost',why:'Lost edge Extrude2:side × Extrude1:top. The boss no longer touches the plate top, so those two faces share no edge.'};return;}
+      if(x+r>80){st[id]={s:'warn',code:'split',why:'Edge split in two: the boss overhangs the plate edge. Resolved by lineage to Extrude1:top.0 (inside arc). Review: the outside arc is now unfilleted.'};built.add(id);return;}
+    }
+    st[id]={s:'ok',why: f.ref?`References resolve by name (${f.ref}).`:'Built.'};
+    built.add(id);
+  });
+  return st;
+}
+
+// --- iso viewport ----------------------------------------------------------
+const K=3.1,OX=250,OY=170;
+const P=(x,y,z)=>[OX+(x-y)*0.866*K,OY+(x+y)*0.5*K-z*K];
+const pts=a=>a.map(p=>P(...p).map(v=>v.toFixed(1)).join(',')).join(' ');
+function ell(cx,cy,z,r,attrs){const [X,Y]=P(cx,cy,z);return `<ellipse cx="${X.toFixed(1)}" cy="${Y.toFixed(1)}" rx="${(r*1.2247*K).toFixed(1)}" ry="${(r*0.7071*K).toFixed(1)}" ${attrs}/>`;}
+function boxSVG(x0,y0,z0,x1,y1,z1,cls,chamf){
+  const top=pts([[x0,y0,z1],[x1,y0,z1],[x1,y1,z1],[x0,y1,z1]]);
+  const fx=pts([[x1,y0,z0],[x1,y1,z0],[x1,y1,z1],[x1,y0,z1]]);
+  const fy=pts([[x0,y1,z0],[x1,y1,z0],[x1,y1,z1],[x0,y1,z1]]);
+  if(cls==='ghost')return `<polygon points="${top}" class="g"/><polygon points="${fx}" class="g"/><polygon points="${fy}" class="g"/>`;
+  return `<polygon points="${fx}" fill="var(--solid2)" stroke="#0004"/><polygon points="${fy}" fill="var(--solid3)" stroke="#0004"/><polygon points="${top}" fill="var(--solid)" stroke="#0004"/>`+
+    (chamf?`<polyline points="${pts([[x1-1.5,y0,z1],[x1,y0+1.5,z1]])}" stroke="#fff8" fill="none"/><polyline points="${pts([[x1,y1-1.5,z1],[x1-1.5,y1,z1],[x0+1.5,y1,z1],[x0,y1-1.5,z1]])}" stroke="#fff6" fill="none"/>`:'');
+}
+function cyl(cx,cy,z0,z1,r,mode){
+  const [a]=P(cx,cy,z0),rx=r*1.2247*K,[,yb]=P(cx,cy,z0),[,yt]=P(cx,cy,z1),ry=r*0.7071*K;
+  if(mode==='ghost')return ell(cx,cy,z1,r,'class="g"')+ell(cx,cy,z0,r,'class="g"')+`<line x1="${a-rx}" y1="${yt}" x2="${a-rx}" y2="${yb}" class="g"/><line x1="${a+rx}" y1="${yt}" x2="${a+rx}" y2="${yb}" class="g"/>`;
+  return `<path d="M${a-rx},${yt} L${a-rx},${yb} A${rx},${ry} 0 0 0 ${a+rx},${yb} L${a+rx},${yt} Z" fill="var(--solid2)" stroke="#0004"/>`+ell(cx,cy,z1,r,'fill="var(--solid)" stroke="#0004"');
+}
+function render3D(st){
+  const show=id=>st[id].s==='ok'||st[id].s==='warn';
+  const ghost=id=>document.getElementById('ghosts').checked&&st[id].s==='roll';
+  const sketchEdit=S.editing==='Sketch2';
+  let s=`<defs><style>.g{fill:none;stroke:var(--ghost);stroke-dasharray:4 3;stroke-width:1.2;opacity:.75}</style></defs>`;
+  // ground grid
+  for(let i=-20;i<=120;i+=10){s+=`<polyline points="${pts([[i,-20,0],[i,90,0]])}" stroke="#ffffff10"/>`;}
+  for(let j=-20;j<=90;j+=10){s+=`<polyline points="${pts([[-20,j,0],[120,j,0]])}" stroke="#ffffff10"/>`;}
+  const x=S.bossX,bossOn=show('Extrude2'),plate=show('Extrude1');
+  if(plate) s+=boxSVG(0,0,0,80,50,8,'solid',show('Chamfer1'));
+  else if(ghost('Extrude1')) s+=boxSVG(0,0,0,80,50,8,'ghost');
+  else if(show('Sketch1')) s+=`<polygon points="${pts([[0,0,0],[80,0,0],[80,50,0],[0,50,0]])}" fill="none" stroke="var(--accent)" stroke-width="1.5"/>`;
+  const holes=[[8,8],[72,8],[8,42],[72,42]];
+  if(show('Cut1')) holes.forEach(([a,b])=>s+=ell(a,b,8,2.6,'fill="#1b1f27" stroke="#0006"'));
+  else if(ghost('Cut1')||ghost('Sketch3')) holes.forEach(([a,b])=>s+=ell(a,b,8,2.6,'class="g"'));
+  else if(show('Sketch3')) holes.forEach(([a,b])=>s+=ell(a,b,8,2.6,'fill="none" stroke="var(--accent)"'));
+  // boss
+  if(bossOn){
+    const fz=st.Fillet1.s;
+    if(fz==='ok'||fz==='warn') s+=ell(x,25,8,13.2,'fill="var(--solid)" stroke="#0003"');
+    s+=cyl(x,25,8,28,10,'solid');
+    if(show('Hole1')) s+=ell(x,25,28,4,'fill="#1b1f27"'); else if(ghost('Hole1')) s+=ell(x,25,28,4,'class="g"');
+    if(fz==='warn') s+=ell(x,25,8,10,'fill="none" stroke="var(--warn)" stroke-width="2.5"');
+  } else if(ghost('Extrude2')||(sketchEdit)) {
+    s+=cyl(x,25,8,28,10,'ghost'); s+=ell(x,25,28,4,'class="g"');
+  }
+  if(show('Sketch2')&&!bossOn&&!sketchEdit) s+=ell(x,25,8,10,'fill="none" stroke="var(--accent)" stroke-width="1.5"');
+  if(sketchEdit){ s+=ell(x,25,8,10,'fill="var(--accent-soft)" stroke="var(--accent)" stroke-width="2"');
+    const [X,Y]=P(x,25,8); s+=`<circle cx="${X}" cy="${Y}" r="4" fill="var(--accent)"/><text x="${X+8}" y="${Y-8}" fill="#cfe0ff" font-size="11" font-family="ui-monospace,monospace">x = ${x} mm</text>`;}
+  if(st.Fillet1.s==='bad'&&st.Fillet1.code==='lost'){ s+=ell(Math.min(x,89),25,8,10,'fill="none" stroke="var(--bad)" stroke-width="2.5" stroke-dasharray="5 4"');
+    const [X,Y]=P(Math.min(x,89),25,8); s+=`<text x="${X-30}" y="${Y+30}" fill="var(--bad)" font-size="11" font-family="ui-monospace,monospace">lost: Fillet1 edge</text>`;}
+  document.getElementById('view').innerHTML=s;
+}
+
+// --- UI ---------------------------------------------------------------------
+const dotCls={ok:'ok',warn:'warn',bad:'bad',skip:'skip',supp:'skip',roll:'roll'};
+function render(){
+  const st=evaluate();
+  render3D(st);
+  // nav
+  let n='<div class="lab">Features</div>';
+  S.order.forEach((id,i)=>{
+    if(i===S.marker) n+='<div class="row markerRow" title="Rollback marker"></div>';
+    const f=F(id);
+    n+=`<div class="row ${S.sel===id?'sel':''} ${i>=S.marker?'after':''}" data-id="${id}">${ICON[f.kind].replace('<svg','<svg width="14" height="14"')}<span style="${S.supp.has(id)?'text-decoration:line-through':''}">${id}</span><i class="dot st ${dotCls[st[id].s]}"></i></div>`;
+  });
+  if(S.marker===S.order.length) n+='<div class="row markerRow" title="Rollback marker"></div>';
+  const nav=document.getElementById('nav'); nav.innerHTML=n;
+  nav.querySelectorAll('.row[data-id]').forEach(r=>r.onclick=()=>{S.sel=r.dataset.id;render();});
+  // chips
+  const chips=document.getElementById('chips'); let c='';
+  S.order.forEach((id,i)=>{
+    const f=F(id),s=st[id].s;
+    c+=`<div class="gap" data-gap="${i}"></div>`;
+    const cached=i<S.marker&&S.cached.has(id)&&s!=='supp'&&s!=='skip';
+    c+=`<div class="chip ${S.sel===id?'sel':''} ${i>=S.marker?'after':''} ${S.supp.has(id)?'supp':''} ${s==='bad'?'isbad':''} ${s==='warn'?'iswarn':''}" draggable="true" tabindex="0" data-id="${id}" title="${st[id].why}">
+      <div class="t">${ICON[f.kind]}<span>${id}</span></div>
+      <div class="m"><span><i class="dot ${dotCls[s]}"></i></span><span>${s==='roll'||s==='supp'||s==='skip'?'—':f.ms+' ms'}${cached?' ⚡':''}</span></div></div>`;
+  });
+  c+=`<div class="gap" data-gap="${S.order.length}"></div>`;
+  chips.innerHTML=c+'<div class="marker" id="marker" tabindex="0" role="slider" aria-label="Rollback marker" aria-valuemin="0" aria-valuemax="'+S.order.length+'" aria-valuenow="'+S.marker+'"></div>';
+  placeMarker(); drawArcs(); wireChips();
+  // info
+  const builtMs=S.order.slice(0,S.marker).filter(id=>st[id].s==='ok'||st[id].s==='warn').reduce((a,id)=>a+F(id).ms,0);
+  const bad=S.order.filter(id=>st[id].s==='bad').length, warn=S.order.filter(id=>st[id].s==='warn').length;
+  document.getElementById('stripinfo').textContent=`${S.marker}/${S.order.length} features · cold rebuild ${builtMs} ms · scrub from cache 0 ms`+(bad?` · ${bad} broken`:'')+(warn?` · ${warn} to review`:'');
+  document.getElementById('tb-state').textContent=S.marker<S.order.length?`— rolled back to ${S.order[S.marker-1]||'start'}`:'— edited';
+  // hud
+  const hud=[]; if(S.marker<S.order.length) hud.push(`<span class="pill">rolled back · ${S.order.length-S.marker} ahead</span>`);
+  if(S.editing) hud.push(`<span class="pill">editing ${S.editing} · downstream live</span>`);
+  if(bad) hud.push(`<span class="pill" style="color:#ff9b9b">${bad} broken</span>`);
+  document.getElementById('hud').innerHTML=hud.join('');
+  const t=document.getElementById('toast'); t.hidden=!S.toast; if(S.toast) t.textContent=S.toast;
+  renderInspector(st);
+}
+
+function renderInspector(st){
+  const id=S.sel,f=F(id),s=st[id];
+  let h=`<div class="lab">Inspector</div><div class="card ${s.s==='bad'?'badc':s.s==='warn'?'warnc':''}"><h3>${ICON[f.kind].replace('<svg','<svg width="15" height="15"')}${id} <i class="dot ${dotCls[s.s]}" style="margin-left:auto"></i></h3><p>${f.desc}</p><p>${s.why}</p>`;
+  if(f.ref) h+=`<dl class="kv"><dt>refs</dt><dd>${f.ref}</dd><dt>needs</dt><dd>${f.deps.join(', ')||'—'}</dd><dt>feeds</dt><dd>${dependents(id).join(', ')||'—'}</dd></dl>`;
+  h+=`<div class="acts"><button data-a="edit">Edit</button><button data-a="roll">Roll to here</button><button data-a="supp">${S.supp.has(id)?'Unsuppress':'Suppress'}</button></div></div>`;
+  if(id==='Sketch2'&&S.editing==='Sketch2'){
+    h+=`<div class="card"><h3>Boss centre X</h3><input type="range" id="bx" min="10" max="105" value="${S.bossX}" aria-label="Boss centre X"><p>Drag it. Downstream features re-resolve on every frame, and the strip below updates live.</p>`;
+    h+='<div>'+['Extrude2','Hole1','Fillet1','Chamfer1'].map(d=>{const v=evalPreview()[d];return `<div class="ref"><i class="dot ${dotCls[v.s]}"></i>${d}<span style="color:var(--mute);margin-left:auto">${v.s==='ok'?'by name':v.s==='warn'?'by lineage':v.s==='bad'?'lost':v.s}</span></div>`}).join('')+'</div>';
+    h+=`<div class="acts"><button class="primary" data-a="finish">Finish sketch</button><button data-a="cancel">Cancel</button></div></div>`;
+  }
+  if(s.s==='bad'&&s.code==='lost'){
+    h+=`<div class="card badc"><h3>Fix Fillet1</h3><p>Candidates near the old edge, ranked by how well they match its recorded direction, midpoint and length:</p>
+      <div class="ref"><i class="dot warn"></i>Extrude2:side × Extrude1:side.2 <span style="margin-left:auto;color:var(--mute)">62%</span></div>
+      <div class="ref"><i class="dot warn"></i>Extrude2:bottom × Extrude2:side <span style="margin-left:auto;color:var(--mute)">48%</span></div>
+      <div class="acts"><button data-a="repick">Re-pick edge</button><button data-a="supp">Suppress Fillet1</button><button data-a="revert">Undo Sketch2 edit</button></div></div>`;
+  }
+  if(s.s==='warn'){
+    h+=`<div class="card warnc"><h3>Review Fillet1</h3><p>The edge was split by the plate boundary. vcad kept the fragment that matches the recorded edge and left the other unfilleted.</p><div class="acts"><button data-a="accept">Accept</button><button data-a="both">Fillet both fragments</button><button data-a="repick">Re-pick</button></div></div>`;
+  }
+  if(s.s==='skip'||s.s==='supp'){
+    const d=dependents(id).filter(x=>st[x].s==='skip'); if(d.length) h+=`<div class="card"><h3>Also skipped</h3><p>${d.join(', ')} depend on ${id} and are skipped with it.</p></div>`;
+  }
+  if(S.dropMsg) h+=`<div class="card ${S.dropMsg.ok?'':'badc'}"><h3>${S.dropMsg.ok?'Reorder':'Can’t move here'}</h3><p>${S.dropMsg.text}</p></div>`;
+  const ins=document.getElementById('insp'); ins.innerHTML=h;
+  ins.querySelectorAll('button[data-a]').forEach(b=>b.onclick=()=>act(b.dataset.a));
+  const bx=document.getElementById('bx'); if(bx) bx.oninput=e=>{S.bossX=+e.target.value;render();document.getElementById('bx')?.focus();};
+}
+function evalPreview(){const m=S.marker;S.marker=S.order.length;const r=evaluate();S.marker=m;return r;}
+
+function act(a){
+  const id=S.sel; S.toast=null; S.dropMsg=null;
+  if(a==='edit'){ if(id==='Sketch2'){S.editing='Sketch2';S.marker=S.order.indexOf('Sketch2')+1;S.toast='Rolled back to Sketch2. Features after the marker are ghosted and still re-resolve as you drag.';}
+    else S.toast=`Editing ${id}. The marker moves to just after it, and downstream features preview live.`;}
+  if(a==='roll'){S.marker=S.order.indexOf(id)+1;S.editing=null;}
+  if(a==='supp'){S.supp.has(id)?S.supp.delete(id):S.supp.add(id);}
+  if(a==='finish'||a==='cancel'){ if(a==='cancel')S.bossX=40; S.editing=null;S.marker=S.order.length;
+    const st=evaluate(); const changed=S.order.filter(x=>st[x].s!=='ok');
+    S.toast=a==='finish'?(changed.length?`Rebuilt 4 features (Extrude2 → Chamfer1). ${changed.map(x=>x+': '+st[x].s).join(', ')}.`:'Rebuilt 4 features. All references resolved by name.'):'Edit discarded.';
+    S.cached=new Set(S.order); if(changed.length)S.sel=changed[0];}
+  if(a==='revert'){S.bossX=40;S.toast='Sketch2 edit undone. Fillet1 resolves by name again.';}
+  if(a==='repick'){S.toast='Pick mode: click an edge in the viewport. Candidates glow; the old edge shows as a dashed ghost.';}
+  if(a==='accept'){S.toast='Accepted. Fillet1 now references Extrude1:top.0 explicitly.';}
+  if(a==='both'){S.toast='Fillet1 now covers both fragments (Extrude1:top.*).';}
+  render();
+}
+
+// marker drag
+function gapX(i){const g=document.querySelector(`.gap[data-gap="${i}"]`);return g.offsetLeft+g.offsetWidth/2-1.5;}
+function placeMarker(){const m=document.getElementById('marker');m.style.left=gapX(S.marker)+'px';
+  m.onpointerdown=e=>{m.setPointerCapture(e.pointerId);S.editing=null;
+    m.onpointermove=ev=>{const r=document.getElementById('chips').getBoundingClientRect();const x=ev.clientX-r.left;let best=0,bd=1e9;
+      for(let i=0;i<=S.order.length;i++){const d=Math.abs(gapX(i)-x);if(d<bd){bd=d;best=i;}}
+      if(best!==S.marker){S.marker=best;S.toast=null;render();}};
+    m.onpointerup=()=>{m.onpointermove=null;};};
+  m.onkeydown=e=>{if(e.key==='ArrowLeft'&&S.marker>0){S.marker--;render();document.getElementById('marker').focus();}
+    if(e.key==='ArrowRight'&&S.marker<S.order.length){S.marker++;render();document.getElementById('marker').focus();}};
+}
+function drawArcs(){
+  const svg=document.getElementById('arcs'),chips=document.getElementById('chips');
+  svg.setAttribute('width',chips.scrollWidth);svg.setAttribute('height',50);
+  const sel=S.sel,f=F(sel);let s='';
+  const cx=id=>{const el=chips.querySelector(`.chip[data-id="${id}"]`);return el.offsetLeft+el.offsetWidth/2+4;};
+  f.deps.forEach(d=>{const a=cx(d),b=cx(sel),h=Math.min(38,10+Math.abs(b-a)/8);s+=`<path d="M${a},44 C${a},${44-h} ${b},${44-h} ${b},44" fill="none" stroke="var(--accent)" stroke-width="1.5"/><circle cx="${a}" cy="44" r="2.5" fill="var(--accent)"/>`;});
+  dependents(sel).forEach(d=>{const a=cx(sel),b=cx(d),h=Math.min(38,10+Math.abs(b-a)/8);s+=`<path d="M${a},44 C${a},${44-h} ${b},${44-h} ${b},44" fill="none" stroke="var(--mute)" stroke-dasharray="3 3" stroke-width="1.2"/>`;});
+  svg.innerHTML=s;
+}
+function canMove(id,gap){
+  const rest=S.order.filter(x=>x!==id),pos=gap>S.order.indexOf(id)?gap-1:gap;
+  const before=new Set(rest.slice(0,pos)),f=F(id);
+  const need=f.deps.find(d=>!before.has(d)); if(need) return {ok:false,text:`${id} needs ${need} (${F(id).ref||'its input'}), so it has to stay after ${need}.`};
+  const feeds=dependents(id).find(d=>before.has(d)); if(feeds) return {ok:false,text:`${feeds} uses ${id}, so ${id} has to stay before ${feeds}.`};
+  return {ok:true,pos,text:`Moving ${id} here keeps every input ahead of it. References re-resolve by name.`};
+}
+function wireChips(){
+  document.querySelectorAll('.chip').forEach(ch=>{
+    ch.onclick=()=>{S.sel=ch.dataset.id;S.dropMsg=null;render();};
+    ch.ondblclick=()=>{S.sel=ch.dataset.id;act('edit');};
+    ch.ondragstart=e=>{S.drag=ch.dataset.id;e.dataTransfer.setData('text/plain',S.drag);
+      document.querySelectorAll('.gap').forEach(g=>{const i=+g.dataset.gap,oi=S.order.indexOf(S.drag);if(i===oi||i===oi+1)return;g.classList.add(canMove(S.drag,i).ok?'drop-ok':'drop-bad');});};
+    ch.ondragend=()=>{document.querySelectorAll('.gap').forEach(g=>g.classList.remove('drop-ok','drop-bad'));};
+  });
+  document.querySelectorAll('.gap').forEach(g=>{
+    g.ondragover=e=>{e.preventDefault();};
+    g.ondrop=e=>{e.preventDefault();const id=S.drag,i=+g.dataset.gap,r=canMove(id,i);S.dropMsg=r;S.sel=id;
+      if(r.ok){const rest=S.order.filter(x=>x!==id);rest.splice(r.pos,0,id);S.order=rest;S.cached=new Set(rest.slice(0,Math.min(r.pos,S.order.indexOf(id))));S.toast=`Moved ${id}. Rebuilt from position ${r.pos+1}; everything before it came from cache.`;}
+      render();};
+  });
+}
+// scenarios
+document.getElementById('s-reset').onclick=()=>{reset();render();};
+document.getElementById('s-edit').onclick=()=>{reset();S.sel='Sketch2';act('edit');};
+document.getElementById('s-break').onclick=()=>{reset();S.bossX=96;S.sel='Fillet1';S.toast='Sketch2 moved the boss to x = 96, clear of the plate. Fillet1 lost its edge; vcad stopped rather than guessing.';render();};
+document.getElementById('s-supp').onclick=()=>{reset();S.supp.add('Extrude2');S.sel='Extrude2';render();};
+document.getElementById('s-reorder').onclick=()=>{reset();S.sel='Fillet1';S.dropMsg=canMove('Fillet1',2);S.toast='Dragging Fillet1 before Extrude2 shows a red gap: it needs the boss edge.';render();};
+document.getElementById('ghosts').onchange=render;
+addEventListener('resize',()=>{placeMarker();drawArcs();});
+render();
+</script>
