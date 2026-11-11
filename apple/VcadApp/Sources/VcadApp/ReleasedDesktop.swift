@@ -909,6 +909,9 @@ struct ReleasedOverlayView: View {
                     .offset(x: r.minX, y: r.minY)
                     .allowsHitTesting(false)
             }
+            // Opening a new document: the import / first-solve card, then
+            // the compact pill once geometry is visible.
+            LoadProgressOverlay(model: model, top: chromeTop)
             // Floating panels, hosted in the overlay itself (separate
             // NSPanels break SwiftUI hit testing after auto-resize).
             if !studio {
@@ -1746,6 +1749,17 @@ struct ReleasedARView: NSViewRepresentable {
 
         let buildStarted = Date()
         defer { GlassUI.shared.lastBuildMillis = Date().timeIntervalSince(buildStarted) * 1000 }
+        // A STEP import is reading: the document hasn't switched yet, but the
+        // stage shows only the grid under the progress card — not the model
+        // being replaced.
+        if model.loading?.isImporting == true || model.loading?.isFailed == true {
+            coordinator.instanceEntities.removeAll(keepingCapacity: true)
+            anchor.children.filter { ["geomRoot", "contactShadow"].contains($0.name) }
+                .forEach { $0.removeFromParent() }
+            coordinator.builtSourceID = nil
+            coordinator.builtKey = ""            // a cancel redraws the old model
+            return
+        }
         let scene = model.buildScene()
         // Still solving with nothing landed yet: parts are drawn as they land
         // and the model flips geometryDirty when the kernel is done. Meanwhile
