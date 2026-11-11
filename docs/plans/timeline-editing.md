@@ -3,6 +3,35 @@
 Status: design (no implementation). Mockup: https://claude.ai/artifact/AxJj23u4pbAtBaRcpGKtHq
 (source: [`timeline-editing-mockup.html`](timeline-editing-mockup.html)).
 
+## Decision: the minimal version first
+
+The feature tree *is* the history. Click a feature, edit it in the inspector, and everything
+after it rebuilds. Undo/redo stays as it is today, one named step per edit. A feature that
+loses its reference gets a red badge and a fix (re-pick, delete, undo). Move Up/Down stays,
+but refuses moves that would put a feature before its input.
+
+Undo alone isn't enough: changing an early decision (plate thickness) with undo means
+throwing away everything built after it. History editing keeps that work. What makes it
+safe is persistent naming, so that is where the effort goes.
+
+Deferred until users ask to insert features mid-history: the timeline strip, rollback
+marker, drag reorder, live ghost previews, thumbnails, and real suppress. Until then,
+rename today's "Suppress" to **Hide**, since that is what it does. The full design is kept
+in §2–§9 below as the roadmap for that later phase.
+
+### Minimal milestones (~15 days)
+
+| # | Milestone | Scope | Days |
+|---|---|---|---|
+| A | Honest tree | Rename Suppress → Hide; `reorder_feature` checks dependencies and returns `OrderViolation`; structured `FeatureDiag` replaces warning strings; red badge + error card in the tree/inspector | 2 |
+| B | Naming for sketch solids | §4.1 + feature-scoped prefixes + `resolve_face` (was M3) | 6 |
+| C | Naming through blends/shell/pattern/mirror | §4.2–4.3 + torture corpus v1 (was M4) | 5 |
+| D | Per-edge fillet/chamfer + sketch-on-face | §3.5, with Re-pick using existing viewport picking (was M5, minus candidate ranking) | 2–3 |
+
+---
+
+## Full design (later phase)
+
 Goal: Fusion-class parametric history in `apple/VcadApp`. You can roll back, edit a sketch or
 feature mid-history, reorder, and suppress. Downstream features re-resolve on stable references,
 and when one breaks you get a clear error with a fix. Then go past Fusion: a live downstream
