@@ -387,6 +387,8 @@ impl Server {
         };
         let id = match uri.strip_prefix("vcad://doc/") {
             Some("current") => self.inner.store.current().ok_or_else(not_found)?,
+            // Reserved for the app's live resources (M1): never document ids.
+            Some(r) if RESERVED_DOC_SEGMENTS.contains(&r) => return Err(not_found()),
             Some(id) => DocumentId::from(id),
             None => return Err(not_found()),
         };
@@ -822,6 +824,9 @@ impl Server {
         }
     }
 }
+
+/// `vcad://doc/<segment>` names that are not document ids (M1 owns them).
+pub const RESERVED_DOC_SEGMENTS: &[&str] = &["current", "selection", "view"];
 
 fn decorate_cache(result: &mut Value, method: &str) {
     if let Some(ttl) = cache_ttl(method) {

@@ -230,7 +230,11 @@ fn valid_id_byte(b: u8) -> bool {
 
 /// Same guard as node's `pathFor`: `^[A-Za-z0-9_-]{1,128}$`.
 pub fn is_valid_id(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 128 && id.bytes().all(valid_id_byte)
+    // `current` / `selection` / `view` name app resources under vcad://doc/.
+    !matches!(id, "current" | "selection" | "view")
+        && !id.is_empty()
+        && id.len() <= 128
+        && id.bytes().all(valid_id_byte)
 }
 
 /// Unwrap a stored blob into a Document; tolerate the legacy `{ ir }` envelope.
@@ -601,5 +605,6 @@ mod tests {
     fn rejects_path_escape() {
         assert!(!is_valid_id("../etc/passwd"));
         assert!(!is_valid_id(""));
+        assert!(!is_valid_id("selection") && !is_valid_id("view"));
     }
 }
