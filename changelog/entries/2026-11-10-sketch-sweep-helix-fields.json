@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-10-sketch-sweep-helix-fields",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "fix",
+  "title": "Mac sketch sweep: Turns/Radius/Length, on-path profile",
+  "summary": "Sketch Sweep gets labeled Turns, Radius and Length fields; the profile's centroid now rides the helix, and profiles that would self-intersect are refused with a plain message.",
+  "features": ["native-app", "sketch", "sweep"]
+}

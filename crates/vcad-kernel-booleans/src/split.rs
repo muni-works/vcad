@@ -916,6 +916,84 @@ fn find_line_polygon_crossings(polygon: &[Point3], line: &vcad_kernel_geom::Line
     crossings
 }
 
+/// Where a line crossing a planar face's boundary meets the true circle, when
+/// the boundary there is a chord of an adjoining cylinder wall's rim.
+///
+/// The wall splits at the plane's exact intersection with the cylinder, while
+/// a crossing read off the polygon lies on the chord, up to the rim's sag
+/// inside it. The two faces then carry different vertices for one corner, and
+/// whether they meet comes down to how the mesh welder rounds them.
+fn crossing_on_rim_circle(
+    brep: &BRepSolid,
+    polygon: &[Point3],
+    line: &vcad_kernel_geom::Line3d,
+    crossing: Point3,
+) -> Point3 {
+    /// Twice `arc_segments`' sag: every rim chord is flatter than this.
+    const MAX_RIM_SAG: f64 = 2e-3;
+    const ON_SURFACE: f64 = 1e-6;
+
+    let (edge, dist) = find_closest_edge_with_dist(polygon, &crossing);
+    if dist > ON_SURFACE {
+        return crossing;
+    }
+    let (a, b) = (polygon[edge], polygon[(edge + 1) % polygon.len()]);
+    let half = (b - a).norm() / 2.0;
+    let mut owners: std::collections::HashMap<usize, (bool, bool)> = Default::default();
+    for (_, face) in &brep.topology.faces {
+        let surface = &brep.geometry.surfaces[face.surface_index];
+        let Some(cyl) = surface
+            .as_any()
+            .downcast_ref::<vcad_kernel_geom::CylinderSurface>()
+        else {
+            continue;
+        };
+        let axis = *cyl.axis.as_ref();
+        let radius = cyl.radius.abs();
+        let radial = |p: &Point3| {
+            let d = *p - cyl.center;
+            (d - axis * d.dot(axis)).norm()
+        };
+        if radius <= half
+            || (b - a).dot(axis).abs() > ON_SURFACE
+            || line.direction.normalize().dot(axis).abs() > 1e-9
+            || radius - (radius * radius - half * half).sqrt() > MAX_RIM_SAG
+            || (radial(&a) - radius).abs() > ON_SURFACE
+            || (radial(&b) - radius).abs() > ON_SURFACE
+        {
+            continue;
+        }
+        let owner = owners.entry(face.surface_index).or_default();
+        for lp in std::iter::once(face.outer_loop).chain(face.inner_loops.iter().copied()) {
+            for he in brep.topology.loop_half_edges(lp) {
+                let p = brep.topology.vertices[brep.topology.half_edges[he].origin].point;
+                owner.0 |= (p - a).norm() < ON_SURFACE;
+                owner.1 |= (p - b).norm() < ON_SURFACE;
+            }
+        }
+        if *owner != (true, true) {
+            continue;
+        }
+        // Line against circle, measured from the crossing.
+        let dir = line.direction.normalize();
+        let d = crossing - cyl.center;
+        let flat = d - axis * d.dot(axis);
+        let along = flat.dot(dir);
+        let disc = along * along - (flat.norm_squared() - radius * radius);
+        if disc < 0.0 {
+            continue;
+        }
+        let root = disc.sqrt();
+        let t = if (-along + root).abs() < (-along - root).abs() {
+            -along + root
+        } else {
+            -along - root
+        };
+        return snap_point(crossing + dir * t);
+    }
+    crossing
+}
+
 /// Create a new face in the BRep from a set of 3D points.
 ///
 /// Reuses existing vertices within tolerance, creating new ones only when needed.
@@ -1542,6 +1620,186 @@ pub fn split_planar_face_by_circle(
 
     SplitResult {
         sub_faces: vec![inner_face, outer_face],
+    }
+}
+
+/// Split a ruled wall (a loop of two equal chains joined by its side edges,
+/// as a partial cylinder is built) where it crosses a plane, cutting every
+/// ruling so the new rim keeps the wall's own sampling. `None` when the face
+/// doesn't have that shape or doesn't cross the plane cleanly.
+pub fn split_ruled_wall_at_plane(
+    brep: &mut BRepSolid,
+    face_id: FaceId,
+    origin: Point3,
+    normal: vcad_kernel_math::Vec3,
+) -> Option<[FaceId; 2]> {
+    let face = &brep.topology.faces[face_id];
+    if !face.inner_loops.is_empty() {
+        return None;
+    }
+    let (surface_index, orientation) = (face.surface_index, face.orientation);
+    let verts: Vec<Point3> = brep
+        .topology
+        .loop_half_edges(face.outer_loop)
+        .map(|he| brep.topology.vertices[brep.topology.half_edges[he].origin].point)
+        .collect();
+    let n = verts.len();
+    if n < 4 || !n.is_multiple_of(2) {
+        return None;
+    }
+    let height: Vec<f64> = verts.iter().map(|v| (*v - origin).dot(normal)).collect();
+    if height.iter().any(|h| h.abs() < 1e-6) {
+        return None;
+    }
+    let crossings: Vec<usize> = (0..n)
+        .filter(|&i| (height[i] > 0.0) != (height[(i + 1) % n] > 0.0))
+        .collect();
+    let [first, second] = crossings[..] else {
+        return None;
+    };
+    let m = n / 2;
+    if (second + n - first) % n != m {
+        return None;
+    }
+    let chain_a: Vec<Point3> = (0..m).map(|j| verts[(first + 1 + j) % n]).collect();
+    let chain_b: Vec<Point3> = (0..m).map(|j| verts[(second + 1 + j) % n]).collect();
+    let cut = |p: Point3, q: Point3| {
+        let (dp, dq) = ((p - origin).dot(normal), (q - origin).dot(normal));
+        p + (q - p) * (dp / (dp - dq))
+    };
+    let ring: Vec<Point3> = (0..m)
+        .map(|j| cut(chain_a[j], chain_b[m - 1 - j]))
+        .collect();
+
+    let mut build = |points: Vec<Point3>| {
+        let hes: Vec<_> = points
+            .iter()
+            .map(|p| {
+                let vertex = find_or_create_vertex(brep, p, 1e-6);
+                brep.topology.add_half_edge(vertex)
+            })
+            .collect();
+        let lp = brep.topology.add_loop(&hes);
+        brep.topology.add_face(lp, surface_index, orientation)
+    };
+    let side_a = build(chain_a.iter().chain(ring.iter().rev()).copied().collect());
+    let side_b = build(chain_b.iter().chain(ring.iter()).copied().collect());
+
+    if let Some(shell) = brep.topology.faces[face_id].shell {
+        let faces = &mut brep.topology.shells[shell].faces;
+        faces.retain(|&f| f != face_id);
+        faces.extend([side_a, side_b]);
+        brep.topology.faces[side_a].shell = Some(shell);
+        brep.topology.faces[side_b].shell = Some(shell);
+    }
+    brep.topology.faces.remove(face_id);
+    Some([side_a, side_b])
+}
+
+/// Split a planar face along a closed outline inside it: the region the
+/// outline encloses becomes one face, the rest keeps a hole of that shape.
+/// `outline` is the vertex list of a simple closed polygon on the face.
+pub fn split_planar_face_by_closed_loop(
+    brep: &mut BRepSolid,
+    face_id: FaceId,
+    outline: &[Point3],
+) -> SplitResult {
+    let face = &brep.topology.faces[face_id];
+    let (surface_index, orientation, outer) =
+        (face.surface_index, face.orientation, face.outer_loop);
+    let existing_holes = face.inner_loops.clone();
+    let loop_points = |brep: &BRepSolid, lp| -> Vec<Point3> {
+        brep.topology
+            .loop_half_edges(lp)
+            .map(|he| brep.topology.vertices[brep.topology.half_edges[he].origin].point)
+            .collect()
+    };
+    let outer_points = loop_points(brep, outer);
+    let winding = |pts: &[Point3]| {
+        (1..pts.len() - 1)
+            .map(|i| (pts[i] - pts[0]).cross(pts[i + 1] - pts[0]))
+            .fold(vcad_kernel_math::Vec3::zeros(), |sum, n| sum + n)
+    };
+    let normal = winding(&outer_points);
+    let u = (outer_points[1] - outer_points[0]).normalize();
+    let v = normal.normalize().cross(u);
+    let flat = |p: &Point3| ((*p - outer_points[0]).dot(u), (*p - outer_points[0]).dot(v));
+
+    // The enclosed face winds like its parent; the hole is its reverse.
+    let enclosed: Vec<Point3> = if winding(outline).dot(normal) > 0.0 {
+        outline.to_vec()
+    } else {
+        outline.iter().rev().copied().collect()
+    };
+    let polygon: Vec<(f64, f64)> = enclosed.iter().map(&flat).collect();
+    let encloses = |p: &Point3| {
+        let (x, y) = flat(p);
+        let mut inside = false;
+        for i in 0..polygon.len() {
+            let (a, b) = (polygon[i], polygon[(i + 1) % polygon.len()]);
+            if (a.1 > y) != (b.1 > y) && x < a.0 + (y - a.1) / (b.1 - a.1) * (b.0 - a.0) {
+                inside = !inside;
+            }
+        }
+        inside
+    };
+
+    fn add_loop(
+        brep: &mut BRepSolid,
+        points: &[Point3],
+    ) -> (vcad_kernel_topo::LoopId, Vec<vcad_kernel_topo::HalfEdgeId>) {
+        let hes: Vec<_> = points
+            .iter()
+            .map(|p| {
+                let vertex = find_or_create_vertex(brep, p, 1e-6);
+                brep.topology.add_half_edge(vertex)
+            })
+            .collect();
+        (brep.topology.add_loop(&hes), hes)
+    }
+
+    let (enclosed_loop, enclosed_hes) = add_loop(brep, &enclosed);
+    let enclosed_face = brep
+        .topology
+        .add_face(enclosed_loop, surface_index, orientation);
+    let (kept_loop, _) = add_loop(brep, &outer_points);
+    let kept_face = brep
+        .topology
+        .add_face(kept_loop, surface_index, orientation);
+    let reversed: Vec<Point3> = enclosed.iter().rev().copied().collect();
+    let (hole_loop, hole_hes) = add_loop(brep, &reversed);
+    brep.topology.faces[kept_face].inner_loops.push(hole_loop);
+
+    for lp in existing_holes {
+        let points = loop_points(brep, lp);
+        let target = if points.first().is_some_and(encloses) {
+            enclosed_face
+        } else {
+            kept_face
+        };
+        let (copy, _) = add_loop(brep, &points);
+        brep.topology.faces[target].inner_loops.push(copy);
+    }
+
+    let n = enclosed.len();
+    for i in 0..n {
+        // enclosed[i]→[i+1] is the reverse of the hole edge starting at i+1.
+        brep.topology
+            .add_edge(enclosed_hes[i], hole_hes[(2 * n - 2 - i) % n]);
+    }
+
+    if let Some(shell) = brep.topology.faces[face_id].shell {
+        let faces = &mut brep.topology.shells[shell].faces;
+        faces.retain(|&f| f != face_id);
+        faces.push(enclosed_face);
+        faces.push(kept_face);
+        brep.topology.faces[enclosed_face].shell = Some(shell);
+        brep.topology.faces[kept_face].shell = Some(shell);
+    }
+    brep.topology.faces.remove(face_id);
+
+    SplitResult {
+        sub_faces: vec![enclosed_face, kept_face],
     }
 }
 
@@ -3078,7 +3336,10 @@ pub fn split_planar_face(
                 .collect();
 
             // Find where the line intersects the polygon edges
-            let crossings = find_line_polygon_crossings(&loop_verts, line);
+            let crossings: Vec<Point3> = find_line_polygon_crossings(&loop_verts, line)
+                .into_iter()
+                .map(|p| crossing_on_rim_circle(brep, &loop_verts, line, p))
+                .collect();
 
             if crossings.len() >= 2 {
                 // Cut the span the recorded trimmed segment sits on — the
@@ -5862,18 +6123,26 @@ fn is_frozen_ring(brep: &BRepSolid, face_id: FaceId) -> bool {
         let d = *p - center;
         d.dot(y_axis).atan2(d.dot(x_axis))
     };
+    use std::f64::consts::{PI, TAU};
+    let mut swept = 0.0;
     for w in 0..pts.len() {
         let a = ang(&pts[w]);
         let b = ang(&pts[(w + 1) % pts.len()]);
-        let mut d = (b - a).rem_euclid(2.0 * std::f64::consts::PI);
-        if d > std::f64::consts::PI {
-            d = 2.0 * std::f64::consts::PI - d;
+        // Signed step, wrapped into (-π, π].
+        let mut d = (b - a).rem_euclid(TAU);
+        if d > PI {
+            d -= TAU;
         }
-        if d > 0.2 {
+        if d.abs() > 0.2 {
             return false;
         }
+        swept += d;
     }
-    true
+    // Small steps aren't sufficient either: a thin segment cut off the rim
+    // by a short chord has every vertex on the circle and no step above the
+    // limit, but its arc and chord cancel. Read as a disk, each later line
+    // would rebuild it from the whole circle, doubling the pieces per cut.
+    (swept.abs() - TAU).abs() < 1e-6
 }
 
 /// Get the circle parameters of a circular disk face.

@@ -80,6 +80,7 @@ fn validate_op(doc: &Document, node_id: NodeId, op: &CsgOp) -> Result<(), EvalEr
         | CsgOp::Torus { .. }
         | CsgOp::Wedge { .. }
         | CsgOp::Prism { .. }
+        | CsgOp::SpurGear { .. }
         | CsgOp::Empty
         | CsgOp::Sketch2D { .. }
         | CsgOp::Text2D { .. }
@@ -124,6 +125,7 @@ fn csg_op_name(op: &CsgOp) -> &'static str {
         CsgOp::Torus { .. } => "Torus",
         CsgOp::Wedge { .. } => "Wedge",
         CsgOp::Prism { .. } => "Prism",
+        CsgOp::SpurGear { .. } => "SpurGear",
         CsgOp::Mirror { .. } => "Mirror",
         CsgOp::Empty => "Empty",
         CsgOp::Union { .. } => "Union",

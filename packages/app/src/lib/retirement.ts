@@ -6,9 +6,10 @@
  * route table this file implements and docs/launch/vcad-url-scheme.md for the
  * `vcad://` links it hands documents off with.
  *
- * Nothing here changes behavior until `VITE_VCAD_RETIREMENT_REDIRECTS=1` is set
- * at build time — except the `/export` page, which is live on its own so users
- * can take their documents out before the switch.
+ * The hosted web app is shut down: production builds redirect every old route
+ * (the editor included) to a notice pointing at the Mac app download and the
+ * `/export` page. `/export` itself always renders. Dev builds keep the local
+ * editor unless `VITE_VCAD_RETIREMENT_REDIRECTS=1` is set.
  */
 
 import { gunzipSync, gzipSync, strFromU8, strToU8 } from "fflate";
@@ -28,11 +29,17 @@ export function shutdownLabel(date: string | null = SHUTDOWN_DATE): string {
   return date ?? "a date to be announced";
 }
 
-/** Redirect switch. Default OFF — set `VITE_VCAD_RETIREMENT_REDIRECTS=1` to flip. */
+/**
+ * Redirect switch. ON in production builds (the hosted editor is retired);
+ * OFF in dev so `npm run dev` still opens the local editor.
+ * `VITE_VCAD_RETIREMENT_REDIRECTS` overrides either way (`1`/`0`).
+ */
 export function retirementRedirectsEnabled(
   env: Record<string, unknown> = import.meta.env,
 ): boolean {
-  return /^(1|true|on)$/i.test(String(env.VITE_VCAD_RETIREMENT_REDIRECTS ?? ""));
+  const flag = env.VITE_VCAD_RETIREMENT_REDIRECTS;
+  if (flag !== undefined && flag !== "") return /^(1|true|on)$/i.test(String(flag));
+  return !env.DEV;
 }
 
 /** What an old vcad.io URL does after retirement. */

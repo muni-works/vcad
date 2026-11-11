@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-10-drop-hosted-services",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "breaking",
+  "title": "Hosted web app and MCP shut down; /export stays",
+  "summary": "Hosted MCP, web editor, sync, sharing, billing and ordering are gone; MCP is local-only (npx @vcad/mcp). Sign in at vcad.io/export to download your cloud documents.",
+  "features": ["mcp", "cloud-sync", "accounts", "sharing", "cli"],
+  "mcpTools": ["open_in_browser", "share_session", "unshare_session", "place_order", "authorize_spend", "get_order_status", "list_orders", "get_order_feed", "continue_document"]
+}

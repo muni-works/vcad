@@ -60,6 +60,8 @@
   [Gear f64 f64 f64 f64 Bool]
   ; [GearN module teeth face-width backlash internal? flank-samples]
   [GearN f64 f64 f64 f64 Bool f64]
+  ; [SpurGear module teeth pressure-angle-deg face-width bore backlash]
+  [SpurGear f64 f64 f64 f64 f64 f64]
   ; Empty (identity for union)
   Empty
   ; Booleans
@@ -255,6 +257,10 @@
 ; one to turn DOWN for a preview: face count is linear in it, and a gear is
 ; teeth x (2 x flank + tip + root) walls.
 [let gear [fn [module teeth face-width] [Gear module teeth face-width 0.0 false]]]
+; `spur-gear` is the parametric twin of `gear`: one editable IR node (the Mac
+; app's Spur Gear tool writes the same thing) with a pressure angle and a bore.
+[let spur-gear [fn [module teeth pressure-angle face-width bore]
+  [SpurGear module teeth pressure-angle face-width bore 0.0]]]
 [let gear-backlash [fn [module teeth face-width backlash]
   [Gear module teeth face-width backlash false]]]
 [let ring-gear [fn [module teeth face-width] [Gear module teeth face-width 0.0 true]]]

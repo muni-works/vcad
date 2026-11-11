@@ -22,8 +22,23 @@ enum Glass {
     static let windowRadius: CGFloat = 26
     /// A panel nested `inset` inside the window keeps the corners concentric.
     static var panelRadius: CGFloat { windowRadius - inset }
-    /// Toolbar height (title-bar row).
-    static let toolbarHeight: CGFloat = 52
+    /// Height of the title-bar row itself.
+    static let toolbarRow: CGFloat = 52
+    /// Air above the row in a window, so the dock doesn't crowd the top edge.
+    static let toolbarDrop: CGFloat = 6
+    /// Vertical center of the row, which the window controls line up with.
+    static var toolbarCenter: CGFloat { toolbarDrop + toolbarRow / 2 }
+    /// Space the row takes from the top of the window.
+    static var toolbarHeight: CGFloat { toolbarDrop + toolbarRow }
+    /// Height of the tool dock's capsule.
+    static let dockHeight: CGFloat = 38
+    /// Space the dock takes from the bottom, for chrome that stacks above it.
+    /// Air between the dock and the window's bottom edge.
+    static let dockLift: CGFloat = inset + 6
+    static var dockClearance: CGFloat { dockLift + dockHeight + 8 }
+    /// Below this window width the dock folds modify and combine tools too,
+    /// so it clears the side panels.
+    static let dockFullWidth: CGFloat = 1080
 }
 
 /// The five workspaces the dock offers. Assembly and Fab are views over the
@@ -59,6 +74,8 @@ enum DockSpace: String, CaseIterable, Identifiable {
         case .fab: "5"
         }
     }
+    /// "⌃⌘1" — the View-menu shortcut, shown in the workspace picker.
+    var shortcutHint: String { "⌃⌘\(String(key.character))" }
 }
 
 @MainActor @Observable
@@ -109,7 +126,13 @@ final class GlassUI {
     /// bound to it. Returns false when nothing is bound (the key beeps on).
     func handleKey(_ ch: Character, model: EditorModel) -> Bool {
         if ch == "?" { shortcutsShown.toggle(); return true }
-        guard !model.sketching, model.activeFeatureOp == nil, !model.showsCommandPalette else { return false }
+        if model.sketching {
+            let key = Character(ch.lowercased())
+            guard let t = SketchToolKind.allCases.first(where: { $0.shortcut == key }) else { return false }
+            model.setSketchTool(t)
+            return true
+        }
+        guard model.activeFeatureOp == nil, !model.showsCommandPalette else { return false }
         let key = Character(ch.lowercased())
         guard let t = DockTools.tools(space, model: model).first(where: { $0.shortcut == key }) else { return false }
         guard t.enabled else { flash("\(t.label) — \(t.hint)", symbol: "exclamationmark.circle"); return true }
@@ -200,96 +223,176 @@ func glassSpring(_ reduceMotion: Bool) -> Animation {
     reduceMotion ? .easeInOut(duration: 0.15) : .spring(response: 0.38, dampingFraction: 0.82)
 }
 
+// MARK: - Dock host
+
+/// The combined tool dock, centered along the bottom of the window.
+struct DockHost: View {
+    @Bindable var model: EditorModel
+    @State private var width: CGFloat = 1240
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        // While sketching the dock itself becomes the sketch bar.
+        ZStack {
+            if model.sketching {
+                SketchBar(model: model)
+                    .modifier(ChromeRegion(key: "sketchBar"))
+                    .transition(reduceMotion ? .opacity : .scale(scale: 0.92).combined(with: .opacity))
+            } else {
+                GlassDock(model: model, compact: width < Glass.dockFullWidth)
+                    .modifier(ChromeRegion(key: "dock"))
+                    .transition(reduceMotion ? .opacity : .scale(scale: 0.92).combined(with: .opacity))
+            }
+        }
+            .animation(glassSpring(reduceMotion), value: model.sketching)
+            .padding(.bottom, Glass.dockLift)
+            .frame(maxWidth: .infinity)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
+    }
+}
+
 // MARK: - Toolbar
 
-/// The title-bar row: window controls (system), sidebar toggle, document name
-/// + Edited, search, inspector toggle. Nothing else.
+/// The title-bar row: window controls (system), sidebar toggle, the status
+/// field, inspector toggle. It says what's true of the document; the dock at
+/// the bottom of the window is how you act on it.
 struct GlassToolbar: View {
     @Bindable var model: EditorModel
     @State private var query = ""
+    @State private var searching = false
     @FocusState private var searchFocused: Bool
     @State private var connectionShown = false
+    @State private var toolbarWidth: CGFloat = 1240
 
     var body: some View {
         HStack(spacing: Theme.Space.m) {
             iconButton("sidebar.leading", "Show or hide the sidebar", active: model.showsTree) {
                 withAnimation(Motion.panel) { model.showsTree.toggle() }
             }
-            documentTitle
             Spacer(minLength: Theme.Space.m)
             if model.workspace == .manufacture { machineChip }
-            searchField
             iconButton("sidebar.trailing", "Show or hide the inspector", active: model.showsInspector) {
                 withAnimation(Motion.panel) { model.showsInspector.toggle() }
             }
         }
         .padding(.leading, model.isWindowed ? 84 : Glass.inset + 6)
         .padding(.trailing, Glass.inset + 6)
-        .frame(height: Glass.toolbarHeight)
-        // The tool dock lives in the title-bar row, centred on the window.
-        .overlay {
-            if model.workspace != .manufacture {
-                GlassDock(model: model).modifier(ChromeRegion(key: "dock"))
-            }
-        }
+        .frame(height: Glass.toolbarRow)
+        // On the window's center, whatever sits either side of it.
+        .overlay { statusField.modifier(ChromeRegion(key: "statusField")) }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarWidth = $0 }
+        .padding(.top, model.isWindowed ? Glass.toolbarDrop : 0)
         .background {
             // ⌘F and ⌘K both land in search.
             Group {
-                Button("") { searchFocused = true }.keyboardShortcut("f", modifiers: .command)
-                Button("") { searchFocused = true }.keyboardShortcut("k", modifiers: .command)
+                Button("") { beginSearch() }.keyboardShortcut("f", modifiers: .command)
+                Button("") { beginSearch() }.keyboardShortcut("k", modifiers: .command)
             }.frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
         }
     }
 
-    private var documentTitle: some View {
-        Menu {
-            if model.documentURL != nil {
-                Button("Save") { model.saveDocument() }.disabled(!model.documentDirty)
-                Button("Save As…") { saveAsPanel(model) }
-                Button("Revert to Saved") { model.revertDocument() }.disabled(!model.documentDirty)
-                Divider()
-                Button("Show in Finder") { model.showInFinder() }
-            } else if model.usesDocumentTree {
-                Button("Save…") { saveAsPanel(model) }
-            } else {
-                Text("Sandbox — add geometry to save")
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Text(model.source.label).font(.headline).lineLimit(1).truncationMode(.middle)
-                if model.documentDirty {
-                    Text("Edited").font(.subheadline).foregroundStyle(.secondary)
-                }
-            }
+    /// Shrinks with the window, and is the same size in either state.
+    private var fieldWidth: CGFloat { min(340, max(200, toolbarWidth * 0.3)) }
+
+    /// The second line, only when there's something to say. Most urgent first.
+    private func news(at now: Date) -> String? {
+        if model.solving {
+            let p = model.solveProgress
+            return p.total > 1 ? "Solving \(p.done) of \(p.total)" : "Solving"
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-        .help("Document")
-        .accessibilityLabel(model.documentDirty ? "\(model.source.label), edited" : model.source.label)
+        if AgentSession.shared.running { return "Agent working" }
+        // An agent over the live link: it has written in the last few seconds.
+        if let at = model.agentLinkActiveAt, now.timeIntervalSince(at) < 4 { return "Agent working" }
+        if let line = model.sketchStatusLine(at: now) { return line }
+        return model.documentDirty ? "Edited" : nil
     }
 
-    private var searchField: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Search", text: $query)
-                .textFieldStyle(.plain)
-                .focused($searchFocused)
-                .onSubmit { runSearch() }
-                .onEscape { query = ""; searchFocused = false }
+    /// When `news(at:)` changes with nothing but the clock moving.
+    private func newsExpiries(after now: Date) -> [Date] {
+        [model.agentLinkActiveAt.map { $0.addingTimeInterval(4) }, model.sketchBlockerShownUntil]
+            .compactMap { $0 }.filter { $0 > now }.sorted()
+    }
+
+    /// Real progress only: a single-step solve has none to show.
+    private var solveFraction: CGFloat? {
+        let p = model.solveProgress
+        guard model.solving, p.total > 1 else { return nil }
+        return CGFloat(p.done) / CGFloat(p.total)
+    }
+
+    /// The document's name at rest; a click or ⌘F makes the same field search.
+    private var statusField: some View {
+        Group {
+            if searching {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Search tools and features", text: $query)
+                        .textFieldStyle(.plain)
+                        .focused($searchFocused)
+                        .onSubmit { runSearch() }
+                        .onEscape { endSearch() }
+                }
+                .accessibilityLabel("Search tools and features")
+            } else {
+                Button { beginSearch() } label: {
+                    // Ticks only at the moments the line can expire on its own
+                    // (a linked agent going quiet, a sketch blocker timing out);
+                    // everything else re-renders through observation. A
+                    // free-running 1 Hz clock here kept the window compositing.
+                    TimelineView(.explicit(newsExpiries(after: .now))) { context in
+                    let news = news(at: context.date)
+                    VStack(spacing: 0) {
+                        Text(model.source.label).font(.system(size: 12, weight: .medium))
+                            .lineLimit(1).truncationMode(.middle)
+                        if let news {
+                            Text(news).font(.system(size: 10)).foregroundStyle(.secondary)
+                                .lineLimit(1).truncationMode(.tail).monospacedDigit()
+                                .transition(.opacity)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Capsule())
+                    .animation(Motion.smooth, value: news)
+                    }
+                }
+                .buttonStyle(.plain)
+                .help("\(model.source.label) — click to search tools and features (⌘F)")
+                .accessibilityLabel([model.source.label, news(at: .now)].compactMap { $0 }.joined(separator: ", "))
+                .accessibilityHint("Search tools and features")
+            }
         }
-        .padding(.horizontal, 10).padding(.vertical, 6)
-        .frame(width: 150)
+        .padding(.horizontal, 14)
+        .frame(width: fieldWidth, height: 32)
+        .overlay(alignment: .bottom) {
+            if !searching, let fraction = solveFraction {
+                GeometryReader { geo in
+                    Capsule().fill(Color.accentColor).frame(width: geo.size.width * fraction, height: 2)
+                        .frame(maxHeight: .infinity, alignment: .bottom)
+                }
+                .padding(.horizontal, 16)
+                .animation(Motion.smooth, value: fraction)
+            }
+        }
         .glassCapsule()
-        .popover(isPresented: Binding(get: { searchFocused && !query.isEmpty }, set: { if !$0 { searchFocused = false } }),
+        .onChange(of: searchFocused) { _, focused in if !focused && query.isEmpty { searching = false } }
+        .popover(isPresented: Binding(get: { searchFocused && !query.isEmpty }, set: { if !$0 { endSearch() } }),
                  arrowEdge: .bottom) {
-            SearchResults(model: model, query: query) { query = ""; searchFocused = false }
+            SearchResults(model: model, query: query) { endSearch() }
         }
-        .help("Search tools and features (⌘F)")
-        .accessibilityLabel("Search tools and features")
+    }
+
+    private func beginSearch() {
+        searching = true
+        // The field has to exist before it can take focus.
+        DispatchQueue.main.async { searchFocused = true }
+    }
+
+    private func endSearch() {
+        query = ""; searchFocused = false; searching = false
     }
 
     private func runSearch() {
         if let first = SearchResults.matches(model: model, query: query).first { first.run() }
-        query = ""; searchFocused = false
+        endSearch()
     }
 
     private var machineChip: some View {
@@ -404,30 +507,38 @@ enum DockTools {
         var out: [Tool] = []
         out.append(Tool(id: "sketch", label: "Sketch", symbol: "scribble.variable", isActive: m.sketching,
                         enabled: doc || sandbox, hint: doc || sandbox ? "" : "Open a document") {
-            if m.promoteSandboxToDocument() { m.enterSketch() }
+            if m.promoteSandboxToDocument(blank: true) { m.enterSketch() }
         })
-        out += m.tools(for: .create).filter { ["shape.cube", "shape.cylinder"].contains($0.id) }
-        for op in FeatureOp.modifyOps where [.fillet, .chamfer, .shell, .circularPattern].contains(op) {
+        out += m.tools(for: .create).filter { $0.id.hasPrefix("shape.") }.map { t in
+            var t = t; t.group = "Primitives"; return t
+        }
+        for op in FeatureOp.modifyOps where [.fillet, .chamfer, .shell, .hole, .circularPattern].contains(op) {
             out.append(Tool(id: "op.\(op.rawValue)", label: op.label, symbol: op.symbol,
                             isActive: m.activeFeatureOp == op, enabled: sandbox || (doc && selected),
-                            hint: sandbox || selected ? "" : "Select a part first") {
+                            hint: sandbox || selected ? "" : "Select a part first", compactGroup: "Modify") {
                 if m.promoteSandboxToDocument() { m.activeFeatureOp = op }
             })
         }
         let ready = m.multiSelectedParts.count == 2
-        let waiting = m.pendingBoolean?.op == .difference
-        out.append(Tool(id: "bool.difference", label: waiting ? "Subtract — click the part to cut away" : "Subtract",
-                        symbol: BooleanOp.difference.symbol,
-                        isActive: waiting, enabled: doc && (ready || selected || waiting),
-                        hint: ready || selected ? "" : "Select the part to cut from") {
-            if waiting { m.pendingBoolean = nil } else { m.beginCombine(.difference) }
-        })
+        // Union, Subtract and Intersect read the same: selected part is the
+        // target, the next click is the tool.
+        for op in [BooleanOp.union, .difference, .intersection] {
+            let waiting = m.pendingBoolean?.op == op
+            let prompt = op == .union ? "click the part to join"
+                : op == .difference ? "click the part to cut away" : "click the part to intersect with"
+            out.append(Tool(id: "bool.\(op.rawValue)", label: waiting ? "\(op.label) — \(prompt)" : op.label,
+                            symbol: op.symbol, isActive: waiting, enabled: doc && (ready || selected || waiting),
+                            hint: ready || selected ? "" : "Select the first part", compactGroup: "Combine") {
+                if waiting { m.pendingBoolean = nil } else { m.beginCombine(op) }
+            })
+        }
         out.append(Tool(id: "measure", label: "Measure", symbol: "ruler", isActive: m.measuring, enabled: doc) {
             m.measuring.toggle()
         })
         return keyed(out, ["sketch": "s", "shape.cube": "b", "shape.cylinder": "y", "op.fillet": "f",
-                           "op.chamfer": "c", "op.shell": "k", "op.circularPattern": "p",
-                           "bool.difference": "x", "measure": "i"])
+                           "op.chamfer": "c", "op.shell": "k", "op.hole": "h", "op.circularPattern": "p",
+                           "bool.difference": "x", "bool.union": "u", "bool.intersection": "n", "measure": "i",
+                           "shape.torus": "t", "shape.wedge": "w", "shape.prism": "r"])
     }
 
     /// Attach bare-letter shortcuts by tool id.
@@ -445,9 +556,13 @@ enum DockTools {
             Tool(id: "asm.panel", label: "Joints & Mates", symbol: "link", isActive: m.assembly.showsPanel) {
                 m.assembly.showsPanel.toggle()
             },
-            Tool(id: "asm.check", label: "Check Mates", symbol: "checkmark.seal", isActive: false,
-                 enabled: !m.asmMates.isEmpty, hint: "Add a mate first") {
-                m.assembly.showsPanel = true; m.checkMates()
+            // Was "Check Mates", enabled only once a mate existed — so with six
+            // instances and no mates the dock's check stayed grey and
+            // interference was only reachable from the Analyze menu.
+            Tool(id: "asm.check", label: "Check Interference", symbol: "checkmark.seal",
+                 isActive: AnalysisStore.shared.shown && AnalysisStore.shared.tab == .clearance,
+                 enabled: m.clearanceBodyCount >= 2, hint: "Needs two or more parts") {
+                m.checkInterference()
             },
             Tool(id: "asm.explode", label: "Explode", symbol: "arrow.up.left.and.arrow.down.right",
                  isActive: m.explode > 0, enabled: has) {
@@ -498,20 +613,25 @@ enum DockTools {
             return keyed([
                 mode(.select, "Select", "cursorarrow"),
                 mode(.place, "Place Component", "square.on.square.dashed"),
-                mode(.wire, "Connect Pins", "point.3.connected.trianglepath.dotted"),
+                mode(.wire, "Wire", "point.3.connected.trianglepath.dotted"),
+                mode(.label, "Net Label", "tag"),
                 empty
                     ? Tool(id: "ec.buildsch", label: "Build Schematic from Board", symbol: "arrow.triangle.branch",
                            isActive: false) { ec.buildSchematicFromBoard(m) }
                     : Tool(id: "ec.check", label: "Check Connectivity", symbol: "checkmark.seal", isActive: ec.checking) { ec.check(m) },
+                Tool(id: "ec.erc", label: "Electrical Rule Check", symbol: "bolt.badge.checkmark", isActive: t.sheet == .erc, enabled: !empty, hint: "Build or draw a schematic first") { t.runErc(ec, m) },
+                Tool(id: "ec.annotate", label: "Annotate", symbol: "textformat.123", isActive: false) { ec.annotate(m) },
+                Tool(id: "ec.tidy", label: "Tidy Sheet", symbol: "square.grid.3x3", isActive: false) { ec.tidySchematic(m) },
                 Tool(id: "ec.simulate", label: "Simulate", symbol: "waveform", isActive: t.sheet == .simulate,
                      enabled: !empty, hint: "Build or draw a schematic first") { t.sheet = .simulate },
-            ], ["ec.select": "e", "ec.place": "p", "ec.wire": "w", "ec.check": "c", "ec.simulate": "s"])
+            ], ["ec.select": "e", "ec.place": "p", "ec.wire": "w", "ec.label": "l", "ec.check": "c", "ec.simulate": "s"])
         }
         return keyed([
             mode(.select, "Select", "cursorarrow"),
             mode(.place, "Place Component", "square.on.square.dashed"),
             mode(.route, "Route", "point.topleft.down.to.point.bottomright.curvepath", boardOnly: true),
             mode(.via, "Via", "smallcircle.filled.circle", boardOnly: true),
+            mode(.zone, "Zone", "square.dashed.inset.filled", boardOnly: true),
             Tool(id: "ec.autoroute", label: "Autoroute", symbol: "wand.and.stars", isActive: t.busy == "Autoroute",
                  enabled: t.busy == nil, hint: "Busy") { t.autoroute(ec, m) },
             Tool(id: "ec.drc", label: "DRC", symbol: "checklist", isActive: t.sheet == .drc,
@@ -532,6 +652,7 @@ enum DockTools {
                      enabled: !t.tuneNets.isEmpty, hint: "Pick nets in Diff Pair first") { t.tune(ec, m) },
                 Tool(id: "ec.fix", label: "Fix DRC", symbol: "wrench.adjustable", isActive: false) { t.fixDrc(ec, m) },
                 Tool(id: "ec.stack", label: "Layer Stack", symbol: "square.3.layers.3d", isActive: false) { t.sheet = .stackup },
+                Tool(id: "ec.netclass", label: "Net Classes", symbol: "list.bullet.rectangle", isActive: false) { t.sheet = .netClasses },
                 Tool(id: "ec.enclose", label: "Enclose Board", symbol: "shippingbox", isActive: false) { t.encloseBoard(ec, m) },
                 Tool(id: "ec.fit", label: "Fit Check", symbol: "cube.transparent", isActive: false) { t.sheet = .enclosure },
                 Tool(id: "ec.sim", label: "Simulate", symbol: "bolt.horizontal", isActive: false) { t.sheet = .simulate },
@@ -572,10 +693,78 @@ enum DockTools {
 
 // MARK: - Dock
 
+/// A dock slot: a single tool, or a family folded behind one button.
+enum DockItem: Identifiable {
+    case tool(Tool)
+    case group(String, [Tool])
+    var id: String {
+        switch self {
+        case .tool(let t): t.id
+        case .group(let name, _): "group.\(name)"
+        }
+    }
+
+    /// Fold tools by `group`, at the position of the family's first member.
+    /// `compact` also folds by `compactGroup`.
+    static func items(_ tools: [Tool], compact: Bool) -> [DockItem] {
+        var out: [DockItem] = []
+        var index: [String: Int] = [:]
+        for t in tools {
+            guard let g = t.group ?? (compact ? t.compactGroup : nil) else { out.append(.tool(t)); continue }
+            if let i = index[g], case .group(let name, let members) = out[i] {
+                out[i] = .group(name, members + [t])
+            } else {
+                index[g] = out.count
+                out.append(.group(g, [t]))
+            }
+        }
+        return out
+    }
+}
+
+/// The five workspaces, listed in the popover above the dock's workspace
+/// button. Each row shows its ⌃⌘ shortcut (the shortcuts themselves live in
+/// the View menu, so they work with the popover closed); Return/Space on a
+/// focused row and the shortcuts inside the open popover both switch.
+struct WorkspacePicker: View {
+    var current: DockSpace
+    var choose: (DockSpace) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(DockSpace.allCases) { s in
+                Button { choose(s) } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: s.symbol).frame(width: 18)
+                        Text(s.label)
+                        Spacer(minLength: 16)
+                        Text(s.shortcutHint).foregroundStyle(.secondary).monospacedDigit()
+                        Image(systemName: "checkmark").font(.caption.weight(.semibold))
+                            .opacity(s == current ? 1 : 0)
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(s.key, modifiers: [.command, .control])
+                .accessibilityLabel(s.label)
+                .accessibilityHint("Switch workspace, Control-Command-\(String(s.key.character))")
+                .accessibilityAddTraits(s == current ? .isSelected : [])
+            }
+        }
+        .padding(6)
+        .frame(minWidth: 200)
+    }
+}
+
 /// One stable centred capsule: workspace menu | tools | history, palette.
 struct GlassDock: View {
     @Bindable var model: EditorModel
+    /// Too narrow for every button: fold modify and combine as well.
+    var compact = false
     @Bindable var ui = GlassUI.shared
+    @State private var openGroup: String?
+    @State private var workspacePickerOpen = false
     @Namespace private var morph
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -584,7 +773,12 @@ struct GlassDock: View {
             workspaceMenu
             divider
             HStack(spacing: 2) {
-                ForEach(DockTools.tools(ui.space, model: model)) { toolButton($0) }
+                ForEach(DockItem.items(DockTools.tools(ui.space, model: model), compact: compact)) { item in
+                    switch item {
+                    case .tool(let t): toolButton(t)
+                    case .group(let name, let tools): groupButton(name, tools)
+                    }
+                }
             }
             .id(ui.space)
             .transition(reduceMotion ? .opacity : .asymmetric(
@@ -596,7 +790,7 @@ struct GlassDock: View {
             }
             .disabled(!model.usesDocumentTree)
             dockButton("ellipsis", "All tools", active: ui.paletteOpen) { ui.paletteOpen.toggle() }
-                .popover(isPresented: $ui.paletteOpen, arrowEdge: .bottom) { ToolPalette(model: model) }
+                .popover(isPresented: $ui.paletteOpen, arrowEdge: .top) { ToolPalette(model: model) }
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 6).padding(.vertical, 3)
@@ -625,21 +819,28 @@ struct GlassDock: View {
         return t.enabled || t.hint.isEmpty ? t.label + key : "\(t.label)\(key) — \(t.hint)"
     }
 
+    /// The dock sits at the bottom of the window, so the workspace picker
+    /// opens upward. (A `Menu` always drops down — below the window edge.)
+    static let workspacePickerEdge: Edge = .top
+
     private var workspaceMenu: some View {
-        Menu {
-            ForEach(DockSpace.allCases) { s in
-                Button { ui.enter(s, model: model) } label: { Label(s.label, systemImage: s.symbol) }
-            }
-        } label: {
+        Button { workspacePickerOpen.toggle() } label: {
             HStack(spacing: 4) {
                 Text(ui.space.label).font(.callout.weight(.semibold))
-                Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                Image(systemName: "chevron.up").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
             }
             .padding(.horizontal, 10).frame(height: 32).contentShape(Capsule())
         }
-        .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+        .fixedSize()
         .help("Workspace (⌃⌘1–5)")
         .accessibilityLabel("Workspace, \(ui.space.label)")
+        .accessibilityHint("Shows the five workspaces")
+        .popover(isPresented: $workspacePickerOpen, arrowEdge: Self.workspacePickerEdge) {
+            WorkspacePicker(current: ui.space) { s in
+                workspacePickerOpen = false
+                ui.enter(s, model: model)
+            }
+        }
     }
 
     @ViewBuilder private func toolButton(_ tool: Tool) -> some View {
@@ -661,6 +862,40 @@ struct GlassDock: View {
         .help(Self.tooltip(tool))
         .accessibilityLabel(tool.label)
         .accessibilityAddTraits(tool.isActive ? .isSelected : [])
+    }
+
+    /// One button for a family of tools; the popover keeps each one click away.
+    @ViewBuilder private func groupButton(_ name: String, _ tools: [Tool]) -> some View {
+        let active = tools.first(where: \.isActive)
+        Button { openGroup = openGroup == name ? nil : name } label: {
+            ZStack(alignment: .bottomTrailing) {
+                Image(systemName: active?.symbol ?? tools[0].symbol).font(.system(size: 16, weight: .medium))
+                    .frame(width: 38, height: 32)
+                Image(systemName: "chevron.down").font(.system(size: 7, weight: .bold))
+                    .foregroundStyle(.secondary).offset(x: -3, y: -3)
+            }
+            .background {
+                if active != nil { Capsule(style: .continuous).fill(Color.primary.opacity(0.14)) }
+            }
+            .contentShape(Capsule())
+        }
+        .help(name)
+        .accessibilityLabel(name)
+        .popover(isPresented: Binding(get: { openGroup == name }, set: { if !$0 { openGroup = nil } }),
+                 arrowEdge: .top) {
+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(72), spacing: 4), count: 4), spacing: 4) {
+                ForEach(tools) { t in
+                    Button { openGroup = nil; if t.enabled { t.action() } } label: {
+                        VStack(spacing: 3) {
+                            Image(systemName: t.symbol).font(.system(size: 17))
+                            Text(t.label).font(.caption).lineLimit(1)
+                        }.frame(width: 72, height: 52).contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain).disabled(!t.enabled).opacity(t.enabled ? 1 : 0.35)
+                    .help(Self.tooltip(t)).accessibilityLabel(t.label)
+                }
+            }.padding(Theme.Space.s)
+        }
     }
 
     private func dockButton(_ symbol: String, _ label: String, active: Bool, _ action: @escaping () -> Void) -> some View {
@@ -727,8 +962,12 @@ struct EditBarParam {
         case "Fillet": EditBarParam(label: "Radius", key: "radius", axis: nil, unit: "mm", min: 0, detent: 1)
         case "Chamfer": EditBarParam(label: "Distance", key: "distance", axis: nil, unit: "mm", min: 0, detent: 1)
         case "Shell": EditBarParam(label: "Thickness", key: "thickness", axis: nil, unit: "mm", min: 0.1, detent: 1)
-        case "Cylinder", "Sphere": EditBarParam(label: "Radius", key: "radius", axis: nil, unit: "mm", min: 0.1, detent: 1)
+        case "Cylinder", "Sphere", "Prism": EditBarParam(label: "Radius", key: "radius", axis: nil, unit: "mm", min: 0.1, detent: 1)
+        case "Torus": EditBarParam(label: "Radius", key: "major_radius", axis: nil, unit: "mm", min: 0.1, detent: 1)
+        case "Wedge": EditBarParam(label: "Height", key: "size", axis: "z", unit: "mm", min: 0.1, detent: 1)
+        case "SweepRotate": EditBarParam(label: "To", key: "angle_hi_deg", axis: nil, unit: "°", min: -3600, detent: 5)
         case "Cone": EditBarParam(label: "Height", key: "height", axis: nil, unit: "mm", min: 0.1, detent: 1)
+        case "SpurGear": EditBarParam(label: "Face width", key: "face_width", axis: nil, unit: "mm", min: 0.1, detent: 1)
         case "Cube": EditBarParam(label: "Height", key: "size", axis: "z", unit: "mm", min: 0.1, detent: 1)
         case "Revolve", "CircularPattern": EditBarParam(label: "Angle", key: "angle_deg", axis: nil, unit: "°", min: 0, detent: 5)
         default: nil
@@ -1161,6 +1400,7 @@ extension GlassUI {
             }
             try? await Task.sleep(for: .milliseconds(80))
             guard model.undoStack.count == frame, let ar = ReleaseWindowController.shared.arView else { return }
+            RenderGate.wake(for: 2)  // a paused view never delivers a snapshot
             ar.snapshot(saveToHDR: false) { img in
                 guard let img else { return }
                 let thumb = NSImage(size: NSSize(width: 96, height: 60))
@@ -1374,6 +1614,11 @@ struct ShortcutSheet: View {
         ("Esc", "Cancel / deselect"), ("?", "This sheet"),
     ]
 
+    /// Sketch-mode tool keys, in bar order (live only while sketching).
+    static let sketch: [(key: String, tool: SketchToolKind)] =
+        (SketchBar.primaryTools + SketchBar.overflowTools + [.dimension])
+            .compactMap { t in t.shortcut.map { (String($0).uppercased(), t) } }
+
     var body: some View {
         let tools = DockTools.tools(ui.space, model: model).filter { $0.shortcut != nil }
         VStack(alignment: .leading, spacing: Theme.Space.m) {
@@ -1389,13 +1634,17 @@ struct ShortcutSheet: View {
                     ForEach(tools) { t in row(String(t.shortcut!).uppercased(), t.label, symbol: t.symbol) }
                 }
                 VStack(alignment: .leading, spacing: 6) {
+                    Eyebrow("Sketch")
+                    ForEach(Self.sketch, id: \.key) { row($0.key, $0.tool.label, symbol: $0.tool.symbol) }
+                }
+                VStack(alignment: .leading, spacing: 6) {
                     Eyebrow("Everywhere")
                     ForEach(Self.global, id: \.0) { row($0.0, $0.1) }
                 }
             }
         }
         .padding(18)
-        .frame(width: 520)
+        .frame(width: 700)
         .glassPanel()
         .modifier(ChromeRegion(key: "shortcuts"))
     }

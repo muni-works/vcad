@@ -153,6 +153,8 @@ struct HostWindowHider: NSViewRepresentable {
 struct DocumentCommands: Commands {
     @Bindable var model: EditorModel
     @Bindable var intent: IntentEngine
+    @AppStorage(Prefs.gridKey) private var showsGrid = true
+    @AppStorage(Prefs.sketchGridKey) private var showsSketchGrid = true
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -270,6 +272,10 @@ struct DocumentCommands: Commands {
             }
             .keyboardShortcut("0", modifiers: [.command, .option])
             Divider()
+            Toggle("Show Grid", isOn: $showsGrid)
+                .keyboardShortcut("g", modifiers: [.command, .option])
+            Toggle("Show Sketch Grid", isOn: $showsSketchGrid)
+            Divider()
             Toggle("Zebra Analysis", isOn: $model.zebraMode)
                 .keyboardShortcut("z", modifiers: [.command, .option])
             Toggle("Ray-Traced Preview", isOn: Binding(
@@ -302,9 +308,14 @@ struct DocumentCommands: Commands {
                                                  set: { model.section = $0 ? SectionPlane() : nil }))
                 .keyboardShortcut("x", modifiers: [.command, .option])
             Divider()
-            Button("New Sketch") { if model.promoteSandboxToDocument() { model.enterSketch() } }
+            Button("New Sketch") { if model.promoteSandboxToDocument(blank: true) { model.enterSketch() } }
                 .keyboardShortcut("s", modifiers: [.control])
                 .disabled(!model.canModel || model.sketching)
+            Menu("Add Shape") {
+                ForEach(BaseShape.allCases, id: \.self) { shape in
+                    Button(shape.label) { if model.promoteSandboxToDocument(blank: true) { model.arm(shape) } }
+                }
+            }.disabled(!model.canModel)
             Menu("Feature") {
                 ForEach(FeatureOp.allCases) { op in
                     Button(op.label + "…") { if model.promoteSandboxToDocument() { model.activeFeatureOp = op } }
@@ -688,7 +699,8 @@ struct FeatureParamEditors: View {
 
     /// Op types that expose live-editable parameters in the inspector.
     static let editableOps: Set<String> = [
-        "Cube", "Cylinder", "Sphere", "Cone", "Fillet", "Chamfer", "Shell",
+        "Cube", "Cylinder", "Sphere", "Cone", "Torus", "Wedge", "Prism", "SpurGear", "Hull", "SweepRotate",
+        "EdgeBlend", "Fillet", "Chamfer", "Shell",
         "Translate", "Rotate", "Scale", "Revolve", "LinearPattern", "CircularPattern",
     ]
 
@@ -714,9 +726,36 @@ struct FeatureParamEditors: View {
         case "Sphere":
             scalarField(op, id, "Radius", "radius")
         case "Cone":
-            scalarField(op, id, "Radius 1", "radius1", minV: 0)
-            scalarField(op, id, "Radius 2", "radius2", minV: 0)
+            scalarField(op, id, "Bottom radius", "radius_bottom", minV: 0)
+            scalarField(op, id, "Top radius", "radius_top", minV: 0)
             scalarField(op, id, "Height", "height")
+        case "Torus":
+            scalarField(op, id, "Major radius", "major_radius")
+            scalarField(op, id, "Minor radius", "minor_radius")
+        case "Wedge":
+            axisField(op, id, "Width", "size", "x", minV: 0.1)
+            axisField(op, id, "Depth", "size", "y", minV: 0.1)
+            axisField(op, id, "Height", "size", "z", minV: 0.1)
+        case "Prism":
+            sidesStepper(id, (op["sides"] as? NSNumber)?.intValue ?? 6)
+            scalarField(op, id, "Radius", "radius")
+            scalarField(op, id, "Height", "height")
+        case "SpurGear":
+            scalarField(op, id, "Module", "module", sens: 0.01, minV: 0.05)
+            teethStepper(id, (op["teeth"] as? NSNumber)?.intValue ?? 20)
+            scalarField(op, id, "Pressure angle", "pressure_angle_deg", unit: "°", sens: 0.1, minV: 10)
+            scalarField(op, id, "Face width", "face_width")
+            scalarField(op, id, "Bore", "bore_diameter", minV: 0)
+            scalarField(op, id, "Backlash", "backlash", sens: 0.005, minV: 0)
+        case "Hull":
+            HullInputsEditor(model: model, nodeId: id)
+        case "SweepRotate":
+            scalarField(op, id, "From", "angle_lo_deg", unit: "°", sens: 0.5, minV: -3600)
+            scalarField(op, id, "To", "angle_hi_deg", unit: "°", sens: 0.5, minV: -3600)
+            scalarField(op, id, "Clearance", "clearance", sens: 0.05, minV: 0)
+        case "EdgeBlend":
+            blendField(op, id, "Size", "size", sens: 0.05, minV: 0)
+            blendField(op, id, "Shape", "shape", unit: "", sens: 0.01, minV: 0)
         case "Fillet":
             scalarField(op, id, "Radius", "radius", sens: 0.05, minV: 0)
         case "Chamfer":
@@ -762,6 +801,39 @@ struct FeatureParamEditors: View {
         return ScrubField(label: label, value: value, unit: unit, sensitivity: sens, minValue: minV) { v, s in
             model.editVec(nodeId: id, key: key, axis: a, value: v, snapshot: s, name: "Change \(label)")
             onEdit(s)
+        }
+    }
+
+    private func sidesStepper(_ id: Int, _ sides: Int) -> some View {
+        Stepper(value: Binding(
+            get: { sides },
+            set: {
+                model.editInt(nodeId: id, key: "sides", value: max(3, $0), snapshot: true, name: "Change Sides")
+                onEdit(true)
+            }
+        ), in: 3...64) {
+            KeyValueRow("Sides", "\(sides)")
+        }
+    }
+
+    private func blendField(_ op: [String: Any], _ id: Int, _ label: String, _ key: String,
+                            unit: String = "mm", sens: Double, minV: Double) -> some View {
+        let value = ((op["profile"] as? [String: Any])?[key] as? NSNumber)?.doubleValue ?? 0
+        return ScrubField(label: label, value: value, unit: unit, sensitivity: sens, minValue: minV) { v, s in
+            model.editBlend(nodeId: id, field: key, value: v, snapshot: s)
+            onEdit(s)
+        }
+    }
+
+    private func teethStepper(_ id: Int, _ teeth: Int) -> some View {
+        Stepper(value: Binding(
+            get: { teeth },
+            set: {
+                model.editInt(nodeId: id, key: "teeth", value: max(4, $0), snapshot: true, name: "Change Teeth")
+                onEdit(true)
+            }
+        ), in: 4...400) {
+            KeyValueRow("Teeth", "\(teeth)")
         }
     }
 
@@ -812,6 +884,21 @@ struct ScrubField: View {
                 .multilineTextAlignment(.trailing)
                 .frame(width: 52)
                 .focused($focused)
+                // A click must take focus: in a floating toolbar the field
+                // could stay unfocused (a triple-click left keystrokes going
+                // to the sketch dimension field focused before it).
+                // `focused = true` alone is not enough: when SwiftUI's focus
+                // state already reads true (stale after another field took the
+                // window's field editor) setting it again is a no-op, and the
+                // gesture itself eats the mouseDown NSTextField uses to take
+                // first responder. So also hand the field editor over the
+                // AppKit way, to the text field actually under the pointer.
+                .simultaneousGesture(TapGesture().onEnded {
+                    focused = true
+                    #if os(macOS)
+                    DispatchQueue.main.async { Self.takeFirstResponderUnderPointer() }
+                    #endif
+                })
                 .onSubmit { commit() }
                 .onEscape { typing = nil; focused = false }
                 .onChange(of: focused) { _, now in if !now { commit() } }
@@ -848,6 +935,30 @@ struct ScrubField: View {
             }
             .onEnded { _ in base = nil }
     }
+
+    #if os(macOS)
+    /// Make the NSTextField under the mouse first responder in the key window,
+    /// unless it already owns the field editor. Returns the field it focused.
+    @discardableResult
+    static func takeFirstResponderUnderPointer(in window: NSWindow? = NSApp.keyWindow) -> NSTextField? {
+        guard let window, let content = window.contentView else { return nil }
+        let p = content.superview?.convert(window.mouseLocationOutsideOfEventStream, from: nil)
+            ?? window.mouseLocationOutsideOfEventStream
+        var v = content.hitTest(p)
+        while let view = v, !(view is NSTextField) { v = view.superview }
+        guard let field = v as? NSTextField, field.isEditable else { return nil }
+        return focus(field)
+    }
+
+    /// Move the window's field editor to `field` and select its text.
+    @discardableResult
+    static func focus(_ field: NSTextField) -> NSTextField? {
+        guard let window = field.window else { return nil }
+        if field.currentEditor() == nil { window.makeFirstResponder(field) }
+        field.currentEditor()?.selectAll(nil)
+        return field.currentEditor() != nil ? field : nil
+    }
+    #endif
 
     static func plain(_ v: Double) -> String {
         abs(v - v.rounded()) < 0.001 ? String(Int(v.rounded())) : String(format: "%.2f", v)

@@ -1380,6 +1380,19 @@ fn check_keepout(pcb: &Pcb, region: Option<&DrcRegion>, violations: &mut Vec<Drc
                 }) {
                     continue;
                 }
+                // A keepout lying wholly inside this part's own courtyard is the
+                // part's own (a Tag-Connect's leg area): it bars other parts.
+                let (own_min, own_max) = courtyard_bounds(fp);
+                if !keepout.outline.is_empty()
+                    && keepout.outline.iter().all(|v| {
+                        v.x >= own_min.x - 0.01
+                            && v.x <= own_max.x + 0.01
+                            && v.y >= own_min.y - 0.01
+                            && v.y <= own_max.y + 0.01
+                    })
+                {
+                    continue;
+                }
                 let mut hit = false;
                 let mut hit_pos = fp.position;
                 for pad in &fp.pads {
@@ -3490,8 +3503,10 @@ pub fn analyze_power_integrity(pcb: &Pcb) -> Vec<NetContinuity> {
         }
     }
     for net in &pcb.nets {
-        if is_power_net(&net.name) {
-            relevant.insert(net.id.clone());
+        // Key by NAME — the copper key. An importer that kept a file-local
+        // index as `id` must not mint a phantom "net 23" with no copper.
+        if is_power_net(&net.name) && !net.name.is_empty() {
+            relevant.insert(net.name.clone());
         }
     }
     if relevant.is_empty() {
@@ -5930,6 +5945,24 @@ mod tests {
             .expect("3V3 is poured + power-named");
         assert_eq!(v33.islands, 2, "two disjoint pours");
         assert!(!v33.continuous);
+    }
+
+    /// A `Net` whose `id` is a file-local index (KiCad/Eagle/Altium number)
+    /// must not surface as a phantom power net: copper is keyed by NAME, so
+    /// the pass reports "VCC"/"GND", never "1"/"2" with zero pads.
+    #[test]
+    fn power_integrity_keys_nets_by_name_not_index() {
+        let pcb = clean_pcb(); // nets: id "1" → VCC, id "2" → GND
+        let report = analyze_power_integrity(&pcb);
+        let names: Vec<&str> = report.iter().map(|c| c.net.as_str()).collect();
+        assert!(
+            !names.iter().any(|n| *n == "1" || *n == "2"),
+            "phantom index nets: {names:?}"
+        );
+        assert!(
+            names.contains(&"VCC") && names.contains(&"GND"),
+            "{names:?}"
+        );
     }
 
     // ----- NetIslands DRC rule -----

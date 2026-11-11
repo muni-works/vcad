@@ -130,6 +130,13 @@ struct DocTimeline {
 
 /// A parsed parametric document — just enough structure to render the tree and
 /// the inspector; geometry still comes from the kernel.
+/// An assembly instance: its id, display name and part def's root node.
+struct DocInstance {
+    let id: String
+    let name: String
+    let root: Int
+}
+
 struct DocumentGraph {
     let nodes: [Int: DocNode]
     let roots: [DocRoot]
@@ -140,6 +147,8 @@ struct DocumentGraph {
     let joints: [DocJoint]
     /// Animation timeline, when the document carries one with joint tracks.
     let timeline: DocTimeline?
+    /// Assembly instances that resolve to a part def (empty for part-only documents).
+    var instances: [DocInstance] = []
 
     /// Visible roots in order — index-aligned with the kernel scene's parts.
     var visibleRoots: [DocRoot] { roots.filter { $0.visible } }
@@ -156,7 +165,7 @@ struct DocumentGraph {
 
     /// Build a graph from an already-parsed JSON object — the editable path,
     /// where the model keeps a mutable doc dict and re-parses after each edit.
-    static func parse(_ obj: [String: Any]) -> DocumentGraph? {
+    static func parse(_ obj: [String: Any], allowEmpty: Bool = false) -> DocumentGraph? {
         guard let nodesRaw = obj["nodes"] as? [String: Any] else { return nil }
 
         var nodes: [Int: DocNode] = [:]
@@ -269,9 +278,16 @@ struct DocumentGraph {
         // Assembly documents may have no scene roots — instances carry the
         // geometry there, so an empty `roots` is only fatal without them.
         let hasInstances = ((obj["instances"] as? [[String: Any]])?.isEmpty == false)
-        guard !nodes.isEmpty, !roots.isEmpty || hasInstances else { return nil }
+        guard allowEmpty || (!nodes.isEmpty && (!roots.isEmpty || hasInstances)) else { return nil }
+        let partDefs = obj["partDefs"] as? [String: [String: Any]] ?? [:]
+        let instances: [DocInstance] = ((obj["instances"] as? [[String: Any]]) ?? []).compactMap { inst in
+            guard let id = inst["id"] as? String, let defId = inst["partDefId"] as? String,
+                  let def = partDefs[defId], let root = (def["root"] as? NSNumber)?.intValue else { return nil }
+            return DocInstance(id: id, name: inst["name"] as? String ?? def["name"] as? String ?? id, root: root)
+        }
         return DocumentGraph(nodes: nodes, roots: roots, materials: materials,
-                             parameters: parameters, joints: joints, timeline: timeline)
+                             parameters: parameters, joints: joints, timeline: timeline,
+                             instances: instances)
     }
 
     // MARK: feature tree
@@ -279,8 +295,23 @@ struct DocumentGraph {
     /// Top-level rows: one per VISIBLE root (so `partIndex` aligns with the
     /// kernel scene), each expandable into its operation sub-tree.
     func featureRoots() -> [FeatureNode] {
-        visibleRoots.enumerated().map { partIndex, root in
+        let rows = visibleRoots.enumerated().map { partIndex, root in
             buildNode(root.nodeId, partIndex: partIndex, depth: 0, visited: [])
+        }
+        return rows + instanceRows(excluding: rows)
+    }
+
+    /// One row per assembly instance, so the tree matches what the scene
+    /// draws. A part def that is also a scene root already has its row.
+    /// `nodeId` stays the def's root: selection and hover map instances by it.
+    private func instanceRows(excluding rows: [FeatureNode]) -> [FeatureNode] {
+        let shown = Set(rows.map(\.nodeId))
+        return instances.filter { !shown.contains(unwrapIdentity($0.root)) }.map { inst in
+            let body = buildNode(inst.root, partIndex: nil, depth: 0, visited: [])
+            return FeatureNode(id: "instance:\(inst.id)", nodeId: inst.root, name: inst.name,
+                               opType: body.opType, symbol: body.symbol, detail: body.detail,
+                               partIndex: nil, children: body.children,
+                               heldNodeId: body.heldNodeId, heldOpType: body.heldOpType)
         }
     }
 
@@ -382,6 +413,7 @@ struct DocumentGraph {
         case "StepImport", "MeshImport", "ImportedMesh": return "Imported"
         case "EmbroideryPattern": return "Embroidery"
         case "PartInstance": return "Instance"
+        case "SpurGear": return "Spur Gear"
         case let s where s.hasPrefix("SheetMetal"):
             return "Sheet Metal " + s.dropFirst("SheetMetal".count)
         default: return t
@@ -392,8 +424,15 @@ struct DocumentGraph {
         switch t {
         case "Cube": return "cube"
         case "Cylinder": return "cylinder"
-        case "Sphere": return "circle.circle"
+        case "Sphere": return "globe"
         case "Cone": return "cone"
+        case "Torus": return "circle.circle"
+        case "Wedge": return "triangle.righthalf.filled"
+        case "Prism": return "hexagon"
+        case "SpurGear": return "gearshape"
+        case "Hull": return "skew"
+        case "SweepRotate": return "arrow.trianglehead.2.clockwise.rotate.90"
+        case "EdgeBlend": return "circle.bottomrighthalf.pattern.checkered"
         case "Empty": return "circle.dashed"
         case "Union": return "plus.square.on.square"
         case "Difference": return "minus.square"
@@ -445,8 +484,20 @@ struct DocumentGraph {
         case "Sphere":
             if let r = num("radius") { return "⌀\(g(r * 2)) mm" }
         case "Cone":
-            let r = num("radius1") ?? num("radius") ?? 0
+            let r = num("radius_bottom") ?? 0
             return "⌀\(g(r * 2)) × \(g(num("height") ?? 0)) mm"
+        case "Torus":
+            if let a = num("major_radius"), let b = num("minor_radius") { return "⌀\(g(a * 2)) × ⌀\(g(b * 2)) mm" }
+        case "Wedge":
+            if let s = vec("size") { return "\(g(s.0)) × \(g(s.1)) × \(g(s.2)) mm" }
+        case "Prism":
+            if let n = intv("sides"), let r = num("radius"), let h = num("height") { return "\(n)-sided r\(g(r)) × \(g(h)) mm" }
+        case "SweepRotate":
+            if let a = num("angle_lo_deg"), let b = num("angle_hi_deg") { return "\(g(a))° to \(g(b))°" }
+        case "SpurGear":
+            if let m = num("module"), let z = intv("teeth"), let w = num("face_width") {
+                return "\(z)T m\(g(m)) × \(g(w)) mm"
+            }
         case "Translate":
             if let o = vec("offset") { return "(\(g(o.0)), \(g(o.1)), \(g(o.2)))" }
         case "Rotate":

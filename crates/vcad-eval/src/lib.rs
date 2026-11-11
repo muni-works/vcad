@@ -227,6 +227,10 @@ pub enum EvalError {
     #[error("sheet-metal error: {0}")]
     SheetMetal(String),
 
+    /// A `SpurGear` node's parameters cannot make a gear.
+    #[error("spur gear: {0}")]
+    Gear(String),
+
     /// A `StepImport` node could not be resolved to geometry.
     ///
     /// Deliberately an error rather than "no geometry": a document that

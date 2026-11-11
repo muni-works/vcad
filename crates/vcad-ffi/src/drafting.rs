@@ -15,12 +15,14 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use vcad_eval::EvaluatedMesh;
 use vcad_ir::{Document, DrawingSectionLine, DrawingSettings, DrawingTitleBlock};
+use vcad_kernel_drafting::dimension::placement::{obstacles_of, place_clear, Obstacle};
 use vcad_kernel_drafting::{
     compose_sheet, create_detail_view, offset_section_mesh, project_mesh, projected_view_to_dxf,
     sheet_to_pdf, AnnotationLayer, BomRow, BoundingBox2D, DetailViewParams, DrawingSheet,
     HatchPattern, OffsetSectionPlane, OffsetSectionStep, PlacedDetailView, PlacedProjectedView,
     PlacedSectionView, Point2D, ProjectedView, RenderedDimension, RenderedText, SectionPlane,
-    SheetSize, SheetSpec, TextAlignment, TitleBlockFields, ViewDirection, Visibility,
+    SectionView, SheetSize, SheetSpec, TextAlignment, TitleBlockFields, ViewDirection, ViewMatrix,
+    Visibility,
 };
 use vcad_kernel_tessellate::TriangleMesh;
 
@@ -143,47 +145,25 @@ fn view_direction(name: &str) -> ViewDirection {
     }
 }
 
-type Vec3 = [f64; 3];
-
-fn cross(a: Vec3, b: Vec3) -> Vec3 {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
-fn normalize(a: Vec3) -> Vec3 {
-    let n = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
-    if n > 1e-12 {
-        [a[0] / n, a[1] / n, a[2] / n]
-    } else {
-        a
-    }
-}
-
-/// Orthographic basis `(right, up, forward)`, mirroring the web's `viewBasis`.
-fn view_basis(dir: &str) -> Option<(Vec3, Vec3, Vec3)> {
-    let (forward, world_up): (Vec3, Vec3) = match dir {
-        "front" => ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
-        "back" => ([0.0, -1.0, 0.0], [0.0, 0.0, 1.0]),
-        "top" => ([0.0, 0.0, -1.0], [0.0, 1.0, 0.0]),
-        "bottom" => ([0.0, 0.0, 1.0], [0.0, -1.0, 0.0]),
-        "right" => ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
-        "left" => ([-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
-        _ => return None,
-    };
-    let right = normalize(cross(world_up, forward));
-    let up = normalize(cross(forward, right));
-    Some((right, up, forward))
-}
-
-/// Offset section plane from a cut polyline (port of `sectionPlaneFromLine`).
+/// Offset section plane from a cut polyline drawn on the `dir` view.
+///
+/// The cut is viewed normal to the plane from the parent's right (the
+/// section sits in the strip right of the main view, as a third-angle
+/// right-side view would), upright relative to the parent: the parent's up
+/// stays up. The plane is built in a frame whose U axis is the parent's up,
+/// so offset steps (spans along the cut line) clip on U; the result goes
+/// through [`upright`] before drawing.
+///
+/// The old web port used a basis with `forward` into the scene, which made
+/// `right = -X` in the front view (mirroring the cut position) and used the
+/// viewing direction as the section's up, so the section came out rotated
+/// 90° (base on the left instead of the bottom).
 fn section_plane_from_line(dir: &str, points: &[[f64; 2]]) -> Option<OffsetSectionPlane> {
-    let (right, _up, forward) = view_basis(dir)?;
-    if points.len() < 2 {
+    if dir == "isometric" || points.len() < 2 {
         return None;
     }
+    let vm = ViewMatrix::from_view_direction(view_direction(dir));
+    let (right, toward) = (vm.right, vm.forward);
     let mut steps = Vec::new();
     let mut base_x: Option<f64> = None;
     for w in points.windows(2) {
@@ -197,14 +177,21 @@ fn section_plane_from_line(dir: &str, points: &[[f64; 2]]) -> Option<OffsetSecti
     }
     let base_x = base_x?;
     let all_flat = steps.iter().all(|s| s.offset == 0.0);
+    // normal = parent right, up = toward the parent's viewer ⇒ U = parent up.
     Some(OffsetSectionPlane::new(
         SectionPlane::from_arrays(
-            [right[0] * base_x, right[1] * base_x, right[2] * base_x],
-            right,
-            forward,
+            [right.x * base_x, right.y * base_x, right.z * base_x],
+            [right.x, right.y, right.z],
+            [toward.x, toward.y, toward.z],
         ),
         if all_flat { Vec::new() } else { steps },
     ))
+}
+
+/// Rotate a section from [`section_plane_from_line`]'s frame (U = parent up)
+/// to the drawn orientation (V = parent up), viewed from the parent's right.
+fn upright(view: &SectionView) -> SectionView {
+    view.rotated_ccw()
 }
 
 /// Conventional drawing scale at or below `s` (port of `niceScale`).
@@ -463,11 +450,11 @@ pub fn compose(doc_text: &str, doc: &Document, req: &DrawingRequest) -> Result<C
         let Some(plane) = section_plane_from_line(&dir_name, &section.points) else {
             continue;
         };
-        let sv = offset_section_mesh(
+        let sv = upright(&offset_section_mesh(
             &mesh,
             &plane,
             Some(&HatchPattern::new(3.0, std::f64::consts::FRAC_PI_4)),
-        );
+        ));
         if !sv.bounds.is_valid() {
             continue;
         }
@@ -530,8 +517,15 @@ pub fn compose(doc_text: &str, doc: &Document, req: &DrawingRequest) -> Result<C
 
     // GD&T: placed directly at the anchor's sheet position so frame boxes
     // and text stay readable at any view scale.
-    let mut gdt = AnnotationLayer::new();
+    // Each symbol is kept clear of the part outline, dimensions, cut lines,
+    // callouts and earlier symbols: one placed on top of something slides
+    // outward and gets a leader back to the clicked point.
+    let mut obstacles: Vec<Obstacle> = spec.annotations.iter().flat_map(obstacles_of).collect();
+    let lo = main.to_sheet(Point2D::new(b.min_x, b.min_y));
+    let hi = main.to_sheet(Point2D::new(b.max_x, b.max_y));
+    obstacles.push(Obstacle::Rect((lo, hi)));
     for g in &req.gdt {
+        let mut gdt = AnnotationLayer::new();
         let at = main.to_sheet(Point2D::new(g.at[0], g.at[1]));
         let datum = g
             .datum
@@ -553,8 +547,12 @@ pub fn compose(doc_text: &str, doc: &Document, req: &DrawingRequest) -> Result<C
             }
             other => return Err(format!("unknown GD&T kind `{other}`")),
         }
+        for rd in gdt.render_all(None) {
+            let placed = place_clear(&rd, at, &obstacles, 1.0);
+            obstacles.extend(obstacles_of(&placed));
+            spec.annotations.push(placed);
+        }
     }
-    spec.annotations.extend(gdt.render_all(None));
 
     if let Some(tb) = &drawing.title_block {
         spec.title_block = Some(kernel_title_block(tb, &scale_note));
@@ -706,7 +704,7 @@ mod tests {
             "materials":{},"part_materials":{},"roots":[{"root":4,"material":"default"}],
             "drawing":{"titleBlock":{"partName":"Bracket","author":"cam","date":"2026-11-06",
               "scale":"","material":"6061","revision":"B"},
-              "sections":[{"id":"s1","view":"top","label":"A","points":[[-20,-5],[-20,25]]}],
+              "sections":[{"id":"s1","view":"top","label":"A","points":[[20,-5],[20,25]]}],
               "showBom":true}}"#
             .to_string()
     }
@@ -866,14 +864,160 @@ mod tests {
     }
 
     #[test]
-    fn section_plane_matches_web_port() {
+    fn section_plane_follows_the_view_matrix() {
         let p = section_plane_from_line("front", &[[5.0, -1.0], [5.0, 9.0]]).unwrap();
         assert!(p.steps.is_empty());
-        // Same basis as the web: front right axis = worldUp × forward = -X.
-        assert_eq!(p.base.normal, [-1.0, 0.0, 0.0]);
+        // The front view's +x is world +X (ViewMatrix), so a cut at x = 5 is
+        // the plane X = 5 (the web port's basis mirrored it to X = -5).
+        assert_eq!(p.base.normal, [1.0, 0.0, 0.0]);
+        assert_eq!(p.base.origin, [5.0, 0.0, 0.0]);
         assert!(section_plane_from_line("isometric", &[[0.0, 0.0], [0.0, 1.0]]).is_none());
         assert_eq!(nice_scale(3.7), (2.0, "2:1".into()));
         assert_eq!(nice_scale(0.3), (0.2, "1:5".into()));
+    }
+
+    /// The drawing-bench heatsink: 50×40×5 base, eight 1.5×36×25 fins along
+    /// X, built the way the app builds it (cube + linear pattern + union).
+    fn heatsink_doc(extra_drawing: &str) -> String {
+        let pitch = (50.0 - 1.5) / 7.0;
+        format!(
+            r#"{{"version":"0.1","nodes":{{
+            "1":{{"id":1,"name":"Base","op":{{"type":"Cube","size":{{"x":50,"y":40,"z":5}}}}}},
+            "2":{{"id":2,"name":null,"op":{{"type":"Cube","size":{{"x":1.5,"y":36,"z":25}}}}}},
+            "3":{{"id":3,"name":null,"op":{{"type":"Translate","child":2,"offset":{{"x":0,"y":2,"z":5}}}}}},
+            "4":{{"id":4,"name":null,"op":{{"type":"LinearPattern","child":3,"direction":{{"x":1,"y":0,"z":0}},"count":8,"spacing":{pitch}}}}},
+            "5":{{"id":5,"name":"Heatsink","op":{{"type":"Union","left":1,"right":4}}}}}},
+            "materials":{{}},"part_materials":{{}},"roots":[{{"root":5,"material":"default"}}]
+            {extra_drawing}}}"#
+        )
+    }
+
+    fn call_doc(doc: &str, req: &str) -> serde_json::Value {
+        let d = CString::new(doc).unwrap();
+        let r = CString::new(req).unwrap();
+        let p = vcad_drawing_sheet_json(d.as_ptr(), r.as_ptr());
+        assert!(!p.is_null(), "{:?}", err::last_error_string());
+        serde_json::from_str(&crate::json::take(p)).unwrap()
+    }
+
+    /// Hidden/visible edges are feature edges, not tessellation diagonals
+    /// (was 1,292 hidden edges in the front view).
+    #[test]
+    fn heatsink_edges_are_feature_edges() {
+        let doc = heatsink_doc("");
+        for view in ["front", "top", "right"] {
+            let v = call_doc(&doc, &format!(r#"{{"view":"{view}"}}"#));
+            let vis = v["visible_edges"].as_u64().unwrap();
+            let hid = v["hidden_edges"].as_u64().unwrap();
+            eprintln!("{view}: visible {vis} hidden {hid}");
+            assert!(hid < 100, "{view}: {hid} hidden edges (was 338 in front)");
+            assert!(vis < 100, "{view}: {vis} visible edges (was 130 in front)");
+        }
+    }
+
+    /// Section A-A cut vertically through the front view of the heatsink is
+    /// a right-side view of the cut: base along the bottom, fin standing up.
+    /// (Was drawn rotated 90°, base on the left.)
+    #[test]
+    fn heatsink_section_is_upright() {
+        // Through fin 3 (x 20.79..22.29).
+        let doc_text = heatsink_doc(
+            r#","drawing":{"sections":[{"id":"s1","view":"front","label":"A","points":[[21.5,-3],[21.5,33]]}]}"#,
+        );
+        let doc = Document::from_json(&doc_text).unwrap();
+        let req = DrawingRequest {
+            view: Some("front".into()),
+            ..Default::default()
+        };
+        let c = compose(&doc_text, &doc, &req).unwrap();
+        assert_eq!(c.sections, 1);
+        let sv = &c.spec.sections[0].view;
+        let b = sv.bounds;
+        let (w, h) = (b.max_x - b.min_x, b.max_y - b.min_y);
+        // Viewed from +X: horizontal = depth (Y, 40), vertical = Z (30).
+        assert!((w - 40.0).abs() < 0.5, "section width {w} (expected 40)");
+        assert!((h - 30.0).abs() < 0.5, "section height {h} (expected 30)");
+        // Upright: the wide part (base, 40) is at the bottom, the narrow fin
+        // (36 wide) on top — not the other way up.
+        let width_at = |y: f64| {
+            let xs: Vec<f64> = sv
+                .curves
+                .iter()
+                .flat_map(|c| c.points.iter())
+                .filter(|p| (p.y - y).abs() < 0.6)
+                .map(|p| p.x)
+                .collect();
+            xs.iter().cloned().fold(f64::MIN, f64::max)
+                - xs.iter().cloned().fold(f64::MAX, f64::min)
+        };
+        let bottom = width_at(b.min_y);
+        let top = width_at(b.max_y);
+        assert!((bottom - 40.0).abs() < 0.5, "bottom width {bottom}");
+        assert!((top - 36.0).abs() < 0.5, "top width {top}");
+        assert!(sv.num_hatch_lines() > 0);
+    }
+
+    /// Datum and feature-control-frame symbols dropped on the part and on a
+    /// dimension land clear of both, with a leader back to the click.
+    #[test]
+    fn gdt_symbols_clear_dimensions_and_geometry() {
+        use vcad_kernel_drafting::dimension::placement::{annotation_box, text_box};
+        let doc_text = heatsink_doc("");
+        let doc = Document::from_json(&doc_text).unwrap();
+        let base = compose(
+            &doc_text,
+            &doc,
+            &DrawingRequest {
+                view: Some("front".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let dims = base.spec.annotations.clone();
+        // View coords of the width dimension's text (below the part): map
+        // the sheet position back through the placement.
+        let m = &base.main;
+        let to_view = |p: Point2D| {
+            [
+                m.view_center[0] + (p.x - m.sheet_center[0]) / m.scale,
+                m.view_center[1] + (p.y - m.sheet_center[1]) / m.scale,
+            ]
+        };
+        let dim_text = dims[0].texts[0].position;
+        let req: DrawingRequest = serde_json::from_value(serde_json::json!({
+            "view": "front",
+            "gdt": [
+                {"kind": "datum", "datum": "A", "at": to_view(dim_text)},
+                {"kind": "flatness", "tolerance": 0.05, "at": [25.0, 15.0]},
+                {"kind": "perpendicularity", "tolerance": 0.1, "datum": "A", "at": [25.0, 15.0]}
+            ]
+        }))
+        .unwrap();
+        let c = compose(&doc_text, &doc, &req).unwrap();
+        let n = dims.len();
+        assert_eq!(c.spec.annotations.len(), n + 3);
+        let lo = m.to_sheet(Point2D::new(m.bounds.min_x, m.bounds.min_y));
+        let hi = m.to_sheet(Point2D::new(m.bounds.max_x, m.bounds.max_y));
+        let overlap = |a: (Point2D, Point2D), b: (Point2D, Point2D)| {
+            a.0.x < b.1.x && b.0.x < a.1.x && a.0.y < b.1.y && b.0.y < a.1.y
+        };
+        let mut placed: Vec<(Point2D, Point2D)> = Vec::new();
+        for g in &c.spec.annotations[n..] {
+            // The symbol proper (minus its leader, the last line).
+            let mut body = g.clone();
+            body.lines.pop();
+            let bx = annotation_box(&body).unwrap();
+            assert!(!overlap(bx, (lo, hi)), "symbol on the part: {bx:?}");
+            for d in &dims {
+                for t in &d.texts {
+                    assert!(!overlap(bx, text_box(t)), "symbol on dimension text");
+                }
+            }
+            for p in &placed {
+                assert!(!overlap(bx, *p), "symbols overlap each other");
+            }
+            placed.push(bx);
+        }
     }
 
     /// Gate: every sample the app ships draws in every orthographic view, and

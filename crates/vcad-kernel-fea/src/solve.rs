@@ -213,7 +213,7 @@ pub(crate) struct Bc {
 pub(crate) fn assemble_bc(mesh: &TetMesh, spec: &FeaSpec) -> Result<Bc, SolveError> {
     let nn = mesh.nodes.len();
     let ndof = 3 * nn;
-    let tol_geom = mesh.h * 0.25;
+    let tol_geom = mesh.region_tol();
 
     let mut fixed = vec![false; ndof];
     for (si, s) in spec.supports.iter().enumerate() {

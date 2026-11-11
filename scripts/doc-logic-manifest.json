@@ -61,6 +61,6 @@
     { "path": "packages/core/src/stores/{ui,chat,sketch,simulation,jobs,participant,recording,billing}-store.ts", "reason": "View, session or editor-interaction state, not .vcad document state" },
     { "path": "packages/app/src/data/examples/*.ts", "reason": "Example document fixtures (data, no logic); materials.ts is a catalog" },
     { "path": "packages/app/src/components/**", "reason": "Views and rendering" },
-    { "path": "packages/mcp/src/{server,http,protocol-2026,oauth}.ts", "reason": "Transport, auth and protocol plumbing" }
+    { "path": "packages/mcp/src/{server,http,protocol-2026}.ts", "reason": "Transport, auth and protocol plumbing" }
   ]
 }

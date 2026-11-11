@@ -69,11 +69,11 @@
       <h2>Two lines, any agent.</h2>
       <div class="receipt-json" style="max-width:520px;">
         <p><span class="d"># claude code</span></p>
-        <p>claude mcp add --transport http vcad https://mcp.vcad.io/mcp</p>
+        <p>claude mcp add vcad -- npx -y @vcad/mcp</p>
         <p><span class="d"># anything that speaks mcp</span></p>
-        <p>{ "mcpServers": { "vcad": { "url": "https://mcp.vcad.io/mcp" } } }</p>
+        <p>{ "mcpServers": { "vcad": { "command": "npx", "args": ["-y", "@vcad/mcp"] } } }</p>
       </div>
-      <p class="mono" style="font-size:11px;color:#7A7E86;margin-top:14px;">claude · claude code · cursor · chatgpt — if it speaks mcp, it has a seat</p>
+      <p class="mono" style="font-size:11px;color:#7A7E86;margin-top:14px;">claude code · cursor · codex — if it speaks mcp, it has a seat</p>
     </section>
   </main>
 

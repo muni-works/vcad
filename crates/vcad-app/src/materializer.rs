@@ -137,29 +137,41 @@ fn collect_consumed_feature_ids(crdt: &CrdtDocument) -> std::collections::HashSe
             if let Some((Value::FeatureRefList(ids), _)) = feature.params.get("colliders") {
                 consumed.extend(ids.iter().cloned());
             }
-        }
-        let Some(input) = FeatureInput::from_crdt_params(&feature.kind, &feature.params) else {
-            continue;
-        };
-        match input {
-            FeatureInput::Boolean {
-                input_a, input_b, ..
-            } => {
-                consumed.insert(input_a);
-                consumed.insert(input_b);
+            let source_only = matches!(
+                feature.params.get(crate::migrate::PART_DEF_SOURCE_CONSUMED),
+                Some((Value::Bool(true), _))
+            );
+            if source_only {
+                if let Some((Value::FeatureRef(id), _)) = feature.params.get("source_feature") {
+                    consumed.insert(id.clone());
+                }
             }
-            FeatureInput::Fillet { input, .. }
-            | FeatureInput::Chamfer { input, .. }
-            | FeatureInput::Shell { input, .. }
-            | FeatureInput::LinearPattern { input, .. }
-            | FeatureInput::CircularPattern { input, .. }
-            | FeatureInput::Mirror { input, .. } => {
-                consumed.insert(input);
-            }
-            _ => {}
         }
+        consumed.extend(feature_input_ids(feature));
     }
     consumed
+}
+
+/// The features a modifier/boolean feature takes as inputs. They exist only to
+/// feed it unless something else references them too.
+pub(crate) fn feature_input_ids(feature: &FeatureState) -> Vec<String> {
+    let Some(input) = FeatureInput::from_crdt_params(&feature.kind, &feature.params) else {
+        return Vec::new();
+    };
+    match input {
+        FeatureInput::Boolean {
+            input_a, input_b, ..
+        } => vec![input_a, input_b],
+        FeatureInput::Hull { inputs, .. } => inputs,
+        FeatureInput::SweepRotate { input, .. }
+        | FeatureInput::Fillet { input, .. }
+        | FeatureInput::Chamfer { input, .. }
+        | FeatureInput::Shell { input, .. }
+        | FeatureInput::LinearPattern { input, .. }
+        | FeatureInput::CircularPattern { input, .. }
+        | FeatureInput::Mirror { input, .. } => vec![input],
+        _ => Vec::new(),
+    }
 }
 
 /// Materialize the full CRDT document into an IR document and parts list.
@@ -248,8 +260,25 @@ pub fn materialize(crdt: &CrdtDocument) -> MaterializeResult {
 
     // Imported document-level fields fill in only what no dedicated
     // feature set, so later edits (e.g. scene settings) win.
+    let extras_for_bindings = extras.clone();
     for feature in extras {
         materialize_doc_extras(&mut doc, feature);
+    }
+    let records: Vec<serde_json::Value> = extras_for_bindings
+        .iter()
+        .filter_map(|f| get_str(f, "extras"))
+        .filter_map(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+        .filter_map(|v| v.get(crate::migrate::FEATURE_BINDINGS)?.as_array().cloned())
+        .flatten()
+        .collect();
+    if !records.is_empty() {
+        let parts_json = serde_json::to_value(&parts).unwrap_or_default();
+        let (bindings, warnings) = crate::migrate::resolve_feature_bindings(&records, &parts_json);
+        ctx.warnings.extend(warnings);
+        match serde_json::from_value(serde_json::Value::Object(bindings)) {
+            Ok(b) => doc.bindings = b,
+            Err(e) => ctx.warnings.push(format!("bindings: {e}")),
+        }
     }
 
     MaterializeResult {
@@ -572,6 +601,228 @@ fn materialize_feature(
                     id: id_str,
                     name,
                     primitive_node_id: prim_id,
+                    scale_node_id: scale_id,
+                    rotate_node_id: rotate_id,
+                    translate_node_id: translate_id,
+                },
+                translate_id,
+            ))
+        }
+        FeatureInput::Torus {
+            major_radius,
+            minor_radius,
+            segments,
+        } => {
+            let prim_id = ctx.alloc();
+            let scale_id = ctx.alloc();
+            let rotate_id = ctx.alloc();
+            let translate_id = ctx.alloc();
+
+            insert_node(
+                doc,
+                prim_id,
+                &name,
+                CsgOp::Torus {
+                    major_radius,
+                    minor_radius,
+                    segments: segments.unwrap_or(32),
+                },
+            );
+            insert_transform_chain(
+                doc,
+                ctx,
+                feature,
+                prim_id,
+                scale_id,
+                rotate_id,
+                translate_id,
+            );
+
+            Some((
+                PartInfo::Torus {
+                    id: id_str,
+                    name,
+                    primitive_node_id: prim_id,
+                    scale_node_id: scale_id,
+                    rotate_node_id: rotate_id,
+                    translate_node_id: translate_id,
+                },
+                translate_id,
+            ))
+        }
+        FeatureInput::Wedge {
+            size_x,
+            size_y,
+            size_z,
+        } => {
+            let prim_id = ctx.alloc();
+            let scale_id = ctx.alloc();
+            let rotate_id = ctx.alloc();
+            let translate_id = ctx.alloc();
+
+            insert_node(
+                doc,
+                prim_id,
+                &name,
+                CsgOp::Wedge {
+                    size: Vec3::new(size_x, size_y, size_z),
+                },
+            );
+            insert_transform_chain(
+                doc,
+                ctx,
+                feature,
+                prim_id,
+                scale_id,
+                rotate_id,
+                translate_id,
+            );
+
+            Some((
+                PartInfo::Wedge {
+                    id: id_str,
+                    name,
+                    primitive_node_id: prim_id,
+                    scale_node_id: scale_id,
+                    rotate_node_id: rotate_id,
+                    translate_node_id: translate_id,
+                },
+                translate_id,
+            ))
+        }
+        FeatureInput::Prism {
+            sides,
+            radius,
+            height,
+        } => {
+            let prim_id = ctx.alloc();
+            let scale_id = ctx.alloc();
+            let rotate_id = ctx.alloc();
+            let translate_id = ctx.alloc();
+
+            insert_node(
+                doc,
+                prim_id,
+                &name,
+                CsgOp::Prism {
+                    sides,
+                    radius,
+                    height,
+                },
+            );
+            insert_transform_chain(
+                doc,
+                ctx,
+                feature,
+                prim_id,
+                scale_id,
+                rotate_id,
+                translate_id,
+            );
+
+            Some((
+                PartInfo::Prism {
+                    id: id_str,
+                    name,
+                    primitive_node_id: prim_id,
+                    scale_node_id: scale_id,
+                    rotate_node_id: rotate_id,
+                    translate_node_id: translate_id,
+                },
+                translate_id,
+            ))
+        }
+        FeatureInput::Hull { inputs, points } => {
+            let mut children = Vec::with_capacity(inputs.len());
+            let mut sources = Vec::with_capacity(inputs.len());
+            for input in inputs {
+                if let Some(child) = ctx.feature_root_or_warn(&input, "hull", &id_str) {
+                    children.push(child);
+                    sources.push(input);
+                }
+            }
+            if children.is_empty() && points.len() < 12 {
+                ctx.warnings.push(format!(
+                    "hull feature {id_str} has no parts and too few points — skipped"
+                ));
+                return None;
+            }
+
+            let hull_id = ctx.alloc();
+            let scale_id = ctx.alloc();
+            let rotate_id = ctx.alloc();
+            let translate_id = ctx.alloc();
+
+            insert_node(doc, hull_id, &name, CsgOp::Hull { children, points });
+            insert_transform_chain(
+                doc,
+                ctx,
+                feature,
+                hull_id,
+                scale_id,
+                rotate_id,
+                translate_id,
+            );
+
+            Some((
+                PartInfo::Hull {
+                    id: id_str,
+                    name,
+                    hull_node_id: hull_id,
+                    scale_node_id: scale_id,
+                    rotate_node_id: rotate_id,
+                    translate_node_id: translate_id,
+                    source_part_ids: sources,
+                },
+                translate_id,
+            ))
+        }
+        FeatureInput::SweepRotate {
+            input,
+            axis_origin,
+            axis_dir,
+            angle_lo_deg,
+            angle_hi_deg,
+            step_deg,
+            clearance,
+        } => {
+            let child = ctx.feature_root_or_warn(&input, "sweep-rotate", &id_str)?;
+
+            let sweep_id = ctx.alloc();
+            let scale_id = ctx.alloc();
+            let rotate_id = ctx.alloc();
+            let translate_id = ctx.alloc();
+
+            insert_node(
+                doc,
+                sweep_id,
+                &name,
+                CsgOp::SweepRotate {
+                    child,
+                    axis_origin: Vec3::new(axis_origin[0], axis_origin[1], axis_origin[2]),
+                    axis_dir: Vec3::new(axis_dir[0], axis_dir[1], axis_dir[2]),
+                    angle_lo_deg,
+                    angle_hi_deg,
+                    step_deg,
+                    clearance,
+                },
+            );
+            insert_transform_chain(
+                doc,
+                ctx,
+                feature,
+                sweep_id,
+                scale_id,
+                rotate_id,
+                translate_id,
+            );
+
+            Some((
+                PartInfo::SweepRotate {
+                    id: id_str,
+                    name,
+                    source_part_id: input,
+                    sweep_node_id: sweep_id,
                     scale_node_id: scale_id,
                     rotate_node_id: rotate_id,
                     translate_node_id: translate_id,
@@ -1499,14 +1750,14 @@ fn materialize_joint(doc: &mut Document, fid: FeatureId, feature: &FeatureState)
         "Revolute" => JointKind::Revolute {
             axis: axis.unwrap_or(Vec3::new(0.0, 0.0, 1.0)),
             limits,
-            effort_limit: None,
-            velocity_limit: None,
+            effort_limit: get_f64(feature, "effort_limit"),
+            velocity_limit: get_f64(feature, "velocity_limit"),
         },
         "Slider" => JointKind::Slider {
             axis: axis.unwrap_or(Vec3::new(0.0, 0.0, 1.0)),
             limits,
-            effort_limit: None,
-            velocity_limit: None,
+            effort_limit: get_f64(feature, "effort_limit"),
+            velocity_limit: get_f64(feature, "velocity_limit"),
         },
         "Cylindrical" => JointKind::Cylindrical {
             axis: axis.unwrap_or(Vec3::new(0.0, 0.0, 1.0)),
@@ -1639,7 +1890,7 @@ fn materialize_scene_settings(doc: &mut Document, feature: &FeatureState) {
 
 // -- Helpers --
 
-fn fid_to_string(fid: FeatureId) -> String {
+pub(crate) fn fid_to_string(fid: FeatureId) -> String {
     format!("{}:{}", fid.0 .0, fid.1)
 }
 

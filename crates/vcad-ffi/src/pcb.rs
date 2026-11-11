@@ -25,7 +25,9 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use vcad_ecad_fabprep::{run_fab_prep, DrcDelta, FabPrepOptions, VerdictOptions};
 use vcad_ecad_pcb::drc::{check_drc, DrcViolation};
-use vcad_ecad_pcb::router::length_match::{match_lengths, net_routed_length, LengthMatchOptions};
+use vcad_ecad_pcb::router::length_match::{
+    match_lengths_runs, net_routed_length, LengthMatchOptions,
+};
 use vcad_ir::ecad::Pcb;
 use vcad_kernel_enclosure as encl;
 
@@ -253,8 +255,9 @@ fn verdict_opts(req: &Value) -> VerdictOptions {
 /// Route every unrouted connection. Returns `{pcb, verdict, drc}`.
 pub fn autoroute(mut pcb: Pcb, req: &Value) -> Value {
     let verdict = vcad_ecad_fabprep::verdict::route_remaining(&mut pcb, verdict_opts(req));
+    let finished = vcad_ecad_fabprep::verdict::finish_remaining(&mut pcb, 150_000);
     let drc = drc_report(&pcb, &accepted_rules(req));
-    json!({ "pcb": pcb, "verdict": verdict, "drc": drc })
+    json!({ "pcb": pcb, "verdict": verdict, "finished": finished, "drc": drc })
 }
 
 /// `char *vcad_pcb_autoroute(const char *pcb_json, const char *request_json)`.
@@ -439,16 +442,44 @@ pub fn length_match(mut pcb: Pcb, req: &Value) -> Result<Value, String> {
     if let Some(a) = req.get("max_amplitude").and_then(Value::as_f64) {
         opts.max_amplitude = a;
     }
-    let result = match_lengths(&pcb, &nets, &opts);
-    for n in result
-        .nets
-        .iter()
-        .filter(|n| n.tuned && !n.new_traces.is_empty())
-    {
-        pcb.traces.retain(|t| t.net != n.net);
-        pcb.traces.extend(n.new_traces.iter().cloned());
+    // The tuner clears its meanders against what it can see; the DRC has the
+    // last word. Shallower meanders if they break a rule, nothing if they
+    // still do.
+    let accepted = accepted_rules(req);
+    let before = drc_report(&pcb, &accepted).route_attributable;
+    let mut result = match_lengths_runs(&pcb, &nets, &opts);
+    let mut tuned = None;
+    for _ in 0..4 {
+        let mut trial = pcb.clone();
+        for n in result
+            .nets
+            .iter()
+            .filter(|n| n.tuned && !n.new_traces.is_empty())
+        {
+            trial.traces.retain(|t| t.net != n.net);
+            trial.traces.extend(n.new_traces.iter().cloned());
+        }
+        if drc_report(&trial, &accepted).route_attributable <= before {
+            tuned = Some(trial);
+            break;
+        }
+        opts.max_amplitude /= 2.0;
+        result = match_lengths_runs(&pcb, &nets, &opts);
     }
-    let drc = drc_report(&pcb, &accepted_rules(req));
+    match tuned {
+        Some(trial) => pcb = trial,
+        None => {
+            result.all_matched = false;
+            for n in result.nets.iter_mut().filter(|n| n.tuned) {
+                n.tuned = false;
+                n.matched = false;
+                n.length_after = n.length_before;
+                n.new_traces.clear();
+                n.skip_reason = Some("meanders would break a design rule here".into());
+            }
+        }
+    }
+    let drc = drc_report(&pcb, &accepted);
     Ok(json!({ "pcb": pcb, "result": result, "drc": drc }))
 }
 
@@ -996,4 +1027,283 @@ mod tests {
         let r = length_match(pcb, &json!({"nets": nets, "tolerance": 0.5})).unwrap();
         assert!(r["result"]["nets"].as_array().unwrap().len() == 2);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Interactive routing
+// ---------------------------------------------------------------------------
+
+/// An open board answering live routing queries.
+pub struct VcadPcbRouter(std::sync::Mutex<vcad_ecad_fabprep::verdict::InteractiveRouter>);
+
+/// Index a board for interactive routing. Free with [`vcad_pcb_router_free`].
+#[no_mangle]
+pub extern "C" fn vcad_pcb_router_open(pcb_json: *const c_char) -> *mut VcadPcbRouter {
+    match parse_pcb(pcb_json) {
+        Ok(pcb) => Box::into_raw(Box::new(VcadPcbRouter(std::sync::Mutex::new(
+            vcad_ecad_fabprep::verdict::InteractiveRouter::new(pcb),
+        )))),
+        Err(e) => {
+            err::set_error(format!("vcad_pcb_router_open: {e}"));
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Free a router from [`vcad_pcb_router_open`].
+#[no_mangle]
+pub extern "C" fn vcad_pcb_router_free(router: *mut VcadPcbRouter) {
+    if !router.is_null() {
+        drop(unsafe { Box::from_raw(router) });
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct RouteQuery {
+    net: String,
+    from: vcad_ir::Vec2,
+    to: vcad_ir::Vec2,
+    layer: Option<vcad_ir::ecad::PcbLayer>,
+    budget: Option<usize>,
+}
+
+#[derive(serde::Deserialize)]
+struct RouteCommit {
+    net: String,
+    #[serde(default)]
+    moved: Vec<vcad_ecad_fabprep::verdict::TraceMove>,
+    path: Vec<(vcad_ir::Vec2, vcad_ir::Vec2, vcad_ir::ecad::PcbLayer)>,
+}
+
+/// Route `{net, from, to, layer?, budget?}`; `{status, reason, path, vias, width}`.
+#[no_mangle]
+pub extern "C" fn vcad_pcb_router_route(
+    router: *const VcadPcbRouter,
+    request_json: *const c_char,
+) -> *mut c_char {
+    run("vcad_pcb_router_route", || {
+        if router.is_null() {
+            return Err("null router".to_string());
+        }
+        let q: RouteQuery =
+            serde_json::from_str(borrow_str("request", request_json).ok_or("bad request")?)
+                .map_err(|e| e.to_string())?;
+        let r = unsafe { &*router }
+            .0
+            .lock()
+            .map_err(|_| "router poisoned")?;
+        Ok(r.route(&q.net, q.from, q.to, q.layer, q.budget.unwrap_or(150_000)))
+    })
+}
+
+/// Commit `{net, path}` (a `route` result's path); `{traces, vias}` to append.
+#[no_mangle]
+pub extern "C" fn vcad_pcb_router_commit(
+    router: *const VcadPcbRouter,
+    request_json: *const c_char,
+) -> *mut c_char {
+    run("vcad_pcb_router_commit", || {
+        if router.is_null() {
+            return Err("null router".to_string());
+        }
+        let q: RouteCommit =
+            serde_json::from_str(borrow_str("request", request_json).ok_or("bad request")?)
+                .map_err(|e| e.to_string())?;
+        let mut r = unsafe { &*router }
+            .0
+            .lock()
+            .map_err(|_| "router poisoned")?;
+        let (traces, vias) = r.commit(&q.net, &q.path, &q.moved)?;
+        Ok(json!({ "traces": traces, "vias": vias, "moved": q.moved }))
+    })
+}
+
+/// The ratsnest: `[{net, from, to}]`, one per connection still needed to join
+/// each net's copper islands — the DRC's own connectivity, so the airwires and
+/// the "open nets" count can never disagree.
+#[no_mangle]
+pub extern "C" fn vcad_pcb_ratsnest(pcb_json: *const c_char) -> *mut c_char {
+    run("vcad_pcb_ratsnest", || {
+        let pcb = parse_pcb(pcb_json)?;
+        let layers: Vec<_> = pcb
+            .stackup
+            .layers
+            .iter()
+            .map(|l| l.layer)
+            .filter(|l| l.is_copper())
+            .collect();
+        let rats =
+            vcad_ecad_pcb::router::islands::island_connections(&pcb, &layers, &BTreeSet::new());
+        let wires: Vec<Value> = rats
+            .iter()
+            .map(|r| json!({ "net": r.net, "from": r.from, "to": r.to }))
+            .collect();
+        Ok(json!({ "wires": wires }))
+    })
+}
+
+/// Filled copper for every zone: `{zones: [{polygons, net, layer}]}`.
+#[no_mangle]
+pub extern "C" fn vcad_pcb_fill_zones(pcb_json: *const c_char) -> *mut c_char {
+    run("vcad_pcb_fill_zones", || {
+        let pcb = parse_pcb(pcb_json)?;
+        Ok(json!({
+            "zones": vcad_ecad_pcb::copper_pour::fill_zones(&pcb),
+            "teardrops": vcad_ecad_pcb::generate_teardrops(&pcb),
+        }))
+    })
+}
+
+/// A KiCad library footprint ready to place: `{footprint}` for
+/// `{id: "Library:Name", ref, position: {x,y}, copper: ["FCu", ...]}`.
+#[no_mangle]
+pub extern "C" fn vcad_pcb_library_footprint(request_json: *const c_char) -> *mut c_char {
+    run("vcad_pcb_library_footprint", || {
+        #[derive(serde::Deserialize)]
+        struct Req {
+            id: String,
+            #[serde(rename = "ref")]
+            reference: String,
+            position: vcad_ir::Vec2,
+            copper: Vec<vcad_ir::ecad::PcbLayer>,
+        }
+        let q: Req =
+            serde_json::from_str(borrow_str("request", request_json).ok_or("bad request")?)
+                .map_err(|e| e.to_string())?;
+        let def = vcad_ecad_symbols::kicad_board::load_footprint(&q.id)?;
+        let fp = vcad_ecad_symbols::kicad_board::place_footprint(
+            &def,
+            &q.id,
+            &q.reference,
+            "",
+            q.position,
+            0.0,
+            &q.copper,
+        );
+        Ok(json!({ "footprint": fp }))
+    })
+}
+
+/// Route a declared differential pair `{p, n}`: `{pcb, routed, reason}`.
+/// The router goes straight, so a result that adds any route-attributable
+/// violation is thrown away and the board returned untouched.
+#[no_mangle]
+pub extern "C" fn vcad_pcb_route_diff_pair(
+    pcb_json: *const c_char,
+    request_json: *const c_char,
+) -> *mut c_char {
+    run("vcad_pcb_route_diff_pair", || {
+        let pcb = parse_pcb(pcb_json)?;
+        let req = parse_request(request_json)?;
+        let net = |k: &str| {
+            req.get(k)
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .ok_or(format!("missing {k}"))
+        };
+        let (p, n) = (net("p")?, net("n")?);
+        let accepted = accepted_rules(&req);
+        let before = drc_report(&pcb, &accepted).route_attributable;
+        // Coupled and straight when the channel is clear; otherwise each leg
+        // finds its own legal way around what's there.
+        let mut out = pcb.clone();
+        let mut coupled = false;
+        if let Some((rp, rn)) = vcad_ecad_pcb::router::diff_pair::route_diff_pair(&pcb, &p, &n) {
+            let layer = vcad_ir::ecad::PcbLayer::FCu;
+            let width = out.rules.default_rules.trace_width;
+            for r in [&rp, &rn] {
+                for (a, b) in &r.segments {
+                    out.traces.push(vcad_ir::ecad::Trace {
+                        start: *a,
+                        end: *b,
+                        width,
+                        layer,
+                        net: r.net.clone(),
+                        source: None,
+                    });
+                }
+            }
+            coupled = drc_report(&out, &accepted).route_attributable <= before;
+        }
+        if !coupled {
+            out = pcb.clone();
+            if !vcad_ecad_fabprep::verdict::route_nets(&mut out, &[p.clone(), n.clone()], 150_000)
+                || drc_report(&out, &accepted).route_attributable > before
+            {
+                return Ok(
+                    json!({ "pcb": pcb, "routed": false, "reason": "No legal route for this pair." }),
+                );
+            }
+        }
+        Ok(json!({ "pcb": out, "routed": true, "coupled": coupled, "reason": null }))
+    })
+}
+
+/// A KiCad library symbol's pins and default footprint:
+/// `{pins, footprint}` for `{id: "Library:Symbol"}`.
+#[no_mangle]
+pub extern "C" fn vcad_pcb_library_symbol(request_json: *const c_char) -> *mut c_char {
+    run("vcad_pcb_library_symbol", || {
+        let req: Value =
+            serde_json::from_str(borrow_str("request", request_json).ok_or("bad request")?)
+                .map_err(|e| e.to_string())?;
+        let id = req.get("id").and_then(Value::as_str).ok_or("missing id")?;
+        let (lib, name) = id.split_once(':').ok_or("id must be Library:Symbol")?;
+        let dirs = [
+            "/Applications/KiCad/KiCad.app/Contents/SharedSupport/symbols",
+            "/usr/share/kicad/symbols",
+            "/usr/local/share/kicad/symbols",
+        ];
+        let path = dirs
+            .iter()
+            .map(|d| Path::new(d).join(format!("{lib}.kicad_sym")))
+            .find(|p| p.exists())
+            .ok_or_else(|| format!("symbol library {lib} not found"))?;
+        let parsed = vcad_ecad_symbols::kicad_sym::parse_symbol_lib_file(&path.to_string_lossy())
+            .map_err(|e| e.to_string())?;
+        let sym = parsed
+            .get(name)
+            .ok_or_else(|| format!("{name} not in {lib}"))?;
+        let footprint = sym
+            .properties
+            .iter()
+            .find(|p| p.key == "Footprint")
+            .map(|p| p.value.clone())
+            .unwrap_or_default();
+        let pins: Vec<Value> = sym
+            .pins
+            .iter()
+            .map(|p| json!({ "number": p.number, "name": p.name, "pin_type": p.pin_type, "position": { "x": p.position.0, "y": -p.position.1 } }))
+            .collect();
+        Ok(json!({ "pins": pins, "footprint": footprint }))
+    })
+}
+
+/// Stitch a net's overlapping zones with vias: `{pcb, added}` for
+/// `{net, pitch?}`. Adds nothing if the result would break a design rule.
+#[no_mangle]
+pub extern "C" fn vcad_pcb_stitch_zones(
+    pcb_json: *const c_char,
+    request_json: *const c_char,
+) -> *mut c_char {
+    run("vcad_pcb_stitch_zones", || {
+        let pcb = parse_pcb(pcb_json)?;
+        let req = parse_request(request_json)?;
+        let net = req
+            .get("net")
+            .and_then(Value::as_str)
+            .ok_or("missing net")?;
+        let pitch = req.get("pitch").and_then(Value::as_f64).unwrap_or(5.0);
+        let accepted = accepted_rules(&req);
+        let mut out = pcb.clone();
+        let added = vcad_ecad_fabprep::verdict::stitch_zones(&mut out, net, pitch);
+        if drc_report(&out, &accepted).route_attributable
+            > drc_report(&pcb, &accepted).route_attributable
+        {
+            return Ok(
+                json!({ "pcb": pcb, "added": 0, "reason": "Stitching would break a design rule." }),
+            );
+        }
+        Ok(json!({ "pcb": out, "added": added, "reason": null }))
+    })
 }

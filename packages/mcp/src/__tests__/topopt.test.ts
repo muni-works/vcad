@@ -86,6 +86,16 @@ describe("topology_optimize", () => {
     expect(node.op.type).toBe("ImportedMesh");
   });
 
+  it("says so plainly when the iteration limit stops the run", () => {
+    const result = out(
+      topologyOptimizeTool({ ...cantileverArgs, max_iterations: 2, volume_fraction: 0.8 }, engine),
+    );
+    expect(result.converged).toBe(false);
+    expect(result.status).toBe("not_converged");
+    expect(result.warning).toMatch(/NOT CONVERGED/);
+    expect(result.warning).toMatch(/2-iteration limit/);
+  });
+
   it("lightweights an existing part and hides the source", () => {
     const opened = out(openDocument({ initial: cubeDocument() }));
     const result = out(

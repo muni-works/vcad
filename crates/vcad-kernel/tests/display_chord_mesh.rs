@@ -3,6 +3,8 @@
 //! and land closer to its exact volume than the fixed-count mesh.
 
 use std::f64::consts::PI;
+use vcad_kernel::vcad_kernel_fillet::{BlendKey, BlendSection, EdgeQuery};
+use vcad_kernel::vcad_kernel_math::Point3;
 use vcad_kernel::vcad_kernel_tessellate::TriangleMesh;
 use vcad_kernel::Solid;
 
@@ -66,11 +68,32 @@ fn sphere_and_cone() {
 }
 
 #[test]
-fn cup() {
+fn cup_and_filleted_cup() {
     let cup = Solid::cylinder(86.0, 40.0, 0)
         .difference(&Solid::cylinder(84.0, 40.0, 0).translate(0.0, 0.0, 2.0));
     let exact = PI * (86.0 * 86.0 * 40.0 - 84.0 * 84.0 * 38.0);
     check("cup", &cup, exact);
+    let keys = [BlendKey {
+        t: 0.0,
+        section: BlendSection {
+            size: 5.0,
+            shape: 1.0,
+        },
+    }];
+    let f = cup
+        .edge_blend(
+            &EdgeQuery::Near {
+                point: Point3::new(86.0, 0.0, 0.0),
+            },
+            &keys,
+        )
+        .expect("rim fillet");
+    let mesh = f.to_mesh_with_chord(32, 0.02);
+    assert!(
+        mesh.boundary_edges().is_empty(),
+        "filleted cup: {} open edges",
+        mesh.boundary_edges().len()
+    );
 }
 
 #[test]

@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-09-mac-app-live-link-fixes",
+  "version": "0.11.0",
+  "date": "2026-11-09",
+  "category": "fix",
+  "title": "Mac app live link keeps its window and its last pose",
+  "summary": "Simulation runs always land their final pose, tool-minted sessions can't take a window another agent is using, and assemblies no longer gain stray roots.",
+  "features": ["native-app", "mcp", "assembly", "simulation"],
+  "mcpTools": ["show_in_app", "gym_step", "attach_app_document"]
+}

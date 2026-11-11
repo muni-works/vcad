@@ -1031,6 +1031,7 @@ fn is_solid_tag(tag: &str) -> bool {
             | "Wedge"
             | "Prism"
             | "Gear"
+            | "SpurGear"
             | "Empty"
             | "Union"
             | "Difference"
@@ -2091,6 +2092,7 @@ impl ConvertCtx {
                     backlash: self.f64_val(&fields[3])?,
                     internal: self.bool_val(&fields[4])?,
                     flank_samples,
+                    pressure_angle_deg: None,
                 };
                 let segments = spec.sketch_segments()?;
                 // Base on z = 0, extruding up the face width. This matches
@@ -2188,6 +2190,28 @@ impl ConvertCtx {
                     radius: self.f64_val(&fields[1])?,
                     height: self.f64_val(&fields[2])?,
                 }
+            }
+            // [SpurGear module teeth pressure-angle-deg face-width bore backlash]
+            // The parametric gear primitive: unlike `Gear` (which lowers to a
+            // frozen Sketch2D + Extrude) this stays one editable IR node.
+            "SpurGear" => {
+                assert_fields(tag, fields, 6)?;
+                let teeth = self.f64_val(&fields[1])?;
+                if teeth.fract() != 0.0 || !(4.0..=10_000.0).contains(&teeth) {
+                    return Err(format!(
+                        "spur gear tooth count must be a whole number >= 4, got {teeth}"
+                    ));
+                }
+                let op = CsgOp::SpurGear {
+                    module: self.f64_val(&fields[0])?,
+                    teeth: teeth as u32,
+                    pressure_angle_deg: self.f64_val(&fields[2])?,
+                    face_width: self.f64_val(&fields[3])?,
+                    bore_diameter: self.f64_val(&fields[4])?,
+                    backlash: self.f64_val(&fields[5])?,
+                };
+                vcad_ir::gear::spur_gear_spec(&op)?;
+                op
             }
             "Empty" => CsgOp::Empty,
 

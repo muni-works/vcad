@@ -20,7 +20,7 @@
  *    search_*, get_*, and pure analyses like run_drc, run_erc, verify_part,
  *    dfm_check).
  *  - `destructiveHint: true` for tools that delete/free/commit irreversibly:
- *    delete_*, close_document, gym_close, place_order.
+ *    delete_*, close_document, gym_close.
  *  - `openWorldHint: true` for tools that reach an external service/catalog:
  *    the parts catalogs (search_/resolve_/find_/verify_substitution), the
  *    Fabricate order flow, and continue_document.
@@ -79,6 +79,8 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
   close_document: { title: "Close Document", annotations: DESTRUCTIVE },
   save_document: { title: "Save Document", annotations: RW },
   load_document: { title: "Load Document", annotations: RW },
+  attach_app_document: { title: "Attach to App Document", annotations: RW },
+  show_in_app: { title: "Show in App", annotations: RW },
   checkpoint_document: { title: "Checkpoint Document", annotations: RW },
   branch_from: { title: "Branch From Checkpoint", annotations: RW },
   continue_document: { title: "Continue Document", annotations: RW_NET },
@@ -88,14 +90,6 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
 
   // ── vcad Fabricate (external manufacturing service) ────────────────────
   quote_manufacturing: { title: "Quote Manufacturing", annotations: RW_NET },
-  get_order_status: { title: "Get Order Status", annotations: RO_NET },
-  list_orders: { title: "List Orders", annotations: RO_NET },
-  authorize_spend: { title: "Authorize Spend", annotations: RW_NET },
-  place_order: {
-    title: "Place Order",
-    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
-  },
-  get_order_feed: { title: "Get Order Feed", annotations: RO_NET },
 
   // ── Project BOM ────────────────────────────────────────────────────────
   bom_create: { title: "Create BOM", annotations: RW },
@@ -104,10 +98,6 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
   search_mechanical_parts: { title: "Search Mechanical Parts", annotations: RO_NET },
   check_part_stock: { title: "Check Part Stock", annotations: RO_NET },
   bom_check_stock: { title: "Check BOM Stock", annotations: RO_NET },
-
-  // ── Live review window ─────────────────────────────────────────────────
-  share_session: { title: "Share Session", annotations: RW },
-  unshare_session: { title: "Unshare Session", annotations: RW },
 
   // ── Stdlib parts library (local) ───────────────────────────────────────
   search_parts: { title: "Search Stdlib Parts", annotations: RO },
@@ -136,6 +126,7 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
 
   // ── Loon one-shot + core see/measure/export ────────────────────────────
   create_cad_loon: { title: "Create CAD (Loon)", annotations: RW },
+  assemble: { title: "Assemble", annotations: RW },
   export_cad: { title: "Export CAD", annotations: RW },
   inspect_cad: { title: "Inspect CAD", annotations: RO },
   inspect_faces: {
@@ -224,7 +215,6 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
   import_altium_library: { title: "Import Altium Library", annotations: RO },
   import_eagle: { title: "Import EAGLE", annotations: RW },
   open_in_app: { title: "Open in vcad", annotations: RW },
-  open_in_browser: { title: "Open in vcad (legacy name)", annotations: RW },
 
   // ── Physics gym ────────────────────────────────────────────────────────
   create_robot_env: { title: "Create Robot Env", annotations: RW },

@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-10-window-drag-no-orbit",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "fix",
+  "title": "Dragging the window no longer orbits the camera",
+  "summary": "The Mac app's top row now moves the window across its full height and never feeds the viewport's orbit; drags in the viewport never move the window.",
+  "features": ["native", "mac", "window", "viewport"]
+}

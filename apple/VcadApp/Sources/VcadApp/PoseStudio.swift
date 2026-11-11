@@ -83,12 +83,19 @@ extension EditorModel {
     /// timeline fighting it for the transforms.
     var hasPoseStudio: Bool { assemblyInstanceCount > 0 && timeline == nil && documentGraph != nil }
 
+    /// The document has joints but its scene hasn't landed. A pose set now is
+    /// kept in `jointPose` (latest wins) and applied by `assemblyScene`.
+    var poseAwaitsScene: Bool {
+        assemblyInstanceCount == 0 && timeline == nil && documentGraph?.joints.isEmpty == false
+    }
+
     static func poseKey(_ j: DocJoint) -> String { j.name ?? j.id }
 
     func jointValue(_ j: DocJoint) -> Double { jointPose[Self.poseKey(j)] ?? j.state }
 
     func setJoint(_ j: DocJoint, _ value: Double) {
         jointPose[Self.poseKey(j)] = value
+        clearJointDrags(forPoseKeys: [Self.poseKey(j)])
         applyStudioPose()
     }
 
@@ -100,16 +107,43 @@ extension EditorModel {
     func resetPose() {
         jointPose = [:]
         explode = 0
+        assembly.dragValues = [:]
         applyStudioPose()
     }
 
     /// FK for the current joint values, then explode on top. Writes the same
     /// channel kinematic playback does.
     func applyStudioPose() {
-        guard let world = solveStudioFK() else { return }
+        guard let solved = solveStudioFK() else { return }
+        let world = movingFloatingBase(solved)
         instanceTransforms = explode > 0 ? explodedTransforms(world, t: Float(explode)) : world
         playbackDirty = true
         poseTick &+= 1
+    }
+
+    /// Carry everything hanging off a Free joint along with a simulated base.
+    private func movingFloatingBase(_ world: [float4x4]) -> [float4x4] {
+        let ids = assemblyInstanceIDs
+        guard let delta = agentBaseDelta, ids.count == world.count, let joints = documentGraph?.joints,
+              let free = joints.first(where: { $0.kind == "Free" }) else { return world }
+        var moving: Set<String> = [free.childInstanceId], grew = true
+        while grew {
+            grew = false
+            for j in joints where j.parentInstanceId.map(moving.contains) == true && !moving.contains(j.childInstanceId) {
+                moving.insert(j.childInstanceId); grew = true
+            }
+        }
+        return world.enumerated().map { moving.contains(ids[$0.offset]) ? delta * $0.element : $0.element }
+    }
+
+    /// Record a simulated base pose: [x, y, z] in metres then [w, x, y, z].
+    func setAgentBasePose(_ p: [Double], restart: Bool) {
+        guard p.count == 7 else { return }
+        let q = simd_quatf(ix: Float(p[4]), iy: Float(p[5]), iz: Float(p[6]), r: Float(p[3]))
+        var pose = simd_float4x4(q)
+        pose.columns.3 = SIMD4(Float(p[0] * 1000), Float(p[1] * 1000), Float(p[2] * 1000), 1)
+        if restart || agentBaseFirst == nil { agentBaseFirst = pose }
+        agentBaseDelta = pose * agentBaseFirst!.inverse
     }
 
     /// World transforms for the current joint values (authored pose when no

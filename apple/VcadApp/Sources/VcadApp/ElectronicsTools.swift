@@ -16,7 +16,7 @@ struct ECBox: @unchecked Sendable { let value: ECObject }
 /// `EditorModel.editElectronics`, so each is one undo step.
 @MainActor @Observable
 final class ElectronicsTools {
-    enum Sheet: String, Identifiable { case drc, length, stackup, simulate, enclosure; var id: String { rawValue } }
+    enum Sheet: String, Identifiable { case drc, erc, footprint, symbol, length, stackup, netClasses, simulate, enclosure; var id: String { rawValue } }
 
     var busy: String?
     var sheet: Sheet?
@@ -104,7 +104,9 @@ final class ElectronicsTools {
             adopt(board: r["pcb"], ec, model)
             drc = r["drc"] as? ECObject
             let unrouted = ecNumber(drc?["unrouted"])
-            status = "Autorouted · \(Int(unrouted)) open net(s) · \(Int(ecNumber(drc?["route_attributable"]))) route-attributable DRC"
+            let v = r["verdict"] as? ECObject
+            let routed = Int(ecNumber(v?["routed"])) + Int(ecNumber(r["finished"]))
+            status = "Routed \(routed) · \(Int(unrouted)) nets open · \(Int(ecNumber(drc?["route_attributable"]))) route DRC"
         }
     }
 
@@ -155,6 +157,14 @@ final class ElectronicsTools {
             tuneResult = ecRows((r["result"] as? ECObject)?["nets"])
             drc = r["drc"] as? ECObject
             status = (r["result"] as? ECObject)?["all_matched"] as? Bool == true ? "All selected nets matched" : "Some nets could not be matched — see Length Tuning"
+        }
+    }
+
+    func stitch(_ ec: ElectronicsWorkspace, _ model: EditorModel, _ net: String) {
+        guard let b = boardBox(ec, model) else { return }
+        run("Stitching") { ECBox(value: try PcbFFI.stitchZones(b.value, net: net, pitch: 5)) } then: { [self] r in
+            adopt(board: r["pcb"], ec, model)
+            status = r["reason"] as? String ?? "Added \(r["added"] as? Int ?? 0) stitching vias on \(net)"
         }
     }
 
@@ -217,6 +227,26 @@ final class ElectronicsTools {
     }
 
     // MARK: simulation
+
+    /// ERC findings with positions, kept for the sheet's markers.
+    var ercFindings: [ECObject] = []
+    func runErc(_ ec: ElectronicsWorkspace, _ model: EditorModel) {
+        let sheetJSON = ec.rootSchematic(model)
+        guard !sheetJSON.isEmpty else { error = "This document has no schematic."; return }
+        let s = ECBox(value: sheetJSON)
+        run("ERC") { ECBox(value: try PcbFFI.erc(s.value)) } then: { [self] r in
+            ercFindings = ecRows(r["violations"])
+            sheet = .erc
+        }
+    }
+
+    func routePair(_ ec: ElectronicsWorkspace, _ model: EditorModel, _ p: String, _ n: String) {
+        guard let b = boardBox(ec, model) else { return }
+        run("Route pair") { ECBox(value: try PcbFFI.routeDiffPair(b.value, p: p, n: n)) } then: { [self] r in
+            adopt(board: r["pcb"], ec, model)
+            status = (r["routed"] as? Bool) == true ? "Routed pair \(p) / \(n)\((r["coupled"] as? Bool) == true ? " coupled" : ", each leg separately")" : (r["reason"] as? String ?? "Pair not routed")
+        }
+    }
 
     func simulate(_ ec: ElectronicsWorkspace, _ model: EditorModel) {
         let sheetJSON = ec.schematic(model)

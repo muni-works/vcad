@@ -9,11 +9,81 @@ import { toVCode } from "@vcad/ir";
 import type { Document } from "@vcad/ir";
 import { appendIntegrity, computeIntegrity } from "./integrity.js";
 import { hydrateMacros, macroPrelude, type InlineLoon } from "./loon-macros.js";
+import { getPcbNodeIds } from "@vcad/core";
+import { carryElectronics } from "./carry-electronics.js";
 import { documents, getSession, recordTriangles } from "./session-core.js";
 import { assetNote, resolveLoonAssets } from "./loon-assets.js";
 import { isRemoteDeployment } from "./remote.js";
 import { behavior, type ToolDef } from "./tool-def.js";
 import type { ToolResult } from "./tool-result.js";
+
+type EcadDoc = Document & { pcb?: unknown; __pendingDesignRules?: unknown };
+
+export { carryElectronics };
+
+/** Every field of a CsgOp that holds a node id (mirrors `CsgOp::child_ids`). */
+const CHILD_FIELDS = ["child", "left", "right", "sketch", "parent"] as const;
+const CHILD_LIST_FIELDS = ["sketches", "children"] as const;
+
+/**
+ * Append a freshly evaluated loon document to a session without touching what
+ * is there: nodes move to fresh ids, roots and assembly records are added, and
+ * nothing is overwritten. Throws, before anything is written, on a board, a
+ * schematic, or an id that already exists. Returns a note for the caller.
+ */
+export function addLoonToSession(session: Document, loonDoc: Document): string {
+  const add = loonDoc as EcadDoc;
+  if (getPcbNodeIds(loonDoc).length || add.pcb || add.schematic) {
+    throw new Error(
+      "create_cad_loon: mode \"add\" adds mechanical parts; this program defines a board or schematic. Nothing was changed.",
+    );
+  }
+  const clash = (what: string, ids: string[], held: Iterable<string>) => {
+    const taken = new Set(held);
+    const hit = ids.filter((id) => taken.has(id));
+    if (hit.length) {
+      throw new Error(
+        `create_cad_loon: mode "add" would overwrite ${what} ${hit.join(", ")}. Rename them in the program. Nothing was changed.`,
+      );
+    }
+  };
+  clash("part definition(s)", Object.keys(loonDoc.partDefs ?? {}), Object.keys(session.partDefs ?? {}));
+  clash("instance(s)", (loonDoc.instances ?? []).map((i) => i.id), (session.instances ?? []).map((i) => i.id));
+  clash("joint(s)", (loonDoc.joints ?? []).map((j) => j.id), (session.joints ?? []).map((j) => j.id));
+  clash("parameter(s)", Object.keys(loonDoc.parameters ?? {}), Object.keys(session.parameters ?? {}));
+
+  const offset = Math.max(-1, ...Object.keys(session.nodes).map(Number)) + 1;
+  for (const [key, node] of Object.entries(loonDoc.nodes)) {
+    const id = Number(key) + offset;
+    const op = { ...node.op } as unknown as Record<string, unknown>;
+    for (const f of CHILD_FIELDS) if (typeof op[f] === "number") op[f] = (op[f] as number) + offset;
+    for (const f of CHILD_LIST_FIELDS) {
+      if (Array.isArray(op[f])) op[f] = (op[f] as number[]).map((c) => c + offset);
+    }
+    session.nodes[String(id)] = { ...node, id, op: op as unknown as typeof node.op };
+  }
+  session.roots.push(...loonDoc.roots.map((r) => ({ ...r, root: r.root + offset })));
+  for (const [key, mat] of Object.entries(loonDoc.materials)) session.materials[key] ??= mat;
+  for (const [key, pd] of Object.entries(loonDoc.partDefs ?? {})) {
+    (session.partDefs ??= {})[key] = {
+      ...pd,
+      root: pd.root + offset,
+      ...(pd.colliders ? { colliders: pd.colliders.map((c) => c + offset) } : {}),
+    };
+  }
+  if (loonDoc.instances?.length) (session.instances ??= []).push(...loonDoc.instances);
+  if (loonDoc.joints?.length) (session.joints ??= []).push(...loonDoc.joints);
+  if (!session.groundInstanceId && loonDoc.groundInstanceId) {
+    session.groundInstanceId = loonDoc.groundInstanceId;
+  }
+  if (loonDoc.parameters) session.parameters = { ...session.parameters, ...loonDoc.parameters };
+  for (const [key, expr] of Object.entries(loonDoc.bindings ?? {})) {
+    const at = key.indexOf(":");
+    session.bindings = { ...session.bindings, [`${Number(key.slice(0, at)) + offset}:${key.slice(at + 1)}`]: expr };
+  }
+  const parts = loonDoc.roots.length + Object.keys(loonDoc.partDefs ?? {}).length;
+  return `Added ${parts} part(s) to the document; nothing already there changed.`;
+}
 
 /** JSON Schema for create_cad_loon input. */
 export const createCadLoonSchema = {
@@ -29,6 +99,15 @@ export const createCadLoonSchema = {
     source: {
       type: "string" as const,
       description: "Loon source code defining CAD geometry",
+    },
+    mode: {
+      type: "string" as const,
+      enum: ["replace", "add"],
+      description:
+        "With document_id: `replace` (default) rebuilds the document's mechanical geometry from " +
+        "this program, keeping any board and schematic. `add` keeps everything and appends this " +
+        "program's parts, part defs, instances, joints and parameters; an id that already exists " +
+        "fails the call with nothing changed. To joint new instances to existing ones, use `assemble`.",
     },
     use_loons: {
       type: "array" as const,
@@ -212,9 +291,61 @@ function missingModules(source: string, modules: Record<string, string>): string
   return [...new Set(all)].filter((n) => !(n in modules));
 }
 
+/** Whether any `[root ...]` form has a single argument. */
+function hasRootWithoutMaterial(source: string): boolean {
+  const stack: Array<{ head: string; args: number; inAtom: boolean; words: number }> = [];
+  const endAtom = () => {
+    const top = stack.at(-1);
+    if (top) top.inAtom = false;
+  };
+  const addChild = () => {
+    const top = stack.at(-1);
+    if (top && ++top.words > 1) top.args++;
+  };
+  for (let i = 0; i < source.length; i++) {
+    const c = source[i]!;
+    if (c === ";") {
+      while (i < source.length && source[i] !== "\n") i++;
+      endAtom();
+    } else if (c === '"') {
+      for (i++; i < source.length && source[i] !== '"'; i++) if (source[i] === "\\") i++;
+      endAtom();
+      addChild();
+    } else if (c === "[" || c === "(") {
+      endAtom();
+      addChild();
+      stack.push({ head: "", args: 0, inAtom: false, words: 0 });
+    } else if (c === "]" || c === ")") {
+      const done = stack.pop();
+      if (done?.head === "root" && done.args === 1) return true;
+    } else if (/\s/.test(c)) {
+      endAtom();
+    } else {
+      const top = stack.at(-1);
+      if (!top) continue;
+      if (!top.inAtom) addChild();
+      top.inAtom = true;
+      if (top.words === 1) top.head += c;
+    }
+  }
+  return false;
+}
+
 /** Rewrite a kernel module-read failure into what the caller should do. */
-function explainEvalError(e: unknown, input: CreateLoonInput, missing: string[]): Error {
+function explainEvalError(
+  e: unknown,
+  input: CreateLoonInput,
+  missing: string[],
+  source: string,
+): Error {
   const msg = e instanceof Error ? e.message : String(e);
+  if (/runtime error/.test(msg) && hasRootWithoutMaterial(source)) {
+    return new Error(
+      `${msg}\n[root <solid> "<material>"] takes a solid and a material name, and this ` +
+        `program has a root with only the solid. Add a material, ` +
+        `e.g. [root [cube 20 20 20] "default"].`,
+    );
+  }
   if (!missing.length || !/cannot read module|not supported on this platform/.test(msg)) {
     return e instanceof Error ? e : new Error(msg);
   }
@@ -256,7 +387,7 @@ export function evalCadLoon(
     // on a macro registry a restart may have emptied) plus its modules.
     doc = engine.evalLoonDocument(source, modules, { baseDir: base_dir });
   } catch (e) {
-    throw explainEvalError(e, parsed, missingModules(source, modules));
+    throw explainEvalError(e, parsed, missingModules(source, modules), source);
   }
   if (!doc) {
     // Distinguish "no loon at all" from "loon, but a kernel too old to
@@ -421,14 +552,26 @@ export const toolDefs: ToolDef[] = [
       // via getSession so an unknown id fails loudly, not silently forks.
       const targetId =
         typeof args.document_id === "string" ? args.document_id : null;
-      if (targetId) getSession(targetId); // unknown id fails loudly
+      const adding = args.mode === "add";
+      if (adding && !targetId) throw new Error('create_cad_loon: mode "add" requires document_id');
+      if (targetId) {
+        const session = getSession(targetId); // unknown id fails loudly
+        // Outside the best-effort block below: a conflict must fail the call
+        // with the session untouched.
+        if (adding && doc) {
+          result.content.push({ type: "text", text: addLoonToSession(session, doc) });
+        } else {
+          const kept = doc ? carryElectronics(session, doc) : null;
+          if (kept) result.content.push({ type: "text", text: kept });
+        }
+      }
       // Attach the integrity certificate to the largest mutation of all:
       // authoring a whole document. The loon evaluation is cheap relative to
       // the mesh evaluation computeIntegrity runs anyway.
       try {
         if (doc) {
-          if (targetId) documents.set(targetId, doc);
-          const integrity = computeIntegrity(doc, ctx.engine);
+          if (targetId && !adding) documents.set(targetId, doc);
+          const integrity = computeIntegrity(adding ? getSession(targetId!) : doc, ctx.engine);
           if (integrity) {
             appendIntegrity(result, integrity);
             if (targetId) recordTriangles(targetId, integrity.triangles);

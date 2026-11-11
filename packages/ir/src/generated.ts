@@ -599,7 +599,7 @@ export type ClaimValue = number | boolean | string;
  * claim (missing inputs, engine unavailable, capped coverage). It is never
  * a pass and never silently dropped.
  */
-export type ClaimVerdict = "pass" | "fail" | "unverifiable";
+export type ClaimVerdict = "pass" | "provisional" | "fail" | "unverifiable";
 
 /**
  * A named clearance assertion between two part groups, with its measured
@@ -988,7 +988,31 @@ radius: number,
 /**
  * Extrusion height along +Z.
  */
-height: number, } | { "type": "Empty" } | { "type": "Union", 
+height: number, } | { "type": "SpurGear", 
+/**
+ * Module, mm (pitch diameter = module × teeth).
+ */
+module: number, 
+/**
+ * Tooth count (>= 4).
+ */
+teeth: number, 
+/**
+ * Pressure angle, degrees (20 is the ISO standard).
+ */
+pressure_angle_deg: number, 
+/**
+ * Face width (extrusion along +Z), mm.
+ */
+face_width: number, 
+/**
+ * Bore diameter, mm (0 = solid).
+ */
+bore_diameter: number, 
+/**
+ * Circumferential tooth thinning at the pitch circle, mm (0 = none).
+ */
+backlash: number, } | { "type": "Empty" } | { "type": "Union", 
 /**
  * Left operand.
  */
@@ -1535,6 +1559,23 @@ direction: [Expr, Expr, Expr], } | { "kind": "point",
  * The point's position.
  */
 position: [Expr, Expr, Expr], };
+
+/**
+ * One feature a delete removed.
+ */
+export type DeletedFeature = { 
+/**
+ * Stable id.
+ */
+id: string, 
+/**
+ * Feature name, when it had one.
+ */
+name?: string, 
+/**
+ * Feature kind (`cube`, `boolean`, ...).
+ */
+kind: string, };
 
 /**
  * IPC-7351 producibility level, controlling fillet (toe/heel/side) goals and
@@ -2414,6 +2455,134 @@ rotateNodeId: number,
 /**
  * Translation transform node.
  */
+translateNodeId: number, } | { "kind": "torus", 
+/**
+ * Part identifier.
+ */
+id: string, 
+/**
+ * Human-readable name.
+ */
+name: string, 
+/**
+ * The primitive IR node.
+ */
+primitiveNodeId: number, 
+/**
+ * Scale transform node.
+ */
+scaleNodeId: number, 
+/**
+ * Rotation transform node.
+ */
+rotateNodeId: number, 
+/**
+ * Translation transform node.
+ */
+translateNodeId: number, } | { "kind": "wedge", 
+/**
+ * Part identifier.
+ */
+id: string, 
+/**
+ * Human-readable name.
+ */
+name: string, 
+/**
+ * The primitive IR node.
+ */
+primitiveNodeId: number, 
+/**
+ * Scale transform node.
+ */
+scaleNodeId: number, 
+/**
+ * Rotation transform node.
+ */
+rotateNodeId: number, 
+/**
+ * Translation transform node.
+ */
+translateNodeId: number, } | { "kind": "prism", 
+/**
+ * Part identifier.
+ */
+id: string, 
+/**
+ * Human-readable name.
+ */
+name: string, 
+/**
+ * The primitive IR node.
+ */
+primitiveNodeId: number, 
+/**
+ * Scale transform node.
+ */
+scaleNodeId: number, 
+/**
+ * Rotation transform node.
+ */
+rotateNodeId: number, 
+/**
+ * Translation transform node.
+ */
+translateNodeId: number, } | { "kind": "hull", 
+/**
+ * Part identifier.
+ */
+id: string, 
+/**
+ * Human-readable name.
+ */
+name: string, 
+/**
+ * The hull IR node.
+ */
+hullNodeId: number, 
+/**
+ * Scale transform node.
+ */
+scaleNodeId: number, 
+/**
+ * Rotation transform node.
+ */
+rotateNodeId: number, 
+/**
+ * Translation transform node.
+ */
+translateNodeId: number, 
+/**
+ * Source part IDs.
+ */
+sourcePartIds: Array<string>, } | { "kind": "sweep-rotate", 
+/**
+ * Part identifier.
+ */
+id: string, 
+/**
+ * Human-readable name.
+ */
+name: string, 
+/**
+ * Source part ID.
+ */
+sourcePartId: string, 
+/**
+ * The sweep IR node.
+ */
+sweepNodeId: number, 
+/**
+ * Scale transform node.
+ */
+scaleNodeId: number, 
+/**
+ * Rotation transform node.
+ */
+rotateNodeId: number, 
+/**
+ * Translation transform node.
+ */
 translateNodeId: number, } | { "kind": "boolean", 
 /**
  * Part identifier.
@@ -2915,7 +3084,11 @@ warnings: Array<string>,
 /**
  * Stable id of the feature the command created, if any.
  */
-createdFeatureId?: string, };
+createdFeatureId?: string, 
+/**
+ * What a delete removed, the requested feature and any inputs only it used.
+ */
+deleted: Array<DeletedFeature>, };
 
 /**
  * Environment lighting configuration.
@@ -3030,7 +3203,79 @@ height: number,
 /**
  * Tessellation segments.
  */
-segments?: number, } | { "type": "Boolean", 
+segments?: number, } | { "type": "Torus", 
+/**
+ * Distance from the axis to the tube centre.
+ */
+major_radius: number, 
+/**
+ * Tube radius.
+ */
+minor_radius: number, 
+/**
+ * Tessellation segments.
+ */
+segments?: number, } | { "type": "Wedge", 
+/**
+ * Width (X).
+ */
+size_x: number, 
+/**
+ * Depth (Y).
+ */
+size_y: number, 
+/**
+ * Height (Z).
+ */
+size_z: number, } | { "type": "Prism", 
+/**
+ * Number of sides (3 or more).
+ */
+sides: number, 
+/**
+ * Circumscribed radius.
+ */
+radius: number, 
+/**
+ * Height along Z.
+ */
+height: number, } | { "type": "Hull", 
+/**
+ * Feature IDs of the parts to hull (consumed).
+ */
+inputs: Array<string>, 
+/**
+ * Extra points, flat `[x, y, z, ...]` (mm).
+ */
+points: Array<number>, } | { "type": "SweepRotate", 
+/**
+ * Input feature ID (consumed).
+ */
+input: string, 
+/**
+ * A point on the rotation axis.
+ */
+axis_origin: [number, number, number], 
+/**
+ * Rotation axis direction.
+ */
+axis_dir: [number, number, number], 
+/**
+ * Start angle, degrees.
+ */
+angle_lo_deg: number, 
+/**
+ * End angle, degrees.
+ */
+angle_hi_deg: number, 
+/**
+ * Angular step, degrees (the kernel picks one when absent).
+ */
+step_deg?: number, 
+/**
+ * Clearance added around the swept solid, mm.
+ */
+clearance?: number, } | { "type": "Boolean", 
 /**
  * Union, difference, or intersection.
  */
@@ -5040,6 +5285,10 @@ total: number,
  */
 passed: number, 
 /**
+ * Claims that hold only on a predicted basis — never counted as passed.
+ */
+provisional: number, 
+/**
  * Claims that failed.
  */
 failed: number, 
@@ -5053,8 +5302,10 @@ unverifiable: number,
 predicted_basis: number, 
 /**
  * Fail-closed rollup: `Fail` if anything failed, else `Unverifiable`
- * if anything (or everything — zero claims) is unverified, else `Pass`.
- * Basis-blind; see [`ReceiptSummary::verdict`] for the basis-aware view.
+ * if anything (or everything — zero claims) is unverified, else
+ * `Provisional` if any claim is, else `Pass`. See
+ * [`ReceiptSummary::verdict`] for the rollup that also covers receipts
+ * saved before `Provisional` existed.
  */
 overall: ClaimVerdict, 
 /**

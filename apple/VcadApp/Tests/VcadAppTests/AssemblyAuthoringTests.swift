@@ -247,6 +247,26 @@ final class AssemblyAuthoringTests: XCTestCase {
         XCTAssertEqual(m.asmMates.count, 1)
     }
 
+    func testAnAgentPoseSupersedesALeftoverDrag() throws {
+        let m = EditorModel()
+        let doc: [String: Any] = [
+            "version": "0.1", "materials": [String: Any](), "part_materials": [String: Any](),
+            "roots": [[String: Any]](),
+            "nodes": ["1": ["id": 1, "op": ["type": "Cube", "size": ["x": 1, "y": 1, "z": 1]]]],
+            "partDefs": ["p": ["id": "p", "root": 1]],
+            "instances": [["id": "i", "partDefId": "p"]],
+            "joints": [["id": "j1", "name": "hip", "parentInstanceId": NSNull(), "childInstanceId": "i",
+                        "parentAnchor": ["x": 0, "y": 0, "z": 0], "childAnchor": ["x": 0, "y": 0, "z": 0],
+                        "kind": ["type": "Revolute", "axis": ["x": 0, "y": 1, "z": 0]], "state": 0]],
+        ]
+        m.documentJSON = doc
+        m.assembly.dragValues["j1"] = -18.5
+        m.jointPose["hip"] = -30
+        XCTAssertEqual(m.currentJointValues()["j1"], -18.5, "fixture: a drag outranks the pose")
+        m.clearJointDrags(forPoseKeys: ["hip"])
+        XCTAssertEqual(m.currentJointValues()["j1"], -30)
+    }
+
     func testTimelineNormalizeIsTheKernelCanonicalForm() {
         let tl: [String: Any] = [
             "durationS": 1.0, "fps": 24.0,

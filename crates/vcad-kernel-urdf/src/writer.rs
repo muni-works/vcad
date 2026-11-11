@@ -302,6 +302,24 @@ impl<'a> UrdfWriter<'a> {
                 };
                 Ok((geometry, None))
             }
+            CsgOp::SpurGear {
+                module,
+                teeth,
+                face_width,
+                ..
+            } => {
+                // URDF has no gear; approximate as its pitch cylinder.
+                let geometry = Geometry {
+                    box_geom: None,
+                    cylinder: Some(CylinderGeom {
+                        radius: module * *teeth as f64 / 2.0 / 1000.0,
+                        length: face_width / 1000.0,
+                    }),
+                    sphere: None,
+                    mesh: None,
+                };
+                Ok((geometry, None))
+            }
             CsgOp::Translate { child, offset } => {
                 let (geometry, _) = self.node_to_geometry(*child)?;
                 let origin = Some(Origin {

@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-08-mcp-agent-run-fixes",
+  "version": "0.11.0",
+  "date": "2026-11-08",
+  "category": "fix",
+  "title": "MCP: boards survive loon, tools see assembly parts",
+  "summary": "create_cad_loon keeps a session's board and schematic; document tools find assembly parts; set_parameters rebuilds from loon; export_gerber only reports success for files on disk.",
+  "features": ["mcp", "assembly", "pcb", "parameters"],
+  "mcpTools": ["create_cad_loon", "board_from_solid", "check_enclosure_fit", "analyze_structure", "read", "set_parameters", "load_document", "create_robot_env", "create_schematic", "export_gerber", "verify_receipt"]
+}

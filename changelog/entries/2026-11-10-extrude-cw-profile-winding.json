@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-10-extrude-cw-profile-winding",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "fix",
+  "title": "Clockwise sketch profiles no longer extrude inside out",
+  "summary": "Extruding a clockwise-drawn profile (e.g. a rectangle dragged top-left to bottom-right) produced an inside-out solid that culled faces and broke Shell. Profiles are now normalized.",
+  "features": ["extrude", "sketch", "shell"]
+}

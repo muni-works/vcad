@@ -18,7 +18,7 @@ extension EditorModel {
         let hasPart = selectedPartIndex != nil || picking.selectionPart != nil
         for shape in BaseShape.allCases {
             out.append(.init(id: "add.\(shape.rawValue)", title: "Add \(shape.label)", symbol: shape.symbol,
-                             enabled: doc) { [weak self] in self?.addPrimitive(shape) })
+                             enabled: doc) { [weak self] in self?.arm(shape) })
         }
         for op in FeatureOp.allCases {
             out.append(.init(id: "op.\(op.rawValue)", title: op.label + "…", symbol: op.symbol,
@@ -32,9 +32,19 @@ extension EditorModel {
                 self?.sketchFinish = f; self?.enterSketch()
             })
         }
+        // Assembly and Fab verbs, so the palette reaches past Design.
+        for space in [DockSpace.assembly, .fab] {
+            for t in DockTools.tools(space, model: self) {
+                out.append(.init(id: "tool.\(t.id)", title: "\(space.label): \(t.label)", symbol: t.symbol, enabled: t.enabled) { [weak self] in
+                    guard let self else { return }
+                    GlassUI.shared.enter(space, model: self)
+                    t.action()
+                })
+            }
+        }
         for b in BooleanOp.allCases {
             out.append(.init(id: "bool.\(b.rawValue)", title: b.label, symbol: b.symbol,
-                             enabled: multiSelectedParts.count == 2) { [weak self] in self?.combineSelected(b) })
+                             enabled: multiSelectedParts.count == 2 || selectedPartIndex != nil) { [weak self] in self?.beginCombine(b) })
         }
         for f in PickFilter.allCases {
             out.append(.init(id: "pick.\(f.rawValue)", title: "Select \(f.label)", symbol: "cursorarrow.rays") { [weak self] in

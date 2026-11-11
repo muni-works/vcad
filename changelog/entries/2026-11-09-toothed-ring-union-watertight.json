@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-09-toothed-ring-union-watertight",
+  "version": "0.11.0",
+  "date": "2026-11-09",
+  "category": "fix",
+  "title": "Toothed ring unions export watertight",
+  "summary": "Unioning flat-walled teeth into a curved ring no longer leaves open mesh edges on the ring's outer rim.",
+  "features": ["booleans", "kernel"]
+}

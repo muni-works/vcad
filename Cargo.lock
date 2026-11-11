@@ -4594,6 +4594,7 @@ dependencies = [
  "vcad-kernel-tessellate",
  "vcad-kernel-text",
  "vcad-loon",
+ "web-time",
 ]
 
 [[package]]

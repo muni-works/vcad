@@ -22,14 +22,38 @@ final class KeyableWindow: NSWindow, NSWindowDelegate {
 
     func alignTitlebarButtons() {
         guard styleMask.contains(.titled), !styleMask.contains(.fullScreen) else { return }
+        // The row's height comes from an empty unified toolbar (see
+        // `installTitlebarToolbar`), never from resizing AppKit's titlebar
+        // container by hand: a container stretched behind AppKit's back left
+        // the whole top row click-through — a press there activated the app
+        // behind the window. Inside the native, taller titlebar the buttons
+        // only need nudging onto the row's center; they no longer clip.
         for type in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
             guard let button = standardWindowButton(type), let container = button.superview else { continue }
-            let center = container.convert(NSPoint(x: 0, y: frame.height - 26), from: nil)
-            button.setFrameOrigin(NSPoint(x: button.frame.minX, y: center.y - button.frame.height / 2))
+            let center = container.convert(NSPoint(x: 0, y: frame.height - Glass.toolbarCenter), from: nil)
+            let y = (center.y - button.frame.height / 2).rounded()
+            guard y >= 0, y + button.frame.height <= container.bounds.height else { continue }
+            if button.frame.minY != y { button.setFrameOrigin(NSPoint(x: button.frame.minX, y: y)) }
         }
     }
+
+    /// An empty unified toolbar: AppKit then lays out a titlebar tall enough
+    /// for the toolbar row itself, and owns its hit region, drag and
+    /// double-click behavior.
+    func installTitlebarToolbar() {
+        if toolbar == nil {
+            let bar = NSToolbar(identifier: "vcad.titlebar")
+            bar.showsBaselineSeparator = false
+            bar.allowsUserCustomization = false
+            toolbar = bar
+        }
+        toolbarStyle = .unified
+    }
+
     func windowDidResize(_ notification: Notification) { alignTitlebarButtons() }
     func windowDidBecomeKey(_ notification: Notification) { alignTitlebarButtons() }
+    /// AppKit lays the titlebar out again on its own schedule.
+    func windowDidUpdate(_ notification: Notification) { alignTitlebarButtons() }
     func windowDidExitFullScreen(_ notification: Notification) { alignTitlebarButtons() }
     /// The red button and ⌘W both go through the unsaved-changes check.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -184,6 +208,7 @@ final class ReleaseWindowController {
         w.styleMask = windowed ? [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView] : [.borderless]
         w.titlebarAppearsTransparent = windowed
         w.titleVisibility = .hidden
+        if windowed { (w as? KeyableWindow)?.installTitlebarToolbar() } else { w.toolbar = nil }
         updateDocumentWindow()
         w.isOpaque = windowed
         w.backgroundColor = windowed ? .windowBackgroundColor : .clear
@@ -211,6 +236,10 @@ final class ReleaseWindowController {
     }
 
     func updateDocumentWindow() {
+        defer {
+            // Changing the title or edited state makes AppKit lay the titlebar out again.
+            DispatchQueue.main.async { [weak self] in (self?.window as? KeyableWindow)?.alignTitlebarButtons() }
+        }
         guard let window, let model else { return }
         window.title = model.source.label
         window.isDocumentEdited = model.documentDirty
@@ -363,6 +392,7 @@ final class ReleaseWindowController {
     private func dolly(by dy: Float) -> Bool {
         guard pointerOverScene, dy != 0, let m = model else { return false }
         m.stopSpin()
+        m.cameraUserMoved = true
         m.distance = max(0.45, min(8.0, m.distance * (1 - dy)))
         m.pinchBaseline = m.distance
         return true
@@ -502,6 +532,9 @@ final class ReleaseWindowController {
     private func paint(entity name: String, lift: Lift) {
         guard let e = centeringEntity?.findEntity(named: name) as? ModelEntity,
               var m = e.model?.materials.first as? PhysicallyBasedMaterial else { return }
+        // Hover can repaint from the global mouse monitor, with no local event
+        // or SwiftUI update to wake the viewport.
+        RenderGate.wake()
         switch lift {
         case .hover where isSelected(name):
             m.emissiveColor = .init(color: NSColor(red: 1.0, green: 0.68, blue: 0.24, alpha: 1))
@@ -580,6 +613,7 @@ final class ReleaseWindowController {
               let e = centeringEntity?.findEntity(named: name) else { return }
         let b = e.visualBounds(relativeTo: nil)
         model.stopSpin()
+        if name != "cncRoot" { model.cameraUserMoved = true }
         withAnimation(.smooth(duration: 0.35)) {
             model.panOffset = b.center
             let extent = max(b.extents.x, max(b.extents.y, b.extents.z))
@@ -738,7 +772,7 @@ struct ReleasedOverlayView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .overlay(alignment: .top) {
-            // Command panel, palette and toasts hang beneath the dock.
+            // Command panel, palette and toasts hang beneath the status field.
             VStack(spacing: Theme.Space.s) {
                 ToastHost()
                 CommandPanelHost(model: model)
@@ -757,13 +791,16 @@ struct ReleasedOverlayView: View {
             }
         }
         .animation(Motion.smooth, value: GlassUI.shared.shortcutsShown)
-        .overlay(alignment: .top) {
-            // History drops down from the dock, in every workspace.
+        .overlay(alignment: .bottom) {
+            if model.workspace != .manufacture { DockHost(model: model) }
+        }
+        .overlay(alignment: .bottom) {
+            // History rises from the dock, in every workspace.
             if GlassUI.shared.historyOpen && model.usesDocumentTree && model.workspace != .manufacture {
                 HistoryFilmstrip(model: model)
                     .modifier(ChromeRegion(key: "history"))
-                    .padding(.top, chromeTop)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .padding(.bottom, Glass.dockClearance)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         .animation(Motion.smooth, value: GlassUI.shared.historyOpen)
@@ -777,6 +814,9 @@ struct ReleasedOverlayView: View {
     @ViewBuilder private var toolbar: some View {
         if model.isWindowed {
             GlassToolbar(model: model)
+                // The row's empty space moves the window and never reaches
+                // the viewport's orbit layer beneath (see WindowDragRegion).
+                .background { WindowDragArea() }
                 .background(fullBleed ? AnyShapeStyle(.clear) : AnyShapeStyle(.bar))
                 .modifier(ChromeRegion(key: "workspaceHeader"))
         } else {
@@ -810,8 +850,10 @@ struct ReleasedOverlayView: View {
                 .simultaneousGesture(zoomGesture)
                 .gesture(SpatialTapGesture(coordinateSpace: .local).modifiers(.command)
                     .onEnded { value in
-                        if model.sketching, let pt = sketchPlanePoint(at: value.location) {
-                            model.sketchTap(pt, additive: true); refreshSketchInk()
+                        if model.sketching, let ray = kernelRay(at: value.location) {
+                            model.sketchTap(ray: ray, neighbour: kernelRay(at: CGPoint(x: value.location.x + 1, y: value.location.y)),
+                                            additive: true)
+                            refreshSketchInk()
                         } else { tapSelect(at: value.location, additive: true) }
                     })
                 .gesture(SpatialTapGesture(coordinateSpace: .local)
@@ -962,24 +1004,13 @@ struct ReleasedOverlayView: View {
             // A loon program that failed to compile: where, and a jump there.
             if let d = model.loonDiagnostic {
                 LoonDiagnosticBanner(diagnostic: d, keptLastGood: model.usesDocumentTree)
-                    .padding(.bottom, Theme.Space.l)
+                    .padding(.bottom, studio ? Theme.Space.l : Glass.dockClearance)
                     .transition(.opacity)
                     .modifier(ChromeRegion(key: "loonDiagnostic"))
             }
         }
         .overlay(alignment: .top) {
-            if model.solving {
-                HStack(spacing: Theme.Space.s) {
-                    ProgressView().controlSize(.small)
-                    Text(model.solveProgress.total > 1
-                         ? "Solving \(model.documentName)… \(model.solveProgress.done) of \(model.solveProgress.total)"
-                         : "Solving \(model.documentName)…").font(.callout).monospacedDigit()
-                }
-                .padding(.horizontal, 14).padding(.vertical, 8).pillSurface()
-                .padding(.top, chromeTop)
-                .transition(.opacity)
-                .accessibilityLabel("Solving \(model.documentName)")
-            } else if let p = model.pendingBoolean {
+            if let p = model.pendingBoolean {
                 HStack(spacing: Theme.Space.s) {
                     Image(systemName: p.op.symbol)
                     Text(p.op == .union ? "Click the part to join"
@@ -1022,15 +1053,11 @@ struct ReleasedOverlayView: View {
             // kinematic transport when a timeline is loaded.
             VStack(spacing: 10) {
                 if model.sketching {
-                    SketchHintBar(model: model)
-                        .modifier(ChromeRegion(key: "sketchHint"))
-                    SketchPaletteView(model: model)
-                        .modifier(ChromeRegion(key: "sketchPalette"))
-                        .background {
-                            // Return finishes a multi-click tool (spline).
-                            Button("") { model.sketch?.commitPending(); model.sketchDirty = true; refreshSketchInk(force: true) }
-                                .keyboardShortcut(.return, modifiers: []).opacity(0).frame(width: 0, height: 0)
-                        }
+                    // The sketch bar is the dock now (DockHost); this keeps
+                    // Return finishing a multi-click tool (spline).
+                    Button("") { model.sketch?.commitPending(); model.sketchDirty = true; refreshSketchInk(force: true) }
+                        .keyboardShortcut(.return, modifiers: []).opacity(0).frame(width: 0, height: 0)
+                        .accessibilityHidden(true)
                 } else {
                     if model.assembly.showsTimeline && model.assemblyInstanceCount > 0 {
                         TimelineEditor(model: model)
@@ -1047,7 +1074,7 @@ struct ReleasedOverlayView: View {
                         AgentPanel(session: AgentSession.shared, model: model)
                             .modifier(ChromeRegion(key: "agentPanel"))
                     }
-                    if let s = GlassUI.shared.suggestion {
+                    if let s = GlassUI.shared.suggestion, !GlassUI.shared.historyOpen {
                         AgentSuggestionPill(model: model, suggestion: s)
                             .id(s.id)
                             .modifier(ChromeRegion(key: "suggestion"))
@@ -1055,7 +1082,7 @@ struct ReleasedOverlayView: View {
                     }
                 }
             }
-            .padding(.bottom, Glass.inset + 6)
+            .padding(.bottom, Glass.dockClearance)
             .animation(Motion.smooth, value: GlassUI.shared.historyOpen)
             .animation(Motion.smooth, value: GlassUI.shared.suggestion)
             .animation(Motion.smooth, value: model.timeline == nil)
@@ -1100,7 +1127,9 @@ struct ReleasedOverlayView: View {
         .onChange(of: model.sketchDirty) { _, dirty in
             if dirty { refreshSketchInk() }
         }
+        .onChange(of: showsSketchGrid) { _, _ in refreshSketchInk(force: true) }
     }
+    @AppStorage(Prefs.sketchGridKey) private var showsSketchGrid = true
 
     /// Top-left origin for the floating Object Inspector: just right of the
     /// selected part's projected center, clamped inside the overlay. With no
@@ -1128,8 +1157,20 @@ struct ReleasedOverlayView: View {
     }
 
     private func sketchTap(at p: CGPoint) {
-        guard let pt = sketchPlanePoint(at: p) else { return }
-        model.sketchTap(pt)
+        // The first click of an untouched sketch picks its plane: a planar
+        // face under the pointer beats the default plane.
+        if model.sketchAwaitsPlane {
+            let filter = model.picking.filter
+            model.picking.filter = .face
+            model.picking.select(hit: topologyHit(at: p), additive: false)
+            // Adopt before restoring: going back to a body filter clears the pick.
+            let adopted = model.adoptPickedFaceAsSketchPlane()
+            model.picking.filter = filter
+            if adopted { refreshSketchInk(); return }
+        }
+        // The ray one point over sets the pick scale (mm per screen point).
+        guard let ray = kernelRay(at: p) else { return }
+        model.sketchTap(ray: ray, neighbour: kernelRay(at: CGPoint(x: p.x + 1, y: p.y)))
         refreshSketchInk()
     }
 
@@ -1140,6 +1181,7 @@ struct ReleasedOverlayView: View {
         guard let centering = ReleaseWindowController.shared.centeringEntity else { return }
         centering.findEntity(named: "sketchRoot")?.removeFromParent()
         if model.sketching { centering.addChild(buildSketchRoot(model: model)) }
+        syncSketchGrid(model, in: centering)
         model.sketchDirty = false
     }
 
@@ -1328,15 +1370,40 @@ struct ReleasedOverlayView: View {
     /// there is one, else on the ground plane (kernel z = 0). Falls back to the
     /// origin when the ray misses everything (a camera looking at the horizon).
     private func placementPoint(at p: CGPoint) -> SIMD3<Float>? {
-        if let centering = ReleaseWindowController.shared.centeringEntity,
-           let hit = ReleaseWindowController.shared.hits(atViewPoint: p)
-               .first(where: { $0.entity.name.hasPrefix("part") }) {
+        let ctl = ReleaseWindowController.shared
+        guard let centering = ctl.centeringEntity else { return nil }
+        if let hit = ctl.hits(atViewPoint: p).first(where: { $0.entity.name.hasPrefix("part") }) {
             return centering.convert(position: hit.position, from: nil)
         }
-        guard let ray = kernelRay(at: p), abs(ray.d.z) > 1e-5 else { return nil }
-        let t = -ray.o.z / ray.d.z
-        guard t > 0 else { return nil }
-        return ray.o + ray.d * t
+        // Ground plane: the renderer's own camera, carried into kernel mm
+        // through the centering entity (which undoes the scene scale).
+        var ground: SIMD3<Float>?
+        if let w = PlacementMath.worldRay(viewPoint: p, viewSize: ctl.overlaySize,
+                                          camera: model.cameraPosition, lookAt: model.panOffset) {
+            let o = centering.convert(position: w.o, from: nil)
+            let d = centering.convert(position: w.o + w.d, from: nil) - o
+            ground = PlacementMath.groundHit(origin: o, direction: normalize(d))
+        }
+        // Existing geometry in kernel mm (parts/instances only — not the
+        // gizmo or sketch ink that also live under the centering entity).
+        let bodies = centering.children.filter {
+            $0.name.hasPrefix("part") || $0.name.hasPrefix("inst") || $0.name.hasPrefix("free")
+        }
+        var lo = SIMD3<Float>(repeating: .infinity), hi = -lo
+        for e in bodies {
+            let b = e.visualBounds(relativeTo: centering)
+            lo = simd_min(lo, b.min); hi = simd_max(hi, b.max)
+        }
+        let has = !bodies.isEmpty && lo.x <= hi.x
+        var fallback = SIMD3<Float>(0, 0, 0)
+        if let pi = model.selectedPartIndex, let e = centering.findEntity(named: "part\(pi)") {
+            let b = e.visualBounds(relativeTo: centering)
+            fallback = SIMD3(b.max.x + 10 + 15, b.center.y, 0)   // beside it, not inside it
+        }
+        return PlacementMath.resolve(hit: ground,
+                                     sceneCenter: has ? (lo + hi) / 2 : .zero,
+                                     sceneExtent: has ? simd_reduce_max(hi - lo) : 0,
+                                     fallback: fallback)
     }
 
     private var marqueeOrOrbitGesture: some Gesture {
@@ -1438,6 +1505,7 @@ struct ReleasedOverlayView: View {
         MagnifyGesture()
             .onChanged { value in
                 model.stopSpin()
+                model.cameraUserMoved = true
                 model.distance = max(0.45, min(8.0, model.pinchBaseline / Float(value.magnification)))
             }
             .onEnded { _ in model.pinchBaseline = model.distance }
@@ -1488,6 +1556,10 @@ struct ReleasedARView: NSViewRepresentable {
         var anchor: AnchorEntity?
         var builtKey = ""
         var builtGrounded = false
+        /// What the ground grid was built from, so a zoom can re-pick its
+        /// spacing without a scene rebuild.
+        var groundSpec: GroundSpec?
+        var builtGridLayout: GridSpacing.Layout?
         var framedCNCRevision = -1
         var builtSelection: Set<Int> = []
         var builtInstances: Set<Int> = []
@@ -1503,9 +1575,10 @@ struct ReleasedARView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> ARView {
-        let ar = ARView(frame: .zero)
+        let ar = GatedARView(frame: .zero)
         ar.environment.background = .color(.clear)
         ReleaseWindowController.shared.arView = ar
+        RenderGate.install(on: ar)
         let anchor = AnchorEntity(world: .zero)
         let camera = PerspectiveCamera()
         anchor.addChild(camera)
@@ -1547,6 +1620,8 @@ struct ReleasedARView: NSViewRepresentable {
     }
 
     func updateNSView(_ ar: ARView, context: Context) {
+        // Any state the viewport reads changed: let it draw the result.
+        RenderGate.wake()
         // Selecting a part used to rebuild the whole scene: `highlightedParts`
         // was part of `geometryKey`, so a click re-evaluated the document,
         // re-tessellated every part, rebuilt every entity and regenerated every
@@ -1595,6 +1670,7 @@ struct ReleasedARView: NSViewRepresentable {
         }
         applyInstancePoses(context.coordinator)
         syncCamera(context.coordinator)
+        syncGroundGrid(context.coordinator)
     }
 
     /// Re-pose instance entities from the latest solve — the released twin of
@@ -1671,6 +1747,18 @@ struct ReleasedARView: NSViewRepresentable {
         // (or nothing) on screen; parts are drawn as they land and the model
         // flips geometryDirty when the kernel is done.
         if scene.solving && scene.meshes.isEmpty { return }
+        if !scene.solving {
+            let bounds = ReleaseWindowController.shared.arView?.bounds.size ?? .zero
+            let aspect = bounds.height > 0 ? Float(bounds.width / bounds.height) : 1.6
+            if let target = model.takeAgentFrameDistance(aspect: aspect) {
+                // Deferred: this runs inside a view update.
+                Task { @MainActor in
+                    guard !model.cameraUserMoved else { return }
+                    withAnimation(Motion.smooth) { model.distance = target }
+                    model.pinchBaseline = target
+                }
+            }
+        }
         // Release-time hook (scripts/bake-sample-meshes.sh): write the solved
         // document's `.vcadmesh` beside it and quit, so a bundled sample opens
         // as a root-cache hit instead of a cold kernel walk on first launch.
@@ -1704,6 +1792,7 @@ struct ReleasedARView: NSViewRepresentable {
         ReleaseWindowController.shared.centeringEntity = centering
         // Keep the in-progress sketch ink alive across geometry rebuilds.
         if model.sketching { centering.addChild(buildSketchRoot(model: model)) }
+        syncSketchGrid(model, in: centering, force: true)
         // And the face/edge selection highlight: a pick triggers a rebuild,
         // which used to drop the overlay the pick had just drawn, so picked
         // edges never showed.
@@ -1728,16 +1817,19 @@ struct ReleasedARView: NSViewRepresentable {
                 m.metallic = .init(floatLiteral: inst.material.metallic)
             }
             let e = ModelEntity(mesh: inst.mesh, materials: [m])
-            e.name = "inst\(i)"
+            // A free root (see `freeRoots`) stays where it is: it isn't an
+            // instance, so nothing that poses or picks instances may reach it.
+            let isFreeRoot = inst.index >= model.assemblyInstanceCount
+            e.name = isFreeRoot ? "free\(i)" : "inst\(i)"
             // Live transforms win over the authored pose: kinematic playback
             // and physics both publish through `instanceTransforms`, and a
             // rebuild mid-episode must not snap the robot back to its rest
             // pose.
-            e.transform = Transform(matrix: i < model.instanceTransforms.count
+            e.transform = Transform(matrix: !isFreeRoot && i < model.instanceTransforms.count
                                     ? model.instanceTransforms[i] : inst.transform)
             e.generateCollisionShapes(recursive: false)
             centering.addChild(e)
-            coordinator.instanceEntities.append(e)
+            if !isFreeRoot { coordinator.instanceEntities.append(e) }
         }
         for (i, item) in scene.meshes.enumerated() {
             var m = PhysicallyBasedMaterial()
@@ -1781,14 +1873,47 @@ struct ReleasedARView: NSViewRepresentable {
         // Grounding: a reference grid and a contact shadow under the part,
         // only when there is a window floor to stand on. Sized in the same
         // display units as the part so grid cells read as round millimetres.
+        coordinator.groundSpec = nil
         if !model.source.isGripper, !scene.solving, scene.size > 0 {
             let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            for e in SceneAssets.groundingEntities(partSizeMM: model.sizeMM, sceneSize: scene.size,
-                                                   sceneScale: sceneScale, dark: dark) {
+            let spec = GroundSpec(partSizeMM: model.sizeMM, sceneSize: scene.size,
+                                  sceneScale: sceneScale, dark: dark, center: scene.center)
+            coordinator.groundSpec = spec
+            let span = viewSpanMM(spec)
+            coordinator.builtGridLayout = GridSpacing.ground(extentMM: spec.sceneSize, viewSpanMM: span)
+            for e in SceneAssets.groundingEntities(partSizeMM: spec.partSizeMM, sceneSize: spec.sceneSize,
+                                                   sceneScale: spec.sceneScale, dark: spec.dark,
+                                                   sceneCenter: spec.center, viewSpanMM: span) {
                 e.isEnabled = grounded
                 anchor.addChild(e)
             }
         }
+    }
+
+    /// Visible width at the target, in model millimetres (60° vertical FOV,
+    /// ~16:10 window).
+    private func viewSpanMM(_ spec: GroundSpec) -> Float {
+        1.8 * simd_length(cameraPosition - lookAt) / max(spec.sceneScale, 1e-9)
+    }
+
+    /// Re-pick the ground grid when zooming crosses a spacing step, so lines
+    /// stay hairlines up close and don't turn to mush far away. Only swaps
+    /// the one grid quad; textures are cached per layout.
+    private func syncGroundGrid(_ c: Coordinator) {
+        guard let spec = c.groundSpec, let anchor = c.anchor else { return }
+        let span = viewSpanMM(spec)
+        let layout = GridSpacing.ground(extentMM: spec.sceneSize, viewSpanMM: span)
+        guard layout != c.builtGridLayout else { return }
+        c.builtGridLayout = layout
+        let old = anchor.findEntity(named: "grid")
+        let enabled = old?.isEnabled ?? grounded
+        old?.removeFromParent()
+        guard let grid = SceneAssets.groundingEntities(partSizeMM: spec.partSizeMM, sceneSize: spec.sceneSize,
+                                                       sceneScale: spec.sceneScale, dark: spec.dark,
+                                                       sceneCenter: spec.center, viewSpanMM: span)
+            .first(where: { $0.name == "grid" }) else { return }
+        grid.isEnabled = enabled
+        anchor.addChild(grid)
     }
 }
 
@@ -2134,8 +2259,11 @@ struct ReleasedScene: View {
                        visibility: VisibilityState(hidden: model.hiddenParts,
                                                    isolated: model.isolatedPart),
                        geometryKey: geometryKey,
-                       grounded: model.isWindowed && Prefs.showsGrid)
+                       // The ground grid steps aside while sketching: the
+                       // sketch plane draws its own grid at the snap step.
+                       grounded: model.isWindowed && showsGrid && !model.sketching)
     }
+    @AppStorage(Prefs.gridKey) private var showsGrid = true
 }
 
 // MARK: - Live Dock icon
@@ -2198,6 +2326,7 @@ final class DockIcon {
         guard model.triangleCount > 0 else { return }   // nothing to depict yet
 
         inFlight = true
+        RenderGate.wake(for: 2)  // a paused view never delivers a snapshot
         ar.snapshot(saveToHDR: false) { [weak self] image in
             // Reduce to a CGImage here, in the callback: NSImage is not
             // Sendable, so it must not cross into the main-actor hop.

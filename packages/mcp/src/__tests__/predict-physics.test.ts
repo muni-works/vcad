@@ -54,10 +54,11 @@ describe("predict_physics", () => {
     expect(out.receipt?.claims).toHaveLength(2);
     for (const c of out.receipt!.claims) {
       expect(c.basis).toBe("predicted");
-      expect(c.verdict).toBe("pass");
+      // A prediction is never a pass.
+      expect(c.verdict).toBe("provisional");
     }
     // The load-bearing assertion: predicted passes are NOT a clean pass.
-    expect(out.summary?.overall).toBe("pass");
+    expect(out.summary?.overall).toBe("provisional");
     expect(out.summary?.verdict).toBe("provisional");
     expect(out.summary?.predicted_basis).toBe(2);
   });

@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-09-sequential-polygon-cutouts",
+  "version": "0.11.0",
+  "date": "2026-11-09",
+  "category": "fix",
+  "title": "Sequential polygon cutouts stay watertight",
+  "summary": "Cutting flat-walled holes one after another through a solid no longer leaves open mesh edges or shatters its faces.",
+  "features": ["booleans", "kernel"]
+}

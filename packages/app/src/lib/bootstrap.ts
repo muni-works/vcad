@@ -125,15 +125,9 @@ async function runIdbBackfillDeferred(
   wasmModule: typeof import("@vcad/kernel-wasm"),
 ): Promise<void> {
   try {
-    const [{ runIdbBackfill }, { triggerSync }] = await Promise.all([
-      import("@/lib/backfill"),
-      import("@vcad/auth"),
-    ]);
-    await runIdbBackfill(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      wasmModule.WasmDocumentEngine as any,
-      () => triggerSync(),
-    );
+    const { runIdbBackfill } = await import("@/lib/backfill");
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await runIdbBackfill(wasmModule.WasmDocumentEngine as any);
   } catch (e) {
     logger.warn("app", `IDB backfill failed: ${e}`);
   }

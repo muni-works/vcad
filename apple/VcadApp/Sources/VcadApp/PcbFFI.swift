@@ -28,6 +28,49 @@ enum PcbFFI {
         String(decoding: try JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]), as: UTF8.self)
     }
 
+    static func fillZones(_ pcb: Obj) throws -> Obj {
+        let json = try text(pcb)
+        return try finish(json.withCString { vcad_pcb_fill_zones($0) }, "fill zones")
+    }
+    static func libraryFootprint(_ req: Obj) throws -> Obj {
+        let json = try text(req)
+        return try finish(json.withCString { vcad_pcb_library_footprint($0) }, "footprint")
+    }
+    static func routeDiffPair(_ pcb: Obj, p: String, n: String) throws -> Obj {
+        try call2(vcad_pcb_route_diff_pair, pcb, ["p": p, "n": n], "route pair")
+    }
+    static func librarySymbol(_ id: String) throws -> Obj {
+        let json = try text(["id": id])
+        return try finish(json.withCString { vcad_pcb_library_symbol($0) }, "symbol")
+    }
+    static func stitchZones(_ pcb: Obj, net: String, pitch: Double) throws -> Obj {
+        try call2(vcad_pcb_stitch_zones, pcb, ["net": net, "pitch": pitch], "stitching")
+    }
+    static func ratsnest(_ pcb: Obj) throws -> Obj {
+        let json = try text(pcb)
+        return try finish(json.withCString { vcad_pcb_ratsnest($0) }, "ratsnest")
+    }
+
+    /// A board open for hand routing (`vcad_pcb_router_*`). Queries are
+    /// serialised by the Rust side's lock.
+    final class Router: @unchecked Sendable {
+        private let handle: OpaquePointer
+        init(board: Obj) throws {
+            let json = try PcbFFI.text(board)
+            guard let h = json.withCString({ vcad_pcb_router_open($0) }) else {
+                throw Failure(message: AnalysisFFI.lastError() ?? "router open failed")
+            }
+            handle = h
+        }
+        deinit { vcad_pcb_router_free(handle) }
+        private func ask(_ f: (OpaquePointer?, UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?, _ req: Obj, _ what: String) throws -> Obj {
+            let text = try PcbFFI.text(req)
+            return try PcbFFI.finish(text.withCString { f(handle, $0) }, what)
+        }
+        func route(_ req: Obj) throws -> Obj { try ask(vcad_pcb_router_route, req, "route") }
+        func commit(_ req: Obj) throws -> Obj { try ask(vcad_pcb_router_commit, req, "commit") }
+    }
+
     static func call2(_ f: (UnsafePointer<CChar>?, UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?,
                       _ a: Any, _ req: Obj, _ what: String) throws -> Obj {
         let sa = try text(a), sr = try text(req)
@@ -44,7 +87,12 @@ enum PcbFFI {
         try finish(path.withCString { vcad_pcb_import($0) }, "import")
     }
     static func drc(_ pcb: Obj) throws -> Obj { try call2(vcad_pcb_drc, pcb, [:], "DRC") }
-    static func autoroute(_ pcb: Obj) throws -> Obj { try call2(vcad_pcb_autoroute, pcb, [:], "autoroute") }
+    /// One connection per search window: a joint window lets one impossible
+    /// connection report its whole cluster infeasible (FOC board: 18 of 169
+    /// routed with the default of 6, against 94 of 116 one at a time).
+    static func autoroute(_ pcb: Obj) throws -> Obj {
+        try call2(vcad_pcb_autoroute, pcb, ["max_cluster": 1, "budget": 20_000_000], "autoroute")
+    }
     static func fixDrc(_ pcb: Obj, calibrate: Bool) throws -> Obj {
         try call2(vcad_pcb_fix_drc, pcb, ["calibrate": calibrate], "fix DRC")
     }

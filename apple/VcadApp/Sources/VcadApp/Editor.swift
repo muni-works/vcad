@@ -129,15 +129,22 @@ enum GeometrySource: Hashable, Identifiable {
 
 /// The sandbox primitive — chosen from the Create tab of the tool palette.
 enum BaseShape: String, CaseIterable {
-    case cube, cylinder, sphere
+    case cube, cylinder, sphere, cone, torus, wedge, prism
     var label: String { rawValue.capitalized }
     var symbol: String {
         switch self {
         case .cube: return "cube"
         case .cylinder: return "cylinder"
-        case .sphere: return "circle.circle"
+        case .sphere: return "globe"
+        case .cone: return "cone"
+        case .torus: return "circle.circle"
+        case .wedge: return "triangle.righthalf.filled"
+        case .prism: return "hexagon"
         }
     }
+    /// The sandbox preview only builds these three; the rest promote to a
+    /// document first.
+    var sandboxPreview: Bool { [.cube, .cylinder, .sphere].contains(self) }
 }
 
 /// The sandbox modifier — chosen from the Modify tab.
@@ -201,7 +208,7 @@ enum BooleanOp: String, CaseIterable, Identifiable {
         switch self {
         case .union: return "plus.circle"
         case .difference: return "minus.circle"
-        case .intersection: return "circle.circle"
+        case .intersection: return "square.on.square.intersection.dashed"
         }
     }
 }
@@ -239,6 +246,10 @@ struct Tool: Identifiable {
     /// A bare-letter key (Fusion/KiCad style) — fires only when nothing else
     /// handles the key, so it can never steal typing from a field.
     var shortcut: Character? = nil
+    /// Tools sharing a group collapse into one dock button with a popover.
+    var group: String? = nil
+    /// Like `group`, but only when the dock is short of room.
+    var compactGroup: String? = nil
     let action: () -> Void
 }
 
@@ -276,6 +287,25 @@ final class EditorModel {
     var section: SectionPlane?
     /// Command palette / parameter table sheets.
     var showsCommandPalette = false
+    var sketchPlaneChosen = false
+    /// The external MCP session this window shows, and the engine state it last pushed.
+    var agentLinkID: String?
+    var agentLinkRevision: String?
+    /// The linked document exists only because an agent pushed it into an empty
+    /// window: another agent session may take the window over while it is
+    /// unedited. False for a document the user opened and an agent attached to.
+    var agentLinkOwned = false
+    /// When the linked session last touched this window. A session may only
+    /// take the window from one that has gone quiet (`AgentEdits.takeoverIdleSeconds`).
+    var agentLinkActiveAt: Date?
+    /// Folder a linked document's relative mesh paths resolve from.
+    var agentLinkBaseDir: String?
+    /// The link a pose has already moved to a posing workspace, so a pose
+    /// stream switches at most once and the user can walk away.
+    var agentPoseSurfacedLink: String?
+    /// A simulated floating base: its first pose this episode, and its motion since.
+    var agentBaseFirst: simd_float4x4?
+    var agentBaseDelta: simd_float4x4?
     var showsParameterTable = false
     var isWindowed = false { didSet { saveLayout() } }
     init() {
@@ -348,7 +378,14 @@ final class EditorModel {
     var source: GeometrySource = .sandbox {
         didSet {
             geometryDirty = true
-            if source.id != oldValue.id { jointPose = [:]; explode = 0 }
+            if source.id != oldValue.id {
+                jointPose = [:]; explode = 0
+                // A different document is not the one any session was linked to.
+                agentLinkID = nil; agentLinkRevision = nil; agentLinkOwned = false
+                agentLinkBaseDir = nil; agentPoseSurfacedLink = nil
+                agentBaseFirst = nil; agentBaseDelta = nil
+                cameraUserMoved = false; agentFramedSize = nil; agentFramePending = false
+            }
             watchDocumentFile()                   // hot reload on regenerate
             loadDocumentTree()                    // parse the DAG for a .vcad
             if !availableTabs.contains(toolTab) { toolTab = .create }
@@ -565,7 +602,7 @@ final class EditorModel {
     /// Directory of the currently open document, when it came from a file —
     /// the base for resolving its relative mesh references.
     var documentDirectory: String? {
-        guard case .document(let path, _) = source else { return nil }
+        guard case .document(let path, _) = source else { return agentLinkBaseDir }
         return (path as NSString).deletingLastPathComponent
     }
 
@@ -824,7 +861,7 @@ final class EditorModel {
     }
     #endif
 
-    var usesDocumentTree: Bool { documentGraph != nil && !featureNodes.isEmpty }
+    var usesDocumentTree: Bool { documentGraph != nil && (!featureNodes.isEmpty || engine != nil) }
 
     /// Parse the DAG when a `.vcad` document loads; clear it for every other
     /// source. Resets visibility + expansion so each document opens clean.
@@ -1189,10 +1226,19 @@ final class EditorModel {
                                                      undo: [UndoEntry], redo: [UndoEntry], dirty: Bool)?
     /// What ⌘Z would undo, for the Edit menu.
     var undoActionName: String? {
+        if let sketch = sketchHistory { return sketch.canUndo ? "Sketch Edit" : nil }
         if let last = undoStack.last { return last.name }
         return generationUndo != nil ? "Generate" : nil
     }
-    var redoActionName: String? { redoStack.last?.name }
+    var redoActionName: String? {
+        if let sketch = sketchHistory { return sketch.canRedo ? "Sketch Edit" : nil }
+        return redoStack.last?.name
+    }
+    /// While sketching, undo/redo are scoped to the sketch (Fusion/Onshape
+    /// style): the open sketch's own history, never the document's. Document
+    /// history comes back once the sketch is finished or cancelled, so an
+    /// undo pressed mid-sketch can never remove a feature under it.
+    var sketchHistory: SketchSession? { sketching ? sketch : nil }
     /// One scrub gesture = one undo entry; skip the materialize-pop on edits.
     @ObservationIgnored var suppressMaterializePop = false
     /// In-place re-eval of a parameter edit (mesh swap, no full rebuild / pop).
@@ -1258,7 +1304,8 @@ final class EditorModel {
         documentJSON = r.document
         adoptingDelta = false
         documentDirty = engine.map { $0.stateHash != savedHash } ?? true
-        if let g = DocumentGraph.parse(r.document) {
+        // The engine's document is always valid, including with nothing in it.
+        if let g = DocumentGraph.parse(r.document, allowEmpty: true) {
             documentGraph = g
             featureNodes = g.featureRoots()
         }
@@ -1351,7 +1398,7 @@ final class EditorModel {
         case ("translate", "offset"): return with("offset").map { .setTranslation(id: id, offset: $0) }
         case ("rotate", "angles"): return with("angles").map { .setRotation(id: id, angles: $0) }
         case ("scale", "factor"): return with("factor").map { .setScale(id: id, factor: $0) }
-        case ("primitive", "size") where kind == "cube":
+        case ("primitive", "size") where kind == "cube" || kind == "wedge":
             guard let axis, ["x", "y", "z"].contains(axis) else { return nil }
             return param("size_\(axis)")
         case ("primitive", _) where axis == nil:
@@ -1359,6 +1406,9 @@ final class EditorModel {
                 "cylinder": ["radius", "height", "segments"],
                 "sphere": ["radius", "segments"],
                 "cone": ["radius_bottom", "radius_top", "height", "segments"],
+                "torus": ["major_radius", "minor_radius", "segments"],
+                "prism": ["sides", "radius", "height"],
+                "sweep-rotate": ["angle_lo_deg", "angle_hi_deg", "step_deg", "clearance"],
                 "fillet": ["radius"], "chamfer": ["distance"],
             ]
             return keys[kind]?.contains(key) == true ? param(key) : nil
@@ -1397,8 +1447,14 @@ final class EditorModel {
         markReeval(.rebuild)
     }
 
-    var canUndo: Bool { !undoStack.isEmpty || generationUndo != nil }
-    var canRedo: Bool { !redoStack.isEmpty }
+    var canUndo: Bool {
+        if let sketch = sketchHistory { return sketch.canUndo }
+        return !undoStack.isEmpty || generationUndo != nil
+    }
+    var canRedo: Bool {
+        if let sketch = sketchHistory { return sketch.canRedo }
+        return !redoStack.isEmpty
+    }
     /// Export is available for anything with exportable geometry (not the gripper).
     var canExport: Bool { if case .gripper = source { return false }; return true }
 
@@ -1420,6 +1476,14 @@ final class EditorModel {
             return .addFeature(feature: .cylinder(radius: 15, height: 30, segments: 64), name: "Cylinder")
         case .sphere:
             return .addFeature(feature: .sphere(radius: 15, segments: 48), name: "Sphere")
+        case .cone:
+            return .addFeature(feature: .cone(radiusBottom: 15, radiusTop: 0, height: 30, segments: 64), name: "Cone")
+        case .torus:
+            return .addFeature(feature: .torus(majorRadius: 20, minorRadius: 5, segments: 64), name: "Torus")
+        case .wedge:
+            return .addFeature(feature: .wedge(sizeX: 30, sizeY: 30, sizeZ: 30), name: "Wedge")
+        case .prism:
+            return .addFeature(feature: .prism(sides: 6, radius: 15, height: 30), name: "Prism")
         }
     }
 
@@ -1516,6 +1580,54 @@ final class EditorModel {
 
     // MARK: feature ops (FeatureOps.swift drives these)
 
+    /// Replace the selected parts with their convex hull, as an editable feature.
+    @discardableResult
+    func hullSelected() -> Bool {
+        let picked = multiSelectedParts.compactMap { partId(forPart: $0) }
+        guard picked.count >= 2 else { return false }
+        guard addOp(.hull(inputs: picked, points: []), name: "Convex Hull", materialFrom: picked[0]) else { return false }
+        multiSelectedParts = []
+        hiddenParts.removeAll(); isolatedPart = nil
+        return true
+    }
+
+    /// The hull feature owning `nodeId`: its id, input part ids and loose points.
+    func hullFeature(nodeId: Int) -> (id: String, inputs: [String], points: [Double])? {
+        guard let (part, _) = engineState?.owner(ofNode: nodeId),
+              case .hull(let id, _, _, _, _, _, let inputs) = part else { return nil }
+        let points = (opDict(nodeId: nodeId)?["points"] as? [NSNumber] ?? []).map(\.doubleValue)
+        return (id, inputs, points)
+    }
+
+    /// Replace a hull's inputs and points. One undo step.
+    @discardableResult
+    func setHull(id: String, inputs: [String], points: [Double], name: String) -> Bool {
+        runCommand(.updateFeature(id: id, feature: .hull(inputs: inputs, points: points)), name: name)
+    }
+
+    /// Set one field of a constant edge blend (`size` or `shape`).
+    func editBlend(nodeId: Int, field: String, value: Double, snapshot: Bool) {
+        irEdit("Change Blend", gestureStart: snapshot, reeval: .inPlace) { doc in
+            guard var nodes = doc["nodes"] as? [String: Any],
+                  var node = nodes[String(nodeId)] as? [String: Any],
+                  var op = node["op"] as? [String: Any],
+                  var profile = op["profile"] as? [String: Any], profile["type"] as? String == "Constant" else { return }
+            profile[field] = value
+            op["profile"] = profile
+            node["op"] = op
+            nodes[String(nodeId)] = node
+            doc["nodes"] = nodes
+        }
+    }
+
+    /// The current offset or rotation on a part's transform chain.
+    func partVector(_ id: String, key: String) -> [Double]? {
+        guard let part = engineState?.parts.first(where: { $0.id == id }),
+              let op = opDict(nodeId: key == "offset" ? part.translateNodeId : part.rotateNodeId),
+              let v = op[key] as? [String: Any] else { return nil }
+        return ["x", "y", "z"].map { (v[$0] as? NSNumber)?.doubleValue ?? 0 }
+    }
+
     /// Add any engine feature as one undo step; the new part takes
     /// `materialFrom`'s material (or the default). Selects the result.
     @discardableResult
@@ -1542,7 +1654,10 @@ final class EditorModel {
         guard var doc = documentJSON, !features.isEmpty else { return false }
         var prev: Int?
         for var f in features {
-            if (f["child"] as? Int) == -1 { guard let prev else { return false }; f["child"] = prev }
+            for key in ["child", "target"] where (f[key] as? Int) == -1 {
+                guard let prev else { return false }
+                f[key] = prev
+            }
             guard let docData = try? JSONSerialization.data(withJSONObject: doc),
                   let fData = try? JSONSerialization.data(withJSONObject: f),
                   let docStr = String(data: docData, encoding: .utf8),
@@ -1617,9 +1732,12 @@ final class EditorModel {
     var sketchFinish: SketchFinish = .extrude
     var sketchExtrudeDepth: Double = 10
     var sketchRevolveAngle: Double = 360
-    /// Sweep path along the sketch normal: helix when `sweepTurns > 0`.
+    /// Sweep path: a helix when `sweepTurns > 0` (world-Z axis, rising
+    /// `sweepLength` over `sweepTurns` turns at `sweepHelixRadius`, profile
+    /// re-centred so its centroid rides the helix — see `SweepPlan`), else a
+    /// straight line `sweepLength` along the sketch normal.
     var sweepHelixRadius: Double = 20
-    var sweepPitch: Double = 10
+    var sweepLength: Double = 50
     var sweepTurns: Double = 0
     /// Profiles collected for a loft, in order.
     var loftProfiles: [[String: Any]] = []
@@ -1632,17 +1750,74 @@ final class EditorModel {
 
     var sketchCursor: SIMD2<Float>? {
         get { sketch?.cursor.map { SIMD2(Float($0.x), Float($0.y)) } }
-        set { sketch?.cursor = newValue.map { SIMD2(Double($0.x), Double($0.y)) }; sketchDirty = true }
+        set { sketch?.cursor = newValue.map { sketch?.gridded(SIMD2(Double($0.x), Double($0.y))) ?? SIMD2(Double($0.x), Double($0.y)) }; sketchDirty = true }
     }
-    var canFinishSketch: Bool {
-        guard let sketch else { return false }
-        return sketchFinish == .loft ? (loftProfiles.count >= 2 || sketch.canFinish) : sketch.canFinish
+    var canFinishSketch: Bool { sketch != nil && sketchFinishBlocker == nil }
+
+    /// Done is hovered: the status field says why it can't finish.
+    var sketchDoneHovered = false
+    /// Done was clicked while blocked: the reason stays up until then.
+    var sketchBlockerShownUntil: Date?
+
+    /// The sketch bar's Done. Never silently dead: when the sketch can't
+    /// finish it puts the reason in the status field and authors nothing.
+    @discardableResult
+    func attemptFinishSketch(now: Date = .now) -> Bool {
+        guard sketch != nil else { return false }
+        if sketchFinishBlocker != nil {
+            sketchBlockerShownUntil = now.addingTimeInterval(4)
+            return false
+        }
+        sketchBlockerShownUntil = nil
+        return finishSketch()
+    }
+
+    /// The status field's second line while sketching: the active tool's
+    /// prompt and the degrees of freedom — or, while Done is hovered or just
+    /// clicked, why the sketch can't finish.
+    func sketchStatusLine(at now: Date = .now) -> String? {
+        guard sketching, let s = sketch else { return nil }
+        if let why = sketchFinishBlocker,
+           sketchDoneHovered || (sketchBlockerShownUntil.map { now < $0 } ?? false) {
+            return "Can't finish — \(why)"
+        }
+        // Drawing: the snapped cursor first (it's what you place by), then a
+        // short prompt, so the 340 pt field truncates the prompt, not the numbers.
+        if let c = s.cursor, s.tool.draws {
+            return "\(Self.cursorText(c)) · \(s.tool.shortHint) · \(s.stateLabel)"
+        }
+        return "\(s.tool.hint) · \(s.stateLabel)"
+    }
+
+    /// "x 12.0, y -4.0 mm" (never "-0.0").
+    static func cursorText(_ c: SIMD2<Double>) -> String {
+        String(format: "x %.1f, y %.1f mm", c.x + 0, c.y + 0)
+            .replacingOccurrences(of: "-0.0,", with: "0.0,")
+            .replacingOccurrences(of: "y -0.0 ", with: "y 0.0 ")
+    }
+
+    /// Why Finish is disabled, in words — the button's tooltip and the sketch
+    /// status line. Nil when Finish can run.
+    var sketchFinishBlocker: String? {
+        guard let sketch else { return "Not sketching" }
+        if sketchFinish == .loft, loftProfiles.count >= 2 { return nil }
+        if sketch.isEmpty { return "Draw a closed profile to finish" }
+        if sketch.canFinish { return nil }
+        switch (sketchFinish, sketch.loopRegions()) {
+        case (.extrude, .success), (.cut, .success): return nil
+        case (_, .failure(let p)): return p.reason
+        case (_, .success(let profiles)):
+            let what = profiles.contains { $0["holes"] != nil } ? "a profile with holes" : "several separate loops"
+            return "\(sketchFinish.label) can't use \(what) — Extrude or Cut can"
+        }
     }
 
     /// Start a sketch: on the picked planar face when exactly one is picked,
     /// else on `sketchPlane`.
+    @ObservationIgnored private var cameraBeforeSketch: CameraState?
     func enterSketch() {
         guard usesDocumentTree else { return }
+        sketchPlaneChosen = false
         var frame = SketchFrame.principal(sketchPlane)
         sketchFace = nil
         if picking.selectedFaces.count == 1, let f = picking.selectedFaces.first,
@@ -1653,6 +1828,7 @@ final class EditorModel {
             sketchFace = (f.part, c, n)
         }
         guard let s = SketchSession(frame: frame) else { engineError = "Sketch solver unavailable"; return }
+        if sketch == nil { cameraBeforeSketch = CameraState(azimuth: azimuth, elevation: elevation, distance: distance, pan: panOffset) }
         sketch = s
         sketching = true
         hoveredPartIndex = nil; hoverDirty = true
@@ -1664,9 +1840,35 @@ final class EditorModel {
         sketch = nil
         sketchFace = nil
         sketchDirty = true
+        if let c = cameraBeforeSketch {
+            azimuth = c.azimuth; elevation = c.elevation
+            distance = c.distance; pinchBaseline = c.distance; panOffset = c.pan
+            cameraBeforeSketch = nil
+        }
+    }
+    /// Nothing drawn and no plane chosen yet: the next click may pick a face.
+    var sketchAwaitsPlane: Bool {
+        guard let k = sketch, sketchFace == nil, !sketchPlaneChosen else { return false }
+        // A click with a drawing tool armed places geometry (Fusion/Shapr3D:
+        // the plane is chosen before drawing). Only the Select tool picks a
+        // face to move an untouched sketch onto.
+        guard k.tool == .select else { return false }
+        return k.isEmpty && !k.hasInProgress
+    }
+    /// Restart the sketch on the face just picked. False when it isn't planar.
+    func adoptPickedFaceAsSketchPlane() -> Bool {
+        guard picking.selectedFaces.count == 1, let f = picking.selectedFaces.first,
+              partTopology(f.part)?.face(f.id)?.isPlanar == true else { picking.clear(); return false }
+        let tool = sketch?.tool ?? .line
+        enterSketch()
+        sketch?.tool = tool
+        picking.clear()
+        if sketchFace != nil { GlassUI.shared.flash("Sketch moved onto the picked face", symbol: "square.on.square") }
+        return sketchFace != nil
     }
     func setSketchPlane(_ p: SketchPlane) {
         sketchPlane = p
+        sketchPlaneChosen = true
         guard sketching, sketchFace == nil else { return }
         sketch = SketchSession(frame: .principal(p))
         aimCamera(at: .principal(p))
@@ -1677,9 +1879,22 @@ final class EditorModel {
         let n = f.normal
         elevation = Float(asin(max(-1, min(1, n.z)))).clamped(to: -1.45...1.45)
         azimuth = abs(n.z) > 0.99 ? 0 : Float(atan2(n.x, -n.y))
+        // Open close enough that the 0.5 mm grid can be hit, centred on the plane.
+        let o = SIMD3<Float>(f.origin) - displayCenter
+        // An empty document has no scene yet, so its display centre is stale.
+        let empty = (documentJSON?["roots"] as? [Any])?.isEmpty ?? true
+        panOffset = empty ? .zero : SIMD3(o.x, o.z, -o.y) * displayScale
+        distance = max(0.45, min(1.5, displayScale * 20))
+        pinchBaseline = distance
     }
 
-    func setSketchTool(_ t: SketchToolKind) { sketch?.tool = t; sketchDirty = true }
+    func setSketchTool(_ t: SketchToolKind) {
+        // A tool's in-progress clicks don't carry over: a line chain left open
+        // would otherwise resume from its old end on the next Line click.
+        if sketch?.tool != t { sketch?.cancelPending() }
+        sketch?.tool = t
+        sketchDirty = true
+    }
 
     /// A tap on the sketch plane (2D plane coords) — drives the active tool.
     func sketchTap(_ p: SIMD2<Float>, additive: Bool = false) {
@@ -1687,11 +1902,39 @@ final class EditorModel {
         sketchDirty = true
     }
 
+    /// A viewport click on the sketch plane, given as the pick ray and the ray
+    /// one screen point to its right. The pair sets the picking scale (plane
+    /// mm per screen point), so edges and points hit within a few points of
+    /// their ink at any zoom. Picking tools (Select, Dimension) take the raw
+    /// hit; drawing tools land on the cursor grid.
+    func sketchTap(ray: (o: SIMD3<Float>, d: SIMD3<Float>), neighbour: (o: SIMD3<Float>, d: SIMD3<Float>)?,
+                   additive: Bool = false) {
+        guard let sketch else { return }
+        guard let raw = sketch.frame.intersect(origin: SIMD3<Double>(ray.o), dir: SIMD3<Double>(ray.d)) else { return }
+        if let n = neighbour, let q = sketch.frame.intersect(origin: SIMD3<Double>(n.o), dir: SIMD3<Double>(n.d)) {
+            let k = simd_distance(raw, q)
+            sketch.pickScale = k.isFinite && k > 0 ? k : nil
+        }
+        if sketch.tool == .select || sketch.tool == .dimension {
+            sketch.tap(raw, additive: additive)
+            sketchDirty = true
+        } else if let p = sketchPlanePoint(originKernel: ray.o, dirKernel: ray.d) {
+            sketchTap(p, additive: additive)
+        }
+    }
+
+    /// Spacing of the sketch cursor grid, in mm.
+    static let sketchGridStep = 0.5
+
     /// Project a kernel-space ray onto the sketch plane → 2D plane coords.
     func sketchPlanePoint(originKernel o: SIMD3<Float>, dirKernel d: SIMD3<Float>) -> SIMD2<Float>? {
         let frame = sketch?.frame ?? .principal(sketchPlane)
         guard let p = frame.intersect(origin: SIMD3<Double>(o), dir: SIMD3<Double>(d)) else { return nil }
-        return SIMD2(Float(p.x), Float(p.y))
+        // Sketch points land on a grid measured from the sketch origin, so a
+        // click can hit a real dimension. Hold Option to place freely.
+        guard !NSEvent.modifierFlags.contains(.option) else { return SIMD2(Float(p.x), Float(p.y)) }
+        let step = Self.sketchGridStep
+        return SIMD2(Float((p.x / step).rounded() * step), Float((p.y / step).rounded() * step))
     }
 
     /// 2D plane coords → 3D kernel coords (for drawing the ink).
@@ -1708,6 +1951,33 @@ final class EditorModel {
         let n = sketch.frame.normal
         func vec(_ v: SIMD3<Double>) -> [String: Double] { ["x": v.x, "y": v.y, "z": v.z] }
         let dir = vec(n * sketchExtrudeDepth)
+        // Several loops — separate regions, or an outer loop with holes (a
+        // ring): one feature per region, in one undo step.
+        if !sketch.canFinish, sketchFinish == .extrude || sketchFinish == .cut {
+            let cutting = sketchFinish == .cut
+            let profiles: [[String: Any]]
+            switch sketch.loopRegions() {
+            case .success(let p): profiles = p
+            case .failure(let problem): engineError = problem.reason; return false
+            }
+            var features: [[String: Any]]
+            if cutting {
+                guard let target = sketchFace.flatMap({ rootNodeId(forPart: $0.part) })
+                        ?? selectedPartIndex.flatMap({ rootNodeId(forPart: $0) }) else {
+                    engineError = "Select the part to cut"; return false
+                }
+                features = profiles.enumerated().map { i, p in
+                    ["kind": "cut_extrude", "target": i == 0 ? target : -1, "profile": p,
+                     "direction": vec(-n * sketchExtrudeDepth), "name": "Cut"]
+                }
+            } else {
+                features = profiles.map { ["kind": "extrude", "profile": $0, "direction": dir, "name": "Extrude"] }
+            }
+            guard appendIRFeatures(features, name: sketchFinish.label) else { return false }
+            selectedFeatureID = featureNodes.last?.id
+            exitSketch()
+            return true
+        }
         var feature: [String: Any]
         switch sketchFinish {
         case .loft:
@@ -1747,11 +2017,14 @@ final class EditorModel {
                 feature = ["kind": "revolve", "profile": profile, "axis_origin": vec(sketch.frame.origin),
                            "axis_dir": vec(sketch.frame.yDir), "angle_deg": sketchRevolveAngle, "name": "Revolve"]
             case .sweep:
-                let path: [String: Any] = sweepTurns > 0
-                    ? ["type": "Helix", "radius": sweepHelixRadius, "pitch": sweepPitch,
-                       "height": sweepPitch * sweepTurns, "turns": sweepTurns]
-                    : ["type": "Line", "start": vec(.zero), "end": vec(n * sketchExtrudeDepth)]
-                feature = ["kind": "sweep", "profile": profile, "path": path, "name": "Sweep"]
+                let plan = SweepPlan(profile: profile, turns: sweepTurns,
+                                     radius: sweepHelixRadius, length: sweepLength)
+                if let problem = plan.problem { engineError = problem; return false }
+                let path: [String: Any] = plan.isHelix
+                    ? ["type": "Helix", "radius": sweepHelixRadius, "pitch": plan.pitch,
+                       "height": sweepLength, "turns": sweepTurns]
+                    : ["type": "Line", "start": vec(.zero), "end": vec(n * sweepLength)]
+                feature = ["kind": "sweep", "profile": plan.profile, "path": path, "name": "Sweep"]
             case .loft:
                 return false
             }
@@ -2104,6 +2377,11 @@ final class EditorModel {
     /// Delete every highlighted part as one undo step. Highest index first so
     /// the remaining indices stay valid while removing.
     func deleteSelectedParts() {
+        if sketching {
+            sketch?.deleteSelection()
+            sketchDirty = true
+            return
+        }
         let ids = highlightedParts.compactMap { partId(forPart: $0) }
         guard !ids.isEmpty else { return }
         guard send(.batch(commands: ids.map { .deleteFeature(id: $0) }),
@@ -2125,12 +2403,21 @@ final class EditorModel {
     }
 
     func undo() {
+        if let sketch = sketchHistory {
+            if sketch.undo() { sketchDirty = true }
+            else { GlassUI.shared.flash("Nothing to undo in this sketch", symbol: "pencil.and.outline") }
+            return
+        }
         guard let entry = undoStack.popLast() else { undoGeneration(); return }
         guard let back = step(entry, forward: false) else { return }
         redoStack.append(back)
         GlassUI.shared.flash("Undo \(entry.name)", symbol: "arrow.uturn.backward")
     }
     func redo() {
+        if let sketch = sketchHistory {
+            if sketch.redo() { sketchDirty = true }
+            return
+        }
         guard let entry = redoStack.popLast() else { return }
         guard let back = step(entry, forward: true) else { return }
         undoStack.append(back)
@@ -2419,6 +2706,7 @@ final class EditorModel {
     /// Turn the camera to a standard view, animated.
     func animateCamera(to preset: CameraPreset) {
         stopSpin()
+        cameraUserMoved = true
         withAnimation(Motion.smooth) {
             azimuth = preset.azimuth
             elevation = preset.elevation
@@ -2435,6 +2723,7 @@ final class EditorModel {
 
     /// Pan the look-at target in the camera's screen plane (⇧-drag).
     func panBy(dx: Float, dy: Float) {
+        cameraUserMoved = true
         let forward = normalize(-orbitVector)
         let right = normalize(cross(forward, SIMD3<Float>(0, 1, 0)))
         let up = cross(right, forward)
@@ -2450,6 +2739,7 @@ final class EditorModel {
     /// A drag started — kill any running momentum and reset velocity tracking.
     func beginOrbit() {
         stopSpin()
+        cameraUserMoved = true
         lastOrbitTime = Date()
         azVel = 0; elVel = 0
     }
@@ -2507,10 +2797,17 @@ final class EditorModel {
                 guard let self else { return }
                 if event.keyCode == 53 {                       // Escape
                     if self.sketching {
-                        self.exitSketch()
+                        // Escape backs out one step: the stroke, then the tool. It never
+                        // discards drawn geometry; the toolbar's X does that.
+                        if let k = self.sketch, k.hasInProgress { k.cancelPending() }
+                        else if let k = self.sketch, k.tool != .select { self.setSketchTool(.select) }
+                        else if self.sketch?.isEmpty ?? true { self.exitSketch() }
                     } else if GlassUI.shared.shortcutsShown {
                         GlassUI.shared.shortcutsShown = false
-                    } else if self.activeFeatureOp != nil || self.showsCommandPalette || GlassUI.shared.panel != nil {
+                    } else if self.activeFeatureOp != nil {
+                        // A focused number field swallows the panel's own Esc shortcut.
+                        self.activeFeatureOp = nil
+                    } else if self.showsCommandPalette || GlassUI.shared.panel != nil {
                         // Their own Cancel handles Esc; keep the selection.
                     } else if self.usesDocumentTree, self.renamingFeatureID == nil, self.hasSelection {
                         self.deselectAll()
@@ -2534,6 +2831,7 @@ final class EditorModel {
             MainActor.assumeIsolated {
                 guard let self, !self.draggingHandle else { return }
                 self.stopSpin()                       // zooming interrupts coasting
+                self.cameraUserMoved = true
                 let dy = Float(event.scrollingDeltaY)
                 let k = Float(event.hasPreciseScrollingDeltas ? 0.004 : 0.04)
                 self.distance = max(0.45, min(8.0, self.distance * (1 - dy * k)))
@@ -3020,7 +3318,10 @@ final class EditorModel {
                      label: docMode ? "Add \(shape.label)" : shape.label, symbol: shape.symbol,
                      isActive: docMode ? armedShape == shape : baseShape == shape,
                      hint: docMode ? "Click in the scene to place it" : "") { [weak self] in
-                    if docMode { self?.arm(shape) } else { self?.baseShape = shape }
+                    guard let self else { return }
+                    if docMode { self.arm(shape) }
+                    else if shape.sandboxPreview { self.baseShape = shape }
+                    else if self.promoteSandboxToDocument(blank: true) { self.arm(shape) }
                 }
             }
             if docMode {
@@ -3104,6 +3405,14 @@ final class EditorModel {
     }
 
     var panOffset: SIMD3<Float> = .zero
+    /// The user has orbited, panned, zoomed or picked a view of this document.
+    /// From then on the camera is theirs and an agent's build never moves it.
+    @ObservationIgnored var cameraUserMoved = false
+    /// An agent changed the geometry and the next finished scene should be
+    /// considered for framing.
+    @ObservationIgnored var agentFramePending = false
+    /// The content size (mm) the camera was last framed on for an agent.
+    @ObservationIgnored var agentFramedSize: SIMD3<Float>?
     var orbitVector: SIMD3<Float> {
         let r = distance
         return SIMD3<Float>(
@@ -3170,6 +3479,7 @@ final class EditorModel {
         case .cube: return vcad_solid_cube(30, 30, 30)
         case .cylinder: return vcad_solid_cylinder(15, 30, 64)
         case .sphere: return vcad_solid_sphere(15, 48)
+        case .cone, .torus, .wedge, .prism: return vcad_solid_cube(30, 30, 30)   // never previewed
         }
     }
 
@@ -3519,6 +3829,18 @@ final class EditorModel {
         return sceneFromHandle(scene, start: start)
     }
 
+    /// Visible roots of an assembly document that no part definition points
+    /// at, with their index among the evaluated parts (one per visible root).
+    private func freeRoots() -> [(part: Int, material: String)] {
+        guard let json = documentJSON, let roots = json["roots"] as? [[String: Any]],
+              let defs = json["partDefs"] as? [String: [String: Any]] else { return [] }
+        let defRoots = Set(defs.values.compactMap { ($0["root"] as? NSNumber)?.intValue })
+        return roots.filter { ($0["visible"] as? Bool) ?? true }.enumerated().compactMap { i, r in
+            guard let root = (r["root"] as? NSNumber)?.intValue, !defRoots.contains(root) else { return nil }
+            return (i, r["material"] as? String ?? "default")
+        }
+    }
+
     /// Gather an ASSEMBLY scene: one entity per instance, mesh in part-def
     /// local coordinates + a world transform, rendered instead of the root
     /// parts (mirrors the web viewport). Takes ownership of `scene` and keeps
@@ -3569,6 +3891,22 @@ final class EditorModel {
                 material: resolvedMaterial(named: matKey, fallbackIndex: i),
                 transform: world))
         }
+        // A root no part definition uses (a frozen topology_optimize mesh added
+        // to an assembly) has no instance to draw it. Index past the instances
+        // so FK, playback and picking never see it.
+        let partTotal = vcad_scene_part_count(scene)
+        for (k, root) in freeRoots().enumerated() where root.part < partTotal {
+            let km = KernelMesh.fromView(vcad_scene_part_mesh(scene, root.part))
+            guard !km.isEmpty else { continue }
+            tris += km.triangleCount
+            lo = simd_min(lo, km.minBound); hi = simd_max(hi, km.maxBound)
+            instances.append(RenderInstance(
+                index: count + k,
+                id: "root\(root.part)",
+                mesh: km.resource(name: "free\(k)"),
+                material: resolvedMaterial(named: root.material, fallbackIndex: count + k),
+                transform: matrix_identity_float4x4))
+        }
         guard !instances.isEmpty else {
             clearAssembly()
             return .empty
@@ -3599,7 +3937,8 @@ final class EditorModel {
         // Land on the authored pose at t=0 when a timeline exists.
         if timeline != nil { applyPlaybackPose() }
         // A reload keeps the pose you were looking at.
-        if timeline == nil, !jointPose.isEmpty || explode > 0 { applyStudioPose() }
+        // So does a pose an agent sent while this scene was still solving.
+        if timeline == nil, !jointPose.isEmpty || explode > 0 || agentBaseDelta != nil { applyStudioPose() }
         return RenderScene(meshes: [], center: center, size: size,
                            triangleCount: tris, partCount: instances.count,
                            instances: instances)
@@ -3735,6 +4074,53 @@ extension EditorModel {
     func agentApplied(_ r: DocumentEngine.Result) {
         engineError = nil
         adopt(r, reeval: .rebuild)
+        agentFramePending = true
+    }
+
+    /// Whether content going from `old` to `new` (mm) is worth reframing for:
+    /// its first geometry, or any axis moving by over a third of the larger
+    /// of the two bodies' longest sides.
+    static func agentShouldFrame(from old: SIMD3<Float>?, to new: SIMD3<Float>) -> Bool {
+        let longest = new.max()
+        guard longest > 0 else { return false }
+        guard let old else { return true }
+        let change = simd_abs(new - old).max()
+        return change > max(longest, old.max()) / 3
+    }
+
+    /// Camera distance that puts a box of `size` (mm, Z-up), scaled to the
+    /// scene's display normalization and centred, inside `margin` of a 60°
+    /// view from this orbit direction. Leaves room for the window's chrome.
+    static func fittedDistance(size: SIMD3<Float>, azimuth: Float, elevation: Float,
+                               aspect: Float, margin: Float = 0.8) -> Float {
+        let world = SIMD3(size.x, size.z, size.y) * (0.6 / max(size.max(), 0.0001)) / 2
+        let toCamera = SIMD3(cos(elevation) * sin(azimuth), sin(elevation), cos(elevation) * cos(azimuth))
+        let right = normalize(cross(-toCamera, SIMD3<Float>(0, 1, 0)))
+        let up = cross(right, -toCamera)
+        let tanHalf = tan(Float.pi / 6) * margin
+        var needed: Float = 0
+        for sx: Float in [-1, 1] {
+            for sy: Float in [-1, 1] {
+                for sz: Float in [-1, 1] {
+                    let c = world * SIMD3(sx, sy, sz)
+                    let reach = max(abs(dot(c, up)) / tanHalf,
+                                    abs(dot(c, right)) / (tanHalf * max(aspect, 0.1)))
+                    needed = max(needed, dot(c, toCamera) + reach)
+                }
+            }
+        }
+        return max(0.45, min(8.0, needed))
+    }
+
+    /// Where the camera should go for the agent build that just finished, or
+    /// nil to leave it alone. Consumes the pending request.
+    func takeAgentFrameDistance(aspect: Float) -> Float? {
+        guard agentFramePending else { return nil }
+        agentFramePending = false
+        guard !cameraUserMoved, !sketching, workspace != .manufacture, workspace != .electronics,
+              Self.agentShouldFrame(from: agentFramedSize, to: sizeMM) else { return nil }
+        agentFramedSize = sizeMM
+        return Self.fittedDistance(size: sizeMM, azimuth: azimuth, elevation: elevation, aspect: aspect)
     }
 
     /// Close an agent turn that changed the document: one undo step back to
@@ -3754,9 +4140,11 @@ extension EditorModel {
     /// anything. One undo step back to the sandbox. Returns whether the
     /// window now has an editable document.
     @discardableResult
-    func promoteSandboxToDocument() -> Bool {
+    func promoteSandboxToDocument(blank: Bool = false) -> Bool {
         if usesDocumentTree, engine != nil { return true }
         guard source.isSandbox, engine == nil, documentJSON == nil else { return usesDocumentTree }
+        // A sketch starts a part from nothing; it shouldn't inherit the demo cube.
+        if blank { return agentEnsureEngine() != nil && usesDocumentTree }
         let applies = modifierApplies && modifierEffective
         let (shape, mod, amount) = (baseShape, modifier, modifierValue)
         guard let e = agentEnsureEngine() else { return false }
@@ -3771,6 +4159,7 @@ extension EditorModel {
             case .cube: ["type": "cube", "name": "Cube", "params": ["size": ["x": 30, "y": 30, "z": 30]]]
             case .cylinder: ["type": "cylinder", "name": "Cylinder", "params": ["radius": 15, "height": 30]]
             case .sphere: ["type": "sphere", "name": "Sphere", "params": ["radius": 15]]
+            case .cone, .torus, .wedge, .prism: ["type": "cube", "name": "Cube", "params": ["size": ["x": 30, "y": 30, "z": 30]]]   // never previewed
             }
             var r = try call("create", primitive)
             if applies, let base = r.createdFeatureId {

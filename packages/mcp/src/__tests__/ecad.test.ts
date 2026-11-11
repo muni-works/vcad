@@ -67,7 +67,7 @@ import {
   recordHistorySnapshot,
   registerSession,
 } from "../tools/session.js";
-import { openInBrowser } from "../tools/share.js";
+import { openInApp } from "../tools/share.js";
 
 let engine: Engine;
 
@@ -4757,24 +4757,20 @@ describe("ecad pipeline behaviors (session flow)", () => {
     expect(unique.size).toBe(8);
   });
 
-  it("export_gerber falls back to inline files when output_dir is unwritable", async () => {
+  it("export_gerber errors when output_dir is unwritable", async () => {
     const created = out(
       await createSchematic({ components: [resistor("R1", 0, ["A", "B"])] }),
     );
     const id = created.document_id;
     out(await placeComponents({ document_id: id, board_width: 30, board_height: 30 }));
 
-    const res = out(
-      await exportGerber({
-        document_id: id,
-        // /dev/null can't be a directory — mkdir fails on every platform.
-        output_dir: "/dev/null/nope",
-      }),
-    );
-    expect(res.success).toBe(true);
-    expect(res.message).toContain("returning contents inline");
-    expect(res.files.length).toBeGreaterThan(0);
-    expect(res.files[0].content).toBeTruthy();
+    const res = await exportGerber({
+      document_id: id,
+      // /dev/null can't be a directory — mkdir fails on every platform.
+      output_dir: "/dev/null/nope",
+    });
+    expect(res.isError).toBe(true);
+    expect(res.content[0]!.text).toContain("could not write");
   });
 
   it("export_gerber offloads a large bundle to an artifact (URL + manifest), keeps a small one inline", async () => {
@@ -4813,14 +4809,14 @@ describe("ecad pipeline behaviors (session flow)", () => {
     }
   });
 
-  it("open_in_browser produces a vcad:// link for PCB documents", async () => {
+  it("open_in_app produces a vcad:// link for PCB documents", async () => {
     const created = out(
       await createSchematic({ components: [resistor("R1", 0, ["A", "B"])] }),
     );
     const id = created.document_id;
     out(await placeComponents({ document_id: id, board_width: 30, board_height: 30 }));
 
-    const res = openInBrowser({
+    const res = openInApp({
       document: JSON.stringify(getSession(id)),
       name: "pcb-test",
     });

@@ -9,6 +9,8 @@
 //! and must equal [`manifest`] (see the drift test; regenerate with
 //! `VCAD_UPDATE_AGENT_MANIFEST=1 cargo test -p vcad-app agent`).
 
+use std::collections::HashSet;
+
 use serde_json::{json, Value};
 
 use crate::command::CommandError;
@@ -24,8 +26,9 @@ pub const MANIFEST_JSON: &str = include_str!("../agent/manifest.json");
 pub const READ_TOOLS: [&str; 2] = ["describe_scene", "inspect"];
 
 /// `create` kinds the agent is offered (all lowered by `tools::lower`).
-pub const CREATE_KINDS: [&str; 8] = [
-    "cube", "cylinder", "sphere", "cone", "tube", "fillet", "chamfer", "shell",
+pub const CREATE_KINDS: [&str; 11] = [
+    "cube", "cylinder", "sphere", "cone", "torus", "wedge", "prism", "tube", "fillet", "chamfer",
+    "shell",
 ];
 
 const SYSTEM_PROMPT: &str = "You are the modeling agent inside vcad, a parametric CAD app. \
@@ -109,7 +112,8 @@ pub fn tools() -> Vec<Value> {
         tool(
             "create",
             "Create a part. Primitives: cube {size:{x,y,z}}, cylinder {radius, height}, sphere {radius}, \
-             cone {radius_bottom, radius_top, height}, tube {start:{x,y,z}, end:{x,y,z}, radius}. \
+             cone {radius_bottom, radius_top, height}, torus {major_radius, minor_radius}, \
+             wedge {size:{x,y,z}}, prism {sides, radius, height}, tube {start:{x,y,z}, end:{x,y,z}, radius}. \
              Modifiers on an existing part (pass parent_part_id): fillet {radius}, chamfer {distance}, \
              shell {thickness, open_faces?} — open_faces removes faces to leave an opening (an open-top enclosure): \
              an array of {name} or {point:{x,y,z}, normal:{x,y,z}} on each face, e.g. the top face's center with normal {z:1}.",
@@ -395,11 +399,36 @@ pub fn evaluation_errors(doc: &DocumentApi) -> String {
 /// One line per part: id, name, kind, material, bbox.
 pub fn describe_scene(doc: &DocumentApi) -> String {
     let state = doc.get_state();
-    if state.parts.is_empty() {
+    // What the feature tree shows: scene roots. A boolean's operands and a
+    // part definition's source are features, not parts.
+    let roots: HashSet<&String> = state
+        .document
+        .part_ids
+        .iter()
+        .flat_map(|m| m.values())
+        .collect();
+    let parts: Vec<_> = state
+        .parts
+        .iter()
+        .filter(|p| roots.contains(&p.id().to_string()))
+        .collect();
+    let instances = state.document.instances.as_deref().unwrap_or_default();
+    if parts.is_empty() && instances.is_empty() {
         return "The document is empty (no parts).".into();
     }
-    let mut out = format!("{} part(s), units mm, Z up:\n", state.parts.len());
-    for part in &state.parts {
+    let mut out = format!(
+        "{} part(s), units mm, Z up. Ids are current as of this call; a document \
+         pushed from an MCP session can renumber them, so re-read after one.\n",
+        parts.len() + instances.len()
+    );
+    for inst in instances {
+        let name = inst.name.as_deref().unwrap_or(&inst.id);
+        out.push_str(&format!(
+            "- instance {} \"{name}\" of {}\n",
+            inst.id, inst.part_def_id
+        ));
+    }
+    for part in parts {
         let v = serde_json::to_value(part).unwrap_or(Value::Null);
         let id = part.id();
         let name = v.get("name").and_then(Value::as_str).unwrap_or("");
@@ -450,17 +479,26 @@ fn density(doc: &DocumentApi, material: &str) -> Option<f64> {
 
 fn inspect(id: &str, doc: &DocumentApi) -> Result<String, CommandError> {
     let state = doc.get_state();
-    if !state.parts.iter().any(|p| p.id() == id) {
-        return Err(CommandError::UnknownId { id: id.to_string() });
-    }
-    let solid = match doc.part_evaluation(id) {
-        Some(Err(e)) => {
-            return Err(CommandError::Invalid {
-                message: format!("part {id} failed to evaluate: {e}"),
-            })
-        }
-        Some(Ok(Some(s))) => s,
-        Some(Ok(None)) | None => return Ok(format!("{id}: empty (no volume)")),
+    let part = state
+        .parts
+        .iter()
+        .find(|p| p.id() == id)
+        .ok_or_else(|| CommandError::UnknownId { id: id.to_string() })?;
+    // Measure what the viewport draws: parameters applied through bindings.
+    let (resolved, _) =
+        vcad_eval::resolve::resolve_document_cloned(&state.document).map_err(|e| {
+            CommandError::Invalid {
+                message: format!("parameters could not be applied: {e}"),
+            }
+        })?;
+    let mut cache = std::collections::HashMap::new();
+    let solid =
+        vcad_eval::evaluate::evaluate_node(part.root_node_id(), &resolved.nodes, &mut cache)
+            .map_err(|e| CommandError::Invalid {
+                message: format!("part {id} could not be evaluated: {e}"),
+            })?;
+    let Some(solid) = solid else {
+        return Ok(format!("{id}: empty (no volume)"));
     };
     let Some((lo, hi)) = solid.try_bounding_box() else {
         return Ok(format!("{id}: empty (no volume)"));
@@ -730,6 +768,9 @@ mod tests {
                     json!({"radius_bottom": 3, "radius_top": 1, "height": 4}),
                     None,
                 ),
+                "torus" => (json!({"major_radius": 5, "minor_radius": 1}), None),
+                "wedge" => (json!({"size": {"x": 1, "y": 2, "z": 3}}), None),
+                "prism" => (json!({"sides": 6, "radius": 2, "height": 3}), None),
                 "tube" => (
                     json!({"start": {"x": 0, "y": 0, "z": 0}, "end": {"x": 0, "y": 0, "z": 10}, "radius": 1}),
                     None,
@@ -789,6 +830,75 @@ mod tests {
         assert_eq!(api.get_state().parts.len(), 1);
         let name = serde_json::to_value(&api.get_state().parts[0]).unwrap()["name"].clone();
         assert_eq!(name, "cube");
+    }
+
+    #[test]
+    fn inspect_measures_with_parameters_applied() {
+        let mut doc: serde_json::Value =
+            serde_json::from_str(include_str!("../../../examples/parametric-plate.vcad")).unwrap();
+        doc["parameters"]["width"]["value"] = json!(120.0);
+        let api = DocumentApi::from_ir(&doc.to_string(), ReplicaId(1)).unwrap();
+        let id = api.get_state().parts[0].id().to_string();
+        let text = read_tool("inspect", &json!({"part_id": id}), &api).unwrap();
+        assert!(text.contains("size (120.00, 50.00"), "{text}");
+    }
+
+    #[test]
+    fn inspect_measures_a_pcb_board_document() {
+        let ir = include_str!("../../../examples/pcb-motor/stator-v3.vcad");
+        let api = DocumentApi::from_ir(ir, ReplicaId(1)).unwrap();
+        let id = api.get_state().parts[0].id().to_string();
+        let text = read_tool("inspect", &json!({"part_id": id}), &api).unwrap();
+        assert!(text.contains("size (70.00, 70.00, 2.60)"), "{text}");
+    }
+
+    #[test]
+    fn inspect_says_why_a_part_could_not_be_evaluated() {
+        // A fillet over a through-hole refuses to rebuild the holed faces.
+        let ir = json!({
+            "version": "0.1",
+            "nodes": {
+                "0": {"id": 0, "name": null, "op": {"type": "Cube", "size": {"x": 20.0, "y": 20.0, "z": 5.0}}},
+                "1": {"id": 1, "name": null, "op": {"type": "Cylinder", "radius": 3.0, "height": 7.0, "segments": 0}},
+                "2": {"id": 2, "name": null, "op": {"type": "Translate", "child": 1, "offset": {"x": 10.0, "y": 10.0, "z": -1.0}}},
+                "3": {"id": 3, "name": null, "op": {"type": "Difference", "left": 0, "right": 2}},
+                "4": {"id": 4, "name": null, "op": {"type": "Fillet", "child": 3, "radius": 0.5}}
+            },
+            "materials": {"default": {"name": "default", "color": [0.8, 0.8, 0.8], "metallic": 0.0, "roughness": 0.5}},
+            "part_materials": {},
+            "roots": [{"root": 4, "material": "default"}]
+        });
+        let api = DocumentApi::from_ir(&ir.to_string(), ReplicaId(1)).unwrap();
+        let state = api.get_state();
+        let id = state.parts.last().unwrap().id().to_string();
+        let err = read_tool_envelope(&api, "inspect", &json!({"part_id": id}).to_string());
+        assert!(err.contains("\"ok\":false"), "{err}");
+        assert!(err.contains("inner loops"), "reason hidden: {err}");
+    }
+
+    #[test]
+    fn describe_scene_lists_what_the_tree_shows() {
+        let mut api = DocumentApi::new(ReplicaId(2));
+        let mut cube = |x: f64| {
+            let r = apply(
+                &mut api,
+                "create",
+                json!({"type": "cube", "params": {"size": {"x": x, "y": 10, "z": 10}}}),
+            );
+            r["result"]["createdFeatureId"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        let (a, b) = (cube(10.0), cube(5.0));
+        apply(&mut api, "difference", json!({"left": a, "right": b}));
+        let scene = describe_scene(&api);
+        assert!(
+            scene.starts_with("1 part(s)"),
+            "operands listed as parts: {scene}"
+        );
+        assert!(!scene.contains(&format!("- {a} ")), "{scene}");
+        assert!(scene.contains("current as of this call"), "{scene}");
     }
 
     #[test]

@@ -254,7 +254,7 @@ fn an_ablated_gradient_refuses_to_steer() {
     o.coupling = Coupling::Full;
     let full = conjugate_gradient(&fm, &tm, &[ParameterSpec::new(POWER)], &o).unwrap();
     assert!(full.table.all_usable(), "{}", full.table.render());
-    assert_eq!(full.table.rows[0].verdict, ClaimVerdict::Pass);
+    assert_eq!(full.table.rows[0].verdict, ClaimVerdict::Provisional);
     // The 2x2 block is finite-differenced, so it may never claim Verified.
     assert_eq!(
         full.table.rows[0].basis,

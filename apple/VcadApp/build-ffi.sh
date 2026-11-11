@@ -30,6 +30,6 @@ else
 fi
 
 mkdir -p "$here/Libs"
-cp "$repo_root/target/$config/libvcad_ffi.a" "$here/Libs/"
+cp "${CARGO_TARGET_DIR:-$repo_root/target}/$config/libvcad_ffi.a" "$here/Libs/"
 echo "Staged: $here/Libs/libvcad_ffi.a"
 echo "Now: swift build --package-path $here"

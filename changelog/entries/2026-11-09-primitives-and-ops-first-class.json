@@ -1,0 +1,13 @@
+{
+  "id": "2026-11-09-primitives-and-ops-first-class",
+  "version": "0.11.0",
+  "date": "2026-11-09",
+  "category": "feat",
+  "title": "Every kernel op in the Mac app, click to place",
+  "summary": "Torus, wedge, prism and hull are editable features. All primitives place by click; rotational sweep, edge blend, jog, hem and bend relief join the tools.",
+  "features": [
+    "native-app",
+    "primitives",
+    "sheet-metal"
+  ]
+}

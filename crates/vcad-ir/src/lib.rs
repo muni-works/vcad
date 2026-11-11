@@ -15,6 +15,7 @@ pub mod datum;
 pub mod ecad;
 pub mod expr_parser;
 pub mod file_io;
+pub mod gear;
 pub mod mates;
 pub mod molecule;
 pub mod parameters;
@@ -890,6 +891,29 @@ pub enum CsgOp {
         /// Extrusion height along +Z.
         height: f64,
     },
+    #[tool(
+        category = "primitive",
+        ai_hint = "Involute spur gear on Z, base at z = 0, tooth 0 centred on +X. Mesh two at center distance m*(z1+z2)/2; see vcad_ir::gear::mesh_rotation_deg for the phase."
+    )]
+    /// Involute spur gear: ISO full-depth teeth (addendum 1 m, dedendum
+    /// 1.25 m), exact involute flanks, extruded from `z = 0` up the face
+    /// width, with an optional centred bore. Tooth 0 is centred on +X.
+    SpurGear {
+        /// Module, mm (pitch diameter = module × teeth).
+        module: f64,
+        /// Tooth count (>= 4).
+        teeth: u32,
+        /// Pressure angle, degrees (20 is the ISO standard).
+        pressure_angle_deg: f64,
+        /// Face width (extrusion along +Z), mm.
+        face_width: f64,
+        /// Bore diameter, mm (0 = solid).
+        #[serde(default)]
+        bore_diameter: f64,
+        /// Circumferential tooth thinning at the pitch circle, mm (0 = none).
+        #[serde(default)]
+        backlash: f64,
+    },
     #[tool(hidden)]
     /// Empty geometry (identity for union).
     Empty,
@@ -1516,6 +1540,7 @@ impl CsgOp {
             | CsgOp::Torus { .. }
             | CsgOp::Wedge { .. }
             | CsgOp::Prism { .. }
+            | CsgOp::SpurGear { .. }
             | CsgOp::Empty
             | CsgOp::Sketch2D { .. }
             | CsgOp::Text2D { .. }
@@ -1566,6 +1591,7 @@ impl CsgOp {
             | CsgOp::Torus { .. }
             | CsgOp::Wedge { .. }
             | CsgOp::Prism { .. }
+            | CsgOp::SpurGear { .. }
             | CsgOp::Empty
             | CsgOp::Sketch2D { .. }
             | CsgOp::Text2D { .. }
@@ -1600,6 +1626,7 @@ impl CsgOp {
             | CsgOp::Torus { .. }
             | CsgOp::Wedge { .. }
             | CsgOp::Prism { .. }
+            | CsgOp::SpurGear { .. }
             | CsgOp::Empty
             | CsgOp::Union { .. }
             | CsgOp::Difference { .. }

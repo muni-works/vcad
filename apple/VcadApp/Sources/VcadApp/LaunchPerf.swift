@@ -61,6 +61,7 @@ enum LaunchPerf {
     /// at its current distance; frame intervals come from scene updates.
     static func startOrbit(_ ar: ARView, camera: PerspectiveCamera, center: SIMD3<Float>, label: String) {
         guard enabled, orbitSeconds > 0, orbitSub == nil else { return }
+        RenderGate.wake(for: orbitSeconds + 1)   // the orbit is driven by frames
         let start = camera.position
         let radius = max(simd_length(SIMD2(start.x - center.x, start.z - center.z)), 0.05)
         let height = start.y

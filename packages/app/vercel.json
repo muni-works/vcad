@@ -3,12 +3,15 @@
   "installCommand": "cd ../.. && npm ci",
   "buildCommand": "cd ../.. && npm run build -w @vcad/ir && npm run build -w @vcad/engine && npm run build -w @vcad/core && npm run build -w @vcad/mcp && npm run build -w @vcad/app",
   "outputDirectory": "dist",
+  "redirects": [
+    { "source": "/download", "destination": "/desktop/", "permanent": false }
+  ],
   "rewrites": [
     { "source": "/~(.*)", "destination": "/" },
     { "source": "/d/(.*)", "destination": "/" },
     { "source": "/view/(.*)", "destination": "/" },
     { "source": "/authorize/(.*)", "destination": "/" },
-    { "source": "/export", "destination": "/" },
+    { "source": "/(export|cli-auth)", "destination": "/" },
     { "source": "/@:path*", "destination": "/" },
     { "source": "/(privacy|terms|security)", "destination": "/" }
   ],
@@ -18,7 +21,7 @@
       "headers": [
         {
           "key": "Content-Security-Policy",
-          "value": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob: https://*.vercel-insights.com https://*.vercel-analytics.com https://us.i.posthog.com https://us-assets.i.posthog.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://yteuhwciuxcbjwmabawj.supabase.co wss://yteuhwciuxcbjwmabawj.supabase.co https://db.vcad.io wss://db.vcad.io https://github.com https://*.githubusercontent.com https://*.vercel-insights.com https://*.vercel-analytics.com https://us.i.posthog.com https://us-assets.i.posthog.com; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; object-src 'none'; form-action 'self'"
+          "value": "default-src 'self'; script-src 'self' 'wasm-unsafe-eval' blob: https://*.vercel-insights.com https://*.vercel-analytics.com https://us.i.posthog.com https://us-assets.i.posthog.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://yteuhwciuxcbjwmabawj.supabase.co wss://yteuhwciuxcbjwmabawj.supabase.co https://github.com https://*.githubusercontent.com https://*.vercel-insights.com https://*.vercel-analytics.com https://us.i.posthog.com https://us-assets.i.posthog.com; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; object-src 'none'; form-action 'self'"
         },
         { "key": "X-Content-Type-Options", "value": "nosniff" },
         { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },

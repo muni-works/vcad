@@ -12,8 +12,11 @@
  * inspect_cad gives numbers, render_view shows the part.
  */
 
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { getKernelWasm, resetKernelWasm, computeRatsnest } from "@vcad/engine";
-import type { NetlistResult } from "@vcad/engine";
+import type { Engine, NetlistResult } from "@vcad/engine";
 import { boardCopperLayers, getNodePcb, getPcbNodeIds } from "@vcad/core";
 import type { Document, Pcb } from "@vcad/ir";
 import {
@@ -23,6 +26,9 @@ import {
   getLastTriangles,
 } from "./session.js";
 import { validatePcb, pcbValidationError } from "./pcb-validate.js";
+import { DECIMATE_GRIDS, decimateMesh } from "./preview.js";
+import { instanceSolids } from "./document-solids.js";
+import type { GlbMesh } from "../export/glb.js";
 import { behavior, type ToolDef } from "./tool-def.js";
 import type { ToolResult } from "./tool-result.js";
 import {
@@ -31,6 +37,8 @@ import {
   withRenderAssets,
 } from "./render-assets.js";
 import { asBool } from "./arg-coerce.js";
+import { isRemoteDeployment } from "./remote.js";
+import { loadResvg } from "./resvg-loader.js";
 import { rootForPartId } from "./part-ids.js";
 import { applyJointState, jointStateSchemaProp, type PoseInfo } from "./pose.js";
 
@@ -181,6 +189,27 @@ type RasterOutcome =
   | { png: Buffer }
   | { png: null; reason: "module-missing" | string };
 
+/**
+ * What a client gets for an SVG too big to inline: on a local server, the
+ * file on disk, which it can read; hosted, only the reason.
+ */
+export function oversizedSvg(
+  svg: string,
+  svgBytes: number,
+  label: string,
+): { svg_omitted: string; svg_path?: string } {
+  const svg_omitted = `SVG is ${svgBytes} bytes (inline cap ${MAX_INLINE_SVG_BYTES}).`;
+  if (isRemoteDeployment()) return { svg_omitted };
+  try {
+    const dir = mkdtempSync(join(tmpdir(), "vcad-render-"));
+    const svg_path = join(dir, `${label.replace(/[^a-z0-9.-]/gi, "_")}.svg`);
+    writeFileSync(svg_path, svg);
+    return { svg_omitted: `${svg_omitted} Written to svg_path.`, svg_path };
+  } catch {
+    return { svg_omitted };
+  }
+}
+
 /** Rasterize SVG to PNG via the optional resvg dependency. A missing
  *  module and a genuine rasterization failure are distinct outcomes so
  *  the fallback note never tells the agent to install a dependency that
@@ -199,25 +228,15 @@ export async function rasterize(
         `(cap ${MAX_RASTER_SVG_BYTES}) — the document is too dense to raster safely`,
     };
   }
-  let ResvgCtor: typeof import("@resvg/resvg-js").Resvg;
-  try {
-    ({ Resvg: ResvgCtor } = await import("@resvg/resvg-js"));
-  } catch (e) {
-    const code = (e as NodeJS.ErrnoException)?.code;
-    if (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") {
-      return { png: null, reason: "module-missing" };
-    }
-    return {
-      png: null,
-      reason: `resvg import failed: ${e instanceof Error ? e.message : String(e)}`,
-    };
-  }
+  const loaded = await loadResvg();
+  if ("reason" in loaded) return { png: null, reason: loaded.reason };
+  const ResvgCtor = loaded.Resvg;
   try {
     const resvg = new ResvgCtor(svg, {
       fitTo: { mode: "width", value: widthPx },
       background,
     });
-    return { png: resvg.render().asPng() };
+    return { png: Buffer.from(resvg.render().asPng()) };
   } catch (e) {
     return {
       png: null,
@@ -226,8 +245,137 @@ export async function rasterize(
   }
 }
 
+/** What render_view changed to fit a document under the triangle budget. */
+export interface RenderSimplification {
+  reason: string;
+  /** Exactly what the image leaves out or draws coarsely. */
+  omitted: string[];
+  rendered_triangles?: number;
+}
+
+function sceneTriangles(scene: ReturnType<Engine["evaluate"]>): number {
+  const tris = (m?: { indices: ArrayLike<number> }) => (m ? m.indices.length / 3 : 0);
+  return (
+    scene.parts.reduce((n, p) => n + tris(p.mesh), 0) +
+    (scene.instances ?? []).reduce((n, i) => n + tris(i.mesh), 0)
+  );
+}
+
+/** A copy with every board's copper removed; `omitted` names what went. */
+function stripBoardCopper(doc: Document): { doc: Document; omitted: string[] } {
+  const omitted: string[] = [];
+  const nodes = { ...doc.nodes };
+  for (const [id, node] of Object.entries(doc.nodes)) {
+    const op = node.op as { type?: string; board?: Pcb };
+    if (op?.type !== "PcbBoard" || !op.board) continue;
+    const { traces = [], vias = [], zones = [] } = op.board;
+    if (traces.length + vias.length + zones.length === 0) continue;
+    nodes[id] = { ...node, op: { ...op, board: { ...op.board, traces: [], vias: [], zones: [] } } } as typeof node;
+    omitted.push(
+      `copper on board "${node.name ?? id}": ${traces.length} trace(s), ${vias.length} via(s), ${zones.length} zone(s) — use render_pcb to see it`,
+    );
+  }
+  return { doc: omitted.length > 0 ? { ...doc, nodes } : doc, omitted };
+}
+
+/**
+ * Replace every part with a vertex-clustered mesh that fits the budget. Roots
+ * keep their node ids, so `focus` and `highlight` still resolve; instances are
+ * baked to world-posed roots. Null when even the coarsest grid is over budget.
+ */
+function decimateDocument(
+  doc: Document,
+  engine: Engine,
+): { doc: Document; triangles: number; grid: number } | null {
+  const scene = engine.evaluate(doc);
+  const visible = doc.roots.filter((r) => r.visible !== false);
+  const parts = scene.parts.map((p, i) => ({ mesh: p.mesh, root: visible[i]!, name: undefined as string | undefined }));
+  const posed = instanceSolids(doc, scene).map((s) => ({ mesh: s.mesh, root: undefined, name: s.name }));
+  const all = [...parts, ...posed].filter((p) => p.mesh.indices.length > 0);
+  const min: [number, number, number] = [Infinity, Infinity, Infinity];
+  const max: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+  for (const { mesh } of all) {
+    for (let i = 0; i + 2 < mesh.positions.length; i += 3) {
+      for (let a = 0; a < 3; a++) {
+        min[a] = Math.min(min[a]!, mesh.positions[i + a]!);
+        max[a] = Math.max(max[a]!, mesh.positions[i + a]!);
+      }
+    }
+  }
+  const diag = Math.hypot(max[0] - min[0], max[1] - min[1], max[2] - min[2]) || 1;
+  for (const grid of DECIMATE_GRIDS) {
+    const reduced = all.map((p) => ({
+      ...p,
+      mesh: decimateMesh({ ...p.mesh, name: "", color: [0, 0, 0], metallic: 0, roughness: 1 } as unknown as GlbMesh, diag / grid, min, grid),
+    }));
+    const triangles = reduced.reduce((n, p) => n + p.mesh.indices.length / 3, 0);
+    if (triangles > MAX_RENDER_TRIANGLES) continue;
+    const nodes = { ...doc.nodes };
+    const roots: Document["roots"] = [];
+    let nextId = Math.max(0, ...Object.keys(nodes).map(Number).filter(Number.isFinite)) + 1;
+    for (const p of reduced) {
+      const id = p.root ? Number(p.root.root) : nextId++;
+      nodes[String(id)] = {
+        id,
+        name: p.root ? (doc.nodes[String(id)]?.name ?? null) : (p.name ?? null),
+        op: {
+          type: "ImportedMesh",
+          positions: Array.from(p.mesh.positions),
+          indices: Array.from(p.mesh.indices),
+          ...(p.mesh.normals ? { normals: Array.from(p.mesh.normals) } : {}),
+        },
+      } as unknown as Document["nodes"][string];
+      roots.push(p.root ?? { root: id, material: "default" });
+    }
+    const { partDefs: _p, instances: _i, joints: _j, ...flat } = doc as Document & Record<string, unknown>;
+    return { doc: { ...flat, nodes, roots } as Document, triangles, grid };
+  }
+  return null;
+}
+
+/**
+ * Fit a too-dense document under the render budget instead of refusing it:
+ * drop board copper first (it is most of a routed board's triangles, and
+ * render_pcb draws it properly), then cluster what is still over. Null means
+ * no representation fits. Without an engine only the copper step is available.
+ */
+export function simplifyForRender(
+  doc: Document,
+  knownTriangles: number,
+  engine?: Engine,
+): { doc: Document; simplification: RenderSimplification } | null {
+  const reason = `document tessellates to ${knownTriangles} triangles (render budget ${MAX_RENDER_TRIANGLES})`;
+  const copper = stripBoardCopper(doc);
+  if (!engine) {
+    return copper.omitted.length > 0
+      ? { doc: copper.doc, simplification: { reason, omitted: copper.omitted } }
+      : null;
+  }
+  const triangles = sceneTriangles(engine.evaluate(copper.doc));
+  if (triangles <= MAX_RENDER_TRIANGLES) {
+    return {
+      doc: copper.doc,
+      simplification: { reason, omitted: copper.omitted, rendered_triangles: triangles },
+    };
+  }
+  const coarse = decimateDocument(copper.doc, engine);
+  if (!coarse) return null;
+  return {
+    doc: coarse.doc,
+    simplification: {
+      reason,
+      omitted: [
+        ...copper.omitted,
+        `all parts decimated from ${triangles} to ${coarse.triangles} triangles (grid ${coarse.grid} across the scene): small features may be missing or faceted, so measure with inspect_cad`,
+      ],
+      rendered_triangles: coarse.triangles,
+    },
+  };
+}
+
 export async function renderView(
   args: Record<string, unknown>,
+  engine?: Engine,
 ): Promise<RenderViewResult> {
   const { doc: storedDoc, documentId: resolvedId } = resolveDocInput(args);
   // Echoed back in result/error payloads; the empty string marks the inline path.
@@ -236,6 +384,7 @@ export async function renderView(
   // Optional pose: render the assembly at the requested joint states rather
   // than the stored (usually zero) pose. Never mutates the session document.
   let doc: Document;
+  let simplification: RenderSimplification | undefined;
   let pose: PoseInfo | undefined;
   try {
     ({ doc, pose } = applyJointState(storedDoc, args.joint_state));
@@ -261,7 +410,14 @@ export async function renderView(
   );
 
   const knownTriangles = documentId ? getLastTriangles(documentId) : null;
-  if (knownTriangles !== null && knownTriangles > MAX_RENDER_TRIANGLES) {
+  const fitted =
+    knownTriangles !== null && knownTriangles > MAX_RENDER_TRIANGLES
+      ? simplifyForRender(doc, knownTriangles, engine)
+      : null;
+  if (fitted) {
+    doc = fitted.doc;
+    simplification = fitted.simplification;
+  } else if (knownTriangles !== null && knownTriangles > MAX_RENDER_TRIANGLES) {
     return {
       content: [
         {
@@ -663,6 +819,7 @@ export async function renderView(
             ...(style !== "drafting" ? { style } : {}),
             width_px: widthPx,
             format: "png",
+            ...(simplification ? { simplified: simplification } : {}),
             ...(pose ? { pose } : {}),
             ...(highlight.length > 0 ? { highlight } : {}),
             asset: renderAssetSummary(asset),
@@ -687,6 +844,7 @@ export async function renderView(
             document_id: documentId,
             view: viewLabel,
             svg_bytes: svgBytes,
+            ...oversizedSvg(svg, svgBytes, `${documentId || "inline"}-${viewLabel}`),
             hint:
               "The document is too dense for the per-triangle SVG renderer. Reduce " +
               "pattern counts, render a subset via `focus`, or inspect numerically " +
@@ -713,13 +871,14 @@ export async function renderView(
           ...(focus ? { focus } : {}),
           ...(sectionRaw ? { section: sectionRaw } : {}),
           format: "svg",
+          ...(simplification ? { simplified: simplification } : {}),
           ...(highlight.length > 0 ? { highlight } : {}),
           ...(pose ? { pose } : {}),
           note,
           ...(svgBytes <= MAX_INLINE_SVG_BYTES
             ? { svg }
             : {
-                svg_omitted: `SVG is ${svgBytes} bytes (inline cap ${MAX_INLINE_SVG_BYTES}) — use export_cad for geometry output.`,
+                ...oversizedSvg(svg, svgBytes, `${documentId || "inline"}-${viewLabel}`),
               }),
         }),
       },
@@ -936,7 +1095,7 @@ export async function renderPcb(
           note,
           ...(svgBytes <= MAX_INLINE_SVG_BYTES
             ? { svg }
-            : { svg_omitted: `SVG is ${svgBytes} bytes (inline cap ${MAX_INLINE_SVG_BYTES}).` }),
+            : oversizedSvg(svg, svgBytes, "render")),
         }),
       },
     ],
@@ -1162,7 +1321,7 @@ export async function renderRatsnest(
           note,
           ...(svgBytes <= MAX_INLINE_SVG_BYTES
             ? { svg }
-            : { svg_omitted: `SVG is ${svgBytes} bytes (inline cap ${MAX_INLINE_SVG_BYTES}).` }),
+            : oversizedSvg(svg, svgBytes, "render")),
         }),
       },
     ],
@@ -1322,9 +1481,9 @@ export const toolDefs: ToolDef[] = [
     name: "render_view",
     pack: null,
     description:
-      "Render an open session document to a PNG image so you can SEE the current geometry — silhouettes, holes, creases — not just numbers. Drafting-style line art, Z-up, same renderer as the vcad CLI. Defaults to isometric; pass azimuth/elevation for an arbitrary orbit view, and focus to frame a single part. Opt-in overlays add engineering context: `axes` (X/Y/Z origin gizmo), `labels` (part names), `dims` (overall W×D×H in mm). Pass style:'shaded' to render parts in their full assigned material colors instead of the navy drafting look. Pass `joint_state` to render a jointed assembly at a real pose (joint id or name → degrees, or mm for sliders) instead of its zero pose — forward kinematics resolves the instance placements and the resolved transforms come back in `pose.transforms`. Call after mutations to visually confirm the part matches intent before declaring done.",
+      "Render an open session document to a PNG image so you can SEE the current geometry — silhouettes, holes, creases — not just numbers. Drafting-style line art, Z-up, same renderer as the vcad CLI. Defaults to isometric; pass azimuth/elevation for an arbitrary orbit view, and focus to frame a single part. Opt-in overlays add engineering context: `axes` (X/Y/Z origin gizmo), `labels` (part names), `dims` (overall W×D×H in mm). Pass style:'shaded' to render parts in their full assigned material colors instead of the navy drafting look. Pass `joint_state` to render a jointed assembly at a real pose (joint id or name → degrees, or mm for sliders) instead of its zero pose — forward kinematics resolves the instance placements and the resolved transforms come back in `pose.transforms`. Call after mutations to visually confirm the part matches intent before declaring done. A document too dense to render whole is simplified rather than refused (board copper dropped, then parts decimated), and the result's `simplified` field says exactly what the image leaves out.",
     inputSchema: renderViewSchema,
-    handler: async (a) => (await renderView(a)) as unknown as ToolResult,
+    handler: async (a, c) => (await renderView(a, c.engine)) as unknown as ToolResult,
     behavior: behavior({}),
   },
   {

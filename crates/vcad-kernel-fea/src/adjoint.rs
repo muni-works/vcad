@@ -298,7 +298,7 @@ pub fn shape_gradient(
                 return Err(GradError::ZeroDirection);
             }
             let dir = [direction[0] / dn, direction[1] / dn, direction[2] / dn];
-            let tol_geom = mesh.h * 0.25;
+            let tol_geom = mesh.region_tol();
             let sel: Vec<usize> = mesh
                 .nodes
                 .iter()

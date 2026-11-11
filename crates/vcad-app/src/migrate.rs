@@ -60,6 +60,10 @@ pub struct MigrationMap {
     pub mappings: Vec<NodeMapping>,
 }
 
+/// Part-def param: its source feature exists only to define the part, and is
+/// not a scene root.
+pub(crate) const PART_DEF_SOURCE_CONSUMED: &str = "source_consumed";
+
 /// Migrate a v1 document (IR DAG + parts metadata) into a CRDT document.
 ///
 /// Each scene entry's root node tree is converted recursively: primitives
@@ -108,6 +112,7 @@ pub fn migrate_v1_mapped(doc: &Document) -> (CrdtDocument, MigrationMap) {
     }
 
     migrate_assembly(&mut crdt, &mut ctx, doc);
+    migrate_orphan_boards(&mut crdt, &mut ctx, doc);
 
     // Atomic / molecular domain: one `molecule` feature carrying the whole
     // system as a JSON blob (mirrors how schematic/scene data round-trips).
@@ -144,6 +149,7 @@ pub fn migrate_v1_mapped(doc: &Document) -> (CrdtDocument, MigrationMap) {
     let map = MigrationMap {
         mappings: std::mem::take(&mut ctx.node_roles),
     };
+    store_feature_bindings(&mut crdt, doc, &map);
     (crdt, map)
 }
 
@@ -427,6 +433,47 @@ fn migrate_node(
             params.insert("radius".to_string(), Value::F64(*radius));
             params.insert("height".to_string(), Value::F64(*height));
             Some(create(crdt, ctx, "prism", params))
+        }
+        CsgOp::Hull { children, points } => {
+            let mut inputs = Vec::with_capacity(children.len());
+            for child in children {
+                inputs.push(fid_to_stable(migrate_node(crdt, ctx, doc, *child)?));
+            }
+            params.insert("inputs".to_string(), Value::FeatureRefList(inputs));
+            params.insert(
+                "points_json".to_string(),
+                Value::String(serde_json::to_string(points).ok()?),
+            );
+            Some(create(crdt, ctx, "hull", params))
+        }
+        CsgOp::SweepRotate {
+            child,
+            axis_origin,
+            axis_dir,
+            angle_lo_deg,
+            angle_hi_deg,
+            step_deg,
+            clearance,
+        } => {
+            let input = migrate_node(crdt, ctx, doc, *child)?;
+            params.insert("input".to_string(), Value::FeatureRef(fid_to_stable(input)));
+            params.insert(
+                "axis_origin".to_string(),
+                Value::Vec3([axis_origin.x, axis_origin.y, axis_origin.z]),
+            );
+            params.insert(
+                "axis_dir".to_string(),
+                Value::Vec3([axis_dir.x, axis_dir.y, axis_dir.z]),
+            );
+            params.insert("angle_lo_deg".to_string(), Value::F64(*angle_lo_deg));
+            params.insert("angle_hi_deg".to_string(), Value::F64(*angle_hi_deg));
+            if let Some(v) = step_deg {
+                params.insert("step_deg".to_string(), Value::F64(*v));
+            }
+            if let Some(v) = clearance {
+                params.insert("clearance".to_string(), Value::F64(*v));
+            }
+            Some(create(crdt, ctx, "sweep-rotate", params))
         }
         // Boolean ops: migrate both operands first so their feature ids
         // exist before the boolean feature that references them.
@@ -718,7 +765,8 @@ fn migrate_doc_extras(crdt: &mut CrdtDocument, ctx: &mut MigrationCtx, doc: &Doc
         .into_iter()
         .filter(|(k, v)| DOC_EXTRA_FIELDS.contains(&k.as_str()) && !is_empty_json(v))
         .collect();
-    if extras.is_empty() {
+    // Bindings are written onto this feature once ids are final.
+    if extras.is_empty() && doc.bindings.is_empty() {
         return;
     }
     let mut params = HashMap::new();
@@ -727,6 +775,85 @@ fn migrate_doc_extras(crdt: &mut CrdtDocument, ctx: &mut MigrationCtx, doc: &Doc
         Value::String(serde_json::Value::Object(extras).to_string()),
     );
     create(crdt, ctx, "doc-extras", params);
+}
+
+/// Key on the `doc-extras` blob holding bindings addressed by feature.
+pub(crate) const FEATURE_BINDINGS: &str = "feature_bindings";
+
+/// Persist `doc.bindings` against features instead of v1 node ids. Node ids
+/// are reassigned on every materialize, so a stored id would go stale at the
+/// first edit; the feature id and field path don't.
+fn store_feature_bindings(crdt: &mut CrdtDocument, doc: &Document, map: &MigrationMap) {
+    let Ok(serde_json::Value::Object(bindings)) = serde_json::to_value(&doc.bindings) else {
+        return;
+    };
+    if bindings.is_empty() {
+        return;
+    }
+    let features: HashMap<NodeId, &str> = map
+        .mappings
+        .iter()
+        .map(|m| (m.old_node_id, m.feature_id.as_str()))
+        .collect();
+    let records: Vec<serde_json::Value> = bindings
+        .iter()
+        .filter_map(|(key, expr)| {
+            let (node, field) = key.split_once(':')?;
+            let feature = features.get(&node.parse::<NodeId>().ok()?)?;
+            Some(serde_json::json!({ "feature": feature, "field": field, "expr": expr }))
+        })
+        .collect();
+    let Some(fid) = crdt
+        .ordered_features()
+        .into_iter()
+        .find(|(_, f)| f.kind == "doc-extras")
+        .map(|(fid, _)| fid)
+    else {
+        return;
+    };
+    let mut extras = match crdt.get_feature(fid).and_then(|f| f.params.get("extras")) {
+        Some((Value::String(s), _)) => serde_json::from_str(s).unwrap_or_default(),
+        _ => serde_json::Map::new(),
+    };
+    extras.insert(FEATURE_BINDINGS.to_string(), records.into());
+    crdt.set_param(
+        fid,
+        "extras",
+        Value::String(serde_json::Value::Object(extras).to_string()),
+    );
+}
+
+/// Turn feature-addressed bindings back into `"<nodeId>:<field>"` keys for
+/// this materialize. Returns the bindings plus one warning per record whose
+/// feature or node is gone.
+pub(crate) fn resolve_feature_bindings(
+    records: &[serde_json::Value],
+    parts_json: &serde_json::Value,
+) -> (serde_json::Map<String, serde_json::Value>, Vec<String>) {
+    let mut out = serde_json::Map::new();
+    let mut warnings = Vec::new();
+    for record in records {
+        let (Some(feature), Some(field), Some(expr)) = (
+            record.get("feature").and_then(|v| v.as_str()),
+            record.get("field").and_then(|v| v.as_str()),
+            record.get("expr"),
+        ) else {
+            continue;
+        };
+        let node = parts_json.as_array().and_then(|parts| {
+            let part = parts
+                .iter()
+                .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(feature))?;
+            role_node_id(part, role_for_field(field))
+        });
+        match node {
+            Some(id) => {
+                out.insert(format!("{id}:{field}"), expr.clone());
+            }
+            None => warnings.push(format!("binding on {feature}.{field} has no target")),
+        }
+    }
+    (out, warnings)
 }
 
 pub(crate) fn is_empty_json(v: &serde_json::Value) -> bool {
@@ -844,6 +971,37 @@ fn fid_to_stable(fid: FeatureId) -> String {
     format!("{}:{}", fid.0 .0, fid.1)
 }
 
+/// A board node no root or part definition reaches is still the document's
+/// board. Everything else is carried by walking from the roots, so without
+/// this it vanished on load, and took the Electronics workspace with it.
+fn migrate_orphan_boards(crdt: &mut CrdtDocument, ctx: &mut MigrationCtx, doc: &Document) {
+    let mut reached = std::collections::HashSet::new();
+    let part_roots = doc.part_defs.iter().flatten().map(|(_, pd)| pd.root);
+    let mut stack: Vec<NodeId> = doc.roots.iter().map(|e| e.root).chain(part_roots).collect();
+    while let Some(id) = stack.pop() {
+        if reached.insert(id) {
+            stack.extend(
+                doc.nodes
+                    .get(&id)
+                    .map(|n| n.op.child_ids())
+                    .unwrap_or_default(),
+            );
+        }
+    }
+    let mut orphans: Vec<NodeId> = doc
+        .nodes
+        .iter()
+        .filter(|(id, node)| matches!(node.op, CsgOp::PcbBoard { .. }) && !reached.contains(id))
+        .map(|(id, _)| *id)
+        .collect();
+    orphans.sort_unstable();
+    for id in orphans {
+        if let Some(fid) = migrate_node(crdt, ctx, doc, id) {
+            crdt.set_param(fid, "material", Value::String("__pcb_fr4__".to_string()));
+        }
+    }
+}
+
 /// Migrate the assembly portion of a v1 document: part definitions, their
 /// instances, and the joints connecting them. No-op when the document has
 /// no `partDefs`.
@@ -867,6 +1025,11 @@ fn migrate_assembly(crdt: &mut CrdtDocument, ctx: &mut MigrationCtx, doc: &Docum
             "source_feature".to_string(),
             Value::FeatureRef(fid_to_stable(source_fid)),
         );
+        // A part definition's geometry reaches the scene through its instances.
+        // Only a node the document itself lists as a root is also a scene root.
+        if !doc.roots.iter().any(|entry| entry.root == pd.root) {
+            params.insert(PART_DEF_SOURCE_CONSUMED.to_string(), Value::Bool(true));
+        }
         if let Some(n) = &pd.name {
             params.insert("name".to_string(), Value::String(n.clone()));
         }
@@ -936,6 +1099,19 @@ fn migrate_assembly(crdt: &mut CrdtDocument, ctx: &mut MigrationCtx, doc: &Docum
                 .as_ref()
                 .and_then(|id| instance_stable.get(id));
 
+            let (effort_limit, velocity_limit) = match &joint.kind {
+                JointKind::Revolute {
+                    effort_limit,
+                    velocity_limit,
+                    ..
+                }
+                | JointKind::Slider {
+                    effort_limit,
+                    velocity_limit,
+                    ..
+                } => (*effort_limit, *velocity_limit),
+                _ => (None, None),
+            };
             let (kind_str, axis, limits_json) = match &joint.kind {
                 JointKind::Fixed => ("Fixed", None, None),
                 JointKind::Revolute { axis, limits, .. } => (
@@ -990,6 +1166,12 @@ fn migrate_assembly(crdt: &mut CrdtDocument, ctx: &mut MigrationCtx, doc: &Docum
                 params.insert("limits".to_string(), Value::String(j));
             }
             params.insert("state".to_string(), Value::F64(joint.state));
+            if let Some(v) = effort_limit {
+                params.insert("effort_limit".to_string(), Value::F64(v));
+            }
+            if let Some(v) = velocity_limit {
+                params.insert("velocity_limit".to_string(), Value::F64(v));
+            }
 
             create(crdt, ctx, "joint", params);
         }
@@ -1091,6 +1273,181 @@ mod tests {
             visible: None,
         });
         doc
+    }
+
+    #[test]
+    fn torus_wedge_and_prism_are_typed_after_a_load() {
+        let doc: Document = serde_json::from_value(serde_json::json!({
+            "version": "0.1",
+            "nodes": {
+                "1": {"id": 1, "op": {"type": "Torus", "major_radius": 20.0, "minor_radius": 5.0, "segments": 64}},
+                "2": {"id": 2, "op": {"type": "Wedge", "size": {"x": 10.0, "y": 20.0, "z": 30.0}}},
+                "3": {"id": 3, "op": {"type": "Prism", "sides": 6, "radius": 10.0, "height": 5.0}}
+            },
+            "materials": {}, "part_materials": {},
+            "roots": [{"root": 1, "material": "default"}, {"root": 2, "material": "default"}, {"root": 3, "material": "default"}]
+        })).unwrap();
+        let got = crate::materializer::materialize(&migrate_v1(&doc));
+        let kinds: Vec<_> = got
+            .parts
+            .iter()
+            .map(|p| serde_json::to_value(p).unwrap()["kind"].clone())
+            .collect();
+        assert_eq!(kinds, vec!["torus", "wedge", "prism"]);
+    }
+
+    #[test]
+    fn hull_and_sweep_rotate_migrate_typed_and_consume_children() {
+        let doc: Document = serde_json::from_value(serde_json::json!({
+            "version": "0.1",
+            "nodes": {
+                "1": {"id": 1, "op": {"type": "Cube", "size": {"x": 10.0, "y": 10.0, "z": 10.0}}},
+                "2": {"id": 2, "op": {"type": "Sphere", "radius": 5.0, "segments": 16}},
+                "3": {"id": 3, "op": {"type": "Hull", "children": [1, 2], "points": [0.0, 0.0, 40.0]}},
+                "4": {"id": 4, "op": {"type": "Cube", "size": {"x": 2.0, "y": 2.0, "z": 2.0}}},
+                "5": {"id": 5, "op": {"type": "SweepRotate", "child": 4,
+                    "axis_origin": {"x": 0.0, "y": 0.0, "z": 0.0}, "axis_dir": {"x": 0.0, "y": 0.0, "z": 1.0},
+                    "angle_lo_deg": 0.0, "angle_hi_deg": 90.0}}
+            },
+            "materials": {}, "part_materials": {},
+            "roots": [{"root": 3, "material": "default"}, {"root": 5, "material": "default"}]
+        })).unwrap();
+        let got = crate::materializer::materialize(&migrate_v1(&doc));
+        assert_eq!(got.document.roots.len(), 2, "{:?}", got.warnings);
+        let hull = got
+            .document
+            .nodes
+            .values()
+            .find_map(|n| match &n.op {
+                CsgOp::Hull { children, points } => Some((children.len(), points.clone())),
+                _ => None,
+            })
+            .expect("hull");
+        assert_eq!(hull, (2, vec![0.0, 0.0, 40.0]));
+        assert!(got.document.nodes.values().any(
+            |n| matches!(n.op, CsgOp::SweepRotate { angle_hi_deg, .. } if angle_hi_deg == 90.0)
+        ));
+    }
+
+    #[test]
+    fn an_unrooted_board_survives_a_load() {
+        let doc: Document = serde_json::from_value(serde_json::json!({
+            "version": "0.1",
+            "nodes": {
+                "1": {"id": 1, "op": {"type": "Cube", "size": {"x": 1.0, "y": 1.0, "z": 1.0}}},
+                "2": {"id": 2, "name": "PCB", "op": {"type": "PcbBoard", "board": {
+                    "outline": {"vertices": [], "thickness": 1.6},
+                    "stackup": {"layers": []},
+                    "nets": [],
+                    "rules": {"defaultRules": {"name": "default", "traceWidth": 0.2,
+                        "clearance": 0.2, "viaDiameter": 0.6, "viaDrill": 0.3},
+                        "edgeClearance": 0.3, "holeToHole": 0.25,
+                        "minAnnularRing": 0.1, "minDrill": 0.2},
+                    "footprints": [], "traces": [], "vias": [], "zones": []
+                }}}
+            },
+            "materials": {},
+            "part_materials": {},
+            "roots": [{"root": 1, "material": "default"}]
+        }))
+        .expect("fixture");
+        let out = crate::materializer::materialize(&migrate_v1(&doc)).document;
+        assert!(
+            out.nodes
+                .values()
+                .any(|n| matches!(n.op, CsgOp::PcbBoard { .. })),
+            "the board must be in the materialized document"
+        );
+        assert_eq!(out.roots.len(), 2, "and reachable from the scene");
+    }
+
+    #[test]
+    fn torus_wedge_and_prism_survive_a_load() {
+        let doc: Document = serde_json::from_value(serde_json::json!({
+            "version": "0.1",
+            "nodes": {
+                "1": {"id": 1, "op": {"type": "Torus", "major_radius": 20.0, "minor_radius": 5.0, "segments": 64}},
+                "2": {"id": 2, "op": {"type": "Wedge", "size": {"x": 10.0, "y": 20.0, "z": 30.0}}},
+                "3": {"id": 3, "op": {"type": "Prism", "sides": 6, "radius": 10.0, "height": 5.0}}
+            },
+            "materials": {}, "part_materials": {},
+            "roots": [{"root": 1, "material": "default"}, {"root": 2, "material": "default"}, {"root": 3, "material": "default"}]
+        })).unwrap();
+        let got = crate::materializer::materialize(&migrate_v1(&doc)).document;
+        assert_eq!(got.roots.len(), 3);
+        for found in [
+            got.nodes
+                .values()
+                .any(|n| matches!(n.op, CsgOp::Torus { .. })),
+            got.nodes
+                .values()
+                .any(|n| matches!(n.op, CsgOp::Wedge { .. })),
+            got.nodes
+                .values()
+                .any(|n| matches!(n.op, CsgOp::Prism { .. })),
+        ] {
+            assert!(found);
+        }
+    }
+
+    /// Real documents, through the same path the app opens them with.
+    fn load(json: &str) -> Document {
+        serde_json::from_str(json).expect("example parses")
+    }
+
+    #[test]
+    fn a_loaded_document_keeps_its_bindings_on_the_right_nodes() {
+        let original = load(include_str!("../../../examples/parametric-plate.vcad"));
+        let once = crate::materializer::materialize(&migrate_v1(&original)).document;
+        // Twice: a saved document must reload the same way.
+        let twice = crate::materializer::materialize(&migrate_v1(&once)).document;
+        for doc in [&once, &twice] {
+            let json = serde_json::to_value(&doc.bindings).unwrap();
+            let bindings = json.as_object().unwrap();
+            assert_eq!(bindings.len(), 7, "{bindings:?}");
+            for key in bindings.keys() {
+                let (node, field) = key.split_once(':').unwrap();
+                let op = &doc.nodes[&node.parse::<NodeId>().unwrap()].op;
+                match field {
+                    "size.x" | "size.y" | "size.z" => {
+                        assert!(matches!(op, CsgOp::Cube { .. }), "{key}: {op:?}")
+                    }
+                    "radius" | "height" => {
+                        assert!(matches!(op, CsgOp::Cylinder { .. }), "{key}: {op:?}")
+                    }
+                    "offset.x" | "offset.y" => {
+                        assert!(matches!(op, CsgOp::Translate { .. }), "{key}: {op:?}")
+                    }
+                    other => panic!("unexpected field {other}"),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_loaded_document_keeps_its_actuator_limits() {
+        let limits = |doc: &Document| -> Vec<(Option<f64>, Option<f64>)> {
+            let mut v: Vec<_> = doc
+                .joints
+                .iter()
+                .flatten()
+                .filter_map(|j| match j.kind {
+                    JointKind::Revolute {
+                        effort_limit,
+                        velocity_limit,
+                        ..
+                    } => Some((effort_limit, velocity_limit)),
+                    _ => None,
+                })
+                .collect();
+            v.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            v
+        };
+        let original = load(include_str!("../../../examples/k1-floating.vcad"));
+        let want = limits(&original);
+        assert!(want.iter().any(|l| l.0.is_some()), "fixture has limits");
+        let got = crate::materializer::materialize(&migrate_v1(&original)).document;
+        assert_eq!(limits(&got), want);
     }
 
     /// Migration renumbers every node, so bindings authored against v1 ids
@@ -1347,6 +1704,92 @@ mod tests {
         let crdt = migrate_v1(&doc);
         assert_eq!(crdt.ordered_features().len(), 1);
         assert_eq!(crdt.ordered_features()[0].1.kind, "cube");
+    }
+
+    /// An assembly: `n` part defs, each instanced once, plus `roots`.
+    fn assembly(n: u64, roots: &[u64]) -> Document {
+        let mut value = serde_json::json!({
+            "version": "0.1", "nodes": {}, "materials": {}, "part_materials": {},
+            "roots": roots.iter().map(|r| serde_json::json!({"root": r, "material": "default"})).collect::<Vec<_>>(),
+            "partDefs": {}, "instances": [],
+        });
+        for i in 1..=n {
+            value["nodes"][i.to_string()] = serde_json::json!({
+                "id": i, "name": format!("link{i}"),
+                "op": {"type": "Cube", "size": {"x": 1.0, "y": 1.0, "z": i as f64}},
+            });
+            let id = format!("def{i}");
+            value["partDefs"][&id] = serde_json::json!({"id": id, "root": i});
+            value["instances"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({
+                    "id": format!("inst{i}"), "partDefId": id,
+                }));
+        }
+        serde_json::from_value(value).expect("assembly fixture")
+    }
+
+    #[test]
+    fn part_definitions_do_not_become_scene_roots() {
+        let doc = assembly(6, &[]);
+        let result = crate::materializer::materialize(&migrate_v1(&doc));
+        assert_eq!(
+            result.document.roots.len(),
+            0,
+            "{:?}",
+            result.document.roots
+        );
+        assert_eq!(result.document.part_defs.as_ref().unwrap().len(), 6);
+        assert_eq!(result.document.instances.as_ref().unwrap().len(), 6);
+    }
+
+    #[test]
+    fn a_root_that_is_also_a_part_definition_stays_one_root() {
+        let doc = assembly(6, &[3]);
+        let result = crate::materializer::materialize(&migrate_v1(&doc));
+        assert_eq!(
+            result.document.roots.len(),
+            1,
+            "{:?}",
+            result.document.roots
+        );
+        // The surviving root is that part's geometry, under any transform wrappers.
+        let mut id = result.document.roots[0].root;
+        while let CsgOp::Translate { child, .. }
+        | CsgOp::Rotate { child, .. }
+        | CsgOp::Scale { child, .. } = &result.document.nodes[&id].op
+        {
+            id = *child;
+        }
+        match &result.document.nodes[&id].op {
+            CsgOp::Cube { size } => assert_eq!(size.z, 3.0),
+            other => panic!("expected the third part's cube, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn assembly_roots_are_stable_across_repeated_round_trips() {
+        let mut doc = assembly(4, &[2]);
+        for _ in 0..3 {
+            doc = crate::materializer::materialize(&migrate_v1(&doc)).document;
+            assert_eq!(doc.roots.len(), 1, "{:?}", doc.roots);
+            assert_eq!(doc.part_defs.as_ref().unwrap().len(), 4);
+        }
+    }
+
+    #[test]
+    fn a_plain_document_round_trips_with_the_same_roots() {
+        let doc: Document = serde_json::from_value(serde_json::json!({
+            "version": "0.1", "materials": {}, "part_materials": {},
+            "nodes": {
+                "1": {"id": 1, "name": "a", "op": {"type": "Cube", "size": {"x": 1.0, "y": 1.0, "z": 1.0}}},
+                "2": {"id": 2, "name": "b", "op": {"type": "Cube", "size": {"x": 2.0, "y": 1.0, "z": 1.0}}},
+            },
+            "roots": [{"root": 1, "material": "default"}, {"root": 2, "material": "default"}],
+        })).expect("plain fixture");
+        let result = crate::materializer::materialize(&migrate_v1(&doc));
+        assert_eq!(result.document.roots.len(), 2);
     }
 
     #[test]

@@ -12,6 +12,7 @@
  * board.
  */
 
+import { evaluateIncrementally } from "./document-solids.js";
 import type { Document } from "@vcad/ir";
 import { pcbPreviewMeshes, transformMesh, type Engine } from "@vcad/engine";
 import { getNodePcb } from "@vcad/core";
@@ -186,13 +187,22 @@ export async function generateGlbPreview(
   // comes from the normal scene eval. Wrapped so a single failing board — or a
   // hard eval throw — can't blank a preview the PCB-data path already filled.
   try {
-    const scene = engine.evaluate(doc);
+    // A board drawn from its preview meshes is dropped before the scene eval:
+    // evaluating it would tessellate all its copper (seconds on a routed
+    // board, on every write) only for the result to be thrown away.
+    const sceneDoc: Document =
+      handledBoards.size === 0
+        ? doc
+        : { ...doc, roots: doc.roots.filter((r) => !handledBoards.has(Number(r.root))) };
+    const sceneRoots = sceneDoc.roots.filter((r) => r.visible !== false);
+    const labelIndex = new Map(visibleRoots.map((r, i) => [Number(r.root), i]));
+    const needsScene = sceneRoots.length > 0 || (doc.instances?.length ?? 0) > 0;
+    const scene = needsScene ? evaluateIncrementally(sceneDoc, engine) : null;
     for (let i = 0; i < (scene?.parts.length ?? 0); i++) {
-      const rootId = visibleRoots[i]?.root;
-      if (rootId !== undefined && handledBoards.has(Number(rootId))) continue;
-
+      const rootId = sceneRoots[i]?.root;
       const part = scene!.parts[i];
-      const name = labels[i] ?? `part_${i}`;
+      const labelAt = rootId !== undefined ? labelIndex.get(Number(rootId)) : undefined;
+      const name = (labelAt !== undefined ? labels[labelAt] : undefined) ?? `part_${i}`;
       const node = rootId !== undefined ? doc.nodes[String(rootId)] : undefined;
 
       // Old-WASM fallback: a board with no preview meshes still renders as the
@@ -266,7 +276,7 @@ export async function generateGlbPreview(
 /** Grid resolutions tried, coarsest-last. 256 barely changes a normal part;
  *  4 flattens anything into a coarse blob. The ladder bottoms out rather than
  *  running forever — below ~4 cells across the scene there is no shape left. */
-const DECIMATE_GRIDS = [256, 192, 128, 96, 64, 48, 32, 24, 16, 12, 8, 6, 4];
+export const DECIMATE_GRIDS = [256, 192, 128, 96, 64, 48, 32, 24, 16, 12, 8, 6, 4];
 
 /**
  * Build the GLB for `meshes`, decimating progressively until the base64
@@ -471,7 +481,7 @@ export function generateInstancesGlbPreview(
   engine: Engine,
 ): string | null {
   try {
-    const scene = engine.evaluate(doc);
+    const scene = evaluateIncrementally(doc, engine);
     const instances = scene?.instances;
     if (!instances || instances.length === 0) return null;
 

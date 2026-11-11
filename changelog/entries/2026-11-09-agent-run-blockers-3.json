@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-09-agent-run-blockers-3",
+  "version": "0.11.0",
+  "date": "2026-11-09",
+  "category": "fix",
+  "title": "Agent CAD runs: cavities, boards, deletes, clearance",
+  "summary": "Cases with cutouts are measured, boards join existing documents, parts move and delete cleanly, and clearance sees real components.",
+  "features": ["mcp", "enclosure", "pcb", "assembly", "topology-optimization", "native"],
+  "mcpTools": ["check_enclosure_fit", "board_from_solid", "create_schematic", "import_kicad", "update", "delete", "topology_optimize", "check_clearance", "build_receipt", "analyze_structure", "create_cad_loon"]
+}

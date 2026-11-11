@@ -139,6 +139,9 @@ pub enum PourReason {
 pub struct PourPolicy {
     /// Master switch. `false` makes synthesis a no-op.
     pub enabled: bool,
+    /// Nets never poured, whatever the rest of the policy says. The router adds
+    /// a net here when its pour left the net's pads disconnected.
+    pub excluded_nets: BTreeSet<String>,
     /// Design intent: net name → continuous current it must carry (A). The
     /// strongest signal, and the one an explicit design-intent surface should
     /// drive. Empty on every imported board, which is why the fallbacks exist.
@@ -190,6 +193,7 @@ impl Default for PourPolicy {
     fn default() -> Self {
         Self {
             enabled: true,
+            excluded_nets: BTreeSet::new(),
             net_current_a: BTreeMap::new(),
             copper_oz: 1.0,
             temp_rise_c: 10.0,
@@ -339,6 +343,9 @@ pub fn decide_pours(pcb: &Pcb, policy: &PourPolicy, nets_filter: &[String]) -> V
     // --- which nets ---------------------------------------------------------
     let mut wanted: Vec<(&str, PourReason)> = Vec::new();
     for (&net, &pads) in &pads_per_net {
+        if policy.excluded_nets.contains(net) {
+            continue;
+        }
         // Distributed enough to be a network: many pads, or a lot of pad copper
         // (a battery input is two big terminals, not twenty small ones).
         let pad_area = pad_area_per_net.get(net).copied().unwrap_or(0.0);
@@ -1161,6 +1168,14 @@ mod tests {
         );
         let only_gnd = decide_pours(&pcb, &PourPolicy::default(), &["GND".into()]);
         assert!(only_gnd.iter().all(|c| c.net == "GND"));
+
+        let no_gnd = PourPolicy {
+            excluded_nets: BTreeSet::from(["GND".to_string()]),
+            ..Default::default()
+        };
+        assert!(decide_pours(&pcb, &no_gnd, &[])
+            .iter()
+            .all(|c| c.net != "GND"));
 
         let off = PourPolicy {
             enabled: false,

@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-10-drawing-letters-and-workspace-picker",
+  "version": "0.11.0",
+  "date": "2026-11-10",
+  "category": "fix",
+  "title": "Drawing letters skip datums; workspace picker opens up",
+  "summary": "Section, detail and datum letters share one alphabet without I, O, Q, so no letter names two things; the dock's workspace picker now opens upward above the bottom dock.",
+  "features": ["drawing", "native", "gdt"],
+  "mcpTools": []
+}

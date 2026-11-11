@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-09-wasm-chained-cuts-no-panic",
+  "version": "0.11.0",
+  "date": "2026-11-09",
+  "category": "perf",
+  "title": "Chained cuts no longer panic the WASM evaluator",
+  "summary": "Documents with chained boolean cuts evaluate in the kernel instead of crashing into the slower TypeScript fallback.",
+  "features": ["kernel", "performance"],
+  "mcpTools": ["describe_scene", "delete"]
+}

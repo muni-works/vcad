@@ -121,7 +121,7 @@ extension EditorModel {
     }
 
     /// Directory relative mesh imports resolve against.
-    var exportBaseDir: String? { documentURL?.deletingLastPathComponent().path }
+    var exportBaseDir: String? { documentURL?.deletingLastPathComponent().path ?? agentLinkBaseDir }
 
     /// Cheap enough for menu validation (no serialization).
     var canExportDocument: Bool {

@@ -396,7 +396,7 @@ fn a_wrong_length_action_is_rejected_rather_than_padded() {
     let spec = g1_spec();
     let gym = Gym::open(&doc, &spec);
     let g = gym.as_ptr();
-    let short = vec![0.0f64; 3];
+    let short = [0.0f64; 3];
     assert_eq!(vcad_gym_step(g, short.as_ptr(), short.len(), 1), 0);
     let e = last_error();
     assert!(e.contains("action values"), "{e}");

@@ -72,6 +72,38 @@ extension EditorModel {
         return id
     }
 
+    /// Bodies a clearance check measures — what the viewport draws: every
+    /// assembly instance plus the visible roots no part def owns, or just the
+    /// visible roots when there is no assembly (mirrors `vcad_clearance`).
+    var clearanceBodyCount: Int {
+        guard let json = documentJSON else { return 0 }
+        let roots = ((json["roots"] as? [[String: Any]]) ?? []).filter { ($0["visible"] as? Bool) != false }
+        let instances = (json["instances"] as? [Any])?.count ?? 0
+        guard instances > 0 else { return roots.count }
+        let defRoots = Set(((json["partDefs"] as? [String: [String: Any]]) ?? [:]).values
+            .compactMap { ($0["root"] as? NSNumber)?.intValue })
+        return instances + roots.filter { !defRoots.contains(($0["root"] as? NSNumber)?.intValue ?? -1) }.count
+    }
+
+    /// Open Analyze ▸ Clearance & Interference and run it — the assembly
+    /// dock's check button. Also re-checks mates when there are any.
+    func checkInterference() {
+        let s = AnalysisStore.shared
+        s.shown = true; s.tab = .clearance; s.overlayRevision += 1
+        if !asmMates.isEmpty { assembly.showsPanel = true; checkMates() }
+        Task { await s.runClearance(self) }
+    }
+
+    /// What a visible scene root is called wherever a part is listed: its
+    /// Model-tree name (the feature under the placement wrappers — "Box",
+    /// not the unnamed Translate a click-placed primitive's root is).
+    func partDisplayName(_ partIndex: Int) -> String {
+        if let n = featureNodes.first(where: { $0.partIndex == partIndex })?.name, !n.isEmpty { return n }
+        if let g = documentGraph, partIndex >= 0, partIndex < g.visibleRoots.count, let json = documentJSON,
+           let n = AsmEdit.partName(json, rootNodeId: g.visibleRoots[partIndex].nodeId) { return n }
+        return "Part \(partIndex + 1)"
+    }
+
     /// Insert an instance of a visible scene root, creating its part
     /// definition on first use (the web's Create Part Definition + Insert).
     @discardableResult
@@ -82,7 +114,7 @@ extension EditorModel {
         let id = newInstanceId {
             assemblyEdit("Insert Instance", rebuild: true) {
                 let def = AsmEdit.ensurePartDef(&$0, rootNodeId: root,
-                                                 name: AsmEdit.partName($0, rootNodeId: root) ?? "Part \(partIndex + 1)")
+                                                 name: AsmEdit.partName($0, rootNodeId: root) ?? partDisplayName(partIndex))
                 AsmEdit.insertInstance(&$0, partDefId: def, translation: SIMD3(n * 20, 0, 0))
             }
         }
@@ -190,6 +222,18 @@ extension EditorModel {
         }
         v.merge(assembly.dragValues) { $1 }
         return v
+    }
+
+    /// A pose set from outside the panel supersedes any drag left on those
+    /// joints. A drag override outranks the pose, so one left behind pinned
+    /// the Joints panel to a value the joint no longer has.
+    func clearJointDrags(forPoseKeys keys: Set<String>) {
+        guard !assembly.dragValues.isEmpty else { return }
+        for j in asmJoints {
+            guard let id = j["id"] as? String else { continue }
+            let key = (j["name"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? id
+            if keys.contains(key) || keys.contains(id) { assembly.dragValues.removeValue(forKey: id) }
+        }
     }
 
     /// Live FK while dragging a joint: one kernel solve, no document change.

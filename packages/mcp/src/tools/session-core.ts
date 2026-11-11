@@ -281,7 +281,7 @@ export function nextSessionId(): string {
 
 /** Register a freshly-built document as a session and return its id.
  *  Lets other tools (e.g. `sheet_metal_create`) hand back a
- *  `document_id` that `inspect_cad` / `export_cad` / `open_in_browser`
+ *  `document_id` that `inspect_cad` / `export_cad` / `open_in_app`
  *  can then operate on, without duplicating the id scheme. */
 export function registerSession(doc: Document): string {
   const id = nextSessionId();
@@ -457,6 +457,20 @@ export function recordHistorySnapshot(documentId: string, toolName?: string): vo
   stack.push(cloneDoc(doc));
   if (stack.length > MAX_HISTORY) stack.shift();
   sessionHistory.set(documentId, stack);
+}
+
+/**
+ * Drop the snapshot just recorded when the tool left the document as it found
+ * it, so `undo` always rewinds a step that changed something rather than a
+ * failed call or one that only read the document (`create_robot_env`).
+ */
+export function discardUnchangedSnapshot(documentId: string): void {
+  const stack = sessionHistory.get(documentId);
+  const doc = documents.get(documentId);
+  if (!stack?.length || !doc) return;
+  if (JSON.stringify(stack[stack.length - 1]) !== JSON.stringify(doc)) return;
+  stack.pop();
+  if (stack.length === 0) sessionHistory.delete(documentId);
 }
 
 /** Number of undo steps available for a session. */
