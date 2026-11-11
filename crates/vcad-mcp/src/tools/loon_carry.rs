@@ -70,17 +70,17 @@ pub fn carry_electronics(session: &Value, doc: &mut Value) -> Result<Option<Stri
             carried.push(id);
         }
     }
-    let mut next = target
+    let base = target
         .keys()
         .filter_map(|k| k.parse::<i64>().ok())
         .max()
         .unwrap_or(-1)
         + 1;
-    let mut remap = std::collections::HashMap::new();
-    for id in &carried {
-        remap.insert(*id, next);
-        next += 1;
-    }
+    let remap: std::collections::HashMap<i64, i64> = carried
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (*id, base + i as i64))
+        .collect();
     let mut roots = doc["roots"].as_array().cloned().unwrap_or_default();
     let mut materials = doc["materials"].as_object().cloned().unwrap_or_default();
     let session_materials = session["materials"]
