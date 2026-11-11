@@ -221,6 +221,8 @@ struct FeatureOpSheet: View {
                 TextField(label, value: v, format: .number.precision(.fractionLength(0...3)))
                     .multilineTextAlignment(.trailing).frame(width: 80).labelsHidden()
                 Text(unit).foregroundStyle(.secondary)
+                // A stepper so these panels work mouse-only (they were type-only).
+                Stepper(label, value: v, step: unit == "°" ? 15 : unit == "×" ? 0.1 : 0.5).labelsHidden()
             }
         }
     }

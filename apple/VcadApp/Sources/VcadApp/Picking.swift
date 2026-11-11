@@ -92,7 +92,10 @@ struct TopoEdge: Decodable {
 
     /// The polyline as point pairs, ready for a ribbon.
     var segmentPoints: [SIMD3<Float>] {
-        stride(from: 0, to: segments.count - 5, by: 3).map { i in
+        // `to: count - 2` keeps the final point. It was `count - 5`, which for
+        // a straight edge (one pair, six floats) yielded a single point, so
+        // the ribbon had no segment and picked edges never lit up.
+        stride(from: 0, to: segments.count - 2, by: 3).map { i in
             SIMD3(segments[i], segments[i + 1], segments[i + 2])
         }
     }

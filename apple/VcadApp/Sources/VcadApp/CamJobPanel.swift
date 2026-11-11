@@ -113,6 +113,16 @@ struct CamJobPanel: View {
             FabField(label: "H", value: $store.stockH, digits: 1)
             FabField(label: "D", value: $store.stockD, digits: 1)
         }.font(.caption)
+        .onAppear {
+            // Untouched template stock (40 × 30 × 10) becomes the part's own
+            // size, so a first Generate cuts the part on screen, not a template.
+            let s = model.sizeMM
+            if store.stockW == 40, store.stockH == 30, store.stockD == 10, s.x > 0, s.y > 0, s.z > 0 {
+                store.stockW = (Double(s.x) * 10).rounded() / 10
+                store.stockH = (Double(s.y) * 10).rounded() / 10
+                store.stockD = (Double(s.z) * 10).rounded() / 10
+            }
+        }
         toolLibrary
         operations
         Picker("Post", selection: $store.post) {
@@ -191,8 +201,8 @@ struct CamJobPanel: View {
                     }
                     HStack {
                         FabField(label: "Depth", value: $op.depth)
-                        FabField(label: "↓", value: $op.stepdown)
-                        FabField(label: "→", value: $op.stepover)
+                        FabField(label: "Step ↓", value: $op.stepdown)
+                        FabField(label: "Step →", value: $op.stepover)
                     }.font(.caption)
                     if op.kind == "circle_pocket" {
                         HStack {
