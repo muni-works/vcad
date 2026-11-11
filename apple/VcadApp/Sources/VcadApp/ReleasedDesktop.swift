@@ -189,10 +189,32 @@ final class ReleaseWindowController {
             // arrive in a fine stream; a notched wheel sends few, large ticks.
             // Scaling them the same way makes the wheel unusable. Read the event
             // out here — NSEvent cannot cross into an isolated closure.
-            let dy = e.hasPreciseScrollingDeltas
-                ? Float(e.scrollingDeltaY) * 0.004
-                : Float(e.scrollingDeltaY) * 0.06
-            let consumed = MainActor.assumeIsolated { self.dolly(by: dy) }
+            let precise = e.hasPreciseScrollingDeltas
+            let shift = e.modifierFlags.contains(.shift)
+            let dx = Float(e.scrollingDeltaX), rawDY = Float(e.scrollingDeltaY)
+            let dy = precise ? rawDY * 0.004 : rawDY * 0.06
+            let loc = e.locationInWindow
+            let consumed = MainActor.assumeIsolated { () -> Bool in
+                switch NavigationScheme.current.action(for: .scroll(precise: precise, shift: shift)) {
+                case .pan: return self.scrollCamera(dx: dx, dy: rawDY, orbit: false)
+                case .orbit: return self.scrollCamera(dx: dx, dy: rawDY, orbit: true)
+                case .zoomAtCursor: return self.dolly(by: dy, atWindowPoint: loc)
+                default: return self.dolly(by: dy)
+                }
+            }
+            return consumed ? nil : e
+        } as Any)
+        // Middle button: Fusion 360's camera button (pan; ⇧ orbit; double-
+        // click fits). SwiftUI gestures only see the left button, so this is
+        // an AppKit monitor, scoped to the scene like the scroll zoom.
+        mouseMonitors.append(NSEvent.addLocalMonitorForEvents(
+            matching: [.otherMouseDown, .otherMouseDragged, .otherMouseUp]) { [weak self] e in
+            guard let self, e.window === self.window, e.buttonNumber == 2 else { return e }
+            let type = e.type, clicks = e.clickCount, shift = e.modifierFlags.contains(.shift)
+            let dx = Float(e.deltaX), dy = Float(e.deltaY)
+            let consumed = MainActor.assumeIsolated {
+                self.middleMouse(type: type, clicks: clicks, shift: shift, dx: dx, dy: dy)
+            }
             return consumed ? nil : e
         } as Any)
         updatePassThrough()
@@ -396,6 +418,75 @@ final class ReleaseWindowController {
         m.distance = max(0.45, min(8.0, m.distance * (1 - dy)))
         m.pinchBaseline = m.distance
         return true
+    }
+
+    /// Zoom about the point under the pointer (Fusion 360's wheel): the
+    /// orbit target slides toward the pointer by the same ratio the camera
+    /// closes in, so what is under the cursor stays under it.
+    private func dolly(by dy: Float, atWindowPoint loc: CGPoint) -> Bool {
+        guard pointerOverScene, dy != 0, let m = model else { return false }
+        guard let ar = arView else { return dolly(by: dy) }
+        var p = ar.convert(loc, from: nil)
+        if !ar.isFlipped { p.y = ar.bounds.height - p.y }
+        guard let ray = PlacementMath.worldRay(viewPoint: p, viewSize: ar.bounds.size,
+                                               camera: m.cameraPosition, lookAt: m.panOffset)
+        else { return dolly(by: dy) }
+        m.stopSpin()
+        m.cameraUserMoved = true
+        let newDistance = max(0.45, min(8.0, m.distance * (1 - dy)))
+        m.panOffset = NavigationScheme.zoomTarget(panOffset: m.panOffset, camera: m.cameraPosition,
+                                                  rayDirection: ray.d, distance: m.distance,
+                                                  newDistance: newDistance)
+        m.distance = newDistance
+        m.pinchBaseline = m.distance
+        return true
+    }
+
+    /// Two-finger swipe → pan or orbit (Fusion 360 trackpad bindings).
+    private func scrollCamera(dx: Float, dy: Float, orbit: Bool) -> Bool {
+        guard pointerOverScene, dx != 0 || dy != 0, let m = model else { return false }
+        m.stopSpin()
+        m.cameraUserMoved = true
+        // Content follows the fingers, like scrolling a document.
+        if orbit { m.orbitDrag(dx: -dx, dy: -dy) } else { m.panBy(dx: dx, dy: dy) }
+        return true
+    }
+
+    private var middleDragging = false
+
+    /// Middle-button camera input. Returns whether the event was consumed.
+    private func middleMouse(type: NSEvent.EventType, clicks: Int, shift: Bool,
+                             dx: Float, dy: Float) -> Bool {
+        guard let m = model else { return false }
+        let scheme = NavigationScheme.current
+        switch type {
+        case .otherMouseDown:
+            guard pointerOverScene else { return false }
+            if clicks == 2, scheme.action(for: .doubleClick(.middle)) == .fitAll {
+                m.resetCamera(animated: true)
+                middleDragging = false
+                return true
+            }
+            middleDragging = true
+            m.beginOrbit()
+            return true
+        case .otherMouseDragged:
+            guard middleDragging else { return false }
+            switch scheme.action(for: .drag(.middle, shift: shift, command: false)) {
+            case .orbit: m.orbitDrag(dx: dx, dy: dy)
+            case .pan: m.panBy(dx: dx, dy: dy)
+            default: break
+            }
+            RenderGate.wake()
+            return true
+        case .otherMouseUp:
+            guard middleDragging else { return false }
+            middleDragging = false
+            m.endOrbit()
+            return true
+        default:
+            return false
+        }
     }
 
     // MARK: hover
@@ -690,6 +781,9 @@ struct ReleasedOverlayView: View {
 
     /// The in-flight ⌘-drag rubber band, in overlay view coords.
     @State private var marquee: (start: CGPoint, current: CGPoint)?
+    /// What the current left-drag does, decided once at its first event from
+    /// the navigation scheme (orbit, pan, marquee, gizmo handle, or nothing).
+    @State private var leftDragMode: NavigationScheme.Action?
     /// Where the last click landed and how far into that point's stack of parts
     /// it selected — clicking the same spot again walks to the part behind.
     @State private var cycleAnchor: CGPoint?
@@ -1412,31 +1506,47 @@ struct ReleasedOverlayView: View {
     private var marqueeOrOrbitGesture: some Gesture {
         DragGesture(minimumDistance: 2)
             .onChanged { value in
-                // ⌘-drag from empty space is a rubber band, matching ⌘-click's
-                // "add to the selection". A plain drag stays an orbit: rebinding
-                // orbit to a modifier to make room for marquee would break the
-                // muscle memory of every 3D app.
-                if marquee != nil || (model.lastDrag == .zero && !model.draggingHandle
-                                      && model.usesDocumentTree
-                                      && NSEvent.modifierFlags.contains(.command)
-                                      && partIndex(at: value.startLocation) == nil) {
+                // What a left-drag does is the navigation scheme's call, made
+                // once at the drag's first event (NavigationScheme.action):
+                // Fusion 360 rubber-bands (the middle button moves the
+                // camera); vcad classic orbits, ⇧ pans, ⌘ from empty space
+                // rubber-bands. A drag from a gizmo handle is a part
+                // transform in both — detected via hitTest, since the clear
+                // layer owns events.
+                if marquee != nil {
                     marquee = (value.startLocation, value.location)
                     return
                 }
-                if model.lastDrag == .zero && !model.draggingHandle {
-                    // A drag that starts on a gizmo handle is a part transform,
-                    // not an orbit — same split the studio's targeted gesture
-                    // makes, done here via hitTest (the clear layer owns events).
-                    if let name = ReleaseWindowController.shared.hits(atViewPoint: value.startLocation)
-                           .first(where: { model.gizmoHandle(for: $0.entity.name) != nil })?.entity.name,
-                       let ray = kernelRay(at: value.startLocation) {
-                        model.draggingHandle = true
-                        NSCursor.closedHand.set()
-                        model.beginGizmoDrag(handle: name, ray: ray)
-                        model.lastDrag = value.translation
+                if leftDragMode == nil && !model.draggingHandle {
+                    let handle = ReleaseWindowController.shared.hits(atViewPoint: value.startLocation)
+                        .first(where: { model.gizmoHandle(for: $0.entity.name) != nil })?.entity.name
+                    let flags = NSEvent.modifierFlags
+                    let mode = NavigationScheme.current.action(
+                        for: .drag(.left, shift: flags.contains(.shift), command: flags.contains(.command),
+                                   onHandle: handle != nil,
+                                   onEmpty: partIndex(at: value.startLocation) == nil),
+                        sketching: model.sketching)
+                    leftDragMode = mode
+                    switch mode {
+                    case .dragHandle:
+                        if let name = handle, let ray = kernelRay(at: value.startLocation) {
+                            model.draggingHandle = true
+                            NSCursor.closedHand.set()
+                            model.beginGizmoDrag(handle: name, ray: ray)
+                            model.lastDrag = value.translation
+                        }
+                        return
+                    case .marquee where model.usesDocumentTree:
+                        marquee = (value.startLocation, value.location)
+                        return
+                    case .orbit, .pan:
+                        break
+                    default:
+                        leftDragMode = NavigationScheme.Action.none
                         return
                     }
                 }
+                if leftDragMode == NavigationScheme.Action.none { return }
                 if model.draggingHandle {
                     if let ray = kernelRay(at: value.location) { model.gizmoDragTo(ray: ray) }
                     refreshDraggedGeometry(final: false)
@@ -1454,6 +1564,9 @@ struct ReleasedOverlayView: View {
                 model.lastDrag = value.translation
             }
             .onEnded { _ in
+                let mode = leftDragMode
+                leftDragMode = nil
+                if mode == NavigationScheme.Action.none { model.lastDrag = .zero; return }
                 if let m = marquee {
                     commitMarquee(from: m.start, to: m.current)
                     marquee = nil
@@ -1919,7 +2032,31 @@ struct ReleasedARView: NSViewRepresentable {
                 e.isEnabled = grounded
                 anchor.addChild(e)
             }
+            let lo = scene.center - model.sizeMM / 2, hi = scene.center + model.sizeMM / 2
+            if let shadow = SceneAssets.contactShadowEntity(
+                triangles: shadowTriangles(model: model, lo: lo, hi: hi), lo: lo, hi: hi,
+                sceneCenter: scene.center, sceneScale: sceneScale,
+                floorY: SceneAssets.floorY(partSizeMM: model.sizeMM, sceneScale: sceneScale), dark: dark) {
+                shadow.isEnabled = grounded
+                anchor.addChild(shadow)
+            }
         }
+    }
+
+    /// The triangle soup (kernel mm) that casts the contact shadow: the
+    /// visible document parts' real meshes, so the shadow follows the actual
+    /// footprint (a cylinder throws a round pool, an L-bracket an L). Scenes
+    /// without per-part triangle data (the sandbox, assemblies) fall back to
+    /// the bounding-box footprint.
+    private func shadowTriangles(model: EditorModel, lo: SIMD3<Float>, hi: SIMD3<Float>) -> [SIMD3<Float>] {
+        var out: [SIMD3<Float>] = []
+        if model.usesDocumentTree {
+            for (i, m) in model.docPartMeshes.enumerated() where model.isPartVisible(i) {
+                out.reserveCapacity(out.count + m.indices.count)
+                for k in m.indices where Int(k) < m.positions.count { out.append(m.positions[Int(k)]) }
+            }
+        }
+        return out.isEmpty ? ContactShadow.boxTriangles(lo: lo, hi: hi) : out
     }
 
     /// Visible width at the target, in model millimetres (60° vertical FOV,
