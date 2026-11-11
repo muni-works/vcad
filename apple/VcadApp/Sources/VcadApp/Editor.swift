@@ -2808,12 +2808,10 @@ final class EditorModel {
 
     /// Turn the camera to a standard view, animated.
     func animateCamera(to preset: CameraPreset) {
-        stopSpin()
-        cameraUserMoved = true
-        withAnimation(Motion.smooth) {
-            azimuth = preset.azimuth
-            elevation = preset.elevation
-        }
+        var p = cameraPose
+        p.azimuth = preset.azimuth
+        p.elevation = preset.elevation
+        NavigationUI.shared.glide(self, to: p)
     }
 
     #if os(macOS)

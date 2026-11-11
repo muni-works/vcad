@@ -881,6 +881,11 @@ struct ReleasedOverlayView: View {
                 CommandPanelHost(model: model)
                 FloatingPanelHost()
                 PaletteHost(model: model)
+                if NavigationUI.shared.namingView {
+                    SaveViewPrompt(model: model).glassPanel()
+                        .modifier(ChromeRegion(key: "saveView"))
+                        .transition(.scale(scale: 0.97).combined(with: .opacity))
+                }
             }
             .padding(.top, chromeTop)
             .animation(Motion.smooth, value: model.activeFeatureOp)
@@ -894,6 +899,18 @@ struct ReleasedOverlayView: View {
             }
         }
         .animation(Motion.smooth, value: GlassUI.shared.shortcutsShown)
+        .overlay(alignment: .bottomTrailing) {
+            // The Compass: orientation, home, turn, section, saved views.
+            if model.workspace == .design {
+                CompassView(model: model)
+                    .modifier(ChromeRegion(key: "compass"))
+                    .padding(.trailing, Glass.inset).padding(.bottom, Glass.inset)
+            }
+        }
+        .overlay { HaloView() }
+        .animation(Motion.pop, value: NavigationUI.shared.haloOrigin != nil)
+        .animation(Motion.smooth, value: NavigationUI.shared.namingView)
+        .onAppear { HaloInput.shared.install(model: model) }
         .overlay(alignment: .bottom) {
             if model.workspace != .manufacture { DockHost(model: model) }
         }

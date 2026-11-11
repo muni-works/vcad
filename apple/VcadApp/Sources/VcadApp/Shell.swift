@@ -317,7 +317,7 @@ struct DocumentCommands: Commands {
             .keyboardShortcut("d", modifiers: [.command, .shift])
         }
         CommandMenu("Tools") {
-            Button("Command Palette…") { model.showsCommandPalette = true }
+            Button("Find Command…") { model.showsCommandPalette = true }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
             Button("Parameters…") { model.showsParameterTable = true }
                 .keyboardShortcut("p", modifiers: [.command, .option])
@@ -327,7 +327,7 @@ struct DocumentCommands: Commands {
                 .keyboardShortcut("m", modifiers: [.control])
                 .disabled(!model.usesDocumentTree)
             Toggle("Section View", isOn: Binding(get: { model.section != nil },
-                                                 set: { model.section = $0 ? SectionPlane() : nil }))
+                                                 set: { _ in model.toggleSmartSection() }))
                 .keyboardShortcut("x", modifiers: [.command, .option])
             Divider()
             Button("New Sketch") { if model.promoteSandboxToDocument(blank: true) { model.enterSketch() } }
@@ -365,6 +365,24 @@ struct DocumentCommands: Commands {
             Button("Front") { model.animateCamera(to: .front) }.keyboardShortcut("2")
             Button("Right") { model.animateCamera(to: .right) }.keyboardShortcut("3")
             Button("Top") { model.animateCamera(to: .top) }.keyboardShortcut("4")
+            Divider()
+            Button("Turn View Left") { model.turnView(clockwise: false) }
+            Button("Turn View Right") { model.turnView(clockwise: true) }
+            Divider()
+            Menu("Views") {
+                let views = NavigationUI.shared.views(for: model)
+                ForEach(views) { v in
+                    Button(v.name) { NavigationUI.shared.glide(model, to: v.pose) }
+                }
+                if views.isEmpty { Text("No saved views") }
+            }
+            Button("Save View…") { NavigationUI.shared.namingView = true }
+                .keyboardShortcut("v", modifiers: [.command, .option])
+            Divider()
+            Button("Quick Actions") {
+                NavigationUI.shared.openHalo(at: EditorModel.pointerInOverlay, model: model, marking: false)
+            }
+            .keyboardShortcut(".", modifiers: [.command, .option])
             Divider()
             Button("Frame All") { model.resetCamera(animated: true) }.keyboardShortcut("0")
             Button("Frame Selection") { ReleaseWindowController.shared.frameSelection() }
