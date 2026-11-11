@@ -374,6 +374,29 @@ fn migrate_node(
             params.insert("name".to_string(), Value::String(name.clone()));
         }
     }
+    // A sketch-based op over an attached sketch (`SketchOnFace`) can't be a
+    // typed feature: those embed their sketch's op as JSON, and a
+    // SketchOnFace op is only node references that materialize renumbers
+    // out from under it. Keep the subgraph verbatim instead (the
+    // materializer renumbers it consistently, face names included).
+    let attached = |id: &NodeId| {
+        matches!(
+            doc.nodes.get(id).map(|n| &n.op),
+            Some(CsgOp::SketchOnFace { .. })
+        )
+    };
+    let over_attached_sketch = match &leaf.op {
+        CsgOp::Extrude { sketch, .. }
+        | CsgOp::Revolve { sketch, .. }
+        | CsgOp::Sweep { sketch, .. } => attached(sketch),
+        CsgOp::Loft { sketches, .. } => sketches.iter().any(attached),
+        _ => false,
+    };
+    if over_attached_sketch {
+        let fid = create_subgraph(crdt, ctx, doc, top_id);
+        ctx.node_to_feature.insert(top_id, fid);
+        return Some(fid);
+    }
     let fid = match &leaf.op {
         CsgOp::Cube { size } => {
             params.insert("size_x".to_string(), Value::F64(size.x));

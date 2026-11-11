@@ -988,10 +988,7 @@ pub enum CsgOp {
         /// Normal vector of the mirror plane (need not be unit).
         plane_normal: Vec3,
     },
-    #[tool(
-        category = "sketch_op",
-        ai_hint = "Attach a Sketch2D to a face of another node so it follows that face when upstream geometry changes (e.g. a boss sketch on a plate's top stays on top when the plate gets thicker). Extrude/Revolve the SketchOnFace node instead of the Sketch2D. face is {name} (preferred, e.g. 'n3:end') and/or {point, normal}."
-    )]
+    #[tool(hidden)]
     /// A sketch attached to a face of another solid.
     ///
     /// At evaluation the face is resolved against `target`'s current

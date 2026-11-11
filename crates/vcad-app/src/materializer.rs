@@ -351,14 +351,16 @@ fn materialize_subgraph(
 /// 'n1456898048:front' and 'n1456898048:right'"). Rewrite each scope that
 /// names a renumbered node; scopes outside the map are left alone.
 fn rescope_named_edges(op: &mut CsgOp, fresh: &HashMap<NodeId, NodeId>) {
-    let CsgOp::EdgeBlend {
-        edges: vcad_ir::EdgeQuery::Named { face_a, face_b, .. },
-        ..
-    } = op
-    else {
-        return;
+    let names: Vec<&mut String> = match op {
+        CsgOp::EdgeBlend {
+            edges: vcad_ir::EdgeQuery::Named { face_a, face_b, .. },
+            ..
+        } => vec![face_a, face_b],
+        // An attached sketch's face name is scoped by node id too.
+        CsgOp::SketchOnFace { face, .. } => face.name.iter_mut().collect(),
+        _ => return,
     };
-    for name in [face_a, face_b] {
+    for name in names {
         let Some((scope, rest)) = name.split_once(':') else {
             continue;
         };
