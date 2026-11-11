@@ -180,6 +180,7 @@ import { toolDefs as ecadToolDefs } from "./tools/ecad.js";
 import { toolDefs as enclosureToolDefs } from "./tools/enclosure.js";
 import { toolDefs as simReplayToolDefs } from "./tools/sim-replay.js";
 import { toolDefs as animateToolDefs } from "./tools/animate.js";
+import { getUpdateStatus, startUpdateCheck, takeResultWarning } from "./version-check.js";
 
 setParameterAssetResolver((doc, base_dir, engine) => {
   resolveLoonAssets(doc, { base_dir }, engine);
@@ -921,6 +922,9 @@ export async function createServer(
     `[mcp] vcad ${VERSION_WITH_BUILD} (instance ${INSTANCE_ID}) — ${dispatchableTools.size} kernel tools; kernel WASM ${kernelWasmLoaded ? "ok" : "UNAVAILABLE"}`,
   );
 
+  // Stale-server check against the npm registry; fire-and-forget, offline-safe.
+  if (!process.env.VITEST) void startUpdateCheck(PKG_VERSION);
+
   // ── server_info: reports THIS connection's build/runtime state ────────────
   // Defined here (not in a module) because it closes over per-connection boot
   // state; still a plain ToolDef so it dispatches through the shared pipeline.
@@ -934,7 +938,9 @@ export async function createServer(
       "survive a restart, vs. " +
       "in-memory only). Call this to confirm a tool exists in THIS build " +
       "before assuming a stale or version-skewed deploy, and to check " +
-      "durable:true before relying on checkpoints across a long session.",
+      "durable:true before relying on checkpoints across a long session. " +
+      "`update` compares this build with the newest @vcad/mcp on npm; when " +
+      "`update.state` is \"stale\", tell the user and suggest restarting the agent.",
     inputSchema: serverInfoSchema,
     handler: async (): Promise<ToolResult> => {
       const buildInfo = getBuildInfo();
@@ -953,6 +959,7 @@ export async function createServer(
               kernel_tool_count: dispatchableTools.size,
               disabled_tool_count: disabledTools.size,
               packs: packsSummary(),
+              update: getUpdateStatus(),
             }),
           },
         ],
@@ -1315,8 +1322,13 @@ export async function createServer(
           // very next call, instead of when a dead document_id finally fails.
           boot_token: currentBootToken(),
           session_durable: isSessionStoreDurable(),
+          update: getUpdateStatus().state,
         },
       };
+      const warning = takeResultWarning();
+      if (warning && Array.isArray(result.content)) {
+        result.content = [...result.content, { type: "text", text: warning }];
+      }
     } catch {
       // identity stamping is observability, never load-bearing
     }
