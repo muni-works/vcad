@@ -129,6 +129,57 @@ pub fn solids(path: &str) -> Result<Option<Arc<Vec<Solid>>>, String> {
     Ok(Some(parsed))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+type Stamp = (u64, Option<std::time::SystemTime>);
+
+#[cfg(not(target_arch = "wasm32"))]
+#[allow(clippy::type_complexity)]
+fn file_cache() -> &'static Mutex<HashMap<String, (Stamp, Arc<Vec<Solid>>)>> {
+    static C: OnceLock<Mutex<HashMap<String, (Stamp, Arc<Vec<Solid>>)>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn file_stamp(path: &str) -> Result<Stamp, String> {
+    let meta = std::fs::metadata(path).map_err(|e| format!("{path}: {e}"))?;
+    Ok((meta.len(), meta.modified().ok()))
+}
+
+/// Seed the file cache with solids an importer already parsed from `path`,
+/// so the first evaluation of the imported document doesn't parse again.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn prime_file(path: &str, solids: Vec<Solid>) {
+    if let Ok(stamp) = file_stamp(path) {
+        file_cache()
+            .lock()
+            .expect("step file cache poisoned")
+            .insert(path.to_string(), (stamp, Arc::new(solids)));
+    }
+}
+
+/// Native filesystem fallback, cached per file.
+///
+/// A STEP import writes one `StepImport` node per solid, all naming the same
+/// file. Without this cache every node re-parsed the whole file, so an
+/// N-solid assembly cost N full parses (Voron 2.4: ~2k solids × a 240 MB
+/// file). Keyed by path and validated against the file's size + mtime, so an
+/// edited file on disk is re-read.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn solids_from_file(path: &str) -> Result<Arc<Vec<Solid>>, String> {
+    let stamp = file_stamp(path)?;
+    // Hold the lock across the parse: concurrent evaluations of the same
+    // document would otherwise all parse the same file at once.
+    let mut c = file_cache().lock().expect("step file cache poisoned");
+    if let Some((s, solids)) = c.get(path) {
+        if *s == stamp {
+            return Ok(solids.clone());
+        }
+    }
+    let parsed = Arc::new(Solid::from_step_all(path).map_err(|e| e.to_string())?);
+    c.insert(path.to_string(), (stamp, parsed.clone()));
+    Ok(parsed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,5 +195,28 @@ mod tests {
         assert!(solids("/tmp/bogus-registry-test.step").is_err());
         unregister("/tmp/bogus-registry-test.step");
         assert!(!is_registered("/tmp/bogus-registry-test.step"));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn file_parse_is_cached_and_invalidated_by_edits() {
+        let dir = std::env::temp_dir().join(format!("vcad-step-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("one.step");
+        let path = p.to_str().unwrap();
+        let mut box_step = Solid::cube(10.0, 10.0, 10.0)
+            .to_step_buffer()
+            .expect("write step");
+        std::fs::write(&p, &box_step).unwrap();
+        let a = solids_from_file(path).unwrap();
+        let b = solids_from_file(path).unwrap();
+        assert!(Arc::ptr_eq(&a, &b), "second lookup must reuse the parse");
+        // A different file length invalidates the entry.
+        box_step.extend_from_slice(b"\n");
+        std::fs::write(&p, &box_step).unwrap();
+        let c = solids_from_file(path).unwrap();
+        assert!(!Arc::ptr_eq(&a, &c), "an edited file is re-parsed");
+        assert!(solids_from_file(dir.join("missing.step").to_str().unwrap()).is_err());
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

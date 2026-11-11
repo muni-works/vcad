@@ -61,14 +61,26 @@ fn step_document_with(path: &str, progress: Option<&StepProgress>) -> Result<Ste
         return Err(format!("{}: no solids in file", abs.display()));
     }
     let abs_str = abs.to_string_lossy().into_owned();
+    let n_solids = solids.len();
+    let skipped_faces = read.report.total_skipped_faces();
+    let warnings = read.report.summary();
+    // Hand the parse to the evaluator: every `StepImport` node below names
+    // this file, and opening the document would otherwise parse it again.
+    vcad_eval::step_sources::prime_file(
+        &abs_str,
+        solids
+            .into_iter()
+            .map(vcad_kernel::Solid::from_brep)
+            .collect(),
+    );
     let stem = abs
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| "step".into());
     let mut doc = Document::new();
-    for i in 0..solids.len() {
+    for i in 0..n_solids {
         let id = i as u64 + 1;
-        let name = if solids.len() == 1 {
+        let name = if n_solids == 1 {
             stem.clone()
         } else {
             format!("{stem} #{}", i + 1)
@@ -92,9 +104,9 @@ fn step_document_with(path: &str, progress: Option<&StepProgress>) -> Result<Ste
     }
     Ok(StepImported {
         document: doc,
-        solids: solids.len(),
-        skipped_faces: read.report.total_skipped_faces(),
-        warnings: read.report.summary(),
+        solids: n_solids,
+        skipped_faces,
+        warnings,
     })
 }
 

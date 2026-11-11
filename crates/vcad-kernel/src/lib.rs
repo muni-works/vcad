@@ -2139,6 +2139,12 @@ impl Solid {
         mesh_clearance(&mesh_a, &mesh_b)
     }
 
+    /// The tessellation density this solid meshes at by default (what
+    /// [`Solid::clearance`] passes to [`Solid::to_mesh`]).
+    pub fn segments(&self) -> u32 {
+        self.segments
+    }
+
     /// Fast vertex-only AABB (no tessellation). Slightly underestimates for curved surfaces.
     fn vertex_aabb(&self) -> ([f64; 3], [f64; 3]) {
         match &self.repr {
