@@ -44,7 +44,7 @@ extension Comparable {
 
 /// What a sketch click does.
 enum SketchToolKind: String, CaseIterable, Identifiable {
-    case select, line, rectangle, polygon, slot, circle, arc, spline, dimension
+    case select, line, rectangle, polygon, slot, circle, arc, spline, dimension, trim, extend, fillet
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -56,7 +56,10 @@ enum SketchToolKind: String, CaseIterable, Identifiable {
         case .circle: "Circle"
         case .arc: "Arc"
         case .spline: "Spline"
-        case .dimension: "Dimension"
+        case .dimension: "Smart Dimension"
+        case .trim: "Trim"
+        case .extend: "Extend"
+        case .fillet: "Sketch Fillet"
         }
     }
     /// Bare-letter key while sketching (Esc also falls back to Select).
@@ -71,10 +74,13 @@ enum SketchToolKind: String, CaseIterable, Identifiable {
         case .arc: "a"
         case .spline: "n"
         case .dimension: "d"
+        case .trim: "t"
+        case .extend: "e"
+        case .fillet: "f"
         }
     }
     /// Places geometry by clicking (the status line shows the cursor).
-    var draws: Bool { self != .select && self != .dimension }
+    var draws: Bool { ![.select, .dimension, .trim, .extend, .fillet].contains(self) }
     /// The prompt cut to fit beside the cursor coordinates.
     var shortHint: String {
         switch self {
@@ -86,7 +92,10 @@ enum SketchToolKind: String, CaseIterable, Identifiable {
         case .circle: "Center, then radius"
         case .arc: "Center, start, end"
         case .spline: "Points · Return ends"
-        case .dimension: "Pick an edge or points"
+        case .dimension: "Pick to size · ⌘ pairs"
+        case .trim: "Click a piece to cut"
+        case .extend: "Click near a line end"
+        case .fillet: "Click a corner"
         }
     }
     /// "Line  L".
@@ -102,6 +111,9 @@ enum SketchToolKind: String, CaseIterable, Identifiable {
         case .arc: "circle.lefthalf.striped.horizontal"
         case .spline: "point.bottomleft.forward.to.point.topright.scurvepath"
         case .dimension: "ruler"
+        case .trim: "scissors"
+        case .extend: "arrow.right.to.line"
+        case .fillet: "arrow.turn.up.right"
         }
     }
     var hint: String {
@@ -114,7 +126,10 @@ enum SketchToolKind: String, CaseIterable, Identifiable {
         case .circle: "Click the center, then the radius"
         case .arc: "Click the center, the start, then the end"
         case .spline: "Click control points · Return to finish"
-        case .dimension: "Click a line for its length, a circle/arc for its radius, or two points for their distance"
+        case .dimension: "Click a line or circle to size it · a point, then another, for the distance · ⌘-click a second line for the angle"
+        case .trim: "Click the piece of a line to cut back to its nearest crossings"
+        case .extend: "Click near a line end to grow it to the next line"
+        case .fillet: "Click the corner where two lines meet"
         }
     }
 }
@@ -391,18 +406,7 @@ final class SketchSession {
     /// this rebuilds it from what remains, keeping solved positions.
     func deleteSelection() {
         guard !selection.isEmpty else { return }
-        recording {
-            var gone = Set(selection)
-            for e in entities where e.kind != .point && e.points.contains(where: gone.contains) { gone.insert(e.handle) }
-            let kept = entities.filter { !gone.contains($0.handle) }
-            let used = Set(kept.filter { $0.kind != .point }.flatMap(\.points))
-            for e in entities where e.kind != .point && gone.contains(e.handle) {
-                for p in e.points where !used.contains(p) { gone.insert(p) }
-            }
-            var snap = snapshot()
-            snap.entities = entities.filter { !gone.contains($0.handle) }
-            restore(snap)
-        }
+        recording { removeEntities(Set(selection)) }
     }
 
     // MARK: history
@@ -601,19 +605,10 @@ final class SketchSession {
     /// Point handle at `p`: an existing one within snap, else a new point.
     private func pointAt(_ p: SIMD2<Double>) -> UInt32 { snapPoint(p) ?? addPoint(p) }
 
-    /// Constrain a fresh line horizontal/vertical when it is within ~3° of an axis.
-    private func autoAxis(_ line: UInt32, _ a: SIMD2<Double>, _ b: SIMD2<Double>) {
-        let d = b - a
-        guard simd_length(d) > 1e-6 else { return }
-        let ang = abs(atan2(d.y, d.x))
-        if ang < 0.05 || abs(ang - .pi) < 0.05 { constrain(.horizontal, line, solveNow: false) }
-        else if abs(ang - .pi / 2) < 0.05 { constrain(.vertical, line, solveNow: false) }
-    }
-
     /// A click on the plane.
     /// Where a click at `p` lands: an existing point, else the nearest grid crossing.
     func gridded(_ p: SIMD2<Double>) -> SIMD2<Double> {
-        guard gridStep > 0, tool != .select, tool != .dimension, snapPoint(p) == nil else { return p }
+        guard gridStep > 0, tool.draws, snapPoint(p) == nil else { return p }
         return (p / gridStep).rounded(.toNearestOrAwayFromZero) * gridStep
     }
 
@@ -623,19 +618,15 @@ final class SketchSession {
         let p = gridded(raw)
         switch tool {
         case .select:
+            if !additive, let c = glyphAt(p) {
+                selection = []; selectedConstraint = c; revision &+= 1; break
+            }
+            selectedConstraint = nil
             let hit = nearestEntity(p)
             if additive { if let hit { if let i = selection.firstIndex(of: hit) { selection.remove(at: i) } else { selection.append(hit) } } }
             else { selection = hit.map { [$0] } ?? [] }
         case .line:
-            let h = pointAt(p)
-            if let last = chain.last, last != h {
-                let line = addLine(last, h)
-                if let a = positions[last], let b = positions[h] { autoAxis(line, a, b) }
-                if h == chain.first { chain = [] }      // closed the loop
-                else { chain.append(h) }
-            } else if chain.isEmpty {
-                chain = [h]
-            }
+            lineTap(raw)
         case .rectangle:
             if let a = pending.first {
                 // Corners sharing a row or column make a zero-area box (the
@@ -674,36 +665,389 @@ final class SketchSession {
         case .spline:
             pending.append(p)
         case .dimension:
-            dimensionTap(p)
+            dimensionTap(p, additive: additive)
+        case .trim:
+            trimTap(p)
+        case .extend:
+            extendTap(p)
+        case .fillet:
+            filletTap(p)
         }
         solve()
     }
 
-    /// Dimension tool: a line gets its length, a circle/arc its radius, and
-    /// two points in turn a point-to-point distance. It never fixes a point.
-    private func dimensionTap(_ p: SIMD2<Double>) {
-        guard let h = nearestEntity(p), let e = entity(h) else { dimensionAnchor = nil; return }
-        if e.kind == .point {
-            guard let first = dimensionAnchor, first != h else { dimensionAnchor = h; revision &+= 1; return }
-            dimensionAnchor = nil
-            guard let a = positions[first], let b = positions[h] else { return }
-            constrain(.distance, first, VCAD_SKETCH_REF_SELF, h, value: simd_distance(a, b), solveNow: false)
-            return
-        }
-        dimensionAnchor = nil
-        let kind: SketchConstraintKind = e.kind == .line ? .length : .radius
-        // A second dimension on the same curve only over-constrains it.
-        guard !constraints.contains(where: { $0.kind == kind && $0.entities == [h] }) else {
-            lastError = "That \(e.kind == .line ? "line" : "curve") already has a dimension — edit it in the list"
-            return
-        }
+    /// The Smart Dimension pick for an entity.
+    func dimensionPick(_ h: UInt32) -> SketchPick? {
+        guard let e = entity(h) else { return nil }
         switch e.kind {
+        case .point: return positions[h].map { .point(h, $0) }
         case .line:
-            if let a = positions[e.points[0]], let b = positions[e.points[1]] {
-                constrain(.length, h, value: simd_distance(a, b), solveNow: false)
+            guard let a = positions[e.points[0]], let b = positions[e.points[1]] else { return nil }
+            return .line(h, a, b)
+        case .circle, .arc:
+            guard let ch = e.points.last, let c = positions[ch], let r = radii[h] else { return nil }
+            return .curve(h, center: ch, c, radius: r, full: e.kind == .circle)
+        }
+    }
+
+    /// Smart Dimension. A line or curve click sizes it at once (length,
+    /// radius, diameter). A point click arms it: the next click on a point,
+    /// curve or line measures the distance between. ⌘-click a second entity
+    /// right after sizing a line to dimension the pair instead — the angle
+    /// between two lines, a point–line distance — replacing the size just
+    /// added. It never fixes a point.
+    private func dimensionTap(_ p: SIMD2<Double>, additive: Bool) {
+        let hit = nearestEntity(p)
+        if let first = dimensionAnchor {
+            dimensionAnchor = nil
+            guard let hit, hit != first else { return }
+            // A point on the line it's paired with (its own end, say): the
+            // pair measures nothing, so size the line instead.
+            if case .point(_, let q) = dimensionPick(first), case .line(_, let a, let b)? = dimensionPick(hit),
+               SmartDimension.lineDistance(q, a, b) < 1e-6 {
+                addDimension(dimensionPick(hit), nil); return
             }
-        default:
-            constrain(.radius, h, value: radii[h] ?? 1, solveNow: false)
+            addDimension(dimensionPick(first), dimensionPick(hit))
+            return
+        }
+        guard let hit, let pk = dimensionPick(hit) else { lastSized = nil; return }
+        if additive, let prev = lastSized, prev != hit, let prevPick = dimensionPick(prev),
+           SmartDimension.plan(prevPick, pk) != nil {
+            if let last = constraints.last, last.entities == [prev],
+               [.length, .radius, .diameter].contains(last.kind), vcad_sketch_pop_constraint(raw) {
+                constraints.removeLast(); recorded.removeLast()
+            }
+            lastSized = nil
+            addDimension(prevPick, pk)
+            return
+        }
+        if case .point = pk { dimensionAnchor = hit; lastSized = nil; revision &+= 1; return }
+        lastSized = hit
+        addDimension(pk, nil)
+    }
+
+    /// The entity the last dimension click sized (for ⌘-click pairing).
+    @ObservationIgnored private var lastSized: UInt32?
+
+    private func addDimension(_ a: SketchPick?, _ b: SketchPick?) {
+        guard let a, let plan = SmartDimension.plan(a, b) else {
+            lastError = "Those two can't be dimensioned together"; return
+        }
+        let sizes: Set<SketchConstraintKind> = [.length, .radius, .diameter]
+        // A second size dimension on the same curve only over-constrains it.
+        if sizes.contains(plan.kind),
+           constraints.contains(where: { sizes.contains($0.kind) && $0.entities == [plan.e0] }) {
+            lastError = "That \(entity(plan.e0)?.kind == .line ? "line" : "curve") already has a dimension — edit it in the list"
+            return
+        }
+        constrain(plan.kind, plan.e0, VCAD_SKETCH_REF_SELF, plan.e1, value: plan.value, solveNow: false)
+    }
+
+    // MARK: inference
+
+    /// The segment the line tool drew last (for ⊥ / ∥ / = inference).
+    private(set) var lastSegment: UInt32?
+
+    /// Snap reach in plane mm.
+    var inferenceReach: Double { pickScale != nil ? pickRadii.point * 1.4 : snap }
+
+    func inferenceModel() -> SketchInference {
+        var m = SketchInference()
+        m.reach = inferenceReach
+        for e in entities {
+            switch e.kind {
+            case .point:
+                if let q = positions[e.handle] { m.points.append((e.handle, q)) }
+            case .line:
+                if let a = positions[e.points[0]], let b = positions[e.points[1]] {
+                    m.lines.append(.init(handle: e.handle, a: a, b: b, aH: e.points[0], bH: e.points[1]))
+                }
+            case .circle, .arc:
+                if let ch = e.points.last, let c = positions[ch], let r = radii[e.handle] {
+                    m.curves.append(.init(handle: e.handle, center: c, radius: r, ends: e.kind == .arc ? Array(e.points.prefix(2)) : []))
+                }
+            }
+        }
+        return m
+    }
+
+    /// Where a line-tool click at `p` would land, and what it would constrain.
+    func inferLine(_ p: SIMD2<Double>) -> SketchInference.Result {
+        let anchorH = chain.last
+        return inferenceModel().infer(p, anchor: anchorH.flatMap { positions[$0] }, anchorH: anchorH, previous: lastSegment)
+    }
+
+    /// The live inference under the cursor (line tool only), for the glyphs.
+    var cursorInference: SketchInference.Result? {
+        guard tool == .line, let c = cursor else { return nil }
+        return inferLine(c)
+    }
+
+    /// When true, the next line click ignores inference (⌘ held).
+    var suppressInference = false
+
+    private func lineTap(_ click: SIMD2<Double>) {
+        let res = suppressInference ? .init(point: click, inferred: []) : inferLine(click)
+        let q = res.inferred.isEmpty ? gridded(click) : res.point
+        let before = constraints.count
+        let h = res.snapped ?? (snapPoint(q) ?? addPoint(q))
+        for i in res.inferred {
+            switch i {
+            case .midpoint(let l): constrain(.midpoint, h, VCAD_SKETCH_REF_SELF, l, solveNow: false)
+            case .onLine(let l): constrain(.pointOnLine, h, VCAD_SKETCH_REF_SELF, l, solveNow: false)
+            case .onCircle(let c): constrain(.pointOnCircle, h, VCAD_SKETCH_REF_SELF, c, solveNow: false)
+            default: break
+            }
+        }
+        if let last = chain.last, last != h {
+            let line = addLine(last, h)
+            for i in res.inferred {
+                switch i {
+                case .horizontal: constrain(.horizontal, line, solveNow: false)
+                case .vertical: constrain(.vertical, line, solveNow: false)
+                case .perpendicular(let l): constrain(.perpendicular, line, VCAD_SKETCH_REF_SELF, l, solveNow: false)
+                case .parallel(let l): constrain(.parallel, line, VCAD_SKETCH_REF_SELF, l, solveNow: false)
+                case .equal(let l): constrain(.equalLength, line, VCAD_SKETCH_REF_SELF, l, solveNow: false)
+                case .tangent(let c): constrain(.tangent, line, VCAD_SKETCH_REF_SELF, c, VCAD_SKETCH_REF_SELF, last, solveNow: false)
+                default: break
+                }
+            }
+            lastSegment = line
+            if h == chain.first { chain = []; lastSegment = nil }      // closed the loop
+            else { chain.append(h) }
+        } else if chain.isEmpty {
+            chain = [h]; lastSegment = nil
+        }
+        // An inference that would over-constrain is dropped, newest first.
+        solve()
+        while isOverConstrained || !converged, constraints.count > before, vcad_sketch_pop_constraint(raw) {
+            constraints.removeLast(); recorded.removeLast(); solve()
+        }
+    }
+
+    // MARK: construction, glyphs, drag
+
+    /// Toggle construction on the selected curves: dashed, still
+    /// constrainable, never part of a profile.
+    func toggleConstruction() {
+        recording {
+            let sel = Set(selection)
+            let curves = entities.indices.filter { sel.contains(entities[$0].handle) && entities[$0].kind != .point }
+            guard !curves.isEmpty else { lastError = "Select lines, arcs or circles to make construction"; return }
+            let on = !curves.allSatisfy { entities[$0].construction }
+            for i in curves { entities[i].construction = on }
+            revision &+= 1
+        }
+    }
+    var hasConstruction: Bool { entities.contains { $0.construction && $0.kind != .point } }
+
+    /// The constraint whose glyph was clicked (Select tool); Delete removes it.
+    var selectedConstraint: Int?
+
+    /// Constraint (row index) whose glyph sits under `p`.
+    func glyphAt(_ p: SIMD2<Double>) -> Int? {
+        let reach = pickRadii.point * 1.2
+        return constraints.compactMap { c in glyphAnchor(c).map { (c.index, simd_distance($0, p)) } }
+            .filter { $0.1 <= reach }.min { $0.1 < $1.1 }?.0
+    }
+
+    /// Delete the selected glyph's constraint, else the selected entities.
+    func deleteSelectionOrConstraint() {
+        if let i = selectedConstraint, let row = constraints.first(where: { $0.index == i }) {
+            selectedConstraint = nil
+            deleteConstraint(row)
+        } else {
+            deleteSelection()
+        }
+    }
+
+    @ObservationIgnored private var dragPoint: UInt32?
+    @ObservationIgnored private var dragBefore: Snapshot?
+    var isDragging: Bool { dragPoint != nil }
+
+    /// Start dragging the point under `p` (Select tool). The point follows
+    /// the cursor and the solver keeps every constraint as it moves.
+    func beginDrag(_ p: SIMD2<Double>) -> Bool {
+        guard tool == .select, let h = nearestEntity(p), entity(h)?.kind == .point else { return false }
+        dragPoint = h; dragBefore = snapshot(); selection = [h]
+        return true
+    }
+    func dragTo(_ p: SIMD2<Double>) {
+        guard let h = dragPoint else { return }
+        pin(h, at: p)
+    }
+    func endDrag() {
+        defer { dragPoint = nil; dragBefore = nil }
+        guard let before = dragBefore, before.positions != positions else { return }
+        undoStack.append(before); redoStack = []
+    }
+
+    /// Solve once with `h` pinned at `p`, then drop the pin: positions keep
+    /// the pinned solution, the constraint list is unchanged.
+    private func pin(_ h: UInt32, at p: SIMD2<Double>) {
+        var c = VcadSketchConstraint(kind: SketchConstraintKind.fixed.rawValue, e0: h, r0: VCAD_SKETCH_REF_SELF,
+                                     e1: 0, r1: VCAD_SKETCH_REF_SELF, e2: 0, r2: VCAD_SKETCH_REF_SELF,
+                                     value: p.x, value2: p.y)
+        guard vcad_sketch_add_constraint(raw, &c) >= 0 else { _ = SimError.pending(); return }
+        _ = vcad_sketch_solve(raw)
+        _ = vcad_sketch_pop_constraint(raw)
+        solve()
+    }
+
+    // MARK: trim / extend / fillet / mirror / pattern
+
+    /// Straight segments other than `h`, for trim and extend.
+    private func cutters(excluding h: UInt32) -> [(SIMD2<Double>, SIMD2<Double>)] {
+        entities.filter { $0.kind == .line && $0.handle != h }.compactMap { e in
+            guard let a = positions[e.points[0]], let b = positions[e.points[1]] else { return nil }
+            return (a, b)
+        }
+    }
+
+    /// Axis constraints a replaced line should hand on to its pieces.
+    private func axisKinds(of h: UInt32) -> [SketchConstraintKind] {
+        constraints.filter { ($0.kind == .horizontal || $0.kind == .vertical) && $0.entities == [h] }.map(\.kind)
+    }
+
+    /// Remove entities (plus curves built on removed points and points left
+    /// unused) by rebuilding the solver. Handles are renumbered.
+    private func removeEntities(_ start: Set<UInt32>) {
+        var gone = start
+        for e in entities where e.kind != .point && e.points.contains(where: gone.contains) { gone.insert(e.handle) }
+        let kept = entities.filter { !gone.contains($0.handle) }
+        let used = Set(kept.filter { $0.kind != .point }.flatMap(\.points))
+        for e in entities where e.kind != .point && gone.contains(e.handle) {
+            for p in e.points where !used.contains(p) { gone.insert(p) }
+        }
+        var snap = snapshot()
+        snap.entities = entities.filter { !gone.contains($0.handle) }
+        restore(snap)
+    }
+
+    private func trimTap(_ p: SIMD2<Double>) {
+        guard let h = nearestEntity(p), let e = entity(h), e.kind == .line,
+              let a = positions[e.points[0]], let b = positions[e.points[1]] else {
+            lastError = "Trim works on lines: click the piece to cut"; return
+        }
+        let ab = b - a
+        let t = (simd_dot(p - a, ab) / max(simd_length_squared(ab), 1e-12)).clamped(to: 0...1)
+        let keep = SketchEdit.trim(a, b, at: t, cutters: cutters(excluding: h))
+        let axes = axisKinds(of: h)
+        for r in keep {
+            let s = r.lowerBound == 0 ? e.points[0] : addPoint(a + r.lowerBound * ab)
+            let f = r.upperBound == 1 ? e.points[1] : addPoint(a + r.upperBound * ab)
+            let piece = addLine(s, f)
+            for k in axes { constrain(k, piece, solveNow: false) }
+        }
+        removeEntities([h])
+    }
+
+    private func extendTap(_ p: SIMD2<Double>) {
+        guard let h = nearestEntity(p), let e = entity(h), e.kind == .line,
+              let a = positions[e.points[0]], let b = positions[e.points[1]] else {
+            lastError = "Extend works on lines: click near the end to grow"; return
+        }
+        guard let target = SketchEdit.extend(a, b, near: p, cutters: cutters(excluding: h)) else {
+            lastError = "Nothing to extend to in that direction"; return
+        }
+        let end = simd_distance(p, b) <= simd_distance(p, a) ? e.points[1] : e.points[0]
+        let shared = entities.filter { $0.kind != .point && $0.points.contains(end) }.count
+        guard shared == 1 else { lastError = "That end is joined to another curve"; return }
+        pin(end, at: target)
+    }
+
+    /// Radius the Fillet tool rounds corners with.
+    var filletRadius: Double = 2
+
+    private func filletTap(_ p: SIMD2<Double>) {
+        guard let h = snapPoint(p) ?? nearestEntity(p).flatMap({ entity($0)?.kind == .point ? $0 : nil }),
+              let c = positions[h] else { lastError = "Click the corner point where two lines meet"; return }
+        let lines = entities.filter { $0.kind == .line && $0.points.contains(h) }
+        let others = entities.filter { $0.kind != .point && $0.kind != .line && $0.points.contains(h) }
+        guard lines.count == 2, others.isEmpty else { lastError = "A fillet needs exactly two lines meeting at the corner"; return }
+        let far = lines.map { $0.points[0] == h ? $0.points[1] : $0.points[0] }
+        guard let a = positions[far[0]], let b = positions[far[1]],
+              let f = SketchEdit.fillet(corner: c, a: a, b: b, radius: filletRadius) else {
+            lastError = "Radius \(filletRadius.formatted()) mm doesn't fit that corner"; return
+        }
+        let axesA = axisKinds(of: lines[0].handle), axesB = axisKinds(of: lines[1].handle)
+        let pa = addPoint(f.onA), pb = addPoint(f.onB), pc = addPoint(f.center)
+        let la = addLine(far[0], pa), lb = addLine(pb, far[1])
+        let arc = addArc(start: f.ccw ? pa : pb, end: f.ccw ? pb : pa, center: pc, ccw: true)
+        for k in axesA { constrain(k, la, solveNow: false) }
+        for k in axesB { constrain(k, lb, solveNow: false) }
+        constrain(.tangent, la, VCAD_SKETCH_REF_SELF, arc, VCAD_SKETCH_REF_SELF, pa, solveNow: false)
+        constrain(.tangent, lb, VCAD_SKETCH_REF_SELF, arc, VCAD_SKETCH_REF_SELF, pb, solveNow: false)
+        constrain(.radius, arc, value: filletRadius, solveNow: false)
+        removeEntities(Set(lines.map(\.handle) + [h]))
+    }
+
+    /// Copy the selected curves through `map`; arcs reverse when `flips`.
+    /// Returns old point handle -> new point handle.
+    @discardableResult
+    private func copySelection(_ map: (SIMD2<Double>) -> SIMD2<Double>, flips: Bool, curves: [SketchEntity]) -> [UInt32: UInt32] {
+        var pts: [UInt32: UInt32] = [:]
+        func pt(_ h: UInt32) -> UInt32 {
+            if let n = pts[h] { return n }
+            let n = addPoint(map(positions[h] ?? .zero)); pts[h] = n; return n
+        }
+        for e in curves {
+            switch e.kind {
+            case .point: _ = pt(e.handle)
+            case .line: addLine(pt(e.points[0]), pt(e.points[1]))
+            case .circle: addCircle(center: pt(e.points[0]), radius: radii[e.handle] ?? 1)
+            case .arc:
+                let (s, f, c) = (pt(e.points[0]), pt(e.points[1]), pt(e.points[2]))
+                addArc(start: flips ? f : s, end: flips ? s : f, center: c, ccw: e.ccw)
+            }
+        }
+        return pts
+    }
+
+    /// Mirror the selection about the last selected line, tying each copied
+    /// point to its original with a symmetric constraint.
+    func mirrorSelection() {
+        recording {
+            let sel = selection.compactMap { entity($0) }
+            guard let axis = sel.last(where: { $0.kind == .line }),
+                  let a = positions[axis.points[0]], let b = positions[axis.points[1]] else {
+                lastError = "Select the curves to mirror, then the mirror line last"; return
+            }
+            let curves = sel.filter { $0.handle != axis.handle }
+            guard !curves.isEmpty else { lastError = "Select curves to mirror as well as the mirror line"; return }
+            let onAxis = Set(axis.points)
+            let pairs = copySelection({ SketchEdit.mirror($0, a, b) }, flips: true, curves: curves)
+            for (old, new) in pairs.sorted(by: { $0.key < $1.key }) where !onAxis.contains(old) {
+                constrain(.symmetric, old, VCAD_SKETCH_REF_SELF, new, VCAD_SKETCH_REF_SELF, axis.handle, solveNow: false)
+            }
+            solve()
+        }
+    }
+
+    /// Circular pattern: `count` copies in all (original included) about the
+    /// selected point (last), else the sketch origin.
+    func circularPattern(count: Int) {
+        recording {
+            let sel = selection.compactMap { entity($0) }
+            let centerH = sel.last(where: { $0.kind == .point })?.handle
+            let c = centerH.flatMap { positions[$0] } ?? .zero
+            let curves = sel.filter { $0.handle != centerH && $0.kind != .point }
+            guard count >= 2, !curves.isEmpty else { lastError = "Select curves to pattern"; return }
+            for k in 1..<count {
+                let ang = 2 * .pi * Double(k) / Double(count)
+                copySelection({ SketchEdit.rotate($0, about: c, by: ang) }, flips: false, curves: curves)
+            }
+            solve()
+        }
+    }
+
+    /// Linear pattern: `count` copies in all, each `step` further along.
+    func linearPattern(count: Int, step: SIMD2<Double>) {
+        recording {
+            let curves = selection.compactMap { entity($0) }.filter { $0.kind != .point }
+            guard count >= 2, !curves.isEmpty, simd_length(step) > 1e-9 else { lastError = "Select curves to pattern"; return }
+            for k in 1..<count { copySelection({ $0 + Double(k) * step }, flips: false, curves: curves) }
+            solve()
         }
     }
 
@@ -723,13 +1067,14 @@ final class SketchSession {
         }
         pending = []
         chain = []
+        lastSegment = nil
         solve()
     }
 
     var hasInProgress: Bool { !pending.isEmpty || !chain.isEmpty || dimensionAnchor != nil }
 
     /// Escape: drop in-progress clicks.
-    func cancelPending() { pending = []; chain = []; dimensionAnchor = nil; revision &+= 1 }
+    func cancelPending() { pending = []; chain = []; lastSegment = nil; dimensionAnchor = nil; revision &+= 1 }
 
     /// Two clicks span a real rectangle: both sides longer than the snap radius,
     /// so no two corners merge.
@@ -819,8 +1164,8 @@ final class SketchSession {
             guard sel.allSatisfy({ $0.kind == .line }),
                   let a0 = positions[sel[0].points[0]], let a1 = positions[sel[0].points[1]],
                   let b0 = positions[sel[1].points[0]], let b1 = positions[sel[1].points[1]] else { return false }
-            let da = simd_normalize(a1 - a0), db = simd_normalize(b1 - b0)
-            let deg = acos(max(-1, min(1, simd_dot(da, db)))) * 180 / .pi
+            // Signed, as the solver measures it: an unsigned value flips one line.
+            let deg = SmartDimension.signedAngle(a1 - a0, b1 - b0)
             return constrain(kind, sel[0].handle, VCAD_SKETCH_REF_SELF, sel[1].handle, value: deg, solveNow: false)
         default:
             lastError = "\(kind.label) needs a different selection"
@@ -904,6 +1249,7 @@ final class SketchSession {
     /// The closed profile as JSON `{origin,x_dir,y_dir,segments}` — exactly
     /// the `profile` object `vcad_feature_append` takes. Nil when open.
     func profileJSON() -> [String: Any]? {
+        if hasConstruction { return singleRegion() }
         guard let r = vcad_sketch_profile_json(raw) else {
             lastError = SimError.pending() ?? "Profile is not closed"; return nil
         }
@@ -1040,14 +1386,26 @@ final class SketchSession {
         }
     }
 
-    var canFinish: Bool { !isEmpty && vcad_sketch_profile_json(raw).map { vcad_string_free($0); return true } ?? false }
+    var canFinish: Bool {
+        if hasConstruction { return singleRegion() != nil }
+        return !isEmpty && vcad_sketch_profile_json(raw).map { vcad_string_free($0); return true } ?? false
+    }
+
+    /// With construction geometry the kernel export would include it, so a
+    /// sketch with construction finishes from its one hole-free loop region.
+    private func singleRegion() -> [String: Any]? {
+        guard case .success(let r) = loopRegions(), r.count == 1, r[0]["holes"] == nil else {
+            lastError = "Profile is not closed"; return nil
+        }
+        return r[0]
+    }
 
     // MARK: drawing
 
     /// Ink as plane-space segment pairs: committed geometry, then the live preview.
     func ink(circleSegments n: Int = 64) -> (geometry: [SIMD2<Double>], preview: [SIMD2<Double>], points: [SIMD2<Double>]) {
         var g: [SIMD2<Double>] = []
-        for e in entities {
+        for e in entities where !e.construction {
             switch e.kind {
             case .point: break
             case .line:
@@ -1068,7 +1426,7 @@ final class SketchSession {
         if let c = cursor {
             switch tool {
             case .line:
-                if let last = chain.last, let a = positions[last] { pv += [a, c] }
+                if let last = chain.last, let a = positions[last] { pv += [a, cursorInference?.point ?? c] }
             case .rectangle:
                 if let a = pending.first {
                     let k = [a, SIMD2(c.x, a.y), c, SIMD2(a.x, c.y)]
@@ -1100,12 +1458,95 @@ final class SketchSession {
             case .spline:
                 let pts = Self.catmullRom(pending + [c], samplesPerSpan: 8)
                 for i in 0..<max(0, pts.count - 1) { pv += [pts[i], pts[i + 1]] }
-            case .select, .dimension:
+            case .select, .dimension, .trim, .extend, .fillet:
                 break
             }
         }
         let pts = entities.filter { $0.kind == .point }.compactMap { positions[$0.handle] } + pending
         return (g, pv, pts)
+    }
+
+    /// Construction curves as dash pairs.
+    func constructionInk(dash: Double, circleSegments n: Int = 64) -> [SIMD2<Double>] {
+        var solid: [SIMD2<Double>] = []
+        for e in entities where e.construction {
+            switch e.kind {
+            case .point: break
+            case .line:
+                if let a = positions[e.points[0]], let b = positions[e.points[1]] { solid += [a, b] }
+            case .circle:
+                if let c = positions[e.points[0]], let r = radii[e.handle] { solid += Self.ring(c, r, 0, 2 * .pi, n) }
+            case .arc:
+                if let st = positions[e.points[0]], let en = positions[e.points[1]], let c = positions[e.points[2]] {
+                    let a0 = atan2(st.y - c.y, st.x - c.x)
+                    var a1 = atan2(en.y - c.y, en.x - c.x)
+                    if a1 <= a0 { a1 += 2 * .pi }
+                    solid += Self.ring(c, simd_distance(c, st), a0, a1, 32)
+                }
+            }
+        }
+        return Self.dashed(solid, dash: dash)
+    }
+
+    /// Split segment pairs into dash pairs (dash on, dash off).
+    static func dashed(_ pairs: [SIMD2<Double>], dash: Double) -> [SIMD2<Double>] {
+        guard dash > 0 else { return pairs }
+        var out: [SIMD2<Double>] = []
+        var phase = 0.0
+        for i in stride(from: 0, to: pairs.count - 1, by: 2) {
+            let a = pairs[i], b = pairs[i + 1], l = simd_distance(a, b)
+            guard l > 1e-12 else { continue }
+            var t = 0.0
+            while t < l {
+                let inDash = phase.truncatingRemainder(dividingBy: 2 * dash) < dash
+                let left = dash - phase.truncatingRemainder(dividingBy: dash)
+                let step = min(left, l - t)
+                if inDash { out += [a + (b - a) * (t / l), a + (b - a) * ((t + step) / l)] }
+                t += step; phase += step
+            }
+        }
+        return out
+    }
+
+    /// Closed regions as triangles (flat vertex list, three per triangle),
+    /// for the live profile shading. Empty while any loop is open.
+    func profileFill(arcSteps: Int = 24) -> [SIMD2<Double>] {
+        guard case .success(let regions) = loopRegions() else { return [] }
+        var out: [SIMD2<Double>] = []
+        for r in regions {
+            guard let segs = r["segments"] as? [[String: Any]] else { continue }
+            let outer = Self.polyline(segs, arcSteps: arcSteps)
+            let holes = ((r["holes"] as? [[[String: Any]]]) ?? []).map { Self.polyline($0, arcSteps: arcSteps) }
+            let poly = SketchFill.bridge(outer: outer, holes: holes)
+            for (a, b, c) in SketchFill.triangulate(poly) { out += [poly[a], poly[b], poly[c]] }
+        }
+        return out
+    }
+
+    /// A profile's segments (`loopRegions` JSON) as a closed polygon.
+    static func polyline(_ segs: [[String: Any]], arcSteps: Int) -> [SIMD2<Double>] {
+        func v(_ a: Any?) -> SIMD2<Double> {
+            let d = a as? [String: Any]
+            return SIMD2((d?["x"] as? NSNumber)?.doubleValue ?? 0, (d?["y"] as? NSNumber)?.doubleValue ?? 0)
+        }
+        var out: [SIMD2<Double>] = []
+        for sgm in segs {
+            let st = v(sgm["start"]), en = v(sgm["end"])
+            if (sgm["type"] as? String) == "Arc" {
+                let c = v(sgm["center"]), ccw = (sgm["ccw"] as? Bool) ?? true
+                let rr = simd_distance(c, st)
+                let a0 = atan2(st.y - c.y, st.x - c.x)
+                var a1 = atan2(en.y - c.y, en.x - c.x)
+                if ccw { if a1 <= a0 { a1 += 2 * .pi } } else { if a1 >= a0 { a1 -= 2 * .pi } }
+                for k in 0..<arcSteps {
+                    let t = a0 + (a1 - a0) * Double(k) / Double(arcSteps)
+                    out.append(c + rr * SIMD2(cos(t), sin(t)))
+                }
+            } else {
+                out.append(st)
+            }
+        }
+        return out
     }
 
     /// Anchor point (plane coords) for a constraint's glyph.
@@ -1117,7 +1558,10 @@ final class SketchSession {
             guard let a = positions[e.points[0]], let b = positions[e.points[1]] else { return nil }
             let t = b - a, l = simd_length(t)
             let n = l > 1e-9 ? SIMD2(-t.y, t.x) / l : .zero
-            return (a + b) / 2 + n * 2.5
+            // Several glyphs on one line sit side by side along it.
+            let k = Double(constraints.prefix { $0.index != c.index }.filter { $0.entities.first == h }.count)
+            let u = l > 1e-9 ? t / l : .zero
+            return (a + b) / 2 + n * 2.5 + u * (k * 3)
         case .circle, .arc:
             guard let c0 = positions[e.points.last ?? 0], let r = radii[h] else { return nil }
             return c0 + SIMD2(r * 0.7, r * 0.7)

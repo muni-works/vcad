@@ -128,6 +128,7 @@ final class GlassUI {
         if ch == "?" { shortcutsShown.toggle(); return true }
         if model.sketching {
             let key = Character(ch.lowercased())
+            if key == "x" { model.sketch?.toggleConstruction(); model.sketchDirty = true; return true }
             guard let t = SketchToolKind.allCases.first(where: { $0.shortcut == key }) else { return false }
             model.setSketchTool(t)
             return true
