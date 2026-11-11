@@ -12,6 +12,7 @@ repository.workspace = true
 
 [dependencies]
 earcutr = "0.4"
+rayon = "1.10"
 serde = { workspace = true }
 serde_json = { workspace = true }
 tang = { workspace = true }

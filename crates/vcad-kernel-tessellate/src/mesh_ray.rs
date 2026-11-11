@@ -146,14 +146,14 @@ fn ray_triangle(point: &Point3, mesh: &TriangleMesh, tri: usize) -> RayHit {
 /// which is why the parity — and so the answer — is unchanged.
 pub struct MeshRayIndex<'m> {
     mesh: &'m TriangleMesh,
-    /// (y, z) grid origin and inverse cell size.
+    /// (y, z) grid origin, shared by every level.
     origin: (f64, f64),
-    inv_cell: (f64, f64),
-    dims: (usize, usize),
-    /// Triangle indices per cell, row-major over (y, z).
-    cells: Vec<Vec<u32>>,
-    /// Triangles spanning too many cells to bucket; tested on every query.
-    overflow: Vec<u32>,
+    /// Grid levels, finest first; each level halves the previous one's
+    /// resolution twice over. A triangle lives in the finest level where it
+    /// covers at most [`MAX_CELLS_PER_TRI`] cells, so a long sliver (earcut
+    /// across a plate full of holes) is bucketed coarsely instead of being
+    /// tested on every query.
+    levels: Vec<Level>,
     /// Largest x reached by each triangle — a triangle entirely behind the
     /// query point cannot produce a forward crossing.
     tri_max_x: Vec<f64>,
@@ -161,7 +161,27 @@ pub struct MeshRayIndex<'m> {
     slack: (f64, f64),
 }
 
-/// Above this many cells a single triangle goes to the overflow list rather
+/// One (y, z) bucket grid of a [`MeshRayIndex`].
+struct Level {
+    inv_cell: (f64, f64),
+    dims: (usize, usize),
+    /// Triangle indices per cell, row-major over (y, z).
+    cells: Vec<Vec<u32>>,
+}
+
+impl Level {
+    fn cell(&self, y: f64, z: f64, origin: (f64, f64)) -> (usize, usize) {
+        let f = |v: f64, o: f64, inv: f64, n: usize| -> usize {
+            (((v - o) * inv).floor().max(0.0) as usize).min(n - 1)
+        };
+        (
+            f(y, origin.0, self.inv_cell.0, self.dims.0),
+            f(z, origin.1, self.inv_cell.1, self.dims.1),
+        )
+    }
+}
+
+/// Above this many cells a single triangle moves to a coarser grid level rather
 /// than being written into every cell it covers.
 const MAX_CELLS_PER_TRI: usize = 64;
 
@@ -206,7 +226,6 @@ impl<'m> MeshRayIndex<'m> {
 
         // Roughly one triangle per cell, capped so the grid stays small.
         let dim = ((n_tri as f64).sqrt().ceil() as usize).clamp(1, 256);
-        let dims = (dim, dim);
         let extent = |c: usize| {
             let e = hi[c] - lo[c];
             if e.is_finite() && e > 0.0 {
@@ -215,40 +234,46 @@ impl<'m> MeshRayIndex<'m> {
                 1.0
             }
         };
-        let inv_cell = (dim as f64 / extent(1), dim as f64 / extent(2));
         let origin = (
             if lo[1].is_finite() { lo[1] } else { 0.0 },
             if lo[2].is_finite() { lo[2] } else { 0.0 },
         );
-
-        let mut cells: Vec<Vec<u32>> = vec![Vec::new(); dim * dim];
-        let mut overflow = Vec::new();
-        let cell_of = |v: f64, o: f64, inv: f64, n: usize| -> usize {
-            (((v - o) * inv).floor().max(0.0) as usize).min(n - 1)
-        };
-        for (t, (tlo, thi)) in boxes.iter().enumerate() {
-            let y0 = cell_of(tlo[1], origin.0, inv_cell.0, dims.0);
-            let y1 = cell_of(thi[1], origin.0, inv_cell.0, dims.0);
-            let z0 = cell_of(tlo[2], origin.1, inv_cell.1, dims.1);
-            let z1 = cell_of(thi[2], origin.1, inv_cell.1, dims.1);
-            if (y1 - y0 + 1) * (z1 - z0 + 1) > MAX_CELLS_PER_TRI {
-                overflow.push(t as u32);
-                continue;
+        let mut levels = Vec::new();
+        let mut d = dim;
+        loop {
+            levels.push(Level {
+                inv_cell: (d as f64 / extent(1), d as f64 / extent(2)),
+                dims: (d, d),
+                cells: vec![Vec::new(); d * d],
+            });
+            if d == 1 {
+                break;
             }
-            for cy in y0..=y1 {
-                for cz in z0..=z1 {
-                    cells[cy * dims.1 + cz].push(t as u32);
+            d = (d / 4).max(1);
+        }
+        for (t, (tlo, thi)) in boxes.iter().enumerate() {
+            // The coarsest level is a single cell, so every triangle fits
+            // somewhere.
+            for level in levels.iter_mut() {
+                let (y0, z0) = level.cell(tlo[1], tlo[2], origin);
+                let (y1, z1) = level.cell(thi[1], thi[2], origin);
+                if (y1 - y0 + 1) * (z1 - z0 + 1) > MAX_CELLS_PER_TRI && level.dims.0 > 1 {
+                    continue;
                 }
+                for cy in y0..=y1 {
+                    for cz in z0..=z1 {
+                        level.cells[cy * level.dims.1 + cz].push(t as u32);
+                    }
+                }
+                break;
             }
         }
+        levels.retain(|l| l.cells.iter().any(|c| !c.is_empty()));
 
         Self {
             mesh,
             origin,
-            inv_cell,
-            dims,
-            cells,
-            overflow,
+            levels,
             tri_max_x,
             slack,
         }
@@ -269,37 +294,27 @@ impl<'m> MeshRayIndex<'m> {
         // The ray leaves the point in +y/+z by at most `slack`; widen the
         // window by a hair on the near side too, so a triangle whose box
         // ends exactly at the point still qualifies.
-        let cell_of = |v: f64, o: f64, inv: f64, n: usize| -> usize {
-            (((v - o) * inv).floor().max(0.0) as usize).min(n - 1)
-        };
-        let y0 = cell_of(point.y - 1e-9, self.origin.0, self.inv_cell.0, self.dims.0);
-        let y1 = cell_of(
-            point.y + self.slack.0,
-            self.origin.0,
-            self.inv_cell.0,
-            self.dims.0,
-        );
-        let z0 = cell_of(point.z - 1e-9, self.origin.1, self.inv_cell.1, self.dims.1);
-        let z1 = cell_of(
-            point.z + self.slack.1,
-            self.origin.1,
-            self.inv_cell.1,
-            self.dims.1,
-        );
-
+        //
         // A triangle bucketed into several of the visited cells must be
-        // counted once, or the parity flips. Gather, dedup, then test.
+        // counted once, or the parity flips. Gather, dedup, then test. (Each
+        // triangle lives in exactly one level, so levels never overlap.)
         let mut cand: Vec<u32> = Vec::with_capacity(32);
-        for cy in y0..=y1 {
-            for cz in z0..=z1 {
-                cand.extend_from_slice(&self.cells[cy * self.dims.1 + cz]);
+        for level in &self.levels {
+            let (y0, z0) = level.cell(point.y - 1e-9, point.z - 1e-9, self.origin);
+            let (y1, z1) = level.cell(point.y + self.slack.0, point.z + self.slack.1, self.origin);
+            let start = cand.len();
+            for cy in y0..=y1 {
+                for cz in z0..=z1 {
+                    cand.extend_from_slice(&level.cells[cy * level.dims.1 + cz]);
+                }
+            }
+            if y0 != y1 || z0 != z1 {
+                cand[start..].sort_unstable();
+                let mut tail = cand.split_off(start);
+                tail.dedup();
+                cand.extend(tail);
             }
         }
-        if y0 != y1 || z0 != z1 {
-            cand.sort_unstable();
-            cand.dedup();
-        }
-        cand.extend_from_slice(&self.overflow);
 
         let mut crossings = 0u32;
         for &t in &cand {
@@ -373,6 +388,11 @@ pub fn remove_interior_membranes(mesh: &mut TriangleMesh) {
     }
 }
 
+/// Below this many triangles the membrane probes run serially: the pass is
+/// already fast, and booleans call it mid-pipeline from inside their own
+/// parallel loops.
+const PARALLEL_PROBE_MIN_TRIS: usize = 4096;
+
 /// One membrane-stripping pass; returns whether anything was removed.
 /// Exposed at crate level so [`crate::repair_watertightness`] can use it
 /// without recursing back into itself.
@@ -413,7 +433,11 @@ pub(crate) fn strip_membranes_once(mesh: &mut TriangleMesh) -> bool {
                 mesh.vertices[k + 2] as f64,
             )
         };
-        for (t, doom) in doomed.iter_mut().enumerate() {
+        // Each triangle's verdict is independent of every other's, so the
+        // probes run in parallel: on a large imported part this pass is the
+        // whole tessellation cost (Voron 2.4: 80%+ of open time, a handful
+        // of 100k-triangle parts each pinning one core for minutes).
+        let classify = |(t, doom): (usize, &mut bool)| {
             let (a, b, c) = (
                 p(mesh.indices[t * 3]),
                 p(mesh.indices[t * 3 + 1]),
@@ -422,7 +446,7 @@ pub(crate) fn strip_membranes_once(mesh: &mut TriangleMesh) -> bool {
             let n = (b - a).cross(c - a);
             let nn = n.norm();
             if nn < 1e-12 {
-                continue;
+                return;
             }
             let n = n / nn;
             // Same scaling rationale as the CSG classifier's probe_offset:
@@ -450,6 +474,12 @@ pub(crate) fn strip_membranes_once(mesh: &mut TriangleMesh) -> bool {
             if hi_in == lo_in {
                 *doom = true;
             }
+        };
+        if ntri >= PARALLEL_PROBE_MIN_TRIS {
+            use rayon::prelude::*;
+            doomed.par_iter_mut().enumerate().for_each(classify);
+        } else {
+            doomed.iter_mut().enumerate().for_each(classify);
         }
     }
     let doomed_count = doomed.iter().filter(|&&d| d).count();
@@ -488,4 +518,69 @@ pub(crate) fn strip_membranes_once(mesh: &mut TriangleMesh) -> bool {
         mesh.face_kinds = kinds;
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Append a closed axis-aligned box (12 triangles, outward winding).
+    fn push_box(m: &mut TriangleMesh, lo: [f32; 3], hi: [f32; 3]) {
+        let base = (m.vertices.len() / 3) as u32;
+        for i in 0..8u32 {
+            m.vertices.push(if i & 1 == 0 { lo[0] } else { hi[0] });
+            m.vertices.push(if i & 2 == 0 { lo[1] } else { hi[1] });
+            m.vertices.push(if i & 4 == 0 { lo[2] } else { hi[2] });
+        }
+        let quads = [
+            [0, 2, 3, 1], // -z
+            [4, 5, 7, 6], // +z
+            [0, 1, 5, 4], // -y
+            [2, 6, 7, 3], // +y
+            [0, 4, 6, 2], // -x
+            [1, 3, 7, 5], // +x
+        ];
+        for q in quads {
+            m.indices.extend([base + q[0], base + q[1], base + q[2]]);
+            m.indices.extend([base + q[0], base + q[2], base + q[3]]);
+        }
+    }
+
+    /// The multi-level index must answer exactly what the brute-force scan
+    /// does — including for huge triangles that land in coarse levels (a big
+    /// slab's faces) mixed with thousands of small ones.
+    #[test]
+    fn index_matches_brute_force_with_coarse_levels() {
+        let mut m = TriangleMesh::new();
+        push_box(&mut m, [-50.0, -50.0, -5.0], [50.0, 50.0, 5.0]);
+        let mut seed = 12345u64;
+        let mut rnd = || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((seed >> 33) as f64 / (1u64 << 31) as f64) as f32
+        };
+        for _ in 0..900 {
+            let c = [
+                rnd() * 140.0 - 70.0,
+                rnd() * 140.0 - 70.0,
+                rnd() * 30.0 - 15.0,
+            ];
+            let s = 0.2 + rnd();
+            push_box(&mut m, [c[0], c[1], c[2]], [c[0] + s, c[1] + s, c[2] + s]);
+        }
+        let index = MeshRayIndex::new(&m);
+        assert!(
+            index.levels.len() > 1,
+            "the slab faces must use a coarse level"
+        );
+        for _ in 0..4000 {
+            let p = Point3::new(
+                (rnd() * 160.0 - 80.0) as f64,
+                (rnd() * 160.0 - 80.0) as f64,
+                (rnd() * 40.0 - 20.0) as f64,
+            );
+            assert_eq!(index.contains(&p), point_in_mesh(&p, &m), "at {p:?}");
+        }
+    }
 }

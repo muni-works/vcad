@@ -2667,6 +2667,30 @@ final class EditorModel {
         let rootKey: String?
     }
 
+    /// Mesh, feature edges and root key of every part of `scene`, gathered in
+    /// parallel (nil = empty part). Pure reads of an immutable scene handle.
+    nonisolated private static func gatherParts(_ scene: OpaquePointer, count: Int)
+        -> [(mesh: KernelMesh, edges: [SIMD3<Float>], rootKey: String?)?] {
+        final class Slots: @unchecked Sendable {
+            var items: [(mesh: KernelMesh, edges: [SIMD3<Float>], rootKey: String?)?]
+            init(_ n: Int) { items = Array(repeating: nil, count: n) }
+        }
+        let slots = Slots(count)
+        let handle = UInt(bitPattern: scene)
+        DispatchQueue.concurrentPerform(iterations: count) { i in
+            guard let scene = OpaquePointer(bitPattern: handle) else { return }
+            let km = KernelMesh.fromView(vcad_scene_part_mesh(scene, i))
+            if km.isEmpty { return }
+            var segs: [SIMD3<Float>] = []
+            if let eh = vcad_scene_part_edges(scene, i, edgeAngleDeg) {
+                segs = EdgeOverlay.segments(fromView: vcad_edges_view(eh))
+                vcad_edges_free(eh)
+            }
+            slots.items[i] = (km, segs, rootKey(scene, i))   // distinct index per task
+        }
+        return slots.items
+    }
+
     nonisolated private static func rootKey(_ scene: OpaquePointer, _ i: Int) -> String? {
         guard let c = vcad_scene_root_key(scene, i) else { return nil }
         defer { vcad_cam_free(c) }
@@ -3473,6 +3497,7 @@ final class EditorModel {
     private func abandonEvaluation() {
         evalPoll?.cancel(); evalPoll = nil
         if let job = evalJob { vcad_eval_abandon(job); evalJob = nil }
+        abandonRefine()
         evaluating = nil
         solving = false
         solveProgress = (0, 0)
@@ -3948,6 +3973,18 @@ final class EditorModel {
     @ObservationIgnored private var evaluating: Data?
     /// The in-flight kernel job and the poll that watches it.
     @ObservationIgnored private var evalJob: OpaquePointer?
+    /// Whether `preparedScene` came from a preview-LOD pass.
+    @ObservationIgnored private var preparedIsPreview = false
+    /// The full-quality pass that follows a preview, and its poll.
+    @ObservationIgnored private var refineJob: OpaquePointer?
+    @ObservationIgnored private var refinePoll: Task<Void, Never>?
+    /// The adopted preview scene, redrawn as-is while the refine pass runs.
+    @ObservationIgnored private var refineHold: (data: Data, scene: RenderScene)?
+    /// True while full-quality meshes are replacing a preview.
+    var refining = false
+    /// Documents with at least this many visible roots open at the preview
+    /// LOD first (a big imported assembly: Voron 2.4 has 1715), then refine.
+    static let previewRootThreshold = 64
     @ObservationIgnored private var evalPoll: Task<Void, Never>?
     /// Parts that have landed so far, drawn while the rest of the document
     /// is still solving.
@@ -3982,6 +4019,10 @@ final class EditorModel {
         guard evaluating != data else { return }          // already in flight
         if let old = evalJob { vcad_eval_abandon(old); evalJob = nil }   // superseded
         evalPoll?.cancel()
+        abandonRefine()
+        let roots = (documentJSON?["roots"] as? [[String: Any]])?
+            .filter { ($0["visible"] as? Bool) ?? true }.count ?? 0
+        let preview = roots >= Self.previewRootThreshold
         evaluating = data
         solving = true
         solveProgress = (0, 0)
@@ -3989,7 +4030,8 @@ final class EditorModel {
         let started = Date()
         let job: OpaquePointer? = data.withUnsafeBytes { raw in
             dir.withUnsafeBufferPointer { d in
-                vcad_eval_begin(raw.bindMemory(to: UInt8.self).baseAddress, data.count, d.baseAddress, d.count)
+                vcad_eval_begin_lod(raw.bindMemory(to: UInt8.self).baseAddress, data.count,
+                                    d.baseAddress, d.count, preview)
             }
         }
         guard let job else {
@@ -4002,6 +4044,7 @@ final class EditorModel {
         evalJob = job
         evalPoll = Task { @MainActor [weak self] in
             var landed = 0
+            var lastRedraw = Date.distantPast
             while !Task.isCancelled {
                 guard let self, self.evalJob == job else { return }
                 var done = 0, total = 0
@@ -4012,9 +4055,12 @@ final class EditorModel {
                         self.loading?.phase = .evaluating(done: done, total: total)
                     }
                 }
-                // Draw newly landed parts now rather than after the last one.
+                // Draw newly landed parts now rather than after the last one —
+                // within a time budget per tick, so a big assembly landing
+                // hundreds of parts at once can't hold the main thread.
                 var newParts = false
-                while landed < done {
+                let tick = Date()
+                while landed < done, Date().timeIntervalSince(tick) < 0.03 {
                     let km = KernelMesh.fromView(vcad_eval_part_mesh(job, landed))
                     if !km.isEmpty {
                         self.partialMeshes.append((km.resource(name: "part\(landed)"),
@@ -4042,6 +4088,8 @@ final class EditorModel {
                     self.partialMeshes = []; self.partialBounds = nil
                     if let handle {
                         self.preparedScene = (data, handle)
+                        self.preparedIsPreview = preview
+                        if preview { self.startRefine(data: data, dir: dir) }
                     } else {
                         self.loadError = SimError.pending() ?? "The kernel could not evaluate this document"
                         self.finishFirstSolve(error: self.loadError)
@@ -4050,10 +4098,58 @@ final class EditorModel {
                     self.geometryDirty = true                // the viewport adopts it
                     return
                 }
-                if newParts { self.geometryDirty = true }
-                try? await Task.sleep(for: .milliseconds(100))
+                // Each redraw rebuilds every landed part's entity, so on a big
+                // assembly redraw at most once a second while streaming.
+                if newParts, Date().timeIntervalSince(lastRedraw) > (landed > 64 ? 1.0 : 0.1) {
+                    self.geometryDirty = true
+                    lastRedraw = Date()
+                }
+                try? await Task.sleep(for: .milliseconds(landed < done ? 10 : 100))
             }
         }
+    }
+
+    /// After a preview-LOD solve lands, solve again at full quality in the
+    /// background and swap the meshes in when done. The preview stays on
+    /// screen meanwhile; nothing blanks and no progress card reappears.
+    private func startRefine(data: Data, dir: [UInt8]) {
+        abandonRefine()
+        let job: OpaquePointer? = data.withUnsafeBytes { raw in
+            dir.withUnsafeBufferPointer { d in
+                vcad_eval_begin_lod(raw.bindMemory(to: UInt8.self).baseAddress, data.count,
+                                    d.baseAddress, d.count, false)
+            }
+        }
+        guard let job else { return }      // the preview stands
+        refineJob = job
+        refining = true
+        let started = Date()
+        refinePoll = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.refineJob == job else { return }
+                var done = 0, total = 0
+                if vcad_eval_progress(job, &done, &total) {
+                    self.refineJob = nil
+                    self.refining = false
+                    LaunchPerf.once("refined", String(format: " (refine %.0f ms)",
+                                                      Date().timeIntervalSince(started) * 1000))
+                    guard let handle = vcad_eval_finish(job) else { return }   // keep the preview
+                    if let p = self.preparedScene { vcad_scene_free(p.handle) }
+                    self.preparedScene = (data, handle)
+                    self.preparedIsPreview = false
+                    self.geometryDirty = true
+                    return
+                }
+                try? await Task.sleep(for: .milliseconds(250))
+            }
+        }
+    }
+
+    private func abandonRefine() {
+        refinePoll?.cancel(); refinePoll = nil
+        if let job = refineJob { vcad_eval_abandon(job); refineJob = nil }
+        refining = false
+        refineHold = nil
     }
 
     // MARK: mesh bundles — a document ships with its solved geometry
@@ -4089,6 +4185,7 @@ final class EditorModel {
 
     private func documentScene(path: String) -> RenderScene {
         let start = Date()
+        var adoptingPreview = false
         // Prefer the live (possibly edited) doc; fall back to the file on disk
         // for formats the JSON parser couldn't load (legacy terse `.vcad`).
         let plan = documentInstancingPlan()
@@ -4110,6 +4207,12 @@ final class EditorModel {
             if let p = preparedScene, p.data == data {
                 preparedScene = nil
                 scene = p.handle
+                adoptingPreview = preparedIsPreview
+                if !preparedIsPreview { refineHold = nil }
+            } else if let hold = refineHold, hold.data == data {
+                // A preview is on screen and its full-quality pass is still
+                // running: redraw the preview, don't start another solve.
+                return hold.scene
             } else {
                 if let p = preparedScene { vcad_scene_free(p.handle); preparedScene = nil }
                 startBackgroundEvaluation(data: data, dir: dir)
@@ -4134,11 +4237,15 @@ final class EditorModel {
             return .empty
         }
         loadError = nil
+        let built: RenderScene
         if vcad_scene_instance_count(scene) > 0 {
-            return assemblyScene(adopting: scene, start: start)
+            built = assemblyScene(adopting: scene, start: start)
+        } else {
+            defer { vcad_scene_free(scene) }
+            built = sceneFromHandle(scene, start: start, plan: plan)
         }
-        defer { vcad_scene_free(scene) }
-        return sceneFromHandle(scene, start: start, plan: plan)
+        if adoptingPreview { refineHold = (data, built) }
+        return built
     }
 
     /// Render the AI-generated loon program. Same evaluator + part-gather as a
@@ -4296,17 +4403,15 @@ final class EditorModel {
     private func sceneFromHandle(_ scene: OpaquePointer, start: Date,
                                  plan: [Int: PatternInstancing] = [:]) -> RenderScene {
         let count = vcad_scene_part_count(scene)
-        let parts: [TessellatedPart?] = (0..<count).map { i in
-            let km = KernelMesh.fromView(vcad_scene_part_mesh(scene, i))
-            if km.isEmpty { return nil }
-            // Feature edges for the CAD edge overlay (same index alignment).
-            var segs: [SIMD3<Float>] = []
-            if let eh = vcad_scene_part_edges(scene, i, Self.edgeAngleDeg) {
-                segs = EdgeOverlay.segments(fromView: vcad_edges_view(eh))
-                vcad_edges_free(eh)
-            }
-            return TessellatedPart(mesh: km, edges: segs, resource: km.resource(name: "part" + String(i)),
-                                   rootKey: Self.rootKey(scene, i))
+        // Copying each mesh out and extracting its feature edges only reads
+        // the finished scene, so it runs across cores; only the RealityKit
+        // resources are made here. Serially, a 1715-part import (Voron 2.4,
+        // 15.8M triangles) held the main thread for ~30 s at this point.
+        let gathered = Self.gatherParts(scene, count: count)
+        let parts: [TessellatedPart?] = gathered.enumerated().map { i, g in
+            guard let g else { return nil }
+            return TessellatedPart(mesh: g.mesh, edges: g.edges, resource: g.mesh.resource(name: "part" + String(i)),
+                                   rootKey: g.rootKey)
         }
         let keys: [String] = (0..<count).compactMap { i in
             guard let c = vcad_scene_root_key(scene, i) else { return nil }

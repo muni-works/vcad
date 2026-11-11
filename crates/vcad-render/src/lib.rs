@@ -1054,6 +1054,7 @@ fn place_parts_cached(
         segments,
         fold_sheet_metal: true,
         chord_tol_mm: 0.0,
+        preview: false,
     };
     let mut node_cache = HashMap::new();
     // Serial: keys, cache lookups, and the BRep each miss must tessellate.

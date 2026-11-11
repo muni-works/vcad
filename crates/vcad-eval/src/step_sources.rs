@@ -180,6 +180,91 @@ pub fn solids_from_file(path: &str) -> Result<Arc<Vec<Solid>>, String> {
     Ok(parsed)
 }
 
+/// Content key of solid `index` in the STEP source at `path`: a SHA-256 of
+/// its B-rep (topology + geometry), independent of the file, the path and
+/// the solid's position in it.
+///
+/// Vendor STEP exports rarely share representations: the Voron 2.4 file
+/// holds 1560 `MANIFOLD_SOLID_BREP`s for 1551 occurrences, every M3 screw
+/// its own copy in its own frame. Keyed by content, identical copies
+/// tessellate once and share the mesh (the root cache already peels the
+/// placement off). The digest is order-sensitive, so two equal solids built
+/// in different entity orders only miss the dedupe; they never collide.
+///
+/// `None` when the source can't be read (the evaluation reports why).
+pub fn solid_key(path: &str, index: usize) -> Option<String> {
+    let solids = match solids(path) {
+        Ok(Some(s)) => s,
+        Ok(None) => {
+            #[cfg(target_arch = "wasm32")]
+            {
+                return None;
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                solids_from_file(path).ok()?
+            }
+        }
+        Err(_) => return None,
+    };
+    let keys = {
+        let mut c = key_cache().lock().expect("step key cache poisoned");
+        match c.get(path) {
+            Some((s, k)) if Arc::ptr_eq(s, &solids) => k.clone(),
+            _ => {
+                let k = Arc::new(digest_all(&solids));
+                c.insert(path.to_string(), (solids.clone(), k.clone()));
+                k
+            }
+        }
+    };
+    keys.get(index).cloned().flatten()
+}
+
+#[allow(clippy::type_complexity)]
+fn key_cache() -> &'static Mutex<HashMap<String, (Arc<Vec<Solid>>, Arc<Vec<Option<String>>>)>> {
+    static C: OnceLock<Mutex<HashMap<String, (Arc<Vec<Solid>>, Arc<Vec<Option<String>>>)>>> =
+        OnceLock::new();
+    C.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn digest_all(solids: &[Solid]) -> Vec<Option<String>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        use rayon::prelude::*;
+        solids.par_iter().map(solid_digest).collect()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        solids.iter().map(solid_digest).collect()
+    }
+}
+
+/// SHA-256 of a solid's B-rep, streamed through its `Debug` form (floats
+/// print in shortest round-trip form, so equal geometry prints equal).
+/// Names and provenance live on `Solid`, not the B-rep, so they don't
+/// split otherwise identical parts.
+pub fn solid_digest(solid: &Solid) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    use std::fmt::Write;
+    struct H(Sha256);
+    impl Write for H {
+        fn write_str(&mut self, s: &str) -> std::fmt::Result {
+            self.0.update(s.as_bytes());
+            Ok(())
+        }
+    }
+    let brep = solid.brep()?;
+    let mut h = H(Sha256::new());
+    h.0.update(b"vcad-step-solid/1\0");
+    write!(h, "{brep:?}").ok()?;
+    let mut hex = String::with_capacity(64);
+    for b in h.0.finalize() {
+        let _ = write!(hex, "{b:02x}");
+    }
+    Some(hex)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

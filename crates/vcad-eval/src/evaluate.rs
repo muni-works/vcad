@@ -41,6 +41,27 @@ thread_local! {
     static DISPLAY_CHORD_TOL: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) };
 }
 
+thread_local! {
+    /// Preview LOD: root meshes skip the export-grade watertightness repair
+    /// (see `Solid::to_preview_mesh`). Set only by a viewport's first pass.
+    static DISPLAY_PREVIEW: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// RAII guard: tessellate root meshes at the preview LOD on this thread for
+/// its lifetime (panic-safe — restored on drop).
+pub struct DisplayPreviewGuard(bool);
+impl DisplayPreviewGuard {
+    /// Turn the preview LOD on (or off) until the guard drops.
+    pub fn enable(on: bool) -> Self {
+        DisplayPreviewGuard(DISPLAY_PREVIEW.with(|t| t.replace(on)))
+    }
+}
+impl Drop for DisplayPreviewGuard {
+    fn drop(&mut self) {
+        DISPLAY_PREVIEW.with(|t| t.set(self.0));
+    }
+}
+
 /// RAII guard: tessellate root meshes with a chord tolerance on this thread
 /// for its lifetime (panic-safe — restored on drop).
 pub struct DisplayChordGuard(f64);
@@ -148,7 +169,10 @@ fn evaluate_inner(
         let chord = DISPLAY_CHORD_TOL.with(|t| t.get());
         crate::incremental::subtree_hashes(
             &doc.nodes,
-            (u64::from(segments) | (u64::from(fold) << 32)) ^ chord.to_bits().rotate_left(17),
+            (u64::from(segments)
+                | (u64::from(fold) << 32)
+                | (u64::from(DISPLAY_PREVIEW.with(|p| p.get())) << 33))
+                ^ chord.to_bits().rotate_left(17),
         )
     });
     let mut cache: HashMap<NodeId, Option<Solid>> = match (inc.as_deref_mut(), &hashes) {
@@ -159,6 +183,7 @@ fn evaluate_inner(
         segments,
         fold_sheet_metal: FOLD_SHEET_METAL.with(|f| f.get()),
         chord_tol_mm: DISPLAY_CHORD_TOL.with(|t| t.get()),
+        preview: DISPLAY_PREVIEW.with(|p| p.get()),
     };
     let lookup = |root: NodeId| -> (Option<RootKey>, Option<EvaluatedMesh>) {
         let Some(c) = root_cache else {
@@ -186,9 +211,8 @@ fn evaluate_inner(
     // incremental path keeps its serial walk: its whole point is reusing
     // solids across edits, which the shared `cache` provides.
     let mut lookups: HashMap<NodeId, (Option<RootKey>, Option<EvaluatedMesh>)> = HashMap::new();
-    let mut pre: HashMap<NodeId, MeshedRoot> = HashMap::new();
+    let mut todo: Vec<NodeId> = Vec::new();
     if inc.is_none() {
-        let mut todo: Vec<NodeId> = Vec::new();
         let mut queued: std::collections::HashSet<RootKey> = Default::default();
         let mut want = |id: NodeId, lookups: &mut HashMap<_, _>| {
             if lookups.contains_key(&id) {
@@ -234,414 +258,423 @@ fn evaluate_inner(
                 }
             }
         }
-        if todo.len() > 1 {
-            pre = evaluate_roots_parallel(&todo, &doc.nodes, segments, clock, &mut node_timings);
-        }
     }
-    // Each pre-pass lookup is consumed once. A second root with the same
-    // shape looks up again and — exactly as without the pre-pass — hits the
-    // mesh the first one just stored.
-    let mut lookup = |root: NodeId| lookups.remove(&root).unwrap_or_else(|| lookup(root));
+    if todo.len() <= 1 {
+        todo.clear();
+    }
+    // The misses evaluate on the rayon pool while this thread walks the
+    // roots in order, taking each result as it lands — so `on_root` (the
+    // progressive viewport) sees part 0 as soon as part 0 is done, not
+    // after the whole document is.
+    rayon::in_place_scope(|scope| {
+        let mut pre = Prepass::start(scope, &todo, &doc.nodes, segments, clock);
+        // Each pre-pass lookup is consumed once. A second root with the same
+        // shape looks up again and — exactly as without the pre-pass — hits the
+        // mesh the first one just stored.
+        let mut lookup = |root: NodeId| lookups.remove(&root).unwrap_or_else(|| lookup(root));
 
-    // Evaluate visible roots
-    let mut parts: Vec<EvaluatedPart> = Vec::new();
-    let mut solids = Vec::new();
-    let mut root_keys: Vec<Option<String>> = Vec::new();
-    let total_visible = doc
-        .roots
-        .iter()
-        .filter(|e| e.visible != Some(false))
-        .count();
-    let landed =
-        |parts: &Vec<EvaluatedPart>, root_keys: &mut Vec<Option<String>>, key: Option<String>| {
+        // Evaluate visible roots
+        let mut parts: Vec<EvaluatedPart> = Vec::new();
+        let mut solids = Vec::new();
+        let mut root_keys: Vec<Option<String>> = Vec::new();
+        let total_visible = doc
+            .roots
+            .iter()
+            .filter(|e| e.visible != Some(false))
+            .count();
+        let landed = |parts: &Vec<EvaluatedPart>,
+                      root_keys: &mut Vec<Option<String>>,
+                      key: Option<String>| {
             root_keys.push(key);
             if let (Some(f), Some(part)) = (options.on_root.as_ref(), parts.last()) {
                 f(parts.len() - 1, total_visible, &part.mesh);
             }
         };
 
-    let mut solid_roots: Vec<NodeId> = Vec::new();
-    for (idx, entry) in doc.roots.iter().enumerate() {
-        if entry.visible == Some(false) {
-            continue;
-        }
-        // Every visible root pushes exactly one entry onto `solids` below.
-        solid_roots.push(entry.root);
-
-        // Check for ImportedMesh chain
-        if let Some(imported) = find_imported_mesh(entry.root, &doc.nodes) {
-            let mesh = transform_imported_mesh(&imported);
-            parts.push(EvaluatedPart {
-                mesh,
-                material: entry.material.clone(),
-                solid: None,
-            });
-            solids.push(None);
-            landed(&parts, &mut root_keys, None);
-            continue;
-        }
-
-        // With a cache, key a root on its shape and not its placement: a
-        // rigid Translate/Rotate chain on top is peeled off, the shape under
-        // it is evaluated, meshed and cached in its own frame, and the
-        // placement is applied to the mesh. A posed assembly re-rendered
-        // in a new pose is then all hits.
-        let (eval_root, placement) = match root_cache {
-            Some(_) => peel_rigid_placement(entry.root, &doc.nodes),
-            None => (entry.root, None),
-        };
-        let (cache_key, cached) = lookup(eval_root);
-        if let Some(mesh) = cached {
-            parts.push(EvaluatedPart {
-                mesh: place_mesh(mesh, placement.as_ref()),
-                material: entry.material.clone(),
-                solid: None,
-            });
-            solids.push(None);
-            landed(
-                &parts,
-                &mut root_keys,
-                cache_key
-                    .as_ref()
-                    .filter(|_| placement.is_none())
-                    .map(|k| k.0.clone()),
-            );
-            continue;
-        }
-
-        // Incremental: an unchanged root reuses its solid and its mesh. A
-        // peeled root caches its unplaced shape (`eval_root`'s subtree hash
-        // excludes the placement), so moving a part only re-places it.
-        let root_hash = hashes.as_ref().and_then(|h| h.get(&eval_root).copied());
-        if let (Some(i), Some(h)) = (inc.as_deref_mut(), root_hash) {
-            if let (Some(Some(solid)), Some(mesh)) =
-                (cache.get(&eval_root).cloned(), i.mesh(eval_root, h))
-            {
-                let key = placement
-                    .is_none()
-                    .then(|| cache_key.as_ref().map(|k| k.0.clone()))
-                    .flatten();
-                let solid = match &placement {
-                    Some(t) => solid.apply_transform(t),
-                    None => solid,
-                };
-                parts.push(EvaluatedPart {
-                    mesh: place_mesh(mesh, placement.as_ref()),
-                    material: entry.material.clone(),
-                    solid: Some(solid.clone()),
-                });
-                solids.push(Some(solid));
-                landed(&parts, &mut root_keys, key);
+        let mut solid_roots: Vec<NodeId> = Vec::new();
+        for (idx, entry) in doc.roots.iter().enumerate() {
+            if entry.visible == Some(false) {
                 continue;
             }
-        }
+            // Every visible root pushes exactly one entry onto `solids` below.
+            solid_roots.push(entry.root);
 
-        // Wrap eval + tessellate in catch_unwind so a kernel assertion
-        // (e.g. `add_loop` invariant) turns into a per-root failure
-        // instead of aborting the whole scene. AssertUnwindSafe is safe
-        // here: cache/timings populated for earlier nodes stay valid
-        // even if this root's evaluation panics mid-way.
-        let eval_outcome = match pre.get(&eval_root) {
-            Some(done) => done.clone(),
-            None => evaluate_and_mesh(
-                eval_root,
-                &doc.nodes,
-                &mut cache,
-                segments,
-                clock,
-                &mut node_timings,
-            ),
-        };
-        if let Ok(m) = &eval_outcome {
-            tessellate_ms += m.mesh_ms;
-            if let Some(nt) = node_timings.get_mut(&entry.root.to_string()) {
-                nt.mesh_ms = m.mesh_ms;
-            }
-            if let Some(nt) = node_timings.get(&eval_root.to_string()) {
-                let name = doc.nodes.get(&entry.root).and_then(|n| n.name.clone());
-                root_ms.push((
-                    name.unwrap_or_else(|| format!("root[{idx}]")),
-                    nt.eval_ms + m.mesh_ms,
-                ));
-            }
-        }
-
-        match eval_outcome {
-            Ok(MeshedOk { mesh, solid, .. }) => {
-                store(&cache_key, &mesh);
-                if let (Some(_), Some(i), Some(h)) = (&solid, inc.as_deref_mut(), root_hash) {
-                    i.put_mesh(eval_root, h, &mesh);
-                }
-                // A peeled root's key names the unplaced shape, which a mesh
-                // bundle cannot stand in for: report none.
-                let key = (!mesh.indices.is_empty() && placement.is_none())
-                    .then(|| cache_key.as_ref().map(|k| k.0.clone()))
-                    .flatten();
-                let mesh = place_mesh(mesh, placement.as_ref());
-                let solid = match (&placement, solid) {
-                    (Some(t), Some(s)) => Some(s.apply_transform(t)),
-                    (_, s) => s,
-                };
+            // Check for ImportedMesh chain
+            if let Some(imported) = find_imported_mesh(entry.root, &doc.nodes) {
+                let mesh = transform_imported_mesh(&imported);
                 parts.push(EvaluatedPart {
                     mesh,
-                    material: entry.material.clone(),
-                    solid: solid.clone(),
-                });
-                solids.push(solid);
-                landed(&parts, &mut root_keys, key);
-            }
-            Err(error) => {
-                failures.push(RootFailure {
-                    scope: format!("root[{idx}]"),
-                    node_id: entry.root,
-                    error,
-                });
-                parts.push(EvaluatedPart {
-                    mesh: EvaluatedMesh::empty(),
                     material: entry.material.clone(),
                     solid: None,
                 });
                 solids.push(None);
                 landed(&parts, &mut root_keys, None);
+                continue;
+            }
+
+            // With a cache, key a root on its shape and not its placement: a
+            // rigid Translate/Rotate chain on top is peeled off, the shape under
+            // it is evaluated, meshed and cached in its own frame, and the
+            // placement is applied to the mesh. A posed assembly re-rendered
+            // in a new pose is then all hits.
+            let (eval_root, placement) = match root_cache {
+                Some(_) => peel_rigid_placement(entry.root, &doc.nodes),
+                None => (entry.root, None),
+            };
+            let (cache_key, cached) = lookup(eval_root);
+            if let Some(mesh) = cached {
+                parts.push(EvaluatedPart {
+                    mesh: place_mesh(mesh, placement.as_ref()),
+                    material: entry.material.clone(),
+                    solid: None,
+                });
+                solids.push(None);
+                landed(
+                    &parts,
+                    &mut root_keys,
+                    cache_key
+                        .as_ref()
+                        .filter(|_| placement.is_none())
+                        .map(|k| k.0.clone()),
+                );
+                continue;
+            }
+
+            // Incremental: an unchanged root reuses its solid and its mesh. A
+            // peeled root caches its unplaced shape (`eval_root`'s subtree hash
+            // excludes the placement), so moving a part only re-places it.
+            let root_hash = hashes.as_ref().and_then(|h| h.get(&eval_root).copied());
+            if let (Some(i), Some(h)) = (inc.as_deref_mut(), root_hash) {
+                if let (Some(Some(solid)), Some(mesh)) =
+                    (cache.get(&eval_root).cloned(), i.mesh(eval_root, h))
+                {
+                    let key = placement
+                        .is_none()
+                        .then(|| cache_key.as_ref().map(|k| k.0.clone()))
+                        .flatten();
+                    let solid = match &placement {
+                        Some(t) => solid.apply_transform(t),
+                        None => solid,
+                    };
+                    parts.push(EvaluatedPart {
+                        mesh: place_mesh(mesh, placement.as_ref()),
+                        material: entry.material.clone(),
+                        solid: Some(solid.clone()),
+                    });
+                    solids.push(Some(solid));
+                    landed(&parts, &mut root_keys, key);
+                    continue;
+                }
+            }
+
+            // Wrap eval + tessellate in catch_unwind so a kernel assertion
+            // (e.g. `add_loop` invariant) turns into a per-root failure
+            // instead of aborting the whole scene. AssertUnwindSafe is safe
+            // here: cache/timings populated for earlier nodes stay valid
+            // even if this root's evaluation panics mid-way.
+            let eval_outcome = match pre.take(&eval_root, &mut node_timings) {
+                Some(done) => done,
+                None => evaluate_and_mesh(
+                    eval_root,
+                    &doc.nodes,
+                    &mut cache,
+                    segments,
+                    clock,
+                    &mut node_timings,
+                ),
+            };
+            if let Ok(m) = &eval_outcome {
+                tessellate_ms += m.mesh_ms;
+                if let Some(nt) = node_timings.get_mut(&entry.root.to_string()) {
+                    nt.mesh_ms = m.mesh_ms;
+                }
+                if let Some(nt) = node_timings.get(&eval_root.to_string()) {
+                    let name = doc.nodes.get(&entry.root).and_then(|n| n.name.clone());
+                    root_ms.push((
+                        name.unwrap_or_else(|| format!("root[{idx}]")),
+                        nt.eval_ms + m.mesh_ms,
+                    ));
+                }
+            }
+
+            match eval_outcome {
+                Ok(MeshedOk { mesh, solid, .. }) => {
+                    store(&cache_key, &mesh);
+                    if let (Some(_), Some(i), Some(h)) = (&solid, inc.as_deref_mut(), root_hash) {
+                        i.put_mesh(eval_root, h, &mesh);
+                    }
+                    // A peeled root's key names the unplaced shape, which a mesh
+                    // bundle cannot stand in for: report none.
+                    let key = (!mesh.indices.is_empty() && placement.is_none())
+                        .then(|| cache_key.as_ref().map(|k| k.0.clone()))
+                        .flatten();
+                    let mesh = place_mesh(mesh, placement.as_ref());
+                    let solid = match (&placement, solid) {
+                        (Some(t), Some(s)) => Some(s.apply_transform(t)),
+                        (_, s) => s,
+                    };
+                    parts.push(EvaluatedPart {
+                        mesh,
+                        material: entry.material.clone(),
+                        solid: solid.clone(),
+                    });
+                    solids.push(solid);
+                    landed(&parts, &mut root_keys, key);
+                }
+                Err(error) => {
+                    failures.push(RootFailure {
+                        scope: format!("root[{idx}]"),
+                        node_id: entry.root,
+                        error,
+                    });
+                    parts.push(EvaluatedPart {
+                        mesh: EvaluatedMesh::empty(),
+                        material: entry.material.clone(),
+                        solid: None,
+                    });
+                    solids.push(None);
+                    landed(&parts, &mut root_keys, None);
+                }
             }
         }
-    }
 
-    // Assembly mode
-    let mut part_defs = None;
-    let mut instances = None;
-    let t_assembly = clock.map(|c| c.now_ms());
+        // Assembly mode
+        let mut part_defs = None;
+        let mut instances = None;
+        let t_assembly = clock.map(|c| c.now_ms());
 
-    if let (Some(pd_map), Some(inst_list)) = (&doc.part_defs, &doc.instances) {
-        if !pd_map.is_empty() && !inst_list.is_empty() {
-            let world_transforms = solve_forward_kinematics(doc);
+        if let (Some(pd_map), Some(inst_list)) = (&doc.part_defs, &doc.instances) {
+            if !pd_map.is_empty() && !inst_list.is_empty() {
+                let world_transforms = solve_forward_kinematics(doc);
 
-            let mut eval_part_defs = Vec::new();
-            let mut part_def_meshes: HashMap<String, EvaluatedMesh> = HashMap::new();
+                let mut eval_part_defs = Vec::new();
+                let mut part_def_meshes: HashMap<String, EvaluatedMesh> = HashMap::new();
 
-            for (id, part_def) in pd_map {
-                // ImportedMesh (e.g. browser-loaded STL/DAE for a URDF link)
-                // bypasses the CSG evaluator: the kernel can't turn a
-                // triangle soup back into a BRep solid, so we apply the
-                // accumulated transform chain to the raw vertex data and
-                // hand the result to the renderer directly. URDFs use this
-                // path for every link whose <visual> is a <mesh>.
-                if let Some(imported) = find_imported_mesh(part_def.root, &doc.nodes) {
-                    let mesh = transform_imported_mesh(&imported);
-                    part_def_meshes.insert(id.clone(), mesh.clone());
-                    eval_part_defs.push(EvaluatedPartDef {
-                        id: id.clone(),
-                        mesh,
-                        solid: None,
-                    });
-                    continue;
-                }
-
-                let (cache_key, cached) = lookup(part_def.root);
-                if let Some(mesh) = cached {
-                    part_def_meshes.insert(id.clone(), mesh.clone());
-                    eval_part_defs.push(EvaluatedPartDef {
-                        id: id.clone(),
-                        mesh,
-                        solid: None,
-                    });
-                    continue;
-                }
-
-                // Incremental: an unchanged part def reuses its mesh.
-                let def_hash = hashes.as_ref().and_then(|h| h.get(&part_def.root).copied());
-                if let (Some(i), Some(h)) = (inc.as_deref_mut(), def_hash) {
-                    if matches!(cache.get(&part_def.root), Some(Some(_))) {
-                        if let Some(mesh) = i.mesh(part_def.root, h) {
-                            part_def_meshes.insert(id.clone(), mesh.clone());
-                            eval_part_defs.push(EvaluatedPartDef {
-                                id: id.clone(),
-                                mesh,
-                                solid: None,
-                            });
-                            continue;
-                        }
+                for (id, part_def) in pd_map {
+                    // ImportedMesh (e.g. browser-loaded STL/DAE for a URDF link)
+                    // bypasses the CSG evaluator: the kernel can't turn a
+                    // triangle soup back into a BRep solid, so we apply the
+                    // accumulated transform chain to the raw vertex data and
+                    // hand the result to the renderer directly. URDFs use this
+                    // path for every link whose <visual> is a <mesh>.
+                    if let Some(imported) = find_imported_mesh(part_def.root, &doc.nodes) {
+                        let mesh = transform_imported_mesh(&imported);
+                        part_def_meshes.insert(id.clone(), mesh.clone());
+                        eval_part_defs.push(EvaluatedPartDef {
+                            id: id.clone(),
+                            mesh,
+                            solid: None,
+                        });
+                        continue;
                     }
-                }
 
-                let outcome = match pre.get(&part_def.root) {
-                    Some(done) => done.clone(),
-                    None => evaluate_and_mesh(
-                        part_def.root,
-                        &doc.nodes,
-                        &mut cache,
-                        segments,
-                        clock,
-                        &mut node_timings,
-                    ),
-                };
-                let (mesh, solid) = match outcome {
-                    Ok(MeshedOk {
-                        mesh: m,
-                        solid,
-                        mesh_ms,
-                    }) => {
-                        tessellate_ms += mesh_ms;
-                        if let Some(nt) = node_timings.get(&part_def.root.to_string()) {
-                            root_ms.push((format!("partDef {id}"), nt.eval_ms + mesh_ms));
-                        }
-                        store(&cache_key, &m);
-                        if let (Some(i), Some(h)) = (inc.as_deref_mut(), def_hash) {
-                            if matches!(cache.get(&part_def.root), Some(Some(_))) {
-                                i.put_mesh(part_def.root, h, &m);
+                    let (cache_key, cached) = lookup(part_def.root);
+                    if let Some(mesh) = cached {
+                        part_def_meshes.insert(id.clone(), mesh.clone());
+                        eval_part_defs.push(EvaluatedPartDef {
+                            id: id.clone(),
+                            mesh,
+                            solid: None,
+                        });
+                        continue;
+                    }
+
+                    // Incremental: an unchanged part def reuses its mesh.
+                    let def_hash = hashes.as_ref().and_then(|h| h.get(&part_def.root).copied());
+                    if let (Some(i), Some(h)) = (inc.as_deref_mut(), def_hash) {
+                        if matches!(cache.get(&part_def.root), Some(Some(_))) {
+                            if let Some(mesh) = i.mesh(part_def.root, h) {
+                                part_def_meshes.insert(id.clone(), mesh.clone());
+                                eval_part_defs.push(EvaluatedPartDef {
+                                    id: id.clone(),
+                                    mesh,
+                                    solid: None,
+                                });
+                                continue;
                             }
                         }
-                        (m, solid)
                     }
-                    Err(error) => {
-                        failures.push(RootFailure {
-                            scope: format!("partDef[{id:?}]"),
-                            node_id: part_def.root,
-                            error,
-                        });
-                        (EvaluatedMesh::empty(), None)
-                    }
-                };
-                part_def_meshes.insert(id.clone(), mesh.clone());
-                eval_part_defs.push(EvaluatedPartDef {
-                    id: id.clone(),
-                    mesh,
-                    solid,
-                });
-            }
 
-            let mut eval_instances = Vec::new();
-            for inst in inst_list {
-                let mesh = match part_def_meshes.get(&inst.part_def_id) {
-                    Some(m) => m.clone(),
-                    None => continue,
-                };
-
-                let world_transform = world_transforms.get(&inst.id).cloned().or(inst.transform);
-
-                let part_def = pd_map.get(&inst.part_def_id);
-                let material = inst
-                    .material
-                    .clone()
-                    .or_else(|| part_def.and_then(|pd| pd.default_material.clone()))
-                    .unwrap_or_else(|| "default".to_string());
-
-                eval_instances.push(EvaluatedInstance {
-                    instance_id: inst.id.clone(),
-                    part_def_id: inst.part_def_id.clone(),
-                    name: inst.name.clone(),
-                    mesh,
-                    material,
-                    transform: world_transform,
-                });
-            }
-
-            part_defs = Some(eval_part_defs);
-            instances = Some(eval_instances);
-        }
-    }
-
-    let assembly_ms = match (t_assembly, clock) {
-        (Some(t0), Some(c)) => c.now_ms() - t0,
-        _ => 0.0,
-    };
-
-    // Clash detection. Broadphase first: blind pairwise `intersection`
-    // across all roots is O(n²) BRep booleans, which is fatal for
-    // many-root scenes (an imported chip die has ~90k roots). Compute
-    // each solid's AABB once, sort by min-x, and sweep — only pairs whose
-    // boxes overlap reach the kernel. AABB-disjoint pairs intersect to
-    // empty anyway, so skipping them is behavior-preserving.
-    let mut clashes = Vec::new();
-    let t_clash = clock.map(|c| c.now_ms());
-    // Incremental: a pair whose two roots are unchanged (fingerprints cover
-    // placement) reuses last evaluation's intersection.
-    let mut clash_prev = inc.as_deref_mut().map(|i| i.take_clashes());
-    let mut clash_next: HashMap<(u64, u64), Option<EvaluatedMesh>> = HashMap::new();
-    let pair_key = |i: usize, j: usize| -> Option<(u64, u64)> {
-        let h = hashes.as_ref()?;
-        Some((*h.get(solid_roots.get(i)?)?, *h.get(solid_roots.get(j)?)?))
-    };
-    if !options.skip_clash_detection && solids.len() >= 2 {
-        let boxes: Vec<Option<([f64; 3], [f64; 3])>> = solids
-            .iter()
-            .map(|s| s.as_ref().map(|s| s.bounding_box()))
-            .collect();
-        let mut order: Vec<usize> = (0..solids.len()).filter(|&i| boxes[i].is_some()).collect();
-        order.sort_by(|&a, &b| {
-            let ax = boxes[a].as_ref().unwrap().0[0];
-            let bx = boxes[b].as_ref().unwrap().0[0];
-            ax.partial_cmp(&bx).unwrap_or(std::cmp::Ordering::Equal)
-        });
-        for (k, &i) in order.iter().enumerate() {
-            let (min_i, max_i) = boxes[i].as_ref().unwrap();
-            for &j in &order[k + 1..] {
-                let (min_j, max_j) = boxes[j].as_ref().unwrap();
-                if min_j[0] > max_i[0] {
-                    break; // sorted by min-x: no later j can overlap i
-                }
-                if min_j[1] > max_i[1]
-                    || max_j[1] < min_i[1]
-                    || min_j[2] > max_i[2]
-                    || max_j[2] < min_i[2]
-                {
-                    continue;
-                }
-                if let (Some(a), Some(b)) = (&solids[i], &solids[j]) {
-                    let key = pair_key(i, j);
-                    let reused = match (&mut clash_prev, key) {
-                        (Some(prev), Some(k)) => prev.remove(&k),
-                        _ => None,
+                    let outcome = match pre.take(&part_def.root, &mut node_timings) {
+                        Some(done) => done,
+                        None => evaluate_and_mesh(
+                            part_def.root,
+                            &doc.nodes,
+                            &mut cache,
+                            segments,
+                            clock,
+                            &mut node_timings,
+                        ),
                     };
-                    let clash = reused.unwrap_or_else(|| {
-                        let intersection = a.intersection(b);
-                        if intersection.is_empty() {
-                            return None;
+                    let (mesh, solid) = match outcome {
+                        Ok(MeshedOk {
+                            mesh: m,
+                            solid,
+                            mesh_ms,
+                        }) => {
+                            tessellate_ms += mesh_ms;
+                            if let Some(nt) = node_timings.get(&part_def.root.to_string()) {
+                                root_ms.push((format!("partDef {id}"), nt.eval_ms + mesh_ms));
+                            }
+                            store(&cache_key, &m);
+                            if let (Some(i), Some(h)) = (inc.as_deref_mut(), def_hash) {
+                                if matches!(cache.get(&part_def.root), Some(Some(_))) {
+                                    i.put_mesh(part_def.root, h, &m);
+                                }
+                            }
+                            (m, solid)
                         }
-                        let tri = intersection.to_mesh(16);
-                        (!tri.vertices.is_empty()).then(|| tri_to_evaluated(&tri))
+                        Err(error) => {
+                            failures.push(RootFailure {
+                                scope: format!("partDef[{id:?}]"),
+                                node_id: part_def.root,
+                                error,
+                            });
+                            (EvaluatedMesh::empty(), None)
+                        }
+                    };
+                    part_def_meshes.insert(id.clone(), mesh.clone());
+                    eval_part_defs.push(EvaluatedPartDef {
+                        id: id.clone(),
+                        mesh,
+                        solid,
                     });
-                    if let Some(m) = &clash {
-                        clashes.push(m.clone());
+                }
+
+                let mut eval_instances = Vec::new();
+                for inst in inst_list {
+                    let mesh = match part_def_meshes.get(&inst.part_def_id) {
+                        Some(m) => m.clone(),
+                        None => continue,
+                    };
+
+                    let world_transform =
+                        world_transforms.get(&inst.id).cloned().or(inst.transform);
+
+                    let part_def = pd_map.get(&inst.part_def_id);
+                    let material = inst
+                        .material
+                        .clone()
+                        .or_else(|| part_def.and_then(|pd| pd.default_material.clone()))
+                        .unwrap_or_else(|| "default".to_string());
+
+                    eval_instances.push(EvaluatedInstance {
+                        instance_id: inst.id.clone(),
+                        part_def_id: inst.part_def_id.clone(),
+                        name: inst.name.clone(),
+                        mesh,
+                        material,
+                        transform: world_transform,
+                    });
+                }
+
+                part_defs = Some(eval_part_defs);
+                instances = Some(eval_instances);
+            }
+        }
+
+        let assembly_ms = match (t_assembly, clock) {
+            (Some(t0), Some(c)) => c.now_ms() - t0,
+            _ => 0.0,
+        };
+
+        // Clash detection. Broadphase first: blind pairwise `intersection`
+        // across all roots is O(n²) BRep booleans, which is fatal for
+        // many-root scenes (an imported chip die has ~90k roots). Compute
+        // each solid's AABB once, sort by min-x, and sweep — only pairs whose
+        // boxes overlap reach the kernel. AABB-disjoint pairs intersect to
+        // empty anyway, so skipping them is behavior-preserving.
+        let mut clashes = Vec::new();
+        let t_clash = clock.map(|c| c.now_ms());
+        // Incremental: a pair whose two roots are unchanged (fingerprints cover
+        // placement) reuses last evaluation's intersection.
+        let mut clash_prev = inc.as_deref_mut().map(|i| i.take_clashes());
+        let mut clash_next: HashMap<(u64, u64), Option<EvaluatedMesh>> = HashMap::new();
+        let pair_key = |i: usize, j: usize| -> Option<(u64, u64)> {
+            let h = hashes.as_ref()?;
+            Some((*h.get(solid_roots.get(i)?)?, *h.get(solid_roots.get(j)?)?))
+        };
+        if !options.skip_clash_detection && solids.len() >= 2 {
+            let boxes: Vec<Option<([f64; 3], [f64; 3])>> = solids
+                .iter()
+                .map(|s| s.as_ref().map(|s| s.bounding_box()))
+                .collect();
+            let mut order: Vec<usize> = (0..solids.len()).filter(|&i| boxes[i].is_some()).collect();
+            order.sort_by(|&a, &b| {
+                let ax = boxes[a].as_ref().unwrap().0[0];
+                let bx = boxes[b].as_ref().unwrap().0[0];
+                ax.partial_cmp(&bx).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            for (k, &i) in order.iter().enumerate() {
+                let (min_i, max_i) = boxes[i].as_ref().unwrap();
+                for &j in &order[k + 1..] {
+                    let (min_j, max_j) = boxes[j].as_ref().unwrap();
+                    if min_j[0] > max_i[0] {
+                        break; // sorted by min-x: no later j can overlap i
                     }
-                    if let Some(k) = key {
-                        clash_next.insert(k, clash);
+                    if min_j[1] > max_i[1]
+                        || max_j[1] < min_i[1]
+                        || min_j[2] > max_i[2]
+                        || max_j[2] < min_i[2]
+                    {
+                        continue;
+                    }
+                    if let (Some(a), Some(b)) = (&solids[i], &solids[j]) {
+                        let key = pair_key(i, j);
+                        let reused = match (&mut clash_prev, key) {
+                            (Some(prev), Some(k)) => prev.remove(&k),
+                            _ => None,
+                        };
+                        let clash = reused.unwrap_or_else(|| {
+                            let intersection = a.intersection(b);
+                            if intersection.is_empty() {
+                                return None;
+                            }
+                            let tri = intersection.to_mesh(16);
+                            (!tri.vertices.is_empty()).then(|| tri_to_evaluated(&tri))
+                        });
+                        if let Some(m) = &clash {
+                            clashes.push(m.clone());
+                        }
+                        if let Some(k) = key {
+                            clash_next.insert(k, clash);
+                        }
                     }
                 }
             }
         }
-    }
-    if let Some(i) = inc.as_deref_mut() {
-        i.put_clashes(clash_next);
-    }
-    let clash_ms = match (t_clash, clock) {
-        (Some(t0), Some(c)) => c.now_ms() - t0,
-        _ => 0.0,
-    };
+        if let Some(i) = inc.as_deref_mut() {
+            i.put_clashes(clash_next);
+        }
+        let clash_ms = match (t_clash, clock) {
+            (Some(t0), Some(c)) => c.now_ms() - t0,
+            _ => 0.0,
+        };
 
-    if let (Some(i), Some(h)) = (inc, &hashes) {
-        i.put_back(cache, h);
-    }
+        if let (Some(i), Some(h)) = (inc, &hashes) {
+            i.put_back(cache, h);
+        }
 
-    let timing = t_start.map(|t0| EvalTiming {
-        total_ms: clock.unwrap().now_ms() - t0,
-        parse_ms: None,
-        serialize_ms: None,
-        tessellate_ms,
-        clash_ms,
-        assembly_ms,
-        nodes: node_timings,
-        roots: root_ms,
-    });
+        let timing = t_start.map(|t0| EvalTiming {
+            total_ms: clock.unwrap().now_ms() - t0,
+            parse_ms: None,
+            serialize_ms: None,
+            tessellate_ms,
+            clash_ms,
+            assembly_ms,
+            nodes: node_timings,
+            roots: root_ms,
+        });
 
-    Ok(EvaluatedScene {
-        parts,
-        part_defs,
-        instances,
-        clashes,
-        failures,
-        timing,
-        root_keys,
+        Ok(EvaluatedScene {
+            parts,
+            part_defs,
+            instances,
+            clashes,
+            failures,
+            timing,
+            root_keys,
+        })
     })
 }
 
@@ -744,7 +777,9 @@ fn evaluate_and_mesh(
             Some(s) => {
                 let t_mesh = clock.map(|c| c.now_ms());
                 let chord = DISPLAY_CHORD_TOL.with(|t| t.get());
-                let tri = if chord > 0.0 {
+                let tri = if DISPLAY_PREVIEW.with(|p| p.get()) {
+                    s.to_preview_mesh(segments, chord)
+                } else if chord > 0.0 {
                     s.to_mesh_with_chord(segments, chord)
                 } else {
                     s.to_mesh(segments)
@@ -773,38 +808,119 @@ fn evaluate_and_mesh(
     }
 }
 
-/// [`evaluate_and_mesh`] for every root in `roots` at once, over rayon.
+/// One pre-pass result: the root, its outcome, and the node timings its
+/// evaluation recorded.
+type PrepassItem = (NodeId, MeshedRoot, HashMap<String, NodeTiming>);
+
+/// [`evaluate_and_mesh`] for a batch of roots on the rayon pool, consumed
+/// in order as results land.
 ///
-/// Each task gets its own node cache, so a subtree shared between two roots
-/// is evaluated by both — cheap next to serialising every root, and it keeps
-/// the tasks independent. The sheet-metal fold flag is thread-local, so it is
-/// carried into each task explicitly.
-fn evaluate_roots_parallel(
-    roots: &[NodeId],
-    nodes: &HashMap<NodeId, vcad_ir::Node>,
-    segments: u32,
-    clock: Option<&dyn Clock>,
-    timings: &mut HashMap<String, NodeTiming>,
-) -> HashMap<NodeId, MeshedRoot> {
-    use rayon::prelude::*;
-    let fold = FOLD_SHEET_METAL.with(|f| f.get());
-    let done: Vec<(NodeId, MeshedRoot, HashMap<String, NodeTiming>)> = roots
-        .par_iter()
-        .map(|&root| {
-            let prev = FOLD_SHEET_METAL.with(|f| f.replace(fold));
-            let mut cache = HashMap::new();
-            let mut local = HashMap::new();
-            let out = evaluate_and_mesh(root, nodes, &mut cache, segments, clock, &mut local);
-            FOLD_SHEET_METAL.with(|f| f.set(prev));
-            (root, out, local)
-        })
-        .collect();
-    done.into_iter()
-        .map(|(root, out, local)| {
+/// Workers pull roots in document order from a shared counter, so results
+/// arrive roughly in the order the walk asks for them and the progressive
+/// viewport fills front to back. Each worker keeps its own node cache: a
+/// subtree shared between two roots is evaluated by both — cheap next to
+/// serialising every root, and it keeps the tasks independent. The
+/// sheet-metal fold flag and the display chord tolerance are thread-local,
+/// so they are carried into each worker explicitly.
+struct Prepass {
+    rx: Option<std::sync::mpsc::Receiver<PrepassItem>>,
+    pending: std::collections::HashSet<NodeId>,
+    done: HashMap<NodeId, MeshedRoot>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Prepass {
+    fn start<'s>(
+        scope: &rayon::Scope<'s>,
+        roots: &'s [NodeId],
+        nodes: &'s HashMap<NodeId, vcad_ir::Node>,
+        segments: u32,
+        clock: Option<&'s dyn Clock>,
+    ) -> Self {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let cancel = Arc::new(AtomicBool::new(false));
+        if roots.is_empty() {
+            return Self {
+                rx: None,
+                pending: Default::default(),
+                done: HashMap::new(),
+                cancel,
+            };
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let next = Arc::new(AtomicUsize::new(0));
+        let fold = FOLD_SHEET_METAL.with(|f| f.get());
+        let chord = DISPLAY_CHORD_TOL.with(|t| t.get());
+        let preview = DISPLAY_PREVIEW.with(|t| t.get());
+        let workers = rayon::current_num_threads().clamp(1, roots.len());
+        for _ in 0..workers {
+            let (tx, next, cancel) = (tx.clone(), next.clone(), cancel.clone());
+            scope.spawn(move |_| {
+                let prev_fold = FOLD_SHEET_METAL.with(|f| f.replace(fold));
+                let prev_chord = DISPLAY_CHORD_TOL.with(|t| t.replace(chord));
+                let prev_preview = DISPLAY_PREVIEW.with(|t| t.replace(preview));
+                while !cancel.load(Ordering::Relaxed) {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(&root) = roots.get(i) else { break };
+                    let mut cache = HashMap::new();
+                    let mut local = HashMap::new();
+                    let out =
+                        evaluate_and_mesh(root, nodes, &mut cache, segments, clock, &mut local);
+                    if tx.send((root, out, local)).is_err() {
+                        break;
+                    }
+                }
+                FOLD_SHEET_METAL.with(|f| f.set(prev_fold));
+                DISPLAY_CHORD_TOL.with(|t| t.set(prev_chord));
+                DISPLAY_PREVIEW.with(|t| t.set(prev_preview));
+            });
+        }
+        Self {
+            rx: Some(rx),
+            pending: roots.iter().copied().collect(),
+            done: HashMap::new(),
+            cancel,
+        }
+    }
+
+    /// The pre-pass outcome for `root`, waiting for it if it is still being
+    /// evaluated; `None` when the pre-pass never had it. Each root is handed
+    /// out once.
+    fn take(
+        &mut self,
+        root: &NodeId,
+        timings: &mut HashMap<String, NodeTiming>,
+    ) -> Option<MeshedRoot> {
+        if let Some(r) = self.done.remove(root) {
+            return Some(r);
+        }
+        if !self.pending.contains(root) {
+            return None;
+        }
+        let rx = self.rx.as_ref()?;
+        while let Ok((id, out, local)) = rx.recv() {
+            self.pending.remove(&id);
             timings.extend(local);
-            (root, out)
-        })
-        .collect()
+            if id == *root {
+                return Some(out);
+            }
+            self.done.insert(id, out);
+        }
+        // Every worker stopped without sending this root (a worker thread
+        // died): the caller evaluates it inline.
+        self.pending.remove(root);
+        None
+    }
+}
+
+impl Drop for Prepass {
+    fn drop(&mut self) {
+        // An early return (error) must not leave the pool grinding through
+        // roots nobody will read.
+        self.cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// Recursively evaluate a node with timing instrumentation.
@@ -2072,12 +2188,20 @@ fn attached_sketch<'a>(
     let mut x2 = x - n * x.dot(n);
     if x2.norm() < 1e-9 {
         // The stored x axis is along the new normal: pick any in-plane axis.
-        let seed = if n.x.abs() < 0.9 { Vec3::new(1.0, 0.0, 0.0) } else { Vec3::new(0.0, 1.0, 0.0) };
+        let seed = if n.x.abs() < 0.9 {
+            Vec3::new(1.0, 0.0, 0.0)
+        } else {
+            Vec3::new(0.0, 1.0, 0.0)
+        };
         x2 = seed - n * seed.dot(n);
     }
     x2 = x2 * (1.0 / x2.norm());
     let y2 = n.cross(x2);
-    let v = |a: Vec3| vcad_ir::Vec3 { x: a.x, y: a.y, z: a.z };
+    let v = |a: Vec3| vcad_ir::Vec3 {
+        x: a.x,
+        y: a.y,
+        z: a.z,
+    };
     Ok(Cow::Owned(vcad_ir::Node {
         id,
         name: node.name.clone(),
