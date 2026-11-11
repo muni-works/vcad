@@ -24,11 +24,12 @@ final class CreasedNormalsTests: XCTestCase {
         }
     }
 
-    /// A gentle 10° fold is below the crease angle: the shared edge stays
+    /// A gentle 10° fold between two long thin strips (a coarse curved
+    /// tessellation) is below the crease angle: the shared edge stays
     /// welded and its normals blend smooth.
     func testShallowFoldStaysSmooth() {
-        let s = sin(Float(10) * .pi / 180)
-        let p: [SIMD3<Float>] = [[0,0,0],[0,1,0],[1,0,0],[1,1,0],[-1,0,s],[-1,1,s]]
+        let s = 0.1 * sin(Float(10) * .pi / 180), c = 0.1 * cos(Float(10) * .pi / 180)
+        let p: [SIMD3<Float>] = [[0,0,0],[0,1,0],[0.1,0,0],[0.1,1,0],[-c,0,s],[-c,1,s]]
         let i: [UInt32] = [0,2,3, 0,3,1,  0,1,5, 0,5,4]
         let (pos, n, _) = KernelMesh.creasedNormals(positions: p, indices: i)
         XCTAssertEqual(pos.count, 6)

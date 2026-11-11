@@ -82,7 +82,7 @@ struct KernelMesh {
             let l = length(v); return l > 1e-12 ? v / l : nil
         }
         // Planar regions: triangles joined edge-to-edge with (near) identical
-        // normals. A region of 3+ triangles is a real flat face and shades
+        // normals. A region of 3+ triangles (or a squarish 2-triangle quad) is a real flat face and shades
         // with its exact plane normal — no blending — so the long sliver
         // triangles CAD exporters fan across flat faces can't smear a tilted
         // rim/hole normal into wedge-shaped "ears". (Two is not enough: every
@@ -102,7 +102,7 @@ struct KernelMesh {
                 let a = indices[3 * t + k], b = indices[3 * t + (k + 1) % 3]
                 let key = UInt64(min(a, b)) << 32 | UInt64(max(a, b))
                 if let o = edgeFace[key] {
-                    if let no = unitN[o], dot(no, nt) > 0.99995 {
+                    if let no = unitN[o], dot(no, nt) > 0.9995 {   // ~1.8°: sliver normals are noisy
                         let ra = find(t), rb = find(o)
                         if ra != rb { parent[ra] = rb }
                     }
@@ -112,7 +112,36 @@ struct KernelMesh {
             }
         }
         var regionSize = [Int](repeating: 0, count: triCount)
-        for t in 0..<triCount { regionSize[find(t)] += 1 }
+        var regionSum = [SIMD3<Float>](repeating: .zero, count: triCount)
+        var regionTris = [[Int]](repeating: [], count: triCount)
+        for t in 0..<triCount {
+            let r = find(t)
+            regionSize[r] += 1
+            regionSum[r] += faceN[t]           // area-weighted: slivers barely count
+            if regionTris[r].count < 3 { regionTris[r].append(t) }
+        }
+        // A 2-triangle region is a flat face when it is roughly square (a
+        // prong side); a long thin quad is a strip of a curved tessellation
+        // and keeps blending.
+        func isFlatFace(_ r: Int) -> Bool {
+            if regionSize[r] >= 3 { return true }
+            guard regionSize[r] == 2 else { return false }
+            var count: [UInt64: Int] = [:]
+            var len: [UInt64: Float] = [:]
+            for t in regionTris[r] {
+                for k in 0..<3 {
+                    let a = indices[3 * t + k], b = indices[3 * t + (k + 1) % 3]
+                    let key = UInt64(min(a, b)) << 32 | UInt64(max(a, b))
+                    count[key, default: 0] += 1
+                    len[key] = distance(positions[Int(a)], positions[Int(b)])
+                }
+            }
+            let outer = count.filter { $0.value == 1 }.compactMap { len[$0.key] }
+            guard let lo = outer.min(), let hi = outer.max(), lo > 0 else { return false }
+            return hi / lo <= 4
+        }
+        var flat = [Bool](repeating: false, count: triCount)
+        for t in 0..<triCount where find(t) == t { flat[t] = isFlatFace(t) }
         var outPos: [SIMD3<Float>] = [], outN: [SIMD3<Float>] = []
         var outIdx = [UInt32](repeating: 0, count: triCount * 3)
         // Per source vertex: normals already emitted, so corners that land on
@@ -120,13 +149,14 @@ struct KernelMesh {
         var emitted = [[(SIMD3<Float>, UInt32)]](repeating: [], count: positions.count)
         for t in 0..<triCount {
             let own = unitN[t]
-            let planar = own != nil && regionSize[find(t)] >= 3
+            let region = find(t)
+            let planar = own != nil && flat[region]
             for k in 0..<3 {
                 let v = Int(indices[3 * t + k])
                 guard v < positions.count else { outIdx[3 * t + k] = 0; continue }
                 var sum = SIMD3<Float>.zero
                 if planar {
-                    sum = own!
+                    sum = regionSum[region]
                 } else if let own {
                     for f in incident[v] {
                         if let fn = unit(faceN[f]), dot(fn, own) >= cosCrease { sum += faceN[f] }
