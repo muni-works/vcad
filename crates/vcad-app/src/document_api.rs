@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use vcad_crdt::{CrdtDocument, FeatureId, FractionalIndex, ReplicaId, Value};
 use vcad_ir::Document;
 
-use crate::feature::FeatureInput;
 use crate::command::CommandError;
+use crate::feature::FeatureInput;
 use crate::materializer::{feature_input_ids, materialize, MaterializeResult};
 use crate::part_info::PartInfo;
 
@@ -433,7 +433,10 @@ impl DocumentApi {
         };
         let inputs = feature_input_ids(me);
         // An input that would land after the moved feature.
-        if let Some((id, _)) = rest[idx..].iter().find(|(id, _)| inputs.contains(&sid(*id))) {
+        if let Some((id, _)) = rest[idx..]
+            .iter()
+            .find(|(id, _)| inputs.contains(&sid(*id)))
+        {
             let other = sid(*id);
             return Some(CommandError::OrderViolation {
                 id: stable_id.to_string(),

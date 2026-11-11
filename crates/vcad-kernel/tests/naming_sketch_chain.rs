@@ -68,7 +68,10 @@ fn edge_between_extruded_faces_resolves_after_a_dimension_edit() {
             .resolve_named_edge("extrude:end", "extrude:side.1")
             .unwrap_or_else(|e| panic!("w={w}: {e:?}"));
         for p in [a, b] {
-            assert!((p.x - w).abs() < 1e-9 && (p.z - 8.0).abs() < 1e-9, "w={w}: {p:?}");
+            assert!(
+                (p.x - w).abs() < 1e-9 && (p.z - 8.0).abs() < 1e-9,
+                "w={w}: {p:?}"
+            );
         }
     }
 }

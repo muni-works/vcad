@@ -466,11 +466,8 @@ fn rcm(a: &CsrMatrix<f64>) -> Vec<usize> {
     let deg: Vec<usize> = (0..n).map(|i| a.row_ptrs[i + 1] - a.row_ptrs[i]).collect();
     let mut visited = vec![false; n];
     let mut order = Vec::with_capacity(n);
-    loop {
-        // Start each component from a minimum-degree unvisited node.
-        let Some(start) = (0..n).filter(|&i| !visited[i]).min_by_key(|&i| deg[i]) else {
-            break;
-        };
+    // Start each component from a minimum-degree unvisited node.
+    while let Some(start) = (0..n).filter(|&i| !visited[i]).min_by_key(|&i| deg[i]) {
         let mut queue = std::collections::VecDeque::new();
         visited[start] = true;
         queue.push_back(start);
@@ -698,6 +695,7 @@ struct Eigs {
     iterations: usize,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn lobpcg(
     sys: &System,
     deflate: &[Vec<f64>],
@@ -966,7 +964,13 @@ pub fn modal_on_mesh(hex: &HexMesh, spec: &ModalSpec) -> Result<ModalResult, Mod
     let mass_kg = {
         // Total mass = sum of all M entries for one translation direction.
         let ones: Vec<f64> = (0..n)
-            .map(|i| if sys.free[i] % 3 == 0 { 1.0 } else { 0.0 })
+            .map(|i| {
+                if sys.free[i].is_multiple_of(3) {
+                    1.0
+                } else {
+                    0.0
+                }
+            })
             .collect();
         let mut y = vec![0.0; n];
         spmv(&sys.m, &ones, &mut y);
