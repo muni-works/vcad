@@ -704,14 +704,20 @@ mod tests {
     /// cube A, cube B, fillet(A) — ids in that order.
     fn cube_cube_fillet(api: &mut DocumentApi) -> [String; 3] {
         let mut add = |f: FeatureInput| {
-            api.apply(DocCommand::AddFeature { feature: f, name: None })
-                .unwrap()
-                .created_feature_id
-                .unwrap()
+            api.apply(DocCommand::AddFeature {
+                feature: f,
+                name: None,
+            })
+            .unwrap()
+            .created_feature_id
+            .unwrap()
         };
         let a = add(cube());
         let b = add(cube());
-        let f = add(FeatureInput::Fillet { input: a.clone(), radius: 1.0 });
+        let f = add(FeatureInput::Fillet {
+            input: a.clone(),
+            radius: 1.0,
+        });
         [a, b, f]
     }
 
@@ -728,7 +734,10 @@ mod tests {
         let mut api = api();
         let [a, b, f] = cube_cube_fillet(&mut api);
         let err = api
-            .apply(DocCommand::Reorder { id: f.clone(), index: 0 })
+            .apply(DocCommand::Reorder {
+                id: f.clone(),
+                index: 0,
+            })
             .unwrap_err();
         assert!(
             matches!(&err, CommandError::OrderViolation { id, conflicts_with, .. } if *id == f && *conflicts_with == a),
@@ -742,7 +751,10 @@ mod tests {
         let mut api = api();
         let [a, b, f] = cube_cube_fillet(&mut api);
         let err = api
-            .apply(DocCommand::Reorder { id: a.clone(), index: 2 })
+            .apply(DocCommand::Reorder {
+                id: a.clone(),
+                index: 2,
+            })
             .unwrap_err();
         assert!(
             matches!(&err, CommandError::OrderViolation { conflicts_with, .. } if *conflicts_with == f),
@@ -756,9 +768,17 @@ mod tests {
         let mut api = api();
         let [a, b, f] = cube_cube_fillet(&mut api);
         // B depends on nothing and nothing depends on it: it can go anywhere.
-        api.apply(DocCommand::Reorder { id: b.clone(), index: 2 }).unwrap();
+        api.apply(DocCommand::Reorder {
+            id: b.clone(),
+            index: 2,
+        })
+        .unwrap();
         assert_eq!(order(&api), [a.clone(), f.clone(), b.clone()]);
-        api.apply(DocCommand::Reorder { id: b.clone(), index: 0 }).unwrap();
+        api.apply(DocCommand::Reorder {
+            id: b.clone(),
+            index: 0,
+        })
+        .unwrap();
         assert_eq!(order(&api), [b, a, f]);
     }
 
@@ -769,8 +789,14 @@ mod tests {
         let err = api
             .apply(DocCommand::Batch {
                 commands: vec![
-                    DocCommand::Reorder { id: b.clone(), index: 0 },
-                    DocCommand::Reorder { id: f.clone(), index: 0 },
+                    DocCommand::Reorder {
+                        id: b.clone(),
+                        index: 0,
+                    },
+                    DocCommand::Reorder {
+                        id: f.clone(),
+                        index: 0,
+                    },
                 ],
             })
             .unwrap_err();
@@ -812,7 +838,11 @@ mod tests {
         assert!(r.warnings.is_empty(), "{:?}", r.warnings);
         let roots = vcad_eval::evaluate_root_solids(&r.document).expect("imported doc evaluates");
         let solid = roots[0].solid.as_ref().expect("a solid");
-        assert!((solid.volume() - (16000.0 - 200.0)).abs() < 1e-6, "{}", solid.volume());
+        assert!(
+            (solid.volume() - (16000.0 - 200.0)).abs() < 1e-6,
+            "{}",
+            solid.volume()
+        );
     }
 
     fn steel() -> vcad_ir::MaterialDef {

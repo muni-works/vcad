@@ -132,7 +132,10 @@ fn check_face_ref(
         Err(e) => {
             // `resolve_face` reports through the shell error type.
             let msg = e.to_string();
-            let msg = msg.strip_prefix("shell failed: ").unwrap_or(&msg).to_string();
+            let msg = msg
+                .strip_prefix("shell failed: ")
+                .unwrap_or(&msg)
+                .to_string();
             return Some(broken(msg, rank_faces(&solid, face)));
         }
     };
@@ -187,7 +190,11 @@ pub fn rank_faces(solid: &Solid, lost: &vcad_ir::FaceRef) -> Vec<FaceCandidate> 
             })
         })
         .collect();
-    out.sort_by(|a, b| a.score.total_cmp(&b.score).then_with(|| a.name.cmp(&b.name)));
+    out.sort_by(|a, b| {
+        a.score
+            .total_cmp(&b.score)
+            .then_with(|| a.name.cmp(&b.name))
+    });
     out.truncate(MAX_CANDIDATES);
     out
 }
