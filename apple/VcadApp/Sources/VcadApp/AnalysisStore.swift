@@ -151,7 +151,7 @@ final class AnalysisStore {
     func setPickTarget(_ t: PickTarget?, _ m: EditorModel) {
         if let h = pickHandler { m.picking.removeHandler(h); pickHandler = nil }
         pickTarget = t
-        guard let t else { m.picking.filter = .body; overlayRevision += 1; return }
+        guard let t else { m.picking.filter = .standard; overlayRevision += 1; return }
         m.picking.filter = .face
         m.picking.setSelection(faces(of: t).map { .face($0, part: feaPart) })
         pickHandler = m.picking.onSelectionChange { [weak self] refs in

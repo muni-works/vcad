@@ -982,6 +982,7 @@ struct ReleasedOverlayView: View {
                 }
                 .onContinuousHover(coordinateSpace: .local) { phase in
                     if !model.sketching, model.picking.filter.picksTopology {
+                        if case .active(let p) = phase { ensurePickableDocument(at: p) }
                         let rev = model.picking.revision
                         switch phase {
                         case .active(let p): model.picking.setHovered(topologyHit(at: p)?.ref)
@@ -1248,7 +1249,7 @@ struct ReleasedOverlayView: View {
         .onChange(of: model.undoStack.count, initial: true) { _, _ in GlassUI.shared.captureThumbnail(model: model) }
         .onChange(of: model.source) { _, _ in GlassUI.shared.thumbnails = [:]; GlassUI.shared.captureThumbnail(model: model) }
         .onChange(of: model.picking.revision) { _, _ in refreshTopologyOverlay() }
-        .onChange(of: model.measuring) { _, on in if !on { model.picking.filter = .body }; refreshTopologyOverlay() }
+        .onChange(of: model.measuring) { _, on in if !on { model.picking.filter = .standard }; refreshTopologyOverlay() }
         .onChange(of: model.sketching) { _, on in
             // Sketch is modal over the desktop: own the mouse everywhere while
             // drawing, hand non-chrome/non-part mouse back when done.
@@ -1338,6 +1339,15 @@ struct ReleasedOverlayView: View {
                                             cameraDistance: dist, viewportHeight: h) { return hit }
         }
         return nil
+    }
+
+    /// The Untitled demo shape is a preview, not a document, so it has no
+    /// B-rep to pick faces/edges on — the reason the default cube showed no
+    /// hover or selection at all. Promote it (silently) the first time the
+    /// pointer reaches it.
+    private func ensurePickableDocument(at p: CGPoint) {
+        guard model.source.isSandbox, model.documentJSON == nil, partIndex(at: p) != nil else { return }
+        model.promoteSandboxToDocument(silent: true)
     }
 
     /// Redraw the face/edge highlight ribbons (selection orange, hover white)
@@ -1433,8 +1443,25 @@ struct ReleasedOverlayView: View {
         // the second frames.
         if (NSApp.currentEvent?.clickCount ?? 1) >= 2, !model.sketching,
            let name = bodyName(at: p) {
+            // Fusion picks faces/edges on a click; the double-click is how a
+            // body is reached from the viewport: it selects the whole body
+            // (dropping the face/edge pick of the first click) and frames it.
+            if model.picking.filter.picksTopology, model.usesDocumentTree,
+               model.armedShape == nil, model.pendingBoolean == nil {
+                model.picking.clear()
+                refreshTopologyOverlay()
+                if name.hasPrefix("inst"), let i = Int(name.dropFirst(4)) {
+                    model.selectInstance(i)
+                } else if let pi = Int(name.dropFirst(4)),
+                          let fid = model.featureNodes.first(where: { $0.partIndex == pi })?.id {
+                    model.selectFeature(fid)
+                }
+                model.selectionDirty = false
+            }
             ReleaseWindowController.shared.frame(entityNamed: name)
+            return
         }
+        if model.picking.filter.picksTopology { ensurePickableDocument(at: p) }
         guard model.usesDocumentTree,
               let ar = ReleaseWindowController.shared.arView else { return }
 
@@ -1443,9 +1470,30 @@ struct ReleasedOverlayView: View {
         // after a Shell or Fillet, and it swallowed that click, so the prompt
         // never completed.
         if model.picking.filter.picksTopology, model.armedShape == nil, model.pendingBoolean == nil {
-            model.picking.select(hit: topologyHit(at: p), additive: additive || model.measuring)
+            let hit = topologyHit(at: p)
+            // Nothing pickable but a body under the pointer (an assembly
+            // instance, a mesh import without B-rep): fall back to selecting
+            // the body so the click is never a dead end.
+            if hit != nil || bodyName(at: p) == nil || model.measuring {
+                if hit == nil, !additive, !model.measuring {
+                    model.deselectAll()           // empty space clears everything
+                } else {
+                    // A face/edge pick replaces a body selection (Fusion).
+                    if !additive, !model.measuring,
+                       model.selectedFeatureID != nil || model.selectedInstanceIndex != nil
+                        || !model.multiSelectedParts.isEmpty {
+                        model.selectedFeatureID = nil
+                        model.selectedInstanceIndex = nil
+                        model.multiSelectedParts = []
+                        model.selectionDirty = false
+                    }
+                    model.picking.select(hit: hit, additive: additive || model.measuring)
+                }
+                refreshTopologyOverlay()
+                return
+            }
+            model.picking.clear()
             refreshTopologyOverlay()
-            return
         }
 
         // An armed palette tool consumes the click: this is a placement, not a

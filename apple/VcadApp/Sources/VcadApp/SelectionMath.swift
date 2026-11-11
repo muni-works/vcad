@@ -22,8 +22,8 @@ enum SelectionStyle {
     static let partSelectedHoverIntensity: Float = 0.75
     static let partHoverIntensity: Float = 0.22
 
-    static let faceFillSelectedAlpha: CGFloat = 0.38
-    static let faceFillHoverAlpha: CGFloat = 0.20
+    static let faceFillSelectedAlpha: CGFloat = 0.48
+    static let faceFillHoverAlpha: CGFloat = 0.28
 
     /// Screen-space widths (device px) of topology edge highlights.
     static let edgeSelectedPx: Float = 3.0

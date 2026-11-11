@@ -4407,8 +4407,13 @@ extension EditorModel {
     /// "Open a document" hover hint, and a fresh install could not model
     /// anything. One undo step back to the sandbox. Returns whether the
     /// window now has an editable document.
+    ///
+    /// `silent`: the viewport's face/edge picking needs a B-rep document to
+    /// pick against, so the first pointer move over the demo shape promotes
+    /// it without an undo step, without marking the window dirty, and
+    /// without selecting the body — nothing the user did changed the model.
     @discardableResult
-    func promoteSandboxToDocument(blank: Bool = false) -> Bool {
+    func promoteSandboxToDocument(blank: Bool = false, silent: Bool = false) -> Bool {
         if usesDocumentTree, engine != nil { return true }
         guard source.isSandbox, engine == nil, documentJSON == nil else { return usesDocumentTree }
         // A sketch starts a part from nothing; it shouldn't inherit the demo cube.
@@ -4446,6 +4451,12 @@ extension EditorModel {
                 }
             }
             adopt(r, reeval: .rebuild)
+            if silent {
+                savedHash = e.stateHash
+                documentDirty = false
+                selectedFeatureID = nil
+                return usesDocumentTree
+            }
             pushUndo(.snapshot(before), name: "Start Document")
             if let first = featureNodes.first { selectFeature(first.id) }
             return usesDocumentTree

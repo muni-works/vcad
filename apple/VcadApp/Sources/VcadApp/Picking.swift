@@ -41,6 +41,12 @@ enum PickFilter: String, CaseIterable, Identifiable {
         }
     }
     var picksTopology: Bool { self != .body }
+
+    /// Out of the box the viewport picks like Fusion 360: hovering
+    /// pre-highlights the face or edge under the cursor (edges win within the
+    /// pick tolerance) and a click selects it. Bodies are picked in the
+    /// browser, by double-click, or by switching the Select menu to Body.
+    static let standard: PickFilter = .faceOrEdge
 }
 
 /// A face or edge of one part.
@@ -172,7 +178,7 @@ final class PartTopology {
 @Observable
 final class PickingState {
     /// What a click in the viewport picks.
-    var filter: PickFilter = .body {
+    var filter: PickFilter = .standard {
         didSet { if filter != oldValue, !filter.picksTopology { clear() } }
     }
     /// Chosen faces/edges, in pick order (ops that care about order — the
