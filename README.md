@@ -27,8 +27,13 @@ cloud, no subscription. Requires macOS 15 or later.
 
 ## Bring your own agent
 
-vcad speaks MCP, so Claude Code, Cursor, Codex, or any MCP client can model,
-measure, and export real parts. The server is on npm and runs locally:
+vcad speaks MCP, so Claude Code, Claude Desktop, Cursor, Codex, or any MCP
+client can model, measure, and export real parts.
+
+**Easiest:** install the Mac app. On first launch it finds the agents you have
+installed and connects them in one dialog (undo any time in Settings ▸ Agents).
+
+**Without the app**, the same server is on npm and runs locally:
 
 ```json
 {
@@ -36,7 +41,9 @@ measure, and export real parts. The server is on npm and runs locally:
 }
 ```
 
-With Claude Code: `claude mcp add vcad -- npx -y @vcad/mcp`.
+With Claude Code: `claude mcp add vcad -- npx -y @vcad/mcp`, or install the
+plugin (server + the vcad skill, versioned together):
+`/plugin marketplace add muni-works/vcad` then `/plugin install vcad@vcad`.
 
 The running Mac app also serves MCP on `127.0.0.1` (port in `~/.vcad/app.json`),
 so an agent can drive the same view you are looking at. Tools and protocol

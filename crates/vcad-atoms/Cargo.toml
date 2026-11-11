@@ -1,0 +1,22 @@
+[package]
+name = "vcad-atoms"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "M4 'agents that touch atoms': fab jobs and gradient optimization as cancellable MCP Tasks"
+publish = false
+
+[dependencies]
+vcad-ir = { workspace = true }
+vcad-eval = { workspace = true }
+vcad-kernel = { workspace = true }
+vcad-kernel-diff = { workspace = true }
+vcad-kernel-tessellate = { workspace = true }
+vcad-kernel-cam = { workspace = true }
+vcad-kernel-stocksim = { workspace = true }
+vcad-slicer = { workspace = true }
+vcad-slicer-gcode = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
