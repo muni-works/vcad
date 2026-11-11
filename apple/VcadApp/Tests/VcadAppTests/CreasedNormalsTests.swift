@@ -57,3 +57,22 @@ final class PlanarRegionNormalsTests: XCTestCase {
         }
     }
 }
+
+final class NormalsTrustTests: XCTestCase {
+    private let cubeP: [SIMD3<Float>] = [[0,0,0],[1,0,0],[1,1,0],[0,1,0],[0,0,1],[1,0,1],[1,1,1],[0,1,1]]
+    private let cubeI: [UInt32] = [0,2,1, 0,3,2,  4,5,6, 4,6,7,  0,1,5, 0,5,4,
+                                   2,3,7, 2,7,6,  1,2,6, 1,6,5,  3,0,4, 3,4,7]
+
+    /// STL-loader style: each shared corner keeps one face's normal, so the
+    /// other faces at that corner see a normal 90° off — not trustworthy.
+    func testLastFaceWinsNormalsAreRejected() {
+        let n = [SIMD3<Float>](repeating: [0, 0, 1], count: 8)
+        XCTAssertFalse(KernelMesh.normalsTrustworthy(n, positions: cubeP, indices: cubeI))
+    }
+
+    /// Per-face (BRep-style) vertices with their own face normal are kept.
+    func testPerFaceNormalsAreKept() {
+        let (p, n, i) = KernelMesh.creasedNormals(positions: cubeP, indices: cubeI)
+        XCTAssertTrue(KernelMesh.normalsTrustworthy(n, positions: p, indices: i))
+    }
+}
