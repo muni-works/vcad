@@ -361,9 +361,10 @@ struct GlassToolbar: View {
         .glassCapsule()
     }
 
-    /// One search for the whole app: the command palette.
+    /// One search for the whole app: the command palette. A second click
+    /// closes it, like Spotlight.
     private func beginSearch() {
-        model.showsCommandPalette = true
+        model.showsCommandPalette.toggle()
     }
 
     private var machineChip: some View {

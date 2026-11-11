@@ -984,6 +984,8 @@ struct ReleasedOverlayView: View {
                     })
                 .gesture(SpatialTapGesture(coordinateSpace: .local)
                     .onEnded { value in
+                        // A click outside Find closes it (Spotlight), and only that.
+                        if model.showsCommandPalette { model.showsCommandPalette = false; return }
                         if model.sketching { sketchTap(at: value.location) }
                         else { tapSelect(at: value.location, additive: false) }
                     })
