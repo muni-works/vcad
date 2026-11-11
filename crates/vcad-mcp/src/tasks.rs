@@ -34,18 +34,30 @@ impl Bus {
     /// Register a listener; returns its id for [`Bus::off`].
     pub fn on(&self, f: Listener) -> u64 {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
-        self.listeners.lock().unwrap_or_else(|e| e.into_inner()).insert(id, f);
+        self.listeners
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, f);
         id
     }
 
     /// Remove a listener.
     pub fn off(&self, id: u64) {
-        self.listeners.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        self.listeners
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
     }
 
     /// Deliver an event to every listener.
     pub fn emit(&self, evt: BusEvent) {
-        let ls: Vec<Listener> = self.listeners.lock().unwrap_or_else(|e| e.into_inner()).values().cloned().collect();
+        let ls: Vec<Listener> = self
+            .listeners
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect();
         for l in ls {
             l(&evt);
         }
@@ -59,7 +71,9 @@ pub const TASK_POLL_INTERVAL_MS: u64 = 1_000;
 
 /// RFC 3339 UTC timestamp (no chrono dependency).
 pub fn now_iso() -> String {
-    let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let d = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     let secs = d.as_secs() as i64;
     let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
     // Howard Hinnant's civil_from_days.
@@ -114,7 +128,10 @@ impl Record {
             "input_required" => v["inputRequests"] = Value::Object(self.input_requests.clone()),
             "completed" => v["result"] = self.result.clone().unwrap_or_else(|| json!({})),
             "failed" => {
-                v["error"] = self.error.clone().unwrap_or_else(|| json!({"code": ERR_INTERNAL, "message": "unknown"}))
+                v["error"] = self
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| json!({"code": ERR_INTERNAL, "message": "unknown"}))
             }
             _ => {}
         }
@@ -157,10 +174,17 @@ impl TaskStore {
     }
 
     /// Create a `working` task; returns `(task_id, cancel flag, detailed)`.
-    pub fn create(&self, tool_name: &str, preset: Map<String, Value>) -> (String, Arc<AtomicBool>, Value) {
+    pub fn create(
+        &self,
+        tool_name: &str,
+        preset: Map<String, Value>,
+    ) -> (String, Arc<AtomicBool>, Value) {
         let mut raw = [0u8; 8];
         let _ = getrandom::getrandom(&mut raw);
-        let id = format!("task_{}", raw.iter().map(|b| format!("{b:02x}")).collect::<String>());
+        let id = format!(
+            "task_{}",
+            raw.iter().map(|b| format!("{b:02x}")).collect::<String>()
+        );
         let now = now_iso();
         let cancel = Arc::new(AtomicBool::new(false));
         let rec = Record {
@@ -215,7 +239,10 @@ impl TaskStore {
                 return;
             }
             r.status = "failed";
-            r.status_message = error.get("message").and_then(Value::as_str).map(str::to_string);
+            r.status_message = error
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_string);
             r.error = Some(error);
         });
     }
@@ -240,8 +267,10 @@ impl TaskStore {
             if let Some(o) = clean.as_object_mut() {
                 o.remove("elicitationId");
             }
-            r.input_requests
-                .insert(key.clone(), json!({"method": "elicitation/create", "params": clean}));
+            r.input_requests.insert(
+                key.clone(),
+                json!({"method": "elicitation/create", "params": clean}),
+            );
             let (tx, rx) = channel();
             r.pending.insert(key, tx);
             rx
@@ -255,7 +284,11 @@ impl TaskStore {
 
     /// `tasks/get` | `tasks/update` | `tasks/cancel`.
     pub fn handle(&self, method: &str, params: &Value) -> TaskReply {
-        let task_id = params.get("taskId").and_then(Value::as_str).unwrap_or("").to_string();
+        let task_id = params
+            .get("taskId")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         {
             let mut map = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
             Self::prune(&mut map);
@@ -271,7 +304,11 @@ impl TaskStore {
             }
         }
         if method == "tasks/update" {
-            let responses = params.get("inputResponses").and_then(Value::as_object).cloned().unwrap_or_default();
+            let responses = params
+                .get("inputResponses")
+                .and_then(Value::as_object)
+                .cloned()
+                .unwrap_or_default();
             let resume = {
                 let mut map = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
                 let r = map.get_mut(&task_id).expect("checked above");
@@ -326,6 +363,8 @@ mod tests {
         store.complete(&id, json!({"content": []}));
         let got = store.handle("tasks/get", &json!({"taskId": id})).unwrap();
         assert_eq!(got["status"], "completed");
-        assert!(store.handle("tasks/get", &json!({"taskId": "nope"})).is_err());
+        assert!(store
+            .handle("tasks/get", &json!({"taskId": "nope"}))
+            .is_err());
     }
 }

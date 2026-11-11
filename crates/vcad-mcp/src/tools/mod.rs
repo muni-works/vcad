@@ -141,7 +141,11 @@ pub struct ToolDef {
 
 impl ToolDef {
     /// Build from a derived schema entry.
-    pub fn from_entry(entry: ToolSchemaEntry, output_schema: Option<Value>, handler: ToolHandler) -> Self {
+    pub fn from_entry(
+        entry: ToolSchemaEntry,
+        output_schema: Option<Value>,
+        handler: ToolHandler,
+    ) -> Self {
         let mut description = entry.description;
         if let Some(h) = entry.ai_hint {
             description.push_str("\n\n");

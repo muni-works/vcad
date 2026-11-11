@@ -36,7 +36,12 @@ pub fn serve_lines<R: Read, W: Write + Send + 'static>(server: &Server, reader: 
         let msg: Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(e) => {
-                sink(error_response(&Value::Null, ERR_PARSE, &format!("Parse error: {e}"), None));
+                sink(error_response(
+                    &Value::Null,
+                    ERR_PARSE,
+                    &format!("Parse error: {e}"),
+                    None,
+                ));
                 continue;
             }
         };
@@ -124,7 +129,10 @@ pub fn run_http(server: &Server, addr: SocketAddr) -> std::io::Result<()> {
 /// Bind (loopback only).
 pub fn bind_http(addr: SocketAddr) -> std::io::Result<TcpListener> {
     if !addr.ip().is_loopback() {
-        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "vcad-mcp HTTP binds 127.0.0.1 / ::1 only"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "vcad-mcp HTTP binds 127.0.0.1 / ::1 only",
+        ));
     }
     TcpListener::bind(addr)
 }
@@ -173,16 +181,29 @@ fn read_request(stream: &mut BufReader<TcpStream>) -> std::io::Result<Option<Req
         }
     }
     let headers = Headers(headers);
-    let len: usize = headers.get("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let len: usize = headers
+        .get("content-length")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
     if len > 64 * 1024 * 1024 {
         return Ok(None);
     }
     let mut body = vec![0u8; len];
     stream.read_exact(&mut body)?;
-    Ok(Some(Request { method, path, headers, body }))
+    Ok(Some(Request {
+        method,
+        path,
+        headers,
+        body,
+    }))
 }
 
-fn write_response(stream: &mut TcpStream, status: u16, extra: &[(&str, String)], body: Option<&Value>) -> std::io::Result<()> {
+fn write_response(
+    stream: &mut TcpStream,
+    status: u16,
+    extra: &[(&str, String)],
+    body: Option<&Value>,
+) -> std::io::Result<()> {
     let reason = match status {
         200 => "OK",
         202 => "Accepted",
@@ -193,7 +214,10 @@ fn write_response(stream: &mut TcpStream, status: u16, extra: &[(&str, String)],
         _ => "Error",
     };
     let payload = body.map(|b| b.to_string()).unwrap_or_default();
-    let mut head = format!("HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n", payload.len());
+    let mut head = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n",
+        payload.len()
+    );
     if body.is_some() {
         head.push_str("Content-Type: application/json\r\n");
     }
@@ -221,12 +245,24 @@ fn origin_ok(headers: &Headers) -> bool {
 fn handle_http(server: &Server, stream: TcpStream) -> std::io::Result<()> {
     let mut out = stream.try_clone()?;
     let mut reader = BufReader::new(stream);
-    let Some(req) = read_request(&mut reader)? else { return Ok(()) };
+    let Some(req) = read_request(&mut reader)? else {
+        return Ok(());
+    };
     if !origin_ok(&req.headers) {
-        return write_response(&mut out, 403, &[], Some(&json!({"error": "forbidden origin"})));
+        return write_response(
+            &mut out,
+            403,
+            &[],
+            Some(&json!({"error": "forbidden origin"})),
+        );
     }
     if req.path.split('?').next() != Some("/mcp") {
-        return write_response(&mut out, 404, &[], Some(&json!({"error": "not found; POST /mcp"})));
+        return write_response(
+            &mut out,
+            404,
+            &[],
+            Some(&json!({"error": "not found; POST /mcp"})),
+        );
     }
     match req.method.as_str() {
         "POST" => {}
@@ -235,7 +271,19 @@ fn handle_http(server: &Server, stream: TcpStream) -> std::io::Result<()> {
     }
     let msg: Value = match serde_json::from_slice(&req.body) {
         Ok(v) => v,
-        Err(e) => return write_response(&mut out, 400, &[], Some(&error_response(&Value::Null, ERR_PARSE, &format!("Parse error: {e}"), None))),
+        Err(e) => {
+            return write_response(
+                &mut out,
+                400,
+                &[],
+                Some(&error_response(
+                    &Value::Null,
+                    ERR_PARSE,
+                    &format!("Parse error: {e}"),
+                    None,
+                )),
+            )
+        }
     };
     let is_listen = msg.get("method").and_then(Value::as_str) == Some("subscriptions/listen");
     if is_listen {
@@ -247,7 +295,10 @@ fn handle_http(server: &Server, stream: TcpStream) -> std::io::Result<()> {
         let (w2, alive2) = (w.clone(), alive.clone());
         let sink: Sink = Arc::new(move |m: Value| {
             let mut w = w2.lock().unwrap_or_else(|e| e.into_inner());
-            if w.write_all(format!("event: message\ndata: {m}\n\n").as_bytes()).and_then(|_| w.flush()).is_err() {
+            if w.write_all(format!("event: message\ndata: {m}\n\n").as_bytes())
+                .and_then(|_| w.flush())
+                .is_err()
+            {
                 alive2.store(false, std::sync::atomic::Ordering::Relaxed);
             }
         });
@@ -255,14 +306,20 @@ fn handle_http(server: &Server, stream: TcpStream) -> std::io::Result<()> {
         let Some(handle) = outcome.listen else {
             // Rejected (version/header): send the error as one event.
             if let Some(b) = outcome.body {
-                let _ = w.lock().unwrap_or_else(|e| e.into_inner()).write_all(format!("event: message\ndata: {b}\n\n").as_bytes());
+                let _ = w
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .write_all(format!("event: message\ndata: {b}\n\n").as_bytes());
             }
             return Ok(());
         };
         while alive.load(std::sync::atomic::Ordering::Relaxed) {
             std::thread::sleep(Duration::from_secs(15));
             let mut g = w.lock().unwrap_or_else(|e| e.into_inner());
-            if g.write_all(b": keepalive\n\n").and_then(|_| g.flush()).is_err() {
+            if g.write_all(b": keepalive\n\n")
+                .and_then(|_| g.flush())
+                .is_err()
+            {
                 break;
             }
         }

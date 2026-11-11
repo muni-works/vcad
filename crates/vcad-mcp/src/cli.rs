@@ -78,7 +78,10 @@ pub fn run(opts: McpOptions) -> std::io::Result<()> {
     }
     #[cfg(unix)]
     if !opts.headless {
-        let path = opts.socket.clone().unwrap_or_else(transport::default_socket_path);
+        let path = opts
+            .socket
+            .clone()
+            .unwrap_or_else(transport::default_socket_path);
         if path.exists() && transport::attach_stdio(&path).is_ok() {
             return Ok(());
         }

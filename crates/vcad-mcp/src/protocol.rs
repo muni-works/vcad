@@ -70,7 +70,10 @@ pub const DISCOVER_TTL_MS: u64 = 300_000;
 pub fn cache_ttl(method: &str) -> Option<u64> {
     match method {
         "server/discover" => Some(DISCOVER_TTL_MS),
-        "tools/list" | "prompts/list" | "resources/list" | "resources/templates/list"
+        "tools/list"
+        | "prompts/list"
+        | "resources/list"
+        | "resources/templates/list"
         | "resources/read" => Some(LIST_TTL_MS),
         _ => None,
     }

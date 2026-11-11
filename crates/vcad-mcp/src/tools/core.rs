@@ -227,7 +227,9 @@ fn resolve_doc(ctx: &ToolCtx, args: &Value) -> Result<Document, ToolError> {
             return parse_doc(v);
         }
     }
-    Err(ToolError::InvalidArgs("pass document_id or an inline document".into()))
+    Err(ToolError::InvalidArgs(
+        "pass document_id or an inline document".into(),
+    ))
 }
 
 fn handle(ctx: &ToolCtx, id: DocumentId) -> Result<ToolOutput, ToolError> {
@@ -238,7 +240,9 @@ fn handle(ctx: &ToolCtx, id: DocumentId) -> Result<ToolOutput, ToolError> {
         nodes: doc.nodes.len() as u64,
         durable: ctx.store.durable(),
     };
-    Ok(ToolOutput::structured(serde_json::to_value(out).unwrap_or_default()))
+    Ok(ToolOutput::structured(
+        serde_json::to_value(out).unwrap_or_default(),
+    ))
 }
 
 fn evaluate(doc: &Document) -> Result<vcad_eval::EvaluatedScene, ToolError> {
@@ -246,7 +250,8 @@ fn evaluate(doc: &Document) -> Result<vcad_eval::EvaluatedScene, ToolError> {
         skip_clash_detection: true,
         ..Default::default()
     };
-    vcad_eval::evaluate_document(doc, &opts).map_err(|e| ToolError::InvalidArgs(format!("evaluation failed: {e}")))
+    vcad_eval::evaluate_document(doc, &opts)
+        .map_err(|e| ToolError::InvalidArgs(format!("evaluation failed: {e}")))
 }
 
 /// All evaluated triangle soups (root parts + placed instances).
@@ -303,17 +308,32 @@ pub fn mesh_properties(meshes: &[(Vec<f32>, Vec<u32>)]) -> (f64, f64, BBox, Xyz,
         }
     }
     let com = if vol.abs() > 1e-12 {
-        Xyz { x: c[0] / vol, y: c[1] / vol, z: c[2] / vol }
+        Xyz {
+            x: c[0] / vol,
+            y: c[1] / vol,
+            z: c[2] / vol,
+        }
     } else {
         Xyz::default()
     };
     let bbox = if lo[0].is_finite() {
         BBox {
-            min: Xyz { x: lo[0], y: lo[1], z: lo[2] },
-            max: Xyz { x: hi[0], y: hi[1], z: hi[2] },
+            min: Xyz {
+                x: lo[0],
+                y: lo[1],
+                z: lo[2],
+            },
+            max: Xyz {
+                x: hi[0],
+                y: hi[1],
+                z: hi[2],
+            },
         }
     } else {
-        BBox { min: Xyz::default(), max: Xyz::default() }
+        BBox {
+            min: Xyz::default(),
+            max: Xyz::default(),
+        }
     };
     (vol, area, bbox, com, tris)
 }
@@ -332,7 +352,11 @@ fn stl_bytes(meshes: &[(Vec<f32>, Vec<u32>)]) -> Vec<u8> {
             let (a, b, c) = (v(t[0]), v(t[1]), v(t[2]));
             let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
             let w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
-            let mut n = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
+            let mut n = [
+                u[1] * w[2] - u[2] * w[1],
+                u[2] * w[0] - u[0] * w[2],
+                u[0] * w[1] - u[1] * w[0],
+            ];
             let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
             if len > 0.0 {
                 n.iter_mut().for_each(|x| *x /= len);
@@ -377,7 +401,10 @@ pub struct InfoSource {
 }
 
 fn entries() -> std::collections::HashMap<String, ToolSchemaEntry> {
-    CoreTool::tool_schemas().into_iter().map(|e| (e.name.clone(), e)).collect()
+    CoreTool::tool_schemas()
+        .into_iter()
+        .map(|e| (e.name.clone(), e))
+        .collect()
 }
 
 fn def(
@@ -386,7 +413,9 @@ fn def(
     output: Option<Value>,
     f: impl Fn(&ToolCtx, Value) -> Result<ToolOutput, ToolError> + Send + Sync + 'static,
 ) -> ToolDef {
-    let entry = entries.remove(name).unwrap_or_else(|| panic!("no schema for {name}"));
+    let entry = entries
+        .remove(name)
+        .unwrap_or_else(|| panic!("no schema for {name}"));
     ToolDef::from_entry(entry, output, Arc::new(f))
 }
 
@@ -394,107 +423,170 @@ fn def(
 pub fn core_tools(info: InfoSource) -> Vec<ToolDef> {
     let mut e = entries();
     vec![
-        def(&mut e, "server_info", Some(ServerInfoOut::output_schema()), move |ctx, _| {
-            let out = ServerInfoOut {
-                name: info.name.clone(),
-                version: info.version.clone(),
-                uptime_s: info.started.elapsed().as_secs_f64(),
-                instance_id: info.instance_id.clone(),
-                boot_token: crate::store::boot_token().to_string(),
-                store: ctx.store.kind().as_str().to_string(),
-                durable: ctx.store.durable(),
-                session_dir: ctx.store.location().map(|p| p.display().to_string()),
-                artifact_store: "in-memory".into(),
-                protocol_versions: crate::protocol::SUPPORTED_PROTOCOL_VERSIONS.iter().map(|s| s.to_string()).collect(),
-            };
-            Ok(ToolOutput::structured(serde_json::to_value(out).unwrap_or_default()))
-        }),
-        def(&mut e, "open_document", Some(DocumentHandle::output_schema()), |ctx, args| {
-            let doc = match args.get("initial").filter(|v| v.is_object()) {
-                Some(v) => parse_doc(v)?,
-                None => Document::default(),
-            };
-            let id = ctx.store.create(doc, None).map_err(store_err)?;
-            handle(ctx, id)
-        }),
+        def(
+            &mut e,
+            "server_info",
+            Some(ServerInfoOut::output_schema()),
+            move |ctx, _| {
+                let out = ServerInfoOut {
+                    name: info.name.clone(),
+                    version: info.version.clone(),
+                    uptime_s: info.started.elapsed().as_secs_f64(),
+                    instance_id: info.instance_id.clone(),
+                    boot_token: crate::store::boot_token().to_string(),
+                    store: ctx.store.kind().as_str().to_string(),
+                    durable: ctx.store.durable(),
+                    session_dir: ctx.store.location().map(|p| p.display().to_string()),
+                    artifact_store: "in-memory".into(),
+                    protocol_versions: crate::protocol::SUPPORTED_PROTOCOL_VERSIONS
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect(),
+                };
+                Ok(ToolOutput::structured(
+                    serde_json::to_value(out).unwrap_or_default(),
+                ))
+            },
+        ),
+        def(
+            &mut e,
+            "open_document",
+            Some(DocumentHandle::output_schema()),
+            |ctx, args| {
+                let doc = match args.get("initial").filter(|v| v.is_object()) {
+                    Some(v) => parse_doc(v)?,
+                    None => Document::default(),
+                };
+                let id = ctx.store.create(doc, None).map_err(store_err)?;
+                handle(ctx, id)
+            },
+        ),
         def(&mut e, "get_document", None, |ctx, args| {
-            let id = arg_str(&args, "document_id").ok_or_else(|| ToolError::InvalidArgs("document_id required".into()))?;
+            let id = arg_str(&args, "document_id")
+                .ok_or_else(|| ToolError::InvalidArgs("document_id required".into()))?;
             let doc = ctx.store.load(&id.into()).map_err(store_err)?;
-            let v = serde_json::to_value(&doc).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
+            let v =
+                serde_json::to_value(&doc).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
             Ok(ToolOutput {
                 content: vec![json!({"type":"text","text": v.to_string()})],
                 structured: None,
                 is_error: false,
             })
         }),
-        def(&mut e, "close_document", Some(CloseOut::output_schema()), |ctx, args| {
-            let id: DocumentId = arg_str(&args, "document_id").ok_or_else(|| ToolError::InvalidArgs("document_id required".into()))?.into();
-            let existed = ctx.store.load(&id).is_ok();
-            if existed {
-                ctx.store.close(&id).map_err(store_err)?;
-            }
-            Ok(ToolOutput::structured(json!({ "closed": existed })))
-        }),
-        def(&mut e, "create_cad_loon", Some(DocumentHandle::output_schema()), |ctx, args| {
-            // Features the native port doesn't have yet go to node verbatim.
-            for k in ["loons", "use_loons", "files", "modules", "joint_state"] {
-                if args.get(k).is_some() {
-                    return Err(ToolError::Delegate(format!("`{k}` not supported natively")));
+        def(
+            &mut e,
+            "close_document",
+            Some(CloseOut::output_schema()),
+            |ctx, args| {
+                let id: DocumentId = arg_str(&args, "document_id")
+                    .ok_or_else(|| ToolError::InvalidArgs("document_id required".into()))?
+                    .into();
+                let existed = ctx.store.load(&id).is_ok();
+                if existed {
+                    ctx.store.close(&id).map_err(store_err)?;
                 }
-            }
-            if arg_str(&args, "mode") == Some("add") {
-                return Err(ToolError::Delegate("mode=add not supported natively".into()));
-            }
-            let source = arg_str(&args, "source").ok_or_else(|| ToolError::InvalidArgs("source required".into()))?;
-            let doc = eval_loon(source, arg_str(&args, "base_dir"))?;
-            let id = match arg_str(&args, "document_id") {
-                Some(id) => {
-                    let id = DocumentId::from(id);
-                    ctx.store.commit(&id, doc, CommitMeta::agent("create_cad_loon")).map_err(store_err)?;
-                    id
+                Ok(ToolOutput::structured(json!({ "closed": existed })))
+            },
+        ),
+        def(
+            &mut e,
+            "create_cad_loon",
+            Some(DocumentHandle::output_schema()),
+            |ctx, args| {
+                // Features the native port doesn't have yet go to node verbatim.
+                for k in ["loons", "use_loons", "files", "modules", "joint_state"] {
+                    if args.get(k).is_some() {
+                        return Err(ToolError::Delegate(format!("`{k}` not supported natively")));
+                    }
                 }
-                None => ctx.store.create(doc, None).map_err(store_err)?,
-            };
-            handle(ctx, id)
-        }),
-        def(&mut e, "load_document", Some(DocumentHandle::output_schema()), |ctx, args| {
-            let Some(path) = arg_str(&args, "path") else {
-                return Err(ToolError::Delegate("named saves are served by the node server".into()));
-            };
-            let p = Path::new(path);
-            let raw = std::fs::read_to_string(p).map_err(|e| ToolError::InvalidArgs(format!("{path}: {e}")))?;
-            let doc = if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("loon")) {
-                eval_loon(&raw, p.parent().and_then(Path::to_str))?
-            } else {
-                let v: Value = serde_json::from_str(&raw).map_err(|e| ToolError::InvalidArgs(format!("{path}: {e}")))?;
-                parse_doc(&v)?
-            };
-            let name = p.file_stem().and_then(|s| s.to_str());
-            let id = ctx.store.create(doc, name).map_err(store_err)?;
-            handle(ctx, id)
-        }),
-        def(&mut e, "inspect_cad", Some(InspectOut::output_schema()), |ctx, args| {
-            let doc = resolve_doc(ctx, &args)?;
-            let scene = evaluate(&doc)?;
-            let m = meshes(&doc, &scene);
-            let (volume, surface_area, bounding_box, center_of_mass, triangles) = mesh_properties(&m);
-            let out = InspectOut {
-                volume,
-                surface_area,
-                bounding_box,
-                center_of_mass,
-                triangles,
-                parts: m.len() as u64,
-                failures: scene.failures.iter().map(|f| format!("{} (node {}): {}", f.scope, f.node_id, f.error)).collect(),
-            };
-            Ok(ToolOutput::structured(serde_json::to_value(out).unwrap_or_default()))
-        }),
+                if arg_str(&args, "mode") == Some("add") {
+                    return Err(ToolError::Delegate(
+                        "mode=add not supported natively".into(),
+                    ));
+                }
+                let source = arg_str(&args, "source")
+                    .ok_or_else(|| ToolError::InvalidArgs("source required".into()))?;
+                let doc = eval_loon(source, arg_str(&args, "base_dir"))?;
+                let id = match arg_str(&args, "document_id") {
+                    Some(id) => {
+                        let id = DocumentId::from(id);
+                        ctx.store
+                            .commit(&id, doc, CommitMeta::agent("create_cad_loon"))
+                            .map_err(store_err)?;
+                        id
+                    }
+                    None => ctx.store.create(doc, None).map_err(store_err)?,
+                };
+                handle(ctx, id)
+            },
+        ),
+        def(
+            &mut e,
+            "load_document",
+            Some(DocumentHandle::output_schema()),
+            |ctx, args| {
+                let Some(path) = arg_str(&args, "path") else {
+                    return Err(ToolError::Delegate(
+                        "named saves are served by the node server".into(),
+                    ));
+                };
+                let p = Path::new(path);
+                let raw = std::fs::read_to_string(p)
+                    .map_err(|e| ToolError::InvalidArgs(format!("{path}: {e}")))?;
+                let doc = if p
+                    .extension()
+                    .is_some_and(|x| x.eq_ignore_ascii_case("loon"))
+                {
+                    eval_loon(&raw, p.parent().and_then(Path::to_str))?
+                } else {
+                    let v: Value = serde_json::from_str(&raw)
+                        .map_err(|e| ToolError::InvalidArgs(format!("{path}: {e}")))?;
+                    parse_doc(&v)?
+                };
+                let name = p.file_stem().and_then(|s| s.to_str());
+                let id = ctx.store.create(doc, name).map_err(store_err)?;
+                handle(ctx, id)
+            },
+        ),
+        def(
+            &mut e,
+            "inspect_cad",
+            Some(InspectOut::output_schema()),
+            |ctx, args| {
+                let doc = resolve_doc(ctx, &args)?;
+                let scene = evaluate(&doc)?;
+                let m = meshes(&doc, &scene);
+                let (volume, surface_area, bounding_box, center_of_mass, triangles) =
+                    mesh_properties(&m);
+                let out = InspectOut {
+                    volume,
+                    surface_area,
+                    bounding_box,
+                    center_of_mass,
+                    triangles,
+                    parts: m.len() as u64,
+                    failures: scene
+                        .failures
+                        .iter()
+                        .map(|f| format!("{} (node {}): {}", f.scope, f.node_id, f.error))
+                        .collect(),
+                };
+                Ok(ToolOutput::structured(
+                    serde_json::to_value(out).unwrap_or_default(),
+                ))
+            },
+        ),
         def(&mut e, "render_view", None, |ctx, args| {
             if args.get("section").is_some() || args.get("joint_state").is_some() {
-                return Err(ToolError::Delegate("section/joint_state not supported natively".into()));
+                return Err(ToolError::Delegate(
+                    "section/joint_state not supported natively".into(),
+                ));
             }
             let doc = resolve_doc(ctx, &args)?;
-            let view = match (args.get("azimuth").and_then(Value::as_f64), args.get("elevation").and_then(Value::as_f64)) {
+            let view = match (
+                args.get("azimuth").and_then(Value::as_f64),
+                args.get("elevation").and_then(Value::as_f64),
+            ) {
                 (Some(azimuth), Some(elevation)) => vcad_render::View::Orbit { azimuth, elevation },
                 _ => match arg_str(&args, "view").unwrap_or("iso") {
                     "top" => vcad_render::View::Top,
@@ -505,12 +597,18 @@ pub fn core_tools(info: InfoSource) -> Vec<ToolDef> {
             };
             let opts = vcad_render::RasterOptions {
                 view,
-                size_px: args.get("width_px").and_then(Value::as_u64).unwrap_or(768).clamp(64, 4096) as u32,
+                size_px: args
+                    .get("width_px")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(768)
+                    .clamp(64, 4096) as u32,
                 focus: arg_str(&args, "focus").map(str::to_string),
                 ..Default::default()
             };
-            let raw = serde_json::to_string(&doc).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
-            let png = vcad_render::render_png_str(&raw, &opts).map_err(|e| ToolError::InvalidArgs(format!("render failed: {e}")))?;
+            let raw =
+                serde_json::to_string(&doc).map_err(|e| ToolError::InvalidArgs(e.to_string()))?;
+            let png = vcad_render::render_png_str(&raw, &opts)
+                .map_err(|e| ToolError::InvalidArgs(format!("render failed: {e}")))?;
             use base64::Engine;
             Ok(ToolOutput {
                 content: vec![json!({
@@ -522,27 +620,46 @@ pub fn core_tools(info: InfoSource) -> Vec<ToolDef> {
                 is_error: false,
             })
         }),
-        def(&mut e, "export_cad", Some(ExportOut::output_schema()), |ctx, args| {
-            let filename = arg_str(&args, "filename").ok_or_else(|| ToolError::InvalidArgs("filename required".into()))?;
-            let ext = Path::new(filename).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
-            if ext != "stl" && ext != "vcad" {
-                return Err(ToolError::Delegate(format!(".{ext} export is served by the node exporter")));
-            }
-            let doc = resolve_doc(ctx, &args)?;
-            let bytes = if ext == "vcad" {
-                serde_json::to_vec(&doc).map_err(|e| ToolError::InvalidArgs(e.to_string()))?
-            } else {
-                let scene = evaluate(&doc)?;
-                stl_bytes(&meshes(&doc, &scene))
-            };
-            let path = export_path(filename);
-            if let Some(parent) = path.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            std::fs::write(&path, &bytes).map_err(|e| ToolError::InvalidArgs(format!("{}: {e}", path.display())))?;
-            let out = ExportOut { path: path.display().to_string(), format: ext, bytes: bytes.len() as u64 };
-            Ok(ToolOutput::structured(serde_json::to_value(out).unwrap_or_default()))
-        }),
+        def(
+            &mut e,
+            "export_cad",
+            Some(ExportOut::output_schema()),
+            |ctx, args| {
+                let filename = arg_str(&args, "filename")
+                    .ok_or_else(|| ToolError::InvalidArgs("filename required".into()))?;
+                let ext = Path::new(filename)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                if ext != "stl" && ext != "vcad" {
+                    return Err(ToolError::Delegate(format!(
+                        ".{ext} export is served by the node exporter"
+                    )));
+                }
+                let doc = resolve_doc(ctx, &args)?;
+                let bytes = if ext == "vcad" {
+                    serde_json::to_vec(&doc).map_err(|e| ToolError::InvalidArgs(e.to_string()))?
+                } else {
+                    let scene = evaluate(&doc)?;
+                    stl_bytes(&meshes(&doc, &scene))
+                };
+                let path = export_path(filename);
+                if let Some(parent) = path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                std::fs::write(&path, &bytes)
+                    .map_err(|e| ToolError::InvalidArgs(format!("{}: {e}", path.display())))?;
+                let out = ExportOut {
+                    path: path.display().to_string(),
+                    format: ext,
+                    bytes: bytes.len() as u64,
+                };
+                Ok(ToolOutput::structured(
+                    serde_json::to_value(out).unwrap_or_default(),
+                ))
+            },
+        ),
     ]
 }
 
@@ -553,8 +670,14 @@ mod tests {
     #[test]
     fn unit_cube_properties() {
         // Outward-wound unit cube.
-        let pos: Vec<f32> = vec![0., 0., 0., 1., 0., 0., 1., 1., 0., 0., 1., 0., 0., 0., 1., 1., 0., 1., 1., 1., 1., 0., 1., 1.];
-        let idx = vec![0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7, 6, 3, 0, 4, 3, 4, 7];
+        let pos: Vec<f32> = vec![
+            0., 0., 0., 1., 0., 0., 1., 1., 0., 0., 1., 0., 0., 0., 1., 1., 0., 1., 1., 1., 1., 0.,
+            1., 1.,
+        ];
+        let idx = vec![
+            0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7,
+            6, 3, 0, 4, 3, 4, 7,
+        ];
         let (v, a, bb, com, t) = mesh_properties(&[(pos, idx)]);
         assert!((v - 1.0).abs() < 1e-9, "{v}");
         assert!((a - 6.0).abs() < 1e-9);
@@ -574,6 +697,9 @@ mod tests {
         assert_eq!(tools.len(), 9);
         let inspect = tools.iter().find(|t| t.name == "inspect_cad").unwrap();
         let out = inspect.output_schema.as_ref().unwrap();
-        assert_eq!(out["properties"]["bounding_box"]["properties"]["min"]["required"], json!(["x", "y", "z"]));
+        assert_eq!(
+            out["properties"]["bounding_box"]["properties"]["min"]["required"],
+            json!(["x", "y", "z"])
+        );
     }
 }

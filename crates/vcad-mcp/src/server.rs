@@ -63,7 +63,11 @@ pub struct RpcErr {
 
 impl RpcErr {
     fn new(code: i64, message: impl Into<String>) -> Self {
-        RpcErr { code, message: message.into(), data: None }
+        RpcErr {
+            code,
+            message: message.into(),
+            data: None,
+        }
     }
 }
 
@@ -83,10 +87,20 @@ pub struct Outcome {
 
 impl Outcome {
     fn body(status: u16, body: Value) -> Self {
-        Outcome { status, body: Some(body), listen: None, session_id: None }
+        Outcome {
+            status,
+            body: Some(body),
+            listen: None,
+            session_id: None,
+        }
     }
     fn empty(status: u16) -> Self {
-        Outcome { status, body: None, listen: None, session_id: None }
+        Outcome {
+            status,
+            body: None,
+            listen: None,
+            session_id: None,
+        }
     }
 }
 
@@ -108,7 +122,10 @@ impl ListenHandle {
 
     /// The graceful-closure response for a server-ended stream.
     pub fn closure_response(&self) -> Value {
-        result_response(&self.id, json!({"resultType": "complete", "_meta": {META_SUBSCRIPTION_ID: self.id}}))
+        result_response(
+            &self.id,
+            json!({"resultType": "complete", "_meta": {META_SUBSCRIPTION_ID: self.id}}),
+        )
     }
 }
 
@@ -148,7 +165,8 @@ impl Server {
         let instance_id = format!("{}-{}", crate::store::boot_token(), std::process::id());
         // Share the session dir with the node upstream.
         if let (Some(p), Some(dir)) = (config.proxy.as_mut(), store.location()) {
-            p.env.push(("VCAD_MCP_SESSION_DIR".into(), dir.display().to_string()));
+            p.env
+                .push(("VCAD_MCP_SESSION_DIR".into(), dir.display().to_string()));
         }
         let proxy = config.proxy.clone().map(|c| Arc::new(Proxy::new(c)));
         if let Some(p) = &proxy {
@@ -169,7 +187,10 @@ impl Server {
             started: Instant::now(),
             instance_id: instance_id.clone(),
         };
-        let tools = core_tools(info).into_iter().map(|t| (t.name.clone(), t)).collect();
+        let tools = core_tools(info)
+            .into_iter()
+            .map(|t| (t.name.clone(), t))
+            .collect();
         // Store changes → resource updates.
         {
             let bus2 = Arc::downgrade(&bus);
@@ -184,7 +205,9 @@ impl Server {
                             bus.emit(BusEvent::ResourceUpdated("vcad://doc/current".into()));
                         }
                     }
-                    StoreEvent::CurrentChanged(_) => bus.emit(BusEvent::ResourceUpdated("vcad://doc/current".into())),
+                    StoreEvent::CurrentChanged(_) => {
+                        bus.emit(BusEvent::ResourceUpdated("vcad://doc/current".into()))
+                    }
                 }
             }));
         }
@@ -203,7 +226,11 @@ impl Server {
 
     /// Register (or replace) a native tool; fires `toolsListChanged`.
     pub fn register(&self, tool: ToolDef) {
-        self.inner.tools.write().unwrap_or_else(|e| e.into_inner()).insert(tool.name.clone(), tool);
+        self.inner
+            .tools
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(tool.name.clone(), tool);
         self.inner.bus.emit(BusEvent::ToolsListChanged);
     }
 
@@ -273,14 +300,24 @@ impl Server {
             .get("name")
             .and_then(Value::as_str)
             .ok_or_else(|| RpcErr::new(ERR_INVALID_PARAMS, "tools/call: missing name"))?;
-        let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
-        let native = self.inner.tools.read().unwrap_or_else(|e| e.into_inner()).get(name).cloned();
+        let args = params
+            .get("arguments")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let native = self
+            .inner
+            .tools
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(name)
+            .cloned();
         let mut delegated = None;
         if let Some(tool) = native {
             match (tool.handler)(&ctx, args.clone()) {
                 Ok(out) => {
                     let mut v = out.to_json();
-                    v["_meta"] = json!({ META_VCAD_BUILD: self.build_meta(), "io.vcad/servedBy": "native" });
+                    v["_meta"] =
+                        json!({ META_VCAD_BUILD: self.build_meta(), "io.vcad/servedBy": "native" });
                     return Ok(v);
                 }
                 Err(ToolError::InvalidArgs(m)) => {
@@ -294,13 +331,25 @@ impl Server {
         }
         let Some(proxy) = &self.inner.proxy else {
             return Err(match delegated {
-                Some(why) => RpcErr::new(ERR_INVALID_PARAMS, format!("{name}: {why}, and no node upstream is configured")),
+                Some(why) => RpcErr::new(
+                    ERR_INVALID_PARAMS,
+                    format!("{name}: {why}, and no node upstream is configured"),
+                ),
                 None => RpcErr::new(ERR_INVALID_PARAMS, format!("Unknown tool '{name}'")),
             });
         };
         let mut v = proxy
-            .call_tool(name, args, Some(ctx.progress.clone()), Some(ctx.elicit.clone()))
-            .map_err(|e| RpcErr { code: e.code, message: e.message, data: e.data })?;
+            .call_tool(
+                name,
+                args,
+                Some(ctx.progress.clone()),
+                Some(ctx.elicit.clone()),
+            )
+            .map_err(|e| RpcErr {
+                code: e.code,
+                message: e.message,
+                data: e.data,
+            })?;
         if let Some(obj) = v.as_object_mut() {
             let meta = obj.entry("_meta").or_insert_with(|| json!({}));
             if let Some(m) = meta.as_object_mut() {
@@ -331,15 +380,22 @@ impl Server {
 
     fn resources_read(&self, params: &Value) -> Result<Value, RpcErr> {
         let uri = params.get("uri").and_then(Value::as_str).unwrap_or("");
-        let not_found = || RpcErr { code: LEGACY_RESOURCE_NOT_FOUND, message: format!("Resource not found: {uri}"), data: Some(json!({"uri": uri})) };
+        let not_found = || RpcErr {
+            code: LEGACY_RESOURCE_NOT_FOUND,
+            message: format!("Resource not found: {uri}"),
+            data: Some(json!({"uri": uri})),
+        };
         let id = match uri.strip_prefix("vcad://doc/") {
             Some("current") => self.inner.store.current().ok_or_else(not_found)?,
             Some(id) => DocumentId::from(id),
             None => return Err(not_found()),
         };
         let doc = self.inner.store.load(&id).map_err(|_| not_found())?;
-        let text = serde_json::to_string(&doc).map_err(|e| RpcErr::new(ERR_INTERNAL, e.to_string()))?;
-        Ok(json!({ "contents": [{ "uri": uri, "mimeType": "application/vnd.vcad+json", "text": text, "_meta": {"io.vcad/documentId": id.0} }] }))
+        let text =
+            serde_json::to_string(&doc).map_err(|e| RpcErr::new(ERR_INTERNAL, e.to_string()))?;
+        Ok(
+            json!({ "contents": [{ "uri": uri, "mimeType": "application/vnd.vcad+json", "text": text, "_meta": {"io.vcad/documentId": id.0} }] }),
+        )
     }
 
     /// Methods both eras share.
@@ -356,8 +412,13 @@ impl Server {
             "resources/read" => self.resources_read(params),
             "prompts/list" => Ok(json!({ "prompts": [] })),
             "prompts/get" => Err(RpcErr::new(ERR_INVALID_PARAMS, "Unknown prompt")),
-            "completion/complete" => Ok(json!({ "completion": { "values": [], "hasMore": false } })),
-            _ => Err(RpcErr::new(ERR_METHOD_NOT_FOUND, format!("Unknown method '{method}'"))),
+            "completion/complete" => {
+                Ok(json!({ "completion": { "values": [], "hasMore": false } }))
+            }
+            _ => Err(RpcErr::new(
+                ERR_METHOD_NOT_FOUND,
+                format!("Unknown method '{method}'"),
+            )),
         }
     }
 
@@ -365,8 +426,16 @@ impl Server {
         let elicit: ElicitFn = match mode {
             ElicitMode::Live(Some(f)) => f.clone(),
             ElicitMode::Live(None) => Arc::new(|_| json!({"action": "cancel"})),
-            ElicitMode::Mrtr { responses, captured, allowed } => {
-                let (responses, captured, allowed) = (responses.clone(), captured.clone(), *allowed && mrtr_allowed(method));
+            ElicitMode::Mrtr {
+                responses,
+                captured,
+                allowed,
+            } => {
+                let (responses, captured, allowed) = (
+                    responses.clone(),
+                    captured.clone(),
+                    *allowed && mrtr_allowed(method),
+                );
                 Arc::new(move |params: Value| {
                     let mut c = captured.lock().unwrap_or_else(|e| e.into_inner());
                     c.0 += 1;
@@ -379,7 +448,10 @@ impl Server {
                         if let Some(o) = clean.as_object_mut() {
                             o.remove("elicitationId");
                         }
-                        c.1.insert(key, json!({"method": "elicitation/create", "params": clean}));
+                        c.1.insert(
+                            key,
+                            json!({"method": "elicitation/create", "params": clean}),
+                        );
                     }
                     json!({"action": "cancel"})
                 })
@@ -397,19 +469,43 @@ impl Server {
 
     /// Serve one modern message. `sink` receives request-scoped notifications
     /// and, for `subscriptions/listen`, the stream's notifications.
-    pub fn handle_modern(&self, msg: &Value, headers: Option<&Headers>, sink: Option<Sink>) -> Outcome {
+    pub fn handle_modern(
+        &self,
+        msg: &Value,
+        headers: Option<&Headers>,
+        sink: Option<Sink>,
+    ) -> Outcome {
         if msg.is_array() {
-            return Outcome::body(400, error_response(&Value::Null, ERR_INVALID_PARAMS, "Batched requests are not supported; send one JSON-RPC message per POST", None));
+            return Outcome::body(
+                400,
+                error_response(
+                    &Value::Null,
+                    ERR_INVALID_PARAMS,
+                    "Batched requests are not supported; send one JSON-RPC message per POST",
+                    None,
+                ),
+            );
         }
         if !msg.is_object() {
-            return Outcome::body(400, error_response(&Value::Null, ERR_INVALID_PARAMS, "Malformed JSON-RPC message", None));
+            return Outcome::body(
+                400,
+                error_response(
+                    &Value::Null,
+                    ERR_INVALID_PARAMS,
+                    "Malformed JSON-RPC message",
+                    None,
+                ),
+            );
         }
         let id = match msg.get("id") {
             None | Some(Value::Null) => return Outcome::empty(202),
             Some(id) => id.clone(),
         };
         let Some(method) = msg.get("method").and_then(Value::as_str) else {
-            return Outcome::body(400, error_response(&id, ERR_INVALID_PARAMS, "Missing JSON-RPC method", None));
+            return Outcome::body(
+                400,
+                error_response(&id, ERR_INVALID_PARAMS, "Missing JSON-RPC method", None),
+            );
         };
         let params = msg.get("params").cloned().unwrap_or_else(|| json!({}));
         let meta = meta_of(msg).cloned().unwrap_or_default();
@@ -419,11 +515,18 @@ impl Server {
         let header_version = headers.and_then(|h| h.get("mcp-protocol-version"));
         if let (Some(b), Some(h)) = (body_version, header_version) {
             if b != h {
-                return header_mismatch(&id, &format!("MCP-Protocol-Version header value '{h}' does not match body value '{b}'"));
+                return header_mismatch(
+                    &id,
+                    &format!(
+                        "MCP-Protocol-Version header value '{h}' does not match body value '{b}'"
+                    ),
+                );
             }
         }
         match body_version.or(header_version) {
-            None if method != "server/discover" => return unsupported_version(&id, "(unspecified)"),
+            None if method != "server/discover" => {
+                return unsupported_version(&id, "(unspecified)")
+            }
             Some(v) if v != PROTOCOL_2026 => return unsupported_version(&id, v),
             _ => {}
         }
@@ -433,7 +536,12 @@ impl Server {
             match h.get("mcp-method") {
                 None => return header_mismatch(&id, "required header Mcp-Method is missing"),
                 Some(m) if m != method => {
-                    return header_mismatch(&id, &format!("Mcp-Method header value '{m}' does not match body value '{method}'"))
+                    return header_mismatch(
+                        &id,
+                        &format!(
+                            "Mcp-Method header value '{m}' does not match body value '{method}'"
+                        ),
+                    )
                 }
                 _ => {}
             }
@@ -446,7 +554,10 @@ impl Server {
                 match h.get("mcp-name") {
                     None => return header_mismatch(&id, "required header Mcp-Name is missing"),
                     Some(n) if decode_header_value(n) != exp => {
-                        return header_mismatch(&id, &format!("Mcp-Name header value does not match body value '{exp}'"))
+                        return header_mismatch(
+                            &id,
+                            &format!("Mcp-Name header value does not match body value '{exp}'"),
+                        )
                     }
                     _ => {}
                 }
@@ -468,13 +579,26 @@ impl Server {
         if method == "subscriptions/listen" {
             let sink = sink.unwrap_or_else(|| Arc::new(|_| {}));
             let handle = self.listen(&id, &params, sink);
-            return Outcome { status: 200, body: None, listen: Some(handle), session_id: None };
+            return Outcome {
+                status: 200,
+                body: None,
+                listen: Some(handle),
+                session_id: None,
+            };
         }
         if method == "ping" {
             return Outcome::body(200, result_response(&id, json!({"resultType": "complete"})));
         }
         if method != "server/discover" && !is_shared_method(method) {
-            return Outcome::body(404, error_response(&id, ERR_METHOD_NOT_FOUND, &format!("Unknown method '{method}'"), None));
+            return Outcome::body(
+                404,
+                error_response(
+                    &id,
+                    ERR_METHOD_NOT_FOUND,
+                    &format!("Unknown method '{method}'"),
+                    None,
+                ),
+            );
         }
 
         let server_info = self.server_info();
@@ -494,11 +618,25 @@ impl Server {
             return Outcome::body(200, result_response(&id, result));
         }
 
-        let client_caps = meta.get(META_CLIENT_CAPABILITIES).cloned().unwrap_or_else(|| json!({}));
-        let wants_tasks = client_caps.get("extensions").and_then(|e| e.get(TASKS_EXTENSION)).is_some();
-        let input_responses = params.get("inputResponses").and_then(Value::as_object).cloned().unwrap_or_default();
+        let client_caps = meta
+            .get(META_CLIENT_CAPABILITIES)
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        let wants_tasks = client_caps
+            .get("extensions")
+            .and_then(|e| e.get(TASKS_EXTENSION))
+            .is_some();
+        let input_responses = params
+            .get("inputResponses")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
         let forwarded = strip_modern_fields(&params);
-        let tool_name = forwarded.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+        let tool_name = forwarded
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
 
         let progress_sink = sink.clone();
         let progress: ProgressFn = Arc::new(move |p, total, message| {
@@ -529,7 +667,13 @@ impl Server {
                         Some(t) => format!(" ({p}/{t})"),
                         None => format!(" ({p})"),
                     };
-                    tasks1.progress(&tid1, format!("{}{counter}", message.unwrap_or_else(|| format!("running {name2}"))));
+                    tasks1.progress(
+                        &tid1,
+                        format!(
+                            "{}{counter}",
+                            message.unwrap_or_else(|| format!("running {name2}"))
+                        ),
+                    );
                 }),
                 elicit: Arc::new(move |params| tasks2.elicit(&tid2, params)),
                 cancel,
@@ -548,21 +692,39 @@ impl Server {
 
         // Synchronous path with MRTR.
         let captured = Arc::new(Mutex::new((0u64, Map::new())));
-        let mode = ElicitMode::Mrtr { responses: input_responses, captured: captured.clone(), allowed: true };
+        let mode = ElicitMode::Mrtr {
+            responses: input_responses,
+            captured: captured.clone(),
+            allowed: true,
+        };
         let ctx = self.make_ctx(&mode, method, progress);
         let reply = self.dispatch(method, &forwarded, ctx);
         let captured = std::mem::take(&mut captured.lock().unwrap_or_else(|e| e.into_inner()).1);
         if !captured.is_empty() {
-            return Outcome::body(200, result_response(&id, json!({
-                "resultType": "input_required",
-                "inputRequests": captured,
-                "_meta": { META_SERVER_INFO: server_info },
-            })));
+            return Outcome::body(
+                200,
+                result_response(
+                    &id,
+                    json!({
+                        "resultType": "input_required",
+                        "inputRequests": captured,
+                        "_meta": { META_SERVER_INFO: server_info },
+                    }),
+                ),
+            );
         }
         match reply {
             Err(e) => {
-                let code = if e.code == LEGACY_RESOURCE_NOT_FOUND { ERR_INVALID_PARAMS } else { e.code };
-                let status = if code == ERR_METHOD_NOT_FOUND { 404 } else { 200 };
+                let code = if e.code == LEGACY_RESOURCE_NOT_FOUND {
+                    ERR_INVALID_PARAMS
+                } else {
+                    e.code
+                };
+                let status = if code == ERR_METHOD_NOT_FOUND {
+                    404
+                } else {
+                    200
+                };
                 Outcome::body(status, error_response(&id, code, &e.message, e.data))
             }
             Ok(mut result) => {
@@ -582,7 +744,10 @@ impl Server {
 
     /// `subscriptions/listen`: ack, then route opted-in events to `sink`.
     fn listen(&self, id: &Value, params: &Value, sink: Sink) -> ListenHandle {
-        let filter = params.get("notifications").cloned().unwrap_or_else(|| json!({}));
+        let filter = params
+            .get("notifications")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         let mut honored = Map::new();
         let tools_changed = filter.get("toolsListChanged") == Some(&Value::Bool(true));
         if tools_changed {
@@ -591,7 +756,11 @@ impl Server {
         let task_ids: HashSet<String> = filter
             .get("taskIds")
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default();
         if !task_ids.is_empty() {
             honored.insert("taskIds".into(), json!(task_ids.iter().collect::<Vec<_>>()));
@@ -599,10 +768,17 @@ impl Server {
         let uris: HashSet<String> = filter
             .get("resourceSubscriptions")
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
             .unwrap_or_default();
         if !uris.is_empty() {
-            honored.insert("resourceSubscriptions".into(), json!(uris.iter().collect::<Vec<_>>()));
+            honored.insert(
+                "resourceSubscriptions".into(),
+                json!(uris.iter().collect::<Vec<_>>()),
+            );
         }
         if filter.get("resourcesListChanged") == Some(&Value::Bool(true)) {
             honored.insert("resourcesListChanged".into(), json!(true));
@@ -639,7 +815,11 @@ impl Server {
                 _ => {}
             }
         }));
-        ListenHandle { bus_id, bus: Arc::downgrade(&self.inner.bus), id: id.clone() }
+        ListenHandle {
+            bus_id,
+            bus: Arc::downgrade(&self.inner.bus),
+            id: id.clone(),
+        }
     }
 }
 
@@ -651,14 +831,30 @@ fn decorate_cache(result: &mut Value, method: &str) {
 }
 
 fn header_mismatch(id: &Value, message: &str) -> Outcome {
-    Outcome::body(400, error_response(id, ERR_HEADER_MISMATCH, &format!("Header mismatch: {message}"), None))
+    Outcome::body(
+        400,
+        error_response(
+            id,
+            ERR_HEADER_MISMATCH,
+            &format!("Header mismatch: {message}"),
+            None,
+        ),
+    )
 }
 
 fn unsupported_version(id: &Value, requested: &str) -> Outcome {
-    Outcome::body(400, error_response(id, ERR_UNSUPPORTED_PROTOCOL_VERSION, "Unsupported protocol version", Some(json!({
-        "supported": SUPPORTED_PROTOCOL_VERSIONS,
-        "requested": requested,
-    }))))
+    Outcome::body(
+        400,
+        error_response(
+            id,
+            ERR_UNSUPPORTED_PROTOCOL_VERSION,
+            "Unsupported protocol version",
+            Some(json!({
+                "supported": SUPPORTED_PROTOCOL_VERSIONS,
+                "requested": requested,
+            })),
+        ),
+    )
 }
 
 // ── Connections (legacy state + routing) ─────────────────────────────
@@ -736,10 +932,16 @@ impl Connection {
     pub fn request_client(&self, method: &str, params: Value, timeout: Duration) -> Option<Value> {
         let id = format!("srv-{}", self.next_req.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = channel();
-        self.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), tx);
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id.clone(), tx);
         (self.sink)(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}));
         let r = rx.recv_timeout(timeout).ok();
-        self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        self.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&id);
         r
     }
 
@@ -752,16 +954,30 @@ impl Connection {
                 Value::String(s) => s.clone(),
                 other => other.to_string(),
             }) {
-                if let Some(tx) = self.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&id) {
-                    let _ = tx.send(msg.get("result").cloned().unwrap_or_else(|| json!({"action": "cancel"})));
+                if let Some(tx) = self
+                    .pending
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&id)
+                {
+                    let _ = tx.send(
+                        msg.get("result")
+                            .cloned()
+                            .unwrap_or_else(|| json!({"action": "cancel"})),
+                    );
                     return Outcome::empty(202);
                 }
             }
         }
         if is_modern_message(&msg, headers) {
-            let out = self.server.handle_modern(&msg, headers, Some(self.sink.clone()));
+            let out = self
+                .server
+                .handle_modern(&msg, headers, Some(self.sink.clone()));
             if let Some(l) = &out.listen {
-                self.listens.lock().unwrap_or_else(|e| e.into_inner()).push(l.clone());
+                self.listens
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(l.clone());
             }
             return out;
         }
@@ -770,15 +986,34 @@ impl Connection {
 
     fn handle_legacy(self: &Arc<Self>, msg: &Value) -> Outcome {
         if msg.is_array() {
-            return Outcome::body(400, error_response(&Value::Null, ERR_INVALID_REQUEST, "Batched requests are not supported", None));
+            return Outcome::body(
+                400,
+                error_response(
+                    &Value::Null,
+                    ERR_INVALID_REQUEST,
+                    "Batched requests are not supported",
+                    None,
+                ),
+            );
         }
         let Some(method) = msg.get("method").and_then(Value::as_str) else {
-            return Outcome::body(400, error_response(msg.get("id").unwrap_or(&Value::Null), ERR_INVALID_REQUEST, "Invalid request", None));
+            return Outcome::body(
+                400,
+                error_response(
+                    msg.get("id").unwrap_or(&Value::Null),
+                    ERR_INVALID_REQUEST,
+                    "Invalid request",
+                    None,
+                ),
+            );
         };
         let params = msg.get("params").cloned().unwrap_or_else(|| json!({}));
         let Some(id) = msg.get("id").filter(|v| !v.is_null()).cloned() else {
             if method == "notifications/initialized" {
-                self.state.lock().unwrap_or_else(|e| e.into_inner()).initialized = true;
+                self.state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .initialized = true;
             }
             return Outcome::empty(202);
         };
@@ -786,12 +1021,22 @@ impl Connection {
         let err = |e: RpcErr| Outcome::body(200, error_response(&id, e.code, &e.message, e.data));
         match method {
             "initialize" => {
-                let requested = params.get("protocolVersion").and_then(Value::as_str).unwrap_or(LATEST_LEGACY);
-                let version = if LEGACY_VERSIONS.contains(&requested) { requested } else { LATEST_LEGACY };
+                let requested = params
+                    .get("protocolVersion")
+                    .and_then(Value::as_str)
+                    .unwrap_or(LATEST_LEGACY);
+                let version = if LEGACY_VERSIONS.contains(&requested) {
+                    requested
+                } else {
+                    LATEST_LEGACY
+                };
                 {
                     let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
                     st.version = Some(version.to_string());
-                    st.client_elicitation = params.get("capabilities").and_then(|c| c.get("elicitation")).is_some();
+                    st.client_elicitation = params
+                        .get("capabilities")
+                        .and_then(|c| c.get("elicitation"))
+                        .is_some();
                     // Lenient (HTTP) or clients that skip the notification.
                     st.initialized = true;
                 }
@@ -804,13 +1049,22 @@ impl Connection {
                     result["instructions"] = json!(i);
                 }
                 let mut out = ok(result);
-                out.session_id = Some(format!("mcp-{}", crate::store::mint_document_id().0.trim_start_matches("doc_")));
+                out.session_id = Some(format!(
+                    "mcp-{}",
+                    crate::store::mint_document_id()
+                        .0
+                        .trim_start_matches("doc_")
+                ));
                 out
             }
             "ping" => ok(json!({})),
             "logging/setLevel" => ok(json!({})),
             "resources/subscribe" | "resources/unsubscribe" => {
-                let uri = params.get("uri").and_then(Value::as_str).unwrap_or("").to_string();
+                let uri = params
+                    .get("uri")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
                 let mut st = self.state.lock().unwrap_or_else(|e| e.into_inner());
                 if method == "resources/subscribe" {
                     st.subscriptions.insert(uri);
@@ -820,20 +1074,40 @@ impl Connection {
                 ok(json!({}))
             }
             m if is_shared_method(m) => {
-                if !self.lenient && !self.state.lock().unwrap_or_else(|e| e.into_inner()).initialized {
-                    return err(RpcErr::new(ERR_INVALID_REQUEST, "Server not initialized: send 'initialize' first"));
+                if !self.lenient
+                    && !self
+                        .state
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .initialized
+                {
+                    return err(RpcErr::new(
+                        ERR_INVALID_REQUEST,
+                        "Server not initialized: send 'initialize' first",
+                    ));
                 }
-                let elicit: Option<ElicitFn> = if !self.lenient && self.state.lock().unwrap_or_else(|e| e.into_inner()).client_elicitation {
+                let elicit: Option<ElicitFn> = if !self.lenient
+                    && self
+                        .state
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .client_elicitation
+                {
                     let weak = Arc::downgrade(self);
                     Some(Arc::new(move |p| {
                         weak.upgrade()
-                            .and_then(|c| c.request_client("elicitation/create", p, Duration::from_secs(600)))
+                            .and_then(|c| {
+                                c.request_client("elicitation/create", p, Duration::from_secs(600))
+                            })
                             .unwrap_or_else(|| json!({"action": "cancel"}))
                     }))
                 } else {
                     None
                 };
-                let token = params.get("_meta").and_then(|m| m.get("progressToken")).cloned();
+                let token = params
+                    .get("_meta")
+                    .and_then(|m| m.get("progressToken"))
+                    .cloned();
                 let sink = self.sink.clone();
                 let progress: ProgressFn = Arc::new(move |p, total, message| {
                     let Some(tok) = &token else { return };
@@ -844,7 +1118,9 @@ impl Connection {
                     if let Some(m) = message {
                         params["message"] = json!(m);
                     }
-                    sink(json!({"jsonrpc":"2.0","method":"notifications/progress","params":params}));
+                    sink(
+                        json!({"jsonrpc":"2.0","method":"notifications/progress","params":params}),
+                    );
                 });
                 let ctx = self.server.make_ctx(&ElicitMode::Live(elicit), m, progress);
                 match self.server.dispatch(m, &params, ctx) {
@@ -852,8 +1128,13 @@ impl Connection {
                     Err(e) => err(e),
                 }
             }
-            "server/discover" | "subscriptions/listen" => unreachable!("modern-only methods route to handle_modern"),
-            _ => err(RpcErr::new(ERR_METHOD_NOT_FOUND, format!("Unknown method '{method}'"))),
+            "server/discover" | "subscriptions/listen" => {
+                unreachable!("modern-only methods route to handle_modern")
+            }
+            _ => err(RpcErr::new(
+                ERR_METHOD_NOT_FOUND,
+                format!("Unknown method '{method}'"),
+            )),
         }
     }
 }
@@ -863,7 +1144,12 @@ impl Drop for Connection {
         if self.bus_id != u64::MAX {
             self.server.inner.bus.off(self.bus_id);
         }
-        for l in self.listens.lock().unwrap_or_else(|e| e.into_inner()).drain(..) {
+        for l in self
+            .listens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+        {
             l.close();
         }
     }

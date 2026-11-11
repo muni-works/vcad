@@ -49,7 +49,11 @@ pub mod test_support {
             input_schema: json!({"type": "object"}),
             output_schema: None,
             long_running: false,
-            handler: Arc::new(|_, args| Ok(ToolOutput::structured(json!({"echo": args, "served_by": "upstream"})))),
+            handler: Arc::new(|_, args| {
+                Ok(ToolOutput::structured(
+                    json!({"echo": args, "served_by": "upstream"}),
+                ))
+            }),
         }
     }
 }

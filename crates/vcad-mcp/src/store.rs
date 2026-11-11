@@ -235,9 +235,7 @@ pub fn is_valid_id(id: &str) -> bool {
 
 /// Unwrap a stored blob into a Document; tolerate the legacy `{ ir }` envelope.
 pub fn unwrap_document(value: serde_json::Value) -> Option<Document> {
-    let looks = |v: &serde_json::Value| {
-        v.get("nodes").is_some() && v.get("roots").is_some()
-    };
+    let looks = |v: &serde_json::Value| v.get("nodes").is_some() && v.get("roots").is_some();
     if looks(&value) {
         return serde_json::from_value(value).ok();
     }
@@ -263,7 +261,9 @@ pub fn vcad_home() -> PathBuf {
     if let Some(d) = std::env::var_os("VCAD_HOME").filter(|d| !d.is_empty()) {
         return PathBuf::from(d);
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."));
     home.join(".vcad")
 }
 
@@ -407,7 +407,13 @@ impl DocumentStore for HeadlessStore {
     fn commit(&self, id: &DocumentId, doc: Document, _meta: CommitMeta) -> Result<(), StoreError> {
         match self.path_for(id)? {
             Some(path) => {
-                if !path.exists() && !self.mem.lock().unwrap_or_else(|e| e.into_inner()).contains_key(id) {
+                if !path.exists()
+                    && !self
+                        .mem
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .contains_key(id)
+                {
                     return Err(StoreError::NotFound(id.clone()));
                 }
                 Self::write_file(&path, &doc)?;
@@ -417,7 +423,9 @@ impl DocumentStore for HeadlessStore {
             }
             None => {
                 let mut mem = self.mem.lock().unwrap_or_else(|e| e.into_inner());
-                let entry = mem.get_mut(id).ok_or_else(|| StoreError::NotFound(id.clone()))?;
+                let entry = mem
+                    .get_mut(id)
+                    .ok_or_else(|| StoreError::NotFound(id.clone()))?;
                 entry.0 = doc;
             }
         }
@@ -434,7 +442,10 @@ impl DocumentStore for HeadlessStore {
                 Err(e) => return Err(StoreError::Io(e.to_string())),
             }
         }
-        self.mem.lock().unwrap_or_else(|e| e.into_inner()).remove(id);
+        self.mem
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(id);
         {
             let mut cur = self.current.lock().unwrap_or_else(|e| e.into_inner());
             if cur.as_ref() == Some(id) {

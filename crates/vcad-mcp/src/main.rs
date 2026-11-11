@@ -11,7 +11,10 @@ fn main() {
     let server = if std::env::var_os("VCAD_MCP_TEST_UPSTREAM").is_some() {
         // Test hook: act as the "node" upstream in the proxy round-trip test,
         // serving one tool the core doesn't have.
-        let s = vcad_mcp::cli::headless_server(&vcad_mcp::cli::McpOptions { no_proxy: true, ..opts.clone() });
+        let s = vcad_mcp::cli::headless_server(&vcad_mcp::cli::McpOptions {
+            no_proxy: true,
+            ..opts.clone()
+        });
         s.register(vcad_mcp::test_support::upstream_echo_tool());
         Some(s)
     } else {

@@ -60,7 +60,11 @@ pub struct RpcError {
 
 impl RpcError {
     fn internal(m: impl Into<String>) -> Self {
-        RpcError { code: ERR_INTERNAL, message: m.into(), data: None }
+        RpcError {
+            code: ERR_INTERNAL,
+            message: m.into(),
+            data: None,
+        }
     }
 }
 
@@ -118,7 +122,10 @@ impl Proxy {
 
     /// Called when the upstream reports `notifications/tools/list_changed`.
     pub fn set_on_tools_changed(&self, f: Arc<dyn Fn() + Send + Sync>) {
-        *self.on_tools_changed.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+        *self
+            .on_tools_changed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(f);
     }
 
     fn spawn(&self) -> Result<Arc<Live>, RpcError> {
@@ -130,31 +137,53 @@ impl Proxy {
         for (k, v) in &self.config.env {
             cmd.env(k, v);
         }
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| RpcError::internal(format!("node upstream `{}` failed to start: {e}", self.config.program)))?;
+        let mut child = cmd.spawn().map_err(|e| {
+            RpcError::internal(format!(
+                "node upstream `{}` failed to start: {e}",
+                self.config.program
+            ))
+        })?;
         let stdin = Arc::new(Mutex::new(child.stdin.take().expect("piped")));
         let stdout = child.stdout.take().expect("piped");
         let pending: Arc<Mutex<HashMap<u64, Sender<Result<Value, RpcError>>>>> = Arc::default();
         let calls: Arc<Mutex<Vec<(u64, Call)>>> = Arc::default();
         let dead = Arc::new(std::sync::atomic::AtomicBool::new(false));
         {
-            let (pending, calls, dead, stdin) = (pending.clone(), calls.clone(), dead.clone(), stdin.clone());
-            let changed = self.on_tools_changed.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let (pending, calls, dead, stdin) =
+                (pending.clone(), calls.clone(), dead.clone(), stdin.clone());
+            let changed = self
+                .on_tools_changed
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
             std::thread::spawn(move || {
                 for line in BufReader::new(stdout).lines() {
                     let Ok(line) = line else { break };
-                    let Ok(msg) = serde_json::from_str::<Value>(&line) else { continue };
+                    let Ok(msg) = serde_json::from_str::<Value>(&line) else {
+                        continue;
+                    };
                     let id = msg.get("id").cloned();
-                    let method = msg.get("method").and_then(Value::as_str).map(str::to_string);
+                    let method = msg
+                        .get("method")
+                        .and_then(Value::as_str)
+                        .map(str::to_string);
                     match (id, method) {
                         (Some(id), None) => {
                             let Some(n) = id.as_u64() else { continue };
-                            if let Some(tx) = pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&n) {
+                            if let Some(tx) =
+                                pending.lock().unwrap_or_else(|e| e.into_inner()).remove(&n)
+                            {
                                 let r = if let Some(err) = msg.get("error") {
                                     Err(RpcError {
-                                        code: err.get("code").and_then(Value::as_i64).unwrap_or(ERR_INTERNAL),
-                                        message: err.get("message").and_then(Value::as_str).unwrap_or("").to_string(),
+                                        code: err
+                                            .get("code")
+                                            .and_then(Value::as_i64)
+                                            .unwrap_or(ERR_INTERNAL),
+                                        message: err
+                                            .get("message")
+                                            .and_then(Value::as_str)
+                                            .unwrap_or("")
+                                            .to_string(),
                                         data: err.get("data").cloned(),
                                     })
                                 } else {
@@ -168,7 +197,12 @@ impl Proxy {
                             // newest in-flight call that can answer it; the
                             // wire carries no call correlation.
                             let elicit = if m == "elicitation/create" {
-                                calls.lock().unwrap_or_else(|e| e.into_inner()).iter().rev().find_map(|(_, c)| c.elicit.clone())
+                                calls
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .iter()
+                                    .rev()
+                                    .find_map(|(_, c)| c.elicit.clone())
                             } else {
                                 None
                             };
@@ -177,9 +211,15 @@ impl Proxy {
                             std::thread::spawn(move || {
                                 let reply = match (m.as_str(), elicit) {
                                     ("ping", _) => json!({"jsonrpc":"2.0","id":id,"result":{}}),
-                                    ("elicitation/create", Some(f)) => json!({"jsonrpc":"2.0","id":id,"result": f(params)}),
-                                    ("elicitation/create", None) => json!({"jsonrpc":"2.0","id":id,"result":{"action":"cancel"}}),
-                                    _ => json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"unsupported"}}),
+                                    ("elicitation/create", Some(f)) => {
+                                        json!({"jsonrpc":"2.0","id":id,"result": f(params)})
+                                    }
+                                    ("elicitation/create", None) => {
+                                        json!({"jsonrpc":"2.0","id":id,"result":{"action":"cancel"}})
+                                    }
+                                    _ => {
+                                        json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"unsupported"}})
+                                    }
                                 };
                                 let _ = write_line(&stdin, &reply);
                             });
@@ -198,7 +238,9 @@ impl Proxy {
                                     cb(
                                         p.get("progress").and_then(Value::as_f64).unwrap_or(0.0),
                                         p.get("total").and_then(Value::as_f64),
-                                        p.get("message").and_then(Value::as_str).map(str::to_string),
+                                        p.get("message")
+                                            .and_then(Value::as_str)
+                                            .map(str::to_string),
                                     );
                                 }
                             } else if m == "notifications/tools/list_changed" {
@@ -216,15 +258,29 @@ impl Proxy {
                 }
             });
         }
-        let live = Arc::new(Live { child, stdin, pending, calls, dead });
+        let live = Arc::new(Live {
+            child,
+            stdin,
+            pending,
+            calls,
+            dead,
+        });
         // Legacy handshake.
-        self.request_on(&live, "initialize", json!({
-            "protocolVersion": LATEST_LEGACY,
-            "capabilities": { "elicitation": {} },
-            "clientInfo": { "name": "vcad-mcp-proxy", "version": env!("CARGO_PKG_VERSION") },
-        }), Duration::from_secs(300))?;
-        write_line(&live.stdin, &json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
-            .map_err(|e| RpcError::internal(e.to_string()))?;
+        self.request_on(
+            &live,
+            "initialize",
+            json!({
+                "protocolVersion": LATEST_LEGACY,
+                "capabilities": { "elicitation": {} },
+                "clientInfo": { "name": "vcad-mcp-proxy", "version": env!("CARGO_PKG_VERSION") },
+            }),
+            Duration::from_secs(300),
+        )?;
+        write_line(
+            &live.stdin,
+            &json!({"jsonrpc":"2.0","method":"notifications/initialized"}),
+        )
+        .map_err(|e| RpcError::internal(e.to_string()))?;
         Ok(live)
     }
 
@@ -240,18 +296,40 @@ impl Proxy {
         Ok(l)
     }
 
-    fn request_on(&self, live: &Live, method: &str, params: Value, timeout: Duration) -> Result<Value, RpcError> {
+    fn request_on(
+        &self,
+        live: &Live,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, RpcError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         self.request_with_id(live, id, method, params, timeout)
     }
 
-    fn request_with_id(&self, live: &Live, id: u64, method: &str, params: Value, timeout: Duration) -> Result<Value, RpcError> {
+    fn request_with_id(
+        &self,
+        live: &Live,
+        id: u64,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Result<Value, RpcError> {
         let (tx, rx) = channel();
-        live.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(id, tx);
-        write_line(&live.stdin, &json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
-            .map_err(|e| RpcError::internal(format!("node upstream write failed: {e}")))?;
-        rx.recv_timeout(timeout)
-            .unwrap_or_else(|_| Err(RpcError::internal(format!("node upstream timed out on {method}"))))
+        live.pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, tx);
+        write_line(
+            &live.stdin,
+            &json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}),
+        )
+        .map_err(|e| RpcError::internal(format!("node upstream write failed: {e}")))?;
+        rx.recv_timeout(timeout).unwrap_or_else(|_| {
+            Err(RpcError::internal(format!(
+                "node upstream timed out on {method}"
+            )))
+        })
     }
 
     /// Upstream tool listings (cached; `None` when the upstream is unavailable).
@@ -277,7 +355,9 @@ impl Proxy {
                 Some(c) => json!({"cursor": c}),
                 None => json!({}),
             };
-            let r = self.request_on(&live, "tools/list", params, Duration::from_secs(120)).ok()?;
+            let r = self
+                .request_on(&live, "tools/list", params, Duration::from_secs(120))
+                .ok()?;
             if let Some(ts) = r.get("tools").and_then(Value::as_array) {
                 out.extend(ts.iter().cloned());
             }
@@ -296,13 +376,31 @@ impl Proxy {
     }
 
     /// Forward a `tools/call`. Progress routes by our own progressToken.
-    pub fn call_tool(&self, name: &str, args: Value, progress: Option<ProgressFn>, elicit: Option<ElicitFn>) -> Result<Value, RpcError> {
+    pub fn call_tool(
+        &self,
+        name: &str,
+        args: Value,
+        progress: Option<ProgressFn>,
+        elicit: Option<ElicitFn>,
+    ) -> Result<Value, RpcError> {
         let live = self.live()?;
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        live.calls.lock().unwrap_or_else(|e| e.into_inner()).push((id, Call { progress, elicit }));
+        live.calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((id, Call { progress, elicit }));
         let params = json!({"name": name, "arguments": args, "_meta": {"progressToken": id}});
-        let r = self.request_with_id(&live, id, "tools/call", params, Duration::from_secs(6 * 3600));
-        live.calls.lock().unwrap_or_else(|e| e.into_inner()).retain(|(i, _)| *i != id);
+        let r = self.request_with_id(
+            &live,
+            id,
+            "tools/call",
+            params,
+            Duration::from_secs(6 * 3600),
+        );
+        live.calls
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(i, _)| *i != id);
         r
     }
 }
