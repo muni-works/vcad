@@ -321,7 +321,7 @@ pub fn mesh_properties(meshes: &[(Vec<f32>, Vec<u32>)]) -> (f64, f64, BBox, Xyz,
 fn stl_bytes(meshes: &[(Vec<f32>, Vec<u32>)]) -> Vec<u8> {
     let tris: usize = meshes.iter().map(|(_, i)| i.len() / 3).sum();
     let mut out = vec![0u8; 80];
-    out[..14].copy_from_slice(b"vcad-mcp export");
+    out[..15].copy_from_slice(b"vcad-mcp export");
     out.extend_from_slice(&(tris as u32).to_le_bytes());
     for (pos, idx) in meshes {
         for t in idx.chunks_exact(3) {

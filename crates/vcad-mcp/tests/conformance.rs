@@ -352,7 +352,7 @@ fn proxy_round_trip_to_upstream() {
 #[test]
 fn unknown_tool_without_proxy() {
     let h = harness();
-    let r = h.send(modern(1, "tools/call", json!({"name": "route_nets", "arguments": {}})));
+    let r = h.send(modern(1, "tools/call", json!({"name": "no_such_tool", "arguments": {}})));
     assert_eq!(r["error"]["code"], ERR_INVALID_PARAMS);
 }
 
