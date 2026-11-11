@@ -28,6 +28,109 @@ pub struct MaterializeResult {
     /// a short human-readable sentence. Consumers should log these so
     /// users know why a feature is missing from the scene.
     pub warnings: Vec<String>,
+    /// Every modeling feature in history order with its build state —
+    /// what the feature tree draws (suppressed and skipped rows included,
+    /// which have no scene root).
+    pub history: Vec<HistoryEntry>,
+}
+
+/// Param key: the feature is suppressed (kept, not built).
+pub const SUPPRESSED: &str = "suppressed";
+/// Param key: the rollback marker sits after this feature. At most one
+/// feature carries it; the first one wins if a merge produced two.
+pub const ROLLBACK_MARKER: &str = "rollback_marker";
+
+/// How a modeling feature fared in this materialize.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryState {
+    /// Built.
+    Built,
+    /// Suppressed by the user: kept, not built.
+    Suppressed,
+    /// Not built because an input is suppressed or skipped (never an error).
+    Skipped,
+    /// After the rollback marker: kept, not built.
+    PastMarker,
+    /// Couldn't be built: an input no longer resolves.
+    Failed,
+}
+
+/// One row of the feature history.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct HistoryEntry {
+    /// Stable feature id (`"replica:seq"`).
+    pub id: String,
+    /// CRDT feature kind (`cube`, `boolean`, `fillet`, `ir-subgraph`, …).
+    pub kind: String,
+    /// Display name, when the feature has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Build state.
+    pub state: HistoryState,
+    /// Features this one is built on.
+    pub inputs: Vec<String>,
+    /// For `skipped`: the suppressed/skipped input that caused it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped_by: Option<String>,
+    /// Whether this feature carries the rollback marker.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub marker: bool,
+    /// Whether this feature is a scene root (drawn as its own part).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub root: bool,
+    /// The feature's root IR node, when it has nodes this materialize.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<NodeId>,
+}
+
+/// Kinds that aren't modeling steps (assembly, settings, blobs).
+fn is_history_kind(kind: &str) -> bool {
+    !matches!(
+        kind,
+        "part-def"
+            | "instance"
+            | "joint"
+            | "scene-settings"
+            | "drawing-settings"
+            | "schematic"
+            | "timeline"
+            | "molecule"
+            | "analysis-studies"
+            | "design-constraints"
+            | "doc-extras"
+    )
+}
+
+/// Per-feature build state from suppress flags, the rollback marker and the
+/// input graph, before anything is built. A feature is skipped when one of
+/// its inputs isn't built for any of those reasons.
+fn plan_history(crdt: &CrdtDocument) -> HashMap<String, (HistoryState, Option<String>)> {
+    let mut out: HashMap<String, (HistoryState, Option<String>)> = HashMap::new();
+    let mut past = false;
+    for (fid, feature) in crdt.ordered_features() {
+        if !is_history_kind(&feature.kind) {
+            continue;
+        }
+        let id = fid_to_string(fid);
+        let state = if past {
+            (HistoryState::PastMarker, None)
+        } else if get_bool(feature, SUPPRESSED) == Some(true) {
+            (HistoryState::Suppressed, None)
+        } else if let Some(by) = feature_input_ids(feature).into_iter().find(|i| {
+            out.get(i)
+                .is_some_and(|(s, _)| !matches!(s, HistoryState::Built | HistoryState::Failed))
+        }) {
+            (HistoryState::Skipped, Some(by))
+        } else {
+            (HistoryState::Built, None)
+        };
+        if get_bool(feature, ROLLBACK_MARKER) == Some(true) {
+            past = true;
+        }
+        out.insert(id, state);
+    }
+    out
 }
 
 /// Node ids come in per-feature blocks: `slot << BLOCK_BITS` plus a local
@@ -129,9 +232,20 @@ impl Context {
 /// must not appear as an independent scene root — otherwise it would render
 /// alongside its consumer and produce z-fighting (e.g. unfilleted cube +
 /// filleted cube).
-fn collect_consumed_feature_ids(crdt: &CrdtDocument) -> std::collections::HashSet<String> {
+fn collect_consumed_feature_ids(
+    crdt: &CrdtDocument,
+    plan: &HashMap<String, (HistoryState, Option<String>)>,
+) -> std::collections::HashSet<String> {
     let mut consumed = std::collections::HashSet::new();
-    for (_, feature) in crdt.ordered_features() {
+    for (fid, feature) in crdt.ordered_features() {
+        // A feature that isn't built doesn't consume its inputs: suppress a
+        // fillet and its input is drawn again, unfilleted.
+        if plan
+            .get(&fid_to_string(fid))
+            .is_some_and(|(s, _)| *s != HistoryState::Built)
+        {
+            continue;
+        }
         // Collision geometry belongs to its part def, not the scene.
         if feature.kind == "part-def" {
             if let Some((Value::FeatureRefList(ids), _)) = feature.params.get("colliders") {
@@ -179,8 +293,10 @@ pub fn materialize(crdt: &CrdtDocument) -> MaterializeResult {
     let mut doc = Document::new();
     let mut parts = Vec::new();
     let mut ctx = Context::new();
-    let consumed = collect_consumed_feature_ids(crdt);
+    let plan = plan_history(crdt);
+    let consumed = collect_consumed_feature_ids(crdt, &plan);
     let mut extras = Vec::new();
+    let mut history = Vec::new();
 
     for (fid, feature) in crdt.ordered_features() {
         ctx.begin_feature(fid);
@@ -238,8 +354,35 @@ pub fn materialize(crdt: &CrdtDocument) -> MaterializeResult {
         } else {
             materialize_feature(&mut doc, &mut ctx, fid, feature, crdt)
         };
+        let fid_str = fid_to_string(fid);
+        let (mut state, skipped_by) = plan
+            .get(&fid_str)
+            .cloned()
+            .unwrap_or((HistoryState::Built, None));
+        if built.is_none() && state == HistoryState::Built {
+            state = HistoryState::Failed;
+        }
+        history.push(HistoryEntry {
+            id: fid_str.clone(),
+            kind: feature.kind.clone(),
+            name: get_str(feature, "name").filter(|n| !n.is_empty()),
+            state,
+            inputs: feature_input_ids(feature),
+            skipped_by,
+            marker: get_bool(feature, ROLLBACK_MARKER) == Some(true),
+            root: state == HistoryState::Built && built.is_some() && !consumed.contains(&fid_str),
+            node: built.as_ref().map(|(_, r)| *r),
+        });
+        if state != HistoryState::Built {
+            // Kept, not built: its nodes stay in the document (so the IR
+            // round trip keeps the feature) but nothing reaches them, and
+            // dependents can still reference its root.
+            if let Some((_, root_id)) = built {
+                ctx.feature_roots.insert(fid_str, root_id);
+            }
+            continue;
+        }
         if let Some((part, root_id)) = built {
-            let fid_str = fid_to_string(fid);
             if !consumed.contains(&fid_str) {
                 let material =
                     get_str(feature, "material").unwrap_or_else(|| "default".to_string());
@@ -281,11 +424,43 @@ pub fn materialize(crdt: &CrdtDocument) -> MaterializeResult {
         }
     }
 
+    write_history(&mut doc, &history);
+
     MaterializeResult {
         document: doc,
         parts,
         warnings: ctx.warnings,
+        history,
     }
+}
+
+/// Record suppress flags and the marker in the IR (`Document::history`),
+/// only when one is in use, so plain documents are unchanged. Unbuilt
+/// features' root nodes also get `partIds` so their stable ids survive.
+fn write_history(doc: &mut Document, history: &[HistoryEntry]) {
+    let in_use = history
+        .iter()
+        .any(|h| h.marker || h.state == HistoryState::Suppressed);
+    if !in_use {
+        return;
+    }
+    let node = |h: &HistoryEntry| h.node;
+    for h in history.iter().filter(|h| h.state != HistoryState::Built) {
+        if let Some(n) = h.node {
+            doc.part_ids
+                .get_or_insert_with(Default::default)
+                .insert(n.to_string(), h.id.clone());
+        }
+    }
+    doc.history = Some(vcad_ir::FeatureHistory {
+        order: history.iter().filter_map(node).collect(),
+        suppressed: history
+            .iter()
+            .filter(|h| h.state == HistoryState::Suppressed)
+            .filter_map(node)
+            .collect(),
+        rollback: history.iter().find(|h| h.marker).and_then(node),
+    });
 }
 
 /// Re-emit an `ir-subgraph` feature's nodes with fresh ids.

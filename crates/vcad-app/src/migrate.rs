@@ -86,6 +86,34 @@ pub fn migrate_v1_mapped(doc: &Document) -> (CrdtDocument, MigrationMap) {
 
     // Root feature → the stable id the materializer stamped on it, if any.
     let mut wanted: Vec<(FeatureId, FeatureId)> = Vec::new();
+    // Feature history first: features in their saved order, including ones
+    // that aren't built (no scene root reaches them), then their flags.
+    if let Some(history) = &doc.history {
+        for &node in &history.order {
+            let fid = migrate_node(&mut crdt, &mut ctx, doc, node);
+            let claim = doc
+                .part_ids
+                .as_ref()
+                .and_then(|m| m.get(&node.to_string()))
+                .and_then(|s| parse_fid(s));
+            if let (Some(fid), Some(claim)) = (fid, claim) {
+                if !wanted.iter().any(|(f, c)| *f == fid || *c == claim) {
+                    wanted.push((fid, claim));
+                }
+            }
+        }
+        let flag = |crdt: &mut CrdtDocument, ctx: &MigrationCtx, node: &NodeId, key: &str| {
+            if let Some(fid) = ctx.node_to_feature.get(node).copied() {
+                crdt.set_param(fid, key, Value::Bool(true));
+            }
+        };
+        for node in &history.suppressed {
+            flag(&mut crdt, &ctx, node, crate::materializer::SUPPRESSED);
+        }
+        if let Some(node) = &history.rollback {
+            flag(&mut crdt, &ctx, node, crate::materializer::ROLLBACK_MARKER);
+        }
+    }
     for entry in &doc.roots {
         let fid = migrate_node(&mut crdt, &mut ctx, doc, entry.root);
         // The scene entry's own material/visibility live on the part feature
