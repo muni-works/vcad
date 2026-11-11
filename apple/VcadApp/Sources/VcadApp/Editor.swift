@@ -1216,6 +1216,7 @@ final class EditorModel {
         didSet {
             if !adoptingDelta { partMeshCache.removeAll() }
             documentRevision &+= 1
+            noteEditForAutosave()
         }
     }
     /// Bumped on every document swap or edit — the observable signal for
@@ -1231,6 +1232,12 @@ final class EditorModel {
     var undoStack: [UndoEntry] = []
     var redoStack: [UndoEntry] = []
     var documentDirty = false
+    /// Last save failure, shown to the user (nil when the last save worked).
+    var saveError: String?
+    /// The version being previewed in the viewport (VersionBrowser), if any.
+    var previewingVersion: DocumentVersion?
+    @ObservationIgnored var autosaver: Autosaver?
+    @ObservationIgnored var autosavePending = false
     /// Engine state hash as last saved (or loaded): undoing back to it clears
     /// the edited state instead of leaving a phantom dot in the title bar.
     @ObservationIgnored private var savedHash: String?
@@ -2304,8 +2311,16 @@ final class EditorModel {
         }
         guard case let .document(path, _) = source,
               let json = documentJSON, let data = DocEdit.serializePretty(json) else { return }
-        // Atomic: the file on disk is never half-written if the app dies mid-save.
-        if (try? data.write(to: URL(fileURLWithPath: path), options: .atomic)) != nil {
+        // Atomic + fsynced + verified: the file on disk is never half-written
+        // if the app dies or the disk fills mid-save (LocalHistory.swift).
+        do {
+            try SafeWriter.write(data, to: URL(fileURLWithPath: path))
+        } catch {
+            saveError = "Couldn’t save “\(documentName)”: \(error). The file on disk is unchanged; your work is still autosaved."
+            return
+        }
+        do {
+            didSaveDocument(data, at: URL(fileURLWithPath: path))
             documentDirty = false
             savedSnapshot = DocEdit.serialize(json)
             savedHash = engine?.stateHash
@@ -2317,7 +2332,11 @@ final class EditorModel {
     /// survives, the same as Save As in any Mac app.
     func saveDocumentAs(_ url: URL) {
         guard let json = documentJSON, let data = DocEdit.serializePretty(json) else { return }
-        guard (try? data.write(to: url, options: .atomic)) != nil else { return }
+        do { try SafeWriter.write(data, to: url) } catch {
+            saveError = "Couldn’t save to \(url.lastPathComponent): \(error)"
+            return
+        }
+        didSaveDocument(data, at: url)
         // Keep the engine (and with it the history the undo stack points
         // into) rather than reopening the file we just wrote.
         let keptUndo = undoStack, keptRedo = redoStack
@@ -2347,6 +2366,22 @@ final class EditorModel {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
     #endif
+
+    /// Replace the whole document with `dict` as ONE undoable edit (version
+    /// preview / restore). Engine documents go through the engine so the
+    /// result is evaluated exactly like an opened file; detached documents
+    /// take a JSON undo step.
+    @discardableResult
+    func replaceDocument(with dict: [String: Any], name: String) -> Bool {
+        if engine != nil {
+            return irEdit(name, reeval: .rebuild, base: dict) { _ in } != nil
+        }
+        guard let before = documentJSON.flatMap({ DocEdit.serialize($0) }),
+              let data = DocEdit.serialize(dict) else { return false }
+        pushUndo(.json(before), name: name)
+        restoreJSON(data)
+        return true
+    }
 
     /// Discard edits and reload the document from disk.
     func revertDocument() {
