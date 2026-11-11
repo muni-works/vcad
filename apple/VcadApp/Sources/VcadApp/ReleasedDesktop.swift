@@ -304,6 +304,7 @@ final class ReleaseWindowController {
             model.saveDocument()
             return !model.documentDirty
         case .alertSecondButtonReturn:
+            model.discardAutosave()
             return true
         default:
             return false
@@ -522,6 +523,7 @@ final class ReleaseWindowController {
             hoveredHandle = handle
             model.hoveredGizmoHandle = handle
             model.gizmoDirty = true
+            ReleaseWindowController.shared.rebuildGizmo(model: model)
         }
         if handle != nil {
             setHovered(part: nil, instance: nil)
@@ -547,6 +549,7 @@ final class ReleaseWindowController {
             hoveredHandle = nil
             model.hoveredGizmoHandle = nil
             model.gizmoDirty = true
+            ReleaseWindowController.shared.rebuildGizmo(model: model)
         }
         NSCursor.arrow.set()
     }
@@ -878,6 +881,11 @@ struct ReleasedOverlayView: View {
                 CommandPanelHost(model: model)
                 FloatingPanelHost()
                 PaletteHost(model: model)
+                if NavigationUI.shared.namingView {
+                    SaveViewPrompt(model: model).glassPanel()
+                        .modifier(ChromeRegion(key: "saveView"))
+                        .transition(.scale(scale: 0.97).combined(with: .opacity))
+                }
             }
             .padding(.top, chromeTop)
             .animation(Motion.smooth, value: model.activeFeatureOp)
@@ -891,6 +899,18 @@ struct ReleasedOverlayView: View {
             }
         }
         .animation(Motion.smooth, value: GlassUI.shared.shortcutsShown)
+        .overlay(alignment: .bottomTrailing) {
+            // The Compass: orientation, home, turn, section, saved views.
+            if model.workspace == .design {
+                CompassView(model: model)
+                    .modifier(ChromeRegion(key: "compass"))
+                    .padding(.trailing, Glass.inset).padding(.bottom, Glass.inset)
+            }
+        }
+        .overlay { HaloView() }
+        .animation(Motion.pop, value: NavigationUI.shared.haloOrigin != nil)
+        .animation(Motion.smooth, value: NavigationUI.shared.namingView)
+        .onAppear { HaloInput.shared.install(model: model) }
         .overlay(alignment: .bottom) {
             if model.workspace != .manufacture { DockHost(model: model) }
         }
@@ -908,6 +928,11 @@ struct ReleasedOverlayView: View {
         .onAppear { ReleaseWindowController.shared.updateDocumentWindow() }
         .onChange(of: model.source) { _, _ in ReleaseWindowController.shared.updateDocumentWindow() }
         .onChange(of: model.documentDirty) { _, _ in ReleaseWindowController.shared.updateDocumentWindow() }
+        .onChange(of: model.saveError) { _, err in
+            guard let err else { return }
+            let a = NSAlert(); a.messageText = "Save failed"; a.informativeText = err; a.alertStyle = .critical
+            a.runModal()
+        }
         .onChange(of: model.workspace) { _, _ in ReleaseWindowController.shared.updateCNCWindowMinimum() }
     }
 
@@ -1003,6 +1028,12 @@ struct ReleasedOverlayView: View {
                     }
                     refreshSketchInk()
                 }
+            DimensionLabelOverlay(model: model) { k in
+                let ctl = ReleaseWindowController.shared
+                guard let centering = ctl.centeringEntity else { return nil }
+                return ctl.viewPoint(forWorld: centering.convert(position: k, to: nil),
+                                     from: model.cameraPosition, lookAt: model.panOffset)
+            }
             if let m = marquee {
                 let r = CGRect(x: min(m.start.x, m.current.x), y: min(m.start.y, m.current.y),
                                width: abs(m.current.x - m.start.x),
@@ -1421,7 +1452,27 @@ struct ReleasedOverlayView: View {
         if model.picking.filter.picksTopology, model.armedShape == nil, model.pendingBoolean == nil {
             model.picking.select(hit: topologyHit(at: p), additive: additive || model.measuring)
             refreshTopologyOverlay()
+            ReleaseWindowController.shared.rebuildGizmo(model: model)
             return
+        }
+        // Press-pull drill-down: a click on the already-selected part picks
+        // the planar face under the pointer and shows its pull arrow; a
+        // second click on it goes back to the body.
+        if model.picking.filter == .body, model.armedShape == nil, model.pendingBoolean == nil, !additive {
+            if let pi = model.selectedPartIndex, partIndex(at: p) == pi,
+               let hit = topologyHit(at: p), hit.ref.kind == .face, hit.ref.part == pi,
+               model.partTopology(pi)?.face(hit.ref.id)?.isPlanar == true,
+               model.picking.selection != [hit.ref] {
+                model.picking.select(hit: hit, additive: false)
+                refreshTopologyOverlay()
+                ReleaseWindowController.shared.rebuildGizmo(model: model)
+                return
+            }
+            if !model.picking.selection.isEmpty {
+                model.picking.clear()
+                refreshTopologyOverlay()
+                ReleaseWindowController.shared.rebuildGizmo(model: model)
+            }
         }
 
         // An armed palette tool consumes the click: this is a placement, not a
@@ -1553,6 +1604,7 @@ struct ReleasedOverlayView: View {
                             model.draggingHandle = true
                             NSCursor.closedHand.set()
                             model.beginGizmoDrag(handle: name, ray: ray)
+                            ReleaseWindowController.shared.rebuildGizmo(model: model)
                             model.lastDrag = value.translation
                         }
                         return
@@ -1632,8 +1684,8 @@ struct ReleasedOverlayView: View {
         if final {
             centering.findEntity(named: "gizmoRoot")?.removeFromParent()
             if model.showsGizmo { centering.addChild(buildGizmo(model: model)) }
-        } else if let c = model.gizmoCenterKernel() {
-            centering.findEntity(named: "gizmoRoot")?.position = c + model.gizmoLiveOffset
+        } else if let c = model.gizmoLivePosition() {
+            centering.findEntity(named: "gizmoRoot")?.position = c
         }
     }
 
@@ -2030,11 +2082,17 @@ struct ReleasedARView: NSViewRepresentable {
             e.generateCollisionShapes(recursive: false)   // pass-through hit test
             // Feature edges as thin ink lines (the kernel already computes
             // them per part): the crisp CAD read Fusion/Shapr3D have.
-            if !model.zebraMode, i < scene.edges.count, !scene.edges[i].isEmpty,
-               let r = EdgeOverlay.ribbonResource(segments: scene.edges[i],
-                                                  width: max(scene.size, 10) * 0.0012,
-                                                  name: "edges\(i)") {
-                e.addChild(ModelEntity(mesh: r, materials: [SceneAssets.edgeMaterial]))
+            if !model.zebraMode, i < scene.edges.count, !scene.edges[i].isEmpty {
+                let view = ReleaseWindowController.shared.arView
+                let hPx = Float((view?.bounds.height ?? 900) * (view?.window?.backingScaleFactor ?? 2))
+                if let lines = SceneAssets.edgeLineMaterial(viewportHeightPx: hPx),
+                   let r = EdgeOverlay.screenLineResource(segments: scene.edges[i], name: "edges\(i)") {
+                    e.addChild(ModelEntity(mesh: r, materials: [lines]))
+                } else if let r = EdgeOverlay.ribbonResource(segments: scene.edges[i],
+                                                             width: max(scene.size, 10) * 0.0012,
+                                                             name: "edges\(i)") {
+                    e.addChild(ModelEntity(mesh: r, materials: [SceneAssets.edgeMaterial]))
+                }
             }
             centering.addChild(e)
         }

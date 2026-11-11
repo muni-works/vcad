@@ -65,6 +65,18 @@ ditto "$bin_dir/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
 
 # The agent bridge's stdio MCP shim ("Connect Claude…" points clients here).
 cp "$here/scripts/vcad-app-mcp.mjs" "$app/Contents/Resources/"
+# Viewport shaders (screen-space edge lines). Optional: without the Metal
+# toolchain the app falls back to plain ribbons.
+if ls "$here"/Shaders/*.metal >/dev/null 2>&1 && xcrun -f metal >/dev/null 2>&1; then
+  air_dir=$(mktemp -d)
+  for f in "$here"/Shaders/*.metal; do
+    xcrun metal -c "$f" -o "$air_dir/$(basename "$f" .metal).air"
+  done
+  xcrun metallib "$air_dir"/*.air -o "$app/Contents/Resources/vcad.metallib"
+  rm -rf "$air_dir"
+else
+  echo "(Metal toolchain missing: viewport shaders not built; edge lines fall back to ribbons)"
+fi
 
 # The vcad agent skill — the same file the npm tarball and the Claude Code
 # plugin ship (plugins/vcad), installed into ~/.claude/skills on consent.
