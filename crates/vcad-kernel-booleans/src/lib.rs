@@ -2015,3 +2015,12 @@ mod tests {
 pub fn freeze_circle_loops_for_test(brep: &mut vcad_kernel_primitives::BRepSolid, segments: u32) {
     freeze::freeze_circle_loops(brep, segments);
 }
+
+/// Test-only export of the partial-arc freeze pass.
+pub fn freeze_arc_chains_for_test(
+    brep: &mut vcad_kernel_primitives::BRepSolid,
+    other: &vcad_kernel_primitives::BRepSolid,
+    segments: u32,
+) {
+    freeze::freeze_arc_chains(brep, other, segments);
+}

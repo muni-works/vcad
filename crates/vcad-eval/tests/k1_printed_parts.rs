@@ -128,6 +128,9 @@ fixture!(grip_cam, "i5b_gripcam.loon");
 fixture!(stator_ring_many_tools, "i6_stator.loon");
 // 8: wrist adapter (render/STEP trap report).
 fixture!(wrist_adapter, "i8_wrist.loon");
+// 9: wrist interface — box pockets cut into an arc-extruded D wall tore the
+// wall from its caps (extrude's 8-point arc chain vs the canonical rims).
+fixture!(wrist_interface, "wrist_interface.loon");
 
 /// 7: an unused `[let f [fn ...]]` binding must not break evaluation.
 #[test]

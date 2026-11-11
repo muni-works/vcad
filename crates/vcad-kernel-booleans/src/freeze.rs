@@ -310,7 +310,21 @@ pub(crate) fn freeze_circle_loops(brep: &mut BRepSolid, segments: u32) {
 /// rewritten — on the wall AND on its twin chain — as the canonical arc
 /// between the same endpoints, so every split downstream lands on vertices
 /// both sides already share.
-pub(crate) fn freeze_arc_chains(brep: &mut BRepSolid, segments: u32) {
+///
+/// Only walls whose bounds strictly overlap `other` (the opposite operand)
+/// are touched: a wall the other solid merely touches cannot be split, and
+/// a dense cap that is only coplanar-imprinted (a D standing on a flange)
+/// trips the imprint path, which still expects the extrude's sparse chain.
+pub(crate) fn freeze_arc_chains(brep: &mut BRepSolid, other: &BRepSolid, segments: u32) {
+    let bounds = |pts: &mut dyn Iterator<Item = vcad_kernel_math::Point3>| {
+        pts.fold(([f64::MAX; 3], [f64::MIN; 3]), |(lo, hi), p| {
+            (
+                [lo[0].min(p.x), lo[1].min(p.y), lo[2].min(p.z)],
+                [hi[0].max(p.x), hi[1].max(p.y), hi[2].max(p.z)],
+            )
+        })
+    };
+    let (olo, ohi) = bounds(&mut other.topology.vertices.values().map(|v| v.point));
     let face_ids: Vec<_> = brep.topology.faces.keys().collect();
     for face_id in face_ids {
         let cyl = {
@@ -332,6 +346,14 @@ pub(crate) fn freeze_arc_chains(brep: &mut BRepSolid, segments: u32) {
         let height = |b: &BRepSolid, h: HalfEdgeId| {
             (b.topology.vertices[b.topology.half_edges[h].origin].point - cyl.center).dot(axis)
         };
+        let (lo, hi) = bounds(
+            &mut hes
+                .iter()
+                .map(|&h| brep.topology.vertices[brep.topology.half_edges[h].origin].point),
+        );
+        if (0..3).any(|k| hi[k].min(ohi[k]) - lo[k].max(olo[k]) <= 1e-6) {
+            continue;
+        }
         let hs: Vec<f64> = hes.iter().map(|&h| height(brep, h)).collect();
         let (hmin, hmax) = hs
             .iter()
@@ -400,7 +422,7 @@ fn rechain_rim(brep: &mut BRepSolid, cyl: &CylinderSurface, run: &[HalfEdgeId], 
     let center = cyl.center + axis * (p0 - cyl.center).dot(axis);
     let radius = (p0 - center).norm();
     // Travel sense about the axis, from the run's own first step.
-    let turn = (pts[0] - center).cross(&(pts[1] - center)).dot(axis);
+    let turn = (pts[0] - center).cross(pts[1] - center).dot(axis);
     if radius < 1e-9 || turn.abs() < 1e-12 {
         return;
     }
