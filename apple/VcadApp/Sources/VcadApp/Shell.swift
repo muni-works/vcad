@@ -353,7 +353,7 @@ struct DocumentCommands: Commands {
                 .keyboardShortcut("/", modifiers: .command)
             Divider()
             Button("Welcome to vcad") { WelcomeWindowController.shared.show(model: model) }
-            Button("Connect Claude…") { ConnectClaude.run() }
+            Button("Connect Agents…") { AgentInstallPrompt.run() }
             Divider()
             Button("vcad Help") { NSWorkspace.shared.open(URL(string: "https://vcad.io/docs")!) }
             Divider()

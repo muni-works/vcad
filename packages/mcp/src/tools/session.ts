@@ -552,8 +552,7 @@ export async function saveDocument(
                 name: slug,
                 hint:
                   `Saved durably to your account — reopen anytime with ` +
-                  `load_document({name: "${slug}"}). It also appears in your ` +
-                  `documents at vcad.io.`,
+                  `load_document({name: "${slug}"}).`,
               }
             : {
                 saved: true,
@@ -834,10 +833,7 @@ export const toolDefs: ToolDef[] = [
     pack: null,
     description:
       "Persist a live session under a name so it can be reopened with " +
-      "load_document. On the hosted server the save is durable: a signed-in " +
-      "user's save goes to their vcad.io account under the (normalized) name; " +
-      "an anonymous save returns an unguessable `saved_…` key to reopen with. " +
-      "On a local/stdio server it writes `<name>.vcad` under VCAD_MCP_STATE_DIR " +
+      "load_document. It writes `<name>.vcad` under VCAD_MCP_STATE_DIR " +
       "(or the working directory) — plus `<name>.loon` when the document knows " +
       "the source it was authored from, so the file and the session can't " +
       "diverge without someone choosing it.",

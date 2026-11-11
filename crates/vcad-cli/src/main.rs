@@ -649,6 +649,32 @@ enum Commands {
         command: printer_cmd::PrinterCommands,
     },
 
+    /// Run vcad's MCP server for AI agents (stdio by default)
+    ///
+    /// Attaches to a running vcad.app (`~/.vcad/vcad.sock`) when one is
+    /// listening, otherwise runs the same core headless. Register it with an
+    /// agent as `{"command": "vcad", "args": ["mcp"]}`.
+    Mcp {
+        /// Never attach to a running app; run the headless core
+        #[arg(long)]
+        headless: bool,
+        /// App socket to attach to (default ~/.vcad/vcad.sock, or $VCAD_MCP_SOCKET)
+        #[arg(long)]
+        socket: Option<PathBuf>,
+        /// Serve HTTP on a loopback address instead of stdio, e.g. 127.0.0.1:7979
+        #[arg(long)]
+        http: Option<std::net::SocketAddr>,
+        /// Serve on this unix socket instead of stdio
+        #[arg(long)]
+        serve_socket: Option<PathBuf>,
+        /// Native tools only: don't proxy unported tools to the node server
+        #[arg(long)]
+        no_proxy: bool,
+        /// Session directory (default ~/.vcad/mcp-sessions)
+        #[arg(long)]
+        session_dir: Option<PathBuf>,
+    },
+
     /// Start the print relay server for web app → printer communication
     #[cfg(feature = "print-server")]
     PrintServer {
@@ -1196,6 +1222,23 @@ fn run_command(cli: Cli) -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(print_server::start_server(port))?;
         }
+        Some(Commands::Mcp {
+            headless,
+            socket,
+            http,
+            serve_socket,
+            no_proxy,
+            session_dir,
+        }) => {
+            vcad_mcp::cli::run(vcad_mcp::cli::McpOptions {
+                http,
+                serve_socket,
+                headless,
+                socket,
+                no_proxy,
+                session_dir,
+            })?;
+        }
         Some(Commands::Probe { file, quiet }) => {
             run_probe(&file, quiet)?;
         }
@@ -1420,10 +1463,7 @@ fn export_file(
     // Fail closed: every root failing (warned above) must not leave an empty
     // file and exit 0 — that reads as a successful export of nothing.
     if meshes.iter().all(|m| m.indices.is_empty()) {
-        anyhow::bail!(
-            "{} produced no geometry; nothing exported",
-            input.display()
-        );
+        anyhow::bail!("{} produced no geometry; nothing exported", input.display());
     }
 
     match ext.to_lowercase().as_str() {
