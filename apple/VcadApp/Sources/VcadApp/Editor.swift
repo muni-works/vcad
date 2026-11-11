@@ -453,7 +453,9 @@ final class EditorModel {
     var loadError: String?
     /// A new document opening (import + first solve): drives the progress
     /// card. Nil for re-solves of the open document.
-    var loading: LoadProgress?
+    var loading: LoadProgress? { didSet { if loading != oldValue { syncProgress() } } }
+    /// Every long-running operation in this window (ProgressCenter.swift).
+    @ObservationIgnored let progress = ProgressCenter()
     /// What was open before `loading` began — Cancel returns to it.
     @ObservationIgnored var loadingPrevious: GeometrySource?
     /// Shown when the first solve lands (STEP faces skipped).
@@ -3398,6 +3400,29 @@ final class EditorModel {
 
     // MARK: open progress (LoadProgress.swift)
 
+    /// Mirror the open (import + first solve) and re-solves into the
+    /// window's progress center. The first solve is part of the "load" task;
+    /// a re-solve of the open document is its own "solve" task.
+    private func syncProgress() {
+        if let load = loading, load.isRunning {
+            progress.report("load", title: load.taskTitle, stage: load.taskStage,
+                            done: load.taskCounts.done, total: load.taskCounts.total,
+                            fraction: load.taskFraction,
+                            cancel: { [weak self] in self?.cancelLoading() })
+        } else {
+            progress.end("load")
+        }
+        if solving, loading?.isRunning != true {
+            let p = solveProgress
+            // All roots landed but still running: the closing pass, uncounted.
+            let finishing = p.total > 1 && p.done >= p.total
+            progress.report("solve", title: "Solving", stage: finishing ? "Finishing" : nil,
+                            done: finishing ? 0 : p.done, total: finishing ? 0 : p.total)
+        } else {
+            progress.end("solve")
+        }
+    }
+
     /// Show the open-progress card for `url`'s first solve (live window only;
     /// a re-solve of the open document never gets one).
     private func beginFirstSolve(_ url: URL) {
@@ -3985,9 +4010,11 @@ final class EditorModel {
     /// smoke hooks and tests keep the synchronous path.
     var evaluatesOffMainThread = false
     /// True while the kernel is evaluating the document off the main thread.
-    var solving = false
+    var solving = false { didSet { if solving != oldValue { syncProgress() } } }
     /// Progress of the background solve: visible roots landed / total.
-    var solveProgress: (done: Int, total: Int) = (0, 0)
+    var solveProgress: (done: Int, total: Int) = (0, 0) {
+        didSet { if solveProgress != oldValue { syncProgress() } }
+    }
     /// The last background evaluation, waiting for the viewport to adopt it.
     @ObservationIgnored private var preparedScene: (data: Data, handle: OpaquePointer)?
     @ObservationIgnored private var evaluating: Data?
@@ -4087,6 +4114,11 @@ final class EditorModel {
                     self.partialMeshes = []; self.partialBounds = nil
                     if let handle {
                         self.preparedScene = (data, handle)
+                        // The open is done once the kernel is: don't wait on the
+                        // viewport adopting the scene (buildScene also calls
+                        // this; the second call is a no-op). Without this the
+                        // header kept "Meshing parts N of N" after the solve.
+                        Task { @MainActor [weak self] in self?.finishFirstSolve(error: nil) }
                     } else {
                         self.loadError = SimError.pending() ?? "The kernel could not evaluate this document"
                         self.finishFirstSolve(error: self.loadError)
