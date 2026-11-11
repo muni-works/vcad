@@ -259,9 +259,6 @@ struct DockHost: View {
 /// the bottom of the window is how you act on it.
 struct GlassToolbar: View {
     @Bindable var model: EditorModel
-    @State private var query = ""
-    @State private var searching = false
-    @FocusState private var searchFocused: Bool
     @State private var connectionShown = false
     @State private var toolbarWidth: CGFloat = 1240
 
@@ -284,7 +281,7 @@ struct GlassToolbar: View {
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { toolbarWidth = $0 }
         .padding(.top, model.isWindowed ? Glass.toolbarDrop : 0)
         .background {
-            // ⌘F and ⌘K both land in search.
+            // ⌘F and ⌘K both open the command palette.
             Group {
                 Button("") { beginSearch() }.keyboardShortcut("f", modifiers: .command)
                 Button("") { beginSearch() }.keyboardShortcut("k", modifiers: .command)
@@ -321,20 +318,9 @@ struct GlassToolbar: View {
         return CGFloat(p.done) / CGFloat(p.total)
     }
 
-    /// The document's name at rest; a click or ⌘F makes the same field search.
+    /// The document's name at rest; a click, ⌘F or ⌘K opens the command palette.
     private var statusField: some View {
         Group {
-            if searching {
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Search tools and features", text: $query)
-                        .textFieldStyle(.plain)
-                        .focused($searchFocused)
-                        .onSubmit { runSearch() }
-                        .onEscape { endSearch() }
-                }
-                .accessibilityLabel("Search tools and features")
-            } else {
                 Button { beginSearch() } label: {
                     // Ticks only at the moments the line can expire on its own
                     // (a linked agent going quiet, a sketch blocker timing out);
@@ -356,15 +342,14 @@ struct GlassToolbar: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .help("\(model.source.label) — click to search tools and features (⌘F)")
+                .help("\(model.source.label) — click to search commands (⌘K)")
                 .accessibilityLabel([model.source.label, news(at: .now)].compactMap { $0 }.joined(separator: ", "))
-                .accessibilityHint("Search tools and features")
-            }
+                .accessibilityHint("Opens the command palette")
         }
         .padding(.horizontal, 14)
         .frame(width: fieldWidth, height: 32)
         .overlay(alignment: .bottom) {
-            if !searching, let fraction = solveFraction {
+            if let fraction = solveFraction {
                 GeometryReader { geo in
                     Capsule().fill(Color.accentColor).frame(width: geo.size.width * fraction, height: 2)
                         .frame(maxHeight: .infinity, alignment: .bottom)
@@ -374,26 +359,11 @@ struct GlassToolbar: View {
             }
         }
         .glassCapsule()
-        .onChange(of: searchFocused) { _, focused in if !focused && query.isEmpty { searching = false } }
-        .popover(isPresented: Binding(get: { searchFocused && !query.isEmpty }, set: { if !$0 { endSearch() } }),
-                 arrowEdge: .bottom) {
-            SearchResults(model: model, query: query) { endSearch() }
-        }
     }
 
+    /// One search for the whole app: the command palette.
     private func beginSearch() {
-        searching = true
-        // The field has to exist before it can take focus.
-        DispatchQueue.main.async { searchFocused = true }
-    }
-
-    private func endSearch() {
-        query = ""; searchFocused = false; searching = false
-    }
-
-    private func runSearch() {
-        if let first = SearchResults.matches(model: model, query: query).first { first.run() }
-        endSearch()
+        model.showsCommandPalette = true
     }
 
     private var machineChip: some View {
@@ -421,65 +391,6 @@ struct GlassToolbar: View {
         .help(help)
         .accessibilityLabel(help)
         .accessibilityAddTraits(active ? .isSelected : [])
-    }
-}
-
-/// Search results: tools of every workspace plus features in the document.
-struct SearchResults: View {
-    @Bindable var model: EditorModel
-    let query: String
-    let dismiss: () -> Void
-
-    struct Hit: Identifiable {
-        let id: String
-        let title: String
-        let subtitle: String
-        let symbol: String
-        let run: () -> Void
-    }
-
-    static func matches(model: EditorModel, query: String) -> [Hit] {
-        let q = query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return [] }
-        var out: [Hit] = []
-        for space in DockSpace.allCases {
-            for t in DockTools.tools(space, model: model) where t.enabled && t.label.localizedCaseInsensitiveContains(q) {
-                out.append(Hit(id: "\(space.rawValue).\(t.id)", title: t.label, subtitle: space.label, symbol: t.symbol) {
-                    GlassUI.shared.enter(space, model: model); t.action()
-                })
-            }
-        }
-        func walk(_ nodes: [FeatureNode]) {
-            for n in nodes {
-                if n.name.localizedCaseInsensitiveContains(q) {
-                    out.append(Hit(id: "feature.\(n.id)", title: n.name, subtitle: "Feature", symbol: n.symbol) {
-                        model.selectedFeatureID = n.id
-                    })
-                }
-                walk(n.children)
-            }
-        }
-        walk(model.featureNodes)
-        return Array(out.prefix(12))
-    }
-
-    var body: some View {
-        let hits = Self.matches(model: model, query: query)
-        VStack(alignment: .leading, spacing: 2) {
-            if hits.isEmpty {
-                Text("No matches").foregroundStyle(.secondary).padding(Theme.Space.s)
-            }
-            ForEach(hits) { h in
-                Button { h.run(); dismiss() } label: {
-                    HStack {
-                        Image(systemName: h.symbol).frame(width: 18)
-                        Text(h.title)
-                        Spacer()
-                        Text(h.subtitle).foregroundStyle(.secondary)
-                    }.padding(.horizontal, Theme.Space.s).padding(.vertical, 5).contentShape(Rectangle())
-                }.buttonStyle(.plain)
-            }
-        }.font(.callout).padding(Theme.Space.s).frame(width: 300)
     }
 }
 
