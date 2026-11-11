@@ -169,7 +169,7 @@ fn check_photo(p: &v1::Photo, r: &Request) -> Result<PhotoCheck, String> {
         return Err(format!("{} {why}.", p.name));
     };
     let c = v1::calibrate(p, r.tag_mm, r.sensor_w_mm).map_err(|e| {
-        if e.contains("no tag36h11") {
+        if e.contains("no tag36h11") || e.contains("no AprilTag found") {
             format!(
                 "No AprilTag found in {}. Lay a printed tag36h11 tag ({} mm, any id) flat beside the part, and keep it whole, sharp and in frame.",
                 photo_label(&p.name), r.tag_mm
@@ -226,7 +226,7 @@ pub fn reconstruct_with(r: &Request, hook: fit::Hook) -> Result<Outcome, String>
     let v = v1::recover_photos(&photos, &o).map_err(|e| {
         if e == fit::CANCELLED {
             e
-        } else if e.contains("no tag36h11") {
+        } else if e.contains("no tag36h11") || e.contains("no AprilTag found") {
             format!("No AprilTag found: {e}.")
         } else {
             format!("The reconstruction failed: {e}.")
