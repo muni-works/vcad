@@ -107,7 +107,6 @@ fn coaxial_counterbore_half_cylinder() {
 fixture!(flange_half_cylinder_union, "i1u_flange_half_union.loon");
 // 1b: the same hole as a revolve of a profile touching its axis.
 #[test]
-#[ignore = "revolve of a profile touching its axis yields an empty mesh"]
 fn revolve_profile_touching_axis() {
     assert_closed("i1b", include_str!("fixtures/k1/i1b_revolve.loon"));
 }
