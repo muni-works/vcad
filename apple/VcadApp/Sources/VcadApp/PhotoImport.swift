@@ -22,9 +22,9 @@ enum PhotoImportCopy {
     static let title = "Import from Photos"
     static let badge = "Experimental"
     static let requirement =
-        "Take at least 3 photos of the part from different sides. Every photo needs a printed AprilTag (family tag36h11) lying flat beside the part, whole and in focus, and must be the camera's original file: the EXIF focal length sets the scale."
+        "Take at least 3 photos of the part from different sides. Every photo needs a printed AprilTag (family tag36h11) lying flat beside the part, whole and in focus, and must be the camera's original file: the EXIF focal length sets the scale. Measure the tag's black square and enter it below: every dimension scales with it, so a wrong tag size makes the whole part the wrong size."
     static let scope =
-        "Recovers plates and blocks: a base with sharp, filleted or chamfered corners, and holes, counterbores, slots, bosses and hole patterns on top."
+        "For small machined parts photographed on a table: plates and blocks with sharp, filleted or chamfered corners, and holes, counterbores, slots, bosses and hole patterns on top. It can't model furniture, organic shapes or large objects; those come back as the nearest plate."
     static let evidence =
         "Tested on synthetic renders only: with three views, 15 of 20 parts came back within 1 mm and 10 of 20 within 0.5 mm. It has not yet been tested on real photos — check every dimension before you make anything."
     /// Shown on every result. Neither the fit's ± nor its residual check can
@@ -466,8 +466,10 @@ struct PhotoImportSheet: View {
         HStack {
             if !controller.running {
                 Button("Choose Photos…") { controller.choosePhotos() }
-                TextField("Tag", value: $controller.tagMM, format: .number).frame(width: 48)
-                Text("mm tag").font(.caption).foregroundStyle(.secondary)
+                Text("Tag black square").font(.caption).foregroundStyle(.secondary)
+                TextField("Tag size", value: $controller.tagMM, format: .number).frame(width: 52)
+                    .help("Edge of the printed tag's black square, in mm. Every dimension scales with this.")
+                Text("mm").font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
             if controller.running {
