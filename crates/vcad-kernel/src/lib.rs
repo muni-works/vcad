@@ -1534,6 +1534,22 @@ impl Solid {
         self.shell_open(thickness, &ids)
     }
 
+    /// A planar face's plane as `(point on it, outward unit normal)`.
+    /// `None` for a non-planar face, a stale id, or a mesh-backed solid.
+    pub fn face_plane(&self, face: vcad_kernel_topo::FaceId) -> Option<(Point3, Vec3)> {
+        let SolidRepr::BRep(brep) = &self.repr else {
+            return None;
+        };
+        let f = brep.topology.faces.get(face)?;
+        let surface = brep.geometry.surfaces.get(f.surface_index)?;
+        let plane = surface.as_any().downcast_ref::<vcad_kernel_geom::Plane>()?;
+        let mut n = plane.normal_dir.into_inner();
+        if f.orientation == vcad_kernel_topo::Orientation::Reversed {
+            n = -n;
+        }
+        Some((plane.origin, n))
+    }
+
     /// Resolve a face reference to one face of this solid, for
     /// [`Solid::shell_open`] and other face-picking operations.
     ///
