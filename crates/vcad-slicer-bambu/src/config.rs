@@ -17,12 +17,12 @@ use std::fmt;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{BambuError, Result};
 
 /// One configured printer.
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct PrinterEntry {
     /// Short name used on the command line (`--printer p1s`).
     pub name: String,
@@ -75,7 +75,7 @@ pub fn model_id_for(model: &str) -> Option<&'static str> {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct PrintersFile {
     #[serde(default)]
     printer: Vec<PrinterEntry>,
@@ -103,6 +103,38 @@ pub fn parse(text: &str) -> Result<Vec<PrinterEntry>> {
         }
     }
     Ok(file.printer)
+}
+
+/// Add (or replace, by name) a printer in the file at `path`, creating it
+/// owner-only (`0600`) so the access code isn't readable by others.
+pub fn save_entry(path: &Path, entry: PrinterEntry) -> Result<()> {
+    let mut printers = if path.exists() {
+        load(path)?
+    } else {
+        Vec::new()
+    };
+    printers.retain(|p| p.name != entry.name);
+    printers.push(entry);
+    let text = toml::to_string(&PrintersFile { printer: printers })
+        .map_err(|e| BambuError::InvalidResponse(format!("printers.toml: {e}")))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let tmp = path.with_extension("toml.tmp");
+    {
+        use std::io::Write;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp)?;
+        f.write_all(text.as_bytes())?;
+    }
+    std::fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 /// Load and permission-check a printers file.

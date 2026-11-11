@@ -697,8 +697,10 @@ struct FeatureRowView: View {
             Button { model.reorderPart(pi, to: pi + 1) } label: { Label("Move Down", systemImage: "arrow.down") }
                 .disabled(pi >= model.featureNodes.count - 1)
             Button { model.toggleSuppressed(part: pi) } label: {
-                Label(model.isSuppressed(part: pi) ? "Unsuppress" : "Suppress", systemImage: "nosign")
+                Label(model.isSuppressed(part: pi) ? "Show in Document" : "Hide in Document",
+                      systemImage: model.isSuppressed(part: pi) ? "eye" : "eye.slash")
             }
+            .help("Saved with the file: the part stays in the document but isn't drawn")
         }
         Button {
             #if os(macOS)

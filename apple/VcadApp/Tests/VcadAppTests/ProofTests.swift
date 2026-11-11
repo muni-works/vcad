@@ -129,7 +129,7 @@ final class ProofTests: XCTestCase {
         XCTAssertEqual(sel[0]["kind"] as? String, "edge")
         XCTAssertEqual(sel[0]["id"] as? Int, 3)
         XCTAssertEqual(sel[0]["part"] as? Int, 0)
-        XCTAssertEqual(m.picking.filter, .body, "picking is restored after the answer")
+        XCTAssertEqual(m.picking.filter, .standard, "picking is restored after the answer")
         XCTAssertNil(ElicitationCenter.shared.current)
     }
 

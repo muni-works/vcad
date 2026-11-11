@@ -21,6 +21,7 @@
 
 pub mod error;
 pub mod infill;
+pub mod orient;
 pub mod path;
 pub mod perimeter;
 pub mod slice;

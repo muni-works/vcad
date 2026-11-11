@@ -510,6 +510,12 @@ pub enum SheetSize {
     A4,
     /// ISO A3 landscape (420 × 297 mm).
     A3,
+    /// ISO A2 landscape (594 × 420 mm).
+    A2,
+    /// ISO A1 landscape (841 × 594 mm).
+    A1,
+    /// ISO A0 landscape (1189 × 841 mm).
+    A0,
     /// ANSI A ("Letter") landscape (279.4 × 215.9 mm).
     Letter,
     /// Custom size in mm.
@@ -527,6 +533,9 @@ impl SheetSize {
         match self {
             SheetSize::A4 => (297.0, 210.0),
             SheetSize::A3 => (420.0, 297.0),
+            SheetSize::A2 => (594.0, 420.0),
+            SheetSize::A1 => (841.0, 594.0),
+            SheetSize::A0 => (1189.0, 841.0),
             SheetSize::Letter => (279.4, 215.9),
             SheetSize::Custom { width, height } => (*width, *height),
         }

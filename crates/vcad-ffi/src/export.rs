@@ -12,6 +12,7 @@
 //! when no adapter is available. GPU renders report progress per sample
 //! batch and can be cancelled between batches.
 
+use std::collections::HashSet;
 use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
@@ -58,10 +59,27 @@ pub(crate) fn named_meshes(doc: &Document) -> Result<Vec<(String, EvaluatedMesh)
     let scene = vcad_eval::evaluate_document_with_sheet_metal(doc, &opts)
         .map_err(|e| format!("evaluate: {e}"))?;
     let placed = vcad_eval::placed_instance_meshes(doc, &scene);
+    // In an assembly the instances replace their part definitions' roots
+    // (what the viewport and clearance draw). Exporting both left a second,
+    // unposed copy of every link piled at the origin — a URDF import lists
+    // each link's def root as a scene root too.
+    let def_roots = if placed.is_empty() {
+        HashSet::new()
+    } else {
+        assembly_def_roots(doc)
+    };
+    let roots = vcad_receipt_verify::bodies::part_roots(doc, &scene);
     let mut out: Vec<(String, EvaluatedMesh)> = scene
         .parts
         .into_iter()
         .enumerate()
+        .filter(|(i, _)| {
+            roots
+                .get(*i)
+                .copied()
+                .flatten()
+                .is_none_or(|r| !def_roots.contains(&r))
+        })
         .map(|(i, part)| {
             let name = doc
                 .roots
@@ -142,9 +160,45 @@ pub fn export_glb(doc: &Document, name: &str) -> Result<(Vec<u8>, usize), String
     Ok((bytes, count))
 }
 
-/// AP214 STEP bytes. Refuses mesh-only roots by name.
+/// Root nodes of part definitions that at least one instance places.
+fn assembly_def_roots(doc: &Document) -> HashSet<vcad_ir::NodeId> {
+    let (Some(defs), Some(instances)) = (&doc.part_defs, &doc.instances) else {
+        return HashSet::new();
+    };
+    instances
+        .iter()
+        .filter_map(|i| defs.get(&i.part_def_id).map(|d| d.root))
+        .collect()
+}
+
+/// An assembly's bodies as STEP roots: every instance posed by forward
+/// kinematics (named by instance), then the free roots. `None` for a plain
+/// part document, which exports its roots as before.
+fn assembly_step_roots(doc: &Document) -> Result<Option<Vec<vcad_eval::RootSolid>>, String> {
+    if doc.instances.as_ref().is_none_or(|i| i.is_empty()) {
+        return Ok(None);
+    }
+    let scene = vcad_receipt_verify::bodies::evaluate(doc)?;
+    Ok(Some(
+        vcad_receipt_verify::bodies::keyed_bodies(doc, &scene)
+            .into_iter()
+            .enumerate()
+            .map(|(i, b)| vcad_eval::RootSolid {
+                node_id: i as u64,
+                name: Some(b.name),
+                solid: b.solid,
+            })
+            .collect(),
+    ))
+}
+
+/// AP214 STEP bytes. Refuses mesh-only roots by name. An assembly exports
+/// its posed instances, not the unplaced part definitions.
 pub fn export_step(doc: &Document) -> Result<(Vec<u8>, usize), String> {
-    let roots = vcad_eval::evaluate_root_solids(doc).map_err(|e| format!("evaluate: {e}"))?;
+    let roots = match assembly_step_roots(doc)? {
+        Some(r) => r,
+        None => vcad_eval::evaluate_root_solids(doc).map_err(|e| format!("evaluate: {e}"))?,
+    };
     if roots.is_empty() {
         return Err("document has no geometry to export".into());
     }
@@ -470,6 +524,57 @@ mod tests {
         assert!(text.starts_with("ISO-10303-21;"));
         assert!(text.contains("MANIFOLD_SOLID_BREP"));
         assert!(text.contains("Block"));
+    }
+
+    /// A URDF-style assembly: one part def, its root ALSO listed as a scene
+    /// root, and two instances placed 100 mm apart.
+    const ASM: &str = r#"{
+      "version": "0.1",
+      "nodes": {
+        "1": { "id": 1, "name": "Link", "op": { "type": "Cube", "size": { "x": 10, "y": 10, "z": 10 } } }
+      },
+      "materials": {},
+      "part_materials": {},
+      "roots": [{ "root": 1, "material": "default" }],
+      "partDefs": { "link": { "id": "link", "name": "Link", "root": 1 } },
+      "instances": [
+        { "id": "a", "partDefId": "link", "name": "Link A",
+          "transform": { "translation": {"x": 0, "y": 0, "z": 0}, "rotation": {"x": 0, "y": 0, "z": 0}, "scale": {"x": 1, "y": 1, "z": 1} } },
+        { "id": "b", "partDefId": "link", "name": "Link B",
+          "transform": { "translation": {"x": 100, "y": 0, "z": 0}, "rotation": {"x": 0, "y": 0, "z": 0}, "scale": {"x": 1, "y": 1, "z": 1} } }
+      ]
+    }"#;
+
+    #[test]
+    fn assembly_exports_instances_not_a_second_copy_of_each_def() {
+        let d = load_document(ASM, None).unwrap();
+        let names: Vec<String> = named_meshes(&d)
+            .unwrap()
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert_eq!(
+            names,
+            ["Link A", "Link B"],
+            "no unposed def copy at the origin"
+        );
+        assert_eq!(export_glb(&d, "asm").unwrap().1, 2);
+        assert_eq!(export_stl(&d, "asm").unwrap().1, 2);
+
+        let (bytes, parts) = export_step(&d).unwrap();
+        assert_eq!(parts, 2, "STEP exports the placed instances");
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert!(text.contains("Link A") && text.contains("Link B"));
+        // Instance B really is placed: re-read, it spans x = 100..110.
+        let back = Solid::from_step_buffer_all(&bytes).unwrap();
+        let max_x = back
+            .iter()
+            .map(|s| s.bounding_box().1[0])
+            .fold(f64::MIN, f64::max);
+        assert!(
+            (max_x - 110.0).abs() < 1e-6,
+            "instance B's +x face at {max_x}, want 110"
+        );
     }
 
     #[test]

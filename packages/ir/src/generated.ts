@@ -2067,6 +2067,94 @@ diverged: boolean,
 diverged_by: Array<string>, };
 
 /**
+ * A detail view: a magnified window onto a region of a drawing view.
+ */
+export type DrawingDetailSpec = { 
+/**
+ * Detail label letter ("B" → "DETAIL B").
+ */
+label: string, 
+/**
+ * Parent view (default: the main view).
+ */
+view?: string, 
+/**
+ * Region center (view mm).
+ */
+center: [number, number], 
+/**
+ * Magnification relative to the parent view.
+ */
+scale: number, 
+/**
+ * Region width (view mm).
+ */
+width: number, 
+/**
+ * Region height (view mm).
+ */
+height: number, };
+
+/**
+ * A user-placed linear dimension between two points of a drawing view.
+ */
+export type DrawingDimension = { 
+/**
+ * Unique id within the drawing.
+ */
+id: string, 
+/**
+ * View the dimension lives on ("front", "top", "right", …).
+ */
+view: string, 
+/**
+ * `horizontal`, `vertical`, `aligned`, or `centerline` (a thin
+ * dash-dot line between the points, no value).
+ */
+kind: string, 
+/**
+ * First point (view mm).
+ */
+a: [number, number], 
+/**
+ * Second point (view mm).
+ */
+b: [number, number], 
+/**
+ * Dimension-line offset from the measured points (view mm, signed).
+ */
+offset: number, };
+
+/**
+ * A GD&T annotation: feature control frame or datum tag.
+ */
+export type DrawingGdtSpec = { 
+/**
+ * Unique id within the drawing.
+ */
+id: string, 
+/**
+ * View the frame is attached to (default: the main view).
+ */
+view?: string, 
+/**
+ * `flatness`, `position`, `perpendicularity`, or `datum`.
+ */
+kind: string, 
+/**
+ * Tolerance zone (mm); ignored for `datum`.
+ */
+tolerance: number, 
+/**
+ * Datum letter (reference, or the tag letter for `datum`).
+ */
+datum?: string, 
+/**
+ * Anchor (view mm).
+ */
+at: [number, number], };
+
+/**
  * A section cut line drawn on an orthographic drawing view. The polyline
  * runs vertically in view coordinates; horizontal jogs produce an offset
  * (stepped) section.
@@ -2105,7 +2193,41 @@ sections?: Array<DrawingSectionLine>,
 /**
  * Whether the BOM table is placed on the sheet.
  */
-showBom?: boolean, };
+showBom?: boolean, 
+/**
+ * Sheet size: `auto` (default — smallest sheet that holds the views at
+ * a readable scale), `a4`, `a3`, `a2`, `a1`, `a0`, or `letter`.
+ */
+sheetSize?: string, 
+/**
+ * User-added dimensions.
+ */
+dimensions?: Array<DrawingDimension>, 
+/**
+ * Ids of automatic dimensions the user deleted.
+ */
+hiddenDimensions?: Array<string>, 
+/**
+ * Offset overrides (view mm) for automatic dimensions the user moved,
+ * keyed by dimension id.
+ */
+dimensionOffsets?: Record<string, number>, 
+/**
+ * Detail views (magnified callouts of a region of a view).
+ */
+details?: Array<DrawingDetailSpec>, 
+/**
+ * GD&T feature control frames and datum tags.
+ */
+gdt?: Array<DrawingGdtSpec>, 
+/**
+ * Center marks on circular features (default true).
+ */
+centerMarks?: boolean, 
+/**
+ * Automatic hole / diameter callouts (default true).
+ */
+holeCallouts?: boolean, };
 
 /**
  * Title block fields for a technical drawing sheet.
@@ -3588,7 +3710,11 @@ sections?: string,
 /**
  * BOM table visibility (JSON bool).
  */
-show_bom?: string, } | { "type": "Molecule", 
+show_bom?: string, 
+/**
+ * Annotations (JSON-serialized `DrawingSettings` subset: sheet size, dimensions, details, GD&T, toggles).
+ */
+annotations?: string, } | { "type": "Molecule", 
 /**
  * System data (JSON-serialized `MoleculeSystem`).
  */

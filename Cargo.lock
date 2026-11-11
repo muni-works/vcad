@@ -5799,6 +5799,7 @@ dependencies = [
  "vcad-kernel-tessellate 0.11.0",
  "vcad-kernel-urdf",
  "vcad-loon",
+ "vcad-printcheck",
  "vcad-receipt-verify",
  "vcad-render",
  "vcad-sim",
@@ -6436,6 +6437,7 @@ dependencies = [
  "vcad-kernel-geom 0.11.0",
  "vcad-kernel-math 0.11.0",
  "vcad-kernel-primitives 0.11.0",
+ "vcad-kernel-sketch 0.11.0",
  "vcad-kernel-topo 0.11.0",
 ]
 
@@ -7177,6 +7179,8 @@ dependencies = [
  "tokio-test",
  "toml",
  "uuid",
+ "vcad-kernel-tessellate 0.11.0",
+ "vcad-printcheck",
  "vcad-slicer",
  "vcad-slicer-gcode",
  "webpki-roots 0.26.11",

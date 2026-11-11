@@ -637,14 +637,14 @@ final class ReleaseWindowController {
         RenderGate.wake()
         switch lift {
         case .hover where isSelected(name):
-            m.emissiveColor = .init(color: NSColor(red: 1.0, green: 0.68, blue: 0.24, alpha: 1))
-            m.emissiveIntensity = 0.6
+            m.emissiveColor = .init(color: SelectionStyle.selectedHover)
+            m.emissiveIntensity = SelectionStyle.partSelectedHoverIntensity
         case .selected:
-            m.emissiveColor = .init(color: NSColor(red: 1.0, green: 0.62, blue: 0.12, alpha: 1))
-            m.emissiveIntensity = 0.35
+            m.emissiveColor = .init(color: SelectionStyle.selected)
+            m.emissiveIntensity = SelectionStyle.partSelectedIntensity
         case .hover:
-            m.emissiveColor = .init(color: .white)
-            m.emissiveIntensity = 0.16
+            m.emissiveColor = .init(color: SelectionStyle.hover)
+            m.emissiveIntensity = SelectionStyle.partHoverIntensity
         case .none:
             m.emissiveIntensity = 0
         }
@@ -1012,11 +1012,14 @@ struct ReleasedOverlayView: View {
                 }
                 .onContinuousHover(coordinateSpace: .local) { phase in
                     if !model.sketching, model.picking.filter.picksTopology {
+                        if case .active(let p) = phase { ensurePickableDocument(at: p) }
+                        let rev = model.picking.revision
                         switch phase {
                         case .active(let p): model.picking.setHovered(topologyHit(at: p)?.ref)
                         case .ended: model.picking.setHovered(nil)
                         }
-                        refreshTopologyOverlay()
+                        // Rebuild only when the hover actually moved to a new entity.
+                        if model.picking.revision != rev { refreshTopologyOverlay() }
                         return
                     }
                     guard model.sketching else { return }
@@ -1038,12 +1041,29 @@ struct ReleasedOverlayView: View {
                 let r = CGRect(x: min(m.start.x, m.current.x), y: min(m.start.y, m.current.y),
                                width: abs(m.current.x - m.start.x),
                                height: abs(m.current.y - m.start.y))
+                // Topology marquee: solid = window (left→right), dashed =
+                // crossing (right→left).
+                let crossing = model.picking.filter.picksTopology
+                    && SelectionMath.MarqueeMode(start: m.start, end: m.current) == .crossing
                 Rectangle()
                     .fill(Color.accentColor.opacity(0.12))
-                    .overlay(Rectangle().strokeBorder(Color.accentColor.opacity(0.8), lineWidth: 1))
+                    .overlay(Rectangle().strokeBorder(Color.accentColor.opacity(0.8),
+                                                      style: StrokeStyle(lineWidth: 1, dash: crossing ? [4, 3] : [])))
                     .frame(width: r.width, height: r.height)
                     .offset(x: r.minX, y: r.minY)
                     .allowsHitTesting(false)
+            }
+            // Selection readout: "2 faces · 1 240 mm²" / "1 edge · 42.0 mm".
+            if !model.sketching, let readout = model.topologySelectionReadout() {
+                Text(readout)
+                    .font(.system(size: 11, weight: .medium).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(.regularMaterial, in: Capsule())
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .padding(.bottom, 96)
+                    .allowsHitTesting(false)
+                    .accessibilityIdentifier("selectionReadout")
             }
             // Opening a new document: the import / first-solve card, then
             // the compact pill once geometry is visible.
@@ -1265,7 +1285,7 @@ struct ReleasedOverlayView: View {
         .onChange(of: model.undoStack.count, initial: true) { _, _ in GlassUI.shared.captureThumbnail(model: model) }
         .onChange(of: model.source) { _, _ in GlassUI.shared.thumbnails = [:]; GlassUI.shared.captureThumbnail(model: model) }
         .onChange(of: model.picking.revision) { _, _ in refreshTopologyOverlay() }
-        .onChange(of: model.measuring) { _, on in if !on { model.picking.filter = .body }; refreshTopologyOverlay() }
+        .onChange(of: model.measuring) { _, on in if !on { model.picking.filter = .standard }; refreshTopologyOverlay() }
         .onChange(of: model.sketching) { _, on in
             // Sketch is modal over the desktop: own the mouse everywhere while
             // drawing, hand non-chrome/non-part mouse back when done.
@@ -1341,10 +1361,29 @@ struct ReleasedOverlayView: View {
             guard hit.entity.name.hasPrefix("part") else { return nil }
             return Int(hit.entity.name.dropFirst(4))
         }
+        // ~6 px edge tolerance: camera→orbit-target distance in kernel mm
+        // stands in for the depth of what's under the pointer (one cheap
+        // conversion, no extra kernel pick per mouse move).
+        let ctl = ReleaseWindowController.shared
+        var dist: Float?
+        if let c = ctl.centeringEntity {
+            dist = simd_distance(ray.o, c.convert(position: model.panOffset, from: nil))
+        }
+        let h = ctl.arView.map { Float($0.bounds.height) }
         for part in parts {
-            if let h = model.pickTopology(part: part, origin: ray.o, dir: ray.d) { return h }
+            if let hit = model.pickTopology(part: part, origin: ray.o, dir: ray.d,
+                                            cameraDistance: dist, viewportHeight: h) { return hit }
         }
         return nil
+    }
+
+    /// The Untitled demo shape is a preview, not a document, so it has no
+    /// B-rep to pick faces/edges on — the reason the default cube showed no
+    /// hover or selection at all. Promote it (silently) the first time the
+    /// pointer reaches it.
+    private func ensurePickableDocument(at p: CGPoint) {
+        guard model.source.isSandbox, model.documentJSON == nil, partIndex(at: p) != nil else { return }
+        model.promoteSandboxToDocument(silent: true)
     }
 
     /// Redraw the face/edge highlight ribbons (selection orange, hover white)
@@ -1440,8 +1479,25 @@ struct ReleasedOverlayView: View {
         // the second frames.
         if (NSApp.currentEvent?.clickCount ?? 1) >= 2, !model.sketching,
            let name = bodyName(at: p) {
+            // Fusion picks faces/edges on a click; the double-click is how a
+            // body is reached from the viewport: it selects the whole body
+            // (dropping the face/edge pick of the first click) and frames it.
+            if model.picking.filter.picksTopology, model.usesDocumentTree,
+               model.armedShape == nil, model.pendingBoolean == nil {
+                model.picking.clear()
+                refreshTopologyOverlay()
+                if name.hasPrefix("inst"), let i = Int(name.dropFirst(4)) {
+                    model.selectInstance(i)
+                } else if let pi = Int(name.dropFirst(4)),
+                          let fid = model.featureNodes.first(where: { $0.partIndex == pi })?.id {
+                    model.selectFeature(fid)
+                }
+                model.selectionDirty = false
+            }
             ReleaseWindowController.shared.frame(entityNamed: name)
+            return
         }
+        if model.picking.filter.picksTopology { ensurePickableDocument(at: p) }
         guard model.usesDocumentTree,
               let ar = ReleaseWindowController.shared.arView else { return }
 
@@ -1450,10 +1506,31 @@ struct ReleasedOverlayView: View {
         // after a Shell or Fillet, and it swallowed that click, so the prompt
         // never completed.
         if model.picking.filter.picksTopology, model.armedShape == nil, model.pendingBoolean == nil {
-            model.picking.select(hit: topologyHit(at: p), additive: additive || model.measuring)
+            let hit = topologyHit(at: p)
+            // Nothing pickable but a body under the pointer (an assembly
+            // instance, a mesh import without B-rep): fall back to selecting
+            // the body so the click is never a dead end.
+            if hit != nil || bodyName(at: p) == nil || model.measuring {
+                if hit == nil, !additive, !model.measuring {
+                    model.deselectAll()           // empty space clears everything
+                } else {
+                    // A face/edge pick replaces a body selection (Fusion).
+                    if !additive, !model.measuring,
+                       model.selectedFeatureID != nil || model.selectedInstanceIndex != nil
+                        || !model.multiSelectedParts.isEmpty {
+                        model.selectedFeatureID = nil
+                        model.selectedInstanceIndex = nil
+                        model.multiSelectedParts = []
+                        model.selectionDirty = false
+                    }
+                    model.picking.select(hit: hit, additive: additive || model.measuring)
+                }
+                refreshTopologyOverlay()
+                ReleaseWindowController.shared.rebuildGizmo(model: model)
+                return
+            }
+            model.picking.clear()
             refreshTopologyOverlay()
-            ReleaseWindowController.shared.rebuildGizmo(model: model)
-            return
         }
         // Press-pull drill-down: a click on the already-selected part picks
         // the planar face under the pointer and shows its pull arrow; a
@@ -1665,6 +1742,10 @@ struct ReleasedOverlayView: View {
                        width: abs(b.x - a.x), height: abs(b.y - a.y))
         guard r.width > 3, r.height > 3 else { return }
         let ctl = ReleaseWindowController.shared
+        if model.picking.filter.picksTopology {
+            commitTopologyMarquee(rect: r, mode: .init(start: a, end: b))
+            return
+        }
         let caught = (0..<model.partCount).filter { i in
             guard model.isPartVisible(i),
                   let p = ctl.viewPoint(forPart: i, from: model.cameraPosition,
@@ -1672,6 +1753,48 @@ struct ReleasedOverlayView: View {
             return r.contains(p)
         }
         model.selectParts(caught)
+    }
+
+    /// Topology marquee: faces and/or edges (per the pick filter) of every
+    /// visible part. Left-to-right = window (every sampled point inside),
+    /// right-to-left = crossing (anything touching). Faces are sampled by
+    /// their boundary edges plus centroid; edges by their polyline. Replaces
+    /// the selection, like the part marquee.
+    private func commitTopologyMarquee(rect r: CGRect, mode: SelectionMath.MarqueeMode) {
+        let ctl = ReleaseWindowController.shared
+        guard let centering = ctl.centeringEntity else { return }
+        let cam = model.cameraPosition, look = model.panOffset
+        func project(_ k: SIMD3<Float>) -> CGPoint? {
+            ctl.viewPoint(forWorld: centering.convert(position: k, to: nil), from: cam, lookAt: look)
+        }
+        let filter = model.picking.filter
+        var refs: [TopoRef] = []
+        for part in 0..<model.partCount where model.isPartVisible(part) {
+            guard let topo = model.partTopology(part) else { continue }
+            // Project each edge once; faces reuse their boundary edges' points.
+            var edgePts: [UInt32: [CGPoint]] = [:]
+            for e in topo.edges {
+                let pts = e.segmentPoints.compactMap(project)
+                if pts.count == e.segmentPoints.count { edgePts[e.id] = pts }
+            }
+            if filter == .face || filter == .faceOrEdge {
+                for f in topo.faces {
+                    var pts = topo.edges.filter { $0.faces.contains(f.id) }.flatMap { edgePts[$0.id] ?? [] }
+                    if let c = project(f.centerF) { pts.append(c) }
+                    if SelectionMath.marqueeCatches(pts, rect: r, mode: mode) { refs.append(.face(f.id, part: part)) }
+                }
+            }
+            if filter == .edge || filter == .faceOrEdge {
+                for e in topo.edges {
+                    guard let pts = edgePts[e.id] else { continue }
+                    if SelectionMath.marqueeCatches(pts, rect: r, mode: mode, segments: true) {
+                        refs.append(.edge(e.id, part: part))
+                    }
+                }
+            }
+        }
+        model.picking.setSelection(refs)
+        refreshTopologyOverlay()
     }
 
     /// Live-sync the dragged part: re-evaluate the document meshes in place and
@@ -2012,6 +2135,20 @@ struct ReleasedARView: NSViewRepresentable {
         centering.name = "centering"
         centering.position = -scene.center
         ReleaseWindowController.shared.centeringEntity = centering
+        // Orbit about the selection (Fusion): face centroid / edge midpoint,
+        // else the selected bodies' bbox centre, else the current target.
+        model.orbitPivotProvider = { [weak model, weak centering] in
+            guard let model, let centering else { return nil }
+            let topo = model.topologySelectionCenters().map { centering.convert(position: $0, to: nil) }
+            let parts = model.highlightedParts.sorted().compactMap { i -> SIMD3<Float>? in
+                guard let e = centering.findEntity(named: "part\(i)") else { return nil }
+                return e.visualBounds(relativeTo: nil).center
+            } + model.selectedInstances.sorted().compactMap { i -> SIMD3<Float>? in
+                guard let e = centering.findEntity(named: "inst\(i)") else { return nil }
+                return e.visualBounds(relativeTo: nil).center
+            }
+            return SelectionMath.orbitPivot(topology: topo, parts: parts)
+        }
         // Keep the in-progress sketch ink alive across geometry rebuilds.
         if model.sketching { centering.addChild(buildSketchRoot(model: model)) }
         syncSketchGrid(model, in: centering, force: true)
@@ -2073,8 +2210,8 @@ struct ReleasedARView: NSViewRepresentable {
             if model.usesDocumentTree, !model.zebraMode, model.highlightedParts.contains(i) {
                 // Brand orange = action: a subtle emissive lift marks selection
                 // without repainting the material (mirrors the studio rule).
-                m.emissiveColor = .init(color: NSColor(red: 1.0, green: 0.62, blue: 0.12, alpha: 1.0))
-                m.emissiveIntensity = 0.35
+                m.emissiveColor = .init(color: SelectionStyle.selected)
+                m.emissiveIntensity = SelectionStyle.partSelectedIntensity
             }
             let e = ModelEntity(mesh: item.mesh, materials: [m])
             e.name = "part\(i)"
@@ -2723,22 +2860,54 @@ func applySectionView(model: EditorModel) {
     centering.addChild(root)
 }
 
-/// Face/edge highlight ribbons under the kernel frame: selection orange, hover
-/// white, measure span teal. Nil when the pick filter isn't topological.
-/// Shared by the pick refresh and the geometry rebuild, so a rebuild keeps it.
+/// Face/edge highlight under the kernel frame: selected faces get a
+/// translucent brand-orange fill, the hovered face a lighter one; selected and
+/// hovered edges are coloured screen-space lines (3 px / 2 px, ribbons when
+/// the shader library is absent); measure span teal. Nil when the pick filter
+/// isn't topological. Shared by the pick refresh and the geometry rebuild, so
+/// a rebuild keeps it.
 @MainActor
 func topologyOverlayEntity(model: EditorModel) -> Entity? {
     guard model.picking.filter.picksTopology else { return nil }
     let (sel, hov) = model.topologyHighlight()
     let root = Entity(); root.name = "topoOverlay"
     let w = max(model.displayedSceneSize, 1) * 0.006
-    if let m = EdgeOverlay.ribbonResource(segments: sel, width: w * 1.4, name: "topoSel") {
-        root.addChild(ModelEntity(mesh: m, materials: [UnlitMaterial(
-            color: NSColor(red: 1.0, green: 0.62, blue: 0.12, alpha: 1))]))
+
+    // Face fills: the face's own triangles, nudged off the surface along their
+    // normals (a hair, scene-relative) so they never z-fight it.
+    if let data = model.pickingDocumentData {
+        let cache = AnalysisMeshCache.shared
+        let lift = Float(max(model.displayedSceneSize, 1)) * 0.0008
+        func fill(_ refs: [TopoRef], _ color: NSColor, _ alpha: CGFloat, _ name: String) {
+            for part in Set(refs.map(\.part)) {
+                let faces = Set(refs.filter { $0.part == part && $0.kind == .face }.map(\.id))
+                guard let mesh = cache.faceMesh(part: part, faces: faces, data: data, lift: lift) else { continue }
+                var m = UnlitMaterial(color: color.withAlphaComponent(alpha))
+                m.blending = .transparent(opacity: .init(floatLiteral: Float(alpha)))
+                m.faceCulling = .none
+                let e = ModelEntity(mesh: mesh, materials: [m]); e.name = name
+                root.addChild(e)
+            }
+        }
+        fill(model.picking.selectedFaces, SelectionStyle.selected, SelectionStyle.faceFillSelectedAlpha, "topoSelFill")
+        if let h = model.picking.hovered, h.kind == .face, !model.picking.isSelected(h) {
+            fill([h], SelectionStyle.hover, SelectionStyle.faceFillHoverAlpha, "topoHoverFill")
+        }
     }
-    if let m = EdgeOverlay.ribbonResource(segments: hov, width: w, name: "topoHover") {
-        root.addChild(ModelEntity(mesh: m, materials: [UnlitMaterial(color: .white)]))
+
+    let view = ReleaseWindowController.shared.arView
+    let hPx = Float((view?.bounds.height ?? 900) * (view?.window?.backingScaleFactor ?? 2))
+    let scale = Float(view?.window?.backingScaleFactor ?? 2)
+    func lines(_ segs: [SIMD3<Float>], _ color: NSColor, px: Float, ribbon: Float, _ name: String) {
+        if let mat = SceneAssets.highlightLineMaterial(viewportHeightPx: hPx, widthPx: px * scale, color: color),
+           let r = EdgeOverlay.screenLineResource(segments: segs, name: name) {
+            root.addChild(ModelEntity(mesh: r, materials: [mat]))
+        } else if let r = EdgeOverlay.ribbonResource(segments: segs, width: ribbon, name: name) {
+            root.addChild(ModelEntity(mesh: r, materials: [UnlitMaterial(color: color)]))
+        }
     }
+    lines(sel, SelectionStyle.selected, px: SelectionStyle.edgeSelectedPx, ribbon: w * 1.4, "topoSel")
+    lines(hov, SelectionStyle.hover, px: SelectionStyle.edgeHoverPx, ribbon: w, "topoHover")
     if model.measuring, let span = model.measurement?.span,
        let m = EdgeOverlay.ribbonResource(segments: [span.0, span.1], width: w, name: "measureSpan") {
         root.addChild(ModelEntity(mesh: m, materials: [UnlitMaterial(color: .systemTeal)]))

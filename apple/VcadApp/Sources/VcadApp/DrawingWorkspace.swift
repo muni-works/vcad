@@ -8,16 +8,19 @@ import UniformTypeIdentifiers
 // The Drawing workspace: 2D shop drawings on vcad-kernel-drafting, through
 // vcad-ffi's `vcad_drawing_*` (crates/vcad-ffi/src/drafting.rs).
 //
-// The kernel composes the whole A4 sheet — main view, overall dimensions,
-// section and detail views, GD&T frames, title block, BOM — with the web
-// app's PDF layout, and hands back its display list. This view draws that
-// list as-is, so the sheet on screen is the PDF File ▸ Export Drawing writes.
-// DXF goes through the web's own writer (`projected_view_to_dxf`).
+// One click from a part or assembly to a full drawing: the default "Sheet"
+// view lays out front / top / right / isometric (third-angle), picks the sheet
+// size and a standard scale, and fills the title block from the document. The
+// kernel composes everything — automatic dimensions (overall size, hole
+// callouts with locations, center marks), the user's dimensions and center
+// lines, section and detail views, GD&T frames and datum tags, title block,
+// BOM — and hands back its display list. This view draws that list as-is, so
+// the sheet on screen is the PDF File ▸ Export Drawing writes; DXF is the same
+// sheet in model millimetres (views at true size).
 //
-// Title block, section lines and the BOM toggle persist on the document (the
-// engine's `drawing-settings` feature → IR `drawing`), so a sheet authored on
-// the web opens here unchanged and vice versa. View, details and GD&T are
-// session state, as on the web.
+// Everything the user authors persists on the document (the engine's
+// `drawing-settings` feature → IR `drawing`) and every annotation is
+// regenerated from the model on each change, so the drawing stays associative.
 
 // MARK: - Kernel wire types
 
@@ -43,6 +46,7 @@ struct DrawingSheetResult: Decodable {
     struct Sheet: Decodable { let lines: [Line]; let arcs: [Arc]; let polygons: [Polygon]; let texts: [Text] }
     struct Bounds: Decodable { let min_x: Double; let min_y: Double; let max_x: Double; let max_y: Double }
     struct Placement: Decodable {
+        var name: String?
         let sheet_center: [Double]
         let view_center: [Double]
         let scale: Double
@@ -54,6 +58,27 @@ struct DrawingSheetResult: Decodable {
             DrawingPoint(x: view_center[0] + (p.x - sheet_center[0]) / scale,
                          y: view_center[1] + (p.y - sheet_center[1]) / scale)
         }
+
+        /// The view's sheet rectangle, grown by `pad` mm.
+        func sheetRect(pad: Double = 0) -> (min: DrawingPoint, max: DrawingPoint) {
+            let hw = (bounds.max_x - bounds.min_x) / 2 * scale, hh = (bounds.max_y - bounds.min_y) / 2 * scale
+            return (DrawingPoint(x: sheet_center[0] - hw - pad, y: sheet_center[1] - hh - pad),
+                    DrawingPoint(x: sheet_center[0] + hw + pad, y: sheet_center[1] + hh + pad))
+        }
+    }
+    /// A selectable annotation (`DimensionHandle`).
+    struct Handle: Decodable, Equatable {
+        let id: String
+        let view: String
+        let auto: Bool
+        let min: [Double]
+        let max: [Double]
+        let offset: Double
+        let kind: String
+
+        func contains(_ p: DrawingPoint, pad: Double = 1.5) -> Bool {
+            p.x >= min[0] - pad && p.x <= max[0] + pad && p.y >= min[1] - pad && p.y <= max[1] + pad
+        }
     }
     let width: Double
     let height: Double
@@ -63,6 +88,46 @@ struct DrawingSheetResult: Decodable {
     let hidden_edges: Int
     let dxf_entities: Int
     let sections: Int
+    var views: [Placement]?
+    var dimensions: [Handle]?
+    var circles: Int?
+    var sheet_size: String?
+
+    /// Placements of every view (the main one alone on older kernels).
+    var placements: [Placement] { views ?? [main] }
+
+    /// The view under a sheet point (nearest, within 15 mm of its outline).
+    func view(at p: DrawingPoint) -> Placement? {
+        func dist(_ v: Placement) -> Double {
+            let r = v.sheetRect()
+            let dx = Swift.max(r.min.x - p.x, 0, p.x - r.max.x), dy = Swift.max(r.min.y - p.y, 0, p.y - r.max.y)
+            return (dx * dx + dy * dy).squareRoot()
+        }
+        return placements.filter { dist($0) <= 15 }.min { dist($0) < dist($1) }
+    }
+
+    /// The topmost annotation under a sheet point (smallest box wins).
+    func handle(at p: DrawingPoint) -> Handle? {
+        (dimensions ?? []).filter { $0.contains(p) }
+            .min { ($0.max[0] - $0.min[0]) * ($0.max[1] - $0.min[1]) < ($1.max[0] - $1.min[0]) * ($1.max[1] - $1.min[1]) }
+    }
+
+    /// Nearest drawn vertex (visible/hidden line end, arc center) within
+    /// `radius` sheet mm — what dimension clicks snap to.
+    func snap(_ p: DrawingPoint, radius: Double = 2.5) -> DrawingPoint {
+        var best = p, bestD = radius * radius
+        func consider(_ q: DrawingPoint) {
+            let d = (q.x - p.x) * (q.x - p.x) + (q.y - p.y) * (q.y - p.y)
+            if d < bestD { bestD = d; best = q }
+        }
+        for l in sheet.lines where l.class == "visible" || l.class == "hidden" { consider(l.start); consider(l.end) }
+        for a in sheet.arcs where a.class == "visible" { consider(a.arc.center) }
+        // Center-mark crossings are hole centers.
+        for l in sheet.lines where l.class == "center" {
+            consider(DrawingPoint(x: (l.start.x + l.end.x) / 2, y: (l.start.y + l.end.y) / 2))
+        }
+        return best
+    }
 }
 
 /// IR `DrawingTitleBlock` (camelCase, as persisted in `.vcad`).
@@ -83,16 +148,56 @@ struct DrawingSectionLine: Codable, Equatable, Identifiable {
     var points: [[Double]]
 }
 
+/// IR `DrawingDimension`: a user dimension or center line.
+struct DrawingDimension: Codable, Equatable, Identifiable {
+    var id = "dim-\(UUID().uuidString.prefix(8))"
+    var view: String
+    /// `horizontal`, `vertical`, `aligned`, or `centerline`.
+    var kind: String
+    var a: [Double]
+    var b: [Double]
+    var offset: Double = 0
+}
+
+/// The annotation half of IR `DrawingSettings` — persisted as the
+/// `drawing-settings` feature's `annotations` JSON.
+struct DrawingAnnotationsIR: Codable, Equatable {
+    var sheetSize: String?
+    var dimensions: [DrawingDimension]?
+    var hiddenDimensions: [String]?
+    var dimensionOffsets: [String: Double]?
+    var details: [DrawingDetail]?
+    var gdt: [DrawingGdt]?
+    var centerMarks: Bool?
+    var holeCallouts: Bool?
+}
+
 /// IR `DrawingSettings`.
 struct DrawingSettingsIR: Codable, Equatable {
     var titleBlock: DrawingTitleBlock?
     var sections: [DrawingSectionLine]?
     var showBom: Bool?
+    var sheetSize: String?
+    var dimensions: [DrawingDimension]?
+    var hiddenDimensions: [String]?
+    var dimensionOffsets: [String: Double]?
+    var details: [DrawingDetail]?
+    var gdt: [DrawingGdt]?
+    var centerMarks: Bool?
+    var holeCallouts: Bool?
+
+    var annotations: DrawingAnnotationsIR {
+        DrawingAnnotationsIR(sheetSize: sheetSize, dimensions: dimensions, hiddenDimensions: hiddenDimensions,
+                             dimensionOffsets: dimensionOffsets, details: details, gdt: gdt,
+                             centerMarks: centerMarks, holeCallouts: holeCallouts)
+    }
 }
 
+/// IR `DrawingDetailSpec`.
 struct DrawingDetail: Codable, Equatable, Identifiable {
     var id: String { label }
     var label: String
+    var view: String?
     var center: [Double]
     var scale: Double = 2
     var width: Double
@@ -112,13 +217,14 @@ enum GdtKind: String, Codable, CaseIterable, Identifiable {
     }
 }
 
+/// IR `DrawingGdtSpec`.
 struct DrawingGdt: Codable, Equatable, Identifiable {
-    var id = UUID()
+    var id = "gdt-\(UUID().uuidString.prefix(8))"
+    var view: String?
     var kind: GdtKind
     var tolerance: Double
     var datum: String?
     var at: [Double]
-    private enum CodingKeys: String, CodingKey { case kind, tolerance, datum, at }
 }
 
 /// Identification letters for section views, detail views and datum
@@ -161,10 +267,18 @@ private struct DrawingRequestWire: Encodable {
 }
 
 enum DrawingView: String, CaseIterable, Identifiable {
-    case front, back, top, bottom, left, right, isometric
+    /// Front / top / right / isometric on one auto-sized sheet.
+    case standard, front, back, top, bottom, left, right, isometric
     var id: String { rawValue }
-    var label: String { rawValue.capitalized }
+    var label: String { self == .standard ? "Standard Sheet" : rawValue.capitalized }
     var canSection: Bool { self != .isometric }
+}
+
+/// Sheet sizes offered in the inspector (`auto` picks one).
+enum DrawingSheetSize: String, CaseIterable, Identifiable {
+    case auto, a4, a3, a2, a1, a0, letter
+    var id: String { rawValue }
+    var label: String { self == .auto ? "Auto" : self == .letter ? "Letter" : rawValue.uppercased() }
 }
 
 enum DrawingExportFormat {
@@ -172,7 +286,8 @@ enum DrawingExportFormat {
     var label: String { self == .dxf ? "DXF" : "PDF" }
     var fileExtension: String { self == .dxf ? "dxf" : "pdf" }
     var contentType: UTType { self == .dxf ? (UTType(filenameExtension: "dxf") ?? .data) : .pdf }
-    var ffiCode: UInt32 { self == .dxf ? UInt32(VCAD_DRAWING_DXF) : UInt32(VCAD_DRAWING_PDF) }
+    /// DXF is the whole sheet in model mm: views at true size.
+    var ffiCode: UInt32 { self == .dxf ? UInt32(VCAD_DRAWING_SHEET_DXF) : UInt32(VCAD_DRAWING_PDF) }
 }
 
 // MARK: - Kernel calls
@@ -208,10 +323,12 @@ enum DrawingKernel {
 
 /// What a click on the sheet does.
 enum DrawingTool: Hashable {
-    case select, detail, section, gdt(GdtKind)
+    case select, dimension, centerLine, detail, section, gdt(GdtKind)
     var hint: String? {
         switch self {
         case .select: nil
+        case .dimension: "Click two points to dimension (snaps to corners and hole centers)"
+        case .centerLine: "Click the two ends of the center line"
         case .detail: "Click the region to magnify"
         case .section: "Click where the cutting plane crosses the view"
         case .gdt(.datum): "Click to place the datum feature symbol"
@@ -224,12 +341,24 @@ enum DrawingTool: Hashable {
 final class DrawingStore {
     static let shared = DrawingStore()
 
-    var view: DrawingView = .front { didSet { if view != oldValue { zoom = 1; pan = .zero; refresh() } } }
+    var view: DrawingView = .standard { didSet { if view != oldValue { zoom = 1; pan = .zero; selection = nil; refresh() } } }
     var showHidden = true { didSet { refresh() } }
     var showDimensions = true { didSet { refresh() } }
-    var details: [DrawingDetail] = [] { didSet { refresh() } }
-    var gdt: [DrawingGdt] = [] { didSet { refresh() } }
-    var tool: DrawingTool = .select
+    /// Detail views (persisted on the document).
+    var details: [DrawingDetail] {
+        get { documentSettings.details ?? [] }
+        set { updateSettings(name: newValue.count > details.count ? "Add Detail" : "Edit Details") { $0.details = newValue } }
+    }
+    /// GD&T frames and datum tags (persisted on the document).
+    var gdt: [DrawingGdt] {
+        get { documentSettings.gdt ?? [] }
+        set { updateSettings(name: newValue.count > gdt.count ? "Add GD&T" : "Edit GD&T") { $0.gdt = newValue } }
+    }
+    var tool: DrawingTool = .select { didSet { pendingPoint = nil } }
+    /// Selected annotation id (dimension, callout, center line, GD&T).
+    var selection: String?
+    /// First click of a two-click tool, sheet mm.
+    var pendingPoint: (view: String, sheet: DrawingPoint)?
     var gdtTolerance = 0.05
     var gdtDatum = "A"
     var zoom: CGFloat = 1
@@ -257,11 +386,25 @@ final class DrawingStore {
         return s
     }
 
-    var sectionsForView: [DrawingSectionLine] { (documentSettings.sections ?? []).filter { $0.view == view.rawValue } }
+    var sectionsForView: [DrawingSectionLine] { (documentSettings.sections ?? []).filter { sectionViews.contains($0.view) } }
+
+    /// Settings as drawn: a sheet with no title block yet gets one filled
+    /// from the document (name, today's date), so one click gives a complete
+    /// sheet; editing it persists real fields.
+    var effectiveSettings: DrawingSettingsIR {
+        var s = documentSettings
+        if s.titleBlock == nil {
+            var tb = DrawingTitleBlock()
+            tb.partName = model?.documentName ?? ""
+            tb.date = String(ISO8601DateFormatter().string(from: Date()).prefix(10))
+            s.titleBlock = tb
+        }
+        return s
+    }
 
     private func requestData() -> Data {
         let wire = DrawingRequestWire(view: view.rawValue, show_hidden: showHidden, show_dimensions: showDimensions,
-                                      details: details, gdt: gdt, drawing: settings,
+                                      details: [], gdt: [], drawing: effectiveSettings,
                                       base_dir: model?.exportBaseDir)
         return (try? JSONEncoder().encode(wire)) ?? Data("{}".utf8)
     }
@@ -306,7 +449,7 @@ final class DrawingStore {
             let enc = JSONEncoder()
             func str<T: Encodable>(_ v: T?) -> String? { v.flatMap { try? enc.encode($0) }.map { String(decoding: $0, as: UTF8.self) } }
             let feature = FeatureInput.drawingSettings(titleBlock: str(s.titleBlock), sections: str(s.sections),
-                                                       showBom: str(s.showBom))
+                                                       showBom: str(s.showBom), annotations: str(s.annotations))
             let known = settingsFeatureId
             if let r = try? AgentEdits.edit(model, name: name, { engine in
                 if let known, let r = try? engine.apply(.updateFeature(id: known, feature: feature)) { return r }
@@ -328,27 +471,95 @@ final class DrawingStore {
         DrawingLetters.used(sections: documentSettings.sections ?? [], details: details, gdt: gdt)
     }
 
-    func addSection(atViewX x: Double) {
-        guard view.canSection, let b = result?.main.bounds else { return }
+    /// Views a section can be cut on in the current layout.
+    var sectionViews: Set<String> { view == .standard ? ["front", "top", "right"] : [view.rawValue] }
+
+    func addSection(atViewX x: Double, on placement: DrawingSheetResult.Placement? = nil) {
+        let p = placement ?? result?.main
+        let name = p?.name ?? view.rawValue
+        guard name != "isometric", let b = p?.bounds else { return }
         let label = DrawingLetters.next(excluding: usedLetters)
         let pad = max(b.max_y - b.min_y, 1) * 0.1
-        let line = DrawingSectionLine(id: "section-\(UUID().uuidString.prefix(8))", view: view.rawValue, label: label,
+        let line = DrawingSectionLine(id: "section-\(UUID().uuidString.prefix(8))", view: name, label: label,
                                       points: [[x, b.min_y - pad], [x, b.max_y + pad]])
         updateSettings(name: "Add Section \(label)-\(label)") { $0.sections = ($0.sections ?? []) + [line] }
     }
 
     func clearSections() {
-        updateSettings(name: "Clear Sections") { s in s.sections = (s.sections ?? []).filter { $0.view != view.rawValue } }
+        let views = sectionViews
+        updateSettings(name: "Clear Sections") { s in s.sections = (s.sections ?? []).filter { !views.contains($0.view) } }
     }
 
-    func addDetail(at p: DrawingPoint) {
-        guard let b = result?.main.bounds else { return }
+    func addDetail(at p: DrawingPoint, on placement: DrawingSheetResult.Placement? = nil) {
+        guard let pl = placement ?? result?.main else { return }
+        let b = pl.bounds
         let size = max(min(b.max_x - b.min_x, b.max_y - b.min_y) * 0.3, 1)
-        details.append(DrawingDetail(label: DrawingLetters.next(excluding: usedLetters), center: [p.x, p.y],
-                                     width: size, height: size))
+        details.append(DrawingDetail(label: DrawingLetters.next(excluding: usedLetters), view: pl.name,
+                                     center: [p.x, p.y], width: size, height: size))
     }
 
-    func addGdt(_ kind: GdtKind, at p: DrawingPoint) {
+    /// Two-click tools: dimension (snapped; horizontal / vertical / aligned
+    /// from the pick direction) and center line.
+    func addLinear(on view: String, from a: DrawingPoint, to b: DrawingPoint, scale: Double, centerLine: Bool) {
+        let dx = b.x - a.x, dy = b.y - a.y
+        guard dx * dx + dy * dy > 1e-12 else { return }
+        let kind = centerLine ? "centerline" : abs(dy) < abs(dx) * 0.25 ? "horizontal" : abs(dx) < abs(dy) * 0.25 ? "vertical" : "aligned"
+        let off = centerLine ? 0 : (kind == "vertical" ? 8.0 : -8.0) / max(scale, 1e-9)
+        let dim = DrawingDimension(view: view, kind: kind, a: [a.x, a.y], b: [b.x, b.y], offset: off)
+        updateSettings(name: centerLine ? "Add Center Line" : "Add Dimension") { $0.dimensions = ($0.dimensions ?? []) + [dim] }
+        selection = dim.id
+    }
+
+    /// Delete the selected annotation: a user item is removed, an automatic
+    /// one is hidden (Restore Automatic Dimensions brings it back).
+    func deleteSelection() {
+        guard let id = selection, let h = result?.dimensions?.first(where: { $0.id == id }) else { return }
+        delete(h)
+    }
+
+    func delete(_ h: DrawingSheetResult.Handle) {
+        let id = h.id
+        if selection == id { selection = nil }
+        if h.kind == "gdt" {
+            gdt.removeAll { $0.id == id }
+        } else if h.auto {
+            updateSettings(name: "Delete Dimension") { $0.hiddenDimensions = ($0.hiddenDimensions ?? []) + [id] }
+        } else {
+            updateSettings(name: h.kind == "centerline" ? "Delete Center Line" : "Delete Dimension") {
+                $0.dimensions = ($0.dimensions ?? []).filter { $0.id != id }
+            }
+        }
+    }
+
+    /// Move a dimension: `delta` sheet mm, converted to its offset (view mm).
+    func moveDimension(_ h: DrawingSheetResult.Handle, by delta: DrawingPoint) {
+        let s = result?.placements.first { $0.name == h.view }?.scale ?? result?.main.scale ?? 1
+        let d: Double
+        switch h.kind {
+        case "horizontal": d = delta.y / s
+        case "vertical": d = delta.x / s
+        case "callout": d = (delta.x + delta.y) / 2.squareRoot()
+        default: return
+        }
+        guard abs(d) > 1e-9 else { return }
+        let new = h.offset + d
+        updateSettings(name: "Move Dimension") { st in
+            if h.auto {
+                var o = st.dimensionOffsets ?? [:]
+                o[h.id] = h.kind == "callout" ? max(new, 1) : new
+                st.dimensionOffsets = o
+            } else if var dims = st.dimensions, let i = dims.firstIndex(where: { $0.id == h.id }) {
+                dims[i].offset = new
+                st.dimensions = dims
+            }
+        }
+    }
+
+    func restoreAutomaticDimensions() {
+        updateSettings(name: "Restore Automatic Dimensions") { $0.hiddenDimensions = nil; $0.dimensionOffsets = nil }
+    }
+
+    func addGdt(_ kind: GdtKind, at p: DrawingPoint, on view: String? = nil) {
         var datum: String? = gdtDatum.isEmpty ? nil : String(gdtDatum.prefix(1)).uppercased()
         if kind == .datum {
             // A new datum feature must not reuse a view letter, another
@@ -358,7 +569,7 @@ final class DrawingStore {
             datum = DrawingLetters.resolve(datum, excluding: taken)
             gdtDatum = datum ?? gdtDatum
         }
-        gdt.append(DrawingGdt(kind: kind, tolerance: gdtTolerance, datum: datum, at: [p.x, p.y]))
+        gdt.append(DrawingGdt(view: view, kind: kind, tolerance: gdtTolerance, datum: datum, at: [p.x, p.y]))
     }
 
     // MARK: export
@@ -370,7 +581,9 @@ final class DrawingStore {
         }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [format.contentType]
-        panel.nameFieldStringValue = "\(model.documentName)-\(view.rawValue).\(format.fileExtension)"
+        panel.nameFieldStringValue = view == .standard
+            ? "\(model.documentName).\(format.fileExtension)"
+            : "\(model.documentName)-\(view.rawValue).\(format.fileExtension)"
         panel.prompt = "Export"
         panel.canCreateDirectories = true
         let req = requestData()
@@ -444,7 +657,7 @@ struct DrawingWorkspaceView: View {
         .animation(Motion.panel, value: model.showsTree)
         .animation(Motion.panel, value: model.showsInspector)
         .onAppear { store.model = model; store.refresh(force: true) }
-        .onChange(of: model.source) { _, _ in store.details = []; store.gdt = []; store.refresh(force: true) }
+        .onChange(of: model.source) { _, _ in store.selection = nil; store.refresh(force: true) }
         .onChange(of: model.undoStack.count) { _, _ in store.refresh() }
         .onChange(of: model.redoStack.count) { _, _ in store.refresh() }
     }
@@ -474,6 +687,9 @@ private struct DrawingNavigator: View {
                 .buttonStyle(.plain)
                 .accessibilityAddTraits(v == store.view ? .isSelected : [])
             }
+            if let r = store.result, let size = r.sheet_size {
+                Text("\(size) · \(r.main.scale_note)").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            }
             if !store.sectionsForView.isEmpty || !store.details.isEmpty || !store.gdt.isEmpty {
                 Divider()
                 Eyebrow("Annotations")
@@ -499,10 +715,21 @@ private struct DrawingInspector: View {
     @State private var titleBlockShown = false
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.Space.s) {
-            PanelHeader(title: "\(store.view.label) View")
+            PanelHeader(title: store.view == .standard ? "Sheet" : "\(store.view.label) View")
             Divider()
+            Picker("Size", selection: Binding(get: { DrawingSheetSize(rawValue: store.documentSettings.sheetSize ?? "auto") ?? .auto },
+                                              set: { v in store.updateSettings(name: "Sheet Size") { $0.sheetSize = v == .auto ? nil : v.rawValue } })) {
+                ForEach(DrawingSheetSize.allCases) { Text($0.label).tag($0) }
+            }
+            .font(.callout).disabled(store.view != .standard)
             Toggle("Hidden lines", isOn: $store.showHidden).font(.callout)
             Toggle("Dimensions", isOn: $store.showDimensions).font(.callout)
+            Toggle("Hole callouts", isOn: Binding(get: { store.documentSettings.holeCallouts ?? true },
+                                                  set: { v in store.updateSettings(name: v ? "Show Hole Callouts" : "Hide Hole Callouts") { $0.holeCallouts = v ? nil : false } }))
+                .font(.callout)
+            Toggle("Center marks", isOn: Binding(get: { store.documentSettings.centerMarks ?? true },
+                                                 set: { v in store.updateSettings(name: v ? "Show Center Marks" : "Hide Center Marks") { $0.centerMarks = v ? nil : false } }))
+                .font(.callout)
             Toggle("Parts list", isOn: Binding(get: { store.documentSettings.showBom ?? false },
                                                set: { v in store.updateSettings(name: v ? "Show BOM" : "Hide BOM") { $0.showBom = v } }))
                 .font(.callout)
@@ -530,7 +757,17 @@ private struct DrawingInspector: View {
                 .popover(isPresented: $titleBlockShown, arrowEdge: .leading) {
                     DrawingTitleBlockEditor(store: store, shown: $titleBlockShown)
                 }
+            if let id = store.selection, let h = store.result?.dimensions?.first(where: { $0.id == id }) {
+                Divider()
+                Eyebrow(h.auto ? "Automatic \(h.kind)" : h.kind.capitalized)
+                Text("Drag to move · ⌫ to delete").font(.caption).foregroundStyle(.secondary)
+                Button(h.auto ? "Hide" : "Delete", role: .destructive) { store.deleteSelection() }
+            }
             Menu("Clear") {
+                Button("Restore Automatic Dimensions") { store.restoreAutomaticDimensions() }
+                    .disabled((store.documentSettings.hiddenDimensions ?? []).isEmpty && (store.documentSettings.dimensionOffsets ?? [:]).isEmpty)
+                Button("Clear My Dimensions") { store.updateSettings(name: "Clear Dimensions") { $0.dimensions = nil } }
+                    .disabled((store.documentSettings.dimensions ?? []).isEmpty)
                 Button("Clear Details") { store.details = [] }.disabled(store.details.isEmpty)
                 Button("Clear Sections in This View") { store.clearSections() }.disabled(store.sectionsForView.isEmpty)
                 Button("Clear GD&T") { store.gdt = [] }.disabled(store.gdt.isEmpty)
@@ -557,7 +794,7 @@ struct DrawingStatusPill: View {
             } else if let e = store.error, store.result != nil {
                 Label(e, systemImage: "exclamationmark.triangle")
             } else if let r = store.result {
-                Text("\(r.main.scale_note) · \(r.visible_edges) visible · \(r.hidden_edges) hidden edges · DXF \(r.dxf_entities)")
+                Text("\(r.sheet_size ?? "A4") · \(r.main.scale_note) · \(r.placements.count) view\(r.placements.count == 1 ? "" : "s") · \(r.dimensions?.count ?? 0) annotations · \(r.circles ?? 0) holes")
                     .monospacedDigit().foregroundStyle(.secondary)
             }
         }
@@ -622,6 +859,10 @@ struct DrawingSheetCanvas: View {
     @Environment(\.colorScheme) private var scheme
     @State private var dragStart: CGSize?
     @State private var zoomStart: CGFloat?
+    /// Annotation being dragged and the sheet-mm offset so far.
+    @State private var moving: (handle: DrawingSheetResult.Handle, delta: DrawingPoint)?
+    @State private var hover: DrawingPoint?
+    @FocusState private var focused: Bool
 
     private func frame(in size: CGSize) -> (fit: CGFloat, origin: CGPoint) {
         let margin: CGFloat = 24
@@ -635,15 +876,40 @@ struct DrawingSheetCanvas: View {
             let f = frame(in: geo.size)
             Canvas { ctx, _ in
                 draw(ctx: &ctx, fit: f.fit, origin: f.origin)
+                overlay(ctx: &ctx, fit: f.fit, origin: f.origin)
             }
             .contentShape(Rectangle())
+            .focusable()
+            .focusEffectDisabled()
+            .focused($focused)
+            .onDeleteCommand { store.deleteSelection() }
+            .onKeyPress(.escape) { store.selection = nil; store.tool = .select; return .handled }
+            .onContinuousHover { phase in
+                if case let .active(p) = phase { hover = toSheet(p, fit: f.fit, origin: f.origin) } else { hover = nil }
+            }
             .gesture(DragGesture(minimumDistance: 4)
                 .onChanged { v in
+                    // Dragging an annotation moves it; dragging paper pans.
+                    if moving == nil, dragStart == nil, store.tool == .select,
+                       let h = result.handle(at: toSheet(v.startLocation, fit: f.fit, origin: f.origin)),
+                       ["horizontal", "vertical", "callout"].contains(h.kind) {
+                        store.selection = h.id
+                        moving = (h, DrawingPoint(x: 0, y: 0))
+                    }
+                    if let m = moving {
+                        moving = (m.handle, DrawingPoint(x: Double(v.translation.width / f.fit),
+                                                         y: -Double(v.translation.height / f.fit)))
+                        return
+                    }
                     if dragStart == nil { dragStart = store.pan }
                     store.pan = CGSize(width: dragStart!.width + v.translation.width,
                                        height: dragStart!.height + v.translation.height)
                 }
-                .onEnded { _ in dragStart = nil })
+                .onEnded { _ in
+                    if let m = moving { store.moveDimension(m.handle, by: m.delta) }
+                    moving = nil
+                    dragStart = nil
+                })
             .simultaneousGesture(MagnifyGesture()
                 .onChanged { v in
                     if zoomStart == nil { zoomStart = store.zoom }
@@ -656,16 +922,69 @@ struct DrawingSheetCanvas: View {
         }
     }
 
+    private func toSheet(_ p: CGPoint, fit: CGFloat, origin: CGPoint) -> DrawingPoint {
+        DrawingPoint(x: Double((p.x - origin.x) / fit), y: result.height - Double((p.y - origin.y) / fit))
+    }
+
     private func click(_ p: CGPoint, fit: CGFloat, origin: CGPoint) {
-        let sheet = DrawingPoint(x: Double((p.x - origin.x) / fit), y: result.height - Double((p.y - origin.y) / fit))
-        let v = result.main.toView(sheet)
+        focused = true
+        let sheet = toSheet(p, fit: fit, origin: origin)
+        if store.tool == .select {
+            store.selection = result.handle(at: sheet)?.id
+            return
+        }
+        guard let placement = result.view(at: sheet) ?? (result.placements.count == 1 ? result.main : nil) else { return }
+        let name = placement.name ?? store.view.rawValue
         switch store.tool {
         case .select: return
-        case .detail: store.addDetail(at: v)
-        case .section: store.addSection(atViewX: v.x)
-        case let .gdt(kind): store.addGdt(kind, at: v)
+        case .dimension, .centerLine:
+            guard name != "isometric" else { return }
+            let snapped = store.tool == .dimension ? result.snap(sheet) : sheet
+            if let first = store.pendingPoint, first.view == name {
+                store.addLinear(on: name, from: placement.toView(first.sheet), to: placement.toView(snapped),
+                                scale: placement.scale, centerLine: store.tool == .centerLine)
+                store.pendingPoint = nil
+            } else {
+                store.pendingPoint = (name, snapped)
+            }
+            return // stay armed for the next one
+        case .detail: store.addDetail(at: placement.toView(sheet), on: placement)
+        case .section: store.addSection(atViewX: placement.toView(sheet).x, on: placement)
+        case let .gdt(kind): store.addGdt(kind, at: placement.toView(sheet), on: placement.name)
         }
         store.tool = .select
+    }
+
+    /// Selection box, drag ghost, and the pending first click.
+    private func overlay(ctx: inout GraphicsContext, fit: CGFloat, origin: CGPoint) {
+        let H = result.height
+        func pt(_ p: DrawingPoint) -> CGPoint { CGPoint(x: origin.x + p.x * fit, y: origin.y + (H - p.y) * fit) }
+        func box(_ h: DrawingSheetResult.Handle, _ d: DrawingPoint) -> CGRect {
+            let a = pt(DrawingPoint(x: h.min[0] - 1 + d.x, y: h.max[1] + 1 + d.y))
+            let b = pt(DrawingPoint(x: h.max[0] + 1 + d.x, y: h.min[1] - 1 + d.y))
+            return CGRect(x: a.x, y: a.y, width: b.x - a.x, height: b.y - a.y)
+        }
+        if let id = store.selection, let h = result.dimensions?.first(where: { $0.id == id }) {
+            let r = Path(roundedRect: box(h, DrawingPoint(x: 0, y: 0)), cornerRadius: 3)
+            ctx.fill(r, with: .color(.accentColor.opacity(0.10)))
+            ctx.stroke(r, with: .color(.accentColor), lineWidth: 1)
+        }
+        if let m = moving {
+            ctx.stroke(Path(roundedRect: box(m.handle, m.delta), cornerRadius: 3), with: .color(.accentColor),
+                       style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+        }
+        if store.tool == .dimension, let h = hover {
+            let s = result.snap(h)
+            if s != h { ctx.stroke(Path(ellipseIn: CGRect(x: pt(s).x - 4, y: pt(s).y - 4, width: 8, height: 8)), with: .color(.accentColor), lineWidth: 1.5) }
+        }
+        if let first = store.pendingPoint {
+            let a = pt(first.sheet)
+            ctx.fill(Path(ellipseIn: CGRect(x: a.x - 3, y: a.y - 3, width: 6, height: 6)), with: .color(.accentColor))
+            if let h = hover {
+                var p = Path(); p.move(to: a); p.addLine(to: pt(store.tool == .dimension ? result.snap(h) : h))
+                ctx.stroke(p, with: .color(.accentColor), style: StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            }
+        }
     }
 
     private var ink: Color { scheme == .dark ? Color(white: 0.92) : Color(red: 0.08, green: 0.12, blue: 0.22) }

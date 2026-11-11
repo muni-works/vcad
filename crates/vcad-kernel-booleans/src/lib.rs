@@ -26,6 +26,7 @@ mod pipeline;
 pub mod recut_log;
 mod repair;
 pub mod sew;
+mod snap;
 pub mod split;
 pub mod ssi;
 pub mod timing;
@@ -2014,4 +2015,13 @@ mod tests {
 /// Test-only export of the freeze pass.
 pub fn freeze_circle_loops_for_test(brep: &mut vcad_kernel_primitives::BRepSolid, segments: u32) {
     freeze::freeze_circle_loops(brep, segments);
+}
+
+/// Test-only export of the partial-arc freeze pass.
+pub fn freeze_arc_chains_for_test(
+    brep: &mut vcad_kernel_primitives::BRepSolid,
+    other: &vcad_kernel_primitives::BRepSolid,
+    segments: u32,
+) {
+    freeze::freeze_arc_chains(brep, other, segments);
 }

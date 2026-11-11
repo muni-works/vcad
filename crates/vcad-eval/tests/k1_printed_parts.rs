@@ -94,17 +94,22 @@ macro_rules! fixture {
 }
 
 // 1: coaxial counterbore + through hole on a half-cylinder (was a wasm trap).
-// Still open off-origin: the half-cylinder's base sits coplanar on the
-// flange top and that union seam leaks (263 open edges, volume changes with
-// z offset). Tracked separately from the break-out fix.
+// Needs both the union seam (1u) and the counterbore entering the curved
+// wall: a perpendicular unequal-radius cylinder pair (1r).
 #[test]
-#[ignore = "coplanar half-cylinder/flange union seam still open"]
 fn coaxial_counterbore_half_cylinder() {
     assert_closed("i1", include_str!("fixtures/k1/i1_counterbore.loon"));
 }
+// 1u: the union under 1 on its own. The flange top is `-8.3 + 8` =
+// -0.3000000000000007 and the half-cylinder base is -0.3; that float noise
+// left 132 open edges until booleans snapped it onto one plane.
+fixture!(flange_half_cylinder_union, "i1u_flange_half_union.loon");
+// 1r: a blind radial hole into a cylinder wall. Perpendicular cylinders of
+// unequal radius used to fall to an unordered marching sampler; the hole
+// lost its floor.
+fixture!(blind_radial_hole_in_cylinder, "i1r_radial_hole.loon");
 // 1b: the same hole as a revolve of a profile touching its axis.
 #[test]
-#[ignore = "revolve of a profile touching its axis yields an empty mesh"]
 fn revolve_profile_touching_axis() {
     assert_closed("i1b", include_str!("fixtures/k1/i1b_revolve.loon"));
 }
@@ -115,9 +120,11 @@ fixture!(mixed_facet_counterbore_8x, "i2_mixed8.loon");
 fixture!(counterbore_sliver, "i3a_sliver.loon");
 // 3b: hex prism standing exactly on a disc's top face, unioned.
 fixture!(hex_prism_on_disc_face, "i3b_hexdisc.loon");
-// 4: half-annulus slot grazing a unioned hub.
+// 4: half-annulus slot grazing a unioned hub. The slot itself (box ∩
+// annulus) was the defect: the box side cuts each annular cap through its
+// hole, and that chord used to be refused (4a).
+fixture!(box_cuts_annulus_through_hole, "i4a_box_annulus.loon");
 #[test]
-#[ignore = "half-annulus slot across a hub/disc union seam: 546 open edges"]
 fn slot_across_hub_seam() {
     assert_closed("i4", include_str!("fixtures/k1/i4_slot_hub.loon"));
 }
@@ -128,6 +135,9 @@ fixture!(grip_cam, "i5b_gripcam.loon");
 fixture!(stator_ring_many_tools, "i6_stator.loon");
 // 8: wrist adapter (render/STEP trap report).
 fixture!(wrist_adapter, "i8_wrist.loon");
+// 9: wrist interface — box pockets cut into an arc-extruded D wall tore the
+// wall from its caps (extrude's 8-point arc chain vs the canonical rims).
+fixture!(wrist_interface, "wrist_interface.loon");
 
 /// 7: an unused `[let f [fn ...]]` binding must not break evaluation.
 #[test]

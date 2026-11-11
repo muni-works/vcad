@@ -43,6 +43,7 @@ pub mod error;
 #[cfg(feature = "network")]
 pub mod ftp;
 pub mod gate;
+pub mod job;
 pub mod link;
 #[cfg(feature = "network")]
 pub mod mqtt;

@@ -1169,6 +1169,10 @@ pub(crate) fn brep_boolean(
     let mut a = solid_a.clone();
     let mut b = solid_b.clone();
 
+    // Planes the operands share up to float noise become exactly shared
+    // (see crate::snap).
+    crate::snap::snap_coplanar_offsets(&a, &mut b);
+
     // Freeze analytic full-circle edges into canonical polylines so the
     // whole pipeline works on one concrete boundary representation (see
     // crate::freeze). Without this, results that keep an untouched analytic
@@ -1177,6 +1181,8 @@ pub(crate) fn brep_boolean(
     if std::env::var("VCAD_NO_FREEZE").is_err() {
         crate::freeze::freeze_circle_loops(&mut a, segments);
         crate::freeze::freeze_circle_loops(&mut b, segments);
+        crate::freeze::freeze_arc_chains(&mut a, solid_b, segments);
+        crate::freeze::freeze_arc_chains(&mut b, solid_a, segments);
     }
 
     // 1. Find candidate face pairs via AABB filtering
@@ -1187,6 +1193,7 @@ pub(crate) fn brep_boolean(
     // 2. For each face pair, compute SSI and collect splits for both A and B.
     // `Ok(None)` means "no splits for this pair"; `Err` aborts the whole
     // boolean with a typed error instead of panicking mid-pipeline.
+    let hole_chords = std::sync::Mutex::new(split::HoleChordSpans::new());
     let compute_ssi =
         |&(face_a, face_b): &(FaceId, FaceId)| -> Result<Option<SsiPairResult>, BooleanError> {
             // Get face data with bounds checking to avoid panics
@@ -1512,6 +1519,39 @@ pub(crate) fn brep_boolean(
             // cylindrical surfaces; route them directly to the cylindrical
             // splitter without going through `trim_curve_to_face`, so the
             // figure-8 stays atomic and the 4-way split happens in one call.
+            // A smaller perpendicular cylinder through a larger one is two
+            // separate closed loops (`ssi::perpendicular_unequal_cylinders`),
+            // not a figure-8: route each to the cylindrical splitter as its
+            // own sampled curve. The splitter tells the cases apart — a loop
+            // winding a face's axis is a profile, one that does not is a
+            // patch — and leaves a face a loop misses whole.
+            if let ssi::IntersectionCurve::TwoSampled(c1, c2) = &curve {
+                let radius = |s: &dyn vcad_kernel_geom::Surface| {
+                    s.as_any()
+                        .downcast_ref::<vcad_kernel_geom::CylinderSurface>()
+                        .map(|c| c.radius)
+                };
+                if let (Some(ra), Some(rb)) = (radius(surf_a.as_ref()), radius(surf_b.as_ref())) {
+                    if (ra - rb).abs() > 1e-6 {
+                        // Both loops lie on both infinite surfaces; only one
+                        // lying on both FACES is a real crossing (the far
+                        // loop of a blind radial hole is not).
+                        let on_both = |c: &Vec<Point3>| {
+                            let step = (c.len() / 16).max(1);
+                            c.iter().step_by(step).any(|p| {
+                                trim::point_in_face(&a, face_a, p)
+                                    && trim::point_in_face(&b, face_b, p)
+                            })
+                        };
+                        for c in [c1, c2].into_iter().filter(|c| on_both(c)) {
+                            let s = ssi::IntersectionCurve::Sampled(c.clone());
+                            results_a.push((s.clone(), Point3::origin(), Point3::origin()));
+                            results_b.push((s, Point3::origin(), Point3::origin()));
+                        }
+                        return Ok(Some((face_a, results_a, face_b, results_b, true)));
+                    }
+                }
+            }
             if let ssi::IntersectionCurve::TwoSampled(_, _) = &curve {
                 debug_bool!(
                     "  TwoSampled: {:?}({:?}) x {:?}({:?})",
@@ -1597,6 +1637,34 @@ pub(crate) fn brep_boolean(
                     }
                     out
                 };
+                // A cut through a planar face's hole is only trusted when
+                // the partner face covers the whole chord (see
+                // `split::trust_hole_chords`).
+                if let ssi::IntersectionCurve::Line(l) = single_curve {
+                    let holed =
+                        |s: &BRepSolid, f: FaceId| !s.topology.faces[f].inner_loops.is_empty();
+                    let mut spans: Vec<(Point3, Point3)> = Vec::new();
+                    // The cutter's own extent along the line: a chord lying
+                    // inside it is really cut, hole included.
+                    let mut extent = |cutter: &[trim::TrimmedSegment]| {
+                        for sg in cutter {
+                            spans.push((
+                                evaluate_curve(single_curve, sg.t_start),
+                                evaluate_curve(single_curve, sg.t_end),
+                            ));
+                        }
+                    };
+                    if holed(&a, face_a) {
+                        extent(&segs_b);
+                    }
+                    if holed(&b, face_b) {
+                        extent(&segs_a);
+                    }
+                    if !spans.is_empty() {
+                        let mut set = hole_chords.lock().unwrap_or_else(|e| e.into_inner());
+                        set.entry(split::line_key(l)).or_default().extend(spans);
+                    }
+                }
                 let line_curve = matches!(single_curve, ssi::IntersectionCurve::Line(_));
                 // A wall that merely ENDS on this face's plane (flush
                 // prismatic stack: the other operand's cap sits in the same
@@ -1777,6 +1845,8 @@ pub(crate) fn brep_boolean(
         pairs.iter().map(compute_ssi).collect()
     };
     let split_results: Vec<SsiPairResult> = pair_results?.into_iter().flatten().collect();
+    let hole_chords = hole_chords.into_inner().unwrap_or_else(|e| e.into_inner());
+    split::trust_hole_chords(hole_chords);
 
     // Merge results into HashMaps
     let mut splits_a: HashMap<FaceId, FaceSplits> = HashMap::new();

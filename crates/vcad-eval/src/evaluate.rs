@@ -1441,9 +1441,9 @@ fn evaluate_op_timed(
                     #[cfg(not(target_arch = "wasm32"))]
                     {
                         let solids =
-                            Solid::from_step_all(path).map_err(|e| step_err(e.to_string()))?;
+                            crate::step_sources::solids_from_file(path).map_err(step_err)?;
                         let count = solids.len();
-                        solids.into_iter().nth(index).ok_or_else(|| {
+                        solids.get(index).cloned().ok_or_else(|| {
                             step_err(format!(
                                 "solid index {} out of range — the file has {} solid(s)",
                                 index, count
@@ -2998,6 +2998,9 @@ fn scope_primitive_names(node_id: NodeId, op: &CsgOp, result: &mut Option<Solid>
             | CsgOp::Wedge { .. }
             | CsgOp::Prism { .. }
             | CsgOp::SpurGear { .. }
+            // Extrudes seed names from their sketch segments (`side.<i>`,
+            // `start`, `end`); scope them to the node like a primitive's.
+            | CsgOp::Extrude { .. }
     );
     if !is_primitive {
         return;

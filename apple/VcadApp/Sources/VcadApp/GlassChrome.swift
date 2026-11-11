@@ -581,13 +581,15 @@ enum DockTools {
         let s = DrawingStore.shared
         return keyed([
             Tool(id: "dwg.select", label: "Select", symbol: "cursorarrow", isActive: s.tool == .select) { s.tool = .select },
+            Tool(id: "dwg.dimension", label: "Dimension", symbol: "ruler", isActive: s.tool == .dimension) { s.tool = .dimension },
+            Tool(id: "dwg.centerline", label: "Center Line", symbol: "line.diagonal", isActive: s.tool == .centerLine) { s.tool = .centerLine },
             Tool(id: "dwg.section", label: "Section", symbol: "rectangle.split.2x1", isActive: s.tool == .section,
                  enabled: s.view.canSection, hint: "Not in the isometric view") { s.tool = .section },
             Tool(id: "dwg.detail", label: "Detail", symbol: "plus.magnifyingglass", isActive: s.tool == .detail) { s.tool = .detail },
             Tool(id: "dwg.datum", label: "Datum", symbol: "a.square", isActive: s.tool == .gdt(.datum)) { s.tool = .gdt(.datum) },
             Tool(id: "dwg.frame", label: "Feature Control Frame", symbol: "square.grid.3x1.below.line.grid.1x2",
                  isActive: { if case .gdt(let k) = s.tool { return k != .datum }; return false }()) { s.tool = .gdt(.position) },
-        ], ["dwg.select": "v", "dwg.section": "t", "dwg.detail": "d", "dwg.datum": "a", "dwg.frame": "g"])
+        ], ["dwg.select": "v", "dwg.dimension": "m", "dwg.centerline": "l", "dwg.section": "t", "dwg.detail": "d", "dwg.datum": "a", "dwg.frame": "g"])
     }
 
     /// Electronics: the editing modes plus the two board-wide verbs. An empty

@@ -24,7 +24,34 @@ pub trait PrinterLink {
     /// Delete a file from the SD card.
     fn delete(&mut self, name: &str) -> Result<()>;
     /// Start printing an already-uploaded file. Requires a gate ticket.
-    fn start_print(&mut self, name: &str, ticket: &PrintTicket) -> Result<()>;
+    /// `ams` maps the file's filament(s) to global AMS tray indices
+    /// (`unit * 4 + slot`); empty = the external spool.
+    fn start_print(&mut self, name: &str, ticket: &PrintTicket, ams: &[u32]) -> Result<()>;
+    /// Pause, resume or stop the running job.
+    fn control(&mut self, action: Control) -> Result<()>;
+}
+
+/// Job control actions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Control {
+    /// Pause the running print.
+    Pause,
+    /// Resume a paused print.
+    Resume,
+    /// Stop (cancel) the print.
+    Stop,
+}
+
+impl Control {
+    /// Parse `pause` / `resume` / `stop`.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "pause" => Some(Self::Pause),
+            "resume" => Some(Self::Resume),
+            "stop" => Some(Self::Stop),
+            _ => None,
+        }
+    }
 }
 
 /// What `upload_test` did.
@@ -41,7 +68,7 @@ pub struct UploadTestReport {
 /// Upload a harmless text file, confirm its size, delete it, confirm it's gone.
 /// The file is plain text with a non-printable name pattern
 /// (`vcad-m0-test-*.txt`); the printer never treats it as a job.
-pub fn upload_test<L: PrinterLink>(link: &mut L, nonce: &str) -> Result<UploadTestReport> {
+pub fn upload_test<L: PrinterLink + ?Sized>(link: &mut L, nonce: &str) -> Result<UploadTestReport> {
     let name = format!("vcad-m0-test-{nonce}.txt");
     let body = format!("vcad M0 upload test {nonce}\nsafe to delete; never printed\n");
     link.upload(&name, body.as_bytes())?;
@@ -73,12 +100,13 @@ pub fn upload_test<L: PrinterLink>(link: &mut L, nonce: &str) -> Result<UploadTe
 /// Gate, upload, verify, start. Nothing touches the printer until the gate
 /// passes; the upload is skipped if the bytes don't hash to the ticket; the
 /// start is skipped if the printer reports a different size.
-pub fn print_gated<L: PrinterLink>(
+pub fn print_gated<L: PrinterLink + ?Sized>(
     link: &mut L,
     name: &str,
     archive: &[u8],
     plate_index: u32,
     inputs: &GateInputs<'_>,
+    ams: &[u32],
 ) -> Result<PrintTicket> {
     let ticket = gate::check(archive, plate_index, inputs)?;
     if gate::md5_upper(archive) != ticket.archive_md5() {
@@ -96,7 +124,7 @@ pub fn print_gated<L: PrinterLink>(
             )))
         }
     }
-    link.start_print(name, &ticket)?;
+    link.start_print(name, &ticket, ams)?;
     Ok(ticket)
 }
 
@@ -115,6 +143,8 @@ pub enum FakeCall {
     Delete(String),
     /// `start_print(name, plate)`
     StartPrint(String, u32),
+    /// `control(action)`
+    Control(Control),
 }
 
 /// In-memory printer for tests.
@@ -181,7 +211,14 @@ impl PrinterLink for FakePrinter {
         self.files.remove(name);
         Ok(())
     }
-    fn start_print(&mut self, name: &str, ticket: &PrintTicket) -> Result<()> {
+    fn control(&mut self, action: Control) -> Result<()> {
+        self.calls.push(FakeCall::Control(action));
+        if self.offline {
+            return Err(BambuError::Timeout("fake printer offline".into()));
+        }
+        Ok(())
+    }
+    fn start_print(&mut self, name: &str, ticket: &PrintTicket, _ams: &[u32]) -> Result<()> {
         self.calls
             .push(FakeCall::StartPrint(name.into(), ticket.plate_index()));
         if self.offline {
@@ -248,14 +285,24 @@ impl PrinterLink for LanPrinter {
     fn delete(&mut self, name: &str) -> Result<()> {
         crate::ftp::delete_blocking(self.entry.ip, &self.entry.access_code, name)
     }
-    fn start_print(&mut self, name: &str, ticket: &PrintTicket) -> Result<()> {
+    fn control(&mut self, action: Control) -> Result<()> {
+        let p = self.connect()?;
+        self.rt.block_on(async {
+            match action {
+                Control::Pause => p.pause().await,
+                Control::Resume => p.resume().await,
+                Control::Stop => p.stop().await,
+            }
+        })
+    }
+    fn start_print(&mut self, name: &str, ticket: &PrintTicket, ams: &[u32]) -> Result<()> {
         let p = self.connect()?;
         self.rt.block_on(p.mqtt_client().send_command(
             crate::commands::PrinterCommand::PrintStart {
                 file: format!("/sdcard/{name}"),
                 plate_index: ticket.plate_index(),
-                use_ams: false,
-                ams_mapping: vec![],
+                use_ams: !ams.is_empty(),
+                ams_mapping: ams.to_vec(),
                 bed_leveling: true,
                 flow_calibration: true,
                 vibration_calibration: true,
@@ -318,7 +365,7 @@ mod tests {
         let st = idle();
         let f = sliced(Some("C12"), "PLA");
         let mut p = FakePrinter::default();
-        print_gated(&mut p, "cube.gcode.3mf", &f, 0, &inputs(&st)).unwrap();
+        print_gated(&mut p, "cube.gcode.3mf", &f, 0, &inputs(&st), &[]).unwrap();
         assert_eq!(
             p.calls,
             vec![
@@ -338,7 +385,7 @@ mod tests {
             confirmed: false,
             ..inputs(&st)
         };
-        assert!(print_gated(&mut p, "cube.gcode.3mf", &f, 0, &no).is_err());
+        assert!(print_gated(&mut p, "cube.gcode.3mf", &f, 0, &no, &[]).is_err());
         assert!(p.calls.is_empty(), "{:?}", p.calls);
     }
 
@@ -350,7 +397,7 @@ mod tests {
             truncate_uploads: 1,
             ..Default::default()
         };
-        assert!(print_gated(&mut p, "cube.gcode.3mf", &f, 0, &inputs(&st)).is_err());
+        assert!(print_gated(&mut p, "cube.gcode.3mf", &f, 0, &inputs(&st), &[]).is_err());
         assert!(p.uploaded());
         assert!(!p.printed());
     }

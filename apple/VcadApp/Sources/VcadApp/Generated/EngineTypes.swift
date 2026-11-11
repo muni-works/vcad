@@ -1810,7 +1810,8 @@ public enum FeatureInput: Codable, Equatable, Sendable {
     /// - titleBlock: Title block fields (JSON-serialized `DrawingTitleBlock`).
     /// - sections: Section lines (JSON-serialized `Vec<DrawingSectionLine>`).
     /// - showBom: BOM table visibility (JSON bool).
-    case drawingSettings(titleBlock: String? = nil, sections: String? = nil, showBom: String? = nil)
+    /// - annotations: Annotations (JSON-serialized `DrawingSettings` subset: sheet size, dimensions, details, GD&T, toggles).
+    case drawingSettings(titleBlock: String? = nil, sections: String? = nil, showBom: String? = nil, annotations: String? = nil)
     /// - system: System data (JSON-serialized `MoleculeSystem`).
     case molecule(system: String? = nil)
     /// - studies: Studies data (JSON-serialized `Vec<AnalysisStudy>`).
@@ -2061,7 +2062,8 @@ public enum FeatureInput: Codable, Equatable, Sendable {
             self = .drawingSettings(
                 titleBlock: try c.decodeIfPresent(String.self, forKey: "title_block"),
                 sections: try c.decodeIfPresent(String.self, forKey: "sections"),
-                showBom: try c.decodeIfPresent(String.self, forKey: "show_bom")
+                showBom: try c.decodeIfPresent(String.self, forKey: "show_bom"),
+                annotations: try c.decodeIfPresent(String.self, forKey: "annotations")
             )
         case "Molecule":
             self = .molecule(
@@ -2250,11 +2252,12 @@ public enum FeatureInput: Codable, Equatable, Sendable {
             try c.encode("Schematic", forKey: "type")
             try c.encodeIfPresent(title, forKey: "title")
             try c.encodeIfPresent(sheet, forKey: "sheet")
-        case .drawingSettings(let titleBlock, let sections, let showBom):
+        case .drawingSettings(let titleBlock, let sections, let showBom, let annotations):
             try c.encode("DrawingSettings", forKey: "type")
             try c.encodeIfPresent(titleBlock, forKey: "title_block")
             try c.encodeIfPresent(sections, forKey: "sections")
             try c.encodeIfPresent(showBom, forKey: "show_bom")
+            try c.encodeIfPresent(annotations, forKey: "annotations")
         case .molecule(let system):
             try c.encode("Molecule", forKey: "type")
             try c.encodeIfPresent(system, forKey: "system")

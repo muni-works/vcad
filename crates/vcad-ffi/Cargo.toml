@@ -25,6 +25,7 @@ vcad-kernel-cam = { workspace = true }
 vcad-slicer = { workspace = true }
 vcad-slicer-gcode = { workspace = true }
 vcad-slicer-bambu = { workspace = true }
+vcad-printcheck = { workspace = true }
 vcad-kernel = { workspace = true }
 vcad-kernel-drafting = { workspace = true }
 vcad-kernel-naming = { workspace = true }
