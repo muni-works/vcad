@@ -3527,8 +3527,11 @@ final class EditorModel {
         runCommand(.reorder(id: id, index: index), name: "Reorder")
     }
 
-    /// Suppressed parts are kept in the document but not built or drawn
-    /// (IR `roots[i].visible = false`, the web's hidden flag).
+    /// Parts hidden in the document: saved with the file (IR
+    /// `roots[i].visible = false`), still built, just not drawn. Unlike the
+    /// view-only Hide, this survives reopening. It is not a true suppress —
+    /// the part is still evaluated, and a part another feature consumes has
+    /// no scene root to hide — so the menu says "Hide in Document".
     func isSuppressed(part i: Int) -> Bool {
         guard let roots = documentJSON?["roots"] as? [[String: Any]], i < roots.count else { return false }
         return (roots[i]["visible"] as? Bool) == false
@@ -3536,7 +3539,7 @@ final class EditorModel {
     func toggleSuppressed(part i: Int) {
         guard let id = partId(forPart: i) else { return }
         let suppressed = isSuppressed(part: i)
-        runCommand(.setVisible(id: id, visible: suppressed), name: suppressed ? "Unsuppress" : "Suppress")
+        runCommand(.setVisible(id: id, visible: suppressed), name: suppressed ? "Show in Document" : "Hide in Document")
     }
 
     /// Parameter table: add / change / remove named parameters. `value` is a

@@ -753,7 +753,7 @@ impl Solid {
         report.applied = blend.blended;
         Some((
             Ok(Solid {
-                names: None,
+                names: self.inherit_names(&blend.solid),
                 provenance: self.provenance.clone(),
                 repr: SolidRepr::BRep(Box::new(blend.solid)),
                 segments: self.segments,
@@ -939,7 +939,7 @@ impl Solid {
             return Err(BlendError::InvalidResult);
         }
         Ok(Solid {
-            names: None,
+            names: self.inherit_names(&chamfered),
             provenance: self.provenance.clone(),
             repr: SolidRepr::BRep(Box::new(chamfered)),
             segments: self.segments,
@@ -1123,7 +1123,7 @@ impl Solid {
         }
         (
             Ok(Solid {
-                names: None,
+                names: self.inherit_names(&filleted),
                 provenance: self.provenance.clone(),
                 repr: SolidRepr::BRep(Box::new(filleted)),
                 segments: self.segments,
@@ -1239,7 +1239,7 @@ impl Solid {
         }
         (
             Ok(Solid {
-                names: None,
+                names: self.inherit_names(&blended),
                 provenance: self.provenance.clone(),
                 repr: SolidRepr::BRep(Box::new(blended)),
                 segments: self.segments,
@@ -1267,6 +1267,17 @@ impl Solid {
     /// (primitives seed it, booleans propagate it, transforms carry it).
     pub fn names(&self) -> Option<&vcad_kernel_naming::NameMap> {
         self.names.as_ref()
+    }
+
+    /// Names for `out`, the B-rep a one-input modifier (fillet, chamfer,
+    /// blend, shell) produced from this solid: kept faces keep their names,
+    /// new faces stay anonymous. `None` when this solid has no names or is
+    /// not a B-rep.
+    fn inherit_names(&self, out: &BRepSolid) -> Option<vcad_kernel_naming::NameMap> {
+        let (Some(names), SolidRepr::BRep(input)) = (&self.names, &self.repr) else {
+            return None;
+        };
+        Some(vcad_kernel_naming::propagate_modified(input, names, out))
     }
 
     /// Rewrite the scope of every face name — DAG evaluators call this with
@@ -1423,8 +1434,12 @@ impl Solid {
                 None,
             ),
         };
+        let names = match &repr {
+            SolidRepr::BRep(b) => self.inherit_names(b),
+            _ => None,
+        };
         let out = Solid {
-            names: None,
+            names,
             provenance: self.provenance.clone(),
             repr,
             segments: self.segments,
@@ -1474,7 +1489,7 @@ impl Solid {
         let shelled = vcad_kernel_shell::shell_brep_open(brep, thickness, open_faces)
             .map_err(|e| BlendError::Shell(e.to_string()))?;
         let out = Solid {
-            names: None,
+            names: self.inherit_names(&shelled),
             provenance: self.provenance.clone(),
             repr: SolidRepr::BRep(Box::new(shelled)),
             segments: self.segments,
@@ -1732,7 +1747,9 @@ impl Solid {
     ) -> Result<Self, vcad_kernel_sketch::SketchError> {
         let brep = vcad_kernel_sketch::extrude(&profile, direction)?;
         Ok(Solid {
-            names: None,
+            names: Some(vcad_kernel_naming::seed_extrude_names(
+                &brep, &profile, &[], direction, "extrude",
+            )),
             provenance: Vec::new(),
             repr: SolidRepr::BRep(Box::new(brep)),
             segments: 32,
@@ -1752,7 +1769,9 @@ impl Solid {
     ) -> Result<Self, vcad_kernel_sketch::SketchError> {
         let brep = vcad_kernel_sketch::extrude_with_holes(&profile, holes, direction)?;
         Ok(Solid {
-            names: None,
+            names: Some(vcad_kernel_naming::seed_extrude_names(
+                &brep, &profile, holes, direction, "extrude",
+            )),
             provenance: Vec::new(),
             repr: SolidRepr::BRep(Box::new(brep)),
             segments: 32,
@@ -1783,8 +1802,13 @@ impl Solid {
             ..Default::default()
         };
         let brep = vcad_kernel_sketch::extrude_with_options(&profile, direction, options)?;
+        // Twisted or tapered walls aren't the swept plane/cylinder the
+        // profile namer matches against; leave them unnamed (fail-closed).
+        let plain = twist_angle.abs() < 1e-12 && (scale_end - 1.0).abs() < 1e-12;
         Ok(Solid {
-            names: None,
+            names: plain.then(|| {
+                vcad_kernel_naming::seed_extrude_names(&brep, &profile, &[], direction, "extrude")
+            }),
             provenance: Vec::new(),
             repr: SolidRepr::BRep(Box::new(brep)),
             segments: 32,

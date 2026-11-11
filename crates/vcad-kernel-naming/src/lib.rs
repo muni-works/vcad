@@ -31,6 +31,9 @@
 //! other outcome is reported explicitly as [`EdgeResolution::Ambiguous`] or
 //! [`EdgeResolution::Lost`] — never a silent rebind.
 
+mod profile;
+pub use profile::seed_extrude_names;
+
 use std::collections::HashMap;
 use std::fmt;
 
@@ -294,6 +297,23 @@ pub fn propagate_boolean(
     names_b: &NameMap,
     out: &BRepSolid,
 ) -> NameMap {
+    propagate_from(&[(a, names_a), (b, names_b)], out)
+}
+
+/// Derive names for the result of a one-input modifier — fillet, chamfer,
+/// edge blend, shell — from its named input.
+///
+/// Same rule as [`propagate_boolean`]: every face the modifier keeps (trimmed
+/// or not) still lies on an input surface and inherits that face's name;
+/// faces the modifier creates (blend surfaces, the inner offset walls of a
+/// shell) lie on no input surface and stay anonymous. A face the modifier
+/// splits gets sibling ordinals. So a fillet on a plate leaves `n1:top`
+/// resolvable, and an edge reference between two kept faces still resolves.
+pub fn propagate_modified(input: &BRepSolid, names: &NameMap, out: &BRepSolid) -> NameMap {
+    propagate_from(&[(input, names)], out)
+}
+
+fn propagate_from(inputs: &[(&BRepSolid, &NameMap)], out: &BRepSolid) -> NameMap {
     // Collect the named input faces as surface classes: one entry per
     // geometrically distinct surface, remembering whether more than one
     // distinct name lives on it. A result face only ever needs to know
@@ -309,7 +329,7 @@ pub fn propagate_boolean(
         ambiguous: bool,
     }
     let mut classes: Vec<SurfaceClass> = Vec::new();
-    for (brep, names) in [(a, names_a), (b, names_b)] {
+    for &(brep, names) in inputs {
         for (face_id, name) in &names.faces {
             let Some(face) = brep.topology.faces.get(*face_id) else {
                 continue;
@@ -695,7 +715,7 @@ pub fn edge_endpoints(brep: &BRepSolid, edge: EdgeId) -> Option<(Point3, Point3)
 }
 
 /// Centroid of a face's outer-loop vertices.
-fn face_centroid(brep: &BRepSolid, face: FaceId) -> Point3 {
+pub(crate) fn face_centroid(brep: &BRepSolid, face: FaceId) -> Point3 {
     let topo = &brep.topology;
     let mut sum = Vec3::new(0.0, 0.0, 0.0);
     let mut n = 0usize;
@@ -713,7 +733,7 @@ fn face_centroid(brep: &BRepSolid, face: FaceId) -> Point3 {
 }
 
 /// Quantize a point for deterministic ordering.
-fn quantize(p: Point3) -> [i64; 3] {
+pub(crate) fn quantize(p: Point3) -> [i64; 3] {
     [
         (p.x / QUANT).round() as i64,
         (p.y / QUANT).round() as i64,

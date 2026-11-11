@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-11-history-edits-keep-references",
+  "version": "undefined",
+  "date": "2026-11-11",
+  "category": "feat",
+  "title": "Edits to earlier features keep downstream references",
+  "summary": "Extruded faces are named after their sketch segments and fillets, chamfers and shells keep face names, so picked edges survive edits. Move Up/Down refuses moves that would drop a feature.",
+  "features": ["naming", "feature-tree", "history"]
+}
