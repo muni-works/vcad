@@ -1,0 +1,51 @@
+<title>vcad Unified Progress</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* layout: single reading column, mock pills on a viewport-grey stage */
+:root{--bg:#f5f6f8;--fg:#1b1d22;--muted:#5d6370;--stage:#2b2d31;--glass:rgba(255,255,255,.12);--accent:#3a7bfd;--line:#d9dce3;--sans:-apple-system,"SF Pro Text",system-ui,sans-serif;--mono:ui-monospace,"SF Mono",Menlo,monospace}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#17181b;--fg:#e8e9ec;--muted:#9aa0ab;--line:#2c2f35;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#17181b;--fg:#e8e9ec;--muted:#9aa0ab;--line:#2c2f35;color-scheme:dark}
+body{background:var(--bg);color:var(--fg);font-family:var(--sans);line-height:1.55;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));padding-block:32px}
+main{max-width:720px;margin:0 auto;display:flex;flex-direction:column;gap:28px}
+h1{font-size:26px;margin:0;text-wrap:balance}h2{font-size:17px;margin:0 0 8px}
+p,li{color:var(--muted)}p{margin:0}ul{margin:0;padding-left:20px}
+code{font-family:var(--mono);font-size:12.5px}
+.stage{background:var(--stage);border-radius:14px;padding:28px 16px;display:flex;flex-direction:column;align-items:center;gap:22px;overflow-x:auto}
+.cap{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:#9aa0ab}
+.pill{position:relative;width:340px;max-width:100%;height:40px;border-radius:20px;background:var(--glass);border:1px solid rgba(255,255,255,.14);color:#f2f3f5;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:12px;font-weight:500}
+.pill small{font-size:10px;font-weight:400;color:#a6abb5;font-variant-numeric:tabular-nums}
+.bar{position:absolute;left:18px;bottom:3px;height:2px;border-radius:2px;background:var(--accent)}
+.x{position:absolute;right:12px;top:11px;width:16px;height:16px;border-radius:8px;background:rgba(255,255,255,.18);font-size:10px;line-height:16px;text-align:center}
+.pop{width:300px;max-width:100%;background:#3a3c41;border-radius:12px;padding:12px;color:#eceef1;font-size:12px;display:flex;flex-direction:column;gap:10px}
+.row{display:grid;grid-template-columns:1fr auto;gap:2px 10px;font-variant-numeric:tabular-nums}.row span{color:#a6abb5}
+.track{grid-column:1/-1;height:3px;border-radius:2px;background:rgba(255,255,255,.12);overflow:hidden}.track i{display:block;height:100%;background:var(--accent)}
+table{border-collapse:collapse;width:100%;font-size:13px}td,th{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}th{color:var(--muted);font-weight:500}
+.wrap{overflow-x:auto}
+</style>
+<main>
+<header><h1>One place for progress</h1><p>Every long operation reports into one task stack. The header title pill is the only place that shows it.</p></header>
+
+<section><h2>Today: three UIs for one open</h2><ul><li>Title pill: "Solving 339 of 1715" plus a thin bar</li><li>Floating capsule: "Meshing parts 339 of 1715", spinner, ✕</li><li>Modal card: "Importing STEP · Building faces …", Cancel, digits blur from the <code>numericText</code> transition</li></ul></section>
+
+<section class="stage" aria-label="Mockups">
+<div class="cap">One task</div>
+<div class="pill">Voron_2.4r2_Assembly<small>Importing STEP · Building faces · 12%</small><div class="bar" style="width:36px"></div></div>
+<div class="cap">Hover: cancel appears</div>
+<div class="pill">Voron_2.4r2_Assembly<small>Meshing parts · 339 of 1715 · ~40 s left</small><div class="bar" style="width:60px"></div><div class="x">✕</div></div>
+<div class="cap">Two or more tasks: "+1" and a click opens the list</div>
+<div class="pill">Voron_2.4r2_Assembly<small>Meshing parts · 20% · +1</small><div class="bar" style="width:61px"></div></div>
+<div class="pop"><div class="row">Meshing parts<span>339 of 1715 ✕</span><div class="track"><i style="width:20%"></i></div></div><div class="row">Export STL<span>48% ✕</span><div class="track"><i style="width:48%"></i></div></div></div>
+</section>
+
+<section><h2>Model: <code>ProgressCenter</code></h2>
+<p>An <code>@Observable</code> stack of <code>ProgressTask</code>s. Producers call <code>begin(title:stage:cancel:)</code>, <code>update(id, stage:, done:, total:)</code> and <code>end(id)</code>; they never own UI.</p>
+<div class="wrap"><table><tr><th>Field</th><th>Meaning</th></tr>
+<tr><td>title, stage</td><td>"Importing STEP", "Building faces"</td></tr>
+<tr><td>fraction?</td><td>0…1, or nil for indeterminate (bar shimmers)</td></tr>
+<tr><td>done / total</td><td>counts shown as "339 of 1715"</td></tr>
+<tr><td>eta</td><td>derived from start time and fraction once past 10% and 3 s</td></tr>
+<tr><td>cancel?</td><td>closure; non-nil means cancellable. One ✕, same path for all tasks</td></tr></table></div>
+<p>Updates are coalesced: the published snapshot changes at most every 100 ms (about 10 Hz). Text uses monospaced digits and no numeric content transition.</p></section>
+
+<section><h2>Producers moved onto it</h2><ul><li>STEP import and first solve (<code>LoadProgress</code> phases) map onto one task; the card and capsule are removed</li><li>Re-solves (<code>solveProgress</code>) become a "Solving" task</li><li>Failures and warnings stay readable: the pill's second line turns red/orange and a click shows details with Retry or OK</li><li>Later producers (slicing, FEA, exports, agent jobs) call the same three methods</li></ul></section>
+</main>

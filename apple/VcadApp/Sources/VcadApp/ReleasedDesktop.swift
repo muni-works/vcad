@@ -1066,9 +1066,6 @@ struct ReleasedOverlayView: View {
                     .allowsHitTesting(false)
                     .accessibilityIdentifier("selectionReadout")
             }
-            // Opening a new document: the import / first-solve card, then
-            // the compact pill once geometry is visible.
-            LoadProgressOverlay(model: model, top: chromeTop)
             // Floating panels, hosted in the overlay itself (separate
             // NSPanels break SwiftUI hit testing after auto-resize).
             if !studio {
