@@ -1,0 +1,10 @@
+; K1 forearm -> RS05 rear face. Frame: z = forearm axis, z=0 at the forearm tip, +z into the arm.
+; Flat face (x=0) bolts to the forearm's internal rib: 3x M3 at z = 6.53 / 14 (boss) / 21.53.
+; Holes are short (through the web only) and counterbores are square: vcad 0.10 traps on coaxial round counterbores.
+[let half [extrude 0 0 31.7 [sketch 0 0 -0.3 1 0 0 0 1 0 #[[line 0 -13.7 0 13.7] [arc 0 13.7 0 -13.7 0 0 true]]]]]
+[let flange [translate 0 0 -8.3 [cylinder-n 25 8 128]]]
+[let t1 [union [translate -15.6 -3.2 3.33 [cube 11.6 6.4 6.4]] [translate -5 0 6.53 [rotate 0 90 0 [cylinder 1.7 5.6]]]]]
+[let t2 [union [translate -15.6 -3.2 18.33 [cube 11.6 6.4 6.4]] [translate -5 0 21.53 [rotate 0 90 0 [cylinder 1.7 5.6]]]]]
+[let t3 [union [translate -15.6 -3.2 10.8 [cube 8.6 6.4 6.4]] [union [translate -3.4 -4.4 9.6 [cube 4 8.8 8.8]] [translate -8 0 14 [rotate 0 90 0 [cylinder 1.7 5.6]]]]]]
+[let bolts [union [translate 13.61 13.61 -9 [cylinder 1.7 9.5]] [union [translate -13.61 13.61 -9 [cylinder 1.7 9.5]] [union [translate 13.61 -13.61 -9 [cylinder 1.7 9.5]] [translate -13.61 -13.61 -9 [cylinder 1.7 9.5]]]]]]
+[root [pipe [union flange half] [difference t1] [difference t2] [difference t3] [difference bolts] [difference [translate 0 0 -8.6 [cylinder 17.75 3.6]]] [difference [translate -7.5 -10.5 -9 [cube 5 5 42]]]] "pla"]

@@ -1417,6 +1417,14 @@ fn export_file(
 
     // Evaluate document to get meshes (not needed for loon)
     let meshes = crate::app::evaluate_document(&doc)?;
+    // Fail closed: every root failing (warned above) must not leave an empty
+    // file and exit 0 — that reads as a successful export of nothing.
+    if meshes.iter().all(|m| m.indices.is_empty()) {
+        anyhow::bail!(
+            "{} produced no geometry; nothing exported",
+            input.display()
+        );
+    }
 
     match ext.to_lowercase().as_str() {
         "stl" => {

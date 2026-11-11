@@ -1,0 +1,4 @@
+[let disc [cylinder-n 25 5 64]]
+[let h1 [intersection [translate 0 -26 -1 [cube 26 52 7]] [difference [translate 0 -5 -1.5 [cylinder-n 14.8 8 64]] [translate 0 -5 -1 [cylinder-n 19.2 7 64]]]]]
+[let h2 [intersection [translate -26 -26 -1 [cube 26 52 7]] [difference [translate 0 5 -1.5 [cylinder-n 14.8 8 64]] [translate 0 5 -1 [cylinder-n 19.2 7 64]]]]]
+[root [pipe disc [difference h1] [difference h2]] "pla"]

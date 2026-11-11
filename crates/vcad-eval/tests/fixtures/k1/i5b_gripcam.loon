@@ -1,0 +1,6 @@
+; Cam disc: female hex hub + two 180deg eccentric slots (circle R17 centred 5 mm off-axis).
+; Pin radius r(phi) = 5 sin(phi) + sqrt(17^2 - (5 cos phi)^2); usable phi -60..+80 -> r 12.5..21.9.
+[let disc [union [translate 0 0 8.2 [cylinder-n 9.4 3.4 48]] [translate 0 0 11.4 [cylinder-n 25 5 64]]]]
+[let h1 [intersection [translate 0.3 -26 11 [cube 26 52 6]] [difference [translate 0 -5 10.5 [cylinder-n 14.8 7 64]] [translate 0 -5 11 [cylinder-n 19.2 6 64]]]]]
+[let h2 [intersection [translate -26.3 -26 11 [cube 26 52 6]] [difference [translate 0 5 10.5 [cylinder-n 14.8 7 64]] [translate 0 5 11 [cylinder-n 19.2 6 64]]]]]
+[root [difference h2 [difference h1 [difference [translate 0 0 7.8 [prism 6 7.16 9.2]] disc]]] "pla"]
