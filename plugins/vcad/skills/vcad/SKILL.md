@@ -88,7 +88,7 @@ Each running vcad.app registers itself in `~/.vcad/instances/<pid>.json`
 the newest. Every app-bridge result ends with `[vcad.app pid N · document]`
 and carries `_meta["io.vcad/instance"]`: check it names the window you mean.
 A `⚠ vcad.app CHANGED` notice means the app relaunched or another window took
-over — re-read `app_state` before trusting earlier state.
+over — re-check the open document before trusting earlier state.
 
 Pick the window explicitly when more than one runs:
 
