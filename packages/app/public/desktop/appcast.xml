@@ -1,9 +1,18 @@
-<?xml version="1.0" standalone="yes"?>
-<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
-    <channel>
-        <title>vcad</title>
-        <link>https://vcad.io/desktop/</link>
-        <description>vcad for Mac updates</description>
-        <language>en</language>
-    </channel>
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>vcad</title>
+    <link>https://vcad.io/desktop/</link>
+    <description>vcad for Mac updates</description>
+    <language>en</language>
+    <item>
+      <title>vcad 1.0.1</title>
+      <pubDate>Thu, 12 Nov 2026 19:31:41 +0000</pubDate>
+      <sparkle:version>3247</sparkle:version>
+      <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+      <sparkle:releaseNotesLink>https://github.com/muni-works/vcad/releases/tag/desktop-v1.0.1-beta.2</sparkle:releaseNotesLink>
+      <enclosure url="https://github.com/muni-works/vcad/releases/download/desktop-v1.0.1-beta.2/vcad-1.0.1.dmg" type="application/octet-stream" sparkle:edSignature="ZkFnfef0XMC+3QeXbj7iGWldhfEwUx00SpBtcL8FHpQCu+dqR8iuBydpHm1CJ8hNA35kgEwIJ1wUt+RYsGbxDw==" length="35324264"/>
+    </item>
+  </channel>
 </rss>
