@@ -136,14 +136,25 @@ impl StepFile {
 pub struct Parser {
     tokens: Vec<SpannedToken>,
     pos: usize,
+    /// Current value-nesting depth (lists and typed values).
+    depth: usize,
 }
+
+/// Deepest value nesting accepted. Real STEP files nest a handful of levels;
+/// the parser recurses per level, so hostile nesting would abort the process
+/// with a stack overflow (fuzz F9).
+pub const MAX_VALUE_DEPTH: usize = 256;
 
 impl Parser {
     /// Parse a STEP file from bytes.
     pub fn parse(input: &[u8]) -> Result<StepFile, StepError> {
         let mut lexer = Lexer::new(input);
         let tokens = lexer.tokenize()?;
-        let mut parser = Parser { tokens, pos: 0 };
+        let mut parser = Parser {
+            tokens,
+            pos: 0,
+            depth: 0,
+        };
         parser.parse_file()
     }
 
@@ -310,6 +321,19 @@ impl Parser {
     }
 
     fn parse_value(&mut self) -> Result<StepValue, StepError> {
+        if self.depth >= MAX_VALUE_DEPTH {
+            return Err(StepError::parser(
+                None,
+                format!("values nest deeper than {MAX_VALUE_DEPTH} levels"),
+            ));
+        }
+        self.depth += 1;
+        let v = self.parse_value_inner();
+        self.depth -= 1;
+        v
+    }
+
+    fn parse_value_inner(&mut self) -> Result<StepValue, StepError> {
         let tok = self.peek().cloned();
         match tok.map(|t| t.token) {
             Some(Token::EntityRef(id)) => {
@@ -543,5 +567,23 @@ END-ISO-10303-21;
         // Regular entity still works
         let point = file.get(2).unwrap();
         assert_eq!(point.type_name, "CARTESIAN_POINT");
+    }
+
+    /// Fuzz finding F9 (docs/qa/fuzz-2026-11-12.md): deeply nested lists
+    /// overflowed the stack. Must be a clean error on a small thread stack.
+    #[test]
+    fn deep_nesting_is_an_error_not_a_stack_overflow() {
+        let d = 100_000;
+        let step = format!(
+            "ISO-10303-21;\nHEADER;\nENDSEC;\nDATA;\n#1=FOO({}{});\nENDSEC;\nEND-ISO-10303-21;\n",
+            "(".repeat(d),
+            ")".repeat(d)
+        );
+        let r = std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(move || Parser::parse(step.as_bytes()).is_err())
+            .unwrap()
+            .join();
+        assert_eq!(r.ok(), Some(true));
     }
 }

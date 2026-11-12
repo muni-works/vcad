@@ -1,0 +1,104 @@
+[package]
+name = "vcad-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1"
+stepperoni = { path = "../crates/stepperoni" }
+vcad-kernel-step = { path = "../crates/vcad-kernel-step" }
+vcad-eval = { path = "../crates/vcad-eval" }
+vcad-loon = { path = "../crates/vcad-loon" }
+vcad-ecad-symbols = { path = "../crates/vcad-ecad-symbols" }
+vcad-kernel-urdf = { path = "../crates/vcad-kernel-urdf" }
+vcad-app = { path = "../crates/vcad-app" }
+vcad-crdt = { path = "../crates/vcad-crdt" }
+
+[[bin]]
+name = "step_parse"
+path = "fuzz_targets/step_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "step_read"
+path = "fuzz_targets/step_read.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "stl"
+path = "fuzz_targets/stl.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "loon"
+path = "fuzz_targets/loon.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vcad_json"
+path = "fuzz_targets/vcad_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vcad_snapshot"
+path = "fuzz_targets/vcad_snapshot.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kicad_pcb"
+path = "fuzz_targets/kicad_pcb.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kicad_sch"
+path = "fuzz_targets/kicad_sch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "eagle_brd"
+path = "fuzz_targets/eagle_brd.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "altium_ascii"
+path = "fuzz_targets/altium_ascii.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "altium_pcbdoc"
+path = "fuzz_targets/altium_pcbdoc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "urdf"
+path = "fuzz_targets/urdf.rs"
+test = false
+doc = false
+bench = false

@@ -414,6 +414,16 @@ fn evaluate_inner(
                 let key = root_fingerprint(eval_root, &doc.nodes, &settings)?;
                 c.get(&key).filter(|m| !m.indices.is_empty())
             };
+            // A mesh with non-finite coordinates (e.g. a 1e300 mm sphere
+            // overflowing the f32 vertex buffer) is a failure, not a part:
+            // never hand a renderer or exporter NaN/inf geometry as success.
+            let eval_outcome = match eval_outcome {
+                Ok(m) if !mesh_is_finite(&m.mesh) => Err(
+                    "geometry has non-finite coordinates (dimensions too large or invalid)"
+                        .to_string(),
+                ),
+                other => other,
+            };
             let mut from_preview = false;
             let eval_outcome = match eval_outcome {
                 Ok(m) if m.mesh.indices.is_empty() && m.solid.is_some() => match preview_fallback()
@@ -1232,6 +1242,7 @@ fn evaluate_op_timed(
             count,
             spacing,
         } => {
+            check_pattern_count(*count)?;
             let c = eval_child(*child, cache)?;
             Ok(c.map(|s| s.linear_pattern(to_vec3(direction), *count, *spacing)))
         }
@@ -1243,6 +1254,7 @@ fn evaluate_op_timed(
             count,
             angle_deg,
         } => {
+            check_pattern_count(*count)?;
             let c = eval_child(*child, cache)?;
             Ok(c.map(|s| {
                 s.circular_pattern(
@@ -2081,6 +2093,25 @@ fn peel_rigid_placement(
 }
 
 /// Apply a rigid placement to a mesh in place (positions and normals).
+fn check_pattern_count(count: u32) -> Result<(), EvalError> {
+    if count > crate::MAX_PATTERN_COUNT {
+        return Err(EvalError::InvalidParam(format!(
+            "pattern count {count} exceeds the maximum of {}",
+            crate::MAX_PATTERN_COUNT
+        )));
+    }
+    Ok(())
+}
+
+/// Every vertex coordinate (and normal, if present) is finite.
+fn mesh_is_finite(mesh: &EvaluatedMesh) -> bool {
+    mesh.positions.iter().all(|v| v.is_finite())
+        && mesh
+            .normals
+            .as_ref()
+            .is_none_or(|n| n.iter().all(|v| v.is_finite()))
+}
+
 fn place_mesh(mut mesh: EvaluatedMesh, t: Option<&Transform>) -> EvaluatedMesh {
     let Some(t) = t else {
         return mesh;
@@ -4707,5 +4738,45 @@ mod tests {
         assert!(w.contains("under 1 mm"), "{w}");
 
         assert!(mesh_import_scale_warning("empty.stl", &[], [1000.0; 3]).is_none());
+    }
+
+    /// Fuzz finding F1 (docs/qa/fuzz-2026-11-12.md): a 1e300 mm sphere overflowed
+    /// the f32 vertex buffer and was reported as a successful part with
+    /// infinite coordinates. It must be a per-root failure.
+    #[test]
+    fn overflowing_primitive_is_a_failure_not_inf_geometry() {
+        let doc: Document = serde_json::from_str(
+            r#"{"version":"0.1","nodes":{"1":{"id":1,"name":null,"op":{"type":"Sphere","radius":1e300,"segments":32}}},
+               "materials":{},"part_materials":{},"roots":[{"root":1,"material":"default"}]}"#,
+        )
+        .unwrap();
+        let scene = crate::evaluate_document(&doc, &crate::EvalOptions::default()).unwrap();
+        assert_eq!(scene.failures.len(), 1, "expected a failure");
+        assert!(scene
+            .parts
+            .iter()
+            .all(|p| p.mesh.positions.iter().all(|v| v.is_finite())));
+    }
+
+    /// Fuzz finding F7: a circular pattern with count 4294967295 (a wrapped
+    /// -1 / saturated 1e300) hung evaluation. It must fail fast.
+    #[test]
+    fn huge_pattern_count_fails_fast() {
+        let doc: Document = serde_json::from_str(
+            r#"{"version":"0.1","nodes":{
+                "1":{"id":1,"name":null,"op":{"type":"Cube","size":{"x":1,"y":1,"z":1}}},
+                "2":{"id":2,"name":null,"op":{"type":"CircularPattern","child":1,"axis_origin":{"x":0,"y":0,"z":0},"axis_dir":{"x":0,"y":0,"z":1},"count":4294967295,"angle_deg":360}}},
+              "materials":{},"part_materials":{},"roots":[{"root":2,"material":"default"}]}"#,
+        )
+        .unwrap();
+        let t = std::time::Instant::now();
+        let scene = crate::evaluate_document(&doc, &crate::EvalOptions::default()).unwrap();
+        assert_eq!(scene.failures.len(), 1);
+        assert!(
+            scene.failures[0].error.contains("pattern count"),
+            "{}",
+            scene.failures[0].error
+        );
+        assert!(t.elapsed().as_secs() < 5);
     }
 }

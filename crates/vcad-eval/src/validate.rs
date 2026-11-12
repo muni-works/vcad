@@ -30,7 +30,53 @@ pub fn validate_document(doc: &Document) -> Result<(), EvalError> {
         validate_op(doc, *node_id, &node.op)?;
     }
 
+    if let Some(n) = find_cycle(doc) {
+        return Err(EvalError::Cycle(n));
+    }
+
     Ok(())
+}
+
+/// A node on a cycle of the node graph, if it has one. Iterative
+/// three-colour DFS over `CsgOp::child_ids`, O(nodes + refs); dangling
+/// references are ignored (that is `validate_document`'s other check).
+pub fn find_cycle(doc: &Document) -> Option<NodeId> {
+    use std::collections::HashMap;
+    #[derive(Clone, Copy, PartialEq)]
+    enum C {
+        Grey,
+        Black,
+    }
+    let mut colour: HashMap<NodeId, C> = HashMap::with_capacity(doc.nodes.len());
+    for &start in doc.nodes.keys() {
+        if colour.contains_key(&start) {
+            continue;
+        }
+        // (node, its children, next child index)
+        let mut stack: Vec<(NodeId, Vec<NodeId>, usize)> = Vec::new();
+        colour.insert(start, C::Grey);
+        stack.push((start, doc.nodes[&start].op.child_ids(), 0));
+        while let Some((id, kids, i)) = stack.last_mut() {
+            if *i == kids.len() {
+                colour.insert(*id, C::Black);
+                stack.pop();
+                continue;
+            }
+            let k = kids[*i];
+            *i += 1;
+            match colour.get(&k) {
+                Some(C::Grey) => return Some(k),
+                Some(C::Black) => {}
+                None => {
+                    if let Some(node) = doc.nodes.get(&k) {
+                        colour.insert(k, C::Grey);
+                        stack.push((k, node.op.child_ids(), 0));
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 fn validate_op(doc: &Document, node_id: NodeId, op: &CsgOp) -> Result<(), EvalError> {
@@ -324,5 +370,22 @@ mod tests {
             visible: None,
         });
         assert!(validate_document(&doc).is_ok());
+    }
+
+    /// Fuzz finding F5 (docs/qa/fuzz-2026-11-12.md): `Translate { child: self }`
+    /// hung the importer forever. Cycles must be reported, not walked.
+    #[test]
+    fn cycles_are_rejected() {
+        let doc: Document = serde_json::from_str(
+            r#"{"version":"0.1","nodes":{
+                "1":{"id":1,"name":null,"op":{"type":"Cube","size":{"x":1,"y":1,"z":1}}},
+                "2":{"id":2,"name":null,"op":{"type":"Translate","child":2,"offset":{"x":0,"y":0,"z":0}}},
+                "3":{"id":3,"name":null,"op":{"type":"Union","left":1,"right":4}},
+                "4":{"id":4,"name":null,"op":{"type":"Rotate","child":3,"angles":{"x":0,"y":0,"z":0}}}},
+              "materials":{},"part_materials":{},"roots":[{"root":3,"material":"default"}]}"#,
+        )
+        .unwrap();
+        assert!(find_cycle(&doc).is_some());
+        assert!(matches!(validate_document(&doc), Err(EvalError::Cycle(_))));
     }
 }

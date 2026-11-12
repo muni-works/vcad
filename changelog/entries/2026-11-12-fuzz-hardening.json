@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-12-fuzz-hardening",
+  "version": "0.11.0",
+  "date": "2026-11-12",
+  "category": "fix",
+  "title": "Importers and evaluation survive hostile input",
+  "summary": "Fuzzing fixes: deeply nested STEP/KiCad/Eagle files, cyclic .vcad graphs, huge pattern counts and overflowing dimensions now fail cleanly instead of crashing, hanging or drawing NaN geometry.",
+  "features": ["kernel", "import", "step", "electronics", "urdf"]
+}

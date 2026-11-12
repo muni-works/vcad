@@ -51,6 +51,18 @@ fn locate_robot_bounds(reader: &mut quick_xml::Reader<&[u8]>) -> Result<(usize, 
     }
 }
 
+/// `xml[start..end]`, failing closed instead of panicking when quick-xml's
+/// offsets don't land on char boundaries. They can't be trusted to: a
+/// sub-slice that begins with U+FEFF has it skipped as a BOM, shifting every
+/// later `buffer_position` into the middle of that character (fuzz F4).
+fn slice_at(xml: &str, start: usize, end: usize) -> Result<&str, UrdfError> {
+    xml.get(start..end).ok_or_else(|| {
+        UrdfError::InvalidFormat(
+            "URDF has a stray byte-order mark or non-UTF-8 boundary inside an element".into(),
+        )
+    })
+}
+
 /// Group the immediate children of the element whose body spans
 /// `[body_start, body_end)` of `xml`, bucketing each child by tag name
 /// into the order given by `order` (unlisted tags keep their relative
@@ -108,7 +120,7 @@ fn group_children_by_tag(
             .iter()
             .position(|t| *t == tag.as_slice())
             .unwrap_or(order.len());
-        buckets[slot].push(xml[pos_before..pos_after].to_string());
+        buckets[slot].push(slice_at(xml, pos_before, pos_after)?.to_string());
     }
 
     Ok(buckets)
@@ -228,7 +240,7 @@ fn normalize_robot_child_order(xml: &str) -> Result<String, UrdfError> {
                     .read_to_end(e.name())
                     .map_err(|err| UrdfError::InvalidFormat(format!("read_to_end: {err}")))?;
                 let pos_after = reader.buffer_position() as usize + inner_offset;
-                let slice = &xml[pos_before..pos_after];
+                let slice = slice_at(xml, pos_before, pos_after)?;
                 match tag.as_slice() {
                     b"link" => links.push(slice),
                     b"joint" => joints.push(slice),
@@ -239,7 +251,7 @@ fn normalize_robot_child_order(xml: &str) -> Result<String, UrdfError> {
             Event::Empty(e) => {
                 let tag = e.name().as_ref().to_vec();
                 let pos_after = reader.buffer_position() as usize + inner_offset;
-                let slice = &xml[pos_before..pos_after];
+                let slice = slice_at(xml, pos_before, pos_after)?;
                 match tag.as_slice() {
                     b"link" => links.push(slice),
                     b"joint" => joints.push(slice),
@@ -2053,5 +2065,14 @@ mod relative_path_tests {
         // And it must actually resolve back to the same file.
         assert!(a.join(&rel).canonicalize().unwrap() == f.canonicalize().unwrap());
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Fuzz finding F4: a U+FEFF right after `<link …>` made the reorder pass
+    /// slice inside the character and panic. It must be a clean error.
+    #[test]
+    fn stray_bom_inside_link_is_an_error_not_a_panic() {
+        let xml = "<?xml version=\"1.0\"?>\n<robot name=\"r\">\n  <link name=\"a\">\u{feff}  <visual><geometry><box size=\"1 1 1\"/></geometry></visual>\n  <collision><geometry><box size=\"1 1 1\"/></geometry></collision>\n  <visual><geometry><box size=\"1 1 1\"/></geometry></visual>\n  </link>\n</robot>\n";
+        let r = std::panic::catch_unwind(|| read_urdf_from_str(xml));
+        assert!(r.is_ok(), "read_urdf_from_str panicked");
     }
 }
