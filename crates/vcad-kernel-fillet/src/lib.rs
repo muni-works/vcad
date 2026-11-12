@@ -73,6 +73,10 @@ pub enum BlendRefusal {
     /// Two adjacent faces are nearly coplanar — there is no real edge
     /// there to round, and blending one cracks the shell.
     CoplanarAdjacentFaces,
+    /// A concave (re-entrant) edge — e.g. where a boss meets its base.
+    /// The all-edges planar rebuild trims faces inward, which only makes
+    /// sense for convex edges; a concave blend adds material instead.
+    ConcaveEdge,
     /// A knife edge (dihedral so shallow that the tangent setback
     /// `r/tan(θ/2)` is unbounded) — no finite blend fits.
     KnifeEdge,
@@ -91,6 +95,10 @@ impl std::fmt::Display for BlendRefusal {
             }
             BlendRefusal::CoplanarAdjacentFaces => {
                 "adjacent faces are nearly coplanar — no real edge to blend"
+            }
+            BlendRefusal::ConcaveEdge => {
+                "solid has concave (inside-corner) edges, which whole-part fillet/chamfer \
+                 can't round yet — pick only the outside edges to blend"
             }
             BlendRefusal::KnifeEdge => {
                 "knife edge: dihedral too shallow for any finite tangent setback"

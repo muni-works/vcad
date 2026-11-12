@@ -299,6 +299,7 @@ fn fillet_safety(
     }
 
     let face_map: HashMap<FaceId, &FaceInfo> = faces.iter().map(|f| (f.face_id, f)).collect();
+    convex_edges_only(brep, faces, edges)?;
     for edge in edges {
         let Some(fa) = face_map.get(&edge.face_a) else {
             continue;
@@ -318,6 +319,30 @@ fn fillet_safety(
         let interior = std::f64::consts::PI - angle;
         if interior > COPLANAR_DIHEDRAL_THRESHOLD {
             return Err(BlendRefusal::CoplanarAdjacentFaces);
+        }
+    }
+    Ok(())
+}
+
+/// Refuse concave (re-entrant) edges: the all-edges planar rebuilds trim
+/// faces inward, which is only right for convex edges. Face A's half-edge
+/// runs start→end counter-clockwise about its outward normal, so a convex
+/// edge has `(n_a × n_b)·dir > 0`; coplanar seams (cross ≈ 0) pass here.
+pub(crate) fn convex_edges_only(
+    brep: &BRepSolid,
+    faces: &[FaceInfo],
+    edges: &[EdgeInfo],
+) -> Result<(), crate::BlendRefusal> {
+    let face_map: HashMap<FaceId, &FaceInfo> = faces.iter().map(|f| (f.face_id, f)).collect();
+    for edge in edges {
+        let (Some(fa), Some(fb)) = (face_map.get(&edge.face_a), face_map.get(&edge.face_b)) else {
+            continue;
+        };
+        let dir =
+            brep.topology.vertices[edge.v_end].point - brep.topology.vertices[edge.v_start].point;
+        let len = dir.norm();
+        if len > 1e-12 && fa.normal.cross(fb.normal).dot(dir) < -1e-9 * len {
+            return Err(crate::BlendRefusal::ConcaveEdge);
         }
     }
     Ok(())

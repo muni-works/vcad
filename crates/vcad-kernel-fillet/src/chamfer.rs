@@ -41,6 +41,7 @@ pub fn chamfer_all_edges_checked(
     if edges.is_empty() {
         return Err(crate::BlendRefusal::NoEdges);
     }
+    crate::fillet_planar::convex_edges_only(brep, &faces, &edges)?;
 
     let trims = compute_trim_vertices(&faces, distance);
 

@@ -1263,6 +1263,10 @@ final class EditorModel {
     @ObservationIgnored var engineState: DocumentEngine.Result?
     /// The last refusal, or why the document is view-only.
     var engineError: String?
+    /// The kernel's reason the last frame left a part empty (shown in
+    /// `engineError` and a viewport pill while it holds); see
+    /// `showPartFailures`.
+    var partFailureMessage: String?
     /// The engine's materialized document — read-only from Swift's side
     /// except for the detached electronics path.
     @ObservationIgnored var documentJSON: [String: Any]? {
@@ -2875,10 +2879,17 @@ final class EditorModel {
         guard let data = DocEdit.serialize(json),
               let scene = evalSession.scene(data: data, dir: dir) else { return nil }
         defer { vcad_scene_free(scene) }
+        // A refused root (whole-part fillet on a body with inside corners)
+        // is an empty part; the session leaves the kernel's reason here.
+        let failure = SimError.pending().map(Self.readablePartFailure)
         let count = vcad_scene_part_count(scene)
         for (k, i) in missing.enumerated() where k < count {
             let km = KernelMesh.fromView(vcad_scene_part_mesh(scene, k))
-            if km.isEmpty { out[i] = nil; continue }
+            if km.isEmpty {
+                out[i] = nil
+                if let failure { engineError = failure; partFailureMessage = failure }
+                continue
+            }
             var segs: [SIMD3<Float>] = []
             if let eh = vcad_scene_part_edges(scene, k, Self.edgeAngleDeg) {
                 segs = EdgeOverlay.segments(fromView: vcad_edges_view(eh))
