@@ -85,6 +85,9 @@ final class CNCStudioTests: XCTestCase {
         cnc.startJob()
         XCTAssertFalse(cnc.machine.active)
         cnc.setupConfirmed = true
+        // The simulated controller's status is "fresh" for 2 s; a slow runner
+        // can spend longer than that generating, so wait for the next report.
+        for _ in 0..<100 where !cnc.machine.status.isFresh { try? await Task.sleep(nanoseconds: 50_000_000) }
         XCTAssertNil(cnc.runBlocker)
         cnc.startJob()
         XCTAssertTrue(cnc.machine.active)
@@ -122,6 +125,9 @@ final class CNCStudioTests: XCTestCase {
         syncCNCOverlay(cnc, in: parent)
         XCTAssertNotNil(parent.findEntity(named: "cncPath-0-false"))
         cnc.setupConfirmed = true
+        // The simulated controller's status is "fresh" for 2 s; a slow runner
+        // can spend longer than that generating, so wait for the next report.
+        for _ in 0..<100 where !cnc.machine.status.isFresh { try? await Task.sleep(nanoseconds: 50_000_000) }
         XCTAssertNil(cnc.runBlocker)
         cnc.startJob()
         XCTAssertTrue(cnc.machine.active)
