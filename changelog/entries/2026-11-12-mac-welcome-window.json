@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-12-mac-welcome-window",
+  "version": "undefined",
+  "date": "2026-11-12",
+  "category": "feat",
+  "title": "Redesigned Welcome window in the Mac app",
+  "summary": "Recent documents with rendered thumbnails, four teaching examples, live agent status, a 60-second tour, and the Welcome window now always sits above the floating model.",
+  "features": ["mac-app", "welcome", "onboarding"]
+}

@@ -56,7 +56,7 @@ struct EditorView: View {
                     AppInstance.pendingOpen = []
                     // First launch: samples and the loon tutorial.
                     if WelcomeWindowController.shouldShowAtLaunch(model: model) {
-                        WelcomeWindowController.shared.show(model: model)
+                        WelcomeWindowController.shared.show(model: model) { intent.focusRequested = true }
                     }
                     // Dev hook: VCAD_SIM=1 builds the physics simulation for the
                     // opened document and starts it running, so the whole path
@@ -181,7 +181,7 @@ struct DocumentCommands: Commands {
             Button("New Document") { AppInstance.open() }.keyboardShortcut("n")
             Divider()
             Button("Open…") { openPanel(model) }.keyboardShortcut("o")
-            Button("Open Sample…") { WelcomeWindowController.shared.show(model: model) }
+            Button("Open Sample…") { WelcomeWindowController.shared.show(model: model) { intent.focusRequested = true } }
             Menu("Open Recent") {
                 ForEach(model.recents, id: \.self) { url in
                     Button(url.deletingPathExtension().lastPathComponent) {
@@ -393,7 +393,7 @@ struct DocumentCommands: Commands {
             Button("Keyboard Shortcuts") { GlassUI.shared.shortcutsShown.toggle() }
                 .keyboardShortcut("/", modifiers: .command)
             Divider()
-            Button("Welcome to vcad") { WelcomeWindowController.shared.show(model: model) }
+            Button("Welcome to vcad") { WelcomeWindowController.shared.show(model: model) { intent.focusRequested = true } }
             Button("Connect Agents…") { AgentInstallPrompt.run() }
             Divider()
             Button("vcad Help") { NSWorkspace.shared.open(URL(string: "https://vcad.io/docs")!) }
