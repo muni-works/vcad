@@ -17,6 +17,11 @@ use vcad_ir::Vec2;
 
 /// Parse an Eagle `.brd` XML document into a [`Pcb`].
 pub fn parse_eagle_brd(text: &str) -> Result<Pcb, String> {
+    // roxmltree recurses per nesting level; hostile nesting aborts the
+    // process with a stack overflow (fuzz F6). Real boards nest < 20 deep.
+    if xml_depth_exceeds(text, MAX_XML_DEPTH) {
+        return Err(format!("XML nests deeper than {MAX_XML_DEPTH} levels"));
+    }
     let opts = roxmltree::ParsingOptions {
         allow_dtd: true,
         ..Default::default()
@@ -511,5 +516,66 @@ mod tests {
         assert_eq!(b.pads[0].position, Vec2::new(0.5, 0.0));
         assert_eq!(b.pads[1].position, Vec2::new(-0.5, 0.0));
         assert_eq!(b.pads[1].rotation, -90.0);
+    }
+}
+
+/// Deepest element nesting an Eagle file may have.
+const MAX_XML_DEPTH: usize = 256;
+
+/// Whether `text`'s element nesting goes deeper than `max`. A cheap byte
+/// scan, deliberately approximate (it ignores comments/CDATA/quoted `>`) —
+/// it only has to bound depth, roxmltree still does the real parse.
+fn xml_depth_exceeds(text: &str, max: usize) -> bool {
+    let b = text.as_bytes();
+    let mut depth = 0usize;
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'<' {
+            match b.get(i + 1) {
+                Some(b'/') => depth = depth.saturating_sub(1),
+                Some(b'?') | Some(b'!') => {}
+                _ => {
+                    // Self-closing `<x/>` doesn't nest.
+                    let end = b[i..].iter().position(|&c| c == b'>').map(|p| i + p);
+                    if !matches!(end, Some(e) if e > 0 && b[e - 1] == b'/') {
+                        depth += 1;
+                        if depth > max {
+                            return true;
+                        }
+                    }
+                    if let Some(e) = end {
+                        i = e;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+#[cfg(test)]
+mod fuzz_regressions {
+    /// Fuzz finding F6 (docs/qa/fuzz-2026-11-12.md): deeply nested elements
+    /// overflowed the stack. Hostile nesting must be a clean error, even on a
+    /// small worker-thread stack (the app parses imports off main).
+    #[test]
+    fn deep_nesting_is_an_error_not_a_stack_overflow() {
+        let depth = 200_000;
+        let text = format!(
+            "<eagle><drawing><board>{}{}</board></drawing></eagle>",
+            "<V>".repeat(depth),
+            "</V>".repeat(depth)
+        );
+        let r = std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(move || super::parse_eagle_brd(&text).is_err())
+            .unwrap()
+            .join();
+        assert_eq!(
+            r.ok(),
+            Some(true),
+            "parse overflowed or accepted hostile nesting"
+        );
     }
 }

@@ -605,7 +605,10 @@ impl DocumentApi {
     /// how a native host opens a `.vcad` file. Fails closed on JSON that
     /// isn't an IR document, unlike [`import_ir`](Self::import_ir).
     pub fn from_ir(ir_json: &str, replica_id: ReplicaId) -> Result<Self, String> {
-        serde_json::from_str::<vcad_ir::Document>(ir_json).map_err(|e| e.to_string())?;
+        let doc = serde_json::from_str::<vcad_ir::Document>(ir_json).map_err(|e| e.to_string())?;
+        if let Some(n) = vcad_eval::find_cycle(&doc) {
+            return Err(format!("document node graph has a cycle through node {n}"));
+        }
         let mut api = Self::new(replica_id);
         api.import_ir(ir_json);
         api.dirty = false;
@@ -723,7 +726,12 @@ impl DocumentApi {
 
     /// Import IR JSON into the document.
     pub fn import_ir(&mut self, ir_json: &str) -> ApiResult {
-        if let Ok(doc) = serde_json::from_str::<vcad_ir::Document>(ir_json) {
+        // A cyclic node graph would spin the migrator's transform peel
+        // forever (fuzz F5): import nothing, like unparseable JSON.
+        if let Some(doc) = serde_json::from_str::<vcad_ir::Document>(ir_json)
+            .ok()
+            .filter(|d| vcad_eval::find_cycle(d).is_none())
+        {
             let (migrated, map) = crate::migrate::migrate_v1_mapped(&doc);
             let ops = migrated.ops_since(&std::collections::BTreeMap::new());
             self.crdt.merge(ops);

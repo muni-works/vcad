@@ -931,10 +931,13 @@ fn segments(v: &Value) -> Result<u32, CommandError> {
 
 fn count(v: &Value, ctx: &str) -> Result<u32, CommandError> {
     let n = num(v, "count", ctx)?;
-    if n >= 1.0 && n.fract() == 0.0 {
+    let max = vcad_eval::MAX_PATTERN_COUNT;
+    if n >= 1.0 && n.fract() == 0.0 && n <= f64::from(max) {
         Ok(n as u32)
     } else {
-        Err(invalid(format!("{ctx} requires integer `count` ≥ 1")))
+        Err(invalid(format!(
+            "{ctx} requires integer `count` from 1 to {max}"
+        )))
     }
 }
 
