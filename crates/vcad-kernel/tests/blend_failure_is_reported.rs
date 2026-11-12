@@ -243,3 +243,54 @@ fn shell_reports_a_fallback_to_the_mesh_offset() {
         "a plain box should shell analytically, got fallback: {degraded:?}"
     );
 }
+
+/// A block with a boss on top (a union, or one L-shaped Press Pull) has
+/// concave inside-corner edges the whole-part planar rebuild can't round.
+/// That used to come back as a bare `InvalidResult` (L-prism) or as
+/// "adjacent faces are nearly coplanar" (union seams), and in the Mac app
+/// as an empty viewport with no message. It must name the actual cause.
+#[test]
+fn whole_part_blend_on_a_concave_body_names_the_concave_edge() {
+    use vcad_kernel::vcad_kernel_fillet::BlendRefusal;
+    use vcad_kernel::vcad_kernel_math::Point2;
+    use vcad_kernel::vcad_kernel_sketch::{SketchProfile, SketchSegment};
+
+    let base = Solid::cube(30.0, 97.0, 25.0);
+    let boss = Solid::cube(30.0, 30.0, 30.0).translate(0.0, 0.0, 25.0);
+    let union = base.union(&boss);
+
+    let pts = [
+        (0.0, 0.0),
+        (97.0, 0.0),
+        (97.0, 25.0),
+        (30.0, 25.0),
+        (30.0, 55.0),
+        (0.0, 55.0),
+    ];
+    let segs = (0..pts.len())
+        .map(|i| {
+            let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+            SketchSegment::Line {
+                start: Point2::new(a.0, a.1),
+                end: Point2::new(b.0, b.1),
+            }
+        })
+        .collect();
+    let profile = SketchProfile::new(Point3::origin(), Vec3::y(), Vec3::z(), segs).unwrap();
+    let l_prism = Solid::extrude(profile, Vec3::new(30.0, 0.0, 0.0)).unwrap();
+
+    for (name, body) in [("union", &union), ("L-prism", &l_prism)] {
+        for (op, r) in [("fillet", body.fillet(2.0)), ("chamfer", body.chamfer(2.0))] {
+            match r {
+                Err(BlendError::Refused(BlendRefusal::ConcaveEdge)) => {}
+                other => panic!(
+                    "{op} on {name}: expected ConcaveEdge, got {:?}",
+                    other.err()
+                ),
+            }
+        }
+    }
+    // The convex block alone still blends.
+    assert!(Solid::cube(30.0, 97.0, 25.0).fillet(2.0).is_ok());
+    assert!(Solid::cube(30.0, 97.0, 25.0).chamfer(2.0).is_ok());
+}

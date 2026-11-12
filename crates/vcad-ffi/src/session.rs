@@ -76,6 +76,8 @@ pub extern "C" fn vcad_eval_session_stats(
 /// only what changed since the session's previous evaluation is redone.
 /// Returns null (see `vcad_last_error`) on a null argument, bad UTF-8, a
 /// parse or evaluation error, or a panic — the session survives all of them.
+/// A scene whose roots partly failed is returned, with the per-root reasons
+/// (one per line) left in `vcad_last_error`.
 #[no_mangle]
 pub extern "C" fn vcad_scene_from_json_session(
     session: *mut VcadEvalSession,
@@ -112,10 +114,18 @@ pub extern "C" fn vcad_scene_from_json_session(
         // The viewport: sag-adaptive curves, so an r86 cup isn't a 32-gon.
         let _chord = vcad_eval::evaluate::DisplayChordGuard::enable(crate::DISPLAY_CHORD_MM);
         match evaluate_document_incremental(&doc, &EvalOptions::default(), &mut session.cache) {
-            Ok(scene) => Box::into_raw(Box::new(VcadScene {
-                inner: scene,
-                doc: Some(doc),
-            })),
+            Ok(scene) => {
+                // Roots the kernel refused come back as empty parts; leave
+                // the reason in `vcad_last_error` so the caller can say why.
+                if !scene.failures.is_empty() {
+                    let why: Vec<_> = scene.failures.iter().map(|f| f.error.as_str()).collect();
+                    err::set_error(why.join("\n"));
+                }
+                Box::into_raw(Box::new(VcadScene {
+                    inner: scene,
+                    doc: Some(doc),
+                }))
+            }
             Err(e) => {
                 err::set_error(format!("evaluate: {e}"));
                 ptr::null_mut()

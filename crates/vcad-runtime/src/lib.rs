@@ -184,7 +184,8 @@ pub struct Frame {
     /// The evaluated scene (visible roots, in order). `None` when
     /// evaluation failed (see `eval_error`) or is disabled.
     pub scene: Option<EvaluatedScene>,
-    /// Why evaluation produced no scene.
+    /// Why evaluation produced no scene, or — with a scene — why some of
+    /// its roots came back empty (per-root failures, one per line).
     pub eval_error: Option<String>,
     /// Refusals from intents in this batch (the document excludes them).
     pub errors: Vec<String>,
@@ -389,7 +390,20 @@ fn evaluator(rx: Receiver<EvalMsg>, sink: Arc<Mutex<Option<Sink>>>, chord: f64) 
             evaluate_document_incremental(doc, &EvalOptions::default(), &mut cache)
         }));
         match out {
-            Ok(Ok(scene)) => (Some(scene), None),
+            Ok(Ok(scene)) => {
+                // A root that failed (a fillet the kernel refused) still
+                // yields a scene — with that part empty. Say why, so the
+                // editor doesn't show a blank viewport with no message.
+                let err = (!scene.failures.is_empty()).then(|| {
+                    scene
+                        .failures
+                        .iter()
+                        .map(|f| f.error.clone())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                });
+                (Some(scene), err)
+            }
             Ok(Err(e)) => (None, Some(format!("evaluate: {e}"))),
             Err(_) => {
                 // A panic mid-evaluation can leave the cache half-updated.

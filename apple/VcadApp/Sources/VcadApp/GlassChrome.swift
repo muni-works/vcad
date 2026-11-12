@@ -1601,6 +1601,28 @@ struct PaletteHost: View {
     }
 }
 
+/// A part the kernel refused to build (a whole-part fillet on a body with
+/// inside corners) is missing from the viewport; say why, and offer the way
+/// back, for as long as it stays missing. Without this the viewport just
+/// went blank.
+struct PartFailureHost: View {
+    @Bindable var model: EditorModel
+    var body: some View {
+        if let message = model.partFailureMessage {
+            HStack(spacing: Theme.Space.s) {
+                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                Text(message).font(.callout).lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                Button("Undo") { model.undo() }.buttonStyle(.borderless)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .frame(maxWidth: 560)
+            .glassCapsule()
+            .transition(.opacity.combined(with: .move(edge: .top)))
+            .modifier(ChromeRegion(key: "partFailure"))
+        }
+    }
+}
+
 /// "Undo Fillet" and friends: a quiet pill that fades on its own.
 struct ToastHost: View {
     @Bindable var ui = GlassUI.shared

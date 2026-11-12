@@ -154,6 +154,7 @@ extension EditorModel {
             // them) and its scene for picking.
             adoptedRuntimeRev = frame.rev
             if let r = engineState { fillPartMeshes(frame, extras, r) }
+            showPartFailures(frame, hasScene: extras != nil)
             adoptPickingScene(frame, extras, sameDocument: true)
             if awaitingRuntimeScene {
                 awaitingRuntimeScene = false
@@ -180,6 +181,7 @@ extension EditorModel {
             adoptingRuntimeFrame = false
             if let rows = frame.history, usesDocumentTree, rows != history { history = rows }
         }
+        showPartFailures(frame, hasScene: extras != nil)
         if !fillPartMeshes(frame, extras, r) {
             // Instanced roots (or a failed evaluation) take the old path —
             // `reevalDocumentMeshes` re-tessellates on main.
@@ -196,6 +198,31 @@ extension EditorModel {
 }
 
 extension EditorModel {
+    /// Parts the kernel refused (a whole-part fillet on a body with inside
+    /// corners) come back empty. Without a message that read as "the
+    /// viewport lost my model"; surface the kernel's reason where edit
+    /// errors go, and clear it once a later frame evaluates cleanly.
+    fileprivate func showPartFailures(_ frame: DocumentEngine.Frame, hasScene: Bool) {
+        let message = !hasScene ? nil : frame.evalError.map(Self.readablePartFailure)
+        if let message {
+            engineError = message
+        } else if engineError != nil, engineError == partFailureMessage {
+            engineError = nil
+        }
+        partFailureMessage = message
+    }
+
+    /// "fillet of node 1621737475 did not apply: …" → "Fillet failed: …".
+    nonisolated static func readablePartFailure(_ raw: String) -> String {
+        raw.split(separator: "\n").map { line -> String in
+            let s = String(line)
+            guard let r = s.range(of: #"^(\w[\w ]*) of node \d+ did not apply: "#, options: .regularExpression)
+            else { return s }
+            let op = s[r].components(separatedBy: " of node ").first ?? "Operation"
+            return op.prefix(1).uppercased() + op.dropFirst() + " failed: " + s[r.upperBound...]
+        }.joined(separator: "\n")
+    }
+
     /// Hand the frame's scene and topologies to picking, keyed by the
     /// frame's document bytes (which then also serve `pickingDocumentData`).
     fileprivate func adoptPickingScene(_ frame: DocumentEngine.Frame, _ extras: FrameExtras?, sameDocument: Bool = false) {

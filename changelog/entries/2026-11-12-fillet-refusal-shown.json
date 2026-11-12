@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-12-fillet-refusal-shown",
+  "version": "undefined",
+  "date": "2026-11-12",
+  "category": "fix",
+  "title": "Refused fillet/chamfer says why instead of blanking",
+  "summary": "A whole-part fillet or chamfer on a body with inside corners (a boss on a block) emptied the viewport silently. It now names the concave edges and offers Undo.",
+  "features": ["mac-app", "fillet", "chamfer", "kernel"]
+}

@@ -909,6 +909,7 @@ struct ReleasedOverlayView: View {
             // Command panel, palette and toasts hang beneath the status field.
             VStack(spacing: Theme.Space.s) {
                 ToastHost()
+                PartFailureHost(model: model)
                 CommandPanelHost(model: model)
                 FloatingPanelHost()
                 PaletteHost(model: model)
@@ -923,6 +924,7 @@ struct ReleasedOverlayView: View {
             .animation(Motion.smooth, value: model.showsCommandPalette)
             .animation(Motion.smooth, value: GlassUI.shared.panel?.id)
             .animation(Motion.smooth, value: GlassUI.shared.toast?.text)
+            .animation(Motion.smooth, value: model.partFailureMessage)
         }
         .overlay {
             if GlassUI.shared.shortcutsShown {
