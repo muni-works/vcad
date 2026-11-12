@@ -362,3 +362,16 @@ What landed differs from the sketch above in a few deliberate ways:
   120/120 hits, no evaluation on main. Follow-up: `vcad_solid_pick`
   re-tessellates the solid per pick (`topology::analyze`, ~0.3 ms); cache it
   per solid.
+
+## Slice 3 as built: analysis overlays
+
+- The frame queue's per-part cache (keyed by root content key) now also
+  builds `AnalysisMeshCache.Part`s (triangles + face ids) next to the picking
+  topology, and `AnalysisMeshCache.adopt` takes them with the frame. The
+  overlay's fallback build uses the runtime's scene
+  (`vcad_doc_runtime_scene`), so `PickingState.evaluate`'s session only
+  serves documents without an engine.
+- Not moved: running DFM / FEA / clearance (`AnalysisFFI.*`) still hands the
+  document bytes to Rust, which evaluates them again — off main and only on
+  request. Feeding those from the runtime's evaluated solids (and running
+  DFM in the background per revision) is follow-up work.

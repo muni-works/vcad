@@ -29,13 +29,27 @@ final class AnalysisMeshCache {
     private var key: Data?
     private var parts: [Part] = []
     private var pending: Data?
+    /// The document runtime's scene for its current state (DocumentRuntime
+    /// .swift) — used instead of a separate evaluation when an engine owns
+    /// the document. Nil: evaluate the bytes (view-only documents).
+    var sceneProvider: (@Sendable () -> OpaquePointer?)?
+
+    /// Meshes the runtime's frame queue already built for `data`.
+    func adopt(key data: Data, parts built: [Part]) {
+        guard data != key else { return }
+        key = data
+        parts = built
+        pending = nil
+        NotificationCenter.default.post(name: .analysisMeshesReady, object: nil)
+    }
 
     func parts(for data: Data) -> [Part] {
         if data == key { return parts }
         if pending != data {
             pending = data
+            let provider = sceneProvider
             Task.detached(priority: .userInitiated) {
-                let built = Self.build(data)
+                let built = Self.build(data, provider)
                 await MainActor.run {
                     let cache = AnalysisMeshCache.shared
                     guard cache.pending == data else { return }
@@ -49,26 +63,27 @@ final class AnalysisMeshCache {
         return []
     }
 
-    nonisolated private static func build(_ data: Data) -> [Part] {
-        var out: [Part] = []
-        // Shared with picking: the second caller for the same bytes reuses
-        // every solid instead of re-running the booleans.
-        guard let scene = PickingState.evaluate(data) else { return out }
+    nonisolated private static func build(_ data: Data, _ provider: (@Sendable () -> OpaquePointer?)?) -> [Part] {
+        // The runtime's own incremental cache when it owns the document;
+        // otherwise the shared session (view-only documents).
+        guard let scene = provider.map({ $0() }) ?? PickingState.evaluate(data) else { return [] }
         defer { vcad_scene_free(scene) }
-        for i in 0..<vcad_scene_part_count(scene) {
-            let v = vcad_scene_part_mesh(scene, i)
-            var n = 0
-            let ids = vcad_scene_part_face_ids(scene, i, &n)
-            guard let vp = v.vertices, let ip = v.indices else { out.append(.init(positions: [], normals: [], indices: [], faceIds: [])); continue }
-            let pos = (0..<(v.vertices_len / 3)).map { SIMD3(vp[3 * $0], vp[3 * $0 + 1], vp[3 * $0 + 2]) }
-            let nor: [SIMD3<Float>] = (v.normals != nil && v.normals_len == v.vertices_len)
-                ? (0..<(v.normals_len / 3)).map { SIMD3(v.normals![3 * $0], v.normals![3 * $0 + 1], v.normals![3 * $0 + 2]) }
-                : Array(repeating: .zero, count: pos.count)
-            let idx = Array(UnsafeBufferPointer(start: ip, count: v.indices_len))
-            let fid = ids.map { Array(UnsafeBufferPointer(start: $0, count: n)) } ?? []
-            out.append(.init(positions: pos, normals: nor, indices: idx, faceIds: fid))
-        }
-        return out
+        return (0..<vcad_scene_part_count(scene)).map { part(scene, $0) }
+    }
+
+    /// Part `i`'s triangles with their face ids. Pure read of `scene`.
+    nonisolated static func part(_ scene: OpaquePointer, _ i: Int) -> Part {
+        let v = vcad_scene_part_mesh(scene, i)
+        var n = 0
+        let ids = vcad_scene_part_face_ids(scene, i, &n)
+        guard let vp = v.vertices, let ip = v.indices else { return .init(positions: [], normals: [], indices: [], faceIds: []) }
+        let pos = (0..<(v.vertices_len / 3)).map { SIMD3(vp[3 * $0], vp[3 * $0 + 1], vp[3 * $0 + 2]) }
+        let nor: [SIMD3<Float>] = (v.normals != nil && v.normals_len == v.vertices_len)
+            ? (0..<(v.normals_len / 3)).map { SIMD3(v.normals![3 * $0], v.normals![3 * $0 + 1], v.normals![3 * $0 + 2]) }
+            : Array(repeating: .zero, count: pos.count)
+        let idx = Array(UnsafeBufferPointer(start: ip, count: v.indices_len))
+        let fid = ids.map { Array(UnsafeBufferPointer(start: $0, count: n)) } ?? []
+        return .init(positions: pos, normals: nor, indices: idx, faceIds: fid)
     }
 
     /// Triangles of `faces` on `part`, pushed out along their normals by `lift` mm.

@@ -23,6 +23,7 @@ extension EditorModel {
         runtimeGesture = nil
         collideAfterSeq = 0
         picking.runtimeScenes = engine.map { e in { e.currentScene() } }
+        AnalysisMeshCache.shared.sceneProvider = engine.map { e in { @Sendable in e.currentScene() } }
         guard let engine else { return }
         let topologies = TopologyCache()       // frame-queue confined
         engine.onFrame = { [weak self] frame in
@@ -31,9 +32,10 @@ extension EditorModel {
             // neither the viewport nor picking evaluates or decodes on main.
             let extras = frame.takeScene().map { scene in
                 let count = vcad_scene_part_count(scene)
+                let (topos, analysis) = topologies.update(scene, count: count)
                 return FrameExtras(scene: scene,
                                    parts: EditorModel.gatherParts(scene, count: count),
-                                   topologies: topologies.update(scene, count: count))
+                                   topologies: topos, analysis: analysis)
             }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
@@ -149,6 +151,7 @@ extension EditorModel {
         if let c = documentBytesCache, c.revision == documentRevision { key = c.data }
         else { key = frame.documentBytes; documentBytesCache = (documentRevision, key) }
         picking.adopt(scene: scene, topologies: extras.topologies, data: key, sameDocument: sameDocument)
+        AnalysisMeshCache.shared.adopt(key: key, parts: extras.analysis)
     }
 }
 
@@ -158,32 +161,37 @@ final class FrameExtras: @unchecked Sendable {
     private var scene: OpaquePointer?
     let parts: [(mesh: KernelMesh, edges: [SIMD3<Float>], rootKey: String?)?]
     let topologies: [Int: PartTopology]
+    let analysis: [AnalysisMeshCache.Part]
 
     init(scene: OpaquePointer, parts: [(mesh: KernelMesh, edges: [SIMD3<Float>], rootKey: String?)?],
-         topologies: [Int: PartTopology]) {
-        self.scene = scene; self.parts = parts; self.topologies = topologies
+         topologies: [Int: PartTopology], analysis: [AnalysisMeshCache.Part]) {
+        self.scene = scene; self.parts = parts; self.topologies = topologies; self.analysis = analysis
     }
     func take() -> OpaquePointer? { defer { scene = nil }; return scene }
     func release() { if let s = take() { vcad_scene_free(s) } }
     deinit { release() }
 }
 
-/// Part topologies by root content key, so a frame only builds the parts
-/// whose geometry changed. Touched only on the engine's frame queue.
+/// Per-part B-rep topology (picking) and face-id meshes (analysis overlay)
+/// by root content key, so a frame only builds the parts whose geometry
+/// changed. Touched only on the engine's frame queue.
 private final class TopologyCache: @unchecked Sendable {
-    private var byKey: [String: PartTopology] = [:]
+    private var byKey: [String: (topo: PartTopology?, analysis: AnalysisMeshCache.Part)] = [:]
 
-    func update(_ scene: OpaquePointer, count: Int) -> [Int: PartTopology] {
-        var out: [Int: PartTopology] = [:]
-        var next: [String: PartTopology] = [:]
+    func update(_ scene: OpaquePointer, count: Int) -> ([Int: PartTopology], [AnalysisMeshCache.Part]) {
+        var topos: [Int: PartTopology] = [:]
+        var analysis: [AnalysisMeshCache.Part] = []
+        var next: [String: (topo: PartTopology?, analysis: AnalysisMeshCache.Part)] = [:]
         for i in 0..<count {
             let key = EditorModel.rootKey(scene, i)
-            if let key, let t = byKey[key] { out[i] = t; next[key] = t; continue }
-            guard let solid = vcad_scene_part_solid(scene, i), let t = PartTopology(solid: solid) else { continue }
-            out[i] = t
-            if let key { next[key] = t }
+            let entry = key.flatMap { byKey[$0] } ?? (
+                topo: vcad_scene_part_solid(scene, i).flatMap { PartTopology(solid: $0) },
+                analysis: AnalysisMeshCache.part(scene, i))
+            topos[i] = entry.topo
+            analysis.append(entry.analysis)
+            if let key { next[key] = entry }
         }
         byKey = next
-        return out
+        return (topos, analysis)
     }
 }
