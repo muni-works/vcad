@@ -135,6 +135,11 @@ struct DocInstance {
     let id: String
     let name: String
     let root: Int
+    /// The part definition's id and display name (what repeated instances group under).
+    var defId: String = ""
+    var defName: String = ""
+    /// Material key: the instance's own, else the part def's default.
+    var material: String? = nil
 }
 
 struct DocumentGraph {
@@ -283,7 +288,10 @@ struct DocumentGraph {
         let instances: [DocInstance] = ((obj["instances"] as? [[String: Any]]) ?? []).compactMap { inst in
             guard let id = inst["id"] as? String, let defId = inst["partDefId"] as? String,
                   let def = partDefs[defId], let root = (def["root"] as? NSNumber)?.intValue else { return nil }
-            return DocInstance(id: id, name: inst["name"] as? String ?? def["name"] as? String ?? id, root: root)
+            let defName = def["name"] as? String ?? defId
+            return DocInstance(id: id, name: inst["name"] as? String ?? defName, root: root,
+                               defId: defId, defName: defName,
+                               material: inst["material"] as? String ?? def["defaultMaterial"] as? String)
         }
         return DocumentGraph(nodes: nodes, roots: roots, materials: materials,
                              parameters: parameters, joints: joints, timeline: timeline,
@@ -294,11 +302,92 @@ struct DocumentGraph {
 
     /// Top-level rows: one per VISIBLE root (so `partIndex` aligns with the
     /// kernel scene), each expandable into its operation sub-tree.
+    ///
+    /// A root row is a PART (Fusion's browser model): it is named after itself
+    /// — the user's name, or the body it started as — never after the last
+    /// operation applied to it, so filleting "Bracket" leaves a row called
+    /// "Bracket", not "Fillet".
     func featureRoots() -> [FeatureNode] {
+        var used: [String: Int] = [:]
+        // A root that is also a part def's root (imported robots: K1) is
+        // that part — "Trunk", not its geometry node "Trunk_geom".
+        let byRoot = Dictionary(grouping: instances, by: \.root)
         let rows = visibleRoots.enumerated().map { partIndex, root in
-            buildNode(root.nodeId, partIndex: partIndex, depth: 0, visited: [])
+            var row = buildNode(root.nodeId, partIndex: partIndex, depth: 0, visited: [])
+            let insts = byRoot[root.nodeId] ?? []
+            if insts.count == 1 { row.instanceId = insts[0].id }
+            let base = insts.count == 1 ? insts[0].name
+                : insts.first.map { $0.defName.isEmpty ? $0.name : $0.defName } ?? partName(root: root.nodeId)
+            used[base, default: 0] += 1
+            row.name = used[base]! > 1 ? "\(base) \(used[base]!)" : base
+            row.material = root.material
+            return row
         }
         return rows + instanceRows(excluding: rows)
+    }
+
+    // MARK: part names (the browser is nouns, not operations)
+
+    /// Leaf shapes a part can "start as" — their label is a fine part name.
+    static let bodyTypes: Set<String> = [
+        "Cube", "Cylinder", "Sphere", "Cone", "Torus", "Wedge", "Prism", "SpurGear", "PcbBoard",
+        "Text2D", "SheetMetalBaseFlangeRect", "SheetMetalBaseFlangePolygon",
+        "StepImport", "MeshImport", "ImportedMesh", "mesh_import", "EmbroideryPattern",
+    ]
+    /// Names the app stamps on operations it creates. On a non-body node they
+    /// say what was DONE, not what the part IS, so they never name a part.
+    static let operationNames: Set<String> = [
+        "Fillet", "Chamfer", "Edge Blend", "Hole", "Counterbore", "Sketch", "Extrude",
+        "Move", "Rotate", "Scale", "Mirror", "Union", "Difference", "Intersection",
+        "Shell", "Revolve", "Sweep", "Loft", "Linear Pattern", "Circular Pattern", "Pattern",
+        "Translate", "Draft", "Thicken", "Offset", "Split", "Cut", "Body",
+    ]
+
+    /// A node's name when it describes the thing rather than the operation.
+    func descriptiveName(_ node: DocNode) -> String? {
+        guard let n = node.name?.trimmingCharacters(in: .whitespaces), !n.isEmpty else { return nil }
+        if Self.bodyTypes.contains(node.opType) { return n }
+        if n == Self.label(node.opType) || Self.operationNames.contains(n) { return nil }
+        return n
+    }
+
+    /// The input an operation modifies: the base of a boolean, the solid
+    /// under a fillet/transform/pattern. nil for leaves and sketch-driven ops.
+    private func primaryInput(_ op: [String: Any]) -> Int? {
+        for key in ["left", "child", "base"] {
+            if let n = (op[key] as? NSNumber)?.intValue { return n }
+        }
+        if let arr = op["children"] as? [Any], let n = (arr.first as? NSNumber)?.intValue { return n }
+        return nil
+    }
+
+    /// The part a root draws, named after itself: the first descriptive name
+    /// walking down its primary-input chain, else the body it started as
+    /// ("Box"), else "Body".
+    func partName(root: Int) -> String {
+        var cur: Int? = root
+        var seen = Set<Int>()
+        var leaf: DocNode?
+        while let id = cur, seen.insert(id).inserted, seen.count < 64, let node = nodes[id] {
+            if let n = descriptiveName(node) { return n }
+            leaf = node
+            cur = primaryInput(node.op)
+        }
+        if let leaf, Self.bodyTypes.contains(leaf.opType) { return Self.label(leaf.opType) }
+        return "Body"
+    }
+
+    /// Sketches anywhere in the document, for the browser's quiet bottom
+    /// section. In document order; unnamed ones are numbered.
+    func sketchRows() -> [FeatureNode] {
+        let sketches = nodes.values.filter { $0.opType == "Sketch2D" || $0.opType == "SketchOnFace" }
+            .sorted { $0.id < $1.id }
+        return sketches.enumerated().map { i, n in
+            let named = n.name.flatMap { $0.isEmpty || $0 == "Sketch" ? nil : $0 }
+            return FeatureNode(id: "n\(n.id)", nodeId: n.id, name: named ?? "Sketch \(i + 1)",
+                               opType: n.opType, symbol: Self.symbol(n.opType), detail: nil,
+                               partIndex: nil, children: [])
+        }
     }
 
     /// One row per assembly instance, so the tree matches what the scene
@@ -308,10 +397,13 @@ struct DocumentGraph {
         let shown = Set(rows.map(\.nodeId))
         return instances.filter { !shown.contains(unwrapIdentity($0.root)) }.map { inst in
             let body = buildNode(inst.root, partIndex: nil, depth: 0, visited: [])
-            return FeatureNode(id: "instance:\(inst.id)", nodeId: inst.root, name: inst.name,
-                               opType: body.opType, symbol: body.symbol, detail: body.detail,
-                               partIndex: nil, children: body.children,
-                               heldNodeId: body.heldNodeId, heldOpType: body.heldOpType)
+            var row = FeatureNode(id: "instance:\(inst.id)", nodeId: inst.root, name: inst.name,
+                                  opType: body.opType, symbol: body.symbol, detail: body.detail,
+                                  partIndex: nil, children: body.children,
+                                  heldNodeId: body.heldNodeId, heldOpType: body.heldOpType)
+            row.groupName = inst.defName.isEmpty ? inst.name : inst.defName
+            row.material = inst.material
+            return row
         }
     }
 
@@ -816,7 +908,7 @@ enum DocEdit {
 struct FeatureNode: Identifiable {
     let id: String
     let nodeId: Int
-    let name: String
+    var name: String
     let opType: String
     let symbol: String
     let detail: String?
@@ -826,5 +918,12 @@ struct FeatureNode: Identifiable {
     /// so the inspector can edit its size as well as its position.
     var heldNodeId: Int? = nil
     var heldOpType: String? = nil
+    /// Material key, for the browser's swatch (root parts and instances).
+    var material: String? = nil
+    /// For an assembly instance: its part def's name — repeated instances
+    /// collapse under it in the browser ("Rotor × 2").
+    var groupName: String? = nil
+    /// A root part that IS one assembly instance's part: renames go there.
+    var instanceId: String? = nil
     var hasChildren: Bool { !children.isEmpty }
 }

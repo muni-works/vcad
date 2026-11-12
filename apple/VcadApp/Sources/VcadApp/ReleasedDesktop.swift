@@ -2128,6 +2128,9 @@ struct ReleasedARView: NSViewRepresentable {
         for i in 0..<model.partCount {
             centering.findEntity(named: "part\(i)")?.isEnabled = model.isPartVisible(i)
         }
+        for i in 0..<model.assemblyInstanceCount {
+            centering.findEntity(named: "inst\(i)")?.isEnabled = model.isInstanceVisible(i)
+        }
     }
 
     private func rebuild(in anchor: AnchorEntity?, coordinator: Coordinator) {
@@ -2274,6 +2277,7 @@ struct ReleasedARView: NSViewRepresentable {
             // instance, so nothing that poses or picks instances may reach it.
             let isFreeRoot = inst.index >= model.assemblyInstanceCount
             e.name = isFreeRoot ? "free\(i)" : "inst\(i)"
+            if !isFreeRoot { e.isEnabled = model.isInstanceVisible(i) }
             // Live transforms win over the authored pose: kinematic playback
             // and physics both publish through `instanceTransforms`, and a
             // rebuild mid-episode must not snap the robot back to its rest

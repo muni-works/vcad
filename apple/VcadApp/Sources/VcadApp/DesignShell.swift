@@ -4,24 +4,39 @@ import SwiftUI
 // modelling tools strip, the breadcrumb, and the viewport tools. All of them
 // share the one surface, one width, and one header from Theme.swift.
 
-/// The left rail: the document's feature tree.
+/// The left rail: the Model browser — the document's parts, not its history
+/// (ModelBrowser.swift). Documents without a DAG keep the flat feature list.
 struct DesignModelNavigator: View {
     @Bindable var model: EditorModel
+    @State private var query = ""
+
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Space.m) {
+        let all = ModelBrowser.items(model.featureNodes)
+        let items = ModelBrowser.filter(all, query)
+        let sketches = query.isEmpty ? model.sketchNodes
+            : model.sketchNodes.filter { $0.name.localizedCaseInsensitiveContains(query) }
+        VStack(alignment: .leading, spacing: Theme.Space.s) {
             PanelHeader(title: "Model")
+            if model.usesDocumentTree && ModelBrowser.partCount(all) + model.sketchNodes.count > 6 {
+                filterField
+            }
             Divider()
             ScrollViewReader { proxy in
                 ScrollView {
-                    FeatureTreeView(model: model, embedded: true)
-                }.frame(maxHeight: 330).fixedSize(horizontal: false, vertical: true)
+                    if model.usesDocumentTree {
+                        ModelBrowserView(model: model, items: items, sketches: sketches, filtering: !query.isEmpty)
+                    } else {
+                        FeatureTreeView(model: model, embedded: true)
+                    }
+                }.frame(maxHeight: 360).fixedSize(horizontal: false, vertical: true)
                     .onChange(of: model.selectedFeatureID) { _, id in
                         if let id { withAnimation(Motion.snappy) { proxy.scrollTo(id, anchor: .center) } }
                     }
             }
             Divider()
             HStack {
-                Text(counted(model.usesDocumentTree ? model.featureNodes.count : model.features.count, "feature"))
+                Text(model.usesDocumentTree ? counted(ModelBrowser.partCount(all), "part")
+                     : counted(model.features.count, "feature"))
                 Spacer(minLength: 0)
                 if model.hasHiddenParts {
                     Button("Show All") { model.showAllParts() }
@@ -31,6 +46,20 @@ struct DesignModelNavigator: View {
             }
             .font(.caption).foregroundStyle(.secondary)
         }.padding(Theme.Space.m).frame(width: Theme.Width.navigator).panelSurface()
+    }
+
+    private var filterField: some View {
+        HStack(spacing: Theme.Space.xs) {
+            Image(systemName: "line.3.horizontal.decrease").font(.caption).foregroundStyle(.tertiary)
+            TextField("Filter", text: $query).textFieldStyle(.plain).font(.callout)
+                .onExitCommand { query = "" }
+            if !query.isEmpty {
+                Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.plain).foregroundStyle(.tertiary).accessibilityLabel("Clear filter")
+            }
+        }
+        .padding(.horizontal, 6).padding(.vertical, 3)
+        .controlWell()
     }
 }
 

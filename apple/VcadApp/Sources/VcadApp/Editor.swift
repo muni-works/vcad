@@ -502,8 +502,14 @@ final class EditorModel {
     var featureNodes: [FeatureNode] = [] {
         // Every rebuild re-reads the history (suppressed/skipped rows, the
         // rollback marker, broken references) — HistoryTree.swift.
-        didSet { if !adoptingRuntimeFrame { refreshHistory() } }
+        didSet {
+            sketchNodes = featureNodes.isEmpty ? [] : (documentGraph?.sketchRows() ?? [])
+            if !adoptingRuntimeFrame { refreshHistory() }
+        }
     }
+    /// The browser's quiet bottom section: every sketch in the document,
+    /// derived once per rebuild (never per render, hover or select).
+    var sketchNodes: [FeatureNode] = []
     /// Set while a runtime frame is adopted: the frame carries the history.
     @ObservationIgnored var adoptingRuntimeFrame = false
     /// The engine's feature history: one row per modeling feature, built or not.
@@ -517,6 +523,10 @@ final class EditorModel {
     var hiddenParts: Set<Int> = []
     /// Isolate: when set, only this part shows (supersedes `hiddenParts`).
     var isolatedPart: Int?
+    /// Assembly instances hidden from the browser (render index), and the
+    /// instances an option-click isolated (empty = no instance isolate).
+    var hiddenInstances: Set<Int> = []
+    var isolatedInstances: Set<Int> = []
     /// Viewport needs to re-apply part visibility / re-highlight the selection.
     var visibilityDirty = false
     var selectionDirty = false
@@ -918,6 +928,8 @@ final class EditorModel {
     private func loadDocumentTree() {
         hiddenParts.removeAll()
         isolatedPart = nil
+        hiddenInstances = []
+        isolatedInstances = []
         multiSelectedParts = []
         hoveredPartIndex = nil
         expandedFeatureIDs.removeAll()
@@ -996,7 +1008,29 @@ final class EditorModel {
         if let iso = isolatedPart { return i == iso }
         return !hiddenParts.contains(i)
     }
-    var hasHiddenParts: Bool { isolatedPart != nil || !hiddenParts.isEmpty }
+    var hasHiddenParts: Bool {
+        isolatedPart != nil || !hiddenParts.isEmpty || !hiddenInstances.isEmpty || !isolatedInstances.isEmpty
+    }
+
+    func isInstanceVisible(_ i: Int) -> Bool {
+        if !isolatedInstances.isEmpty { return isolatedInstances.contains(i) }
+        return !hiddenInstances.contains(i)
+    }
+    /// Hide or show a set of instances together (a browser row may stand for
+    /// every instance of a part def). Visible if any is: the toggle hides all.
+    func toggleVisibility(instances: [Int]) {
+        guard !instances.isEmpty else { return }
+        isolatedInstances = []
+        if instances.contains(where: isInstanceVisible) { hiddenInstances.formUnion(instances) }
+        else { hiddenInstances.subtract(instances) }
+        visibilityDirty = true
+    }
+    func isolate(instances: [Int]) {
+        guard !instances.isEmpty else { return }
+        isolatedInstances = isolatedInstances == Set(instances) ? [] : Set(instances)
+        hiddenInstances = []
+        visibilityDirty = true
+    }
 
     func toggleVisibility(part i: Int) {
         isolatedPart = nil                       // an explicit toggle exits isolate
@@ -1011,6 +1045,8 @@ final class EditorModel {
     func showAllParts() {
         hiddenParts.removeAll()
         isolatedPart = nil
+        hiddenInstances = []
+        isolatedInstances = []
         visibilityDirty = true
     }
 
@@ -1065,6 +1101,9 @@ final class EditorModel {
         let d = instanceDicts[i]
         return (d["name"] as? String) ?? (d["id"] as? String)
     }
+
+    /// Render index of the instance with this id.
+    func instanceIndex(id: String) -> Int? { instanceDicts.firstIndex { ($0["id"] as? String) == id } }
 
     /// The part definition an instance is an instance OF.
     func instancePartDefName(_ i: Int) -> String? {
