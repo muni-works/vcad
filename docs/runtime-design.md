@@ -399,3 +399,29 @@ What landed differs from the sketch above in a few deliberate ways:
   the document per step inside `vcad-sound` (off main, on request), and the
   Tune panel's `vcad_instrument_call` still takes document bytes. Folding
   those onto the runtime's incremental cache is follow-up.
+
+## Slice 5 as built: agent / MCP
+
+- The 10 Hz resource poll's `.view` fingerprint is now its inputs (camera,
+  workspace, visibility, sketch, filter, epoch) instead of a sorted JSON
+  serialization of `view()` — it showed up in every profile.
+- `front`/`read` agent replies splice the frame's document bytes into the
+  reply (`AgentCore.encode`) instead of re-serializing the document
+  dictionary on main per agent read.
+- Picking: `vcad_solid_pick` re-tessellated the solid and rebuilt its BVH on
+  every call — real mouse movement over the glockenspiel spent 3.2 s of main
+  in it during one bench. The topology + BVH are now built once per solid
+  handle (dropped in `vcad_solid_free`) and warmed by
+  `vcad_solid_pick_prepare` on the frame queue when the topology is built.
+- Release bench under load 23: main idle 85%; no evaluation, pick indexing or
+  document serialization on main.
+- Deliberately not done here — needs a decision:
+  - Agent edits (`engine_tool`, `apply`) still go through `AgentEdits.edit`:
+    the work runs on the runtime thread but main waits for it (a
+    materialize, typically ms). Making them async means making
+    `AgentTurn.perform`'s fold-into-one-undo-step and the ghost/review gate
+    async too.
+  - The undo stack is still Swift's (sketch scoping, generation undo, JSON
+    steps, agent-turn folding all live there); only gesture snapshots live in
+    Rust. Moving it is the remaining big piece of the design and touches all
+    of those.

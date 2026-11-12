@@ -242,6 +242,7 @@ pub extern "C" fn vcad_mesh_free(mesh: *mut VcadMesh) {
 #[no_mangle]
 pub extern "C" fn vcad_solid_free(solid: *mut VcadSolid) {
     if !solid.is_null() {
+        topology::forget_pick_index(solid);
         drop(unsafe { Box::from_raw(solid) });
     }
 }

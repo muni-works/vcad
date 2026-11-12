@@ -158,7 +158,29 @@ final class AgentCore {
         } catch {
             out = ["error": AgentEdits.describe(error)]
         }
-        return String(decoding: (try? JSONSerialization.data(withJSONObject: out)) ?? Data("{}".utf8), as: UTF8.self)
+        return Self.encode(out)
+    }
+
+    /// Key under which `answer` hands back the document as ready-made JSON
+    /// bytes (the runtime frame's, serialized off main), spliced into the
+    /// reply as `"document"` instead of re-serializing a dictionary on main.
+    nonisolated static let rawDocumentKey = "__raw_document"
+
+    nonisolated static func encode(_ out: [String: Any]) -> String {
+        var rest = out
+        guard let raw = rest.removeValue(forKey: rawDocumentKey) as? Data else {
+            return String(decoding: (try? JSONSerialization.data(withJSONObject: out)) ?? Data("{}".utf8), as: UTF8.self)
+        }
+        var text = String(decoding: (try? JSONSerialization.data(withJSONObject: rest)) ?? Data("{}".utf8), as: UTF8.self)
+        let doc = String(decoding: raw, as: UTF8.self)
+        text.removeLast()                                   // the closing brace
+        return text + (rest.isEmpty ? "" : ",") + "\"document\":" + doc + "}"
+    }
+
+    /// The document for a reply: frame bytes when the runtime has them.
+    private static func documentReply(_ m: EditorModel) -> (String, Any) {
+        if m.documentJSON != nil, let data = m.pickingDocumentData { return (rawDocumentKey, data) }
+        return ("document", m.documentJSON ?? emptyDocument)
     }
 
     /// An empty IR document (an Untitled window before its first part).
@@ -174,12 +196,14 @@ final class AgentCore {
         }
         switch op {
         case "front":
-            return ["id": Self.documentId(m), "document": m.documentJSON ?? Self.emptyDocument]
+            let (k, v) = Self.documentReply(m)
+            return ["id": Self.documentId(m), k: v]
         case "read":
             if let refusal = Self.scopeRefusal(id, m) {
                 return ["error": refusal, "kind": Self.isStale(id, m) ? "scope" : "not_found"]
             }
-            return ["document": m.documentJSON ?? Self.emptyDocument]
+            let (k, v) = Self.documentReply(m)
+            return [k: v]
         case "documents":
             return ["documents": [["id": Self.documentId(m), "name": m.documentName]]]
         case "open", "apply":

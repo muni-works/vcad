@@ -159,6 +159,9 @@ final class PartTopology {
         self.solid = solid
         self.faces = r.faces
         self.edges = r.edges
+        // Build the pick index (topology + BVH) here: topologies are made on
+        // the frame queue, so the first hover pick doesn't pay for it on main.
+        _ = vcad_solid_pick_prepare(solid)
     }
     deinit { vcad_solid_free(solid) }
 

@@ -395,10 +395,68 @@ fn seg_dist(p: Vec3, a: Vec3, b: Vec3) -> f64 {
     (a + ab * t - p).norm()
 }
 
+/// What a pick needs from a solid: its topology table and a BVH. Building it
+/// re-tessellates every face, so it is built once per solid handle and kept
+/// until `vcad_solid_free` (hover picks at pointer rate used to rebuild it on
+/// every mouse move).
+struct PickIndex {
+    topo: Topo,
+    bvh: Bvh,
+}
+
+static PICK_INDEX: std::sync::Mutex<Option<HashMap<usize, std::sync::Arc<PickIndex>>>> =
+    std::sync::Mutex::new(None);
+
+fn pick_index(solid: *const VcadSolid, s: &VcadSolid) -> Result<std::sync::Arc<PickIndex>, String> {
+    let key = solid as usize;
+    if let Some(ix) = PICK_INDEX
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|m| m.get(&key).cloned())
+    {
+        return Ok(ix);
+    }
+    let (topo, brep) = analyze(&s.inner)?;
+    let ix = std::sync::Arc::new(PickIndex {
+        bvh: Bvh::build_brep(brep),
+        topo,
+    });
+    PICK_INDEX
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .insert(key, ix.clone());
+    Ok(ix)
+}
+
+/// Drop a solid handle's pick index (called by `vcad_solid_free`).
+pub(crate) fn forget_pick_index(solid: *const VcadSolid) {
+    if let Some(m) = PICK_INDEX
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_mut()
+    {
+        m.remove(&(solid as usize));
+    }
+}
+
+/// Build `solid`'s pick index now (off the UI thread), so the first pick
+/// doesn't pay for it. False for a solid with no B-rep.
+#[no_mangle]
+pub extern "C" fn vcad_solid_pick_prepare(solid: *const VcadSolid) -> bool {
+    let Some(s) = solid_ref(solid) else {
+        return false;
+    };
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        pick_index(solid, s).is_ok()
+    }))
+    .unwrap_or(false)
+}
+
 /// Ray-pick a face — and an edge, when the hit lands within `edge_tol` mm of
 /// one of that face's edges. `origin`/`dir` are 3 doubles in kernel coords.
-/// Builds a BVH per call, fine for click-rate picking (hover should use the
-/// tessellation's face ids instead).
+/// The topology + BVH are built once per solid handle (`PickIndex`).
 #[no_mangle]
 pub extern "C" fn vcad_solid_pick(
     solid: *const VcadSolid,
@@ -416,10 +474,10 @@ pub extern "C" fn vcad_solid_pick(
     let o = unsafe { std::slice::from_raw_parts(origin, 3) };
     let d = unsafe { std::slice::from_raw_parts(dir, 3) };
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let Ok((topo, brep)) = analyze(&s.inner) else {
+        let Ok(ix) = pick_index(solid, s) else {
             return MISS;
         };
-        let bvh = Bvh::build_brep(brep);
+        let (topo, bvh) = (&ix.topo, &ix.bvh);
         let ray = Ray::new(Point3::new(o[0], o[1], o[2]), Vec3::new(d[0], d[1], d[2]));
         let Some(h) = bvh.trace_closest(&ray) else {
             return MISS;
