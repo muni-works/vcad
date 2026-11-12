@@ -121,6 +121,28 @@ pub extern "C" fn vcad_doc_runtime_swap_gesture(
     }
 }
 
+/// The evaluated scene of the runtime's current state, through its
+/// incremental cache — for a host that needs B-reps before the next frame
+/// lands. Blocks. Null on failure (see `vcad_last_error`); free with
+/// `vcad_scene_free`.
+#[no_mangle]
+pub extern "C" fn vcad_doc_runtime_scene(engine: *const VcadEngine) -> *mut VcadScene {
+    err::clear_error();
+    let Some(engine) = (unsafe { engine.as_ref() }) else {
+        return ptr::null_mut();
+    };
+    match engine.rt.call(|c| c.evaluate_current()) {
+        Ok(Ok((inner, doc))) => Box::into_raw(Box::new(VcadScene {
+            inner,
+            doc: Some(doc),
+        })),
+        Ok(Err(e)) | Err(e) => {
+            err::set_error(e);
+            ptr::null_mut()
+        }
+    }
+}
+
 /// Drop a gesture's snapshot (its undo entry is gone).
 #[no_mangle]
 pub extern "C" fn vcad_doc_runtime_forget_gesture(engine: *const VcadEngine, gesture: u64) {
@@ -246,7 +268,15 @@ mod tests {
         let intent = br#"{"seq":1,"intent":{"type":"set_doc_param","name":"w","value":20,"gesture":{"id":5,"start":true}}}"#;
         assert!(vcad_doc_runtime_send(engine, intent.as_ptr(), intent.len()));
         assert!(!vcad_doc_runtime_send(engine, b"{".as_ptr(), 1));
-        let frame = rx.recv_timeout(Duration::from_secs(30)).unwrap() as *mut VcadFrame;
+        // The load published a scene frame first (blocking edits publish once
+        // the inbox is idle); skip to the intent's frame.
+        let frame = loop {
+            let f = rx.recv_timeout(Duration::from_secs(30)).unwrap() as *mut VcadFrame;
+            if vcad_frame_acked_seq(f) == 1 {
+                break f;
+            }
+            vcad_frame_free(f);
+        };
         assert!(vcad_frame_rev(frame) > rev0);
         assert_eq!(vcad_frame_acked_seq(frame), 1);
         let mut len = 0;

@@ -82,13 +82,16 @@ pub enum Intent {
         /// The gesture's id.
         gesture: u64,
     },
+    /// Publish a frame of the current state without changing it (a host
+    /// that just installed its sink, e.g. after opening a document).
+    Publish,
 }
 
 impl Intent {
     fn gesture(&self) -> Option<Gesture> {
         match self {
             Intent::Command { gesture, .. } | Intent::SetDocParam { gesture, .. } => *gesture,
-            Intent::GestureEnd { .. } => None,
+            Intent::GestureEnd { .. } | Intent::Publish => None,
         }
     }
 
@@ -309,6 +312,7 @@ impl Core {
                 self.open_gestures.retain(|g| *g != gesture);
                 Ok(())
             }
+            Intent::Publish => Ok(()),
         }
     }
 
@@ -331,6 +335,16 @@ impl Core {
             gesture_open: !self.open_gestures.is_empty(),
             state_hash: self.api.state_hash(),
             history_json: serde_json::to_string(&self.api.feature_history()).unwrap_or_default(),
+        }
+    }
+
+    /// Evaluate the current state through the runtime's incremental cache
+    /// (nearly free right after a frame evaluated the same revision).
+    pub fn evaluate_current(&mut self) -> Result<(EvaluatedScene, Document), String> {
+        let document = self.api.get_state().document;
+        match self.evaluate(&document) {
+            (Some(scene), _) => Ok((scene, document)),
+            (None, e) => Err(e.unwrap_or_else(|| "no scene".into())),
         }
     }
 
@@ -430,9 +444,30 @@ impl Drop for Runtime {
 }
 
 /// Apply queued intents in order, coalesced; blocking calls are barriers.
+///
+/// Blocking edits publish too: once the inbox is idle after a call that
+/// changed the revision, a frame of that revision goes out, so a host's
+/// consumers of the evaluated scene (picking) never evaluate it themselves.
 fn run(mut core: Core, rx: Receiver<Msg>, sink: Arc<Mutex<Option<Sink>>>) {
     let mut queue: std::collections::VecDeque<Msg> = Default::default();
+    let mut acked_total = 0u64;
+    let mut scene_stale = false;
+    let has_sink =
+        |sink: &Arc<Mutex<Option<Sink>>>| sink.lock().unwrap_or_else(|e| e.into_inner()).is_some();
     loop {
+        if queue.is_empty() && scene_stale {
+            queue.extend(rx.try_iter());
+            if queue.is_empty() {
+                scene_stale = false;
+                if has_sink(&sink) {
+                    let frame = core.frame(acked_total, Vec::new(), Vec::new());
+                    if let Some(s) = sink.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                        s(frame);
+                    }
+                }
+                continue;
+            }
+        }
         if queue.is_empty() {
             match rx.recv() {
                 Ok(m) => queue.push_back(m),
@@ -459,6 +494,8 @@ fn run(mut core: Core, rx: Receiver<Msg>, sink: Arc<Mutex<Option<Sink>>>) {
         }
         if !run_.is_empty() {
             let acked = run_.last().map_or(0, |e| e.seq);
+            acked_total = acked_total.max(acked);
+            let changes = run_.iter().any(|e| e.intent != Intent::Publish);
             let mut errors = Vec::new();
             let mut ended = Vec::new();
             for env in run_ {
@@ -471,7 +508,9 @@ fn run(mut core: Core, rx: Receiver<Msg>, sink: Arc<Mutex<Option<Sink>>>) {
                     errors.push(e);
                 }
             }
-            core.bump();
+            if changes {
+                core.bump();
+            }
             // Latest wins: if more intents arrived meanwhile, fold them in
             // before paying for a materialize + evaluation.
             queue.extend(rx.try_iter());
@@ -481,6 +520,7 @@ fn run(mut core: Core, rx: Receiver<Msg>, sink: Arc<Mutex<Option<Sink>>>) {
             {
                 continue;
             }
+            scene_stale = false;
             let frame = core.frame(acked, errors, ended);
             if let Some(s) = sink.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
                 s(frame);
@@ -489,7 +529,9 @@ fn run(mut core: Core, rx: Receiver<Msg>, sink: Arc<Mutex<Option<Sink>>>) {
         }
         if let Some(Msg::Call(job)) = queue.pop_front() {
             // A panicking job drops its reply sender; the caller sees Err.
+            let before = core.rev;
             let _ = catch_unwind(AssertUnwindSafe(|| job(&mut core)));
+            scene_stale |= core.rev != before;
         }
     }
 }
@@ -518,6 +560,9 @@ mod tests {
             c.replace(api);
         })
         .unwrap();
+        // The load is a blocking edit, so its scene frame follows; drain it.
+        let load = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        assert!(load.scene.is_some());
         (rt, rx)
     }
 
@@ -651,6 +696,26 @@ mod tests {
         let f = rx.recv_timeout(Duration::from_secs(30)).unwrap();
         assert_eq!(f.errors.len(), 1);
         assert_eq!(param(&f.document_json), 10.0);
+    }
+
+    #[test]
+    fn blocking_edits_and_publish_produce_scene_frames() {
+        let (rt, rx) = runtime();
+        // A blocking edit publishes its revision once the inbox is idle.
+        let rev = rt.call(|c| c.bump()).unwrap();
+        let f = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        assert_eq!(f.rev, rev);
+        assert!(f.scene.is_some());
+        // A read doesn't publish; Publish does, without bumping the revision.
+        rt.call(|c| c.api.state_hash()).unwrap();
+        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
+        rt.send(Envelope {
+            seq: 1,
+            intent: Intent::Publish,
+        });
+        let p = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        assert_eq!(p.rev, rev);
+        assert_eq!(p.acked_seq, 1);
     }
 
     #[test]

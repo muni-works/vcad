@@ -334,3 +334,31 @@ What landed differs from the sketch above in a few deliberate ways:
   (tests, smoke harnesses). `VCAD_RUNTIME_SCRUB=0` restores the old path.
 - **Profiling hook:** `VCAD_SCRUB_BENCH=1` (`RuntimeBench.swift`) drives a
   180-tick parameter scrub and five Mallet strikes for `sample(1)`.
+
+## Slice 2 as built: picking
+
+- Blocking edits publish too: once the inbox is idle after a call that bumped
+  the revision, the runtime sends a frame of that revision. `publish` asks for
+  one explicitly (the editor sends it when it installs its sink).
+- The frame queue builds each part's `PartTopology` (B-rep + face/edge table)
+  off main, reusing parts by root content key. `PickingState.adopt` takes the
+  frame's scene and topologies; a frame for a revision the editor already
+  shows keeps the selection.
+- Sync callers that need B-reps before a frame lands (feature ops, agent
+  selection resources, measure) get `vcad_doc_runtime_scene`, which evaluates
+  through the runtime's own incremental cache. `PickingState.evaluate`'s
+  second session now only serves `AnalysisMeshCache` (slice 3) and documents
+  without an engine.
+- One set of document bytes per revision: frames only fill
+  `documentBytesCache` when that revision has none, and the viewport's
+  `evalData` shares `pickingDocumentData`, because its prepared-scene key
+  depends on the bytes staying stable.
+- Found on the way: the Mac app builds without the built-in font, and text
+  evaluation `expect`ed it. Text now fails to evaluate with an error. Open
+  question: why a panic aborts on the runtime thread instead of unwinding to
+  its `catch_unwind` in the app's static lib.
+- Release bench (glockenspiel, 12 s `sample`): main idle 79% (the bench
+  drives 120 hover picks at 60 Hz plus a scrub). Hover worst tick 3.1 ms,
+  120/120 hits, no evaluation on main. Follow-up: `vcad_solid_pick`
+  re-tessellates the solid per pick (`topology::analyze`, ~0.3 ms); cache it
+  per solid.

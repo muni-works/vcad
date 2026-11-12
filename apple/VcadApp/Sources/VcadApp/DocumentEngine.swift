@@ -178,13 +178,18 @@ final class DocumentEngine: @unchecked Sendable {
         case setDocParam(name: String, value: Double, gesture: UInt64, start: Bool)
         case command(DocCommand, gesture: UInt64, start: Bool, coalesce: String?)
         case gestureEnd(UInt64)
+        /// Publish the current state as a frame (no change).
+        case publish
     }
 
     /// Seq of the last intent sent; `adoptedSeq` is the last one a frame the
     /// editor adopted folded in. Unequal = edits in flight.
     private(set) var sentSeq: UInt64 = 0
     var adoptedSeq: UInt64 = 0
-    var intentsInFlight: Bool { sentSeq > adoptedSeq }
+    /// Seq of the last intent that changes the document (a `publish` doesn't,
+    /// so it never makes the delta base look stale).
+    private var lastChangeSeq: UInt64 = 0
+    var intentsInFlight: Bool { lastChangeSeq > adoptedSeq }
     /// Runtime revision after this client's last blocking call.
     private(set) var lastRev: UInt64 = 0
 
@@ -203,8 +208,11 @@ final class DocumentEngine: @unchecked Sendable {
             if let coalesce { body["coalesce"] = coalesce }
         case let .gestureEnd(id):
             body = ["type": "gesture_end", "gesture": id]
+        case .publish:
+            body = ["type": "publish"]
         }
         sentSeq += 1
+        if case .publish = intent {} else { lastChangeSeq = sentSeq }
         guard let data = try? JSONSerialization.data(withJSONObject: ["seq": sentSeq, "intent": body]) else { return 0 }
         let ok = data.withUnsafeBytes { vcad_doc_runtime_send(handle, $0.bindMemory(to: UInt8.self).baseAddress, data.count) }
         return ok ? sentSeq : 0
@@ -220,6 +228,9 @@ final class DocumentEngine: @unchecked Sendable {
     func swapGesture(_ id: UInt64) throws -> Result {
         try track(Self.unwrap(vcad_doc_runtime_swap_gesture(handle, id)))
     }
+
+    /// The runtime's scene for its current state (blocking; caller frees).
+    func currentScene() -> OpaquePointer? { vcad_doc_runtime_scene(handle) }
 
     /// Drop a gesture's snapshot (its undo entry is gone).
     func forgetGesture(_ id: UInt64) { vcad_doc_runtime_forget_gesture(handle, id) }

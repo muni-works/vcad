@@ -92,6 +92,34 @@ final class DocumentRuntimeTests: XCTestCase {
         XCTAssertEqual((back?["value"] as? NSNumber)?.doubleValue, 20)
     }
 
+    /// Picking takes its B-reps from the runtime's frames (open, scrub and
+    /// blocking edits alike) instead of evaluating the document again.
+    func testPickingUsesTheRuntimeScene() async throws {
+        let m = try open()
+        for _ in 0..<1000 where m.picking.readyPartCount == 0 {   // the open's publish frame
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(m.picking.readyPartCount, 2, "topologies arrived with the frame")
+        XCTAssertNotNil(m.partTopology(0))
+
+        m.setPartMaterial(1, "brass")       // a blocking edit publishes its revision too
+        let engine = try XCTUnwrap(m.engine)
+        for _ in 0..<1000 where m.adoptedRuntimeRev < engine.lastRev {
+            try await Task.sleep(nanoseconds: 5_000_000)
+        }
+        XCTAssertEqual(m.adoptedRuntimeRev, engine.lastRev)
+        XCTAssertEqual(m.picking.readyPartCount, 2)
+        XCTAssertEqual(m.pickingDocumentData, m.documentBytesCache?.data)
+
+        let leaf = try XCTUnwrap(m.engineState?.parts.first { $0.kind == "cube" }?.leafNodeIds.first)
+        m.editVec(nodeId: leaf, key: "size", axis: "x", value: 26, snapshot: true)
+        try await settle(m)
+        XCTAssertEqual(m.picking.readyPartCount, 2)
+        let topo = try XCTUnwrap(m.partTopology(0))
+        let maxX = topo.faces.map { $0.centerF.x }.max() ?? 0
+        XCTAssertEqual(maxX, 26, accuracy: 0.01, "picking sees the scrubbed block")
+    }
+
     func testBlockingEditSupersedesInFlightFrames() async throws {
         let m = try open()
         let leaf = try XCTUnwrap(m.engineState?.parts.first { $0.kind == "cube" }?.leafNodeIds.first)

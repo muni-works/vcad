@@ -116,11 +116,20 @@ impl FontRegistry {
     }
 
     /// Get the built-in sans-serif font.
+    ///
+    /// Panics in a build without the built-in font (`no-builtin-font`); use
+    /// [`try_builtin_sans`](Self::try_builtin_sans) where that can happen.
     pub fn builtin_sans() -> &'static Font {
-        static FONT: OnceLock<Font> = OnceLock::new();
-        FONT.get_or_init(|| {
-            Font::from_data("sans-serif", OPEN_SANS_REGULAR).expect("built-in font should be valid")
-        })
+        Self::try_builtin_sans().expect("built-in font should be valid")
+    }
+
+    /// The built-in sans-serif font, or `None` when this build carries none
+    /// (`no-builtin-font`) — a document with text then fails to evaluate
+    /// instead of panicking the evaluator.
+    pub fn try_builtin_sans() -> Option<&'static Font> {
+        static FONT: OnceLock<Option<Font>> = OnceLock::new();
+        FONT.get_or_init(|| Font::from_data("sans-serif", OPEN_SANS_REGULAR).ok())
+            .as_ref()
     }
 
     /// Get a font by name, falling back to built-in sans-serif.
