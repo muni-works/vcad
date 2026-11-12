@@ -425,3 +425,37 @@ What landed differs from the sketch above in a few deliberate ways:
     steps, agent-turn folding all live there); only gesture snapshots live in
     Rust. Moving it is the remaining big piece of the design and touches all
     of those.
+
+## Slice 6 as built: the viewport's own solve is gone
+
+- In the live window, a full rebuild after a blocking edit or an open used
+  to start its own `vcad_eval_begin_lod` job: a second evaluation of a
+  revision the runtime was already evaluating. `documentScene` now draws from
+  the runtime's frames (`runtimeDocumentScene`): every visible part from
+  `partMeshCache`, or "solving" until the revision's frame lands, at which
+  point the frame fills the cache (blocking-edit frames included) and marks
+  the geometry dirty. Geometry-neutral edits (material, rename) keep their
+  cached parts and draw at once.
+- Still on the old path: pattern-instanced documents (the viewport places
+  seed copies; the runtime evaluates the unioned root), assemblies
+  (`instances`), headless/synchronous callers, and a revision whose frame
+  failed to evaluate.
+- Release bench (scrub, hover, strikes, six material edits, 16 s `sample`):
+  evaluation appears only on `vcad-doc-runtime`; main idle 82%. What is left
+  on main is the blocking shim of discrete edits — ~12 ms per material edit
+  waiting on `apply_delta`, `state_hash` (dirty check) and the
+  `feature_history` read. Deferring those to the frame would change
+  synchronous dirty/undo/history semantics that tests and the agent rely on;
+  left as documented debt along with Swift's undo stack.
+
+## The evaluator thread (fix, merged up from slice 2)
+
+Once blocking edits published frames (slice 2), the runtime thread evaluated
+eagerly whenever it went idle, so the next blocking call — another edit, a
+sync scene request, `vcad_engine_free` on close — waited behind that
+evaluation (on big documents and a slow CI runner, `WebRoundTripTests` ran
+past the job timeout). Evaluation now runs on its own `vcad-doc-eval` thread,
+as the design intended: it owns the incremental cache, evaluates frames
+latest-first (folding skipped frames' errors, acks and gesture ends into the
+next), serves blocking scene requests ahead of queued frames, and is
+detached, so dropping the runtime never waits for an evaluation.
