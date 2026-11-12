@@ -25,9 +25,9 @@ final class AsyncEvaluationTests: XCTestCase {
         XCTAssertFalse(second.solving)
         XCTAssertGreaterThan(second.partCount, 0)
         XCTAssertGreaterThan(model.triangleCount, 0)
-        // Nothing left waiting: a third build evaluates again (synchronously
-        // prepared scenes are consumed once).
-        XCTAssertTrue(model.buildScene().solving)
+        // The runtime's frame for this revision is kept: a third build draws
+        // it again without another solve.
+        XCTAssertFalse(model.buildScene().solving)
     }
 
     /// The headless path is unchanged: synchronous, complete on the first call.

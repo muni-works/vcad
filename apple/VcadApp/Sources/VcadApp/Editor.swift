@@ -1250,6 +1250,12 @@ final class EditorModel {
     @ObservationIgnored var lastGestureId: UInt64 = 0
     @ObservationIgnored var adoptedRuntimeRev: UInt64 = 0
     @ObservationIgnored var collideAfterSeq: UInt64 = 0
+    /// Part ids the last frame evaluated to empty meshes (known, not missing).
+    @ObservationIgnored var runtimeEmptyParts: Set<String> = []
+    /// The viewport is waiting for this revision's frame to draw it.
+    @ObservationIgnored var awaitingRuntimeScene = false
+    /// The last frame failed to evaluate: draw through the old path.
+    @ObservationIgnored var runtimeSceneFailed = false
     /// Scrubs go to the runtime as intents (off: the blocking path).
     @ObservationIgnored var runtimeScrubEnabled = !EditorModel.runtimeScrubDisabled
     /// The engine's last result (document + part table).
@@ -4137,7 +4143,7 @@ final class EditorModel {
     @ObservationIgnored private var lastRootKeys: [String] = []
 
     /// What the viewport draws while solving: whatever has landed.
-    private func partialScene() -> RenderScene {
+    func partialScene() -> RenderScene {
         var s = RenderScene.pending
         guard let b = partialBounds, !partialMeshes.isEmpty else { return s }
         s.meshes = partialMeshes
@@ -4346,6 +4352,9 @@ final class EditorModel {
         // and the whole assembly evaluates to empty meshes, which presents as
         // "the file didn't load" rather than "the meshes weren't found".
         let dir = Array((documentDirectory ?? "").utf8)
+        // The document runtime already evaluates every revision (and
+        // publishes it as a frame): draw from that, not a separate solve.
+        if let s = runtimeDocumentScene(plan: plan, start: start) { return s }
         let scene: OpaquePointer?
         if evaluatesOffMainThread {
             // A slow document must never beachball the app: the kernel runs
@@ -4590,7 +4599,7 @@ final class EditorModel {
 
     /// Gather a part-mode scene from per-root tessellations (index-aligned
     /// with the evaluated roots; nil = empty).
-    private func sceneFromParts(_ parts: [TessellatedPart?], rootKeys: [String]?, start: Date,
+    func sceneFromParts(_ parts: [TessellatedPart?], rootKeys: [String]?, start: Date,
                                 plan: [Int: PatternInstancing]) -> RenderScene {
         clearAssembly()                      // part-mode scene: drop any resident assembly
         var meshes: [(MeshResource, NSColor)] = []

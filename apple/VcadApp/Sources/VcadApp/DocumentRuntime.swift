@@ -80,6 +80,62 @@ extension EditorModel {
         for e in entries { if case .gesture(let id) = e.step { engine.forgetGesture(id) } }
     }
 
+    /// Put a frame's meshes in `partMeshCache`, reusing parts whose
+    /// fingerprint didn't change. False when the frame can't serve the
+    /// viewport (no scene, pattern instancing, mismatched roots).
+    @discardableResult
+    func fillPartMeshes(_ frame: DocumentEngine.Frame, _ extras: FrameExtras?, _ r: DocumentEngine.Result) -> Bool {
+        guard let parts = extras?.parts, let g = documentGraph, parts.count == g.visibleRoots.count,
+              documentInstancingPlan().isEmpty else {
+            runtimeSceneFailed = extras == nil
+            return false
+        }
+        runtimeSceneFailed = false
+        for (i, root) in g.visibleRoots.enumerated() {
+            guard let id = r.partId(forRootNode: root.nodeId) else { continue }
+            guard let p = parts[i] else {
+                partMeshCache.removeValue(forKey: id)
+                runtimeEmptyParts.insert(id)
+                continue
+            }
+            runtimeEmptyParts.remove(id)
+            let key = i < frame.partKeys.count && !frame.partKeys[i].isEmpty ? frame.partKeys[i] : nil
+            if let old = partMeshCache[id], let k = old.contentKey, k == key { continue }
+            partMeshCache[id] = TessellatedPart(mesh: p.mesh, edges: p.edges,
+                                                resource: p.mesh.resource(name: "part" + String(i)),
+                                                rootKey: p.rootKey, contentKey: key)
+        }
+        return true
+    }
+
+    /// The live viewport's scene from runtime frames: every visible part's
+    /// mesh from the frame of the current revision, or "solving" until that
+    /// frame lands. Nil → the caller's own evaluation path (headless/sync
+    /// callers, pattern-instanced and assembly documents, a failed frame).
+    func runtimeDocumentScene(plan: [Int: PatternInstancing], start: Date) -> RenderScene? {
+        guard evaluatesOffMainThread, runtimeScrubEnabled, let engine, documentJSON != nil, plan.isEmpty,
+              (documentJSON?["instances"] as? [Any])?.isEmpty ?? true, !runtimeSceneFailed,
+              let g = documentGraph, let state = engineState else { return nil }
+        let ids = g.visibleRoots.map { state.partId(forRootNode: $0.nodeId) }
+        guard !ids.contains(nil) else { return nil }
+        // Cached parts are valid for the current document: edits drop the
+        // parts they change (deltas) or everything (full reloads), so a
+        // geometry-neutral edit (material, rename) draws at once.
+        _ = engine
+        let ready = ids.allSatisfy { id in
+            partMeshCache[id!]?.contentKey != nil || runtimeEmptyParts.contains(id!)
+        }
+        guard ready else {
+            awaitingRuntimeScene = true
+            solving = true
+            return partialScene()
+        }
+        awaitingRuntimeScene = false
+        solving = false
+        loadError = nil
+        return sceneFromParts(ids.map { partMeshCache[$0!] }, rootKeys: nil, start: start, plan: plan)
+    }
+
     /// What a part's vibration modes depend on — its geometry's content key
     /// and material — or nil when unknown (no runtime-built mesh yet).
     func soundModesKey(part: Int) -> String? {
@@ -100,9 +156,16 @@ extension EditorModel {
         if frame.rev < engine.lastRev { extras?.release(); return }
         if frame.rev == engine.lastRev {
             // A blocking edit (or a publish) already put this revision in the
-            // editor; the frame brings its scene for picking.
+            // editor; the frame brings its meshes (for the rebuild waiting on
+            // them) and its scene for picking.
             adoptedRuntimeRev = frame.rev
+            if let r = engineState { fillPartMeshes(frame, extras, r) }
             adoptPickingScene(frame, extras, sameDocument: true)
+            if awaitingRuntimeScene {
+                awaitingRuntimeScene = false
+                solving = false
+                geometryDirty = true
+            }
             return
         }
         adoptedRuntimeRev = frame.rev
@@ -123,23 +186,14 @@ extension EditorModel {
             adoptingRuntimeFrame = false
             if let rows = frame.history, usesDocumentTree, rows != history { history = rows }
         }
-        if let parts, let g = documentGraph, parts.count == g.visibleRoots.count, documentInstancingPlan().isEmpty {
-            for (i, root) in g.visibleRoots.enumerated() {
-                guard let id = r.partId(forRootNode: root.nodeId) else { continue }
-                guard let p = parts[i] else { partMeshCache.removeValue(forKey: id); continue }
-                let key = i < frame.partKeys.count && !frame.partKeys[i].isEmpty ? frame.partKeys[i] : nil
-                if let old = partMeshCache[id], let k = old.contentKey, k == key { continue }
-                partMeshCache[id] = TessellatedPart(mesh: p.mesh, edges: p.edges,
-                                                    resource: p.mesh.resource(name: "part" + String(i)),
-                                                    rootKey: p.rootKey, contentKey: key)
-            }
-        } else {
-            // SHIM(runtime): instanced roots (or a failed evaluation) take the
-            // old path — `reevalDocumentMeshes` re-tessellates on main.
+        if !fillPartMeshes(frame, extras, r) {
+            // Instanced roots (or a failed evaluation) take the old path —
+            // `reevalDocumentMeshes` re-tessellates on main.
             partMeshCache.removeAll()
             if let e = frame.evalError { loadError = e }
         }
         adoptPickingScene(frame, extras)
+        if awaitingRuntimeScene { awaitingRuntimeScene = false; solving = false; geometryDirty = true }
         let collide = collideAfterSeq > 0 && frame.ackedSeq >= collideAfterSeq
         if collide { collideAfterSeq = 0 }
         docParamDirty = true

@@ -9,7 +9,7 @@ import Foundation
 /// Waits for the document, idles `VCAD_SCRUB_BENCH_DELAY` seconds (default 4,
 /// time to attach `sample`), then drives the same calls the inspector's
 /// ScrubField and the Mallet tool make: 180 scrub ticks at ~60 Hz on the
-/// first document parameter, then 120 hover picks, then five strikes on the first bar. Markers go
+/// first document parameter, then 120 hover picks, then five strikes on the first bar, then six material edits. Markers go
 /// to stderr as `[VCAD_BENCH]`. `VCAD_RUNTIME_SCRUB=0` runs the old path.
 @MainActor
 enum RuntimeScrubBench {
@@ -66,6 +66,18 @@ enum RuntimeScrubBench {
             await wait(0.4)
         }
         emit(String(format: "strike end %.2fs", Date().timeIntervalSince(s0)))
+
+        // Blocking edits: the viewport redraws from the runtime's frame of
+        // each revision, never a separate evaluation.
+        let e0 = Date()
+        var worstEdit = 0.0
+        for k in 0..<6 {
+            let tick = Date()
+            m.setPartMaterial(bar, k % 2 == 0 ? "steel" : "aluminum")
+            worstEdit = max(worstEdit, Date().timeIntervalSince(tick))
+            await wait(0.5)
+        }
+        emit(String(format: "edits worst %.1fms total %.2fs", worstEdit * 1000, Date().timeIntervalSince(e0)))
         emit("done")
     }
 }
