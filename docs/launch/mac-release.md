@@ -45,25 +45,14 @@ lists exactly what is still missing, with the fix for each.
 Keychain. Check: `security find-identity -v -p codesigning`. Override with
 `VCAD_SIGN_IDENTITY` (e.g. a later Municipal Robotics team identity).
 
-### 2. Notary profile `vcad` (App Store Connect API key): TODO
+### 2. Notary profile: done (shared with frog)
 
-The app-specific-password route 401'd for frog, so use an API key:
-
-1. appstoreconnect.apple.com → Users and Access → Integrations → App Store
-   Connect API → Team Keys → **+**, name `vcad-notary`, access **Developer**.
-2. Download `AuthKey_<KEYID>.p8` (one chance) to `~/keys/` (outside any
-   repo, `chmod 600`). Note the Key ID and the Issuer ID on that page.
-3. Store the profile in the login Keychain:
-
-   ```bash
-   xcrun notarytool store-credentials vcad --key ~/keys/AuthKey_<KEYID>.p8 --key-id <KEYID> --issuer <ISSUER-UUID>
-   ```
-
-4. Check: `xcrun notarytool history --keychain-profile vcad`.
-
-If frog's profile was made from a team key with Developer access, the same
-key works here (`store-credentials vcad` with it); only the profile name
-differs. Override the name with `VCAD_NOTARY_PROFILE`.
+Decision (2026-11-12): vcad notarizes with frog's keychain profile `frog`,
+which is backed by the App Store Connect API key. Check it with
+`xcrun notarytool history --keychain-profile frog`. To give vcad its own
+profile later, run
+`xcrun notarytool store-credentials vcad --key ~/keys/AuthKey_<KEYID>.p8 --key-id <KEYID> --issuer <ISSUER-UUID>`
+and set `VCAD_NOTARY_PROFILE=vcad`.
 
 ### 3. Sparkle EdDSA key: done (shared with frog)
 
@@ -89,7 +78,7 @@ after any `swift build`.
 | Secret | Location | Never |
 |---|---|---|
 | Developer ID private key | login Keychain (+ `.p12` backup in password manager) | in the repo, in CI logs |
-| App Store Connect API key `.p8` | `~/keys/` + notarytool profile `vcad` in login Keychain | in the repo |
+| App Store Connect API key | notarytool profile `frog` in login Keychain (shared) | in the repo |
 | Sparkle EdDSA private key | login Keychain item `https://sparkle-project.org` (+ `generate_keys -x` backup in password manager) | on disk after backup, in the repo |
 | Sparkle EdDSA **public** key | baked into each app's Info.plist at build time | — (it's public) |
 

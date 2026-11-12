@@ -15,7 +15,7 @@
 #
 # Knobs (env):
 #   VCAD_SIGN_IDENTITY   default "Developer ID Application: Cameron Pedersen (54SNZV8YN8)"
-#   VCAD_NOTARY_PROFILE  notarytool keychain profile, default "vcad"
+#   VCAD_NOTARY_PROFILE  notarytool keychain profile, default "frog" (shared with frog)
 #   VCAD_BUILD           CFBundleVersion override (default: git commit count)
 #   VCAD_DOWNLOAD_BASE   where the DMG will be hosted (appcast enclosure prefix),
 #                        default https://github.com/ecto/vcad/releases/download/desktop-v<version>/
@@ -38,7 +38,7 @@ HERE=${0:A:h}
 APP_DIR=${HERE:h}
 ROOT=$(git -C "$APP_DIR" rev-parse --show-toplevel)
 SIGN_ID=${VCAD_SIGN_IDENTITY:-"Developer ID Application: Cameron Pedersen (54SNZV8YN8)"}
-NOTARY_PROFILE=${VCAD_NOTARY_PROFILE:-vcad}
+NOTARY_PROFILE=${VCAD_NOTARY_PROFILE:-frog}
 BUNDLE_ID=io.vcad.m0
 SPARKLE_BIN="$APP_DIR/.build/artifacts/sparkle/Sparkle/bin"
 PUBLIC_DESKTOP="$ROOT/packages/app/public/desktop"
