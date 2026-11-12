@@ -28,11 +28,11 @@ extension EditorModel {
         let topologies = TopologyCache()       // frame-queue confined
         engine.onFrame = { [weak self] frame in
             // Off main: pull the meshes out of the scene and build each part's
-            // B-rep topology (reused across frames by root content key), so
+            // B-rep topology (reused across frames by part fingerprint), so
             // neither the viewport nor picking evaluates or decodes on main.
             let extras = frame.takeScene().map { scene in
                 let count = vcad_scene_part_count(scene)
-                let (topos, analysis) = topologies.update(scene, count: count)
+                let (topos, analysis) = topologies.update(scene, count: count, keys: frame.partKeys)
                 return FrameExtras(scene: scene,
                                    parts: EditorModel.gatherParts(scene, count: count),
                                    topologies: topos, analysis: analysis)
@@ -80,6 +80,13 @@ extension EditorModel {
         for e in entries { if case .gesture(let id) = e.step { engine.forgetGesture(id) } }
     }
 
+    /// What a part's vibration modes depend on — its geometry's content key
+    /// and material — or nil when unknown (no runtime-built mesh yet).
+    func soundModesKey(part: Int) -> String? {
+        guard engine != nil, let id = partId(forPart: part), let k = partMeshCache[id]?.contentKey else { return nil }
+        return k + "|" + (engineState?.material(ofPart: id) ?? "")
+    }
+
     /// Whether scrub edits are still in flight (frames not yet adopted).
     var runtimeEditsInFlight: Bool { engine?.intentsInFlight ?? false }
 
@@ -120,10 +127,11 @@ extension EditorModel {
             for (i, root) in g.visibleRoots.enumerated() {
                 guard let id = r.partId(forRootNode: root.nodeId) else { continue }
                 guard let p = parts[i] else { partMeshCache.removeValue(forKey: id); continue }
-                if let old = partMeshCache[id], let k = old.rootKey, k == p.rootKey { continue }
+                let key = i < frame.partKeys.count && !frame.partKeys[i].isEmpty ? frame.partKeys[i] : nil
+                if let old = partMeshCache[id], let k = old.contentKey, k == key { continue }
                 partMeshCache[id] = TessellatedPart(mesh: p.mesh, edges: p.edges,
                                                     resource: p.mesh.resource(name: "part" + String(i)),
-                                                    rootKey: p.rootKey)
+                                                    rootKey: p.rootKey, contentKey: key)
             }
         } else {
             // SHIM(runtime): instanced roots (or a failed evaluation) take the
@@ -173,17 +181,17 @@ final class FrameExtras: @unchecked Sendable {
 }
 
 /// Per-part B-rep topology (picking) and face-id meshes (analysis overlay)
-/// by root content key, so a frame only builds the parts whose geometry
-/// changed. Touched only on the engine's frame queue.
+/// by the frame's part fingerprint, so a frame only builds the parts whose
+/// geometry changed. Touched only on the engine's frame queue.
 private final class TopologyCache: @unchecked Sendable {
     private var byKey: [String: (topo: PartTopology?, analysis: AnalysisMeshCache.Part)] = [:]
 
-    func update(_ scene: OpaquePointer, count: Int) -> ([Int: PartTopology], [AnalysisMeshCache.Part]) {
+    func update(_ scene: OpaquePointer, count: Int, keys: [String]) -> ([Int: PartTopology], [AnalysisMeshCache.Part]) {
         var topos: [Int: PartTopology] = [:]
         var analysis: [AnalysisMeshCache.Part] = []
         var next: [String: (topo: PartTopology?, analysis: AnalysisMeshCache.Part)] = [:]
         for i in 0..<count {
-            let key = EditorModel.rootKey(scene, i)
+            let key = i < keys.count && !keys[i].isEmpty ? keys[i] : nil
             let entry = key.flatMap { byKey[$0] } ?? (
                 topo: vcad_scene_part_solid(scene, i).flatMap { PartTopology(solid: $0) },
                 analysis: AnalysisMeshCache.part(scene, i))

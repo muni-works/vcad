@@ -71,6 +71,9 @@ uint64_t vcad_doc_runtime_rev(const VcadEngine *engine);
 char *vcad_doc_runtime_swap_gesture(const VcadEngine *engine, uint64_t gesture);
 /* Current state's scene through the runtime's incremental cache; blocks. vcad_scene_free. */
 VcadScene *vcad_doc_runtime_scene(const VcadEngine *engine);
+/* vcad_sound_call on the runtime's document + evaluated meshes; solves on the
+ * calling thread (call off the UI thread). vcad_string_free. */
+char *vcad_doc_runtime_sound(const VcadEngine *engine, const char *request_json);
 void vcad_doc_runtime_forget_gesture(const VcadEngine *engine, uint64_t gesture);
 void vcad_doc_runtime_set_base_dir(const VcadEngine *engine, const uint8_t *dir, size_t len);
 uint64_t vcad_frame_rev(const VcadFrame *frame);

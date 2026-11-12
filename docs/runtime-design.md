@@ -375,3 +375,27 @@ What landed differs from the sketch above in a few deliberate ways:
   document bytes to Rust, which evaluates them again — off main and only on
   request. Feeding those from the runtime's evaluated solids (and running
   DFM in the background per revision) is follow-up work.
+
+## Slice 4 as built: sound
+
+- `vcad_doc_runtime_sound` runs a `vcad_sound_call` request against the
+  runtime's document and evaluated scene: the snapshot is taken on the
+  runtime thread, the solve runs on the caller's (background) thread.
+  `modes` and `check` take part meshes from that scene instead of the host
+  shipping its tessellation as JSON (flattened on main) or `check`
+  re-evaluating each locked part.
+- Frames carry `part_keys`: per visible root, the incremental cache's subtree
+  fingerprint. Root-cache keys turned out to exist only with the root cache on
+  and no placement, so per-part reuse keyed on them silently rebuilt every
+  translated part each frame. MeshResource reuse (slice 1), the topology/
+  analysis cache (slices 2–3) and the Mallet's modes cache now key on the
+  fingerprint (+ material, for modes), so an edit elsewhere no longer forces a
+  re-solve.
+- `SoundFFI` takes the engine explicitly (`engine:`); a process-wide runtime
+  pointer leaked between documents.
+- Release bench: first strike solves (388 ms); strikes 2–5 15–36 ms (before:
+  a ~450 ms re-solve mid-sequence after an unrelated rebuild).
+- Not moved: pitch-lock solving (`lock`) still Newton-iterates by evaluating
+  the document per step inside `vcad-sound` (off main, on request), and the
+  Tune panel's `vcad_instrument_call` still takes document bytes. Folding
+  those onto the runtime's incremental cache is follow-up.

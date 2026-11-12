@@ -118,6 +118,9 @@ final class DocumentEngine: @unchecked Sendable {
         /// `feature_history` rows, decoded here so the tree redraw never
         /// waits on the runtime.
         let history: [HistoryRow]?
+        /// Per visible root: subtree fingerprint, equal exactly when that
+        /// part's geometry is unchanged ("" when unknown).
+        let partKeys: [String]
         let errors: [String]
         let evalError: String?
         /// Visible-root scene, owned; free with `vcad_scene_free` (or let
@@ -136,6 +139,7 @@ final class DocumentEngine: @unchecked Sendable {
             let info = vcad_frame_info(raw)
                 .flatMap { try? JSONSerialization.jsonObject(with: Data(String(cString: $0).utf8)) as? [String: Any] } ?? [:]
             stateHash = info["stateHash"] as? String ?? ""
+            partKeys = info["partKeys"] as? [String] ?? []
             history = (info["history"] as? String).flatMap { try? JSONDecoder().decode([HistoryRow].self, from: Data($0.utf8)) }
             errors = info["errors"] as? [String] ?? []
             evalError = info["evalError"] as? String
@@ -231,6 +235,17 @@ final class DocumentEngine: @unchecked Sendable {
 
     /// The runtime's scene for its current state (blocking; caller frees).
     func currentScene() -> OpaquePointer? { vcad_doc_runtime_scene(handle) }
+
+    /// `vcad_sound_call` on the runtime's document and meshes. Blocks while
+    /// it solves: call off main.
+    func sound(_ request: Data) throws -> Data {
+        let req = String(decoding: request, as: UTF8.self)
+        guard let raw = req.withCString({ vcad_doc_runtime_sound(handle, $0) }) else {
+            throw AnalysisFFI.Failure(message: AnalysisFFI.lastError() ?? "sound failed")
+        }
+        defer { vcad_string_free(raw) }
+        return Data(bytes: raw, count: strlen(raw))
+    }
 
     /// Drop a gesture's snapshot (its undo entry is gone).
     func forgetGesture(_ id: UInt64) { vcad_doc_runtime_forget_gesture(handle, id) }

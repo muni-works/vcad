@@ -65,33 +65,36 @@ enum SoundFFI {
     /// Part names in visible-part order (the engine keeps names on features,
     /// not root nodes); sent with every request.
     nonisolated(unsafe) static var partNames: [String] = []
-
-    static func call(doc: Data, _ request: [String: Any]) throws -> Data {
+    /// With `engine` (the document runtime, DocumentRuntime.swift) a request
+    /// runs on its document and evaluated meshes and `doc` is ignored.
+    static func call(doc: Data, _ request: [String: Any], engine: DocumentEngine? = nil) throws -> Data {
         var req = request
         if !partNames.isEmpty { req["part_names"] = partNames }
+        if let engine { return try engine.sound(try AnalysisFFI.encode(req)) }
         return try AnalysisFFI.call(vcad_sound_call, doc: doc, request: try AnalysisFFI.encode(req))
     }
 
     static func modes(doc: Data, part: Int, quality: String = "preview",
-                      mesh: (positions: [Float], indices: [UInt32])? = nil) throws -> PartModesDTO {
+                      mesh: (positions: [Float], indices: [UInt32])? = nil,
+                      engine: DocumentEngine? = nil) throws -> PartModesDTO {
         var req: [String: Any] = ["op": "modes", "part": part, "modes": 6, "quality": quality]
         // The app's own tessellation: no document re-evaluation per strike.
         if let mesh { req["mesh"] = ["positions": mesh.positions, "indices": mesh.indices] }
-        return try JSONDecoder().decode(PartModesDTO.self, from: call(doc: doc, req))
+        return try JSONDecoder().decode(PartModesDTO.self, from: call(doc: doc, req, engine: engine))
     }
 
-    static func check(doc: Data, part: String? = nil) throws -> [LockStatusDTO] {
+    static func check(doc: Data, part: String? = nil, engine: DocumentEngine? = nil) throws -> [LockStatusDTO] {
         struct R: Decodable { let locks: [LockStatusDTO] }
         var req: [String: Any] = ["op": "check"]
         if let part { req["part"] = part }
-        return try JSONDecoder().decode(R.self, from: call(doc: doc, req)).locks
+        return try JSONDecoder().decode(R.self, from: call(doc: doc, req, engine: engine)).locks
     }
 
     /// Solve + store a lock; returns the patched document and the final error in cents.
-    static func lock(doc: Data, _ lock: PitchLockDTO) throws -> (document: [String: Any], cents: Double, converged: Bool) {
+    static func lock(doc: Data, _ lock: PitchLockDTO, engine: DocumentEngine? = nil) throws -> (document: [String: Any], cents: Double, converged: Bool) {
         var req = (try JSONSerialization.jsonObject(with: JSONEncoder().encode(lock)) as? [String: Any]) ?? [:]
         req["op"] = "lock"
-        return try parseLock(try call(doc: doc, req))
+        return try parseLock(try call(doc: doc, req, engine: engine))
     }
 
     static func parseLock(_ out: Data) throws -> (document: [String: Any], cents: Double, converged: Bool) {
@@ -101,8 +104,8 @@ enum SoundFFI {
         return (d, rep["cents"] as? Double ?? .nan, rep["converged"] as? Bool ?? false)
     }
 
-    static func unlock(doc: Data, part: String, mode: Int) throws -> [String: Any] {
-        let out = try call(doc: doc, ["op": "unlock", "part": part, "mode": mode])
+    static func unlock(doc: Data, part: String, mode: Int, engine: DocumentEngine? = nil) throws -> [String: Any] {
+        let out = try call(doc: doc, ["op": "unlock", "part": part, "mode": mode], engine: engine)
         guard let obj = try JSONSerialization.jsonObject(with: out) as? [String: Any],
               let d = obj["document"] as? [String: Any] else { throw AnalysisFFI.Failure(message: "unlock returned no document") }
         return d
@@ -205,7 +208,11 @@ final class SoundStore {
     /// Parameter the lock drives.
     var drives: String?
 
-    @ObservationIgnored private var key: (Data, Int, Int)?
+    /// What the cached modes are a function of: the part's geometry content
+    /// key + material when the document runtime owns the document (so an
+    /// unrelated edit or viewport rebuild doesn't force a re-solve), else
+    /// the document bytes + scene generation.
+    @ObservationIgnored private var key: (String, Int)?
     @ObservationIgnored private let synth = ToneSynth()
     @ObservationIgnored weak var model: EditorModel?
     /// Animation state read by the overlay.
@@ -227,20 +234,24 @@ final class SoundStore {
         model = m
         SoundStore.syncNames(m)
         guard let data = AnalysisStore.documentData(m) else { return nil }
-        if let k = key, k.0 == data, k.1 == part, k.2 == m.sceneGeneration, let modes { return modes }
+        let want = m.soundModesKey(part: part) ?? "\(data.hashValue)|\(m.sceneGeneration)"
+        if let k = key, k.0 == want, k.1 == part, let modes { return modes }
         busy = true
         error = nil
-        let mesh: (positions: [Float], indices: [UInt32])? = part < m.docPartMeshes.count
+        // The runtime path solves on the runtime's own meshes; only the
+        // legacy path ships the app's tessellation (flattened here, on main).
+        let engine = m.engine
+        let mesh: (positions: [Float], indices: [UInt32])? = engine == nil && part < m.docPartMeshes.count
             ? (m.docPartMeshes[part].positions.flatMap { [$0.x, $0.y, $0.z] }, m.docPartMeshes[part].indices)
             : nil
         let result = await Task.detached(priority: .userInitiated) { () -> Result<PartModesDTO, Error> in
-            Result { try SoundFFI.modes(doc: data, part: part, mesh: mesh) }
+            Result { try SoundFFI.modes(doc: data, part: part, mesh: mesh, engine: engine) }
         }.value
         busy = false
         switch result {
         case .success(let pm):
             modes = pm
-            key = (data, part, m.sceneGeneration)
+            key = (want, part)
             focusedMode = nil
             overlayRevision &+= 1
             drives = drivingParameters(m, part: pm.name).first
@@ -380,8 +391,9 @@ final class SoundStore {
         }
         // The check is a Fine single-part solve (~2 s): reuse it per bytes+part.
         if let c = lockCache, c.data == data, c.part == name { apply(c.status); return }
+        let engine = m.engine
         Task.detached(priority: .utility) {
-            let st = (try? SoundFFI.check(doc: data, part: name))?.first { $0.lock.part == name && $0.lock.mode == 1 }
+            let st = (try? SoundFFI.check(doc: data, part: name, engine: engine))?.first { $0.lock.part == name && $0.lock.mode == 1 }
             await MainActor.run {
                 SoundStore.shared.lockCache = (data, name, st)
                 SoundStore.shared.apply(st)
@@ -406,10 +418,11 @@ final class SoundStore {
         defer { busy = false }
         do {
             let lock = st.lock
+            let engine = m.engine
             let raw = try await Task.detached(priority: .userInitiated) { () throws -> Data in
                 var req = (try JSONSerialization.jsonObject(with: JSONEncoder().encode(lock)) as? [String: Any]) ?? [:]
                 req["op"] = "lock"
-                return try SoundFFI.call(doc: data, req)
+                return try SoundFFI.call(doc: data, req, engine: engine)
             }.value
             let r = try SoundFFI.parseLock(raw)
             let gen = m.sceneGeneration
@@ -426,17 +439,18 @@ final class SoundStore {
         defer { busy = false }
         do {
             if isLocked {
-                let d = try SoundFFI.unlock(doc: data, part: pm.name, mode: 1)
+                let d = try SoundFFI.unlock(doc: data, part: pm.name, mode: 1, engine: m.engine)
                 _ = try AgentEdits.edit(m, name: "Unlock pitch") { try $0.loadIR(d) }
                 lockStatus = nil
             } else {
                 guard let drives, let hz = Pitch.hz(targetNote) else { error = "Pick a parameter to drive."; return }
                 let lock = PitchLockDTO(part: pm.name, mode: 1, target_hz: hz, note: targetNote, drives: drives, tolerance_cents: 1)
                 // Solve off the main actor; hand back bytes (Sendable), parse here.
+                let engine = m.engine
                 let raw = try await Task.detached(priority: .userInitiated) { () throws -> Data in
                     var req = (try JSONSerialization.jsonObject(with: JSONEncoder().encode(lock)) as? [String: Any]) ?? [:]
                     req["op"] = "lock"
-                    return try SoundFFI.call(doc: data, req)
+                    return try SoundFFI.call(doc: data, req, engine: engine)
                 }.value
                 let r = try SoundFFI.parseLock(raw)
                 let gen = m.sceneGeneration
