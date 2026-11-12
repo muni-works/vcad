@@ -121,7 +121,12 @@ h2 { font-size: clamp(26px, 4vw, 36px); letter-spacing: -0.025em; margin-bottom:
 .lead { color: var(--muted); max-width: 60ch; margin: -18px 0 32px; }
 .ex-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 36px 20px; }
 .ex { margin: 0; display: flex; flex-direction: column; }
-.ex canvas, .ex img { width: 100%; aspect-ratio: 4 / 3; display: block; background: var(--surface); object-fit: cover; }
+.ex canvas, .ex img { width: 100%; aspect-ratio: 4 / 3; display: block; object-fit: cover; border-radius: 10px;
+  /* A lit studio sweep: a soft key-light glow above centre, falling off to
+     the page colour at the edges, with a faint floor horizon. */
+  background:
+    radial-gradient(120% 90% at 50% 30%, color-mix(in oklab, var(--fg) 13%, var(--surface)) 0%, color-mix(in oklab, var(--fg) 5%, var(--surface)) 45%, var(--surface) 100%),
+    var(--surface); }
 .ex canvas { cursor: grab; touch-action: pan-y; }
 .ex canvas:active { cursor: grabbing; }
 .ex.failed canvas { opacity: .3; }

@@ -35,7 +35,7 @@ function readPalette() {
 
 // ---------- shared renderer + environment ----------
 const sharedCanvas = document.createElement("canvas");
-const renderer = new THREE.WebGLRenderer({ canvas: sharedCanvas, antialias: true, alpha: false, preserveDrawingBuffer: true });
+const renderer = new THREE.WebGLRenderer({ canvas: sharedCanvas, antialias: true, alpha: true, premultipliedAlpha: false, preserveDrawingBuffer: true });
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 0.78;
@@ -75,7 +75,31 @@ function figure(canvas, { autoRotate = true } = {}) {
   return f;
 }
 
+// Soft contact shadow: a blurred dark ellipse on the floor under the model,
+// so parts sit on the studio backdrop instead of floating.
+let shadowTex;
+function contactShadow(f, box) {
+  if (!shadowTex) {
+    const c = document.createElement("canvas"); c.width = c.height = 128;
+    const g = c.getContext("2d"), r = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+    r.addColorStop(0, "rgba(0,0,0,0.55)"); r.addColorStop(0.55, "rgba(0,0,0,0.22)"); r.addColorStop(1, "rgba(0,0,0,0)");
+    g.fillStyle = r; g.fillRect(0, 0, 128, 128);
+    shadowTex = new THREE.CanvasTexture(c);
+  }
+  if (f.shadow) { f.scene.remove(f.shadow); f.shadow.geometry.dispose(); }
+  const size = box.getSize(new THREE.Vector3()), ctr = box.getCenter(new THREE.Vector3());
+  const w = Math.max(size.x, size.z) * 1.5;
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, w),
+    new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthWrite: false, opacity: P.dark ? 0.9 : 0.55 }));
+  m.rotation.x = -Math.PI / 2;
+  m.position.set(ctr.x, box.min.y - size.y * 0.002, ctr.z);
+  m.renderOrder = -1;
+  f.scene.add(m);
+  f.shadow = m;
+}
+
 function frame(f, box, dir = [1, 0.75, 1.1]) {
+  contactShadow(f, box);
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
   const radius = size.length() / 2 || 1;
@@ -290,11 +314,13 @@ function loop() {
     const pw = Math.floor(rect.width * dpr), ph = Math.floor(rect.height * dpr);
     if (f.canvas.width !== pw || f.canvas.height !== ph) { f.canvas.width = pw; f.canvas.height = ph; }
     renderer.setSize(pw, ph, false);
-    renderer.setClearColor(P.bg);
+    // Transparent clear: each tile's CSS studio backdrop shows through.
+    renderer.setClearColor(P.bg, 0);
     f.camera.aspect = rect.width / rect.height;
     f.camera.updateProjectionMatrix();
     f.controls.update();
     renderer.render(f.scene, f.camera);
+    f.ctx.clearRect(0, 0, pw, ph);
     f.ctx.drawImage(sharedCanvas, 0, 0);
   }
 }
