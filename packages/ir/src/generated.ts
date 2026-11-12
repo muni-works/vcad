@@ -2054,7 +2054,7 @@ instrument?: Instrument,
  * Pitch constraints (`vcad-sound`): each holds one mode of one part at a
  * target frequency by solving a document parameter.
  */
-pitch_locks: Array<PitchLock>, 
+pitch_locks?: Array<PitchLock>, 
 /**
  * History state the DAG alone can't carry: suppressed features and the
  * rollback marker. Written by the document engine's materializer only
