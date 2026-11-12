@@ -398,7 +398,8 @@ struct DocumentCommands: Commands {
             Divider()
             Button("vcad Help") { NSWorkspace.shared.open(URL(string: "https://vcad.io/docs")!) }
             Divider()
-            Button("Report an Issue…") { NSWorkspace.shared.open(URL(string: "https://github.com/ecto/vcad/issues/new")!) }
+            Button("Report a Bug…") { BugReporter.reportBug() }
+            Button("Privacy") { NSWorkspace.shared.open(URL(string: "https://github.com/muni-works/vcad/blob/main/docs/privacy.md")!) }
         }
     }
 }

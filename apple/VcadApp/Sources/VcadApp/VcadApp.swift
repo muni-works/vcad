@@ -391,7 +391,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-        MainActor.assumeIsolated { RecoveryPrompt.runIfNeeded(); AgentInstallPrompt.runIfFirstLaunch() }
+        MainActor.assumeIsolated { RecoveryPrompt.runIfNeeded(); AgentInstallPrompt.runIfFirstLaunch()
+            #if DEBUG
+            if ProcessInfo.processInfo.environment["VCAD_FAKE_CRASH"] == "1" { CrashDiagnostics.plantFake() }
+            #endif
+            CrashDiagnostics.shared.start()
+        }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }
 

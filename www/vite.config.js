@@ -29,6 +29,23 @@ const siteKernel = {
   load(id) { if (id === "\0site-kernel-meta") return `export const KERNEL_BYTES = ${kernelBytes}; export const KERNEL_WIRE_BYTES = ${wireBytes};`; },
 };
 
+// Cloudflare Web Analytics (cookieless, no consent banner; see docs/privacy.md).
+// Injected into every page only when CF_BEACON_TOKEN is set at build time —
+// the token comes from the Web Analytics site Cam creates in Cloudflare, set
+// as a build env var on the vcad-site Pages project. Without it, no beacon.
+const cfToken = (process.env.CF_BEACON_TOKEN || "").trim();
+const cfAnalytics = {
+  name: "cf-analytics",
+  transformIndexHtml() {
+    if (!/^[A-Za-z0-9]+$/.test(cfToken)) return [];
+    return [{
+      tag: "script",
+      attrs: { defer: true, src: "https://static.cloudflareinsights.com/beacon.min.js", "data-cf-beacon": JSON.stringify({ token: cfToken }) },
+      injectTo: "body",
+    }];
+  },
+};
+
 // The Mac app's Sparkle feed lives in packages/app/public/desktop (its single
 // source, written by the release pipeline). Ship it at /desktop/appcast.xml so
 // this site can take over vcad.io without breaking updates. _redirects only
@@ -61,7 +78,7 @@ const exportPage = {
 };
 
 export default defineConfig({
-  plugins: [siteKernel, appcast, exportPage],
+  plugins: [siteKernel, appcast, exportPage, cfAnalytics],
   resolve: {
     alias: [
       { find: /^@site-kernel-wasm(?=\?|$)/, replacement: kernel.wasm },

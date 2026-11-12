@@ -212,6 +212,9 @@ extension EditorModel {
             guard let self else { return }
             NavigationUI.shared.openHalo(at: Self.pointerInOverlay, model: self, marking: false)
         })
+        out.append(.init(id: "reportBug", title: "Report a Bug…", symbol: "ladybug", group: "Help") {
+            BugReporter.reportBug()
+        })
         return out
     }
 

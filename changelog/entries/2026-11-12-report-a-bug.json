@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-12-report-a-bug",
+  "version": "undefined",
+  "date": "2026-11-12",
+  "category": "feat",
+  "title": "Report a Bug and crash-report prompt (nothing sent)",
+  "summary": "Report a Bug opens a pre-filled GitHub issue; after a crash or hang, vcad offers to report it using on-device MetricKit diagnostics. No telemetry.",
+  "features": ["mac-app", "feedback", "privacy"]
+}
