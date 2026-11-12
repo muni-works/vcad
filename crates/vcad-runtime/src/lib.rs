@@ -96,24 +96,47 @@ impl Intent {
     /// target. Keeps `start` if either was the start.
     fn absorb(&mut self, next: &Intent) -> bool {
         let start = |a: Option<Gesture>, b: Option<Gesture>| match (a, b) {
-            (Some(a), Some(b)) if a.id == b.id => Some(Gesture { id: a.id, start: a.start || b.start }),
+            (Some(a), Some(b)) if a.id == b.id => Some(Gesture {
+                id: a.id,
+                start: a.start || b.start,
+            }),
             _ => None,
         };
         match (&mut *self, next) {
             (
-                Intent::SetDocParam { name, value, gesture },
-                Intent::SetDocParam { name: n2, value: v2, gesture: g2 },
+                Intent::SetDocParam {
+                    name,
+                    value,
+                    gesture,
+                },
+                Intent::SetDocParam {
+                    name: n2,
+                    value: v2,
+                    gesture: g2,
+                },
             ) if name == n2 => {
-                let Some(g) = start(*gesture, *g2) else { return false };
+                let Some(g) = start(*gesture, *g2) else {
+                    return false;
+                };
                 *value = *v2;
                 *gesture = Some(g);
                 true
             }
             (
-                Intent::Command { command, gesture, coalesce: Some(k) },
-                Intent::Command { command: c2, gesture: g2, coalesce: Some(k2) },
+                Intent::Command {
+                    command,
+                    gesture,
+                    coalesce: Some(k),
+                },
+                Intent::Command {
+                    command: c2,
+                    gesture: g2,
+                    coalesce: Some(k2),
+                },
             ) if k == k2 => {
-                let Some(g) = start(*gesture, *g2) else { return false };
+                let Some(g) = start(*gesture, *g2) else {
+                    return false;
+                };
                 *command = c2.clone();
                 *gesture = Some(g);
                 true
@@ -179,7 +202,11 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { replica: 1, display_chord_mm: 0.02, stack_size: 64 << 20 }
+        Self {
+            replica: 1,
+            display_chord_mm: 0.02,
+            stack_size: 64 << 20,
+        }
     }
 }
 
@@ -232,7 +259,11 @@ impl Core {
     /// Undo/redo a gesture: restore the snapshot taken at its start and keep
     /// the current state in its place, so calling it again redoes.
     pub fn swap_gesture(&mut self, id: u64) -> Result<(), String> {
-        let snap = self.gestures.get(&id).ok_or_else(|| format!("no gesture {id}"))?.clone();
+        let snap = self
+            .gestures
+            .get(&id)
+            .ok_or_else(|| format!("no gesture {id}"))?
+            .clone();
         let current = self.api.save();
         self.api.restore_snapshot(&snap)?;
         self.gestures.insert(id, current);
@@ -255,9 +286,11 @@ impl Core {
             }
         }
         match intent {
-            Intent::Command { command, .. } => {
-                self.api.apply_json(&command.to_string()).map(drop).map_err(|e| e.to_string())
-            }
+            Intent::Command { command, .. } => self
+                .api
+                .apply_json(&command.to_string())
+                .map(drop)
+                .map_err(|e| e.to_string()),
             Intent::SetDocParam { name, value, .. } => {
                 let mut doc = serde_json::to_value(self.api.get_state().document)
                     .map_err(|e| e.to_string())?;
@@ -350,7 +383,11 @@ impl Runtime {
             .stack_size(cfg.stack_size)
             .spawn(move || run(Core::new(&cfg), rx, thread_sink))
             .expect("spawn vcad-doc-runtime");
-        Self { tx: Some(tx), thread: Some(thread), sink }
+        Self {
+            tx: Some(tx),
+            thread: Some(thread),
+            sink,
+        }
     }
 
     /// Install (or clear) the frame sink.
@@ -360,7 +397,9 @@ impl Runtime {
 
     /// Queue an intent. Never blocks. False if the runtime has stopped.
     pub fn send(&self, envelope: Envelope) -> bool {
-        self.tx.as_ref().is_some_and(|tx| tx.send(Msg::Intent(envelope)).is_ok())
+        self.tx
+            .as_ref()
+            .is_some_and(|tx| tx.send(Msg::Intent(envelope)).is_ok())
     }
 
     /// Run `f` on the runtime thread, after everything already queued, and
@@ -374,7 +413,8 @@ impl Runtime {
             let _ = rtx.send(f(core));
         });
         let tx = self.tx.as_ref().ok_or("runtime stopped")?;
-        tx.send(Msg::Call(job)).map_err(|_| "runtime stopped".to_string())?;
+        tx.send(Msg::Call(job))
+            .map_err(|_| "runtime stopped".to_string())?;
         rrx.recv().map_err(|_| "runtime call panicked".to_string())
     }
 }
@@ -403,7 +443,9 @@ fn run(mut core: Core, rx: Receiver<Msg>, sink: Arc<Mutex<Option<Sink>>>) {
         // Take the leading run of intents (up to the next call), coalesced.
         let mut run_: Vec<Envelope> = Vec::new();
         while let Some(Msg::Intent(_)) = queue.front() {
-            let Some(Msg::Intent(env)) = queue.pop_front() else { unreachable!() };
+            let Some(Msg::Intent(env)) = queue.pop_front() else {
+                unreachable!()
+            };
             let absorbed = run_.last_mut().is_some_and(|last| {
                 let hit = last.intent.absorb(&env.intent);
                 if hit {
@@ -433,7 +475,10 @@ fn run(mut core: Core, rx: Receiver<Msg>, sink: Arc<Mutex<Option<Sink>>>) {
             // Latest wins: if more intents arrived meanwhile, fold them in
             // before paying for a materialize + evaluation.
             queue.extend(rx.try_iter());
-            if matches!(queue.front(), Some(Msg::Intent(_))) && ended.is_empty() && errors.is_empty() {
+            if matches!(queue.front(), Some(Msg::Intent(_)))
+                && ended.is_empty()
+                && errors.is_empty()
+            {
                 continue;
             }
             let frame = core.frame(acked, errors, ended);
@@ -498,8 +543,17 @@ mod tests {
             r#"{"seq":3,"intent":{"type":"set_doc_param","name":"w","value":2,"gesture":{"id":1,"start":true}}}"#,
         )
         .unwrap();
-        assert_eq!(e, Envelope { seq: 3, intent: Intent::SetDocParam {
-            name: "w".into(), value: 2.0, gesture: Some(Gesture { id: 1, start: true }) } });
+        assert_eq!(
+            e,
+            Envelope {
+                seq: 3,
+                intent: Intent::SetDocParam {
+                    name: "w".into(),
+                    value: 2.0,
+                    gesture: Some(Gesture { id: 1, start: true })
+                }
+            }
+        );
         let c: Envelope = serde_json::from_str(
             r#"{"seq":4,"intent":{"type":"command","command":{"type":"undo"},"coalesce":"k"}}"#,
         )
@@ -538,7 +592,10 @@ mod tests {
             for i in 0..20 {
                 rt.send(scrub(i + 1, 10.0 + i as f64, i == 0));
             }
-            rt.send(Envelope { seq: 21, intent: Intent::GestureEnd { gesture: 9 } });
+            rt.send(Envelope {
+                seq: 21,
+                intent: Intent::GestureEnd { gesture: 9 },
+            });
             go_tx.send(()).unwrap();
         });
         let f = rx.recv_timeout(Duration::from_secs(30)).unwrap();
@@ -546,7 +603,10 @@ mod tests {
         assert_eq!(param(&f.document_json), 29.0);
         assert_eq!(f.ended_gestures, vec![9]);
         assert!(!f.gesture_open);
-        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err(), "one frame for the batch");
+        assert!(
+            rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "one frame for the batch"
+        );
         // The whole gesture undoes as one step, and swapping again redoes.
         let undone = rt.call(|c| {
             c.swap_gesture(9).unwrap();
@@ -565,7 +625,12 @@ mod tests {
         let (rt, rx) = runtime();
         rt.send(scrub(1, 15.0, true));
         let (rev, w) = rt
-            .call(|c| (c.rev(), param(&serde_json::to_vec(&c.api.get_state().document).unwrap())))
+            .call(|c| {
+                (
+                    c.rev(),
+                    param(&serde_json::to_vec(&c.api.get_state().document).unwrap()),
+                )
+            })
             .unwrap();
         assert_eq!(w, 15.0, "the call saw the scrub queued before it");
         let f = rx.recv_timeout(Duration::from_secs(30)).unwrap();
@@ -575,7 +640,14 @@ mod tests {
     #[test]
     fn refused_intent_reports_and_keeps_document() {
         let (rt, rx) = runtime();
-        rt.send(Envelope { seq: 1, intent: Intent::SetDocParam { name: "nope".into(), value: 1.0, gesture: None } });
+        rt.send(Envelope {
+            seq: 1,
+            intent: Intent::SetDocParam {
+                name: "nope".into(),
+                value: 1.0,
+                gesture: None,
+            },
+        });
         let f = rx.recv_timeout(Duration::from_secs(30)).unwrap();
         assert_eq!(f.errors.len(), 1);
         assert_eq!(param(&f.document_json), 10.0);

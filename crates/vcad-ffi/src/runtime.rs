@@ -35,7 +35,9 @@ pub extern "C" fn vcad_doc_runtime_set_sink(
     cb: Option<VcadFrameFn>,
     ctx: *mut c_void,
 ) {
-    let Some(engine) = (unsafe { engine.as_ref() }) else { return };
+    let Some(engine) = (unsafe { engine.as_ref() }) else {
+        return;
+    };
     let Some(cb) = cb else {
         engine.rt.set_sink(None);
         return;
@@ -64,9 +66,15 @@ pub extern "C" fn vcad_doc_runtime_set_sink(
 /// Never blocks. False on a bad envelope (see `vcad_last_error`) or a
 /// stopped runtime.
 #[no_mangle]
-pub extern "C" fn vcad_doc_runtime_send(engine: *const VcadEngine, json: *const u8, len: usize) -> bool {
+pub extern "C" fn vcad_doc_runtime_send(
+    engine: *const VcadEngine,
+    json: *const u8,
+    len: usize,
+) -> bool {
     err::clear_error();
-    let Some(engine) = (unsafe { engine.as_ref() }) else { return false };
+    let Some(engine) = (unsafe { engine.as_ref() }) else {
+        return false;
+    };
     if json.is_null() {
         err::set_error("vcad_doc_runtime_send: null json");
         return false;
@@ -84,16 +92,23 @@ pub extern "C" fn vcad_doc_runtime_send(engine: *const VcadEngine, json: *const 
 /// The runtime's current revision (after everything queued so far).
 #[no_mangle]
 pub extern "C" fn vcad_doc_runtime_rev(engine: *const VcadEngine) -> u64 {
-    unsafe { engine.as_ref() }.and_then(|e| e.rt.call(|c| c.rev()).ok()).unwrap_or(0)
+    unsafe { engine.as_ref() }
+        .and_then(|e| e.rt.call(|c| c.rev()).ok())
+        .unwrap_or(0)
 }
 
 /// Undo (or, called again, redo) a whole gesture: swap the document with the
 /// snapshot taken at the gesture's first intent. Returns the state envelope
 /// (free with `vcad_engine_string_free`), or null when the gesture is unknown.
 #[no_mangle]
-pub extern "C" fn vcad_doc_runtime_swap_gesture(engine: *const VcadEngine, gesture: u64) -> *mut c_char {
+pub extern "C" fn vcad_doc_runtime_swap_gesture(
+    engine: *const VcadEngine,
+    gesture: u64,
+) -> *mut c_char {
     err::clear_error();
-    let Some(engine) = (unsafe { engine.as_ref() }) else { return ptr::null_mut() };
+    let Some(engine) = (unsafe { engine.as_ref() }) else {
+        return ptr::null_mut();
+    };
     match engine.rt.call(move |c| {
         c.swap_gesture(gesture)?;
         Ok::<_, String>(c.api.state_envelope())
@@ -117,8 +132,14 @@ pub extern "C" fn vcad_doc_runtime_forget_gesture(engine: *const VcadEngine, ges
 /// Directory relative `MeshImport` paths resolve against when frames are
 /// evaluated (empty clears it).
 #[no_mangle]
-pub extern "C" fn vcad_doc_runtime_set_base_dir(engine: *const VcadEngine, dir: *const u8, len: usize) {
-    let Some(e) = (unsafe { engine.as_ref() }) else { return };
+pub extern "C" fn vcad_doc_runtime_set_base_dir(
+    engine: *const VcadEngine,
+    dir: *const u8,
+    len: usize,
+) {
+    let Some(e) = (unsafe { engine.as_ref() }) else {
+        return;
+    };
     let dir = (!dir.is_null() && len > 0)
         .then(|| std::str::from_utf8(unsafe { std::slice::from_raw_parts(dir, len) }).ok())
         .flatten()
@@ -153,8 +174,13 @@ pub extern "C" fn vcad_frame_info(frame: *const VcadFrame) -> *const c_char {
 
 /// The materialized IR document as JSON bytes, borrowed from the frame.
 #[no_mangle]
-pub extern "C" fn vcad_frame_document_json(frame: *const VcadFrame, out_len: *mut usize) -> *const u8 {
-    let Some(f) = (unsafe { frame.as_ref() }) else { return ptr::null() };
+pub extern "C" fn vcad_frame_document_json(
+    frame: *const VcadFrame,
+    out_len: *mut usize,
+) -> *const u8 {
+    let Some(f) = (unsafe { frame.as_ref() }) else {
+        return ptr::null();
+    };
     if !out_len.is_null() {
         unsafe { *out_len = f.frame.document_json.len() };
     }
@@ -165,7 +191,9 @@ pub extern "C" fn vcad_frame_document_json(frame: *const VcadFrame, out_len: *mu
 /// was already taken). Free with `vcad_scene_free`.
 #[no_mangle]
 pub extern "C" fn vcad_frame_take_scene(frame: *mut VcadFrame) -> *mut VcadScene {
-    let Some(f) = (unsafe { frame.as_mut() }) else { return ptr::null_mut() };
+    let Some(f) = (unsafe { frame.as_mut() }) else {
+        return ptr::null_mut();
+    };
     match f.frame.scene.take() {
         Some(inner) => Box::into_raw(Box::new(VcadScene {
             inner,
@@ -236,7 +264,10 @@ mod tests {
         // Gesture undo through the C ABI, ordered after the intent.
         let undone = vcad_doc_runtime_swap_gesture(engine, 5);
         assert!(!undone.is_null());
-        let s = unsafe { std::ffi::CStr::from_ptr(undone) }.to_str().unwrap().to_owned();
+        let s = unsafe { std::ffi::CStr::from_ptr(undone) }
+            .to_str()
+            .unwrap()
+            .to_owned();
         crate::engine::vcad_engine_string_free(undone);
         assert!(s.contains(r#""w":{"value":10.0"#), "{s}");
         assert!(vcad_doc_runtime_swap_gesture(engine, 99).is_null());

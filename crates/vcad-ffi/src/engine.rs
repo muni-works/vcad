@@ -200,7 +200,10 @@ pub extern "C" fn vcad_engine_state(engine: *const VcadEngine) -> *mut c_char {
         return std::ptr::null_mut();
     }
     let engine = unsafe { &*engine };
-    finish(Ok(engine.with(|api| api.state_envelope())), "vcad_engine_state")
+    finish(
+        Ok(engine.with(|api| api.state_envelope())),
+        "vcad_engine_state",
+    )
 }
 
 /// Replace the engine's document with an IR `Document` JSON (a `.vcad`
@@ -290,13 +293,19 @@ pub extern "C" fn vcad_engine_restore(
 /// Whether `{"type":"undo"}` would succeed.
 #[no_mangle]
 pub extern "C" fn vcad_engine_can_undo(engine: *const VcadEngine) -> bool {
-    !engine.is_null() && unsafe { &*engine }.with(|api| api.can_undo()).unwrap_or(false)
+    !engine.is_null()
+        && unsafe { &*engine }
+            .with(|api| api.can_undo())
+            .unwrap_or(false)
 }
 
 /// Whether `{"type":"redo"}` would succeed.
 #[no_mangle]
 pub extern "C" fn vcad_engine_can_redo(engine: *const VcadEngine) -> bool {
-    !engine.is_null() && unsafe { &*engine }.with(|api| api.can_redo()).unwrap_or(false)
+    !engine.is_null()
+        && unsafe { &*engine }
+            .with(|api| api.can_redo())
+            .unwrap_or(false)
 }
 
 /// The built-in agent's tool manifest + system prompt (`vcad_app::agent`),
