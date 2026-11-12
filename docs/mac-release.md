@@ -1,5 +1,9 @@
 # Releasing vcad for Mac
 
+> Local releases for vcad 1.0 use `apple/VcadApp/scripts/release.sh`; see
+> [`docs/launch/mac-release.md`](launch/mac-release.md). This page covers the
+> env-driven `release.sh` + CI path.
+
 The native app (`apple/VcadApp`) ships as a Developer ID–signed, notarized DMG
 with Sparkle 2 auto-update.
 

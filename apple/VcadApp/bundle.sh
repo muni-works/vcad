@@ -14,6 +14,12 @@
 #   SPARKLE_PUBLIC_ED_KEY  EdDSA public key for update verification (SUPublicEDKey).
 #   VCAD_VERSION           CFBundleShortVersionString (default 0.1)
 #   VCAD_BUILD             CFBundleVersion, monotonically increasing (default 1)
+#   VCAD_RELEASE=1         Release bundle without signing here (scripts/release.sh
+#                          signs every Mach-O itself). Same key requirement.
+#   VCAD_BUNDLE_ID         CFBundleIdentifier override. Release builds are
+#                          io.vcad.m0; dev builds default to io.vcad.dev.<checkout>
+#                          so each worktree's app gets its own Local Network
+#                          permission and Launch Services entry.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 
@@ -23,14 +29,30 @@ sign_identity="${VCAD_SIGN_IDENTITY:-}"
 ed_key="${SPARKLE_PUBLIC_ED_KEY:-}"
 ed_key="${ed_key//[[:space:]]/}"
 release_build=false
-if [ -n "$sign_identity" ]; then
+if [ -n "$sign_identity" ] || [ "${VCAD_RELEASE:-0}" = 1 ]; then
   release_build=true
   if [ -z "$ed_key" ]; then
-    echo "error: VCAD_SIGN_IDENTITY is set (release build) but SPARKLE_PUBLIC_ED_KEY is empty." >&2
+    echo "error: release build (VCAD_SIGN_IDENTITY or VCAD_RELEASE=1) but SPARKLE_PUBLIC_ED_KEY is empty." >&2
     echo "       A release without the EdDSA public key could never verify its updates." >&2
     echo "       Print it with: generate_keys -p   (see docs/mac-release.md)" >&2
     exit 1
   fi
+fi
+
+# Dev builds sharing io.vcad.m0 fight over the Local Network permission (TCC
+# keys it by bundle id + signature), so each checkout gets its own id.
+if [ -n "${VCAD_BUNDLE_ID:-}" ]; then
+  bundle_id="$VCAD_BUNDLE_ID"
+elif [ "$release_build" = true ]; then
+  bundle_id="io.vcad.m0"
+else
+  checkout="$(basename "$(git -C "$here" rev-parse --show-toplevel 2>/dev/null || echo main)")"
+  [ "$checkout" = vcad ] && checkout=main
+  suffix="$(printf '%s' "$checkout" | tr -c 'A-Za-z0-9-' '-' | sed 's/-*$//')"
+  bundle_id="io.vcad.dev.${suffix:-main}"
+fi
+if ! printf '%s' "$bundle_id" | grep -Eq '^[A-Za-z0-9.-]+$'; then
+  echo "error: bad bundle id '$bundle_id'" >&2; exit 1
 fi
 
 echo "swift build…"
@@ -109,7 +131,7 @@ cat > "$app/Contents/Info.plist" <<'PLIST'
 <dict>
   <key>CFBundleName</key><string>vcad</string>
   <key>CFBundleDisplayName</key><string>vcad</string>
-  <key>CFBundleIdentifier</key><string>io.vcad.m0</string>
+  <key>CFBundleIdentifier</key><string>@BUNDLEID@</string>
   <key>CFBundleExecutable</key><string>vcad</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleVersion</key><string>@BUILD@</string>
@@ -201,13 +223,13 @@ if [ -n "$ed_key" ]; then
   edkey_entry="
   <key>SUPublicEDKey</key><string>${ed_key}</string>"
 fi
-python3 - "$plist" "$version" "$build_number" "$release_build" "$edkey_entry" <<'PY'
+python3 - "$plist" "$version" "$build_number" "$release_build" "$edkey_entry" "$bundle_id" <<'PY'
 import sys
-path, version, build, release, edkey = sys.argv[1:]
+path, version, build, release, edkey, bundle_id = sys.argv[1:]
 s = open(path).read()
 s = (s.replace("@VERSION@", version).replace("@BUILD@", build)
       .replace("@RELEASE@", "true" if release == "true" else "false")
-      .replace("@EDKEY@", edkey))
+      .replace("@EDKEY@", edkey).replace("@BUNDLEID@", bundle_id))
 open(path, "w").write(s)
 PY
 plutil -lint "$plist" >/dev/null
@@ -219,9 +241,15 @@ if [ "${BAKE_SAMPLES:-$release_build}" = 1 ] || [ "${BAKE_SAMPLES:-$release_buil
   "$here/scripts/bake-sample-meshes.sh" "$app"
 fi
 
+if [ -z "$sign_identity" ] && [ "${VCAD_RELEASE:-0}" = 1 ]; then
+  echo "built (unsigned release, signed by scripts/release.sh): $app ($bundle_id)"
+  exit 0
+fi
 if [ -z "$sign_identity" ]; then
   codesign --force --deep --sign - "$app" >/dev/null 2>&1 || echo "(codesign skipped)"
-  echo "built: $app"
+  # Register so Finder/`open vcad://` route to this build's id right away.
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app" 2>/dev/null || true
+  echo "built: $app ($bundle_id)"
   exit 0
 fi
 

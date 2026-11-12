@@ -1,0 +1,129 @@
+# vcad for Mac: release pipeline
+
+vcad 1.0 ships as a free, Developer ID–signed, notarized DMG (no App Store),
+updated by Sparkle 2 from `https://vcad.io/desktop/appcast.xml`, which is the
+static file `packages/app/public/desktop/appcast.xml`. That directory must
+outlive everything else on vcad.io.
+
+| Piece | Where |
+|---|---|
+| Release script | `apple/VcadApp/scripts/release.sh` (local, never publishes) |
+| Bundle assembly | `apple/VcadApp/bundle.sh` |
+| Entitlements | `apple/VcadApp/VcadApp.entitlements` (`device.audio-input` for Mallet/Tune; nothing else) |
+| Updater | `Sources/VcadApp/Updater.swift` ("Check for Updates…" in the vcad menu), `Sources/VcadUpdate/UpdaterConfig.swift` |
+| Feed + download page | `packages/app/public/desktop/{appcast.xml,index.html}` |
+| DMGs | GitHub Releases `desktop-v<version>` on ecto/vcad (appcast enclosure) |
+
+The older env-driven `apple/VcadApp/release.sh` and the
+`desktop-release.yml` CI workflow (see `docs/mac-release.md`) still exist;
+`scripts/release.sh` is the local path described here.
+
+## Bundle ids
+
+| Build | `CFBundleIdentifier` |
+|---|---|
+| Release (`scripts/release.sh`, or `VCAD_RELEASE=1` / `VCAD_SIGN_IDENTITY`) | `io.vcad.m0` (unchanged: shipped apps update in place) |
+| Dev (`bundle.sh`) | `io.vcad.dev.<checkout>`, e.g. `io.vcad.dev.main`, `io.vcad.dev.viewport-lighting-bb82bd` |
+| Override | `VCAD_BUNDLE_ID=…` |
+
+Each dev checkout gets its own Local Network permission, TCC entries and
+computer-use target instead of fighting over `io.vcad.m0`. Dev bundles are
+registered with Launch Services (`lsregister -f`) after bundling. All of them
+export the same `io.vcad.document` / `io.vcad.loon` UTIs; Finder opens
+`.vcad` with whichever owner it picks (the release app once installed in
+/Applications). Dev builds keep their own `UserDefaults` domain, so settings
+don't carry over from the release app.
+
+## One-time setup (Cam)
+
+Run `apple/VcadApp/scripts/release.sh --dry-run` at any point: its preflight
+lists exactly what is still missing, with the fix for each.
+
+### 1. Developer ID certificate: done
+
+`Developer ID Application: Cameron Pedersen (54SNZV8YN8)` is in the login
+Keychain. Check: `security find-identity -v -p codesigning`. Override with
+`VCAD_SIGN_IDENTITY` (e.g. a later Municipal Robotics team identity).
+
+### 2. Notary profile: done (shared with frog)
+
+Decision (2026-11-12): vcad notarizes with frog's keychain profile `frog`,
+which is backed by the App Store Connect API key. Check it with
+`xcrun notarytool history --keychain-profile frog`. To give vcad its own
+profile later, run
+`xcrun notarytool store-credentials vcad --key ~/keys/AuthKey_<KEYID>.p8 --key-id <KEYID> --issuer <ISSUER-UUID>`
+and set `VCAD_NOTARY_PROFILE=vcad`.
+
+### 3. Sparkle EdDSA key: done (shared with frog)
+
+Decision (2026-11-12): vcad shares frog's Sparkle key, the item
+"https://sparkle-project.org" in this Mac's login Keychain. `release.sh`
+reads its public half with `generate_keys -p` and bakes it into
+`SUPublicEDKey`. To split later, `generate_keys --account vcad` makes a
+separate key, and `generate_keys -p` / `sign_update` in the script then need
+`--account vcad`. Installed copies only trust the key they shipped with, so a
+later split needs one transition release signed with the old key that ships
+the new public key.
+
+**The first public release freezes the key**: every installed
+copy only accepts updates signed by it. Back it up now:
+`.build/artifacts/sparkle/Sparkle/bin/generate_keys -x ~/keys/sparkle-ed25519.key`,
+move that file into the password manager, delete it from disk.
+
+The tools live at `apple/VcadApp/.build/artifacts/sparkle/Sparkle/bin/`
+after any `swift build`.
+
+### Where each secret lives
+
+| Secret | Location | Never |
+|---|---|---|
+| Developer ID private key | login Keychain (+ `.p12` backup in password manager) | in the repo, in CI logs |
+| App Store Connect API key | notarytool profile `frog` in login Keychain (shared) | in the repo |
+| Sparkle EdDSA private key | login Keychain item `https://sparkle-project.org` (+ `generate_keys -x` backup in password manager) | on disk after backup, in the repo |
+| Sparkle EdDSA **public** key | baked into each app's Info.plist at build time | — (it's public) |
+
+## Cutting a release
+
+1. On a clean, up-to-date `main`: bump the version in
+   `packages/*/package.json` if needed (the script reads
+   `packages/app/package.json`; or pass `release.sh 1.0.0`).
+2. Build the static libs: `apple/VcadApp/build-ffi.sh && apple/VcadApp/build-tc-ffi.sh`.
+   For the path tracer, build irys first (`~/Developer/irys`, `cargo build --release -p irys-ffi`)
+   or set `IRYS_FFI`; without it the DMG ships with Path-Traced View disabled.
+3. Dry run, then the real thing:
+
+   ```bash
+   apple/VcadApp/scripts/release.sh --dry-run
+   ```
+
+   ```bash
+   apple/VcadApp/scripts/release.sh
+   ```
+
+   It: preflights (identity, notary profile, Sparkle key, tools, libs, clean
+   tree, build number above the published one) → `bundle.sh` with
+   `CONFIG=release`, `io.vcad.m0`, version + build stamped → signs every
+   Mach-O inside-out (irys, Sparkle's XPC services/Autoupdate/Updater.app,
+   framework, app with entitlements; hardened runtime + timestamp, never
+   `--deep`) → `codesign --verify --deep --strict` + per-binary team/runtime/
+   timestamp audit → notarize (`ditto` zip, `submit --wait --timeout 30m`)
+   + staple the app → `create-dmg` (540×360, icon 128, app 140,170,
+   Applications 400,170) → sign, notarize, staple the DMG → `spctl` on both →
+   `sign_update` + verify → one-item `appcast.xml`.
+   `--dry-run` does all of it except the two notarizations (so `spctl`
+   rejects, which is expected).
+4. Output: `apple/VcadApp/dist/release/<version>/` with `vcad-<version>.dmg`,
+   its `.sha256`, and `desktop/` mirroring `packages/app/public/desktop/`.
+5. Publish (the script prints these; nothing is uploaded automatically):
+
+   ```bash
+   gh release create desktop-v<version> apple/VcadApp/dist/release/<version>/vcad-<version>.dmg --repo muni-works/vcad --title "vcad <version>" --generate-notes
+   ```
+
+   Then copy `desktop/appcast.xml` over `packages/app/public/desktop/appcast.xml`
+   in a PR. **Merging it is what ships the update** to installed apps.
+
+`CFBundleVersion` is the git commit count of `HEAD` (monotonic on `main`);
+the preflight refuses a number not above the feed's highest
+`sparkle:version`. If CI releases (run numbers) were ever mixed in, set
+`VCAD_BUILD` above both.
