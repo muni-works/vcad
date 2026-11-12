@@ -221,3 +221,23 @@ rect.rc-pill.rc-holds { fill: color-mix(in oklab, var(--green) 16%, transparent)
 rect.rc-pill.rc-stale, rect.rc-pill.rc-checking { fill: color-mix(in oklab, #ffb000 18%, transparent); stroke: none; }
 rect.rc-pill.rc-violated { fill: color-mix(in oklab, #ff4d5e 18%, transparent); stroke: none; }
 rect.rc-pill.rc-pending { fill: color-mix(in oklab, var(--muted) 14%, transparent); stroke: none; }
+
+/* example loading states (kit/gallery.js loadStatus) */
+.ex-stage { position: relative; }
+.ex-status {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 8px; pointer-events: none;
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+}
+.ex-status[hidden] { display: none; }
+.ex-status-bar { display: block; width: 40%; max-width: 140px; height: 2px; background: color-mix(in srgb, var(--muted) 25%, transparent); overflow: hidden; }
+.ex-status-bar i { display: block; height: 100%; background: var(--fg); transition: width 150ms linear; }
+.ex-status-bar.indeterminate i { width: 30% !important; animation: ex-indet 1.1s ease-in-out infinite; }
+@keyframes ex-indet { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+@media (prefers-reduced-motion: reduce) { .ex-status-bar.indeterminate i { animation: none; width: 100% !important; opacity: .5; } }
+.ex-retry {
+  pointer-events: auto; cursor: pointer; font: inherit; color: var(--fg);
+  background: var(--surface); border: 1px solid color-mix(in srgb, var(--muted) 40%, transparent);
+  padding: 8px 14px; min-height: 36px;
+}
+.ex.failed .ex-status { color: var(--fg); }
