@@ -272,6 +272,13 @@ struct GlassToolbar: View {
             }
             Spacer(minLength: Theme.Space.m)
             if model.workspace == .manufacture { machineChip }
+            // Release to Desktop / Open in Window (⇧⌘D), out of the View menu
+            // and next to the panel toggles where it's discoverable.
+            iconButton(model.isWindowed ? "arrow.up.forward.app" : "macwindow",
+                       model.isWindowed ? "Release to Desktop (⇧⌘D)" : "Open in Window (⇧⌘D)",
+                       active: false) {
+                ReleaseWindowController.shared.setWindowed(!model.isWindowed)
+            }
             iconButton("sidebar.trailing", "Show or hide the inspector", active: model.showsInspector) {
                 withAnimation(Motion.panel) { model.showsInspector.toggle() }
             }
