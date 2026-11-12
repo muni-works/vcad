@@ -3,6 +3,9 @@
 /assets/*
   Cache-Control: public, max-age=31536000, immutable
 
+/export/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
 # Posters, fonts, kit: unhashed, so revalidate daily.
 /posters/*
   Cache-Control: public, max-age=86400, stale-while-revalidate=604800
