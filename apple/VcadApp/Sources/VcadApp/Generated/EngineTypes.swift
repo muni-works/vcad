@@ -163,6 +163,10 @@ public indirect enum CommandError: Codable, Equatable, Sendable {
     case invalid(detail: String)
     /// - tool: Tool or feature kind.
     case unsupported(tool: String)
+    /// - id: The feature being moved.
+    /// - conflictsWith: The feature it would end up on the wrong side of.
+    /// - reason: Plain-language reason, e.g. "it is built on `3:1`".
+    case orderViolation(id: String, conflictsWith: String, reason: String)
     /// - index: Index of the failing command.
     /// - source: The underlying error.
     case batch(index: Int, source: CommandError)
@@ -174,6 +178,7 @@ public indirect enum CommandError: Codable, Equatable, Sendable {
         case .nothingTo: return "nothing_to"
         case .invalid: return "invalid"
         case .unsupported: return "unsupported"
+        case .orderViolation: return "order_violation"
         case .batch: return "batch"
         }
     }
@@ -196,6 +201,12 @@ public indirect enum CommandError: Codable, Equatable, Sendable {
         case "unsupported":
             self = .unsupported(
                 tool: try c.decode(String.self, forKey: "tool")
+            )
+        case "order_violation":
+            self = .orderViolation(
+                id: try c.decode(String.self, forKey: "id"),
+                conflictsWith: try c.decode(String.self, forKey: "conflicts_with"),
+                reason: try c.decode(String.self, forKey: "reason")
             )
         case "batch":
             self = .batch(
@@ -222,6 +233,11 @@ public indirect enum CommandError: Codable, Equatable, Sendable {
         case .unsupported(let tool):
             try c.encode("unsupported", forKey: "kind")
             try c.encode(tool, forKey: "tool")
+        case .orderViolation(let id, let conflictsWith, let reason):
+            try c.encode("order_violation", forKey: "kind")
+            try c.encode(id, forKey: "id")
+            try c.encode(conflictsWith, forKey: "conflicts_with")
+            try c.encode(reason, forKey: "reason")
         case .batch(let index, let source):
             try c.encode("batch", forKey: "kind")
             try c.encode(index, forKey: "index")
