@@ -100,6 +100,9 @@ struct UndoEntry: Equatable {
         /// Serialized document JSON, for documents edited outside the engine
         /// (electronics, which the command vocabulary doesn't cover yet).
         case json(Data)
+        /// A scrub gesture the document runtime snapshotted at its first
+        /// intent: undone (and redone) by swapping with that snapshot.
+        case gesture(UInt64)
     }
     let step: Step
     let name: String
@@ -498,8 +501,10 @@ final class EditorModel {
     var featureNodes: [FeatureNode] = [] {
         // Every rebuild re-reads the history (suppressed/skipped rows, the
         // rollback marker, broken references) — HistoryTree.swift.
-        didSet { refreshHistory() }
+        didSet { if !adoptingRuntimeFrame { refreshHistory() } }
     }
+    /// Set while a runtime frame is adopted: the frame carries the history.
+    @ObservationIgnored var adoptingRuntimeFrame = false
     /// The engine's feature history: one row per modeling feature, built or not.
     var history: [HistoryRow] = []
     /// Feature id whose broken-reference card is open in the tree.
@@ -1235,9 +1240,20 @@ final class EditorModel {
 
     /// The engine for the open document; nil for sources with no editable
     /// document and for files it can't round-trip (opened view-only).
-    @ObservationIgnored private(set) var engine: DocumentEngine?
+    @ObservationIgnored private(set) var engine: DocumentEngine? {
+        didSet { if engine !== oldValue { installRuntimeSink() } }
+    }
+    /// Runtime bookkeeping (DocumentRuntime.swift): the open scrub gesture,
+    /// the last gesture id handed out, the newest frame revision adopted,
+    /// and the intent seq whose frame should regenerate collision shapes.
+    @ObservationIgnored var runtimeGesture: UInt64?
+    @ObservationIgnored var lastGestureId: UInt64 = 0
+    @ObservationIgnored var adoptedRuntimeRev: UInt64 = 0
+    @ObservationIgnored var collideAfterSeq: UInt64 = 0
+    /// Scrubs go to the runtime as intents (off: the blocking path).
+    @ObservationIgnored var runtimeScrubEnabled = !EditorModel.runtimeScrubDisabled
     /// The engine's last result (document + part table).
-    @ObservationIgnored private(set) var engineState: DocumentEngine.Result?
+    @ObservationIgnored var engineState: DocumentEngine.Result?
     /// The last refusal, or why the document is view-only.
     var engineError: String?
     /// The engine's materialized document — read-only from Swift's side
@@ -1262,8 +1278,8 @@ final class EditorModel {
     /// Tessellated parts by stable part id, reused across edits: an engine
     /// delta drops exactly the parts it added, updated or removed, so an edit
     /// re-tessellates only those.
-    @ObservationIgnored private var partMeshCache: [String: TessellatedPart] = [:]
-    @ObservationIgnored private var adoptingDelta = false
+    @ObservationIgnored var partMeshCache: [String: TessellatedPart] = [:]
+    @ObservationIgnored var adoptingDelta = false
     /// Part ids whose tessellation is cached (for tests and diagnostics).
     var cachedPartIds: Set<String> { Set(partMeshCache.keys) }
     var undoStack: [UndoEntry] = []
@@ -1277,7 +1293,7 @@ final class EditorModel {
     @ObservationIgnored var autosavePending = false
     /// Engine state hash as last saved (or loaded): undoing back to it clears
     /// the edited state instead of leaving a phantom dot in the title bar.
-    @ObservationIgnored private var savedHash: String?
+    @ObservationIgnored var savedHash: String?
     /// Same, for detached (non-engine) documents.
     @ObservationIgnored private var savedSnapshot: Data?
     /// The source the intent bar replaced, so a generation can be undone as a
@@ -1352,7 +1368,8 @@ final class EditorModel {
 
     func pushUndo(_ step: UndoEntry.Step, name: String) {
         undoStack.append(UndoEntry(step: step, name: name))
-        if undoStack.count > 64 { undoStack.removeFirst() }
+        if undoStack.count > 64 { forgetGestures([undoStack.removeFirst()]) }
+        forgetGestures(redoStack)
         redoStack.removeAll()
     }
 
@@ -1374,6 +1391,14 @@ final class EditorModel {
         markReeval(reeval)
     }
 
+    /// Wait for queued scrub intents (DocumentRuntime.swift) and adopt the
+    /// runtime's state now — for callers that read the document right after
+    /// a scrub (tests, smoke harnesses). Supersedes the frames in flight.
+    func flushRuntime() {
+        guard let engine, engine.intentsInFlight, let r = try? engine.state() else { return }
+        adopt(r, reeval: .inPlace)
+    }
+
     func markReeval(_ reeval: Reeval) {
         switch reeval {
         case .inPlace:
@@ -1393,6 +1418,7 @@ final class EditorModel {
     func engineEdit(_ name: String, undo mode: UndoMode, reeval: Reeval,
                             _ body: (DocumentEngine) throws -> DocumentEngine.Result) -> DocumentEngine.Result? {
         guard let engine else { return nil }
+        runtimeGesture = nil                // a blocking edit closes any scrub gesture
         let before = mode == .snapshot ? engine.save() : nil
         do {
             let r = try body(engine)
@@ -1485,6 +1511,9 @@ final class EditorModel {
                                snapshot: Bool, name: String,
                                fallback: (inout [String: Any]) -> Void) {
         if let cmd = nodeFieldCommand(nodeId: nodeId, key: key, axis: axis, value: value) {
+            if runtimeScrub(name, snapshot: snapshot, { gid, start in
+                .command(cmd, gesture: gid, start: start, coalesce: "node:\(nodeId):\(key):\(axis ?? "")")
+            }) { return }
             engineEdit(name, undo: snapshot ? .snapshot : .none, reeval: .inPlace) { try $0.apply(cmd) }
         } else {
             irEdit(name, gestureStart: snapshot, reeval: .inPlace, fallback)
@@ -2503,6 +2532,9 @@ final class EditorModel {
         var v = value
         if let lo = p.min { v = Swift.max(lo, v) }
         if let hi = p.max { v = Swift.min(hi, v) }
+        if runtimeScrub("Change \(name)", snapshot: snapshot, { gid, start in
+            .setDocParam(name: name, value: v, gesture: gid, start: start)
+        }) { return }
         irEdit("Change \(name)", gestureStart: snapshot, reeval: .inPlace) {
             DocEdit.setParameter(&$0, name: name, value: v)
         }
@@ -2613,6 +2645,12 @@ final class EditorModel {
             adopt(r, reeval: .rebuild)
             afterHistoryStep()
             return UndoEntry(step: .snapshot(current), name: entry.name)
+        case .gesture(let id):
+            guard let engine, let r = try? engine.swapGesture(id) else { return nil }
+            runtimeGesture = nil
+            adopt(r, reeval: .rebuild)
+            afterHistoryStep()
+            return entry
         case .json(let data):
             guard let cur = documentJSON.flatMap({ DocEdit.serialize($0) }) else { return nil }
             restoreJSON(data)
@@ -2721,7 +2759,7 @@ final class EditorModel {
 
     /// Mesh, feature edges and root key of every part of `scene`, gathered in
     /// parallel (nil = empty part). Pure reads of an immutable scene handle.
-    nonisolated private static func gatherParts(_ scene: OpaquePointer, count: Int)
+    nonisolated static func gatherParts(_ scene: OpaquePointer, count: Int)
         -> [(mesh: KernelMesh, edges: [SIMD3<Float>], rootKey: String?)?] {
         final class Slots: @unchecked Sendable {
             var items: [(mesh: KernelMesh, edges: [SIMD3<Float>], rootKey: String?)?]
@@ -3997,7 +4035,7 @@ final class EditorModel {
     /// Kernel part index → instancing plan, for visible roots whose node is a
     /// Linear/CircularPattern. Only the editable-JSON path instances (legacy
     /// docs the parser couldn't load fall back to baked kernel meshes).
-    private func documentInstancingPlan() -> [Int: PatternInstancing] {
+    func documentInstancingPlan() -> [Int: PatternInstancing] {
         guard let json = documentJSON, let g = documentGraph else { return [:] }
         var plan: [Int: PatternInstancing] = [:]
         for (i, root) in g.visibleRoots.enumerated() {
@@ -4013,6 +4051,8 @@ final class EditorModel {
     /// re-pointed at its seed child — the kernel then tessellates the seed ONCE
     /// (no N-way boolean union); the viewport places the N copies.
     private func evalData(applying plan: [Int: PatternInstancing]) -> Data? {
+        // The runtime frame already serialized this revision (off main).
+        if plan.isEmpty, let c = documentBytesCache, c.revision == documentRevision { return c.data }
         guard var json = documentJSON else { return nil }
         if !plan.isEmpty, var roots = json["roots"] as? [[String: Any]] {
             var vis = 0

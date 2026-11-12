@@ -68,6 +68,7 @@ final class OpsFirstClassTests: XCTestCase {
         let before = try volume()
         XCTAssertEqual(before, 2 * .pi * .pi * 20 * 25, accuracy: before * 0.03)
         m.editScalar(nodeId: id, key: "minor_radius", value: 10, snapshot: true, name: "Change Minor")
+        m.flushRuntime()
         let after = try volume()
         XCTAssertEqual(after, 2 * .pi * .pi * 20 * 100, accuracy: after * 0.03)
         m.undo()
@@ -79,10 +80,12 @@ final class OpsFirstClassTests: XCTestCase {
         m.addPrimitive(.wedge, at: .zero)
         let w = try node(m, "Wedge")
         m.editVec(nodeId: w, key: "size", axis: "z", value: 60, snapshot: true, name: "Height")
+        m.flushRuntime()
         XCTAssertEqual(try volume(m, nodeId: try node(m, "Wedge")), 0.5 * 30 * 30 * 60, accuracy: 300)
         m.addPrimitive(.prism, at: .zero)
         let p = try node(m, "Prism")
         m.editInt(nodeId: p, key: "sides", value: 8, snapshot: true, name: "Sides")
+        m.flushRuntime()
         let op = try XCTUnwrap(m.opDict(nodeId: p))
         XCTAssertEqual(op["sides"] as? NSNumber, 8)
     }
@@ -92,6 +95,7 @@ final class OpsFirstClassTests: XCTestCase {
         m.addPrimitive(.torus, at: SIMD3(5, 0, 0))
         let id = try node(m, "Torus")
         m.editScalar(nodeId: id, key: "major_radius", value: 33, snapshot: true, name: "Major")
+        m.flushRuntime()
         let out = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".vcad")
         defer { try? FileManager.default.removeItem(at: out) }
         try XCTUnwrap(DocEdit.serialize(try XCTUnwrap(m.documentJSON))).write(to: out)
@@ -104,6 +108,7 @@ final class OpsFirstClassTests: XCTestCase {
         let reloaded = try node(again, "Torus")
         XCTAssertEqual(again.opDict(nodeId: reloaded)?["major_radius"] as? NSNumber, 33)
         again.editScalar(nodeId: reloaded, key: "minor_radius", value: 2, snapshot: true, name: "Minor")
+        again.flushRuntime()
         XCTAssertEqual(again.opDict(nodeId: reloaded)?["minor_radius"] as? NSNumber, 2)
     }
 
@@ -145,6 +150,7 @@ final class OpsFirstClassTests: XCTestCase {
                               name: "Sweep", materialFrom: source), m.engineError ?? "")
         let id = try node(m, "SweepRotate")
         m.editScalar(nodeId: id, key: "angle_hi_deg", value: 90, snapshot: true, name: "To")
+        m.flushRuntime()
         XCTAssertEqual(m.opDict(nodeId: id)?["angle_hi_deg"] as? NSNumber, 90)
         XCTAssertEqual(m.engineState?.parts.last?.kind, "sweep-rotate")
     }

@@ -2582,6 +2582,10 @@ pub struct Document {
     /// Pitch constraints (`vcad-sound`): each holds one mode of one part at a
     /// target frequency by solving a document parameter.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(
+        feature = "ts-rs",
+        ts(as = "Option<Vec<instrument::PitchLock>>", optional)
+    )]
     pub pitch_locks: Vec<instrument::PitchLock>,
 
     // Feature history (optional, zero-cost when absent)

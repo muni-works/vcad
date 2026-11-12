@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-11-doc-runtime-scrub",
+  "version": "undefined",
+  "date": "2026-11-11",
+  "category": "perf",
+  "title": "Mac app: parameter scrubs run off the main thread",
+  "summary": "Scrubs go to a Rust document runtime that coalesces, evaluates and tessellates on its own thread; the viewport stays responsive while big parts re-solve.",
+  "features": ["mac-app", "performance", "runtime"]
+}

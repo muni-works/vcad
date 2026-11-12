@@ -97,6 +97,7 @@ final class SpurGearTests: XCTestCase {
 
         // Inspector edit: more teeth, more gear; undo puts it back.
         m.editInt(nodeId: g, key: "teeth", value: 30, snapshot: true, name: "Change Teeth")
+        m.flushRuntime()
         let bigger = try volume(m, nodeId: try XCTUnwrap(try gearNodes(m).first))
         XCTAssertGreaterThan(bigger, v * 2)
         m.undo()
@@ -129,6 +130,7 @@ final class SpurGearTests: XCTestCase {
         // Pull the second gear 0.4 mm (0.2 module) closer: now they collide.
         let translate = try XCTUnwrap(m.rootNodeId(forPart: try part(m, gear: nodes[1])))
         m.editVec(nodeId: translate, key: "offset", axis: "x", value: -0.4, snapshot: true, name: "Move")
+        m.flushRuntime()
         XCTAssertEqual(try XCTUnwrap((0..<Self.roots(m)).compactMap { m.placedSpurGear(part: $0) }
             .first { $0.gearNodeId == (try? gearNodes(m))?.last }).center.x, 49.6, accuracy: 1e-9)
         let bad = try gearPair(m)

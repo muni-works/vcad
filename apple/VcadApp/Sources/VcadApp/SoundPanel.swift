@@ -179,7 +179,7 @@ final class ToneSynth: @unchecked Sendable {
         player.stop()
         // Pause the engine once the strike has rung out: an idle running
         // engine keeps the audio IO thread busy for nothing.
-        let engine = self.engine
+        nonisolated(unsafe) let engine = self.engine   // AVAudioEngine isn't Sendable; only touched on main
         player.scheduleBuffer(buf, at: nil, options: [], completionCallbackType: .dataPlayedBack) { _ in
             DispatchQueue.main.async { engine.pause() }
         }

@@ -93,9 +93,11 @@ final class EditorEngineTests: XCTestCase {
         let cubeNode = try XCTUnwrap(cubeLeaf.leafNodeIds.first)
         // One gesture: first event snapshots, the rest continue it.
         m.editVec(nodeId: cubeNode, key: "size", axis: "x", value: 25, snapshot: true)
+        m.flushRuntime()
         let after = try XCTUnwrap(m.engineState?.parts.first { $0.kind == "cube" })
         let node2 = try XCTUnwrap(after.leafNodeIds.first)
         m.editVec(nodeId: node2, key: "size", axis: "x", value: 30, snapshot: false)
+        m.flushRuntime()
         let size = leafOp(m, part: 0)?["size"] as? [String: Any]
         XCTAssertEqual((size?["x"] as? NSNumber)?.doubleValue, 30)
         XCTAssertEqual((size?["y"] as? NSNumber)?.doubleValue, 10)
@@ -106,6 +108,7 @@ final class EditorEngineTests: XCTestCase {
         let pin = try XCTUnwrap(m.engineState?.parts.first { $0.kind == "cylinder" })
         let pinNode = try XCTUnwrap(pin.leafNodeIds.first)
         m.editScalar(nodeId: pinNode, key: "radius", value: 4.5, snapshot: true)
+        m.flushRuntime()
         XCTAssertEqual((leafOp(m, part: 1)?["radius"] as? NSNumber)?.doubleValue, 4.5)
         // The pin keeps its placement through the edit.
         let pin2 = m.engineState?.parts.first { $0.kind == "cylinder" }
@@ -160,6 +163,7 @@ final class EditorEngineTests: XCTestCase {
     /// touched are re-tessellated.
     func testEditsRetessellateOnlyTheChangedParts() throws {
         let m = try open()
+        m.runtimeScrubEnabled = false       // the blocking delta path (runtime path: DocumentRuntimeTests)
         XCTAssertEqual(m.reevalDocumentMeshes()?.count, 2)
         let block = try XCTUnwrap(m.partId(forPart: 0)), pin = try XCTUnwrap(m.partId(forPart: 1))
         XCTAssertEqual(m.cachedPartIds, [block, pin])
@@ -167,6 +171,7 @@ final class EditorEngineTests: XCTestCase {
         // Scrub the block's size: a delta naming only the block.
         let cube = try XCTUnwrap(m.engineState?.parts.first { $0.kind == "cube" })
         m.editVec(nodeId: try XCTUnwrap(cube.leafNodeIds.first), key: "size", axis: "x", value: 25, snapshot: true)
+        m.flushRuntime()
         XCTAssertEqual(m.engineState?.changes?.rebuild, [block])
         XCTAssertEqual(m.cachedPartIds, [pin], "the pin's tessellation survives the edit")
         XCTAssertEqual(m.reevalDocumentMeshes()?.count, 2)

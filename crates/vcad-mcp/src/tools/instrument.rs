@@ -527,13 +527,25 @@ mod tests {
         let doc = ctx.store.load(&DocumentId::from(id.as_str())).unwrap();
         assert_eq!(doc.roots.len(), 9);
         assert_eq!(doc.pitch_locks.len(), 8);
-        assert!(doc.parameters.contains_key("len_c6"), "bars are length-parametric");
+        assert!(
+            doc.parameters.contains_key("len_c6"),
+            "bars are length-parametric"
+        );
         // The solid model agrees with the beam tuner: C6's lock holds within a few cents.
         let scene = vcad_sound::evaluate(&doc).unwrap();
         let idx = vcad_sound::part_index(&doc, "bar_c6").unwrap();
-        let pm = vcad_sound::part_modes(&doc, &scene, &vcad_sound::ModesRequest {
-            part: idx, modes: 1, quality: vcad_sound::Quality::Fine, material: None, shapes: false,
-        }).unwrap();
+        let pm = vcad_sound::part_modes(
+            &doc,
+            &scene,
+            &vcad_sound::ModesRequest {
+                part: idx,
+                modes: 1,
+                quality: vcad_sound::Quality::Fine,
+                material: None,
+                shapes: false,
+            },
+        )
+        .unwrap();
         let c = 1200.0 * (pm.modes[0].hz / 1046.502).log2();
         assert!(c.abs() < 25.0, "solid vs beam on C6: {c:+.1} cents");
         let r = (tool("record_strike").handler)(

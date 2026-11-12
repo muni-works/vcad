@@ -1,0 +1,16 @@
+[package]
+name = "vcad-runtime"
+description = "Per-document runtime thread: CRDT, incremental eval and tessellation behind fire-and-forget intents and immutable frames"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+vcad-ir = { workspace = true }
+vcad-app = { workspace = true }
+vcad-crdt = { workspace = true }
+vcad-eval = { workspace = true }

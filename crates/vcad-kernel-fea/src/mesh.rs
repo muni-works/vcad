@@ -342,8 +342,11 @@ pub fn hex_fill_pitch(
     max_pitch: Option<[f64; 3]>,
 ) -> Result<HexMesh, MeshError> {
     let v = voxelize(mesh, resolution, max_pitch)?;
-    let axes: [Vec<f64>; 3] =
-        [0, 1, 2].map(|a| (0..=v.n[a]).map(|i| v.min[a] + i as f64 * v.pitch[a]).collect());
+    let axes: [Vec<f64>; 3] = [0, 1, 2].map(|a| {
+        (0..=v.n[a])
+            .map(|i| v.min[a] + i as f64 * v.pitch[a])
+            .collect()
+    });
     Ok(build_hex(&axes, &v.active, v.h))
 }
 
@@ -385,7 +388,10 @@ fn build_hex(axes: &[Vec<f64>; 3], active: &[bool], h: f64) -> HexMesh {
         }
     }
     let pitch = [0, 1, 2].map(|a| {
-        axes[a].windows(2).map(|w| w[1] - w[0]).fold(0.0f64, f64::max)
+        axes[a]
+            .windows(2)
+            .map(|w| w[1] - w[0])
+            .fold(0.0f64, f64::max)
     });
     HexMesh {
         nodes,
@@ -477,7 +483,10 @@ pub fn hex_fill_conforming(mesh: &TriangleMesh, max_cell: [f64; 3]) -> Result<He
             let dy = axes[1][iy + 1] - axes[1][iy];
             let cx = 0.5 * (axes[0][ix] + axes[0][ix + 1]) + dx * 0.01371;
             let cy = 0.5 * (axes[1][iy] + axes[1][iy + 1]) + dy * 0.00847;
-            let mut crossings: Vec<f64> = tris.iter().filter_map(|tri| ray_z_crossing(tri, cx, cy)).collect();
+            let mut crossings: Vec<f64> = tris
+                .iter()
+                .filter_map(|tri| ray_z_crossing(tri, cx, cy))
+                .collect();
             crossings.sort_by(|a, b| a.partial_cmp(b).unwrap());
             let mut k = 0;
             while k + 1 < crossings.len() {
@@ -495,7 +504,11 @@ pub fn hex_fill_conforming(mesh: &TriangleMesh, max_cell: [f64; 3]) -> Result<He
         return Err(MeshError::NoInteriorCells);
     }
     let longest = (0..3).map(|a| hi[a] - lo[a]).fold(0.0, f64::max);
-    Ok(build_hex(&axes, &active, longest / n.iter().copied().max().unwrap_or(1) as f64))
+    Ok(build_hex(
+        &axes,
+        &active,
+        longest / n.iter().copied().max().unwrap_or(1) as f64,
+    ))
 }
 
 /// How thick the solid actually is, measured rather than assumed.
