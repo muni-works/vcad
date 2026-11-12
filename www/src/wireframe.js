@@ -123,14 +123,6 @@ export function drawMolecule(ctx, body, opts) {
   }
 }
 
-let kernelPromise = null;
-/** Shared, memoized kernel load — every consumer on a page shares one instance. */
-export function loadKernel() {
-  if (!kernelPromise) {
-    kernelPromise = import("../../packages/kernel-wasm/vcad_kernel_wasm.js").then(async (wasm) => {
-      await wasm.default();
-      return wasm;
-    });
-  }
-  return kernelPromise;
-}
+// The kernel lives in kernel-loader.js (slim site build, streaming compile,
+// progress, connection gating); re-exported here for existing imports.
+export { loadKernel } from "./kernel-loader.js";

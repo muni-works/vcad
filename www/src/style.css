@@ -485,3 +485,33 @@ body.dimensioned [data-dim] { outline: 1px dashed var(--orange); outline-offset:
   background: var(--panel); border: 1px solid var(--hair-2);
   margin-bottom: 14px;
 }
+
+/* ---------- kernel demos: poster first, kernel on approach / on tap ---------- */
+/* Posters are static frames of the same kernel parts; the live canvas
+   paints over them once the kernel has loaded (.live drops the poster). */
+.engine-card, #proveCanvas { background-repeat: no-repeat; background-position: center; background-size: contain; }
+#proveCanvas { background-image: url("/posters/prove.png"); }
+.engine-card[data-part="mechanical"] { background-image: url("/posters/mechanical.png"); }
+.engine-card[data-part="sheetmetal"] { background-image: url("/posters/sheetmetal.png"); }
+.engine-card[data-part="electronics"] { background-image: url("/posters/electronics.png"); }
+.engine-card[data-part="simulation"] { background-image: url("/posters/simulation.png"); }
+.engine-card[data-part="drafting"] { background-image: url("/posters/drafting.png"); }
+.engine-card[data-part="atoms"] { background-image: url("/posters/atoms.png"); }
+.engine-card.live, #proveCanvas.live { background-image: none; }
+.engine-card.live { background-color: var(--panel); }
+.kgate-wrap { position: relative; }
+.kgate-host { position: relative; }
+.kgate {
+  position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  font-size: 11px; color: var(--t2); pointer-events: none; z-index: 2;
+}
+.kgate-btn {
+  pointer-events: auto; cursor: pointer; font: inherit; font-size: 12px;
+  color: var(--t1); background: var(--carbon); border: 1px solid var(--hair-strong);
+  padding: 10px 16px; min-height: 44px;
+}
+.kgate-btn:hover { border-color: var(--orange); }
+.kgate-label { background: var(--carbon); padding: 2px 6px; }
+.kgate-bar { display: block; width: 160px; height: 2px; background: var(--hair-2); }
+.kgate-bar i { display: block; height: 100%; width: 0; background: var(--orange); transition: width 120ms linear; }

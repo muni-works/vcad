@@ -1,0 +1,20 @@
+# Cloudflare Pages headers.
+# Vite emits content-hashed files under /assets/ — safe to cache forever.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Posters, fonts, kit: unhashed, so revalidate daily.
+/posters/*
+  Cache-Control: public, max-age=86400, stale-while-revalidate=604800
+/fonts/*
+  Cache-Control: public, max-age=2592000, stale-while-revalidate=604800
+
+# The Mac app's Sparkle update feed: must always be fresh.
+/desktop/appcast.xml
+  Cache-Control: public, max-age=300, must-revalidate
+  Content-Type: application/xml; charset=utf-8
+
+/*
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()

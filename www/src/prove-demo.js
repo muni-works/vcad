@@ -3,6 +3,7 @@
 // until you fix it. The wireframe and the true mass come from the kernel.
 
 import { loadKernel, extractEdges, meshBounds, drawWireframe } from "./wireframe.js";
+import { attachGate } from "./kernel-loader.js";
 
 const canvas = document.getElementById("proveCanvas");
 const slider = document.getElementById("wallSlider");
@@ -43,24 +44,18 @@ function init() {
     rebuildTimer = setTimeout(() => rebuild(parseFloat(slider.value)), 140);
   }
 
-  /* ---- kernel: lazy, loads when the section approaches ---- */
+  /* ---- kernel: lazy — fetched only when the section approaches, and
+     only on tap on Save-Data / slow links. The poster shows until then. ---- */
 
-  let booted = false;
-  const boot = () => {
-    if (booted) return;
-    booted = true;
-    loadKernel()
-      .then((wasm) => {
-        kernel = wasm;
-        rebuild(parseFloat(slider.value));
-      })
-      .catch((e) => console.warn("prove demo: kernel unavailable", e));
-  };
   const io = new IntersectionObserver((en) => {
-    if (en.some((e) => e.isIntersecting)) { io.disconnect(); boot(); }
-  }, { rootMargin: "400px" });
+    if (!en.some((e) => e.isIntersecting)) return;
+    io.disconnect();
+    attachGate(canvas, () => loadKernel().then((wasm) => {
+      kernel = wasm;
+      rebuild(parseFloat(slider.value));
+    }));
+  }, { rootMargin: "300px" });
   io.observe(canvas);
-  setTimeout(boot, 4000); // IO never fires in hidden documents
 
   function rebuild(w) {
     if (!kernel) return;
@@ -88,17 +83,13 @@ function init() {
   const CS = Math.cos(SPIN), SN = Math.sin(SPIN);
 
   function draw(pass) {
+    if (!mesh) return; // the static poster (CSS background) stands in
+    canvas.classList.add("live");
     const dpr = Math.min(devicePixelRatio || 1, 2);
     canvas.width = canvas.clientWidth * dpr;
     canvas.height = canvas.clientHeight * dpr;
     const ctx = canvas.getContext("2d");
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-    if (!mesh) {
-      ctx.fillStyle = "rgba(58, 61, 66, 0.9)";
-      ctx.font = `${10 * dpr}px "JetBrains Mono", monospace`;
-      ctx.fillText("loading the kernel…", 12 * dpr, 20 * dpr);
-      return;
-    }
     // green only when the checks actually pass — the color law holds here too
     drawWireframe(ctx, mesh, {
       spin: 0.62,

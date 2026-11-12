@@ -14,8 +14,8 @@ const TAU = Math.PI * 2;
 const FADE_MS = 450;
 
 export async function startHeroEngine(canvas, caption) {
-  const wasm = await import("../../packages/kernel-wasm/vcad_kernel_wasm.js");
-  await wasm.default();
+  const { loadKernel } = await import("./kernel-loader.js");
+  const wasm = await loadKernel();
   const { Solid } = wasm;
   const version = safeVersion(wasm);
 
