@@ -2781,7 +2781,7 @@ final class EditorModel {
         return slots.items
     }
 
-    nonisolated private static func rootKey(_ scene: OpaquePointer, _ i: Int) -> String? {
+    nonisolated static func rootKey(_ scene: OpaquePointer, _ i: Int) -> String? {
         guard let c = vcad_scene_root_key(scene, i) else { return nil }
         defer { vcad_cam_free(c) }
         return String(cString: c)
@@ -4051,8 +4051,10 @@ final class EditorModel {
     /// re-pointed at its seed child — the kernel then tessellates the seed ONCE
     /// (no N-way boolean union); the viewport places the N copies.
     private func evalData(applying plan: [Int: PatternInstancing]) -> Data? {
-        // The runtime frame already serialized this revision (off main).
-        if plan.isEmpty, let c = documentBytesCache, c.revision == documentRevision { return c.data }
+        // One set of bytes per revision, shared with picking/analysis (a
+        // runtime frame usually serialized them off main already). The
+        // prepared-scene key depends on them staying stable.
+        if plan.isEmpty { return pickingDocumentData }
         guard var json = documentJSON else { return nil }
         if !plan.isEmpty, var roots = json["roots"] as? [[String: Any]] {
             var vis = 0

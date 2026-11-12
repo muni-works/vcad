@@ -2298,7 +2298,9 @@ fn evaluate_text_extrude(
     };
 
     let font_ref = match font {
-        "sans-serif" | "" => FontRegistry::builtin_sans(),
+        "sans-serif" | "" => FontRegistry::try_builtin_sans().ok_or_else(|| {
+            EvalError::UnknownFont("sans-serif (this build has no built-in font)".to_string())
+        })?,
         other => return Err(EvalError::UnknownFont(other.to_string())),
     };
 

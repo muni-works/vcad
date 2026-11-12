@@ -1,6 +1,8 @@
 //! Per-document runtime: one thread owns the CRDT document
-//! ([`vcad_app::DocumentApi`]) and the incremental evaluation cache, so a
-//! host's UI thread never materializes, serializes or tessellates.
+//! ([`vcad_app::DocumentApi`]) and a second, the evaluator, owns the
+//! incremental evaluation cache, so a host's UI thread never materializes,
+//! serializes or tessellates — and the runtime thread never waits for an
+//! evaluation (a blocking call is never stuck behind one).
 //!
 //! Hosts talk to it two ways (see `docs/runtime-design.md`):
 //!
@@ -8,7 +10,7 @@
 //!   gesture command). Queued intents are coalesced (a scrub keeps only its
 //!   latest value) and the result comes back as an immutable [`Frame`]
 //!   through the sink: the materialized state, its IR bytes, and the
-//!   evaluated scene, all built on the runtime thread.
+//!   evaluated scene, built off the host thread (runtime + evaluator).
 //! - [`Runtime::call`] — a blocking closure run on the runtime thread, in
 //!   inbox order with the intents. The C ABI's existing `vcad_engine_*`
 //!   entry points go through this, so every client (UI, agent, MCP host
@@ -82,13 +84,16 @@ pub enum Intent {
         /// The gesture's id.
         gesture: u64,
     },
+    /// Publish a frame of the current state without changing it (a host
+    /// that just installed its sink, e.g. after opening a document).
+    Publish,
 }
 
 impl Intent {
     fn gesture(&self) -> Option<Gesture> {
         match self {
             Intent::Command { gesture, .. } | Intent::SetDocParam { gesture, .. } => *gesture,
-            Intent::GestureEnd { .. } => None,
+            Intent::GestureEnd { .. } | Intent::Publish => None,
         }
     }
 
@@ -215,25 +220,23 @@ impl Default for Config {
 pub struct Core {
     /// The document.
     pub api: DocumentApi,
-    cache: IncrementalCache,
+    eval: Sender<EvalMsg>,
     gestures: HashMap<u64, Vec<u8>>,
     open_gestures: Vec<u64>,
     rev: u64,
     /// Directory relative mesh imports resolve against.
     pub base_dir: Option<PathBuf>,
-    display_chord_mm: f64,
 }
 
 impl Core {
-    fn new(cfg: &Config) -> Self {
+    fn new(cfg: &Config, eval: Sender<EvalMsg>) -> Self {
         Self {
             api: DocumentApi::new(ReplicaId(cfg.replica)),
-            cache: IncrementalCache::new(),
+            eval,
             gestures: HashMap::new(),
             open_gestures: Vec::new(),
             rev: 0,
             base_dir: None,
-            display_chord_mm: cfg.display_chord_mm,
         }
     }
 
@@ -309,7 +312,17 @@ impl Core {
                 self.open_gestures.retain(|g| *g != gesture);
                 Ok(())
             }
+            Intent::Publish => Ok(()),
         }
+    }
+
+    /// Build a frame of the current state (everything but the scene) and
+    /// hand it to the evaluator, which adds the scene and publishes it. The
+    /// runtime thread never waits for an evaluation.
+    fn publish(&mut self, acked_seq: u64, errors: Vec<String>, ended: Vec<u64>) {
+        let frame = self.frame(acked_seq, errors, ended);
+        let doc = self.eval_doc(&frame.document);
+        let _ = self.eval.send(EvalMsg::Frame(Box::new(frame), doc));
     }
 
     fn frame(&mut self, acked_seq: u64, errors: Vec<String>, ended: Vec<u64>) -> Frame {
@@ -317,15 +330,14 @@ impl Core {
         let document = state.document.clone();
         let document_json = serde_json::to_vec(&document).unwrap_or_default();
         let state = serde_json::to_string(&EngineEnvelope::from(Ok(state))).unwrap_or_default();
-        let (scene, eval_error) = self.evaluate(&document);
         Frame {
             rev: self.rev,
             acked_seq,
             state,
             document_json,
             document,
-            scene,
-            eval_error,
+            scene: None,
+            eval_error: None,
             errors,
             ended_gestures: ended,
             gesture_open: !self.open_gestures.is_empty(),
@@ -334,25 +346,95 @@ impl Core {
         }
     }
 
-    fn evaluate(&mut self, document: &Document) -> (Option<EvaluatedScene>, Option<String>) {
+    /// Evaluate the current state through the evaluator's incremental cache
+    /// (nearly free right after a frame evaluated the same revision). Waits
+    /// for the evaluator; served ahead of queued frames.
+    pub fn evaluate_current(&mut self) -> Result<(EvaluatedScene, Document), String> {
+        let document = self.api.get_state().document;
+        let (tx, rx) = mpsc::sync_channel(1);
+        self.eval
+            .send(EvalMsg::Now(self.eval_doc(&document), tx))
+            .map_err(|_| "evaluator stopped".to_string())?;
+        match rx.recv().map_err(|_| "evaluator stopped".to_string())? {
+            (Some(scene), _) => Ok((scene, document)),
+            (None, e) => Err(e.unwrap_or_else(|| "no scene".into())),
+        }
+    }
+
+    /// The document as the evaluator should see it (mesh paths resolved).
+    fn eval_doc(&self, document: &Document) -> Document {
         let mut doc = document.clone();
         if let Some(dir) = &self.base_dir {
             vcad_eval::resolve_mesh_paths(&mut doc, dir);
         }
-        let chord = self.display_chord_mm;
-        let cache = &mut self.cache;
+        doc
+    }
+}
+
+/// Work for the evaluator thread.
+enum EvalMsg {
+    /// Evaluate and publish this frame (superseded frames are folded into
+    /// the next one).
+    Frame(Box<Frame>, Document),
+    /// Evaluate now and reply (blocking scene requests).
+    Now(
+        Document,
+        mpsc::SyncSender<(Option<EvaluatedScene>, Option<String>)>,
+    ),
+}
+
+/// The evaluator: owns the incremental cache, evaluates frames latest-first
+/// and publishes them. Blocking scene requests go ahead of queued frames.
+fn evaluator(rx: Receiver<EvalMsg>, sink: Arc<Mutex<Option<Sink>>>, chord: f64) {
+    let mut cache = IncrementalCache::new();
+    let mut evaluate = |doc: &Document| -> (Option<EvaluatedScene>, Option<String>) {
         let out = catch_unwind(AssertUnwindSafe(|| {
             let _g = DisplayChordGuard::enable(chord);
-            evaluate_document_incremental(&doc, &EvalOptions::default(), cache)
+            evaluate_document_incremental(doc, &EvalOptions::default(), &mut cache)
         }));
         match out {
             Ok(Ok(scene)) => (Some(scene), None),
             Ok(Err(e)) => (None, Some(format!("evaluate: {e}"))),
             Err(_) => {
                 // A panic mid-evaluation can leave the cache half-updated.
-                self.cache.clear();
+                cache.clear();
                 (None, Some("evaluation panicked".into()))
             }
+        }
+    };
+    while let Ok(first) = rx.recv() {
+        let mut pending: Option<(Box<Frame>, Document)> = None;
+        for msg in std::iter::once(first).chain(rx.try_iter()) {
+            match msg {
+                EvalMsg::Now(doc, reply) => {
+                    let _ = reply.send(evaluate(&doc));
+                }
+                EvalMsg::Frame(mut frame, doc) => {
+                    // Latest wins; keep what the skipped frame reported.
+                    if let Some((old, _)) = pending.take() {
+                        let mut errors = old.errors;
+                        errors.append(&mut frame.errors);
+                        frame.errors = errors;
+                        let mut ended = old.ended_gestures;
+                        ended.append(&mut frame.ended_gestures);
+                        frame.ended_gestures = ended;
+                        frame.acked_seq = frame.acked_seq.max(old.acked_seq);
+                    }
+                    pending = Some((frame, doc));
+                }
+            }
+        }
+        let Some((mut frame, doc)) = pending else {
+            continue;
+        };
+        if sink.lock().unwrap_or_else(|e| e.into_inner()).is_none() {
+            continue;
+        }
+        let (scene, err) = evaluate(&doc);
+        frame.scene = scene;
+        frame.eval_error = err;
+        if let Some(s) = sink.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            s(*frame);
         }
     }
 }
@@ -377,11 +459,21 @@ impl Runtime {
     pub fn new(cfg: Config) -> Self {
         let (tx, rx) = mpsc::channel();
         let sink: Arc<Mutex<Option<Sink>>> = Arc::new(Mutex::new(None));
+        // The evaluator is detached: dropping the runtime closes its inbox
+        // and clears the sink, so it finishes (or skips) quietly on its own
+        // instead of making `drop` wait for an evaluation.
+        let (etx, erx) = mpsc::channel();
+        let (esink, chord) = (sink.clone(), cfg.display_chord_mm);
+        std::thread::Builder::new()
+            .name("vcad-doc-eval".into())
+            .stack_size(cfg.stack_size)
+            .spawn(move || evaluator(erx, esink, chord))
+            .expect("spawn vcad-doc-eval");
         let thread_sink = sink.clone();
         let thread = std::thread::Builder::new()
             .name("vcad-doc-runtime".into())
             .stack_size(cfg.stack_size)
-            .spawn(move || run(Core::new(&cfg), rx, thread_sink))
+            .spawn(move || run(Core::new(&cfg, etx), rx, thread_sink))
             .expect("spawn vcad-doc-runtime");
         Self {
             tx: Some(tx),
@@ -430,9 +522,27 @@ impl Drop for Runtime {
 }
 
 /// Apply queued intents in order, coalesced; blocking calls are barriers.
+///
+/// Blocking edits publish too: once the inbox is idle after a call that
+/// changed the revision, a frame of that revision goes out, so a host's
+/// consumers of the evaluated scene (picking) never evaluate it themselves.
 fn run(mut core: Core, rx: Receiver<Msg>, sink: Arc<Mutex<Option<Sink>>>) {
     let mut queue: std::collections::VecDeque<Msg> = Default::default();
+    let mut acked_total = 0u64;
+    let mut scene_stale = false;
+    let has_sink =
+        |sink: &Arc<Mutex<Option<Sink>>>| sink.lock().unwrap_or_else(|e| e.into_inner()).is_some();
     loop {
+        if queue.is_empty() && scene_stale {
+            queue.extend(rx.try_iter());
+            if queue.is_empty() {
+                scene_stale = false;
+                if has_sink(&sink) {
+                    core.publish(acked_total, Vec::new(), Vec::new());
+                }
+                continue;
+            }
+        }
         if queue.is_empty() {
             match rx.recv() {
                 Ok(m) => queue.push_back(m),
@@ -459,6 +569,8 @@ fn run(mut core: Core, rx: Receiver<Msg>, sink: Arc<Mutex<Option<Sink>>>) {
         }
         if !run_.is_empty() {
             let acked = run_.last().map_or(0, |e| e.seq);
+            acked_total = acked_total.max(acked);
+            let changes = run_.iter().any(|e| e.intent != Intent::Publish);
             let mut errors = Vec::new();
             let mut ended = Vec::new();
             for env in run_ {
@@ -471,7 +583,9 @@ fn run(mut core: Core, rx: Receiver<Msg>, sink: Arc<Mutex<Option<Sink>>>) {
                     errors.push(e);
                 }
             }
-            core.bump();
+            if changes {
+                core.bump();
+            }
             // Latest wins: if more intents arrived meanwhile, fold them in
             // before paying for a materialize + evaluation.
             queue.extend(rx.try_iter());
@@ -481,15 +595,15 @@ fn run(mut core: Core, rx: Receiver<Msg>, sink: Arc<Mutex<Option<Sink>>>) {
             {
                 continue;
             }
-            let frame = core.frame(acked, errors, ended);
-            if let Some(s) = sink.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
-                s(frame);
-            }
+            scene_stale = false;
+            core.publish(acked, errors, ended);
             continue;
         }
         if let Some(Msg::Call(job)) = queue.pop_front() {
             // A panicking job drops its reply sender; the caller sees Err.
+            let before = core.rev;
             let _ = catch_unwind(AssertUnwindSafe(|| job(&mut core)));
+            scene_stale |= core.rev != before;
         }
     }
 }
@@ -518,6 +632,9 @@ mod tests {
             c.replace(api);
         })
         .unwrap();
+        // The load is a blocking edit, so its scene frame follows; drain it.
+        let load = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        assert!(load.scene.is_some());
         (rt, rx)
     }
 
@@ -651,6 +768,26 @@ mod tests {
         let f = rx.recv_timeout(Duration::from_secs(30)).unwrap();
         assert_eq!(f.errors.len(), 1);
         assert_eq!(param(&f.document_json), 10.0);
+    }
+
+    #[test]
+    fn blocking_edits_and_publish_produce_scene_frames() {
+        let (rt, rx) = runtime();
+        // A blocking edit publishes its revision once the inbox is idle.
+        let rev = rt.call(|c| c.bump()).unwrap();
+        let f = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        assert_eq!(f.rev, rev);
+        assert!(f.scene.is_some());
+        // A read doesn't publish; Publish does, without bumping the revision.
+        rt.call(|c| c.api.state_hash()).unwrap();
+        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
+        rt.send(Envelope {
+            seq: 1,
+            intent: Intent::Publish,
+        });
+        let p = rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        assert_eq!(p.rev, rev);
+        assert_eq!(p.acked_seq, 1);
     }
 
     #[test]

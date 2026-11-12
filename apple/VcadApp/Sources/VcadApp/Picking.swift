@@ -205,6 +205,13 @@ final class PickingState {
 
     deinit { if let s = cachedScene { vcad_scene_free(s) } }
 
+    /// Scenes come from the document runtime's frames (`adopt`): never
+    /// evaluate here. Until a revision's frame lands, picks miss.
+    @ObservationIgnored var runtimeScenes: (() -> OpaquePointer?)?
+
+    /// Parts with a B-rep ready to pick (tests, diagnostics).
+    var readyPartCount: Int { cache.count }
+
     // MARK: Reading the selection
 
     var selectedFaces: [TopoRef] { selection.filter { $0.kind == .face } }
@@ -271,6 +278,20 @@ final class PickingState {
 
     // MARK: Topology
 
+    /// Take the document runtime's evaluated scene and the topologies built
+    /// from it off main (DocumentRuntime.swift) as the B-reps for `data` —
+    /// picking never evaluates a document the runtime already evaluated.
+    /// Takes ownership of `scene`.
+    /// `sameDocument`: the scene is of the document already being picked (a
+    /// frame for a revision the editor already shows) — keep the selection.
+    func adopt(scene: OpaquePointer, topologies: [Int: PartTopology], data: Data, sameDocument: Bool = false) {
+        if sameDocument { cacheKey = data } else { documentChanged(data) }
+        if let s = cachedScene { vcad_scene_free(s) }
+        cachedScene = scene
+        cache = topologies
+        prewarming = nil
+    }
+
     /// Drop cached B-reps and the selection when the document changes.
     func documentChanged(_ data: Data?) {
         guard data != cacheKey else { return }
@@ -294,7 +315,7 @@ final class PickingState {
     /// the first hover/marquee after a change doesn't block on it.
     func prewarm(_ data: Data) {
         documentChanged(data)
-        guard cachedScene == nil, prewarming != data else { return }
+        guard runtimeScenes == nil, cachedScene == nil, prewarming != data else { return }
         prewarming = data
         Task.detached(priority: .background) {
             // Let the viewport's own evaluation of this revision go first:
@@ -335,6 +356,11 @@ final class PickingState {
         documentChanged(data)
         if let t = cache[part] { return t }
         if cachedScene == nil {
+            // The document runtime's own incremental cache, when it owns the
+            // document (no second evaluation session); a frame replaces it.
+            cachedScene = runtimeScenes.map { $0() } ?? nil
+        }
+        if cachedScene == nil, runtimeScenes == nil {
             // Incremental session: after an edit only changed nodes
             // re-evaluate (a fresh vcad_scene_from_json re-did the whole
             // assembly on the main thread — seconds — on the first hover or

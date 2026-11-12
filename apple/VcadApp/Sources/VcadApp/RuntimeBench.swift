@@ -9,7 +9,7 @@ import Foundation
 /// Waits for the document, idles `VCAD_SCRUB_BENCH_DELAY` seconds (default 4,
 /// time to attach `sample`), then drives the same calls the inspector's
 /// ScrubField and the Mallet tool make: 180 scrub ticks at ~60 Hz on the
-/// first document parameter, then five strikes on the first bar. Markers go
+/// first document parameter, then 120 hover picks, then five strikes on the first bar. Markers go
 /// to stderr as `[VCAD_BENCH]`. `VCAD_RUNTIME_SCRUB=0` runs the old path.
 @MainActor
 enum RuntimeScrubBench {
@@ -37,6 +37,22 @@ enum RuntimeScrubBench {
         for _ in 0..<400 where m.runtimeEditsInFlight { await wait(0.01) }
         emit(String(format: "scrub end %.2fs worst-tick %.1fms rev=%d", Date().timeIntervalSince(t0),
                     worst * 1000, m.documentRevision))
+
+        // Hover right after the scrub: picking must answer from the runtime's
+        // scene, never by evaluating on main.
+        if let pm = m.docPartMeshes.first {
+            let c = (pm.lo + pm.hi) / 2
+            var worstHover = 0.0, hits = 0
+            for i in 0..<120 {
+                let tick = Date()
+                let o = SIMD3<Float>(c.x + Float(i % 10) - 5, c.y, pm.hi.z + 50)
+                if m.pickTopology(part: 0, origin: o, dir: SIMD3(0, 0, -1)) != nil { hits += 1 }
+                _ = m.topologyHighlight()
+                worstHover = max(worstHover, Date().timeIntervalSince(tick))
+                await wait(1.0 / 60)
+            }
+            emit(String(format: "hover worst-tick %.1fms hits %d/120", worstHover * 1000, hits))
+        }
 
         SoundStore.syncNames(m)
         let bar = SoundFFI.partNames.firstIndex { $0.hasPrefix("bar_") } ?? 0

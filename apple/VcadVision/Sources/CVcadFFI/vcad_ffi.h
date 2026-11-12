@@ -63,11 +63,14 @@ typedef struct VcadFrame VcadFrame;
 typedef struct VcadScene VcadScene;
 typedef void (*VcadFrameFn)(void *ctx, VcadFrame *frame);
 void vcad_doc_runtime_set_sink(const VcadEngine *engine, VcadFrameFn cb, void *ctx);
-/* {"seq":N,"intent":{"type":"set_doc_param"|"command"|"gesture_end",...}}; never blocks. */
+/* {"seq":N,"intent":{"type":"set_doc_param"|"command"|"gesture_end"|"publish",...}}; never blocks.
+ * Blocking edits also publish a frame of their revision once the inbox is idle. */
 bool vcad_doc_runtime_send(const VcadEngine *engine, const uint8_t *json, size_t len);
 uint64_t vcad_doc_runtime_rev(const VcadEngine *engine);
 /* Undo / redo a whole gesture; state envelope (vcad_engine_string_free) or null. */
 char *vcad_doc_runtime_swap_gesture(const VcadEngine *engine, uint64_t gesture);
+/* Current state's scene through the runtime's incremental cache; blocks. vcad_scene_free. */
+VcadScene *vcad_doc_runtime_scene(const VcadEngine *engine);
 void vcad_doc_runtime_forget_gesture(const VcadEngine *engine, uint64_t gesture);
 void vcad_doc_runtime_set_base_dir(const VcadEngine *engine, const uint8_t *dir, size_t len);
 uint64_t vcad_frame_rev(const VcadFrame *frame);
