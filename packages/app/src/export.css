@@ -1,0 +1,3 @@
+/* /export standalone build: Vite root is export-site/, so point Tailwind at src. */
+@import "./index.css";
+@source "./";

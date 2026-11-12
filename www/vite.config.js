@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import { fileURLToPath } from "node:url";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { join, relative } from "node:path";
 
 const page = (p) => fileURLToPath(new URL(p, import.meta.url));
 
@@ -39,8 +40,28 @@ const appcast = {
   },
 };
 
+// /export — the read-only off-ramp (sign in, download your cloud documents).
+// Built standalone from packages/app (vite.export.config.ts → dist-export,
+// base /export/) and shipped under /export/ so this site can serve all of
+// vcad.io. A production build refuses to ship without it.
+const EXPORT_DIR = page("../packages/app/dist-export");
+const walk = (d) => readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(join(d, e.name)) : [join(d, e.name)]));
+const exportPage = {
+  name: "export-page",
+  apply: "build",
+  generateBundle() {
+    if (!existsSync(join(EXPORT_DIR, "index.html"))) {
+      if (process.env.VCAD_SKIP_EXPORT) return;
+      this.error("packages/app/dist-export missing — run `npm run build:export -w @vcad/app` (or set VCAD_SKIP_EXPORT=1)");
+    }
+    for (const f of walk(EXPORT_DIR)) {
+      this.emitFile({ type: "asset", fileName: `export/${relative(EXPORT_DIR, f)}`, source: readFileSync(f) });
+    }
+  },
+};
+
 export default defineConfig({
-  plugins: [siteKernel, appcast],
+  plugins: [siteKernel, appcast, exportPage],
   resolve: {
     alias: [
       { find: /^@site-kernel-wasm(?=\?|$)/, replacement: kernel.wasm },
