@@ -51,6 +51,7 @@ pub extern "C" fn vcad_doc_runtime_set_sink(
             "evalError": frame.eval_error,
             "stateHash": frame.state_hash,
             "history": frame.history_json,
+            "partKeys": frame.part_keys,
         })
         .to_string();
         let boxed = Box::new(VcadFrame {
@@ -138,6 +139,41 @@ pub extern "C" fn vcad_doc_runtime_scene(engine: *const VcadEngine) -> *mut Vcad
         })),
         Ok(Err(e)) | Err(e) => {
             err::set_error(e);
+            ptr::null_mut()
+        }
+    }
+}
+
+/// `vcad_sound_call` on the runtime's current document, using its evaluated
+/// meshes (no document JSON from the host, no part re-evaluation for
+/// `modes`/`check`). Only the snapshot is taken on the runtime thread; the
+/// solve runs on the calling thread, so call it off the UI thread. Free with
+/// `vcad_string_free`; null + `vcad_last_error` on failure.
+#[no_mangle]
+pub extern "C" fn vcad_doc_runtime_sound(
+    engine: *const VcadEngine,
+    request_json: *const c_char,
+) -> *mut c_char {
+    err::clear_error();
+    let Some(engine) = (unsafe { engine.as_ref() }) else {
+        return ptr::null_mut();
+    };
+    let run = || -> Result<String, String> {
+        let req = crate::analysis::parse_request(request_json)?;
+        let (doc, scene) = engine.rt.call(|c| match c.evaluate_current() {
+            Ok((scene, doc)) => (doc, Some(scene)),
+            Err(_) => (c.api.get_state().document, None),
+        })?;
+        Ok(crate::sound::call_with_scene(&doc, scene.as_ref(), &req)?.to_string())
+    };
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
+        Ok(Ok(s)) => CString::new(s).map_or(ptr::null_mut(), CString::into_raw),
+        Ok(Err(e)) => {
+            err::set_error(e);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            err::set_error("vcad_doc_runtime_sound panicked");
             ptr::null_mut()
         }
     }
@@ -301,6 +337,16 @@ mod tests {
         crate::engine::vcad_engine_string_free(undone);
         assert!(s.contains(r#""w":{"value":10.0"#), "{s}");
         assert!(vcad_doc_runtime_swap_gesture(engine, 99).is_null());
+
+        // Sound on the runtime's document + meshes, no host JSON.
+        let req = CString::new(r#"{"op":"modes","part":0,"modes":3,"quality":"preview"}"#).unwrap();
+        let out = vcad_doc_runtime_sound(engine, req.as_ptr());
+        assert!(!out.is_null(), "{:?}", crate::err::last_error_string());
+        let v: serde_json::Value =
+            serde_json::from_str(unsafe { std::ffi::CStr::from_ptr(out) }.to_str().unwrap())
+                .unwrap();
+        crate::json::vcad_string_free(out);
+        assert!(v["modes"][0]["hz"].as_f64().unwrap() > 0.0, "{v}");
         crate::engine::vcad_engine_free(engine);
     }
 }

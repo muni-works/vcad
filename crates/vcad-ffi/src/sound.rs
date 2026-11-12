@@ -50,6 +50,23 @@ fn apply_names(doc: &mut Document, req: &Value) {
 }
 
 pub(crate) fn call(doc: &Document, req: &Value) -> Result<Value, String> {
+    call_with_scene(doc, None, req)
+}
+
+/// [`call`] with the document's evaluated scene already in hand (the
+/// document runtime's): `modes` and `check` take part meshes from it instead
+/// of evaluating the part again.
+pub(crate) fn call_with_scene(
+    doc: &Document,
+    scene: Option<&vcad_eval::EvaluatedScene>,
+    req: &Value,
+) -> Result<Value, String> {
+    let scene_mesh = |part: usize| {
+        scene
+            .and_then(|s| s.parts.get(part))
+            .filter(|p| !p.mesh.indices.is_empty())
+            .map(|p| (&p.mesh.positions, &p.mesh.indices))
+    };
     let mut named = doc.clone();
     apply_names(&mut named, req);
     let doc = &named;
@@ -68,7 +85,10 @@ pub(crate) fn call(doc: &Document, req: &Value) -> Result<Value, String> {
                         .map_err(|e| format!("mesh.indices: {e}"))?;
                     vcad_sound::part_modes_mesh(doc, &r, &positions, &indices)
                 }
-                None => vcad_sound::part_modes_alone(doc, &r),
+                None => match scene_mesh(r.part) {
+                    Some((p, i)) => vcad_sound::part_modes_mesh(doc, &r, p, i),
+                    None => vcad_sound::part_modes_alone(doc, &r),
+                },
             }
             .map_err(|e| e.to_string())?;
             serde_json::to_value(pm).map_err(|e| e.to_string())
@@ -114,7 +134,11 @@ pub(crate) fn call(doc: &Document, req: &Value) -> Result<Value, String> {
                             material: None,
                             shapes: false,
                         };
-                        match vcad_sound::part_modes_alone(doc, &r) {
+                        let modes = match scene_mesh(idx) {
+                            Some((p, i)) => vcad_sound::part_modes_mesh(doc, &r, p, i),
+                            None => vcad_sound::part_modes_alone(doc, &r),
+                        };
+                        match modes {
                             Ok(pm) => match pm.modes.get(l.mode - 1) {
                                 Some(m) => {
                                     let c = 1200.0 * (m.hz / l.target_hz).log2();

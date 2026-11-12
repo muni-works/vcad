@@ -187,6 +187,10 @@ pub struct Frame {
     /// [`DocumentApi::feature_history`] as JSON (the history tree's rows),
     /// so the host never makes a blocking read to redraw it.
     pub history_json: String,
+    /// Per visible root (scene order): a fingerprint of its subtree, equal
+    /// across frames exactly when that part's geometry is unchanged — what
+    /// a host keys per-part derived data on (meshes, topology, modes).
+    pub part_keys: Vec<String>,
 }
 
 /// Receives frames, on the runtime thread.
@@ -322,6 +326,7 @@ impl Core {
         let document_json = serde_json::to_vec(&document).unwrap_or_default();
         let state = serde_json::to_string(&EngineEnvelope::from(Ok(state))).unwrap_or_default();
         let (scene, eval_error) = self.evaluate(&document);
+        let part_keys = part_keys(&document);
         Frame {
             rev: self.rev,
             acked_seq,
@@ -335,6 +340,7 @@ impl Core {
             gesture_open: !self.open_gestures.is_empty(),
             state_hash: self.api.state_hash(),
             history_json: serde_json::to_string(&self.api.feature_history()).unwrap_or_default(),
+            part_keys,
         }
     }
 
@@ -369,6 +375,20 @@ impl Core {
             }
         }
     }
+}
+
+/// Subtree fingerprint of each visible root, in scene order.
+fn part_keys(doc: &Document) -> Vec<String> {
+    let hashes = vcad_eval::incremental::subtree_hashes(&doc.nodes, 0);
+    doc.roots
+        .iter()
+        .filter(|e| e.visible != Some(false))
+        .map(|e| {
+            hashes
+                .get(&e.root)
+                .map_or_else(String::new, |h| format!("{h:016x}"))
+        })
+        .collect()
 }
 
 type Job = Box<dyn FnOnce(&mut Core) + Send>;
@@ -617,6 +637,8 @@ mod tests {
         assert_eq!(f.scene.as_ref().map(|s| s.parts.len()), Some(1));
         assert!(f.gesture_open);
         assert!(f.errors.is_empty());
+        assert_eq!(f.part_keys.len(), 1);
+        assert!(!f.part_keys[0].is_empty());
     }
 
     #[test]

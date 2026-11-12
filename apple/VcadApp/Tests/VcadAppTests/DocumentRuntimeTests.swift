@@ -125,6 +125,29 @@ final class DocumentRuntimeTests: XCTestCase {
         XCTAssertEqual(maxX, 26, accuracy: 0.01, "picking sees the scrubbed block")
     }
 
+    /// The Mallet solves on the runtime's document and meshes, and its
+    /// cached modes survive edits that don't touch the struck part.
+    func testSoundSolvesThroughTheRuntimeAndKeysByContent() async throws {
+        let m = try open()
+        for _ in 0..<1000 where m.picking.readyPartCount == 0 { try await Task.sleep(nanoseconds: 5_000_000) }
+        _ = m.reevalDocumentMeshes()
+        let leaf = try XCTUnwrap(m.engineState?.parts.first { $0.kind == "cube" }?.leafNodeIds.first)
+        m.editVec(nodeId: leaf, key: "size", axis: "x", value: 24, snapshot: true)   // a runtime frame: content keys
+        try await settle(m)
+        let key = try XCTUnwrap(m.soundModesKey(part: 0), "a runtime-built mesh carries a content key")
+        let solved = await SoundStore.shared.ensureModes(part: 0, m)
+        let pm = try XCTUnwrap(solved, SoundStore.shared.error ?? "no modes")
+        XCTAssertGreaterThan(pm.modes.first?.hz ?? 0, 0)
+
+        let pinNode = try XCTUnwrap(m.engineState?.parts.first { $0.kind == "cylinder" }?.leafNodeIds.first)
+        m.editScalar(nodeId: pinNode, key: "radius", value: 3.5, snapshot: true)     // the other part
+        try await settle(m)
+        XCTAssertEqual(m.soundModesKey(part: 0), key, "an edit elsewhere keeps the block's modes")
+        m.editVec(nodeId: leaf, key: "size", axis: "x", value: 28, snapshot: true)
+        try await settle(m)
+        XCTAssertNotEqual(m.soundModesKey(part: 0), key, "resizing the block invalidates them")
+    }
+
     func testBlockingEditSupersedesInFlightFrames() async throws {
         let m = try open()
         let leaf = try XCTUnwrap(m.engineState?.parts.first { $0.kind == "cube" }?.leafNodeIds.first)

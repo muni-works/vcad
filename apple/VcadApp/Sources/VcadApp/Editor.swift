@@ -2755,6 +2755,9 @@ final class EditorModel {
         let resource: MeshResource
         /// Root-cache key (what a mesh bundle is written from).
         let rootKey: String?
+        /// The runtime's subtree fingerprint for this part (DocumentRuntime
+        /// .swift): equal exactly when its geometry is unchanged.
+        var contentKey: String? = nil
     }
 
     /// Mesh, feature edges and root key of every part of `scene`, gathered in
