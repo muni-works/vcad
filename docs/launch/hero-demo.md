@@ -78,7 +78,36 @@ mill  C7   → bar_c7-setup1.nc (2365 lines), bar_c7-setup2.nc (184 lines)
 
 **Receipts:** while any bar is only predicted, the receipt is **Provisional** (`ClaimBasis::Predicted` never passes). Once every bar is measured inside ±5 cents it rolls up **Pass**. One bar outside the tolerance makes it **Fail**.
 
-## 2. Measurement: the Tune panel
+## 1b. Strike to hear: the Mallet (any solid)
+
+Pick the **Mallet** from the dock (hammer, `M`) and click any part.
+
+- **Solve:** vcad computes the part's vibration modes with the solid solver (`vcad-kernel-fea::modal`) on the app's own tessellation, so nothing is re-evaluated. A glockenspiel bar answers in about 0.2 s.
+- **Sound:** you hear the strike. Each mode rings as loud as the mode shape moves at the struck point; hit a nodal line and the fundamental goes quiet.
+- **Motion:** the part flexes on screen, and its still regions are drawn in green.
+- **The card:** it names the pitch as a note with a tuner needle and plain words, with no cents. The overtones appear as a spectrum: click a peak to hear and see that mode alone.
+
+| strike (mid-ring) | after Re-solve |
+|---|---|
+| ![](hero-demo/mallet-strike.jpg) | ![](hero-demo/mallet-locked.jpg) |
+
+**Pitch is a constraint.** The Pitch row locks the part's fundamental to a note by solving one parameter (it "drives" `len_c6` here). Newton runs through the real geometry: evaluate the part, then the modal solve. The lock is stored on the document (`Document.pitch_locks`), so change the width, thickness or material, or let an agent edit the part, and Re-solve keeps it on pitch. `design_instrument` now emits length-parametric bars (`len_c6` … `len_c7`), with one lock each.
+
+**What the solid solver found.** The beam tuner (1-D, plane sections) puts every bar within 0.01 cent of its note. The 3-D solid says the undercut bars ring about 17 cents flat, because sections don't stay plane at the sharp undercut step.
+
+`examples/beam_vs_solid.rs` probes this on the C6 bar:
+
+| bar | beam | solid |
+|---|---|---|
+| plain | 1793.0 Hz | 1797.0 Hz (+4 c) |
+| with holes | 1786.8 Hz | 1782.4 Hz (−4 c) |
+| undercut + holes | 1047.2 Hz | 1036.9 Hz (−17 c) |
+
+So the card reads "17 cents flat" on a freshly designed bar, and one Re-solve fixes it in about 6 s. Getting here required a mesher fix: a uniform voxel lattice snapped the 2.74 mm pocket floor to a 3 mm or 4 mm web depending on cell size, which moved the bar's pitch by 30% between refinements. The grid is now rectilinear, with planes on every axis-aligned face (`hex_fill_conforming`).
+
+Agents get the same thing as native MCP tools: `part_sound` (modes as notes), `lock_pitch` and `unlock_pitch`.
+
+## 2. Check the real part: the Tune panel (microphone)
 
 **Fabricate › Tune Instrument (Microphone)** (⌥⌘T) opens the panel in the right rail (`apple/VcadApp/Sources/VcadApp/TunePanel.swift`).
 
