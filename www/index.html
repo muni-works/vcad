@@ -3,238 +3,153 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>vcad — CAD that proves its work.</title>
-  <meta name="description" content="CAD that proves its work. Design it. Prove it. Make it." />
-  <meta property="og:title" content="vcad — CAD that proves its work." />
-  <meta property="og:description" content="Open-source parametric CAD with a real kernel, built for agents and humans. Every part ships with a receipt." />
+  <title>vcad — your agent, in your CAD</title>
+  <meta name="description" content="vcad is a free native Mac CAD app on an open Rust kernel. Bring your own agent over local MCP. No account." />
+  <meta property="og:title" content="vcad — your agent, in your CAD" />
+  <meta property="og:description" content="Free, open parametric CAD for the Mac. Your agent works in your window, and every claim has a receipt." />
   <meta property="og:url" content="https://vcad.io" />
-  <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Cpath%20d='M6%2010%20L58%2010%20L32%2056%20Z'%20fill='%23F5F5F6'/%3E%3C/svg%3E" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" />
-  <link rel="stylesheet" href="/src/style.css" />
+  <meta name="color-scheme" content="light dark" />
+  <link rel="icon" href="/shots/icon.png" />
+  <script src="/theme.js"></script>
+  <link rel="stylesheet" href="/src/home.css" />
 </head>
 <body>
-
-  <div id="boot" aria-hidden="true">
-    <svg viewBox="0 0 64 64" class="boot-tri"><path d="M6 10 L58 10 L32 56 Z" fill="#F5F5F6"/></svg>
-    <p class="boot-line mono">kernel ready</p>
-  </div>
-
-  <header class="nav" data-dim>
+  <header class="nav">
     <a class="wordmark" href="/" aria-label="vcad home">
       <svg class="tri" viewBox="0 0 24 23" aria-hidden="true"><path d="M0 0 L24 0 L12 23 Z"/></svg><span>cad</span>
     </a>
     <nav class="nav-links">
-      <a href="/design/">Design</a>
-      <a href="/prove/">Prove</a>
-      <a href="/make/">Make</a>
-      <a href="/agents/">Agents</a>
-      <a href="/pricing/">Pricing</a>
-      <a class="nav-app snap" href="https://app.vcad.io">Web app</a>
+      <a href="#tour">Tour</a>
+      <a href="#examples">Examples</a>
+      <a href="#agents">Agents</a>
+      <a href="/kernel/">Kernel</a>
+      <a href="https://github.com/muni-works/vcad">GitHub</a>
+      <a class="nav-dl" href="/download">Download</a>
+      <button id="theme-toggle" aria-label="Toggle light and dark"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 2a6 6 0 0 1 0 12z" fill="currentColor"/></svg></button>
     </nav>
   </header>
 
   <main>
-
-    <section class="hero" data-dim>
-      <canvas id="heroEngine" aria-hidden="true"></canvas>
-      <p class="mono hero-engine-caption" id="heroEngineCaption" aria-hidden="true"></p>
-      <span class="tick tick-tl" aria-hidden="true"></span>
-      <span class="tick tick-tr" aria-hidden="true"></span>
-      <span class="tick tick-bl" aria-hidden="true"></span>
-      <span class="tick tick-br" aria-hidden="true"></span>
-
-      <div class="hero-measure" id="heroMeasure" aria-hidden="true">
-        <svg width="100%" height="16" preserveAspectRatio="none">
-          <line x1="0" y1="9" x2="100%" y2="9" stroke="#F25C1F" stroke-width="1"/>
-          <line x1="0.5" y1="3" x2="0.5" y2="15" stroke="#F25C1F" stroke-width="1"/>
-          <line x1="99.9%" y1="3" x2="99.9%" y2="15" stroke="#F25C1F" stroke-width="1"/>
-        </svg>
-        <span class="mono" id="heroMeasureValue"></span>
-      </div>
-
-      <h1 id="heroHeadline">Design it. Prove it.<br>Make it.</h1>
-      <p class="sub">Sketch it at breakfast. Hold it on Thursday.</p>
-
+    <section class="hero">
+      <img class="hero-icon" src="/shots/icon.png" alt="" width="96" height="96" />
+      <h1>Your agent,<br>in your CAD<span class="dot">.</span></h1>
+      <p class="sub">Free for Mac. Open kernel. No account.<br><span class="dim">Sketch, model, draw and print yourself, or watch your agent do it in your window and check its own work.</span></p>
       <div class="cta-row">
-        <div class="agent-cta agent-primary snap" id="agentCta">
-          <button class="agent-main" id="agentMain" aria-haspopup="true" aria-expanded="false">
-            <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 1 L12.2 4 L12.2 10 L7 13 L1.8 10 L1.8 4 Z" fill="none" stroke="#F25C1F" stroke-width="1.4"/></svg>
-            Open in Claude
-          </button>
-          <button class="agent-chev" id="agentChev" aria-label="Other agents">
-            <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2 4 L6 8 L10 4" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>
-          </button>
-          <div class="agent-menu" id="agentMenu" hidden>
-            <button data-copy="claude mcp add vcad -- npx -y @vcad/mcp">Claude Code <span class="mono">cli</span></button>
-            <button data-copy="npx -y @vcad/mcp">Cursor <span class="mono">mcp url</span></button>
-            
-            <button class="agent-copyall" data-copy='{"mcpServers":{"vcad":{"command":"npx","args":["-y","@vcad/mcp"]}}}'>Copy setup for anything else</button>
-          </div>
+        <a class="btn-primary" href="/download">
+          <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v8m-3.5-3.5L8 10l3.5-3.5M3 13h10" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
+          Download for Mac
+        </a>
+        <a class="btn-secondary" href="https://github.com/muni-works/vcad">Source on GitHub</a>
+      </div>
+      <p class="mono fine">Free · no account · macOS · auto-updates</p>
+      <figure class="hero-shot hero-app" id="heroApp">
+        <svg id="heroSvg" viewBox="0 0 1200 760" role="img" aria-labelledby="heroAppDesc"><desc id="heroAppDesc">Animation of vcad.app: an agent adds a boss under a cover, vcad checks a 3 mm clearance receipt, then you can drag the boss height yourself.</desc></svg>
+        <figcaption class="mono fine hero-cap"><span id="heroHint">Illustration of vcad.app</span> · <button id="heroReplay" class="replay">replay</button></figcaption>
+      </figure>
+    </section>
+
+    <section id="tour" class="tour">
+      <h2>A real CAD app, not a demo.</h2>
+      <div class="grid">
+        <article class="card">
+          <div class="card-fig"><!-- ART:model --><svg class="il" viewBox="0 0 400 260" role="img" aria-label="A sketched rectangle with constraints is press-pulled into a solid"><line class="il-grid" x1="182.7" y1="40.0" x2="9.5" y2="140.0"/><line class="il-grid" x1="182.7" y1="40.0" x2="390.5" y2="160.0"/><line class="il-grid" x1="203.5" y1="52.0" x2="30.3" y2="152.0"/><line class="il-grid" x1="165.4" y1="50.0" x2="373.2" y2="170.0"/><line class="il-grid" x1="224.2" y1="64.0" x2="51.0" y2="164.0"/><line class="il-grid" x1="148.0" y1="60.0" x2="355.9" y2="180.0"/><line class="il-grid" x1="245.0" y1="76.0" x2="71.8" y2="176.0"/><line class="il-grid" x1="130.7" y1="70.0" x2="338.6" y2="190.0"/><line class="il-grid" x1="265.8" y1="88.0" x2="92.6" y2="188.0"/><line class="il-grid" x1="113.4" y1="80.0" x2="321.2" y2="200.0"/><line class="il-grid" x1="286.6" y1="100.0" x2="113.4" y2="200.0"/><line class="il-grid" x1="96.1" y1="90.0" x2="303.9" y2="210.0"/><line class="il-grid" x1="307.4" y1="112.0" x2="134.2" y2="212.0"/><line class="il-grid" x1="78.8" y1="100.0" x2="286.6" y2="220.0"/><line class="il-grid" x1="328.2" y1="124.0" x2="155.0" y2="224.0"/><line class="il-grid" x1="61.4" y1="110.0" x2="269.3" y2="230.0"/><line class="il-grid" x1="349.0" y1="136.0" x2="175.8" y2="236.0"/><line class="il-grid" x1="44.1" y1="120.0" x2="252.0" y2="240.0"/><line class="il-grid" x1="369.7" y1="148.0" x2="196.5" y2="248.0"/><line class="il-grid" x1="26.8" y1="130.0" x2="234.6" y2="250.0"/><line class="il-grid" x1="390.5" y1="160.0" x2="217.3" y2="260.0"/><line class="il-grid" x1="9.5" y1="140.0" x2="217.3" y2="260.0"/><polygon class="il-sketch" pathLength="1" points="182.7,100.0 286.6,160.0 217.3,200.0 113.4,140.0"><animate attributeName="stroke-dashoffset" dur="7s" repeatCount="indefinite" keyTimes="0;0.16;0.5;0.9;1" values="1;0;0;0;1" /></polygon><g><animate attributeName="opacity" dur="7s" repeatCount="indefinite" keyTimes="0;0.32;0.36;0.9;1" values="0;0;1;1;0" /><polygon class="il-front" points="113.4,140.0 217.3,200.0 217.3,200.0 113.4,140.0"><animate attributeName="points" dur="7s" repeatCount="indefinite" keyTimes="0;0.32;0.58;0.9;1" values="113.4,140.0 217.3,200.0 217.3,200.0 113.4,140.0;113.4,140.0 217.3,200.0 217.3,200.0 113.4,140.0;113.4,140.0 217.3,200.0 217.3,148.0 113.4,88.0;113.4,140.0 217.3,200.0 217.3,148.0 113.4,88.0;113.4,140.0 217.3,200.0 217.3,200.0 113.4,140.0" calcMode="spline" keySplines="0.45 0 0.25 1;0.45 0 0.25 1;0.45 0 0.25 1;0.45 0 0.25 1"/></polygon><polygon class="il-right" points="286.6,160.0 217.3,200.0 217.3,200.0 286.6,160.0"><animate attributeName="points" dur="7s" repeatCount="indefinite" keyTimes="0;0.32;0.58;0.9;1" values="286.6,160.0 217.3,200.0 217.3,200.0 286.6,160.0;286.6,160.0 217.3,200.0 217.3,200.0 286.6,160.0;286.6,160.0 217.3,200.0 217.3,148.0 286.6,108.0;286.6,160.0 217.3,200.0 217.3,148.0 286.6,108.0;286.6,160.0 217.3,200.0 217.3,200.0 286.6,160.0" calcMode="spline" keySplines="0.45 0 0.25 1;0.45 0 0.25 1;0.45 0 0.25 1;0.45 0 0.25 1"/></polygon><polygon class="il-sel" points="182.7,100.0 286.6,160.0 217.3,200.0 113.4,140.0"><animate attributeName="points" dur="7s" repeatCount="indefinite" keyTimes="0;0.32;0.58;0.9;1" values="182.7,100.0 286.6,160.0 217.3,200.0 113.4,140.0;182.7,100.0 286.6,160.0 217.3,200.0 113.4,140.0;182.7,48.0 286.6,108.0 217.3,148.0 113.4,88.0;182.7,48.0 286.6,108.0 217.3,148.0 113.4,88.0;182.7,100.0 286.6,160.0 217.3,200.0 113.4,140.0" calcMode="spline" keySplines="0.45 0 0.25 1;0.45 0 0.25 1;0.45 0 0.25 1;0.45 0 0.25 1"/></polygon></g><g><animate attributeName="opacity" dur="7s" repeatCount="indefinite" keyTimes="0;0.14;0.2;0.34;0.4;1" values="0;0;1;1;0;0" /><rect class="il-glyph" x="179.2" y="96.5" width="7" height="7"/><rect class="il-glyph" x="213.8" y="196.5" width="7" height="7"/><text class="il-t il-acc" x="234.6" y="120.0" text-anchor="middle" transform="rotate(-30 234.6 120.0)">60.00</text></g><g><animate attributeName="opacity" dur="7s" repeatCount="indefinite" keyTimes="0;0.3;0.34;0.9;1" values="0;0;1;1;0" /><g><animateTransform attributeName="transform" type="translate" dur="7s" repeatCount="indefinite" keyTimes="0;0.32;0.58;0.9;1" values="0 0;0 0;0 -52.0;0 -52.0;0 0" calcMode="spline" keySplines="0.45 0 0.25 1;0.45 0 0.25 1;0.45 0 0.25 1;0.45 0 0.25 1"/><line class="il-arrow" x1="200.0" y1="150.0" x2="200.0" y2="116.0"/><polygon class="il-arrowhead" points="194.0,118.0 206.0,118.0 200.0,106.0"/></g></g><g><animate attributeName="opacity" dur="7s" repeatCount="indefinite" keyTimes="0;0.5;0.58;0.9;1" values="0;0;1;1;0" /><rect class="il-chip" x="231.3" y="163.0" width="72" height="20"/><text class="il-t il-fg" x="267.3" y="177.0" text-anchor="middle">h 26.00</text></g></svg><!-- /ART:model --></div>
+          <div class="card-meta"><span class="pill" style="--pill:#ff2052">modeling</span><h3>model directly</h3>
+          <p>Fusion-style selection and orbit. Press-pull with live dimensions. Sketches with inference, smart dimensions and trim/extend. History you can reorder, suppress and roll back.</p></div>
+        </article>
+        <article class="card">
+          <div class="card-fig"><!-- ART:drawing --><svg class="il" viewBox="0 0 400 260" role="img" aria-label="A dimensioned drawing sheet draws itself: front, top and section views, title block"><rect class="il-sheet" x="36" y="18" width="328" height="224"/><rect class="il-frame" x="44" y="26" width="312" height="208"/><path d="M74 128 h92 v-22 h-56 v-56 h-36 z" pathLength="1" class="il-view"><animate attributeName="stroke-dashoffset" dur="8s" repeatCount="indefinite" keyTimes="0;0.02;0.18;0.9;1" values="1;1;0;0;1" /></path><path d="M92 128 v-10 M148 128 v-10"  pathLength="1" class="il-view"><animate attributeName="stroke-dashoffset" dur="8s" repeatCount="indefinite" keyTimes="0;0.1;0.2;0.9;1" values="1;1;0;0;1" /></path><path d="M74 152 h92 v40 h-92 z" pathLength="1" class="il-view"><animate attributeName="stroke-dashoffset" dur="8s" repeatCount="indefinite" keyTimes="0;0.16;0.3;0.9;1" values="1;1;0;0;1" /></path><circle cx="92" cy="172" r="7" pathLength="1" class="il-view"><animate attributeName="stroke-dashoffset" dur="8s" repeatCount="indefinite" keyTimes="0;0.24;0.32;0.9;1" values="1;1;0;0;1" /></circle><circle cx="148" cy="172" r="7" pathLength="1" class="il-view"><animate attributeName="stroke-dashoffset" dur="8s" repeatCount="indefinite" keyTimes="0;0.26;0.34;0.9;1" values="1;1;0;0;1" /></circle><path d="M194 128 h40 v-78 h-14 v56 h-26 z" pathLength="1" class="il-view"><animate attributeName="stroke-dashoffset" dur="8s" repeatCount="indefinite" keyTimes="0;0.3;0.44;0.9;1" values="1;1;0;0;1" /></path><g class="il-hatch" clip-path="url(#ilSec)"><animate attributeName="opacity" dur="8s" repeatCount="indefinite" keyTimes="0;0.44;0.5;0.9;1" values="0;0;1;1;0" /><line x1="196" y1="128" x2="212" y2="112"/><line x1="202" y1="128" x2="218" y2="112"/><line x1="208" y1="128" x2="224" y2="112"/><line x1="214" y1="128" x2="230" y2="112"/><line x1="220" y1="128" x2="236" y2="112"/><line x1="226" y1="128" x2="242" y2="112"/><line x1="232" y1="128" x2="248" y2="112"/></g><clipPath id="ilSec"><path d="M194 128 h40 v-78 h-14 v56 h-26 z"/></clipPath><g><animate attributeName="opacity" dur="8s" repeatCount="indefinite" keyTimes="0;0.52;0.6;0.9;1" values="0;0;1;1;0" /><g class="il-dim"><line x1="74" y1="140" x2="166" y2="140"/><line x1="74" y1="135" x2="74" y2="145"/><line x1="166" y1="135" x2="166" y2="145"/><line x1="60" y1="50" x2="60" y2="128"/><line x1="55" y1="50" x2="65" y2="50"/><line x1="55" y1="128" x2="65" y2="128"/></g><text class="il-t il-acc" x="120" y="137" text-anchor="middle">80.00</text><text class="il-t il-acc" x="56" y="89" text-anchor="middle" transform="rotate(-90 56 89)">40.00</text><text class="il-t" x="214" y="146" text-anchor="middle">A–A</text></g><g><animate attributeName="opacity" dur="8s" repeatCount="indefinite" keyTimes="0;0.6;0.68;0.9;1" values="0;0;1;1;0" /><g class="il-frame-g"><rect x="262" y="190" width="94" height="44"/><line x1="262" y1="206" x2="356" y2="206"/><line x1="309" y1="206" x2="309" y2="234"/></g><text class="il-t il-fg" x="270" y="202">L BRACKET</text><text class="il-t" x="270" y="224">1:1</text><text class="il-t" x="317" y="224">REV A</text></g><g><animate attributeName="opacity" dur="8s" repeatCount="indefinite" keyTimes="0;0.7;0.76;0.9;1" values="0;0;1;1;0" /><rect class="il-chip" x="262" y="40" width="40" height="18"/><text class="il-t il-fg" x="282" y="53" text-anchor="middle">PDF</text><rect class="il-chip" x="308" y="40" width="40" height="18"/><text class="il-t il-fg" x="328" y="53" text-anchor="middle">DXF</text></g></svg><!-- /ART:drawing --></div>
+          <div class="card-meta"><span class="pill" style="--pill:#3d8bff">drawings</span><h3>one click to a sheet</h3>
+          <p>Front, top and section views with dimensions, a BOM and a title block. Export to PDF or DXF.</p></div>
+        </article>
+        <article class="card">
+          <div class="card-fig"><!-- ART:print --><svg class="il" viewBox="0 0 400 260" role="img" aria-label="A part prints layer by layer on a build plate: orient, slice, print"><defs><pattern id="ilLayL" width="8" height="7.6" patternUnits="userSpaceOnUse" patternTransform="skewY(30)"><line x1="0" y1="0.5" x2="8" y2="0.5" class="il-layer"/></pattern><pattern id="ilLayR" width="8" height="7.6" patternUnits="userSpaceOnUse" patternTransform="skewY(-30)"><line x1="0" y1="0.5" x2="8" y2="0.5" class="il-layer"/></pattern></defs><polygon class="il-front" points="28.9,154.7 232.9,272.5 232.9,266.8 28.9,149.0"/><polygon class="il-right" points="371.1,192.7 232.9,272.5 232.9,266.8 371.1,187.0"/><polygon class="il-bed" points="167.1,69.2 371.1,187.0 232.9,266.8 28.9,149.0"/><line class="il-grid" x1="170.4" y1="71.1" x2="32.2" y2="150.9"/><line class="il-grid" x1="195.1" y1="85.4" x2="56.8" y2="165.2"/><line class="il-grid" x1="219.7" y1="99.6" x2="81.5" y2="179.4"/><line class="il-grid" x1="244.4" y1="113.8" x2="106.2" y2="193.7"/><line class="il-grid" x1="269.1" y1="128.1" x2="130.9" y2="207.9"/><line class="il-grid" x1="293.8" y1="142.3" x2="155.6" y2="222.2"/><line class="il-grid" x1="318.5" y1="156.6" x2="180.3" y2="236.4"/><line class="il-grid" x1="343.2" y1="170.8" x2="204.9" y2="250.6"/><line class="il-grid" x1="367.8" y1="185.1" x2="229.6" y2="264.9"/><polygon class="il-front" points="127.6,160.4 213.2,209.8 213.2,209.8 127.6,160.4"><animate attributeName="points" dur="8s" repeatCount="indefinite" keyTimes="0;0.06;0.12;0.18;0.24;0.3;0.36;0.42;0.48;0.54;0.6;0.66;0.72;0.9;1" values="127.6,160.4 213.2,209.8 213.2,209.8 127.6,160.4;127.6,160.4 213.2,209.8 213.2,209.8 127.6,160.4;127.6,160.4 213.2,209.8 213.2,202.2 127.6,152.8;127.6,160.4 213.2,209.8 213.2,194.6 127.6,145.2;127.6,160.4 213.2,209.8 213.2,187.0 127.6,137.6;127.6,160.4 213.2,209.8 213.2,179.4 127.6,130.0;127.6,160.4 213.2,209.8 213.2,171.8 127.6,122.4;127.6,160.4 213.2,209.8 213.2,164.2 127.6,114.8;127.6,160.4 213.2,209.8 213.2,156.6 127.6,107.2;127.6,160.4 213.2,209.8 213.2,149.0 127.6,99.6;127.6,160.4 213.2,209.8 213.2,141.4 127.6,92.0;127.6,160.4 213.2,209.8 213.2,133.8 127.6,84.4;127.6,160.4 213.2,209.8 213.2,126.2 127.6,76.8;127.6,160.4 213.2,209.8 213.2,126.2 127.6,76.8;127.6,160.4 213.2,209.8 213.2,209.8 127.6,160.4" calcMode="discrete"/></polygon><polygon fill="url(#ilLayL)" points="127.6,160.4 213.2,209.8 213.2,209.8 127.6,160.4"><animate attributeName="points" dur="8s" repeatCount="indefinite" keyTimes="0;0.06;0.12;0.18;0.24;0.3;0.36;0.42;0.48;0.54;0.6;0.66;0.72;0.9;1" values="127.6,160.4 213.2,209.8 213.2,209.8 127.6,160.4;127.6,160.4 213.2,209.8 213.2,209.8 127.6,160.4;127.6,160.4 213.2,209.8 213.2,202.2 127.6,152.8;127.6,160.4 213.2,209.8 213.2,194.6 127.6,145.2;127.6,160.4 213.2,209.8 213.2,187.0 127.6,137.6;127.6,160.4 213.2,209.8 213.2,179.4 127.6,130.0;127.6,160.4 213.2,209.8 213.2,171.8 127.6,122.4;127.6,160.4 213.2,209.8 213.2,164.2 127.6,114.8;127.6,160.4 213.2,209.8 213.2,156.6 127.6,107.2;127.6,160.4 213.2,209.8 213.2,149.0 127.6,99.6;127.6,160.4 213.2,209.8 213.2,141.4 127.6,92.0;127.6,160.4 213.2,209.8 213.2,133.8 127.6,84.4;127.6,160.4 213.2,209.8 213.2,126.2 127.6,76.8;127.6,160.4 213.2,209.8 213.2,126.2 127.6,76.8;127.6,160.4 213.2,209.8 213.2,209.8 127.6,160.4" calcMode="discrete"/></polygon><polygon class="il-right" points="272.4,175.6 213.2,209.8 213.2,209.8 272.4,175.6"><animate attributeName="points" dur="8s" repeatCount="indefinite" keyTimes="0;0.06;0.12;0.18;0.24;0.3;0.36;0.42;0.48;0.54;0.6;0.66;0.72;0.9;1" values="272.4,175.6 213.2,209.8 213.2,209.8 272.4,175.6;272.4,175.6 213.2,209.8 213.2,209.8 272.4,175.6;272.4,175.6 213.2,209.8 213.2,202.2 272.4,168.0;272.4,175.6 213.2,209.8 213.2,194.6 272.4,160.4;272.4,175.6 213.2,209.8 213.2,187.0 272.4,152.8;272.4,175.6 213.2,209.8 213.2,179.4 272.4,145.2;272.4,175.6 213.2,209.8 213.2,171.8 272.4,137.6;272.4,175.6 213.2,209.8 213.2,164.2 272.4,130.0;272.4,175.6 213.2,209.8 213.2,156.6 272.4,122.4;272.4,175.6 213.2,209.8 213.2,149.0 272.4,114.8;272.4,175.6 213.2,209.8 213.2,141.4 272.4,107.2;272.4,175.6 213.2,209.8 213.2,133.8 272.4,99.6;272.4,175.6 213.2,209.8 213.2,126.2 272.4,92.0;272.4,175.6 213.2,209.8 213.2,126.2 272.4,92.0;272.4,175.6 213.2,209.8 213.2,209.8 272.4,175.6" calcMode="discrete"/></polygon><polygon fill="url(#ilLayR)" points="272.4,175.6 213.2,209.8 213.2,209.8 272.4,175.6"><animate attributeName="points" dur="8s" repeatCount="indefinite" keyTimes="0;0.06;0.12;0.18;0.24;0.3;0.36;0.42;0.48;0.54;0.6;0.66;0.72;0.9;1" values="272.4,175.6 213.2,209.8 213.2,209.8 272.4,175.6;272.4,175.6 213.2,209.8 213.2,209.8 272.4,175.6;272.4,175.6 213.2,209.8 213.2,202.2 272.4,168.0;272.4,175.6 213.2,209.8 213.2,194.6 272.4,160.4;272.4,175.6 213.2,209.8 213.2,187.0 272.4,152.8;272.4,175.6 213.2,209.8 213.2,179.4 272.4,145.2;272.4,175.6 213.2,209.8 213.2,171.8 272.4,137.6;272.4,175.6 213.2,209.8 213.2,164.2 272.4,130.0;272.4,175.6 213.2,209.8 213.2,156.6 272.4,122.4;272.4,175.6 213.2,209.8 213.2,149.0 272.4,114.8;272.4,175.6 213.2,209.8 213.2,141.4 272.4,107.2;272.4,175.6 213.2,209.8 213.2,133.8 272.4,99.6;272.4,175.6 213.2,209.8 213.2,126.2 272.4,92.0;272.4,175.6 213.2,209.8 213.2,126.2 272.4,92.0;272.4,175.6 213.2,209.8 213.2,209.8 272.4,175.6" calcMode="discrete"/></polygon><polygon class="il-top" points="186.8,126.2 272.4,175.6 213.2,209.8 127.6,160.4"><animate attributeName="points" dur="8s" repeatCount="indefinite" keyTimes="0;0.06;0.12;0.18;0.24;0.3;0.36;0.42;0.48;0.54;0.6;0.66;0.72;0.9;1" values="186.8,126.2 272.4,175.6 213.2,209.8 127.6,160.4;186.8,126.2 272.4,175.6 213.2,209.8 127.6,160.4;186.8,118.6 272.4,168.0 213.2,202.2 127.6,152.8;186.8,111.0 272.4,160.4 213.2,194.6 127.6,145.2;186.8,103.4 272.4,152.8 213.2,187.0 127.6,137.6;186.8,95.8 272.4,145.2 213.2,179.4 127.6,130.0;186.8,88.2 272.4,137.6 213.2,171.8 127.6,122.4;186.8,80.6 272.4,130.0 213.2,164.2 127.6,114.8;186.8,73.0 272.4,122.4 213.2,156.6 127.6,107.2;186.8,65.4 272.4,114.8 213.2,149.0 127.6,99.6;186.8,57.8 272.4,107.2 213.2,141.4 127.6,92.0;186.8,50.2 272.4,99.6 213.2,133.8 127.6,84.4;186.8,42.6 272.4,92.0 213.2,126.2 127.6,76.8;186.8,42.6 272.4,92.0 213.2,126.2 127.6,76.8;186.8,126.2 272.4,175.6 213.2,209.8 127.6,160.4" calcMode="discrete"/></polygon><g><animate attributeName="opacity" dur="8s" repeatCount="indefinite" keyTimes="0;0.84;0.86;0.98;1" values="1;1;0;0;1" /><g><animateTransform attributeName="transform" type="translate" dur="8s" repeatCount="indefinite" keyTimes="0;0.06;0.12;0.18;0.24;0.3;0.36;0.42;0.48;0.54;0.6;0.66;0.72;0.9;1" values="0 0.0;0 0.0;0 -7.6;0 -15.2;0 -22.8;0 -30.4;0 -38.0;0 -45.6;0 -53.2;0 -60.8;0 -68.4;0 -76.0;0 -83.6;0 -83.6;0 0.0" calcMode="discrete"/><g><animateTransform attributeName="transform" type="translate" dur="0.48s" repeatCount="indefinite" values="-32.9 -19.0;23.0 -13.3;32.9 19.0;-23.0 13.3;-32.9 -19.0"/><rect class="il-head" x="188.0" y="134.0" width="24" height="18"/><polygon class="il-arrowhead" points="195.0,152.0 205.0,152.0 200.0,163.0"/></g></g></g><text class="il-t il-step" x="138" y="34" text-anchor="middle">orient<animate attributeName="class" dur="8s" repeatCount="indefinite" keyTimes="0;0.04" values="il-t il-step il-on;il-t il-step" calcMode="discrete"/></text><text class="il-t il-step" x="200" y="34" text-anchor="middle">slice<animate attributeName="class" dur="8s" repeatCount="indefinite" keyTimes="0;0.04;0.08" values="il-t il-step;il-t il-step il-on;il-t il-step" calcMode="discrete"/></text><text class="il-t il-step" x="262" y="34" text-anchor="middle">print<animate attributeName="class" dur="8s" repeatCount="indefinite" keyTimes="0;0.08;0.9" values="il-t il-step;il-t il-step il-on;il-t il-step" calcMode="discrete"/></text><text class="il-t" x="169" y="34" text-anchor="middle">→</text><text class="il-t" x="231" y="34" text-anchor="middle">→</text></svg><!-- /ART:print --></div>
+          <div class="card-meta"><span class="pill" style="--pill:#00f0ff">fabrication</span><h3>orient, slice, print</h3>
+          <p>Send a part to your printer without leaving vcad. No slicer hand-off.</p></div>
+        </article>
+        <article class="card">
+          <div class="card-fig"><!-- ART:assembly --><svg class="il" viewBox="0 0 400 260" role="img" aria-label="Exploded parts slide together onto a base plate and mate with no clashes"><polygon class="il-front" points="57.1,151.5 228.6,250.5 228.6,237.3 57.1,138.3"/><polygon class="il-right" points="342.9,184.5 228.6,250.5 228.6,237.3 342.9,171.3"/><polygon class="il-top" points="171.4,72.3 342.9,171.3 228.6,237.3 57.1,138.3"/><g><animate attributeName="opacity" dur="8s" repeatCount="indefinite" keyTimes="0;0.2;0.45;0.88;1" values="1;1;0;0;1" /><line class="il-guide" x1="150.0" y1="125.9" x2="150.0" y2="59.9"/><line class="il-guide" x1="264.3" y1="175.4" x2="264.3" y2="69.8"/><line class="il-guide" x1="235.7" y1="191.9" x2="235.7" y2="86.3"/><line class="il-guide" x1="91.4" y1="144.9" x2="91.4" y2="-6.9"/><line class="il-guide" x1="148.6" y1="177.9" x2="148.6" y2="26.1"/></g><g><animateTransform attributeName="transform" type="translate" dur="8s" repeatCount="indefinite" keyTimes="0;0.18;0.5;0.86;1" values="0.0 -66.0;0.0 -66.0;0 0;0 0;0.0 -66.0" calcMode="spline" keySplines="0.45 0 0.25 1;0.45 0 0.25 1;0.45 0 0.25 1;0.45 0 0.25 1"/><polygon class="il-front" points="100.0,130.1 142.8,154.8 142.8,82.2 100.0,57.5"/><polygon class="il-right" points="200.0,121.8 142.8,154.8 142.8,82.2 200.0,49.2"/><polygon class="il-top" points="157.1,24.5 200.0,49.2 142.8,82.2 100.0,57.5"/></g><g><animateTransform attributeName="transform" type="translate" dur="8s" repeatCount="indefinite" keyTimes="0;0.18;0.5;0.86;1" values="0.0 -105.6;0.0 -105.6;0 0;0 0;0.0 -105.6" calcMode="spline" keySplines="0.45 0 0.25 1;0.45 0 0.25 1;0.45 0 0.25 1;0.45 0 0.25 1"/><polygon class="il-front" points="191.4,189.5 240.0,217.5 240.0,187.8 191.4,159.8"/><polygon class="il-right" points="308.6,177.9 240.0,217.5 240.0,187.8 308.6,148.2"/><polygon class="il-sel" points="260.0,120.2 308.6,148.2 240.0,187.8 191.4,159.8"/></g><g><animateTransform attributeName="transform" type="translate" dur="8s" repeatCount="indefinite" keyTimes="0;0.18;0.5;0.86;1" values="0.0 -151.8;0.0 -151.8;0 0;0 0;0.0 -151.8" calcMode="spline" keySplines="0.45 0 0.25 1;0.45 0 0.25 1;0.45 0 0.25 1;0.45 0 0.25 1"/><rect class="il-right" x="87.4" y="130.9" width="8" height="14"/><ellipse class="il-top" cx="91.4" cy="130.9" rx="7" ry="3.6"/></g><g><animateTransform attributeName="transform" type="translate" dur="8s" repeatCount="indefinite" keyTimes="0;0.18;0.5;0.86;1" values="0.0 -151.8;0.0 -151.8;0 0;0 0;0.0 -151.8" calcMode="spline" keySplines="0.45 0 0.25 1;0.45 0 0.25 1;0.45 0 0.25 1;0.45 0 0.25 1"/><rect class="il-right" x="144.6" y="163.9" width="8" height="14"/><ellipse class="il-top" cx="148.6" cy="163.9" rx="7" ry="3.6"/></g><g><animate attributeName="opacity" dur="8s" repeatCount="indefinite" keyTimes="0;0.2;0.5;0.56;1" values="0;0;0;1;0" /><rect class="il-chip" x="138" y="22" width="124" height="22"/><text class="il-t il-ok" x="200" y="37" text-anchor="middle">✓ mated · 0 clashes</text></g><g><animate attributeName="opacity" dur="8s" repeatCount="indefinite" keyTimes="0;0.18;0.22;0.86;1" values="1;1;0;0;1" /><text class="il-t" x="200" y="37" text-anchor="middle">exploded</text></g></svg><!-- /ART:assembly --></div>
+          <div class="card-meta"><span class="pill" style="--pill:#ffd400">assemblies</span><h3>huge assemblies, fast</h3>
+          <p>Mates, interference checks and exploded views. Import and export STEP. A Voron 2.4 opens in 22 seconds.</p></div>
+        </article>
+        <article class="card">
+          <div class="card-fig"><!-- ART:versions --><svg class="il" viewBox="0 0 400 260" role="img" aria-label="Autosaved versions appear on a timeline; an older version is restored"><line class="il-rail" x1="40" y1="150" x2="360" y2="150"/><g><animate attributeName="opacity" dur="9s" repeatCount="indefinite" keyTimes="0;0.06;0.1;0.9;1" values="0;0;1;1;0" /><rect class="il-thumb" x="36" y="70" width="56" height="62"/><polygon class="il-front" points="44.9,114.4 66.7,127.0 66.7,116.5 44.9,103.9"/><polygon class="il-right" points="83.1,117.6 66.7,127.0 66.7,116.5 83.1,107.1"/><polygon class="il-top" points="61.3,94.5 83.1,107.1 66.7,116.5 44.9,103.9"/><circle class="il-dot" cx="64" cy="150" r="3.5"/><text class="il-t" x="64" y="172" text-anchor="middle">10:02</text></g><g><animate attributeName="opacity" dur="9s" repeatCount="indefinite" keyTimes="0;0.19;0.23;0.9;1" values="0;0;1;1;0" /><rect class="il-thumb" x="104" y="70" width="56" height="62"/><polygon class="il-front" points="112.9,114.4 134.7,127.0 134.7,110.2 112.9,97.6"/><polygon class="il-right" points="151.1,117.6 134.7,127.0 134.7,110.2 151.1,100.8"/><polygon class="il-top" points="129.3,88.2 151.1,100.8 134.7,110.2 112.9,97.6"/><circle class="il-dot" cx="132" cy="150" r="3.5"/><text class="il-t" x="132" y="172" text-anchor="middle">10:07</text></g><g><animate attributeName="opacity" dur="9s" repeatCount="indefinite" keyTimes="0;0.32;0.36;0.9;1" values="0;0;1;1;0" /><rect class="il-thumb" x="172" y="70" width="56" height="62"/><polygon class="il-front" points="180.9,114.4 202.7,127.0 202.7,110.2 180.9,97.6"/><polygon class="il-right" points="219.1,117.6 202.7,127.0 202.7,110.2 219.1,100.8"/><polygon class="il-top" points="197.3,88.2 219.1,100.8 202.7,110.2 180.9,97.6"/><circle class="il-dot" cx="200" cy="150" r="3.5"/><text class="il-t" x="200" y="172" text-anchor="middle">10:12</text></g><g><animate attributeName="opacity" dur="9s" repeatCount="indefinite" keyTimes="0;0.45;0.49;0.9;1" values="0;0;1;1;0" /><rect class="il-thumb" x="240" y="70" width="56" height="62"/><polygon class="il-front" points="248.9,114.4 270.7,127.0 270.7,101.8 248.9,89.2"/><polygon class="il-right" points="287.1,117.6 270.7,127.0 270.7,101.8 287.1,92.4"/><polygon class="il-top" points="265.3,79.8 287.1,92.4 270.7,101.8 248.9,89.2"/><circle class="il-dot" cx="268" cy="150" r="3.5"/><text class="il-t" x="268" y="172" text-anchor="middle">10:17</text></g><g><animate attributeName="opacity" dur="9s" repeatCount="indefinite" keyTimes="0;0.58;0.62;0.9;1" values="0;0;1;1;0" /><rect class="il-thumb-on" x="308" y="70" width="56" height="62"/><polygon class="il-front" points="316.9,114.4 338.7,127.0 338.7,95.5 316.9,82.9"/><polygon class="il-right" points="355.1,117.6 338.7,127.0 338.7,95.5 355.1,86.1"/><polygon class="il-sel" points="333.3,73.5 355.1,86.1 338.7,95.5 316.9,82.9"/><circle class="il-dot-on" cx="336" cy="150" r="5"/><text class="il-t il-acc" x="336" y="172" text-anchor="middle">now</text></g><g><animate attributeName="opacity" dur="9s" repeatCount="indefinite" keyTimes="0;0.7;0.74;0.9;1" values="0;0;1;1;0" /><path class="il-guide" d="M336 62 C 336 32, 200 32, 200 62" fill="none"/><polygon class="il-arrowhead" points="195,58 205,58 200,66"/><rect class="il-chip" x="240" y="16" width="96" height="20"/><text class="il-t il-fg" x="288" y="30" text-anchor="middle">restore 10:12</text></g><g><animate attributeName="opacity" dur="9s" repeatCount="indefinite" keyTimes="0;0.66;0.7;0.9;1" values="1;1;0;0;1" /><text class="il-t" x="200" y="226" text-anchor="middle">autosaved · every change</text></g><g><animate attributeName="opacity" dur="9s" repeatCount="indefinite" keyTimes="0;0.7;0.74;0.9;1" values="0;0;1;1;0" /><text class="il-t il-ok" x="200" y="226" text-anchor="middle">✓ crash recovery · safe save</text></g></svg><!-- /ART:versions --></div>
+          <div class="card-meta"><span class="pill" style="--pill:#46a758">files</span><h3>never lose work</h3>
+          <p>Every change autosaves. Browse version history, restore any point, and recover after a crash. Saves are atomic.</p></div>
+        </article>
+        <article class="card">
+          <div class="card-fig"><!-- ART:photo --><svg class="il" viewBox="0 0 400 260" role="img" aria-label="A photo of a bracket is scanned and becomes an editable CAD model"><defs><linearGradient id="ilPhoto" x1="0" y1="0" x2="1" y2="1"><stop offset="0" class="il-ph0"/><stop offset="1" class="il-ph1"/></linearGradient><clipPath id="ilPhotoClip"><rect x="34" y="50" width="140" height="160"/></clipPath></defs><rect class="il-photo" x="34" y="50" width="140" height="160" fill="url(#ilPhoto)"/><g clip-path="url(#ilPhotoClip)"><ellipse class="il-shadow" cx="106" cy="172" rx="58" ry="10"/><path class="il-blob" d="M58 166 L58 104 Q58 96 66 96 L82 96 L82 150 L150 150 Q156 150 156 158 L156 166 Z"/><path class="il-blob-hi" d="M60 104 Q60 98 66 98 L78 98 L78 160 L62 160 Z"/><line class="il-scan" x1="34" y1="50" x2="174" y2="50"><animate attributeName="y1" dur="8s" repeatCount="indefinite" keyTimes="0;0.06;0.36;1" values="50;50;210;210"/><animate attributeName="y2" dur="8s" repeatCount="indefinite" keyTimes="0;0.06;0.36;1" values="50;50;210;210"/><animate attributeName="opacity" dur="8s" repeatCount="indefinite" keyTimes="0;0.06;0.36;0.38;1" values="0;1;1;0;0" /></line></g><text class="il-t" x="104" y="228" text-anchor="middle">photo.jpg</text><g><animate attributeName="opacity" dur="8s" repeatCount="indefinite" keyTimes="0;0.36;0.4;0.9;1" values="0;0;1;1;0" /><line class="il-arrow" x1="186" y1="130" x2="214" y2="130"/><polygon class="il-arrowhead" points="212,124 224,130 212,136"/></g><g><animate attributeName="opacity" dur="8s" repeatCount="indefinite" keyTimes="0;0.42;0.56;0.9;1" values="0;0;1;1;0" /><polygon class="il-front" points="232.9,142.2 313.4,188.8 313.4,176.3 232.9,129.8"/><polygon class="il-right" points="367.1,157.8 313.4,188.8 313.4,176.3 367.1,145.3"/><polygon class="il-top" points="286.6,98.8 367.1,145.3 313.4,176.3 232.9,129.8"/><polygon class="il-front" points="232.9,129.8 251.7,140.7 251.7,78.7 232.9,67.8"/><polygon class="il-right" points="305.4,109.7 251.7,140.7 251.7,78.7 305.4,47.7"/><polygon class="il-top" points="286.6,36.8 305.4,47.7 251.7,78.7 232.9,67.8"/></g><g><animate attributeName="opacity" dur="8s" repeatCount="indefinite" keyTimes="0;0.6;0.66;0.9;1" values="0;0;1;1;0" /><text class="il-t il-acc" x="354.3" y="185.2" text-anchor="middle" transform="rotate(-30 354.3 185.2)">40.0</text><text class="il-t" x="300" y="228" text-anchor="middle">editable features</text></g></svg><!-- /ART:photo --></div>
+          <div class="card-meta"><span class="pill" style="--pill:#b26bff">experimental</span><h3>image to CAD</h3>
+          <p>Start from a photo of a part. vcad proposes an editable model you can dimension and change. Early, and labelled that way in the app.</p></div>
+        </article>
+      </div>
+    </section>
+
+    <section id="examples" class="examples">
+      <h2>Examples</h2>
+      <p class="lead">Models built in vcad, loaded live in this tab. Drag to orbit.</p>
+      <div class="ex-grid">
+        <figure class="ex"><canvas data-model="/kit/models/stirling-engine.glb" aria-label="stirling-engine, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#ff2052">mechanical</span><a class="ex-name" href="https://github.com/muni-works/vcad/blob/main/apple/VcadApp/Samples/stirling-engine.vcad">stirling-engine <span class="ex-src">source ↗</span></a><span class="ex-desc">Ten parts, four materials, a flywheel on a joint</span></figcaption></figure>
+        <figure class="ex"><canvas data-model="/kit/models/k1-humanoid.glb" aria-label="k1-humanoid, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#3d8bff">robotics</span><a class="ex-name" href="https://github.com/muni-works/vcad/blob/main/apple/VcadApp/Samples/k1/k1-humanoid.vcad">k1-humanoid <span class="ex-src">source ↗</span></a><span class="ex-desc">22 DOF, simulated standing in physics</span></figcaption></figure>
+        <figure class="ex"><canvas data-model="/kit/models/pcb-motor.glb" data-board="/kit/models/pcb-stator" aria-label="pcb-motor, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#39ff14">electronics</span><a class="ex-name" href="https://github.com/muni-works/vcad/tree/main/examples/pcb-motor">pcb-motor <span class="ex-src">source ↗</span></a><span class="ex-desc">Printed-coil stator between two rotors</span></figcaption></figure>
+        <figure class="ex"><canvas data-pcb="/kit/models/pcb-stator.pcb.json" aria-label="pcb-stator, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#39ff14">electronics</span><a class="ex-name" href="https://github.com/muni-works/vcad/blob/main/apple/VcadApp/Samples/pcb-stator.vcad">pcb-stator <span class="ex-src">source ↗</span></a><span class="ex-desc">The coil board: schematic, copper, solid</span></figcaption></figure>
+        <figure class="ex"><canvas data-pcb="/kit/models/fpga-board.pcb.json" aria-label="fpga-board, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#39ff14">electronics</span><a class="ex-name" href="https://github.com/muni-works/vcad/blob/main/apple/VcadApp/Samples/fpga-board.vcad">fpga-board <span class="ex-src">source ↗</span></a><span class="ex-desc">Designed end to end by an agent, DRC-clean</span></figcaption></figure>
+        <figure class="ex"><canvas data-model="/kit/models/l-bracket.glb" aria-label="l-bracket, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#ffd400">analysis</span><a class="ex-name" href="https://github.com/muni-works/vcad/blob/main/apple/VcadApp/Samples/l-bracket.vcad">l-bracket <span class="ex-src">source ↗</span></a><span class="ex-desc">Fix the base, load the flange, read the stress</span></figcaption></figure>
+        <figure class="ex"><canvas data-model="/kit/models/motor-flange.glb" aria-label="motor-flange, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#00f0ff">manufacture</span><a class="ex-name" href="https://github.com/muni-works/vcad/blob/main/apple/VcadApp/Samples/motor-flange.vcad">motor-flange <span class="ex-src">source ↗</span></a><span class="ex-desc">A 2.5D part ready for toolpaths</span></figcaption></figure>
+        <figure class="ex"><canvas data-model="/kit/models/snap-cap.glb" aria-label="snap-cap, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#ff2052">mechanical</span><a class="ex-name" href="https://github.com/muni-works/vcad/blob/main/apple/VcadApp/Samples/snap-cap.vcad">snap-cap <span class="ex-src">source ↗</span></a><span class="ex-desc">A snap fit, checked as clearance</span></figcaption></figure>
+        <figure class="ex"><canvas data-model="/kit/models/robot-arm.glb" aria-label="robot-arm, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#3d8bff">robotics</span><a class="ex-name" href="https://github.com/muni-works/vcad/blob/main/apple/VcadApp/Samples/robot-arm.vcad">robot-arm <span class="ex-src">source ↗</span></a><span class="ex-desc">Two revolute joints. Pose it or simulate it</span></figcaption></figure>
+        <figure class="ex"><canvas data-model="/kit/models/ribbed-plate.glb" aria-label="ribbed-plate, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#ffd400">analysis</span><a class="ex-name" href="https://github.com/muni-works/vcad/blob/main/apple/VcadApp/Samples/ribbed-plate.vcad">ribbed-plate <span class="ex-src">source ↗</span></a><span class="ex-desc">A first DFM check for thin ribs</span></figcaption></figure>
+        <figure class="ex"><canvas data-model="/kit/models/sensor-mast.glb" aria-label="sensor-mast, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#ff2052">mechanical</span><a class="ex-name" href="https://github.com/muni-works/vcad/blob/main/apple/VcadApp/Samples/sensor-mast.vcad">sensor-mast <span class="ex-src">source ↗</span></a><span class="ex-desc">Pocketed base, mast, sensor housings</span></figcaption></figure>
+        <figure class="ex"><canvas data-model="/kit/models/pulley.glb" aria-label="pulley, drag to orbit"></canvas><figcaption class="ex-meta"><span class="pill" style="--pill:#ff2052">mechanical</span><a class="ex-name" href="https://github.com/muni-works/vcad/blob/main/apple/VcadApp/Samples/pulley.vcad">pulley <span class="ex-src">source ↗</span></a><span class="ex-desc">Flanges, groove and bore from booleans</span></figcaption></figure>
+        <figure class="ex ready"><img src="/shots/glock-tile.jpg" alt="Glockenspiel in vcad.app, one bar struck with the Mallet" loading="lazy" /><figcaption class="ex-meta"><span class="pill" style="--pill:#b26bff">acoustics</span><a class="ex-name" href="https://github.com/muni-works/vcad/tree/main/examples/glockenspiel">glockenspiel <span class="ex-src">source ↗</span></a><span class="ex-desc">Eight bars tuned by modal FEA. Strike one with the Mallet to hear it</span></figcaption></figure>
+      </div>
+    </section>
+
+    <section id="agents" class="agents">
+      <div class="split">
+        <div>
+          <h2>Your agent works in your window.</h2>
+          <ul class="points">
+            <li><b>Bring your own agent.</b> Claude Code, Cursor, or anything that speaks MCP connects to vcad.app on your machine. There's no hosted server.</li>
+            <li><b>Watch it work.</b> The agent's cursor moves in your viewport, its edits land live, and long jobs like FEA show in the header pill, where you can cancel them.</li>
+            <li><b>Every claim has a receipt.</b> Clearances, masses and pitches carry a badge that reads Holds, Stale or Violated, and it re-checks on every edit.</li>
+          </ul>
+          <pre class="mono code"><span class="dim"># one line</span>
+claude mcp add vcad -- npx -y @vcad/mcp</pre>
         </div>
-        <a class="btn-secondary snap" href="https://app.vcad.io">Open the web app</a>
-      </div>
-
-      <div class="hero-viewport" data-dim id="heroViewport">
-        <svg class="hero-part" width="260" height="160" viewBox="0 0 180 110" aria-label="Bracket part being modeled, dimensioned">
-          <g id="partEdges" stroke="#4A505A" fill="none" stroke-width="1.4">
-            <path class="trace" d="M40 80 L90 55 L140 80 L90 105 Z"/>
-            <path class="trace" d="M40 40 L90 15 L140 40 L140 80 M40 40 L40 80 M40 40 L90 65 L140 40 M90 65 L90 105"/>
-          </g>
-          <path id="partChamfer" d="M90 15 L140 40" stroke="#F25C1F" stroke-width="2" fill="none"/>
-          <text id="partChamferLabel" x="122" y="18" class="svg-dim" fill="#F25C1F">chamfer 2.0 ⏎</text>
-          <g id="partDims">
-            <g stroke="#F25C1F" stroke-width="1"><path d="M148 40 L148 80 M145 40 L151 40 M145 80 L151 80"/></g>
-            <text x="153" y="62" class="svg-dim">120.0</text>
-            <text x="58" y="10" class="svg-dim">ø 8.5</text>
-          </g>
-        </svg>
-        <p class="mono receipt-line" id="partReceipt"><span class="t-dim2">checking…</span></p>
+        <figure class="receipt-fig"><svg id="receiptArt" class="il" viewBox="0 0 520 440" role="img" aria-label="A part and its receipt. Four claims hold; a press-pull makes the clearance claim stale, then violated; the agent fixes it and the receipt re-seals."></svg></figure>
       </div>
     </section>
 
-    <section class="triptych-wrap" data-dim>
-      <p class="section-intro">From napkin sketch to anodized aluminum, with a receipt at every step.</p>
-      <div class="triptych">
-        <div class="panel reveal">
-          <h2>Design it</h2>
-          <p>Sketch it, or say it. Parametric solids, assemblies, boards — one document.</p>
-          <div class="panel-chip">
-            <svg width="80" height="52" viewBox="0 0 80 52" aria-hidden="true"><g stroke="#5A616B" fill="none" stroke-width="1.2"><path d="M15 40 L40 28 L65 40 L40 52 Z M15 20 L40 8 L65 20 L65 40 M15 20 L15 40 M15 20 L40 32 L65 20 M40 32 L40 52"/></g><path d="M40 8 L65 20" stroke="#F25C1F" stroke-width="1.4"/></svg>
-          </div>
-        </div>
-        <div class="panel reveal">
-          <h2>Prove it</h2>
-          <p>DFM, clearance, mass, cost — checked on every edit, not at export.</p>
-          <div class="panel-chip mono chip-checks">
-            <span>dfm · 14 rules <b class="green">✓</b></span>
-            <span>clearance ≥ 2.0 <b class="green">✓</b></span>
-            <span>mass 142.7 g <b class="green">✓</b></span>
-          </div>
-        </div>
-        <div class="panel reveal">
-          <h2>Make it</h2>
-          <p>Quote and order from the canvas. Or export clean files for your own machine.</p>
-          <div class="panel-chip mono chip-quote">
-            <span>$23.40 · ships thu</span>
-            <span class="orange">make it? ⏎</span>
-          </div>
-        </div>
+    <section class="pillars">
+      <div class="pillar">
+        <h3>Open kernel</h3>
+        <p>The BRep kernel is open source Rust: booleans, fillets, sweeps, STEP, drafting, FEA and physics. Read it, fork it, or embed it.</p>
+        <a class="link" href="/kernel/">The kernel →</a>
+      </div>
+      <div class="pillar">
+        <h3>Free, no account</h3>
+        <p>vcad has no sign-up, no license server and no cloud. Your files stay on your disk as plain <span class="mono">.vcad</span> JSON.</p>
+        <a class="link" href="/download">Download →</a>
+      </div>
+      <div class="pillar">
+        <h3>Used the web app?</h3>
+        <p>The browser editor has retired. Sign in once to download all your documents as a zip, then open them in the Mac app.</p>
+        <a class="link" href="https://vcad.io/export">Export your files →</a>
       </div>
     </section>
 
-    <div class="cut" aria-hidden="true"><span class="mono">cut a · 0.2</span></div>
-
-    <section class="demo shifted-1" data-dim>
-      <div class="terminal" id="demoTerminal" title="Click to skip">
-        <p class="mono t-dim" id="demoPrompt"></p>
-        <p class="mono t-body" id="demoL1"></p>
-        <p class="mono t-body" id="demoL2"></p>
-        <p class="mono t-ask" id="demoL3"></p>
-      </div>
-      <p class="demo-caption">That's the whole product. The screen part of it, anyway.</p>
+    <section class="close">
+      <h2>Make something real.</h2>
+      <a class="btn-primary" href="/download">Download for Mac</a>
     </section>
-
-    <section class="gallery shifted-1" data-dim>
-      <h2 class="gallery-head">Made with vcad. Measured after.</h2>
-      <p class="gallery-sub">The bracket, the enclosure, the instrument you keep meaning to build — build it.</p>
-      <div class="gallery-grid">
-        <figure class="reveal">
-          <div class="fig-art">
-            <svg width="60" height="60" viewBox="0 0 60 60" aria-hidden="true"><path d="M22 6 L22 32 Q22 40 30 40 Q38 40 38 32 L38 6 M27 40 L27 52 L33 52 L33 40" stroke="#8B929C" fill="none" stroke-width="1.6"/></svg>
-          </div>
-          <figcaption>
-            <p>Tuning fork</p>
-            <p class="mono">predicted 440.0 Hz ± 2.1 · order in progress</p>
-          </figcaption>
-        </figure>
-        <figure class="reveal">
-          <div class="fig-art fig-bars" aria-hidden="true">
-            <i style="height:44px"></i><i style="height:38px"></i><i style="height:33px"></i><i style="height:29px"></i><i style="height:25px"></i>
-          </div>
-          <figcaption>
-            <p>Glockenspiel</p>
-            <p class="mono">13 bars · ±5 cents in the strike sim</p>
-          </figcaption>
-        </figure>
-        <figure class="reveal">
-          <div class="fig-art">
-            <svg width="56" height="56" viewBox="0 0 56 56" aria-hidden="true"><circle cx="28" cy="28" r="22" fill="none" stroke="#2A2C31" stroke-width="1.4"/><circle cx="28" cy="28" r="5" fill="none" stroke="#8B929C" stroke-width="1.4"/><g stroke="#F25C1F" stroke-width="1" fill="none"><path d="M28 8 A20 20 0 0 1 45 18"/><path d="M48 28 A20 20 0 0 1 38 45"/><path d="M28 48 A20 20 0 0 1 11 38"/><path d="M8 28 A20 20 0 0 1 18 11"/></g></svg>
-          </div>
-          <figcaption>
-            <p>PCB motor</p>
-            <p class="mono">9 slots 6 poles · windings drc-clean</p>
-          </figcaption>
-        </figure>
-      </div>
-      <p class="gallery-cta mono">What will you make? <a class="orange" href="https://app.vcad.io">Start designing →</a></p>
-    </section>
-
-    <div class="cut" aria-hidden="true"><span class="mono">cut b · 0.2</span></div>
-
-    <section class="receipt shifted-2" id="receiptSection" data-dim>
-      <h2>Nothing ships unproven.</h2>
-      <div class="receipt-stage">
-        <svg class="seal" width="96" height="96" viewBox="0 0 64 64" role="img" aria-label="Verification ring">
-          <circle cx="32" cy="32" r="29" fill="none" stroke="#26282D" stroke-width="2.5"/>
-          <circle id="sealRing" cx="32" cy="32" r="29" fill="none" stroke="#3ECF8E" stroke-width="2.5"
-                  stroke-linecap="butt" transform="rotate(-90 32 32)"
-                  stroke-dasharray="182.2" stroke-dashoffset="182.2"/>
-          <text id="sealCount" x="32" y="37" text-anchor="middle" class="seal-count">0/4</text>
-        </svg>
-        <div class="receipt-card mono" id="receiptCard">
-          <p><span class="t-dim2">vcad.receipt/1</span><span id="receiptVerdict" class="t-dim2">running</span></p>
-          <p data-check><span>dfm · 14 rules</span><span class="mark">·</span></p>
-          <p data-check><span>clearance ≥ 2.0 mm</span><span class="mark">·</span></p>
-          <p data-check><span>mass 142.7 g ± 0.4</span><span class="mark">·</span></p>
-          <p data-check><span>gerber drc</span><span class="mark">·</span></p>
-        </div>
-      </div>
-      <p class="receipt-caption mono">14 checks between you and a bad part.</p>
-    </section>
-
-    <section class="deal shifted-2" id="deal" data-dim>
-      <h2>Free to design.<br><span class="t-dim3">3% when you make.</span></h2>
-      <p class="mono deal-caption">open source · no license server · full kernel in the free tier</p>
-    </section>
-
-    <section class="agent-close shifted-2" data-dim>
-      <h2>Your agent already knows how to use it.</h2>
-      <div class="cta-row">
-        <div class="agent-cta agent-cta-2" id="agentCta2">
-          <button class="agent-main" id="agentMain2">
-            <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M7 1 L12.2 4 L12.2 10 L7 13 L1.8 10 L1.8 4 Z" fill="none" stroke="#F25C1F" stroke-width="1.4"/></svg>
-            Open in Claude
-          </button>
-        </div>
-      </div>
-      <p class="mono agent-note">claude code · cursor · chatgpt · or copy the setup above</p>
-    </section>
-
   </main>
 
-  <footer class="titleblock" data-dim>
-    <a class="tb-cell tb-muni" href="https://muni.works" aria-label="Municipal Robotics">
-      <svg viewBox="-60 -60 880 400" role="img" aria-hidden="true">
-        <g stroke="#ff6600" stroke-width="40" stroke-linecap="round" stroke-linejoin="round" fill="none">
-          <path d="M 20 240 L 20 100 C 20 50, 80 50, 100 50 C 140 50, 160 70, 160 100"/>
-          <path d="M 160 240 L 160 100"/>
-          <path d="M 160 100 C 160 50, 220 50, 240 50 C 280 50, 300 70, 300 100 L 300 240 C 300 270, 330 280, 370 280 C 410 280, 440 270, 440 240 L 440 100"/>
-          <path d="M 440 100 C 440 50, 500 50, 520 50 C 560 50, 600 70, 600 100 L 600 240 C 600 270, 630 280, 670 280 C 710 280, 740 270, 740 240 L 740 100"/>
-        </g>
-        <circle cx="740" cy="30" r="28" fill="#ff6600"/>
-      </svg>
-      <span><span class="mono t-dim2">Built by</span><span class="mono">Municipal Robotics</span></span>
-    </a>
-    <div class="tb-cell"><span class="mono t-dim2">Title</span><span class="mono">vcad.io</span></div>
-    <div class="tb-cell"><span class="mono t-dim2">Drawn by</span><span class="mono">humans + agents</span></div>
-    <div class="tb-cell"><span class="mono t-dim2">Rev</span><span class="mono" id="tbRev">0.1.0</span></div>
-    <div class="tb-cell"><span class="mono t-dim2">Checked</span><span class="mono t-dim2" id="tbChecked">local build</span></div>
+  <footer class="foot mono">
+    <span>vcad · built by <a href="https://muni.works">Municipal Robotics</a></span>
+    <span><a href="https://github.com/muni-works/vcad">GitHub</a> · <a href="/kernel/">Kernel</a> · <a href="https://vcad.io/export">Export</a></span>
   </footer>
-
-  <div id="copyToast" class="mono" hidden>copied</div>
-
-  <script type="module" src="/src/main.js"></script>
+  <script type="module" src="/src/hero-app.js"></script>
+  <script type="module" src="/kit/gallery.js"></script>
+  <script type="module" src="/src/receipt-art.js"></script>
 </body>
 </html>

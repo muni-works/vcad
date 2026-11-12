@@ -129,7 +129,10 @@ jobs:
           dmg="apple/VcadApp/dist/vcad-${{ steps.v.outputs.version }}.dmg"
           pre=""
           [ "${{ inputs.prerelease }}" = "true" ] && pre="--prerelease"
-          gh release create "${{ steps.v.outputs.tag }}" "$dmg" \
+          # Also attach a stable-named copy so the site can link
+          # releases/latest/download/vcad.dmg (vcad.io/download, /desktop/).
+          cp "$dmg" "apple/VcadApp/dist/vcad.dmg"
+          gh release create "${{ steps.v.outputs.tag }}" "$dmg" "apple/VcadApp/dist/vcad.dmg" \
             --target "$GITHUB_SHA" --title "vcad for Mac ${{ steps.v.outputs.version }}" \
             --generate-notes $pre
 
