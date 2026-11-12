@@ -30,7 +30,9 @@ It holds, on its own thread, everything that is a function of the document:
 - the incremental eval session (`vcad-eval` incremental cache),
 - tessellation (coarse + fine LOD),
 - background analyses keyed by revision: picking BVH, DFM, sound modes / pitch
-  locks (`vcad-sound`, landing with #1139), agent fingerprint/state hash.
+  locks (`vcad-sound`, merged in #1139 — the runtime calls `part_modes_mesh`,
+  `strike_gains`, `solve_pitch_lock` with its own evaluated meshes instead of
+  `vcad_sound::evaluate` re-evaluating the doc), agent fingerprint/state hash.
 
 Swift sends **intents** (fire-and-forget, serializable). Rust sends back
 immutable **frames** via one callback. Swift never holds the document as a
@@ -267,15 +269,14 @@ Each slice lands as its own PR, app usable at every step.
      `vcad_engine_*`, `vcad_scene_*`, `JSONSerialization` or tessellation on the
      main thread; `nice swift test` + `cargo test -p vcad-runtime -p vcad-ffi`
      green (Rust on `ssh mew`); release bundle (`CONFIG=release ./bundle.sh`).
-     The strike part depends on #1139's Mallet path landing first — if it
-     hasn't, slice 1 routes `Strike` as a plain intent and the sound frame
-     arrives in slice 4.
+     #1139 is merged: in slice 1 `Strike` still calls `vcad_sound_call` via
+     `SoundStore`, but off main, against frame data; full absorption is slice 4.
 2. **Picking.** BVH built per rev on the pool; `Picking.swift` sends
    `Query::Ray` and reads `Reply`. Delete `pickingDocumentData`,
    `PickingState.evaluate`, the second `EvalSession`.
 3. **Analysis overlays.** `AnalysisMeshCache` goes; overlay meshes ride
    `Geometry`-like frames keyed by content key. DFM findings via `Dfm` frames.
-4. **Sound.** `SoundStore` becomes a frame consumer; modes/pitch locks preview →
+4. **Sound.** `vcad_sound_call`/`vcad_instrument_call` callers go away; `SoundStore` becomes a frame consumer; modes/pitch locks preview →
    fine, debounced on gesture end.
 5. **Agent/MCP.** `mcp.rs` host hooks send intents to the runtime directly;
    `AgentCore` engine-edit hooks and the agent fingerprint deleted (fingerprint
