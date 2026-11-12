@@ -16,10 +16,8 @@ export default defineConfig({
         main: page("./index.html"),
         design: page("./design/index.html"),
         prove: page("./prove/index.html"),
-        make: page("./make/index.html"),
         agents: page("./agents/index.html"),
         kernel: page("./kernel/index.html"),
-        pricing: page("./pricing/index.html"),
       },
       output: {
         manualChunks(id) {
