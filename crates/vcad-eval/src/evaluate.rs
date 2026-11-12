@@ -879,7 +879,11 @@ impl Prepass {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         use std::sync::Arc;
         let cancel = Arc::new(AtomicBool::new(false));
-        if roots.is_empty() {
+        // wasm32 has no rayon worker threads: a spawned job only runs when the
+        // scope unwinds, so blocking on its result below would wait forever
+        // (every document evaluation in the WASM kernel hung). Evaluate the
+        // roots inline there, as before the pre-pass.
+        if roots.is_empty() || cfg!(target_arch = "wasm32") {
             return Self {
                 rx: None,
                 pending: Default::default(),
