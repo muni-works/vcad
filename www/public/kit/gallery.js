@@ -299,6 +299,52 @@ function loop() {
   }
 }
 
+// ---------- loading states: every example says what it's doing ----------
+// An overlay over each canvas: a progress bar while the model downloads,
+// "preparing" while it's processed, and a retry button if it fails or stalls.
+const STALL_MS = 25000;
+function loadStatus(canvas, retry) {
+  const stage = document.createElement("div");
+  stage.className = "ex-stage";
+  canvas.replaceWith(stage);
+  stage.appendChild(canvas);
+  const el = document.createElement("div");
+  el.className = "ex-status";
+  el.setAttribute("role", "status");
+  stage.appendChild(el);
+  const ex = canvas.closest(".ex");
+  let stall = 0;
+  const api = {
+    loading(frac) {
+      ex?.classList.remove("failed");
+      clearTimeout(stall);
+      stall = setTimeout(() => api.failed("still loading — slow connection?"), STALL_MS);
+      const pct = frac == null ? null : Math.round(frac * 100);
+      el.innerHTML = `<span class="ex-status-label">${pct == null ? "loading model" : `loading model · ${pct}%`}</span>` +
+        `<span class="ex-status-bar${pct == null ? " indeterminate" : ""}"><i style="width:${pct ?? 30}%"></i></span>`;
+      el.hidden = false;
+    },
+    preparing() {
+      clearTimeout(stall);
+      el.innerHTML = `<span class="ex-status-label">preparing</span><span class="ex-status-bar indeterminate"><i></i></span>`;
+    },
+    ready() { clearTimeout(stall); el.hidden = true; el.innerHTML = ""; ex?.classList.add("ready"); },
+    failed(msg = "couldn't load this example") {
+      clearTimeout(stall);
+      if (ex?.classList.contains("ready")) return;
+      ex?.classList.add("failed");
+      el.hidden = false;
+      el.innerHTML = `<span class="ex-status-label">${msg}</span><button type="button" class="ex-retry">retry</button>`;
+      el.querySelector("button").onclick = () => retry();
+    },
+  };
+  el.hidden = true;
+  return api;
+}
+// let the overlay paint before a heavy synchronous step
+// (rAF never fires in a background tab, so fall back to a timer)
+const nextPaint = () => new Promise((r) => { requestAnimationFrame(() => setTimeout(r, 0)); setTimeout(r, 50); });
+
 // ---------- gallery: every sample, orbitable ----------
 // Models come from `vcad-render --export-web`: one named node per part, each
 // with the document's own PBR material, Y-up and world-placed already.
@@ -306,35 +352,46 @@ const loader = new GLTFLoader();
 function galleryFigure(canvas) {
   const f = figure(canvas);
   let loaded = false;
+  const st = loadStatus(canvas, () => { loaded = false; f.wake(); });
   f.wake = () => {
     if (loaded) return;
     loaded = true;
     let tries = 0;
-    const fetchModel = () => loader.load(canvas.dataset.model, (gltf) => {
-      gltf.scene.traverse((o) => {
-        if (!o.isMesh) return;
-        const mats = Array.isArray(o.material) ? o.material : [o.material];
-        for (const m of mats) {
-          m.side = THREE.DoubleSide; m.envMapIntensity = 0.75; m.flatShading = false;
-          // vcad-render's fallback material ("part"/"default") is a flat grey
-          // dielectric that reads as plaster; show it as bead-blasted aluminum.
-          if (m.metalness < 0.05 && m.color.r > 0.55 && Math.abs(m.color.r - m.color.b) < 0.08 && /^(part|default)$/.test(m.name)) {
-            m.color.setRGB(0.78, 0.79, 0.81); m.metalness = 0.8; m.roughness = 0.42;
+    st.loading(null);
+    const fetchModel = () => loader.load(canvas.dataset.model, async (gltf) => {
+      st.preparing();
+      await nextPaint();
+      try {
+        gltf.scene.traverse((o) => {
+          if (!o.isMesh) return;
+          const mats = Array.isArray(o.material) ? o.material : [o.material];
+          for (const m of mats) {
+            m.side = THREE.DoubleSide; m.envMapIntensity = 0.75; m.flatShading = false;
+            // vcad-render's fallback material ("part"/"default") is a flat grey
+            // dielectric that reads as plaster; show it as bead-blasted aluminum.
+            if (m.metalness < 0.05 && m.color.r > 0.55 && Math.abs(m.color.r - m.color.b) < 0.08 && /^(part|default)$/.test(m.name)) {
+              m.color.setRGB(0.78, 0.79, 0.81); m.metalness = 0.8; m.roughness = 0.42;
+            }
+            m.needsUpdate = true;
           }
-          m.needsUpdate = true;
-        }
-        const original = stitchTJunctions(o.geometry) || o.geometry;
-        o.geometry = autoSmooth(original);
-        o.add(edgeLines(original));
-      });
-      if (canvas.dataset.board) dressBoard(gltf.scene, canvas.dataset.board);
-      f.root.add(gltf.scene);
-      f.root.updateMatrixWorld(true);
-      frame(f, new THREE.Box3().setFromObject(gltf.scene), (canvas.dataset.view || "1,0.75,1.1").split(",").map(Number));
-      canvas.closest(".ex")?.classList.add("ready");
-    }, undefined, () => {
+          const original = stitchTJunctions(o.geometry) || o.geometry;
+          o.geometry = autoSmooth(original);
+          o.add(edgeLines(original));
+        });
+        if (canvas.dataset.board) dressBoard(gltf.scene, canvas.dataset.board);
+        f.root.add(gltf.scene);
+        f.root.updateMatrixWorld(true);
+        frame(f, new THREE.Box3().setFromObject(gltf.scene), (canvas.dataset.view || "1,0.75,1.1").split(",").map(Number));
+        st.ready();
+      } catch (e) {
+        console.warn("example failed to prepare:", canvas.dataset.model, e);
+        st.failed();
+      }
+    }, (ev) => {
+      if (ev.lengthComputable && ev.total) st.loading(ev.loaded / ev.total);
+    }, () => {
       if (tries++ < 2) setTimeout(fetchModel, 800 * tries);
-      else canvas.closest(".ex")?.classList.add("failed");
+      else st.failed();
     });
     fetchModel();
   };
@@ -469,12 +526,24 @@ function pcbFigure(canvas) {
   const f = figure(canvas);
   f.root.rotation.x = -Math.PI / 2;            // board data is Z-up
   let loaded = false;
+  const st = loadStatus(canvas, () => { loaded = false; f.root.clear(); f.wake(); });
   f.wake = async () => {
     if (loaded) return;
     loaded = true;
+    st.loading(null);
+    try { await buildBoard(); } catch (e) {
+      console.warn("board example failed:", canvas.dataset.pcb, e);
+      st.failed();
+    }
+  };
+  async function buildBoard() {
     const url = canvas.dataset.pcb;
     const base = url.replace(/\.pcb\.json$/, "");
-    const b = await (await fetch(url)).json();
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`${url}: ${res.status}`);
+    const b = await res.json();
+    st.preparing();
+    await nextPaint();
     const [bx0, by0, bx1, by1] = b.bbox, bw = bx1 - bx0, bh = by1 - by0, t = b.thickness;
     const shape = new THREE.Shape(b.outline.map(([x, y]) => new THREE.Vector2(x, y)));
     for (const c of b.cutouts) shape.holes.push(new THREE.Path(c.map(([x, y]) => new THREE.Vector2(x, y))));
@@ -508,8 +577,8 @@ function pcbFigure(canvas) {
     }
     f.root.updateMatrixWorld(true);
     frame(f, new THREE.Box3().setFromObject(f.root), (canvas.dataset.view || "0.55,1.15,0.9").split(",").map(Number));
-    canvas.closest(".ex")?.classList.add("ready");
-  };
+    st.ready();
+  }
 }
 
 // ---------- boot ----------
