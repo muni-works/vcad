@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-12-mac-model-browser",
+  "version": "undefined",
+  "date": "2026-11-12",
+  "category": "feat",
+  "title": "Mac app: Model browser lists parts, not operations",
+  "summary": "Filleting a part no longer buries it under a Fillet row: parts keep their own names, repeated instances read 'Rotor × 2', sketches sit in a quiet section, with swatches and a filter.",
+  "features": ["mac-app", "model-browser"]
+}
