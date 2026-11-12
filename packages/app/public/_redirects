@@ -1,0 +1,6 @@
+# Cloudflare static redirects. /download and /desktop/ go straight to the
+# newest signed DMG (desktop-release.yml attaches a stable-named vcad.dmg).
+# Exact-path rules only: /desktop/appcast.xml (Sparkle feed) is untouched.
+/download   https://github.com/muni-works/vcad/releases/latest/download/vcad.dmg  302
+/desktop    https://github.com/muni-works/vcad/releases/latest/download/vcad.dmg  302
+/desktop/   https://github.com/muni-works/vcad/releases/latest/download/vcad.dmg  302

@@ -139,7 +139,7 @@ function init(svg) {
     h = OK_H; drawPart("holds");
     rows.forEach((r, i) => setRow(i, "holds", r.val));
     setSummary(4, true, "3f9a…c21e");
-    say("agent · check_clearance", "boss h 26.0 · clearance 4.00 mm holds");
+    say("agent · check_clearance", "clearance 4.00 mm · holds");
   }
 
   async function play() {
@@ -166,19 +166,19 @@ function init(svg) {
     await tween(900, (t) => { h = OK_H + (BAD_H - OK_H) * t; drawPart("stale"); ui[0].val.textContent = `${clr().toFixed(2)} mm`; });
     setRow(0, "stale"); setSummary(3, false, "3f9a…c21e");
     await sleep(900); if (!alive()) return;
-    setRow(0, "checking"); say("vcad · re-check", "edit touched the boss · clearance");
+    setRow(0, "checking"); say("vcad · re-check", "boss changed · re-checking");
     await sleep(600); if (!alive()) return;
     setRow(0, "violated", `${clr().toFixed(2)} mm`); drawPart("violated"); setSummary(3, false, "b04d…7a19");
-    say("vcad · re-check", "clearance violated · boss hits cover");
+    say("vcad · re-check", "clearance violated");
     await sleep(1800); if (!alive()) return;
 
-    say("agent · apply_edits", "boss h 32 → 26 to restore 3 mm");
+    say("agent · apply_edits", "boss h 32 → 26");
     setRow(0, "stale");
     await tween(900, (t) => { h = BAD_H + (OK_H - BAD_H) * t; drawPart("stale"); ui[0].val.textContent = `${clr().toFixed(2)} mm`; });
     setRow(0, "checking");
     await sleep(600); if (!alive()) return;
     setRow(0, "holds", `${clr().toFixed(2)} mm`); drawPart("holds"); setSummary(4, true, "e71c…05b8");
-    say("agent · check_clearance", "clearance 4.00 mm holds · receipt re-sealed");
+    say("agent · check_clearance", "clearance 4.00 mm · re-sealed");
     await sleep(3800); if (!alive()) return;
     play();
   }
