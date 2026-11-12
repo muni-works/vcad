@@ -192,3 +192,18 @@ enum WelcomeExamples {
         Array(samples.filter { $0.lesson != nil }.prefix(limit))
     }
 }
+
+enum WelcomeLinks {
+    static let releases = URL(string: "https://github.com/muni-works/vcad/releases")!
+
+    /// "What's new": the GitHub release for this build (Mac releases are
+    /// tagged `desktop-v<version>`), or the releases page for a dev build
+    /// whose version has no release (bundle.sh's default is 0.1).
+    static func whatsNew(version: String?) -> URL {
+        guard let v = version?.trimmingCharacters(in: .whitespaces),
+              (v.split(separator: ".").first.flatMap { Int($0) } ?? 0) >= 1,
+              v.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "." || $0 == "-" })
+        else { return releases }
+        return releases.appendingPathComponent("tag/desktop-v\(v)")
+    }
+}

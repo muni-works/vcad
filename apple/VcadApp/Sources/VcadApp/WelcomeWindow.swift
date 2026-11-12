@@ -56,7 +56,10 @@ final class WelcomeWindowController: NSObject, NSWindowDelegate {
             openRecent: { [weak self] url in self?.close(); AppInstance.opening(url, from: model) },
             openSample: { [weak self] sample in self?.openSample(sample) },
             connectAgent: { AgentInstallPrompt.run() },
-            whatsNew: { NSWorkspace.shared.open(URL(string: "https://vcad.io/docs/architecture/changelog")!) },
+            whatsNew: {
+                let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+                NSWorkspace.shared.open(WelcomeLinks.whatsNew(version: version))
+            },
             close: { [weak self] in self?.close() })
         let host = NSHostingController(rootView: WelcomeView(state: state, actions: actions))
         host.sizingOptions = [.preferredContentSize]

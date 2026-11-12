@@ -156,6 +156,16 @@ final class WelcomeTests: XCTestCase {
         XCTAssertNil(WelcomeGridNav.move(0, .right, columns: 4, count: 0))
     }
 
+    func testWhatsNewLinksToTheGitHubRelease() {
+        XCTAssertEqual(WelcomeLinks.whatsNew(version: "1.0.0-beta.1").absoluteString,
+                       "https://github.com/muni-works/vcad/releases/tag/desktop-v1.0.0-beta.1")
+        XCTAssertEqual(WelcomeLinks.whatsNew(version: "1.2.0").absoluteString,
+                       "https://github.com/muni-works/vcad/releases/tag/desktop-v1.2.0")
+        XCTAssertEqual(WelcomeLinks.whatsNew(version: "0.1"), WelcomeLinks.releases, "dev build")
+        XCTAssertEqual(WelcomeLinks.whatsNew(version: nil), WelcomeLinks.releases)
+        XCTAssertEqual(WelcomeLinks.whatsNew(version: "1.0 x/../"), WelcomeLinks.releases)
+    }
+
     func testThumbnailKeyChangesWithTheFile() {
         let a = WelcomeThumbnailKey.key(path: "/x.vcad", modified: Date(timeIntervalSince1970: 100), size: 10)
         XCTAssertEqual(a, WelcomeThumbnailKey.key(path: "/x.vcad", modified: Date(timeIntervalSince1970: 100), size: 10))
