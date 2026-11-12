@@ -346,8 +346,11 @@ struct DocumentGraph {
     /// A node's name when it describes the thing rather than the operation.
     func descriptiveName(_ node: DocNode) -> String? {
         guard let n = node.name?.trimmingCharacters(in: .whitespaces), !n.isEmpty else { return nil }
+        // Runtime-stamped names echo the op ("cube", "Fillet"): not descriptive.
+        let lower = n.lowercased()
+        if lower == node.opType.lowercased() || lower == Self.label(node.opType).lowercased() { return nil }
         if Self.bodyTypes.contains(node.opType) { return n }
-        if n == Self.label(node.opType) || Self.operationNames.contains(n) { return nil }
+        if Self.operationNames.contains(n) { return nil }
         return n
     }
 

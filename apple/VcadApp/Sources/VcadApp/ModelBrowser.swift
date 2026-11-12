@@ -100,43 +100,41 @@ extension EditorModel {
         return instanceIndices(forNodeId: node.nodeId)
     }
 
+    /// Whether the row can be hidden. Plain document parts can; assembly
+    /// instances can't yet (the viewport's assembly path ignores per-instance
+    /// visibility — follow-up), so their rows show no eye rather than a lie.
+    func canHideBrowserRow(_ nodes: [FeatureNode]) -> Bool {
+        nodes.allSatisfy { $0.partIndex != nil && browserInstances($0).isEmpty }
+    }
+
     func isBrowserRowVisible(_ nodes: [FeatureNode]) -> Bool {
-        nodes.contains { n in
-            let inst = browserInstances(n)
-            if !inst.isEmpty { return inst.contains(where: isInstanceVisible) }
-            return n.partIndex.map(isPartVisible) ?? true
-        }
+        nodes.contains { $0.partIndex.map(isPartVisible) ?? true }
     }
 
     func toggleBrowserVisibility(_ nodes: [FeatureNode]) {
-        let inst = nodes.flatMap(browserInstances)
-        if !inst.isEmpty { toggleVisibility(instances: inst); return }
+        guard canHideBrowserRow(nodes) else { return }
         let parts = nodes.compactMap(\.partIndex)
         let hide = parts.contains(where: isPartVisible)
         for p in parts where isPartVisible(p) == hide { toggleVisibility(part: p) }
     }
 
-    /// ⌥-click: show only this row (again to show everything).
+    /// ⌥-click: show only this part (again to show everything).
     func isolateBrowserRow(_ nodes: [FeatureNode]) {
-        let inst = nodes.flatMap(browserInstances)
-        if !inst.isEmpty { isolate(instances: inst); return }
-        if let p = nodes.first?.partIndex { isolate(part: p) }
+        guard canHideBrowserRow(nodes), let p = nodes.first?.partIndex else { return }
+        isolate(part: p)
     }
 
     func isBrowserRowIsolated(_ nodes: [FeatureNode]) -> Bool {
-        let inst = Set(nodes.flatMap(browserInstances))
-        if !inst.isEmpty { return isolatedInstances == inst }
-        return nodes.first?.partIndex.map { isolatedPart == $0 } ?? false
+        nodes.first?.partIndex.map { isolatedPart == $0 } ?? false
     }
 
     /// Swatch colour: the row's material, else the colour the viewport
     /// gives an unmaterialed part.
     func browserSwatch(_ node: FeatureNode) -> Color {
-        if let key = node.material, let m = documentGraph?.materials[key] {
-            return Color(.sRGB, red: m.color.0, green: m.color.1, blue: m.color.2)
-        }
+        // Same resolution the viewport uses, so the swatch matches the part.
         #if os(macOS)
-        if let pi = node.partIndex { return Color(nsColor: documentBaseColor(pi)) }
+        if let pi = node.partIndex { return Color(nsColor: resolvedMaterial(forPart: pi).color) }
+        if let key = node.material { return Color(nsColor: resolvedMaterial(named: key, fallbackIndex: 0).color) }
         #endif
         return Color.secondary.opacity(0.5)
     }
@@ -233,6 +231,7 @@ struct BrowserRow: View {
             || (isInstance && model.hoveredInstanceIndex.map(instanceIndices.contains) == true)
     }
     private var visible: Bool { quiet || model.isBrowserRowVisible(nodes) }
+    private var hideable: Bool { !quiet && model.canHideBrowserRow(nodes) }
     private var expanded: Bool { groupID.map(model.expandedFeatureIDs.contains) ?? false }
     private var renaming: Bool { model.renamingFeatureID == node.id && groupID == nil }
     private var canRename: Bool { groupID == nil && (node.partIndex != nil || isInstance || quiet) }
@@ -248,7 +247,7 @@ struct BrowserRow: View {
                 Text(title).font(.callout).lineLimit(1).truncationMode(.middle)
             }
             Spacer(minLength: 0)
-            if !quiet { visibilityButton }
+            if hideable { visibilityButton }
         }
         .padding(.leading, CGFloat(depth) * Theme.Space.m + Theme.Space.xs)
         .padding(.trailing, 4).padding(.vertical, 4)
@@ -328,7 +327,7 @@ struct BrowserRow: View {
         let event = NSApp.currentEvent
         let flags = event?.modifierFlags ?? []
         if event?.clickCount == 2, canRename { model.renamingFeatureID = node.id; return }
-        if flags.contains(.option), !quiet { model.isolateBrowserRow(nodes); return }
+        if flags.contains(.option), hideable { model.isolateBrowserRow(nodes); return }
         if flags.contains(.command), let pi = node.partIndex {
             model.toggleMultiSelect(part: pi, featureID: node.id); return
         }
@@ -351,7 +350,7 @@ struct BrowserRow: View {
     }
 
     @ViewBuilder private var menu: some View {
-        if !quiet {
+        if hideable {
             Button { model.isolateBrowserRow(nodes) } label: {
                 Label(model.isBrowserRowIsolated(nodes) ? "Exit Isolate" : "Isolate", systemImage: "scope")
             }

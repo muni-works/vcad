@@ -523,10 +523,6 @@ final class EditorModel {
     var hiddenParts: Set<Int> = []
     /// Isolate: when set, only this part shows (supersedes `hiddenParts`).
     var isolatedPart: Int?
-    /// Assembly instances hidden from the browser (render index), and the
-    /// instances an option-click isolated (empty = no instance isolate).
-    var hiddenInstances: Set<Int> = []
-    var isolatedInstances: Set<Int> = []
     /// Viewport needs to re-apply part visibility / re-highlight the selection.
     var visibilityDirty = false
     var selectionDirty = false
@@ -928,8 +924,6 @@ final class EditorModel {
     private func loadDocumentTree() {
         hiddenParts.removeAll()
         isolatedPart = nil
-        hiddenInstances = []
-        isolatedInstances = []
         multiSelectedParts = []
         hoveredPartIndex = nil
         expandedFeatureIDs.removeAll()
@@ -1008,29 +1002,7 @@ final class EditorModel {
         if let iso = isolatedPart { return i == iso }
         return !hiddenParts.contains(i)
     }
-    var hasHiddenParts: Bool {
-        isolatedPart != nil || !hiddenParts.isEmpty || !hiddenInstances.isEmpty || !isolatedInstances.isEmpty
-    }
-
-    func isInstanceVisible(_ i: Int) -> Bool {
-        if !isolatedInstances.isEmpty { return isolatedInstances.contains(i) }
-        return !hiddenInstances.contains(i)
-    }
-    /// Hide or show a set of instances together (a browser row may stand for
-    /// every instance of a part def). Visible if any is: the toggle hides all.
-    func toggleVisibility(instances: [Int]) {
-        guard !instances.isEmpty else { return }
-        isolatedInstances = []
-        if instances.contains(where: isInstanceVisible) { hiddenInstances.formUnion(instances) }
-        else { hiddenInstances.subtract(instances) }
-        visibilityDirty = true
-    }
-    func isolate(instances: [Int]) {
-        guard !instances.isEmpty else { return }
-        isolatedInstances = isolatedInstances == Set(instances) ? [] : Set(instances)
-        hiddenInstances = []
-        visibilityDirty = true
-    }
+    var hasHiddenParts: Bool { isolatedPart != nil || !hiddenParts.isEmpty }
 
     func toggleVisibility(part i: Int) {
         isolatedPart = nil                       // an explicit toggle exits isolate
@@ -1045,8 +1017,6 @@ final class EditorModel {
     func showAllParts() {
         hiddenParts.removeAll()
         isolatedPart = nil
-        hiddenInstances = []
-        isolatedInstances = []
         visibilityDirty = true
     }
 

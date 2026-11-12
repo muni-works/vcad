@@ -15,7 +15,7 @@ final class ModelBrowserTests: XCTestCase {
 
     func testFilletedBoxStaysABox() throws {
         let g = try graph([
-            "nodes": ["1": cube(1),
+            "nodes": ["1": cube(1, "cube"),   // the runtime stamps op-echo names
                       "2": ["id": 2, "name": "Fillet", "op": ["type": "Fillet", "child": 1, "radius": 1]]],
             "roots": [["root": 2]],
         ])
@@ -115,5 +115,23 @@ final class ModelBrowserTests: XCTestCase {
         let k1 = try XCTUnwrap(DocumentGraph.load(path: samples.appendingPathComponent("k1/k1-humanoid.vcad").path))
         let names = k1.featureRoots().map(\.name)
         XCTAssertFalse(names.contains { $0 == "Imported" || $0 == "Body" }, "\(names)")
+    }
+}
+
+@MainActor
+final class ModelBrowserVisibilityTests: XCTestCase {
+    func testAssemblyRowsResolveToTheirInstancesAndAreNotHideable() throws {
+        let path = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+            .appendingPathComponent("../../Samples/stirling-engine.vcad").standardized
+        let m = EditorModel()
+        m.openDocument(path)
+        m.buildScene()
+        XCTAssertEqual(m.assemblyInstanceCount, 10)
+        let items = ModelBrowser.items(m.featureNodes)
+        let crank = try XCTUnwrap(items.first { $0.title == "crank-1" })
+        XCTAssertEqual(m.browserInstances(crank.nodes[0]).count, 1)
+        let stands = try XCTUnwrap(items.first { $0.title == "stand × 2" })
+        XCTAssertEqual(Set(stands.nodes.flatMap(m.browserInstances)).count, 2)
+        XCTAssertFalse(m.canHideBrowserRow(crank.nodes))
     }
 }
