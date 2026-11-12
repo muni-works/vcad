@@ -124,11 +124,15 @@ function init(svg) {
   const dimBg = el("rect", { width: 108, height: 26, rx: 6, fill: "#1f1f22", stroke: "#3d8bff" }, dim);
   const dimTxt = el("text", { class: "hv-t hv-b", "text-anchor": "middle" }, dim, "");
 
-  // agent prompt
-  const prompt = el("g", { opacity: 0 }, root);
-  el("rect", { x: 300, y: 628, width: 600, height: 40, rx: 20, fill: "#1f1f22", stroke: "#4a4a4f" }, prompt);
-  el("circle", { cx: 324, cy: 648, r: 8, fill: "#ff2052" }, prompt);
-  const promptTxt = el("text", { x: 342, y: 653, class: "hv-t" }, prompt, "");
+  // the agent lives in YOUR client (a terminal here), not inside vcad.app:
+  // it drives the app over local MCP. Drawn as a separate window on top.
+  const prompt = el("g", { opacity: 0 }, svg);
+  el("rect", { x: 300, y: 560, width: 600, height: 112, rx: 10, fill: "#0e0e10", stroke: "#4a4a4f" }, prompt);
+  el("path", { d: "M310 560 h580 a10 10 0 0 1 10 10 v18 h-600 v-18 a10 10 0 0 1 10 -10 z", fill: "#1c1c1f" }, prompt);
+  [["#ff5f57", 318], ["#febc2e", 334], ["#28c840", 350]].forEach(([c, x]) => el("circle", { cx: x, cy: 574, r: 4.5, fill: c }, prompt));
+  el("text", { x: 600, y: 578, "text-anchor": "middle", class: "hv-m hv-dim" }, prompt, "terminal — your agent, over local MCP");
+  const promptTxt = el("text", { x: 318, y: 614, class: "hv-m" }, prompt, "");
+  const replyTxt = el("text", { x: 318, y: 644, class: "hv-m hv-ok" }, prompt, "");
 
   // toolbar
   el("rect", { x: 380, y: 690, width: 440, height: 44, rx: 22, class: "hv-panel" }, root);
@@ -213,8 +217,8 @@ function init(svg) {
     svg.classList.remove("hv-live");
 
     show(prompt);
-    const ask = "add a boss under the cover, keep 3 mm clearance";
-    promptTxt.textContent = "";
+    const ask = "> add a boss under the cover, keep 3 mm clearance";
+    promptTxt.textContent = ""; replyTxt.textContent = "";
     if (reduced) promptTxt.textContent = ask;
     else for (const ch of ask) { if (!alive(id)) return; promptTxt.textContent += ch; await sleep(28); }
     await sleep(400); if (!alive(id)) return;
@@ -240,6 +244,7 @@ function init(svg) {
     await sleep(700); if (!alive(id)) return;
     checked = true; setReceipt(); show(badge);
     pillTxt.textContent = "agent · done · 1 claim holds";
+    replyTxt.textContent = "✓ boss 26 mm · clearance 4.00 mm (holds)";
     await moveCursor([860, 600], 800); if (!alive(id)) return;
     show(cursor, false);
     await sleep(600); if (!alive(id)) return;
@@ -248,6 +253,8 @@ function init(svg) {
   }
   function goLive() {
     checked = true; setReceipt(); render();
+    if (!replyTxt.textContent) { promptTxt.textContent = "> add a boss under the cover, keep 3 mm clearance"; replyTxt.textContent = "✓ boss 26 mm · clearance 4.00 mm (holds)"; }
+    show(prompt);
     [boss, navBoss, handle, dim, badge].forEach((n) => show(n));
     svg.classList.add("hv-live");
     hint.textContent = "Your turn: drag the blue arrow";
@@ -262,6 +269,7 @@ function init(svg) {
   handle.addEventListener("pointerdown", (e) => {
     if (!svg.classList.contains("hv-live")) { run++; goLive(); }
     drag = { y: toSvgY(e), h };
+    prompt.setAttribute("opacity", 0.35); // your edit now, not the agent's
     handle.setPointerCapture(e.pointerId);
     e.preventDefault();
   });
@@ -281,6 +289,7 @@ function init(svg) {
     const d = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1 }[e.key];
     if (!d) return;
     if (!svg.classList.contains("hv-live")) { run++; goLive(); }
+    prompt.setAttribute("opacity", 0.35);
     h = Math.max(2, Math.min(H_MAX, h + d)); render(); e.preventDefault();
   });
 

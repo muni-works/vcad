@@ -130,3 +130,5 @@ a.link { display: inline-block; margin-top: 10px; font-weight: 500; }
 .hero-cap { margin-top: 12px; }
 .replay { font: inherit; color: var(--flame-ink); background: none; border: 0; cursor: pointer; padding: 0 2px; }
 .replay:hover { background: var(--flame-ink); color: #fff; }
+.hv-m { font-family: var(--mono); font-size: 13px; fill: #e8e8ea; }
+.hv-ok { fill: #3ecf8e; }
