@@ -65,20 +65,18 @@ If frog's profile was made from a team key with Developer access, the same
 key works here (`store-credentials vcad` with it); only the profile name
 differs. Override the name with `VCAD_NOTARY_PROFILE`.
 
-### 3. Sparkle EdDSA key: present, confirm it's the one you want
+### 3. Sparkle EdDSA key: done (shared with frog)
 
-A Sparkle private key already exists in this Mac's login Keychain (item
-"https://sparkle-project.org", shared by every Sparkle app on the machine,
-so it is probably frog's). Sparkle uses one key per Keychain by default.
-Decide:
+Decision (2026-11-12): vcad shares frog's Sparkle key, the item
+"https://sparkle-project.org" in this Mac's login Keychain. `release.sh`
+reads its public half with `generate_keys -p` and bakes it into
+`SUPublicEDKey`. To split later, `generate_keys --account vcad` makes a
+separate key, and `generate_keys -p` / `sign_update` in the script then need
+`--account vcad`. Installed copies only trust the key they shipped with, so a
+later split needs one transition release signed with the old key that ships
+the new public key.
 
-- **Reuse it** (simplest): nothing to do. `release.sh` reads the public key
-  with `generate_keys -p` and bakes it into `SUPublicEDKey`.
-- **Separate key for vcad:** `generate_keys --account vcad` creates a second
-  one; then the script needs `--account vcad` passed to `generate_keys -p` and
-  `sign_update` (small change, not wired yet).
-
-Either way, **the first public release freezes the key**: every installed
+**The first public release freezes the key**: every installed
 copy only accepts updates signed by it. Back it up now:
 `.build/artifacts/sparkle/Sparkle/bin/generate_keys -x ~/keys/sparkle-ed25519.key`,
 move that file into the password manager, delete it from disk.
