@@ -35,13 +35,19 @@ pub fn chamfer_all_edges_checked(
     brep: &BRepSolid,
     distance: f64,
 ) -> Result<BRepSolid, crate::BlendRefusal> {
+    // Inside corners and coplanar seams take the non-convex rebuild.
+    if crate::polyhedral::needs_polyhedral(brep) {
+        return crate::polyhedral::blend_polyhedral(
+            brep,
+            crate::polyhedral::PolyBlend::Chamfer(distance),
+        );
+    }
     let faces = extract_faces(brep);
     let edges = extract_edges(brep);
 
     if edges.is_empty() {
         return Err(crate::BlendRefusal::NoEdges);
     }
-    crate::fillet_planar::convex_edges_only(brep, &faces, &edges)?;
 
     let trims = compute_trim_vertices(&faces, distance);
 

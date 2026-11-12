@@ -68,6 +68,8 @@ Every result is held to a post-boolean validity oracle: probe points are classif
 
 ![A filleted cube next to a chamfered cube](/assets/kernel/fillet-chamfer.jpg)
 
+Whole-part blends also handle planar bodies that aren't convex — a boss unioned onto a block, an L-shaped extrude. Coplanar faces a boolean split along seams are fused first; convex edges are trimmed back, concave (inside-corner) edges gain a fillet or bevel of material, and the shell stays watertight. Where convex and concave edges meet, the corner patch is a faceted approximation of the true vertex blend. Faces with holes (a boss inset from every edge) are still refused.
+
 ### Shell and Patterns
 
 `vcad-kernel-shell` hollows a solid by offsetting its surfaces inward — each `Surface` knows how to offset itself analytically (a cylinder shrinks its radius, a plane translates). It also provides linear and circular patterns. Below, a box shelled to a 3 mm wall, with a cutaway to show the interior:
