@@ -10,9 +10,7 @@
   <meta property="og:url" content="https://vcad.io" />
   <meta name="color-scheme" content="light dark" />
   <link rel="icon" href="/shots/icon.png" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" />
+  <script src="/theme.js"></script>
   <link rel="stylesheet" href="/src/home.css" />
 </head>
 <body>
@@ -26,13 +24,14 @@
       <a href="/kernel/">Kernel</a>
       <a href="https://github.com/ecto/vcad">GitHub</a>
       <a class="nav-dl" href="https://vcad.io/desktop/">Download</a>
+      <button id="theme-toggle" aria-label="Toggle light and dark"><svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2"/><path d="M8 2a6 6 0 0 1 0 12z" fill="currentColor"/></svg></button>
     </nav>
   </header>
 
   <main>
     <section class="hero">
       <img class="hero-icon" src="/shots/icon.png" alt="" width="96" height="96" />
-      <h1>CAD that proves its work.<br><span class="dim">Now on your Mac.</span></h1>
+      <h1>CAD that proves its work.<br><span class="dim">Now on your Mac<span class="dot">.</span></span></h1>
       <p class="sub">vcad is a free, native Mac CAD app on an open Rust kernel. Sketch, model, draw and print. Bring your own agent and watch it work in your window.</p>
       <div class="cta-row">
         <a class="btn-primary" href="https://vcad.io/desktop/">
