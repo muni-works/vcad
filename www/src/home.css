@@ -78,10 +78,58 @@ a.btn-secondary:hover { background: var(--flame-ink); color: #fff; }
 h2 { font-size: clamp(26px, 4vw, 36px); letter-spacing: -0.025em; margin-bottom: 32px; }
 .tour h2, .close h2 { text-align: center; }
 .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; }
-.card { background: var(--surface); }
-.card img { aspect-ratio: 16 / 10; object-fit: cover; width: 100%; background: #2a2a2c; }
-.card h3 { font-size: var(--s-md); margin: 16px 18px 6px; }
-.card p { margin: 0 18px 18px; color: var(--muted); font-size: var(--s-sm); line-height: 1.6; }
+.card { display: flex; flex-direction: column; }
+.card-fig { background: var(--surface); aspect-ratio: 400 / 260; }
+.card-meta { padding-top: 14px; }
+.card-meta h3 { font-family: var(--mono); font-size: var(--s-sm); font-weight: 500; letter-spacing: 0; margin: 8px 0 4px; }
+.card-meta p { color: var(--muted); font-size: var(--s-sm); line-height: 1.6; max-width: 48ch; }
+
+/* pills: master-plan neon, tinted fill, no rule (as on the launch page) */
+.pill { --ink: color-mix(in oklab, var(--pill) 55%, #000); display: inline-block; padding: 3px 9px; font-family: var(--mono); font-size: var(--s-xs); font-weight: 500; color: var(--ink); background: color-mix(in oklab, var(--pill) 16%, transparent); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .pill { --ink: var(--pill); background: color-mix(in oklab, var(--pill) 12%, transparent); } }
+:root[data-theme="dark"] .pill { --ink: var(--pill); background: color-mix(in oklab, var(--pill) 12%, transparent); }
+
+/* tour illustrations: line art in theme colours, SMIL motion */
+.il { display: block; width: 100%; height: 100%; }
+.il-grid { stroke: var(--fg); stroke-opacity: .07; stroke-width: 1; }
+.il-top { fill: color-mix(in oklab, var(--fg) 12%, var(--surface)); stroke: var(--fg); stroke-opacity: .7; stroke-width: 1.2; stroke-linejoin: round; }
+.il-right { fill: color-mix(in oklab, var(--fg) 26%, var(--surface)); stroke: var(--fg); stroke-opacity: .7; stroke-width: 1.2; stroke-linejoin: round; }
+.il-front { fill: color-mix(in oklab, var(--fg) 6%, var(--surface)); stroke: var(--fg); stroke-opacity: .7; stroke-width: 1.2; stroke-linejoin: round; }
+.il-bed { fill: color-mix(in oklab, var(--fg) 4%, var(--surface)); stroke: var(--fg); stroke-opacity: .45; stroke-width: 1; }
+.il-sel { fill: color-mix(in oklab, var(--flame) 22%, var(--surface)); stroke: var(--flame-ink); stroke-width: 1.4; stroke-linejoin: round; }
+.il-sketch { fill: none; stroke: var(--flame-ink); stroke-width: 1.6; stroke-dasharray: 1; }
+.il-glyph { fill: none; stroke: var(--flame-ink); stroke-width: 1.2; }
+.il-arrow { stroke: var(--flame-ink); stroke-width: 2.4; }
+.il-arrowhead { fill: var(--flame-ink); }
+.il-chip { fill: var(--bg); stroke: var(--border); stroke-width: .8; }
+.il-head { fill: var(--raised); stroke: var(--fg); stroke-opacity: .7; stroke-width: 1.2; }
+.il-layer { stroke: var(--fg); stroke-opacity: .22; stroke-width: .8; }
+.il-sheet { fill: var(--bg); stroke: var(--border); stroke-width: 1; }
+.il-frame, .il-frame-g rect, .il-frame-g line { fill: none; stroke: var(--fg); stroke-opacity: .55; stroke-width: 1; }
+.il-view { fill: none; stroke: var(--fg); stroke-width: 1.5; stroke-dasharray: 1; stroke-linejoin: round; }
+.il-hatch line { stroke: var(--flame-ink); stroke-width: 1; }
+.il-dim line { stroke: var(--flame-ink); stroke-width: 1; }
+.il-guide { stroke: var(--flame-ink); stroke-width: 1; stroke-dasharray: 3 4; }
+.il-t { font-family: var(--mono); font-size: 10.5px; fill: var(--muted); }
+.il-fg { fill: var(--fg); }
+.il-acc { fill: var(--flame-ink); }
+.il-ok { fill: var(--green); }
+.il-step { letter-spacing: .08em; text-transform: uppercase; }
+.il-on { fill: var(--flame-ink); }
+
+/* example library (scene kit ported from the launch page) */
+.lead { color: var(--muted); max-width: 60ch; margin: -18px 0 32px; }
+.ex-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 36px 20px; }
+.ex { margin: 0; display: flex; flex-direction: column; }
+.ex canvas, .ex img { width: 100%; aspect-ratio: 4 / 3; display: block; background: var(--surface); object-fit: cover; }
+.ex canvas { cursor: grab; touch-action: pan-y; }
+.ex canvas:active { cursor: grabbing; }
+.ex.failed canvas { opacity: .3; }
+.ex-meta { padding-top: 10px; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.ex-name { font-family: var(--mono); font-size: var(--s-sm); font-weight: 500; color: var(--fg); }
+.ex-desc { font-size: var(--s-sm); color: var(--muted); line-height: 1.5; }
+@media (max-width: 1000px) { .ex-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
 .more { text-align: center; margin-top: 24px; }
 .tag { display: inline-block; font-family: var(--mono); font-size: var(--s-xs); font-weight: 500; letter-spacing: var(--track); text-transform: uppercase; color: var(--flame-ink); background: color-mix(in oklab, var(--flame) 14%, transparent); padding: 1px 7px; margin-right: 4px; }
 
@@ -106,6 +154,7 @@ a.link { display: inline-block; margin-top: 10px; font-weight: 500; }
   section { padding: 48px 16px; }
   .nav-links a:not(.nav-dl):not([href="#agents"]) { display: none; }
   .grid, .split, .pillars { grid-template-columns: 1fr; }
+  .ex-grid { gap: 28px 14px; }
   .sub { font-size: var(--s-body); }
   .hero-shot { margin-top: 40px; }
 }
