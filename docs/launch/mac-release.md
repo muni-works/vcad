@@ -117,7 +117,7 @@ after any `swift build`.
 5. Publish (the script prints these; nothing is uploaded automatically):
 
    ```bash
-   gh release create desktop-v<version> apple/VcadApp/dist/release/<version>/vcad-<version>.dmg --repo ecto/vcad --title "vcad <version>" --generate-notes
+   gh release create desktop-v<version> apple/VcadApp/dist/release/<version>/vcad-<version>.dmg --repo muni-works/vcad --title "vcad <version>" --generate-notes
    ```
 
    Then copy `desktop/appcast.xml` over `packages/app/public/desktop/appcast.xml`

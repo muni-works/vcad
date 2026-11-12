@@ -18,7 +18,7 @@
 #   VCAD_NOTARY_PROFILE  notarytool keychain profile, default "frog" (shared with frog)
 #   VCAD_BUILD           CFBundleVersion override (default: git commit count)
 #   VCAD_DOWNLOAD_BASE   where the DMG will be hosted (appcast enclosure prefix),
-#                        default https://github.com/ecto/vcad/releases/download/desktop-v<version>/
+#                        default https://github.com/muni-works/vcad/releases/download/desktop-v<version>/
 #   SPARKLE_PUBLIC_ED_KEY  default: `generate_keys -p` (login Keychain)
 #   VCAD_ALLOW_DIRTY=1   allow a dirty tree outside --dry-run (don't)
 set -euo pipefail
@@ -51,7 +51,7 @@ fail() { print -P "%F{red}error:%f $*" >&2; exit 1 }
 [[ $VERSION =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]] || fail "version must look like 1.2.3 (got '$VERSION')"
 TAG="desktop-v$VERSION"
 BUILD=${VCAD_BUILD:-$(git -C "$ROOT" rev-list --count HEAD)}
-DOWNLOAD_BASE=${VCAD_DOWNLOAD_BASE:-"https://github.com/ecto/vcad/releases/download/$TAG/"}
+DOWNLOAD_BASE=${VCAD_DOWNLOAD_BASE:-"https://github.com/muni-works/vcad/releases/download/$TAG/"}
 [[ $DOWNLOAD_BASE == */ ]] || DOWNLOAD_BASE="$DOWNLOAD_BASE/"
 DIST="$APP_DIR/dist/release/$VERSION"
 DMG="$DIST/vcad-$VERSION.dmg"
@@ -276,7 +276,7 @@ cat > "$STAGE/appcast.xml" <<EOF
       <sparkle:version>$BUILD</sparkle:version>
       <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>$min_os</sparkle:minimumSystemVersion>
-      <sparkle:releaseNotesLink>https://github.com/ecto/vcad/releases/tag/$TAG</sparkle:releaseNotesLink>
+      <sparkle:releaseNotesLink>https://github.com/muni-works/vcad/releases/tag/$TAG</sparkle:releaseNotesLink>
       <enclosure url="${DOWNLOAD_BASE}vcad-$VERSION.dmg" type="application/octet-stream" $ED/>
     </item>
   </channel>
@@ -293,6 +293,6 @@ print "  appcast:  $STAGE/appcast.xml  (build $BUILD, $VERSION)"
 print "  bundle:   $BUNDLE_ID, min macOS $min_os"
 if [[ $DRY_RUN == 0 ]]; then
   print "\nPublish (only with an explicit go):"
-  print "  gh release create $TAG \"$DMG\" \"$DMG.sha256\" --repo ecto/vcad --title \"vcad $VERSION\" --generate-notes"
+  print "  gh release create $TAG \"$DMG\" \"$DMG.sha256\" --repo muni-works/vcad --title \"vcad $VERSION\" --generate-notes"
   print "  cp \"$STAGE/appcast.xml\" packages/app/public/desktop/appcast.xml   # then PR + merge; vcad.io redeploys"
 fi
