@@ -164,7 +164,13 @@ final class AppStore: DocumentStore {
         // fingerprint is the inputs, not the output.
         case .selection:
             return "\(model.picking.revision)|\(model.selectedFeatureID ?? "")|\(model.multiSelectedParts)|\(model.selectedInstances.sorted())"
-        case .view: return Self.stableJSON(view())
+        // Polled at 10 Hz too: the inputs of `view()`, not a serialized copy
+        // of it (which walked every part and sorted-serialized the result).
+        case .view:
+            func r(_ x: Float) -> Int { Int((Double(x) * 180 / .pi * 100).rounded()) }
+            return "\(r(model.azimuth))|\(r(model.elevation))|\(Int((Double(model.distance) * 100).rounded()))|"
+                + "\(model.workspace)|\(model.partCount)|\(model.hiddenParts.sorted())|\(String(describing: model.isolatedPart))|"
+                + "\(model.sketching)|\(model.sketchPlane)|\(model.picking.filter)|\(model.documentEpoch)"
         }
     }
 

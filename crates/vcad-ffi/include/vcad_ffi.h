@@ -666,6 +666,9 @@ typedef struct VcadPick {
     double edge_distance;
 } VcadPick;
 VcadPick vcad_solid_pick(const VcadSolid *solid, const double *origin, const double *dir, double edge_tol);
+/* Build the solid's pick index (topology + BVH, kept until vcad_solid_free)
+ * ahead of the first pick; call off the UI thread. False: no B-rep. */
+bool vcad_solid_pick_prepare(const VcadSolid *solid);
 VcadSolid *vcad_solid_fillet_edges(const VcadSolid *solid, const uint32_t *edge_ids, size_t count, double radius);
 VcadSolid *vcad_solid_chamfer_edges(const VcadSolid *solid, const uint32_t *edge_ids, size_t count, double distance);
 VcadSolid *vcad_solid_shell_open(const VcadSolid *solid, double thickness, const uint32_t *face_ids, size_t count);
