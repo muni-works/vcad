@@ -110,3 +110,23 @@ a.link { display: inline-block; margin-top: 10px; font-weight: 500; }
   .hero-shot { margin-top: 40px; }
 }
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+
+/* interactive app hero — the mock is the app's own dark chrome in both themes */
+.hero-app { background: none; }
+.hero-app svg { display: block; width: 100%; height: auto; border-radius: 14px; user-select: none; -webkit-user-select: none; touch-action: pan-y; }
+.hv-t { font-family: -apple-system, "SF Pro Text", var(--sans); font-size: 14px; fill: #e8e8ea; }
+.hv-s { font-size: 12px; }
+.hv-b { font-weight: 600; }
+.hv-big { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.hv-dim { fill: #9a9aa0; }
+.hv-w { fill: #fff; }
+.hv-panel { fill: #2e2e32; fill-opacity: .92; stroke: #48484e; }
+.hv-handle { cursor: grab; outline: none; }
+.hv-live .hv-handle line, .hv-live .hv-handle polygon { animation: hv-pulse 1.6s ease-in-out infinite; }
+.hv-handle:focus-visible circle { stroke: #3d8bff; stroke-width: 2; }
+.hv-handle:active { cursor: grabbing; }
+@keyframes hv-pulse { 50% { opacity: .55; } }
+@media (prefers-reduced-motion: reduce) { .hv-live .hv-handle line, .hv-live .hv-handle polygon { animation: none; } }
+.hero-cap { margin-top: 12px; }
+.replay { font: inherit; color: var(--flame-ink); background: none; border: 0; cursor: pointer; padding: 0 2px; }
+.replay:hover { background: var(--flame-ink); color: #fff; }
