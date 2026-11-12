@@ -4,6 +4,7 @@
 // once, a frame draws immediately (hidden-tab safe), and one rAF loop turns
 // every card slowly. Reduced motion gets the still frame.
 
+import { attachGate } from "./kernel-loader.js";
 import { loadKernel, extractEdges, meshBounds, drawWireframe, drawMolecule, TILT } from "./wireframe.js";
 
 const PARTS = {
@@ -97,6 +98,7 @@ function buildCard(canvas, wasm) {
     const extent = Math.max(...bodies.map((b) => b.extent)) * (bodies.length > 1 ? 1.7 : 1.25);
     const card = { canvas, bodies, extent, flat: FLAT.has(key), spin: 0.55, seed: Math.abs(hash(key)) % 100 };
     cards.push(card);
+    canvas.classList.add("live");
     render(card);
     startLoop();
   } catch (e) {
@@ -155,21 +157,17 @@ function startLoop() {
   requestAnimationFrame(tick);
 }
 
-/* boot: lazy, shared, gated like the hero engine */
+/* boot: lazy and shared. Posters (CSS backgrounds) show until the kernel
+   arrives; it's fetched only when a card approaches, and only on tap on
+   Save-Data / slow links (one button for the whole grid). */
 const canvases = [...document.querySelectorAll("canvas.engine-card")];
-if (canvases.length && !navigator.connection?.saveData) {
-  let booted = false;
-  const boot = () => {
-    if (booted) return;
-    booted = true;
-    loadKernel()
-      .then((wasm) => canvases.forEach((c) => buildCard(c, wasm)))
-      .catch((e) => console.warn("engine cards unavailable:", e));
-  };
+if (canvases.length) {
   const io = new IntersectionObserver((entries) => {
-    if (entries.some((e) => e.isIntersecting)) { io.disconnect(); boot(); }
-  }, { rootMargin: "500px" });
+    if (!entries.some((e) => e.isIntersecting)) return;
+    io.disconnect();
+    const grid = canvases[0].closest(".card-grid") || canvases[0].parentElement;
+    attachGate(grid, () => loadKernel().then((wasm) => canvases.forEach((c) => buildCard(c, wasm))),
+      { label: "Load live kernel renders" });
+  }, { rootMargin: "300px" });
   canvases.forEach((c) => io.observe(c));
-  // IO never fires in hidden documents — boot on a timer as the fallback
-  setTimeout(boot, 4000);
 }

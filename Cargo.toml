@@ -39,6 +39,7 @@ members = [
     "crates/vcad-kernel-orbit",
     "crates/vcad-kernel-qcd",
     "crates/vcad-kernel-wasm",
+    "crates/vcad-site-wasm",
     "crates/vcad-kernel-drafting",
     "crates/vcad-cli",
     "crates/vcad-diff",
@@ -389,6 +390,16 @@ debug = false
 inherits = "release"
 lto = "thin"
 codegen-units = 1
+strip = true
+
+# Size-optimized profile for the vcad.io landing-site kernel
+# (www/scripts/build-site-kernel.sh). opt-level 3 vs z measured there.
+[profile.site-wasm]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
 strip = true
 
 # Size-optimized profile for the Typst plugin WASM

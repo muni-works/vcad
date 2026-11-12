@@ -7167,6 +7167,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "vcad-site-wasm"
+version = "0.11.0"
+dependencies = [
+ "getrandom 0.2.17",
+ "js-sys",
+ "serde_json",
+ "vcad-kernel 0.11.0",
+ "vcad-kernel-atoms",
+ "vcad-kernel-tessellate 0.11.0",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "vcad-slicer"
 version = "0.11.0"
 dependencies = [
