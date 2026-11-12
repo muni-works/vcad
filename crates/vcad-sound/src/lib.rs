@@ -510,26 +510,20 @@ fn refine(positions: &[f32], indices: &[u32], max_edge: f64) -> (Vec<f32>, Vec<u
 /// staircased solid may not cover every corner), widening the search one
 /// cell when none do.
 fn to_render_vertices(r: &ModalResult, positions: &[f32]) -> Vec<Vec<f32>> {
-    let p = r.pitch;
-    let mut lo = [f64::INFINITY; 3];
-    for x in &r.nodes {
-        for a in 0..3 {
-            lo[a] = lo[a].min(x[a]);
-        }
-    }
-    let key = |x: &[f64; 3]| -> (i64, i64, i64) {
-        (
-            ((x[0] - lo[0]) / p[0]).round() as i64,
-            ((x[1] - lo[1]) / p[1]).round() as i64,
-            ((x[2] - lo[2]) / p[2]).round() as i64,
-        )
-    };
     let lattice: HashMap<(i64, i64, i64), usize> = r
-        .nodes
+        .node_ijk
         .iter()
         .enumerate()
-        .map(|(i, x)| (key(x), i))
+        .map(|(i, k)| ((k[0] as i64, k[1] as i64, k[2] as i64), i))
         .collect();
+    // Continuous grid coordinate along one axis (cell index + fraction).
+    let grid_coord = |a: usize, x: f64| -> f64 {
+        let ax = &r.axes[a];
+        let n = ax.len() - 1;
+        let i = ax.partition_point(|&p| p <= x).clamp(1, n) - 1;
+        let w = (ax[i + 1] - ax[i]).max(1e-12);
+        i as f64 + ((x - ax[i]) / w).clamp(-1.0, 2.0)
+    };
     // For each render vertex: (node index, weight) list.
     let weights: Vec<Vec<(usize, f64)>> = positions
         .as_chunks::<3>()
@@ -537,17 +531,13 @@ fn to_render_vertices(r: &ModalResult, positions: &[f32]) -> Vec<Vec<f32>> {
         .iter()
         .map(|v| {
             let g = [
-                (v[0] as f64 - lo[0]) / p[0],
-                (v[1] as f64 - lo[1]) / p[1],
-                (v[2] as f64 - lo[2]) / p[2],
+                grid_coord(0, v[0] as f64),
+                grid_coord(1, v[1] as f64),
+                grid_coord(2, v[2] as f64),
             ];
             for reach in 0..3i64 {
                 let mut out = Vec::new();
-                let base = [
-                    g[0].floor() as i64,
-                    g[1].floor() as i64,
-                    g[2].floor() as i64,
-                ];
+                let base = [g[0].floor() as i64, g[1].floor() as i64, g[2].floor() as i64];
                 for dx in -reach..=1 + reach {
                     for dy in -reach..=1 + reach {
                         for dz in -reach..=1 + reach {

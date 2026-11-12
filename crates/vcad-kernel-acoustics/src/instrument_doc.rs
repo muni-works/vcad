@@ -43,6 +43,22 @@ pub fn metadata(inst: &Instrument) -> IrInstrument {
     }
 }
 
+/// One pitch lock per bar: the fundamental held at the bar's note by solving
+/// the bar's length parameter (see `instrument::length_param`).
+pub fn pitch_locks(inst: &Instrument) -> Vec<vcad_ir::instrument::PitchLock> {
+    inst.bars
+        .iter()
+        .map(|p| vcad_ir::instrument::PitchLock {
+            part: p.part.clone(),
+            mode: 1,
+            target_hz: p.bar.target_hz,
+            note: Some(p.bar.note.clone()),
+            drives: crate::instrument::length_param(&p.part),
+            tolerance_cents: 1.0,
+        })
+        .collect()
+}
+
 /// The claim for one bar in its current state.
 pub fn bar_claim(bar: &InstrumentBar) -> vcad_receipt::ReceiptClaim {
     match &bar.measurement {

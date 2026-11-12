@@ -1125,7 +1125,13 @@ struct ReleasedOverlayView: View {
             if !studio {
             // The right rail: the inspector, docked to the screen edge.
             VStack(alignment: .trailing, spacing: Theme.Space.m) {
-                if AnalysisStore.shared.shown && !model.source.isGripper && model.showsInspector {
+                if SoundStore.shared.shown && !model.source.isGripper {
+                    // Mallet: what the struck part rings at, and its pitch lock.
+                    RingsAtCard(model: model).modifier(ChromeRegion(key: "inspector"))
+                        .onDisappear {
+                            if let c = ReleaseWindowController.shared.centeringEntity { syncSoundOverlay(SoundStore.shared, in: c) }
+                        }
+                } else if AnalysisStore.shared.shown && !model.source.isGripper && model.showsInspector {
                     // DFM / stress / clearance (AnalysisPanel.swift). Its host was
                     // dropped in #1055, so the dock's DFM and Stress buttons lit
                     // up and showed nothing; it takes the rail while active.
@@ -1473,9 +1479,31 @@ struct ReleasedOverlayView: View {
         }
     }
 
+    /// Strike the part under `p`: solve its modes if needed, find the hit
+    /// point on its animation mesh, ring it, and flex it on screen.
+    private func malletStrike(at p: CGPoint) {
+        ensurePickableDocument(at: p)
+        guard let part = partIndex(at: p), let ray = kernelRay(at: p) else { return }
+        let store = SoundStore.shared
+        Task { @MainActor in
+            guard let pm = await store.ensureModes(part: part, model) else { return }
+            if let c = ReleaseWindowController.shared.centeringEntity { syncSoundOverlay(store, in: c) }
+            if let hit = soundHit(pm, origin: ray.o, dir: ray.d) {
+                store.strike(vertex: hit.vertex, dir: hit.dir)
+            } else {
+                store.playMode(0)
+            }
+        }
+    }
+
     private func tapSelect(at p: CGPoint, additive: Bool) {
         let t0 = CFAbsoluteTimeGetCurrent()
         defer { perf("tapSelect", t0) }
+        // Mallet: a click strikes the part under the pointer.
+        if SoundStore.shared.malletArmed {
+            malletStrike(at: p)
+            return
+        }
 
         // Double-click frames the body — read off the CLICK COUNT of the event
         // we are already handling, not a second `SpatialTapGesture(count: 2)`.

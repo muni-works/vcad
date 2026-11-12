@@ -1112,6 +1112,59 @@ fn f(v: f64) -> String {
     format!("{v:.3}")
 }
 
+/// Length parameter name for a bar part ("bar_c6" → "len_c6").
+pub fn length_param(part: &str) -> String {
+    format!("len_{}", part.trim_start_matches("bar_"))
+}
+
+/// [`bar_loon`] with the bar's length as a loon parameter: every
+/// length-dependent position (centring, undercut, holes) is an expression of
+/// `param`, so a pitch lock that solves the length keeps the bar coherent.
+pub fn bar_loon_param(bar: &TunedBar, param: &str, origin_yz: [f64; 2]) -> String {
+    let g = &bar.geometry;
+    let l = g.length_mm;
+    let mul = |k: f64| format!("[* {param} {}]", f(k));
+    let mut tools = Vec::new();
+    if g.undercut_depth_mm > 0.05 {
+        let (a, b) = g.pocket();
+        tools.push(format!(
+            "[translate {} -1 -1 [cube {} {} {}]]",
+            mul(a / l),
+            mul((b - a) / l),
+            f(g.width_mm + 2.0),
+            f(g.undercut_depth_mm + 1.0)
+        ));
+    }
+    if g.hole_dia_mm > 0.0 {
+        for &h in &g.holes_mm {
+            tools.push(format!(
+                "[translate {} {} -1 [cylinder {} {}]]",
+                mul(h / l),
+                f(g.width_mm / 2.0),
+                f(g.hole_dia_mm / 2.0),
+                f(g.thickness_mm + 2.0)
+            ));
+        }
+    }
+    let body = format!("[cube {param} {} {}]", f(g.width_mm), f(g.thickness_mm));
+    let cut = match tools.len() {
+        0 => body,
+        _ => {
+            let tool = tools
+                .iter()
+                .skip(1)
+                .fold(tools[0].clone(), |acc, t| format!("[union {acc} {t}]"));
+            format!("[difference {tool} {body}]")
+        }
+    };
+    format!(
+        "[translate {} {} {} {cut}]",
+        mul(-0.5),
+        f(origin_yz[0]),
+        f(origin_yz[1])
+    )
+}
+
 /// Loon expression for a tuned bar at `origin`.
 pub fn bar_loon(bar: &TunedBar, origin: [f64; 3]) -> String {
     let g = &bar.geometry;
@@ -1206,12 +1259,25 @@ pub fn design_instrument(spec: &InstrumentSpec) -> Result<Instrument, String> {
             "; {} target {:.2} Hz, predicted {:.2} Hz ({:+.2} c), f2/f1 {:.2}\n",
             bar.note, bar.target_hz, bar.hz[0], bar.cents_error, bar.overtone_ratio
         ));
-        out.push_str(&format!("[let {part} {}]\n", bar_loon(&bar, origin)));
+        let lp = length_param(&part);
+        out.push_str(&format!(
+            "[defparam {lp} {} :unit \"mm\" :min {} :max {}]\n",
+            f(bar.geometry.length_mm),
+            f((bar.geometry.length_mm * 0.6).round()),
+            f((bar.geometry.length_mm * 1.6).round())
+        ));
+        out.push_str(&format!(
+            "[let {part} {}]\n",
+            bar_loon_param(&bar, &lp, [origin[1], origin[2]])
+        ));
         for &h in &bar.geometry.holes_mm {
-            let (x, y) = (origin[0] + h, origin[1] + w / 2.0);
+            // Pegs follow the bar's length parameter too (x = L·(h/L − ½)).
+            let k = h / bar.geometry.length_mm - 0.5;
+            let y = origin[1] + w / 2.0;
+            let px = format!("[* {lp} {}]", f(k));
             frame_parts.push(format!(
                 "[translate {} {} {} [cylinder {} {}]]",
-                f(x),
+                px,
                 f(y),
                 f(spec.plate_mm - 0.5),
                 f(collar_r),
@@ -1219,7 +1285,7 @@ pub fn design_instrument(spec: &InstrumentSpec) -> Result<Instrument, String> {
             ));
             frame_parts.push(format!(
                 "[translate {} {} {} [cylinder {} {}]]",
-                f(x),
+                px,
                 f(y),
                 f(spec.plate_mm - 0.5),
                 f(peg_dia / 2.0),

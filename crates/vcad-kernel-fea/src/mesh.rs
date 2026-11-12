@@ -303,12 +303,27 @@ pub struct HexMesh {
     pub pitch: [f64; 3],
     /// Lattice cell counts per axis.
     pub grid: [usize; 3],
+    /// Per-cell brick size (x, y, z), mm. Uniform for [`hex_fill`];
+    /// varies for [`hex_fill_conforming`].
+    pub cell_sizes: Vec<[f64; 3]>,
+    /// Grid plane coordinates per axis (`grid[a] + 1` each), mm.
+    pub axes: [Vec<f64>; 3],
+    /// Grid indices (i, j, k) of every node.
+    pub node_ijk: Vec<[u32; 3]>,
 }
 
 impl HexMesh {
     /// Total mesh volume, mm³.
     pub fn volume(&self) -> f64 {
-        self.cells.len() as f64 * self.pitch[0] * self.pitch[1] * self.pitch[2]
+        self.cell_sizes.iter().map(|s| s[0] * s[1] * s[2]).sum()
+    }
+
+    /// Smallest brick edge, mm.
+    pub fn min_cell(&self) -> f64 {
+        self.cell_sizes
+            .iter()
+            .flat_map(|s| s.iter().copied())
+            .fold(f64::INFINITY, f64::min)
     }
 }
 
@@ -327,44 +342,160 @@ pub fn hex_fill_pitch(
     max_pitch: Option<[f64; 3]>,
 ) -> Result<HexMesh, MeshError> {
     let v = voxelize(mesh, resolution, max_pitch)?;
-    let [nx, ny, nz] = v.n;
-    let eidx = |ix: usize, iy: usize, iz: usize| (iz * ny + iy) * nx + ix;
-    let (nxp, nyp) = (nx + 1, ny + 1);
+    let axes: [Vec<f64>; 3] =
+        [0, 1, 2].map(|a| (0..=v.n[a]).map(|i| v.min[a] + i as f64 * v.pitch[a]).collect());
+    Ok(build_hex(&axes, &v.active, v.h))
+}
+
+/// Brick mesh from grid planes and an active-cell mask (x fastest).
+fn build_hex(axes: &[Vec<f64>; 3], active: &[bool], h: f64) -> HexMesh {
+    let n = [axes[0].len() - 1, axes[1].len() - 1, axes[2].len() - 1];
+    let (nxp, nyp) = (n[0] + 1, n[1] + 1);
     let nidx = |ix: usize, iy: usize, iz: usize| (iz * nyp + iy) * nxp + ix;
-    let mut node_map = vec![u32::MAX; nxp * nyp * (nz + 1)];
+    let mut node_map = vec![u32::MAX; nxp * nyp * (n[2] + 1)];
     let mut nodes: Vec<[f64; 3]> = Vec::new();
+    let mut node_ijk = Vec::new();
     let mut cells = Vec::new();
-    for iz in 0..nz {
-        for iy in 0..ny {
-            for ix in 0..nx {
-                if !v.active[eidx(ix, iy, iz)] {
+    let mut cell_sizes = Vec::new();
+    for iz in 0..n[2] {
+        for iy in 0..n[1] {
+            for ix in 0..n[0] {
+                if !active[(iz * n[1] + iy) * n[0] + ix] {
                     continue;
                 }
                 let mut corner = [0u32; 8];
                 for (c, slot) in corner.iter_mut().enumerate() {
                     let (dx, dy, dz) = (c & 1, (c >> 1) & 1, (c >> 2) & 1);
-                    let gi = nidx(ix + dx, iy + dy, iz + dz);
+                    let (i, j, k) = (ix + dx, iy + dy, iz + dz);
+                    let gi = nidx(i, j, k);
                     if node_map[gi] == u32::MAX {
                         node_map[gi] = nodes.len() as u32;
-                        nodes.push([
-                            v.min[0] + (ix + dx) as f64 * v.pitch[0],
-                            v.min[1] + (iy + dy) as f64 * v.pitch[1],
-                            v.min[2] + (iz + dz) as f64 * v.pitch[2],
-                        ]);
+                        nodes.push([axes[0][i], axes[1][j], axes[2][k]]);
+                        node_ijk.push([i as u32, j as u32, k as u32]);
                     }
                     *slot = node_map[gi];
                 }
                 cells.push(corner);
+                cell_sizes.push([
+                    axes[0][ix + 1] - axes[0][ix],
+                    axes[1][iy + 1] - axes[1][iy],
+                    axes[2][iz + 1] - axes[2][iz],
+                ]);
             }
         }
     }
-    Ok(HexMesh {
+    let pitch = [0, 1, 2].map(|a| {
+        axes[a].windows(2).map(|w| w[1] - w[0]).fold(0.0f64, f64::max)
+    });
+    HexMesh {
         nodes,
         cells,
-        h: v.h,
-        pitch: v.pitch,
-        grid: v.n,
-    })
+        h,
+        pitch,
+        grid: n,
+        cell_sizes,
+        axes: axes.clone(),
+        node_ijk,
+    }
+}
+
+/// Fill a closed mesh with bricks on a **rectilinear** grid whose planes
+/// include every axis-aligned face of the part (pocket floors, steps, slot
+/// walls), with the gaps subdivided to at most `max_cell` per axis. A uniform
+/// lattice snaps such faces to the nearest cell plane — a 2.74 mm pocket
+/// floor read as a 3 mm or a 4 mm web depending on the cell size, which
+/// moved a glockenspiel bar's pitch by 30% between refinements. Faces that
+/// are not axis-aligned (holes, slopes) are still staircased at `max_cell`.
+pub fn hex_fill_conforming(mesh: &TriangleMesh, max_cell: [f64; 3]) -> Result<HexMesh, MeshError> {
+    let nv = mesh.num_vertices();
+    if nv == 0 {
+        return Err(MeshError::EmptyMesh);
+    }
+    let tris: Vec<[[f64; 3]; 3]> = (0..mesh.num_triangles())
+        .map(|t| {
+            let mut tri = [[0.0; 3]; 3];
+            for (k, corner) in tri.iter_mut().enumerate() {
+                let vi = mesh.indices[3 * t + k] as usize;
+                for (a, c) in corner.iter_mut().enumerate() {
+                    *c = mesh.vertices[3 * vi + a] as f64;
+                }
+            }
+            tri
+        })
+        .collect();
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for t in &tris {
+        for p in t {
+            for a in 0..3 {
+                lo[a] = lo[a].min(p[a]);
+                hi[a] = hi[a].max(p[a]);
+            }
+        }
+    }
+    let axes: [Vec<f64>; 3] = [0, 1, 2].map(|a| {
+        let size = (hi[a] - lo[a]).max(1e-9);
+        let h = max_cell[a].clamp(size / 512.0, size);
+        let tol = size * 1e-6 + 1e-9;
+        let mut planes = vec![lo[a], hi[a]];
+        for t in &tris {
+            let z = t[0][a];
+            if (t[1][a] - z).abs() <= tol && (t[2][a] - z).abs() <= tol {
+                planes.push(z);
+            }
+        }
+        planes.sort_by(|x, y| x.partial_cmp(y).unwrap());
+        // Merge planes closer than a twentieth of a cell (tessellation noise,
+        // sliver gaps) so no brick is degenerate.
+        let mut kept: Vec<f64> = Vec::new();
+        for z in planes {
+            if kept.last().is_none_or(|&k| z - k > h * 0.05) {
+                kept.push(z);
+            }
+        }
+        if let Some(last) = kept.last_mut() {
+            *last = hi[a];
+        }
+        let mut out = vec![kept[0]];
+        for w in kept.windows(2) {
+            let n = ((w[1] - w[0]) / h).ceil().max(1.0) as usize;
+            for i in 1..=n {
+                out.push(w[0] + (w[1] - w[0]) * i as f64 / n as f64);
+            }
+        }
+        out
+    });
+    let n = [axes[0].len() - 1, axes[1].len() - 1, axes[2].len() - 1];
+    if n.iter().product::<usize>() > 4_000_000 {
+        return Err(MeshError::NoInteriorCells);
+    }
+    let mut active = vec![false; n[0] * n[1] * n[2]];
+    let zc: Vec<f64> = axes[2].windows(2).map(|w| 0.5 * (w[0] + w[1])).collect();
+    for iy in 0..n[1] {
+        for ix in 0..n[0] {
+            let dx = axes[0][ix + 1] - axes[0][ix];
+            let dy = axes[1][iy + 1] - axes[1][iy];
+            let cx = 0.5 * (axes[0][ix] + axes[0][ix + 1]) + dx * 0.01371;
+            let cy = 0.5 * (axes[1][iy] + axes[1][iy + 1]) + dy * 0.00847;
+            let mut crossings: Vec<f64> = tris.iter().filter_map(|tri| ray_z_crossing(tri, cx, cy)).collect();
+            crossings.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            let mut k = 0;
+            while k + 1 < crossings.len() {
+                let (z0, z1) = (crossings[k], crossings[k + 1]);
+                k += 2;
+                for (iz, &z) in zc.iter().enumerate() {
+                    if z > z0 && z < z1 {
+                        active[(iz * n[1] + iy) * n[0] + ix] = true;
+                    }
+                }
+            }
+        }
+    }
+    if !active.iter().any(|a| *a) {
+        return Err(MeshError::NoInteriorCells);
+    }
+    let longest = (0..3).map(|a| hi[a] - lo[a]).fold(0.0, f64::max);
+    Ok(build_hex(&axes, &active, longest / n.iter().copied().max().unwrap_or(1) as f64))
 }
 
 /// How thick the solid actually is, measured rather than assumed.

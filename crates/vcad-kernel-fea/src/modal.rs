@@ -1,6 +1,7 @@
 //! Natural frequencies and mode shapes of any solid (free vibration).
 //!
-//! The part is filled with lattice bricks ([`crate::mesh::hex_fill_pitch`]).
+//! The part is filled with bricks on a rectilinear grid whose planes include
+//! every axis-aligned face of the part ([`crate::mesh::hex_fill_conforming`]).
 //! Each brick is a trilinear hexahedron **with incompatible modes**
 //! (Wilson–Taylor): nine extra internal bubble displacements `1−ξ²` per axis,
 //! statically condensed out. Plain trilinear bricks and linear tets lock in
@@ -19,11 +20,13 @@
 //! Units: geometry in mm, modulus in Pa (via MPa in the spec), density in
 //! kg/m³; frequencies in Hz.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use tang_sparse::{CooMatrix, CsrMatrix, Preconditioner};
 use vcad_kernel_tessellate::TriangleMesh;
 
-use crate::mesh::{hex_fill_pitch, HexMesh, MeshError};
+use crate::mesh::{hex_fill_conforming, HexMesh, MeshError};
 use crate::spec::RegionBox;
 
 const TAU: f64 = 2.0 * std::f64::consts::PI;
@@ -73,8 +76,12 @@ pub struct ModalResult {
     pub nodes: Vec<[f64; 3]>,
     /// Bricks.
     pub cells: usize,
-    /// Cell size, mm.
+    /// Largest cell size per axis, mm.
     pub pitch: [f64; 3],
+    /// Grid plane coordinates per axis, mm (rectilinear lattice).
+    pub axes: [Vec<f64>; 3],
+    /// Grid indices of every node.
+    pub node_ijk: Vec<[u32; 3]>,
     /// Free DOFs.
     pub dofs: usize,
     /// LOBPCG iterations.
@@ -366,20 +373,9 @@ struct System {
 
 fn assemble(mesh: &HexMesh, spec: &ModalSpec) -> System {
     let ndof = 3 * mesh.nodes.len();
-    let p = [
-        mesh.pitch[0] / 1000.0,
-        mesh.pitch[1] / 1000.0,
-        mesh.pitch[2] / 1000.0,
-    ];
-    let (ke, me) = brick_matrices(
-        p[0],
-        p[1],
-        p[2],
-        spec.youngs_modulus_mpa * 1e6,
-        spec.poisson,
-        spec.density_kg_m3,
-    );
-    let tol = mesh.pitch[0].min(mesh.pitch[1]).min(mesh.pitch[2]) * 0.25;
+    // Element matrices per distinct brick size (a rectilinear grid has few).
+    let mut cache: HashMap<[i64; 3], (Vec<f64>, Vec<f64>)> = HashMap::new();
+    let tol = mesh.min_cell() * 0.25;
     let mut fixed = vec![false; ndof];
     for (i, x) in mesh.nodes.iter().enumerate() {
         if spec
@@ -403,7 +399,19 @@ fn assemble(mesh: &HexMesh, spec: &ModalSpec) -> System {
     let nf = free.len();
     let mut kc = CooMatrix::with_capacity(nf, nf, mesh.cells.len() * 576);
     let mut mc = CooMatrix::with_capacity(nf, nf, mesh.cells.len() * 576);
-    for cell in &mesh.cells {
+    for (ci, cell) in mesh.cells.iter().enumerate() {
+        let sz = mesh.cell_sizes[ci];
+        let key = sz.map(|v| (v * 1e6).round() as i64);
+        let (ke, me) = cache.entry(key).or_insert_with(|| {
+            brick_matrices(
+                sz[0] / 1000.0,
+                sz[1] / 1000.0,
+                sz[2] / 1000.0,
+                spec.youngs_modulus_mpa * 1e6,
+                spec.poisson,
+                spec.density_kg_m3,
+            )
+        });
         let mut dofs = [0usize; 24];
         for (c, &node) in cell.iter().enumerate() {
             for comp in 0..3 {
@@ -899,7 +907,18 @@ pub fn modal_analysis(mesh: &TriangleMesh, spec: &ModalSpec) -> Result<ModalResu
             "modulus and density must be positive, poisson in (-1, 0.5), modes ≥ 1".into(),
         ));
     }
-    let hex = hex_fill_pitch(mesh, spec.resolution, spec.max_pitch_mm).map_err(ModalError::Mesh)?;
+    // Cell size: longest axis / resolution, optionally capped per axis.
+    let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for v in mesh.vertices.as_chunks::<3>().0 {
+        for a in 0..3 {
+            lo[a] = lo[a].min(v[a] as f64);
+            hi[a] = hi[a].max(v[a] as f64);
+        }
+    }
+    let longest = (0..3).map(|a| hi[a] - lo[a]).fold(0.0, f64::max).max(1e-9);
+    let h = longest / spec.resolution.clamp(2, 512) as f64;
+    let cap = spec.max_pitch_mm.unwrap_or([h; 3]).map(|m| m.min(h));
+    let hex = hex_fill_conforming(mesh, cap).map_err(ModalError::Mesh)?;
     modal_on_mesh(&hex, spec)
 }
 
@@ -1004,6 +1023,8 @@ pub fn modal_on_mesh(hex: &HexMesh, spec: &ModalSpec) -> Result<ModalResult, Mod
         nodes: hex.nodes.clone(),
         cells: hex.cells.len(),
         pitch: hex.pitch,
+        axes: hex.axes.clone(),
+        node_ijk: hex.node_ijk.clone(),
         dofs: n,
         iterations: eig.iterations,
         mass_kg,
@@ -1132,7 +1153,7 @@ mod tests {
 #[cfg(test)]
 mod dense_check {
     use super::*;
-    use crate::mesh::{box_mesh, hex_fill_pitch};
+    use crate::mesh::{box_mesh, hex_fill_conforming};
 
     /// Dense reference: all eigenvalues of (K, M) on a tiny mesh.
     fn dense_eigs(sys: &System) -> Vec<f64> {
@@ -1193,7 +1214,7 @@ mod dense_check {
             supports: vec![],
             modes: 4,
         };
-        let hex = hex_fill_pitch(&mesh, spec.resolution, spec.max_pitch_mm).unwrap();
+        let hex = hex_fill_conforming(&mesh, spec.max_pitch_mm.unwrap()).unwrap();
         let sys = assemble(&hex, &spec);
         eprintln!(
             "dofs {} cells {} pitch {:?}",

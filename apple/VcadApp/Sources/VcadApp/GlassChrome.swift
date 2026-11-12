@@ -534,9 +534,12 @@ enum DockTools {
         out.append(Tool(id: "measure", label: "Measure", symbol: "ruler", isActive: m.measuring, enabled: doc) {
             m.measuring.toggle()
         })
+        out.append(Tool(id: "mallet", label: "Mallet", symbol: "hammer", isActive: SoundStore.shared.malletArmed, enabled: doc) {
+            SoundStore.shared.malletArmed.toggle()
+        })
         return keyed(out, ["sketch": "s", "shape.cube": "b", "shape.cylinder": "y", "op.fillet": "f",
                            "op.chamfer": "c", "op.shell": "k", "op.hole": "h", "op.circularPattern": "p",
-                           "bool.difference": "x", "bool.union": "u", "bool.intersection": "n", "measure": "i",
+                           "bool.difference": "x", "bool.union": "u", "bool.intersection": "n", "measure": "i", "mallet": "m",
                            "shape.torus": "t", "shape.wedge": "w", "shape.prism": "r"])
     }
 
