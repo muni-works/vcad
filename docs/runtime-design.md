@@ -447,3 +447,15 @@ What landed differs from the sketch above in a few deliberate ways:
   `feature_history` read. Deferring those to the frame would change
   synchronous dirty/undo/history semantics that tests and the agent rely on;
   left as documented debt along with Swift's undo stack.
+
+## The evaluator thread (fix, merged up from slice 2)
+
+Once blocking edits published frames (slice 2), the runtime thread evaluated
+eagerly whenever it went idle, so the next blocking call — another edit, a
+sync scene request, `vcad_engine_free` on close — waited behind that
+evaluation (on big documents and a slow CI runner, `WebRoundTripTests` ran
+past the job timeout). Evaluation now runs on its own `vcad-doc-eval` thread,
+as the design intended: it owns the incremental cache, evaluates frames
+latest-first (folding skipped frames' errors, acks and gesture ends into the
+next), serves blocking scene requests ahead of queued frames, and is
+detached, so dropping the runtime never waits for an evaluation.
