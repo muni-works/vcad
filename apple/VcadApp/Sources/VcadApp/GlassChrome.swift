@@ -1422,8 +1422,18 @@ extension GlassUI {
 
     static func seek(model: EditorModel, to frame: Int) async -> Double {
         let started = Date()
+        let from = model.undoStack.count
         while model.undoStack.count > frame, model.canUndo { model.undo() }
         while model.undoStack.count < frame, model.canRedo { model.redo() }
+        // Seeking to the frame we're on changes nothing: return at once.
+        // Waiting on `geometryDirty` here stalled every no-op seek for the
+        // full 60 s cap whenever the viewport had a pending (unconsumed)
+        // rebuild — e.g. a window that isn't on screen (fuzz F2).
+        guard model.undoStack.count != from || model.solving else {
+            let ms = Date().timeIntervalSince(started) * 1000
+            GlassUI.shared.lastSeekMillis = ms
+            return ms
+        }
         ReleaseWindowController.shared.refreshGeometry(model: model, collisions: false)
         // Wait for the viewport to adopt the scene (geometryDirty clears) and
         // for any background solve to finish — capped so a pathological
