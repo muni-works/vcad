@@ -351,6 +351,13 @@ fn arc_points(from: [f64; 3], to: [f64; 3], center: [f64; 3], dir: ArcDir) -> Ve
         .collect()
 }
 
+/// Run a job given as a JSON request value (in-crate callers, e.g. the
+/// instrument mill path).
+pub(crate) fn run_job_value(v: &Value) -> Result<Value, String> {
+    let req: JobRequest = serde_json::from_value(v.clone()).map_err(|e| format!("job: {e}"))?;
+    job(&req)
+}
+
 fn job(req: &JobRequest) -> Result<Value, String> {
     let s = &req.stock;
     if ![s.width, s.height, s.depth, req.clearance]

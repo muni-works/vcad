@@ -1254,6 +1254,11 @@ final class EditorModel {
     /// Bumped on every document swap or edit — the observable signal for
     /// state derived from `documentJSON` (live receipts re-verify on it).
     var documentRevision = 0
+    /// Sorted-keys JSON bytes of `documentJSON`, memoized per
+    /// `documentRevision` (see `pickingDocumentData`): hover, overlays,
+    /// marquee and analysis all ask for these bytes, and re-serializing the
+    /// whole document on every mouse move made the viewport crawl.
+    @ObservationIgnored var documentBytesCache: (revision: Int, data: Data)?
     /// Tessellated parts by stable part id, reused across edits: an engine
     /// delta drops exactly the parts it added, updated or removed, so an edit
     /// re-tessellates only those.

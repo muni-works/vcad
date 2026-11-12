@@ -459,31 +459,60 @@ enum EdgeOverlay {
     /// (`Shaders/EdgeLines.metal`): both endpoints twice, the segment
     /// direction in the normal and the side (-1/+1) in uv.x. The shader faces
     /// it to the camera at a constant pixel width.
-    static func screenLineResource(segments: [SIMD3<Float>], name: String) -> MeshResource? {
+    @MainActor static func screenLineResource(segments: [SIMD3<Float>], name: String) -> MeshResource? {
         let segCount = segments.count / 2
         guard segCount > 0 else { return nil }
-        var pos = [SIMD3<Float>](), nrm = [SIMD3<Float>](), uv = [SIMD2<Float>](), idx = [UInt32]()
-        pos.reserveCapacity(segCount * 4); nrm.reserveCapacity(segCount * 4)
-        uv.reserveCapacity(segCount * 4); idx.reserveCapacity(segCount * 12)
+        // LowLevelMesh, written straight into its buffers: MeshResource.generate
+        // "conditions" the mesh for the GPU (tangents, re-indexing) — seconds
+        // on a marquee selection of a few thousand edges, on the main thread.
+        // Vertex = position(3) + normal(3, the segment direction) + uv(2).
+        var verts = [Float]()
+        verts.reserveCapacity(segCount * 32)
+        var idx = [UInt32]()
+        idx.reserveCapacity(segCount * 12)
+        var lo = SIMD3<Float>(repeating: .infinity), hi = SIMD3<Float>(repeating: -.infinity)
+        let corners: [(Bool, SIMD2<Float>)] = [(false, [-1, 0]), (false, [1, 0]), (true, [1, 1]), (true, [-1, 1])]
+        var n: UInt32 = 0
         for s in 0..<segCount {
             let a = segments[s * 2], b = segments[s * 2 + 1]
             let d = b - a
             let len = length(d)
             guard len > 1e-6 else { continue }
             let dir = d / len
-            let o = UInt32(pos.count)
-            pos += [a, a, b, b]
-            nrm += [dir, dir, dir, dir]
-            uv += [[-1, 0], [1, 0], [1, 1], [-1, 1]]
-            idx += [o, o + 1, o + 2, o, o + 2, o + 3, o, o + 2, o + 1, o, o + 3, o + 2]
+            lo = simd_min(lo, simd_min(a, b)); hi = simd_max(hi, simd_max(a, b))
+            for (atB, uv) in corners {
+                let p = atB ? b : a
+                verts.append(p.x); verts.append(p.y); verts.append(p.z)
+                verts.append(dir.x); verts.append(dir.y); verts.append(dir.z)
+                verts.append(uv.x); verts.append(uv.y)
+            }
+            for k: UInt32 in [0, 1, 2, 0, 2, 3, 0, 2, 1, 0, 3, 2] { idx.append(n + k) }
+            n += 4
         }
-        guard !pos.isEmpty else { return nil }
-        var d = MeshDescriptor(name: name)
-        d.positions = MeshBuffers.Positions(pos)
-        d.normals = MeshBuffers.Normals(nrm)
-        d.textureCoordinates = MeshBuffers.TextureCoordinates(uv)
-        d.primitives = .triangles(idx)
-        return try? MeshResource.generate(from: [d])
+        guard n > 0 else { return nil }
+        let desc = LowLevelMesh.Descriptor(
+            vertexCapacity: Int(n),
+            vertexAttributes: [
+                LowLevelMesh.Attribute(semantic: .position, format: .float3, layoutIndex: 0, offset: 0),
+                LowLevelMesh.Attribute(semantic: .normal, format: .float3, layoutIndex: 0, offset: 12),
+                LowLevelMesh.Attribute(semantic: .uv0, format: .float2, layoutIndex: 0, offset: 24),
+            ],
+            vertexLayouts: [LowLevelMesh.Layout(bufferIndex: 0, bufferOffset: 0, bufferStride: 32)],
+            indexCapacity: idx.count,
+            indexType: .uint32
+        )
+        guard let mesh = try? LowLevelMesh(descriptor: desc) else { return nil }
+        mesh.withUnsafeMutableBytes(bufferIndex: 0) { raw in
+            verts.withUnsafeBytes { src in raw.copyMemory(from: UnsafeRawBufferPointer(rebasing: src[0..<min(src.count, raw.count)])) }
+        }
+        mesh.withUnsafeMutableIndices { raw in
+            idx.withUnsafeBytes { src in raw.copyMemory(from: UnsafeRawBufferPointer(rebasing: src[0..<min(src.count, raw.count)])) }
+        }
+        // Generous bounds: the shader extrudes quads in screen space.
+        let pad = simd_reduce_max(hi - lo) * 0.05 + 1
+        mesh.parts.replaceAll([LowLevelMesh.Part(indexCount: idx.count, topology: .triangle,
+                                                 bounds: BoundingBox(min: lo - pad, max: hi + pad))])
+        return try? MeshResource(from: mesh)
     }
 
     static func ribbonResource(segments: [SIMD3<Float>], width: Float, name: String) -> MeshResource? {

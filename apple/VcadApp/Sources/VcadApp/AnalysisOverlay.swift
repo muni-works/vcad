@@ -15,42 +15,67 @@ import simd
 // (`vcad_scene_part_face_ids`) — the same ids DFM reports and FEA picks use.
 
 /// Per-part triangles tagged with face ids, cached per document bytes.
+///
+/// Evaluated **off the main thread** with its own incremental session: the
+/// old synchronous `vcad_scene_from_json` re-evaluated the whole document on
+/// the main thread the first time a face was selected after any edit
+/// (seconds on an assembly — the app froze). Until the meshes for the
+/// current bytes are ready, callers get the previous set (or none) and
+/// `.analysisMeshesReady` is posted when the new one lands.
 @MainActor
 final class AnalysisMeshCache {
     static let shared = AnalysisMeshCache()
-    struct Part { var positions: [SIMD3<Float>]; var normals: [SIMD3<Float>]; var indices: [UInt32]; var faceIds: [UInt32] }
+    struct Part: Sendable { var positions: [SIMD3<Float>]; var normals: [SIMD3<Float>]; var indices: [UInt32]; var faceIds: [UInt32] }
     private var key: Data?
     private var parts: [Part] = []
+    private var pending: Data?
 
     func parts(for data: Data) -> [Part] {
         if data == key { return parts }
-        key = data
-        parts = []
-        let scene: OpaquePointer? = data.withUnsafeBytes { raw in
-            vcad_scene_from_json(raw.bindMemory(to: UInt8.self).baseAddress, data.count)
+        if pending != data {
+            pending = data
+            Task.detached(priority: .userInitiated) {
+                let built = Self.build(data)
+                await MainActor.run {
+                    let cache = AnalysisMeshCache.shared
+                    guard cache.pending == data else { return }
+                    cache.key = data
+                    cache.parts = built
+                    cache.pending = nil
+                    NotificationCenter.default.post(name: .analysisMeshesReady, object: nil)
+                }
+            }
         }
-        guard let scene else { return parts }
+        return []
+    }
+
+    nonisolated private static func build(_ data: Data) -> [Part] {
+        var out: [Part] = []
+        // Shared with picking: the second caller for the same bytes reuses
+        // every solid instead of re-running the booleans.
+        guard let scene = PickingState.evaluate(data) else { return out }
         defer { vcad_scene_free(scene) }
         for i in 0..<vcad_scene_part_count(scene) {
             let v = vcad_scene_part_mesh(scene, i)
             var n = 0
             let ids = vcad_scene_part_face_ids(scene, i, &n)
-            guard let vp = v.vertices, let ip = v.indices else { parts.append(.init(positions: [], normals: [], indices: [], faceIds: [])); continue }
+            guard let vp = v.vertices, let ip = v.indices else { out.append(.init(positions: [], normals: [], indices: [], faceIds: [])); continue }
             let pos = (0..<(v.vertices_len / 3)).map { SIMD3(vp[3 * $0], vp[3 * $0 + 1], vp[3 * $0 + 2]) }
             let nor: [SIMD3<Float>] = (v.normals != nil && v.normals_len == v.vertices_len)
                 ? (0..<(v.normals_len / 3)).map { SIMD3(v.normals![3 * $0], v.normals![3 * $0 + 1], v.normals![3 * $0 + 2]) }
                 : Array(repeating: .zero, count: pos.count)
             let idx = Array(UnsafeBufferPointer(start: ip, count: v.indices_len))
             let fid = ids.map { Array(UnsafeBufferPointer(start: $0, count: n)) } ?? []
-            parts.append(.init(positions: pos, normals: nor, indices: idx, faceIds: fid))
+            out.append(.init(positions: pos, normals: nor, indices: idx, faceIds: fid))
         }
-        return parts
+        return out
     }
 
     /// Triangles of `faces` on `part`, pushed out along their normals by `lift` mm.
     func faceMesh(part: Int, faces: Set<UInt32>, data: Data, lift: Float) -> MeshResource? {
+        guard !faces.isEmpty else { return nil }   // don't kick a full build for nothing
         let ps = parts(for: data)
-        guard part >= 0, part < ps.count, !faces.isEmpty else { return nil }
+        guard part >= 0, part < ps.count else { return nil }
         let p = ps[part]
         guard p.faceIds.count == p.indices.count / 3 else { return nil }
         var pos: [SIMD3<Float>] = [], idx: [UInt32] = []
@@ -68,6 +93,11 @@ final class AnalysisMeshCache {
         d.primitives = .triangles(idx)
         return try? MeshResource.generate(from: [d])
     }
+}
+
+extension Notification.Name {
+    /// `AnalysisMeshCache` finished meshes for the current document bytes.
+    static let analysisMeshesReady = Notification.Name("vcad.analysisMeshesReady")
 }
 
 @MainActor

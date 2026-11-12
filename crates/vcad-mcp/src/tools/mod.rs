@@ -10,6 +10,7 @@ pub mod core;
 pub mod docs;
 pub mod engine;
 pub mod host;
+pub mod instrument;
 pub mod loon_carry;
 pub mod proof;
 
@@ -230,6 +231,7 @@ pub fn native_tools(info: core::InfoSource) -> Vec<ToolDef> {
         .chain(proof::tools())
         .chain(atoms::tools())
         .chain(host::tools())
+        .chain(instrument::instrument_tools())
     {
         by_name.insert(t.name.clone(), t);
     }

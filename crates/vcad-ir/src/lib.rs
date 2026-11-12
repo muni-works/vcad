@@ -16,6 +16,7 @@ pub mod ecad;
 pub mod expr_parser;
 pub mod file_io;
 pub mod gear;
+pub mod instrument;
 pub mod mates;
 pub mod molecule;
 pub mod parameters;
@@ -2570,6 +2571,19 @@ pub struct Document {
     #[cfg_attr(feature = "ts-rs", ts(optional))]
     pub source: Option<DocumentSource>,
 
+    // Tuned instrument (optional, zero-cost when absent)
+    /// Tuned-bar metadata for an instrument document (`design_instrument`):
+    /// per-bar target, predicted and measured pitch — the receipt the Tune
+    /// panel flips from predicted to measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub instrument: Option<instrument::Instrument>,
+
+    /// Pitch constraints (`vcad-sound`): each holds one mode of one part at a
+    /// target frequency by solving a document parameter.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pitch_locks: Vec<instrument::PitchLock>,
+
     // Feature history (optional, zero-cost when absent)
     /// History state the DAG alone can't carry: suppressed features and the
     /// rollback marker. Written by the document engine's materializer only
@@ -2923,6 +2937,8 @@ impl Default for Document {
             timeline: None,
             part_ids: None,
             hardware: Vec::new(),
+            instrument: None,
+            pitch_locks: Vec::new(),
             history: None,
             source: None,
         }

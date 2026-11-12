@@ -795,6 +795,20 @@ char *vcad_print_call(const char *doc_json, const char *request_json);
 char *vcad_cam_job(const char *request_json);
 /* {"tools":[...]} — the kernel's default tool library. */
 char *vcad_cam_tool_library(void);
+/* --- Tuned instruments (instrument.rs) ---
+ * doc = IR Document with `instrument` metadata (design_instrument).
+ * {"op":"receipt"} | {"op":"record","measured_hz",note?,instrument?,measured_at?}
+ * (-> {bar, note, claim, receipt, document}) | {"op":"cam_jobs","note",post?}
+ * | {"op":"mill","note","out_dir",post?} | {"op":"print","plate":"bars"|"frame",
+ * "gcode_path",settings?}. mill/print are DRY RUNS: files only. */
+char *vcad_instrument_call(const char *doc_json, const char *request_json);
+/* --- How parts sound (sound.rs) ---
+ * {"op":"modes","part",modes?,quality?:"preview"|"fine",material?} -> modes
+ *   (hz, note, cents, shape[]) + animation mesh (positions, indices)
+ * | {"op":"lock","part",mode?,"target_hz",note?,"drives",tolerance_cents?}
+ *   -> {document, report} | {"op":"unlock","part",mode?} -> {document}
+ * | {"op":"check"} -> {locks:[{lock,hz,cents,holds}]}. */
+char *vcad_sound_call(const char *doc_json, const char *request_json);
 /* --- Electronics co-design (pcb.rs, schematic.rs) ---
  * Board = IR Pcb JSON (camelCase, as stored under doc.pcb / a PcbBoard node);
  * sheet = IR SchematicSheet JSON. All return owned JSON freed ONLY with

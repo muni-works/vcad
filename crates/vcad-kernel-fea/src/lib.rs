@@ -77,6 +77,7 @@ pub mod adjoint;
 pub mod convergence;
 pub mod graph;
 pub mod mesh;
+pub mod modal;
 pub mod receipt;
 pub mod section;
 pub mod solve;

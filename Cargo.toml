@@ -61,6 +61,7 @@ members = [
     "crates/vcad-kernel-thermal",
     "crates/vcad-kernel-flow",
     "crates/vcad-kernel-fea",
+    "crates/vcad-sound",
     "crates/vcad-kernel-cost",
     "crates/vcad-kernel-dfm",
     "crates/vcad-kernel-features",
@@ -160,6 +161,7 @@ default-members = [
     "crates/vcad-kernel-thermal",
     "crates/vcad-kernel-flow",
     "crates/vcad-kernel-fea",
+    "crates/vcad-sound",
     "crates/vcad-kernel-cost",
     "crates/vcad-kernel-dfm",
     "crates/vcad-kernel-features",
@@ -309,6 +311,7 @@ vcad-kernel-photonics = { path = "crates/vcad-kernel-photonics", version = "0.11
 vcad-kernel-thermal = { path = "crates/vcad-kernel-thermal", version = "0.11.0" }
 vcad-kernel-flow = { path = "crates/vcad-kernel-flow", version = "0.11.0" }
 vcad-kernel-fea = { path = "crates/vcad-kernel-fea", version = "0.11.0" }
+vcad-sound = { path = "crates/vcad-sound" }
 vcad-kernel-text = { path = "crates/vcad-kernel-text", version = "0.11.0" }
 vcad-crdt = { path = "crates/vcad-crdt", version = "0.11.0" }
 vcad-app = { path = "crates/vcad-app", version = "0.11.0" }

@@ -155,7 +155,11 @@ final class AppStore: DocumentStore {
 
     func fingerprint(_ r: StoreResource) -> String {
         switch r {
-        case .document: return revision
+        // Polled at 10 Hz on the main thread: the engine's state hash
+        // canonically re-serializes the whole document (~8% of an idle main
+        // thread in a profile). The model's edit counter moves on every
+        // document change, which is all a change detector needs.
+        case .document: return String(model.documentRevision)
         // Selection is read lazily (selectors need the B-rep); its
         // fingerprint is the inputs, not the output.
         case .selection:

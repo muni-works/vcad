@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-11-tuned-glockenspiel",
+  "version": "0.11.0",
+  "date": "2026-11-11",
+  "category": "feat",
+  "title": "Tuned instruments: design, strike, measure",
+  "summary": "design_instrument builds a C-major glockenspiel with FEM-tuned bars and one predicted receipt per bar; the Mac app's Tune panel hears each strike and flips it to measured.",
+  "features": ["acoustics", "receipts", "mac-app", "fabrication"],
+  "mcpTools": ["design_bar", "design_instrument", "record_strike", "instrument_receipt"]
+}

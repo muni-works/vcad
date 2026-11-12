@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-12-mallet-strike-to-hear",
+  "version": "0.11.0",
+  "date": "2026-11-12",
+  "category": "feat",
+  "title": "Mallet: strike any part, hear it, lock its pitch",
+  "summary": "Click a part to hear its real vibration modes and watch it flex; the pitch reads as a note, and a pitch constraint solves a dimension to keep it on that note.",
+  "features": ["acoustics", "mac-app", "constraints", "fea"],
+  "mcpTools": ["part_sound", "lock_pitch", "unlock_pitch"]
+}

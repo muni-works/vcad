@@ -68,6 +68,7 @@ pub mod fea;
 pub mod features;
 pub mod gym;
 pub mod import;
+pub mod instrument;
 mod json;
 pub mod mcp;
 pub mod pcb;
@@ -81,6 +82,7 @@ pub mod sensitivity;
 pub mod session;
 pub mod sheet_metal;
 pub mod sketch;
+pub mod sound;
 pub mod topology;
 pub mod train;
 

@@ -5786,6 +5786,7 @@ dependencies = [
  "vcad-eval",
  "vcad-ir 0.11.0",
  "vcad-kernel 0.11.0",
+ "vcad-kernel-acoustics 0.11.0",
  "vcad-kernel-assembly",
  "vcad-kernel-cam 0.11.0",
  "vcad-kernel-drafting",
@@ -5807,6 +5808,7 @@ dependencies = [
  "vcad-slicer",
  "vcad-slicer-bambu",
  "vcad-slicer-gcode",
+ "vcad-sound",
 ]
 
 [[package]]
@@ -5957,6 +5959,7 @@ version = "0.11.0"
 dependencies = [
  "serde",
  "serde_json",
+ "vcad-ir 0.11.0",
  "vcad-receipt 0.11.0",
 ]
 
@@ -7041,9 +7044,11 @@ dependencies = [
  "vcad-crdt",
  "vcad-eval",
  "vcad-ir 0.11.0",
+ "vcad-kernel-acoustics 0.11.0",
  "vcad-loon",
  "vcad-receipt-verify",
  "vcad-render",
+ "vcad-sound",
  "vcad-tool-derive 0.11.0",
 ]
 
@@ -7203,6 +7208,20 @@ dependencies = [
  "vcad-kernel-math 0.11.0",
  "vcad-kernel-tessellate 0.11.0",
  "vcad-slicer",
+]
+
+[[package]]
+name = "vcad-sound"
+version = "0.11.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "vcad-eval",
+ "vcad-ir 0.11.0",
+ "vcad-kernel-acoustics 0.11.0",
+ "vcad-kernel-fea 0.11.0",
+ "vcad-kernel-tessellate 0.11.0",
+ "vcad-loon",
 ]
 
 [[package]]
