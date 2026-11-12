@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-12-wasm-eval-hang",
+  "version": "undefined",
+  "date": "2026-11-12",
+  "category": "fix",
+  "title": "WASM kernel: document evaluation no longer hangs",
+  "summary": "The root pre-pass waited on rayon jobs that never run without threads, so every document evaluation in the WASM kernel (including @vcad/mcp) hung.",
+  "features": ["kernel", "wasm", "mcp"]
+}
