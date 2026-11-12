@@ -1,0 +1,31 @@
+; Enclosure — shell and PCB fit
+; =============================
+;
+; A rounded box hollowed with `shell`, sized from the board that goes inside
+; it. Change the board dimensions and the case grows around them, keeping the
+; clearance you asked for.
+
+[defparam board_x 60.0 :unit "mm" :min 30 :max 120]
+[defparam board_y 40.0 :unit "mm" :min 20 :max 90]
+[defparam clearance 1.0 :unit "mm" :min 0.3 :max 3]
+[defparam wall 2.0 :unit "mm" :min 1.2 :max 4]
+[defparam height 22.0 :unit "mm" :min 10 :max 50]
+
+; Outer size = board + clearance + wall on every side.
+[let ox [+ board_x [* 2 [+ clearance wall]]]]
+[let oy [+ board_y [* 2 [+ clearance wall]]]]
+
+; A filleted block, then shell it: hollow with `wall` thick sides.
+[let block [fillet 3.0 [cube ox oy height]]]
+[let case [shell wall block]]
+
+; Open the top so the board drops in.
+[let lid-cut [translate wall wall [- height wall 0.01] [cube [- ox [* 2 wall]] [- oy [* 2 wall]] [* wall 2]]]]
+
+; A USB-C opening in one end wall, centred on the board.
+[let port [translate -1 [- [/ oy 2] 4.5] [+ wall 3] [cube [+ wall 2] 9 3.5]]]
+
+[root [difference port [difference lid-cut case]] "pla"]
+
+; The board itself, so you can see the fit (and check clearance against it).
+[root [translate [+ wall clearance] [+ wall clearance] [+ wall 2] [cube board_x board_y 1.6]] "fr4"]

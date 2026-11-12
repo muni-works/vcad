@@ -1,0 +1,29 @@
+; Bracket — sketch, extrude, fillet
+; =================================
+;
+; Three moves almost every part starts with:
+;   1. sketch a profile on a plane,
+;   2. extrude it into a solid,
+;   3. round the edges you will touch.
+; This bracket is two plates made that way, joined, then drilled.
+; Change a parameter, save, and watch the model rebuild.
+
+[defparam leg 50.0 :unit "mm" :min 30 :max 90]
+[defparam rise 40.0 :unit "mm" :min 20 :max 80]
+[defparam thick 6.0 :unit "mm" :min 3 :max 12]
+[defparam width 30.0 :unit "mm" :min 15 :max 60]
+[defparam radius 1.5 :unit "mm" :min 0.5 :max 2.5]
+
+; 1. Sketch: a rectangle on the XY plane (origin, x axis, y axis, segments).
+[let rect [fn [x y] [sketch 0 0 0  1 0 0  0 1 0  #[[polygon #[0 0  x 0  x y  0 y]]]]]]
+
+; 2. Extrude each sketch into a plate, and
+; 3. fillet its edges.
+[let base [fillet radius [extrude 0 0 thick [rect leg width]]]]
+[let wall [fillet radius [extrude 0 0 rise [rect thick width]]]]
+
+; Join them, then drill one hole through each plate.
+[let drill [cylinder 3 [* thick 3]]]
+[let holes [union [translate [* leg 0.65] [/ width 2] -1 drill]
+                  [translate -1 [/ width 2] [* rise 0.65] [rotate 0 90 0 drill]]]]
+[root [difference holes [union base wall]] "aluminum"]

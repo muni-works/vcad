@@ -187,6 +187,7 @@ final class AgentCore {
     static let emptyDocument: [String: Any] = ["version": "0.1", "nodes": [String: Any](), "roots": [Any]()]
 
     private func answer(_ op: String, _ r: [String: Any]) async throws -> [String: Any] {
+        AgentBridge.shared.noteCall()
         if op == "instance_meta" { return AgentBridge.shared.instanceMeta }
         guard let m = model else { return ["error": "The app has no window yet.", "kind": "unavailable"] }
         let id = r["id"] as? String

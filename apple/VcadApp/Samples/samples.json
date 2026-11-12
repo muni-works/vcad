@@ -9,6 +9,42 @@
     "category": "Tutorial"
   },
   {
+    "id": "bracket",
+    "title": "Bracket",
+    "subtitle": "Two plates, each sketched, extruded and filleted, then joined and drilled.",
+    "lesson": "sketch → extrude → fillet",
+    "file": "bracket.loon",
+    "thumbnail": "bracket.jpg",
+    "category": "Learn"
+  },
+  {
+    "id": "spur-gear",
+    "title": "Spur gear",
+    "subtitle": "An involute gear driven by module and tooth count, lightened with a circular pattern.",
+    "lesson": "parameters, patterns",
+    "file": "spur-gear.loon",
+    "thumbnail": "spur-gear.jpg",
+    "category": "Learn"
+  },
+  {
+    "id": "enclosure",
+    "title": "Enclosure",
+    "subtitle": "A shelled case sized from the board inside it, with the board shown for the fit.",
+    "lesson": "shell, PCB fit",
+    "file": "enclosure.loon",
+    "thumbnail": "enclosure.jpg",
+    "category": "Learn"
+  },
+  {
+    "id": "tuned-bar",
+    "title": "Tuned bar",
+    "subtitle": "A glockenspiel bar. Arm the Mallet and click it to hear the note it rings at.",
+    "lesson": "strike it, hear it, using the Mallet",
+    "file": "tuned-bar.loon",
+    "thumbnail": "tuned-bar.jpg",
+    "category": "Learn"
+  },
+  {
     "id": "stirling-engine",
     "title": "Stirling engine",
     "subtitle": "Ten parts in cast iron, steel, brass and aluminum, with a flywheel on a revolute joint.",

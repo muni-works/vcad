@@ -1,0 +1,27 @@
+; Tuned bar — strike it, hear it
+; ==============================
+;
+; A glockenspiel bar. Its pitch comes from its length and the arch cut
+; underneath it. Arm the Mallet (M) and click the bar: vcad solves the
+; bar's modes and plays the note it would ring at. Lengthen the bar and it
+; drops; deepen the arch and it drops faster.
+
+[defparam length 180.0 :unit "mm" :min 100 :max 260]
+[defparam width 30.0 :unit "mm" :min 20 :max 40]
+[defparam thick 8.0 :unit "mm" :min 4 :max 12]
+[defparam arch 3.0 :unit "mm" :min 0 :max 6]
+
+[let bar [cube length width thick]]
+
+; The undercut: a long, shallow cylinder slice under the middle of the bar.
+[let span [* length 0.5]]
+[let rr [/ [+ [* span span 0.25] [* arch arch]] [* 2 [if [< arch 0.01] 0.01 arch]]]]
+[let undercut [translate [/ length 2] -1 [- arch rr]
+                [rotate -90 0 0 [cylinder rr [+ width 2]]]]]
+
+; Suspension holes at the nodes (22.4% in from each end).
+[let node [* length 0.224]]
+[let hole [fn [x] [translate x [/ width 2] -1 [cylinder 2 [+ thick 2]]]]]
+
+[root [difference [union [hole node] [hole [- length node]]]
+                  [difference undercut bar]] "aluminum"]

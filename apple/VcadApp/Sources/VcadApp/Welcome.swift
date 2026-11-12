@@ -22,6 +22,9 @@ struct SampleProject: Decodable, Identifiable, Equatable, Sendable {
     var assets: [String]? = nil
     /// Gallery category, for grouping ("Mechanical", "Electronics", …).
     var category: String? = nil
+    /// What the sample teaches ("sketch → extrude → fillet"): set on the
+    /// Welcome window's "Start from an example" cards.
+    var lesson: String? = nil
 }
 
 enum SampleLibrary {
@@ -89,128 +92,3 @@ enum SampleLibrary {
     }
 }
 
-#if os(macOS)
-/// The welcome window: shown once on first launch, and from Help ▸ Welcome to vcad.
-@MainActor
-final class WelcomeWindowController {
-    static let shared = WelcomeWindowController()
-    static let shownKey = "vcad.welcome.shown"
-    private var window: NSWindow?
-
-    /// First launch of a scratch instance, outside the headless dev hooks.
-    static func shouldShowAtLaunch(model: EditorModel,
-                                   defaults: UserDefaults = .standard,
-                                   environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
-        guard !defaults.bool(forKey: shownKey), model.isDisposableScratch else { return false }
-        if environment["VCAD_NO_WELCOME"] == "1" { return false }
-        // Smoke/dev hooks drive the app without a person in front of it.
-        return !environment.keys.contains { $0.hasPrefix("VCAD_") && $0 != "VCAD_LOON_PATH" && $0 != "VCAD_SAMPLES" }
-    }
-
-    func show(model: EditorModel) {
-        UserDefaults.standard.set(true, forKey: Self.shownKey)
-        if let window { window.makeKeyAndOrderFront(nil); return }
-        let dir = SampleLibrary.directory()
-        let samples = dir.map(SampleLibrary.load(from:)) ?? []
-        let view = WelcomeView(samples: samples, directory: dir) { [weak self] sample in
-            guard let dir else { return }
-            do {
-                let url = try SampleLibrary.materialize(sample, from: dir)
-                AppInstance.opening(url, from: model)
-                if sample.tutorial == true { NSWorkspace.shared.open(url) }   // the editor, beside the model
-                self?.window?.close()
-            } catch {
-                model.loadError = "Could not open \(sample.title): \(error.localizedDescription)"
-            }
-        } onOpen: { [weak self] in
-            self?.window?.close()
-            openPanel(model)
-        }
-        let w = NSWindow(contentViewController: NSHostingController(rootView: view))
-        w.title = "Welcome to vcad"
-        w.styleMask = [.titled, .closable, .fullSizeContentView]
-        w.titlebarAppearsTransparent = true
-        w.isReleasedWhenClosed = false
-        w.center()
-        window = w
-        w.makeKeyAndOrderFront(nil)
-    }
-}
-
-struct WelcomeView: View {
-    let samples: [SampleProject]
-    let directory: URL?
-    let onSample: (SampleProject) -> Void
-    let onOpen: () -> Void
-
-    private var tutorial: SampleProject? { samples.first { $0.tutorial == true } }
-    private var projects: [SampleProject] { samples.filter { $0.tutorial != true } }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Space.l) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Welcome to vcad").font(.largeTitle.weight(.semibold))
-                Text("Parametric CAD you can write. Start with a sample, or open your own .vcad or .loon.")
-                    .foregroundStyle(.secondary)
-            }
-            if let tutorial {
-                Button { onSample(tutorial) } label: {
-                    HStack(spacing: Theme.Space.m) {
-                        thumbnail(tutorial, height: 120).frame(width: 160)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(tutorial.title).font(.title3.weight(.semibold))
-                            Text(tutorial.subtitle).foregroundStyle(.secondary)
-                            Text("Opens the model and the source side by side.").font(.caption).foregroundStyle(.tertiary)
-                        }
-                        Spacer()
-                    }
-                    .padding(Theme.Space.m)
-                    .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
-                }
-                .buttonStyle(.plain)
-            }
-            Text("Samples").font(.headline)
-            ScrollView {
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Theme.Space.m, alignment: .top), count: 4),
-                      alignment: .leading, spacing: Theme.Space.m) {
-                ForEach(projects) { s in
-                    Button { onSample(s) } label: {
-                        VStack(alignment: .leading, spacing: 6) {
-                            thumbnail(s, height: 110)
-                            Text(s.title).font(.callout.weight(.semibold))
-                            Text(s.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(3)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Open sample \(s.title)")
-                }
-            }
-            }
-            .frame(maxHeight: 440)
-            if samples.isEmpty {
-                Text("No samples found in this build.").foregroundStyle(.secondary)
-            }
-            HStack {
-                Button("Open…") { onOpen() }
-                Spacer()
-                Text("Samples are copied to ~/Documents/vcad/Samples so you can edit them.")
-                    .font(.caption).foregroundStyle(.tertiary)
-            }
-        }
-        .padding(28)
-        .frame(width: 760)
-    }
-
-    @ViewBuilder private func thumbnail(_ s: SampleProject, height: CGFloat) -> some View {
-        if let dir = directory, let image = NSImage(contentsOf: dir.appendingPathComponent(s.thumbnail)) {
-            Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
-                .frame(minWidth: 0, maxWidth: .infinity, minHeight: height, maxHeight: height)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-        } else {
-            RoundedRectangle(cornerRadius: 8).fill(.quaternary).frame(height: height)
-        }
-    }
-}
-#endif

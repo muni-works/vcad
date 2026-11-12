@@ -57,6 +57,11 @@ final class AgentBridge {
         AgentResources.shared.startPolling()
     }
 
+    /// When an agent last called this instance — the Welcome window's live
+    /// "is working here" status.
+    private(set) var lastCallAt: Date?
+    func noteCall() { lastCallAt = Date() }
+
     /// Random per launch; agents compare it across calls to notice a relaunch.
     let instanceId = UUID().uuidString.lowercased()
     private let launched: String = {

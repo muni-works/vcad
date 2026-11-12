@@ -218,6 +218,7 @@ final class ReleaseWindowController {
             return consumed ? nil : e
         } as Any)
         updatePassThrough()
+        WelcomeWindowController.shared.reattach()
     }
 
     /// Change the existing window in place: the renderer, document, camera,
@@ -255,6 +256,7 @@ final class ReleaseWindowController {
         (w as? KeyableWindow)?.alignTitlebarButtons()
         w.makeKeyAndOrderFront(nil)
         updatePassThrough()
+        WelcomeWindowController.shared.reattach()
     }
 
     func updateDocumentWindow() {

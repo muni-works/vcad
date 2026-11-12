@@ -1,0 +1,25 @@
+; Spur gear — parameters and patterns
+; ===================================
+;
+; One involute gear, driven entirely by parameters: change the module or the
+; tooth count and the whole part follows. The lightening holes are a circular
+; pattern — one hole, repeated around the axis.
+
+[defparam module 2.0 :unit "mm" :min 1 :max 4]
+[defparam teeth 32 :min 12 :max 80]
+[defparam face 10.0 :unit "mm" :min 4 :max 30]
+[defparam bore 8.0 :unit "mm" :min 4 :max 20]
+[defparam pockets 6 :min 3 :max 10]
+
+; Pitch diameter = module × teeth.
+[let pitch-r [/ [* module teeth] 2]]
+
+; The gear itself: module, teeth, 20° pressure angle, face width, bore.
+[let blank [spur-gear module teeth 20.0 face bore]]
+
+; One pocket halfway out, then a circular pattern of it around Z.
+[let pocket-r [* pitch-r 0.18]]
+[let pocket [translate [* pitch-r 0.55] 0 -1 [cylinder pocket-r [+ face 2]]]]
+[let pattern [circular-pattern 0 0 0 0 0 1 pockets 360 pocket]]
+
+[root [difference pattern blank] "steel"]
