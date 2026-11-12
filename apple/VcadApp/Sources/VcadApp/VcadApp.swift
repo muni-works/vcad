@@ -81,6 +81,7 @@ struct VcadApp: App {
                 .task { FieldOverlayStore.shared.loadFromEnvironment() }
                 .task { await DirectManipDemo.runIfRequested(model) }
                 .task { await AssemblyOpenDemo.runIfRequested(model) }
+                .task { await RuntimeScrubBench.runIfRequested(model) }
         }
         .windowStyle(.automatic)
         .commands {

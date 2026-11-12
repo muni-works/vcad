@@ -51,6 +51,30 @@ bool vcad_engine_can_undo(const VcadEngine *engine);
 bool vcad_engine_can_redo(const VcadEngine *engine);
 void vcad_engine_string_free(char *json);
 void vcad_engine_free(VcadEngine *engine);
+
+/* Document runtime (docs/runtime-design.md). A VcadEngine is a runtime: its
+ * vcad_engine_* calls and the intents queued here run in order on one
+ * thread. Frames arrive through the sink ON THE RUNTIME THREAD; the host owns
+ * each frame and frees it with vcad_frame_free. vcad_engine_free clears the
+ * sink and joins the thread: no callback runs after it returns. */
+typedef struct VcadFrame VcadFrame;
+typedef struct VcadScene VcadScene;
+typedef void (*VcadFrameFn)(void *ctx, VcadFrame *frame);
+void vcad_doc_runtime_set_sink(const VcadEngine *engine, VcadFrameFn cb, void *ctx);
+/* {"seq":N,"intent":{"type":"set_doc_param"|"command"|"gesture_end",...}}; never blocks. */
+bool vcad_doc_runtime_send(const VcadEngine *engine, const uint8_t *json, size_t len);
+uint64_t vcad_doc_runtime_rev(const VcadEngine *engine);
+/* Undo / redo a whole gesture; state envelope (vcad_engine_string_free) or null. */
+char *vcad_doc_runtime_swap_gesture(const VcadEngine *engine, uint64_t gesture);
+void vcad_doc_runtime_forget_gesture(const VcadEngine *engine, uint64_t gesture);
+void vcad_doc_runtime_set_base_dir(const VcadEngine *engine, const uint8_t *dir, size_t len);
+uint64_t vcad_frame_rev(const VcadFrame *frame);
+uint64_t vcad_frame_acked_seq(const VcadFrame *frame);
+const char *vcad_frame_state(const VcadFrame *frame);
+const char *vcad_frame_info(const VcadFrame *frame);
+const uint8_t *vcad_frame_document_json(const VcadFrame *frame, size_t *out_len);
+VcadScene *vcad_frame_take_scene(VcadFrame *frame);
+void vcad_frame_free(VcadFrame *frame);
 /* Built-in agent: tool manifest + system prompt JSON (free with
  * vcad_engine_string_free), and read tools (describe_scene, inspect) answered
  * as {"ok":true,"result":{"text":...}} without mutating the document. */

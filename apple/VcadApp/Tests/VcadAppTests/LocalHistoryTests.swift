@@ -46,6 +46,7 @@ final class LocalHistoryTests: XCTestCase {
               let part = m.engineState?.parts.first(where: { $0.id == id }),
               let leaf = part.leafNodeIds.first else { return XCTFail("no editable part") }
         m.editVec(nodeId: leaf, key: "size", axis: "x", value: x, snapshot: true, name: "Size")
+        m.flushRuntime()
         XCTAssertEqual(cubeX(m.documentJSON), x)
     }
 

@@ -5804,6 +5804,7 @@ dependencies = [
  "vcad-printcheck",
  "vcad-receipt-verify",
  "vcad-render",
+ "vcad-runtime",
  "vcad-sim",
  "vcad-slicer",
  "vcad-slicer-bambu",
@@ -7133,6 +7134,18 @@ dependencies = [
  "vcad-kernel-gpu",
  "vcad-kernel-raytrace 0.11.0",
  "vcad-loon",
+]
+
+[[package]]
+name = "vcad-runtime"
+version = "0.11.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "vcad-app",
+ "vcad-crdt",
+ "vcad-eval",
+ "vcad-ir 0.11.0",
 ]
 
 [[package]]

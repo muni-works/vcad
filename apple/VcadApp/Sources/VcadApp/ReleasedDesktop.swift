@@ -777,7 +777,11 @@ extension ReleaseWindowController {
     /// studio's docParamDirty path): parameter scrubs and gizmo drags update
     /// the floating parts without a rebuild pop. Plain (non-instanced) part
     /// entities only — instanced docs settle on the next full rebuild.
-    func refreshGeometry(model: EditorModel, collisions: Bool = true) {
+    func refreshGeometry(model: EditorModel, collisions: Bool = true, fromRuntime: Bool = false) {
+        // A scrub that went to the document runtime refreshes when its frame
+        // lands (`adoptRuntimeFrame`); refreshing now would just redraw the
+        // old meshes on main.
+        if !fromRuntime, model.runtimeEditsInFlight { return }
         guard let centering = centeringEntity,
               let meshes = model.reevalDocumentMeshes() else { return }
         for (i, m) in meshes.enumerated() {

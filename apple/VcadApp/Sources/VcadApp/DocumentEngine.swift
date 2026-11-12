@@ -9,7 +9,7 @@ import Foundation
 /// mirrors in `Generated/EngineTypes.swift`, generated from the Rust types
 /// (`npm run swift:gen`); the materialized IR document stays raw JSON for the
 /// existing `vcad_scene_from_json` path.
-final class DocumentEngine {
+final class DocumentEngine: @unchecked Sendable {
     /// A command the engine refused (`CommandError` in Rust).
     struct Refusal: Error, CustomStringConvertible {
         /// `unknown_id`, `invalid`, `nothing_to`, `unsupported`, `batch`, or
@@ -94,13 +94,146 @@ final class DocumentEngine {
         handle = vcad_engine_new(replicaId)
     }
 
-    deinit { vcad_engine_free(handle) }
+    deinit {
+        // Clears the sink and joins the runtime thread: no frame callback
+        // runs after this returns, so the unretained `self` ctx never dangles.
+        vcad_engine_free(handle)
+    }
+
+    // MARK: Runtime (docs/runtime-design.md)
+    //
+    // The engine handle is a `vcad_runtime::Runtime`: every call above runs
+    // on its thread. `send` queues a fire-and-forget intent; the result
+    // comes back as a frame through `onFrame`, decoded OFF the main thread.
+
+    /// A frame, decoded off main: everything the editor adopts is already
+    /// built. `@unchecked`: immutable once constructed, handed main-ward once.
+    final class Frame: @unchecked Sendable {
+        let rev: UInt64
+        let ackedSeq: UInt64
+        let result: Result?
+        let documentBytes: Data
+        let graph: DocumentGraph?
+        let stateHash: String
+        /// `feature_history` rows, decoded here so the tree redraw never
+        /// waits on the runtime.
+        let history: [HistoryRow]?
+        let errors: [String]
+        let evalError: String?
+        /// Visible-root scene, owned; free with `vcad_scene_free` (or let
+        /// `deinit` do it).
+        private(set) var scene: OpaquePointer?
+
+        init(raw: OpaquePointer) {
+            rev = vcad_frame_rev(raw)
+            ackedSeq = vcad_frame_acked_seq(raw)
+            let state = vcad_frame_state(raw).map { Data(String(cString: $0).utf8) } ?? Data()
+            result = try? DocumentEngine.result(from: state)
+            var len = 0
+            if let p = vcad_frame_document_json(raw, &len) { documentBytes = Data(bytes: p, count: len) }
+            else { documentBytes = Data() }
+            graph = result.flatMap { DocumentGraph.parse($0.document, allowEmpty: true) }
+            let info = vcad_frame_info(raw)
+                .flatMap { try? JSONSerialization.jsonObject(with: Data(String(cString: $0).utf8)) as? [String: Any] } ?? [:]
+            stateHash = info["stateHash"] as? String ?? ""
+            history = (info["history"] as? String).flatMap { try? JSONDecoder().decode([HistoryRow].self, from: Data($0.utf8)) }
+            errors = info["errors"] as? [String] ?? []
+            evalError = info["evalError"] as? String
+            scene = vcad_frame_take_scene(raw)
+        }
+
+        /// Take ownership of the scene.
+        func takeScene() -> OpaquePointer? {
+            defer { scene = nil }
+            return scene
+        }
+
+        deinit { if let scene { vcad_scene_free(scene) } }
+    }
+
+    /// Frame handler, called on `frameQueue` (never main). Install once.
+    var onFrame: (@Sendable (Frame) -> Void)? {
+        didSet {
+            if onFrame == nil { vcad_doc_runtime_set_sink(handle, nil, nil); return }
+            let ctx = Unmanaged.passUnretained(self).toOpaque()
+            vcad_doc_runtime_set_sink(handle, { ctx, raw in
+                guard let ctx, let raw else { return }
+                let engine = Unmanaged<DocumentEngine>.fromOpaque(ctx).takeUnretainedValue()
+                let ptr = UInt(bitPattern: raw)
+                // Decode on our own queue so the runtime thread goes straight
+                // back to its inbox.
+                engine.frameQueue.async { [weak engine] in
+                    guard let raw = OpaquePointer(bitPattern: ptr) else { return }
+                    defer { vcad_frame_free(raw) }
+                    guard let engine, let handler = engine.onFrame else { return }
+                    handler(Frame(raw: raw))
+                }
+            }, ctx)
+        }
+    }
+    let frameQueue = DispatchQueue(label: "vcad.doc-runtime.frames", qos: .userInitiated)
+
+    /// One fire-and-forget request.
+    enum Intent {
+        case setDocParam(name: String, value: Double, gesture: UInt64, start: Bool)
+        case command(DocCommand, gesture: UInt64, start: Bool, coalesce: String?)
+        case gestureEnd(UInt64)
+    }
+
+    /// Seq of the last intent sent; `adoptedSeq` is the last one a frame the
+    /// editor adopted folded in. Unequal = edits in flight.
+    private(set) var sentSeq: UInt64 = 0
+    var adoptedSeq: UInt64 = 0
+    var intentsInFlight: Bool { sentSeq > adoptedSeq }
+    /// Runtime revision after this client's last blocking call.
+    private(set) var lastRev: UInt64 = 0
+
+    /// Queue an intent; returns its seq (0 if the runtime refused it).
+    @discardableResult
+    func send(_ intent: Intent) -> UInt64 {
+        var body: [String: Any]
+        switch intent {
+        case let .setDocParam(name, value, gesture, start):
+            body = ["type": "set_doc_param", "name": name, "value": value,
+                    "gesture": ["id": gesture, "start": start]]
+        case let .command(cmd, gesture, start, coalesce):
+            guard let data = try? JSONEncoder().encode(cmd),
+                  let obj = try? JSONSerialization.jsonObject(with: data) else { return 0 }
+            body = ["type": "command", "command": obj, "gesture": ["id": gesture, "start": start]]
+            if let coalesce { body["coalesce"] = coalesce }
+        case let .gestureEnd(id):
+            body = ["type": "gesture_end", "gesture": id]
+        }
+        sentSeq += 1
+        guard let data = try? JSONSerialization.data(withJSONObject: ["seq": sentSeq, "intent": body]) else { return 0 }
+        let ok = data.withUnsafeBytes { vcad_doc_runtime_send(handle, $0.bindMemory(to: UInt8.self).baseAddress, data.count) }
+        return ok ? sentSeq : 0
+    }
+
+    /// Adopt a frame's state as the base later deltas patch.
+    func adopt(_ frame: Frame) {
+        adoptedSeq = max(adoptedSeq, frame.ackedSeq)
+        if let r = frame.result { current = r }
+    }
+
+    /// Undo — or, called again, redo — a whole gesture.
+    func swapGesture(_ id: UInt64) throws -> Result {
+        try track(Self.unwrap(vcad_doc_runtime_swap_gesture(handle, id)))
+    }
+
+    /// Drop a gesture's snapshot (its undo entry is gone).
+    func forgetGesture(_ id: UInt64) { vcad_doc_runtime_forget_gesture(handle, id) }
+
+    /// Where relative mesh imports resolve when frames evaluate.
+    func setBaseDir(_ dir: [UInt8]) {
+        dir.withUnsafeBufferPointer { vcad_doc_runtime_set_base_dir(handle, $0.baseAddress, $0.count) }
+    }
 
     /// Apply one `DocCommand`, e.g. `.setMaterial(id: id, material: "steel")`.
     @discardableResult
     func apply(_ command: DocCommand) throws -> Result {
         let json = String(decoding: try JSONEncoder().encode(command), as: UTF8.self)
-        guard let base = current else {
+        guard let base = current, !intentsInFlight else {
             return try track(Self.unwrap(json.withCString { vcad_engine_apply(handle, $0) }))
         }
         return try track(Self.patch(base, json.withCString { vcad_engine_apply_delta(handle, $0) }))
@@ -110,7 +243,7 @@ final class DocumentEngine {
     @discardableResult
     func applyTool(_ call: ToolCall) throws -> Result {
         let json = String(decoding: try JSONEncoder().encode(call.args), as: UTF8.self)
-        guard let base = current else {
+        guard let base = current, !intentsInFlight else {
             return try track(Self.unwrap(call.tool.withCString { t in json.withCString { vcad_engine_apply_tool(handle, t, $0) } }))
         }
         return try track(Self.patch(base, call.tool.withCString { t in
@@ -181,6 +314,9 @@ final class DocumentEngine {
 
     private func track(_ r: Result) -> Result {
         current = r
+        // A blocking edit supersedes every frame minted before it.
+        lastRev = vcad_doc_runtime_rev(handle)
+        adoptedSeq = sentSeq
         return r
     }
 

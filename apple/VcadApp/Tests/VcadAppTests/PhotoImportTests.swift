@@ -63,6 +63,7 @@ final class PhotoImportTests: XCTestCase {
         let w = try XCTUnwrap(m.docParameters.first { $0.name == "base_w" }?.value)
         XCTAssertEqual(w, 70.4, accuracy: 1.0)
         m.editParameter("base_w", value: 80, snapshot: true)
+        m.flushRuntime()
         XCTAssertEqual(m.docParameters.first { $0.name == "base_w" }?.value, 80)
         XCTAssertNil(m.engineError)
     }
@@ -158,6 +159,7 @@ final class PhotoImportTests: XCTestCase {
         XCTAssertEqual(model.docParameters.first { $0.name == "base_w" }?.description?.contains("±0.12"), true)
         // A dimension is editable like any parameter.
         model.editParameter("base_w", value: 70, snapshot: true)
+        model.flushRuntime()
         XCTAssertEqual(model.docParameters.first { $0.name == "base_w" }?.value, 70)
         XCTAssertNil(model.engineError)
     }

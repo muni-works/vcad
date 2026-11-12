@@ -9,11 +9,35 @@
 use std::ffi::{c_char, CStr, CString};
 
 use vcad_app::DocumentApi;
-use vcad_crdt::ReplicaId;
+use vcad_runtime::{Config, Runtime};
 
-/// Opaque engine handle.
+/// Opaque engine handle: a `vcad_runtime::Runtime`. Every `vcad_engine_*`
+/// call runs on the runtime's thread, in order with the intents queued by
+/// `vcad_doc_runtime_send` (see `runtime.rs`).
 pub struct VcadEngine {
-    api: DocumentApi,
+    pub(crate) rt: Runtime,
+}
+
+impl VcadEngine {
+    /// Run `f` against the document on the runtime thread and wait.
+    fn with<R: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut DocumentApi) -> R + Send + 'static,
+    ) -> Result<R, String> {
+        self.rt.call(move |c| f(&mut c.api))
+    }
+
+    /// Like [`with`](Self::with), for an edit: bumps the runtime revision.
+    fn edit<R: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut DocumentApi) -> R + Send + 'static,
+    ) -> Result<R, String> {
+        self.rt.call(move |c| {
+            let r = f(&mut c.api);
+            c.bump();
+            r
+        })
+    }
 }
 
 /// Create an empty document engine. `replica_id` must be unique per
@@ -21,7 +45,11 @@ pub struct VcadEngine {
 #[no_mangle]
 pub extern "C" fn vcad_engine_new(replica_id: u64) -> *mut VcadEngine {
     Box::into_raw(Box::new(VcadEngine {
-        api: DocumentApi::new(ReplicaId(replica_id)),
+        rt: Runtime::new(Config {
+            replica: replica_id,
+            display_chord_mm: crate::DISPLAY_CHORD_MM,
+            ..Config::default()
+        }),
     }))
 }
 
@@ -39,9 +67,10 @@ pub extern "C" fn vcad_engine_apply(
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let json = unsafe { CStr::from_ptr(command_json) }
             .to_str()
-            .map_err(|e| e.to_string())?;
-        let engine = unsafe { &mut *engine };
-        Ok::<_, String>(engine.api.apply_json_envelope(json))
+            .map_err(|e| e.to_string())?
+            .to_owned();
+        let engine = unsafe { &*engine };
+        engine.edit(move |api| api.apply_json_envelope(&json))
     }));
     match result {
         Ok(Ok(out)) => CString::new(out).map_or(std::ptr::null_mut(), CString::into_raw),
@@ -71,12 +100,14 @@ pub extern "C" fn vcad_engine_apply_tool(
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let tool = unsafe { CStr::from_ptr(tool) }
             .to_str()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?
+            .to_owned();
         let args = unsafe { CStr::from_ptr(args_json) }
             .to_str()
-            .map_err(|e| e.to_string())?;
-        let engine = unsafe { &mut *engine };
-        Ok::<_, String>(engine.api.apply_tool_envelope(tool, args))
+            .map_err(|e| e.to_string())?
+            .to_owned();
+        let engine = unsafe { &*engine };
+        engine.edit(move |api| api.apply_tool_envelope(&tool, &args))
     }));
     match result {
         Ok(Ok(out)) => CString::new(out).map_or(std::ptr::null_mut(), CString::into_raw),
@@ -106,9 +137,10 @@ pub extern "C" fn vcad_engine_apply_delta(
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let json = unsafe { CStr::from_ptr(command_json) }
             .to_str()
-            .map_err(|e| e.to_string())?;
-        let engine = unsafe { &mut *engine };
-        Ok::<_, String>(engine.api.apply_json_delta_envelope(json))
+            .map_err(|e| e.to_string())?
+            .to_owned();
+        let engine = unsafe { &*engine };
+        engine.edit(move |api| api.apply_json_delta_envelope(&json))
     }));
     finish(result, "vcad_engine_apply_delta")
 }
@@ -128,12 +160,14 @@ pub extern "C" fn vcad_engine_apply_tool_delta(
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let tool = unsafe { CStr::from_ptr(tool) }
             .to_str()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?
+            .to_owned();
         let args = unsafe { CStr::from_ptr(args_json) }
             .to_str()
-            .map_err(|e| e.to_string())?;
-        let engine = unsafe { &mut *engine };
-        Ok::<_, String>(engine.api.apply_tool_delta_envelope(tool, args))
+            .map_err(|e| e.to_string())?
+            .to_owned();
+        let engine = unsafe { &*engine };
+        engine.edit(move |api| api.apply_tool_delta_envelope(&tool, &args))
     }));
     finish(result, "vcad_engine_apply_tool_delta")
 }
@@ -147,7 +181,13 @@ pub extern "C" fn vcad_engine_state_hash(engine: *const VcadEngine) -> *mut c_ch
         return std::ptr::null_mut();
     }
     let engine = unsafe { &*engine };
-    CString::new(engine.api.state_hash()).map_or(std::ptr::null_mut(), CString::into_raw)
+    match engine.with(|api| api.state_hash()) {
+        Ok(h) => owned(h),
+        Err(e) => {
+            crate::err::set_error(e);
+            std::ptr::null_mut()
+        }
+    }
 }
 
 /// Current state as an `ok` result envelope (owned; free with
@@ -160,7 +200,7 @@ pub extern "C" fn vcad_engine_state(engine: *const VcadEngine) -> *mut c_char {
         return std::ptr::null_mut();
     }
     let engine = unsafe { &*engine };
-    owned(engine.api.state_envelope())
+    finish(Ok(engine.with(|api| api.state_envelope())), "vcad_engine_state")
 }
 
 /// Replace the engine's document with an IR `Document` JSON (a `.vcad`
@@ -180,11 +220,14 @@ pub extern "C" fn vcad_engine_load_ir(
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let json = unsafe { CStr::from_ptr(ir_json) }
             .to_str()
-            .map_err(|e| e.to_string())?;
-        let engine = unsafe { &mut *engine };
-        let replica = engine.api.crdt().replica_id();
-        engine.api = DocumentApi::from_ir(json, replica)?;
-        Ok::<_, String>(engine.api.state_envelope())
+            .map_err(|e| e.to_string())?
+            .to_owned();
+        let engine = unsafe { &*engine };
+        engine.rt.call(move |c| {
+            let replica = c.api.crdt().replica_id();
+            c.replace(DocumentApi::from_ir(&json, replica)?);
+            Ok::<_, String>(c.api.state_envelope())
+        })?
     }));
     finish(result, "vcad_engine_load_ir")
 }
@@ -199,7 +242,11 @@ pub extern "C" fn vcad_engine_save(engine: *const VcadEngine, out_len: *mut usiz
         return std::ptr::null_mut();
     }
     let engine = unsafe { &*engine };
-    let bytes = engine.api.save().into_boxed_slice();
+    let Ok(bytes) = engine.with(|api| api.save()) else {
+        crate::err::set_error("vcad_engine_save: runtime stopped");
+        return std::ptr::null_mut();
+    };
+    let bytes = bytes.into_boxed_slice();
     unsafe { *out_len = bytes.len() };
     Box::into_raw(bytes).cast::<u8>()
 }
@@ -230,10 +277,12 @@ pub extern "C" fn vcad_engine_restore(
         return std::ptr::null_mut();
     }
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let data = unsafe { std::slice::from_raw_parts(bytes, len) };
-        let engine = unsafe { &mut *engine };
-        engine.api.restore_snapshot(data)?;
-        Ok::<_, String>(engine.api.state_envelope())
+        let data = unsafe { std::slice::from_raw_parts(bytes, len) }.to_vec();
+        let engine = unsafe { &*engine };
+        engine.edit(move |api| {
+            api.restore_snapshot(&data)?;
+            Ok::<_, String>(api.state_envelope())
+        })?
     }));
     finish(result, "vcad_engine_restore")
 }
@@ -241,13 +290,13 @@ pub extern "C" fn vcad_engine_restore(
 /// Whether `{"type":"undo"}` would succeed.
 #[no_mangle]
 pub extern "C" fn vcad_engine_can_undo(engine: *const VcadEngine) -> bool {
-    !engine.is_null() && unsafe { &*engine }.api.can_undo()
+    !engine.is_null() && unsafe { &*engine }.with(|api| api.can_undo()).unwrap_or(false)
 }
 
 /// Whether `{"type":"redo"}` would succeed.
 #[no_mangle]
 pub extern "C" fn vcad_engine_can_redo(engine: *const VcadEngine) -> bool {
-    !engine.is_null() && unsafe { &*engine }.api.can_redo()
+    !engine.is_null() && unsafe { &*engine }.with(|api| api.can_redo()).unwrap_or(false)
 }
 
 /// The built-in agent's tool manifest + system prompt (`vcad_app::agent`),
@@ -273,12 +322,14 @@ pub extern "C" fn vcad_engine_agent_read(
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let tool = unsafe { CStr::from_ptr(tool) }
             .to_str()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?
+            .to_owned();
         let args = unsafe { CStr::from_ptr(args_json) }
             .to_str()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| e.to_string())?
+            .to_owned();
         let engine = unsafe { &*engine };
-        Ok::<_, String>(vcad_app::agent::read_tool_envelope(&engine.api, tool, args))
+        engine.with(move |api| vcad_app::agent::read_tool_envelope(api, &tool, &args))
     }));
     finish(result, "vcad_engine_agent_read")
 }

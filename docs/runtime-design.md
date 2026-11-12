@@ -297,3 +297,40 @@ Each slice lands as its own PR, app usable at every step.
    acceptable as a temporary, counted debt?
 5. **Fine-LOD trigger:** gesture end + 150 ms stable — or always produce fine
    in the background at lower priority?
+
+## Slice 1 as built
+
+What landed differs from the sketch above in a few deliberate ways:
+
+- **No separate handle.** `VcadEngine` (the existing `vcad_engine_*` handle)
+  now wraps `vcad_runtime::Runtime`. Every blocking engine call runs on the
+  runtime thread through `Runtime::call`, so the shim needed no new blocking
+  API and UI, agent and MCP host-hook edits are ordered with the intents for
+  free. New C ABI: `vcad_doc_runtime_{set_sink,send,rev,swap_gesture,
+  forget_gesture,set_base_dir}` and `vcad_frame_*`.
+- **One frame per batch, no LOD yet.** A frame carries the state envelope,
+  IR bytes, state hash and the evaluated scene together, so the editor adopts
+  document and meshes atomically. Coarse→fine LOD and pool-side cancellation
+  are not in slice 1: evaluation runs on the runtime thread, and "latest
+  wins" comes from coalescing (if more intents queued during a batch, the
+  frame is skipped and folded into the next one).
+- **Undo stays in Swift, data in Rust.** The Swift stack keeps labels and
+  sketch scoping; a scrub gesture pushes `UndoEntry.Step.gesture(id)` whose
+  snapshot lives in the runtime (`swap_gesture` undoes and redoes). Moving the
+  whole stack is still the plan for the MCP slice.
+- **Staleness = revision.** Every blocking edit bumps the runtime revision;
+  the editor drops any frame not newer than its last blocking edit or last
+  adopted frame. While intents are in flight `DocumentEngine` asks for full
+  states instead of deltas (its delta base would be stale).
+- **Frame decoding** (state JSON → `Result`, `DocumentGraph.parse`, mesh
+  gathering via `vcad_scene_part_mesh`/edges) happens on the engine's frame
+  queue; main swaps values in and builds `MeshResource`s only for parts whose
+  root content key changed. The frame's IR bytes seed
+  `documentBytesCache`, so picking/analysis/sound keys no longer serialize
+  the document on main.
+- **SHIM(runtime) left:** non-scrub edits (blocking calls, now off-thread but
+  still waited on), instanced/pattern documents (re-tessellate on main after
+  a frame), `flushRuntime()` for callers that read state right after a scrub
+  (tests, smoke harnesses). `VCAD_RUNTIME_SCRUB=0` restores the old path.
+- **Profiling hook:** `VCAD_SCRUB_BENCH=1` (`RuntimeBench.swift`) drives a
+  180-tick parameter scrub and five Mallet strikes for `sample(1)`.
