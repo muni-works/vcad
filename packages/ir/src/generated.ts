@@ -2051,6 +2051,11 @@ source?: DocumentSource,
  */
 instrument?: Instrument, 
 /**
+ * Pitch constraints (`vcad-sound`): each holds one mode of one part at a
+ * target frequency by solving a document parameter.
+ */
+pitch_locks: Array<PitchLock>, 
+/**
  * History state the DAG alone can't carry: suppressed features and the
  * rollback marker. Written by the document engine's materializer only
  * when one of those is in use, and honored on import so they survive an
@@ -5381,6 +5386,38 @@ export type PinRole = "Power" | "Ground" | "Signal" | "Analog" | "Clock" | "Rese
  * Pin electrical type for ERC validation.
  */
 export type PinType = "Input" | "Output" | "Bidirectional" | "TriState" | "Passive" | "PowerInput" | "PowerOutput" | "OpenCollector" | "OpenEmitter" | "NotConnected" | "Free";
+
+/**
+ * A pitch constraint: hold elastic mode `mode` (1 = fundamental) of `part`
+ * at `target_hz` by solving document parameter `drives`. Unlike a sketch
+ * constraint it is solved through the real geometry (evaluate → modal →
+ * Newton), by `vcad-sound`.
+ */
+export type PitchLock = { 
+/**
+ * Part (root node) name.
+ */
+part: string, 
+/**
+ * 1-based elastic mode number.
+ */
+mode: number, 
+/**
+ * Target frequency, Hz.
+ */
+target_hz: number, 
+/**
+ * Target note label, e.g. `"G6"` (display only; `target_hz` rules).
+ */
+note?: string, 
+/**
+ * Document parameter the lock solves.
+ */
+drives: string, 
+/**
+ * Done when within this many cents.
+ */
+tolerance_cents: number, };
 
 /**
  * Post-processing effects configuration.
