@@ -652,6 +652,10 @@ export class Solid {
      */
     isEmpty(): boolean;
     /**
+     * True when the solid's faces point inward (negative signed volume).
+     */
+    isInsideOut(): boolean;
+    /**
      * Create a linear pattern of the solid along a direction.
      *
      * # Arguments
@@ -733,13 +737,31 @@ export class Solid {
      */
     sectionView(plane_json: string, hatch_json?: string | null, segments?: number | null): any;
     /**
+     * Shell with faces removed: hollow inward by `thickness` and leave
+     * the referenced faces as the opening (an open-top box).
+     * `open_faces_json` is a JSON array of IR `FaceRef`s
+     * (`{name}` and/or `{point:{x,y,z}, normal:{x,y,z}}`). An empty array
+     * is the closed shell.
+     */
+    shellOpen(thickness: number, open_faces_json: string): Solid;
+    /**
      * Shell (hollow) the solid by offsetting all faces inward.
      */
     shell(thickness: number): Solid;
     /**
+     * Signed volume: positive for an outward-facing solid, negative when it
+     * is inside out.
+     */
+    signedVolume(): number;
+    /**
      * Create a sphere centered at origin with given radius.
      */
     static sphere(radius: number, segments?: number | null): Solid;
+    /**
+     * Create an involute spur gear (the `SpurGear` IR node): ISO full-depth
+     * teeth, base at z = 0, tooth 0 centred on +X, optional centred bore.
+     */
+    static spurGear(module: number, teeth: number, pressure_angle_deg: number, face_width: number, bore_diameter: number, backlash: number): Solid;
     /**
      * Compute the surface area of the solid.
      */
@@ -1614,17 +1636,7 @@ export function checkDesignConstraints(doc_json: string): string;
 export function checkPrintability(solid: Solid, printer_profile: string): any;
 
 /**
- * Re-run manufacturability against a *caller-supplied* shop profile.
- *
- * Separate from [`evaluate_sheet_metal_chain`] on purpose: the spec treats
- * manufacturability as a **typed query against the model**, not a
- * by-product of mesh evaluation. The app's DFM inspector and the
- * `sheet_metal.check` MCP tool both call this so a shop's real
- * capabilities — not the generic defaults — drive the result.
- *
- * `shop_json` is field-tolerant (see [`ShopProfile`]); pass `""` for the
- * generic shop. On any error the `error` field is set and `violations` is
- * empty.
+ * Manufacturability check against a shop profile.
  */
 export function checkSheetMetal(chain_json: string, shop_json: string): string;
 
@@ -1697,8 +1709,10 @@ export function computeCreasedNormalsGpu(positions: Float32Array, indices: Uint3
  * inconsistently wound meshes), and triangle count.
  *
  * Positions are `[x, y, z, ...]` (flat f32), indices are `[i0, i1, i2, ...]`.
- * Returns `{ volume, area, bbox: { min: {x,y,z}, max: {x,y,z} },
- * centerOfMass: {x,y,z}, triangles }` in the same units as positions (mm).
+ * Returns `{ volume, signedVolume, insideOut, area, bbox: { min: {x,y,z},
+ * max: {x,y,z} }, centerOfMass: {x,y,z}, triangles }` in the same units as
+ * positions (mm). `volume` is the magnitude; `signedVolume` is negative (and
+ * `insideOut` true) for a mesh wound inside out.
  */
 export function computeMeshProperties(positions: Float32Array, indices: Uint32Array): any;
 
@@ -1711,10 +1725,7 @@ export function computeMeshProperties(positions: Float32Array, indices: Uint32Ar
 export function computeMeshVolume(positions: Float32Array, indices: Uint32Array): number;
 
 /**
- * Estimate the manufacturing cost of a sheet-metal chain.
- *
- * `rates_json` is field-tolerant (omit keys to use the generic shop
- * rates); pass `""` for full defaults. `quantity` is clamped to `>= 1`.
+ * Cost estimate for a chain.
  */
 export function costSheetMetal(chain_json: string, rates_json: string, quantity: number): string;
 
@@ -2490,12 +2501,7 @@ export function evalVcadSourceWithModules(source: string, modules_json: string):
 export function evaluateDocument(doc_json: string, skip_clash_detection: boolean): any;
 
 /**
- * Evaluate a chain of sheet-metal ops and return `(mesh, flat-pattern,
- * model-summary)` as a JSON string. Caller is responsible for parsing.
- *
- * On error, returns a JSON object with a non-null `error` field; the other
- * fields are zeroed. Never panics — every fallible kernel call is mapped
- * to an error string.
+ * Evaluate a sheet-metal op chain → mesh, flat pattern, summary, DXF.
  */
 export function evaluateSheetMetalChain(chain_json: string): string;
 
@@ -2615,14 +2621,7 @@ export function feaAnalyzeMesh(spec_json: string, options_json: string, position
 export function feaCheckBeam(case_json: string): any;
 
 /**
- * Recover a flat pattern from a solid that was **not** authored through the
- * sheet-metal ops — an extruded sketch, a boolean result, an imported STEP.
- *
- * This is the mechanical counterpart of `boardFromSolid`: it recognises the
- * constant-thickness walls and the cylindrical bends between them, rebuilds
- * the panel/bend graph, and runs it through the same unfold → silhouette →
- * DXF pipeline authored parts use. It fails closed — a solid that is not
- * constant-thickness sheet returns an `error` rather than a wrong outline.
+ * Recover a flat pattern from an arbitrary constant-thickness solid mesh.
  */
 export function flattenSolidToSheetMetal(request_json: string): string;
 
@@ -2661,27 +2660,17 @@ export function getCompiledModule(): any;
 export function getPartsManifest(): string;
 
 /**
- * Return the built-in bend-table rows as JSON.
- *
- * Exposes the curated `(material, t, R) → K` lookup so a shop / agent can
- * audit what K-factor an upcoming bend will use without having to model
- * the part first.
+ * Built-in bend-table rows.
  */
 export function getSheetMetalBendTable(): string;
 
 /**
- * Return the built-in sheet-metal materials registry as JSON.
- *
- * Lets the UI populate a material picker and the MCP tools advertise
- * what alloys are available — without each consumer hard-coding the list.
+ * Built-in sheet-metal materials registry.
  */
 export function getSheetMetalMaterials(): string;
 
 /**
- * Return a built-in shop bending catalog (per-material fixed radius,
- * K-factor, die width, relief depth, flange minimums, max bend length) as
- * JSON. Pass `"sendcutsend"`; unknown ids return `{"error": ...}` listing
- * the available catalogs.
+ * Built-in shop bending catalog by id.
  */
 export function getSheetMetalShopCatalog(shop_id: string): string;
 
@@ -2893,22 +2882,12 @@ export function latticeGaugeSimulate(spec_json: string): any;
 export function mesh_clearance(positions_a: Float32Array, indices_a: Uint32Array, positions_b: Float32Array, indices_b: Uint32Array): any;
 
 /**
- * Rectangular nesting of multiple parts on stock sheets.
- *
- * `parts_json` is a JSON array of `PartFootprint` objects (each with
- * `name`, `width_mm`, `height_mm`, `quantity`); `params_json` is a
- * `NestingParams` object (pass `""` for the generic 4'×8' default).
+ * Rectangular nesting of part footprints on stock sheets.
  */
 export function nestSheetMetalParts(parts_json: string, params_json: string): string;
 
 /**
- * Produce one layered DXF per stock sheet for a set of nested parts.
- *
- * `placements_json` is an array of `NestedPlacementDto`; each chain
- * is independently evaluated into a flat pattern, then translated /
- * rotated according to its placement before being written to the
- * sheet's DXF. Layers are the same `CUT` / `BEND_UP` / `BEND_DOWN`
- * triple a shop's post-processor already knows.
+ * One layered DXF per nested stock sheet.
  */
 export function nestedSheetMetalDxf(placements_json: string): string;
 
@@ -3389,23 +3368,12 @@ export function sample_timeline_track(track_json: string, t: number): number;
 export function sectionMesh(mesh_js: any, plane_json: string, hatch_json?: string | null): any;
 
 /**
- * Export the **folded** sheet-metal solid as a STEP AP214 file.
- *
- * Builds the model from the same chain JSON that
- * [`evaluate_sheet_metal_chain`] accepts, constructs the folded B-rep via
- * `vcad_kernel::folded_sheet_solid` (panel slabs + true cylindrical bend
- * sectors, unioned into one body), and serialises it to STEP. The
- * cylindrical bend faces let downstream fab pipelines (e.g. SendCutSend)
- * auto-detect bend radii, angles, and directions.
- *
- * Returns JSON: `{"step": "<full ASCII STEP file>", "error": null}` on
- * success or `{"step": "", "error": "..."}` on failure. Never panics.
+ * Folded solid as a STEP file with true cylindrical bend faces.
  */
 export function sheetMetalFoldedStep(chain_json: string): string;
 
 /**
- * Return a feasible bend sequence for the chain. Outermost-first
- * heuristic; pure query, no mesh evaluation.
+ * Feasible bend sequence for a chain.
  */
 export function sheetMetalSequence(chain_json: string): string;
 
@@ -4019,6 +3987,7 @@ export interface InitOutput {
     readonly solid_hullWith: (a: number, b: number) => [number, number, number];
     readonly solid_intersection: (a: number, b: number) => [number, number, number];
     readonly solid_isEmpty: (a: number) => number;
+    readonly solid_isInsideOut: (a: number) => number;
     readonly solid_linearPattern: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
     readonly solid_loft: (a: number, b: number, c: number) => [number, number, number];
     readonly solid_mirror: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
@@ -4031,7 +4000,10 @@ export interface InitOutput {
     readonly solid_scale: (a: number, b: number, c: number, d: number) => number;
     readonly solid_sectionView: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
     readonly solid_shell: (a: number, b: number) => [number, number, number];
+    readonly solid_shellOpen: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly solid_signedVolume: (a: number) => number;
     readonly solid_sphere: (a: number, b: number) => number;
+    readonly solid_spurGear: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
     readonly solid_surfaceArea: (a: number) => number;
     readonly solid_sweepHelix: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => [number, number, number];
     readonly solid_sweepLine: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number) => [number, number, number];
@@ -4142,12 +4114,12 @@ export interface InitOutput {
     readonly wasmsketchsession_undo: (a: number) => number;
     readonly writeEmbroideryDst: (a: number, b: number) => [number, number, number, number];
     readonly writeEmbroideryPes: (a: number, b: number) => [number, number, number, number];
-    readonly wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___js_sys_fd485cc146ff22c1___Function_fn_wasm_bindgen_847cf9dc19a95d2a___JsValue_____wasm_bindgen_847cf9dc19a95d2a___sys__Undefined___js_sys_fd485cc146ff22c1___Function_fn_wasm_bindgen_847cf9dc19a95d2a___JsValue_____wasm_bindgen_847cf9dc19a95d2a___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___JsValue__core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___sys__JsNullable_wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___sys__JsNullable_wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true__460: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___sys__JsNullable_wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true__461: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuDeviceLostInfo__GpuDeviceLostInfo______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___js_sys_642bfe987b1cf332___Function_fn_wasm_bindgen_8e3ced698336b946___JsValue_____wasm_bindgen_8e3ced698336b946___sys__Undefined___js_sys_642bfe987b1cf332___Function_fn_wasm_bindgen_8e3ced698336b946___JsValue_____wasm_bindgen_8e3ced698336b946___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wasm_bindgen_8e3ced698336b946___JsValue__core_d941ad8722425d2e___result__Result_____wasm_bindgen_8e3ced698336b946___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wasm_bindgen_8e3ced698336b946___sys__JsNullable_wgpu_b966c5ae24b4fafb___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_d941ad8722425d2e___result__Result_____wasm_bindgen_8e3ced698336b946___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wasm_bindgen_8e3ced698336b946___sys__JsNullable_wgpu_b966c5ae24b4fafb___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_d941ad8722425d2e___result__Result_____wasm_bindgen_8e3ced698336b946___JsError___true__464: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wasm_bindgen_8e3ced698336b946___sys__JsNullable_wgpu_b966c5ae24b4fafb___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_d941ad8722425d2e___result__Result_____wasm_bindgen_8e3ced698336b946___JsError___true__465: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wgpu_b966c5ae24b4fafb___backend__webgpu__webgpu_sys__gen_GpuDeviceLostInfo__GpuDeviceLostInfo______true_: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;

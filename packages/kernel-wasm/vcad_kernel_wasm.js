@@ -1491,6 +1491,14 @@ export class Solid {
         return ret !== 0;
     }
     /**
+     * True when the solid's faces point inward (negative signed volume).
+     * @returns {boolean}
+     */
+    isInsideOut() {
+        const ret = wasm.solid_isInsideOut(this.__wbg_ptr);
+        return ret !== 0;
+    }
+    /**
      * Create a linear pattern of the solid along a direction.
      *
      * # Arguments
@@ -1688,6 +1696,25 @@ export class Solid {
         return ret;
     }
     /**
+     * Shell with faces removed: hollow inward by `thickness` and leave
+     * the referenced faces as the opening (an open-top box).
+     * `open_faces_json` is a JSON array of IR `FaceRef`s
+     * (`{name}` and/or `{point:{x,y,z}, normal:{x,y,z}}`). An empty array
+     * is the closed shell.
+     * @param {number} thickness
+     * @param {string} open_faces_json
+     * @returns {Solid}
+     */
+    shellOpen(thickness, open_faces_json) {
+        const ptr0 = passStringToWasm0(open_faces_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.solid_shellOpen(this.__wbg_ptr, thickness, ptr0, len0);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Solid.__wrap(ret[0]);
+    }
+    /**
      * Shell (hollow) the solid by offsetting all faces inward.
      * @param {number} thickness
      * @returns {Solid}
@@ -1700,6 +1727,15 @@ export class Solid {
         return Solid.__wrap(ret[0]);
     }
     /**
+     * Signed volume: positive for an outward-facing solid, negative when it
+     * is inside out.
+     * @returns {number}
+     */
+    signedVolume() {
+        const ret = wasm.solid_signedVolume(this.__wbg_ptr);
+        return ret;
+    }
+    /**
      * Create a sphere centered at origin with given radius.
      * @param {number} radius
      * @param {number | null} [segments]
@@ -1708,6 +1744,24 @@ export class Solid {
     static sphere(radius, segments) {
         const ret = wasm.solid_sphere(radius, isLikeNone(segments) ? Number.MAX_SAFE_INTEGER : (segments) >>> 0);
         return Solid.__wrap(ret);
+    }
+    /**
+     * Create an involute spur gear (the `SpurGear` IR node): ISO full-depth
+     * teeth, base at z = 0, tooth 0 centred on +X, optional centred bore.
+     * @param {number} module
+     * @param {number} teeth
+     * @param {number} pressure_angle_deg
+     * @param {number} face_width
+     * @param {number} bore_diameter
+     * @param {number} backlash
+     * @returns {Solid}
+     */
+    static spurGear(module, teeth, pressure_angle_deg, face_width, bore_diameter, backlash) {
+        const ret = wasm.solid_spurGear(module, teeth, pressure_angle_deg, face_width, bore_diameter, backlash);
+        if (ret[2]) {
+            throw takeFromExternrefTable0(ret[1]);
+        }
+        return Solid.__wrap(ret[0]);
     }
     /**
      * Compute the surface area of the solid.
@@ -4182,17 +4236,7 @@ export function checkPrintability(solid, printer_profile) {
 }
 
 /**
- * Re-run manufacturability against a *caller-supplied* shop profile.
- *
- * Separate from [`evaluate_sheet_metal_chain`] on purpose: the spec treats
- * manufacturability as a **typed query against the model**, not a
- * by-product of mesh evaluation. The app's DFM inspector and the
- * `sheet_metal.check` MCP tool both call this so a shop's real
- * capabilities — not the generic defaults — drive the result.
- *
- * `shop_json` is field-tolerant (see [`ShopProfile`]); pass `""` for the
- * generic shop. On any error the `error` field is set and `violations` is
- * empty.
+ * Manufacturability check against a shop profile.
  * @param {string} chain_json
  * @param {string} shop_json
  * @returns {string}
@@ -4370,8 +4414,10 @@ export function computeCreasedNormalsGpu(positions, indices, crease_angle) {
  * inconsistently wound meshes), and triangle count.
  *
  * Positions are `[x, y, z, ...]` (flat f32), indices are `[i0, i1, i2, ...]`.
- * Returns `{ volume, area, bbox: { min: {x,y,z}, max: {x,y,z} },
- * centerOfMass: {x,y,z}, triangles }` in the same units as positions (mm).
+ * Returns `{ volume, signedVolume, insideOut, area, bbox: { min: {x,y,z},
+ * max: {x,y,z} }, centerOfMass: {x,y,z}, triangles }` in the same units as
+ * positions (mm). `volume` is the magnitude; `signedVolume` is negative (and
+ * `insideOut` true) for a mesh wound inside out.
  * @param {Float32Array} positions
  * @param {Uint32Array} indices
  * @returns {any}
@@ -4407,10 +4453,7 @@ export function computeMeshVolume(positions, indices) {
 }
 
 /**
- * Estimate the manufacturing cost of a sheet-metal chain.
- *
- * `rates_json` is field-tolerant (omit keys to use the generic shop
- * rates); pass `""` for full defaults. `quantity` is clamped to `>= 1`.
+ * Cost estimate for a chain.
  * @param {string} chain_json
  * @param {string} rates_json
  * @param {number} quantity
@@ -6263,12 +6306,7 @@ export function evaluateDocument(doc_json, skip_clash_detection) {
 }
 
 /**
- * Evaluate a chain of sheet-metal ops and return `(mesh, flat-pattern,
- * model-summary)` as a JSON string. Caller is responsible for parsing.
- *
- * On error, returns a JSON object with a non-null `error` field; the other
- * fields are zeroed. Never panics — every fallible kernel call is mapped
- * to an error string.
+ * Evaluate a sheet-metal op chain → mesh, flat pattern, summary, DXF.
  * @param {string} chain_json
  * @returns {string}
  */
@@ -6542,14 +6580,7 @@ export function feaCheckBeam(case_json) {
 }
 
 /**
- * Recover a flat pattern from a solid that was **not** authored through the
- * sheet-metal ops — an extruded sketch, a boolean result, an imported STEP.
- *
- * This is the mechanical counterpart of `boardFromSolid`: it recognises the
- * constant-thickness walls and the cylindrical bends between them, rebuilds
- * the panel/bend graph, and runs it through the same unfold → silhouette →
- * DXF pipeline authored parts use. It fails closed — a solid that is not
- * constant-thickness sheet returns an `error` rather than a wrong outline.
+ * Recover a flat pattern from an arbitrary constant-thickness solid mesh.
  * @param {string} request_json
  * @returns {string}
  */
@@ -6689,11 +6720,7 @@ export function getPartsManifest() {
 }
 
 /**
- * Return the built-in bend-table rows as JSON.
- *
- * Exposes the curated `(material, t, R) → K` lookup so a shop / agent can
- * audit what K-factor an upcoming bend will use without having to model
- * the part first.
+ * Built-in bend-table rows.
  * @returns {string}
  */
 export function getSheetMetalBendTable() {
@@ -6710,10 +6737,7 @@ export function getSheetMetalBendTable() {
 }
 
 /**
- * Return the built-in sheet-metal materials registry as JSON.
- *
- * Lets the UI populate a material picker and the MCP tools advertise
- * what alloys are available — without each consumer hard-coding the list.
+ * Built-in sheet-metal materials registry.
  * @returns {string}
  */
 export function getSheetMetalMaterials() {
@@ -6730,10 +6754,7 @@ export function getSheetMetalMaterials() {
 }
 
 /**
- * Return a built-in shop bending catalog (per-material fixed radius,
- * K-factor, die width, relief depth, flange minimums, max bend length) as
- * JSON. Pass `"sendcutsend"`; unknown ids return `{"error": ...}` listing
- * the available catalogs.
+ * Built-in shop bending catalog by id.
  * @param {string} shop_id
  * @returns {string}
  */
@@ -7215,11 +7236,7 @@ export function mesh_clearance(positions_a, indices_a, positions_b, indices_b) {
 }
 
 /**
- * Rectangular nesting of multiple parts on stock sheets.
- *
- * `parts_json` is a JSON array of `PartFootprint` objects (each with
- * `name`, `width_mm`, `height_mm`, `quantity`); `params_json` is a
- * `NestingParams` object (pass `""` for the generic 4'×8' default).
+ * Rectangular nesting of part footprints on stock sheets.
  * @param {string} parts_json
  * @param {string} params_json
  * @returns {string}
@@ -7242,13 +7259,7 @@ export function nestSheetMetalParts(parts_json, params_json) {
 }
 
 /**
- * Produce one layered DXF per stock sheet for a set of nested parts.
- *
- * `placements_json` is an array of `NestedPlacementDto`; each chain
- * is independently evaluated into a flat pattern, then translated /
- * rotated according to its placement before being written to the
- * sheet's DXF. Layers are the same `CUT` / `BEND_UP` / `BEND_DOWN`
- * triple a shop's post-processor already knows.
+ * One layered DXF per nested stock sheet.
  * @param {string} placements_json
  * @returns {string}
  */
@@ -8504,17 +8515,7 @@ export function sectionMesh(mesh_js, plane_json, hatch_json) {
 }
 
 /**
- * Export the **folded** sheet-metal solid as a STEP AP214 file.
- *
- * Builds the model from the same chain JSON that
- * [`evaluate_sheet_metal_chain`] accepts, constructs the folded B-rep via
- * `vcad_kernel::folded_sheet_solid` (panel slabs + true cylindrical bend
- * sectors, unioned into one body), and serialises it to STEP. The
- * cylindrical bend faces let downstream fab pipelines (e.g. SendCutSend)
- * auto-detect bend radii, angles, and directions.
- *
- * Returns JSON: `{"step": "<full ASCII STEP file>", "error": null}` on
- * success or `{"step": "", "error": "..."}` on failure. Never panics.
+ * Folded solid as a STEP file with true cylindrical bend faces.
  * @param {string} chain_json
  * @returns {string}
  */
@@ -8534,8 +8535,7 @@ export function sheetMetalFoldedStep(chain_json) {
 }
 
 /**
- * Return a feasible bend sequence for the chain. Outermost-first
- * heuristic; pure query, no mesh evaluation.
+ * Feasible bend sequence for a chain.
  * @param {string} chain_json
  * @returns {string}
  */
@@ -10397,7 +10397,7 @@ function __wbg_get_imports() {
                     const a = state0.a;
                     state0.a = 0;
                     try {
-                        return wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___js_sys_fd485cc146ff22c1___Function_fn_wasm_bindgen_847cf9dc19a95d2a___JsValue_____wasm_bindgen_847cf9dc19a95d2a___sys__Undefined___js_sys_fd485cc146ff22c1___Function_fn_wasm_bindgen_847cf9dc19a95d2a___JsValue_____wasm_bindgen_847cf9dc19a95d2a___sys__Undefined_______true_(a, state0.b, arg0, arg1);
+                        return wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___js_sys_642bfe987b1cf332___Function_fn_wasm_bindgen_8e3ced698336b946___JsValue_____wasm_bindgen_8e3ced698336b946___sys__Undefined___js_sys_642bfe987b1cf332___Function_fn_wasm_bindgen_8e3ced698336b946___JsValue_____wasm_bindgen_8e3ced698336b946___sys__Undefined_______true_(a, state0.b, arg0, arg1);
                     } finally {
                         state0.a = a;
                     }
@@ -10435,7 +10435,7 @@ function __wbg_get_imports() {
                     const a = state0.a;
                     state0.a = 0;
                     try {
-                        return wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___js_sys_fd485cc146ff22c1___Function_fn_wasm_bindgen_847cf9dc19a95d2a___JsValue_____wasm_bindgen_847cf9dc19a95d2a___sys__Undefined___js_sys_fd485cc146ff22c1___Function_fn_wasm_bindgen_847cf9dc19a95d2a___JsValue_____wasm_bindgen_847cf9dc19a95d2a___sys__Undefined_______true_(a, state0.b, arg0, arg1);
+                        return wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___js_sys_642bfe987b1cf332___Function_fn_wasm_bindgen_8e3ced698336b946___JsValue_____wasm_bindgen_8e3ced698336b946___sys__Undefined___js_sys_642bfe987b1cf332___Function_fn_wasm_bindgen_8e3ced698336b946___JsValue_____wasm_bindgen_8e3ced698336b946___sys__Undefined_______true_(a, state0.b, arg0, arg1);
                     } finally {
                         state0.a = a;
                     }
@@ -10474,12 +10474,20 @@ function __wbg_get_imports() {
             const ret = Date.now();
             return ret;
         },
+        __wbg_now_e7c6795a7f81e10f: function(arg0) {
+            const ret = arg0.now();
+            return ret;
+        },
         __wbg_of_1a3f47170341cefe: function(arg0) {
             const ret = Array.of(arg0);
             return ret;
         },
         __wbg_onSubmittedWorkDone_1190213cee1ecf7e: function(arg0) {
             const ret = arg0.onSubmittedWorkDone();
+            return ret;
+        },
+        __wbg_performance_3fcf6e32a7e1ed0a: function(arg0) {
+            const ret = arg0.performance;
             return ret;
         },
         __wbg_pixelStorei_1bc7980b82e1ba4b: function(arg0, arg1, arg2) {
@@ -11167,28 +11175,28 @@ function __wbg_get_imports() {
             arg0.writeTexture(arg1, getArrayU8FromWasm0(arg2, arg3), arg4, arg5);
         }, arguments); },
         __wbindgen_generic_0000000000000001: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 6095, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___JsValue__core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true_);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [Externref], shim_idx: 6216, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wasm_bindgen_8e3ced698336b946___JsValue__core_d941ad8722425d2e___result__Result_____wasm_bindgen_8e3ced698336b946___JsError___true_);
             return ret;
         },
         __wbindgen_generic_0000000000000002: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUDevice")], shim_idx: 3951, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___sys__JsNullable_wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true_);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUDevice")], shim_idx: 4119, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wasm_bindgen_8e3ced698336b946___sys__JsNullable_wgpu_b966c5ae24b4fafb___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_d941ad8722425d2e___result__Result_____wasm_bindgen_8e3ced698336b946___JsError___true_);
             return ret;
         },
         __wbindgen_generic_0000000000000003: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUUncapturedErrorEvent")], shim_idx: 3954, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuDeviceLostInfo__GpuDeviceLostInfo______true_);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("GPUUncapturedErrorEvent")], shim_idx: 4134, ret: Unit, inner_ret: Some(Unit) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wgpu_b966c5ae24b4fafb___backend__webgpu__webgpu_sys__gen_GpuDeviceLostInfo__GpuDeviceLostInfo______true_);
             return ret;
         },
         __wbindgen_generic_0000000000000004: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("any")], shim_idx: 3951, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___sys__JsNullable_wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true__460);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("any")], shim_idx: 4119, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wasm_bindgen_8e3ced698336b946___sys__JsNullable_wgpu_b966c5ae24b4fafb___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_d941ad8722425d2e___result__Result_____wasm_bindgen_8e3ced698336b946___JsError___true__464);
             return ret;
         },
         __wbindgen_generic_0000000000000005: function(arg0, arg1) {
-            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("undefined")], shim_idx: 3951, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
-            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___sys__JsNullable_wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true__461);
+            // Cast intrinsic for `Closure(Closure { owned: true, function: Function { arguments: [NamedExternref("undefined")], shim_idx: 4119, ret: Result(Unit), inner_ret: Some(Result(Unit)) }, mutable: true }) -> Externref`.
+            const ret = makeMutClosure(arg0, arg1, wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wasm_bindgen_8e3ced698336b946___sys__JsNullable_wgpu_b966c5ae24b4fafb___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_d941ad8722425d2e___result__Result_____wasm_bindgen_8e3ced698336b946___JsError___true__465);
             return ret;
         },
         __wbindgen_generic_0000000000000006: function(arg0) {
@@ -11276,40 +11284,40 @@ function __wbg_get_imports() {
     };
 }
 
-function wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuDeviceLostInfo__GpuDeviceLostInfo______true_(arg0, arg1, arg2) {
-    wasm.wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuDeviceLostInfo__GpuDeviceLostInfo______true_(arg0, arg1, arg2);
+function wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wgpu_b966c5ae24b4fafb___backend__webgpu__webgpu_sys__gen_GpuDeviceLostInfo__GpuDeviceLostInfo______true_(arg0, arg1, arg2) {
+    wasm.wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wgpu_b966c5ae24b4fafb___backend__webgpu__webgpu_sys__gen_GpuDeviceLostInfo__GpuDeviceLostInfo______true_(arg0, arg1, arg2);
 }
 
-function wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___JsValue__core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true_(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___JsValue__core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true_(arg0, arg1, arg2);
+function wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wasm_bindgen_8e3ced698336b946___JsValue__core_d941ad8722425d2e___result__Result_____wasm_bindgen_8e3ced698336b946___JsError___true_(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wasm_bindgen_8e3ced698336b946___JsValue__core_d941ad8722425d2e___result__Result_____wasm_bindgen_8e3ced698336b946___JsError___true_(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
 }
 
-function wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___sys__JsNullable_wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true_(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___sys__JsNullable_wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true_(arg0, arg1, arg2);
+function wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wasm_bindgen_8e3ced698336b946___sys__JsNullable_wgpu_b966c5ae24b4fafb___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_d941ad8722425d2e___result__Result_____wasm_bindgen_8e3ced698336b946___JsError___true_(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wasm_bindgen_8e3ced698336b946___sys__JsNullable_wgpu_b966c5ae24b4fafb___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_d941ad8722425d2e___result__Result_____wasm_bindgen_8e3ced698336b946___JsError___true_(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
 }
 
-function wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___sys__JsNullable_wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true__460(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___sys__JsNullable_wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true__460(arg0, arg1, arg2);
+function wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wasm_bindgen_8e3ced698336b946___sys__JsNullable_wgpu_b966c5ae24b4fafb___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_d941ad8722425d2e___result__Result_____wasm_bindgen_8e3ced698336b946___JsError___true__464(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wasm_bindgen_8e3ced698336b946___sys__JsNullable_wgpu_b966c5ae24b4fafb___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_d941ad8722425d2e___result__Result_____wasm_bindgen_8e3ced698336b946___JsError___true__464(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
 }
 
-function wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___sys__JsNullable_wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true__461(arg0, arg1, arg2) {
-    const ret = wasm.wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___sys__JsNullable_wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true__461(arg0, arg1, arg2);
+function wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wasm_bindgen_8e3ced698336b946___sys__JsNullable_wgpu_b966c5ae24b4fafb___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_d941ad8722425d2e___result__Result_____wasm_bindgen_8e3ced698336b946___JsError___true__465(arg0, arg1, arg2) {
+    const ret = wasm.wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wasm_bindgen_8e3ced698336b946___sys__JsNullable_wgpu_b966c5ae24b4fafb___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_d941ad8722425d2e___result__Result_____wasm_bindgen_8e3ced698336b946___JsError___true__465(arg0, arg1, arg2);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }
 }
 
-function wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___js_sys_fd485cc146ff22c1___Function_fn_wasm_bindgen_847cf9dc19a95d2a___JsValue_____wasm_bindgen_847cf9dc19a95d2a___sys__Undefined___js_sys_fd485cc146ff22c1___Function_fn_wasm_bindgen_847cf9dc19a95d2a___JsValue_____wasm_bindgen_847cf9dc19a95d2a___sys__Undefined_______true_(arg0, arg1, arg2, arg3) {
-    wasm.wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___js_sys_fd485cc146ff22c1___Function_fn_wasm_bindgen_847cf9dc19a95d2a___JsValue_____wasm_bindgen_847cf9dc19a95d2a___sys__Undefined___js_sys_fd485cc146ff22c1___Function_fn_wasm_bindgen_847cf9dc19a95d2a___JsValue_____wasm_bindgen_847cf9dc19a95d2a___sys__Undefined_______true_(arg0, arg1, arg2, arg3);
+function wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___js_sys_642bfe987b1cf332___Function_fn_wasm_bindgen_8e3ced698336b946___JsValue_____wasm_bindgen_8e3ced698336b946___sys__Undefined___js_sys_642bfe987b1cf332___Function_fn_wasm_bindgen_8e3ced698336b946___JsValue_____wasm_bindgen_8e3ced698336b946___sys__Undefined_______true_(arg0, arg1, arg2, arg3) {
+    wasm.wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___js_sys_642bfe987b1cf332___Function_fn_wasm_bindgen_8e3ced698336b946___JsValue_____wasm_bindgen_8e3ced698336b946___sys__Undefined___js_sys_642bfe987b1cf332___Function_fn_wasm_bindgen_8e3ced698336b946___JsValue_____wasm_bindgen_8e3ced698336b946___sys__Undefined_______true_(arg0, arg1, arg2, arg3);
 }
 
 
