@@ -223,9 +223,15 @@ fi
 # ---------------------------------------------------------------- DMG
 step "Making the disk image"
 dmgsrc="$DIST/dmgsrc"; rm -rf "$dmgsrc"; mkdir -p "$dmgsrc"; ditto "$APP" "$dmgsrc/vcad.app"
-create-dmg --volname "vcad" --window-size 540 360 --icon-size 128 \
-  --icon vcad.app 140 170 --hide-extension vcad.app --app-drop-link 400 170 \
+# Drafting-sheet background (1x + 2x in one TIFF); layout lives in dmg-background.swift.
+bgdir="$DIST/dmgbg"; rm -rf "$bgdir"; mkdir -p "$bgdir"
+swift "$HERE/dmg-background.swift" "$bgdir"
+tiffutil -cathidpicheck "$bgdir/dmg-background.png" "$bgdir/dmg-background@2x.png" -out "$bgdir/background.tiff" >/dev/null
+create-dmg --volname "vcad" --background "$bgdir/background.tiff" \
+  --window-pos 200 160 --window-size 660 420 --icon-size 128 --text-size 12 \
+  --icon vcad.app 180 190 --hide-extension vcad.app --app-drop-link 480 190 \
   --no-internet-enable "$DMG" "$dmgsrc" >/dev/null
+rm -rf "$bgdir"
 rm -rf "$dmgsrc"
 codesign --force --timestamp --sign "$SIGN_ID" "$DMG"
 codesign --verify --strict "$DMG"
