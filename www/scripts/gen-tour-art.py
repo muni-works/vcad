@@ -220,10 +220,75 @@ def card_assembly():
              + '<text class="il-t" x="200" y="37" text-anchor="middle">exploded</text></g>')
     return svg("".join(g), "Exploded parts slide together onto a base plate and mate with no clashes")
 
+# ---------------------------------------------------------------- 5. versions
+def card_versions():
+    D = 9
+    g = []
+    y0 = 150
+    g.append(f'<line class="il-rail" x1="40" y1="{y0}" x2="360" y2="{y0}"/>')
+    hs = [10, 16, 16, 24, 30]
+    times = ["10:02", "10:07", "10:12", "10:17", "now"]
+    n = len(hs)
+    for i, (h, t) in enumerate(zip(hs, times)):
+        x = 64 + i * 68
+        P = iso(1.05, x, y0 - 34)
+        t0 = round(0.06 + i * 0.13, 2)
+        last = i == n - 1
+        thumb = (f'<rect class="{"il-thumb-on" if last else "il-thumb"}" x="{x-28}" y="{y0-80}" width="56" height="62"/>'
+                 + box(P, -12, -9, 0, 24, 18, h, top="il-sel" if last else "il-top")
+                 + f'<circle class="{"il-dot-on" if last else "il-dot"}" cx="{x}" cy="{y0}" r="{5 if last else 3.5}"/>'
+                 + f'<text class="il-t{" il-acc" if last else ""}" x="{x}" y="{y0+22}" text-anchor="middle">{t}</text>')
+        g.append('<g>' + anim_attr("opacity", "0;0;1;1;0", f"0;{t0};{t0+0.04};0.9;1", D) + thumb + "</g>")
+    # restore: a marker hops back to 10:12 and the "now" thumbnail matches it
+    rx = 64 + 2 * 68
+    g.append('<g>' + anim_attr("opacity", "0;0;1;1;0", "0;0.7;0.74;0.9;1", D)
+             + f'<path class="il-guide" d="M{64+4*68} {y0-88} C {64+4*68} {y0-118}, {rx} {y0-118}, {rx} {y0-88}" fill="none"/>'
+             + f'<polygon class="il-arrowhead" points="{rx-5},{y0-92} {rx+5},{y0-92} {rx},{y0-84}"/>'
+             + f'<rect class="il-chip" x="{rx+40}" y="{y0-134}" width="96" height="20"/>'
+             + f'<text class="il-t il-fg" x="{rx+88}" y="{y0-120}" text-anchor="middle">restore 10:12</text></g>')
+    g.append('<g>' + anim_attr("opacity", "1;1;0;0;1", "0;0.66;0.7;0.9;1", D)
+             + f'<text class="il-t" x="200" y="226" text-anchor="middle">autosaved · every change</text></g>')
+    g.append('<g>' + anim_attr("opacity", "0;0;1;1;0", "0;0.7;0.74;0.9;1", D)
+             + f'<text class="il-t il-ok" x="200" y="226" text-anchor="middle">✓ crash recovery · safe save</text></g>')
+    return svg("".join(g), "Autosaved versions appear on a timeline; an older version is restored")
+
+# ---------------------------------------------------------------- 6. image to CAD
+def card_photo():
+    D = 8
+    g = []
+    # the photo: a soft, shaded bracket on a table
+    g.append('<defs><linearGradient id="ilPhoto" x1="0" y1="0" x2="1" y2="1">'
+             '<stop offset="0" class="il-ph0"/><stop offset="1" class="il-ph1"/></linearGradient>'
+             '<clipPath id="ilPhotoClip"><rect x="34" y="50" width="140" height="160"/></clipPath></defs>')
+    g.append('<rect class="il-photo" x="34" y="50" width="140" height="160" fill="url(#ilPhoto)"/>')
+    g.append('<g clip-path="url(#ilPhotoClip)">'
+             '<ellipse class="il-shadow" cx="106" cy="172" rx="58" ry="10"/>'
+             '<path class="il-blob" d="M58 166 L58 104 Q58 96 66 96 L82 96 L82 150 L150 150 Q156 150 156 158 L156 166 Z"/>'
+             '<path class="il-blob-hi" d="M60 104 Q60 98 66 98 L78 98 L78 160 L62 160 Z"/>'
+             + '<line class="il-scan" x1="34" y1="50" x2="174" y2="50">'
+             + '<animate attributeName="y1" dur="8s" repeatCount="indefinite" keyTimes="0;0.06;0.36;1" values="50;50;210;210"/>'
+             + '<animate attributeName="y2" dur="8s" repeatCount="indefinite" keyTimes="0;0.06;0.36;1" values="50;50;210;210"/>'
+             + anim_attr("opacity", "0;1;1;0;0", "0;0.06;0.36;0.38;1", D) + '</line></g>')
+    g.append('<text class="il-t" x="104" y="228" text-anchor="middle">photo.jpg</text>')
+    # arrow
+    g.append('<g>' + anim_attr("opacity", "0;0;1;1;0", "0;0.36;0.4;0.9;1", D)
+             + '<line class="il-arrow" x1="186" y1="130" x2="214" y2="130"/>'
+             + '<polygon class="il-arrowhead" points="212,124 224,130 212,136"/></g>')
+    # the CAD result: an iso L-bracket drawing itself
+    P = iso(1.55, 300, 150)
+    L = box(P, -30, -20, 0, 60, 40, 8) + box(P, -30, -20, 8, 14, 40, 40)
+    g.append('<g>' + anim_attr("opacity", "0;0;1;1;0", "0;0.42;0.56;0.9;1", D) + L + "</g>")
+    a, b = P(30, 20, 0), P(30, -20, 0)
+    g.append('<g>' + anim_attr("opacity", "0;0;1;1;0", "0;0.6;0.66;0.9;1", D)
+             + f'<text class="il-t il-acc" x="{(a[0]+b[0])/2+14:.1f}" y="{(a[1]+b[1])/2+12:.1f}" text-anchor="middle" '
+               f'transform="rotate(-30 {(a[0]+b[0])/2+14:.1f} {(a[1]+b[1])/2+12:.1f})">40.0</text>'
+             + '<text class="il-t" x="300" y="228" text-anchor="middle">editable features</text></g>')
+    return svg("".join(g), "A photo of a bracket is scanned and becomes an editable CAD model")
+
 if __name__ == "__main__":
     html = pathlib.Path(__file__).resolve().parent.parent / "index.html"
     s = html.read_text()
-    arts = {"model": card_model(), "drawing": card_drawing(), "print": card_print(), "assembly": card_assembly()}
+    arts = {"model": card_model(), "drawing": card_drawing(), "print": card_print(), "assembly": card_assembly(), "versions": card_versions(), "photo": card_photo()}
     for k, v in arts.items():
         s, n = re.subn(rf"(<!-- ART:{k} -->).*?(<!-- /ART:{k} -->)", lambda m: m.group(1) + v + m.group(2), s, flags=re.S)
         assert n == 1, k
