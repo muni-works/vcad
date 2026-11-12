@@ -172,7 +172,7 @@ extension EditorModel {
         guard ok else { return false }
         if let failed = newEvaluationErrors(), !failed.isEmpty {
             undo()
-            redoStack.removeAll()
+            clearRedo()
             engineError = "The gear couldn't be built, so it was undone:\n\(failed)"
             return false
         }

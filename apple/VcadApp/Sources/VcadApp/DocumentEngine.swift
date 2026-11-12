@@ -198,17 +198,21 @@ final class DocumentEngine: @unchecked Sendable {
     private(set) var lastRev: UInt64 = 0
 
     /// Queue an intent; returns its seq (0 if the runtime refused it).
+    /// `label` names the undo entry a gesture's first intent pushes.
     @discardableResult
-    func send(_ intent: Intent) -> UInt64 {
+    func send(_ intent: Intent, label: String? = nil) -> UInt64 {
         var body: [String: Any]
         switch intent {
         case let .setDocParam(name, value, gesture, start):
-            body = ["type": "set_doc_param", "name": name, "value": value,
-                    "gesture": ["id": gesture, "start": start]]
+            var g: [String: Any] = ["id": gesture, "start": start]
+            if start, let label { g["label"] = label }
+            body = ["type": "set_doc_param", "name": name, "value": value, "gesture": g]
         case let .command(cmd, gesture, start, coalesce):
             guard let data = try? JSONEncoder().encode(cmd),
                   let obj = try? JSONSerialization.jsonObject(with: data) else { return 0 }
-            body = ["type": "command", "command": obj, "gesture": ["id": gesture, "start": start]]
+            var g: [String: Any] = ["id": gesture, "start": start]
+            if start, let label { g["label"] = label }
+            body = ["type": "command", "command": obj, "gesture": g]
             if let coalesce { body["coalesce"] = coalesce }
         case let .gestureEnd(id):
             body = ["type": "gesture_end", "gesture": id]
@@ -228,9 +232,54 @@ final class DocumentEngine: @unchecked Sendable {
         if let r = frame.result { current = r }
     }
 
-    /// Undo — or, called again, redo — a whole gesture.
-    func swapGesture(_ id: UInt64) throws -> Result {
-        try track(Self.unwrap(vcad_doc_runtime_swap_gesture(handle, id)))
+    // MARK: Undo history (vcad_runtime::History)
+
+    /// The runtime's undo history, bottom to top.
+    struct History: Equatable {
+        var undo: [String] = []
+        var redo: [String] = []
+    }
+
+    /// One history op (`vcad_doc_runtime_history`). Returns the stacks, the
+    /// new state when the op changed the document, and the raw reply.
+    @discardableResult
+    func history(_ op: [String: Any]) throws -> (history: History, state: Result?, reply: [String: Any]) {
+        let json = String(decoding: try JSONSerialization.data(withJSONObject: op), as: UTF8.self)
+        guard let raw = json.withCString({ vcad_doc_runtime_history(handle, $0) }) else {
+            throw Refusal(kind: "ffi", message: "history call failed")
+        }
+        defer { vcad_engine_string_free(raw) }
+        // A state-changing op (undo, redo, restore) is a blocking edit.
+        return historyReplyTracked(try Self.historyReply(Data(String(cString: raw).utf8)))
+    }
+
+    /// Push a snapshot this client holds as one undo entry.
+    @discardableResult
+    func historyPushSnapshot(_ label: String, _ snapshot: Data) throws -> History {
+        let raw = label.withCString { l in
+            snapshot.withUnsafeBytes { vcad_doc_runtime_history_push_snapshot(handle, l, $0.bindMemory(to: UInt8.self).baseAddress, snapshot.count) }
+        }
+        guard let raw else { throw Refusal(kind: "ffi", message: "history push failed") }
+        defer { vcad_engine_string_free(raw) }
+        return try Self.historyReply(Data(String(cString: raw).utf8)).history
+    }
+
+    private func historyReplyTracked(_ r: (history: History, state: Result?, reply: [String: Any])) -> (history: History, state: Result?, reply: [String: Any]) {
+        if let s = r.state { _ = track(s) }
+        return r
+    }
+
+    private static func historyReply(_ data: Data) throws -> (history: History, state: Result?, reply: [String: Any]) {
+        let obj = (try JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+        guard obj["ok"] as? Bool == true else {
+            throw Refusal(kind: "history", message: obj["error"] as? String ?? "history op refused")
+        }
+        let h = History(undo: obj["undo"] as? [String] ?? [], redo: obj["redo"] as? [String] ?? [])
+        var state: Result?
+        if let s = obj["state"], !(s is NSNull) {
+            state = try result(from: JSONSerialization.data(withJSONObject: s))
+        }
+        return (h, state, obj)
     }
 
     /// The runtime's scene for its current state (blocking; caller frees).
@@ -247,8 +296,6 @@ final class DocumentEngine: @unchecked Sendable {
         return Data(bytes: raw, count: strlen(raw))
     }
 
-    /// Drop a gesture's snapshot (its undo entry is gone).
-    func forgetGesture(_ id: UInt64) { vcad_doc_runtime_forget_gesture(handle, id) }
 
     /// Where relative mesh imports resolve when frames evaluate.
     func setBaseDir(_ dir: [UInt8]) {

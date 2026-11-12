@@ -98,28 +98,144 @@ pub extern "C" fn vcad_doc_runtime_rev(engine: *const VcadEngine) -> u64 {
         .unwrap_or(0)
 }
 
-/// Undo (or, called again, redo) a whole gesture: swap the document with the
-/// snapshot taken at the gesture's first intent. Returns the state envelope
-/// (free with `vcad_engine_string_free`), or null when the gesture is unknown.
+/// The shared undo history (`vcad_runtime::History`), one JSON op per call:
+///
+/// - `{"op":"list"}`
+/// - `{"op":"push_engine","label"}` — one engine history group was applied
+/// - `{"op":"mark"}` → `"mark"`: remember the current state
+/// - `{"op":"push_mark","mark","label"}` — land the mark as one snapshot entry
+/// - `{"op":"restore_mark","mark"}` — put the document back to it (a failed edit)
+/// - `{"op":"drop_mark","mark"}`
+/// - `{"op":"undo"}` / `{"op":"redo"}` → `"label"` (null: nothing to do)
+/// - `{"op":"truncate","depth"}`, `{"op":"rename_top","label"}`,
+///   `{"op":"top_is_snapshot"}`, `{"op":"clear_redo"}`, `{"op":"clear"}`
+///
+/// Every reply carries `{"ok":true,"undo":[labels],"redo":[labels]}` (bottom
+/// to top); ops that change the document add `"state"`, the state envelope.
+/// Errors: `{"ok":false,"error":…}`. Free with `vcad_engine_string_free`.
 #[no_mangle]
-pub extern "C" fn vcad_doc_runtime_swap_gesture(
+pub extern "C" fn vcad_doc_runtime_history(
     engine: *const VcadEngine,
-    gesture: u64,
+    op_json: *const c_char,
 ) -> *mut c_char {
     err::clear_error();
     let Some(engine) = (unsafe { engine.as_ref() }) else {
         return ptr::null_mut();
     };
-    match engine.rt.call(move |c| {
-        c.swap_gesture(gesture)?;
-        Ok::<_, String>(c.api.state_envelope())
-    }) {
-        Ok(Ok(s)) => CString::new(s).map_or(ptr::null_mut(), CString::into_raw),
-        Ok(Err(e)) | Err(e) => {
-            err::set_error(e);
-            ptr::null_mut()
+    let reply = match crate::analysis::parse_request(op_json) {
+        Err(e) => serde_json::json!({ "ok": false, "error": e }),
+        Ok(req) => engine
+            .rt
+            .call(move |c| history_op(c, &req))
+            .unwrap_or_else(|e| serde_json::json!({ "ok": false, "error": e })),
+    };
+    CString::new(reply.to_string()).map_or(ptr::null_mut(), CString::into_raw)
+}
+
+fn history_op(c: &mut vcad_runtime::Core, req: &serde_json::Value) -> serde_json::Value {
+    use serde_json::{json, Value};
+    let label = req
+        .get("label")
+        .and_then(Value::as_str)
+        .unwrap_or("Edit")
+        .to_string();
+    let mark = req.get("mark").and_then(Value::as_u64).unwrap_or(0);
+    let mut out = json!({ "ok": true });
+    let mut changed = false;
+    let res: Result<(), String> = match req.get("op").and_then(Value::as_str).unwrap_or("") {
+        "list" => Ok(()),
+        "push_engine" => {
+            c.history.push_engine(&label);
+            Ok(())
         }
+        "mark" => {
+            out["mark"] = json!(c.history.mark(&c.api));
+            Ok(())
+        }
+        "push_mark" => c.history.push_mark(mark, &label),
+        "restore_mark" => {
+            changed = true;
+            c.history.restore_mark(mark, &mut c.api)
+        }
+        "drop_mark" => {
+            c.history.drop_mark(mark);
+            Ok(())
+        }
+        op @ ("undo" | "redo") => {
+            let r = if op == "undo" {
+                c.history.undo(&mut c.api)
+            } else {
+                c.history.redo(&mut c.api)
+            };
+            r.map(|l| {
+                changed = l.is_some();
+                out["label"] = json!(l);
+            })
+        }
+        "truncate" => {
+            c.history
+                .truncate(req.get("depth").and_then(Value::as_u64).unwrap_or(0) as usize);
+            Ok(())
+        }
+        "rename_top" => {
+            out["renamed"] = json!(c.history.rename_top(&label));
+            Ok(())
+        }
+        "top_is_snapshot" => {
+            out["snapshot"] = json!(c.history.top_is_snapshot());
+            Ok(())
+        }
+        "clear_redo" => {
+            c.history.clear_redo();
+            Ok(())
+        }
+        "clear" => {
+            c.history.clear();
+            Ok(())
+        }
+        other => Err(format!("history: unknown op `{other}`")),
+    };
+    if let Err(e) = res {
+        return json!({ "ok": false, "error": e });
     }
+    let labels = c.history.labels();
+    out["undo"] = json!(labels.undo);
+    out["redo"] = json!(labels.redo);
+    if changed {
+        c.bump();
+        out["state"] = serde_json::from_str(&c.api.state_envelope()).unwrap_or(Value::Null);
+    }
+    out
+}
+
+/// Push a snapshot the host holds (bytes of `vcad_engine_save`) as an undo
+/// entry. Returns the `vcad_doc_runtime_history` list reply.
+#[no_mangle]
+pub extern "C" fn vcad_doc_runtime_history_push_snapshot(
+    engine: *const VcadEngine,
+    label: *const c_char,
+    bytes: *const u8,
+    len: usize,
+) -> *mut c_char {
+    let Some(engine) = (unsafe { engine.as_ref() }) else {
+        return ptr::null_mut();
+    };
+    let label = crate::json::borrow_str("label", label)
+        .unwrap_or("Edit")
+        .to_string();
+    let snap = if bytes.is_null() {
+        Vec::new()
+    } else {
+        unsafe { std::slice::from_raw_parts(bytes, len) }.to_vec()
+    };
+    let reply = engine
+        .rt
+        .call(move |c| {
+            c.history.push_snapshot(&label, snap);
+            history_op(c, &serde_json::json!({ "op": "list" }))
+        })
+        .unwrap_or_else(|e| serde_json::json!({ "ok": false, "error": e }));
+    CString::new(reply.to_string()).map_or(ptr::null_mut(), CString::into_raw)
 }
 
 /// The evaluated scene of the runtime's current state, through its
@@ -176,14 +292,6 @@ pub extern "C" fn vcad_doc_runtime_sound(
             err::set_error("vcad_doc_runtime_sound panicked");
             ptr::null_mut()
         }
-    }
-}
-
-/// Drop a gesture's snapshot (its undo entry is gone).
-#[no_mangle]
-pub extern "C" fn vcad_doc_runtime_forget_gesture(engine: *const VcadEngine, gesture: u64) {
-    if let Some(e) = unsafe { engine.as_ref() } {
-        let _ = e.rt.call(move |c| c.forget_gesture(gesture));
     }
 }
 
@@ -327,16 +435,32 @@ mod tests {
         assert!(vcad_frame_take_scene(frame).is_null());
         vcad_frame_free(frame);
 
-        // Gesture undo through the C ABI, ordered after the intent.
-        let undone = vcad_doc_runtime_swap_gesture(engine, 5);
-        assert!(!undone.is_null());
-        let s = unsafe { std::ffi::CStr::from_ptr(undone) }
-            .to_str()
-            .unwrap()
-            .to_owned();
-        crate::engine::vcad_engine_string_free(undone);
-        assert!(s.contains(r#""w":{"value":10.0"#), "{s}");
-        assert!(vcad_doc_runtime_swap_gesture(engine, 99).is_null());
+        // The gesture is one history entry; undo through the C ABI, ordered
+        // after the intent.
+        let op = |j: &str| {
+            let c = CString::new(j).unwrap();
+            let raw = vcad_doc_runtime_history(engine, c.as_ptr());
+            let v: serde_json::Value =
+                serde_json::from_str(unsafe { std::ffi::CStr::from_ptr(raw) }.to_str().unwrap())
+                    .unwrap();
+            crate::engine::vcad_engine_string_free(raw);
+            v
+        };
+        assert_eq!(op(r#"{"op":"list"}"#)["undo"], serde_json::json!(["Edit"]));
+        let u = op(r#"{"op":"undo"}"#);
+        assert_eq!(u["label"], "Edit");
+        assert_eq!(
+            u["state"]["result"]["document"]["parameters"]["w"]["value"], 10.0,
+            "{u}"
+        );
+        assert_eq!(u["redo"], serde_json::json!(["Edit"]));
+        let r = op(r#"{"op":"redo"}"#);
+        assert_eq!(
+            r["state"]["result"]["document"]["parameters"]["w"]["value"],
+            20.0
+        );
+        assert!(op(r#"{"op":"redo"}"#)["label"].is_null());
+        assert_eq!(op(r#"{"op":"bogus"}"#)["ok"], false);
 
         // Sound on the runtime's document + meshes, no host JSON.
         let req = CString::new(r#"{"op":"modes","part":0,"modes":3,"quality":"preview"}"#).unwrap();

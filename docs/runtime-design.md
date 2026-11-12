@@ -459,3 +459,26 @@ as the design intended: it owns the incremental cache, evaluates frames
 latest-first (folding skipped frames' errors, acks and gesture ends into the
 next), serves blocking scene requests ahead of queued frames, and is
 detached, so dropping the runtime never waits for an evaluation.
+
+## Undo in Rust
+
+- `vcad_runtime::History` owns the history of engine-backed documents: engine
+  entries (one CRDT history group, undone through the CRDT's own undo/redo)
+  and snapshot entries (the whole engine state, swapped on undo so the same
+  entry redoes), 64 deep. Compound edits mark the state on the runtime
+  (`mark` → `push_mark` on success, `restore_mark` on failure), so no
+  snapshot bytes cross the C ABI; a gesture's first intent pushes its own
+  snapshot entry (labelled), replacing `swap_gesture`.
+- One C entry point, `vcad_doc_runtime_history` (JSON ops: list, push_engine,
+  mark/push_mark/restore_mark/drop_mark, undo, redo, truncate, rename_top,
+  top_is_snapshot, clear_redo, clear), plus
+  `vcad_doc_runtime_history_push_snapshot` for a client that holds bytes
+  (the agent-turn path).
+- Swift's `undoStack`/`redoStack` are a mirror for the UI (`.runtime`
+  entries, re-synced from every history reply). Agent-turn folding
+  (truncate + rename the top snapshot), take-backs (`clearRedo`) and the
+  timeline scrubber all go through the runtime.
+- Still Swift's, by design: the open sketch's history (sketch state isn't
+  document state), electronics' detached JSON steps (no engine), and
+  generation undo (it swaps whole engines — each engine's history now travels
+  with it).

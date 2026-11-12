@@ -65,14 +65,18 @@ void vcad_doc_runtime_set_sink(const VcadEngine *engine, VcadFrameFn cb, void *c
  * Blocking edits also publish a frame of their revision once the inbox is idle. */
 bool vcad_doc_runtime_send(const VcadEngine *engine, const uint8_t *json, size_t len);
 uint64_t vcad_doc_runtime_rev(const VcadEngine *engine);
-/* Undo / redo a whole gesture; state envelope (vcad_engine_string_free) or null. */
-char *vcad_doc_runtime_swap_gesture(const VcadEngine *engine, uint64_t gesture);
 /* Current state's scene through the runtime's incremental cache; blocks. vcad_scene_free. */
 VcadScene *vcad_doc_runtime_scene(const VcadEngine *engine);
 /* vcad_sound_call on the runtime's document + evaluated meshes; solves on the
  * calling thread (call off the UI thread). vcad_string_free. */
 char *vcad_doc_runtime_sound(const VcadEngine *engine, const char *request_json);
-void vcad_doc_runtime_forget_gesture(const VcadEngine *engine, uint64_t gesture);
+/* The shared undo history: one JSON op ({"op":"list"|"push_engine"|"mark"|"push_mark"|
+ * "restore_mark"|"drop_mark"|"undo"|"redo"|"truncate"|"rename_top"|"top_is_snapshot"|
+ * "clear_redo"|"clear",...}) -> {"ok","undo":[labels],"redo":[labels],"state"?}.
+ * Free with vcad_engine_string_free. */
+char *vcad_doc_runtime_history(const VcadEngine *engine, const char *op_json);
+char *vcad_doc_runtime_history_push_snapshot(const VcadEngine *engine, const char *label,
+                                             const uint8_t *bytes, size_t len);
 void vcad_doc_runtime_set_base_dir(const VcadEngine *engine, const uint8_t *dir, size_t len);
 uint64_t vcad_frame_rev(const VcadFrame *frame);
 uint64_t vcad_frame_acked_seq(const VcadFrame *frame);

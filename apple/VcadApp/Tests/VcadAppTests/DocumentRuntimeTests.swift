@@ -148,6 +148,38 @@ final class DocumentRuntimeTests: XCTestCase {
         XCTAssertNotEqual(m.soundModesKey(part: 0), key, "resizing the block invalidates them")
     }
 
+    /// The undo history lives in the runtime: the editor's stacks mirror
+    /// it, and undo/redo (including a scrub gesture's one-step entry) run
+    /// through it.
+    func testUndoHistoryLivesInTheRuntime() async throws {
+        let m = try open()
+        let engine = try XCTUnwrap(m.engine)
+        m.setPartMaterial(1, "brass")
+        let leaf = try XCTUnwrap(m.engineState?.parts.first { $0.kind == "cube" }?.leafNodeIds.first)
+        m.editVec(nodeId: leaf, key: "size", axis: "x", value: 30, snapshot: true, name: "Width")
+        m.editVec(nodeId: leaf, key: "size", axis: "x", value: 31, snapshot: false, name: "Width")
+        try await settle(m)
+        let runtime = try engine.history(["op": "list"]).history
+        XCTAssertEqual(runtime.undo, m.undoStack.map(\.name), "the stacks mirror the runtime")
+        XCTAssertEqual(runtime.undo.last, "Width")
+        XCTAssertEqual(m.undoStack.count, 2, "material + one gesture")
+
+        m.undo()
+        XCTAssertEqual(cubeX(m), 20)
+        XCTAssertEqual(try engine.history(["op": "list"]).history.redo, ["Width"])
+        m.undo()
+        XCTAssertNil((m.documentJSON?["materials"] as? [String: Any])?["brass"])
+        XCTAssertTrue(m.undoStack.isEmpty)
+        m.redo(); m.redo()
+        XCTAssertEqual(cubeX(m), 31)
+        XCTAssertEqual(m.undoStack.map(\.name), try engine.history(["op": "list"]).history.undo)
+        // A new edit after undoing drops the redo stack, on the runtime too.
+        m.undo()
+        m.setPartMaterial(0, "steel")
+        XCTAssertTrue(try engine.history(["op": "list"]).history.redo.isEmpty)
+        XCTAssertTrue(m.redoStack.isEmpty)
+    }
+
     func testBlockingEditSupersedesInFlightFrames() async throws {
         let m = try open()
         let leaf = try XCTUnwrap(m.engineState?.parts.first { $0.kind == "cube" }?.leafNodeIds.first)
