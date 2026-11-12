@@ -137,8 +137,50 @@ fn sexpr_node(input: &str) -> IResult<&str, SExpr<'_>> {
     alt((list, quoted_string, atom))(input)
 }
 
+/// Deepest list nesting accepted. Real KiCad files nest < 30 deep; the
+/// parser recurses per level, so hostile nesting would abort the process
+/// with a stack overflow (fuzz F8).
+pub const MAX_SEXPR_DEPTH: usize = 512;
+
+/// Whether `input`'s parenthesis nesting (outside quoted strings) goes
+/// deeper than `max`.
+fn depth_exceeds(input: &str, max: usize) -> bool {
+    let mut depth = 0usize;
+    let mut in_str = false;
+    let mut escaped = false;
+    for b in input.bytes() {
+        if in_str {
+            match (escaped, b) {
+                (true, _) => escaped = false,
+                (false, b'\\') => escaped = true,
+                (false, b'"') => in_str = false,
+                _ => {}
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_str = true,
+            b'(' => {
+                depth += 1;
+                if depth > max {
+                    return true;
+                }
+            }
+            b')' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Parse the entire input as a top-level S-expression.
 pub fn parse_sexpr(input: &str) -> IResult<&str, SExpr<'_>> {
+    if depth_exceeds(input, MAX_SEXPR_DEPTH) {
+        return Err(nom::Err::Failure(nom::error::Error::new(
+            input,
+            nom::error::ErrorKind::TooLarge,
+        )));
+    }
     let (input, _) = ws(input)?;
     let (input, node) = sexpr_node(input)?;
     let (input, _) = ws(input)?;
@@ -202,5 +244,32 @@ mod tests {
         let (_, node) = sexpr_node("(root (pin 1) (pin 2) (pin 3))").unwrap();
         let pins = node.find_all("pin");
         assert_eq!(pins.len(), 3);
+    }
+}
+
+#[cfg(test)]
+mod fuzz_regressions {
+    /// Fuzz finding F8 (docs/qa/fuzz-2026-11-12.md): deeply nested lists
+    /// overflowed the stack in every KiCad reader. Must be a clean error,
+    /// even on a small worker-thread stack.
+    #[test]
+    fn deep_nesting_is_an_error_not_a_stack_overflow() {
+        let depth = 200_000;
+        let text = format!("(kicad_pcb {}{})", "(a ".repeat(depth), ")".repeat(depth));
+        let t2 = text.replace("kicad_pcb", "kicad_sch");
+        let pcb = std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(move || crate::parse_kicad_pcb(&text).is_err())
+            .unwrap()
+            .join();
+        assert_eq!(pcb.ok(), Some(true));
+        let sch = std::thread::Builder::new()
+            .stack_size(512 * 1024)
+            .spawn(move || crate::parse_kicad_sch(&t2).is_err())
+            .unwrap()
+            .join();
+        assert_eq!(sch.ok(), Some(true));
+        // A quoted "(" doesn't count toward depth.
+        assert!(!super::depth_exceeds(r#"(a "((((((((((")"#, 3));
     }
 }

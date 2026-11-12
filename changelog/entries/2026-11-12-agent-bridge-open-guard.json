@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-12-agent-bridge-open-guard",
+  "version": "0.11.0",
+  "date": "2026-11-12",
+  "category": "fix",
+  "title": "Agents can only open vcad documents in the app",
+  "summary": "open_document with a path now refuses non-document files (it could make any file the window's Save target), and history_seek to the current frame returns at once instead of after 60 s.",
+  "features": ["mac-app", "mcp", "agent"],
+  "mcpTools": ["open_document", "history_seek"]
+}

@@ -48,7 +48,12 @@ pub use evaluate::{
 };
 pub use kinematics::solve_forward_kinematics;
 pub use placement::placed_instance_meshes;
-pub use validate::validate_document;
+pub use validate::{find_cycle, validate_document};
+
+/// Most copies a linear/circular pattern may make. Past this a pattern is a
+/// typo or a wrapped negative (`-1 as u32`), not a design; evaluating it
+/// would hang the runtime thread (fuzz F7).
+pub const MAX_PATTERN_COUNT: u32 = 10_000;
 pub use vcad_ir::resolve::{self, resolve_document, resolve_document_cloned, ResolvePatchError};
 
 /// Platform-agnostic clock for timing instrumentation.
@@ -175,6 +180,16 @@ pub enum EvalError {
     /// A node referenced by ID was not found in the document.
     #[error("missing node: {0}")]
     MissingNode(vcad_ir::NodeId),
+
+    /// An operation parameter is out of its supported range (fail closed
+    /// rather than spend unbounded time or memory on it).
+    #[error("invalid parameter: {0}")]
+    InvalidParam(String),
+
+    /// The node graph has a cycle (a node is its own ancestor). Fail closed:
+    /// walking it would never terminate.
+    #[error("node graph has a cycle through node {0}")]
+    Cycle(vcad_ir::NodeId),
 
     /// A [`vcad_ir::CsgOp::SketchOnFace`] could not attach: the face didn't
     /// resolve (fail-closed, never a guessed face), isn't planar, or the

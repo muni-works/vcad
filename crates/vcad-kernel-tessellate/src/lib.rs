@@ -1598,8 +1598,10 @@ fn fill_closed_boundary_loops(
         let area = cost[0][n - 1];
         // A zero-area "loop" is an edge traversed both ways (a fin, not a
         // hole); filling it would add a degenerate flap and new overused
-        // edges.
-        if area <= 1e-9 {
+        // edges. A non-finite one has a NaN/inf vertex: no triangle ever
+        // won the DP, `pick` still holds `usize::MAX`, and walking it would
+        // index out of bounds (fuzz F11) — leave that hole alone.
+        if !area.is_finite() || area <= 1e-9 {
             continue;
         }
         if let Some(gate) = width_gate {
@@ -10019,5 +10021,21 @@ mod delaunay_flip_tests {
             let o = (b.0 - a.0) * (cc.1 - a.1) - (b.1 - a.1) * (cc.0 - a.0);
             assert!(o > 0.0, "inverted {t:?}");
         }
+    }
+
+    /// Fuzz finding F11 (docs/qa/fuzz-2026-11-12.md): a boundary loop through
+    /// a NaN vertex left the min-area DP's `pick` at `usize::MAX`, and the
+    /// hole filler indexed with it — a panic out of an ordinary rotate.
+    #[test]
+    fn hole_fill_skips_loops_with_non_finite_vertices() {
+        let mut m = TriangleMesh {
+            vertices: vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, f32::NAN, 1.0, 0.0],
+            indices: vec![0, 1, 2],
+            normals: vec![0.0; 9],
+            face_kinds: Vec::new(),
+            face_ids: Vec::new(),
+        };
+        fill_closed_boundary_loops(&mut m, 256, None, false);
+        assert_eq!(m.indices, vec![0, 1, 2]);
     }
 }
