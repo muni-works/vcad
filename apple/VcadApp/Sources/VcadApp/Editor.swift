@@ -502,8 +502,14 @@ final class EditorModel {
     var featureNodes: [FeatureNode] = [] {
         // Every rebuild re-reads the history (suppressed/skipped rows, the
         // rollback marker, broken references) — HistoryTree.swift.
-        didSet { if !adoptingRuntimeFrame { refreshHistory() } }
+        didSet {
+            sketchNodes = featureNodes.isEmpty ? [] : (documentGraph?.sketchRows() ?? [])
+            if !adoptingRuntimeFrame { refreshHistory() }
+        }
     }
+    /// The browser's quiet bottom section: every sketch in the document,
+    /// derived once per rebuild (never per render, hover or select).
+    var sketchNodes: [FeatureNode] = []
     /// Set while a runtime frame is adopted: the frame carries the history.
     @ObservationIgnored var adoptingRuntimeFrame = false
     /// The engine's feature history: one row per modeling feature, built or not.
@@ -1065,6 +1071,9 @@ final class EditorModel {
         let d = instanceDicts[i]
         return (d["name"] as? String) ?? (d["id"] as? String)
     }
+
+    /// Render index of the instance with this id.
+    func instanceIndex(id: String) -> Int? { instanceDicts.firstIndex { ($0["id"] as? String) == id } }
 
     /// The part definition an instance is an instance OF.
     func instancePartDefName(_ i: Int) -> String? {
