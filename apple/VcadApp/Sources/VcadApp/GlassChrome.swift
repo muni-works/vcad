@@ -272,6 +272,8 @@ struct GlassToolbar: View {
             }
             Spacer(minLength: Theme.Space.m)
             if model.workspace == .manufacture { machineChip }
+            exportMenu
+            agentsButton
             // Release to Desktop / Open in Window (⇧⌘D), out of the View menu
             // and next to the panel toggles where it's discoverable.
             iconButton(model.isWindowed ? "arrow.up.forward.app" : "macwindow",
@@ -472,6 +474,51 @@ struct GlassToolbar: View {
         .accessibilityLabel("Machine connection, \(model.cnc.machine.summary)")
         .popover(isPresented: $connectionShown, arrowEdge: .bottom) {
             CNCConnectionView(cnc: model.cnc).padding(18).frame(width: 320)
+        }
+    }
+
+    /// Everything that gets the model out of vcad, in one place: the File ▸
+    /// Export, Export Drawing and Render items plus the print workspace.
+    private var exportMenu: some View {
+        Menu {
+            Button("STL…") { exportDocumentPanel(model, format: .stl) }.disabled(!model.canExport)
+            Button("STEP…") { exportDocumentPanel(model, format: .step) }.disabled(!model.canExportDocument)
+            Button("GLB…") { exportDocumentPanel(model, format: .glb) }.disabled(!model.canExportDocument)
+            Button("USDZ…") { exportUSDZPanel(model) }.disabled(!model.canExport)
+            Divider()
+            Button("Drawing as PDF…") { DrawingStore.shared.model = model; DrawingStore.shared.export(.pdf) }
+                .disabled(!model.canExportDocument)
+            Button("Drawing as DXF…") { DrawingStore.shared.model = model; DrawingStore.shared.export(.dxf) }
+                .disabled(!model.canExportDocument)
+            Divider()
+            Button("3D Print…") { withAnimation(Motion.panel) { model.workspace = .manufacture } }
+                .disabled(!model.canExport)
+            Button("Render Photoreal…") { PhotorealRenderController.shared.show(for: model) }
+                .disabled(!model.canExportDocument)
+        } label: {
+            Image(systemName: "square.and.arrow.up").font(.system(size: 15, weight: .regular))
+                .frame(width: 30, height: 26).contentShape(Rectangle())
+                .foregroundStyle(.secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Export, print or render")
+        .accessibilityLabel("Export, print or render")
+    }
+
+    /// The local agent: lit while one is working in this document, and the
+    /// way in to connecting Claude, Codex or Cursor.
+    private var agentsButton: some View {
+        // Ticks only when the "working" glow can expire on its own; a
+        // free-running clock would keep the idle window compositing.
+        TimelineView(.explicit([model.agentLinkActiveAt.map { $0.addingTimeInterval(4) }]
+            .compactMap { $0 }.filter { $0 > .now })) { context in
+            let working = AgentSession.shared.running
+                || (model.agentLinkActiveAt.map { context.date.timeIntervalSince($0) < 4 } ?? false)
+            iconButton(working ? "sparkles" : "sparkle",
+                       working ? "Agent working — connect agents…" : "Connect agents…",
+                       active: working) { AgentInstallPrompt.run() }
         }
     }
 
