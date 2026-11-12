@@ -15,36 +15,60 @@ import simd
 // (`vcad_scene_part_face_ids`) — the same ids DFM reports and FEA picks use.
 
 /// Per-part triangles tagged with face ids, cached per document bytes.
+///
+/// Evaluated **off the main thread** with its own incremental session: the
+/// old synchronous `vcad_scene_from_json` re-evaluated the whole document on
+/// the main thread the first time a face was selected after any edit
+/// (seconds on an assembly — the app froze). Until the meshes for the
+/// current bytes are ready, callers get the previous set (or none) and
+/// `.analysisMeshesReady` is posted when the new one lands.
 @MainActor
 final class AnalysisMeshCache {
     static let shared = AnalysisMeshCache()
-    struct Part { var positions: [SIMD3<Float>]; var normals: [SIMD3<Float>]; var indices: [UInt32]; var faceIds: [UInt32] }
+    struct Part: Sendable { var positions: [SIMD3<Float>]; var normals: [SIMD3<Float>]; var indices: [UInt32]; var faceIds: [UInt32] }
     private var key: Data?
     private var parts: [Part] = []
+    private var pending: Data?
+    private nonisolated(unsafe) let session = EvalSession()
 
     func parts(for data: Data) -> [Part] {
         if data == key { return parts }
-        key = data
-        parts = []
-        let scene: OpaquePointer? = data.withUnsafeBytes { raw in
-            vcad_scene_from_json(raw.bindMemory(to: UInt8.self).baseAddress, data.count)
+        if pending != data {
+            pending = data
+            let session = self.session
+            Task.detached(priority: .userInitiated) {
+                let built = Self.build(data, session: session)
+                await MainActor.run {
+                    let cache = AnalysisMeshCache.shared
+                    guard cache.pending == data else { return }
+                    cache.key = data
+                    cache.parts = built
+                    cache.pending = nil
+                    NotificationCenter.default.post(name: .analysisMeshesReady, object: nil)
+                }
+            }
         }
-        guard let scene else { return parts }
+        return []
+    }
+
+    nonisolated private static func build(_ data: Data, session: EvalSession) -> [Part] {
+        var out: [Part] = []
+        guard let scene = session.scene(data: data, dir: []) else { return out }
         defer { vcad_scene_free(scene) }
         for i in 0..<vcad_scene_part_count(scene) {
             let v = vcad_scene_part_mesh(scene, i)
             var n = 0
             let ids = vcad_scene_part_face_ids(scene, i, &n)
-            guard let vp = v.vertices, let ip = v.indices else { parts.append(.init(positions: [], normals: [], indices: [], faceIds: [])); continue }
+            guard let vp = v.vertices, let ip = v.indices else { out.append(.init(positions: [], normals: [], indices: [], faceIds: [])); continue }
             let pos = (0..<(v.vertices_len / 3)).map { SIMD3(vp[3 * $0], vp[3 * $0 + 1], vp[3 * $0 + 2]) }
             let nor: [SIMD3<Float>] = (v.normals != nil && v.normals_len == v.vertices_len)
                 ? (0..<(v.normals_len / 3)).map { SIMD3(v.normals![3 * $0], v.normals![3 * $0 + 1], v.normals![3 * $0 + 2]) }
                 : Array(repeating: .zero, count: pos.count)
             let idx = Array(UnsafeBufferPointer(start: ip, count: v.indices_len))
             let fid = ids.map { Array(UnsafeBufferPointer(start: $0, count: n)) } ?? []
-            parts.append(.init(positions: pos, normals: nor, indices: idx, faceIds: fid))
+            out.append(.init(positions: pos, normals: nor, indices: idx, faceIds: fid))
         }
-        return parts
+        return out
     }
 
     /// Triangles of `faces` on `part`, pushed out along their normals by `lift` mm.
@@ -68,6 +92,11 @@ final class AnalysisMeshCache {
         d.primitives = .triangles(idx)
         return try? MeshResource.generate(from: [d])
     }
+}
+
+extension Notification.Name {
+    /// `AnalysisMeshCache` finished meshes for the current document bytes.
+    static let analysisMeshesReady = Notification.Name("vcad.analysisMeshesReady")
 }
 
 @MainActor

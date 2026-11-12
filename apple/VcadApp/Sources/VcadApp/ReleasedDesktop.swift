@@ -330,6 +330,32 @@ final class ReleaseWindowController {
     }
 
     /// Any world-space point, projected the same way (the agent cursor).
+    /// A fast kernel-frame -> view-point projector for bulk work (marquee):
+    /// the entity's world matrix and the camera basis are computed once, not
+    /// per point (per-point `convert(position:to:)` + basis rebuild cost
+    /// seconds on a few thousand edges).
+    func projector(from entity: Entity, camera: SIMD3<Float>, lookAt: SIMD3<Float>) -> ((SIMD3<Float>) -> CGPoint?)? {
+        guard let ar = arView else { return nil }
+        let size = ar.bounds.size
+        guard size.width > 0, size.height > 0 else { return nil }
+        let m = entity.transformMatrix(relativeTo: nil)
+        let fwd = normalize(lookAt - camera)
+        let right = normalize(cross(fwd, SIMD3<Float>(0, 1, 0)))
+        let up = cross(right, fwd)
+        let tanHalf = tan(Float(60) / 2 * .pi / 180)
+        let aspect = Float(size.width / size.height)
+        let (w, h) = (size.width, size.height)
+        return { k in
+            let p4 = m * SIMD4<Float>(k, 1)
+            let v = SIMD3(p4.x, p4.y, p4.z) - camera
+            let z = dot(v, fwd)
+            guard z > 0.0001 else { return nil }
+            let ndcX = (dot(v, right) / z) / (tanHalf * aspect)
+            let ndcY = (dot(v, up) / z) / tanHalf
+            return CGPoint(x: CGFloat(ndcX * 0.5 + 0.5) * w, y: CGFloat(0.5 - ndcY * 0.5) * h)
+        }
+    }
+
     func viewPoint(forWorld w: SIMD3<Float>, from camera: SIMD3<Float>, lookAt: SIMD3<Float>) -> CGPoint? {
         guard let ar = arView else { return nil }
         let size = ar.bounds.size
@@ -1298,6 +1324,8 @@ struct ReleasedOverlayView: View {
         .onChange(of: model.undoStack.count, initial: true) { _, _ in GlassUI.shared.captureThumbnail(model: model) }
         .onChange(of: model.source) { _, _ in GlassUI.shared.thumbnails = [:]; GlassUI.shared.captureThumbnail(model: model) }
         .onChange(of: model.picking.revision) { _, _ in refreshTopologyOverlay() }
+        .onReceive(NotificationCenter.default.publisher(for: .analysisMeshesReady)) { _ in refreshTopologyOverlay() }
+        .onChange(of: model.documentRevision, initial: true) { _, _ in model.prewarmPicking() }
         .onChange(of: model.measuring) { _, on in if !on { model.picking.filter = .standard }; refreshTopologyOverlay() }
         .onChange(of: model.sketching) { _, on in
             // Sketch is modal over the desktop: own the mouse everywhere while
@@ -1815,23 +1843,24 @@ struct ReleasedOverlayView: View {
     private func commitTopologyMarquee(rect r: CGRect, mode: SelectionMath.MarqueeMode) {
         let ctl = ReleaseWindowController.shared
         guard let centering = ctl.centeringEntity else { return }
-        let cam = model.cameraPosition, look = model.panOffset
-        func project(_ k: SIMD3<Float>) -> CGPoint? {
-            ctl.viewPoint(forWorld: centering.convert(position: k, to: nil), from: cam, lookAt: look)
-        }
+        guard let project = ctl.projector(from: centering, camera: model.cameraPosition, lookAt: model.panOffset) else { return }
         let filter = model.picking.filter
         var refs: [TopoRef] = []
         for part in 0..<model.partCount where model.isPartVisible(part) {
             guard let topo = model.partTopology(part) else { continue }
             // Project each edge once; faces reuse their boundary edges' points.
+            // (segmentPoints is computed — read it once per edge.)
             var edgePts: [UInt32: [CGPoint]] = [:]
+            var edgesOfFace: [UInt32: [UInt32]] = [:]
             for e in topo.edges {
-                let pts = e.segmentPoints.compactMap(project)
-                if pts.count == e.segmentPoints.count { edgePts[e.id] = pts }
+                let seg = e.segmentPoints
+                let pts = seg.compactMap(project)
+                if pts.count == seg.count { edgePts[e.id] = pts }
+                for f in e.faces { edgesOfFace[f, default: []].append(e.id) }
             }
             if filter == .face || filter == .faceOrEdge {
                 for f in topo.faces {
-                    var pts = topo.edges.filter { $0.faces.contains(f.id) }.flatMap { edgePts[$0.id] ?? [] }
+                    var pts = (edgesOfFace[f.id] ?? []).flatMap { edgePts[$0] ?? [] }
                     if let c = project(f.centerF) { pts.append(c) }
                     if SelectionMath.marqueeCatches(pts, rect: r, mode: mode) { refs.append(.face(f.id, part: part)) }
                 }
@@ -1845,8 +1874,11 @@ struct ReleasedOverlayView: View {
                 }
             }
         }
+        // setSelection bumps picking.revision, whose onChange redraws the
+        // overlay — an explicit refresh here built it twice.
+        let changed = refs != model.picking.selection
         model.picking.setSelection(refs)
-        refreshTopologyOverlay()
+        if !changed { refreshTopologyOverlay() }
     }
 
     /// Live-sync the dragged part: re-evaluate the document meshes in place and

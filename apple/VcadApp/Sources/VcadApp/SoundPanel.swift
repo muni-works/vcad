@@ -175,9 +175,14 @@ final class ToneSynth: @unchecked Sendable {
         guard let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(samples.count)) else { return }
         buf.frameLength = buf.frameCapacity
         samples.withUnsafeBufferPointer { buf.floatChannelData![0].update(from: $0.baseAddress!, count: samples.count) }
-        if !started { try? engine.start(); started = engine.isRunning }
+        if !engine.isRunning { try? engine.start(); started = engine.isRunning }
         player.stop()
-        player.scheduleBuffer(buf, at: nil, options: [], completionHandler: nil)
+        // Pause the engine once the strike has rung out: an idle running
+        // engine keeps the audio IO thread busy for nothing.
+        let engine = self.engine
+        player.scheduleBuffer(buf, at: nil, options: [], completionCallbackType: .dataPlayedBack) { _ in
+            DispatchQueue.main.async { engine.pause() }
+        }
         player.play()
     }
 }

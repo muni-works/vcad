@@ -201,6 +201,7 @@ final class PickingState {
     @ObservationIgnored private var cache: [Int: PartTopology] = [:]
     @ObservationIgnored private var cacheKey: Data?
     @ObservationIgnored nonisolated(unsafe) private var cachedScene: OpaquePointer?
+    @ObservationIgnored private var prewarming: Data?
 
     deinit { if let s = cachedScene { vcad_scene_free(s) } }
 
@@ -279,15 +280,57 @@ final class PickingState {
         if !selection.isEmpty || hovered != nil { clear() }
     }
 
+    private nonisolated(unsafe) static let session = EvalSession()   // guarded by sessionLock
+    private nonisolated static let sessionLock = NSLock()
+
+    nonisolated private static func evaluate(_ data: Data) -> OpaquePointer? {
+        sessionLock.lock(); defer { sessionLock.unlock() }
+        return session.scene(data: data, dir: [])
+    }
+
+    /// Evaluate the document's B-reps for picking off the main thread, so
+    /// the first hover/marquee after a change doesn't block on it.
+    func prewarm(_ data: Data) {
+        documentChanged(data)
+        guard cachedScene == nil, prewarming != data else { return }
+        prewarming = data
+        Task.detached(priority: .utility) {
+            // Evaluate AND decode every part's topology here: the JSON decode
+            // (`PartTopology.init`) cost ~2 s on the first hover otherwise.
+            final class Box: @unchecked Sendable { var topos: [Int: PartTopology] = [:] }
+            let box = Box()
+            let scene = Self.evaluate(data)
+            if let scene {
+                for i in 0..<vcad_scene_part_count(scene) {
+                    if let solid = vcad_scene_part_solid(scene, i), let t = PartTopology(solid: solid) { box.topos[i] = t }
+                }
+            }
+            let raw = scene.map { UInt(bitPattern: $0) }
+            await MainActor.run {
+                let me = self
+                me.prewarming = nil
+                guard let raw, let ptr = OpaquePointer(bitPattern: raw) else { return }
+                if me.cacheKey == data, me.cachedScene == nil {
+                    me.cachedScene = ptr
+                    for (i, t) in box.topos where me.cache[i] == nil { me.cache[i] = t }
+                } else {
+                    vcad_scene_free(ptr)
+                }
+            }
+        }
+    }
+
     /// The B-rep of `part` evaluated from `data` (cached until the bytes change).
     /// Nil for mesh-only parts (imports, cache-only roots).
     func topology(part: Int, document data: Data) -> PartTopology? {
         documentChanged(data)
         if let t = cache[part] { return t }
         if cachedScene == nil {
-            cachedScene = data.withUnsafeBytes { raw in
-                vcad_scene_from_json(raw.bindMemory(to: UInt8.self).baseAddress, data.count)
-            }
+            // Incremental session: after an edit only changed nodes
+            // re-evaluate (a fresh vcad_scene_from_json re-did the whole
+            // assembly on the main thread — seconds — on the first hover or
+            // marquee after every change). `prewarm` usually got here first.
+            cachedScene = Self.evaluate(data)
         }
         guard let scene = cachedScene,
               part >= 0, part < vcad_scene_part_count(scene),
@@ -343,11 +386,19 @@ final class PickingState {
 }
 
 extension EditorModel {
+    /// Kick a background B-rep evaluation for picking (call on document change).
+    func prewarmPicking() {
+        if let data = pickingDocumentData { picking.prewarm(data) }
+    }
+
     /// The open document's bytes, as the topology picker keys them. Nil when
     /// there is no editable document.
     var pickingDocumentData: Data? {
-        guard let doc = documentJSON else { return nil }
-        return try? JSONSerialization.data(withJSONObject: doc, options: [.sortedKeys])
+        if let c = documentBytesCache, c.revision == documentRevision { return c.data }
+        guard let doc = documentJSON,
+              let data = try? JSONSerialization.data(withJSONObject: doc, options: [.sortedKeys]) else { return nil }
+        documentBytesCache = (documentRevision, data)
+        return data
     }
 
     /// Pick a face/edge of `part` along a kernel-space ray. With the camera's

@@ -80,8 +80,7 @@ final class AnalysisStore {
     @ObservationIgnored var picker: AnalysisFacePicker = KernelFaceTable()
 
     static func documentData(_ m: EditorModel) -> Data? {
-        guard let doc = m.documentJSON else { return nil }
-        return try? JSONSerialization.data(withJSONObject: doc, options: [.sortedKeys])
+        m.pickingDocumentData   // same bytes, memoized per document revision
     }
 
     func isStale(_ key: Data?, _ m: EditorModel) -> Bool { key != nil && key != Self.documentData(m) }
