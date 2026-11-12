@@ -101,6 +101,10 @@ final class DocumentRuntimeTests: XCTestCase {
         }
         XCTAssertEqual(m.picking.readyPartCount, 2, "topologies arrived with the frame")
         XCTAssertNotNil(m.partTopology(0))
+        // The analysis overlay's face-id meshes came with the same frame.
+        let analysis = AnalysisMeshCache.shared.parts(for: try XCTUnwrap(m.pickingDocumentData))
+        XCTAssertEqual(analysis.count, 2, "no separate analysis evaluation")
+        XCTAssertEqual(analysis[0].faceIds.count, analysis[0].indices.count / 3)
 
         m.setPartMaterial(1, "brass")       // a blocking edit publishes its revision too
         let engine = try XCTUnwrap(m.engine)
@@ -115,6 +119,7 @@ final class DocumentRuntimeTests: XCTestCase {
         m.editVec(nodeId: leaf, key: "size", axis: "x", value: 26, snapshot: true)
         try await settle(m)
         XCTAssertEqual(m.picking.readyPartCount, 2)
+        XCTAssertEqual(AnalysisMeshCache.shared.parts(for: try XCTUnwrap(m.pickingDocumentData)).count, 2)
         let topo = try XCTUnwrap(m.partTopology(0))
         let maxX = topo.faces.map { $0.centerF.x }.max() ?? 0
         XCTAssertEqual(maxX, 26, accuracy: 0.01, "picking sees the scrubbed block")
