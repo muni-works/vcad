@@ -283,7 +283,9 @@ final class PickingState {
     private nonisolated(unsafe) static let session = EvalSession()   // guarded by sessionLock
     private nonisolated static let sessionLock = NSLock()
 
-    nonisolated private static func evaluate(_ data: Data) -> OpaquePointer? {
+    /// One incremental session for every off-main B-rep consumer (picking,
+    /// analysis face meshes), so the same bytes are only evaluated once.
+    nonisolated static func evaluate(_ data: Data) -> OpaquePointer? {
         sessionLock.lock(); defer { sessionLock.unlock() }
         return session.scene(data: data, dir: [])
     }
@@ -294,7 +296,14 @@ final class PickingState {
         documentChanged(data)
         guard cachedScene == nil, prewarming != data else { return }
         prewarming = data
-        Task.detached(priority: .utility) {
+        Task.detached(priority: .background) {
+            // Let the viewport's own evaluation of this revision go first:
+            // three concurrent full evaluations made launch crawl.
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard await MainActor.run(body: { self.cacheKey == data }) else {
+                await MainActor.run { if self.prewarming == data { self.prewarming = nil } }
+                return
+            }
             // Evaluate AND decode every part's topology here: the JSON decode
             // (`PartTopology.init`) cost ~2 s on the first hover otherwise.
             final class Box: @unchecked Sendable { var topos: [Int: PartTopology] = [:] }

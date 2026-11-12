@@ -29,15 +29,13 @@ final class AnalysisMeshCache {
     private var key: Data?
     private var parts: [Part] = []
     private var pending: Data?
-    private nonisolated(unsafe) let session = EvalSession()
 
     func parts(for data: Data) -> [Part] {
         if data == key { return parts }
         if pending != data {
             pending = data
-            let session = self.session
             Task.detached(priority: .userInitiated) {
-                let built = Self.build(data, session: session)
+                let built = Self.build(data)
                 await MainActor.run {
                     let cache = AnalysisMeshCache.shared
                     guard cache.pending == data else { return }
@@ -51,9 +49,11 @@ final class AnalysisMeshCache {
         return []
     }
 
-    nonisolated private static func build(_ data: Data, session: EvalSession) -> [Part] {
+    nonisolated private static func build(_ data: Data) -> [Part] {
         var out: [Part] = []
-        guard let scene = session.scene(data: data, dir: []) else { return out }
+        // Shared with picking: the second caller for the same bytes reuses
+        // every solid instead of re-running the booleans.
+        guard let scene = PickingState.evaluate(data) else { return out }
         defer { vcad_scene_free(scene) }
         for i in 0..<vcad_scene_part_count(scene) {
             let v = vcad_scene_part_mesh(scene, i)
@@ -73,8 +73,9 @@ final class AnalysisMeshCache {
 
     /// Triangles of `faces` on `part`, pushed out along their normals by `lift` mm.
     func faceMesh(part: Int, faces: Set<UInt32>, data: Data, lift: Float) -> MeshResource? {
+        guard !faces.isEmpty else { return nil }   // don't kick a full build for nothing
         let ps = parts(for: data)
-        guard part >= 0, part < ps.count, !faces.isEmpty else { return nil }
+        guard part >= 0, part < ps.count else { return nil }
         let p = ps[part]
         guard p.faceIds.count == p.indices.count / 3 else { return nil }
         var pos: [SIMD3<Float>] = [], idx: [UInt32] = []

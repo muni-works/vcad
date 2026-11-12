@@ -378,14 +378,23 @@ final class SoundStore {
         guard ((m.documentJSON?["pitch_locks"] as? [[String: Any]]) ?? []).contains(where: { ($0["part"] as? String) == name }) else {
             lockStatus = nil; return
         }
+        // The check is a Fine single-part solve (~2 s): reuse it per bytes+part.
+        if let c = lockCache, c.data == data, c.part == name { apply(c.status); return }
         Task.detached(priority: .utility) {
             let st = (try? SoundFFI.check(doc: data, part: name))?.first { $0.lock.part == name && $0.lock.mode == 1 }
             await MainActor.run {
-                SoundStore.shared.lockStatus = st
-                if let n = st?.lock.note { SoundStore.shared.targetNote = n }
-                SoundStore.shared.drives = st?.lock.drives ?? SoundStore.shared.drives
+                SoundStore.shared.lockCache = (data, name, st)
+                SoundStore.shared.apply(st)
             }
         }
+    }
+
+    private var lockCache: (data: Data, part: String, status: LockStatusDTO?)?
+
+    private func apply(_ st: LockStatusDTO?) {
+        lockStatus = st
+        if let n = st?.lock.note { targetNote = n }
+        drives = st?.lock.drives ?? drives
     }
 
     var isLocked: Bool { lockStatus != nil }

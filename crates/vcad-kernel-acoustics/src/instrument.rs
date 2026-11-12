@@ -1150,10 +1150,7 @@ pub fn bar_loon_param(bar: &TunedBar, param: &str, origin_yz: [f64; 2]) -> Strin
     let cut = match tools.len() {
         0 => body,
         _ => {
-            let tool = tools
-                .iter()
-                .skip(1)
-                .fold(tools[0].clone(), |acc, t| format!("[union {acc} {t}]"));
+            let tool = balanced_union(&tools);
             format!("[difference {tool} {body}]")
         }
     };
@@ -1163,6 +1160,19 @@ pub fn bar_loon_param(bar: &TunedBar, param: &str, origin_yz: [f64; 2]) -> Strin
         f(origin_yz[0]),
         f(origin_yz[1])
     )
+}
+
+/// Union `parts` as a balanced binary tree: each boolean sees operands of
+/// similar size, O(n log n) instead of the left-deep fold's O(n²).
+fn balanced_union(parts: &[String]) -> String {
+    match parts {
+        [] => String::new(),
+        [one] => one.clone(),
+        _ => {
+            let (a, b) = parts.split_at(parts.len() / 2);
+            format!("[union {} {}]", balanced_union(a), balanced_union(b))
+        }
+    }
 }
 
 /// Loon expression for a tuned bar at `origin`.
@@ -1199,10 +1209,7 @@ pub fn bar_loon(bar: &TunedBar, origin: [f64; 3]) -> String {
     let cut = match tools.len() {
         0 => body,
         _ => {
-            let tool = tools
-                .iter()
-                .skip(1)
-                .fold(tools[0].clone(), |acc, t| format!("[union {acc} {t}]"));
+            let tool = balanced_union(&tools);
             format!("[difference {tool} {body}]")
         }
     };
@@ -1310,9 +1317,9 @@ pub fn design_instrument(spec: &InstrumentSpec) -> Result<Instrument, String> {
         f((n - 1.0) * pitch + w + 2.0 * margin),
         f(spec.plate_mm)
     );
-    let frame = frame_parts
-        .iter()
-        .fold(plate, |acc, p| format!("[union {acc} {p}]"));
+    let mut all = vec![plate];
+    all.extend(frame_parts);
+    let frame = balanced_union(&all);
     out.push_str(&format!("\n[let frame {frame}]\n\n"));
     for p in &placed {
         out.push_str(&format!(
