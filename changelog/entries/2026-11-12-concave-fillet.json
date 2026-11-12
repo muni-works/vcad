@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-12-concave-fillet",
+  "version": "undefined",
+  "date": "2026-11-12",
+  "category": "feat",
+  "title": "Fillet and chamfer round inside corners",
+  "summary": "Whole-part fillet and chamfer now work on bodies with concave edges, like a boss on a block or an L-shaped extrude: inside corners gain material, outside edges are trimmed.",
+  "features": ["kernel", "fillet", "chamfer"]
+}

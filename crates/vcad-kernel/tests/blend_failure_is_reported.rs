@@ -244,14 +244,13 @@ fn shell_reports_a_fallback_to_the_mesh_offset() {
     );
 }
 
-/// A block with a boss on top (a union, or one L-shaped Press Pull) has
-/// concave inside-corner edges the whole-part planar rebuild can't round.
-/// That used to come back as a bare `InvalidResult` (L-prism) or as
-/// "adjacent faces are nearly coplanar" (union seams), and in the Mac app
-/// as an empty viewport with no message. It must name the actual cause.
+/// Bodies with concave inside-corner edges — a boss unioned onto a block
+/// (whose result also carries coplanar seam faces), an L-shaped extrude —
+/// used to be refused by whole-part fillet/chamfer (and before that, in
+/// the Mac app, blanked the viewport). They now blend: convex edges are
+/// trimmed, concave edges gain material, and the shell stays watertight.
 #[test]
-fn whole_part_blend_on_a_concave_body_names_the_concave_edge() {
-    use vcad_kernel::vcad_kernel_fillet::BlendRefusal;
+fn whole_part_blend_on_a_concave_body_rounds_inside_corners() {
     use vcad_kernel::vcad_kernel_math::Point2;
     use vcad_kernel::vcad_kernel_sketch::{SketchProfile, SketchSegment};
 
@@ -279,17 +278,45 @@ fn whole_part_blend_on_a_concave_body_names_the_concave_edge() {
     let profile = SketchProfile::new(Point3::origin(), Vec3::y(), Vec3::z(), segs).unwrap();
     let l_prism = Solid::extrude(profile, Vec3::new(30.0, 0.0, 0.0)).unwrap();
 
+    // Same body either way: 30×97×25 block + 30×30×30 boss.
+    let v_in = 30.0 * 97.0 * 25.0 + 30.0f64.powi(3);
     for (name, body) in [("union", &union), ("L-prism", &l_prism)] {
+        assert!(
+            (body.volume() - v_in).abs() < 1e-6 * v_in,
+            "{name} input volume"
+        );
         for (op, r) in [("fillet", body.fillet(2.0)), ("chamfer", body.chamfer(2.0))] {
-            match r {
-                Err(BlendError::Refused(BlendRefusal::ConcaveEdge)) => {}
-                other => panic!(
-                    "{op} on {name}: expected ConcaveEdge, got {:?}",
-                    other.err()
-                ),
-            }
+            let out = r.unwrap_or_else(|e| panic!("{op} on {name}: {e}"));
+            let mesh = out.to_mesh(32);
+            assert!(
+                mesh.boundary_edges().is_empty(),
+                "{op} on {name}: {} open edges",
+                mesh.boundary_edges().len()
+            );
+            let v = out.volume();
+            // Twelve convex edges per box minus the shared ones lose
+            // material; the two 30 mm inside edges gain a sliver back.
+            assert!(
+                v < v_in && v > v_in * 0.97,
+                "{op} on {name}: volume {v} vs {v_in}"
+            );
+            // Both concave edges are rounded: the inside corner line
+            // y=30, z=25 is no longer on the surface — material fills it.
+            let bb = out.bounding_box();
+            assert!(
+                (bb.1[2] - 55.0).abs() < 1e-9,
+                "{op} on {name}: top stays at z=55"
+            );
         }
     }
+    // A chamfer cuts r²/2 off each convex edge, a fillet only r²(1−π/4),
+    // so the chamfered body is the lighter one.
+    let (f, c) = (
+        union.fillet(2.0).unwrap().volume(),
+        union.chamfer(2.0).unwrap().volume(),
+    );
+    assert!(c < f, "chamfer {c} should remove more than fillet {f}");
+
     // The convex block alone still blends.
     assert!(Solid::cube(30.0, 97.0, 25.0).fillet(2.0).is_ok());
     assert!(Solid::cube(30.0, 97.0, 25.0).chamfer(2.0).is_ok());

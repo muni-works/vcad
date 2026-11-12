@@ -15,6 +15,7 @@ mod closest_point;
 mod fillet_curved;
 mod fillet_planar;
 mod fillet_subset;
+mod polyhedral;
 mod revolved;
 mod rolling_ball;
 mod topology;

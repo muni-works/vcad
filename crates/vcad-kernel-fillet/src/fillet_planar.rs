@@ -52,6 +52,15 @@ pub fn fillet_all_edges_checked(
 ) -> Result<BRepSolid, crate::BlendRefusal> {
     use crate::BlendRefusal;
 
+    // Inside corners and coplanar seams (boolean results, L-shaped
+    // extrudes) go to the rebuild that doesn't assume convexity.
+    if crate::polyhedral::needs_polyhedral(brep) {
+        return crate::polyhedral::blend_polyhedral(
+            brep,
+            crate::polyhedral::PolyBlend::Fillet(radius),
+        );
+    }
+
     let faces = extract_faces(brep);
     let edges = extract_edges(brep);
 
