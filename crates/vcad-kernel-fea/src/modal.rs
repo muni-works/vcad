@@ -51,6 +51,10 @@ pub struct ModalSpec {
     pub supports: Vec<RegionBox>,
     /// Elastic modes wanted.
     pub modes: usize,
+    /// Cell budget: the grid coarsens (axis-aligned faces stay exact) until
+    /// it has at most this many bricks.
+    #[serde(default)]
+    pub max_cells: Option<usize>,
 }
 
 /// One elastic mode.
@@ -917,8 +921,18 @@ pub fn modal_analysis(mesh: &TriangleMesh, spec: &ModalSpec) -> Result<ModalResu
     }
     let longest = (0..3).map(|a| hi[a] - lo[a]).fold(0.0, f64::max).max(1e-9);
     let h = longest / spec.resolution.clamp(2, 512) as f64;
-    let cap = spec.max_pitch_mm.unwrap_or([h; 3]).map(|m| m.min(h));
-    let hex = hex_fill_conforming(mesh, cap).map_err(ModalError::Mesh)?;
+    let mut cap = spec.max_pitch_mm.unwrap_or([h; 3]).map(|m| m.min(h));
+    let mut hex = hex_fill_conforming(mesh, cap).map_err(ModalError::Mesh)?;
+    if let Some(budget) = spec.max_cells {
+        for _ in 0..24 {
+            if hex.cells.len() <= budget {
+                break;
+            }
+            let k = (hex.cells.len() as f64 / budget as f64).cbrt().max(1.08);
+            cap = cap.map(|c| c * k);
+            hex = hex_fill_conforming(mesh, cap).map_err(ModalError::Mesh)?;
+        }
+    }
     modal_on_mesh(&hex, spec)
 }
 
@@ -1049,6 +1063,7 @@ mod tests {
             density_kg_m3: RHO,
             supports: vec![],
             modes,
+            max_cells: None,
         }
     }
 
@@ -1213,6 +1228,7 @@ mod dense_check {
             density_kg_m3: 2700.0,
             supports: vec![],
             modes: 4,
+            max_cells: None,
         };
         let hex = hex_fill_conforming(&mesh, spec.max_pitch_mm.unwrap()).unwrap();
         let sys = assemble(&hex, &spec);

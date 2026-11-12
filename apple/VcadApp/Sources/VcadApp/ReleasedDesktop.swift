@@ -1483,7 +1483,8 @@ struct ReleasedOverlayView: View {
     /// point on its animation mesh, ring it, and flex it on screen.
     private func malletStrike(at p: CGPoint) {
         ensurePickableDocument(at: p)
-        guard let part = partIndex(at: p), let ray = kernelRay(at: p) else { return }
+        guard let ray = kernelRay(at: p),
+              let part = nearestPartHit(model, origin: ray.o, dir: simd_normalize(ray.d)) ?? partIndex(at: p) else { return }
         let store = SoundStore.shared
         Task { @MainActor in
             guard let pm = await store.ensureModes(part: part, model) else { return }

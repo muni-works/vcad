@@ -62,18 +62,29 @@ struct LockStatusDTO: Decodable, Equatable {
 }
 
 enum SoundFFI {
+    /// Part names in visible-part order (the engine keeps names on features,
+    /// not root nodes); sent with every request.
+    nonisolated(unsafe) static var partNames: [String] = []
+
     static func call(doc: Data, _ request: [String: Any]) throws -> Data {
-        try AnalysisFFI.call(vcad_sound_call, doc: doc, request: try AnalysisFFI.encode(request))
+        var req = request
+        if !partNames.isEmpty { req["part_names"] = partNames }
+        return try AnalysisFFI.call(vcad_sound_call, doc: doc, request: try AnalysisFFI.encode(req))
     }
 
-    static func modes(doc: Data, part: Int, quality: String = "preview") throws -> PartModesDTO {
-        try JSONDecoder().decode(PartModesDTO.self,
-                                 from: call(doc: doc, ["op": "modes", "part": part, "modes": 6, "quality": quality]))
+    static func modes(doc: Data, part: Int, quality: String = "preview",
+                      mesh: (positions: [Float], indices: [UInt32])? = nil) throws -> PartModesDTO {
+        var req: [String: Any] = ["op": "modes", "part": part, "modes": 6, "quality": quality]
+        // The app's own tessellation: no document re-evaluation per strike.
+        if let mesh { req["mesh"] = ["positions": mesh.positions, "indices": mesh.indices] }
+        return try JSONDecoder().decode(PartModesDTO.self, from: call(doc: doc, req))
     }
 
-    static func check(doc: Data) throws -> [LockStatusDTO] {
+    static func check(doc: Data, part: String? = nil) throws -> [LockStatusDTO] {
         struct R: Decodable { let locks: [LockStatusDTO] }
-        return try JSONDecoder().decode(R.self, from: call(doc: doc, ["op": "check"])).locks
+        var req: [String: Any] = ["op": "check"]
+        if let part { req["part"] = part }
+        return try JSONDecoder().decode(R.self, from: call(doc: doc, req)).locks
     }
 
     /// Solve + store a lock; returns the patched document and the final error in cents.
@@ -189,7 +200,7 @@ final class SoundStore {
     /// Parameter the lock drives.
     var drives: String?
 
-    @ObservationIgnored private var key: (Data, Int)?
+    @ObservationIgnored private var key: (Data, Int, Int)?
     @ObservationIgnored private let synth = ToneSynth()
     @ObservationIgnored weak var model: EditorModel?
     /// Animation state read by the overlay.
@@ -209,21 +220,25 @@ final class SoundStore {
     /// Solve (or reuse) the modes of `part`.
     func ensureModes(part: Int, _ m: EditorModel) async -> PartModesDTO? {
         model = m
+        SoundStore.syncNames(m)
         guard let data = AnalysisStore.documentData(m) else { return nil }
-        if let k = key, k.0 == data, k.1 == part, let modes { return modes }
+        if let k = key, k.0 == data, k.1 == part, k.2 == m.sceneGeneration, let modes { return modes }
         busy = true
         error = nil
+        let mesh: (positions: [Float], indices: [UInt32])? = part < m.docPartMeshes.count
+            ? (m.docPartMeshes[part].positions.flatMap { [$0.x, $0.y, $0.z] }, m.docPartMeshes[part].indices)
+            : nil
         let result = await Task.detached(priority: .userInitiated) { () -> Result<PartModesDTO, Error> in
-            Result { try SoundFFI.modes(doc: data, part: part) }
+            Result { try SoundFFI.modes(doc: data, part: part, mesh: mesh) }
         }.value
         busy = false
         switch result {
         case .success(let pm):
             modes = pm
-            key = (data, part)
+            key = (data, part, m.sceneGeneration)
             focusedMode = nil
             overlayRevision &+= 1
-            if drives == nil { drives = parameterNames(m).first }
+            drives = drivingParameters(m, part: pm.name).first
             if let f = pm.modes.first { targetNote = closestPickable(f.hz) }
             refreshLock(m)
             return pm
@@ -231,6 +246,38 @@ final class SoundStore {
             error = "\(e)"
             return nil
         }
+    }
+
+    /// Re-analyze the part named `name` after an edit (edits can reorder
+    /// parts, so the old index may now be a different part).
+    func reanalyze(_ name: String, _ m: EditorModel, fallback: Int, after gen: Int? = nil) async {
+        // An edit re-tessellates asynchronously: wait (≤ 5 s) for the new
+        // scene so the solve doesn't run on the old mesh.
+        if let gen {
+            for _ in 0..<50 where m.sceneGeneration == gen {
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+        }
+        SoundStore.syncNames(m)
+        let idx = SoundFFI.partNames.firstIndex(of: name) ?? fallback
+        _ = await ensureModes(part: idx, m)
+    }
+
+    /// Visible-part names from the feature tree.
+    static func syncNames(_ m: EditorModel) {
+        let byPart = Dictionary(m.featureNodes.compactMap { n in n.partIndex.map { ($0, n.name) } }, uniquingKeysWith: { a, _ in a })
+        let count = (byPart.keys.max() ?? -1) + 1
+        SoundFFI.partNames = (0..<count).map { byPart[$0] ?? "part\($0)" }
+    }
+
+    /// Parameters that drive this part: names whose binding expressions
+    /// mention them on any node — narrowed to ones containing the part's
+    /// name suffix when that matches (glockenspiel `len_c6` for `bar_c6`).
+    func drivingParameters(_ m: EditorModel, part: String) -> [String] {
+        let all = parameterNames(m)
+        let suffix = part.split(separator: "_").last.map(String.init) ?? part
+        let mine = all.filter { $0.hasSuffix("_" + suffix) || $0 == suffix }
+        return mine.isEmpty ? all : mine + all.filter { !mine.contains($0) }
     }
 
     private func closestPickable(_ hz: Double) -> String {
@@ -298,7 +345,7 @@ final class SoundStore {
 
     private func startAnimation() {
         timer?.invalidate()
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 60, repeats: true) { _ in
+        timer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30, repeats: true) { _ in
             Task { @MainActor in SoundStore.shared.tick() }
         }
     }
@@ -327,7 +374,7 @@ final class SoundStore {
             lockStatus = nil; return
         }
         Task.detached(priority: .utility) {
-            let st = (try? SoundFFI.check(doc: data))?.first { $0.lock.part == name && $0.lock.mode == 1 }
+            let st = (try? SoundFFI.check(doc: data, part: name))?.first { $0.lock.part == name && $0.lock.mode == 1 }
             await MainActor.run {
                 SoundStore.shared.lockStatus = st
                 if let n = st?.lock.note { SoundStore.shared.targetNote = n }
@@ -337,6 +384,27 @@ final class SoundStore {
     }
 
     var isLocked: Bool { lockStatus != nil }
+
+    /// Re-solve the stored lock against the current geometry.
+    func resolveLock(_ m: EditorModel) async {
+        guard let st = lockStatus, let data = AnalysisStore.documentData(m) else { return }
+        busy = true
+        defer { busy = false }
+        do {
+            let lock = st.lock
+            let raw = try await Task.detached(priority: .userInitiated) { () throws -> Data in
+                var req = (try JSONSerialization.jsonObject(with: JSONEncoder().encode(lock)) as? [String: Any]) ?? [:]
+                req["op"] = "lock"
+                return try SoundFFI.call(doc: data, req)
+            }.value
+            let r = try SoundFFI.parseLock(raw)
+            let gen = m.sceneGeneration
+            _ = try AgentEdits.edit(m, name: "Re-solve pitch \(lock.note ?? "")") { try $0.loadIR(r.document) }
+            if let pm = modes { await reanalyze(pm.name, m, fallback: pm.part, after: gen) }
+        } catch {
+            self.error = "\(error)"
+        }
+    }
 
     func toggleLock(_ m: EditorModel) async {
         guard let pm = modes, let data = AnalysisStore.documentData(m) else { return }
@@ -357,9 +425,10 @@ final class SoundStore {
                     return try SoundFFI.call(doc: data, req)
                 }.value
                 let r = try SoundFFI.parseLock(raw)
+                let gen = m.sceneGeneration
                 _ = try AgentEdits.edit(m, name: "Lock pitch to \(targetNote)") { try $0.loadIR(r.document) }
                 if !r.converged { error = String(format: "Got within %.1f cents of %@ — %@ may be at its limit.", abs(r.cents), targetNote, drives) }
-                _ = await ensureModes(part: pm.part, m)
+                await reanalyze(pm.name, m, fallback: pm.part, after: gen)
             }
         } catch {
             self.error = "\(error)"
@@ -384,18 +453,52 @@ func syncSoundOverlay(_ store: SoundStore, in parent: Entity) {
     let root = Entity()
     root.name = name
     let base = (0..<pm.vertices).map { SIMD3(pm.positions[3 * $0], pm.positions[3 * $0 + 1], pm.positions[3 * $0 + 2]) }
-    func meshFor(_ pos: [SIMD3<Float>]) -> MeshResource? {
-        var d = MeshDescriptor(name: "struck")
-        d.positions = MeshBuffers.Positions(pos)
-        d.primitives = .triangles(pm.indices)
-        return try? MeshResource.generate(from: [d])
+    // Smooth vertex normals once (the deflection is small; lighting needn't follow it).
+    var normals = [SIMD3<Float>](repeating: .zero, count: base.count)
+    for t in stride(from: 0, to: pm.indices.count, by: 3) {
+        let (a, b, c) = (Int(pm.indices[t]), Int(pm.indices[t + 1]), Int(pm.indices[t + 2]))
+        let n = simd_cross(base[b] - base[a], base[c] - base[a])
+        normals[a] += n; normals[b] += n; normals[c] += n
     }
+    normals = normals.map { simd_length($0) > 0 ? simd_normalize($0) : SIMD3(0, 0, 1) }
+    // LowLevelMesh: one vertex buffer, positions rewritten in place each frame —
+    // regenerating a MeshResource per frame pegged the CPU.
+    struct V { var p: SIMD3<Float>; var n: SIMD3<Float> }
+    var desc = LowLevelMesh.Descriptor()
+    desc.vertexAttributes = [
+        .init(semantic: .position, format: .float3, offset: 0),
+        .init(semantic: .normal, format: .float3, offset: MemoryLayout<SIMD3<Float>>.stride),
+    ]
+    desc.vertexLayouts = [.init(bufferIndex: 0, bufferStride: MemoryLayout<V>.stride)]
+    desc.vertexCapacity = base.count
+    desc.indexCapacity = pm.indices.count
+    desc.indexType = .uint32
+    guard let llm = try? LowLevelMesh(descriptor: desc) else { return }
+    var lo = SIMD3<Float>(repeating: .infinity), hi = SIMD3<Float>(repeating: -.infinity)
+    for p in base { lo = simd_min(lo, p); hi = simd_max(hi, p) }
+    let pad = (hi - lo) * 0.25
+    llm.withUnsafeMutableIndices { raw in
+        let dst = raw.bindMemory(to: UInt32.self)
+        for (i, v) in pm.indices.enumerated() { dst[i] = v }
+    }
+    func write(_ d: [Float]?) {
+        llm.withUnsafeMutableBytes(bufferIndex: 0) { raw in
+            let dst = raw.bindMemory(to: V.self)
+            for i in 0..<base.count {
+                let off = d.map { SIMD3($0[3 * i], $0[3 * i + 1], $0[3 * i + 2]) } ?? .zero
+                dst[i] = V(p: base[i] + off, n: normals[i])
+            }
+        }
+    }
+    write(nil)
+    llm.parts.replaceAll([LowLevelMesh.Part(indexCount: pm.indices.count, topology: .triangle,
+                                            bounds: BoundingBox(min: lo - pad, max: hi + pad))])
     var mat = PhysicallyBasedMaterial()
     mat.baseColor = .init(tint: NSColor.systemTeal)
     mat.metallic = 0.6
     mat.roughness = 0.35
     mat.faceCulling = .none
-    guard let mesh = meshFor(base) else { return }
+    guard let mesh = try? MeshResource(from: llm) else { return }
     let body = ModelEntity(mesh: mesh, materials: [mat])
     body.name = "soundBody"
     body.isEnabled = false
@@ -443,8 +546,7 @@ func syncSoundOverlay(_ store: SoundStore, in parent: Entity) {
             real?.isEnabled = true
             return
         }
-        let pos = (0..<pm.vertices).map { base[$0] + SIMD3(d[3 * $0], d[3 * $0 + 1], d[3 * $0 + 2]) }
-        if let m = meshFor(pos) { body.model?.mesh = m }
+        write(d)
         body.isEnabled = true
         real?.isEnabled = false
     }
@@ -511,7 +613,7 @@ struct RingsAtCard: View {
         .padding(Theme.Space.m).frame(width: Theme.Width.toolInspector).panelSurface()
         .accessibilityIdentifier("mallet-card")
         .task(id: model.documentRevision) {
-            if let pm = store.modes { _ = await store.ensureModes(part: pm.part, model) }
+            if let pm = store.modes { await store.reanalyze(pm.name, model, fallback: pm.part) }
         }
     }
 
@@ -577,7 +679,7 @@ struct RingsAtCard: View {
             }
             .padding(6)
             .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(store.isLocked ? Color.accentColor : Color.secondary.opacity(0.3)))
-            let params = store.parameterNames(model)
+            let params = store.drivingParameters(model, part: pm.name)
             if params.isEmpty {
                 Text("Add a parameter (e.g. a length) for the pitch lock to drive.").font(.caption).foregroundStyle(.secondary)
             } else {
@@ -590,8 +692,18 @@ struct RingsAtCard: View {
                 }
             }
             if let st = store.lockStatus, let c = st.cents {
-                Text(st.holds == true ? "Locked: holds" : String(format: "Locked, but %.1f cents off — re-lock to re-solve", abs(c)))
-                    .font(.caption).foregroundStyle(st.holds == true ? Color.green : .orange)
+                if st.holds == true {
+                    Text("Locked · on pitch").font(.caption).foregroundStyle(.green)
+                } else {
+                    HStack {
+                        Text(String(format: "Locked · %.0f cents %@", abs(c), c < 0 ? "flat" : "sharp"))
+                            .font(.caption).foregroundStyle(.orange)
+                        Spacer()
+                        Button(store.busy ? "Solving…" : "Re-solve") { Task { await store.resolveLock(model) } }
+                            .disabled(store.busy)
+                            .accessibilityIdentifier("mallet-resolve")
+                    }
+                }
             }
         }
     }
@@ -616,4 +728,41 @@ struct TunerNeedle: View {
         }
         .accessibilityHidden(true)
     }
+}
+
+
+/// The part a kernel-frame ray actually hits first, by ray-casting each part's
+/// render mesh (collision bounds of an enclosing part — a frame under its
+/// bars — would otherwise win).
+@MainActor
+func nearestPartHit(_ m: EditorModel, origin o: SIMD3<Float>, dir d: SIMD3<Float>) -> Int? {
+    var best: (t: Float, part: Int)?
+    for (pi, pm) in m.docPartMeshes.enumerated() {
+        // Slab test against the part's bounds first.
+        var t0: Float = 0, t1: Float = .infinity
+        var miss = false
+        for a in 0..<3 {
+            if abs(d[a]) < 1e-12 {
+                if o[a] < pm.lo[a] || o[a] > pm.hi[a] { miss = true; break }
+                continue
+            }
+            var ta = (pm.lo[a] - o[a]) / d[a], tb = (pm.hi[a] - o[a]) / d[a]
+            if ta > tb { swap(&ta, &tb) }
+            t0 = max(t0, ta); t1 = min(t1, tb)
+            if t0 > t1 { miss = true; break }
+        }
+        if miss || t0 > (best?.t ?? .infinity) { continue }
+        for t in stride(from: 0, to: pm.indices.count, by: 3) {
+            let a = pm.positions[Int(pm.indices[t])], b = pm.positions[Int(pm.indices[t + 1])], c = pm.positions[Int(pm.indices[t + 2])]
+            let e1 = b - a, e2 = c - a, h = simd_cross(d, e2), det = simd_dot(e1, h)
+            if abs(det) < 1e-12 { continue }
+            let f = 1 / det, s = o - a, u = f * simd_dot(s, h)
+            if u < 0 || u > 1 { continue }
+            let q = simd_cross(s, e1), v = f * simd_dot(d, q)
+            if v < 0 || u + v > 1 { continue }
+            let tt = f * simd_dot(e2, q)
+            if tt > 0, tt < (best?.t ?? .infinity) { best = (tt, pi) }
+        }
+    }
+    return best?.part
 }

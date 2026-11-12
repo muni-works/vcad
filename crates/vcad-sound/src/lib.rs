@@ -366,22 +366,55 @@ fn pitch_for(mesh: &TriangleMesh, quality: Quality) -> (usize, [f64; 3]) {
     (res, [h, h, h])
 }
 
+/// The document with only visible part `part` as a root, so evaluating it
+/// costs one part, not the whole assembly.
+pub fn single_part_doc(doc: &Document, part: usize) -> Option<Document> {
+    let entry = visible_roots(doc).nth(part)?.clone();
+    let mut d = doc.clone();
+    d.roots = vec![entry];
+    Some(d)
+}
+
+/// Modes of visible part `req.part` evaluated on its own.
+pub fn part_modes_alone(doc: &Document, req: &ModesRequest) -> Result<PartModes, SoundError> {
+    let single = single_part_doc(doc, req.part)
+        .ok_or_else(|| SoundError::NoPart(format!("index {}", req.part)))?;
+    let scene = evaluate(&single)?;
+    let part = scene
+        .parts
+        .first()
+        .ok_or_else(|| SoundError::NoPart(format!("index {} is empty", req.part)))?;
+    part_modes_mesh(doc, req, &part.mesh.positions, &part.mesh.indices)
+}
+
 /// Natural frequencies and (optionally) render-vertex mode shapes of a part.
 pub fn part_modes(
     doc: &Document,
     scene: &EvaluatedScene,
     req: &ModesRequest,
 ) -> Result<PartModes, SoundError> {
-    let t0 = std::time::Instant::now();
     let part = scene
         .parts
         .get(req.part)
         .ok_or_else(|| SoundError::NoPart(format!("index {}", req.part)))?;
+    part_modes_mesh(doc, req, &part.mesh.positions, &part.mesh.indices)
+}
+
+/// [`part_modes`] on a mesh the caller already has (the app's tessellation),
+/// skipping document evaluation. `req.part` still names the part (material,
+/// name).
+pub fn part_modes_mesh(
+    doc: &Document,
+    req: &ModesRequest,
+    positions: &[f32],
+    indices: &[u32],
+) -> Result<PartModes, SoundError> {
+    let t0 = std::time::Instant::now();
     let (material, material_known) = match req.material.as_deref() {
         Some(k) => material_for_key(k).map_or((ALUMINIUM, false), |m| (m, true)),
         None => part_material(doc, req.part),
     };
-    let mesh = tri_mesh(&part.mesh.positions, &part.mesh.indices);
+    let mesh = tri_mesh(positions, indices);
     let (resolution, pitch) = pitch_for(&mesh, req.quality);
     let spec = ModalSpec {
         resolution,
@@ -391,13 +424,22 @@ pub fn part_modes(
         density_kg_m3: material.density_kg_m3,
         supports: vec![],
         modes: req.modes.clamp(1, 24),
+        max_cells: Some(match req.quality {
+            Quality::Preview => 2_500,
+            Quality::Fine => 40_000,
+        }),
     };
     let r = modal_analysis(&mesh, &spec).map_err(|e| SoundError::Modal(e.to_string()))?;
     let (anim_pos, anim_idx) = if req.shapes {
         refine(
-            &part.mesh.positions,
-            &part.mesh.indices,
-            r.pitch[0].min(r.pitch[1]).min(r.pitch[2]),
+            positions,
+            indices,
+            // Animation only needs to show the bend: one solver cell, but no
+            // finer than 1/48 of the part, so the viewer can redraw it live.
+            r.pitch[0]
+                .min(r.pitch[1])
+                .min(r.pitch[2])
+                .max(longest_extent(positions) / 32.0),
         )
     } else {
         (Vec::new(), Vec::new())
@@ -437,6 +479,18 @@ pub fn part_modes(
     })
 }
 
+/// Longest bounding-box extent of a flat position array, mm.
+fn longest_extent(positions: &[f32]) -> f64 {
+    let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
+    for v in positions.as_chunks::<3>().0 {
+        for a in 0..3 {
+            lo[a] = lo[a].min(v[a] as f64);
+            hi[a] = hi[a].max(v[a] as f64);
+        }
+    }
+    (0..3).map(|a| hi[a] - lo[a]).fold(0.0, f64::max)
+}
+
 /// Subdivide triangles (longest-edge midpoint splits, shared across
 /// neighbours) until every edge is at most `max_edge` mm, capped at ~200k
 /// triangles.
@@ -460,7 +514,7 @@ fn refine(positions: &[f32], indices: &[u32], max_edge: f64) -> (Vec<f32>, Vec<u
     };
     let lim = max_edge * max_edge;
     for _ in 0..24 {
-        if tris.len() > 200_000 {
+        if tris.len() > 12_000 {
             break;
         }
         let mut changed = false;
@@ -537,7 +591,11 @@ fn to_render_vertices(r: &ModalResult, positions: &[f32]) -> Vec<Vec<f32>> {
             ];
             for reach in 0..3i64 {
                 let mut out = Vec::new();
-                let base = [g[0].floor() as i64, g[1].floor() as i64, g[2].floor() as i64];
+                let base = [
+                    g[0].floor() as i64,
+                    g[1].floor() as i64,
+                    g[2].floor() as i64,
+                ];
                 for dx in -reach..=1 + reach {
                     for dy in -reach..=1 + reach {
                         for dz in -reach..=1 + reach {
@@ -662,16 +720,14 @@ fn with_param(doc: &Document, name: &str, v: f64) -> Document {
     d
 }
 
-fn mode_hz(doc: &Document, part: &str, mode: usize) -> Result<f64, SoundError> {
+fn mode_hz_q(doc: &Document, part: &str, mode: usize, quality: Quality) -> Result<f64, SoundError> {
     let idx = part_index(doc, part).ok_or_else(|| SoundError::NoPart(part.to_string()))?;
-    let scene = evaluate(doc)?;
-    let pm = part_modes(
+    let pm = part_modes_alone(
         doc,
-        &scene,
         &ModesRequest {
             part: idx,
             modes: mode,
-            quality: Quality::Fine,
+            quality,
             material: None,
             shapes: false,
         },
@@ -680,6 +736,10 @@ fn mode_hz(doc: &Document, part: &str, mode: usize) -> Result<f64, SoundError> {
         .get(mode - 1)
         .map(|m| m.hz)
         .ok_or_else(|| SoundError::Modal(format!("mode {mode} not found")))
+}
+
+fn mode_hz(doc: &Document, part: &str, mode: usize) -> Result<f64, SoundError> {
+    mode_hz_q(doc, part, mode, Quality::Fine)
 }
 
 /// Solve `lock.drives` so mode `lock.mode` of `lock.part` rings at
@@ -725,15 +785,19 @@ pub fn solve_pitch_lock(
             break;
         }
         let h = 0.01;
-        let up = mode_hz(
+        // The slope only steers Newton: the coarse mesh is plenty, and 3–5×
+        // cheaper. Values are always measured at Fine.
+        let up = mode_hz_q(
             &with_param(doc, &lock.drives, x * (1.0 + h)),
             &lock.part,
             lock.mode,
+            Quality::Preview,
         )?;
-        let dn = mode_hz(
+        let dn = mode_hz_q(
             &with_param(doc, &lock.drives, x * (1.0 - h)),
             &lock.part,
             lock.mode,
+            Quality::Preview,
         )?;
         let slope = (up.ln() - dn.ln()) / ((1.0 + h).ln() - (1.0 - h).ln());
         if !slope.is_finite() || slope.abs() < 1e-6 {

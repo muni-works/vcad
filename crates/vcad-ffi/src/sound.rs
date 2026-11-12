@@ -17,7 +17,7 @@ use std::ptr;
 
 use serde_json::{json, Value};
 use vcad_ir::Document;
-use vcad_sound::{part_index, part_modes, solve_pitch_lock, ModesRequest, PitchLock};
+use vcad_sound::{part_index, solve_pitch_lock, ModesRequest, PitchLock};
 
 use crate::analysis::parse_request;
 use crate::err;
@@ -27,14 +27,50 @@ fn lock_from(req: &Value) -> Result<PitchLock, String> {
     serde_json::from_value(req.clone()).map_err(|e| format!("lock: {e}"))
 }
 
+/// The app's engine-materialized documents carry part names as feature
+/// names, not on the root nodes; the caller passes them (`part_names`, in
+/// visible-part order) and they fill any unnamed root.
+fn apply_names(doc: &mut Document, req: &Value) {
+    let Some(names) = req.get("part_names").and_then(Value::as_array) else {
+        return;
+    };
+    let roots: Vec<_> = doc
+        .roots
+        .iter()
+        .filter(|e| e.visible != Some(false))
+        .map(|e| e.root)
+        .collect();
+    for (root, name) in roots.iter().zip(names) {
+        if let (Some(node), Some(n)) = (doc.nodes.get_mut(root), name.as_str()) {
+            if node.name.is_none() && !n.is_empty() {
+                node.name = Some(n.to_string());
+            }
+        }
+    }
+}
+
 pub(crate) fn call(doc: &Document, req: &Value) -> Result<Value, String> {
+    let mut named = doc.clone();
+    apply_names(&mut named, req);
+    let doc = &named;
     let op = req.get("op").and_then(Value::as_str).unwrap_or("");
     match op {
         "modes" => {
             let r: ModesRequest =
                 serde_json::from_value(req.clone()).map_err(|e| format!("modes: {e}"))?;
-            let scene = vcad_sound::evaluate(doc).map_err(|e| e.to_string())?;
-            let pm = part_modes(doc, &scene, &r).map_err(|e| e.to_string())?;
+            // The app passes the part's tessellation it already has; else
+            // evaluate just that part.
+            let pm = match req.get("mesh") {
+                Some(m) => {
+                    let positions: Vec<f32> = serde_json::from_value(m["positions"].clone())
+                        .map_err(|e| format!("mesh.positions: {e}"))?;
+                    let indices: Vec<u32> = serde_json::from_value(m["indices"].clone())
+                        .map_err(|e| format!("mesh.indices: {e}"))?;
+                    vcad_sound::part_modes_mesh(doc, &r, &positions, &indices)
+                }
+                None => vcad_sound::part_modes_alone(doc, &r),
+            }
+            .map_err(|e| e.to_string())?;
             serde_json::to_value(pm).map_err(|e| e.to_string())
         }
         "lock" => {
@@ -61,9 +97,13 @@ pub(crate) fn call(doc: &Document, req: &Value) -> Result<Value, String> {
             Ok(json!({ "document": d }))
         }
         "check" => {
-            let scene = vcad_sound::evaluate(doc).map_err(|e| e.to_string())?;
             let mut out = Vec::new();
-            for l in &doc.pitch_locks {
+            let only = req.get("part").and_then(Value::as_str);
+            for l in doc
+                .pitch_locks
+                .iter()
+                .filter(|l| only.is_none_or(|p| p == l.part))
+            {
                 let entry = match part_index(doc, &l.part) {
                     None => json!({"lock": l, "error": format!("part {:?} is gone", l.part)}),
                     Some(idx) => {
@@ -74,7 +114,7 @@ pub(crate) fn call(doc: &Document, req: &Value) -> Result<Value, String> {
                             material: None,
                             shapes: false,
                         };
-                        match part_modes(doc, &scene, &r) {
+                        match vcad_sound::part_modes_alone(doc, &r) {
                             Ok(pm) => match pm.modes.get(l.mode - 1) {
                                 Some(m) => {
                                     let c = 1200.0 * (m.hz / l.target_hz).log2();

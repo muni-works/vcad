@@ -12,6 +12,7 @@ fn run(name: &str, min: [f64; 3], max: [f64; 3], res: usize, pitch: Option<[f64;
         density_kg_m3: 2700.0,
         supports: vec![],
         modes: 6,
+        max_cells: None,
     };
     let t = std::time::Instant::now();
     match modal_analysis(&mesh, &spec) {
