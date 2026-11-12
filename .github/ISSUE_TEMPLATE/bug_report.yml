@@ -1,0 +1,40 @@
+name: Bug report
+description: Something in vcad didn't work. The Mac app's "Report a Bug…" pre-fills this form.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Nothing here was sent automatically — you're reviewing it now.
+        Please don't paste file paths or document contents unless you're comfortable making them public.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      placeholder: The model disappeared after I filleted an edge.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. New document
+        2. Add a box
+        3. ...
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: App version, build, macOS version, chip, active workspace.
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Diagnostics
+      description: Crash/hang summary or logs. If vcad copied diagnostics to your clipboard, paste them here.
+      render: text

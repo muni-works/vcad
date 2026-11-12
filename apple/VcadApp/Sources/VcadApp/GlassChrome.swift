@@ -1642,6 +1642,9 @@ struct ShortcutSheet: View {
             HStack {
                 Text("Keyboard Shortcuts").font(.headline)
                 Spacer()
+                Button { BugReporter.reportBug() } label: { Label("Report a Bug…", systemImage: "ladybug") }
+                    .buttonStyle(.borderless).foregroundStyle(.secondary)
+                    .help("Opens a pre-filled GitHub issue — nothing is sent automatically")
                 Button { ui.shortcutsShown = false } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }
                     .buttonStyle(.borderless).help("Close").accessibilityLabel("Close shortcuts")
             }
