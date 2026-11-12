@@ -208,14 +208,14 @@ extension EditorModel {
         manip.kind = nil
         if abs(manip.value) < 1e-9 {
             // A click on the handle, not a drag: take the empty step back.
-            if let last = undoStack.last, last.name == manip.name { undo(); redoStack.removeAll() }
+            if let last = undoStack.last, last.name == manip.name { undo(); clearRedo() }
             manipLabel = nil
             gizmoDirty = true
             return true
         }
         markReeval(.rebuild)
         if let failed = newEvaluationErrors(), !failed.isEmpty {
-            undo(); redoStack.removeAll()
+            undo(); clearRedo()
             engineError = "\(manip.name) couldn't be built, so it was undone:\n\(failed)"
             manipLabel = nil
             return true

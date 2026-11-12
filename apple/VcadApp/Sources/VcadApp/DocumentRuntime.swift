@@ -61,10 +61,10 @@ extension EditorModel {
             runtimeGesture = lastGestureId
         }
         guard let gid = runtimeGesture else { return false }
-        let seq = engine.send(make(gid, start))
+        let seq = engine.send(make(gid, start), label: start ? name : nil)
         guard seq > 0 else { return false }
         if start {
-            pushUndo(.gesture(gid), name: name)
+            pushUndo(.runtime, name: name)      // the intent pushes it on the runtime
             collideAfterSeq = seq
         }
         engineError = nil
@@ -73,12 +73,6 @@ extension EditorModel {
 
     /// `VCAD_RUNTIME_SCRUB=0` restores the old blocking scrub path (A/B).
     nonisolated static let runtimeScrubDisabled = ProcessInfo.processInfo.environment["VCAD_RUNTIME_SCRUB"] == "0"
-
-    /// Gesture snapshots whose undo entries are gone.
-    func forgetGestures(_ entries: [UndoEntry]) {
-        guard let engine else { return }
-        for e in entries { if case .gesture(let id) = e.step { engine.forgetGesture(id) } }
-    }
 
     /// Put a frame's meshes in `partMeshCache`, reusing parts whose
     /// fingerprint didn't change. False when the frame can't serve the

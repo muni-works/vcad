@@ -21,7 +21,9 @@
 
 #![warn(missing_docs)]
 
-use std::collections::HashMap;
+pub mod history;
+pub use history::{History, Labels};
+
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -39,15 +41,18 @@ use vcad_eval::{EvalOptions, EvaluatedScene};
 use vcad_ir::Document;
 
 /// Where a gesture-scoped intent sits in its gesture. The first intent of a
-/// gesture (`start`) snapshots the document so the whole gesture undoes as
-/// one step ([`Core::swap_gesture`]).
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+/// gesture (`start`) pushes a snapshot entry on the [`History`] (labelled
+/// `label`), so the whole gesture undoes as one step.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct Gesture {
     /// Host-chosen id, unique per gesture.
     pub id: u64,
     /// First event of the gesture.
     #[serde(default)]
     pub start: bool,
+    /// The undo entry's name ("Change Width"); sent with the start.
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 /// A fire-and-forget request. JSON: `{"type":"set_doc_param",…}`.
@@ -92,7 +97,9 @@ pub enum Intent {
 impl Intent {
     fn gesture(&self) -> Option<Gesture> {
         match self {
-            Intent::Command { gesture, .. } | Intent::SetDocParam { gesture, .. } => *gesture,
+            Intent::Command { gesture, .. } | Intent::SetDocParam { gesture, .. } => {
+                gesture.clone()
+            }
             Intent::GestureEnd { .. } | Intent::Publish => None,
         }
     }
@@ -100,10 +107,11 @@ impl Intent {
     /// Fold `next` into `self` when it supersedes it: same gesture, same
     /// target. Keeps `start` if either was the start.
     fn absorb(&mut self, next: &Intent) -> bool {
-        let start = |a: Option<Gesture>, b: Option<Gesture>| match (a, b) {
+        let start = |a: &Option<Gesture>, b: &Option<Gesture>| match (a.clone(), b.clone()) {
             (Some(a), Some(b)) if a.id == b.id => Some(Gesture {
                 id: a.id,
                 start: a.start || b.start,
+                label: a.label.or(b.label),
             }),
             _ => None,
         };
@@ -120,7 +128,7 @@ impl Intent {
                     gesture: g2,
                 },
             ) if name == n2 => {
-                let Some(g) = start(*gesture, *g2) else {
+                let Some(g) = start(gesture, g2) else {
                     return false;
                 };
                 *value = *v2;
@@ -139,7 +147,7 @@ impl Intent {
                     coalesce: Some(k2),
                 },
             ) if k == k2 => {
-                let Some(g) = start(*gesture, *g2) else {
+                let Some(g) = start(gesture, g2) else {
                     return false;
                 };
                 *command = c2.clone();
@@ -225,7 +233,8 @@ pub struct Core {
     /// The document.
     pub api: DocumentApi,
     eval: Sender<EvalMsg>,
-    gestures: HashMap<u64, Vec<u8>>,
+    /// The undo history every client shares.
+    pub history: History,
     open_gestures: Vec<u64>,
     rev: u64,
     /// Directory relative mesh imports resolve against.
@@ -237,7 +246,7 @@ impl Core {
         Self {
             api: DocumentApi::new(ReplicaId(cfg.replica)),
             eval,
-            gestures: HashMap::new(),
+            history: History::default(),
             open_gestures: Vec::new(),
             rev: 0,
             base_dir: None,
@@ -263,30 +272,11 @@ impl Core {
         self.bump();
     }
 
-    /// Undo/redo a gesture: restore the snapshot taken at its start and keep
-    /// the current state in its place, so calling it again redoes.
-    pub fn swap_gesture(&mut self, id: u64) -> Result<(), String> {
-        let snap = self
-            .gestures
-            .get(&id)
-            .ok_or_else(|| format!("no gesture {id}"))?
-            .clone();
-        let current = self.api.save();
-        self.api.restore_snapshot(&snap)?;
-        self.gestures.insert(id, current);
-        self.bump();
-        Ok(())
-    }
-
-    /// Forget a gesture snapshot (its undo entry fell off the host's stack).
-    pub fn forget_gesture(&mut self, id: u64) {
-        self.gestures.remove(&id);
-    }
-
     fn apply(&mut self, intent: Intent) -> Result<(), String> {
         if let Some(g) = intent.gesture() {
             if g.start {
-                self.gestures.insert(g.id, self.api.save());
+                let label = g.label.as_deref().unwrap_or("Edit");
+                self.history.push_snapshot(label, self.api.save());
             }
             if !self.open_gestures.contains(&g.id) {
                 self.open_gestures.push(g.id);
@@ -669,7 +659,11 @@ mod tests {
             intent: Intent::SetDocParam {
                 name: "w".into(),
                 value,
-                gesture: Some(Gesture { id: 9, start }),
+                gesture: Some(Gesture {
+                    id: 9,
+                    start,
+                    label: start.then(|| "Change W".to_string()),
+                }),
             },
         }
     }
@@ -687,7 +681,11 @@ mod tests {
                 intent: Intent::SetDocParam {
                     name: "w".into(),
                     value: 2.0,
-                    gesture: Some(Gesture { id: 1, start: true })
+                    gesture: Some(Gesture {
+                        id: 1,
+                        start: true,
+                        label: None
+                    })
                 }
             }
         );
@@ -748,12 +746,13 @@ mod tests {
         );
         // The whole gesture undoes as one step, and swapping again redoes.
         let undone = rt.call(|c| {
-            c.swap_gesture(9).unwrap();
+            assert_eq!(c.history.labels().undo, vec!["Change W"]);
+            c.history.undo(&mut c.api).unwrap();
             serde_json::to_vec(&c.api.get_state().document).unwrap()
         });
         assert_eq!(param(&undone.unwrap()), 10.0);
         let redone = rt.call(|c| {
-            c.swap_gesture(9).unwrap();
+            c.history.redo(&mut c.api).unwrap();
             serde_json::to_vec(&c.api.get_state().document).unwrap()
         });
         assert_eq!(param(&redone.unwrap()), 29.0);

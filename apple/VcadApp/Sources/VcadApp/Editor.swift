@@ -100,9 +100,10 @@ struct UndoEntry: Equatable {
         /// Serialized document JSON, for documents edited outside the engine
         /// (electronics, which the command vocabulary doesn't cover yet).
         case json(Data)
-        /// A scrub gesture the document runtime snapshotted at its first
-        /// intent: undone (and redone) by swapping with that snapshot.
-        case gesture(UInt64)
+        /// An entry of the document runtime's own history (engine-backed
+        /// documents): the stacks mirror `vcad_runtime::History`, which owns
+        /// the data and is shared with every other client.
+        case runtime
     }
     let step: Step
     let name: String
@@ -1373,9 +1374,40 @@ final class EditorModel {
     }
 
     func pushUndo(_ step: UndoEntry.Step, name: String) {
+        // Engine-backed documents: the runtime owns the history.
+        if let engine {
+            switch step {
+            case .engine:
+                if let h = try? engine.history(["op": "push_engine", "label": name]).history { syncHistory(h); return }
+            case .snapshot(let data):
+                if let h = try? engine.historyPushSnapshot(name, data) { syncHistory(h); return }
+            case .runtime:
+                // Already pushed on the runtime (a gesture's first intent,
+                // queued): mirror it now so the menu and stack are current.
+                undoStack.append(UndoEntry(step: .runtime, name: name))
+                if undoStack.count > 64 { undoStack.removeFirst() }
+                redoStack.removeAll()
+                return
+            case .json:
+                break
+            }
+        }
         undoStack.append(UndoEntry(step: step, name: name))
-        if undoStack.count > 64 { forgetGestures([undoStack.removeFirst()]) }
-        forgetGestures(redoStack)
+        if undoStack.count > 64 { undoStack.removeFirst() }
+        redoStack.removeAll()
+    }
+
+    /// Mirror the runtime's history into the stacks the UI reads.
+    func syncHistory(_ h: DocumentEngine.History) {
+        let undo = h.undo.map { UndoEntry(step: .runtime, name: $0) }
+        let redo = h.redo.map { UndoEntry(step: .runtime, name: $0) }
+        if undo != undoStack { undoStack = undo }
+        if redo != redoStack { redoStack = redo }
+    }
+
+    /// Drop the redo stack (a step taken back, an edit after undoing).
+    func clearRedo() {
+        if let engine, let h = try? engine.history(["op": "clear_redo"]).history { syncHistory(h); return }
         redoStack.removeAll()
     }
 
@@ -1425,19 +1457,24 @@ final class EditorModel {
                             _ body: (DocumentEngine) throws -> DocumentEngine.Result) -> DocumentEngine.Result? {
         guard let engine else { return nil }
         runtimeGesture = nil                // a blocking edit closes any scrub gesture
-        let before = mode == .snapshot ? engine.save() : nil
+        // A snapshot edit marks the state on the runtime (no bytes cross):
+        // it becomes the undo entry on success, or is restored on failure.
+        let mark = mode == .snapshot ? (try? engine.history(["op": "mark"]).reply["mark"] as? Int) ?? nil : nil
         do {
             let r = try body(engine)
             switch mode {
             case .step: pushUndo(.engine, name: name)
-            case .snapshot: pushUndo(.snapshot(before ?? Data()), name: name)
+            case .snapshot:
+                if let mark, let h = try? engine.history(["op": "push_mark", "mark": mark, "label": name]).history {
+                    syncHistory(h)
+                }
             case .none: break
             }
             engineError = nil
             adopt(r, reeval: reeval)
             return r
         } catch {
-            if let before { _ = try? engine.restore(before) }
+            if let mark { _ = try? engine.history(["op": "restore_mark", "mark": mark]) }
             engineError = String(describing: error)
             return nil
         }
@@ -1776,7 +1813,7 @@ final class EditorModel {
         // whole part vanished with no message. Check, and take it back.
         if let failed = newEvaluationErrors(), !failed.isEmpty {
             undo()
-            redoStack.removeAll()
+            clearRedo()
             engineError = "\(name) couldn't be built, so it was undone:\n\(failed)"
             return false
         }
@@ -2620,6 +2657,11 @@ final class EditorModel {
             else { GlassUI.shared.flash("Nothing to undo in this sketch", symbol: "pencil.and.outline") }
             return
         }
+        if engine != nil, case .runtime = undoStack.last?.step {
+            let name = undoStack.last?.name ?? ""
+            if runtimeHistoryStep(forward: false) { GlassUI.shared.flash("Undo \(name)", symbol: "arrow.uturn.backward") }
+            return
+        }
         guard let entry = undoStack.popLast() else { undoGeneration(); return }
         guard let back = step(entry, forward: false) else { return }
         redoStack.append(back)
@@ -2628,6 +2670,11 @@ final class EditorModel {
     func redo() {
         if let sketch = sketchHistory {
             if sketch.redo() { sketchDirty = true }
+            return
+        }
+        if engine != nil, case .runtime = redoStack.last?.step {
+            let name = redoStack.last?.name ?? ""
+            if runtimeHistoryStep(forward: true) { GlassUI.shared.flash("Redo \(name)", symbol: "arrow.uturn.forward") }
             return
         }
         guard let entry = redoStack.popLast() else { return }
@@ -2651,17 +2698,25 @@ final class EditorModel {
             adopt(r, reeval: .rebuild)
             afterHistoryStep()
             return UndoEntry(step: .snapshot(current), name: entry.name)
-        case .gesture(let id):
-            guard let engine, let r = try? engine.swapGesture(id) else { return nil }
-            runtimeGesture = nil
-            adopt(r, reeval: .rebuild)
-            afterHistoryStep()
-            return entry
+        case .runtime:
+            // undo()/redo() handle runtime entries (runtimeHistoryStep).
+            return nil
         case .json(let data):
             guard let cur = documentJSON.flatMap({ DocEdit.serialize($0) }) else { return nil }
             restoreJSON(data)
             return UndoEntry(step: .json(cur), name: entry.name)
         }
+    }
+
+    /// Undo or redo the runtime history's top entry and adopt the result.
+    private func runtimeHistoryStep(forward: Bool) -> Bool {
+        guard let engine, let r = try? engine.history(["op": forward ? "redo" : "undo"]) else { return false }
+        syncHistory(r.history)
+        guard let state = r.state else { return false }
+        runtimeGesture = nil
+        adopt(state, reeval: .rebuild)
+        afterHistoryStep()
+        return true
     }
 
     private func afterHistoryStep() {
@@ -4742,7 +4797,9 @@ extension EditorModel {
 
     /// Drop undo entries an agent edit pushed above `depth` (AgentTurn.swift).
     func agentDropUndo(above depth: Int) {
-        if undoStack.count > depth { undoStack.removeSubrange(depth...) }
+        guard undoStack.count > depth else { return }
+        if let engine, let h = try? engine.history(["op": "truncate", "depth": depth]).history { syncHistory(h); return }
+        undoStack.removeSubrange(depth...)
     }
 
     /// Land an agent edit as one snapshot entry: entries the edit pushed
@@ -4750,7 +4807,12 @@ extension EditorModel {
     /// existing top entry instead — it already snapshots the turn's start.
     func agentCommitUndo(before: Data, above depth: Int, coalesce: Bool, name: String) {
         agentDropUndo(above: depth)
-        if coalesce, let last = undoStack.last, case .snapshot = last.step {
+        if coalesce, let engine,
+           (try? engine.history(["op": "top_is_snapshot"]).reply["snapshot"] as? Bool) == true,
+           let h = try? engine.history(["op": "rename_top", "label": name]).history {
+            syncHistory(h)
+            clearRedo()
+        } else if coalesce, engine == nil, let last = undoStack.last, case .snapshot = last.step {
             undoStack[undoStack.count - 1] = UndoEntry(step: last.step, name: name)
             redoStack.removeAll()
         } else {
