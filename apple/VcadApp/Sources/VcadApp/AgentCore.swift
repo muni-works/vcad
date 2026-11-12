@@ -241,7 +241,13 @@ final class AgentCore {
             return ["label": label]
         case "open_path":
             guard let path = r["path"] as? String else { throw AgentTools.Failure(message: "path is required") }
-            m.openDocument(URL(fileURLWithPath: path))
+            // Fail closed on anything that isn't an existing document: an
+            // arbitrary file (e.g. /etc/passwd, a user's notes.txt) would
+            // otherwise become the window's document — and its Save target.
+            guard let url = AgentCore.openableDocument(path) else {
+                throw AgentTools.Failure(message: "not an openable vcad document (need an existing .vcad, .loon, .dxf, .step/.stp, .urdf file or a loon folder): \(path)")
+            }
+            m.openDocument(url)
             return ["id": agentWindowDocumentId]
         case "live_resources":
             return ["resources": AgentResources.shared.list()["resources"] ?? []]
@@ -456,5 +462,22 @@ enum AgentSelection {
         }
         if let p = focus.point { return .point(p) }
         return focus.part.map { .part($0) }
+    }
+}
+
+extension AgentCore {
+    /// Extensions `EditorModel.openDocument` handles as documents/imports.
+    nonisolated static let openableExtensions: Set<String> = ["vcad", "loon", "dxf", "step", "stp", "urdf"]
+
+    /// `path` as a URL when it names an existing openable document (or a
+    /// folder, which opens its loon entry program); nil otherwise.
+    nonisolated static func openableDocument(_ path: String) -> URL? {
+        let expanded = (path as NSString).expandingTildeInPath
+        guard expanded.hasPrefix("/") else { return nil }
+        let url = URL(fileURLWithPath: expanded).standardizedFileURL
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir) else { return nil }
+        if isDir.boolValue { return url }
+        return openableExtensions.contains(url.pathExtension.lowercased()) ? url : nil
     }
 }
