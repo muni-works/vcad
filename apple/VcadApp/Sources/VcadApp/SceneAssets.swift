@@ -385,7 +385,9 @@ enum SceneAssets {
         let e = ModelEntity(mesh: mesh, materials: [m])
         e.name = "contactShadow"
         let off = (plane.center - SIMD2(sceneCenter.x, sceneCenter.y)) * sceneScale
-        e.position = [off.x, floorY + 0.0008, -off.y]
+        // Under the grid (which sits at floorY + 0.0004): a shadow above it
+        // painted its black over the grid lines and erased them around the part.
+        e.position = [off.x, floorY + 0.0002, -off.y]
         return e
     }
 }
