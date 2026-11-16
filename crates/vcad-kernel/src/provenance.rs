@@ -102,6 +102,11 @@ pub enum LossKind {
     /// The solid was constructed from a triangle mesh and never had a
     /// B-rep (mesh import, topology optimization).
     MeshSource,
+    /// The difference *succeeded* and kept its analytic surfaces, but the
+    /// result provably still holds material inside the region the cut
+    /// should have emptied, and no mesh fallback could replace it. The
+    /// representation is fine; the geometry is wrong.
+    BooleanMissedCut,
 }
 
 impl LossKind {
@@ -113,6 +118,7 @@ impl LossKind {
             LossKind::BooleanFailedNoOp(_) => "boolean-failed-no-op",
             LossKind::MeshOperandConcat => "mesh-operand-concat",
             LossKind::MeshSource => "mesh-source",
+            LossKind::BooleanMissedCut => "boolean-missed-cut",
         }
     }
 
@@ -120,6 +126,8 @@ impl LossKind {
     pub fn resulting_fidelity(&self) -> SolidFidelity {
         match self {
             LossKind::BooleanFallback(_) => SolidFidelity::TriangleSoup,
+            // The B-rep survived: only the geometry is wrong.
+            LossKind::BooleanMissedCut => SolidFidelity::Analytic,
             _ => SolidFidelity::MeshOnly,
         }
     }
@@ -133,6 +141,7 @@ impl LossKind {
             LossKind::BooleanFailedNoOp(_)
                 | LossKind::MeshOperandConcat
                 | LossKind::BooleanFailedMeshMerge(_)
+                | LossKind::BooleanMissedCut
         )
     }
 }
@@ -158,6 +167,11 @@ impl std::fmt::Display for LossKind {
                  instead of the boolean being performed"
             ),
             LossKind::MeshSource => write!(f, "the solid was built from a mesh, not a B-rep"),
+            LossKind::BooleanMissedCut => write!(
+                f,
+                "the cut was missed: material the tool should have removed is still \
+                 present, and no fallback could produce a sound replacement"
+            ),
         }
     }
 }

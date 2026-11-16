@@ -408,6 +408,13 @@ pub struct EvaluatedScene {
     pub clashes: Vec<EvaluatedMesh>,
     /// Per-root evaluation failures. Empty on a fully successful eval.
     pub failures: Vec<RootFailure>,
+    /// Roots that DID produce geometry, but geometry the kernel knows is
+    /// wrong: a recorded wrong-geometry loss in the solid's construction
+    /// history (a cut that was skipped or provably missed, meshes
+    /// concatenated instead of combined). The mesh is still in `parts` —
+    /// it is the best the kernel has — but a caller reporting success must
+    /// surface these instead of a clean bill of health.
+    pub warnings: Vec<RootFailure>,
     /// Timing breakdown (populated when a `Clock` is provided in `EvalOptions`).
     pub timing: Option<EvalTiming>,
     /// The root-cache key of each part, index-aligned with `parts`; `None`
