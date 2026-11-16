@@ -5767,6 +5767,7 @@ dependencies = [
  "vcad-kernel-antenna 0.11.0",
  "vcad-kernel-booleans 0.11.0",
  "vcad-kernel-diff",
+ "vcad-kernel-em 0.11.0",
  "vcad-kernel-fillet 0.11.0",
  "vcad-kernel-geom 0.11.0",
  "vcad-kernel-math 0.11.0",
@@ -5778,8 +5779,10 @@ dependencies = [
  "vcad-kernel-tessellate 0.11.0",
  "vcad-kernel-text 0.11.0",
  "vcad-kernel-thermal 0.11.0",
+ "vcad-kernel-tolerance 0.11.0",
  "vcad-kernel-topo 0.11.0",
  "vcad-loon",
+ "vcad-parts",
  "web-time",
 ]
 
