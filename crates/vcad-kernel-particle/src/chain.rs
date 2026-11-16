@@ -118,7 +118,8 @@ pub struct ChainOptions {
     pub sigma_cx_scale: f64,
     /// Multiplier on every ion/neutral-impact ionization cross section.
     pub sigma_ion_scale: f64,
-    /// Fraction of born ions that are atomic D⁺ (rest D₂⁺).
+    /// Fraction of *ionization*-born ions that are atomic D⁺ (rest D₂⁺;
+    /// charge-exchange relaunches are always D₂⁺).
     pub born_atomic_fraction: f64,
     /// Whether D₂⁺ converts to D₃⁺ at low energy.
     pub d3_formation: bool,
@@ -948,6 +949,10 @@ fn summed_cx_chain(ctx: &Ctx, q: &[f64], cells: usize, salt: usize) -> (Acc, f64
             break;
         }
         let w0 = weight / picks.len() as f64;
+        // Wave 0 is the ionization source (a stated D⁺ fraction from
+        // dissociative ionization); every later wave is a charge-exchange
+        // relaunch, whose slow product is always D₂⁺.
+        let fa_wave = if waves == 0 { fa } else { 0.0 };
         let mut acc = run_parallel(picks.len(), ctx.opts.threads, cells, |k, acc| {
             let id = picks[k];
             if ctx.sol.phi[id] - ctx.phi_min < cut {
@@ -963,7 +968,7 @@ fn summed_cx_chain(ctx: &Ctx, q: &[f64], cells: usize, salt: usize) -> (Acc, f64
                 acc,
                 pos,
                 [0.0; 3],
-                [0.0, w0 * fa, w0 * (1.0 - fa), 0.0],
+                [0.0, w0 * fa_wave, w0 * (1.0 - fa_wave), 0.0],
                 0,
             );
         });

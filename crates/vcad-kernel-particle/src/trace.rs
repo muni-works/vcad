@@ -723,6 +723,31 @@ mod tests {
     }
 
     #[test]
+    fn synchronized_integrator_beats_leapfrog_at_equal_step() {
+        // Same geometry, same step: the synchronized scheme must cut the
+        // worst-case energy drift by a large factor (19% → 0.17% on the
+        // production open-fusor grid; see examples/integrator_drift.rs).
+        let device = Device::classic_fusor(76.0, 19.0, 4, 1.0, -30_000.0);
+        let sol = solve(&device, 77, 153, &SolveOptions::default()).unwrap();
+        let fields = FieldMap::new(&device, &sol);
+        let worst = |integrator: Integrator| {
+            let opts = TraceOptions {
+                max_passes: 10,
+                integrator,
+                ..TraceOptions::default()
+            };
+            Tracer::new(&device, &fields, &sol, opts)
+                .launch_ensemble(DEUTERON, 12)
+                .iter()
+                .map(|o| o.energy_drift_rel)
+                .fold(0.0, f64::max)
+        };
+        let (lf, sy) = (worst(Integrator::Leapfrog), worst(Integrator::Synchronized));
+        assert!(sy < 0.2 * lf, "synchronized {sy:.4} vs leapfrog {lf:.4}");
+        assert!(sy < 0.02, "synchronized drift {sy:.4}");
+    }
+
+    #[test]
     fn charge_exchange_splits_the_yield() {
         // At 2 mTorr D₂ the CX mean free path (~4 cm at 1e-19 m²) is
         // shorter than one pass: the surviving-ion channel must be heavily
