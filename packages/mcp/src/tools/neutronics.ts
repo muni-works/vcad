@@ -12,6 +12,7 @@
  */
 
 import { behavior, type ToolDef } from "./tool-def.js";
+import { getSession } from "./session-core.js";
 
 const paramValue = {
   description:
@@ -92,6 +93,64 @@ const shieldSpecSchema = {
   },
 };
 
+const shieldExtractSchema = {
+  type: "object" as const,
+  required: ["shells", "source", "detectors"],
+  description:
+    "Which parts of `document_id` are the shield. Each shell part must be a " +
+    "concentric spherical shell (sphere minus a smaller concentric sphere, " +
+    "or a solid ball); thicknesses are measured from the BRep. Fail-closed: " +
+    "a cylindrical/box shield, an off-centre or overlapping shell, or a " +
+    "material outside the library errors naming the part — the transport " +
+    "is 1-D spherical, so nothing is folded into a sphere silently.",
+  properties: {
+    shells: {
+      type: "array" as const,
+      minItems: 1,
+      items: {
+        type: "object" as const,
+        required: ["part"],
+        properties: {
+          part: {
+            type: "string" as const,
+            description: "Shell part (name or part id).",
+          },
+          material: {
+            type: "string" as const,
+            description:
+              "Library material (hdpe, paraffin, borated-hdpe-5, water, lead, " +
+              "concrete, air, void). Omitted = the part's document material.",
+          },
+        },
+      },
+    },
+    fill_material: {
+      type: "string" as const,
+      description:
+        "Material for the core, the gaps between shells and the world beyond " +
+        "the last shell. Default \"air\".",
+    },
+    source: shieldSpecSchema.properties.source,
+    detectors: shieldSpecSchema.properties.detectors,
+    world_radius_mm: {
+      type: "number" as const,
+      description:
+        "Outer radius of the modelled world, mm. Default: 10% past the " +
+        "outermost detector shell.",
+    },
+    center: {
+      type: "array" as const,
+      items: { type: "number" as const },
+      minItems: 3,
+      maxItems: 3,
+      description:
+        "Source point [x, y, z] mm (e.g. the chamber centre); every shell " +
+        "must be centred on it. Default: the shells' common centre.",
+    },
+    run: shieldSpecSchema.properties.run,
+  },
+};
+
 type Json = Record<string, unknown>;
 
 function textResult(payload: unknown) {
@@ -123,23 +182,76 @@ export const toolDefs: ToolDef[] = [
       "error bars shrink as 1/sqrt(N). The 400k default runs in seconds.",
     inputSchema: {
       type: "object" as const,
-      required: ["spec"],
       properties: {
-        spec: shieldSpecSchema,
+        spec: {
+          ...shieldSpecSchema,
+          description:
+            shieldSpecSchema.description +
+            " Pass this OR `document_id` + `extract`.",
+        },
+        document_id: {
+          type: "string" as const,
+          description:
+            "Session document to extract the shield from (instead of `spec`): " +
+            "the layer stack is measured from the document's own evaluated " +
+            "solids. Requires `extract`.",
+        },
+        extract: shieldExtractSchema,
         parameters: {
           type: "object" as const,
           additionalProperties: { type: "number" as const },
-          description: "Bindings for named spec parameters, `{name: value}`.",
+          description:
+            "Bindings for named spec parameters, `{name: value}`. With " +
+            "`document_id` these override the document's parameter values.",
         },
       },
     },
     handler: (args, ctx) => {
       const a = args as Json;
+      const params = (a.parameters ?? {}) as Record<string, number>;
+      if (a.document_id === undefined) {
+        if (a.spec === undefined) {
+          throw new Error(
+            "simulate_neutron_shield: pass `spec`, or `document_id` + `extract`",
+          );
+        }
+        return textResult(
+          ctx.engine.neutronicsSimulate(JSON.stringify(a.spec), JSON.stringify(params)),
+        );
+      }
+      if (a.spec !== undefined) {
+        throw new Error("simulate_neutron_shield: pass `spec` OR `document_id`, not both");
+      }
+      if (a.extract === undefined) {
+        throw new Error(
+          "simulate_neutron_shield: `document_id` requires `extract` (shell parts, source, detectors)",
+        );
+      }
+      const documentId = String(a.document_id);
+      const ex = ctx.engine.extractShieldSpec(
+        JSON.stringify(getSession(documentId)),
+        JSON.stringify(a.extract),
+      ) as {
+        spec: unknown;
+        parameters: Record<string, number>;
+        center: number[];
+        layer_parts: Array<string | null>;
+      };
+      const parameters = { ...ex.parameters, ...params };
       const out = ctx.engine.neutronicsSimulate(
-        JSON.stringify(a.spec),
-        JSON.stringify(a.parameters ?? {}),
-      );
-      return textResult(out);
+        JSON.stringify(ex.spec),
+        JSON.stringify(parameters),
+      ) as Json;
+      return textResult({
+        ...out,
+        extracted: {
+          document_id: documentId,
+          spec: ex.spec,
+          parameters,
+          center: ex.center,
+          layer_parts: ex.layer_parts,
+        },
+      });
     },
     behavior: behavior({}),
   },

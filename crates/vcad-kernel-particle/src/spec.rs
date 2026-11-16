@@ -12,8 +12,9 @@
 //! the Dirichlet mask, which is discrete, so geometric parameters take
 //! finite differences until the shape-adjoint milestone.
 //!
-//! BRep extraction (revolved sketch sections → rings) is deliberately not
-//! here: it lands on the vcad side of the seam, emitting this schema.
+//! BRep extraction is deliberately not here: it lives on the vcad side of
+//! the seam (`vcad_eval::sim_extract::extract_device_spec`), emitting this
+//! schema.
 
 use std::collections::BTreeMap;
 
@@ -39,7 +40,7 @@ impl From<f64> for ParamValue {
 }
 
 impl ParamValue {
-    fn resolve(&self, params: &BTreeMap<String, f64>) -> Result<f64, SpecError> {
+    pub(crate) fn resolve(&self, params: &BTreeMap<String, f64>) -> Result<f64, SpecError> {
         match self {
             ParamValue::Literal(v) => Ok(*v),
             ParamValue::Named(name) => params
@@ -49,7 +50,7 @@ impl ParamValue {
         }
     }
 
-    fn name(&self) -> Option<&str> {
+    pub(crate) fn name(&self) -> Option<&str> {
         match self {
             ParamValue::Literal(_) => None,
             ParamValue::Named(n) => Some(n),
