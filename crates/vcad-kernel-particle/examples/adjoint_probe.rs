@@ -26,6 +26,22 @@ fn tracer(v: f64, at: f64) -> f64 {
     stats(&t.launch_ensemble(DEUTERON, 48)).mean_ddn_sigma_v_m3
 }
 
+fn adj(v: f64, at: f64, drop_v: f64) -> f64 {
+    let d = Device::shielded_two_ring(150.0, 45.0, 25.0, 3.0, v, at);
+    yield_gradient(
+        &d,
+        81,
+        161,
+        &SolveOptions::default(),
+        &AdjointConfig {
+            reference_drop_v: Some(drop_v),
+            ..AdjointConfig::default()
+        },
+    )
+    .unwrap()
+    .value
+}
+
 fn main() {
     for &(v, at) in &[
         (-30_000.0, 20_000.0),
@@ -54,16 +70,23 @@ fn main() {
         let dv = 0.05 * v.abs();
         let fd_i = (tracer(v, at + dat) - tracer(v, at - dat)) / (2.0 * dat);
         let fd_v = (tracer(v + dv, at) - tracer(v - dv, at)) / (2.0 * dv);
+        // The adjoint's own J, secant at the same steps (frozen drop):
+        // separates "J differs from the tracer" from "J is rough".
+        let js_i = (adj(v, at + dat, v.abs()) - adj(v, at - dat, v.abs())) / (2.0 * dat);
+        let js_v = (adj(v + dv, at, v.abs()) - adj(v - dv, at, v.abs())) / (2.0 * dv);
         let adj_i = g.d_ampere_turns[0] - g.d_ampere_turns[1];
         let adj_v: f64 = g.d_ring_potentials.iter().sum();
         println!(
             "V={v:.0} AT={at:.0}: tracer f={f0:.3e} ({t_tr:.2}s)  adjoint J={:.3e} ({t_adj:.2}s)\n  \
-             dlnf/dI fd={:.3e}  dlnJ/dI adj={:.3e}\n  dlnf/dV fd={:.3e}  dlnJ/dV adj={:.3e}",
+             dlnf/dI fd={:.3e}  dlnJ/dI adj={:.3e}  dlnJ/dI J-secant={:.3e}\n  \
+             dlnf/dV fd={:.3e}  dlnJ/dV adj={:.3e}  dlnJ/dV J-secant={:.3e}",
             g.value,
             fd_i / f0,
             adj_i / g.value,
+            js_i / g.value,
             fd_v / f0,
-            adj_v / g.value
+            adj_v / g.value,
+            js_v / g.value
         );
     }
 }
