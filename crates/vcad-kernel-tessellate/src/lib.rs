@@ -16,6 +16,7 @@ use vcad_kernel_topo::{FaceId, Orientation, Topology};
 
 pub mod clearance;
 mod creased_normals;
+pub mod display;
 pub mod frozen;
 pub mod manifold;
 pub mod mesh_props;

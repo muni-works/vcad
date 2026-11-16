@@ -230,3 +230,54 @@ fn fusor_chamber_and_flanges_are_clean_analytic() {
     }
     assert!(fails.is_empty(), "{fails:#?}");
 }
+
+/// The viewport's mesh: the same document under the native app's display
+/// chord tolerance. Boolean rims sit on the kernel's 1 µm grid (512 points
+/// a turn at this size); the display path thins them to the tolerance it
+/// was asked for, consistently on both faces of every rim, so the chamber
+/// stays closed at well under half the triangles.
+#[test]
+fn fusor_chamber_display_mesh_is_thinned_and_closed() {
+    let doc = vcad_loon::eval_vcad(SOURCE, None).expect("loon");
+    let options = || EvalOptions {
+        skip_clash_detection: true,
+        ..Default::default()
+    };
+    let full = evaluate_document(&doc, &options()).expect("evaluate");
+    let display = {
+        let _chord = vcad_eval::evaluate::DisplayChordGuard::enable(0.02);
+        evaluate_document(&doc, &options()).expect("evaluate")
+    };
+    let mut fails = Vec::new();
+    for ((name, f), d) in ["chamber", "lid-flange", "pump-flange"]
+        .into_iter()
+        .zip(&full.parts)
+        .zip(&display.parts)
+    {
+        let (ft, dt) = (f.mesh.indices.len() / 3, d.mesh.indices.len() / 3);
+        let (_, _, _, full_vol, _) = census(&f.mesh.positions, &f.mesh.indices);
+        let (nonmanifold, folded, boundary, vol, _) = census(&d.mesh.positions, &d.mesh.indices);
+        let opposed = opposed_normals(&d.mesh.positions, d.mesh.normals.as_deref(), &d.mesh.indices);
+        eprintln!(
+            "{name}: {ft} → {dt} triangles, volume {full_vol:.1} → {vol:.1}, nonmanifold \
+             {nonmanifold} folded {folded} boundary {boundary} opposed {opposed}"
+        );
+        if dt * 2 > ft {
+            fails.push(format!("{name}: display mesh has {dt} triangles (full {ft})"));
+        }
+        if (nonmanifold, folded, boundary, opposed) != (0, 0, 0, 0) {
+            fails.push(format!(
+                "{name}: {nonmanifold} non-manifold, {folded} folded, {boundary} boundary edges, \
+                 {opposed} opposed normals"
+            ));
+        }
+        if (vol - full_vol).abs() > 2e-3 * full_vol {
+            fails.push(format!("{name}: volume {vol:.1} vs {full_vol:.1}"));
+        }
+        let ids = d.mesh.face_ids.as_ref().map(Vec::len);
+        if ids != Some(dt) {
+            fails.push(format!("{name}: face ids {ids:?} for {dt} triangles"));
+        }
+    }
+    assert!(fails.is_empty(), "{fails:#?}");
+}

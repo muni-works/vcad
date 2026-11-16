@@ -2074,6 +2074,7 @@ impl Solid {
                 params.chord_tolerance = Some(chord_tol);
                 let mut mesh = vcad_kernel_tessellate::tessellate_brep_with(brep.as_ref(), params);
                 vcad_kernel_booleans::repair_export_mesh(brep.as_ref(), &mut mesh);
+                thin_to_display_tolerance(&mut mesh, segments, chord_tol);
                 mesh
             }
             _ => self.to_mesh(segments),
@@ -2093,7 +2094,9 @@ impl Solid {
                 if chord_tol > 0.0 {
                     params.chord_tolerance = Some(chord_tol);
                 }
-                vcad_kernel_tessellate::tessellate_brep_with(brep.as_ref(), params)
+                let mut mesh = vcad_kernel_tessellate::tessellate_brep_with(brep.as_ref(), params);
+                thin_to_display_tolerance(&mut mesh, segments, chord_tol);
+                mesh
             }
             _ => self.to_mesh(segments),
         }
@@ -4926,5 +4929,17 @@ mod tests {
                 "{name} after difference regrew material: vol={vol:.1} > bored={bored_vol:.1}"
             );
         }
+    }
+}
+
+/// A chord tolerance cuts both ways: it refines faces the tessellator
+/// samples itself, and it thins the rims a boolean froze onto the kernel's
+/// 1 µm grid, which the tessellator otherwise renders verbatim (a 76 mm
+/// wall as 512 strips). Display meshes only — see
+/// [`vcad_kernel_tessellate::display`].
+fn thin_to_display_tolerance(mesh: &mut TriangleMesh, segments: u32, chord_tol: f64) {
+    if chord_tol > 0.0 {
+        let max_turn = 2.0 * std::f64::consts::PI / f64::from(segments.max(3));
+        vcad_kernel_tessellate::display::thin_feature_chains(mesh, chord_tol, max_turn);
     }
 }
