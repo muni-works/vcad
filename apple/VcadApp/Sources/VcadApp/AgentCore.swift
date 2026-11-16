@@ -92,7 +92,7 @@ final class AgentCore {
     /// lone `npx` (e.g. a stale standalone `/opt/homebrew/bin/npx`) dies with
     /// "env: node: No such file or directory". The core puts the chosen dir
     /// first on the child's PATH, so the sibling `node` is the one it runs.
-    static func nodeCommand(
+    nonisolated static func nodeCommand(
         env: [String: String] = ProcessInfo.processInfo.environment,
         isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) },
         kegDirs: [String] = AgentCore.homebrewNodeKegs()
@@ -106,7 +106,7 @@ final class AgentCore {
     }
 
     /// Homebrew keg-only node installs (`node@20`, `node@24`…), newest first.
-    static func homebrewNodeKegs() -> [String] {
+    nonisolated static func homebrewNodeKegs() -> [String] {
         ["/opt/homebrew/opt", "/usr/local/opt"].flatMap { root -> [String] in
             let names = (try? FileManager.default.contentsOfDirectory(atPath: root)) ?? []
             return names.filter { $0 == "node" || $0.hasPrefix("node@") }
