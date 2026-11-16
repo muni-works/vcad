@@ -214,7 +214,14 @@ pub struct PathResult {
 pub fn transmission(slabs: &[Slab], e_kev: f64) -> f64 {
     let tau: f64 = slabs
         .iter()
-        .map(|s| s.material.linear(e_kev).map(|l| l.total).unwrap_or(f64::INFINITY) * s.thickness_mm * 0.1)
+        .map(|s| {
+            s.material
+                .linear(e_kev)
+                .map(|l| l.total)
+                .unwrap_or(f64::INFINITY)
+                * s.thickness_mm
+                * 0.1
+        })
         .sum();
     (-tau).exp()
 }
@@ -339,7 +346,11 @@ pub fn run(spectrum: &Spectrum, cfg: &PathConfig) -> Result<PathResult, Transpor
         return Err(TransportError::BadSpectrum("empty or zero-rate".into()));
     }
     for b in &spectrum.bins {
-        if !(b.rate_per_s >= 0.0 && b.lo_kev >= TRANSPORT_CUT_KEV && b.hi_kev <= DATA_MAX_KEV && b.hi_kev >= b.lo_kev) {
+        if !(b.rate_per_s >= 0.0
+            && b.lo_kev >= TRANSPORT_CUT_KEV
+            && b.hi_kev <= DATA_MAX_KEV
+            && b.hi_kev >= b.lo_kev)
+        {
             return Err(TransportError::BadSpectrum(format!(
                 "bin [{}, {}] keV outside [{TRANSPORT_CUT_KEV}, {DATA_MAX_KEV}] keV or negative",
                 b.lo_kev, b.hi_kev
@@ -387,7 +398,9 @@ pub fn run(spectrum: &Spectrum, cfg: &PathConfig) -> Result<PathResult, Transpor
     let mut tau_w = vec![vec![0.0; ns]; nd];
     let mut tau_air = vec![0.0; nd];
     for_each_node(spectrum, |e, w| {
-        let taus: Vec<f64> = (0..ns).map(|k| geo.mu(k, e).0 * (geo.bounds_cm[k + 1] - geo.bounds_cm[k])).collect();
+        let taus: Vec<f64> = (0..ns)
+            .map(|k| geo.mu(k, e).0 * (geo.bounds_cm[k + 1] - geo.bounds_cm[k]))
+            .collect();
         let mu_air = geo.air.linear(e).unwrap().total;
         let slab_tau: f64 = taus.iter().sum();
         for d in 0..nd {
@@ -556,10 +569,18 @@ pub fn run(spectrum: &Spectrum, cfg: &PathConfig) -> Result<PathResult, Transpor
     let combine = |u: f64, s: &[f64], k: f64| -> Estimate {
         let est = Estimate::from_batches(s);
         let mean = u + est.mean;
-        let sigma = if est.mean == 0.0 { 0.0 } else { est.abs_sigma() };
+        let sigma = if est.mean == 0.0 {
+            0.0
+        } else {
+            est.abs_sigma()
+        };
         Estimate {
             mean: mean * k,
-            rse: if mean > 0.0 { sigma / mean } else { f64::INFINITY },
+            rse: if mean > 0.0 {
+                sigma / mean
+            } else {
+                f64::INFINITY
+            },
             batches: s.len(),
         }
     };
@@ -571,10 +592,21 @@ pub fn run(spectrum: &Spectrum, cfg: &PathConfig) -> Result<PathResult, Transpor
                 kerma_ugy_h: combine(u_k[d], &s_k[d], to_ugy),
                 fluence_cm2_s: combine(u_f[d], &s_f[d], 1.0),
                 uncollided_h10_usv_h: u_h[d] * to_usv,
-                buildup_h10: if u_h[d] > 0.0 { h.mean / (u_h[d] * to_usv) } else { f64::INFINITY },
+                buildup_h10: if u_h[d] > 0.0 {
+                    h.mean / (u_h[d] * to_usv)
+                } else {
+                    f64::INFINITY
+                },
                 tip_fraction: if u_h[d] > 0.0 { u_tip[d] / u_h[d] } else { 0.0 },
-                tau_per_slab: tau_w[d].iter().map(|t| if u_h[d] > 0.0 { t / u_h[d] } else { 0.0 }).collect(),
-                tau_air: if u_h[d] > 0.0 { tau_air[d] / u_h[d] } else { 0.0 },
+                tau_per_slab: tau_w[d]
+                    .iter()
+                    .map(|t| if u_h[d] > 0.0 { t / u_h[d] } else { 0.0 })
+                    .collect(),
+                tau_air: if u_h[d] > 0.0 {
+                    tau_air[d] / u_h[d]
+                } else {
+                    0.0
+                },
                 h10_usv_h: h,
             }
         })
@@ -587,7 +619,8 @@ pub fn run(spectrum: &Spectrum, cfg: &PathConfig) -> Result<PathResult, Transpor
             seed: cfg.seed,
             histories_per_batch: cfg.histories_per_batch,
             batches: cfg.batches,
-            data: "NIST SRD 126 (Hubbell & Seltzer) mu/rho, mu_en/rho; free-electron Klein-Nishina".into(),
+            data: "NIST SRD 126 (Hubbell & Seltzer) mu/rho, mu_en/rho; free-electron Klein-Nishina"
+                .into(),
             dose_coefficients: "ICRP 74 photon H*(10)/phi and K_air/phi".into(),
             model: if cfg.scatter {
                 "slab point-kernel: exact uncollided + next-event MC scatter (KN, implicit capture); \
@@ -635,13 +668,19 @@ mod tests {
         let s = Spectrum::line(662.0, 1.0);
         let slabs = vec![Slab::new(materials::lead(), 10.0)];
         let mut c = PathConfig::new(slabs.clone(), vec![15.0]);
-        assert!(matches!(run(&s, &c), Err(TransportError::DetectorTooClose { .. })));
+        assert!(matches!(
+            run(&s, &c),
+            Err(TransportError::DetectorTooClose { .. })
+        ));
         c.detector_distances_mm = vec![];
         assert!(matches!(run(&s, &c), Err(TransportError::NoDetectors)));
         c.detector_distances_mm = vec![100.0];
         c.batches = 1;
         assert!(matches!(run(&s, &c), Err(TransportError::BadStatistics)));
         let c = PathConfig::new(slabs, vec![100.0]);
-        assert!(matches!(run(&Spectrum::line(5000.0, 1.0), &c), Err(TransportError::BadSpectrum(_))));
+        assert!(matches!(
+            run(&Spectrum::line(5000.0, 1.0), &c),
+            Err(TransportError::BadSpectrum(_))
+        ));
     }
 }

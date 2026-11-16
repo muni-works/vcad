@@ -101,7 +101,10 @@ impl Spectrum {
 
     /// Lowest photon energy, keV.
     pub fn min_kev(&self) -> f64 {
-        self.bins.iter().map(|b| b.lo_kev).fold(f64::INFINITY, f64::min)
+        self.bins
+            .iter()
+            .map(|b| b.lo_kev)
+            .fold(f64::INFINITY, f64::min)
     }
 
     /// Scale every rate by `k`.
@@ -165,7 +168,11 @@ pub struct ThickTarget {
 
 impl ThickTarget {
     /// Build, validating the band.
-    pub fn new(voltage_kv: f64, electron_current_ma: f64, target: Material) -> Result<Self, SourceError> {
+    pub fn new(
+        voltage_kv: f64,
+        electron_current_ma: f64,
+        target: Material,
+    ) -> Result<Self, SourceError> {
         if !(BREMS_KV_RANGE.0..=BREMS_KV_RANGE.1).contains(&voltage_kv) {
             return Err(SourceError::VoltageOutOfBand(voltage_kv));
         }
@@ -241,7 +248,11 @@ mod tests {
             s += 0.5 * (a + b) * t.photons_per_electron(a.max(1e-12), b);
         }
         let eta = t.radiative_yield();
-        assert!((s / (eta * t0) - 1.0).abs() < 1e-3, "∫E dN = {s}, ηT₀ = {}", eta * t0);
+        assert!(
+            (s / (eta * t0) - 1.0).abs() < 1e-3,
+            "∫E dN = {s}, ηT₀ = {}",
+            eta * t0
+        );
         // Steel at 40 kV: η ≈ 1.1e-9 · 25.5 · 4e4 ≈ 1.1e-3.
         assert!(eta > 1.0e-3 && eta < 1.3e-3, "η = {eta}");
     }

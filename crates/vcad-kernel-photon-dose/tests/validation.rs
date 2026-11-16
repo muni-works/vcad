@@ -28,7 +28,11 @@ fn uncollided_is_exact_exponential_times_inverse_square() {
     let phi = 1.0e6 * (-mu * 1.0 - mu_air * 99.0).exp() / (PI4 * 100.0 * 100.0);
     let want = phi * h10_psv_cm2(662.0) * PSV_PER_S_TO_USV_PER_H;
     let got = res.detectors[0].h10_usv_h;
-    assert!((got.mean / want - 1.0).abs() < 1e-12, "{} vs {want}", got.mean);
+    assert!(
+        (got.mean / want - 1.0).abs() < 1e-12,
+        "{} vs {want}",
+        got.mean
+    );
     assert_eq!(got.rse, 0.0, "uncollided-only has no statistical error");
 }
 
@@ -38,7 +42,14 @@ fn exponential_attenuation_composes() {
     let s = Spectrum::line(100.0, 1.0);
     let fe = materials::ss304();
     let one = run(&s, &narrow(vec![Slab::new(fe.clone(), 2.0)], vec![500.0])).unwrap();
-    let two = run(&s, &narrow(vec![Slab::new(fe.clone(), 2.0), Slab::new(fe, 2.0)], vec![500.0])).unwrap();
+    let two = run(
+        &s,
+        &narrow(
+            vec![Slab::new(fe.clone(), 2.0), Slab::new(fe, 2.0)],
+            vec![500.0],
+        ),
+    )
+    .unwrap();
     let bare = materials::air();
     // Air-only reference with the same distance (thin air slab as a stand-in for "nothing").
     let zero = run(&s, &narrow(vec![Slab::new(bare, 1.0e-9)], vec![500.0])).unwrap();
@@ -51,7 +62,11 @@ fn exponential_attenuation_composes() {
 fn inverse_square_in_free_field() {
     let s = Spectrum::line(1000.0, 1.0);
     let al = materials::aluminum();
-    let res = run(&s, &narrow(vec![Slab::new(al, 1.0)], vec![500.0, 1000.0, 2000.0])).unwrap();
+    let res = run(
+        &s,
+        &narrow(vec![Slab::new(al, 1.0)], vec![500.0, 1000.0, 2000.0]),
+    )
+    .unwrap();
     let mu_air = materials::air().linear(1000.0).unwrap().total;
     let d = &res.detectors;
     let r1 = d[0].h10_usv_h.mean / d[1].h10_usv_h.mean;
@@ -91,7 +106,10 @@ fn published_gamma_hvls_lead_and_steel() {
     let pb = materials::lead();
     let fe = materials::ss304();
     let narrow_pb = std::f64::consts::LN_2 / pb.linear(662.0).unwrap().total * 10.0;
-    assert!((narrow_pb - 5.5).abs() < 0.3, "narrow Pb HVL Cs-137 {narrow_pb} mm");
+    assert!(
+        (narrow_pb - 5.5).abs() < 0.3,
+        "narrow Pb HVL Cs-137 {narrow_pb} mm"
+    );
     // First broad-beam HVL (with buildup). Handbook shielding tables
     // (Radiological Health Handbook / NCRP-49 class) give Pb 6.5 mm and
     // steel ~16 mm for Cs-137. For Co-60 the handbook's 12 mm Pb is the
@@ -100,11 +118,19 @@ fn published_gamma_hvls_lead_and_steel() {
     // B·e^{−x} = ½ at x ≈ 1.0 mfp ≈ 15 mm — that is what the MC must hit.
     let pb_cs = broad_hvl(&pb, 662.0, &[4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
     eprintln!("Pb Cs-137: narrow {narrow_pb:.2} mm, MC broad {pb_cs:.2} mm (handbook 6.5)");
-    assert!(pb_cs > narrow_pb && (5.6..7.6).contains(&pb_cs), "Pb Cs-137 broad HVL {pb_cs}");
+    assert!(
+        pb_cs > narrow_pb && (5.6..7.6).contains(&pb_cs),
+        "Pb Cs-137 broad HVL {pb_cs}"
+    );
     let pb_co = broad_hvl(&pb, 1250.0, &[8.0, 10.0, 12.0, 14.0, 16.0, 18.0]);
     let narrow_co = std::f64::consts::LN_2 / pb.linear(1250.0).unwrap().total * 10.0;
-    eprintln!("Pb Co-60: narrow {narrow_co:.2} mm, MC broad {pb_co:.2} mm (ANS-buildup first HVL ≈ 15)");
-    assert!(pb_co > narrow_co && (13.0..17.0).contains(&pb_co), "Pb Co-60 broad HVL {pb_co}");
+    eprintln!(
+        "Pb Co-60: narrow {narrow_co:.2} mm, MC broad {pb_co:.2} mm (ANS-buildup first HVL ≈ 15)"
+    );
+    assert!(
+        pb_co > narrow_co && (13.0..17.0).contains(&pb_co),
+        "Pb Co-60 broad HVL {pb_co}"
+    );
     // Steel: the handbook "16 mm" for Cs-137 is again a narrow/deep
     // convention — iron's buildup is large (ANS-6.4.3, Fe 1 MeV 1 mfp ≈
     // 1.87), pushing the first broad HVL toward ~1.7 mfp. Pin the
@@ -171,8 +197,14 @@ fn published_xray_hvls() {
     );
     assert!((2.0..4.5).contains(&al_100), "Al HVL @100 kVp {al_100} mm");
     assert!(pb_first < pb_100, "beam hardening must lengthen the HVL");
-    assert!((0.18..0.34).contains(&pb_100), "hardened Pb HVL @100 kVp {pb_100} mm (tables 0.25-0.27)");
-    assert!((0.035..0.09).contains(&pb_50), "hardened Pb HVL @50 kVp {pb_50} mm (tables ~0.06)");
+    assert!(
+        (0.18..0.34).contains(&pb_100),
+        "hardened Pb HVL @100 kVp {pb_100} mm (tables 0.25-0.27)"
+    );
+    assert!(
+        (0.035..0.09).contains(&pb_50),
+        "hardened Pb HVL @50 kVp {pb_50} mm (tables ~0.06)"
+    );
 }
 
 #[test]
@@ -205,7 +237,11 @@ fn buildup_behaves() {
     c.histories_per_batch = 5_000;
     c.batches = 5;
     let r = run(&Spectrum::line(30.0, 1.0), &c).unwrap();
-    assert!(r.detectors[0].buildup_h10 < 1.05, "{}", r.detectors[0].buildup_h10);
+    assert!(
+        r.detectors[0].buildup_h10 < 1.05,
+        "{}",
+        r.detectors[0].buildup_h10
+    );
 }
 
 #[test]
@@ -230,7 +266,12 @@ fn spectrum_binning_converged() {
     let t = ThickTarget::new(40.0, 10.0, materials::ss304()).unwrap();
     let slabs = vec![Slab::new(materials::borosilicate(), 5.0)];
     let d = |n| {
-        run(&t.spectrum(10.0, n).unwrap(), &narrow(slabs.clone(), vec![500.0])).unwrap().detectors[0]
+        run(
+            &t.spectrum(10.0, n).unwrap(),
+            &narrow(slabs.clone(), vec![500.0]),
+        )
+        .unwrap()
+        .detectors[0]
             .h10_usv_h
             .mean
     };
@@ -254,7 +295,10 @@ fn lead_glass_equivalence_is_plausible() {
     let t = ThickTarget::new(40.0, 1.0, materials::ss304()).unwrap();
     let s = t.spectrum(10.0, 120).unwrap();
     let eq = transport::lead_equivalent_mm(&Slab::new(materials::lead_glass(), 8.0), &s);
-    assert!((1.0..3.0).contains(&eq), "8 mm lead glass ≈ {eq} mm Pb at 40 kV");
+    assert!(
+        (1.0..3.0).contains(&eq),
+        "8 mm lead glass ≈ {eq} mm Pb at 40 kV"
+    );
 }
 
 #[test]
@@ -297,7 +341,14 @@ fn path_spec_receipt_is_provisional_and_fails_closed() {
     assert!(ok.iter().any(|e| e.verdict == receipt::Verdict::Holds));
     let bad = receipt::compare(&set, &[m(h.high * 10.0)]).unwrap();
     assert!(bad.iter().any(|e| e.verdict == receipt::Verdict::Violated));
-    assert!(receipt::compare(&set, &[receipt::Measurement { name: "nope".into(), ..m(1.0) }]).is_err());
+    assert!(receipt::compare(
+        &set,
+        &[receipt::Measurement {
+            name: "nope".into(),
+            ..m(1.0)
+        }]
+    )
+    .is_err());
 }
 
 #[test]
@@ -313,7 +364,9 @@ fn chamber_dose_scales_linearly_with_current_and_steeply_with_voltage() {
             }}"#
         ))
         .unwrap();
-        evaluate_chamber(&spec, &BTreeMap::new()).unwrap().reports[0].h10_usv_h.mean
+        evaluate_chamber(&spec, &BTreeMap::new()).unwrap().reports[0]
+            .h10_usv_h
+            .mean
     };
     let a = mk(30.0, 10.0);
     let b = mk(30.0, 20.0);

@@ -58,7 +58,9 @@ fn chamber(kv: f64, window: &str) -> ChamberSpec {
 }
 
 fn main() {
-    println!("6\" SS304 IEC chamber (r = 76 mm, 1.65 mm wall), 2.75\" CF viewport (19 mm clear radius)");
+    println!(
+        "6\" SS304 IEC chamber (r = 76 mm, 1.65 mm wall), 2.75\" CF viewport (19 mm clear radius)"
+    );
     println!("10 mA supply, electron fraction 1.0 (bound); H*(10) µSv/h = mean ± MC rse, [band low – high]\n");
     let p = BTreeMap::new();
     for kv in [20.0, 30.0, 40.0] {
@@ -68,7 +70,11 @@ fn main() {
             let set = receipt::predicted_claims(&ev).expect("claims");
             println!("  {name}");
             for r in ev.reports.iter().filter(|r| r.label.starts_with("vp")) {
-                let c = set.claims.iter().find(|c| c.name == format!("h10_rate:{}", r.label)).unwrap();
+                let c = set
+                    .claims
+                    .iter()
+                    .find(|c| c.name == format!("h10_rate:{}", r.label))
+                    .unwrap();
                 println!(
                     "    {:<8} total {:>9.3e} ± {:.2}%  [{:.2e} – {:.2e}] ×/÷{:.2} | window {:.3e}  flange/wall {:.3e} | kerma {:.2e} µGy/h  B {:.2}",
                     r.label,
@@ -136,13 +142,34 @@ fn main() {
     let lines: Vec<String> = cap
         .lines
         .iter()
-        .map(|l| format!("{} {:.0} keV {:.3e}/s ± {:.1}%", l.element, l.energy_kev, l.rate_per_s.mean, l.rate_per_s.rse * 100.0))
+        .map(|l| {
+            format!(
+                "{} {:.0} keV {:.3e}/s ± {:.1}%",
+                l.element,
+                l.energy_kev,
+                l.rate_per_s.mean,
+                l.rate_per_s.rse * 100.0
+            )
+        })
         .collect();
     println!("  capture lines: {}", lines.join("; "));
-    let total = receipt::combined_claims(&neutron, &cap.evaluation.reports.iter().collect::<Vec<_>>(), cap.evaluation.provenance.clone()).unwrap();
+    let total = receipt::combined_claims(
+        &neutron,
+        &cap.evaluation.reports.iter().collect::<Vec<_>>(),
+        cap.evaluation.provenance.clone(),
+    )
+    .unwrap();
     for r in &cap.evaluation.reports {
-        let n = neutron.claims.iter().find(|c| c.name == format!("dose_rate:{}", r.label)).unwrap();
-        let t = total.claims.iter().find(|c| c.name == format!("total_dose_rate:{}", r.label)).unwrap();
+        let n = neutron
+            .claims
+            .iter()
+            .find(|c| c.name == format!("dose_rate:{}", r.label))
+            .unwrap();
+        let t = total
+            .claims
+            .iter()
+            .find(|c| c.name == format!("total_dose_rate:{}", r.label))
+            .unwrap();
         println!(
             "  {:<18} neutron {:.3e} ± {:.1}%   capture-γ {:.3e} ± {:.1}% (×/÷{:.2})   total {:.3e} [{:.2e} – {:.2e}] µSv/h",
             r.label,

@@ -36,12 +36,22 @@ fn run_spec() -> RunSpec {
 
 #[test]
 fn hdpe_capture_gamma_is_a_real_minority_of_neutron_dose() {
-    let (neutron, cap) = capture::from_shield_spec(&shield("hdpe"), &BTreeMap::new(), &run_spec()).unwrap();
+    let (neutron, cap) =
+        capture::from_shield_spec(&shield("hdpe"), &BTreeMap::new(), &run_spec()).unwrap();
     // Captures can't exceed the source; H dominates the lines.
-    let total: f64 = cap.lines.iter().filter(|l| l.element == "H").map(|l| l.rate_per_s.mean).sum();
+    let total: f64 = cap
+        .lines
+        .iter()
+        .filter(|l| l.element == "H")
+        .map(|l| l.rate_per_s.mean)
+        .sum();
     assert!(total > 0.0 && total < 5.0e6, "H captures {total}/s");
     // Books balance against the neutron run: captures ≤ absorbed fraction × S.
-    let absorbed = neutron.claims.iter().find(|c| c.name == "absorbed_fraction").unwrap();
+    let absorbed = neutron
+        .claims
+        .iter()
+        .find(|c| c.name == "absorbed_fraction")
+        .unwrap();
     let all: f64 = cap
         .lines
         .iter()
@@ -57,7 +67,12 @@ fn hdpe_capture_gamma_is_a_real_minority_of_neutron_dose() {
     let c = cap.lines.iter().find(|l| l.element == "C").unwrap();
     assert!(h.rate_per_s.mean > 50.0 * c.rate_per_s.mean);
     let r1 = &cap.evaluation.reports[0];
-    let n1 = neutron.claims.iter().find(|c| c.name == "dose_rate:1m").unwrap().value;
+    let n1 = neutron
+        .claims
+        .iter()
+        .find(|c| c.name == "dose_rate:1m")
+        .unwrap()
+        .value;
     let frac = r1.h10_usv_h.mean / n1;
     // Literature: capture gammas are ~5–30% of neutron dose behind
     // ~15 cm of polyethylene.
@@ -74,20 +89,27 @@ fn hdpe_capture_gamma_is_a_real_minority_of_neutron_dose() {
         cap.evaluation.provenance.clone(),
     )
     .unwrap();
-    let t = set.claims.iter().find(|c| c.name == "total_dose_rate:1m").unwrap();
+    let t = set
+        .claims
+        .iter()
+        .find(|c| c.name == "total_dose_rate:1m")
+        .unwrap();
     assert!((t.value - (n1 + r1.h10_usv_h.mean)).abs() < 1e-12 * t.value);
     assert!(t.high > t.value);
 }
 
 #[test]
 fn borated_poly_adds_the_478_kev_line() {
-    let (_, cap) = capture::from_shield_spec(&shield("borated-hdpe-5"), &BTreeMap::new(), &run_spec()).unwrap();
+    let (_, cap) =
+        capture::from_shield_spec(&shield("borated-hdpe-5"), &BTreeMap::new(), &run_spec())
+            .unwrap();
     let b = cap.lines.iter().find(|l| l.element == "B").unwrap();
     assert!((b.energy_kev - 477.6).abs() < 1e-9 && b.rate_per_s.mean > 0.0);
 }
 
 #[test]
 fn unsupported_emitters_fail_closed() {
-    let e = capture::from_shield_spec(&shield("concrete"), &BTreeMap::new(), &run_spec()).unwrap_err();
+    let e =
+        capture::from_shield_spec(&shield("concrete"), &BTreeMap::new(), &run_spec()).unwrap_err();
     assert!(matches!(e, CaptureError::UnsupportedEmitter(_)), "{e}");
 }

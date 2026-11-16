@@ -40,7 +40,12 @@ impl BandTerm {
 
 /// Compose band terms in log-quadrature.
 pub fn compose(terms: &[BandTerm]) -> f64 {
-    terms.iter().map(|t| t.ln_factor * t.ln_factor).sum::<f64>().sqrt().exp()
+    terms
+        .iter()
+        .map(|t| t.ln_factor * t.ln_factor)
+        .sum::<f64>()
+        .sqrt()
+        .exp()
 }
 
 /// Attenuation-data band terms for one detector of one path: u_k·τ_k
@@ -52,7 +57,10 @@ pub fn data_terms(cfg: &PathConfig, det: &DetectorResult) -> Vec<BandTerm> {
         .iter()
         .zip(&det.tau_per_slab)
         .map(|(s, tau)| BandTerm {
-            name: format!("attenuation data: {} {} mm (tau {:.2})", s.material.name, s.thickness_mm, tau),
+            name: format!(
+                "attenuation data: {} {} mm (tau {:.2})",
+                s.material.name, s.thickness_mm, tau
+            ),
             ln_factor: s.material.mu_rel_uncertainty * tau,
         })
         .collect();
@@ -67,7 +75,8 @@ pub fn data_terms(cfg: &PathConfig, det: &DetectorResult) -> Vec<BandTerm> {
 /// from the top 10% of the spectrum, the linear-to-endpoint shape
 /// assumption is load-bearing — ×/÷ 1.5.
 pub fn tip_term(tip_fraction: f64) -> Option<BandTerm> {
-    (tip_fraction > 0.5).then(|| BandTerm::factor("Kramers spectral tip (dose from top 10% of spectrum)", 1.5))
+    (tip_fraction > 0.5)
+        .then(|| BandTerm::factor("Kramers spectral tip (dose from top 10% of spectrum)", 1.5))
 }
 
 /// A named dose component (for the breakdown table).
@@ -122,10 +131,17 @@ impl DoseReport {
 /// sigmas add **linearly** (the conservative bound).
 pub fn sum_conservative(parts: &[Estimate]) -> Estimate {
     let mean: f64 = parts.iter().map(|e| e.mean).sum();
-    let sigma: f64 = parts.iter().map(|e| if e.mean == 0.0 { 0.0 } else { e.abs_sigma() }).sum();
+    let sigma: f64 = parts
+        .iter()
+        .map(|e| if e.mean == 0.0 { 0.0 } else { e.abs_sigma() })
+        .sum();
     Estimate {
         mean,
-        rse: if mean > 0.0 { sigma / mean } else { f64::INFINITY },
+        rse: if mean > 0.0 {
+            sigma / mean
+        } else {
+            f64::INFINITY
+        },
         batches: parts.iter().map(|e| e.batches).min().unwrap_or(0),
     }
 }
@@ -143,8 +159,16 @@ mod tests {
 
     #[test]
     fn conservative_sum() {
-        let a = Estimate { mean: 1.0, rse: 0.1, batches: 10 };
-        let b = Estimate { mean: 3.0, rse: 0.1, batches: 8 };
+        let a = Estimate {
+            mean: 1.0,
+            rse: 0.1,
+            batches: 10,
+        };
+        let b = Estimate {
+            mean: 3.0,
+            rse: 0.1,
+            batches: 8,
+        };
         let s = sum_conservative(&[a, b]);
         assert!((s.mean - 4.0).abs() < 1e-12);
         assert!((s.rse - 0.1).abs() < 1e-12);

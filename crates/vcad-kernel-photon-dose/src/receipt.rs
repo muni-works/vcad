@@ -84,12 +84,19 @@ pub enum ClaimError {
 impl std::fmt::Display for ClaimError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ClaimError::TruncatedHistories(n) => write!(f, "{n} truncated histories — refusing to claim"),
+            ClaimError::TruncatedHistories(n) => {
+                write!(f, "{n} truncated histories — refusing to claim")
+            }
             ClaimError::ScatterUnresolved => {
-                write!(f, "scattering run scored nothing: buildup unresolved, run more histories")
+                write!(
+                    f,
+                    "scattering run scored nothing: buildup unresolved, run more histories"
+                )
             }
             ClaimError::NothingScored(n) => write!(f, "claim {n:?} has no finite error bar"),
-            ClaimError::MissingLabel(l) => write!(f, "label {l:?} missing from one of the claim sets"),
+            ClaimError::MissingLabel(l) => {
+                write!(f, "label {l:?} missing from one of the claim sets")
+            }
         }
     }
 }
@@ -214,7 +221,10 @@ pub fn combined_claims(
             .find(|c| c.name == name)
             .ok_or_else(|| ClaimError::MissingLabel(r.label.clone()))?;
         if !n.rse.is_finite() || !r.h10_usv_h.rse.is_finite() {
-            return Err(ClaimError::NothingScored(format!("total_dose_rate:{}", r.label)));
+            return Err(ClaimError::NothingScored(format!(
+                "total_dose_rate:{}",
+                r.label
+            )));
         }
         let nb = crate::capture::NEUTRON_LIBRARY_BAND;
         let pb = r.band_factor();
@@ -222,7 +232,10 @@ pub fn combined_claims(
         let sigma = n.value * n.rse + r.h10_usv_h.abs_sigma();
         let ln_b = (n.value * nb.ln() + r.h10_usv_h.mean * pb.ln()) / total;
         let b = ln_b.exp();
-        let mut terms = vec![BandTerm::factor("neutron dose: design-estimate library", nb)];
+        let mut terms = vec![BandTerm::factor(
+            "neutron dose: design-estimate library",
+            nb,
+        )];
         terms.extend(r.band.iter().cloned());
         claims.push(Claim {
             name: format!("total_dose_rate:{}", r.label),
@@ -294,7 +307,10 @@ pub struct ComparisonEntry {
 /// Bind measurements. Holds iff the reading lies in
 /// [low − 2σ, high + 2σ], σ combining the claim's MC error and the
 /// reading's uncertainty.
-pub fn compare(set: &ClaimSet, measurements: &[Measurement]) -> Result<Vec<ComparisonEntry>, String> {
+pub fn compare(
+    set: &ClaimSet,
+    measurements: &[Measurement],
+) -> Result<Vec<ComparisonEntry>, String> {
     for m in measurements {
         if !set.claims.iter().any(|c| c.name == m.name) {
             return Err(format!("measurement {:?} matches no claim", m.name));
@@ -317,7 +333,11 @@ pub fn compare(set: &ClaimSet, measurements: &[Measurement]) -> Result<Vec<Compa
                     name: c.name.clone(),
                     predicted: c.value,
                     measured: Some(m.value),
-                    verdict: if holds { Verdict::Holds } else { Verdict::Violated },
+                    verdict: if holds {
+                        Verdict::Holds
+                    } else {
+                        Verdict::Violated
+                    },
                 }
             }
         })
@@ -352,13 +372,18 @@ pub fn design_claims(set: &ClaimSet) -> Vec<vcad_receipt::ReceiptClaim> {
             } else {
                 vcad_receipt::ClaimQuantity::new(c.value, &c.unit)
             };
-            vcad_receipt::ReceiptClaim::pass(format!("photon.{}", c.name), RECEIPT_DOMAIN, c.note.clone(), oracle.clone())
-                .with_basis(vcad_receipt::ClaimBasis::Predicted)
-                .with_measured(q)
-                .with_details(format!(
-                    "{prov}; rse {:.4}; band x/{:.3} [{:.4e}, {:.4e}]",
-                    c.rse, c.band_factor, c.low, c.high
-                ))
+            vcad_receipt::ReceiptClaim::pass(
+                format!("photon.{}", c.name),
+                RECEIPT_DOMAIN,
+                c.note.clone(),
+                oracle.clone(),
+            )
+            .with_basis(vcad_receipt::ClaimBasis::Predicted)
+            .with_measured(q)
+            .with_details(format!(
+                "{prov}; rse {:.4}; band x/{:.3} [{:.4e}, {:.4e}]",
+                c.rse, c.band_factor, c.low, c.high
+            ))
         })
         .collect()
 }

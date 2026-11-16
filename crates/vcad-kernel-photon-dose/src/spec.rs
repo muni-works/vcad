@@ -40,7 +40,9 @@ use serde::{Deserialize, Serialize};
 use crate::materials::{self, Material};
 use crate::report::{self, BandTerm, Component, DoseReport};
 use crate::source::{SourceError, Spectrum, ThickTarget};
-use crate::transport::{self, PathConfig, PathResult, Slab, TransportError, MIN_GAP_MM, TRANSPORT_CUT_KEV};
+use crate::transport::{
+    self, PathConfig, PathResult, Slab, TransportError, MIN_GAP_MM, TRANSPORT_CUT_KEV,
+};
 
 /// Bremsstrahlung spectrum bins used by the spec evaluators.
 pub const SPECTRUM_BINS: usize = 120;
@@ -69,7 +71,10 @@ impl ParamValue {
     pub fn resolve(&self, params: &BTreeMap<String, f64>) -> Result<f64, SpecError> {
         match self {
             ParamValue::Literal(v) => Ok(*v),
-            ParamValue::Named(n) => params.get(n).copied().ok_or_else(|| SpecError::UnboundParameter(n.clone())),
+            ParamValue::Named(n) => params
+                .get(n)
+                .copied()
+                .ok_or_else(|| SpecError::UnboundParameter(n.clone())),
         }
     }
 }
@@ -256,9 +261,14 @@ impl std::fmt::Display for SpecError {
         match self {
             SpecError::UnboundParameter(n) => write!(f, "unbound parameter {n:?}"),
             SpecError::UnknownMaterial(m) => write!(f, "unknown photon material {m:?}"),
-            SpecError::BadValue { field, value } => write!(f, "{field} = {value} must be positive and finite"),
+            SpecError::BadValue { field, value } => {
+                write!(f, "{field} = {value} must be positive and finite")
+            }
             SpecError::NoDetectors => write!(f, "no detectors"),
-            SpecError::NoViewport(l) => write!(f, "detector {l:?} looks through a viewport, but none is declared"),
+            SpecError::NoViewport(l) => write!(
+                f,
+                "detector {l:?} looks through a viewport, but none is declared"
+            ),
             SpecError::Source(e) => write!(f, "source: {e}"),
             SpecError::Transport(e) => write!(f, "transport: {e}"),
         }
@@ -286,7 +296,12 @@ fn material(name: &str) -> Result<Material, SpecError> {
 fn slabs(layers: &[LayerSpec], p: &BTreeMap<String, f64>) -> Result<Vec<Slab>, SpecError> {
     layers
         .iter()
-        .map(|l| Ok(Slab::new(material(&l.material)?, positive(&format!("{} thickness", l.material), &l.thickness_mm, p)?)))
+        .map(|l| {
+            Ok(Slab::new(
+                material(&l.material)?,
+                positive(&format!("{} thickness", l.material), &l.thickness_mm, p)?,
+            ))
+        })
         .collect()
 }
 
@@ -339,15 +354,25 @@ pub fn evaluate_path(spec: &PathSpec, p: &BTreeMap<String, f64>) -> Result<Evalu
             let i = positive("electron_current_ma", electron_current_ma, p)?;
             let t = ThickTarget::new(v, i, material(target)?).map_err(SpecError::Source)?;
             (
-                t.spectrum(TRANSPORT_CUT_KEV, SPECTRUM_BINS).map_err(SpecError::Source)?,
+                t.spectrum(TRANSPORT_CUT_KEV, SPECTRUM_BINS)
+                    .map_err(SpecError::Source)?,
                 "brems",
-                format!("Kramers thick-target bremsstrahlung, {v} kV, {i} mA electrons on {target}"),
+                format!(
+                    "Kramers thick-target bremsstrahlung, {v} kV, {i} mA electrons on {target}"
+                ),
             )
         }
-        PathSource::Line { energy_kev, rate_per_s } => {
+        PathSource::Line {
+            energy_kev,
+            rate_per_s,
+        } => {
             let e = positive("energy_kev", energy_kev, p)?;
             let r = positive("rate_per_s", rate_per_s, p)?;
-            (Spectrum::line(e, r), "line", format!("{e} keV line, {r:.3e} photons/s"))
+            (
+                Spectrum::line(e, r),
+                "line",
+                format!("{e} keV line, {r:.3e} photons/s"),
+            )
         }
     };
     let s = slabs(&spec.layers, p)?;
@@ -379,7 +404,8 @@ pub fn evaluate_path(spec: &PathSpec, p: &BTreeMap<String, f64>) -> Result<Evalu
                     name: "source".into(),
                     h10_usv_h: r.h10_usv_h.mean,
                 }],
-                geometry_note: "on-axis point detector; distance from the source point; infinite slabs".into(),
+                geometry_note:
+                    "on-axis point detector; distance from the source point; infinite slabs".into(),
             }
         })
         .collect();
@@ -393,7 +419,10 @@ pub fn evaluate_path(spec: &PathSpec, p: &BTreeMap<String, f64>) -> Result<Evalu
 }
 
 /// Evaluate a [`ChamberSpec`] (see module docs for the source model).
-pub fn evaluate_chamber(spec: &ChamberSpec, p: &BTreeMap<String, f64>) -> Result<Evaluation, SpecError> {
+pub fn evaluate_chamber(
+    spec: &ChamberSpec,
+    p: &BTreeMap<String, f64>,
+) -> Result<Evaluation, SpecError> {
     if spec.detectors.is_empty() {
         return Err(SpecError::NoDetectors);
     }
@@ -409,7 +438,9 @@ pub fn evaluate_chamber(spec: &ChamberSpec, p: &BTreeMap<String, f64>) -> Result
     let wall_t = positive("wall thickness", &spec.wall.thickness_mm, p)?;
     let ie = i * fe;
     let wall_src = ThickTarget::new(v, ie, wall_mat.clone()).map_err(SpecError::Source)?;
-    let s_wall = wall_src.spectrum(TRANSPORT_CUT_KEV, SPECTRUM_BINS).map_err(SpecError::Source)?;
+    let s_wall = wall_src
+        .spectrum(TRANSPORT_CUT_KEV, SPECTRUM_BINS)
+        .map_err(SpecError::Source)?;
 
     let dists: Vec<(f64, ChamberPath)> = spec
         .detectors
@@ -453,7 +484,10 @@ pub fn evaluate_chamber(spec: &ChamberSpec, p: &BTreeMap<String, f64>) -> Result
     // wall thickness + gap (viewport detectors: gap + viewport stack −
     // wall, floored to the minimum gap — the flange term is a minor
     // component and this keeps it on the conservative side).
-    let vp_stack: f64 = vp.as_ref().map(|(_, s)| s.iter().map(|x| x.thickness_mm).sum()).unwrap_or(0.0);
+    let vp_stack: f64 = vp
+        .as_ref()
+        .map(|(_, s)| s.iter().map(|x| x.thickness_mm).sum())
+        .unwrap_or(0.0);
     let wall_gaps: Vec<f64> = dists
         .iter()
         .map(|(d, path)| match path {
@@ -483,8 +517,11 @@ pub fn evaluate_chamber(spec: &ChamberSpec, p: &BTreeMap<String, f64>) -> Result
     let vp_run: Option<(PathResult, PathConfig, f64)> = match &vp {
         Some((r_vp, s)) => {
             let f = (r_vp / a_mm).powi(2) / 4.0;
-            let glass = ThickTarget::new(v, ie, s[0].material.clone()).map_err(SpecError::Source)?;
-            let s_glass = glass.spectrum(TRANSPORT_CUT_KEV, SPECTRUM_BINS).map_err(SpecError::Source)?;
+            let glass =
+                ThickTarget::new(v, ie, s[0].material.clone()).map_err(SpecError::Source)?;
+            let s_glass = glass
+                .spectrum(TRANSPORT_CUT_KEV, SPECTRUM_BINS)
+                .map_err(SpecError::Source)?;
             let mut combined = s_wall.scaled(f);
             for (b, g) in combined.bins.iter_mut().zip(&s_glass.bins) {
                 b.rate_per_s += g.rate_per_s * f * beaming;
@@ -643,12 +680,21 @@ mod tests {
         let mut spec: ChamberSpec = serde_json::from_str(chamber_json()).unwrap();
         let p = BTreeMap::from([("kv".to_string(), 40.0)]);
         spec.wall.material = "kryptonite".into();
-        assert!(matches!(evaluate_chamber(&spec, &p), Err(SpecError::UnknownMaterial(_))));
+        assert!(matches!(
+            evaluate_chamber(&spec, &p),
+            Err(SpecError::UnknownMaterial(_))
+        ));
         let mut spec: ChamberSpec = serde_json::from_str(chamber_json()).unwrap();
         spec.viewport = None;
-        assert!(matches!(evaluate_chamber(&spec, &p), Err(SpecError::NoViewport(_))));
+        assert!(matches!(
+            evaluate_chamber(&spec, &p),
+            Err(SpecError::NoViewport(_))
+        ));
         let spec: ChamberSpec = serde_json::from_str(chamber_json()).unwrap();
         let p = BTreeMap::from([("kv".to_string(), 300.0)]);
-        assert!(matches!(evaluate_chamber(&spec, &p), Err(SpecError::Source(_))));
+        assert!(matches!(
+            evaluate_chamber(&spec, &p),
+            Err(SpecError::Source(_))
+        ));
     }
 }

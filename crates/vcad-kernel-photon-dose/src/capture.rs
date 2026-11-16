@@ -84,10 +84,17 @@ pub enum CaptureError {
 impl std::fmt::Display for CaptureError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CaptureError::NotSpherical => write!(f, "capture gammas need a spherical neutronics geometry"),
-            CaptureError::UnsupportedEmitter(m) => write!(f, "no capture-gamma table for material {m:?}"),
+            CaptureError::NotSpherical => {
+                write!(f, "capture gammas need a spherical neutronics geometry")
+            }
+            CaptureError::UnsupportedEmitter(m) => {
+                write!(f, "no capture-gamma table for material {m:?}")
+            }
             CaptureError::CompositionDrift(m) => {
-                write!(f, "restated composition of {m:?} disagrees with the neutronics library")
+                write!(
+                    f,
+                    "restated composition of {m:?} disagrees with the neutronics library"
+                )
             }
             CaptureError::NothingScored { region } => {
                 write!(f, "region {region}: dominant capture group scored nothing — run more neutron histories")
@@ -103,10 +110,15 @@ impl std::fmt::Display for CaptureError {
 
 impl std::error::Error for CaptureError {}
 
+/// (element data, mass fraction, lines (keV, photons/capture)).
+type EmitterPart = (ElementData, f64, Vec<(f64, f64)>);
+/// Static line table.
+type Lines = &'static [(f64, f64)];
+
 struct Emitter {
     photon: Material,
     /// (element data, mass fraction, lines (keV, photons/capture))
-    parts: Vec<(ElementData, f64, Vec<(f64, f64)>)>,
+    parts: Vec<EmitterPart>,
 }
 
 const H_LINES: &[(f64, f64)] = &[(2223.2, 1.0)];
@@ -118,15 +130,30 @@ const PB_LINES: &[(f64, f64)] = &[(7367.8, 1.0)];
 /// Emitter table keyed by the neutronics material name. `Ok(None)` for
 /// non-emitters (air, void).
 fn emitter(name: &str) -> Result<Option<Emitter>, CaptureError> {
-    let e = |photon: Material, parts: Vec<(ElementData, f64, &[(f64, f64)])>| {
+    let e = |photon: Material, parts: Vec<(ElementData, f64, Lines)>| {
         Some(Emitter {
             photon,
-            parts: parts.into_iter().map(|(el, w, l)| (el, w, l.to_vec())).collect(),
+            parts: parts
+                .into_iter()
+                .map(|(el, w, l)| (el, w, l.to_vec()))
+                .collect(),
         })
     };
     Ok(match name {
-        "HDPE" => e(materials::hdpe(), vec![(nmat::HYDROGEN, 0.1437, H_LINES), (nmat::CARBON, 0.8563, C_LINES)]),
-        "paraffin" => e(materials::paraffin(), vec![(nmat::HYDROGEN, 0.1486, H_LINES), (nmat::CARBON, 0.8514, C_LINES)]),
+        "HDPE" => e(
+            materials::hdpe(),
+            vec![
+                (nmat::HYDROGEN, 0.1437, H_LINES),
+                (nmat::CARBON, 0.8563, C_LINES),
+            ],
+        ),
+        "paraffin" => e(
+            materials::paraffin(),
+            vec![
+                (nmat::HYDROGEN, 0.1486, H_LINES),
+                (nmat::CARBON, 0.8514, C_LINES),
+            ],
+        ),
         "borated-HDPE-5%" => e(
             materials::borated_hdpe_5(),
             vec![
@@ -135,7 +162,13 @@ fn emitter(name: &str) -> Result<Option<Emitter>, CaptureError> {
                 (nmat::BORON, 0.05, B_LINES),
             ],
         ),
-        "water" => e(materials::water(), vec![(nmat::HYDROGEN, 0.1119, H_LINES), (nmat::OXYGEN, 0.8881, O_LINES)]),
+        "water" => e(
+            materials::water(),
+            vec![
+                (nmat::HYDROGEN, 0.1119, H_LINES),
+                (nmat::OXYGEN, 0.8881, O_LINES),
+            ],
+        ),
         "lead" => e(materials::lead(), vec![(nmat::LEAD, 1.0, PB_LINES)]),
         "air" | "void" => None,
         other => return Err(CaptureError::UnsupportedEmitter(other.to_string())),
@@ -194,7 +227,11 @@ pub fn capture_lines(
             let sa: f64 = em
                 .parts
                 .iter()
-                .map(|(el, w, _)| rho * w * vcad_kernel_neutronics::constants::AVOGADRO / el.mass_amu * el.sigma_a_b[g] * 1e-24)
+                .map(|(el, w, _)| {
+                    rho * w * vcad_kernel_neutronics::constants::AVOGADRO / el.mass_amu
+                        * el.sigma_a_b[g]
+                        * 1e-24
+                })
                 .sum();
             let lib = layer.material.sigma_a[g];
             if (sa - lib).abs() > 1e-6 * lib.max(1e-30) {
@@ -206,7 +243,10 @@ pub fn capture_lines(
             let contrib: Vec<(f64, f64)> = (0..N_GROUPS)
                 .map(|g| {
                     let f = result.flux_per_source[r][g];
-                    (n_i * el.sigma_a_b[g] * 1e-24 * f.mean * vol * source_rate_n_per_s, f.rse)
+                    (
+                        n_i * el.sigma_a_b[g] * 1e-24 * f.mean * vol * source_rate_n_per_s,
+                        f.rse,
+                    )
                 })
                 .collect();
             let total: f64 = contrib.iter().map(|c| c.0).sum();
@@ -266,7 +306,9 @@ pub fn capture_gamma_reports(
         for line in &lines {
             let a = b[line.region + 1];
             if a + MIN_GAP_MM * 0.1 > r_det {
-                return Err(CaptureError::EmitterBeyondDetector { label: label.clone() });
+                return Err(CaptureError::EmitterBeyondDetector {
+                    label: label.clone(),
+                });
             }
             let z_cm = r_det - a;
             let g = z_cm * z_cm / (2.0 * a * r_det) * ((r_det + a) / (r_det - a)).ln();
@@ -286,7 +328,8 @@ pub fn capture_gamma_reports(
                     ..PathConfig::new(slabs, vec![z_cm * 10.0])
                 };
                 let spec = Spectrum::line(line.energy_kev, line.rate_per_s.mean);
-                let res = transport::run(&spec, &cfg).map_err(|e| CaptureError::Transport(e.to_string()))?;
+                let res = transport::run(&spec, &cfg)
+                    .map_err(|e| CaptureError::Transport(e.to_string()))?;
                 truncated += res.truncated_histories;
                 scored &= res.scatter_scored;
                 provenance.get_or_insert(res.provenance.clone());
@@ -296,7 +339,12 @@ pub fn capture_gamma_reports(
                     rse: (x.rse.powi(2) + line.rate_per_s.rse.powi(2)).sqrt(),
                     batches: x.batches.min(line.rate_per_s.batches),
                 };
-                (comb(d.h10_usv_h), comb(d.kerma_ugy_h), d.buildup_h10, report::data_terms(&cfg, d))
+                (
+                    comb(d.h10_usv_h),
+                    comb(d.kerma_ugy_h),
+                    d.buildup_h10,
+                    report::data_terms(&cfg, d),
+                )
             } else {
                 let phi = line.rate_per_s.mean * g / (4.0 * std::f64::consts::PI * z_cm * z_cm);
                 let mk = |c: f64| Estimate {
@@ -304,7 +352,12 @@ pub fn capture_gamma_reports(
                     rse: line.rate_per_s.rse,
                     batches: line.rate_per_s.batches,
                 };
-                (mk(h10_psv_cm2(line.energy_kev)), mk(kerma_pgy_cm2(line.energy_kev)), 1.0, vec![])
+                (
+                    mk(h10_psv_cm2(line.energy_kev)),
+                    mk(kerma_pgy_cm2(line.energy_kev)),
+                    1.0,
+                    vec![],
+                )
             };
             comps.push(Component {
                 name: format!(
@@ -312,11 +365,15 @@ pub fn capture_gamma_reports(
                     line.element,
                     line.energy_kev,
                     line.region,
-                    if line.energy_kev > DATA_MAX_KEV { " (unattenuated bound)" } else { "" }
+                    if line.energy_kev > DATA_MAX_KEV {
+                        " (unattenuated bound)"
+                    } else {
+                        ""
+                    }
                 ),
                 h10_usv_h: h.mean,
             });
-            if dominant.as_ref().map_or(true, |d| h.mean > d.0) {
+            if dominant.as_ref().is_none_or(|d| h.mean > d.0) {
                 dominant = Some((h.mean, terms, buildup));
             }
             h_parts.push(h);
@@ -372,8 +429,11 @@ pub fn from_shield_spec(
     params: &BTreeMap<String, f64>,
     run: &RunSpec,
 ) -> Result<(vcad_kernel_neutronics::receipt::ClaimSet, CaptureEvaluation), CaptureError> {
-    let resolved = spec.resolve(params).map_err(|e| CaptureError::Neutronics(e.to_string()))?;
-    let (doses, result) = n_evaluate(spec, params).map_err(|e| CaptureError::Neutronics(e.to_string()))?;
+    let resolved = spec
+        .resolve(params)
+        .map_err(|e| CaptureError::Neutronics(e.to_string()))?;
+    let (doses, result) =
+        n_evaluate(spec, params).map_err(|e| CaptureError::Neutronics(e.to_string()))?;
     let neutron = vcad_kernel_neutronics::receipt::claims_from_run(
         spec,
         &resolved.detector_regions,

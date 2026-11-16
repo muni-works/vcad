@@ -62,14 +62,17 @@ impl Material {
 
     /// Electrons per gram of mixture.
     pub fn electrons_per_gram(&self) -> f64 {
-        self.elements().map(|(el, w)| w * el.electrons_per_gram()).sum()
+        self.elements()
+            .map(|(el, w)| w * el.electrons_per_gram())
+            .sum()
     }
 
     /// Linear coefficients at `e_kev`, 1/cm.
     pub fn linear(&self, e_kev: f64) -> Result<Linear, OutOfRange> {
         let (m, n) = self.mass_coefficients(e_kev)?;
         let total = m * self.density_g_cc;
-        let kn = xsdata::klein_nishina_sigma_cm2(e_kev) * self.electrons_per_gram() * self.density_g_cc;
+        let kn =
+            xsdata::klein_nishina_sigma_cm2(e_kev) * self.electrons_per_gram() * self.density_g_cc;
         Ok(Linear {
             total,
             incoherent: kn.min(total),
@@ -93,7 +96,10 @@ impl Material {
 
 fn mat(name: &str, density: f64, comp: Vec<(&'static str, f64)>, unc: f64) -> Material {
     let total: f64 = comp.iter().map(|(_, w)| w).sum();
-    assert!((total - 1.0).abs() < 1e-6, "{name}: mass fractions sum to {total}");
+    assert!(
+        (total - 1.0).abs() < 1e-6,
+        "{name}: mass fractions sum to {total}"
+    );
     Material {
         name: name.to_string(),
         density_g_cc: density,
@@ -193,7 +199,12 @@ pub fn borosilicate() -> Material {
     mat(
         "borosilicate",
         2.23,
-        from_oxides(&[("SiO2", 0.81), ("B2O3", 0.13), ("Na2O", 0.04), ("Al2O3", 0.02)]),
+        from_oxides(&[
+            ("SiO2", 0.81),
+            ("B2O3", 0.13),
+            ("Na2O", 0.04),
+            ("Al2O3", 0.02),
+        ]),
         0.08,
     )
 }
@@ -207,7 +218,12 @@ pub fn lead_glass() -> Material {
     mat(
         "lead-glass",
         4.8,
-        from_oxides(&[("PbO", 0.65), ("SiO2", 0.30), ("K2O", 0.025), ("Na2O", 0.025)]),
+        from_oxides(&[
+            ("PbO", 0.65),
+            ("SiO2", 0.30),
+            ("K2O", 0.025),
+            ("Na2O", 0.025),
+        ]),
         0.15,
     )
 }
@@ -236,8 +252,16 @@ mod tests {
     #[test]
     fn library_compositions_sum_and_resolve() {
         for n in [
-            "air", "hdpe", "paraffin", "borated-hdpe-5", "water", "ss304", "aluminum", "lead",
-            "borosilicate", "lead-glass",
+            "air",
+            "hdpe",
+            "paraffin",
+            "borated-hdpe-5",
+            "water",
+            "ss304",
+            "aluminum",
+            "lead",
+            "borosilicate",
+            "lead-glass",
         ] {
             let m = by_name(n).unwrap();
             let s: f64 = m.composition.iter().map(|c| c.1).sum();
@@ -254,7 +278,10 @@ mod tests {
         let w = water();
         for (e, nist) in [(30.0, 0.3756), (100.0, 0.1707), (1000.0, 0.07072)] {
             let (m, _) = w.mass_coefficients(e).unwrap();
-            assert!((m / nist - 1.0).abs() < 0.01, "water {e} keV: {m} vs {nist}");
+            assert!(
+                (m / nist - 1.0).abs() < 0.01,
+                "water {e} keV: {m} vs {nist}"
+            );
         }
     }
 
@@ -264,7 +291,12 @@ mod tests {
         let si = g.composition.iter().find(|c| c.0 == "Si").unwrap().1;
         // SiO₂ is 46.74 wt% Si.
         assert!((si - 0.81 * 28.086 / (28.086 + 2.0 * 15.999)).abs() < 1e-9);
-        let pb = lead_glass().composition.iter().find(|c| c.0 == "Pb").unwrap().1;
+        let pb = lead_glass()
+            .composition
+            .iter()
+            .find(|c| c.0 == "Pb")
+            .unwrap()
+            .1;
         assert!((pb - 0.65 * 207.2 / (207.2 + 15.999)).abs() < 1e-9);
     }
 

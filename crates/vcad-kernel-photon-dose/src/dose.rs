@@ -116,7 +116,10 @@ mod tests {
         for e in [100.0, 300.0, 662.0, 1000.0, 2000.0, 3000.0] {
             let k = kerma_of(e);
             let tab = kerma_pgy_cm2(e);
-            assert!((k / tab - 1.0).abs() < 0.06, "{e} keV: E·μen {k} vs ICRP {tab}");
+            assert!(
+                (k / tab - 1.0).abs() < 0.06,
+                "{e} keV: E·μen {k} vs ICRP {tab}"
+            );
         }
     }
 }
