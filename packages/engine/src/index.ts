@@ -865,6 +865,14 @@ export interface KernelModule {
     paramsJson: string,
     optionsJson: string,
   ) => unknown;
+  /** Steady thermal solve of a document's own parts (Document/ThermalStudy JSON). */
+  thermalSolveDocument?: (
+    docJson: string,
+    studyJson: string,
+    studyId: string,
+    paramsJson: string,
+    optionsJson: string,
+  ) => unknown;
   /** Transient heat-conduction solve (adds a TransientSpec schedule). */
   thermalSolveTransient?: (
     specJson: string,
@@ -1534,6 +1542,7 @@ export class Engine {
       toleranceAnalyze: (wasmModule as Record<string, unknown>).toleranceAnalyze as KernelModule["toleranceAnalyze"],
       thermalSolve: (wasmModule as Record<string, unknown>).thermalSolve as KernelModule["thermalSolve"],
       thermalSolveTransient: (wasmModule as Record<string, unknown>).thermalSolveTransient as KernelModule["thermalSolveTransient"],
+      thermalSolveDocument: (wasmModule as Record<string, unknown>).thermalSolveDocument as KernelModule["thermalSolveDocument"],
       simulateFlow: (wasmModule as Record<string, unknown>).simulateFlow as KernelModule["simulateFlow"],
       documentDiff: (wasmModule as Record<string, unknown>).documentDiff as KernelModule["documentDiff"],
       documentDiffApply: (wasmModule as Record<string, unknown>).documentDiffApply as KernelModule["documentDiffApply"],
@@ -1941,6 +1950,30 @@ export class Engine {
       );
     }
     return fn(specJson, paramsJson, optionsJson);
+  }
+
+  /**
+   * Steady thermal solve of a document's own parts: the study's parts are
+   * voxelized from their tessellations (`vcad_eval::thermal_extract`),
+   * sources/sinks tied to parts, and solved. `studyJson` is an inline
+   * `ThermalStudy` ("" = use the document's study `studyId`, or its only
+   * thermal study). Returns the `thermalSolve` summary plus `extracted`
+   * (grid, per-part voxel audit, sources/sinks as solved).
+   */
+  thermalSolveDocument(
+    docJson: string,
+    studyJson: string,
+    studyId: string,
+    paramsJson: string,
+    optionsJson: string,
+  ): unknown {
+    const fn = this.kernel.thermalSolveDocument;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "thermalSolveDocument is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(docJson, studyJson, studyId, paramsJson, optionsJson);
   }
 
   /**

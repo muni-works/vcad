@@ -10,6 +10,14 @@ enum NavigationScheme: String, CaseIterable, Identifiable, Sendable {
     /// Fusion 360's bindings (the default): left-drag selects, the middle
     /// button moves the camera, the wheel zooms about the pointer.
     case fusion360 = "fusion360"
+    /// SolidWorks: the middle button orbits, ⌃-middle pans.
+    case solidworks = "solidworks"
+    /// Onshape: right-drag orbits, middle-drag (or ⌃-right-drag) pans. A
+    /// right-click that doesn't move still opens the context menu.
+    case onshape = "onshape"
+    /// Blender: the middle button orbits, ⇧-middle pans, the wheel zooms
+    /// toward the screen centre.
+    case blender = "blender"
     /// vcad's original bindings: left-drag orbits, ⇧-left-drag pans.
     case classic = "classic"
 
@@ -18,6 +26,9 @@ enum NavigationScheme: String, CaseIterable, Identifiable, Sendable {
     var label: String {
         switch self {
         case .fusion360: "Fusion 360"
+        case .solidworks: "SolidWorks"
+        case .onshape: "Onshape"
+        case .blender: "Blender"
         case .classic: "vcad classic"
         }
     }
@@ -35,7 +46,8 @@ enum NavigationScheme: String, CaseIterable, Identifiable, Sendable {
         enum Button: Equatable, Sendable { case left, middle, right }
         /// A drag with a mouse button held. `onHandle` = it started on a
         /// gizmo handle; `onEmpty` = it started on empty space (no part).
-        case drag(Button, shift: Bool, command: Bool, onHandle: Bool = false, onEmpty: Bool = true)
+        case drag(Button, shift: Bool, command: Bool, control: Bool = false,
+                  onHandle: Bool = false, onEmpty: Bool = true)
         /// A scroll: `precise` = trackpad / Magic Mouse (two-finger swipe),
         /// otherwise a notched mouse wheel.
         case scroll(precise: Bool, shift: Bool)
@@ -69,22 +81,46 @@ enum NavigationScheme: String, CaseIterable, Identifiable, Sendable {
     func action(for input: Input, sketching: Bool = false) -> Action {
         switch (self, input) {
         // A drag that starts on a gizmo handle is a transform in every scheme.
-        case (_, .drag(.left, _, _, true, _)): return .dragHandle
-        case (_, .drag(.right, _, _, _, _)): return .none
+        case (_, .drag(.left, _, _, _, true, _)): return .dragHandle
+        // Onshape is the one scheme that moves the camera with the right button.
+        case (.onshape, .drag(.right, _, _, let control, _, _)): return control ? .pan : .orbit
+        // Everywhere else right-drag is the marking menu / context menu.
+        case (_, .drag(.right, _, _, _, _, _)): return .none
         case (_, .pinch): return .zoom
         case (_, .doubleClick(.left)): return sketching ? .none : .framePart
         case (_, .doubleClick(.middle)): return .fitAll
         case (_, .doubleClick(.right)): return .none
 
         // Fusion 360.
-        case (.fusion360, .drag(.middle, let shift, _, _, _)): return shift ? .orbit : .pan
-        case (.fusion360, .drag(.left, _, _, _, _)): return sketching ? .none : .marquee
-        case (.fusion360, .scroll(true, let shift)): return shift ? .orbit : .pan
-        case (.fusion360, .scroll(false, _)): return .zoomAtCursor
+        case (.fusion360, .drag(.middle, let shift, _, _, _, _)): return shift ? .orbit : .pan
+
+        // SolidWorks.
+        case (.solidworks, .drag(.middle, _, _, let control, _, _)): return control ? .pan : .orbit
+
+        // Onshape: middle-drag pans (the right button orbits, above).
+        case (.onshape, .drag(.middle, _, _, _, _, _)): return .pan
+
+        // Blender.
+        case (.blender, .drag(.middle, let shift, _, _, _, _)): return shift ? .pan : .orbit
+        case (.blender, .scroll(false, _)): return .zoom
+
+        // Fusion, SolidWorks, Onshape and Blender share the rest: left-drag
+        // box-selects, the wheel zooms at the pointer, and the trackpad keeps
+        // the same two-finger pan / ⇧ orbit so switching presets for a mouse
+        // never changes how the trackpad feels.
+        case (.fusion360, .drag(.left, _, _, _, _, _)), (.solidworks, .drag(.left, _, _, _, _, _)),
+             (.onshape, .drag(.left, _, _, _, _, _)), (.blender, .drag(.left, _, _, _, _, _)):
+            return sketching ? .none : .marquee
+        case (.fusion360, .scroll(true, let shift)), (.solidworks, .scroll(true, let shift)),
+             (.onshape, .scroll(true, let shift)), (.blender, .scroll(true, let shift)):
+            return shift ? .orbit : .pan
+        case (.fusion360, .scroll(false, _)), (.solidworks, .scroll(false, _)),
+             (.onshape, .scroll(false, _)):
+            return .zoomAtCursor
 
         // vcad classic.
-        case (.classic, .drag(.middle, let shift, _, _, _)): return shift ? .orbit : .pan
-        case (.classic, .drag(.left, let shift, let command, _, let onEmpty)):
+        case (.classic, .drag(.middle, let shift, _, _, _, _)): return shift ? .orbit : .pan
+        case (.classic, .drag(.left, let shift, let command, _, _, let onEmpty)):
             if command && onEmpty && !sketching { return .marquee }
             return shift ? .pan : .orbit
         case (.classic, .scroll(_, _)): return .zoom
@@ -112,6 +148,21 @@ enum NavigationScheme: String, CaseIterable, Identifiable, Sendable {
         case .fusion360:
             return [("Middle-drag", "Pan"), ("⇧ Middle-drag", "Orbit"),
                     ("Scroll wheel", "Zoom at pointer"), ("Double-click middle", "Fit all"),
+                    ("Two-finger swipe", "Pan"), ("⇧ Two-finger swipe", "Orbit"),
+                    ("Pinch", "Zoom"), ("Left-drag", "Box select")]
+        case .solidworks:
+            return [("Middle-drag", "Orbit"), ("⌃ Middle-drag", "Pan"),
+                    ("Scroll wheel", "Zoom at pointer"), ("Double-click middle", "Fit all"),
+                    ("Two-finger swipe", "Pan"), ("⇧ Two-finger swipe", "Orbit"),
+                    ("Pinch", "Zoom"), ("Left-drag", "Box select")]
+        case .onshape:
+            return [("Right-drag", "Orbit"), ("Middle-drag", "Pan"), ("⌃ Right-drag", "Pan"),
+                    ("Scroll wheel", "Zoom at pointer"), ("Double-click middle", "Fit all"),
+                    ("Two-finger swipe", "Pan"), ("⇧ Two-finger swipe", "Orbit"),
+                    ("Pinch", "Zoom"), ("Left-drag", "Box select")]
+        case .blender:
+            return [("Middle-drag", "Orbit"), ("⇧ Middle-drag", "Pan"),
+                    ("Scroll wheel", "Zoom"), ("Double-click middle", "Fit all"),
                     ("Two-finger swipe", "Pan"), ("⇧ Two-finger swipe", "Orbit"),
                     ("Pinch", "Zoom"), ("Left-drag", "Box select")]
         case .classic:
