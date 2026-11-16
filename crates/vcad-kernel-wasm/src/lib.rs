@@ -9924,6 +9924,15 @@ fn em_stress_panels() -> usize {
     64
 }
 
+/// Air-gap probe region for the axisym magnet claims.
+#[derive(serde::Deserialize)]
+struct WasmEmGapProbe {
+    r_inner_mm: f64,
+    r_outer_mm: f64,
+    z_min_mm: f64,
+    z_max_mm: f64,
+}
+
 /// Torque extraction request for the planar problem class.
 #[derive(serde::Deserialize)]
 struct WasmEmTorqueSpec {
@@ -9962,6 +9971,9 @@ struct EmSimOptions {
     force_coil: Option<usize>,
     /// Axisym: Maxwell-stress cylinder for the force cross-route residual.
     stress_probe: Option<WasmEmStressProbe>,
+    /// Axisym with magnets: the air-gap region the `gap_flux_t` claim
+    /// averages |B_r| over (r/z bounds, mm).
+    gap_probe: Option<WasmEmGapProbe>,
     /// Planar: torque center/radius/depth (required for planar claims).
     torque: Option<WasmEmTorqueSpec>,
     /// Electrostatics: index of the driven (nonzero-potential) electrode.
@@ -9983,6 +9995,7 @@ impl Default for EmSimOptions {
             drive_coil: 0,
             force_coil: None,
             stress_probe: None,
+            gap_probe: None,
             torque: None,
             hot: 0,
         }
@@ -10100,10 +10113,12 @@ pub fn em_simulate(
             let dev = spec
                 .resolve(&params)
                 .map_err(|e| JsError::new(&e.to_string()))?;
-            if dev.coils.is_empty() {
-                return Err(JsError::new("axisym_magnetostatics needs at least one coil"));
+            if dev.coils.is_empty() && dev.magnets.is_empty() {
+                return Err(JsError::new(
+                    "axisym_magnetostatics needs at least one coil or magnet",
+                ));
             }
-            if opts.drive_coil >= dev.coils.len() {
+            if !dev.coils.is_empty() && opts.drive_coil >= dev.coils.len() {
                 return Err(JsError::new(&format!(
                     "drive_coil {} out of range ({} coils)",
                     opts.drive_coil,
@@ -10134,12 +10149,32 @@ pub fn em_simulate(
             let flux_linkages: Vec<f64> = (0..n_coils).map(|k| sol.flux_linkage(k)).collect();
             let forces: Vec<f64> = (0..n_coils).map(|k| sol.axial_force_on_coil(k)).collect();
             let energy = sol.energy();
-            let mut claim_sets = vec![em::receipt::axisym_inductance_claims(
-                &sol,
-                opts.drive_coil,
-                sopts.tol,
-                None,
-            )];
+            let has_magnets = !dev.magnets.is_empty();
+            let gap = opts.gap_probe.as_ref().map(|g| em::axisym::Annulus {
+                r_inner_mm: g.r_inner_mm,
+                r_outer_mm: g.r_outer_mm,
+                z_min_mm: g.z_min_mm,
+                z_max_mm: g.z_max_mm,
+            });
+            let drive = (n_coils > 0).then_some(opts.drive_coil);
+            // With magnets the coil's flux linkage carries the magnet's DC
+            // flux, so λ/I is not an inductance: price the gap instead.
+            let mut claim_sets = if has_magnets {
+                vec![em::receipt::axisym_gap_flux_claims(
+                    &sol,
+                    drive,
+                    gap.as_ref(),
+                    sopts.tol,
+                    None,
+                )]
+            } else {
+                vec![em::receipt::axisym_inductance_claims(
+                    &sol,
+                    opts.drive_coil,
+                    sopts.tol,
+                    None,
+                )]
+            };
             if let Some(k) = opts.force_coil {
                 if k >= n_coils {
                     return Err(JsError::new(&format!(
@@ -10162,7 +10197,13 @@ pub fn em_simulate(
                 residual: sol.residual,
                 picard,
                 qois: serde_json::json!({
-                    "self_inductance_h": sol.self_inductance(opts.drive_coil),
+                    "self_inductance_h": if has_magnets || n_coils == 0 {
+                        None
+                    } else {
+                        Some(sol.self_inductance(opts.drive_coil))
+                    },
+                    "bl_n_per_a": drive.map(|k| sol.force_factor(k)),
+                    "gap_flux_t": gap.as_ref().map(|g| sol.mean_field_in(g, 16).0),
                     "flux_linkages_wb_t": flux_linkages,
                     "axial_forces_n": forces,
                     "field_energy_j": energy.field,
@@ -10855,6 +10896,46 @@ pub fn extract_shield_spec(doc_json: &str, selection_json: &str) -> Result<JsVal
     let sel: vcad_eval::sim_extract::ShieldExtraction = serde_json::from_str(selection_json)
         .map_err(|e| JsError::new(&format!("bad extraction selection: {e}")))?;
     let out = vcad_eval::sim_extract::extract_shield_spec(&doc, &sel)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Extract an axisymmetric magnetostatic `AxisymSpec` from a document's
+/// revolved magnetic parts (steel, axial magnets, coils).
+///
+/// `selection_json` is a `vcad_eval::sim_extract::em::AxisymMagExtraction`.
+/// Returns `{spec, parameters, axis, parts, grid}` — feed `spec` (with
+/// `problem: "axisym_magnetostatics"`) and `parameters` to `emSimulate`,
+/// on the advised `grid.nx × grid.ny`. Fail-closed: a non-axisymmetric
+/// part errors with its name.
+#[wasm_bindgen(js_name = extractAxisymMagSpec)]
+pub fn extract_axisym_mag_spec(doc_json: &str, selection_json: &str) -> Result<JsValue, JsError> {
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {e}")))?;
+    let sel: vcad_eval::sim_extract::em::AxisymMagExtraction = serde_json::from_str(selection_json)
+        .map_err(|e| JsError::new(&format!("bad extraction selection: {e}")))?;
+    let out = vcad_eval::sim_extract::em::extract_axisym_mag_spec(&doc, &sel)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Extract a linear tolerance `StackupSpec` from a document's clearance
+/// assertion and toleranced parameters.
+///
+/// `selection_json` is a `vcad_eval::sim_extract::tolerance::StackupExtraction`.
+/// Returns `{spec, parameters, gap_mm, fit_parts, contributors,
+/// independent, fixed_geometry_mm}` — feed `spec` and `parameters` to
+/// `toleranceAnalyze`.
+#[wasm_bindgen(js_name = extractStackupSpec)]
+pub fn extract_stackup_spec(doc_json: &str, selection_json: &str) -> Result<JsValue, JsError> {
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {e}")))?;
+    let sel: vcad_eval::sim_extract::tolerance::StackupExtraction =
+        serde_json::from_str(selection_json)
+            .map_err(|e| JsError::new(&format!("bad extraction selection: {e}")))?;
+    let out = vcad_eval::sim_extract::tolerance::extract_stackup_spec(&doc, &sel)
         .map_err(|e| JsError::new(&e.to_string()))?;
     let ser = serde_wasm_bindgen::Serializer::json_compatible();
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))

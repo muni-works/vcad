@@ -56,6 +56,9 @@ use vcad_kernel_topo::{FaceId, Orientation};
 
 use crate::{evaluate_document, EvalError, EvalOptions, EvaluatedScene};
 
+pub mod em;
+pub mod tolerance;
+
 type V3 = [f64; 3];
 
 fn sub(a: V3, b: V3) -> V3 {
@@ -303,6 +306,8 @@ fn root_names(doc: &Document, idx: usize) -> Vec<String> {
     if let Some(id) = doc.part_ids.as_ref().and_then(|m| m.get(&root.to_string())) {
         names.push(id.clone());
     }
+    // Clearance assertions name parts by stringified root node id.
+    names.push(root.to_string());
     names
 }
 

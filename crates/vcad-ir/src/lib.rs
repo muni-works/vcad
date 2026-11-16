@@ -29,7 +29,7 @@ pub use datum::{resolve_datums, Datum, PrincipalAxis, ResolvedDatum};
 pub use mates::{Mate, MateKind};
 pub use parameters::{
     resolve_binding, resolve_parameters, validate_bindings, BindingKey, Bindings, Expr, Parameter,
-    ResolveError,
+    ParameterTolerance, ResolveError,
 };
 pub use resolve::{resolve_document, resolve_document_cloned, ResolvePatchError};
 

@@ -11,6 +11,7 @@
  */
 
 import { behavior, type ToolDef } from "./tool-def.js";
+import { getSession } from "./session-core.js";
 
 const paramValue = {
   description:
@@ -69,7 +70,8 @@ const emSpecSchema = {
     "Problem-tagged EM spec. `axisym_magnetostatics`: chamber `r_max_mm`/" +
     "`z_min_mm`/`z_max_mm` + `coils` [{region, turns, current_a}] + " +
     "`materials` [{region, mu_r, js_t?}] (js_t enables the saturable B-H " +
-    "law; named parameters allowed). `planar_magnetostatics`: `x_min_mm`/" +
+    "law) + `magnets` [{region, br_z_t, mu_r}] (axially magnetized rings: " +
+    "speaker/actuator motors; named parameters allowed). `planar_magnetostatics`: `x_min_mm`/" +
     "`x_max_mm`/`y_min_mm`/`y_max_mm` + `conductors` [{region, " +
     "total_current_a}] + `magnets` [{region, br_x_t, br_y_t, mu_r}] + " +
     "`materials` + `periodic_x` (named parameters allowed). " +
@@ -126,11 +128,16 @@ const emSpecSchema = {
           region: rectRegion,
           br_x_t: { ...paramValue, description: "Remanence x, tesla." },
           br_y_t: { ...paramValue, description: "Remanence y, tesla." },
+          br_z_t: {
+            ...paramValue,
+            description: "Axisym only: axial remanence, tesla (+ = north up).",
+          },
           mu_r: { ...paramValue, description: "Recoil mu_r. Default 1." },
         },
       },
     },
     periodic_x: { type: "boolean" as const },
+    // (axisym magnets share the `magnets` key: {region, br_z_t, mu_r})
     // shared magnetostatics
     materials: {
       type: "array" as const,
@@ -186,6 +193,70 @@ const emSpecSchema = {
   },
 };
 
+const magPartSchema = {
+  type: "object" as const,
+  required: ["part"],
+  properties: {
+    part: { type: "string" as const, description: "Part name or part id." },
+    material: {
+      type: "string" as const,
+      description:
+        "Material key for the magnetic table (default: the part's material): " +
+        "steel-1008/1010/1018, low-carbon-steel, mild-steel, iron, " +
+        "ferrite-y30/c8/y35, ndfeb-n35/n42/n52.",
+    },
+    role: {
+      type: "string" as const,
+      enum: ["steel", "magnet", "coil"],
+      description: "Required when the material isn't in the table.",
+    },
+    mu_r: { ...paramValue, description: "Steel initial / magnet recoil mu_r." },
+    js_t: { ...paramValue, description: "Steel saturation polarization, T." },
+    linear: { type: "boolean" as const, description: "Drop the steel B-H law." },
+    br_t: { ...paramValue, description: "Magnet remanence magnitude, T." },
+    north: {
+      type: "string" as const,
+      enum: ["+axis", "-axis"],
+      description: "Magnet polarity along the motor axis. Default +axis.",
+    },
+    turns: { ...paramValue, description: "Coil turns (required for coils)." },
+    current_a: { ...paramValue, description: "Coil current, A. Default 0." },
+  },
+};
+
+const magExtractSchema = {
+  type: "object" as const,
+  required: ["parts"],
+  description:
+    "Which parts of `document_id` form the axisymmetric magnetic device " +
+    "(unselected parts are air). Every selected part must be a solid of " +
+    "revolution about one common axis whose faces are all coaxial " +
+    "cylinders or axis-perpendicular planes; its meridian section is " +
+    "measured from the BRep into annuli (a T-yoke = two). Fail-closed by " +
+    "part name: cones/fillets, off-axis holes, flats, unknown materials " +
+    "without a role, overlapping parts, or a domain whose grid can't " +
+    "resolve the thinnest gap.",
+  properties: {
+    parts: { type: "array" as const, minItems: 1, items: magPartSchema },
+    domain: {
+      type: "object" as const,
+      properties: {
+        pad_factor: {
+          type: "number" as const,
+          description: "Padding around the device as a multiple of its size. Default 1.",
+        },
+        r_max_mm: { type: "number" as const },
+        z_min_mm: { type: "number" as const },
+        z_max_mm: { type: "number" as const },
+        cells_per_feature: {
+          type: "number" as const,
+          description: "Grid cells across the thinnest steel/magnet feature or gap. Default 4.",
+        },
+      },
+    },
+  },
+};
+
 type Json = Record<string, unknown>;
 
 function textResult(payload: unknown) {
@@ -218,14 +289,25 @@ export const toolDefs: ToolDef[] = [
       "tolerances.",
     inputSchema: {
       type: "object" as const,
-      required: ["spec"],
       properties: {
-        spec: emSpecSchema,
+        spec: {
+          ...emSpecSchema,
+          description: emSpecSchema.description + " Pass this OR `document_id` + `extract`.",
+        },
+        document_id: {
+          type: "string" as const,
+          description:
+            "Session document to extract an axisym magnetostatic device from " +
+            "(instead of `spec`): annuli measured from the document's revolved " +
+            "parts. Requires `extract`. nx/ny default to the advised grid.",
+        },
+        extract: magExtractSchema,
         parameters: {
           type: "object" as const,
           additionalProperties: { type: "number" as const },
           description:
-            "Bindings for named spec parameters (magnetostatic classes).",
+            "Bindings for named spec parameters (magnetostatic classes). With " +
+            "`document_id` these override the document's parameter values.",
         },
         options: {
           type: "object" as const,
@@ -326,18 +408,81 @@ export const toolDefs: ToolDef[] = [
               description:
                 "Electrostatics: index of the driven electrode. Default 0.",
             },
+            gap_probe: {
+              type: "object" as const,
+              description:
+                "Axisym with magnets: air-gap region {r_inner_mm, r_outer_mm, " +
+                "z_min_mm, z_max_mm} the `gap_flux_t` claim averages |B_r| over " +
+                "(a Hall probe's reading). With magnets the inductance claim is " +
+                "replaced by gap-flux + Bl (force factor of `drive_coil`) claims.",
+              properties: {
+                r_inner_mm: { type: "number" as const },
+                r_outer_mm: { type: "number" as const },
+                z_min_mm: { type: "number" as const },
+                z_max_mm: { type: "number" as const },
+              },
+            },
           },
         },
       },
     },
     handler: (args, ctx) => {
       const a = args as Json;
+      const params = (a.parameters ?? {}) as Record<string, number>;
+      if (a.document_id === undefined) {
+        if (a.spec === undefined) {
+          throw new Error("simulate_em: pass `spec`, or `document_id` + `extract`");
+        }
+        return textResult(
+          ctx.engine.emSimulate(
+            JSON.stringify(a.spec),
+            JSON.stringify(params),
+            JSON.stringify(a.options ?? {}),
+          ),
+        );
+      }
+      if (a.spec !== undefined) {
+        throw new Error("simulate_em: pass `spec` OR `document_id`, not both");
+      }
+      if (a.extract === undefined) {
+        throw new Error(
+          "simulate_em: `document_id` requires `extract` (steel/magnet/coil parts)",
+        );
+      }
+      const documentId = String(a.document_id);
+      const ex = ctx.engine.extractAxisymMagSpec(
+        JSON.stringify(getSession(documentId)),
+        JSON.stringify(a.extract),
+      ) as {
+        spec: Json;
+        parameters: Record<string, number>;
+        axis: unknown;
+        parts: unknown[];
+        grid: { nx: number; ny: number; dx_mm: number; thinnest_feature_mm: number };
+      };
+      const parameters = { ...ex.parameters, ...params };
+      const options = {
+        nx: ex.grid.nx,
+        ny: ex.grid.ny,
+        ...((a.options ?? {}) as Json),
+      };
+      const spec = { problem: "axisym_magnetostatics", ...ex.spec };
       const out = ctx.engine.emSimulate(
-        JSON.stringify(a.spec),
-        JSON.stringify(a.parameters ?? {}),
-        JSON.stringify(a.options ?? {}),
-      );
-      return textResult(out);
+        JSON.stringify(spec),
+        JSON.stringify(parameters),
+        JSON.stringify(options),
+      ) as Json;
+      return textResult({
+        ...out,
+        extracted: {
+          document_id: documentId,
+          spec,
+          parameters,
+          axis: ex.axis,
+          parts: ex.parts,
+          grid: ex.grid,
+        },
+      });
     },
     behavior: behavior({}),
   },

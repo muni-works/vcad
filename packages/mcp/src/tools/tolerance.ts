@@ -9,6 +9,7 @@
  */
 
 import { behavior, type ToolDef } from "./tool-def.js";
+import { getSession } from "./session-core.js";
 
 const paramValue = {
   description:
@@ -107,6 +108,58 @@ const stackupSpecSchema = {
   },
 };
 
+const stackupExtractSchema = {
+  type: "object" as const,
+  required: ["clearance", "feature"],
+  description:
+    "Derive the stack from `document_id`: the fit is the document's labeled " +
+    "clearance assertion (`clearance_specs`), measured analytically from the " +
+    "BRep (radial: coaxial bore/shaft, gap = r_bore − r_shaft, negative = " +
+    "interference; axial: opposed parallel planes). Chain coefficients are " +
+    "d(gap)/d(parameter) by re-evaluating the document at p ± tolerance; " +
+    "parameters that don't move the gap drop out. Tolerances come from the " +
+    "document parameters (`tolerance: {plus, minus, sigmaK?}`, loon `:tol`). " +
+    "Fail-closed: a parameter that moves the gap with no tolerance (and no " +
+    "`process_tolerance_mm`), a gap nonlinear in a parameter, or an " +
+    "ambiguous/absent fit errors.",
+  properties: {
+    clearance: {
+      type: "string" as const,
+      description: "Label of the clearance assertion naming the two part groups.",
+    },
+    feature: {
+      type: "string" as const,
+      enum: ["radial", "axial"],
+      description: "Fit feature to measure between the groups.",
+    },
+    fit_window_mm: {
+      type: "number" as const,
+      description: "Only fits with |gap| <= this are candidates. Default 1.0.",
+    },
+    lower_mm: {
+      type: "number" as const,
+      description: "Lower gap bound (overrides the assertion's min_mm).",
+    },
+    upper_mm: {
+      type: "number" as const,
+      description:
+        "Upper gap bound, mm — a press/transition fit needs one (e.g. -0.01: " +
+        "less interference than this rattles).",
+    },
+    process_tolerance_mm: {
+      type: "number" as const,
+      description:
+        "Symmetric 3-sigma process tolerance (e.g. 0.1 for FDM) applied to " +
+        "gap-driving parameters that declare none.",
+    },
+    parameters: {
+      type: "array" as const,
+      items: { type: "string" as const },
+      description: "Restrict candidate parameters (default: all literal ones).",
+    },
+  },
+};
+
 type Json = Record<string, unknown>;
 
 function textResult(payload: unknown) {
@@ -136,13 +189,25 @@ export const toolDefs: ToolDef[] = [
       "runs in well under a second.",
     inputSchema: {
       type: "object" as const,
-      required: ["spec"],
       properties: {
-        spec: stackupSpecSchema,
+        spec: {
+          ...stackupSpecSchema,
+          description:
+            stackupSpecSchema.description + " Pass this OR `document_id` + `extract`.",
+        },
+        document_id: {
+          type: "string" as const,
+          description:
+            "Session document to derive the stack from (instead of `spec`). " +
+            "Requires `extract`.",
+        },
+        extract: stackupExtractSchema,
         parameters: {
           type: "object" as const,
           additionalProperties: { type: "number" as const },
-          description: "Bindings for named spec parameters, `{name: value}`.",
+          description:
+            "Bindings for named spec parameters, `{name: value}`. With " +
+            "`document_id` these override the document's parameter values.",
         },
         options: {
           type: "object" as const,
@@ -165,12 +230,58 @@ export const toolDefs: ToolDef[] = [
     },
     handler: (args, ctx) => {
       const a = args as Json;
+      const params = (a.parameters ?? {}) as Record<string, number>;
+      const options = JSON.stringify(a.options ?? {});
+      if (a.document_id === undefined) {
+        if (a.spec === undefined) {
+          throw new Error(
+            "analyze_tolerance_stackup: pass `spec`, or `document_id` + `extract`",
+          );
+        }
+        return textResult(
+          ctx.engine.toleranceAnalyze(JSON.stringify(a.spec), JSON.stringify(params), options),
+        );
+      }
+      if (a.spec !== undefined) {
+        throw new Error("analyze_tolerance_stackup: pass `spec` OR `document_id`, not both");
+      }
+      if (a.extract === undefined) {
+        throw new Error(
+          "analyze_tolerance_stackup: `document_id` requires `extract` (clearance label + feature)",
+        );
+      }
+      const documentId = String(a.document_id);
+      const ex = ctx.engine.extractStackupSpec(
+        JSON.stringify(getSession(documentId)),
+        JSON.stringify(a.extract),
+      ) as {
+        spec: unknown;
+        parameters: Record<string, number>;
+        gap_mm: number;
+        fit_parts: string[];
+        contributors: unknown[];
+        independent: string[];
+        fixed_geometry_mm: number;
+      };
+      const parameters = { ...ex.parameters, ...params };
       const out = ctx.engine.toleranceAnalyze(
-        JSON.stringify(a.spec),
-        JSON.stringify(a.parameters ?? {}),
-        JSON.stringify(a.options ?? {}),
-      );
-      return textResult(out);
+        JSON.stringify(ex.spec),
+        JSON.stringify(parameters),
+        options,
+      ) as Json;
+      return textResult({
+        ...out,
+        extracted: {
+          document_id: documentId,
+          spec: ex.spec,
+          parameters,
+          gap_mm: ex.gap_mm,
+          fit_parts: ex.fit_parts,
+          contributors: ex.contributors,
+          independent: ex.independent,
+          fixed_geometry_mm: ex.fixed_geometry_mm,
+        },
+      });
     },
     behavior: behavior({}),
   },

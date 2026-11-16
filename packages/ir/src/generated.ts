@@ -5131,7 +5131,35 @@ max?: number,
 /**
  * Optional description shown in the parameters panel.
  */
-description?: string, };
+description?: string, 
+/**
+ * Optional drawing tolerance: how far the manufactured value may
+ * deviate from this nominal. Consumed by tolerance-stackup extraction
+ * (`vcad_eval::sim_extract::tolerance`); ignored by evaluation, which
+ * always builds the nominal.
+ */
+tolerance?: ParameterTolerance, };
+
+/**
+ * A drawing tolerance band on a parameter, in the parameter's own unit
+ * (mm for lengths): the produced value lies in
+ * `[nominal − minus, nominal + plus]`.
+ */
+export type ParameterTolerance = { 
+/**
+ * Allowed deviation above nominal (≥ 0).
+ */
+plus: number, 
+/**
+ * Allowed deviation below nominal (≥ 0).
+ */
+minus: number, 
+/**
+ * Statistical convention: the band spans ±`sigma_k`·σ of a normal
+ * process (3 = the industry default when absent; 4 for Cp 1.33).
+ * Only meaningful for a symmetric band.
+ */
+sigmaK?: number, };
 
 /**
  * A reusable part definition in an assembly.
