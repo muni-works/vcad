@@ -5875,18 +5875,7 @@ pub fn arc_segments(radius: f64, segments: u32) -> u32 {
     } else {
         3
     };
-    n.max(segments).clamp(3, rim_cap())
-}
-
-/// TEMP experiment switch.
-pub(crate) fn rim_cap() -> u32 {
-    static CAP: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
-    *CAP.get_or_init(|| {
-        std::env::var("VCAD_RIM_CAP")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(512)
-    })
+    n.max(segments).clamp(3, 512)
 }
 
 /// Discretization of a circular arc on the circle's own raw-`segments`

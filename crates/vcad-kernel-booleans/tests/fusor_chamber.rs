@@ -236,7 +236,16 @@ fn dump_faces(b: &BRepSolid) {
                 for &i in tri {
                     let k = i as usize * 3;
                     let d = (0..3).map(|c| n[c] * m.normals[k + c] as f64).sum::<f64>() / len;
-                    worst = worst.max(d.clamp(-1.0, 1.0).acos().to_degrees());
+                    let dev = d.clamp(-1.0, 1.0).acos().to_degrees();
+                    if dev > worst && dev > 10.0 && std::env::var_os("CENSUS_WORST").is_some() {
+                        eprintln!(
+                            "      {dev:.1}°: {:?} {:?} {:?}",
+                            p(tri[0]),
+                            p(tri[1]),
+                            p(tri[2])
+                        );
+                    }
+                    worst = worst.max(dev);
                 }
             }
         }
