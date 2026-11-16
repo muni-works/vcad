@@ -58,16 +58,45 @@ const boundarySchema = {
   required: ["type"],
   description:
     'Boundary condition: `{"type":"Adiabatic"}`, ' +
-    '`{"type":"FixedTemperature","temperature_c":..}`, or ' +
-    '`{"type":"Convection","h_w_m2k":..,"ambient_c":..}`.',
+    '`{"type":"FixedTemperature","temperature_c":..}`, ' +
+    '`{"type":"Convection","h_w_m2k":..,"ambient_c":..}`, or ' +
+    '`{"type":"Radiation","emissivity":..,"ambient_c":..}` (gray-diffuse ' +
+    "eps*sigma*(Ts^4-Tamb^4), optional parallel `h_w_m2k` (0 in vacuum), " +
+    "optional `area_scale` = true/voxel surface area (a voxel staircase " +
+    "over-counts curved area ~4/pi for cylinders, ~1.5 for spheres, which " +
+    "over-cools: the result reports `voxel_area_m2` per slot so you can " +
+    "compute it), optional `enclosure` {emissivity, area_m2} for a " +
+    "two-surface gray enclosure such as a grid inside a vacuum chamber " +
+    "whose wall temperature is `ambient_c`). Any radiation face makes the " +
+    "solve nonlinear (Newton); temperatures must be degC.",
   properties: {
     type: {
       type: "string" as const,
-      enum: ["Adiabatic", "FixedTemperature", "Convection"],
+      enum: ["Adiabatic", "FixedTemperature", "Convection", "Radiation"],
     },
     temperature_c: paramValue,
     h_w_m2k: paramValue,
     ambient_c: paramValue,
+    emissivity: {
+      ...paramValue,
+      description: "Radiation: surface emissivity in (0, 1]. Required.",
+    },
+    area_scale: {
+      ...paramValue,
+      description: "Radiation: radiating-area multiplier (> 0), default 1.",
+    },
+    enclosure: {
+      type: "object" as const,
+      required: ["emissivity", "area_m2"],
+      description:
+        "Radiation: enclosing wall (view factor 1). eps_eff = " +
+        "1/(1/eps + (A_s/A_w)(1/eps_w - 1)); A_w must exceed the slot's " +
+        "radiating area.",
+      properties: {
+        emissivity: paramValue,
+        area_m2: paramValue,
+      },
+    },
   },
 };
 
@@ -201,7 +230,7 @@ const transientSchema = {
             description:
               'Boundary-temperature overrides by face label ("-x","+x",' +
               '"-y","+y","-z","+z","exposed"): retunes a FixedTemperature ' +
-              "face's temperature or a Convection face's ambient. " +
+              "face's temperature or a Convection/Radiation face's ambient. " +
               "Overriding an adiabatic face errors (fail-closed).",
           },
           fixed_temperature_c: {
@@ -243,9 +272,13 @@ export const toolDefs: ToolDef[] = [
       "default; pass `transient` for backward-Euler time stepping over a piecewise-" +
       "constant drive schedule (RTP ramp/soak/cool, ambient steps, duty cycles — needs " +
       "per-material `heat_capacity_j_m3k`), which returns T_max/per-source time series " +
-      "and the run-integrated energy audit. Conduction only: convection enters as film " +
-      "coefficients you supply (h values are the dominant uncertainty), no radiation, " +
-      "no fluid flow. Full temperature fields are not returned (summaries + claims are). " +
+      "and the run-integrated energy audit. Conduction plus optional gray-diffuse surface " +
+      "radiation (`Radiation` boundary: emissivity you supply, radiating to an ambient or " +
+      "an enclosing wall; solved by Newton; reports per-slot radiated W and a " +
+      "`radiation_fraction` claim). Convection enters as film coefficients you supply " +
+      "(h and emissivity are the dominant uncertainties); no surface-to-surface exchange " +
+      "between parts of the model, no fluid flow. Full temperature fields are not " +
+      "returned (summaries + claims are). " +
       "Cost scales with voxel count (capped at 2M; transient runs also capped at 20k " +
       "steps and 1e9 voxel-steps); a 20x20x2 board solves instantly, 100x100x13 in " +
       "seconds.",
@@ -265,7 +298,9 @@ export const toolDefs: ToolDef[] = [
           properties: {
             tol: {
               type: "number" as const,
-              description: "PCG relative tolerance. Default 1e-8.",
+              description:
+                "Relative tolerance (PCG, and the Newton residual when a " +
+                "face radiates). Default 1e-8.",
             },
             max_iters: {
               type: "number" as const,

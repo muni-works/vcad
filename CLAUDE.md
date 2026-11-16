@@ -250,8 +250,10 @@ vcad/
 │   #                            # Lawson; predicted → Provisional, never
 │   #                            # Pass) and the MCP tools
 │   #                            # simulate_charged_particles /
-│   #                            # optimize_electrodes (multi-start FD search;
-│   #                            # adjoint optimizer in-crate) are live.
+│   #                            # optimize_electrodes (multi-start search via
+│   #                            # electrode_opt: FD default, `gradient:
+│   #                            # "hybrid"` = adjoint for potentials/A·t + FD
+│   #                            # geometry + FD fallback) are live.
 │   #                            # (docs/particle-optics-m0.md, -paper-draft,
 │   #                            # shielded-grid-experiment.md)
 │   # - vcad-kernel-tolerance    # Tolerance stackups: WC/RSS/seeded-MC +
@@ -261,8 +263,10 @@ vcad/
 │   #                            # (docs/tolerance-m0.md)
 │   # - vcad-kernel-thermal      # Voxel FV heat conduction, steady + transient
 │   #                            # (PCG, harmonic-mean faces) + one-extra-solve
-│   #                            # adjoint; vcad.thermal-claims/1
-│   #                            # (docs/thermal-m0.md … thermal-m5-m6.md)
+│   #                            # adjoint; gray-diffuse radiation BC (Newton,
+│   #                            # enclosure, linearized adjoint, M7);
+│   #                            # vcad.thermal-claims/1
+│   #                            # (docs/thermal-m0.md … thermal-m7.md)
 │   # - vcad-kernel-photonics    # 2D FDTD (Yee, CPML) + discrete adjoint +
 │   #                            # density topology optimization → fab-ready
 │   #                            # GDS; vcad.photonics-claims/1

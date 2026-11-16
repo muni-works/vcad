@@ -37,19 +37,32 @@
 //! On the hot_chip benchmark the isotropic idealization under-reads θ_ja
 //! by 43%; model the split.
 //!
-//! **Scope and honesty:** pure conduction. No radiation, no fluid flow —
-//! convective cooling enters only as a supplied film coefficient `h` on a
-//! boundary, and that `h` is the biggest uncertainty in any prediction
-//! this crate makes (natural convection correlations carry ±20–30% on a
-//! good day, and radiation at electronics temperatures is the same order
-//! as natural convection). Off-diagonal conductivity tensors (rotated
-//! laminates) are out of scope. See `docs/thermal-m0.md` and
-//! `docs/thermal-m1.md` for the milestone ladder.
+//! 5. **Radiation (M7)** — [`model::Boundary::Radiation`]: gray-diffuse
+//!    εσ(T_s⁴ − T_∞⁴) loss (plus an optional parallel film) on any
+//!    domain face or the exposed rule, half-cell conduction in series,
+//!    optionally inside a two-surface gray enclosure (a grid in a vacuum
+//!    chamber). The steady and transient solvers switch to Newton when a
+//!    face radiates; the adjoint linearizes at the converged state.
+//!
+//! **Scope and honesty:** conduction plus surface-to-ambient radiation.
+//! No fluid flow — convective cooling enters only as a supplied film
+//! coefficient `h` on a boundary, and that `h` is the biggest uncertainty
+//! in any prediction this crate makes (natural convection correlations
+//! carry ±20–30% on a good day). Radiation is gray-diffuse with a
+//! *supplied* emissivity (oxidation can move it 5×), each radiating face
+//! sees only its ambient or its enclosure wall — no surface-to-surface
+//! exchange between parts of the model, no participating media — and the
+//! radiating area is the voxel staircase times a supplied `area_scale`.
+//! Off-diagonal conductivity tensors (rotated laminates) are out of
+//! scope. See `docs/thermal-m0.md` … `docs/thermal-m7.md` for the
+//! milestone ladder.
 //!
 //! Units: public geometry is **millimeters** (vcad convention); material
 //! and boundary coefficients are SI (W/m·K, W/m²·K, watts); temperatures
-//! are °C throughout. Conduction is linear, so any consistent affine
-//! temperature unit works — the solver never converts.
+//! are °C throughout. Conduction is linear, so for conduction-only
+//! models any consistent affine temperature unit works; radiation needs
+//! absolute temperature, so radiating models **must** use °C (converted
+//! internally with T_K = T_C + 273.15).
 
 pub mod adjoint;
 // wasm32 solves without the graph (no clock for its solve timing).
