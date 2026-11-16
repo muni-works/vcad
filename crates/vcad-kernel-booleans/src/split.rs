@@ -174,32 +174,54 @@ pub(crate) fn hole_chords_cutting_a(a: bool) {
     HOLE_CHORD_OPERAND.with(|o| o.set(usize::from(!a)));
 }
 
-/// Does one of the cutter's own spans along `l` cover the stretch `from →
-/// to`?
+/// Do the cutter's own spans along `l` cover the stretch `from → to`?
+///
+/// The spans are unioned first: a cutter face that an earlier boolean left
+/// in several coplanar pieces (a section block fused with coaxial bores
+/// carries the phantom splits of every bore radius) covers the stretch
+/// piecewise, each piece a separate span.
 fn hole_chord_covered(l: &vcad_kernel_geom::Line3d, from: &Point3, to: &Point3) -> bool {
     // The spans are trimmed curve segments, whose ends the trimmer leaves a
     // few 1e-6 short of the cutter face's true edge (a 400 mm section-block
     // face came back as 76.0000039 … 399.999996). A stretch that starts
     // exactly on that edge — the hole's rim, where the cutter's own wall
-    // ends — must still count as covered.
+    // ends — must still count as covered, and two pieces that meet at such
+    // an edge must join.
     let tol = (1e-6 * (*to - *from).norm()).max(1e-4);
+    let dir = *to - *from;
+    let len = dir.norm();
+    if len < 1e-12 {
+        return false;
+    }
+    let dir = dir / len;
+    // Parameter along from → to, or None for a point off that line.
+    let param = |p: &Point3| {
+        let t = (*p - *from).dot(dir);
+        ((*p - (*from + dir * t)).norm() <= tol).then_some(t)
+    };
     let operand = HOLE_CHORD_OPERAND.with(|o| o.get());
     HOLE_CHORDS.with(|h| {
-        h.borrow()[operand].get(&line_key(l)).is_some_and(|spans| {
-            spans.iter().any(|(a, b)| {
-                let ab = *b - *a;
-                let len2 = ab.norm_squared();
-                if len2 < 1e-18 {
-                    return false;
-                }
-                let inside = |p: &Point3| {
-                    let t = (*p - *a).dot(ab) / len2;
-                    let off = (*p - (*a + ab * t)).norm();
-                    off <= tol && t * len2.sqrt() >= -tol && (t - 1.0) * len2.sqrt() <= tol
-                };
-                inside(from) && inside(to)
+        let h = h.borrow();
+        let Some(spans) = h[operand].get(&line_key(l)) else {
+            return false;
+        };
+        let mut intervals: Vec<(f64, f64)> = spans
+            .iter()
+            .filter_map(|(a, b)| {
+                let (ta, tb) = (param(a)?, param(b)?);
+                Some((ta.min(tb), ta.max(tb)))
             })
-        })
+            .collect();
+        intervals.sort_by(|x, y| x.0.total_cmp(&y.0));
+        // Walk the union outward from `from`.
+        let mut reach = 0.0f64;
+        for (lo, hi) in intervals {
+            if lo > reach + tol {
+                break;
+            }
+            reach = reach.max(hi);
+        }
+        reach >= len - tol
     })
 }
 
