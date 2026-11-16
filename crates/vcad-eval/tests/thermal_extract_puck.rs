@@ -38,6 +38,7 @@ fn scene(doc: &Document) -> EvaluatedScene {
         root_cache: None,
         mesh_segments: 0,
         on_root: None,
+        on_root_ready: None,
     };
     evaluate_document(doc, &opts).expect("evaluate")
 }
