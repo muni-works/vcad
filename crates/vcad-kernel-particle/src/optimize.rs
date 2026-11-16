@@ -308,6 +308,11 @@ pub fn central_difference(
     (f(&xp) - f(&xm)) / denom
 }
 
+/// Gradient hook for [`maximize_hybrid`]: `(x, f(x), force_fd, f)`, where
+/// `f` is the objective for any FD probes the hook needs.
+pub type GradientHook<'a> =
+    dyn FnMut(&[f64], f64, bool, &mut dyn FnMut(&[f64]) -> f64) -> GradEstimate + 'a;
+
 /// Projected gradient ascent where the gradient comes from a caller hook
 /// that may mix sources per component (adjoint for some variables, finite
 /// differences for others).
@@ -326,7 +331,7 @@ pub fn central_difference(
 /// stalls where pure FD would still climb.
 pub fn maximize_hybrid(
     f: &mut dyn FnMut(&[f64]) -> f64,
-    grad: &mut dyn FnMut(&[f64], f64, bool, &mut dyn FnMut(&[f64]) -> f64) -> GradEstimate,
+    grad: &mut GradientHook<'_>,
     x0: &[f64],
     lo: &[f64],
     hi: &[f64],
@@ -510,11 +515,7 @@ mod tests {
     #[test]
     fn hybrid_with_a_true_gradient_needs_no_fd() {
         let mut f = |x: &[f64]| -(x[0] - 2.0).powi(2) - 3.0 * (x[1] + 1.0).powi(2);
-        let mut fallbacks = 0;
-        let mut grad = |x: &[f64], _fx: f64, force_fd: bool, _f: &mut dyn FnMut(&[f64]) -> f64| {
-            if force_fd {
-                fallbacks += 1;
-            }
+        let mut grad = |x: &[f64], _fx: f64, _force_fd: bool, _f: &mut dyn FnMut(&[f64]) -> f64| {
             GradEstimate {
                 grad: vec![-2.0 * (x[0] - 2.0), -6.0 * (x[1] + 1.0)],
                 sources: vec![GradSource::Adjoint; 2],
@@ -532,9 +533,13 @@ mod tests {
             },
         );
         assert!((r.x[0] - 2.0).abs() < 0.05 && (r.x[1] + 1.0).abs() < 0.05);
-        // Only line-search trials hit f (no FD probes).
         assert!(r.history.windows(2).all(|w| w[1] > w[0]));
-        let _ = fallbacks;
+        // A true gradient climbs without FD: every accepted step rode it.
+        assert!(r
+            .iterations
+            .iter()
+            .filter(|it| it.accepted)
+            .all(|it| it.sources == vec![GradSource::Adjoint; 2]));
     }
 
     #[test]

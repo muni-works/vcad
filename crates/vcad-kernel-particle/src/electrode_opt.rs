@@ -246,8 +246,8 @@ pub fn optimize_electrodes(
             ..Default::default()
         };
         let tracer = Tracer::new(&device, &fields, &sol, topts);
-        let v = fom::stats(&tracer.launch_ensemble(DEUTERON, problem.particles))
-            .mean_ddn_sigma_v_m3;
+        let v =
+            fom::stats(&tracer.launch_ensemble(DEUTERON, problem.particles)).mean_ddn_sigma_v_m3;
         if v.is_finite() {
             v
         } else {
@@ -283,41 +283,38 @@ pub fn optimize_electrodes(
         Some(by_name.into_iter().map(|(k, d)| (k, d / g.value)).collect())
     };
 
-    let mut grad = |x: &[f64],
-                    fx: f64,
-                    force_fd: bool,
-                    f: &mut dyn FnMut(&[f64]) -> f64|
-     -> GradEstimate {
-        let dim = x.len();
-        let mut g = vec![0.0; dim];
-        let mut sources = vec![GradSource::FiniteDifference; dim];
-        if any_adjoint {
-            let adj = if force_fd || fx <= 0.0 {
-                None
-            } else {
-                adjoint_log_grad(x)
-            };
-            for i in 0..dim {
-                if !use_adjoint[i] {
-                    continue;
-                }
-                match adj.as_ref() {
-                    Some(m) => {
-                        g[i] = fx * m.get(&names[i]).copied().unwrap_or(0.0);
-                        sources[i] = GradSource::Adjoint;
+    let mut grad =
+        |x: &[f64], fx: f64, force_fd: bool, f: &mut dyn FnMut(&[f64]) -> f64| -> GradEstimate {
+            let dim = x.len();
+            let mut g = vec![0.0; dim];
+            let mut sources = vec![GradSource::FiniteDifference; dim];
+            if any_adjoint {
+                let adj = if force_fd || fx <= 0.0 {
+                    None
+                } else {
+                    adjoint_log_grad(x)
+                };
+                for i in 0..dim {
+                    if !use_adjoint[i] {
+                        continue;
                     }
-                    None => sources[i] = GradSource::FdFallback,
+                    match adj.as_ref() {
+                        Some(m) => {
+                            g[i] = fx * m.get(&names[i]).copied().unwrap_or(0.0);
+                            sources[i] = GradSource::Adjoint;
+                        }
+                        None => sources[i] = GradSource::FdFallback,
+                    }
                 }
             }
-        }
-        let rel = FdOptions::default().rel_step;
-        for i in 0..dim {
-            if sources[i] != GradSource::Adjoint {
-                g[i] = central_difference(&mut *f, x, i, &lo, &hi, rel);
+            let rel = FdOptions::default().rel_step;
+            for i in 0..dim {
+                if sources[i] != GradSource::Adjoint {
+                    g[i] = central_difference(&mut *f, x, i, &lo, &hi, rel);
+                }
             }
-        }
-        GradEstimate { grad: g, sources }
-    };
+            GradEstimate { grad: g, sources }
+        };
 
     let seed_fractions: Vec<f64> = if problem.multi_start {
         vec![0.2, 0.5, 0.8]
@@ -334,7 +331,11 @@ pub fn optimize_electrodes(
     for (k, frac) in seed_fractions.iter().enumerate() {
         let x0: Vec<f64> = match (&explicit, k) {
             (Some(e), 0) => e.clone(),
-            _ => lo.iter().zip(&hi).map(|(a, b)| a + frac * (b - a)).collect(),
+            _ => lo
+                .iter()
+                .zip(&hi)
+                .map(|(a, b)| a + frac * (b - a))
+                .collect(),
         };
         reference_drop.set(
             spec.resolve(&params_at(&x0))
@@ -354,10 +355,11 @@ pub fn optimize_electrodes(
         });
     }
 
-    let best_start = starts
-        .iter()
-        .enumerate()
-        .fold(0, |b, (i, s)| if s.value > starts[b].value { i } else { b });
+    let best_start =
+        starts
+            .iter()
+            .enumerate()
+            .fold(0, |b, (i, s)| if s.value > starts[b].value { i } else { b });
     let best = &starts[best_start];
     Ok(ElectrodeOptResult {
         best_params: best.params.clone(),
@@ -477,7 +479,10 @@ mod tests {
             let adj = by_name[name];
             let num = fd(name, h);
             let rel = (adj - num).abs() / num.abs().max(1e-300);
-            assert!(rel < tol, "{name}: adjoint {adj:.6e} vs fd {num:.6e} (rel {rel:.3})");
+            assert!(
+                rel < tol,
+                "{name}: adjoint {adj:.6e} vs fd {num:.6e} (rel {rel:.3})"
+            );
         }
     }
 
