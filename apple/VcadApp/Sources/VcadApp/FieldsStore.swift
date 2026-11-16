@@ -29,8 +29,9 @@ struct FusorDesign: Equatable {
     var pressureMtorr = 5.0
     var cxOn = true
     var cxSigmaM2 = 1e-19
-    /// Grid spacing, mm (the solve's h).
-    var gridMm = 0.5
+    /// Grid spacing, mm (the solve's h). 0.25 mm is the plan's finest row:
+    /// coarser grids fatten the wire mask and read interception ≈ 1.00.
+    var gridMm = 0.25
     var particles = 96
     var maxPasses = 40
     var sweepKv: [Double] = [20, 25, 30, 35, 40]
@@ -135,6 +136,8 @@ final class FieldsStore {
     var particleError: String?
     /// Who ran it: "panel" or the agent's display name.
     var particleSource = "panel"
+    /// The form the panel's last run used (nil for an agent's run, whose spec is its own).
+    var particleDesign: FusorDesign?
 
     // Optimize
     var optVariables: Set<String> = ["grid_r"]
@@ -202,10 +205,11 @@ final class FieldsStore {
     func simulate(sweep: Bool = true) async {
         particleBusy = true; particleError = nil
         Self.setCancel(false)
-        let r = await run("simulate_charged_particles", design.simulateArgs(sweep: sweep))
+        let used = design
+        let r = await run("simulate_charged_particles", used.simulateArgs(sweep: sweep))
         particleBusy = false
         switch r {
-        case .success(let d): ingestParticle(d, source: "panel")
+        case .success(let d): ingestParticle(d, source: "panel"); particleDesign = used
         case .failure(let e): particleError = "\(e)"
         }
     }
@@ -337,7 +341,7 @@ final class FieldsStore {
         AnalysisStore.shared.shown = true
         AnalysisStore.shared.tab = .fields
         switch tool {
-        case "simulate_charged_particles": tab = .ions; ingestParticle(d, source: agent)
+        case "simulate_charged_particles": tab = .ions; ingestParticle(d, source: agent); particleDesign = nil
         case "optimize_electrodes": tab = .optimize; ingestOptimize(d)
         case "simulate_neutron_shield": tab = .dose; ingestDose(d)
         case "compare_measurements":

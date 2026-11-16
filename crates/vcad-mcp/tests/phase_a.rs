@@ -686,3 +686,31 @@ fn app_window_exports_3mf_natively_and_failures_explain_themselves() {
     );
     assert!(msg.contains("127"), "{glb}");
 }
+
+// ── Solver tools reach the app's panel ───────────────────────────────
+
+#[test]
+fn solver_results_reach_the_app_in_full_and_the_agent_compacted() {
+    let (ap, fake) = app();
+    let spec = json!({"classic_fusor": {"chamber_radius_mm": 76, "cathode_radius_mm": 19, "rings": 4,
+                                        "wire_radius_mm": 1, "cathode_v": -30000}});
+    let r = ap.ok(
+        "simulate_charged_particles",
+        json!({"spec": spec, "options": {"nr": 31, "nz": 61, "particles": 6, "max_passes": 4}}),
+    );
+    // The agent sees FoMs and claims, not the drawing data.
+    let sc = &r["structuredContent"];
+    assert!(sc["claim_set"]["claims"].is_array(), "{r}");
+    assert!(sc["section"].get("tracks").is_none(), "agent result must be compacted");
+    // The app got the full result once, section included (computed by default).
+    let calls = fake.host_calls.lock().unwrap();
+    let shown: Vec<_> = calls
+        .iter()
+        .filter(|(n, _, _)| n == vcad_mcp::tools::solver::SHOW_RESULT)
+        .collect();
+    assert_eq!(shown.len(), 1, "one panel hand-over per call");
+    let (_, args, _) = shown[0];
+    assert_eq!(args["tool"], "simulate_charged_particles");
+    assert!(!args["result"]["section"]["tracks"].as_array().unwrap().is_empty());
+    assert!(args["result"]["section"]["potential"]["values"].is_array());
+}

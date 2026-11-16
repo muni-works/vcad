@@ -103,6 +103,7 @@ enum FieldsSnapshots {
         fs.tab = .optimize
         fs.optVariables = ["grid_r"]
         await fs.runOptimizer()
+        log("optimize live stream \(fs.optLive.count) evaluations parsed vs \(fs.optimize?.evals ?? -1) run")
         log("optimize \(fs.optimize.map { String(format: "best %.3e at grid_r %.2f, %d evals", $0.best_neutron_rate_n_per_s, $0.best_params["grid_r"] ?? -1, $0.evals) } ?? fs.optError ?? "-")")
         await snap("optimize", .optimize)
 

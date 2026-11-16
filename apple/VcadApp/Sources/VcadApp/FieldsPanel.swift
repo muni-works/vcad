@@ -100,6 +100,13 @@ private struct IonsView: View {
         }
         if let e = store.particleError { ErrorNote(text: e) }
         if let p = store.particle {
+            if store.particleSource != "panel" {
+                Label("Run by \(store.particleSource) with its own device spec — the form above was not used.",
+                      systemImage: "sparkles").font(.caption).foregroundStyle(.secondary)
+            } else if let used = store.particleDesign, used != store.design {
+                Label("Device edited since this run — Simulate to update.", systemImage: "arrow.clockwise")
+                    .font(.caption).foregroundStyle(.orange)
+            }
             if let s = p.section, store.sectionInPanel {
                 SectionImageView(section: s, style: SectionStyle(heatmap: store.showHeatmap, tracks: store.showTracks))
                     .frame(maxHeight: 420)
