@@ -8043,15 +8043,20 @@ fn tessellate_revolved_trimmed(
     // torus corner neighbours sample the shared rims on the grid path's
     // schedule, not the loop's, and the trimmed mesh left them cracked
     // open (an arc-extrude fillet failed its validity check).
+    // Every lookup past the face's own loops is fallible: the boolean
+    // pipeline tessellates its operands between splitting and sewing, when
+    // a neighbour's twin can still name the loop of a face the split
+    // replaced (the open-fusor chamber panicked here on a dead face key).
     let blend_neighbour = std::iter::once(face.outer_loop)
         .chain(face.inner_loops.iter().copied())
         .flat_map(|l| topo.loop_half_edges(l))
         .filter_map(|he| topo.half_edges[he].twin)
-        .filter_map(|tw| topo.half_edges[tw].loop_id)
-        .filter_map(|l| topo.loops[l].face)
+        .filter_map(|tw| topo.half_edges.get(tw)?.loop_id)
+        .filter_map(|l| topo.loops.get(l)?.face)
+        .filter_map(|f| topo.faces.get(f))
         .any(|f| {
             matches!(
-                geom.surfaces[topo.faces[f].surface_index].surface_type(),
+                geom.surfaces[f.surface_index].surface_type(),
                 SurfaceKind::Sphere | SurfaceKind::Torus
             )
         });
