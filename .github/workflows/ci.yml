@@ -111,7 +111,7 @@ jobs:
       - name: Install nextest
         uses: taiki-e/install-action@v2
         with:
-          tool: nextest@0.9.122
+          tool: nextest@0.9.151
       # Compile the tests once into a nextest archive; the rust-test shards
       # below run it in parallel (compiling is ~16 min, running ~14 min —
       # sharding cuts the latter to a few). Keep optimized test builds: the
@@ -182,7 +182,7 @@ jobs:
       - name: Install nextest
         uses: taiki-e/install-action@v2
         with:
-          tool: nextest@0.9.122
+          tool: nextest@0.9.151
       - uses: actions/download-artifact@v8
         with:
           name: nextest-archive-${{ matrix.toolchain }}
