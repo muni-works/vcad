@@ -5303,6 +5303,102 @@
     }
   },
   {
+    "name": "shell_buckling_check",
+    "title": "Check Shell Buckling",
+    "description": "External-pressure BUCKLING screen for a thin shell — the governing failure mode of a vacuum chamber, viewport cover, or welded tube/sphere/dished head, and one that analyze_structure cannot see (a static solve has no buckling in it). Give a cylinder (OD, wall, unsupported length between flanges/rings, hydrostatic or lateral loading), a sphere, or a head (hemispherical, 2:1 ellipsoidal, torispherical), a material, and the net external pressure (default 1 atm = 0.101325 MPa); get the classical (perfect-shell) bifurcation pressure, the IMPERFECTION KNOCKDOWN applied and its citation, the knocked-down collapse pressure, the membrane-yield cap, the allowable pressure after a design factor, and the margin. Cylinders: von Mises classical pressure (full n^2-1 ring term, integer wave count, a cross-check of vcad's eigenvalue FE) knocked down by NASA/SP-8007-2020/REV 2's own ratio (Eq. 19-22 with sqrt(gamma)=0.75 inside the bracket, Eq. 28), or gamma=0.90 when the mode ovalizes (Eq. 29); design factor 3 by default. Spheres/heads: Zoelly classical plus ASME VIII-1 UG-28(d) elastic branch as commonly published (Pa = 0.0625·E/(Ro/t)^2, i.e. ~0.21x classical with a factor of 4); heads as an equivalent sphere per UG-33 (2:1 ellipsoidal Ro = 0.9·Do). A margin below 1 lands as a FAIL claim. Linear (eigenvalue) buckling is UNCONSERVATIVE for shells — real ones collapse below it — which is why the knockdown is stated, not hidden. Fail-closed: D/t < 10 (thick wall) is Unverifiable and claims nothing. Claims ride `vcad.fea-claims/1` and unified-receipt `structure.shell.*` with basis \"predicted\" (Provisional until tested). A SCREEN, not ASME code compliance: UG-28 cylinder charts and elastic-plastic collapse are not reproduced; knuckles, nozzles, ports and out-of-roundness are not checked. Needs no document.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "geometry": {
+          "type": "object",
+          "required": [
+            "type",
+            "outer_diameter_mm",
+            "wall_mm"
+          ],
+          "description": "One of: {\"type\":\"cylinder\",outer_diameter_mm,wall_mm,length_mm,loading?} (length = unsupported span between flanges or stiffening rings; loading \"hydrostatic\" (default, a capped vessel) or \"lateral\"), {\"type\":\"sphere\",outer_diameter_mm,wall_mm}, or {\"type\":\"head\",head:{\"kind\":\"hemispherical\"|\"ellipsoidal_2to1\"|\"torispherical\",crown_radius_mm?},outer_diameter_mm,wall_mm}.",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "cylinder",
+                "sphere",
+                "head"
+              ]
+            },
+            "outer_diameter_mm": {
+              "type": "number",
+              "description": "Outside diameter, mm."
+            },
+            "wall_mm": {
+              "type": "number",
+              "description": "Wall thickness, mm."
+            },
+            "length_mm": {
+              "type": "number",
+              "description": "Cylinder only: unsupported length between rings/flanges, mm."
+            },
+            "loading": {
+              "type": "string",
+              "enum": [
+                "hydrostatic",
+                "lateral"
+              ]
+            },
+            "head": {
+              "type": "object",
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "hemispherical",
+                    "ellipsoidal_2to1",
+                    "torispherical"
+                  ]
+                },
+                "crown_radius_mm": {
+                  "type": "number",
+                  "description": "Torispherical only: outside crown radius, mm."
+                }
+              }
+            }
+          }
+        },
+        "youngs_modulus_mpa": {
+          "type": "number",
+          "description": "Young's modulus, MPa (304/316 stainless ~193000, 6061 ~69000)."
+        },
+        "poisson": {
+          "type": "number",
+          "description": "Poisson's ratio (steel ~0.29)."
+        },
+        "yield_strength_mpa": {
+          "type": "number",
+          "description": "Yield strength, MPa (304 annealed ~205). Caps collapse at membrane yield; without it the cap is skipped and a caution says so."
+        },
+        "external_pressure_mpa": {
+          "type": "number",
+          "description": "Net external pressure, MPa. Default 0.101325 (1 atm, vacuum inside)."
+        },
+        "design_factor": {
+          "type": "number",
+          "description": "Design factor on the knocked-down cylinder collapse pressure (default 3). Spheres/heads use UG-28(d)'s built-in factor of 4."
+        }
+      },
+      "required": [
+        "geometry",
+        "youngs_modulus_mpa",
+        "poisson"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
     "name": "simulate_neutron_shield",
     "title": "Simulate Neutron Shield",
     "description": "Monte Carlo neutron shielding run (analog transport, 5-group multigroup library with exact elastic kinematics): spherical layer stack around a point source (D-D band), H*(10) dose rate at each detector shell WITH 1-sigma batch error bars (rse), attenuation factor vs bare source, thermal flux, and absorbed/leakage balance — as data plus `vcad.neutronics-claims/1` and unified-receipt claims. Fail-closed: truncated histories or a tally that scored nothing refuses claims (raise histories). Predictions carry basis \"predicted\" and roll up Provisional until surveyed. Design-estimate physics: 5-group library (not ENDF continuous-energy), spherical geometry only, no gamma dose, no activation, source energy capped at 3 MeV (no D-T). Deterministic per seed. Cost ~histories (cap 5M); error bars shrink as 1/sqrt(N). The 400k default runs in seconds.",

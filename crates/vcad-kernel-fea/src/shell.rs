@@ -307,7 +307,8 @@ fn batdorf_k(n: f64, l: f64, r: f64, z: f64, gamma: f64, loading: CylinderLoadin
 }
 
 /// Minimum-over-`n` Batdorf pressure (MPa) and its wave count (the raw
-/// Eq. 19–22 value).
+/// Eq. 19–22 value). Test oracle for the Eq. 24 asymptote.
+#[cfg(test)]
 fn batdorf_pressure(
     e: f64,
     nu: f64,
