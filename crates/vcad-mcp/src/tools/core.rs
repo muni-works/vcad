@@ -429,7 +429,8 @@ pub(crate) fn unsupported_export(ext: &str) -> String {
 }
 
 /// A 3MF package (core spec, millimetres): one `<object>` per mesh, each
-/// placed by an identity `<build>` item. Same triangles as [`stl_bytes`].
+/// placed by an identity `<build>` item. Same triangles as [`stl_bytes`],
+/// on welded vertices (zero-area triangles that welding collapses dropped).
 pub(crate) fn threemf_bytes(meshes: &[(Vec<f32>, Vec<u32>)]) -> std::io::Result<Vec<u8>> {
     use std::fmt::Write as _;
     use std::io::Write as _;
@@ -447,11 +448,29 @@ pub(crate) fn threemf_bytes(meshes: &[(Vec<f32>, Vec<u32>)]) -> std::io::Result<
         }
         let id = ids.len() + 1;
         ids.push(id);
+        // Weld bit-identical positions: 3MF wants a shared-vertex manifold,
+        // and slicers read per-triangle vertices as open edges. Exact
+        // equality only (with -0 == +0), so no geometry moves.
+        let mut welded: std::collections::HashMap<[u32; 3], u32> = Default::default();
+        let mut verts: Vec<[f32; 3]> = Vec::new();
+        let remap: Vec<u32> = pos
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|v| {
+                *welded
+                    .entry(v.map(|x| (x + 0.0).to_bits()))
+                    .or_insert_with(|| {
+                        verts.push(*v);
+                        verts.len() as u32 - 1
+                    })
+            })
+            .collect();
         let _ = writeln!(
             model,
             "<object id=\"{id}\" type=\"model\" name=\"part {id}\"><mesh><vertices>"
         );
-        for v in pos.as_chunks::<3>().0 {
+        for v in &verts {
             let _ = writeln!(
                 model,
                 "<vertex x=\"{}\" y=\"{}\" z=\"{}\"/>",
@@ -460,11 +479,12 @@ pub(crate) fn threemf_bytes(meshes: &[(Vec<f32>, Vec<u32>)]) -> std::io::Result<
         }
         model.push_str("</vertices><triangles>\n");
         for t in tris {
-            let _ = writeln!(
-                model,
-                "<triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"/>",
-                t[0], t[1], t[2]
-            );
+            let [a, b, c] = t.map(|i| remap[i as usize]);
+            // 3MF forbids repeated corners; such a triangle had zero area.
+            if a == b || b == c || a == c {
+                continue;
+            }
+            let _ = writeln!(model, "<triangle v1=\"{a}\" v2=\"{b}\" v3=\"{c}\"/>");
         }
         model.push_str("</triangles></mesh></object>\n");
     }
@@ -951,6 +971,8 @@ mod tests {
         assert_eq!(model.matches("<object ").count(), 2);
         assert_eq!(model.matches("<item ").count(), 2);
         assert!(model.contains("x=\"3.5\""));
+        // Welded: 8 shared corners per cube, not 3 per triangle.
+        assert_eq!(model.matches("<vertex ").count(), 16);
     }
 
     #[test]
