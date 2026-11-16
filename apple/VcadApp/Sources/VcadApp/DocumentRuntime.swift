@@ -168,6 +168,10 @@ extension EditorModel {
                 awaitingRuntimeScene = false
                 solving = false
                 geometryDirty = true
+            } else if firstSolveStreams {
+                // The streamed first solve is on screen: redraw so the
+                // runtime's parts take over from it.
+                geometryDirty = true
             }
             return
         }
@@ -198,6 +202,7 @@ extension EditorModel {
         }
         adoptPickingScene(frame, extras)
         if awaitingRuntimeScene { awaitingRuntimeScene = false; solving = false; geometryDirty = true }
+        else if firstSolveStreams { geometryDirty = true }   // runtime takes over the streamed open
         let collide = collideAfterSeq > 0 && frame.ackedSeq >= collideAfterSeq
         if collide { collideAfterSeq = 0 }
         docParamDirty = true

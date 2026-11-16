@@ -3724,6 +3724,7 @@ final class EditorModel {
     /// still running, its work is redundant now) and drop its scene.
     func endFirstSolveStream() {
         guard openHold != nil || evalJob != nil || preparedScene != nil else { return }
+        LaunchPerf.once("runtime took over", evalJob != nil ? " (first-solve job abandoned)" : "")
         if evalJob != nil { abandonEvaluation() }
         abandonRefine()
         if let p = preparedScene { vcad_scene_free(p.handle); preparedScene = nil }
