@@ -5761,6 +5761,7 @@ dependencies = [
  "vcad-ecad-pcb",
  "vcad-ir 0.11.0",
  "vcad-kernel 0.11.0",
+ "vcad-kernel-acoustics 0.11.0",
  "vcad-kernel-adjoint 0.11.0",
  "vcad-kernel-antenna 0.11.0",
  "vcad-kernel-booleans 0.11.0",
@@ -5888,6 +5889,7 @@ dependencies = [
  "serde",
  "serde_json",
  "ts-rs",
+ "vcad-receipt 0.11.0",
  "vcad-tool-derive 0.11.0",
 ]
 
@@ -6319,6 +6321,7 @@ dependencies = [
 name = "vcad-kernel-fea"
 version = "0.11.0"
 dependencies = [
+ "faer",
  "serde",
  "serde_json",
  "tang",

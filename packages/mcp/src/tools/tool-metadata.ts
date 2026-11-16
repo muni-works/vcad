@@ -172,6 +172,7 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
   },
   parameter_gradient: { title: "Parameter Gradient", annotations: RO },
   sensitivity: { title: "Sensitivity", annotations: RO },
+  optimize_parameters: { title: "Optimize Parameters", annotations: RO },
 
   // ── Design constraints (document-level geometric solver) ───────────────
   add_constraint: { title: "Add Constraint", annotations: RW },
@@ -297,6 +298,10 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
     title: "Simulate Neutron Shield",
     annotations: RO,
   },
+  simulate_cavity: {
+    title: "Simulate Ported Box (Cavity Acoustics)",
+    annotations: RO,
+  },
   simulate_lattice_gauge: {
     title: "Simulate Lattice Gauge Theory",
     annotations: RO,
@@ -350,6 +355,7 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
     outputSchema: objectOut({
       unified: { type: "object" },
       receipt: { type: "object" },
+      scorecard: { type: "object" },
       document_id: { type: "string" },
     }),
   },
@@ -361,6 +367,8 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
       document_id: { type: "string" },
     }),
   },
+  attach_claims: { title: "Attach Solver Claims", annotations: RW },
+  import_measurement: { title: "Import Measurement", annotations: RW },
   route_diff_pair: { title: "Route Differential Pair", annotations: RW },
   length_match_traces: { title: "Length Match Traces", annotations: RW },
   critique_route: { title: "Critique Route", annotations: RO },
