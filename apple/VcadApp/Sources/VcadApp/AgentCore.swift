@@ -86,14 +86,33 @@ final class AgentCore {
 
     /// `npx -y @vcad/mcp` for the proxy, found where a GUI app's PATH misses it.
     /// `VCAD_MCP_NODE_CMD` wins (and `off` disables the proxy).
-    static func nodeCommand() -> String? {
-        let env = ProcessInfo.processInfo.environment
+    ///
+    /// Only an `npx` with a `node` beside it counts: `npx` is a
+    /// `#!/usr/bin/env node` script, and a GUI app's PATH has no node, so a
+    /// lone `npx` (e.g. a stale standalone `/opt/homebrew/bin/npx`) dies with
+    /// "env: node: No such file or directory". The core puts the chosen dir
+    /// first on the child's PATH, so the sibling `node` is the one it runs.
+    static func nodeCommand(
+        env: [String: String] = ProcessInfo.processInfo.environment,
+        isExecutable: (String) -> Bool = { FileManager.default.isExecutableFile(atPath: $0) },
+        kegDirs: [String] = AgentCore.homebrewNodeKegs()
+    ) -> String? {
         if let c = env["VCAD_MCP_NODE_CMD"] { return c }
-        for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"] where
-            FileManager.default.isExecutableFile(atPath: "\(dir)/npx") {
+        let dirs = ["/opt/homebrew/bin", "/usr/local/bin"] + kegDirs + ["/usr/bin"]
+        for dir in dirs where isExecutable("\(dir)/npx") && isExecutable("\(dir)/node") {
             return "\(dir)/npx -y @vcad/mcp"
         }
         return nil
+    }
+
+    /// Homebrew keg-only node installs (`node@20`, `node@24`…), newest first.
+    static func homebrewNodeKegs() -> [String] {
+        ["/opt/homebrew/opt", "/usr/local/opt"].flatMap { root -> [String] in
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: root)) ?? []
+            return names.filter { $0 == "node" || $0.hasPrefix("node@") }
+                .sorted { $0.localizedStandardCompare($1) == .orderedDescending }
+                .map { "\(root)/\($0)/bin" }
+        }
     }
 
     // MARK: calls through the core

@@ -533,7 +533,10 @@ impl Server {
         }
         let mut v = result.map_err(|e| RpcErr {
             code: e.code,
-            message: e.message,
+            message: match &delegated {
+                Some(why) => format!("{name}: {why}, which failed: {}", e.message),
+                None => e.message,
+            },
             data: e.data,
         })?;
         if let Some(obj) = v.as_object_mut() {

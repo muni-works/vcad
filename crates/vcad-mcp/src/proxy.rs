@@ -6,7 +6,7 @@
 //! documents created natively are visible to node tools and vice versa (node
 //! hydrates from disk on a cache miss).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -76,8 +76,15 @@ struct Call {
     elicit: Option<ElicitFn>,
 }
 
+/// Lines of upstream stderr kept for error reports.
+const STDERR_TAIL_LINES: usize = 20;
+
+/// The last lines the upstream wrote to stderr (also echoed to ours).
+type StderrTail = Arc<Mutex<VecDeque<String>>>;
+
 struct Live {
-    child: Child,
+    child: Arc<Mutex<Child>>,
+    stderr_tail: StderrTail,
     stdin: Arc<Mutex<ChildStdin>>,
     pending: PendingMap,
     calls: Arc<Mutex<Vec<(u64, Call)>>>,
@@ -86,8 +93,9 @@ struct Live {
 
 impl Drop for Live {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let mut c = self.child.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = c.kill();
+        let _ = c.wait();
     }
 }
 
@@ -100,6 +108,62 @@ pub struct Proxy {
     on_tools_changed: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     /// Upstream spawn failed: don't retry on every list.
     failed: std::sync::atomic::AtomicBool,
+}
+
+/// Why the upstream is gone, for the caller: the command, its exit status
+/// (when it has one) and the tail of its stderr — never a bare "exited".
+fn death_message(
+    what: &str,
+    config: &ProxyConfig,
+    child: &Mutex<Child>,
+    tail: &Mutex<VecDeque<String>>,
+) -> String {
+    let status = child
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .try_wait()
+        .ok()
+        .flatten()
+        .map(|s| format!(" ({s})"))
+        .unwrap_or_default();
+    let cmd = std::iter::once(config.program.as_str())
+        .chain(config.args.iter().map(String::as_str))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let lines: Vec<String> = tail
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .cloned()
+        .collect();
+    let mut m = format!("node upstream `{cmd}` {what}{status}");
+    if lines.is_empty() {
+        m.push_str("; it wrote nothing to stderr");
+    } else {
+        m.push_str("; stderr: ");
+        m.push_str(&lines.join(" | "));
+    }
+    if lines.iter().any(|l| l.contains("node: No such file")) {
+        m.push_str(
+            " — no `node` on the child's PATH; point VCAD_MCP_NODE_CMD at a working npx (e.g. /opt/homebrew/opt/node@20/bin/npx -y @vcad/mcp)",
+        );
+    }
+    m
+}
+
+/// The child's PATH: the program's own directory first, so a script launcher
+/// (`npx` is `#!/usr/bin/env node`) finds the `node` installed beside it even
+/// under a GUI app's minimal PATH.
+fn child_path(program: &str) -> Option<std::ffi::OsString> {
+    let dir = std::path::Path::new(program).parent()?;
+    if dir.as_os_str().is_empty() {
+        return None;
+    }
+    let mut dirs = vec![dir.to_path_buf()];
+    if let Some(p) = std::env::var_os("PATH") {
+        dirs.extend(std::env::split_paths(&p));
+    }
+    std::env::join_paths(dirs).ok()
 }
 
 fn write_line(stdin: &Mutex<ChildStdin>, v: &Value) -> std::io::Result<()> {
@@ -136,7 +200,10 @@ impl Proxy {
         cmd.args(&self.config.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::inherit());
+            .stderr(Stdio::piped());
+        if let Some(path) = child_path(&self.config.program) {
+            cmd.env("PATH", path);
+        }
         for (k, v) in &self.config.env {
             cmd.env(k, v);
         }
@@ -148,12 +215,32 @@ impl Proxy {
         })?;
         let stdin = Arc::new(Mutex::new(child.stdin.take().expect("piped")));
         let stdout = child.stdout.take().expect("piped");
+        let stderr = child.stderr.take().expect("piped");
+        let child = Arc::new(Mutex::new(child));
+        let stderr_tail: StderrTail = Arc::default();
+        let (stderr_done_tx, stderr_done) = channel::<()>();
+        {
+            let tail = stderr_tail.clone();
+            std::thread::spawn(move || {
+                for line in BufReader::new(stderr).lines() {
+                    let Ok(line) = line else { break };
+                    eprintln!("[vcad-mcp node] {line}");
+                    let mut t = tail.lock().unwrap_or_else(|e| e.into_inner());
+                    if t.len() == STDERR_TAIL_LINES {
+                        t.pop_front();
+                    }
+                    t.push_back(line);
+                }
+                let _ = stderr_done_tx.send(());
+            });
+        }
         let pending: PendingMap = Arc::default();
         let calls: Arc<Mutex<Vec<(u64, Call)>>> = Arc::default();
         let dead = Arc::new(std::sync::atomic::AtomicBool::new(false));
         {
             let (pending, calls, dead, stdin) =
                 (pending.clone(), calls.clone(), dead.clone(), stdin.clone());
+            let (child, tail, config) = (child.clone(), stderr_tail.clone(), self.config.clone());
             let changed = self
                 .on_tools_changed
                 .lock()
@@ -256,13 +343,38 @@ impl Proxy {
                     }
                 }
                 dead.store(true, Ordering::Relaxed);
+                // Let stderr drain and the process be reaped (bounded) so
+                // the report carries the real reason.
+                let _ = stderr_done.recv_timeout(Duration::from_millis(1500));
+                for _ in 0..20 {
+                    let exited = child
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .try_wait()
+                        .ok()
+                        .flatten()
+                        .is_some();
+                    if exited {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                let msg = death_message("exited", &config, &child, &tail);
+                let data = json!({
+                    "stderr_tail": tail.lock().unwrap_or_else(|e| e.into_inner()).iter().cloned().collect::<Vec<_>>(),
+                });
                 for (_, tx) in pending.lock().unwrap_or_else(|e| e.into_inner()).drain() {
-                    let _ = tx.send(Err(RpcError::internal("node upstream exited")));
+                    let _ = tx.send(Err(RpcError {
+                        code: ERR_INTERNAL,
+                        message: msg.clone(),
+                        data: Some(data.clone()),
+                    }));
                 }
             });
         }
         let live = Arc::new(Live {
             child,
+            stderr_tail,
             stdin,
             pending,
             calls,
@@ -323,11 +435,25 @@ impl Proxy {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(id, tx);
-        write_line(
+        if let Err(e) = write_line(
             &live.stdin,
             &json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}),
-        )
-        .map_err(|e| RpcError::internal(format!("node upstream write failed: {e}")))?;
+        ) {
+            // A broken pipe means the child died. The reader thread reports
+            // why (exit status + stderr) to everything pending, us included.
+            return rx.recv_timeout(Duration::from_secs(3)).unwrap_or_else(|_| {
+                live.pending
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&id);
+                Err(RpcError::internal(death_message(
+                    &format!("is not accepting input ({e})"),
+                    &self.config,
+                    &live.child,
+                    &live.stderr_tail,
+                )))
+            });
+        }
         rx.recv_timeout(timeout).unwrap_or_else(|_| {
             Err(RpcError::internal(format!(
                 "node upstream timed out on {method}"
@@ -405,5 +531,41 @@ impl Proxy {
             .unwrap_or_else(|e| e.into_inner())
             .retain(|(i, _)| *i != id);
         r
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dead_upstream_reports_status_and_stderr() {
+        let proxy = Proxy::new(ProxyConfig {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "echo 'env: node: No such file or directory' >&2; exit 127".into(),
+            ],
+            env: Vec::new(),
+        });
+        let err = proxy
+            .call_tool("export_cad", json!({}), None, None)
+            .unwrap_err();
+        assert!(err.message.contains("/bin/sh"), "{}", err.message);
+        assert!(err.message.contains("127"), "{}", err.message);
+        assert!(
+            err.message.contains("env: node: No such file or directory"),
+            "{}",
+            err.message
+        );
+        assert!(err.message.contains("VCAD_MCP_NODE_CMD"), "{}", err.message);
+    }
+
+    #[test]
+    fn child_path_puts_program_dir_first() {
+        let p = child_path("/opt/x/bin/npx").unwrap();
+        let first = std::env::split_paths(&p).next().unwrap();
+        assert_eq!(first, std::path::PathBuf::from("/opt/x/bin"));
+        assert!(child_path("npx").is_none());
     }
 }

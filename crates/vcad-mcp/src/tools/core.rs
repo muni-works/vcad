@@ -84,7 +84,7 @@ enum CoreTool {
         /// Image width in pixels (default 768).
         width_px: Option<u32>,
     },
-    /// Export a session document to a file (.stl or .vcad natively; other formats are served by the node exporter). Relative paths resolve against VCAD_MCP_EXPORT_DIR or the working directory.
+    /// Export a session document to a file. Format comes from the extension: .stl, .3mf (millimetres, one object per part) and .vcad are written natively; .glb and .step/.stp are served by the node exporter. Relative paths resolve against VCAD_MCP_EXPORT_DIR or the working directory.
     ExportCad {
         /// Session id.
         document_id: Option<String>,
@@ -92,7 +92,7 @@ enum CoreTool {
         document: Option<Value>,
         /// Inline Document IR (alias).
         ir: Option<Value>,
-        /// Output filename with extension.
+        /// Output filename with extension (.stl, .3mf, .vcad, .glb, .step, .stp).
         filename: String,
     },
 }
@@ -406,6 +406,100 @@ fn stl_bytes(meshes: &[(Vec<f32>, Vec<u32>)]) -> Vec<u8> {
         }
     }
     out
+}
+
+/// Formats `export_cad` writes in-process.
+pub const NATIVE_EXPORT_FORMATS: &[&str] = &["stl", "3mf", "vcad"];
+/// Formats `export_cad` hands to the node exporter (`packages/mcp`).
+pub const NODE_EXPORT_FORMATS: &[&str] = &["glb", "step", "stp"];
+
+/// The refusal for an extension nobody exports.
+pub(crate) fn unsupported_export(ext: &str) -> String {
+    let all: Vec<String> = NATIVE_EXPORT_FORMATS
+        .iter()
+        .chain(NODE_EXPORT_FORMATS)
+        .map(|f| format!(".{f}"))
+        .collect();
+    let what = if ext.is_empty() {
+        "filename has no extension".to_string()
+    } else {
+        format!("unsupported export format .{ext}")
+    };
+    format!("{what}; export_cad writes {}", all.join(", "))
+}
+
+/// A 3MF package (core spec, millimetres): one `<object>` per mesh, each
+/// placed by an identity `<build>` item. Same triangles as [`stl_bytes`].
+pub(crate) fn threemf_bytes(meshes: &[(Vec<f32>, Vec<u32>)]) -> std::io::Result<Vec<u8>> {
+    use std::fmt::Write as _;
+    use std::io::Write as _;
+    let mut model = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <model unit=\"millimeter\" xml:lang=\"en-US\" \
+         xmlns=\"http://schemas.microsoft.com/3dmanufacturing/core/2015/02\">\n\
+         <metadata name=\"Application\">vcad</metadata>\n<resources>\n",
+    );
+    let mut ids = Vec::new();
+    for (pos, idx) in meshes {
+        let tris = idx.as_chunks::<3>().0;
+        if tris.is_empty() {
+            continue;
+        }
+        let id = ids.len() + 1;
+        ids.push(id);
+        let _ = write!(
+            model,
+            "<object id=\"{id}\" type=\"model\" name=\"part {id}\"><mesh><vertices>\n"
+        );
+        for v in pos.as_chunks::<3>().0 {
+            let _ = writeln!(
+                model,
+                "<vertex x=\"{}\" y=\"{}\" z=\"{}\"/>",
+                v[0], v[1], v[2]
+            );
+        }
+        model.push_str("</vertices><triangles>\n");
+        for t in tris {
+            let _ = writeln!(
+                model,
+                "<triangle v1=\"{}\" v2=\"{}\" v3=\"{}\"/>",
+                t[0], t[1], t[2]
+            );
+        }
+        model.push_str("</triangles></mesh></object>\n");
+    }
+    model.push_str("</resources>\n<build>\n");
+    for id in &ids {
+        let _ = writeln!(model, "<item objectid=\"{id}\"/>");
+    }
+    model.push_str("</build>\n</model>\n");
+
+    let mut buf = std::io::Cursor::new(Vec::new());
+    let mut zip = zip::ZipWriter::new(&mut buf);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated)
+        .last_modified_time(zip::DateTime::default());
+    let files: [(&str, &str); 3] = [
+        (
+            "[Content_Types].xml",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">\
+             <Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>\
+             <Default Extension=\"model\" ContentType=\"application/vnd.ms-package.3dmanufacturing-3dmodel+xml\"/></Types>",
+        ),
+        (
+            "_rels/.rels",
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">\
+             <Relationship Target=\"/3D/3dmodel.model\" Id=\"rel0\" Type=\"http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel\"/></Relationships>",
+        ),
+        ("3D/3dmodel.model", &model),
+    ];
+    for (name, body) in files {
+        zip.start_file(name, opts).map_err(std::io::Error::other)?;
+        zip.write_all(body.as_bytes())?;
+    }
+    zip.finish().map_err(std::io::Error::other)?;
+    drop(zip);
+    Ok(buf.into_inner())
 }
 
 fn export_path(filename: &str) -> PathBuf {
@@ -760,17 +854,27 @@ pub fn core_tools(info: InfoSource) -> Vec<ToolDef> {
                     .and_then(|e| e.to_str())
                     .unwrap_or("")
                     .to_ascii_lowercase();
-                if ext != "stl" && ext != "vcad" {
+                if NODE_EXPORT_FORMATS.contains(&ext.as_str()) {
                     return Err(ToolError::Delegate(format!(
                         ".{ext} export is served by the node exporter"
                     )));
                 }
+                if !NATIVE_EXPORT_FORMATS.contains(&ext.as_str()) {
+                    return Err(ToolError::InvalidArgs(unsupported_export(&ext)));
+                }
                 let doc = resolve_doc(ctx, &args)?;
-                let bytes = if ext == "vcad" {
-                    serde_json::to_vec(&doc).map_err(|e| ToolError::InvalidArgs(e.to_string()))?
-                } else {
-                    let scene = evaluate(&doc)?;
-                    stl_bytes(&meshes(&doc, &scene))
+                let bytes = match ext.as_str() {
+                    "vcad" => serde_json::to_vec(&doc)
+                        .map_err(|e| ToolError::InvalidArgs(e.to_string()))?,
+                    "3mf" => {
+                        let scene = evaluate(&doc)?;
+                        threemf_bytes(&meshes(&doc, &scene))
+                            .map_err(|e| ToolError::InvalidArgs(format!("3mf: {e}")))?
+                    }
+                    _ => {
+                        let scene = evaluate(&doc)?;
+                        stl_bytes(&meshes(&doc, &scene))
+                    }
                 };
                 let path = export_path(filename);
                 if let Some(parent) = path.parent() {
@@ -812,6 +916,52 @@ mod tests {
         assert_eq!(t, 12);
         assert!((com.x - 0.5).abs() < 1e-9 && (com.z - 0.5).abs() < 1e-9);
         assert_eq!(bb.max.y, 1.0);
+    }
+
+    #[test]
+    fn threemf_round_trips_in_millimetres() {
+        use std::io::Read as _;
+        let cube_pos: Vec<f32> = vec![
+            0., 0., 0., 1., 0., 0., 1., 1., 0., 0., 1., 0., 0., 0., 1., 1., 0., 1., 1., 1., 1., 0.,
+            1., 1.,
+        ];
+        let cube_idx = vec![
+            0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7, 0, 1, 5, 0, 5, 4, 1, 2, 6, 1, 6, 5, 2, 3, 7, 2, 7,
+            6, 3, 0, 4, 3, 4, 7,
+        ];
+        let meshes = vec![
+            (cube_pos.clone(), cube_idx.clone()),
+            (Vec::new(), Vec::new()), // empty part: skipped, not an empty <object>
+            (cube_pos.iter().map(|v| v + 2.5).collect(), cube_idx),
+        ];
+        let bytes = threemf_bytes(&meshes).unwrap();
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        for name in ["[Content_Types].xml", "_rels/.rels"] {
+            zip.by_name(name).unwrap();
+        }
+        let mut model = String::new();
+        zip.by_name("3D/3dmodel.model")
+            .unwrap()
+            .read_to_string(&mut model)
+            .unwrap();
+        assert!(model.contains("unit=\"millimeter\""));
+        let stl = stl_bytes(&meshes);
+        let stl_tris = u32::from_le_bytes(stl[80..84].try_into().unwrap()) as usize;
+        assert_eq!(model.matches("<triangle ").count(), stl_tris);
+        assert_eq!(stl_tris, 24);
+        assert_eq!(model.matches("<object ").count(), 2);
+        assert_eq!(model.matches("<item ").count(), 2);
+        assert!(model.contains("x=\"3.5\""));
+    }
+
+    #[test]
+    fn unsupported_export_names_format_and_list() {
+        let m = unsupported_export("obj");
+        assert!(m.contains(".obj"), "{m}");
+        for f in [".stl", ".3mf", ".vcad", ".glb", ".step", ".stp"] {
+            assert!(m.contains(f), "{m}");
+        }
+        assert!(unsupported_export("").contains("no extension"));
     }
 
     #[test]
