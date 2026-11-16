@@ -13,23 +13,20 @@ const K_E: f64 = 1.0 / (4.0 * std::f64::consts::PI * EPSILON_0);
 
 /// The axisymmetric special case: a ring stack in a grounded sphere must
 /// give the same potential from the 3D BEM and the 2D SOR solver (with
-/// the 2D solver's spherical staircase chamber).
+/// the 2D solver's spherical staircase chamber). The 2D wire mask and
+/// staircase wall make the 2D solver first-order in h, so the claim is
+/// convergence: halving h shrinks the gap, and the Richardson-extrapolated
+/// 2D potential (2·φ_h/2 − φ_h) agrees with 3D to 1% of |V|.
 #[test]
 fn ring_stack_matches_the_2d_solver() {
     let v = -10_000.0;
     let rings = Device::classic_fusor(60.0, 20.0, 4, 0.75, v);
     let d3 = Device3d::from_rings(&rings, Chamber3d::Sphere { radius_mm: 60.0 });
     let f3 = solve(&d3, &BemOptions::default()).unwrap();
-    // h = 0.25 mm: the 2D wire mask (floored at 0.75h) matches a = 0.75 mm.
-    let s2 = solve_with_chamber(
-        &rings,
-        ChamberShape::Sphere,
-        241,
-        481,
-        &SolveOptions::default(),
-    )
-    .unwrap();
-    let mut worst = 0.0_f64;
+    let coarse = solve_with_chamber(&rings, ChamberShape::Sphere, 121, 241, &SolveOptions::default())
+        .unwrap();
+    let fine = solve_with_chamber(&rings, ChamberShape::Sphere, 241, 481, &SolveOptions::default())
+        .unwrap();
     for &(r_mm, z_mm) in &[
         (0.0, 0.0),
         (5.0, 3.0),
@@ -41,22 +38,28 @@ fn ring_stack_matches_the_2d_solver() {
         (0.0, -40.0),
         (45.0, 10.0),
     ] {
-        let p3 = f3.potential([r_mm * 1e-3, 0.0, z_mm * 1e-3]);
+        let (r, z) = (r_mm * 1e-3, z_mm * 1e-3);
+        let p3 = f3.potential([r, 0.0, z]);
         // And it must be axisymmetric: same value at another azimuth.
         let az = 1.1_f64;
-        let p3b = f3.potential([
-            r_mm * 1e-3 * az.cos(),
-            r_mm * 1e-3 * az.sin(),
-            z_mm * 1e-3,
-        ]);
+        let p3b = f3.potential([r * az.cos(), r * az.sin(), z]);
         assert!(
             (p3 - p3b).abs() < 1e-3 * v.abs(),
             "not axisymmetric at ({r_mm},{z_mm}): {p3} vs {p3b}"
         );
-        let p2 = s2.potential_at(r_mm * 1e-3, z_mm * 1e-3);
-        worst = worst.max((p3 - p2).abs() / v.abs());
+        let e_coarse = (coarse.potential_at(r, z) - p3) / v.abs();
+        let e_fine = (fine.potential_at(r, z) - p3) / v.abs();
+        assert!(
+            e_fine.abs() <= e_coarse.abs() + 1e-3,
+            "2D not converging toward 3D at ({r_mm},{z_mm}): {e_coarse} -> {e_fine}"
+        );
+        assert!(e_fine.abs() < 0.025, "({r_mm},{z_mm}): 2D(h=0.25) gap {e_fine}");
+        let extrapolated = 2.0 * e_fine - e_coarse;
+        assert!(
+            extrapolated.abs() < 0.01,
+            "({r_mm},{z_mm}): extrapolated 2D vs 3D gap {extrapolated}"
+        );
     }
-    assert!(worst < 0.02, "3D vs 2D mid-field mismatch {worst:.4} of |V|");
 }
 
 /// A point charge in a grounded sphere, built as a tiny wire ring (its
