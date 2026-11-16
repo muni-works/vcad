@@ -173,6 +173,29 @@ enum ElicitMode {
     },
 }
 
+/// A document mirrored into node's session dir for one proxied call.
+struct Mirrored {
+    /// The app's id for it.
+    id: DocumentId,
+    /// The id node knows it by (== `id` when that's already a valid session id).
+    alias: DocumentId,
+    /// The document as sent, serialized — to tell whether node changed it.
+    before: String,
+}
+
+/// A session id node can load for `id`: `id` itself when valid, else
+/// `appdoc_<base64url(id)>` (distinct per id, never minted by either server).
+fn node_alias(id: &DocumentId) -> DocumentId {
+    use base64::Engine;
+    if crate::store::is_valid_id(id.as_str()) {
+        return id.clone();
+    }
+    DocumentId(format!(
+        "appdoc_{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(id.as_str())
+    ))
+}
+
 impl Server {
     /// A server over `store` with the native core tools registered.
     pub fn new(store: Arc<dyn DocumentStore>, mut config: ServerConfig) -> Self {
@@ -524,21 +547,41 @@ impl Server {
             Some(ctx.progress.clone()),
             Some(ctx.elicit.clone()),
         );
-        if let (Some((id, before)), Some(m)) = (mirrored, &self.inner.mirror) {
-            if let Ok(after) = m.load(&id) {
-                if serde_json::to_string(&after).ok() != Some(before) {
-                    let _ = self.inner.store.commit(&id, after, CommitMeta::agent(name));
+        let mut aliased = None;
+        if let (Some(mi), Some(m)) = (mirrored, &self.inner.mirror) {
+            if let Ok(after) = m.load(&mi.alias) {
+                if serde_json::to_string(&after).ok() != Some(mi.before) {
+                    let _ = self
+                        .inner
+                        .store
+                        .commit(&mi.id, after, CommitMeta::agent(name));
                 }
             }
+            if mi.alias != mi.id {
+                aliased = Some((mi.alias, mi.id));
+            }
         }
+        // Node only ever saw the alias: answer in the app's own id.
+        let unalias = |s: String| match &aliased {
+            Some((alias, id)) => s.replace(alias.as_str(), id.as_str()),
+            None => s,
+        };
         let mut v = result.map_err(|e| RpcErr {
             code: e.code,
-            message: match &delegated {
+            message: unalias(match &delegated {
                 Some(why) => format!("{name}: {why}, which failed: {}", e.message),
                 None => e.message,
-            },
+            }),
             data: e.data,
         })?;
+        if aliased.is_some() {
+            if let Ok(back) = serde_json::to_string(&v)
+                .map(unalias)
+                .and_then(|s| serde_json::from_str(&s))
+            {
+                v = back;
+            }
+        }
         if let Some(obj) = v.as_object_mut() {
             let meta = obj.entry("_meta").or_insert_with(|| json!({}));
             if let Some(m) = meta.as_object_mut() {
@@ -550,7 +593,12 @@ impl Server {
 
     /// vcad.app + proxied call: write the target document (named, else the
     /// front window) into node's session dir and name it in the arguments.
-    fn mirror_in(&self, name: &str, args: &mut Value) -> Option<(DocumentId, String)> {
+    ///
+    /// App window ids (`app_window#3`) aren't valid session filenames — node's
+    /// `FileSessionStore` and [`HeadlessStore`](crate::store::HeadlessStore)
+    /// both only take `[A-Za-z0-9_-]` — so such a document is mirrored under
+    /// [`node_alias`] and node is handed the alias.
+    fn mirror_in(&self, name: &str, args: &mut Value) -> Option<Mirrored> {
         let m = self.inner.mirror.as_ref()?;
         // Only tools that take a session document.
         let takes_doc = self.inner.proxy.as_ref()?.list_tools()?.iter().any(|t| {
@@ -566,11 +614,12 @@ impl Server {
         };
         let doc = self.inner.store.load(&id).ok()?;
         let before = serde_json::to_string(&doc).ok()?;
-        m.put(&id, doc).ok()?;
+        let alias = node_alias(&id);
+        m.put(&alias, doc).ok()?;
         if let Some(o) = args.as_object_mut() {
-            o.entry("document_id").or_insert_with(|| json!(id.0));
+            o.insert("document_id".into(), json!(alias.0));
         }
-        Some((id, before))
+        Some(Mirrored { id, alias, before })
     }
 
     fn resources_list(&self) -> Value {

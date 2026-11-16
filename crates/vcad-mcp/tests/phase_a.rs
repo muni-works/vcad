@@ -497,6 +497,50 @@ fn proxied_tools_edit_the_live_app_document() {
     assert!(r["structuredContent"]["echo"].get("document_id").is_none());
 }
 
+/// The real app pins window ids as `app_window#<epoch>`, which aren't valid
+/// session filenames: the core must mirror them under an alias node can load
+/// (it once silently skipped the mirror, and node answered "Unknown
+/// document_id").
+#[test]
+fn proxied_tools_reach_app_window_ids() {
+    let home = tempfile::tempdir().unwrap();
+    std::env::set_var("VCAD_HOME", home.path());
+    let fake = Arc::new(FakeApp::default());
+    let front = DocumentId::from("app_window#0");
+    fake.docs
+        .lock()
+        .unwrap()
+        .insert(front.clone(), (Document::default(), vec![]));
+    *fake.front.lock().unwrap() = Some(front.clone());
+    let cfg = ServerConfig {
+        proxy: Some(vcad_mcp::proxy::ProxyConfig {
+            program: env!("CARGO_BIN_EXE_vcad-mcp").into(),
+            args: vec![],
+            env: vec![("VCAD_MCP_TEST_UPSTREAM".into(), "1".into())],
+        }),
+        ..ServerConfig::default()
+    };
+    let h = H::new(Server::new(
+        Arc::new(AppStore::with_bridge(fake.clone())),
+        cfg,
+    ));
+    // Named explicitly, the way an agent following the app's prompt does.
+    let r = h.ok("upstream_touch", json!({"document_id": "app_window#0"}));
+    assert_eq!(r["_meta"]["io.vcad/servedBy"], "node-proxy");
+    assert!(fake
+        .read(&front)
+        .unwrap()
+        .parameters
+        .contains_key("touched"));
+    // Node only saw the alias; the agent never does.
+    assert_eq!(r["structuredContent"]["touched"], "app_window#0");
+    let text = serde_json::to_string(&r).unwrap();
+    assert!(!text.contains("appdoc_"), "{text}");
+    // And by default (front window).
+    let r = h.ok("upstream_touch", json!({}));
+    assert_eq!(r["_meta"]["io.vcad/servedBy"], "node-proxy");
+}
+
 /// vcad.app's export path: `export_cad` on the front window writes STL and
 /// 3MF natively (no node), with the same triangles; an unknown extension and
 /// a dead node exporter both say what went wrong.
