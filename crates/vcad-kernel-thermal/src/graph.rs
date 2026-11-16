@@ -670,6 +670,11 @@ impl DeviceAssembly {
 /// Build the device assembly graph for a model.
 pub fn device_assembly(model: &ThermalModel) -> Result<DeviceAssembly, SolveError> {
     let sys = crate::solve::build(model)?;
+    if sys.radiates() {
+        return Err(SolveError::RadiationUnsupported(
+            "the device assembly graph (linear operator only)".into(),
+        ));
+    }
     let a = assemble(model, &sys, Lowering::Comprehension);
     Ok(DeviceAssembly {
         graph: a.ins.g,
@@ -693,6 +698,11 @@ pub fn smooth_max_gradient_graph(
         return Err(SolveError::InvalidSmoothingExponent);
     }
     let sys = crate::solve::build(model)?;
+    if sys.radiates() {
+        return Err(SolveError::RadiationUnsupported(
+            "smooth_max_gradient_graph (use adjoint::smooth_max_gradient)".into(),
+        ));
+    }
     let model_ref = crate::solve::resolve_reference(&sys, model)?;
     let reference_c = oopts
         .reference_c

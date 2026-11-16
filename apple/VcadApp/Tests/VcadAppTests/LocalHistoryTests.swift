@@ -50,6 +50,14 @@ final class LocalHistoryTests: XCTestCase {
         XCTAssertEqual(cubeX(m.documentJSON), x)
     }
 
+    /// An undoable edit to an Untitled (promoted-sandbox) document.
+    private func editUntitled(_ m: EditorModel, _ x: Double) {
+        let dict = try! JSONSerialization.jsonObject(with: doc(x)) as! [String: Any]
+        XCTAssertTrue(m.replaceDocument(with: dict, name: "Edit"))
+        m.flushRuntime()
+        XCTAssertEqual(cubeX(m.documentJSON), x)
+    }
+
     private func file(_ size: Double) throws -> URL {
         let url = root.appendingPathComponent("part-\(Int(size)).vcad")
         try doc(size).write(to: url)
@@ -162,6 +170,65 @@ final class LocalHistoryTests: XCTestCase {
         let next = EditorModel()
         next.openDocument(recovered)
         XCTAssertEqual(cubeX(next.documentJSON), 63)
+    }
+
+    /// No launch prompt any more: an Untitled doc closed (or quit) with
+    /// unsaved changes leaves its autosave behind, lists in Recents marked
+    /// unsaved, and reopens with the edit intact.
+    func testClosedUntitledDocListsInRecentsAndReopensIntact() throws {
+        let m = EditorModel()
+        XCTAssertTrue(m.promoteSandboxToDocument())
+        editUntitled(m, 55)
+        XCTAssertTrue(m.documentDirty)
+        XCTAssertNil(m.documentURL, "still Untitled")
+        // Close/quit: written synchronously, no debounce, no main-loop hop.
+        m.flushAutosaveNow()
+        let own = try XCTUnwrap(m.autosaver?.id)
+
+        // The instance that owns it never lists its own open document...
+        XCTAssertTrue(Recovery.unsaved(excluding: own, isAlive: { _ in false }).isEmpty)
+        // ...but once it's gone (closed, quit, crashed), the next one does.
+        let unsaved = Recovery.unsaved(excluding: nil, isAlive: { _ in false })
+        XCTAssertEqual(unsaved.count, 1)
+        let e = try XCTUnwrap(unsaved.first)
+        XCTAssertNil(e.documentPath)
+        XCTAssertEqual(e.name, "Untitled")
+
+        // Welcome: unsaved work comes first, ahead of files, capped together.
+        let files = (0..<4).map { WelcomeRecent(url: URL(fileURLWithPath: "/tmp/f\($0).vcad"), modified: nil) }
+        let merged = WelcomeRecents.merge(unsaved: unsaved, files: files)
+        XCTAssertEqual(merged.count, WelcomeRecents.limit)
+        XCTAssertEqual(merged.first?.unsaved, e)
+        XCTAssertEqual(merged.first?.name, "Untitled")
+        XCTAssertEqual(cubeX(try Data(contentsOf: try XCTUnwrap(merged.first).url)), 55,
+                       "the card's url is the autosave itself, so the thumbnail shows the unsaved state")
+        XCTAssertEqual(WelcomeMode(recents: merged), .returning)
+
+        // Reopen: intact, and no longer listed.
+        let reopened = try Recovery.materialize(e, recoveredDir: root)
+        XCTAssertTrue(Recovery.unsaved(excluding: nil, isAlive: { _ in false }).isEmpty)
+        let next = EditorModel()
+        next.openDocument(reopened)
+        XCTAssertEqual(cubeX(next.documentJSON), 55)
+    }
+
+    /// Discard from Recents removes it; "Don't Save" on close doesn't let the
+    /// quit-time flush write the thrown-away edits back.
+    func testDiscardedUnsavedWorkStaysGone() throws {
+        let m = EditorModel()
+        XCTAssertTrue(m.promoteSandboxToDocument())
+        editUntitled(m, 12)
+        m.flushAutosaveNow()
+        let e = try XCTUnwrap(Recovery.unsaved(excluding: nil, isAlive: { _ in false }).first)
+        Recovery.discard(e)
+        XCTAssertTrue(Recovery.unsaved(excluding: nil, isAlive: { _ in false }).isEmpty)
+
+        editUntitled(m, 13)
+        m.flushAutosaveNow()
+        XCTAssertEqual(Recovery.unsaved(excluding: nil, isAlive: { _ in false }).count, 1)
+        m.discardAutosave()
+        m.flushAutosaveNow()      // applicationWillTerminate after "Don't Save"
+        XCTAssertTrue(Recovery.unsaved(excluding: nil, isAlive: { _ in false }).isEmpty)
     }
 
     func testOrphansIgnoreLiveInstancesAndSavedDocuments() throws {

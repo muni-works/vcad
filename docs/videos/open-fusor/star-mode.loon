@@ -1,0 +1,5 @@
+; star-mode dressing for renders only. NOT part of the simulated or built
+; geometry: an illustrative glowing core where the ion paths converge.
+; build the shot file with: cat fusor.loon star-mode.loon > shot.loon
+[material "plasma" 0.75 0.45 1.0 0.0 1.0]
+[root-named [sphere 5.0] "plasma" "plasma-core"]

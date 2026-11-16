@@ -20,9 +20,10 @@
 //!    terminate on electrode or wall impact, core passes are counted.
 //! 5. [`fom`] — ensemble statistics: interception fraction, mean
 //!    recirculation count, effective grid transparency.
-//! 6. [`optimize`] — derivative-free/finite-difference maximization of any
-//!    figure of merit over electrode parameters (M0 stand-in for the
-//!    adjoint; see `docs/particle-optics-m0.md`).
+//! 6. [`optimize`] — finite-difference / adjoint / hybrid maximization of
+//!    any figure of merit over electrode parameters; [`electrode_opt`]
+//!    drives it over a [`spec::DeviceSpec`]'s named parameters (the
+//!    `optimize_electrodes` MCP tool; see `docs/particle-optics-m0.md`).
 //!
 //! **Scope and honesty (M0):** no space charge, no collisions, no neutral
 //! gas — the regime where electrode geometry dominates and where every
@@ -39,6 +40,7 @@ pub mod beam_target;
 pub mod chain;
 pub mod confinement;
 pub mod device;
+pub mod electrode_opt;
 pub mod elliptic;
 pub mod field;
 pub mod fom;

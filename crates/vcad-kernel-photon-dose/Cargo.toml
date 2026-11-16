@@ -1,0 +1,19 @@
+[package]
+name = "vcad-kernel-photon-dose"
+description = "Photon (x-ray and gamma) shielding dose for radiation-producing benches: thick-target bremsstrahlung and neutron-capture gamma sources, layered-slab photon Monte Carlo with buildup, H*(10) and air-kerma with error bands"
+readme = "README.md"
+keywords = ["cad", "kernel", "radiation", "shielding", "dosimetry"]
+categories = ["science", "simulation", "mathematics"]
+include = ["src/**/*", "README.md", "examples/**/*", "tests/**/*"]
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+vcad-receipt = { workspace = true }
+vcad-kernel-neutronics = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

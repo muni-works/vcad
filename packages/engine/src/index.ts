@@ -919,6 +919,8 @@ export interface KernelModule {
     paramsJson: string,
     optionsJson: string,
   ) => unknown;
+  /** PcbBoard → AntennaSpec extraction (Document/AntennaExtraction JSON). */
+  extractAntennaSpec?: (docJson: string, selectionJson: string) => unknown;
   /** Forward 2D FDTD photonics run (device spec/options JSON). */
   photonicsSimulate?: (specJson: string, optionsJson: string) => unknown;
   /** Monte Carlo neutron shielding run (ShieldSpec/params JSON). */
@@ -1413,6 +1415,7 @@ export class Engine {
       feaCheckBeam: (wasmModule as Record<string, unknown>).feaCheckBeam as KernelModule["feaCheckBeam"],
       emSimulate: (wasmModule as Record<string, unknown>).emSimulate as KernelModule["emSimulate"],
       antennaAnalyze: (wasmModule as Record<string, unknown>).antennaAnalyze as KernelModule["antennaAnalyze"],
+      extractAntennaSpec: (wasmModule as Record<string, unknown>).extractAntennaSpec as KernelModule["extractAntennaSpec"],
       photonicsSimulate: (wasmModule as Record<string, unknown>).photonicsSimulate as KernelModule["photonicsSimulate"],
       neutronicsSimulate: (wasmModule as Record<string, unknown>).neutronicsSimulate as KernelModule["neutronicsSimulate"],
       latticeGaugeSimulate: (wasmModule as Record<string, unknown>).latticeGaugeSimulate as KernelModule["latticeGaugeSimulate"],
@@ -1709,7 +1712,7 @@ export class Engine {
   /**
    * Multi-start gradient ascent over named device-spec parameters against
    * predicted D-D yield per ion. Inputs are JSON strings; see
-   * `vcad-kernel-particle::optimize`.
+   * `vcad-kernel-particle::electrode_opt` (`gradient: "fd" | "hybrid"`).
    */
   particleOptimize(
     specJson: string,
@@ -1942,6 +1945,23 @@ export class Engine {
       );
     }
     return fn(specJson, paramsJson, optionsJson);
+  }
+
+  /**
+   * Extract a thin-wire `AntennaSpec` from a document's `PcbBoard` node:
+   * antenna-net trace centerlines → wires (radius = width/4), delta-gap
+   * feed at a pad, infinite ground at the pour edge (recorded). Returns
+   * `{spec, parameters, feed, frame, ground, substrate, notes, ...}`.
+   * Fail-closed; see `vcad_eval::antenna_extract`.
+   */
+  extractAntennaSpec(docJson: string, selectionJson: string): unknown {
+    const fn = this.kernel.extractAntennaSpec;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "extractAntennaSpec is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(docJson, selectionJson);
   }
 
   /**

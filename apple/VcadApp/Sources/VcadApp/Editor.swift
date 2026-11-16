@@ -928,6 +928,10 @@ final class EditorModel {
         hoveredPartIndex = nil
         expandedFeatureIDs.removeAll()
         docPartMeshes = []
+        openHold = nil
+        // The previous source's numbers (the sandbox cube's 30 mm bounds)
+        // read as this document's until its first solve lands.
+        triangleCount = 0; sizeMM = .zero; solveMillis = 0
         documentJSON = nil
         engine = nil; engineState = nil; engineError = nil; savedHash = nil
         evalSession = EvalSession()          // a new document starts a fresh session
@@ -3709,6 +3713,24 @@ final class EditorModel {
         }
     }
 
+    /// The first solve of an opened document is drawn by the progressive
+    /// job (DocumentRuntime.runtimeDocumentScene): from the open until the
+    /// runtime's first frame can serve the viewport.
+    var firstSolveStreams: Bool {
+        loading?.isEvaluating == true || evalJob != nil || preparedScene != nil || openHold != nil
+    }
+
+    /// The runtime's frame is ready: stop the first-solve job (if it is
+    /// still running, its work is redundant now) and drop its scene.
+    func endFirstSolveStream() {
+        guard openHold != nil || evalJob != nil || preparedScene != nil else { return }
+        LaunchPerf.once("runtime took over", evalJob != nil ? " (first-solve job abandoned)" : "")
+        if evalJob != nil { abandonEvaluation() }
+        abandonRefine()
+        if let p = preparedScene { vcad_scene_free(p.handle); preparedScene = nil }
+        openHold = nil
+    }
+
     /// Drop the in-flight background evaluation (the kernel thread finishes
     /// on its own and its result is discarded).
     private func abandonEvaluation() {
@@ -3718,7 +3740,7 @@ final class EditorModel {
         evaluating = nil
         solving = false
         solveProgress = (0, 0)
-        partialMeshes = []; partialBounds = nil
+        partialMeshes = []; partialBounds = nil; landedParts = []
     }
 
     /// The first solve landed (or failed): fold the card away, or keep it up
@@ -4187,6 +4209,8 @@ final class EditorModel {
     var evaluatesOffMainThread = false
     /// True while the kernel is evaluating the document off the main thread.
     var solving = false { didSet { if solving != oldValue { syncProgress() } } }
+    /// Visible-root indices the background solve has landed (any order).
+    var landedParts = Set<Int>()
     /// Progress of the background solve: visible roots landed / total.
     var solveProgress: (done: Int, total: Int) = (0, 0) {
         didSet { if solveProgress != oldValue { syncProgress() } }
@@ -4203,6 +4227,9 @@ final class EditorModel {
     @ObservationIgnored private var refinePoll: Task<Void, Never>?
     /// The adopted preview scene, redrawn as-is while the refine pass runs.
     @ObservationIgnored private var refineHold: (data: Data, scene: RenderScene)?
+    /// A first solve's streamed scene, redrawn as-is until the runtime's
+    /// frame for the document lands.
+    @ObservationIgnored private var openHold: (data: Data, scene: RenderScene)?
     /// True while full-quality meshes are replacing a preview.
     var refining = false
     /// Documents with at least this many visible roots open at the preview
@@ -4249,7 +4276,7 @@ final class EditorModel {
         evaluating = data
         solving = true
         solveProgress = (0, 0)
-        partialMeshes = []; partialBounds = nil
+        partialMeshes = []; partialBounds = nil; landedParts = []
         let started = Date()
         let job: OpaquePointer? = data.withUnsafeBytes { raw in
             dir.withUnsafeBufferPointer { d in
@@ -4266,7 +4293,9 @@ final class EditorModel {
         }
         evalJob = job
         evalPoll = Task { @MainActor [weak self] in
-            var landed = 0
+            // Roots land in any order (a fast part doesn't wait behind a slow
+            // one): `taken` are the indices already pulled into the viewport.
+            var taken = Set<Int>()
             var lastRedraw = Date.distantPast
             while !Task.isCancelled {
                 guard let self, self.evalJob == job else { return }
@@ -4283,17 +4312,25 @@ final class EditorModel {
                 // hundreds of parts at once can't hold the main thread.
                 var newParts = false
                 let tick = Date()
-                while landed < done, Date().timeIntervalSince(tick) < 0.03 {
-                    let km = KernelMesh.fromView(vcad_eval_part_mesh(job, landed))
+                var index = 0
+                while taken.count < done, index < total, Date().timeIntervalSince(tick) < 0.03 {
+                    defer { index += 1 }
+                    guard !taken.contains(index), vcad_eval_part_landed(job, index) else { continue }
+                    taken.insert(index)
+                    self.landedParts.insert(index)
+                    if LaunchPerf.enabled {
+                        LaunchPerf.write(String(format: "[PERF] part %d landed %.0f ms since launch",
+                                                index, LaunchPerf.sinceLaunchMs))
+                    }
+                    let km = KernelMesh.fromView(vcad_eval_part_mesh(job, index))
                     if !km.isEmpty {
-                        self.partialMeshes.append((km.resource(name: "part\(landed)"),
-                                                   Self.partColors[landed % Self.partColors.count]))
+                        self.partialMeshes.append((km.resource(name: "part\(index)"),
+                                                   Self.partColors[index % Self.partColors.count]))
                         var b = self.partialBounds ?? (km.minBound, km.maxBound)
                         b.lo = simd_min(b.lo, km.minBound); b.hi = simd_max(b.hi, km.maxBound)
                         self.partialBounds = b
                         newParts = true
                     }
-                    landed += 1
                 }
                 if newParts {
                     LaunchPerf.once("first part landed")
@@ -4328,11 +4365,11 @@ final class EditorModel {
                 }
                 // Each redraw rebuilds every landed part's entity, so on a big
                 // assembly redraw at most once a second while streaming.
-                if newParts, Date().timeIntervalSince(lastRedraw) > (landed > 64 ? 1.0 : 0.1) {
+                if newParts, Date().timeIntervalSince(lastRedraw) > (taken.count > 64 ? 1.0 : 0.1) {
                     self.geometryDirty = true
                     lastRedraw = Date()
                 }
-                try? await Task.sleep(for: .milliseconds(landed < done ? 10 : 100))
+                try? await Task.sleep(for: .milliseconds(taken.count < done ? 10 : 100))
             }
         }
     }
@@ -4414,6 +4451,7 @@ final class EditorModel {
     private func documentScene(path: String) -> RenderScene {
         let start = Date()
         var adoptingPreview = false
+        var adoptedPrepared = false
         // Prefer the live (possibly edited) doc; fall back to the file on disk
         // for formats the JSON parser couldn't load (legacy terse `.vcad`).
         let plan = documentInstancingPlan()
@@ -4438,11 +4476,16 @@ final class EditorModel {
             if let p = preparedScene, p.data == data {
                 preparedScene = nil
                 scene = p.handle
+                adoptedPrepared = true
                 adoptingPreview = preparedIsPreview
                 if !preparedIsPreview { refineHold = nil }
             } else if let hold = refineHold, hold.data == data {
                 // A preview is on screen and its full-quality pass is still
                 // running: redraw the preview, don't start another solve.
+                return hold.scene
+            } else if let hold = openHold, hold.data == data {
+                // The streamed first solve is on screen; the runtime's frame
+                // is still coming. Don't solve the same bytes again.
                 return hold.scene
             } else {
                 if let p = preparedScene { vcad_scene_free(p.handle); preparedScene = nil }
@@ -4476,6 +4519,7 @@ final class EditorModel {
             built = sceneFromHandle(scene, start: start, plan: plan)
         }
         if adoptingPreview { refineHold = (data, built) }
+        if adoptedPrepared, engine != nil, runtimeScrubEnabled { openHold = (data, built) }
         return built
     }
 

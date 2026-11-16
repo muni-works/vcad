@@ -124,6 +124,7 @@ pub fn document_parameter_gradient(
         root_cache: None,
         mesh_segments: 0,
         on_root: None,
+        on_root_ready: None,
     };
     let env = vcad_ir::resolve_parameters(&doc.parameters)
         .map_err(|e| DocDiffError::Resolve(e.to_string()))?;
@@ -271,6 +272,7 @@ pub fn document_parameter_qoi_gradient(
         root_cache: None,
         mesh_segments: 0,
         on_root: None,
+        on_root_ready: None,
     };
     let env = vcad_ir::resolve_parameters(&doc.parameters)
         .map_err(|e| DocDiffError::Resolve(e.to_string()))?;

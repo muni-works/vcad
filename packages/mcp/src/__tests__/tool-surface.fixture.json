@@ -2716,7 +2716,7 @@
   {
     "name": "optimize_electrodes",
     "title": "Optimize Electrodes",
-    "description": "Design electrodes by gradient ascent: optimize named device-spec parameters (e.g. shield ampere-turns, ring spacing) against predicted D-D yield per ion, with multi-start FD search (the yield landscape is multimodal — single starts stall on the recirculation hill at ~3x lower yield). Returns the best parameter set, its yield, per-start results, and the ascent history. Candidate configurations that fail to resolve or converge score 0 rather than aborting. Follow with simulate_charged_particles at the winning parameters for full claims. Cost ≈ evals × one simulation; defaults run in tens of seconds.",
+    "description": "Design electrodes by gradient ascent: optimize named device-spec parameters (e.g. shield ampere-turns, ring spacing) against predicted D-D yield per ion, with multi-start search (the yield landscape is multimodal — single starts stall on the recirculation hill at ~3x lower yield). Gradients are FD by default; `options.gradient: \"hybrid\"` routes potentials + ampere-turns through the discrete adjoint with FD for geometry and an FD fallback. Returns the best parameter set, its yield, per-start results, the ascent history, and per-iteration records (objective + gradient source per variable). Candidate configurations that fail to resolve or converge score 0 rather than aborting. Follow with simulate_charged_particles at the winning parameters for full claims. Cost ≈ evals × one simulation; defaults run in tens of seconds.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2895,6 +2895,14 @@
             "multi_start": {
               "type": "boolean",
               "description": "Three seeds across the box instead of one (the landscape is multimodal). Default true."
+            },
+            "gradient": {
+              "type": "string",
+              "enum": [
+                "fd",
+                "hybrid"
+              ],
+              "description": "Gradient routing. \"fd\" (default): central differences for every variable. \"hybrid\": potentials + ampere-turns take the discrete adjoint (one run per iterate), geometry takes FD; an iteration whose adjoint direction fails to climb is retried on pure FD. The adjoint differentiates a fixed-horizon surrogate with no wire interception, so on shield current it can disagree with the scored objective — each iteration reports its source."
             }
           }
         }
@@ -3800,7 +3808,7 @@
   {
     "name": "analyze_antenna",
     "title": "Analyze Antenna",
-    "description": "Thin-wire method-of-moments antenna analysis over a frequency band: per-frequency Z_in and S11 sweep rows, minimum-S11 point, in-band resonance (Im Z = 0), -10 dB bandwidth, far-field peak gain (37x72 pattern scan), and a radiation-efficiency energy cross-check — as data plus `vcad.antenna-claims/1` and unified-receipt claims. Predictions carry basis \"predicted\" and roll up Provisional until a VNA sweep is bound. Free-space PEC wires (optional infinite ground plane): no dielectric substrate (PCB antennas read a few percent high in frequency), no conductor loss (gain = directivity), thin-wire validity gates enforced fail-closed (segment >= 4a, segment <= lambda/8, ka <= 0.1). Deterministic. Cost ~O(segments^3) per frequency x band points (segment cap 600); a 30-segment dipole over 46 points runs in seconds.",
+    "description": "Thin-wire method-of-moments antenna analysis over a frequency band: per-frequency Z_in and S11 sweep rows, minimum-S11 point, in-band resonance (Im Z = 0), -10 dB bandwidth, far-field peak gain (37x72 pattern scan), and a radiation-efficiency energy cross-check — as data plus `vcad.antenna-claims/1` and unified-receipt claims. Predictions carry basis \"predicted\" and roll up Provisional until a VNA sweep is bound. Pass `spec` (hand-built wires), or `document_id` + `extract` to read the antenna from the document's PCB board (traces -> wires, pad feed, infinite ground at the pour edge; approximation + board eps_r/thickness returned under `extracted`). Free-space PEC wires (optional infinite ground plane): no dielectric substrate (FR-4 PCB antennas resonate ~20-30% BELOW the prediction), no conductor loss (gain = directivity), thin-wire validity gates enforced fail-closed (segment >= 4a, segment <= lambda/8, ka <= 0.1). Deterministic. Cost ~O(segments^3) per frequency x band points (segment cap 600); a 30-segment dipole over 46 points runs in seconds.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3810,7 +3818,7 @@
             "elements",
             "feed_mm"
           ],
-          "description": "Thin-wire antenna: straight wires, polyline paths, and closed loops, with a delta-gap feed at the basis nearest `feed_mm`. Units mm. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error).",
+          "description": "Thin-wire antenna: straight wires, polyline paths, and closed loops, with a delta-gap feed at the basis nearest `feed_mm`. Units mm. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error). Pass this OR `document_id` + `extract`.",
           "properties": {
             "ground_plane": {
               "type": "boolean",
@@ -3930,12 +3938,63 @@
             }
           }
         },
+        "document_id": {
+          "type": "string",
+          "description": "Session document whose PcbBoard holds the antenna (instead of `spec`). Requires `extract`."
+        },
+        "extract": {
+          "type": "object",
+          "required": [
+            "feed"
+          ],
+          "description": "Which copper of `document_id`'s PcbBoard is the antenna. Every trace on the antenna net becomes a round wire of radius width/4; the feed is a delta gap between the feed pad and the ground pour; the pour becomes an INFINITE PEC plane at its edge nearest the feed (image theory — recorded with the pour's real size in wavelengths). Fail-closed: arcs, vias, zones or extra pads on the antenna net, copper on two layers, floating islands, copper over/behind the pour edge (feedlines), a pour wrapping the antenna, or a feed that isn't a free trace end on the pad all error.",
+          "properties": {
+            "feed": {
+              "type": "object",
+              "required": [
+                "footprint",
+                "pad"
+              ],
+              "description": "Feed pad, e.g. the U.FL signal pad.",
+              "properties": {
+                "footprint": {
+                  "type": "string",
+                  "description": "Reference, e.g. J1."
+                },
+                "pad": {
+                  "type": "string",
+                  "description": "Pad number, e.g. 1."
+                }
+              }
+            },
+            "net": {
+              "type": "string",
+              "description": "Antenna net. Default: the feed pad's net."
+            },
+            "ground_net": {
+              "type": "string",
+              "description": "Net of the ground pour. Default GND."
+            },
+            "board_node": {
+              "type": "number",
+              "description": "PcbBoard node id. Default: the document's only board."
+            },
+            "segments_per_wavelength": {
+              "type": "number",
+              "description": "Segmentation at band top (>= 8). Default 20."
+            },
+            "max_feed_gap_mm": {
+              "type": "number",
+              "description": "Largest feed-pad-to-pour-edge gap accepted, mm. Default 2."
+            }
+          }
+        },
         "parameters": {
           "type": "object",
           "additionalProperties": {
             "type": "number"
           },
-          "description": "Bindings for named spec parameters, `{name: value}`."
+          "description": "Bindings for named spec parameters, `{name: value}` (an extracted board spec is all literals)."
         },
         "band": {
           "type": "object",
@@ -3944,7 +4003,7 @@
             "f_hi_hz",
             "points"
           ],
-          "description": "Frequency band to sweep and make claims over.",
+          "description": "Frequency band to sweep and make claims over (with `document_id`, `f_hi_hz` also sets the extracted segmentation).",
           "properties": {
             "f_lo_hz": {
               "type": "number"
@@ -3981,7 +4040,6 @@
         }
       },
       "required": [
-        "spec",
         "band"
       ]
     },
@@ -3992,7 +4050,7 @@
   {
     "name": "solve_thermal",
     "title": "Solve Thermal",
-    "description": "Heat-conduction FEA on a voxel grid: harmonic-mean finite volumes + PCG, returning T_max and its location, per-source theta_ja (K/W, junction-to-ambient), reservoir loads, and an energy-balance audit — as data plus `vcad.thermal-claims/1` and unified-receipt claims. Predictions carry basis \"predicted\" and roll up Provisional until hardware is measured. Steady state by default; pass `transient` for backward-Euler time stepping over a piecewise-constant drive schedule (RTP ramp/soak/cool, ambient steps, duty cycles — needs per-material `heat_capacity_j_m3k`), which returns T_max/per-source time series and the run-integrated energy audit. Conduction only: convection enters as film coefficients you supply (h values are the dominant uncertainty), no radiation, no fluid flow. Full temperature fields are not returned (summaries + claims are). Cost scales with voxel count (capped at 2M; transient runs also capped at 20k steps and 1e9 voxel-steps); a 20x20x2 board solves instantly, 100x100x13 in seconds.",
+    "description": "Heat-conduction FEA on a voxel grid: harmonic-mean finite volumes + PCG, returning T_max and its location, per-source theta_ja (K/W, junction-to-ambient), reservoir loads, and an energy-balance audit — as data plus `vcad.thermal-claims/1` and unified-receipt claims. Predictions carry basis \"predicted\" and roll up Provisional until hardware is measured. Steady state by default; pass `transient` for backward-Euler time stepping over a piecewise-constant drive schedule (RTP ramp/soak/cool, ambient steps, duty cycles — needs per-material `heat_capacity_j_m3k`), which returns T_max/per-source time series and the run-integrated energy audit. Conduction plus optional gray-diffuse surface radiation (`Radiation` boundary: emissivity you supply, radiating to an ambient or an enclosing wall; solved by Newton; reports per-slot radiated W and a `radiation_fraction` claim). Convection enters as film coefficients you supply (h and emissivity are the dominant uncertainties); no surface-to-surface exchange between parts of the model, no fluid flow. Full temperature fields are not returned (summaries + claims are). Cost scales with voxel count (capped at 2M; transient runs also capped at 20k steps and 1e9 voxel-steps); a 20x20x2 board solves instantly, 100x100x13 in seconds.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -4466,14 +4524,15 @@
                 "required": [
                   "type"
                 ],
-                "description": "Boundary condition: `{\"type\":\"Adiabatic\"}`, `{\"type\":\"FixedTemperature\",\"temperature_c\":..}`, or `{\"type\":\"Convection\",\"h_w_m2k\":..,\"ambient_c\":..}`.",
+                "description": "Boundary condition: `{\"type\":\"Adiabatic\"}`, `{\"type\":\"FixedTemperature\",\"temperature_c\":..}`, `{\"type\":\"Convection\",\"h_w_m2k\":..,\"ambient_c\":..}`, or `{\"type\":\"Radiation\",\"emissivity\":..,\"ambient_c\":..}` (gray-diffuse eps*sigma*(Ts^4-Tamb^4), optional parallel `h_w_m2k` (0 in vacuum), optional `area_scale` = true/voxel surface area (a voxel staircase over-counts curved area ~4/pi for cylinders, ~1.5 for spheres, which over-cools: the result reports `voxel_area_m2` per slot so you can compute it), optional `enclosure` {emissivity, area_m2} for a two-surface gray enclosure such as a grid inside a vacuum chamber whose wall temperature is `ambient_c`). Any radiation face makes the solve nonlinear (Newton); temperatures must be degC.",
                 "properties": {
                   "type": {
                     "type": "string",
                     "enum": [
                       "Adiabatic",
                       "FixedTemperature",
-                      "Convection"
+                      "Convection",
+                      "Radiation"
                     ]
                   },
                   "temperature_c": {
@@ -4508,6 +4567,60 @@
                         "type": "string"
                       }
                     ]
+                  },
+                  "emissivity": {
+                    "description": "Radiation: surface emissivity in (0, 1]. Required.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "area_scale": {
+                    "description": "Radiation: radiating-area multiplier (> 0), default 1.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "enclosure": {
+                    "type": "object",
+                    "required": [
+                      "emissivity",
+                      "area_m2"
+                    ],
+                    "description": "Radiation: enclosing wall (view factor 1). eps_eff = 1/(1/eps + (A_s/A_w)(1/eps_w - 1)); A_w must exceed the slot's radiating area.",
+                    "properties": {
+                      "emissivity": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "area_m2": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      }
+                    }
                   }
                 }
               },
@@ -4525,7 +4638,8 @@
                   "enum": [
                     "Adiabatic",
                     "FixedTemperature",
-                    "Convection"
+                    "Convection",
+                    "Radiation"
                   ]
                 },
                 "temperature_c": {
@@ -4560,6 +4674,60 @@
                       "type": "string"
                     }
                   ]
+                },
+                "emissivity": {
+                  "description": "Radiation: surface emissivity in (0, 1]. Required.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "area_scale": {
+                  "description": "Radiation: radiating-area multiplier (> 0), default 1.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "enclosure": {
+                  "type": "object",
+                  "required": [
+                    "emissivity",
+                    "area_m2"
+                  ],
+                  "description": "Radiation: enclosing wall (view factor 1). eps_eff = 1/(1/eps + (A_s/A_w)(1/eps_w - 1)); A_w must exceed the slot's radiating area.",
+                  "properties": {
+                    "emissivity": {
+                      "description": "A number, or the name of a named parameter bound via `parameters`.",
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "area_m2": {
+                      "description": "A number, or the name of a named parameter bound via `parameters`.",
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    }
+                  }
                 }
               }
             },
@@ -4655,7 +4823,7 @@
                         }
                       ]
                     },
-                    "description": "Boundary-temperature overrides by face label (\"-x\",\"+x\",\"-y\",\"+y\",\"-z\",\"+z\",\"exposed\"): retunes a FixedTemperature face's temperature or a Convection face's ambient. Overriding an adiabatic face errors (fail-closed)."
+                    "description": "Boundary-temperature overrides by face label (\"-x\",\"+x\",\"-y\",\"+y\",\"-z\",\"+z\",\"exposed\"): retunes a FixedTemperature face's temperature or a Convection/Radiation face's ambient. Overriding an adiabatic face errors (fail-closed)."
                   },
                   "fixed_temperature_c": {
                     "type": "object",
@@ -4689,7 +4857,7 @@
           "properties": {
             "tol": {
               "type": "number",
-              "description": "PCG relative tolerance. Default 1e-8."
+              "description": "Relative tolerance (PCG, and the Newton residual when a face radiates). Default 1e-8."
             },
             "max_iters": {
               "type": "number",
