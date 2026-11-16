@@ -521,7 +521,7 @@ pub(crate) fn threemf_bytes(meshes: &[(Vec<f32>, Vec<u32>)]) -> std::io::Result<
     Ok(buf.into_inner())
 }
 
-fn export_path(filename: &str) -> PathBuf {
+pub(crate) fn export_path(filename: &str) -> PathBuf {
     let p = Path::new(filename);
     if p.is_absolute() {
         return p.to_path_buf();

@@ -590,6 +590,13 @@ fn real_node_exports_app_window_documents() {
         );
         assert_eq!(r["_meta"]["io.vcad/servedBy"], "node-proxy", "{r}");
         assert_ne!(r["isError"], true, "{r}");
+        // Node writes to its staging dir; the caller only sees its own path.
+        let text = serde_json::to_string(&r).unwrap();
+        assert!(
+            !text.contains("export-staging") && !text.contains("appdoc_"),
+            "{text}"
+        );
+        assert!(text.contains(path.to_str().unwrap()), "{text}");
         let len = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         assert!(len > 100, "{name}: {len} bytes; {r}");
     }

@@ -6,6 +6,7 @@
 //! behaves identically whichever era called it.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex, RwLock, Weak};
@@ -153,6 +154,10 @@ struct Inner {
     /// document is written here; after it, node's result is committed back
     /// to the live window as one undo step.
     mirror: Option<Arc<crate::store::HeadlessStore>>,
+    /// Node's `VCAD_MCP_EXPORT_DIR`: proxied `export_cad` writes here under a
+    /// staged name and the core moves the file to the path it resolved
+    /// (node refuses absolute paths, and its cwd isn't the core's).
+    export_staging: Option<PathBuf>,
 }
 
 /// The MCP server. Cheap to clone.
@@ -183,6 +188,15 @@ struct Mirrored {
     before: String,
 }
 
+/// Rename, falling back to copy + remove across filesystems.
+fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(from, to)?;
+    std::fs::remove_file(from)
+}
+
 /// A session id node can load for `id`: `id` itself when valid, else
 /// `appdoc_<base64url(id)>` (distinct per id, never minted by either server).
 fn node_alias(id: &DocumentId) -> DocumentId {
@@ -205,6 +219,7 @@ impl Server {
         // Share the session dir with the node upstream (the app has none of
         // its own: give node a mirror dir the core keeps in step).
         let mut mirror = None;
+        let mut export_staging = None;
         if let Some(p) = config.proxy.as_mut() {
             let dir = store.location().or_else(|| {
                 (store.kind() == StoreKind::App).then(|| {
@@ -222,6 +237,12 @@ impl Server {
             }
             // The core writes session files between node's calls.
             p.env.push(("VCAD_MCP_PROXIED".into(), "1".into()));
+            let staging = crate::store::vcad_home()
+                .join("export-staging")
+                .join(std::process::id().to_string());
+            p.env
+                .push(("VCAD_MCP_EXPORT_DIR".into(), staging.display().to_string()));
+            export_staging = Some(staging);
         }
         let proxy = config.proxy.clone().map(|c| Arc::new(Proxy::new(c)));
         if let Some(p) = &proxy {
@@ -277,6 +298,7 @@ impl Server {
                 config,
                 instance_id,
                 mirror,
+                export_staging,
             }),
         }
     }
@@ -541,6 +563,7 @@ impl Server {
         };
         let mut args = args;
         let mirrored = self.mirror_in(name, &mut args);
+        let staged = self.stage_export(name, &mut args);
         let result = proxy.call_tool(
             name,
             args,
@@ -574,9 +597,34 @@ impl Server {
             }),
             data: e.data,
         })?;
-        if aliased.is_some() {
+        // A staged export: move it where the caller asked, report that path.
+        let mut rewrites: Vec<(String, String)> = Vec::new();
+        if let Some((alias, id)) = &aliased {
+            rewrites.push((alias.0.clone(), id.0.clone()));
+        }
+        if let Some((tmp, dest)) = &staged {
+            if tmp.exists() {
+                if let Err(e) = move_file(tmp, dest) {
+                    let _ = std::fs::remove_file(tmp);
+                    let mut out = crate::tools::ToolOutput::error(format!(
+                        "export_cad: node wrote the file but it could not be moved to {}: {e}",
+                        dest.display()
+                    ))
+                    .to_json();
+                    out["_meta"] = json!({ META_VCAD_BUILD: self.build_meta() });
+                    return Ok(out);
+                }
+                rewrites.push((tmp.display().to_string(), dest.display().to_string()));
+            }
+        }
+        if !rewrites.is_empty() {
             if let Ok(back) = serde_json::to_string(&v)
-                .map(unalias)
+                .map(|mut s| {
+                    for (from, to) in &rewrites {
+                        s = s.replace(from.as_str(), to.as_str());
+                    }
+                    s
+                })
                 .and_then(|s| serde_json::from_str(&s))
             {
                 v = back;
@@ -620,6 +668,26 @@ impl Server {
             o.insert("document_id".into(), json!(alias.0));
         }
         Some(Mirrored { id, alias, before })
+    }
+
+    /// Proxied `export_cad`: resolve `filename` the way native exports do,
+    /// hand node a fresh name inside its staging dir instead, and return
+    /// `(staged file, destination)`.
+    fn stage_export(&self, name: &str, args: &mut Value) -> Option<(PathBuf, PathBuf)> {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        if name != "export_cad" {
+            return None;
+        }
+        let dir = self.inner.export_staging.as_ref()?;
+        let filename = args.get("filename").and_then(Value::as_str)?;
+        let dest = crate::tools::core::export_path(filename);
+        let ext = dest.extension()?.to_str()?.to_owned();
+        std::fs::create_dir_all(dir).ok()?;
+        let n = SEQ.fetch_add(1, Ordering::Relaxed);
+        let staged = format!("export-{n}.{ext}");
+        args.as_object_mut()?
+            .insert("filename".into(), json!(staged));
+        Some((dir.join(staged), dest))
     }
 
     fn resources_list(&self) -> Value {
