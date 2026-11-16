@@ -189,7 +189,8 @@ band top — the known pressure-release-mouth gap (honesty, above).
 - **Fail-closed, named.** A non-axisymmetric face errors with the part,
   face index, surface kind and a point on it. Air that doesn't fill the
   enclosure (a sideways gap), a side vent or annular slot, a second port, a
-  sealed air part, enclosure/air overlap, a port mouth recessed inside the
+  sealed air part, a lone opening at least as wide as the piston (a sealed
+  box's driver cutout is not a port), enclosure/air overlap, a port mouth recessed inside the
   box's axial extent, or driver and port on the same end each error naming
   where.
 - **The driver plugs its cutout.** The cutout cells are not fluid; the

@@ -932,6 +932,13 @@ pub fn extract_cavity(
         }
     };
     let mut assumptions = Vec::new();
+    if driver.is_none() {
+        assumptions.push(format!(
+            "Single opening (r = {:.3} mm) taken as the port; no driver cutout found, so the \
+             piston sits on the opposite, closed end face.",
+            g.r[port.k1]
+        ));
+    }
     if let (Some(d), [_, _]) = (driver, passages.as_slice()) {
         if is_end(&port) {
             assumptions.push(format!(
@@ -1105,6 +1112,14 @@ pub fn extract_cavity(
         return Err(not_repr(format!(
             "driver piston radius {piston_r:.3} mm exceeds the box radius {bottom_r:.3} mm at \
              the driver face"
+        )));
+    }
+    if driver.is_none() && g.r[port.k1] >= piston_r - tol.length_mm {
+        return Err(not_repr(format!(
+            "air part {:?} has a single opening (r = {:.3} mm) at least as wide as the driver \
+             piston (r = {piston_r:.3} mm): that is a driver cutout on a sealed box, not a \
+             bass-reflex port — the ported-box model needs a port",
+            air.name, g.r[port.k1]
         )));
     }
     if let Some(cr) = cutout_r {

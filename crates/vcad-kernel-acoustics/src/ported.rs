@@ -222,12 +222,15 @@ pub fn analyze(
     };
     let n = opts.sweep_points.max(8);
     let coarse = frequency_sweep(&cav, nr, nz, src, probe, s_lo, s_hi, n);
-    let field_tuning_hz = find_peaks(&coarse, 1).first().map(|p| {
+    // `find_peaks` keeps the N *strongest* peaks (sorted by frequency), so ask
+    // for several and take the lowest: the Helmholtz mode, not whichever
+    // lossless pole happened to sample highest.
+    let field_tuning_hz = find_peaks(&coarse, 8).first().map(|p| {
         // Refine on a fine sweep one coarse step either side.
         let step = (s_hi - s_lo) / (n - 1) as f64;
         let (lo, hi) = ((p.f_hz - step).max(s_lo * 0.5), p.f_hz + step);
         let fine = frequency_sweep(&cav, nr, nz, src, probe, lo, hi, 33);
-        find_peaks(&fine, 1).first().map_or(p.f_hz, |q| q.f_hz)
+        find_peaks(&fine, 8).first().map_or(p.f_hz, |q| q.f_hz)
     });
 
     let [c_lo, c_hi] = opts.curve_hz.unwrap_or([s_lo, s_hi]);

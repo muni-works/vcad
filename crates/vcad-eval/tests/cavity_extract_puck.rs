@@ -297,6 +297,23 @@ fn unknown_parameter_and_oversized_piston_are_refused() {
 }
 
 #[test]
+fn a_sealed_box_is_not_mistaken_for_a_ported_one() {
+    // No port: the driver cutout is the only opening.
+    let src = PUCK
+        .replace(
+            "[let s3 [union port-tube s2]]\n[let enclosure [difference port-bore s3]]",
+            "[let enclosure s2]",
+        )
+        .replace(
+            "[root [difference port-tube cavity] \"air\"]",
+            "[root cavity \"air\"]",
+        );
+    assert!(src.contains("[let enclosure s2]"), "fixture text drifted");
+    let msg = err(&src, &sel()).to_string();
+    assert!(msg.contains("sealed box"), "{msg}");
+}
+
+#[test]
 fn unknown_part_lists_what_is_there() {
     let mut s = sel();
     s.enclosure = "shell".into();
