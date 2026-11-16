@@ -215,6 +215,18 @@
 [type MaterialE
   [MaterialE Str f64 f64 f64 f64 f64 f64 f64 f64 f64 Str f64 f64 f64 f64 f64 f64 f64 f64 f64]]
 
+; Physical properties for a material key, read by every solver (FEA, modal,
+; thermal, EM, antenna, acoustics): [material-physics "key" :opt value ...].
+; Unset properties come from the shared library (`:library "pla"`, else
+; matched from the key); see vcad_ir::materials. Options and units:
+;   :library "id"   :density kg/m3   :youngs-modulus MPa   :poisson
+;   :yield-strength MPa   :thermal-conductivity W/(m K)
+;   :k-in-plane + :k-through-plane W/(m K) (laminates)   :specific-heat J/(kg K)
+;   :emissivity   :permittivity (relative)   :loss-tangent
+;   :permeability (relative)   :remanence T   :resistivity ohm m
+[type MaterialPhysics
+  [MaterialPhysics Str (Vec a)]]
+
 ; ---------------------------------------------------------------------------
 ; Scene output
 ; ---------------------------------------------------------------------------
@@ -681,6 +693,8 @@
   [Material name r g b metallic roughness]]]
 [let material-emissive [fn [name r g b metallic roughness er eg eb strength map ox oy oz ux uy uz vx vy vz]
   [MaterialE name r g b metallic roughness er eg eb strength map ox oy oz ux uy uz vx vy vz]]]
+
+[let material-physics [fn [key & opts] [MaterialPhysics key opts]]]
 
 ; Scene (no subject)
 [let root [fn [solid material-name]

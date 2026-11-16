@@ -72,7 +72,7 @@ enum InstrumentTool {
         /// How it was measured (default "agent-reported strike").
         instrument: Option<String>,
     },
-    /// How a part sounds: its natural frequencies (vibration modes of the real solid, any shape), each named as the nearest note with the offset in cents. Material comes from the part's material key (aluminium, steel, brass, bronze, copper, titanium, PLA, PETG, ABS, nylon, glass, wood). Use before lock_pitch to see what a part rings at.
+    /// How a part sounds: its natural frequencies (vibration modes of the real solid, any shape), each named as the nearest note with the offset in cents. Material comes from the document material's physical properties, else the shared library by key (aluminium, steel, stainless, brass, bronze, copper, titanium, PLA, PETG, ABS, nylon, FR4, glass, wood); an unresolvable material rings as aluminium with material_known false and a material_note. Use before lock_pitch to see what a part rings at.
     PartSound {
         /// Session id (default: current document).
         document_id: Option<String>,
@@ -376,8 +376,9 @@ pub fn instrument_tools() -> Vec<ToolDef> {
                 .collect();
             structured(json!({
                 "part": pm.name,
-                "material": pm.material.name,
+                "material": &pm.material.name,
                 "material_known": pm.material_known,
+                "material_note": &pm.material_note,
                 "mass_kg": pm.mass_kg,
                 "rings_at": pm.modes.first().map(|m| format!("{} ({:.1} Hz, {:+.0} c)", m.note, m.hz, m.cents)),
                 "modes": modes,
