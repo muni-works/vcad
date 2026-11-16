@@ -70,13 +70,15 @@ fn main() {
             for r in ev.reports.iter().filter(|r| r.label.starts_with("vp")) {
                 let c = set.claims.iter().find(|c| c.name == format!("h10_rate:{}", r.label)).unwrap();
                 println!(
-                    "    {:<10} {:>10.3e} ± {:>4.1}%  [{:.2e} – {:.2e}]  band ×/÷{:.2}  kerma {:.2e} µGy/h  buildup {:.2}",
+                    "    {:<8} total {:>9.3e} ± {:.2}%  [{:.2e} – {:.2e}] ×/÷{:.2} | window {:.3e}  flange/wall {:.3e} | kerma {:.2e} µGy/h  B {:.2}",
                     r.label,
                     c.value,
                     c.rse * 100.0,
                     c.low,
                     c.high,
                     c.band_factor,
+                    r.components[0].h10_usv_h,
+                    r.components[1].h10_usv_h,
                     r.kerma_ugy_h.mean,
                     r.buildup_h10
                 );
@@ -86,7 +88,7 @@ fn main() {
         println!("  through the 1.65 mm steel wall");
         for r in ev.reports.iter().filter(|r| r.label.starts_with("wall")) {
             println!(
-                "    {:<10} {:>10.3e} ± {:>4.1}%  [{:.2e} – {:.2e}]",
+                "    {:<10} {:>10.3e} ± {:.2}%  [{:.2e} – {:.2e}]",
                 r.label,
                 r.h10_usv_h.mean,
                 r.h10_usv_h.rse * 100.0,

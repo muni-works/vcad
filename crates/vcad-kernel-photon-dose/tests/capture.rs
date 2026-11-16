@@ -40,6 +40,19 @@ fn hdpe_capture_gamma_is_a_real_minority_of_neutron_dose() {
     // Captures can't exceed the source; H dominates the lines.
     let total: f64 = cap.lines.iter().filter(|l| l.element == "H").map(|l| l.rate_per_s.mean).sum();
     assert!(total > 0.0 && total < 5.0e6, "H captures {total}/s");
+    // Books balance against the neutron run: captures ≤ absorbed fraction × S.
+    let absorbed = neutron.claims.iter().find(|c| c.name == "absorbed_fraction").unwrap();
+    let all: f64 = cap
+        .lines
+        .iter()
+        .filter(|l| l.element != "C")
+        .map(|l| l.rate_per_s.mean)
+        .sum();
+    assert!(
+        all <= absorbed.value * 5.0e6 * (1.0 + 4.0 * absorbed.rse),
+        "captures {all}/s exceed absorbed {}/s",
+        absorbed.value * 5.0e6
+    );
     let h = cap.lines.iter().find(|l| l.element == "H").unwrap();
     let c = cap.lines.iter().find(|l| l.element == "C").unwrap();
     assert!(h.rate_per_s.mean > 50.0 * c.rate_per_s.mean);
