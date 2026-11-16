@@ -910,6 +910,8 @@ export interface KernelModule {
   ) => unknown;
   /** Closed-form prismatic member check (BeamCase JSON). */
   feaCheckBeam?: (caseJson: string) => unknown;
+  /** Closed-form shell external-pressure buckling screen (ShellCase JSON). */
+  feaCheckShell?: (caseJson: string) => unknown;
   /** EM field simulation (problem-tagged spec/params/options JSON). */
   emSimulate?: (
     specJson: string,
@@ -922,10 +924,16 @@ export interface KernelModule {
     paramsJson: string,
     optionsJson: string,
   ) => unknown;
+  /** PcbBoard → AntennaSpec extraction (Document/AntennaExtraction JSON). */
+  extractAntennaSpec?: (docJson: string, selectionJson: string) => unknown;
   /** Forward 2D FDTD photonics run (device spec/options JSON). */
   photonicsSimulate?: (specJson: string, optionsJson: string) => unknown;
   /** Monte Carlo neutron shielding run (ShieldSpec/params JSON). */
   neutronicsSimulate?: (specJson: string, paramsJson: string) => unknown;
+  /** Document → DeviceSpec extraction (Document/DeviceExtraction JSON). */
+  extractDeviceSpec?: (docJson: string, selectionJson: string) => unknown;
+  /** Document → ShieldSpec extraction (Document/ShieldExtraction JSON). */
+  extractShieldSpec?: (docJson: string, selectionJson: string) => unknown;
   /** Lattice gauge theory Monte Carlo run (SimSpec JSON). */
   latticeGaugeSimulate?: (specJson: string) => unknown;
   /** Static structural analysis of a box solid. */
@@ -1399,6 +1407,8 @@ export class Engine {
       topologyOptimizeBox: (wasmModule as Record<string, unknown>).topologyOptimizeBox as KernelModule["topologyOptimizeBox"],
       topologyOptimizeMesh: (wasmModule as Record<string, unknown>).topologyOptimizeMesh as KernelModule["topologyOptimizeMesh"],
       particleSimulate: (wasmModule as Record<string, unknown>).particleSimulate as KernelModule["particleSimulate"],
+      extractDeviceSpec: (wasmModule as Record<string, unknown>).extractDeviceSpec as KernelModule["extractDeviceSpec"],
+      extractShieldSpec: (wasmModule as Record<string, unknown>).extractShieldSpec as KernelModule["extractShieldSpec"],
       particleOptimize: (wasmModule as Record<string, unknown>).particleOptimize as KernelModule["particleOptimize"],
       toleranceAnalyze: (wasmModule as Record<string, unknown>).toleranceAnalyze as KernelModule["toleranceAnalyze"],
       thermalSolve: (wasmModule as Record<string, unknown>).thermalSolve as KernelModule["thermalSolve"],
@@ -1415,8 +1425,10 @@ export class Engine {
       circuitTune: (wasmModule as Record<string, unknown>).circuitTune as KernelModule["circuitTune"],
       feaAnalyzeMesh: (wasmModule as Record<string, unknown>).feaAnalyzeMesh as KernelModule["feaAnalyzeMesh"],
       feaCheckBeam: (wasmModule as Record<string, unknown>).feaCheckBeam as KernelModule["feaCheckBeam"],
+      feaCheckShell: (wasmModule as Record<string, unknown>).feaCheckShell as KernelModule["feaCheckShell"],
       emSimulate: (wasmModule as Record<string, unknown>).emSimulate as KernelModule["emSimulate"],
       antennaAnalyze: (wasmModule as Record<string, unknown>).antennaAnalyze as KernelModule["antennaAnalyze"],
+      extractAntennaSpec: (wasmModule as Record<string, unknown>).extractAntennaSpec as KernelModule["extractAntennaSpec"],
       photonicsSimulate: (wasmModule as Record<string, unknown>).photonicsSimulate as KernelModule["photonicsSimulate"],
       neutronicsSimulate: (wasmModule as Record<string, unknown>).neutronicsSimulate as KernelModule["neutronicsSimulate"],
       latticeGaugeSimulate: (wasmModule as Record<string, unknown>).latticeGaugeSimulate as KernelModule["latticeGaugeSimulate"],
@@ -1713,7 +1725,7 @@ export class Engine {
   /**
    * Multi-start gradient ascent over named device-spec parameters against
    * predicted D-D yield per ion. Inputs are JSON strings; see
-   * `vcad-kernel-particle::optimize`.
+   * `vcad-kernel-particle::electrode_opt` (`gradient: "fd" | "hybrid"`).
    */
   particleOptimize(
     specJson: string,
@@ -1909,6 +1921,22 @@ export class Engine {
   }
 
   /**
+   * Closed-form external-pressure buckling screen for a thin cylinder,
+   * sphere or dished head: classical bifurcation pressure, the cited
+   * imperfection knockdown, yield cap, allowable and margin, plus
+   * `vcad.fea-claims/1` predicted claims; see `vcad-kernel-fea::shell`.
+   */
+  feaCheckShell(caseJson: string): unknown {
+    const fn = this.kernel.feaCheckShell;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "feaCheckShell is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(caseJson);
+  }
+
+  /**
    * EM field simulation (2D/axisymmetric finite-volume magnetostatics or
    * electrostatics): inductance, force, torque, capacitance extraction and
    * predicted receipt claims. The spec JSON carries a `problem` tag; see
@@ -1949,6 +1977,23 @@ export class Engine {
   }
 
   /**
+   * Extract a thin-wire `AntennaSpec` from a document's `PcbBoard` node:
+   * antenna-net trace centerlines → wires (radius = width/4), delta-gap
+   * feed at a pad, infinite ground at the pour edge (recorded). Returns
+   * `{spec, parameters, feed, frame, ground, substrate, notes, ...}`.
+   * Fail-closed; see `vcad_eval::antenna_extract`.
+   */
+  extractAntennaSpec(docJson: string, selectionJson: string): unknown {
+    const fn = this.kernel.extractAntennaSpec;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "extractAntennaSpec is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(docJson, selectionJson);
+  }
+
+  /**
    * Forward 2D TM FDTD photonics run: rect-composed device, slab-mode
    * source, transmission spectrum, and predicted receipt claims. Inputs
    * are JSON strings (device spec, options); see `vcad-kernel-photonics`.
@@ -1977,6 +2022,38 @@ export class Engine {
       );
     }
     return fn(specJson, paramsJson);
+  }
+
+  /**
+   * Extract an axisymmetric `DeviceSpec` from a document's evaluated solids
+   * (chamber cavity + toroidal wire rings; potentials/ampere-turns bound to
+   * named document parameters). Returns `{spec, parameters, cavity,
+   * ring_parts}`. Fail-closed; see `vcad_eval::sim_extract`.
+   */
+  extractDeviceSpec(docJson: string, selectionJson: string): unknown {
+    const fn = this.kernel.extractDeviceSpec;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "extractDeviceSpec is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(docJson, selectionJson);
+  }
+
+  /**
+   * Extract a spherical `ShieldSpec` from a document's evaluated solids
+   * (concentric spherical shells → layer stack). Returns `{spec,
+   * parameters, center, layer_parts}`. Fail-closed; see
+   * `vcad_eval::sim_extract`.
+   */
+  extractShieldSpec(docJson: string, selectionJson: string): unknown {
+    const fn = this.kernel.extractShieldSpec;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "extractShieldSpec is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(docJson, selectionJson);
   }
 
   /**

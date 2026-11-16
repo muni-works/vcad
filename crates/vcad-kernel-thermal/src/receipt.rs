@@ -10,9 +10,11 @@
 //!
 //! **Every claim note states the missing physics.** These are conduction
 //! predictions priced at a *supplied* film coefficient; the note on every
-//! temperature claim says so, names the h values used, and flags that
-//! radiation is not modeled. A claim that hides its h is a guess wearing
-//! a lab coat.
+//! temperature claim says so, names the h values used, and either flags
+//! that radiation is not modeled or — when a face radiates (M7) — names
+//! the gray-diffuse radiation model and the supplied emissivities, and
+//! adds per-slot `radiated_w` and a `radiation_fraction` claim. A claim
+//! that hides its h (or its ε) is a guess wearing a lab coat.
 //!
 //! These are `basis: "predicted"` claims. Binding them to thermal-camera
 //! and thermocouple measurements (Holds / Violated / Unmeasured) is the
@@ -52,6 +54,11 @@ pub struct SolverProvenance {
     /// True when the geometry came through the voxelized-part seam
     /// (`VoxelMaterials`) rather than region painting.
     pub voxelized_materials: bool,
+    /// The radiation model, named, when any face radiates (`None` =
+    /// conduction only). Its presence also means the solve was nonlinear
+    /// (Newton), so linear superposition/duty scaling no longer holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub radiation_model: Option<String>,
 }
 
 /// One predicted claim.
@@ -100,7 +107,43 @@ fn describe_bc(label: &str, bc: &Boundary) -> Option<String> {
         Boundary::Convection { h_w_m2k, ambient_c } => Some(format!(
             "{label}: convection h={h_w_m2k} W/m2K, ambient {ambient_c} C"
         )),
+        Boundary::Radiation {
+            emissivity,
+            ambient_c,
+            h_w_m2k,
+            area_scale,
+            enclosure,
+        } => {
+            let enc = match enclosure {
+                Some(e) => format!(
+                    ", two-surface gray enclosure (wall eps={}, area {} m2, F=1)",
+                    e.emissivity, e.area_m2
+                ),
+                None => ", to large black surroundings".to_string(),
+            };
+            Some(format!(
+                "{label}: gray-diffuse radiation eps={emissivity}, ambient {ambient_c} C{enc}, \
+                 parallel film h={h_w_m2k} W/m2K, area scale {area_scale}"
+            ))
+        }
     }
+}
+
+/// The radiation model, named — `None` for conduction-only models.
+fn radiation_model(model: &ThermalModel) -> Option<String> {
+    let any = model
+        .domain_faces
+        .iter()
+        .chain([&model.exposed])
+        .any(|bc| matches!(bc, Boundary::Radiation { .. }));
+    any.then(|| {
+        "gray-diffuse surface radiation q = eps_eff*sigma*(Ts^4 - Tamb^4) [+ h*(Ts - Tamb)], \
+         half-cell conduction in series, solved by Newton; no surface-to-surface exchange \
+         between parts of the model (each radiating face sees only its ambient or its \
+         enclosure wall), emissivity supplied (not derived), voxel-staircase area x \
+         area_scale"
+            .to_string()
+    })
 }
 
 /// The standing caveat every temperature claim carries.
@@ -122,6 +165,23 @@ fn conduction_caveat(model: &ThermalModel) -> String {
             hs.join(", ")
         )
     };
+    if radiation_model(model).is_some() {
+        let eps: Vec<String> = model
+            .domain_faces
+            .iter()
+            .chain([&model.exposed])
+            .filter_map(|bc| match bc {
+                Boundary::Radiation { emissivity, .. } => Some(format!("{emissivity}")),
+                _ => None,
+            })
+            .collect();
+        return format!(
+            "conduction + gray-diffuse radiation at supplied eps = {{{}}} (not derived; \
+             oxidation and temperature drift eps); {h_part}; no surface-to-surface exchange \
+             between parts of the model; radiating area is voxel staircase x area_scale",
+            eps.join(", ")
+        );
+    }
     format!(
         "conduction only; {h_part}; radiation not modeled (~6 W/m2K equivalent at \
          electronics temperatures)"
@@ -189,6 +249,46 @@ pub fn predicted_claims(
         }
     }
 
+    // Radiation: what each radiating slot sheds, and how much of the
+    // source power left by radiation at all.
+    let single_rad = solution.radiation.len() == 1;
+    for r in &solution.radiation {
+        let name = if single_rad {
+            "radiated_w".to_string()
+        } else {
+            format!("radiated_w:{}", r.label)
+        };
+        claims.push(claim(
+            name,
+            r.radiated_w,
+            "W",
+            format!(
+                "radiative loss of slot {} ({} faces, area {:.4e} m2 = voxel {:.4e} m2 x \
+                 scale), eps {} -> eps_eff {:.4}, mean surface {:.1} C, max {:.1} C; {caveat}",
+                r.label,
+                r.faces,
+                r.area_m2,
+                r.voxel_area_m2,
+                r.emissivity,
+                r.effective_emissivity,
+                r.mean_surface_c,
+                r.max_surface_c
+            ),
+        ));
+    }
+    if !solution.radiation.is_empty() && solution.energy.source_w.abs() > 0.0 {
+        claims.push(claim(
+            "radiation_fraction".into(),
+            solution.energy.radiation_out_w / solution.energy.source_w,
+            "1",
+            format!(
+                "share of source power leaving through radiation faces (radiative + any \
+                 parallel film there); Newton iterations {}",
+                solution.newton_iterations
+            ),
+        ));
+    }
+
     claims.push(claim(
         "energy_balance_residual".into(),
         solution.energy.residual_rel,
@@ -233,6 +333,7 @@ pub fn predicted_claims(
             bc_set,
             anisotropy: anisotropy.to_string(),
             voxelized_materials: model.voxel_materials.is_some(),
+            radiation_model: radiation_model(model),
         },
         claims,
     }
@@ -510,6 +611,10 @@ pub fn design_claims(set: &ClaimSet) -> Vec<vcad_receipt::ReceiptClaim> {
         set.provenance.anisotropy,
         set.provenance.bc_set.join("; "),
     );
+    let provenance = match &set.provenance.radiation_model {
+        Some(r) => format!("{provenance}, radiation: {r}"),
+        None => format!("{provenance}, radiation: not modeled"),
+    };
     set.claims
         .iter()
         .map(|c| {

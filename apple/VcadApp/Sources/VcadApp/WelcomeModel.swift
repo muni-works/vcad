@@ -30,8 +30,11 @@ enum WelcomeMode: Equatable, Sendable {
 struct WelcomeRecent: Identifiable, Equatable, Sendable {
     let url: URL
     let modified: Date?
+    /// Set for unsaved work (a closed/quit/crashed document's autosave):
+    /// `url` is then the autosave's data file, for the thumbnail.
+    var unsaved: AutosaveEntry? = nil
     var id: String { url.path }
-    var name: String { url.deletingPathExtension().lastPathComponent }
+    var name: String { unsaved?.name ?? url.deletingPathExtension().lastPathComponent }
 }
 
 enum WelcomeRecents {
@@ -51,6 +54,16 @@ enum WelcomeRecents {
             out.append(WelcomeRecent(url: url, modified: modified))
         }
         return out
+    }
+
+    /// Unsaved work first (newest first — it's the work at risk), then the
+    /// files, capped at `limit` together.
+    static func merge(unsaved: [AutosaveEntry], files: [WelcomeRecent], root: URL = LocalData.root,
+                      limit: Int = WelcomeRecents.limit) -> [WelcomeRecent] {
+        let pending = unsaved.map {
+            WelcomeRecent(url: Recovery.dataURL(for: $0, root: root), modified: $0.savedAt, unsaved: $0)
+        }
+        return Array((pending + files).prefix(limit))
     }
 
     /// The line under a recent's name: "9 parts · yesterday". Either half may
