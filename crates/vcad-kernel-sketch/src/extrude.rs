@@ -535,40 +535,71 @@ fn extrude_full_circle_analytic(
     }
 }
 
-/// Extrude a profile whose segments include non-full-circle arcs.
-///
-/// Each arc segment becomes one analytic `CylinderSurface` lateral face;
-/// each line segment becomes one `Plane` lateral face. The outer loop of
-/// every cylindrical face includes `arc_segs + 1` vertices along each of
-/// its top and bottom arc boundaries so the cap polygons stay faithful to
-/// the original profile and share their boundary vertices with the
-/// adjacent lateral faces (required for half-edge twin pairing).
-///
-/// This path is taken in preference to the generic polygonal builder
-/// whenever a profile contains any arc; it preserves the analytic surface
-/// type end-to-end (tessellator, booleans, STEP export, fillet) so
-/// downstream ops don't have to guess that a curved wall lurks inside a
-/// strip of thin near-coplanar quads.
-fn extrude_with_arcs(profile: &SketchProfile, direction: Vec3, arc_segs: usize) -> BRepSolid {
-    let arc_segs = arc_segs.max(2);
+/// Rim samples per full turn for an arc extruded into an analytic wall —
+/// the same 32 the cylinder primitive tessellates at by default, so a
+/// circle drawn as arcs comes out exactly as fine as a `Cylinder`.
+const ARC_SAMPLES_PER_TURN: f64 = 32.0;
 
-    let mut topo = Topology::new();
-    let mut geom = GeometryStore::new();
+/// Number of chords to sample an arc with: proportional to its sweep
+/// ([`ARC_SAMPLES_PER_TURN`] per full turn), never fewer than `floor`.
+///
+/// A fixed count per arc made the resolution depend on how the loop was
+/// *drawn*: a circle authored as two semicircles came out a 16-gon (2.55%
+/// of its area missing) while the same circle as one arc, or as a
+/// `Cylinder`, was a 32-gon. Every rim vertex is baked into the B-rep's
+/// cap loop, so this loss survived tessellation at any resolution.
+fn arc_sample_count(start: Point2, end: Point2, center: Point2, ccw: bool, floor: usize) -> usize {
+    let a0 = (start - center).y.atan2((start - center).x);
+    let a1 = (end - center).y.atan2((end - center).x);
+    let mut sweep = if ccw { a1 - a0 } else { a0 - a1 };
+    if sweep <= 1e-12 {
+        sweep += 2.0 * PI;
+    }
+    let n = (sweep / (2.0 * PI) * ARC_SAMPLES_PER_TURN).ceil() as usize;
+    n.max(floor).max(2)
+}
 
-    let quantize_pt = |p: Point3| -> [i64; 3] {
-        [
-            (p.x * 1e9).round() as i64,
-            (p.y * 1e9).round() as i64,
-            (p.z * 1e9).round() as i64,
-        ]
+/// Shared vertex cache keyed on a 1e-9 grid (see [`extrude`]).
+type VertexCache = HashMap<[i64; 3], VertexId>;
+
+fn quantize_1e9(p: Point3) -> [i64; 3] {
+    [
+        (p.x * 1e9).round() as i64,
+        (p.y * 1e9).round() as i64,
+        (p.z * 1e9).round() as i64,
+    ]
+}
+
+/// Build the lateral walls of one closed loop: one analytic
+/// `CylinderSurface` face per arc, one `Plane` face per line. Arcs are
+/// densified ([`arc_sample_count`]) so the caps stay faithful to the
+/// profile, and every rim vertex is shared between the wall and the cap
+/// that will be built over the returned rings (required for half-edge twin
+/// pairing).
+///
+/// The loop must already be wound the way its walls should face: CCW (seen
+/// from +normal) for an outer boundary, CW for a hole. A CW arc gets a
+/// `Reversed` cylinder face — the material lies outside its cylinder.
+///
+/// Returns the bottom and top rim rings (closing duplicate dropped), in loop
+/// order.
+#[allow(clippy::too_many_arguments)]
+fn build_loop_walls(
+    topo: &mut Topology,
+    geom: &mut GeometryStore,
+    profile: &SketchProfile,
+    segments: &[SketchSegment],
+    direction: Vec3,
+    arc_segs: usize,
+    vertex_cache: &mut VertexCache,
+    he_map: &mut HashMap<([i64; 3], [i64; 3]), HalfEdgeId>,
+    all_faces: &mut Vec<vcad_kernel_topo::FaceId>,
+) -> (Vec<VertexId>, Vec<VertexId>) {
+    let mut get_or_create = |topo: &mut Topology, pos: Point3| -> VertexId {
+        *vertex_cache
+            .entry(quantize_1e9(pos))
+            .or_insert_with(|| topo.add_vertex(pos))
     };
-
-    let mut vertex_cache: HashMap<[i64; 3], VertexId> = HashMap::new();
-    let get_or_create =
-        |cache: &mut HashMap<[i64; 3], VertexId>, topo: &mut Topology, pos: Point3| -> VertexId {
-            let key = quantize_pt(pos);
-            *cache.entry(key).or_insert_with(|| topo.add_vertex(pos))
-        };
 
     // Walk each segment, densifying arcs. Every tessellation point becomes a
     // shared vertex pair (bot + top); lateral faces and cap faces both
@@ -578,10 +609,10 @@ fn extrude_with_arcs(profile: &SketchProfile, direction: Vec3, arc_segs: usize) 
     let mut bot_chain: Vec<VertexId> = Vec::new();
     let mut top_chain: Vec<VertexId> = Vec::new();
     // Inclusive ranges: seg `i` spans chain[seg_first[i]..=seg_last[i]].
-    let mut seg_first: Vec<usize> = Vec::with_capacity(profile.segments.len());
-    let mut seg_last: Vec<usize> = Vec::with_capacity(profile.segments.len());
+    let mut seg_first: Vec<usize> = Vec::with_capacity(segments.len());
+    let mut seg_last: Vec<usize> = Vec::with_capacity(segments.len());
 
-    for (idx, seg) in profile.segments.iter().enumerate() {
+    for (idx, seg) in segments.iter().enumerate() {
         let tess_points_2d: Vec<Point2> = match seg {
             SketchSegment::Line { start, end } => {
                 if idx == 0 {
@@ -596,7 +627,8 @@ fn extrude_with_arcs(profile: &SketchProfile, direction: Vec3, arc_segs: usize) 
                 center,
                 ccw,
             } => {
-                let mut pts = sample_arc_2d(*start, *end, *center, *ccw, arc_segs);
+                let n = arc_sample_count(*start, *end, *center, *ccw, arc_segs);
+                let mut pts = sample_arc_2d(*start, *end, *center, *ccw, n);
                 if idx != 0 {
                     pts.remove(0);
                 }
@@ -615,8 +647,8 @@ fn extrude_with_arcs(profile: &SketchProfile, direction: Vec3, arc_segs: usize) 
 
         for p2 in tess_points_2d {
             let p3 = profile.to_3d(p2);
-            let bot_v = get_or_create(&mut vertex_cache, &mut topo, p3);
-            let top_v = get_or_create(&mut vertex_cache, &mut topo, p3 + direction);
+            let bot_v = get_or_create(topo, p3);
+            let top_v = get_or_create(topo, p3 + direction);
             bot_chain.push(bot_v);
             top_chain.push(top_v);
         }
@@ -624,11 +656,8 @@ fn extrude_with_arcs(profile: &SketchProfile, direction: Vec3, arc_segs: usize) 
         seg_last.push(bot_chain.len() - 1);
     }
 
-    let mut all_faces = Vec::new();
-    let mut he_map: HashMap<([i64; 3], [i64; 3]), HalfEdgeId> = HashMap::new();
-
     // Build one lateral face per original segment.
-    for (idx, seg) in profile.segments.iter().enumerate() {
+    for (idx, seg) in segments.iter().enumerate() {
         let start_idx = seg_first[idx];
         let end_idx = seg_last[idx];
         let slice_len = end_idx - start_idx + 1;
@@ -640,12 +669,10 @@ fn extrude_with_arcs(profile: &SketchProfile, direction: Vec3, arc_segs: usize) 
         let mut loop_hes: Vec<HalfEdgeId> = Vec::with_capacity(2 * slice_len);
         for w in bot_slice.windows(2) {
             loop_hes.push(topo.add_half_edge(w[0]));
-            let _ = w[1];
         }
         loop_hes.push(topo.add_half_edge(bot_slice[slice_len - 1])); // right edge start
         for w in top_slice.windows(2).rev() {
             loop_hes.push(topo.add_half_edge(w[1]));
-            let _ = w[0];
         }
         loop_hes.push(topo.add_half_edge(top_slice[0])); // left edge start
 
@@ -681,10 +708,11 @@ fn extrude_with_arcs(profile: &SketchProfile, direction: Vec3, arc_segs: usize) 
         };
 
         let loop_id = topo.add_loop(&loop_hes);
-        // A clockwise arc in a CCW profile is concave: the solid material
-        // lies *outside* its cylinder, so the face normal (which
-        // CylinderSurface always evaluates radially outward) must be
-        // flipped for the face to point out of the solid.
+        // A clockwise arc in a CCW loop is concave (and every arc of a CW
+        // hole loop is): the solid material lies *outside* its cylinder,
+        // so the face normal (which CylinderSurface always evaluates
+        // radially outward) must be flipped for the face to point out of
+        // the solid.
         let orientation = match seg {
             SketchSegment::Arc { ccw: false, .. } => Orientation::Reversed,
             _ => Orientation::Forward,
@@ -698,18 +726,53 @@ fn extrude_with_arcs(profile: &SketchProfile, direction: Vec3, arc_segs: usize) 
             let origin = topo.vertices[he.origin].point;
             let next = he.next.unwrap();
             let dest = topo.vertices[topo.half_edges[next].origin].point;
-            he_map.insert((quantize_pt(origin), quantize_pt(dest)), he_id);
+            he_map.insert((quantize_1e9(origin), quantize_1e9(dest)), he_id);
         }
     }
 
-    // Build cap faces. Drop the final duplicate (chains close with
-    // bot_chain[last] == bot_chain[first]) so caps become a single circular
-    // loop.
+    // Drop the final duplicate (chains close with chain[last] ==
+    // chain[first]) so a cap sees a single circular ring.
     let n_chain = bot_chain.len();
     let last_is_dup = bot_chain[n_chain - 1] == bot_chain[0];
     let chain_len = if last_is_dup { n_chain - 1 } else { n_chain };
-    let cap_bot: Vec<VertexId> = (0..chain_len).map(|i| bot_chain[i]).collect();
-    let cap_top: Vec<VertexId> = (0..chain_len).map(|i| top_chain[i]).collect();
+    bot_chain.truncate(chain_len);
+    top_chain.truncate(chain_len);
+    (bot_chain, top_chain)
+}
+
+/// Extrude a profile whose segments include non-full-circle arcs.
+///
+/// Each arc segment becomes one analytic `CylinderSurface` lateral face;
+/// each line segment becomes one `Plane` lateral face. The outer loop of
+/// every cylindrical face carries the arc's rim samples (proportional to
+/// its sweep, at least `arc_segs`) along each of its top and bottom
+/// boundaries so the cap polygons stay faithful to the original profile and
+/// share their boundary vertices with the adjacent lateral faces (required
+/// for half-edge twin pairing).
+///
+/// This path is taken in preference to the generic polygonal builder
+/// whenever a profile contains any arc; it preserves the analytic surface
+/// type end-to-end (tessellator, booleans, STEP export, fillet) so
+/// downstream ops don't have to guess that a curved wall lurks inside a
+/// strip of thin near-coplanar quads.
+fn extrude_with_arcs(profile: &SketchProfile, direction: Vec3, arc_segs: usize) -> BRepSolid {
+    let mut topo = Topology::new();
+    let mut geom = GeometryStore::new();
+    let mut vertex_cache = VertexCache::new();
+    let mut all_faces = Vec::new();
+    let mut he_map: HashMap<([i64; 3], [i64; 3]), HalfEdgeId> = HashMap::new();
+
+    let (cap_bot, cap_top) = build_loop_walls(
+        &mut topo,
+        &mut geom,
+        profile,
+        &profile.segments,
+        direction,
+        arc_segs,
+        &mut vertex_cache,
+        &mut he_map,
+        &mut all_faces,
+    );
 
     let bot_cap_face_id = build_cap_face(
         &mut topo,
@@ -718,7 +781,7 @@ fn extrude_with_arcs(profile: &SketchProfile, direction: Vec3, arc_segs: usize) 
         &-*profile.normal.as_ref(),
         true,
         &mut he_map,
-        quantize_pt,
+        quantize_1e9,
     );
     all_faces.push(bot_cap_face_id);
 
@@ -729,7 +792,7 @@ fn extrude_with_arcs(profile: &SketchProfile, direction: Vec3, arc_segs: usize) 
         profile.normal.as_ref(),
         false,
         &mut he_map,
-        quantize_pt,
+        quantize_1e9,
     );
     all_faces.push(top_cap_face_id);
 
@@ -757,9 +820,9 @@ fn extrude_with_arcs(profile: &SketchProfile, direction: Vec3, arc_segs: usize) 
 /// clockwise and hole loops clockwise (viewed from the +normal direction),
 /// so callers may pass loops in either orientation.
 ///
-/// Arc segments (in the outer profile or holes) are polygonized with the
-/// default [`ExtrudeOptions::arc_segments`] subdivision; the analytic
-/// cylinder fast paths only apply to hole-free profiles.
+/// Arc segments (in the outer profile or holes) become analytic
+/// `CylinderSurface` walls, sampled along their rims in proportion to their
+/// sweep, as in a hole-free arc extrusion.
 ///
 /// # Preconditions
 ///
@@ -791,8 +854,10 @@ pub fn extrude_with_holes(
     let arc_segs = ExtrudeOptions::default().arc_segments as usize;
 
     // Validate each hole loop (closure, degeneracy) by round-tripping it
-    // through the SketchProfile constructor on the outer profile's plane,
-    // then polygonize arcs so the build below is line-only.
+    // through the SketchProfile constructor on the outer profile's plane.
+    // Normalize winding: outer CCW, holes CW (viewed from +normal). The
+    // wall builder then points the outer walls out of the solid and the
+    // hole walls into the hole cavity (also out of the material).
     let mut hole_profiles: Vec<SketchProfile> = Vec::with_capacity(holes.len());
     for hole in holes {
         let hp = SketchProfile::new(
@@ -801,112 +866,55 @@ pub fn extrude_with_holes(
             *profile.y_dir.as_ref(),
             hole.clone(),
         )?;
-        hole_profiles.push(if hp.is_line_only() {
-            hp
+        hole_profiles.push(if hp.signed_area() > 0.0 {
+            hp.reversed()
         } else {
-            hp.tessellate(arc_segs)
+            hp
         });
     }
-    let outer = if profile.is_line_only() {
-        profile.clone()
+    let outer = if profile.signed_area() < 0.0 {
+        profile.reversed()
     } else {
-        profile.tessellate(arc_segs)
+        profile.clone()
     };
-
-    // Normalize winding: outer CCW, holes CW (viewed from +normal). The
-    // lateral-face winding below then produces outward normals on the outer
-    // walls and hole-facing normals on the interior walls.
-    let outer_pts = oriented_loop_points(&outer, true);
-    let hole_pts: Vec<Vec<Point2>> = hole_profiles
-        .iter()
-        .map(|hp| oriented_loop_points(hp, false))
-        .collect();
 
     let mut topo = Topology::new();
     let mut geom = GeometryStore::new();
-
-    let quantize_pt = |p: Point3| -> [i64; 3] {
-        [
-            (p.x * 1e9).round() as i64,
-            (p.y * 1e9).round() as i64,
-            (p.z * 1e9).round() as i64,
-        ]
-    };
-    let mut vertex_cache: HashMap<[i64; 3], VertexId> = HashMap::new();
-    let mut get_or_create = |topo: &mut Topology, pos: Point3| -> VertexId {
-        let key = quantize_pt(pos);
-        *vertex_cache
-            .entry(key)
-            .or_insert_with(|| topo.add_vertex(pos))
-    };
-
-    // Bottom/top vertex rings for the outer loop and each hole loop.
-    let make_rings = |topo: &mut Topology,
-                      cache: &mut dyn FnMut(&mut Topology, Point3) -> VertexId,
-                      pts: &[Point2]|
-     -> (Vec<VertexId>, Vec<VertexId>) {
-        let mut bot = Vec::with_capacity(pts.len());
-        let mut top = Vec::with_capacity(pts.len());
-        for p2 in pts {
-            let p3 = profile.to_3d(*p2);
-            bot.push(cache(topo, p3));
-            top.push(cache(topo, p3 + direction));
-        }
-        (bot, top)
-    };
-
-    let (outer_bot, outer_top) = make_rings(&mut topo, &mut get_or_create, &outer_pts);
-    let hole_rings: Vec<(Vec<VertexId>, Vec<VertexId>)> = hole_pts
-        .iter()
-        .map(|pts| make_rings(&mut topo, &mut get_or_create, pts))
-        .collect();
-
+    let mut vertex_cache = VertexCache::new();
     let mut all_faces = Vec::new();
     let mut he_map: HashMap<([i64; 3], [i64; 3]), HalfEdgeId> = HashMap::new();
 
-    // Lateral faces: one planar quad per loop edge, winding
-    // bot_i → bot_next → top_next → top_i. For the CCW outer loop this
-    // points normals out of the solid; for CW hole loops it points them
-    // into the hole cavity (also out of the material).
-    let build_lateral_ring =
-        |topo: &mut Topology,
-         geom: &mut GeometryStore,
-         bot: &[VertexId],
-         top: &[VertexId],
-         faces: &mut Vec<vcad_kernel_topo::FaceId>,
-         he_map: &mut HashMap<([i64; 3], [i64; 3]), HalfEdgeId>| {
-            let n = bot.len();
-            for i in 0..n {
-                let j = (i + 1) % n;
-                let p0 = topo.vertices[bot[i]].point;
-                let p1 = topo.vertices[bot[j]].point;
-                let p2 = topo.vertices[top[j]].point;
-                let p3 = topo.vertices[top[i]].point;
-                let (face_id, face_hes) = build_planar_lateral_face(
-                    topo, geom, bot[i], bot[j], top[j], top[i], p0, p1, p2, p3,
-                );
-                faces.push(face_id);
-                for he_id in face_hes {
-                    let he = &topo.half_edges[he_id];
-                    let origin = topo.vertices[he.origin].point;
-                    let next = he.next.unwrap();
-                    let dest = topo.vertices[topo.half_edges[next].origin].point;
-                    he_map.insert((quantize_pt(origin), quantize_pt(dest)), he_id);
-                }
-            }
-        };
-
-    build_lateral_ring(
+    // Lateral walls. Arcs stay analytic (one CylinderSurface face each, a
+    // hole's walls `Reversed`), exactly as in a hole-free arc extrusion —
+    // polygonizing them here made every arc-bearing profile with holes a
+    // coarse, lossy chord polygon in the B-rep itself.
+    let (outer_bot, outer_top) = build_loop_walls(
         &mut topo,
         &mut geom,
-        &outer_bot,
-        &outer_top,
-        &mut all_faces,
+        &outer,
+        &outer.segments,
+        direction,
+        arc_segs,
+        &mut vertex_cache,
         &mut he_map,
+        &mut all_faces,
     );
-    for (bot, top) in &hole_rings {
-        build_lateral_ring(&mut topo, &mut geom, bot, top, &mut all_faces, &mut he_map);
-    }
+    let hole_rings: Vec<(Vec<VertexId>, Vec<VertexId>)> = hole_profiles
+        .iter()
+        .map(|hp| {
+            build_loop_walls(
+                &mut topo,
+                &mut geom,
+                &outer,
+                &hp.segments,
+                direction,
+                arc_segs,
+                &mut vertex_cache,
+                &mut he_map,
+                &mut all_faces,
+            )
+        })
+        .collect();
 
     // Caps. Bottom cap: outward normal is -profile.normal, so both the outer
     // loop and the hole loops are reversed relative to their stored order;
@@ -914,8 +922,8 @@ pub fn extrude_with_holes(
     // anti-parallel to its lateral twin so `pair_twin_half_edges` closes the
     // manifold.
     for (is_bottom, cap_normal) in [
-        (true, -*profile.normal.as_ref()),
-        (false, *profile.normal.as_ref()),
+        (true, -*outer.normal.as_ref()),
+        (false, *outer.normal.as_ref()),
     ] {
         let ring = |bot: &Vec<VertexId>, top: &Vec<VertexId>| -> Vec<VertexId> {
             if is_bottom {
@@ -929,11 +937,11 @@ pub fn extrude_with_holes(
         let surf_idx = geom.add_surface(Box::new(Plane::from_normal(origin_pos, cap_normal)));
 
         let outer_loop_id =
-            add_cap_loop(&mut topo, &outer_ring, is_bottom, &mut he_map, quantize_pt);
+            add_cap_loop(&mut topo, &outer_ring, is_bottom, &mut he_map, quantize_1e9);
         let face_id = topo.add_face(outer_loop_id, surf_idx, Orientation::Forward);
         for (bot, top) in &hole_rings {
             let hole_ring = ring(bot, top);
-            let loop_id = add_cap_loop(&mut topo, &hole_ring, is_bottom, &mut he_map, quantize_pt);
+            let loop_id = add_cap_loop(&mut topo, &hole_ring, is_bottom, &mut he_map, quantize_1e9);
             topo.add_inner_loop(face_id, loop_id);
         }
         all_faces.push(face_id);
@@ -949,17 +957,6 @@ pub fn extrude_with_holes(
         geometry: geom,
         solid_id,
     })
-}
-
-/// Segment start points of a (line-only) profile, oriented CCW when `ccw`
-/// is true and CW otherwise, as measured in the profile's 2D plane.
-fn oriented_loop_points(profile: &SketchProfile, ccw: bool) -> Vec<Point2> {
-    let mut pts = profile.vertices_2d();
-    let is_ccw = profile.signed_area() > 0.0;
-    if is_ccw != ccw {
-        pts.reverse();
-    }
-    pts
 }
 
 /// Create a cap loop over `ring` (reversed when `reversed`), registering its
