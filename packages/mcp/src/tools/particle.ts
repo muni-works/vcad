@@ -60,6 +60,91 @@ const deviceSpecSchema = {
   },
 };
 
+const vec3 = {
+  type: "array" as const,
+  minItems: 3,
+  maxItems: 3,
+  items: paramValue,
+};
+
+const wireCommon = {
+  wire_radius_mm: paramValue,
+  potential_v: paramValue,
+};
+
+const deviceSpec3dSchema = {
+  type: "object" as const,
+  required: ["chamber", "electrodes"],
+  description:
+    "Non-axisymmetric (3D) device: thin-wire electrodes along arbitrary paths " +
+    "inside a grounded sphere — real fusor globe grids (great circles, " +
+    "latitude + meridian), stalks, rings. Solved by the thin-wire boundary-" +
+    "element method; refused (fail-closed) if the wire model's surface-" +
+    "residual gates fail. Units mm / volts. Unknown fields are errors. Any " +
+    "numeric field may be a parameter name bound in `parameters`.",
+  properties: {
+    chamber: {
+      type: "object" as const,
+      required: ["kind"],
+      description:
+        '`{"kind":"sphere","radius_mm":…}` (grounded sphere about the origin) ' +
+        'or `{"kind":"unbounded"}`.',
+      properties: {
+        kind: { type: "string" as const, enum: ["sphere", "unbounded"] },
+        radius_mm: paramValue,
+      },
+    },
+    wall_potential_v: paramValue,
+    electrodes: {
+      type: "array" as const,
+      minItems: 1,
+      items: {
+        type: "object" as const,
+        required: ["kind", "wire_radius_mm", "potential_v"],
+        description:
+          "One of: great_circle_globe {grid_radius_mm, layout " +
+          '("orthogonal3"|"cuboctahedral4"|"icosidodecahedral6") | normals: [[x,y,z],…]}; ' +
+          "lat_long_globe {grid_radius_mm, n_lat, n_long}; circle {center_mm, normal, " +
+          "radius_mm, ampere_turns?}; arc {center_mm, normal, start_mm, sweep_deg}; " +
+          "polyline {points_mm, closed?}; ring {ring_radius_mm, z_mm, ampere_turns?}. " +
+          "All take wire_radius_mm and potential_v.",
+        properties: {
+          kind: {
+            type: "string" as const,
+            enum: [
+              "great_circle_globe",
+              "lat_long_globe",
+              "circle",
+              "arc",
+              "polyline",
+              "ring",
+            ],
+          },
+          ...wireCommon,
+          grid_radius_mm: paramValue,
+          layout: {
+            type: "string" as const,
+            enum: ["orthogonal3", "cuboctahedral4", "icosidodecahedral6"],
+          },
+          normals: { type: "array" as const, items: vec3 },
+          n_lat: { type: "number" as const },
+          n_long: { type: "number" as const },
+          center_mm: vec3,
+          normal: vec3,
+          start_mm: vec3,
+          radius_mm: paramValue,
+          sweep_deg: paramValue,
+          points_mm: { type: "array" as const, items: vec3 },
+          closed: { type: "boolean" as const },
+          ring_radius_mm: paramValue,
+          z_mm: paramValue,
+          ampere_turns: paramValue,
+        },
+      },
+    },
+  },
+};
+
 const parametersSchema = {
   type: "object" as const,
   additionalProperties: { type: "number" as const },
@@ -104,6 +189,12 @@ const simOptionsSchema = {
         "m² (order 1e-19 for D⁺ on D₂ in the keV band). Omitted = CX off; " +
         "the neutron-rate claim then reports the beam-on-background floor.",
     },
+    step_mm: {
+      type: "number" as const,
+      description:
+        "3D specs only: tracer step length, mm. Default a quarter of the " +
+        "thinnest wire radius, capped at 0.25 mm. (nr/nz apply to 2D specs only.)",
+    },
   },
 };
 
@@ -111,7 +202,12 @@ export const simulateChargedParticlesSchema = {
   type: "object" as const,
   required: ["spec"],
   properties: {
-    spec: deviceSpecSchema,
+    spec: {
+      description:
+        "An axisymmetric ring device (`rings`) or a 3D wire device " +
+        "(`chamber` + `electrodes`).",
+      anyOf: [deviceSpecSchema, deviceSpec3dSchema],
+    },
     parameters: parametersSchema,
     options: simOptionsSchema,
   },
@@ -192,10 +288,24 @@ export const toolDefs: ToolDef[] = [
       "\"predicted\" and roll up Provisional until bench-measured. Vacuum single-particle " +
       "optics: no space charge, no CX chain (optional single-generation CX via " +
       "`options.cx_sigma_m2`); neutron rates are floors. Deterministic. Cost scales with " +
-      "grid × particles × passes — defaults run in seconds.",
+      "grid × particles × passes — defaults run in seconds. A 3D spec (`chamber` + " +
+      "`electrodes`) models real globe grids (great circles, latitude + meridian wires) in " +
+      "a grounded sphere via the thin-wire BEM and a full-sphere launch; it returns stats, " +
+      "neutron-rate floor/ceiling and the solver's surface-residual report, without " +
+      "receipt claims (3D claims are not wired yet).",
     inputSchema: simulateChargedParticlesSchema,
     handler: (args, ctx) => {
       const a = args as Json;
+      const spec = a.spec as Json | undefined;
+      if (spec && typeof spec === "object" && "electrodes" in spec) {
+        return textResult(
+          ctx.engine.particleSimulate3d(
+            JSON.stringify(spec),
+            JSON.stringify(a.parameters ?? {}),
+            JSON.stringify(a.options ?? {}),
+          ),
+        );
+      }
       const out = ctx.engine.particleSimulate(
         JSON.stringify(a.spec),
         JSON.stringify(a.parameters ?? {}),

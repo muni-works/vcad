@@ -344,7 +344,7 @@ impl SegIndex {
 ///
 /// At every station (segment midpoint and joint) the exact-kernel
 /// potential is sampled on a ring of points around the wire surface.
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ResidualReport {
     /// Worst |ring-mean − V| away from junctions: the monopole
     /// consistency the thin-wire model claims. Gated by
