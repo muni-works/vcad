@@ -339,8 +339,9 @@ export {
   defaultParamsFor,
   searchParts,
   buildPartDocument,
+  partInfo,
 } from "./parts.js";
-export type { PartManifestEntry, PartParam, PartXref } from "./parts.js";
+export type { PartManifestEntry, PartParam, PartXref, PartPort, PartInfo } from "./parts.js";
 
 // Analyze mode (#592): off-main-thread solver studies
 export { AnalyzeClient, getAnalyzeClient } from "./analyze.js";
@@ -780,6 +781,8 @@ export interface KernelModule {
   getPartsManifest?: () => string;
   /** Build a stdlib part's sub-document given path and params JSON. */
   buildPart?: (path: string, paramsJson: string) => string;
+  /** Describe a stdlib part: mate ports + metadata JSON. */
+  partInfo?: (path: string, paramsJson: string) => string;
   /** Evaluate a sheet-metal op chain → mesh + flat pattern + summary JSON. */
   evaluateSheetMetalChain?: (chainJson: string) => string;
   /** Run sheet-metal manufacturability vs. a shop profile → JSON. */
@@ -1379,6 +1382,7 @@ export class Engine {
       documentSensitivities: (wasmModule as Record<string, unknown>).documentSensitivities as KernelModule["documentSensitivities"],
       getPartsManifest: (wasmModule as Record<string, unknown>).getPartsManifest as KernelModule["getPartsManifest"],
       buildPart: (wasmModule as Record<string, unknown>).buildPart as KernelModule["buildPart"],
+      partInfo: (wasmModule as Record<string, unknown>).partInfo as KernelModule["partInfo"],
       evaluateSheetMetalChain: (wasmModule as Record<string, unknown>).evaluateSheetMetalChain as KernelModule["evaluateSheetMetalChain"],
       checkSheetMetal: (wasmModule as Record<string, unknown>).checkSheetMetal as KernelModule["checkSheetMetal"],
       costSheetMetal: (wasmModule as Record<string, unknown>).costSheetMetal as KernelModule["costSheetMetal"],

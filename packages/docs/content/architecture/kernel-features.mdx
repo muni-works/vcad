@@ -272,6 +272,44 @@ Three things fall out of declaring the axis instead of composing rotations by ha
 
 The catalog behind `search_mechanical_parts` supplies stocked lengths, so `M4x11` is rejected rather than modeled; `[bolt-stacked]` adds washers and nuts on the same axis and checks the length against the grip plus the stack, refusing a bolt that is too short to reach or too long for a blind hole. `[clearance-hole]` and `[tapped-hole]` take the same thread designation (ISO 273 medium fit, coarse-thread tap drill), so a hole and the fastener that goes in it cannot disagree.
 
+### Vacuum Hardware
+
+Vacuum systems are assembled almost entirely from stock hardware, so the parts library carries it: `vcad-parts` ships 18 parametric `std:vacuum.*` parts with dimensions taken from published tables. Nothing is guessed.
+
+| Family | Parts | Sizes | Source |
+|---|---|---|---|
+| ConFlat (ISO 3669) | flange (blank or bored, through or tapped holes, fixed or rotatable, knife edge), copper gasket, bolt set, zero-length reducer | DN16, DN25, DN40, DN63, DN100, DN160 (1.33"–8") | Metallicflex CF catalog; bolt circles cross-checked against vacgen |
+| ISO-KF (ISO 2861) | flange (blank or weld stub), centering ring, wing-nut clamp | KF16, KF25, KF40, KF50 | MKS Series 31 catalog; Marco Rubber O-ring table |
+| Fittings | nipple, tee, 4- or 6-way cross, CF→KF adapter | any CF or KF size | catalog center-to-face values |
+| Chambers | spherical cube (6 faces, optional 8 corner ports), spherical octagon | DN63, DN100, DN160 faces | Kimball MCF600 spherical ID; center-to-face is derived and labelled as derived |
+| Instruments | viewport, HV feedthrough, electrical/thermocouple feedthrough, needle/leak valve, gauge | CF and KF mounts | catalog window apertures; envelopes are labelled |
+
+Every part has named **ports**. A port sits on the seal mid-plane, with an outward `axis` and a clocking `up` that the CF bolt holes straddle. Mating two ports makes the origins coincide, opposes the axes and keeps the `up` vectors parallel, so the bolt holes line up. In loon, `[vac-mate]` places a part's port on a parent part's port. Joining two different sizes or families is refused with a hint to add a reducer or adapter. Each joint also adds its consumables to the document's hardware list: a copper gasket plus bolts, nuts and washers for CF (bolt length worked out from the stack, with no nuts on a tapped side), or a centering ring plus clamp for KF.
+
+A hobby IEC fusor chamber built from the library ([`examples/vacuum/fusor-chamber.loon`](https://github.com/ecto/vcad/blob/main/examples/vacuum/fusor-chamber.loon)):
+
+```lisp
+[let cube   [vac "vacuum.chamber.spherical-cube" #["size" "DN100"]]]
+[let hv-red [vac-mate "vacuum.cf.reducer" #["large" "DN100" "small" "DN40"] "large" cube "+z"]]
+[let hv     [vac-mate "vacuum.feedthrough.hv" #["size" "DN40" "rated_kv" "40" "vacuum_length" "115"]
+              "seal" hv-red "small"]]
+[let window [vac-mate "vacuum.viewport" #["size" "DN100"] "seal" cube "+y"]]
+[let side   [vac-mate "vacuum.cf.reducer" #["large" "DN100" "small" "DN40"] "large" cube "+x"]]
+[let tee    [vac-mate "vacuum.tee" #["size" "DN40"] "-z" side "small"]]
+[let ad     [vac-mate "vacuum.adapter.cf-kf" #["cf" "DN40" "kf" "KF25" "length" "40"] "cf" tee "+z"]]
+[let gauge  [vac-mate "vacuum.gauge" #["size" "KF25" "kind" "pirani"] "inlet" ad "kf"]]
+; … pump port, leak valve, blanks, grid: see the example file
+[root cube "stainless"]
+[root window "glass"]
+[root hv "ceramic"]
+```
+
+![Fusor chamber: 6" spherical cube with HV feedthrough, viewport, pump line, gauge tee and leak valve](/assets/kernel/vacuum-fusor-chamber.jpg)
+
+Metadata is machine-readable and says where each number comes from. `describe_part` (MCP) and `vcad_parts::part_info` return the dimensions with their catalog source and BOM lines. Ratings such as kV, A and V are inputs you take from the part you buy; they are echoed back and never derived from geometry. Figures computed from the model carry a `_model` suffix. The HV feedthrough, for example, sizes its air-side insulator at 3 mm/kV and reports `creepage_air_mm_model`. It also returns a `suggested_clearance` entry (`min_mm`, 1 mm/kV, at least 25 mm) that can go straight into `check_clearance`.
+
+On the Rust side, `std:` `PartInstance` nodes (from `place_part`) are now expanded inside `vcad-eval`, so library parts render in vcad.app, the CLI and `vcad-render`, not only in the TypeScript engine. Flanges are built as one extrude, with bolt holes and bore as sketch hole loops, plus a recess cut and a revolved knife edge, so a 20-hole DN160 flange costs a handful of booleans instead of twenty. Tests pin the DN160 flange to its closed-form volume within 1%, every part to a non-empty solid through the real kernel, mated CF bolt holes to coincidence, and a mated cube-to-nipple joint to zero interference.
+
 ### Spur Gears
 
 `SpurGear` is a parametric involute spur gear: module, tooth count, pressure angle (20° by default; 14.5° and 25° are the other common standards), face width and an optional bore. The flanks are exact involutes of the base circle `d·cos α`, ISO full-depth (addendum 1 m, dedendum 1.25 m), extruded straight up from `z = 0` with the bore as an interior loop — no boolean pass. Tooth 0 is centred on +X, so meshing is arithmetic: put the second gear at `m(z1+z2)/2` and turn it by `vcad_ir::gear::mesh_rotation_deg` (here 180° − half a 30-tooth pitch) so a gap faces the first gear's tooth. The Mac app's **Spur Gear** tool does exactly this with **Mesh with selected gear**.

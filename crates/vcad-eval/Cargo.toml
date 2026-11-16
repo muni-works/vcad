@@ -13,6 +13,8 @@ build = "build.rs"
 
 [dependencies]
 vcad-ir.workspace = true
+# Expands `std:` PartInstance nodes for Rust-side evaluators (vcad.app, CLI, render).
+vcad-parts.workspace = true
 vcad-kernel = { path = "../vcad-kernel", version = "0.11.0", default-features = false }
 vcad-ecad-pcb.workspace = true
 vcad-kernel-math.workspace = true

@@ -1056,6 +1056,9 @@ fn is_solid_tag(tag: &str) -> bool {
             | "Hull"
             | "Fastener"
             | "BoltCircle"
+            | "StdPart"
+            | "StdPartAt"
+            | "StdPartMate"
             | "ClearanceHole"
             | "TappedHole"
             | "CylinderN"
@@ -1470,6 +1473,187 @@ impl ConvertCtx {
 
         for line in &plan.hardware {
             self.add_hardware(line.clone());
+        }
+        Ok(root)
+    }
+
+    /// Read a library-part params list: alternating key/value pairs,
+    /// `#["size" "DN40" "length" 150]`. Values may be strings, numbers or
+    /// booleans.
+    fn part_params(
+        &self,
+        v: &Value,
+    ) -> Result<HashMap<String, serde_json::Value>, String> {
+        let Value::Vec(items) = v else {
+            return Err(format!(
+                "part params must be a list of alternating keys and values, got {v}"
+            ));
+        };
+        if items.len() % 2 != 0 {
+            return Err(format!(
+                "part params need key/value pairs, got an odd-length list {v}"
+            ));
+        }
+        let items: Vec<&Value> = items.iter().collect();
+        let mut out = HashMap::new();
+        for kv in items.chunks(2) {
+            let key = self.str_val(kv[0])?;
+            let val = match kv[1] {
+                Value::Str(s) => serde_json::json!(s.to_string()),
+                Value::Int(i) => serde_json::json!(i),
+                Value::Float(f) => serde_json::json!(f),
+                Value::Bool(b) => serde_json::json!(b),
+                other => return Err(format!("part param {key:?}: unsupported value {other}")),
+            };
+            out.insert(key, val);
+        }
+        Ok(out)
+    }
+
+    /// Resolve a `StdPart*` value to (path, params, world pose, mate joint).
+    /// The joint is the (child port, parent port) pair for a `StdPartMate`.
+    #[allow(clippy::type_complexity)]
+    fn std_part_pose(
+        &self,
+        value: &Value,
+        depth: usize,
+    ) -> Result<
+        (
+            String,
+            HashMap<String, serde_json::Value>,
+            vcad_parts::vacuum::Rigid,
+            Option<(vcad_parts::PortInfo, vcad_parts::PortInfo)>,
+        ),
+        String,
+    > {
+        use vcad_parts::vacuum::{check_compatible, mate_transform, Rigid};
+        if depth > 64 {
+            return Err("part mate chain is deeper than 64 — is it cyclic?".into());
+        }
+        let (tag, fields) = match value {
+            Value::Adt(tag, fields) => (tag.as_str(), fields.as_slice()),
+            other => {
+                return Err(format!(
+                    "a mate parent must be a [vac], [vac-at] or [vac-mate] part, got {other}"
+                ))
+            }
+        };
+        match tag {
+            "StdPart" => {
+                assert_fields(tag, fields, 2)?;
+                Ok((
+                    self.str_val(&fields[0])?,
+                    self.part_params(&fields[1])?,
+                    Rigid::IDENTITY,
+                    None,
+                ))
+            }
+            "StdPartAt" => {
+                assert_fields(tag, fields, 8)?;
+                let t = self.vec3(fields, 2)?;
+                let e = self.vec3(fields, 5)?;
+                Ok((
+                    self.str_val(&fields[0])?,
+                    self.part_params(&fields[1])?,
+                    Rigid {
+                        r: euler_xyz_matrix(e),
+                        t: [t.x, t.y, t.z],
+                    },
+                    None,
+                ))
+            }
+            "StdPartMate" => {
+                assert_fields(tag, fields, 5)?;
+                let path = self.str_val(&fields[0])?;
+                let params = self.part_params(&fields[1])?;
+                let port = self.str_val(&fields[2])?;
+                let parent_port = self.str_val(&fields[4])?;
+                let (ppath, pparams, ppose, _) = self.std_part_pose(&fields[3], depth + 1)?;
+                let pinfo = vcad_parts::part_info(&ppath, &pparams)?;
+                let pp = pinfo
+                    .ports
+                    .iter()
+                    .find(|p| p.name == parent_port)
+                    .ok_or_else(|| {
+                        format!(
+                            "{ppath} has no port {parent_port:?} (ports: {})",
+                            port_names(&pinfo.ports)
+                        )
+                    })?;
+                let cinfo = vcad_parts::part_info(&path, &params)?;
+                let cp = cinfo.ports.iter().find(|p| p.name == port).ok_or_else(|| {
+                    format!(
+                        "{path} has no port {port:?} (ports: {})",
+                        port_names(&cinfo.ports)
+                    )
+                })?;
+                check_compatible(cp, pp)?;
+                let world_pp = ppose.port(pp);
+                let pose = mate_transform(cp, &world_pp);
+                Ok((path, params, pose, Some((cp.clone(), pp.clone()))))
+            }
+            other => Err(format!(
+                "a mate parent must be a [vac], [vac-at] or [vac-mate] part, got [{other} …]"
+            )),
+        }
+    }
+
+    /// `[StdPart path params]`, `[StdPartAt path params x y z rx ry rz]`,
+    /// `[StdPartMate path params port parent parent-port]`: a `vcad-parts`
+    /// library part, spliced in as geometry, posed (for a mate: so its port
+    /// meets the parent's), with its BOM lines — and, for a mate, the joint's
+    /// gasket + bolts or centering ring + clamp — added to the hardware list.
+    fn convert_std_part(&mut self, value: &Value) -> Result<NodeId, String> {
+        let (path, params, pose, joint) = self.std_part_pose(value, 0)?;
+        let sub = vcad_parts::build_part(&path, &params)?;
+        let mut next = self.next_id;
+        let mut alloc = || {
+            let n = next;
+            next += 1;
+            n
+        };
+        let mut root = vcad_parts::splice(&mut self.doc.nodes, &sub, &mut alloc)?;
+        self.next_id = next;
+
+        let e = pose.euler_xyz_deg();
+        if e.iter().any(|a| a.abs() > 1e-9) {
+            root = self.insert_node(CsgOp::Rotate {
+                child: root,
+                angles: Vec3::new(e[0], e[1], e[2]),
+            });
+        }
+        if pose.t.iter().any(|v| v.abs() > 1e-12) {
+            root = self.insert_node(CsgOp::Translate {
+                child: root,
+                offset: Vec3::new(pose.t[0], pose.t[1], pose.t[2]),
+            });
+        }
+
+        let info = vcad_parts::part_info(&path, &params)?;
+        if let Some(lines) = info.metadata.get("bom").and_then(|b| b.as_array()) {
+            for l in lines {
+                if let (Some(spec), Some(qty)) = (l["spec"].as_str(), l["qty"].as_u64()) {
+                    self.add_hardware(HardwareLine {
+                        catalog_id: None,
+                        spec: spec.to_string(),
+                        qty: qty as u32,
+                        head_protrusion_mm: None,
+                    });
+                }
+            }
+        }
+        if let Some((cp, pp)) = joint {
+            let spec = vcad_parts::vacuum::FlangeSpec::parse(&cp.family, &cp.size)?;
+            for (spec, qty) in
+                vcad_parts::vacuum::flanges::joint_hardware(spec, cp.tapped || pp.tapped)
+            {
+                self.add_hardware(HardwareLine {
+                    catalog_id: None,
+                    spec,
+                    qty,
+                    head_protrusion_mm: None,
+                });
+            }
         }
         Ok(root)
     }
@@ -1992,6 +2176,7 @@ impl ConvertCtx {
                 return self.emit_fastener(&plan);
             }
             "BoltCircle" => return self.convert_bolt_circle(fields),
+            "StdPart" | "StdPartAt" | "StdPartMate" => return self.convert_std_part(value),
             "ClearanceHole" | "TappedHole" => return self.convert_hole(tag, fields),
             "SheetBaseFlangeRect"
             | "SheetBaseFlangePolygon"
@@ -2859,6 +3044,27 @@ fn assert_fields(tag: &str, fields: &[Value], expected: usize) -> Result<(), Str
         ));
     }
     Ok(())
+}
+
+
+/// Comma-separated port names, for error messages.
+fn port_names(ports: &[vcad_parts::PortInfo]) -> String {
+    ports
+        .iter()
+        .map(|p| p.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// R = Rz·Ry·Rx for XYZ Euler angles in degrees (the `CsgOp::Rotate` order).
+fn euler_xyz_matrix(e: Vec3) -> [[f64; 3]; 3] {
+    let (a, b, c) = (e.x.to_radians(), e.y.to_radians(), e.z.to_radians());
+    let (sa, ca, sb, cb, sc, cc) = (a.sin(), a.cos(), b.sin(), b.cos(), c.sin(), c.cos());
+    [
+        [cc * cb, cc * sb * sa - sc * ca, cc * sb * ca + sc * sa],
+        [sc * cb, sc * sb * sa + cc * ca, sc * sb * ca - cc * sa],
+        [-sb, cb * sa, cb * ca],
+    ]
 }
 
 #[cfg(test)]

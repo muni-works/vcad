@@ -7802,6 +7802,19 @@ pub fn build_part(path: &str, params_json: &str) -> Result<String, JsError> {
     serde_json::to_string(&doc).map_err(|e| JsError::new(&format!("serialize failed: {e}")))
 }
 
+/// Describe a built-in part: its mate ports (part-local frame) and metadata
+/// (ratings, envelopes, provenance, BOM lines), as JSON
+/// `{ "ports": [...], "metadata": {...} }`. Parts without a describer return
+/// no ports and empty metadata.
+#[wasm_bindgen(js_name = partInfo)]
+pub fn part_info(path: &str, params_json: &str) -> Result<String, JsError> {
+    let params: std::collections::HashMap<String, serde_json::Value> =
+        serde_json::from_str(params_json)
+            .map_err(|e| JsError::new(&format!("invalid params JSON: {e}")))?;
+    let info = vcad_parts::part_info(path, &params).map_err(|e| JsError::new(&e))?;
+    serde_json::to_string(&info).map_err(|e| JsError::new(&format!("serialize failed: {e}")))
+}
+
 /// Evaluate a loon source string and return a JSON-serialized vcad Document.
 ///
 /// The vcad library (types, constructors) is automatically prepended.
