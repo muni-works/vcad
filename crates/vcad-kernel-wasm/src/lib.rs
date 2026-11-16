@@ -9,6 +9,7 @@
 
 #[cfg(feature = "ecad")]
 pub mod calibration;
+pub mod cavity;
 pub mod circuit_sim;
 #[cfg(feature = "ecad")]
 pub mod design_constraints;
@@ -8059,6 +8060,34 @@ pub fn document_sensitivities_js(doc_json: &str, request_json: &str) -> Result<J
         .map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// Optimize named document parameters: minimize a weighted sum of QoIs
+/// subject to parameter-expression and QoI constraints
+/// ([`vcad_eval::optimize::optimize_document`]). Returns the
+/// [`vcad_eval::optimize::OptimizeDocResult`] — the optimum, the KKT report,
+/// and the full trajectory with every gradient component's provenance.
+///
+/// Only the built-in seam QoIs (volume, mass, centroid) are available here:
+/// solver plug-ins (modal frequency, …) register through the native Rust API
+/// (`vcad_eval::optimize::QoiRegistry`), not in the browser kernel.
+#[wasm_bindgen(js_name = optimizeDocument)]
+pub fn optimize_document_js(doc_json: &str, request_json: &str) -> Result<JsValue, JsError> {
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {}", e)))?;
+    let req: vcad_eval::optimize::OptimizeDocRequest = serde_json::from_str(request_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse request: {}", e)))?;
+    let registry = vcad_eval::optimize::QoiRegistry::new();
+    let result = vcad_eval::optimize::optimize_document(
+        &doc,
+        &req,
+        &registry,
+        &vcad_eval::optimize::OptimizeHooks::default(),
+    )
+    .map_err(|e| JsError::new(&e.to_string()))?;
+    result
+        .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+        .map_err(|e| JsError::new(&e.to_string()))
+}
+
 // =============================================================================
 // Embroidery module (feature-gated)
 // =============================================================================
@@ -10629,6 +10658,106 @@ pub fn antenna_analyze(
     };
     let ser = serde_wasm_bindgen::Serializer::json_compatible();
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
+#[derive(serde::Deserialize, Default)]
+struct WasmNanoVnaTolerances {
+    s11_db: Option<f64>,
+    freq_rel: Option<f64>,
+    z_ohm: Option<f64>,
+    bandwidth_rel: Option<f64>,
+}
+
+#[derive(serde::Deserialize)]
+struct WasmS1pContext {
+    claim_set: vcad_kernel::vcad_kernel_antenna::receipt::ClaimSet,
+    #[serde(default)]
+    tolerances: Option<WasmNanoVnaTolerances>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct WasmRewContext {
+    #[serde(default)]
+    extra_uncertainty_hz: f64,
+}
+
+#[derive(serde::Serialize)]
+struct WasmS1pImport {
+    points: usize,
+    reference_ohm: f64,
+    measurements: Vec<vcad_kernel::vcad_kernel_antenna::receipt::Measurement>,
+}
+
+/// Reduce a raw instrument file to measurements for the claims ledger
+/// (`import_measurement`), fail-closed:
+///
+/// - `"touchstone_s1p"`: NanoVNA one-port sweep → antenna measurements named
+///   after the claims (`vcad_kernel_antenna::nanovna`). `context_json` is
+///   `{claim_set: <vcad.antenna-claims/1>, tolerances?: {s11_db, freq_rel,
+///   z_ohm, bandwidth_rel}}` (unset tolerances keep the NanoVNA defaults).
+/// - `"rew_impedance"`: REW impedance export → port tuning f_b
+///   (`vcad_kernel_acoustics::rew`). `context_json`: `{extra_uncertainty_hz?}`.
+/// - `"thermocouple_csv"`: thermocouple log → one temperature
+///   (`vcad_kernel_thermal::thermocouple`). `context_json` is a
+///   `ThermocoupleOptions`.
+#[wasm_bindgen(js_name = importMeasurementFile)]
+pub fn import_measurement_file(
+    format: &str,
+    text: &str,
+    context_json: &str,
+) -> Result<JsValue, JsError> {
+    let ctx = if context_json.trim().is_empty() {
+        "{}"
+    } else {
+        context_json
+    };
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    match format {
+        "touchstone_s1p" => {
+            use vcad_kernel::vcad_kernel_antenna as ak;
+            let c: WasmS1pContext = serde_json::from_str(ctx).map_err(|e| {
+                JsError::new(&format!("bad context (needs the antenna claim_set): {e}"))
+            })?;
+            let sweep = ak::nanovna::parse_s1p(text).map_err(|e| JsError::new(&e.to_string()))?;
+            let d = ak::nanovna::NanoVnaTolerances::default();
+            let t = c.tolerances.unwrap_or_default();
+            let tol = ak::nanovna::NanoVnaTolerances {
+                s11_db: t.s11_db.unwrap_or(d.s11_db),
+                freq_rel: t.freq_rel.unwrap_or(d.freq_rel),
+                z_ohm: t.z_ohm.unwrap_or(d.z_ohm),
+                bandwidth_rel: t.bandwidth_rel.unwrap_or(d.bandwidth_rel),
+            };
+            let measurements = ak::nanovna::measurements_from_s1p(&sweep, &c.claim_set, &tol)
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            let out = WasmS1pImport {
+                points: sweep.samples.len(),
+                reference_ohm: sweep.z0,
+                measurements,
+            };
+            serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+        }
+        "rew_impedance" => {
+            let c: WasmRewContext = serde_json::from_str(ctx)
+                .map_err(|e| JsError::new(&format!("bad context: {e}")))?;
+            let out = vcad_kernel::vcad_kernel_acoustics::rew::tuning_from_impedance_export(
+                text,
+                c.extra_uncertainty_hz,
+            )
+            .map_err(|e| JsError::new(&e))?;
+            serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+        }
+        "thermocouple_csv" => {
+            let o: vcad_kernel::vcad_kernel_thermal::thermocouple::ThermocoupleOptions =
+                serde_json::from_str(ctx)
+                    .map_err(|e| JsError::new(&format!("bad context: {e}")))?;
+            let out = vcad_kernel::vcad_kernel_thermal::thermocouple::reduce_log(text, &o)
+                .map_err(|e| JsError::new(&e))?;
+            serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+        }
+        other => Err(JsError::new(&format!(
+            "unknown measurement format {other:?} (touchstone_s1p, rew_impedance, thermocouple_csv)"
+        ))),
+    }
 }
 
 /// Extract a thin-wire `AntennaSpec` from a document's `PcbBoard` node

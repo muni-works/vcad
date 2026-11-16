@@ -2706,6 +2706,18 @@ pub struct Document {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub analysis_studies: Vec<AnalysisStudy>,
 
+    /// Every solver's frozen predictions and their bench measurements
+    /// (`vcad.claims-ledger/1`): one ledger per document, so one receipt can
+    /// carry thermal, EM, antenna, acoustics, tolerance … claims and later
+    /// score each against hardware. Excluded from the document fingerprint
+    /// (recording a measurement is not a design change).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // Named, not inlined: vcad-receipt exports the ledger types itself (one
+    // generated.ts module, so the name resolves); deriving them here too
+    // would export them twice.
+    #[cfg_attr(feature = "ts-rs", ts(optional, type = "ClaimsLedger"))]
+    pub claims_ledger: Option<vcad_receipt::ledger::ClaimsLedger>,
+
     // Drafting (optional, zero-cost when absent)
     /// Drawing sheet settings: title block, section lines, BOM visibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3327,6 +3339,7 @@ impl Default for Document {
             clearance_specs: Vec::new(),
             constraints: Vec::new(),
             analysis_studies: Vec::new(),
+            claims_ledger: None,
             drawing: None,
             timeline: None,
             part_ids: None,

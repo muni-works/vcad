@@ -7,6 +7,21 @@
 /* eslint-disable */
 
 /**
+ * How a measurement is accepted against a prediction. The measurer owns
+ * the band (instrument accuracy + design acceptance) — every domain crate
+ * says so — but each domain fixes the *shape* of the rule.
+ */
+export type AcceptanceBand = { "kind": "factor", 
+/**
+ * Band factor, ≥ 1.
+ */
+band_factor: number, } | { "kind": "absolute", 
+/**
+ * Acceptance half-width, in the claim's unit, ≥ 0.
+ */
+half_width: number, };
+
+/**
  * The agent manifest hosts load (`vcad_agent_manifest`).
  */
 export type AgentManifest = { 
@@ -621,6 +636,23 @@ export type ClaimValue = number | boolean | string;
  * a pass and never silently dropped.
  */
 export type ClaimVerdict = "pass" | "provisional" | "fail" | "unverifiable";
+
+/**
+ * The document-persisted ledger.
+ */
+export type ClaimsLedger = { 
+/**
+ * [`LEDGER_SCHEMA`].
+ */
+schema: string, 
+/**
+ * Entries, in attach order (the scorecard's row order).
+ */
+entries: Array<LedgerEntry>, 
+/**
+ * Native claim sets referenced by [`LedgerEntry::claim_set`].
+ */
+claim_sets?: Array<NativeClaimSet>, };
 
 /**
  * A named clearance assertion between two part groups, with its measured
@@ -2015,6 +2047,14 @@ constraints?: Array<DesignConstraint>,
  * a study whose stored baseline no longer reproduces is Stale/Violated.
  */
 analysis_studies?: Array<AnalysisStudy>, 
+/**
+ * Every solver's frozen predictions and their bench measurements
+ * (`vcad.claims-ledger/1`): one ledger per document, so one receipt can
+ * carry thermal, EM, antenna, acoustics, tolerance … claims and later
+ * score each against hardware. Excluded from the document fingerprint
+ * (recording a measurement is not a design change).
+ */
+claims_ledger?: ClaimsLedger, 
 /**
  * Drawing sheet settings: title block, section lines, BOM visibility.
  */
@@ -4507,6 +4547,109 @@ drill: number, } | { "type": "Castellated",
 drill: number, };
 
 /**
+ * One frozen prediction, plus its measurement once bound.
+ */
+export type LedgerEntry = { 
+/**
+ * The unified claim exactly as the solver emitted it (oracle id and
+ * version, basis, solver provenance in `details`).
+ */
+claim: ReceiptClaim, 
+/**
+ * The frozen numeric prediction. Solver adapters put the computed value
+ * in `claim.measured` ("what the oracle computed"); freezing lifts it
+ * here so the comparison never has to guess which field holds it.
+ */
+predicted: ClaimQuantity, 
+/**
+ * The prediction's own uncertainty, when the claim family carries one
+ * (tolerance stackups), same unit.
+ */
+prediction_uncertainty?: number, 
+/**
+ * Hash over the frozen prediction (claim identity, oracle, value, unit,
+ * uncertainty), computed by the producer over one canonical form.
+ */
+prediction_sha256: string, 
+/**
+ * Fingerprint of the design the prediction was priced on.
+ */
+document_fingerprint?: string, 
+/**
+ * Native claim-set schema the claim came from (`vcad.thermal-claims/1`).
+ */
+claim_set_schema?: string, 
+/**
+ * Index into [`ClaimsLedger::claim_sets`] of the native set this claim
+ * came from (typed importers read domain context from it).
+ */
+claim_set?: number, 
+/**
+ * The tool that produced the claim (`"solve_thermal"`).
+ */
+source_tool?: string, 
+/**
+ * RFC 3339 time the prediction was frozen.
+ */
+attached_at?: string, 
+/**
+ * The bound measurement, once recorded.
+ */
+measurement?: LedgerMeasurement, };
+
+/**
+ * One bench reading bound to one ledger entry.
+ */
+export type LedgerMeasurement = { 
+/**
+ * Measured value, in the prediction's unit.
+ */
+value: number, 
+/**
+ * Unit label (must match the frozen prediction's unit).
+ */
+unit?: string, 
+/**
+ * One-sigma absolute uncertainty, same unit, ≥ 0.
+ */
+uncertainty: number, 
+/**
+ * Instrument provenance ("NanoVNA-H4 SOL-cal at SMA", "type-K TC epoxied").
+ */
+instrument: string, 
+/**
+ * Acceptance band the measurer committed to.
+ */
+band: AcceptanceBand, 
+/**
+ * SHA-256 (hex) of the raw instrument file, when one was imported.
+ */
+raw_sha256?: string, 
+/**
+ * Raw file name, for the audit trail.
+ */
+raw_name?: string, 
+/**
+ * Typed importer that produced this reading (`"touchstone_s1p"`,
+ * `"rew_impedance"`, `"thermocouple_csv"`); absent for a hand entry.
+ */
+importer?: string, 
+/**
+ * RFC 3339 time of recording.
+ */
+recorded_at?: string, 
+/**
+ * The `prediction_sha256` this reading was compared against. If the
+ * entry's prediction hash moves, the row reads Stale.
+ */
+prediction_sha256: string, };
+
+/**
+ * Per-row verdict.
+ */
+export type LedgerRow = "holds" | "violated" | "unmeasured" | "stale";
+
+/**
  * A light source in the scene.
  */
 export type Light = { 
@@ -4919,6 +5062,21 @@ direction: Vec3,
  * Edge length at pick time (mm).
  */
 length: number, };
+
+/**
+ * A native claim set, kept verbatim (as JSON text) for importers that need
+ * domain context the unified claim drops (antenna band + reference
+ * impedance, tolerance uncertainties).
+ */
+export type NativeClaimSet = { 
+/**
+ * Schema tag, e.g. `vcad.antenna-claims/1`.
+ */
+schema: string, 
+/**
+ * The claim set serialized as JSON.
+ */
+json: string, };
 
 /**
  * A named electrical connection.
@@ -6308,6 +6466,11 @@ role?: LayerRole,
  * rather than authored.
  */
 roleInferred?: boolean, };
+
+/**
+ * Why a row is Stale.
+ */
+export type StaleReason = "prediction_changed" | "design_changed";
 
 /**
  * One contributor in a linear tolerance chain.
