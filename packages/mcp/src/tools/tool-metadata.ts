@@ -284,6 +284,7 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
     annotations: RO,
   },
   optimize_electrodes: { title: "Optimize Electrodes", annotations: RO },
+  magnetic_field: { title: "Magnetic Field", annotations: RO },
   simulate_em: { title: "Simulate EM Fields", annotations: RO },
   simulate_photonics: { title: "Simulate Photonics", annotations: RO },
   analyze_antenna: { title: "Analyze Antenna", annotations: RO },

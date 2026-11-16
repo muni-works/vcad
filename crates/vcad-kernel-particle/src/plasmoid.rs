@@ -12,9 +12,10 @@
 //! - [`DiscMagnet`]: an axially magnetized disc is *exactly* a solenoidal
 //!   bound-current sheet `K = M × n̂ = (B_r/μ0) φ̂`, so its field is the sum
 //!   of coaxial current loops — evaluated with the crate's exact
-//!   elliptic-integral loop field ([`crate::field::b_ring`]). Posed
-//!   anywhere in 3D via [`MagnetPose`] (the existing [`crate::field::FieldMap`]
-//!   is coaxial-only, which is why this is a separate source).
+//!   elliptic-integral loop field ([`crate::field::b_ring`]). It lives in
+//!   [`crate::field3d`] (the general posed-source module, re-exported here)
+//!   and is posed in 3D via [`MagnetPose`], a thin wrapper over
+//!   [`crate::field3d::Pose`].
 //! - [`hall_parameter`]: electron magnetization `β = ω_ce / ν_m` from the
 //!   local |B| and a gas collision frequency ([`collision_frequency`]).
 //!   Classical cross-field transport scales as `1/(1+β²)`, so a region with
@@ -43,93 +44,12 @@
 //! E×B term uses the *time-averaged* (rectified) sheath field, which does
 //! not average out.
 
-use crate::constants::{ELECTRON_MASS, ELEMENTARY_CHARGE, MU_0};
-use crate::field::{b_ring, RingCoil};
+use crate::constants::{ELECTRON_MASS, ELEMENTARY_CHARGE};
+pub use crate::field3d::{b_dipole, DiscMagnet};
+use crate::field3d::{norm, FieldScene, Pose};
 
 /// Boltzmann constant, J/K.
 const K_B: f64 = 1.380_649e-23;
-
-/// An axially magnetized cylindrical permanent magnet (disc or rod), SI.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DiscMagnet {
-    /// Radius, m.
-    pub radius_m: f64,
-    /// Thickness along the magnetization axis, m.
-    pub thickness_m: f64,
-    /// Remanence B_r, tesla (N52 ≈ 1.43).
-    pub remanence_t: f64,
-    /// Number of loops the bound-current sheet is discretized into.
-    pub n_loops: usize,
-}
-
-impl DiscMagnet {
-    /// A 10 mm × 5 mm N52 disc — the classic "tiny neodymium magnet".
-    pub fn n52_10x5() -> Self {
-        Self {
-            radius_m: 5e-3,
-            thickness_m: 5e-3,
-            remanence_t: 1.43,
-            n_loops: 48,
-        }
-    }
-
-    /// Magnetic dipole moment, A·m² (`M·V = B_r V / μ0`).
-    pub fn moment(&self) -> f64 {
-        self.remanence_t / MU_0
-            * std::f64::consts::PI
-            * self.radius_m
-            * self.radius_m
-            * self.thickness_m
-    }
-
-    /// Field in the magnet frame (center at origin, magnetization +z),
-    /// returned as Cartesian `[Bx, By, Bz]`, tesla.
-    pub fn b_local(&self, p: [f64; 3]) -> [f64; 3] {
-        let n = self.n_loops.max(1);
-        let dz = self.thickness_m / n as f64;
-        let at = self.remanence_t / MU_0 * dz;
-        let rho = (p[0] * p[0] + p[1] * p[1]).sqrt();
-        let (mut br, mut bz) = (0.0, 0.0);
-        for i in 0..n {
-            let coil = RingCoil {
-                radius_m: self.radius_m,
-                z_m: -0.5 * self.thickness_m + (i as f64 + 0.5) * dz,
-                ampere_turns: at,
-                wire_radius_m: 0.5 * dz,
-            };
-            let (r, z) = b_ring(&coil, rho, p[2]);
-            br += r;
-            bz += z;
-        }
-        if rho < 1e-15 {
-            return [0.0, 0.0, bz];
-        }
-        [br * p[0] / rho, br * p[1] / rho, bz]
-    }
-
-    /// Closed-form on-axis field `B_z(z)` (magnet frame), tesla — the exact
-    /// solid-cylinder result, valid outside the magnet (`|z| > h/2`).
-    pub fn b_axis_exact(&self, z: f64) -> f64 {
-        let (r, h) = (self.radius_m, self.thickness_m);
-        let a = z + 0.5 * h;
-        let b = z - 0.5 * h;
-        0.5 * self.remanence_t * (a / (r * r + a * a).sqrt() - b / (r * r + b * b).sqrt())
-    }
-}
-
-/// Field of a point dipole with moment `m` (A·m²) along unit `axis`, at
-/// offset `d` from it, tesla.
-pub fn b_dipole(m: f64, axis: [f64; 3], d: [f64; 3]) -> [f64; 3] {
-    let r2 = dot(d, d);
-    let r = r2.sqrt();
-    let mr = m * dot(axis, d) / r;
-    let k = MU_0 / (4.0 * std::f64::consts::PI * r2 * r);
-    [
-        k * (3.0 * mr * d[0] / r - m * axis[0]),
-        k * (3.0 * mr * d[1] / r - m * axis[1]),
-        k * (3.0 * mr * d[2] / r - m * axis[2]),
-    ]
-}
 
 /// Where a magnet is and which way its north pole points, SI.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -141,17 +61,22 @@ pub struct MagnetPose {
 }
 
 impl MagnetPose {
+    /// The equivalent general [`Pose`] (same local frame construction).
+    pub fn pose(&self) -> Pose {
+        Pose::from_axis(self.center_m, self.axis)
+    }
+
     /// World-frame field of `magnet` in this pose at world point `p`.
     pub fn b_world(&self, magnet: &DiscMagnet, p: [f64; 3]) -> [f64; 3] {
-        let w = normalize(self.axis);
-        let (u, v) = basis(w);
-        let d = sub(p, self.center_m);
-        let bl = magnet.b_local([dot(d, u), dot(d, v), dot(d, w)]);
-        [
-            bl[0] * u[0] + bl[1] * v[0] + bl[2] * w[0],
-            bl[0] * u[1] + bl[1] * v[1] + bl[2] * w[1],
-            bl[0] * u[2] + bl[1] * v[2] + bl[2] * w[2],
-        ]
+        let pose = self.pose();
+        pose.vec_to_world(magnet.b_local(pose.to_local(p)))
+    }
+
+    /// `magnet` in this pose as a one-source [`FieldScene`] — the form the
+    /// model's physics runs on. Add more sources to it (a second magnet, a
+    /// coil, a block) to steer the foot with any posed field.
+    pub fn scene(&self, magnet: &DiscMagnet) -> FieldScene {
+        FieldScene::new().with(magnet.as_source(), self.pose())
     }
 }
 
@@ -207,11 +132,82 @@ impl PlasmaParams {
         }
     }
 
+    /// Hall parameter β at dish point `(x, y)` (sampled at the glow height)
+    /// in an arbitrary field scene.
+    pub fn beta_in(&self, field: &FieldScene, x: f64, y: f64) -> f64 {
+        hall_parameter(field.b_magnitude([x, y, self.glow_height_m]), self.nu_per_s)
+    }
+
+    /// Transport potential Φ = ln(1 + β²) at dish point `(x, y)` in an
+    /// arbitrary field scene (any number of posed coils and magnets).
+    pub fn potential_in(&self, field: &FieldScene, x: f64, y: f64) -> f64 {
+        let beta = self.beta_in(field, x, y);
+        (1.0 + beta * beta).ln()
+    }
+
+    /// ∇Φ in the dish plane by central differences (1/m).
+    pub fn grad_potential_in(&self, field: &FieldScene, x: f64, y: f64) -> [f64; 2] {
+        let h = 2e-4;
+        let px = self.potential_in(field, x + h, y) - self.potential_in(field, x - h, y);
+        let py = self.potential_in(field, x, y + h) - self.potential_in(field, x, y - h);
+        [px / (2.0 * h), py / (2.0 * h)]
+    }
+
+    /// Largest |∇Φ| on the dish within `search_m` of `center_xy` (grid
+    /// search, 1 mm cells).
+    pub fn max_grad_in(&self, field: &FieldScene, center_xy: [f64; 2], search_m: f64) -> f64 {
+        let (cx, cy) = (center_xy[0], center_xy[1]);
+        let n = (search_m / 1e-3).ceil() as i64;
+        let mut best = 0.0f64;
+        for i in -n..=n {
+            for j in -n..=n {
+                let (x, y) = (cx + i as f64 * 1e-3, cy + j as f64 * 1e-3);
+                let g = self.grad_potential_in(field, x, y);
+                best = best.max((g[0] * g[0] + g[1] * g[1]).sqrt());
+            }
+        }
+        best
+    }
+
+    /// Depinning mobility `μ* = v_race / max|∇Φ|` for a field scene, with
+    /// the search centered on `center_xy` (the pinning site of interest).
+    pub fn depinning_mobility_in(&self, field: &FieldScene, center_xy: [f64; 2]) -> f64 {
+        self.race_speed_m_s / self.max_grad_in(field, center_xy, 0.03)
+    }
+
+    /// Foot velocity at `pos` (m/s) in a field scene; `None` = no field.
+    pub fn velocity_in(&self, field: Option<&FieldScene>, pos: [f64; 2]) -> [f64; 2] {
+        let (x, y) = (pos[0], pos[1]);
+        let r = (x * x + y * y).sqrt().max(1e-9);
+        let (er, ephi) = ([x / r, y / r], [-y / r, x / r]);
+        let vr = self.radial_rate_per_s * (self.orbit_radius_m - r);
+        let mut v = [
+            self.race_speed_m_s * ephi[0] + vr * er[0],
+            self.race_speed_m_s * ephi[1] + vr * er[1],
+        ];
+        if let Some(field) = field {
+            let g = self.grad_potential_in(field, x, y);
+            v[0] += self.mobility_m2_s * g[0];
+            v[1] += self.mobility_m2_s * g[1];
+            if self.spin_speed_m_s != 0.0 {
+                let b = field.b([x, y, self.glow_height_m]);
+                let beta = hall_parameter(norm(b), self.nu_per_s);
+                // E_dc points from the glow into the dish (−z); E×B ∝ −ẑ×B.
+                let d = [b[1], -b[0]];
+                let dn = (d[0] * d[0] + d[1] * d[1]).sqrt();
+                if dn > 1e-12 {
+                    let s = self.spin_speed_m_s * beta * beta / (1.0 + beta * beta) / dn;
+                    v[0] += s * d[0];
+                    v[1] += s * d[1];
+                }
+            }
+        }
+        v
+    }
+
     /// Transport potential Φ = ln(1 + β²) at dish point `(x, y)`.
     pub fn potential(&self, magnet: &DiscMagnet, pose: &MagnetPose, x: f64, y: f64) -> f64 {
-        let b = pose.b_world(magnet, [x, y, self.glow_height_m]);
-        let beta = hall_parameter(norm(b), self.nu_per_s);
-        (1.0 + beta * beta).ln()
+        self.potential_in(&pose.scene(magnet), x, y)
     }
 
     /// ∇Φ in the dish plane by central differences (1/m).
@@ -222,26 +218,14 @@ impl PlasmaParams {
         x: f64,
         y: f64,
     ) -> [f64; 2] {
-        let h = 2e-4;
-        let px = self.potential(magnet, pose, x + h, y) - self.potential(magnet, pose, x - h, y);
-        let py = self.potential(magnet, pose, x, y + h) - self.potential(magnet, pose, x, y - h);
-        [px / (2.0 * h), py / (2.0 * h)]
+        self.grad_potential_in(&pose.scene(magnet), x, y)
     }
 
     /// Largest |∇Φ| on the dish for this pose (grid search, 1 mm cells
     /// within `search_m` of the magnet's footprint).
     pub fn max_grad(&self, magnet: &DiscMagnet, pose: &MagnetPose, search_m: f64) -> f64 {
-        let (cx, cy) = (pose.center_m[0], pose.center_m[1]);
-        let n = (search_m / 1e-3).ceil() as i64;
-        let mut best = 0.0f64;
-        for i in -n..=n {
-            for j in -n..=n {
-                let (x, y) = (cx + i as f64 * 1e-3, cy + j as f64 * 1e-3);
-                let g = self.grad_potential(magnet, pose, x, y);
-                best = best.max((g[0] * g[0] + g[1] * g[1]).sqrt());
-            }
-        }
-        best
+        let c = [pose.center_m[0], pose.center_m[1]];
+        self.max_grad_in(&pose.scene(magnet), c, search_m)
     }
 
     /// Mobility at which the pin exactly balances the racing drive,
@@ -259,32 +243,7 @@ impl PlasmaParams {
         pose: Option<&MagnetPose>,
         pos: [f64; 2],
     ) -> [f64; 2] {
-        let (x, y) = (pos[0], pos[1]);
-        let r = (x * x + y * y).sqrt().max(1e-9);
-        let (er, ephi) = ([x / r, y / r], [-y / r, x / r]);
-        let vr = self.radial_rate_per_s * (self.orbit_radius_m - r);
-        let mut v = [
-            self.race_speed_m_s * ephi[0] + vr * er[0],
-            self.race_speed_m_s * ephi[1] + vr * er[1],
-        ];
-        if let Some(pose) = pose {
-            let g = self.grad_potential(magnet, pose, x, y);
-            v[0] += self.mobility_m2_s * g[0];
-            v[1] += self.mobility_m2_s * g[1];
-            if self.spin_speed_m_s != 0.0 {
-                let b = pose.b_world(magnet, [x, y, self.glow_height_m]);
-                let beta = hall_parameter(norm(b), self.nu_per_s);
-                // E_dc points from the glow into the dish (−z); E×B ∝ −ẑ×B.
-                let d = [b[1], -b[0]];
-                let dn = (d[0] * d[0] + d[1] * d[1]).sqrt();
-                if dn > 1e-12 {
-                    let s = self.spin_speed_m_s * beta * beta / (1.0 + beta * beta) / dn;
-                    v[0] += s * d[0];
-                    v[1] += s * d[1];
-                }
-            }
-        }
-        v
+        self.velocity_in(pose.map(|q| q.scene(magnet)).as_ref(), pos)
     }
 }
 
@@ -338,7 +297,54 @@ where
     out.push(sample(0.0, p));
     for s in 0..steps {
         let t = s as f64 * dt;
-        let f = |tt: f64, q: [f64; 2]| params.velocity(magnet, pose_at(tt).as_ref(), q);
+        p = rk4_step(params, magnet, &pose_at, t, p, dt);
+        if (s + 1) % stride == 0 {
+            out.push(sample(t + dt, p));
+        }
+    }
+    out
+}
+
+/// One sample of a [`simulate_scene`] trajectory.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneSample {
+    /// Time, s.
+    pub t_s: f64,
+    /// Foot position on the dish, m.
+    pub pos_m: [f64; 2],
+    /// Hall parameter at the foot (0 with no field).
+    pub beta: f64,
+}
+
+/// [`simulate`] for an arbitrary, time-varying field: `field_at(t)` returns
+/// the scene at time `t` (any posed coils and magnets — see
+/// [`crate::field3d`]), or `None` for no field. Same RK4 + dish clamp.
+pub fn simulate_scene<F>(
+    params: &PlasmaParams,
+    field_at: F,
+    start: [f64; 2],
+    t_end: f64,
+    dt: f64,
+    stride: usize,
+) -> Vec<SceneSample>
+where
+    F: Fn(f64) -> Option<FieldScene>,
+{
+    let steps = (t_end / dt).round() as usize;
+    let stride = stride.max(1);
+    let mut p = start;
+    let mut out = Vec::with_capacity(steps / stride + 1);
+    let sample = |t: f64, p: [f64; 2]| SceneSample {
+        t_s: t,
+        pos_m: p,
+        beta: field_at(t)
+            .map(|f| params.beta_in(&f, p[0], p[1]))
+            .unwrap_or(0.0),
+    };
+    out.push(sample(0.0, p));
+    for s in 0..steps {
+        let t = s as f64 * dt;
+        let f = |tt: f64, q: [f64; 2]| params.velocity_in(field_at(tt).as_ref(), q);
         let k1 = f(t, p);
         let k2 = f(
             t + 0.5 * dt,
@@ -351,7 +357,6 @@ where
         let k4 = f(t + dt, [p[0] + dt * k3[0], p[1] + dt * k3[1]]);
         p[0] += dt / 6.0 * (k1[0] + 2.0 * k2[0] + 2.0 * k3[0] + k4[0]);
         p[1] += dt / 6.0 * (k1[1] + 2.0 * k2[1] + 2.0 * k3[1] + k4[1]);
-        // The foot cannot leave the dish.
         let r = (p[0] * p[0] + p[1] * p[1]).sqrt();
         if r > params.dish_radius_m {
             let s = params.dish_radius_m / r;
@@ -364,40 +369,217 @@ where
     out
 }
 
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+/// One RK4 step of the foot from `p` at time `t` (pose sampled at `t`,
+/// `t + dt/2` and `t + dt`), then the dish clamp. Shared by [`simulate`]
+/// and [`PlasmoidStepper`] so the two cannot drift.
+fn rk4_step<F>(
+    params: &PlasmaParams,
+    magnet: &DiscMagnet,
+    pose_at: &F,
+    t: f64,
+    mut p: [f64; 2],
+    dt: f64,
+) -> [f64; 2]
+where
+    F: Fn(f64) -> Option<MagnetPose>,
+{
+    let f = |tt: f64, q: [f64; 2]| params.velocity(magnet, pose_at(tt).as_ref(), q);
+    let k1 = f(t, p);
+    let k2 = f(
+        t + 0.5 * dt,
+        [p[0] + 0.5 * dt * k1[0], p[1] + 0.5 * dt * k1[1]],
+    );
+    let k3 = f(
+        t + 0.5 * dt,
+        [p[0] + 0.5 * dt * k2[0], p[1] + 0.5 * dt * k2[1]],
+    );
+    let k4 = f(t + dt, [p[0] + dt * k3[0], p[1] + dt * k3[1]]);
+    p[0] += dt / 6.0 * (k1[0] + 2.0 * k2[0] + 2.0 * k3[0] + k4[0]);
+    p[1] += dt / 6.0 * (k1[1] + 2.0 * k2[1] + 2.0 * k3[1] + k4[1]);
+    // The foot cannot leave the dish.
+    let r = (p[0] * p[0] + p[1] * p[1]).sqrt();
+    if r > params.dish_radius_m {
+        let s = params.dish_radius_m / r;
+        p = [p[0] * s, p[1] * s];
+    }
+    p
 }
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+
+/// Horizontal foot–footprint distance under which the foot counts as
+/// locked to the magnet, m (the demo example's criterion).
+pub const LOCK_RADIUS_M: f64 = 8e-3;
+/// Magnet height above the dish surface beyond which it is "lifted away"
+/// and nothing counts as locked, m.
+pub const LOCK_MAX_HEIGHT_M: f64 = 0.05;
+
+/// Hall parameter below which the glow under the foot is not magnetized
+/// and nothing counts as locked (a racer merely passing under a magnet at
+/// 1 atm is not "locked").
+pub const LOCK_MIN_BETA: f64 = 1.0;
+
+/// Whether a foot at `pos` (Hall parameter `beta` there) is locked to a
+/// magnet at `pose`: within [`LOCK_RADIUS_M`] of its footprint, the magnet
+/// held low, and the glow magnetized (β ≥ [`LOCK_MIN_BETA`]).
+pub fn is_locked(pos: [f64; 2], beta: f64, pose: Option<&MagnetPose>) -> bool {
+    let Some(q) = pose else { return false };
+    let c = q.center_m;
+    let d = ((pos[0] - c[0]).powi(2) + (pos[1] - c[1]).powi(2)).sqrt();
+    d < LOCK_RADIUS_M && c[2] < LOCK_MAX_HEIGHT_M && beta >= LOCK_MIN_BETA
 }
-fn norm(a: [f64; 3]) -> f64 {
-    dot(a, a).sqrt()
+
+/// Snapshot of a live [`PlasmoidStepper`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlasmoidState {
+    /// Simulated time since creation / reset, s.
+    pub t_s: f64,
+    /// Foot position on the dish, m.
+    pub pos_m: [f64; 2],
+    /// Hall parameter at the foot (0 with no magnet).
+    pub beta: f64,
+    /// Foot locked to the magnet ([`is_locked`]).
+    pub locked: bool,
 }
-fn normalize(a: [f64; 3]) -> [f64; 3] {
-    let n = norm(a);
-    [a[0] / n, a[1] / n, a[2] / n]
+
+/// Incremental (live) integration of the same model as [`simulate`], for a
+/// magnet whose pose is only known as it happens — e.g. dragged by hand in
+/// the app. Each [`advance`](Self::advance) call takes the magnet pose at
+/// the start and end of a frame and integrates fixed RK4 substeps with the
+/// pose linearly interpolated between them, so a fast flick still reaches
+/// the integrator as a smooth path rather than one teleport per frame.
+#[derive(Debug, Clone)]
+pub struct PlasmoidStepper {
+    /// Model parameters (pressure can be changed with
+    /// [`set_pressure_torr`](Self::set_pressure_torr)).
+    pub params: PlasmaParams,
+    /// The magnet.
+    pub magnet: DiscMagnet,
+    start: [f64; 2],
+    pos: [f64; 2],
+    t: f64,
+    last_pose: Option<MagnetPose>,
 }
-/// Orthonormal `(u, v)` completing `w` to a right-handed frame.
-fn basis(w: [f64; 3]) -> ([f64; 3], [f64; 3]) {
-    let a = if w[0].abs() < 0.9 {
-        [1.0, 0.0, 0.0]
-    } else {
-        [0.0, 1.0, 0.0]
-    };
-    let u = normalize(cross(a, w));
-    (u, cross(w, u))
-}
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
+
+impl PlasmoidStepper {
+    /// A stepper with the foot at `start` (m) and no magnet seen yet.
+    pub fn new(params: PlasmaParams, magnet: DiscMagnet, start: [f64; 2]) -> Self {
+        Self {
+            params,
+            magnet,
+            start,
+            pos: start,
+            t: 0.0,
+            last_pose: None,
+        }
+    }
+
+    /// The demo configuration: argon at `pressure_torr` on a dish of
+    /// `dish_radius_m`, the racer on an orbit at `orbit_frac` of the dish
+    /// radius, and the mobility calibrated *once* at 1 Torr to `margin × μ*`
+    /// for the magnet held `gap_m` above the orbit. Pressure changes later
+    /// move only ν (hence β), never μ — so raising the pressure makes the
+    /// lock vanish instead of being renormalized away.
+    pub fn demo(
+        magnet: DiscMagnet,
+        dish_radius_m: f64,
+        orbit_frac: f64,
+        gap_m: f64,
+        margin: f64,
+        pressure_torr: f64,
+    ) -> Self {
+        let mut p = PlasmaParams::argon_dish(1.0);
+        p.dish_radius_m = dish_radius_m;
+        p.orbit_radius_m = orbit_frac * dish_radius_m;
+        let hold = MagnetPose {
+            center_m: [0.0, p.orbit_radius_m, gap_m + 0.5 * magnet.thickness_m],
+            axis: [0.0, 0.0, -1.0],
+        };
+        p.mobility_m2_s = margin * p.depinning_mobility(&magnet, &hold);
+        let mut s = Self::new(p, magnet, [p.orbit_radius_m, 0.0]);
+        s.set_pressure_torr(pressure_torr);
+        s
+    }
+
+    /// Change the gas pressure (argon, 300 K): updates ν only.
+    pub fn set_pressure_torr(&mut self, torr: f64) {
+        self.params.nu_per_s = collision_frequency(torr.max(1e-6) * 133.322, 300.0, 1e-19, 3.0);
+    }
+
+    /// Back to the start position at t = 0.
+    pub fn reset(&mut self) {
+        self.pos = self.start;
+        self.t = 0.0;
+        self.last_pose = None;
+    }
+
+    /// Advance by `substeps` RK4 steps of `dt` each, the magnet pose moving
+    /// linearly from `from` to `to` over the interval. `to = None` means no
+    /// magnet for the whole interval; `from = None` reuses the pose the
+    /// previous call ended on (or `to`, on the first call), which is what
+    /// a frame loop wants.
+    pub fn advance(
+        &mut self,
+        from: Option<MagnetPose>,
+        to: Option<MagnetPose>,
+        dt: f64,
+        substeps: usize,
+    ) -> PlasmoidState {
+        let from = from.or(self.last_pose).or(to);
+        let t0 = self.t;
+        let span = dt * substeps as f64;
+        let pose_at = |t: f64| -> Option<MagnetPose> {
+            let (a, b) = (from?, to?);
+            let u = if span > 0.0 {
+                ((t - t0) / span).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            let l = |x: f64, y: f64| x + (y - x) * u;
+            Some(MagnetPose {
+                center_m: [
+                    l(a.center_m[0], b.center_m[0]),
+                    l(a.center_m[1], b.center_m[1]),
+                    l(a.center_m[2], b.center_m[2]),
+                ],
+                axis: [
+                    l(a.axis[0], b.axis[0]),
+                    l(a.axis[1], b.axis[1]),
+                    l(a.axis[2], b.axis[2]),
+                ],
+            })
+        };
+        for k in 0..substeps {
+            let t = t0 + k as f64 * dt;
+            self.pos = rk4_step(&self.params, &self.magnet, &pose_at, t, self.pos, dt);
+        }
+        self.t = t0 + span;
+        self.last_pose = to;
+        self.state(to.as_ref())
+    }
+
+    /// The current state with the magnet at `pose`.
+    pub fn state(&self, pose: Option<&MagnetPose>) -> PlasmoidState {
+        let beta = pose
+            .map(|q| {
+                let b = q.b_world(
+                    &self.magnet,
+                    [self.pos[0], self.pos[1], self.params.glow_height_m],
+                );
+                hall_parameter(norm(b), self.params.nu_per_s)
+            })
+            .unwrap_or(0.0);
+        PlasmoidState {
+            t_s: self.t,
+            pos_m: self.pos,
+            beta,
+            locked: is_locked(self.pos, beta, pose),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::field3d::{sub, FieldSource};
 
     fn rel(a: f64, b: f64) -> f64 {
         (a - b).abs() / b.abs().max(1e-30)
@@ -549,5 +731,189 @@ mod tests {
         let fast = follows_sweep(20.0);
         assert!(slow > 0.99, "slow sweep: under the magnet {slow}");
         assert!(fast < 0.2, "fast flick: under the magnet {fast}");
+    }
+
+    #[test]
+    fn magnet_api_and_scene_api_are_bit_identical() {
+        let m = DiscMagnet::n52_10x5();
+        let mut p = PlasmaParams::argon_dish(1.0);
+        let r0 = p.orbit_radius_m;
+        let pose0 = pose_above(0.0, r0, 10e-3, &m);
+        p.mobility_m2_s = 2.0 * p.depinning_mobility(&m, &pose0);
+        assert_eq!(
+            p.depinning_mobility(&m, &pose0),
+            p.depinning_mobility_in(&pose0.scene(&m), [0.0, r0])
+        );
+        let pose_at = |t: f64| {
+            let a = std::f64::consts::FRAC_PI_2 - 3.0 * t;
+            Some(pose_above(r0 * a.cos(), r0 * a.sin(), 10e-3, &m))
+        };
+        let old = simulate(&p, &m, pose_at, [r0, 0.0], 1.0, 1e-3, 50);
+        let new = simulate_scene(
+            &p,
+            |t| pose_at(t).map(|q| q.scene(&m)),
+            [r0, 0.0],
+            1.0,
+            1e-3,
+            50,
+        );
+        assert_eq!(old.len(), new.len());
+        for (a, b) in old.iter().zip(&new) {
+            assert_eq!((a.t_s, a.pos_m, a.beta), (b.t_s, b.pos_m, b.beta));
+        }
+    }
+
+    #[test]
+    fn block_magnet_pins_the_foot() {
+        // A source the disc-only API could not express: a 10×10×5 mm N52
+        // block, north pole down, 10 mm above the orbit.
+        let mut p = PlasmaParams::argon_dish(1.0);
+        p.radial_rate_per_s = 0.0;
+        p.spin_speed_m_s = 0.0;
+        let site = [0.0, p.orbit_radius_m];
+        let scene = FieldScene::new().with(
+            FieldSource::BlockMagnet {
+                size_m: [10e-3, 10e-3, 5e-3],
+                remanence_t: 1.43,
+            },
+            Pose::from_euler_deg([site[0], site[1], 12.5e-3], [180.0, 0.0, 0.0]),
+        );
+        let dist = |scale: f64| {
+            let mut q = p;
+            q.mobility_m2_s = scale * q.depinning_mobility_in(&scene, site);
+            let tr = simulate_scene(
+                &q,
+                |_| Some(scene.clone()),
+                [q.orbit_radius_m, 0.0],
+                4.0,
+                5e-4,
+                100,
+            );
+            let e = tr.last().unwrap().pos_m;
+            ((e[0] - site[0]).powi(2) + (e[1] - site[1]).powi(2)).sqrt()
+        };
+        assert!(dist(1.3) < 8e-3, "{}", dist(1.3));
+        assert!(dist(0.7) > 20e-3, "{}", dist(0.7));
+    }
+
+    /// The live stepper, fed frame-by-frame poses from a piecewise-linear
+    /// path, reproduces `simulate` on the same path.
+    #[test]
+    fn stepper_matches_simulate_on_scripted_path() {
+        let m = DiscMagnet::n52_10x5();
+        let mut p = PlasmaParams::argon_dish(1.0);
+        let r0 = p.orbit_radius_m;
+        p.mobility_m2_s = 1.8 * p.depinning_mobility(&m, &pose_above(0.0, r0, 10e-3, &m));
+        // Knots every frame (1/60 s): lower, hold, drag against the race, flick.
+        let frame = 1.0 / 60.0;
+        let n_frames = 240usize; // 4 s
+        let knot = |i: usize| {
+            let t = i as f64 * frame;
+            let a =
+                std::f64::consts::FRAC_PI_2 - 3.0 * (t - 1.0).max(0.0) - 15.0 * (t - 3.2).max(0.0);
+            let gap = if t < 0.5 { 0.2 } else { 10e-3 };
+            pose_above(r0 * a.cos(), r0 * a.sin(), gap, &m)
+        };
+        let lerp_pose = |t: f64| {
+            let i = ((t / frame).floor() as usize).min(n_frames - 1);
+            let u = (t - i as f64 * frame) / frame;
+            let (a, b) = (knot(i), knot(i + 1));
+            let l = |x: f64, y: f64| x + (y - x) * u;
+            Some(MagnetPose {
+                center_m: [
+                    l(a.center_m[0], b.center_m[0]),
+                    l(a.center_m[1], b.center_m[1]),
+                    l(a.center_m[2], b.center_m[2]),
+                ],
+                axis: a.axis,
+            })
+        };
+        let sub = 40usize;
+        let dt = frame / sub as f64;
+        let reference = simulate(
+            &p,
+            &m,
+            lerp_pose,
+            [r0, 0.0],
+            n_frames as f64 * frame,
+            dt,
+            sub,
+        );
+        let mut st = PlasmoidStepper::new(p, m, [r0, 0.0]);
+        let mut locked_frames = 0;
+        for i in 0..n_frames {
+            let s = st.advance(Some(knot(i)), Some(knot(i + 1)), dt, sub);
+            let r = reference[i + 1];
+            let err =
+                ((s.pos_m[0] - r.pos_m[0]).powi(2) + (s.pos_m[1] - r.pos_m[1]).powi(2)).sqrt();
+            assert!(err < 1e-7, "frame {i}: {err} m off simulate");
+            assert!(rel(s.beta + 1e-12, r.beta + 1e-12) < 1e-4, "frame {i}: β");
+            locked_frames += s.locked as usize;
+        }
+        // It did lock somewhere along the way (the path is a real demo).
+        assert!(locked_frames > 30, "locked {locked_frames} frames");
+    }
+
+    /// Drag slowly → stays locked; flick → breaks away; hold still → the
+    /// racer comes round and is recaptured. And the same drag at 1 atm
+    /// never locks (β ≈ 0.004, the mobility calibrated at 1 Torr).
+    #[test]
+    fn stepper_lock_drag_flick_recapture_and_pressure() {
+        let run = |torr: f64| {
+            let m = DiscMagnet::n52_10x5();
+            let mut st = PlasmoidStepper::demo(m, 0.08, 0.6875, 10e-3, 1.8, torr);
+            let r0 = st.params.orbit_radius_m;
+            let frame = 1.0 / 60.0;
+            let mut ang = std::f64::consts::FRAC_PI_2;
+            let mut log = Vec::new();
+            for i in 0..(60 * 10) {
+                let t = i as f64 * frame;
+                // 0-3 s hold; 3-6 s slow drag (2 rad/s, against the race);
+                // 6-6.15 s flick (25 rad/s); then hold.
+                let w = if (3.0..6.0).contains(&t) {
+                    2.0
+                } else if (6.0..6.15).contains(&t) {
+                    25.0
+                } else {
+                    0.0
+                };
+                ang -= w * frame;
+                let pose = pose_above(r0 * ang.cos(), r0 * ang.sin(), 10e-3, &m);
+                let s = st.advance(None, Some(pose), frame / 40.0, 40);
+                log.push((t, s.locked, s.beta));
+            }
+            log
+        };
+        let low = run(1.0);
+        let frac = |a: f64, b: f64, l: &[(f64, bool, f64)]| {
+            let w: Vec<_> = l.iter().filter(|s| s.0 >= a && s.0 < b).collect();
+            w.iter().filter(|s| s.1).count() as f64 / w.len() as f64
+        };
+        assert!(
+            frac(2.0, 3.0, &low) > 0.95,
+            "held: {}",
+            frac(2.0, 3.0, &low)
+        );
+        assert!(
+            frac(3.5, 6.0, &low) > 0.95,
+            "slow drag: {}",
+            frac(3.5, 6.0, &low)
+        );
+        // The flick leaves the foot behind at once…
+        assert!(
+            frac(6.02, 6.17, &low) == 0.0,
+            "after flick: {}",
+            frac(6.02, 6.17, &low)
+        );
+        // …and the racer, meeting the (now still) magnet head-on, is
+        // recaptured on its next pass (≈ 0.2 s later) and stays.
+        assert!(
+            frac(6.5, 10.0, &low) > 0.99,
+            "recaptured: {}",
+            frac(6.5, 10.0, &low)
+        );
+        let atm = run(760.0);
+        assert!(atm.iter().all(|s| !s.1), "1 atm locked");
+        assert!(atm.iter().all(|s| s.2 < 0.01));
     }
 }

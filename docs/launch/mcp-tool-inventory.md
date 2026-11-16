@@ -155,6 +155,7 @@ Totals after Phase A: 33 host hook (Swift UI, dispatched by Rust core), 41 nativ
 | `load_document` | Rust (M0), node |  | **yes** | native (Rust core) |  |
 | `load_structure` | node |  |  | node proxy | S — atoms.ts ~8 lines, pure TS |
 | `lock_pitch` | — (new) |  |  | native (Rust core) |  |
+| `magnetic_field` | node |  |  | node proxy | S — particle.ts ~20 lines, wraps Rust/WASM |
 | `md_run` | node |  |  | node proxy | S — atoms.ts ~8 lines, pure TS |
 | `measure` | node |  |  | node proxy | S — measure.ts ~9 lines, wraps Rust/WASM |
 | `measure_outer_diameter` | node |  |  | node proxy | S — faces.ts ~9 lines, pure TS |

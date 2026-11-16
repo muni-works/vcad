@@ -838,6 +838,8 @@ export interface KernelModule {
     paramsJson: string,
     optimizeJson: string,
   ) => unknown;
+  /** Magnetic field of posed 3D sources (SceneSpec/QuerySpec JSON). */
+  magneticField?: (sceneJson: string, queryJson: string) => unknown;
   /** Tolerance stackup analysis (StackupSpec/params/options JSON). */
   toleranceAnalyze?: (
     specJson: string,
@@ -1396,6 +1398,7 @@ export class Engine {
       topologyOptimizeMesh: (wasmModule as Record<string, unknown>).topologyOptimizeMesh as KernelModule["topologyOptimizeMesh"],
       particleSimulate: (wasmModule as Record<string, unknown>).particleSimulate as KernelModule["particleSimulate"],
       particleOptimize: (wasmModule as Record<string, unknown>).particleOptimize as KernelModule["particleOptimize"],
+      magneticField: (wasmModule as Record<string, unknown>).magneticField as KernelModule["magneticField"],
       toleranceAnalyze: (wasmModule as Record<string, unknown>).toleranceAnalyze as KernelModule["toleranceAnalyze"],
       thermalSolve: (wasmModule as Record<string, unknown>).thermalSolve as KernelModule["thermalSolve"],
       thermalSolveTransient: (wasmModule as Record<string, unknown>).thermalSolveTransient as KernelModule["thermalSolveTransient"],
@@ -1723,6 +1726,22 @@ export class Engine {
       );
     }
     return fn(specJson, paramsJson, optimizeJson);
+  }
+
+  /**
+   * Magnetic field of posed 3D sources — current loops, solenoids, disc /
+   * ring and block magnets — at query points or on a plane grid. Inputs are
+   * JSON strings (SceneSpec, QuerySpec); see
+   * `vcad-kernel-particle::field3d_spec`.
+   */
+  magneticField(sceneJson: string, queryJson: string): unknown {
+    const fn = this.kernel.magneticField;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "magneticField is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(sceneJson, queryJson);
   }
 
   /**

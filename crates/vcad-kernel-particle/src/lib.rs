@@ -24,6 +24,10 @@
 //!    figure of merit over electrode parameters (M0 stand-in for the
 //!    adjoint; see `docs/particle-optics-m0.md`).
 //!
+//! Beyond the axisymmetric pipeline, [`field3d`] superposes coils and
+//! permanent magnets (loops, solenoids, disc/ring and block magnets) at
+//! arbitrary 3D poses, with a mm/degree JSON seam in [`field3d_spec`].
+//!
 //! **Scope and honesty (M0):** no space charge, no collisions, no neutral
 //! gas — the regime where electrode geometry dominates and where every
 //! classic electrode-design tool (SIMION lineage) operates. Self-consistent
@@ -40,6 +44,8 @@ pub mod confinement;
 pub mod device;
 pub mod elliptic;
 pub mod field;
+pub mod field3d;
+pub mod field3d_spec;
 pub mod fom;
 pub mod optimize;
 pub mod plasmoid;
