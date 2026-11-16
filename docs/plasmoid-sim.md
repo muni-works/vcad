@@ -28,6 +28,8 @@ cargo run --release -p vcad-kernel-particle --example plasmoid_magnet -- out
 python3 docs/plasmoid-sim/render.py out frames --jobs 8
 ffmpeg -framerate 30 -i frames/f%04d.png -c:v libx264 -pix_fmt yuv420p -crf 27 plasmoid.mp4
 python3 docs/plasmoid-sim/figures.py out docs/plasmoid-sim
+cargo run --release -p vcad-loon --example loon2vcad -- docs/plasmoid-sim/plasmoid-dish.loon > dish.vcad
+cargo run --release -p vcad-render -- dish.vcad --jpeg docs/plasmoid-sim/device.jpg --size 720
 ```
 
 ## 1. Physics triage

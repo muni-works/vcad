@@ -12,12 +12,13 @@
 [let dish-r 85]
 [let dish-depth 14]
 
-; Dish electrode: a shallow conical bowl, 2 mm wall, open top at z = 0.
+; Dish electrode: a shallow conical bowl with a 2 mm wall and its open top at
+; z = 0, revolved from its (r, z) cross-section about Z.
 [let dish
-  [difference
-    [pipe [cone 52 [+ dish-r 2] [+ dish-depth 2]] [translate 0 0 [- 0 dish-depth 2]]]
-    [pipe [cone 50 dish-r dish-depth] [translate 0 0 [- 0 dish-depth]]]
-    [pipe [cylinder 30 4] [translate 0 0 [- 0 dish-depth 3]]]]]
+  [revolve 0 0 0  0 0 1  360
+    [sketch 0 0 0  1 0 0  0 0 1
+      #[[polygon #[30 [- 0 dish-depth 2]  52 [- 0 dish-depth 2]  [+ dish-r 2] 0
+                   dish-r 0  50 [- 0 dish-depth]  30 [- 0 dish-depth]]]]]]]
 
 ; Central glass spike the filaments root on.
 [let spike [pipe [cone 7 0.6 24] [translate 0 0 [- 0 dish-depth]]]]
@@ -27,8 +28,8 @@
 [let puck-1 [pipe [cylinder 56 16] [translate 0 0 -70]]]
 [let puck-2 [pipe [cylinder 62 18] [translate 0 0 -90]]]
 
-; Pickup / antenna ring above and behind the dish.
-[let ring [pipe [torus 105 2.5] [translate 0 25 95]]]
+; Pickup / antenna ring above the dish, carried on the posts.
+[let ring [pipe [torus 112 2.5] [translate 0 0 95]]]
 
 ; Dielectric posts carrying the ring.
 [let post [fn [ang]

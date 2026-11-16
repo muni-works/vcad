@@ -103,7 +103,7 @@ def base_scene(glow, magnet_mm):
     img = Image.new("RGB", (W, H), (6, 3, 3))
     d = ImageDraw.Draw(img)
     # ring (back half), posts
-    ring = proj(circle(105, 95, n=128, cy=25))
+    ring = proj(circle(112, 95, n=128))
     d.line([tuple(p) for p in ring] + [tuple(ring[0])], fill=shade((60, 40, 30), glow * 0.6), width=4)
     for ang in (60, 120, 200, 340):
         a = math.radians(ang)
