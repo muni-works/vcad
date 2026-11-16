@@ -32,8 +32,8 @@ EXTRA=()
 CRATES=(
   stepperoni
   vcad-tool-derive
-  vcad-ir
   vcad-receipt
+  vcad-ir
   vcad-kernel-acoustics
   vcad-kernel-antenna
   vcad-kernel-math
