@@ -74,6 +74,9 @@ pub use faces::{inspect_faces, FaceInfo, FaceQueryError, FaceReport};
 pub mod cam_verify;
 pub use cam_verify::verify_toolpaths;
 
+pub mod turning_profile;
+pub use turning_profile::{turning_profile, FaceEnd, TurningAxis, TurningProfileError};
+
 pub mod sheet_fold;
 pub mod sheet_json;
 pub use sheet_fold::folded_sheet_solid;
