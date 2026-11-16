@@ -194,6 +194,15 @@ pub fn check_document(doc: &Document, req: &Value) -> Result<AppReport, String> 
             });
         }
     }
+    // Per-part ids are unique; across parts the same feature key can recur.
+    let mut seen = std::collections::HashMap::<String, usize>::new();
+    for i in &mut issues {
+        let n = seen.entry(i.issue.id.clone()).or_insert(0);
+        *n += 1;
+        if *n > 1 {
+            i.issue.id = format!("{}#p{}", i.issue.id, i.part_index);
+        }
+    }
     let mut counts = Counts::default();
     for i in &issues {
         match i.issue.severity {
@@ -539,6 +548,96 @@ mod tests {
             }
             None => panic!("no patch: {:?}", issue.patch_note),
         }
+    }
+
+    fn cnc(src: &str) -> AppReport {
+        check_document(&doc(src), &json!({ "process": "cnc_3axis" })).unwrap()
+    }
+
+    fn rule<'a>(r: &'a AppReport, id: &str) -> &'a dfm::RuleResult {
+        r.rule_results
+            .iter()
+            .find(|x| x.rule == id)
+            .unwrap_or_else(|| panic!("no {id} verdict: {:#?}", r.rule_results))
+    }
+
+    /// The cross-drilled split clamp (44×44×66, stepped bore, slit, four
+    /// counterbored cross holes) used to come back as ~27k errors, score 0:
+    /// one tool-inaccessibility error per facet of the triangulated boolean
+    /// output and dozens of phantom sub-mm walls. It is a clean two-setup
+    /// part. Asserts are on meaning (which setups, no errors, unique ids),
+    /// not on counts tied to how the boolean happens to facet it today.
+    #[test]
+    fn cnc_cross_drilled_clamp_is_two_setups_and_clean() {
+        let src = include_str!("../../vcad-kernel-dfm/tests/fixtures/cross_drilled_clamp.loon");
+        let t = std::time::Instant::now();
+        let r = cnc(src);
+        eprintln!("check_document (evaluate + dfm): {:?}", t.elapsed());
+        let ids: std::collections::HashSet<_> = r.issues.iter().map(|i| &i.issue.id).collect();
+        assert_eq!(ids.len(), r.issues.len(), "ids must be unique");
+        assert_eq!(r.counts.error, 0, "{:#?}", r.issues);
+        assert_eq!(r.counts.warning, 0, "{:#?}", r.issues);
+        assert!(r.issues.iter().all(|i| i.issue.rule != "cnc.thin_wall"));
+        let setups = rule(&r, "cnc.setups");
+        assert_eq!(setups.summary, "2 setups: +Z, −Y", "{:#?}", r.rule_results);
+        let plan: Vec<_> = r
+            .issues
+            .iter()
+            .filter(|i| i.issue.rule == "cnc.setups")
+            .collect();
+        assert_eq!(plan.len(), 1);
+        assert_eq!(plan[0].issue.severity, dfm::DfmSeverity::Info);
+        assert!(
+            !plan[0].face_ids.is_empty(),
+            "−Y-only faces are highlighted"
+        );
+        assert!(rule(&r, "cnc.tool_inaccessibility").passed);
+        assert_eq!(r.score, 100);
+    }
+
+    /// Negative control: a blind hole at 45° has no axis-aligned line of
+    /// sight to its floor or most of its wall — still an error, reported
+    /// once per feature rather than per face.
+    #[test]
+    fn cnc_angled_blind_hole_is_unreachable() {
+        let r = cnc(
+            "[let hole [translate 20 15 25 [rotate 0 45 0 [translate 0 0 -16 [cylinder 2 20]]]]]
+             [root [difference hole [cube 40 30 25]] \"aluminum\"]",
+        );
+        let bad: Vec<_> = r
+            .issues
+            .iter()
+            .filter(|i| i.issue.rule == "cnc.tool_inaccessibility")
+            .collect();
+        assert!(!bad.is_empty(), "{:#?}", r.rule_results);
+        assert!(bad.len() <= 3, "one issue per feature, got {}", bad.len());
+        assert!(bad
+            .iter()
+            .all(|i| i.issue.severity == dfm::DfmSeverity::Error));
+        assert!(!rule(&r, "cnc.tool_inaccessibility").passed);
+    }
+
+    /// Positive control: a pocket leaving 0.6 mm side walls is flagged, once
+    /// per wall, with the exact plane-to-plane thickness.
+    #[test]
+    fn cnc_thin_pocket_walls_are_measured_on_the_brep() {
+        let r = cnc("[let pocket [translate 0.6 0.6 2 [cube 38.8 28.8 20]]]
+             [root [difference pocket [cube 40 30 12]] \"aluminum\"]");
+        let thin: Vec<_> = r
+            .issues
+            .iter()
+            .filter(|i| i.issue.rule == "cnc.thin_wall")
+            .collect();
+        assert!(!thin.is_empty() && thin.len() <= 4, "{thin:#?}");
+        for w in &thin {
+            assert!(
+                (w.issue.measured - 0.6).abs() < 0.01,
+                "{}",
+                w.issue.measured
+            );
+        }
+        let ids: std::collections::HashSet<_> = r.issues.iter().map(|i| &i.issue.id).collect();
+        assert_eq!(ids.len(), r.issues.len());
     }
 
     #[test]

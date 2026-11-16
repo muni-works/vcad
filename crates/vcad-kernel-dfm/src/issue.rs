@@ -123,6 +123,15 @@ impl DfmIssue {
         }
     }
 
+    /// Derive the id from the rule and a caller-chosen key (e.g. the
+    /// lowest face index of the feature) instead of the anchor point. Use it
+    /// when several issues of one rule can share an anchor — the id is what
+    /// `dfm_apply_fix` looks an issue up by, so it must be unique.
+    pub fn with_key(mut self, key: &str) -> Self {
+        self.id = format!("{}:{}", self.rule, key);
+        self
+    }
+
     /// Attach a long-form explanation.
     pub fn with_explanation(mut self, e: impl Into<String>) -> Self {
         self.explanation = e.into();
@@ -198,6 +207,19 @@ pub struct DfmReport {
 }
 
 impl DfmReport {
+    /// Make every issue id unique by suffixing repeats with `#2`, `#3`, …
+    /// (first occurrence keeps its id). Ids are lookup keys for fixes.
+    pub fn dedupe_ids(&mut self) {
+        let mut seen: std::collections::HashMap<String, usize> = Default::default();
+        for issue in &mut self.issues {
+            let n = seen.entry(issue.id.clone()).or_insert(0);
+            *n += 1;
+            if *n > 1 {
+                issue.id = format!("{}#{}", issue.id, n);
+            }
+        }
+    }
+
     /// Number of `Error`-severity issues.
     pub fn error_count(&self) -> usize {
         self.issues

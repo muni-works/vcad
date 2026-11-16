@@ -5,7 +5,6 @@
 //! average is at risk of shrinkage cavities and needs a riser.
 
 use vcad_kernel_cost::Process;
-use vcad_kernel_math::Point3;
 use vcad_kernel_primitives::BRepSolid;
 
 use crate::geom::{self, provenance::ProvenanceMap};
@@ -20,6 +19,7 @@ pub fn run(
     pack: &RulePack,
     issues: &mut Vec<DfmIssue>,
 ) {
+    let mids = geom::face_midpoints(brep);
     debug_assert!(matches!(
         process,
         Process::CastingSand | Process::CastingInvestment
@@ -38,9 +38,7 @@ pub fn run(
                 continue;
             }
             if sample.draft_deg.abs() < min_draft && sample.draft_deg > -90.0 {
-                let anchor = geom::face_midpoint_and_normal(brep, sample.face)
-                    .map(|(p, _)| p)
-                    .unwrap_or_else(|| Point3::new(0.0, 0.0, 0.0));
+                let anchor = geom::anchor_from(&mids, sample.face);
                 let mut issue = DfmIssue::new(
                     "casting.insufficient_draft",
                     rule.severity_enum(),

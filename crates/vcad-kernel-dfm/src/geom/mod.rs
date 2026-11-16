@@ -14,8 +14,10 @@
 pub mod accessibility;
 pub mod draft;
 pub mod overhang;
+pub mod probe;
 pub mod provenance;
 pub mod radii;
+pub mod setups;
 pub mod thickness;
 
 use vcad_kernel_math::{Point3, Vec3};
@@ -24,8 +26,30 @@ use vcad_kernel_topo::Orientation;
 
 /// Compute the outward normal for a face at the midpoint of its
 /// parameter domain, respecting `Face.orientation`.
+///
+/// O(F): it walks `topology.faces` to find the `face_idx`-th face. Loops
+/// over every face should use [`face_midpoints`] (one pass) instead — the
+/// per-face call made every sampler quadratic, ~2 s per pass at 66k faces.
 pub fn face_midpoint_and_normal(brep: &BRepSolid, face_idx: usize) -> Option<(Point3, Vec3)> {
     let (_face_id, face) = brep.topology.faces.iter().nth(face_idx)?;
+    midpoint_and_normal_of(brep, face)
+}
+
+/// [`face_midpoint_and_normal`] for every face, in `topology.faces`
+/// iteration order, in one pass.
+pub fn face_midpoints(brep: &BRepSolid) -> Vec<Option<(Point3, Vec3)>> {
+    brep.topology
+        .faces
+        .iter()
+        .map(|(_, face)| midpoint_and_normal_of(brep, face))
+        .collect()
+}
+
+/// Domain-midpoint point + outward normal of one face.
+fn midpoint_and_normal_of(
+    brep: &BRepSolid,
+    face: &vcad_kernel_topo::Face,
+) -> Option<(Point3, Vec3)> {
     let surface = brep.geometry.surfaces.get(face.surface_index)?;
     let ((u_min, u_max), (v_min, v_max)) = surface.domain();
     let u = (u_min + u_max) * 0.5;
@@ -39,6 +63,15 @@ pub fn face_midpoint_and_normal(brep: &BRepSolid, face_idx: usize) -> Option<(Po
         n_raw
     };
     Some((p, outward))
+}
+
+/// Anchor point for face `idx` out of a [`face_midpoints`] table.
+pub fn anchor_from(mids: &[Option<(Point3, Vec3)>], idx: usize) -> Point3 {
+    mids.get(idx)
+        .copied()
+        .flatten()
+        .map(|(p, _)| p)
+        .unwrap_or_else(|| Point3::new(0.0, 0.0, 0.0))
 }
 
 /// Axis-aligned bounding box over the BRep's vertices.

@@ -14,7 +14,7 @@
 use vcad_kernel_math::Point3;
 use vcad_kernel_primitives::BRepSolid;
 
-use super::face_midpoint_and_normal;
+use super::face_midpoints;
 
 /// Sampled wall thickness for a face index, with the opposing face it
 /// was paired against.
@@ -70,10 +70,7 @@ pub fn cv(samples: &[ThicknessSample]) -> f64 {
 #[allow(dead_code)]
 fn sample_via_pairs(brep: &BRepSolid, cos_threshold: f64) -> Vec<ThicknessSample> {
     let n = brep.topology.faces.len();
-    let mut mids: Vec<Option<(Point3, vcad_kernel_math::Vec3)>> = Vec::with_capacity(n);
-    for i in 0..n {
-        mids.push(face_midpoint_and_normal(brep, i));
-    }
+    let mids = face_midpoints(brep);
     let mut samples = Vec::new();
     for i in 0..n {
         for j in (i + 1)..n {
@@ -121,8 +118,9 @@ fn sample_via_raycast(brep: &BRepSolid) -> Vec<ThicknessSample> {
         .collect();
 
     let mut samples = Vec::with_capacity(n);
-    for (i, _) in brep.topology.faces.iter().enumerate() {
-        let Some((midpoint, outward)) = face_midpoint_and_normal(brep, i) else {
+    let mids = face_midpoints(brep);
+    for (i, m) in mids.iter().enumerate() {
+        let Some((midpoint, outward)) = *m else {
             continue;
         };
         // Step a tiny bit inward to avoid self-hit, then cast inward.

@@ -9,7 +9,7 @@
 use vcad_kernel_math::Vec3;
 use vcad_kernel_primitives::BRepSolid;
 
-use super::face_midpoint_and_normal;
+use super::face_midpoints;
 
 /// Per-face draft measurement.
 #[derive(Debug, Clone, Copy)]
@@ -26,8 +26,9 @@ pub fn sample(brep: &BRepSolid, pull_dir: Vec3) -> Vec<DraftSample> {
     let pull = pull_dir.normalize();
     let n = brep.topology.faces.len();
     let mut out = Vec::with_capacity(n);
-    for i in 0..n {
-        let Some((_, normal)) = face_midpoint_and_normal(brep, i) else {
+    let mids = face_midpoints(brep);
+    for (i, m) in mids.iter().enumerate() {
+        let Some((_, normal)) = *m else {
             continue;
         };
         // Angle between normal and pull plane (= 90° - angle(normal, pull)).

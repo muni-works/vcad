@@ -12,7 +12,7 @@
 use vcad_kernel_math::{Point3, Vec3};
 use vcad_kernel_primitives::BRepSolid;
 
-use super::{brep_bbox, face_midpoint_and_normal};
+use super::{brep_bbox, face_midpoints};
 
 /// One overhang flag.
 #[derive(Debug, Clone, Copy)]
@@ -31,7 +31,6 @@ pub struct OverhangSample {
 /// Sample overhangs.
 pub fn sample(brep: &BRepSolid, max_overhang_deg: f64) -> Vec<OverhangSample> {
     let z_up = Vec3::new(0.0, 0.0, 1.0);
-    let n = brep.topology.faces.len();
     // The part prints sitting on its lowest face; a face pointing straight
     // down at that height rests on the build plate and needs no support.
     // It was flagged as a 180° overhang ("supports required") on every part.
@@ -50,8 +49,10 @@ pub fn sample(brep: &BRepSolid, max_overhang_deg: f64) -> Vec<OverhangSample> {
         .map(|(idx, (id, _))| (id, idx))
         .collect();
 
-    for i in 0..n {
-        let Some((midpoint, normal)) = face_midpoint_and_normal(brep, i) else {
+    let mids = face_midpoints(brep);
+
+    for (i, m) in mids.iter().enumerate() {
+        let Some((midpoint, normal)) = *m else {
             continue;
         };
         let dot = normal.dot(z_up).clamp(-1.0, 1.0);

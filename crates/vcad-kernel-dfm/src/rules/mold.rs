@@ -5,7 +5,7 @@
 //! without rewriting the part.
 
 use vcad_kernel_cost::Process;
-use vcad_kernel_math::{Point3, Vec3};
+use vcad_kernel_math::Vec3;
 use vcad_kernel_primitives::BRepSolid;
 
 use crate::geom::{self, provenance::ProvenanceMap};
@@ -19,6 +19,7 @@ pub fn run(
     pack: &RulePack,
     issues: &mut Vec<DfmIssue>,
 ) {
+    let mids = geom::face_midpoints(brep);
     let process = Process::Injection;
     let pull_dir = pull_direction(pack);
 
@@ -30,9 +31,7 @@ pub fn run(
                 continue;
             }
             if sample.draft_deg.abs() < min_draft && sample.draft_deg > -90.0 {
-                let anchor = geom::face_midpoint_and_normal(brep, sample.face)
-                    .map(|(p, _)| p)
-                    .unwrap_or_else(|| Point3::new(0.0, 0.0, 0.0));
+                let anchor = geom::anchor_from(&mids, sample.face);
                 let mut issue = DfmIssue::new(
                     "mold.insufficient_draft",
                     rule.severity_enum(),
@@ -65,9 +64,7 @@ pub fn run(
     if let Some(rule) = pack.rule("undercut") {
         for sample in geom::draft::sample(brep, pull_dir) {
             if sample.draft_deg < -0.5 {
-                let anchor = geom::face_midpoint_and_normal(brep, sample.face)
-                    .map(|(p, _)| p)
-                    .unwrap_or_else(|| Point3::new(0.0, 0.0, 0.0));
+                let anchor = geom::anchor_from(&mids, sample.face);
                 let mut issue = DfmIssue::new(
                     "mold.undercut",
                     rule.severity_enum(),

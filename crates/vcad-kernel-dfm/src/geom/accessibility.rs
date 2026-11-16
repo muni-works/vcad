@@ -11,7 +11,7 @@
 use vcad_kernel_math::Vec3;
 use vcad_kernel_primitives::BRepSolid;
 
-use super::face_midpoint_and_normal;
+use super::face_midpoints;
 
 /// Face index + dot product with the tool axis.
 #[derive(Debug, Clone, Copy)]
@@ -41,8 +41,9 @@ pub fn sample(brep: &BRepSolid, tool_axis: Vec3) -> Vec<AccessibilitySample> {
 fn sample_via_normal(brep: &BRepSolid, axis: Vec3) -> Vec<AccessibilitySample> {
     let n = brep.topology.faces.len();
     let mut out = Vec::with_capacity(n);
-    for i in 0..n {
-        let Some((_, normal)) = face_midpoint_and_normal(brep, i) else {
+    let mids = face_midpoints(brep);
+    for (i, m) in mids.iter().enumerate() {
+        let Some((_, normal)) = *m else {
             continue;
         };
         out.push(AccessibilitySample {
@@ -69,8 +70,9 @@ fn sample_via_raycast(brep: &BRepSolid, axis: Vec3) -> Vec<AccessibilitySample> 
 
     let n = brep.topology.faces.len();
     let mut out = Vec::with_capacity(n);
-    for (i, _) in brep.topology.faces.iter().enumerate() {
-        let Some((midpoint, normal)) = face_midpoint_and_normal(brep, i) else {
+    let mids = face_midpoints(brep);
+    for (i, m) in mids.iter().enumerate() {
+        let Some((midpoint, normal)) = *m else {
             continue;
         };
         // Front-facing fast path: if the face's normal already points

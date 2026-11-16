@@ -85,7 +85,9 @@ pub fn run_dfm(
         };
     }
     match process {
-        Process::Cnc3Axis => rules::cnc::run(brep, provenance, pack, &mut issues),
+        Process::Cnc3Axis => {
+            rules::cnc::run(brep, provenance, pack, &mut issues, &mut rule_results)
+        }
         Process::Fdm | Process::Sla => {
             rules::fdm::run(brep, provenance, process, pack, &mut issues)
         }
@@ -95,14 +97,16 @@ pub fn run_dfm(
             rules::casting::run(brep, provenance, process, pack, &mut issues)
         }
     }
-    DfmReport {
+    let mut report = DfmReport {
         process,
         rule_pack_version: pack.version.clone(),
         rule_pack_name: pack.name.clone(),
         issues,
         cost_estimate: None,
         rule_results,
-    }
+    };
+    report.dedupe_ids();
+    report
 }
 
 /// Run a mesh-domain ruleset against a triangle soup (mm). Only rulesets

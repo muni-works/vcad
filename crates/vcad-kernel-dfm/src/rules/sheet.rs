@@ -7,7 +7,6 @@
 //! follow-up alongside the deep geom samplers.
 
 use vcad_kernel_cost::Process;
-use vcad_kernel_math::Point3;
 use vcad_kernel_primitives::BRepSolid;
 
 use crate::geom::{self, provenance::ProvenanceMap};
@@ -21,6 +20,7 @@ pub fn run(
     pack: &RulePack,
     issues: &mut Vec<DfmIssue>,
 ) {
+    let mids = geom::face_midpoints(brep);
     let process = Process::SheetMetal;
 
     if let Some(rule) = pack.rule("small_hole") {
@@ -28,9 +28,7 @@ pub fn run(
         for cyl in geom::radii::cylinders(brep) {
             let diameter = cyl.radius_mm * 2.0;
             if diameter < min_diameter {
-                let anchor = geom::face_midpoint_and_normal(brep, cyl.face)
-                    .map(|(p, _)| p)
-                    .unwrap_or_else(|| Point3::new(0.0, 0.0, 0.0));
+                let anchor = geom::anchor_from(&mids, cyl.face);
                 let mut issue = DfmIssue::new(
                     "sheet.small_hole",
                     rule.severity_enum(),

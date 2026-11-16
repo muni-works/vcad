@@ -1,0 +1,35 @@
+; Cross-drilled split clamp — the cnc_3axis DFM regression part.
+;
+; 44 × 44 × 66 mm block (Z up) with:
+;   - a stepped bore down Z: Ø20 through, Ø28 × 15 counterbore from the top,
+;   - a 2 mm slit from the bore out through the +X face, full height,
+;   - 4 cross-drilled clamp-screw holes along Y across the slit:
+;     Ø5.5 through, Ø10 × 6 counterbore on the −Y face.
+;
+; cnc_3axis plans two setups: +Z reaches the top, bore, slit and (by line of
+; sight, with the cutter's flank) the four sides; −Y reaches the counterbored
+; screw holes and side-mills the bottom face. Real minimum wall is 2 mm
+; (screw counterbore to the +X face), so no thin-wall finding is correct.
+; Note: loon [difference A B] is B − A.
+
+[let block [cube 44 44 66]]
+
+; Stepped bore on the block's centre axis (22, 22).
+[let bore [translate 22 22 -1 [cylinder 10 68]]]
+[let cbore [translate 22 22 51 [cylinder 14 16]]]
+
+; Slit from the bore centre out through +X.
+[let slit [translate 22 21 -1 [cube 23 2 68]]]
+
+; Cylinder along +Y (Rx −90 maps +Z → +Y), starting at y = y0.
+[let along-y [fn [r h x y0 z] [translate x y0 z [rotate -90 0 0 [cylinder r h]]]]]
+
+[let screw [fn [z] [union [along-y 2.75 46 37 -1 z]
+                          [along-y 5 7 37 -1 z]]]]
+
+[let screws [union [union [screw 8] [screw 20]]
+                   [union [screw 32] [screw 44]]]]
+
+[let cuts [union [union bore cbore] [union slit screws]]]
+
+[root [difference cuts block] "aluminum"]

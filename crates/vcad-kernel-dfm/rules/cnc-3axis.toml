@@ -12,9 +12,19 @@ fix = "raise_fillet_radius"
 [rules.thin_wall]
 severity = "error"
 min_wall_mm = 1.0
+# Walls thinner than this are sliver / folded tessellation debris, not walls.
+artifact_tol_mm = 0.05
 fix = "thicken_wall"
 
+# Setup plan: the fewest of these tool axes that reach every reachable face
+# is reported once (`cnc.setups`, info up to max_setups, warning above).
+# Only features reachable from none of them are errors.
 [rules.tool_inaccessibility]
 severity = "error"
-min_dot = 0.0
+axes = ["+z", "-z", "+x", "-x", "+y", "-y"]
+max_setups = 3
+# Unreachable area below this (mm²) is ignored as tessellation noise.
+min_unreachable_area_mm2 = 0.05
+# Faces smaller than this (mm²) are boolean debris: grouped, never sampled.
+sliver_area_mm2 = 0.001
 fix = "manual"
