@@ -25,6 +25,7 @@ pub mod evaluate;
 pub mod incremental;
 pub mod kinematics;
 pub mod mesh_inline;
+pub mod optimize;
 pub mod pcb_preview;
 pub mod placement;
 pub mod provenance;

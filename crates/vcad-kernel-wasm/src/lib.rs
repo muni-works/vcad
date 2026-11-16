@@ -8060,6 +8060,34 @@ pub fn document_sensitivities_js(doc_json: &str, request_json: &str) -> Result<J
         .map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// Optimize named document parameters: minimize a weighted sum of QoIs
+/// subject to parameter-expression and QoI constraints
+/// ([`vcad_eval::optimize::optimize_document`]). Returns the
+/// [`vcad_eval::optimize::OptimizeDocResult`] — the optimum, the KKT report,
+/// and the full trajectory with every gradient component's provenance.
+///
+/// Only the built-in seam QoIs (volume, mass, centroid) are available here:
+/// solver plug-ins (modal frequency, …) register through the native Rust API
+/// (`vcad_eval::optimize::QoiRegistry`), not in the browser kernel.
+#[wasm_bindgen(js_name = optimizeDocument)]
+pub fn optimize_document_js(doc_json: &str, request_json: &str) -> Result<JsValue, JsError> {
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {}", e)))?;
+    let req: vcad_eval::optimize::OptimizeDocRequest = serde_json::from_str(request_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse request: {}", e)))?;
+    let registry = vcad_eval::optimize::QoiRegistry::new();
+    let result = vcad_eval::optimize::optimize_document(
+        &doc,
+        &req,
+        &registry,
+        &vcad_eval::optimize::OptimizeHooks::default(),
+    )
+    .map_err(|e| JsError::new(&e.to_string()))?;
+    result
+        .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+        .map_err(|e| JsError::new(&e.to_string()))
+}
+
 // =============================================================================
 // Embroidery module (feature-gated)
 // =============================================================================
