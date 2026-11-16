@@ -10455,6 +10455,27 @@ pub fn antenna_analyze(
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// Extract a thin-wire `AntennaSpec` from a document's `PcbBoard` node
+/// (antenna-net trace centerlines → wires of radius width/4, feed at a pad,
+/// infinite ground at the pour edge — see `vcad_eval::antenna_extract`).
+///
+/// `doc_json` is a `vcad_ir::Document`; `selection_json` an
+/// `AntennaExtraction` (feed pad, optional net / board node, `f_max_hz`).
+/// Returns `{spec, parameters, feed, frame, ground, substrate, notes, …}` —
+/// feed `spec` and `parameters` straight to `antennaAnalyze`. Fail-closed.
+#[wasm_bindgen(js_name = extractAntennaSpec)]
+pub fn extract_antenna_spec(doc_json: &str, selection_json: &str) -> Result<JsValue, JsError> {
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {e}")))?;
+    let sel: vcad_eval::antenna_extract::AntennaExtraction =
+        serde_json::from_str(selection_json)
+            .map_err(|e| JsError::new(&format!("bad antenna extraction selection: {e}")))?;
+    let out = vcad_eval::antenna_extract::extract_antenna_spec(&doc, &sel)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
 // ---------------------------------------------------------------------------
 // 2D FDTD photonics (vcad-kernel-photonics)
 // ---------------------------------------------------------------------------

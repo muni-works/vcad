@@ -3808,7 +3808,7 @@
   {
     "name": "analyze_antenna",
     "title": "Analyze Antenna",
-    "description": "Thin-wire method-of-moments antenna analysis over a frequency band: per-frequency Z_in and S11 sweep rows, minimum-S11 point, in-band resonance (Im Z = 0), -10 dB bandwidth, far-field peak gain (37x72 pattern scan), and a radiation-efficiency energy cross-check — as data plus `vcad.antenna-claims/1` and unified-receipt claims. Predictions carry basis \"predicted\" and roll up Provisional until a VNA sweep is bound. Free-space PEC wires (optional infinite ground plane): no dielectric substrate (PCB antennas read a few percent high in frequency), no conductor loss (gain = directivity), thin-wire validity gates enforced fail-closed (segment >= 4a, segment <= lambda/8, ka <= 0.1). Deterministic. Cost ~O(segments^3) per frequency x band points (segment cap 600); a 30-segment dipole over 46 points runs in seconds.",
+    "description": "Thin-wire method-of-moments antenna analysis over a frequency band: per-frequency Z_in and S11 sweep rows, minimum-S11 point, in-band resonance (Im Z = 0), -10 dB bandwidth, far-field peak gain (37x72 pattern scan), and a radiation-efficiency energy cross-check — as data plus `vcad.antenna-claims/1` and unified-receipt claims. Predictions carry basis \"predicted\" and roll up Provisional until a VNA sweep is bound. Pass `spec` (hand-built wires), or `document_id` + `extract` to read the antenna from the document's PCB board (traces -> wires, pad feed, infinite ground at the pour edge; approximation + board eps_r/thickness returned under `extracted`). Free-space PEC wires (optional infinite ground plane): no dielectric substrate (FR-4 PCB antennas resonate ~20-30% BELOW the prediction), no conductor loss (gain = directivity), thin-wire validity gates enforced fail-closed (segment >= 4a, segment <= lambda/8, ka <= 0.1). Deterministic. Cost ~O(segments^3) per frequency x band points (segment cap 600); a 30-segment dipole over 46 points runs in seconds.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3818,7 +3818,7 @@
             "elements",
             "feed_mm"
           ],
-          "description": "Thin-wire antenna: straight wires, polyline paths, and closed loops, with a delta-gap feed at the basis nearest `feed_mm`. Units mm. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error).",
+          "description": "Thin-wire antenna: straight wires, polyline paths, and closed loops, with a delta-gap feed at the basis nearest `feed_mm`. Units mm. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error). Pass this OR `document_id` + `extract`.",
           "properties": {
             "ground_plane": {
               "type": "boolean",
@@ -3938,12 +3938,63 @@
             }
           }
         },
+        "document_id": {
+          "type": "string",
+          "description": "Session document whose PcbBoard holds the antenna (instead of `spec`). Requires `extract`."
+        },
+        "extract": {
+          "type": "object",
+          "required": [
+            "feed"
+          ],
+          "description": "Which copper of `document_id`'s PcbBoard is the antenna. Every trace on the antenna net becomes a round wire of radius width/4; the feed is a delta gap between the feed pad and the ground pour; the pour becomes an INFINITE PEC plane at its edge nearest the feed (image theory — recorded with the pour's real size in wavelengths). Fail-closed: arcs, vias, zones or extra pads on the antenna net, copper on two layers, floating islands, copper over/behind the pour edge (feedlines), a pour wrapping the antenna, or a feed that isn't a free trace end on the pad all error.",
+          "properties": {
+            "feed": {
+              "type": "object",
+              "required": [
+                "footprint",
+                "pad"
+              ],
+              "description": "Feed pad, e.g. the U.FL signal pad.",
+              "properties": {
+                "footprint": {
+                  "type": "string",
+                  "description": "Reference, e.g. J1."
+                },
+                "pad": {
+                  "type": "string",
+                  "description": "Pad number, e.g. 1."
+                }
+              }
+            },
+            "net": {
+              "type": "string",
+              "description": "Antenna net. Default: the feed pad's net."
+            },
+            "ground_net": {
+              "type": "string",
+              "description": "Net of the ground pour. Default GND."
+            },
+            "board_node": {
+              "type": "number",
+              "description": "PcbBoard node id. Default: the document's only board."
+            },
+            "segments_per_wavelength": {
+              "type": "number",
+              "description": "Segmentation at band top (>= 8). Default 20."
+            },
+            "max_feed_gap_mm": {
+              "type": "number",
+              "description": "Largest feed-pad-to-pour-edge gap accepted, mm. Default 2."
+            }
+          }
+        },
         "parameters": {
           "type": "object",
           "additionalProperties": {
             "type": "number"
           },
-          "description": "Bindings for named spec parameters, `{name: value}`."
+          "description": "Bindings for named spec parameters, `{name: value}` (an extracted board spec is all literals)."
         },
         "band": {
           "type": "object",
@@ -3952,7 +4003,7 @@
             "f_hi_hz",
             "points"
           ],
-          "description": "Frequency band to sweep and make claims over.",
+          "description": "Frequency band to sweep and make claims over (with `document_id`, `f_hi_hz` also sets the extracted segmentation).",
           "properties": {
             "f_lo_hz": {
               "type": "number"
@@ -3989,7 +4040,6 @@
         }
       },
       "required": [
-        "spec",
         "band"
       ]
     },
