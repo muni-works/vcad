@@ -2542,123 +2542,393 @@
   {
     "name": "simulate_charged_particles",
     "title": "Simulate Charged Particles",
-    "description": "Charged-particle optics for axisymmetric electrode devices (fusors, magnetically shielded-grid IEC, ring traps): solve the electrostatic field + ring-coil magnetics, trace a deuteron ensemble (Boris integrator, Bosch-Hale D-D yield weighting), and report interception fraction (the cathode-ammeter observable), recirculation, predicted neutron rate, fusion power, Q, and distance-to-Lawson — as data plus `vcad.particle-claims/1` and unified-receipt claims. Predictions carry basis \"predicted\" and roll up Provisional until bench-measured. Vacuum single-particle optics: no space charge, no CX chain (optional single-generation CX via `options.cx_sigma_m2`); neutron rates are floors. Deterministic. Cost scales with grid × particles × passes — defaults run in seconds.",
+    "description": "Charged-particle optics for axisymmetric electrode devices (fusors, magnetically shielded-grid IEC, ring traps): solve the electrostatic field + ring-coil magnetics, trace a deuteron ensemble (Boris integrator, Bosch-Hale D-D yield weighting), and report interception fraction (the cathode-ammeter observable), recirculation, predicted neutron rate, fusion power, Q, and distance-to-Lawson — as data plus `vcad.particle-claims/1` and unified-receipt claims. Predictions carry basis \"predicted\" and roll up Provisional until bench-measured. Vacuum single-particle optics: no space charge, no CX chain (optional single-generation CX via `options.cx_sigma_m2`); neutron rates are floors. Deterministic. Cost scales with grid × particles × passes — defaults run in seconds. A 3D spec (`chamber` + `electrodes`) models real globe grids (great circles, latitude + meridian wires) in a grounded sphere via the thin-wire BEM and a full-sphere launch; it returns stats, neutron-rate floor/ceiling and the solver's surface-residual report, without receipt claims (3D claims are not wired yet).",
     "inputSchema": {
       "type": "object",
       "properties": {
         "spec": {
-          "type": "object",
-          "required": [
-            "chamber_radius_mm",
-            "chamber_half_height_mm",
-            "rings"
-          ],
-          "description": "Axisymmetric device: grounded cylindrical chamber + biased (optionally current-carrying) wire rings, coaxial with Z. Units mm / volts / ampere-turns. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error).",
-          "properties": {
-            "chamber_radius_mm": {
-              "description": "A number, or the name of a named parameter bound via `parameters`.",
-              "anyOf": [
-                {
-                  "type": "number"
+          "description": "An axisymmetric ring device (`rings`) or a 3D wire device (`chamber` + `electrodes`).",
+          "anyOf": [
+            {
+              "type": "object",
+              "required": [
+                "chamber_radius_mm",
+                "chamber_half_height_mm",
+                "rings"
+              ],
+              "description": "Axisymmetric device: grounded cylindrical chamber + biased (optionally current-carrying) wire rings, coaxial with Z. Units mm / volts / ampere-turns. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error).",
+              "properties": {
+                "chamber_radius_mm": {
+                  "description": "A number, or the name of a named parameter bound via `parameters`.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
                 },
-                {
-                  "type": "string"
-                }
-              ]
-            },
-            "chamber_half_height_mm": {
-              "description": "A number, or the name of a named parameter bound via `parameters`.",
-              "anyOf": [
-                {
-                  "type": "number"
+                "chamber_half_height_mm": {
+                  "description": "A number, or the name of a named parameter bound via `parameters`.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
                 },
-                {
-                  "type": "string"
-                }
-              ]
-            },
-            "wall_potential_v": {
-              "description": "Chamber wall potential, volts. Default 0 (grounded).",
-              "anyOf": [
-                {
-                  "type": "number"
+                "wall_potential_v": {
+                  "description": "Chamber wall potential, volts. Default 0 (grounded).",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
                 },
-                {
-                  "type": "string"
+                "rings": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "ring_radius_mm",
+                      "z_mm",
+                      "wire_radius_mm",
+                      "potential_v"
+                    ],
+                    "properties": {
+                      "ring_radius_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "z_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "wire_radius_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "potential_v": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "ampere_turns": {
+                        "description": "Circulating current, ampere-turns (+ = CCW viewed from +Z). Default 0. This is the magnetic grid-shielding knob.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      }
+                    }
+                  }
                 }
-              ]
+              }
             },
-            "rings": {
-              "type": "array",
-              "minItems": 1,
-              "items": {
-                "type": "object",
-                "required": [
-                  "ring_radius_mm",
-                  "z_mm",
-                  "wire_radius_mm",
-                  "potential_v"
-                ],
-                "properties": {
-                  "ring_radius_mm": {
-                    "description": "A number, or the name of a named parameter bound via `parameters`.",
-                    "anyOf": [
-                      {
+            {
+              "type": "object",
+              "required": [
+                "chamber",
+                "electrodes"
+              ],
+              "description": "Non-axisymmetric (3D) device: thin-wire electrodes along arbitrary paths inside a grounded sphere — real fusor globe grids (great circles, latitude + meridian), stalks, rings. Solved by the thin-wire boundary-element method; refused (fail-closed) if the wire model's surface-residual gates fail. Units mm / volts. Unknown fields are errors. Any numeric field may be a parameter name bound in `parameters`.",
+              "properties": {
+                "chamber": {
+                  "type": "object",
+                  "required": [
+                    "kind"
+                  ],
+                  "description": "`{\"kind\":\"sphere\",\"radius_mm\":…}` (grounded sphere about the origin) or `{\"kind\":\"unbounded\"}`.",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "sphere",
+                        "unbounded"
+                      ]
+                    },
+                    "radius_mm": {
+                      "description": "A number, or the name of a named parameter bound via `parameters`.",
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    }
+                  }
+                },
+                "wall_potential_v": {
+                  "description": "A number, or the name of a named parameter bound via `parameters`.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "electrodes": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "wire_radius_mm",
+                      "potential_v"
+                    ],
+                    "description": "One of: great_circle_globe {grid_radius_mm, layout (\"orthogonal3\"|\"cuboctahedral4\"|\"icosidodecahedral6\") | normals: [[x,y,z],…]}; lat_long_globe {grid_radius_mm, n_lat, n_long}; circle {center_mm, normal, radius_mm, ampere_turns?}; arc {center_mm, normal, start_mm, sweep_deg}; polyline {points_mm, closed?}; ring {ring_radius_mm, z_mm, ampere_turns?}. All take wire_radius_mm and potential_v.",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "great_circle_globe",
+                          "lat_long_globe",
+                          "circle",
+                          "arc",
+                          "polyline",
+                          "ring"
+                        ]
+                      },
+                      "wire_radius_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "potential_v": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "grid_radius_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "layout": {
+                        "type": "string",
+                        "enum": [
+                          "orthogonal3",
+                          "cuboctahedral4",
+                          "icosidodecahedral6"
+                        ]
+                      },
+                      "normals": {
+                        "type": "array",
+                        "items": {
+                          "type": "array",
+                          "minItems": 3,
+                          "maxItems": 3,
+                          "items": {
+                            "description": "A number, or the name of a named parameter bound via `parameters`.",
+                            "anyOf": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      "n_lat": {
                         "type": "number"
                       },
-                      {
-                        "type": "string"
-                      }
-                    ]
-                  },
-                  "z_mm": {
-                    "description": "A number, or the name of a named parameter bound via `parameters`.",
-                    "anyOf": [
-                      {
+                      "n_long": {
                         "type": "number"
                       },
-                      {
-                        "type": "string"
-                      }
-                    ]
-                  },
-                  "wire_radius_mm": {
-                    "description": "A number, or the name of a named parameter bound via `parameters`.",
-                    "anyOf": [
-                      {
-                        "type": "number"
+                      "center_mm": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                          "description": "A number, or the name of a named parameter bound via `parameters`.",
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        }
                       },
-                      {
-                        "type": "string"
-                      }
-                    ]
-                  },
-                  "potential_v": {
-                    "description": "A number, or the name of a named parameter bound via `parameters`.",
-                    "anyOf": [
-                      {
-                        "type": "number"
+                      "normal": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                          "description": "A number, or the name of a named parameter bound via `parameters`.",
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        }
                       },
-                      {
-                        "type": "string"
-                      }
-                    ]
-                  },
-                  "ampere_turns": {
-                    "description": "Circulating current, ampere-turns (+ = CCW viewed from +Z). Default 0. This is the magnetic grid-shielding knob.",
-                    "anyOf": [
-                      {
-                        "type": "number"
+                      "start_mm": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                          "description": "A number, or the name of a named parameter bound via `parameters`.",
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        }
                       },
-                      {
-                        "type": "string"
+                      "radius_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "sweep_deg": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "points_mm": {
+                        "type": "array",
+                        "items": {
+                          "type": "array",
+                          "minItems": 3,
+                          "maxItems": 3,
+                          "items": {
+                            "description": "A number, or the name of a named parameter bound via `parameters`.",
+                            "anyOf": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      "closed": {
+                        "type": "boolean"
+                      },
+                      "ring_radius_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "z_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "ampere_turns": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
                       }
-                    ]
+                    }
                   }
                 }
               }
             }
-          }
+          ]
         },
         "parameters": {
           "type": "object",
@@ -2701,6 +2971,10 @@
             "cx_sigma_m2": {
               "type": "number",
               "description": "Enable charge-exchange channels with this constant cross section, m² (order 1e-19 for D⁺ on D₂ in the keV band). Omitted = CX off; the neutron-rate claim then reports the beam-on-background floor."
+            },
+            "step_mm": {
+              "type": "number",
+              "description": "3D specs only: tracer step length, mm. Default a quarter of the thinnest wire radius, capped at 0.25 mm. (nr/nz apply to 2D specs only.)"
             }
           }
         }
