@@ -374,65 +374,67 @@ no measurement could violate it.
 4-ring 2 mm-wire grid, 305×609 grid at h = 0.25 mm, 128 ions per CX wave):
 
 Raw output: [`particle-optics-m7-open-fusor-band.csv`](particle-optics-m7-open-fusor-band.csv)
-(commit `9f71fb60f`, 52 min on mew under load ~50).
+(chain at commit `4a8855e13`, 65 min on mew under load ~50–110).
 
 | −kV | lower n/s | **central n/s** | upper n/s | upper/central | cathode ion mA | M | space charge | ion-gas / fast-neutral / wall |
 |---:|---:|---:|---:|---:|---:|---:|---:|---|
-| 20 | 5.5 | **2.4×10²** | 4.0×10³ | ×17 | 6.2 | 0.055 | 0.044 | 0.43 / 0.56 / 0.01 |
-| 25 | 30 | **8.1×10²** | 1.2×10⁴ | ×15 | 6.0 | 0.071 | 0.030 | 0.44 / 0.55 / 0.01 |
-| 30 | 78 | **1.9×10³** | 2.2×10⁴ | ×11 | 5.8 | 0.090 | 0.022 | 0.46 / 0.53 / 0.01 |
-| 35 | 1.9×10² | **3.7×10³** | 5.0×10⁴ | ×14 | 5.6 | 0.101 | 0.018 | 0.48 / 0.50 / 0.02 |
-| 40 | 3.4×10² | **6.0×10³** | 6.5×10⁴ | ×11 | 5.4 | 0.108 | 0.016 | 0.50 / 0.49 / 0.02 |
+| 20 | 5.0 | **2.3×10²** | 3.1×10³ | ×13 | 6.1 | 0.055 | 0.042 | 0.43 / 0.56 / 0.01 |
+| 25 | 23 | **7.4×10²** | 9.2×10³ | ×12 | 5.9 | 0.073 | 0.031 | 0.45 / 0.54 / 0.01 |
+| 30 | 87 | **1.9×10³** | 1.8×10⁴ | ×9.4 | 5.7 | 0.089 | 0.023 | 0.46 / 0.52 / 0.01 |
+| 35 | 1.7×10² | **3.6×10³** | 4.2×10⁴ | ×12 | 5.6 | 0.101 | 0.018 | 0.49 / 0.50 / 0.02 |
+| 40 | 2.1×10² | **6.3×10³** | 4.8×10⁴ | ×7.7 | 5.4 | 0.118 | 0.014 | 0.49 / 0.49 / 0.02 |
 
-Every point converged (one at −25 kV hit the 6-generation cap at 5%
-spread). Max per-trace energy drift is ≤ 0.3%, and censored plus
-truncated weight is < 0.3%.
+All five points converged or stopped at the 6-generation cap with a
+generation spread ≤ 6%. Max per-trace energy drift is ≤ 0.4%, and
+censored plus truncated weight is < 0.3%. Like-for-like integrator check
+(`examples/integrator_drift.rs`; same geometry, CX off, 40 passes, same
+step): max drift 19.4% → 0.17% at `step_fraction` 0.25.
 
 Band components at −30 kV, as factors on the central at the low and high
 setting of each knob (from the CSV):
 
 | term | kind | low setting | high setting |
 |---|---|---:|---:|
-| sampling (shifted-sampler RMS 0.081) | numerical | ×0.92 | ×1.09 |
-| grid (153×305 vs 305×609) | numerical | ×0.99 | ×1.01 |
-| integrator step (½) | numerical | ×0.93 | ×1.08 |
+| sampling (shifted-sampler RMS 0.145) | numerical | ×0.87 | ×1.16 |
+| grid (153×305 vs 305×609) | numerical | ×0.96 | ×1.04 |
+| integrator step (½) | numerical | ×0.94 | ×1.06 |
 | supply current ±2% | input | ×0.98 | ×1.02 |
-| pressure ±15% | input | ×0.87 | ×1.15 |
-| voltage ±2% (d ln R/d ln V = 4.4) | input | ×0.92 | ×1.09 |
-| σ_cx ±25% | input | ×1.13 | ×0.90 |
-| σ_ionization ±25% | input | ×1.01 | ×0.98 |
-| σ_breakup ±25% | input | ×0.90 | ×1.07 |
-| γ_SE 0.6…2.4 | model form | ×1.26 | ×0.71 |
+| pressure ±15% | input | ×0.87 | ×1.03 |
+| voltage ±2% (d ln R/d ln V = 4.7) | input | ×0.91 | ×1.10 |
+| σ_cx ±25% | input | ×1.13 | ×0.89 |
+| σ_ionization ±25% | input | ×0.98 | ×0.94 |
+| σ_breakup ±25% | input | ×0.93 | ×0.96 |
+| γ_SE 0.6…2.4 | model form | ×1.27 | ×0.70 |
 | wall loading 0…0.02 | model form | ×0.99 | ×1.08 |
-| born D⁺ fraction 0…0.3 | model form | ×0.77 | ×2.08 |
-| D₃⁺ formation toggled | model form | — | ×1.08 |
-| D₃⁺ breakup-fit frame | model form | — | ×1.07 |
-| **source shape** (|1−M| = 0.91: cold / uniform / edge) | model form | **×0.095** | **×3.2** |
-| space charge vs neutralized | model form | — | ×1.08 |
+| born D⁺ fraction 0…0.3 (ionization births only) | model form | ×0.79 | ×1.89 |
+| D₃⁺ formation toggled | model form | ×0.95 | — |
+| D₃⁺ breakup-fit frame | model form | ×0.90 | — |
+| **source shape** (|1−M| = 0.91: cold / uniform / edge) | model form | **×0.096** | **×3.1** |
+| space charge vs neutralized | model form | — | ×1.02 |
 
 **Reading it.**
 
 - **The model does not explain how the discharge sustains itself, and
   that sets the width.** Modeled ionization (ion, fast-neutral and
-  electron impact) creates only **M ≈ 0.06–0.11** of the ions the supply
+  electron impact) creates only **M ≈ 0.06–0.12** of the ions the supply
   current says are lost. The other ~90% come from something the model
   does not carry, and where they are born decides how much energy they
   fall through. Ions born in the cathode fall (cold) barely fuse
   (×0.095). Ions born uniformly in the volume, or at the wall (hot), fuse
   about 3× more. That single term dominates both edges. Born-species
-  composition is second (×2 up), then γ_SE (±25–30%). Every
+  composition is second (×1.9 up), then γ_SE (±25–30%). Every
   measured-input and numerical term is ≤ 15%. The band is wider than 10×,
   and that is the honest state of the physics, not a tuning choice.
 - **It can lose, mostly from above.** At −30 kV the upper edge is
-  2.2×10⁴ n/s. A hobby machine reading 10⁵ n/s at 30 kV / 10 mA, which
+  1.8×10⁴ n/s. A hobby machine reading 10⁵ n/s at 30 kV / 10 mA, which
   is a commonly reported amateur level, returns **Violated**, and that
   would be a publishable statement that a channel is missing. The lower
-  edge (78 n/s) sits below practical detection, so in practice the
+  edge (87 n/s) sits below practical detection, so in practice the
   falsifiable side is the top.
 - **The central is not comparable to the old 2.5×10⁴ "floor".** That
   number took 10 mA as the *ion* current, born atomic D⁺ at the wall with
   the full drop, and applied σ_cx to the deuteron density. Now 10 mA on
-  the meter is ~5.8 mA of ions at the cathode (γ_SE partition). Born ions
+  the meter is ~5.7 mA of ions at the cathode (γ_SE partition). Born ions
   are molecular. Most cathode arrivals are cold CX relaunches that cost
   supply current and barely fuse (mean cathode-impact energy ≈ 5 keV at
   −30 kV).
@@ -455,6 +457,15 @@ setting of each knob (from the CSV):
   fusion is neglected.
 - The geometry is still the ring stack. The other open-fusor session owns
   3D grids.
+- The space-charge ratio here (≈ 0.02 at −30 kV) is much smaller than the
+  0.118 gauge quoted in the open-fusor audit. That gauge priced 10 mA of
+  *ion* current in long-lived CX-off orbits (up to 40 passes). Here the
+  ions are the ~5.7 mA the partition leaves, and CX ends most of them
+  within a pass or two, so far less charge is in flight.
+- **Follow-up:** the wasm/MCP `simulate_charged_particles` tool still
+  returns the legacy CX floor with a free ion-current input. Exposing
+  `chain::predict` there (and binding bench measurements to the banded
+  claim) is the next PR.
 
 ## Non-goals
 
