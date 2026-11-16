@@ -770,6 +770,36 @@ fn imprint_section_outline(
     true
 }
 
+/// Indices of `solid`'s planar surfaces whose plane also carries a planar
+/// face of `other`.
+fn coplanar_surfaces(solid: &BRepSolid, other: &BRepSolid) -> std::collections::HashSet<usize> {
+    let planes = |s: &BRepSolid| -> Vec<(usize, Point3, vcad_kernel_math::Vec3)> {
+        let mut seen = std::collections::HashSet::new();
+        s.topology
+            .faces
+            .values()
+            .filter(|f| seen.insert(f.surface_index))
+            .filter_map(|f| {
+                let surface = s.geometry.surfaces.get(f.surface_index)?;
+                (surface.surface_type() == vcad_kernel_geom::SurfaceKind::Plane).then(|| {
+                    let at = vcad_kernel_math::Point2::new(0.0, 0.0);
+                    (f.surface_index, surface.evaluate(at), *surface.normal(at).as_ref())
+                })
+            })
+            .collect()
+    };
+    let theirs = planes(other);
+    planes(solid)
+        .into_iter()
+        .filter(|(_, origin, normal)| {
+            theirs.iter().any(|(_, o, n)| {
+                normal.cross(n).norm() < 1e-9 && (*o - *origin).dot(*normal).abs() < 1e-6
+            })
+        })
+        .map(|(index, _, _)| index)
+        .collect()
+}
+
 /// Apply splits from intersection curves to solid A.
 fn apply_splits_to_solid(
     solid: &mut BRepSolid,
@@ -785,7 +815,7 @@ fn apply_splits_to_solid(
     // different volume) run to run.
     let mut ordered: Vec<(FaceId, FaceSplits)> = splits.into_iter().collect();
     ordered.sort_by_key(|(fid, _)| *fid);
-    split::hole_chords_cutting_a(solid_name == "A");
+    split::hole_chords_cutting_a(solid_name == "A", coplanar_surfaces(solid, other));
     for (face_id, split_list) in ordered {
         let mut current_faces = vec![face_id];
         let split_list = if solid.topology.faces.contains_key(face_id)

@@ -216,6 +216,8 @@ fn dump_faces(b: &BRepSolid) {
             ]
         };
         let (mut v, mut a) = ([0.0f64; 3], 0.0f64);
+        // Worst angle between a triangle's own normal and its vertex normals.
+        let mut worst = 0.0f64;
         for tri in m.indices.chunks(3) {
             let (x, y, z) = (p(tri[0]), p(tri[1]), p(tri[2]));
             let u = [y[0] - x[0], y[1] - x[1], y[2] - x[2]];
@@ -228,9 +230,17 @@ fn dump_faces(b: &BRepSolid) {
             for c in 0..3 {
                 v[c] += n[c] / 2.0;
             }
-            a += (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt() / 2.0;
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            a += len / 2.0;
+            if m.normals.len() == m.vertices.len() && len > 1e-12 {
+                for &i in tri {
+                    let k = i as usize * 3;
+                    let d = (0..3).map(|c| n[c] * m.normals[k + c] as f64).sum::<f64>() / len;
+                    worst = worst.max(d.clamp(-1.0, 1.0).acos().to_degrees());
+                }
+            }
         }
-        (fid, (v, a, m.indices.len() / 3))
+        (fid, (v, a, m.indices.len() / 3, worst))
     })
     .collect();
     for (fid, f) in &t.faces {
@@ -261,9 +271,9 @@ fn dump_faces(b: &BRepSolid) {
             lo[0], lo[1], lo[2], hi[0], hi[1], hi[2],
             n[0] / 2.0, n[1] / 2.0, n[2] / 2.0
         );
-        if let Some((v, a, tris)) = mesh_area.get(&fid) {
+        if let Some((v, a, tris, worst)) = mesh_area.get(&fid) {
             eprintln!(
-                "      mesh: {tris} tris, area {a:.0}, area vector [{:.0},{:.0},{:.0}]",
+                "      mesh: {tris} tris, area {a:.0}, area vector [{:.0},{:.0},{:.0}], worst normal deviation {worst:.1}°",
                 v[0], v[1], v[2]
             );
         }

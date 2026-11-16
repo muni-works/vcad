@@ -154,6 +154,10 @@ thread_local! {
     /// B's faces) and on operand B's (`[1]`).
     static HOLE_CHORDS: std::cell::RefCell<[HoleChordSpans; 2]> =
         std::cell::RefCell::new([HoleChordSpans::new(), HoleChordSpans::new()]);
+    /// Surface indices of the operand being split whose plane also carries
+    /// a face of the other operand (see `split_face_by_curve`).
+    static HOLE_CHORD_COPLANAR: std::cell::RefCell<std::collections::HashSet<usize>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
     /// Which operand's faces are being split: indexes `HOLE_CHORDS`.
     static HOLE_CHORD_OPERAND: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
@@ -169,9 +173,11 @@ pub(crate) fn trust_hole_chords(cutting_a: HoleChordSpans, cutting_b: HoleChordS
 }
 
 /// Select whose faces the splits that follow belong to: operand A
-/// (`true`) or operand B.
-pub(crate) fn hole_chords_cutting_a(a: bool) {
+/// (`true`) or operand B — and which of that operand's planar surfaces
+/// (by surface index) share their plane with a face of the other operand.
+pub(crate) fn hole_chords_cutting_a(a: bool, coplanar_surfaces: std::collections::HashSet<usize>) {
     HOLE_CHORD_OPERAND.with(|o| o.set(usize::from(!a)));
+    HOLE_CHORD_COPLANAR.with(|c| *c.borrow_mut() = coplanar_surfaces);
 }
 
 /// Do the cutter's own spans along `l` cover the stretch `from → to`?
@@ -790,9 +796,18 @@ pub fn split_face_by_curve(
             // `merge_crossed_hole` appends `p2, detour…, p1` to loop 1:
             // the hole crossings nearest the exit and the entry.
             let (p_exit_side, p_entry_side) = (l1[loop1_points.len()], l1[l1.len() - 1]);
+            // The one-stretch rule stops at a face that shares its plane
+            // with a face of the other operand. Such a face is a coplanar
+            // overlap, settled whole by the OnSame tie-break; cut through
+            // its hole, the pieces under the other operand's footprint are
+            // judged one by one and a zero-thickness flap survives (torr
+            // A2: blades flush with an annulus' cap kept a strip out to
+            // r 45 past the r 30 trim).
+            let coplanar = HOLE_CHORD_COPLANAR.with(|c| c.borrow().contains(&surface_index));
             if hole_chord_covered(l, entry_point, exit_point)
-                || hole_chord_covered(l, entry_point, &p_entry_side)
-                || hole_chord_covered(l, &p_exit_side, exit_point)
+                || (!coplanar
+                    && (hole_chord_covered(l, entry_point, &p_entry_side)
+                        || hole_chord_covered(l, &p_exit_side, exit_point)))
             {
                 split_dbg!("sfbc: cut passes through a hole ({entry_point:?} → {exit_point:?})");
                 loop1_points = l1.clone();
@@ -5860,7 +5875,18 @@ pub fn arc_segments(radius: f64, segments: u32) -> u32 {
     } else {
         3
     };
-    n.max(segments).clamp(3, 512)
+    n.max(segments).clamp(3, rim_cap())
+}
+
+/// TEMP experiment switch.
+pub(crate) fn rim_cap() -> u32 {
+    static CAP: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+    *CAP.get_or_init(|| {
+        std::env::var("VCAD_RIM_CAP")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(512)
+    })
 }
 
 /// Discretization of a circular arc on the circle's own raw-`segments`

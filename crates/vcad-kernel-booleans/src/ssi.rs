@@ -330,7 +330,7 @@ fn ellipse_samples(r: f64) -> usize {
     } else {
         64
     };
-    n.clamp(64, 512)
+    n.clamp(64, crate::split::rim_cap().max(64) as usize)
 }
 
 /// Intersection of a plane and a cylinder.
