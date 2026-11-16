@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-16-mouse-navigation-presets",
+  "version": "undefined",
+  "date": "2026-11-16",
+  "category": "feat",
+  "title": "SolidWorks, Onshape and Blender mouse presets",
+  "summary": "Settings ▸ Navigation adds SolidWorks, Onshape (right-drag orbit) and Blender presets next to the Fusion 360 default; the trackpad behaves the same in every preset.",
+  "features": ["native-app", "viewport", "navigation"]
+}
