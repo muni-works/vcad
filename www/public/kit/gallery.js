@@ -9,7 +9,6 @@
 import * as THREE from "./vendor/three.module.min.js";
 import { OrbitControls } from "./vendor/OrbitControls.js";
 import { GLTFLoader } from "./vendor/GLTFLoader.js";
-import { RoomEnvironment } from "./vendor/RoomEnvironment.js";
 
 // ---------- palette, from the page's CSS tokens ----------
 const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -40,7 +39,80 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 0.78;
 const pmrem = new THREE.PMREMGenerator(renderer);
-const envMap = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+// A photo studio, not a white room: dark surroundings with an overhead
+// softbox and two strip lights. Nearly every vcad material is metal, and a
+// metal only shows form through what it reflects; three's RoomEnvironment is
+// bright in every direction, so parts mirrored flat white with no shading.
+// Colors above 1 are HDR emitters (the same trick RoomEnvironment uses).
+function studioEnvironment() {
+  const scene = new THREE.Scene();
+  const emitter = (rgb, k) => new THREE.MeshBasicMaterial({ color: new THREE.Color(...rgb).multiplyScalar(k), side: THREE.DoubleSide });
+  scene.add(new THREE.Mesh(new THREE.SphereGeometry(12, 32, 16), emitter([0.07, 0.065, 0.06], 1)));
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(30, 30), emitter([0.16, 0.15, 0.14], 1));
+  floor.rotation.x = -Math.PI / 2; floor.position.y = -2;
+  scene.add(floor);
+  const panel = (w, h, rgb, k, pos) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), emitter(rgb, k));
+    m.position.set(...pos); m.lookAt(0, 0, 0);
+    scene.add(m);
+  };
+  panel(7, 5, [1, 0.97, 0.92], 5, [0.5, 8, 2]);     // overhead softbox, warm
+  panel(1.6, 8, [1, 1, 1], 3, [-8, 1.5, 2.5]);      // left strip
+  panel(1.6, 8, [0.9, 0.94, 1], 1.6, [8, 1, -1.5]); // right strip, cool
+  panel(10, 2.5, [1, 1, 1], 0.8, [0, 2.5, -9]);     // back kicker
+  return scene;
+}
+const envMap = pmrem.fromScene(studioEnvironment(), 0.035).texture;
+
+// Does the room environment actually light anything? On some browsers the
+// PMREM bake silently comes out black, and then every metal (steel, brass,
+// tin, copper — most of these models) renders as a black silhouette, since
+// metal has no diffuse term for direct lights to hit. Probe once: render a
+// mirror-ish swatch into an 8-bit target and read it back. `?noenv` forces
+// the fallback for testing.
+function envWorks() {
+  if (new URLSearchParams(location.search).has("noenv")) return false;
+  try {
+    const scene = new THREE.Scene();
+    scene.environment = envMap;
+    const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 10);
+    cam.position.z = 2;
+    const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 1, roughness: 0.5 });
+    const geo = new THREE.PlaneGeometry(2, 2);
+    scene.add(new THREE.Mesh(geo, mat));
+    const rt = new THREE.WebGLRenderTarget(4, 4);
+    renderer.setRenderTarget(rt);
+    renderer.render(scene, cam);
+    const px = new Uint8Array(4 * 4 * 4);
+    renderer.readRenderTargetPixels(rt, 0, 0, 4, 4, px);
+    renderer.setRenderTarget(null);
+    rt.dispose(); mat.dispose(); geo.dispose();
+    let sum = 0;
+    for (let i = 0; i < px.length; i += 4) sum += px[i] + px[i + 1] + px[i + 2];
+    return sum / (16 * 3) > 8;
+  } catch (e) {
+    console.warn("environment probe failed:", e);
+    return false;
+  }
+}
+const envOk = envWorks();
+if (!envOk) console.warn("gallery: room environment not available, using direct-light fallback");
+
+// Without an environment, metals keep their color but turn mostly dielectric
+// so the light rig can shade them.
+function adaptToLighting(root) {
+  if (envOk) return;
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+      if (!m || m.userData.litFallback || !(m.metalness > 0.3)) continue;
+      m.metalness = 0.2;
+      m.roughness = Math.max(m.roughness, 0.45);
+      m.userData.litFallback = true;
+      m.needsUpdate = true;
+    }
+  });
+}
 
 const figures = new Map();   // canvas -> figure
 const visible = new Set();
@@ -54,11 +126,27 @@ const io = new IntersectionObserver((entries) => {
 
 function figure(canvas, { autoRotate = true } = {}) {
   const scene = new THREE.Scene();
-  scene.environment = envMap;
-  const key = new THREE.DirectionalLight(0xffffff, 0.8);
-  key.position.set(1, 2, 1.5);
-  scene.add(key);
+  scene.environment = envOk ? envMap : null;
+  // Studio rig: a warm key, cool fill and a rim that separates dark parts
+  // from the backdrop. It rides on the camera so the lit side always faces
+  // the viewer while a tile orbits. The environment supplies reflections;
+  // when it's unavailable (see envWorks) these lights carry the image alone.
   const camera = new THREE.PerspectiveCamera(28, 4 / 3, 0.1, 10000);
+  scene.add(camera);
+  // without the environment's ambient bounce, lift the sky and key a little
+  scene.add(new THREE.HemisphereLight(0xf4f1ec, 0x2a2622, envOk ? 0.25 : 0.6));
+  const rig = [
+    [0xfff6ea, envOk ? 0.9 : 1.2, [-1.0, 1.4, 1.2]],   // key: warm, upper left
+    [0xe6eeff, 0.2, [1.4, 0.2, 0.8]],   // fill: cool, right, low
+    [0xffffff, 0.7, [0.3, 1.2, -1.6]],   // rim: behind, separates dark parts from the backdrop
+  ];
+  for (const [color, intensity, [x, y, z]] of rig) {
+    const l = new THREE.DirectionalLight(color, intensity);
+    // camera space (+z toward the viewer): the light shines from here toward
+    // the camera origin, so only its direction matters
+    l.position.set(x, y, z);
+    camera.add(l, l.target);
+  }
   const controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
   controls.dampingFactor = 0.1;
@@ -99,6 +187,7 @@ function contactShadow(f, box) {
 }
 
 function frame(f, box, dir = [1, 0.75, 1.1]) {
+  adaptToLighting(f.root);
   contactShadow(f, box);
   const size = box.getSize(new THREE.Vector3());
   const center = box.getCenter(new THREE.Vector3());
@@ -392,11 +481,13 @@ function galleryFigure(canvas) {
           if (!o.isMesh) return;
           const mats = Array.isArray(o.material) ? o.material : [o.material];
           for (const m of mats) {
-            m.side = THREE.DoubleSide; m.envMapIntensity = 0.75; m.flatShading = false;
+            m.side = THREE.DoubleSide; m.envMapIntensity = 1.0; m.flatShading = false;
             // vcad-render's fallback material ("part"/"default") is a flat grey
             // dielectric that reads as plaster; show it as bead-blasted aluminum.
             if (m.metalness < 0.05 && m.color.r > 0.55 && Math.abs(m.color.r - m.color.b) < 0.08 && /^(part|default)$/.test(m.name)) {
-              m.color.setRGB(0.78, 0.79, 0.81); m.metalness = 0.8; m.roughness = 0.42;
+              // metalness stays moderate: full metal has no diffuse term, so
+              // without a working environment map it renders black
+              m.color.setRGB(0.62, 0.63, 0.65); m.metalness = 0.45; m.roughness = 0.42;
             }
             m.needsUpdate = true;
           }
