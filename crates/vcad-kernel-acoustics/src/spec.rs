@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::cavity::{Cavity, EndCondition, Segment};
+use crate::cavity::{Cavity, EndCondition, Obstacle, Segment};
 use crate::medium::Medium;
 
 /// A literal value or the name of a document parameter.
@@ -66,6 +66,19 @@ pub struct SegmentSpec {
     pub radius_mm: ParamValue,
 }
 
+/// One rigid annular obstacle in the spec (see [`Obstacle`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ObstacleSpec {
+    /// Inner radius, mm (`0` = solid post on the axis).
+    pub r_in_mm: ParamValue,
+    /// Outer radius, mm.
+    pub r_out_mm: ParamValue,
+    /// Lower z bound, mm.
+    pub z0_mm: ParamValue,
+    /// Upper z bound, mm.
+    pub z1_mm: ParamValue,
+}
+
 /// An end condition in the spec.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -91,6 +104,10 @@ pub enum EndSpec {
 pub struct CavitySpec {
     /// Coaxial segments, stacked along +z.
     pub segments: Vec<SegmentSpec>,
+    /// Rigid annular obstacles carved out of the segments (internal port
+    /// walls). Optional in JSON; absent = none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub obstacles: Vec<ObstacleSpec>,
     /// Bottom (−z) end condition.
     pub bottom: EndSpec,
     /// Top (+z) end condition.
@@ -158,8 +175,21 @@ impl CavitySpec {
                 })
             })
             .collect::<Result<Vec<_>, SpecError>>()?;
+        let obstacles = self
+            .obstacles
+            .iter()
+            .map(|o| {
+                Ok(Obstacle {
+                    r_in_mm: o.r_in_mm.resolve(params)?,
+                    r_out_mm: o.r_out_mm.resolve(params)?,
+                    z0_mm: o.z0_mm.resolve(params)?,
+                    z1_mm: o.z1_mm.resolve(params)?,
+                })
+            })
+            .collect::<Result<Vec<_>, SpecError>>()?;
         Ok(Cavity {
             segments,
+            obstacles,
             bottom: self.bottom.resolve(params)?,
             top: self.top.resolve(params)?,
             medium: Medium::air(self.temp_c.resolve(params)?),
@@ -179,6 +209,12 @@ impl CavitySpec {
             put(&s.z0_mm);
             put(&s.z1_mm);
             put(&s.radius_mm);
+        }
+        for o in &self.obstacles {
+            put(&o.r_in_mm);
+            put(&o.r_out_mm);
+            put(&o.z0_mm);
+            put(&o.z1_mm);
         }
         for e in [&self.bottom, &self.top] {
             match e {
@@ -249,6 +285,7 @@ mod tests {
                 z1_mm: ParamValue::Named("missing".into()),
                 radius_mm: 50.0.into(),
             }],
+            obstacles: Vec::new(),
             bottom: EndSpec::Rigid,
             top: EndSpec::Rigid,
             temp_c: 20.0.into(),
@@ -267,6 +304,7 @@ mod tests {
                 z1_mm: ParamValue::Named("h".into()),
                 radius_mm: ParamValue::Named("r".into()),
             }],
+            obstacles: Vec::new(),
             bottom: EndSpec::Piston {
                 radius_mm: ParamValue::Named("rd".into()),
             },

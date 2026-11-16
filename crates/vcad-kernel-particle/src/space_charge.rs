@@ -77,6 +77,47 @@ fn beam_rho(
     (rho, beam_charge_c)
 }
 
+/// Steady ion charge density, C/m³ per node, from a dwell map expressed
+/// **per source particle** (seconds of residence per node per born ion,
+/// species clocks included — see [`crate::chain::ChainResult`]) and a
+/// source rate in particles per second.
+pub fn rho_from_dwell(
+    solution: &Solution,
+    dwell_per_source: &[f64],
+    source_rate_per_s: f64,
+) -> Vec<f64> {
+    assert_eq!(
+        dwell_per_source.len(),
+        solution.nr * solution.nz,
+        "dwell map size"
+    );
+    let nz = solution.nz;
+    dwell_per_source
+        .iter()
+        .enumerate()
+        .map(|(id, d)| {
+            let i = id / nz;
+            let r_eff = if i == 0 {
+                0.25 * solution.dr
+            } else {
+                i as f64 * solution.dr
+            };
+            let vol = 2.0 * std::f64::consts::PI * r_eff * solution.dr * solution.dz;
+            source_rate_per_s * d * ELEMENTARY_CHARGE / vol
+        })
+        .collect()
+}
+
+/// The beam's perturbation potential for a charge density `rho` (C/m³ per
+/// node): ∇²φ = −ρ/ε₀ with every conductor grounded, volts per node.
+pub fn grounded_potential(
+    solution: &Solution,
+    rho: &[f64],
+    opts: &SolveOptions,
+) -> Result<Vec<f64>, SolveError> {
+    solve_grounded_source(solution, rho, opts)
+}
+
 /// Estimate the space-charge validity gauge from a dwell map.
 ///
 /// `dwell` is the node-indexed dwell-time map from

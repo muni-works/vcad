@@ -22,7 +22,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::lumped::TuningBand;
+use crate::lumped::{PortMount, TuningBand};
 
 /// Schema tag for this claim family.
 pub const CLAIM_SCHEMA: &str = "vcad.acoustics-claims/1";
@@ -108,6 +108,44 @@ pub fn predicted_claims(
     modes: &[f64],
     responses: &[ResponsePoint],
 ) -> ClaimSet {
+    predicted_claims_mount(
+        provenance,
+        PortMount::Flush,
+        field_tuning_hz,
+        band,
+        modes,
+        responses,
+    )
+}
+
+/// [`predicted_claims`] for a port with an explicit [`PortMount`]: the
+/// lumped-claim notes state which end is flanged (an internal port's
+/// interior end is a bare tube end, its mouth flanged by the enclosure), so
+/// `band` should come from
+/// [`crate::lumped::ported_box_tuning_mount_mm`] with the same mount.
+pub fn predicted_claims_mount(
+    provenance: Provenance,
+    mount: PortMount,
+    field_tuning_hz: Option<f64>,
+    band: TuningBand,
+    modes: &[f64],
+    responses: &[ResponsePoint],
+) -> ClaimSet {
+    let (nominal_note, high_note) = match mount {
+        PortMount::Flush => (
+            "lumped Helmholtz tuning f=(c/2π)√(S/(V·L_eff)); interior-flanged + \
+             exterior-unflanged end correction",
+            "highest plausible tuning (interior end only; pressure-release mouth \
+             omits exterior radiation mass)",
+        ),
+        PortMount::Internal => (
+            "lumped Helmholtz tuning f=(c/2π)√(S/(V·L_eff)); internal port: \
+             interior end unflanged (bare tube end in the box) + mouth flanged \
+             by the enclosure face",
+            "highest plausible tuning (unflanged interior end only; \
+             pressure-release mouth omits exterior radiation mass)",
+        ),
+    };
     let mut claims = Vec::new();
 
     if let Some(ft) = field_tuning_hz {
@@ -124,8 +162,7 @@ pub fn predicted_claims(
         "tuning_hz_lumped",
         band.f_nominal_hz,
         "Hz",
-        "lumped Helmholtz tuning f=(c/2π)√(S/(V·L_eff)); interior-flanged + \
-         exterior-unflanged end correction",
+        nominal_note,
     ));
     claims.push(claim(
         "tuning_band_low_hz",
@@ -133,13 +170,7 @@ pub fn predicted_claims(
         "Hz",
         "lowest plausible tuning (both ends flanged, longest L_eff)",
     ));
-    claims.push(claim(
-        "tuning_band_high_hz",
-        band.f_max_hz,
-        "Hz",
-        "highest plausible tuning (interior end only; pressure-release mouth \
-         omits exterior radiation mass)",
-    ));
+    claims.push(claim("tuning_band_high_hz", band.f_max_hz, "Hz", high_note));
     for (i, &m) in modes.iter().enumerate() {
         claims.push(claim(
             &format!("mode_{}_hz", i + 1),
