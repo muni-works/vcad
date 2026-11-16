@@ -267,7 +267,7 @@ pub(crate) fn brick_matrices(
     (kc, m)
 }
 
-fn dense_cholesky(a: &[f64], n: usize) -> Option<Vec<f64>> {
+pub(crate) fn dense_cholesky(a: &[f64], n: usize) -> Option<Vec<f64>> {
     let mut l = vec![0.0; n * n];
     for i in 0..n {
         for j in 0..=i {
@@ -288,7 +288,7 @@ fn dense_cholesky(a: &[f64], n: usize) -> Option<Vec<f64>> {
     Some(l)
 }
 
-fn chol_solve(l: &[f64], n: usize, b: &mut [f64]) {
+pub(crate) fn chol_solve(l: &[f64], n: usize, b: &mut [f64]) {
     for i in 0..n {
         let mut s = b[i];
         for k in 0..i {
@@ -307,7 +307,7 @@ fn chol_solve(l: &[f64], n: usize, b: &mut [f64]) {
 
 /// Symmetric eigen-decomposition (cyclic Jacobi): ascending values and
 /// column eigenvectors `vecs[c][r]`.
-fn sym_eig(mut a: Vec<f64>, n: usize) -> (Vec<f64>, Vec<Vec<f64>>) {
+pub(crate) fn sym_eig(mut a: Vec<f64>, n: usize) -> (Vec<f64>, Vec<Vec<f64>>) {
     let mut v = vec![0.0; n * n];
     for i in 0..n {
         v[i * n + i] = 1.0;
@@ -534,7 +534,7 @@ impl Skyline {
         (inv, first)
     }
 
-    fn factor(a: &CsrMatrix<f64>, budget: usize) -> Option<Skyline> {
+    pub(crate) fn factor(a: &CsrMatrix<f64>, budget: usize) -> Option<Skyline> {
         let n = a.nrows;
         let perm = rcm(a);
         let (inv, first) = Self::profile(a, &perm);
@@ -584,7 +584,7 @@ impl Skyline {
         })
     }
 
-    fn solve(&self, r: &[f64], z: &mut [f64]) {
+    pub(crate) fn solve(&self, r: &[f64], z: &mut [f64]) {
         let n = self.perm.len();
         let mut y: Vec<f64> = self.perm.iter().map(|&o| r[o]).collect();
         for i in 0..n {
@@ -611,14 +611,14 @@ impl Skyline {
     }
 }
 
-enum Precond {
+pub(crate) enum Precond {
     Exact(Skyline),
     Ic0(tang_sparse::Ic0),
     Jacobi(tang_sparse::Jacobi),
 }
 
 impl Precond {
-    fn apply(&self, r: &[f64], z: &mut [f64]) {
+    pub(crate) fn apply(&self, r: &[f64], z: &mut [f64]) {
         match self {
             Precond::Exact(p) => p.solve(r, z),
             Precond::Ic0(p) => p.apply(r, z),
@@ -701,15 +701,16 @@ fn project_out(v: &mut [f64], z: &[Vec<f64>], mz: &[Vec<f64>]) {
     }
 }
 
-struct Eigs {
-    vals: Vec<f64>,
-    vecs: Vec<Vec<f64>>,
-    iterations: usize,
+pub(crate) struct Eigs {
+    pub(crate) vals: Vec<f64>,
+    pub(crate) vecs: Vec<Vec<f64>>,
+    pub(crate) iterations: usize,
 }
 
 #[allow(clippy::too_many_arguments)]
-fn lobpcg(
-    sys: &System,
+pub(crate) fn lobpcg(
+    sys_k: &CsrMatrix<f64>,
+    sys_m: &CsrMatrix<f64>,
     deflate: &[Vec<f64>],
     lam_ref: f64,
     want: usize,
@@ -718,7 +719,7 @@ fn lobpcg(
     tol: f64,
     max_iter: usize,
 ) -> Result<Eigs, ModalError> {
-    let n = sys.k.nrows;
+    let n = sys_k.nrows;
     let block = block.min(n);
     // Deterministic, well-mixed start vectors.
     let mut seed = 0x9E37_79B9_7F4A_7C15u64;
@@ -741,7 +742,7 @@ fn lobpcg(
         .iter()
         .map(|v| {
             let mut y = vec![0.0; n];
-            spmv(&sys.m, v, &mut y);
+            spmv(sys_m, v, &mut y);
             y
         })
         .collect();
@@ -755,8 +756,8 @@ fn lobpcg(
         let nx = x.len();
         let nw = w.len();
         let span: Vec<Vec<f64>> = x.iter().chain(w.iter()).chain(p.iter()).cloned().collect();
-        let (basis, coef) = m_orthonormalize(&span, &sys.m);
-        let (vals, xnew, ritz) = rr(&basis, sys, block);
+        let (basis, coef) = m_orthonormalize(&span, sys_m);
+        let (vals, xnew, ritz) = rr(&basis, sys_k, block);
         // Ritz vector j = Σ_b ritz[j][b] · basis[b] = Σ_s (Σ_b ritz[j][b] coef[b][s]) · span[s].
         // P_new keeps only the W and P parts (s ≥ nx).
         let mut pnew = Vec::with_capacity(block);
@@ -788,8 +789,8 @@ fn lobpcg(
         for (jj, xv) in x.iter().enumerate() {
             let mut kx = vec![0.0; n];
             let mut mx = vec![0.0; n];
-            spmv(&sys.k, xv, &mut kx);
-            spmv(&sys.m, xv, &mut mx);
+            spmv(sys_k, xv, &mut kx);
+            spmv(sys_m, xv, &mut mx);
             let lam = vals[jj];
             let r: Vec<f64> = kx.iter().zip(&mx).map(|(a, b)| a - lam * b).collect();
             // Relative to (|λ| + λ_ref)·‖Mx‖: a rigid mode (λ ≈ 0) is judged
@@ -821,14 +822,14 @@ fn lobpcg(
 }
 
 /// Rayleigh–Ritz in an M-orthonormal basis: lowest `k` Ritz pairs.
-fn rr(basis: &[Vec<f64>], sys: &System, k: usize) -> (Vec<f64>, Vec<Vec<f64>>, Vec<Vec<f64>>) {
+fn rr(basis: &[Vec<f64>], sys_k: &CsrMatrix<f64>, k: usize) -> (Vec<f64>, Vec<Vec<f64>>, Vec<Vec<f64>>) {
     let nb = basis.len();
-    let n = sys.k.nrows;
+    let n = sys_k.nrows;
     let kb: Vec<Vec<f64>> = basis
         .iter()
         .map(|v| {
             let mut y = vec![0.0; n];
-            spmv(&sys.k, v, &mut y);
+            spmv(sys_k, v, &mut y);
             y
         })
         .collect();
@@ -984,7 +985,8 @@ pub fn modal_on_mesh(hex: &HexMesh, spec: &ModalSpec) -> Result<ModalResult, Mod
     // λ_ref ≈ 1e-8 × the element-level ω² (diag K / diag M): ~10 Hz on a
     // millimetre-scale metal mesh.
     let eig = lobpcg(
-        &sys,
+        &sys.k,
+        &sys.m,
         &deflate,
         1e-8 * kd / md.max(1e-300),
         want,
