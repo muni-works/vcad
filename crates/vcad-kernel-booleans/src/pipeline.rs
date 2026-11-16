@@ -106,7 +106,10 @@ fn evaluate_curve(curve: &ssi::IntersectionCurve, t: f64) -> Point3 {
             // Caller should expand TwoLines before calling this
             line1.origin + t * line1.direction
         }
-        ssi::IntersectionCurve::Circle(c) => {
+        // TwoCircles is expanded before evaluation; first circle by default.
+        ssi::IntersectionCurve::Circle(c)
+        | ssi::IntersectionCurve::Ring(c, _)
+        | ssi::IntersectionCurve::TwoCircles(c, _) => {
             let (sin_t, cos_t) = t.sin_cos();
             c.center + c.radius * (cos_t * c.x_dir.into_inner() + sin_t * c.y_dir.into_inner())
         }
@@ -979,6 +982,18 @@ fn apply_splits_to_solid(
                             }
                             continue;
                         }
+                        if let ssi::IntersectionCurve::Ring(circle, ring) = &curve {
+                            let (result, sound) = split::split_spherical_face_by_ring_checked(
+                                solid, fid, circle, ring, segments,
+                            );
+                            *sphere_unsound |= !sound;
+                            if result.sub_faces.len() >= 2 {
+                                new_faces.extend(result.sub_faces);
+                            } else {
+                                new_faces.push(fid);
+                            }
+                            continue;
+                        }
                         // Non-circle curves on sphere faces: keep unchanged
                         new_faces.push(fid);
                         continue;
@@ -1384,6 +1399,81 @@ pub(crate) fn brep_boolean(
 
             let mut results_a = Vec::new();
             let mut results_b = Vec::new();
+
+            // TwoCircles is the coaxial cylinder × sphere result. Both
+            // circles lie on both infinite surfaces; only one lying on both
+            // FACES is a real crossing (a rod ending inside a ball reaches
+            // the near circle and never the far one — splitting the ball
+            // along the far one would cut a cap nothing bounds). Each
+            // survivor is an ordinary circle split of both curved faces.
+            if let ssi::IntersectionCurve::TwoCircles(c1, c2) = &curve {
+                // `trim::point_in_face` reads an UNTRIMMED sphere (a pole
+                // loop of two positions, no holes) through its degenerate UV
+                // polygon and is only right near the seam; every point of
+                // the sphere is on such a face.
+                let on_face = |solid: &BRepSolid, fid: FaceId, p: &Point3| {
+                    let face = &solid.topology.faces[fid];
+                    let whole_sphere = face.inner_loops.is_empty()
+                        && split::is_spherical_face(solid, fid)
+                        && {
+                            let mut seen: Vec<Point3> = Vec::new();
+                            for he in solid.topology.loop_half_edges(face.outer_loop) {
+                                let v = solid.topology.vertices
+                                    [solid.topology.half_edges[he].origin]
+                                    .point;
+                                if !seen.iter().any(|u| (*u - v).norm() < 1e-9) {
+                                    seen.push(v);
+                                }
+                            }
+                            seen.len() <= 2
+                        };
+                    whole_sphere || trim::point_in_face(solid, fid, p)
+                };
+                let on_both = |c: &vcad_kernel_geom::Circle3d| {
+                    (0..16).any(|k| {
+                        let theta = 2.0 * std::f64::consts::PI * (k as f64 + 0.5) / 16.0;
+                        let p = c.center
+                            + c.radius
+                                * (theta.cos() * c.x_dir.into_inner()
+                                    + theta.sin() * c.y_dir.into_inner());
+                        on_face(&a, face_a, &p) && on_face(&b, face_b, &p)
+                    })
+                };
+                // The cylinder wall realizes the circle on its own frozen
+                // columns — the canonical sag-dense grid — so the sphere is
+                // handed that exact ring; on its usual raw circle-frame grid
+                // the two would share no vertices and the seam would gape.
+                for c in [c1, c2].into_iter().filter(|c| on_both(c)) {
+                    let plain = ssi::IntersectionCurve::Circle(c.clone());
+                    let ring = ssi::IntersectionCurve::Ring(
+                        c.clone(),
+                        split::canonical_circle_points(
+                            c.center,
+                            c.radius,
+                            c.normal.into_inner(),
+                            segments,
+                        ),
+                    );
+                    let for_face = |solid: &BRepSolid, fid: FaceId| {
+                        if split::is_spherical_face(solid, fid) {
+                            ring.clone()
+                        } else {
+                            plain.clone()
+                        }
+                    };
+                    results_a.push((for_face(&a, face_a), c.center, c.center));
+                    results_b.push((for_face(&b, face_b), c.center, c.center));
+                }
+                let real = !results_a.is_empty();
+                if std::env::var_os("VCAD_SSI_DEBUG").is_some() {
+                    eprintln!(
+                        "TwoCircles {face_a:?}×{face_b:?}: on both faces: {} {}",
+                        on_both(c1),
+                        on_both(c2)
+                    );
+                }
+                return Ok(Some((face_a, results_a, face_b, results_b, real)));
+            }
 
             // For circle curves (from plane-cylinder intersection), skip trimming —
             // the circle is already the intersection. Add split instructions to
@@ -2097,7 +2187,9 @@ pub(crate) fn brep_boolean(
                 let caps: Vec<(vcad_kernel_math::Vec3, f64)> = list
                     .iter()
                     .filter_map(|(curve, _, _)| {
-                        let ssi::IntersectionCurve::Circle(c) = curve else {
+                        let (ssi::IntersectionCurve::Circle(c)
+                        | ssi::IntersectionCurve::Ring(c, _)) = curve
+                        else {
                             return None;
                         };
                         let off = c.center - sphere.center;

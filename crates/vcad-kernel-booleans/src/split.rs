@@ -4014,8 +4014,54 @@ pub fn split_spherical_face_by_circle_checked(
     segments: u32,
 ) -> (SplitResult, bool) {
     let mut sound = true;
-    let result = split_spherical_face_by_circle_inner(brep, face_id, circle, segments, &mut sound);
+    let result =
+        split_spherical_face_by_circle_inner(brep, face_id, circle, segments, &mut sound, None);
     (result, sound)
+}
+
+/// [`split_spherical_face_by_circle_checked`] with the circle realized on
+/// the given closed polyline instead of the circle-frame `segments` grid —
+/// for a circle the sphere shares with a face that samples it differently
+/// (a coaxial cylinder wall's frozen columns).
+///
+/// Only a whole circle can carry the ring: on an untrimmed sphere, or
+/// wholly inside a trimmed patch. A circle that crosses a patch's boundary
+/// is clipped on the usual grid.
+pub fn split_spherical_face_by_ring_checked(
+    brep: &mut BRepSolid,
+    face_id: FaceId,
+    circle: &vcad_kernel_geom::Circle3d,
+    ring: &[Point3],
+    segments: u32,
+) -> (SplitResult, bool) {
+    let mut sound = true;
+    let ring = (ring.len() >= 3).then_some(ring);
+    let result =
+        split_spherical_face_by_circle_inner(brep, face_id, circle, segments, &mut sound, ring);
+    (result, sound)
+}
+
+/// The vertices a full circle is realized on: the caller's `ring`, or the
+/// circle-frame `segments` grid.
+fn sphere_circle_ring(
+    circle: &vcad_kernel_geom::Circle3d,
+    segments: u32,
+    ring: Option<&[Point3]>,
+) -> Vec<Point3> {
+    if let Some(ring) = ring {
+        return ring.to_vec();
+    }
+    // NOTE: sphere ring pairing relies on the circle's own frame — do NOT
+    // switch this to the canonical grid (see fillet-defects notes).
+    (0..segments)
+        .map(|i| {
+            let theta = 2.0 * std::f64::consts::PI * (i as f64) / (segments as f64);
+            let (sin_t, cos_t) = theta.sin_cos();
+            circle.center
+                + circle.radius
+                    * (cos_t * circle.x_dir.into_inner() + sin_t * circle.y_dir.into_inner())
+        })
+        .collect()
 }
 
 fn split_spherical_face_by_circle_inner(
@@ -4024,6 +4070,7 @@ fn split_spherical_face_by_circle_inner(
     circle: &vcad_kernel_geom::Circle3d,
     segments: u32,
     sound: &mut bool,
+    ring: Option<&[Point3]>,
 ) -> SplitResult {
     let face = &brep.topology.faces[face_id];
     let surface_index = face.surface_index;
@@ -4072,7 +4119,7 @@ fn split_spherical_face_by_circle_inner(
         || !brep.topology.faces[face_id].inner_loops.is_empty()
     {
         if let Some(result) =
-            clip_spherical_face_by_circle(brep, face_id, circle, segments, tolerance)
+            clip_spherical_face_by_circle(brep, face_id, circle, segments, tolerance, ring)
         {
             return result;
         }
@@ -4085,18 +4132,8 @@ fn split_spherical_face_by_circle_inner(
     }
 
     // Generate the N shared circle vertices.
-    let n = segments as usize;
-    // NOTE: sphere ring pairing relies on the circle's own frame — do NOT
-    // switch this to the canonical grid (see fillet-defects notes).
-    let circle_verts: Vec<Point3> = (0..segments)
-        .map(|i| {
-            let theta = 2.0 * std::f64::consts::PI * (i as f64) / (segments as f64);
-            let (sin_t, cos_t) = theta.sin_cos();
-            circle.center
-                + circle.radius
-                    * (cos_t * circle.x_dir.into_inner() + sin_t * circle.y_dir.into_inner())
-        })
-        .collect();
+    let circle_verts = sphere_circle_ring(circle, segments, ring);
+    let n = circle_verts.len();
     let circle_vert_ids: Vec<_> = circle_verts
         .iter()
         .map(|p| find_or_create_vertex(brep, p, tolerance))
@@ -4168,6 +4205,7 @@ fn clip_spherical_face_by_circle(
     circle: &vcad_kernel_geom::Circle3d,
     segments: u32,
     tolerance: f64,
+    ring: Option<&[Point3]>,
 ) -> Option<SplitResult> {
     use vcad_kernel_math::Vec3;
 
@@ -4264,6 +4302,7 @@ fn clip_spherical_face_by_circle(
             segments,
             tolerance,
             outer_sign > 0.0,
+            ring,
         ));
     }
     if has_holes {
@@ -4585,18 +4624,13 @@ fn punch_spherical_hole(
     segments: u32,
     tolerance: f64,
     disk_on_negative: bool,
+    ring: Option<&[Point3]>,
 ) -> SplitResult {
-    let n = segments as usize;
-    let ids: Vec<_> = (0..segments)
-        .map(|i| {
-            let theta = 2.0 * std::f64::consts::PI * (i as f64) / (segments as f64);
-            let (sin_t, cos_t) = theta.sin_cos();
-            let p = circle.center
-                + circle.radius
-                    * (cos_t * circle.x_dir.into_inner() + sin_t * circle.y_dir.into_inner());
-            find_or_create_vertex(brep, &p, tolerance)
-        })
+    let ids: Vec<_> = sphere_circle_ring(circle, segments, ring)
+        .iter()
+        .map(|p| find_or_create_vertex(brep, p, tolerance))
         .collect();
+    let n = ids.len();
     // A forward walk bounds the cap on the +normal side; the reverse walk
     // (v0, vN-1, …, v1) bounds the other one.
     let he_fwd: Vec<_> = (0..n)
@@ -4882,7 +4916,9 @@ pub fn split_conical_face(
             }
             SplitResult { sub_faces: out }
         }
-        IntersectionCurve::TwoSampled(_, _) => SplitResult {
+        IntersectionCurve::TwoSampled(_, _)
+        | IntersectionCurve::TwoCircles(_, _)
+        | IntersectionCurve::Ring(_, _) => SplitResult {
             sub_faces: vec![face_id],
         },
     }
@@ -6624,7 +6660,9 @@ pub fn split_cylindrical_face(
                 segments,
             )
         }
-        IntersectionCurve::TwoSampled(_, _) => {
+        IntersectionCurve::TwoSampled(_, _)
+        | IntersectionCurve::TwoCircles(_, _)
+        | IntersectionCurve::Ring(_, _) => {
             // The SSI stage expands a TwoSampled pair into two `Sampled`
             // loops before splitting (see `brep_boolean`), so this arm is
             // unreachable from the pipeline. Defensive no-op for any other

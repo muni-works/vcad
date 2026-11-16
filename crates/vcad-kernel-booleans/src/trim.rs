@@ -1174,6 +1174,15 @@ pub fn trim_curve_to_face(
                 n_samples,
             )
         }
+        IntersectionCurve::Ring(c1, _) | IntersectionCurve::TwoCircles(c1, _) => {
+            // TwoCircles should be expanded before calling this function.
+            trim_curve_to_face(
+                &IntersectionCurve::Circle(c1.clone()),
+                face_id,
+                brep,
+                n_samples,
+            )
+        }
         IntersectionCurve::TwoSampled(c1, _c2) => {
             // TwoSampled should be expanded before calling this function.
             // Defensive fallback: process the first sampled curve.
