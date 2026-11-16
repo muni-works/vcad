@@ -1926,7 +1926,11 @@ mod tests {
         let i = 10.0f64.powi(4) / 12.0;
         let pcr = std::f64::consts::PI.powi(2) * E * i / (4.0 * 200.0 * 200.0);
         let err = rel(r.modes[0].load_factor, pcr);
-        eprintln!("Euler FE {} vs {pcr} ({:+.2}%)", r.modes[0].load_factor, 100.0 * err);
+        eprintln!(
+            "Euler FE {} vs {pcr} ({:+.2}%)",
+            r.modes[0].load_factor,
+            100.0 * err
+        );
         assert!(
             err.abs() < 0.03,
             "Euler {} vs {pcr} ({:+.2}%)",
