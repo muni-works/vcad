@@ -250,8 +250,10 @@ vcad/
 │   #                            # Lawson; predicted → Provisional, never
 │   #                            # Pass) and the MCP tools
 │   #                            # simulate_charged_particles /
-│   #                            # optimize_electrodes (multi-start FD search;
-│   #                            # adjoint optimizer in-crate) are live.
+│   #                            # optimize_electrodes (multi-start search via
+│   #                            # electrode_opt: FD default, `gradient:
+│   #                            # "hybrid"` = adjoint for potentials/A·t + FD
+│   #                            # geometry + FD fallback) are live.
 │   #                            # (docs/particle-optics-m0.md, -paper-draft,
 │   #                            # shielded-grid-experiment.md)
 │   # - vcad-kernel-tolerance    # Tolerance stackups: WC/RSS/seeded-MC +
