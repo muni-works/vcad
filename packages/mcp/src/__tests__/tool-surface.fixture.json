@@ -868,6 +868,7 @@
             "torus",
             "wedge",
             "prism",
+            "spur_gear",
             "union",
             "difference",
             "intersection",
