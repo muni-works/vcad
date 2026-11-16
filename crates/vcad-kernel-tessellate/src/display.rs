@@ -49,7 +49,10 @@ fn segment_distance(p: P, a: P, b: P) -> f64 {
     } else {
         (dot(sub(p, a), ab) / len2).clamp(0.0, 1.0)
     };
-    norm(sub(p, [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t]))
+    norm(sub(
+        p,
+        [a[0] + ab[0] * t, a[1] + ab[1] * t, a[2] + ab[2] * t],
+    ))
 }
 
 struct Work {
@@ -180,11 +183,7 @@ pub fn thin_feature_chains(mesh: &mut TriangleMesh, sag_tol: f64, max_turn: f64)
             ]
         })
         .collect();
-    let tris: Vec<[u32; 3]> = mesh
-        .indices
-        .chunks(3)
-        .map(|t| [t[0], t[1], t[2]])
-        .collect();
+    let tris: Vec<[u32; 3]> = mesh.indices.chunks(3).map(|t| [t[0], t[1], t[2]]).collect();
 
     // Edge → triangles, to find feature edges and edges that are not
     // two-manifold.
@@ -229,6 +228,18 @@ pub fn thin_feature_chains(mesh: &mut TriangleMesh, sag_tol: f64, max_turn: f64)
             faces.len() == 2
         })
         .collect();
+
+    // Hash order must not reach the result: the same solid has to thin to
+    // the same mesh every time (a warm viewport session is compared against
+    // a cold evaluation).
+    for f in &mut feature {
+        f.sort_by(|&a, &b| {
+            pos[a as usize]
+                .partial_cmp(&pos[b as usize])
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.cmp(&b))
+        });
+    }
 
     // Chains, each from one kept vertex to the next (or round a closed
     // loop back to its anchor), in a direction fixed by position so the two
@@ -394,8 +405,11 @@ mod tests {
         for z in [0.0, h] {
             for i in 0..n {
                 let a = 2.0 * PI * i as f64 / n as f64;
-                mesh.vertices
-                    .extend_from_slice(&[(r * a.cos()) as f32, (r * a.sin()) as f32, z as f32]);
+                mesh.vertices.extend_from_slice(&[
+                    (r * a.cos()) as f32,
+                    (r * a.sin()) as f32,
+                    z as f32,
+                ]);
                 mesh.normals
                     .extend_from_slice(&[a.cos() as f32, a.sin() as f32, 0.0]);
             }

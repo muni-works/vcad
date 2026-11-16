@@ -257,13 +257,19 @@ fn fusor_chamber_display_mesh_is_thinned_and_closed() {
         let (ft, dt) = (f.mesh.indices.len() / 3, d.mesh.indices.len() / 3);
         let (_, _, _, full_vol, _) = census(&f.mesh.positions, &f.mesh.indices);
         let (nonmanifold, folded, boundary, vol, _) = census(&d.mesh.positions, &d.mesh.indices);
-        let opposed = opposed_normals(&d.mesh.positions, d.mesh.normals.as_deref(), &d.mesh.indices);
+        let opposed = opposed_normals(
+            &d.mesh.positions,
+            d.mesh.normals.as_deref(),
+            &d.mesh.indices,
+        );
         eprintln!(
             "{name}: {ft} → {dt} triangles, volume {full_vol:.1} → {vol:.1}, nonmanifold \
              {nonmanifold} folded {folded} boundary {boundary} opposed {opposed}"
         );
         if dt * 2 > ft {
-            fails.push(format!("{name}: display mesh has {dt} triangles (full {ft})"));
+            fails.push(format!(
+                "{name}: display mesh has {dt} triangles (full {ft})"
+            ));
         }
         if (nonmanifold, folded, boundary, opposed) != (0, 0, 0, 0) {
             fails.push(format!(
