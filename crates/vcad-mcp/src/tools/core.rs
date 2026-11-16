@@ -498,7 +498,6 @@ pub(crate) fn threemf_bytes(meshes: &[(Vec<f32>, Vec<u32>)]) -> std::io::Result<
         zip.write_all(body.as_bytes())?;
     }
     zip.finish().map_err(std::io::Error::other)?;
-    drop(zip);
     Ok(buf.into_inner())
 }
 
