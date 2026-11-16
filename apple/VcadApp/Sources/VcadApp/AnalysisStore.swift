@@ -91,8 +91,9 @@ final class AnalysisStore {
     // MARK: DFM
 
     func runDfm(_ m: EditorModel) async {
-        guard let data = Self.documentData(m) else { dfmError = "No document is open."; return }
-        dfmBusy = true; dfmError = nil
+        dfmBusy = true
+        guard let data = await m.documentDataOffMain() else { dfmBusy = false; dfmError = "No document is open."; return }
+        dfmError = nil
         let process = dfmProcess
         let r = await Task.detached { Result { try AnalysisFFI.dfmCheck(doc: data, process: process) } }.value
         dfmBusy = false
@@ -104,13 +105,29 @@ final class AnalysisStore {
     }
 
     /// Apply an issue's resolved patch as one undo step, then re-check.
+    ///
+    /// The patch is resolved off the main actor; only the engine swap
+    /// (`loadIR` — a parse, no geometry: the viewport re-evaluates on its own
+    /// eval job) runs on main. An edit that lands while the patch is being
+    /// resolved wins: the stale patch is dropped rather than loaded over it.
     @discardableResult
     func applyFix(_ issue: DfmIssue, _ m: EditorModel) async -> Bool {
         guard let patch = issue.patch else { dfmError = issue.patch_note ?? "No automatic fix."; return false }
-        guard let data = Self.documentData(m) else { return false }
+        guard !dfmBusy else { dfmError = "A DFM check or fix is already running."; return false }
+        dfmBusy = true
+        let rev = m.documentRevision
+        guard let data = await m.documentDataOffMain() else { dfmBusy = false; return false }
+        let r = await Task.detached(priority: .userInitiated) {
+            Result { try AnalysisFFI.dfmApply(doc: data, patch: patch) }
+        }.value
+        dfmBusy = false
         do {
-            let patched = try AnalysisFFI.dfmApply(doc: data, patch: patch)
-            try AgentEdits.edit(m, name: "DFM: Fix \(issue.ruleTitle)") { try $0.loadIR(patched) }
+            let patched = try r.get()
+            guard m.documentRevision == rev else {
+                dfmError = "The document changed while the fix was being prepared — run the check again."
+                return false
+            }
+            try AgentEdits.edit(m, name: "DFM: Fix \(issue.ruleTitle)") { try $0.loadIR(json: patched) }
             lastFix = patch.summary
         } catch {
             dfmError = AgentEdits.describe(error)
@@ -122,9 +139,26 @@ final class AnalysisStore {
 
     // MARK: FEA
 
-    func faces(_ m: EditorModel) -> [AnalysisFace] {
-        guard let data = Self.documentData(m) else { return [] }
-        return picker.faces(part: feaPart, document: data) ?? []
+    /// Bumped when `loadFaces` lands, so views reading `faces` refresh.
+    private var facesLoaded = 0
+
+    /// Faces of the analysed part if already loaded for the current document
+    /// revision; nil while not loaded (`loadFaces`). Never evaluates or
+    /// serializes — safe from a view body.
+    func faces(_ m: EditorModel) -> [AnalysisFace]? {
+        _ = facesLoaded
+        guard let c = m.documentBytesCache, c.revision == m.documentRevision,
+              let f = picker.cachedFaces(part: feaPart, document: c.data) else { return nil }
+        return f ?? []
+    }
+
+    /// Load the analysed part's faces off the main thread.
+    @discardableResult
+    func loadFaces(_ m: EditorModel) async -> [AnalysisFace] {
+        guard let data = await m.documentDataOffMain() else { return [] }
+        let f = await picker.faces(part: feaPart, document: data) ?? []
+        facesLoaded += 1
+        return f
     }
 
     func toggle(face: UInt32) {
@@ -186,7 +220,7 @@ final class AnalysisStore {
     }
 
     func runFea(_ m: EditorModel) async {
-        guard let data = Self.documentData(m) else { feaError = "No document is open."; return }
+        guard let data = await m.documentDataOffMain() else { feaError = "No document is open."; return }
         let req = request()
         guard !req.loads.isEmpty else { feaError = "Pick at least one face for a load."; return }
         guard !req.supports.isEmpty else { feaError = "Pick at least one face for a support."; return }
@@ -212,7 +246,7 @@ final class AnalysisStore {
     // MARK: Clearance
 
     func runClearance(_ m: EditorModel) async {
-        guard let data = Self.documentData(m) else { clearanceError = "No document is open."; return }
+        guard let data = await m.documentDataOffMain() else { clearanceError = "No document is open."; return }
         clearanceBusy = true; clearanceError = nil
         let r = await Task.detached { Result { try AnalysisFFI.clearance(doc: data) } }.value
         clearanceBusy = false

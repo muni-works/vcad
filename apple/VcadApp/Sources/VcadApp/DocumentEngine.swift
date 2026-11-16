@@ -354,7 +354,13 @@ final class DocumentEngine: @unchecked Sendable {
     /// untouched, when the JSON isn't an IR document.
     @discardableResult
     func loadIR(_ document: [String: Any]) throws -> Result {
-        let json = String(decoding: try JSONSerialization.data(withJSONObject: document), as: UTF8.self)
+        try loadIR(json: try JSONSerialization.data(withJSONObject: document))
+    }
+
+    /// `loadIR` from IR JSON bytes already in hand (a DFM patch, a file).
+    @discardableResult
+    func loadIR(json: Data) throws -> Result {
+        let json = String(decoding: json, as: UTF8.self)
         return try track(Self.unwrap(json.withCString { vcad_engine_load_ir(handle, $0) }))
     }
 

@@ -253,9 +253,14 @@ private struct FacePickList: View {
     }
 
     var body: some View {
-        let faces = store.faces(model)
+        let loaded = store.faces(model)
+        let faces = loaded ?? []
         VStack(alignment: .leading, spacing: 2) {
-            if faces.isEmpty { Text("This part has no pickable faces.").font(.caption).foregroundStyle(.secondary) }
+            if loaded == nil {
+                Text("Loading faces…").font(.caption).foregroundStyle(.secondary)
+            } else if faces.isEmpty {
+                Text("This part has no pickable faces.").font(.caption).foregroundStyle(.secondary)
+            }
             ForEach(faces) { f in
                 HStack {
                     Image(systemName: chosen.contains(f.id) ? "checkmark.square.fill" : "square")
@@ -269,6 +274,8 @@ private struct FacePickList: View {
         }
         .padding(6)
         .controlWell()
+        // Evaluate off main whenever the document or the analysed part changes.
+        .task(id: "\(model.documentRevision)/\(store.feaPart)") { await store.loadFaces(model) }
     }
 }
 

@@ -41,8 +41,8 @@ enum AnalysisAgentTools {
                                     "report": store.dfmReport.map(dfmSummary) ?? [:]])
         case "inspect_faces":
             let part = a["part_index"] as? Int ?? 0
-            guard let data = AnalysisStore.documentData(m) else { throw Failure(message: "No document is open.") }
-            guard let faces = store.picker.faces(part: part, document: data) else {
+            guard let data = await m.documentDataOffMain() else { throw Failure(message: "No document is open.") }
+            guard let faces = await store.picker.faces(part: part, document: data) else {
                 throw Failure(message: "Part \(part) has no B-rep faces.")
             }
             return AgentTools.json(faces.map { ["id": $0.id, "surface": $0.surface, "center": $0.center,
@@ -80,7 +80,7 @@ enum AnalysisAgentTools {
     }
 
     private static func structure(_ a: [String: Any], _ m: EditorModel, _ store: AnalysisStore) async throws -> [String: Any] {
-        guard let data = AnalysisStore.documentData(m) else { throw Failure(message: "No document is open.") }
+        guard let data = await m.documentDataOffMain() else { throw Failure(message: "No document is open.") }
         // Pass the agent's loads/supports straight through: the FFI accepts
         // faces and/or explicit regions.
         var req: [String: Any] = [
