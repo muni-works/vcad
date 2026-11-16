@@ -32,10 +32,11 @@ fn mate_poses_child_on_parent_port_and_adds_joint_hardware() {
 [union cube [union vp blank]]
 "#;
     let doc = eval_vcad(src, None).unwrap();
-    // Two CF joints → two DN100 gaskets, 2 × 16 bolts and nuts.
+    // Two CF joints → two DN100 gaskets and 2 × 16 bolts. The cube's faces
+    // are tapped, so no nuts.
     assert_eq!(hw(&doc, "DN100 CF copper gasket"), 2);
     assert_eq!(hw(&doc, "M8x"), 32);
-    assert_eq!(hw(&doc, "M8 hex nut"), 32);
+    assert_eq!(hw(&doc, "M8 hex nut"), 0);
     assert_eq!(hw(&doc, "spherical cube"), 1);
     assert_eq!(hw(&doc, "viewport"), 1);
 
@@ -77,7 +78,10 @@ fn mate_chain_reducer_then_kf_adapter() {
 
 #[test]
 fn numeric_param_values_are_accepted() {
-    let doc = eval_vcad(r#"[vac "vacuum.nipple" #["size" "DN40" "length" 150]]"#, None);
+    let doc = eval_vcad(
+        r#"[vac "vacuum.nipple" #["size" "DN40" "length" 150]]"#,
+        None,
+    );
     // Whether loon admits a number in a (Vec Str) or not, the result must be
     // either a 150 mm nipple or a clear type error — never a silent default.
     match doc {
@@ -123,7 +127,9 @@ fn vac_at_pose_composes_into_mates() {
     let c2f = info.metadata["center_to_face_mm"].as_f64().unwrap();
     let found = doc.nodes.values().any(|n| match &n.op {
         CsgOp::Translate { offset, .. } => {
-            offset.x.abs() < 1e-6 && (offset.y - c2f).abs() < 1e-6 && (offset.z - 500.0).abs() < 1e-6
+            offset.x.abs() < 1e-6
+                && (offset.y - c2f).abs() < 1e-6
+                && (offset.z - 500.0).abs() < 1e-6
         }
         _ => false,
     });

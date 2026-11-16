@@ -254,7 +254,13 @@ fn build_cf_gasket(p: &Params) -> Result<Document, String> {
     let d = cf(&p.str("size"))?;
     let mut b = Builder::new();
     let h = d.gasket_thickness;
-    let g = tube_z(&mut b, d.gasket_od / 2.0, d.gasket_id / 2.0, -h / 2.0, h / 2.0);
+    let g = tube_z(
+        &mut b,
+        d.gasket_od / 2.0,
+        d.gasket_id / 2.0,
+        -h / 2.0,
+        h / 2.0,
+    );
     let mat = if p.str("material") == "fkm" {
         "rubber"
     } else {
@@ -395,7 +401,11 @@ pub const CF_REDUCER: PartEntry = PartEntry {
             },
         ],
         xrefs: CF_XREF,
-        synonyms: &["zero length reducer", "reducing flange", "cf adapter flange"],
+        synonyms: &[
+            "zero length reducer",
+            "reducing flange",
+            "cf adapter flange",
+        ],
         version: "1.0",
         thumb: THUMB,
     },
@@ -463,7 +473,10 @@ fn build_cf_reducer(p: &Params) -> Result<Document, String> {
     body = b.difference(body, cut);
     let r = s.knife_edge_dia() / 2.0;
     let z0 = t - depth - 0.05;
-    let ring = b.revolve_z(&[[r - 0.6, z0], [r, z0], [r, t - depth + 0.3]]);
+    let disc = cyl_z(&mut b, r, z0, t - depth + 0.3);
+    let flank = b.cone(r - 0.6, r + 0.001, 0.35);
+    let flank = b.translate(flank, 0.0, 0.0, z0);
+    let ring = b.difference(disc, flank);
     let root = b.union(body, ring);
     Ok(b.finish(root, SS))
 }
@@ -526,7 +539,13 @@ pub const KF_FLANGE: PartEntry = PartEntry {
             },
         ],
         xrefs: KF_XREF,
-        synonyms: &["nw flange", "qf flange", "iso-kf", "kf blank", "quick flange"],
+        synonyms: &[
+            "nw flange",
+            "qf flange",
+            "iso-kf",
+            "kf blank",
+            "quick flange",
+        ],
         version: "1.0",
         thumb: THUMB,
     },
@@ -596,7 +615,12 @@ pub const KF_CENTERING_RING: PartEntry = PartEntry {
             },
         ],
         xrefs: KF_XREF,
-        synonyms: &["centering ring", "centring ring", "kf o-ring", "nw centering ring"],
+        synonyms: &[
+            "centering ring",
+            "centring ring",
+            "kf o-ring",
+            "nw centering ring",
+        ],
         version: "1.0",
         thumb: THUMB,
     },
@@ -665,7 +689,13 @@ fn build_kf_clamp(p: &Params) -> Result<Document, String> {
     let d = kf(&p.str("size"))?;
     let mut b = Builder::new();
     let w = d.clamp_width;
-    let ring = tube_z(&mut b, d.clamp_od / 2.0, d.od / 2.0 + 0.5, -w / 2.0, w / 2.0);
+    let ring = tube_z(
+        &mut b,
+        d.clamp_od / 2.0,
+        d.od / 2.0 + 0.5,
+        -w / 2.0,
+        w / 2.0,
+    );
     // Wing-nut boss out to the published overall span along +X.
     let reach = d.clamp_span - d.clamp_od / 2.0 - d.od / 2.0;
     let boss_w = 0.6 * w;

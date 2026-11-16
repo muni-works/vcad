@@ -14,21 +14,33 @@
 //!   plane inside the bore (`√(r_i² − r_bore²) + 1`), so the cavity never
 //!   breaks out through a sealing face;
 //! * center-to-face = `h` + flange thickness;
-//! * outer body = sphere of radius `√(h² + (OD/2)²)` (each face flat just
-//!   carries its flange) intersected with the face planes.
+//! * outer body = sphere of radius `√(h² + (OD/2 − 3 mm)²)` intersected
+//!   with planes 1 mm past each face plane. The sphere meets each flange's
+//!   back face 3 mm inside its rim and the clip planes sit inside the
+//!   flanges, so every body/flange intersection is a clean circle — a
+//!   sphere tangent to the flange rim, or a clip plane coplanar with its
+//!   back face, are degenerate cases the boolean kernel handles badly.
 //!
 //! The part's metadata labels center-to-face as `derived`, and reports the
 //! cavity volume next to Kimball's published 5,512 cc for comparison.
 
-use super::flanges::{bom, cf_meta};
 use super::fittings::AXES;
+use super::flanges::{bom, cf_meta};
 use super::*;
-use crate::types::{Param, Params, PartEntry, PartInfo, PartMetadata};
+use crate::types::{Param, Params, PartEntry, PartInfo, PartMetadata, PortInfo};
 use serde_json::json;
 use vcad_ir::Document;
 
 const CHAMBER_SIZES: &[&str] = &["DN63", "DN100", "DN160"];
 const PORT_SIZES: &[&str] = &["DN16", "DN40"];
+
+/// How far the body clip planes reach into the face flanges.
+const CLIP_OVERLAP: f64 = 1.0;
+
+/// Port bores start inside the cavity (at this fraction of its radius), so
+/// opposite bores never meet end-to-end and crossing bores never intersect
+/// each other — the cavity sphere already removes the centre.
+const BORE_START: f64 = 0.6;
 
 /// Kimball MCF600 spherical ID / 2 (mm) and its face flange OD (DN100).
 const KIMBALL_R_I: f64 = 213.36 / 2.0;
@@ -56,7 +68,7 @@ pub fn chamber_geom(d: &CfDims) -> ChamberGeom {
         r_i,
         h,
         c2f: h + d.thickness,
-        r_out: (h * h + d.od * d.od / 4.0).sqrt(),
+        r_out: (h * h + (d.od / 2.0 - 3.0).powi(2)).sqrt(),
     }
 }
 
@@ -76,14 +88,22 @@ fn main_half(g: &ChamberGeom, d: &CfDims) -> f64 {
 fn body(b: &mut Builder, g: &ChamberGeom, slab_only_z: bool) -> vcad_ir::NodeId {
     let s = b.sphere(g.r_out);
     let big = 2.0 * g.r_out + 2.0;
+    // Clip 1 mm past the face planes, into the flanges: a clip plane
+    // coplanar with a flange's back face is a degenerate union.
+    let e = g.h + CLIP_OVERLAP;
     let clip = if slab_only_z {
-        let c = b.cube(big, big, 2.0 * g.h);
-        b.translate(c, -big / 2.0, -big / 2.0, -g.h)
+        let c = b.cube(big, big, 2.0 * e);
+        b.translate(c, -big / 2.0, -big / 2.0, -e)
     } else {
-        let c = b.cube(2.0 * g.h, 2.0 * g.h, 2.0 * g.h);
-        b.translate(c, -g.h, -g.h, -g.h)
+        let c = b.cube(2.0 * e, 2.0 * e, 2.0 * e);
+        b.translate(c, -e, -e, -e)
     };
     b.intersection(s, clip)
+}
+
+/// Chamber faces carry tapped blind holes (as Kimball's do).
+fn tapped(p: PortInfo) -> PortInfo {
+    PortInfo { tapped: true, ..p }
 }
 
 fn main_frame(g: &ChamberGeom, name: &str) -> Frame {
@@ -120,6 +140,7 @@ pub const SPHERICAL_CUBE: PartEntry = PartEntry {
                 values: PORT_SIZES,
                 default: "DN40",
             },
+            DETAIL_PARAM,
         ],
         xrefs: &[Xref {
             params: &[("size", "DN100")],
@@ -200,19 +221,34 @@ fn build_cube(p: &Params) -> Result<Document, String> {
     let c = cube_spec(p)?;
     let (d, g) = (c.d, c.g);
     let mut b = Builder::new();
-    let mut parts = Parts::default();
+    let mut parts = Parts::with_detail(Detail::parse(&p.str("detail")));
     parts.solids.push(body(&mut b, &g, false));
     for (name, a, _) in AXES {
         let f = main_frame(&g, name);
-        flange_at(&mut b, &mut parts, FlangeSpec::Cf(d), &f, Some(CfOpts::chamber()));
-        parts
-            .cutters
-            .push(rod_between(&mut b, d.bore() / 2.0, [0.0; 3], scale(*a, g.c2f + 1.0)));
+        flange_at(
+            &mut b,
+            &mut parts,
+            FlangeSpec::Cf(d),
+            &f,
+            Some(CfOpts::chamber()),
+        );
+        parts.cutters.push(rod_between(
+            &mut b,
+            d.bore() / 2.0,
+            scale(*a, BORE_START * g.r_i),
+            scale(*a, g.c2f + 1.0),
+        ));
     }
     if let Some((s, face)) = c.corner {
         for (_, dir) in CORNERS {
             let f = corner_frame(*dir, face);
-            flange_at(&mut b, &mut parts, FlangeSpec::Cf(s), &f, Some(CfOpts::chamber()));
+            flange_at(
+                &mut b,
+                &mut parts,
+                FlangeSpec::Cf(s),
+                &f,
+                Some(CfOpts::chamber()),
+            );
             let a = f.axis;
             parts.solids.push(rod_between(
                 &mut b,
@@ -223,7 +259,7 @@ fn build_cube(p: &Params) -> Result<Document, String> {
             parts.cutters.push(rod_between(
                 &mut b,
                 s.bore() / 2.0,
-                [0.0; 3],
+                scale(a, BORE_START * g.r_i),
                 scale(a, face + 1.0),
             ));
         }
@@ -238,14 +274,14 @@ fn info_cube(p: &Params) -> Result<PartInfo, String> {
     let (d, g) = (c.d, c.g);
     let mut ports: Vec<_> = AXES
         .iter()
-        .map(|(n, _, _)| main_frame(&g, n).port(n, FlangeSpec::Cf(d)))
+        .map(|(n, _, _)| tapped(main_frame(&g, n).port(n, FlangeSpec::Cf(d))))
         .collect();
     let mut lines = vec![bom(format!("{} CF spherical cube, 6 faces", d.dn), 1)];
     if let Some((s, face)) = c.corner {
         ports.extend(
             CORNERS
                 .iter()
-                .map(|(n, dir)| corner_frame(*dir, face).port(n, FlangeSpec::Cf(s))),
+                .map(|(n, dir)| tapped(corner_frame(*dir, face).port(n, FlangeSpec::Cf(s)))),
         );
         lines = vec![bom(
             format!("{} CF spherical cube, 6 faces + 8 {} corners", d.dn, s.dn),
@@ -292,6 +328,7 @@ pub const SPHERICAL_OCTAGON: PartEntry = PartEntry {
                 values: PORT_SIZES,
                 default: "DN40",
             },
+            DETAIL_PARAM,
         ],
         xrefs: CF_XREF,
         synonyms: &["spherical octagon", "octagon chamber", "mcf600-sphoct"],
@@ -304,9 +341,7 @@ pub const SPHERICAL_OCTAGON: PartEntry = PartEntry {
 
 const SIDE_NAMES: &[&str] = &["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7"];
 
-fn oct_spec(
-    p: &Params,
-) -> Result<(&'static CfDims, &'static CfDims, ChamberGeom, f64), String> {
+fn oct_spec(p: &Params) -> Result<(&'static CfDims, &'static CfDims, ChamberGeom, f64), String> {
     let d = cf(&p.str("size"))?;
     let s = cf(&p.str("side_size"))?;
     let g = chamber_geom(d);
@@ -335,21 +370,33 @@ fn side_frame(k: usize, face: f64) -> Frame {
 fn build_oct(p: &Params) -> Result<Document, String> {
     let (d, s, g, face) = oct_spec(p)?;
     let mut b = Builder::new();
-    let mut parts = Parts::default();
+    let mut parts = Parts::with_detail(Detail::parse(&p.str("detail")));
     parts.solids.push(body(&mut b, &g, true));
     for name in ["+z", "-z"] {
         let f = main_frame(&g, name);
-        flange_at(&mut b, &mut parts, FlangeSpec::Cf(d), &f, Some(CfOpts::chamber()));
+        flange_at(
+            &mut b,
+            &mut parts,
+            FlangeSpec::Cf(d),
+            &f,
+            Some(CfOpts::chamber()),
+        );
         parts.cutters.push(rod_between(
             &mut b,
             d.bore() / 2.0,
-            [0.0; 3],
+            scale(f.axis, BORE_START * g.r_i),
             scale(f.axis, g.c2f + 1.0),
         ));
     }
     for k in 0..8 {
         let f = side_frame(k, face);
-        flange_at(&mut b, &mut parts, FlangeSpec::Cf(s), &f, Some(CfOpts::chamber()));
+        flange_at(
+            &mut b,
+            &mut parts,
+            FlangeSpec::Cf(s),
+            &f,
+            Some(CfOpts::chamber()),
+        );
         parts.solids.push(rod_between(
             &mut b,
             s.tube_od / 2.0,
@@ -359,7 +406,7 @@ fn build_oct(p: &Params) -> Result<Document, String> {
         parts.cutters.push(rod_between(
             &mut b,
             s.bore() / 2.0,
-            [0.0; 3],
+            scale(f.axis, BORE_START * g.r_i),
             scale(f.axis, face + 1.0),
         ));
     }
@@ -371,10 +418,11 @@ fn build_oct(p: &Params) -> Result<Document, String> {
 fn info_oct(p: &Params) -> Result<PartInfo, String> {
     let (d, s, g, face) = oct_spec(p)?;
     let mut ports = vec![
-        main_frame(&g, "+z").port("+z", FlangeSpec::Cf(d)),
-        main_frame(&g, "-z").port("-z", FlangeSpec::Cf(d)),
+        tapped(main_frame(&g, "+z").port("+z", FlangeSpec::Cf(d))),
+        tapped(main_frame(&g, "-z").port("-z", FlangeSpec::Cf(d))),
     ];
-    ports.extend((0..8).map(|k| side_frame(k, face).port(SIDE_NAMES[k], FlangeSpec::Cf(s))));
+    ports
+        .extend((0..8).map(|k| tapped(side_frame(k, face).port(SIDE_NAMES[k], FlangeSpec::Cf(s)))));
     Ok(PartInfo {
         ports,
         metadata: json!({

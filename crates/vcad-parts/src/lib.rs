@@ -119,7 +119,9 @@ pub fn splice(
         .get(&sub.roots[0].root)
         .ok_or("part root is not one of its nodes")?;
     for r in &sub.roots[1..] {
-        let right = *map.get(&r.root).ok_or("part root is not one of its nodes")?;
+        let right = *map
+            .get(&r.root)
+            .ok_or("part root is not one of its nodes")?;
         let id = alloc();
         nodes.insert(
             id,
@@ -142,12 +144,17 @@ pub fn splice(
 /// that fails to build becomes `Empty` — mirroring the engine — and its
 /// error is returned alongside, keyed by the instance's node id.
 pub fn expand_part_instances(doc: &Document) -> Option<(Document, Vec<(NodeId, String)>)> {
-    let targets: Vec<NodeId> = doc
+    let mut targets: Vec<NodeId> = doc
         .nodes
         .iter()
-        .filter(|(_, n)| matches!(&n.op, CsgOp::PartInstance { path, .. } if !path.starts_with('@')))
+        .filter(
+            |(_, n)| matches!(&n.op, CsgOp::PartInstance { path, .. } if !path.starts_with('@')),
+        )
         .map(|(&id, _)| id)
         .collect();
+    // Deterministic order: spliced ids must not shuffle between evaluations
+    // (the incremental cache keys on subtree content).
+    targets.sort_unstable();
     if targets.is_empty() {
         return None;
     }

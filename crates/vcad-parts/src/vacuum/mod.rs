@@ -359,15 +359,12 @@ pub fn kf(size: &str) -> Result<&'static KfDims, String> {
         .trim_start_matches("NW")
         .trim_start_matches("ISO")
         .trim_start_matches('-');
-    KF_TABLE
-        .iter()
-        .find(|d| &d.name[2..] == n)
-        .ok_or_else(|| {
-            format!(
-                "unknown KF size {size:?} — expected one of {}",
-                KF_SIZES.join(", ")
-            )
-        })
+    KF_TABLE.iter().find(|d| &d.name[2..] == n).ok_or_else(|| {
+        format!(
+            "unknown KF size {size:?} — expected one of {}",
+            KF_SIZES.join(", ")
+        )
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -699,6 +696,42 @@ impl CfOpts {
     }
 }
 
+/// How much flange detail a multi-flange part models.
+///
+/// Every bolt hole and knife edge is a set of faces the next boolean has to
+/// classify, and that cost compounds when a fitting or chamber unions
+/// several flanges with its body. Ports, metadata and outer envelope are
+/// identical at every level; only the face detail changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Detail {
+    /// Plain flange discs (bored where the part needs a bore): the right
+    /// envelope for layout, clearance and rendering. Fast.
+    Envelope,
+    /// Bolt holes and gasket recesses, no knife edge.
+    Holes,
+    /// Bolt holes, recesses and knife edges.
+    #[default]
+    Full,
+}
+
+impl Detail {
+    /// Parse the `detail` parameter (`envelope` / `holes` / `full`).
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "envelope" => Detail::Envelope,
+            "holes" => Detail::Holes,
+            _ => Detail::Full,
+        }
+    }
+}
+
+/// The `detail` parameter shared by multi-flange parts.
+pub(crate) const DETAIL_PARAM: crate::types::Param = crate::types::Param::Enum {
+    name: "detail",
+    values: &["envelope", "holes", "full"],
+    default: "envelope",
+};
+
 /// Union a list of nodes (left fold); `None` when empty.
 pub(crate) fn union_all(b: &mut Builder, ids: &[NodeId]) -> Option<NodeId> {
     let mut it = ids.iter().copied();
@@ -712,28 +745,15 @@ pub(crate) fn cyl_z(b: &mut Builder, r: f64, z0: f64, z1: f64) -> NodeId {
     b.translate(c, 0.0, 0.0, z0)
 }
 
-/// Annulus (tube) from `z0` to `z1`: one extrude of a ring sketch, no boolean.
+/// Annulus (tube) from `z0` to `z1`.
+///
+/// Deliberately a cylinder difference, not an extrude of a ring sketch: the
+/// kernel's extrude-with-hole-loops currently over-removes hole area (a
+/// DN160 bolt pattern measured 2.55 % light), while the boolean is exact.
 pub(crate) fn tube_z(b: &mut Builder, r_out: f64, r_in: f64, z0: f64, z1: f64) -> NodeId {
-    disc_with_holes(b, r_out, &[(0.0, 0.0, r_in)], z0, z1)
-}
-
-/// A disc of radius `r` from `z0` to `z1` with circular through-holes
-/// `(cx, cy, r)` — a single extrude of a sketch with hole loops, so a
-/// flange's bolt pattern costs no boolean at all.
-pub(crate) fn disc_with_holes(
-    b: &mut Builder,
-    r: f64,
-    holes: &[(f64, f64, f64)],
-    z0: f64,
-    z1: f64,
-) -> NodeId {
-    let outer = Builder::circle_loop(0.0, 0.0, r);
-    let loops = holes
-        .iter()
-        .map(|&(x, y, hr)| Builder::circle_loop(x, y, hr))
-        .collect();
-    let sk = b.sketch_xy(z0, outer, loops);
-    b.extrude(sk, z1 - z0)
+    let o = cyl_z(b, r_out, z0, z1);
+    let i = cyl_z(b, r_in, z0 - 0.5, z1 + 0.5);
+    b.difference(o, i)
 }
 
 /// Bolt-hole centres (local XY) on a bolt circle, straddling +X.
@@ -755,9 +775,10 @@ pub fn cf_bolt_positions(d: &CfDims) -> Vec<[f64; 2]> {
 /// Finished CF flange in its local frame: sealing face at `z = 0`, body
 /// `z ∈ [-T, 0]`.
 ///
-/// Built as one extrude (outer circle + bolt holes + optional bore as hole
-/// loops), one recess cut, and — optionally — a revolved knife edge on the
-/// recess floor: a handful of booleans regardless of bolt count.
+/// One cylinder minus *one* union of cutters (bolt holes, gasket recess,
+/// optional bore and rotatable split groove), then — optionally — a revolved
+/// knife edge on the recess floor. Pinned to its closed-form volume by
+/// `vcad-eval/tests/vacuum_parts.rs`.
 pub(crate) fn cf_flange_local(b: &mut Builder, d: &CfDims, o: &CfOpts) -> NodeId {
     let t = if o.rotatable {
         d.thickness_rotatable
@@ -769,39 +790,45 @@ pub(crate) fn cf_flange_local(b: &mut Builder, d: &CfDims, o: &CfOpts) -> NodeId
     } else {
         d.hole_clearance
     };
-    let mut holes: Vec<(f64, f64, f64)> = cf_bolt_positions(d)
+    let disc = cyl_z(b, d.od / 2.0, -t, 0.0);
+    let mut cuts: Vec<NodeId> = cf_bolt_positions(d)
         .into_iter()
-        .map(|[x, y]| (x, y, hole / 2.0))
+        .map(|[x, y]| {
+            let c = cyl_z(b, hole / 2.0, -t - 1.0, 1.0);
+            b.translate(c, x, y, 0.0)
+        })
         .collect();
-    if let Some(bore) = o.bore {
-        holes.push((0.0, 0.0, bore / 2.0));
-    }
-    let disc = disc_with_holes(b, d.od / 2.0, &holes, -t, 0.0);
 
     // Gasket recess (counterbore to the gasket OD, half a gasket deep).
     let depth = d.recess_depth();
     let r_recess = d.gasket_od / 2.0 + 0.1;
-    let mut cut = match o.bore {
-        Some(bore) => tube_z(b, r_recess, bore / 2.0 - 0.01, -depth, 1.0),
-        None => cyl_z(b, r_recess, -depth, 1.0),
-    };
+    cuts.push(cyl_z(b, r_recess, -depth, 1.0));
+    if let Some(bore) = o.bore {
+        cuts.push(cyl_z(b, bore / 2.0, -t - 1.0, 1.0));
+    }
     if o.rotatable {
         // Split line between the knife-edge insert and the bolt ring: a
         // narrow groove from the back face, stopping short of the seal face
         // so the model stays one solid.
         let r = (r_recess + d.bolt_circle / 2.0 - hole / 2.0) / 2.0;
-        let groove = tube_z(b, r + 0.25, r - 0.25, -t - 1.0, -depth - 1.5);
-        cut = b.union(cut, groove);
+        cuts.push(tube_z(b, r + 0.25, r - 0.25, -t - 1.0, -depth - 1.5));
     }
+    let cut = union_all(b, &cuts).expect("a CF flange always has cuts");
     let mut flange = b.difference(disc, cut);
 
     if o.knife_edge {
         // ISO 3669 knife edge on the recess floor: vertical outer wall, the
         // sloped flank facing the bore, 0.3 mm tall, sunk 0.05 mm into the
-        // floor so the union is not coplanar.
+        // floor so the union is not coplanar. Built as a short cylinder
+        // minus a cone (a revolved triangle unions far slower in the
+        // current kernel).
         let r = d.knife_edge_dia() / 2.0;
+        let h = 0.3;
         let z0 = -depth - 0.05;
-        let ring = b.revolve_z(&[[r - 0.6, z0], [r, z0], [r, -depth + 0.3]]);
+        let disc = cyl_z(b, r, z0, -depth + h);
+        let flank = b.cone(r - 0.6, r + 0.001, h + 0.05);
+        let flank = b.translate(flank, 0.0, 0.0, z0);
+        let ring = b.difference(disc, flank);
         flange = b.union(flange, ring);
     }
     flange
@@ -817,13 +844,7 @@ pub(crate) fn kf_flange_local(
     let h = kf_flange_height(d);
     let ro = d.od / 2.0;
     let rt = d.tube_od / 2.0 + 0.5;
-    let solid = b.revolve_z(&[
-        [0.0, -h],
-        [rt, -h],
-        [ro, -KF_RIM],
-        [ro, 0.0],
-        [0.0, 0.0],
-    ]);
+    let solid = b.revolve_z(&[[0.0, -h], [rt, -h], [ro, -KF_RIM], [ro, 0.0], [0.0, 0.0]]);
     let cutter = bore.map(|bore| cyl_z(b, bore / 2.0, -h - 1.0, 1.0));
     (solid, cutter)
 }
@@ -835,9 +856,23 @@ pub(crate) struct Parts {
     pub solids: Vec<NodeId>,
     pub cutters: Vec<NodeId>,
     pub after: Vec<NodeId>,
+    /// Flange detail level for this part.
+    pub detail: Detail,
+    /// Local-frame flange nodes already built, keyed by size + options.
+    /// The evaluator caches solids per node id, so every port that reuses
+    /// one is evaluated once — a 6-way cross builds one flange, not six.
+    flange_cache: std::collections::HashMap<String, NodeId>,
 }
 
 impl Parts {
+    /// Empty collection at the given flange detail.
+    pub fn with_detail(detail: Detail) -> Self {
+        Self {
+            detail,
+            ..Default::default()
+        }
+    }
+
     /// Union solids, subtract all cutters at once, then union the details.
     pub fn assemble(self, b: &mut Builder) -> Result<NodeId, String> {
         let body = union_all(b, &self.solids).ok_or("part has no geometry")?;
@@ -865,8 +900,35 @@ pub(crate) fn flange_at(
 ) {
     match spec {
         FlangeSpec::Cf(d) => {
-            let o = cf_opts.unwrap_or_else(|| CfOpts::fitting(d));
-            let fl = cf_flange_local(b, d, &o);
+            let mut o = cf_opts.unwrap_or_else(|| CfOpts::fitting(d));
+            if out.detail == Detail::Holes {
+                o.knife_edge = false;
+            }
+            let key = format!("{}{o:?}{:?}", d.dn, out.detail);
+            let fl = match out.flange_cache.get(&key) {
+                Some(&id) => id,
+                None => {
+                    let id = if out.detail == Detail::Envelope {
+                        let t = if o.rotatable {
+                            d.thickness_rotatable
+                        } else {
+                            d.thickness
+                        };
+                        let disc = cyl_z(b, d.od / 2.0, -t, 0.0);
+                        match o.bore {
+                            Some(bore) => {
+                                let c = cyl_z(b, bore / 2.0, -t - 1.0, 1.0);
+                                b.difference(disc, c)
+                            }
+                            None => disc,
+                        }
+                    } else {
+                        cf_flange_local(b, d, &o)
+                    };
+                    out.flange_cache.insert(key, id);
+                    id
+                }
+            };
             out.solids.push(place(b, fl, f));
         }
         FlangeSpec::Kf(d) => {
@@ -970,7 +1032,11 @@ mod tests {
             let ke = d.knife_edge_dia();
             assert!(ke > d.gasket_id && ke < d.gasket_od, "{}", d.dn);
             // and clear of the standard bore
-            assert!(ke / 2.0 - 0.6 > d.bore() / 2.0, "{} knife edge over bore", d.dn);
+            assert!(
+                ke / 2.0 - 0.6 > d.bore() / 2.0,
+                "{} knife edge over bore",
+                d.dn
+            );
             // bolt holes clear the recess
             assert!(
                 d.bolt_circle / 2.0 - d.hole_clearance / 2.0 > d.gasket_od / 2.0,
@@ -1015,7 +1081,16 @@ mod tests {
         let m = Frame::new(p.origin, p.axis, p.up).matrix();
         cf_bolt_positions(d)
             .into_iter()
-            .map(|[x, y]| add(p.origin, [m[0][0] * x + m[0][1] * y, m[1][0] * x + m[1][1] * y, m[2][0] * x + m[2][1] * y]))
+            .map(|[x, y]| {
+                add(
+                    p.origin,
+                    [
+                        m[0][0] * x + m[0][1] * y,
+                        m[1][0] * x + m[1][1] * y,
+                        m[2][0] * x + m[2][1] * y,
+                    ],
+                )
+            })
             .collect()
     }
 
@@ -1048,9 +1123,21 @@ mod tests {
         let m = f.matrix();
         let e = mat_to_euler_xyz_deg(&m);
         let (a, bb, c) = (e[0].to_radians(), e[1].to_radians(), e[2].to_radians());
-        let rx = [[1.0, 0.0, 0.0], [0.0, a.cos(), -a.sin()], [0.0, a.sin(), a.cos()]];
-        let ry = [[bb.cos(), 0.0, bb.sin()], [0.0, 1.0, 0.0], [-bb.sin(), 0.0, bb.cos()]];
-        let rz = [[c.cos(), -c.sin(), 0.0], [c.sin(), c.cos(), 0.0], [0.0, 0.0, 1.0]];
+        let rx = [
+            [1.0, 0.0, 0.0],
+            [0.0, a.cos(), -a.sin()],
+            [0.0, a.sin(), a.cos()],
+        ];
+        let ry = [
+            [bb.cos(), 0.0, bb.sin()],
+            [0.0, 1.0, 0.0],
+            [-bb.sin(), 0.0, bb.cos()],
+        ];
+        let rz = [
+            [c.cos(), -c.sin(), 0.0],
+            [c.sin(), c.cos(), 0.0],
+            [0.0, 0.0, 1.0],
+        ];
         let r = mat_mul(&rz, &mat_mul(&ry, &rx));
         for i in 0..3 {
             for j in 0..3 {

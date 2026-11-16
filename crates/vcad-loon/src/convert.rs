@@ -1138,6 +1138,10 @@ struct ConvertCtx {
     /// microvia fanout), pinned - the router routes to it and never rips it.
     fixed_vias: Vec<ecad::Via>,
     fixed_traces: Vec<ecad::Trace>,
+    /// Library parts already spliced, keyed by path + params: a repeated
+    /// part (three identical reducers) shares one sub-graph, so the
+    /// evaluator — which caches per node — builds it once.
+    std_parts: HashMap<String, NodeId>,
 }
 
 impl ConvertCtx {
@@ -1158,6 +1162,7 @@ impl ConvertCtx {
             class_nets: Vec::new(),
             fixed_vias: Vec::new(),
             fixed_traces: Vec::new(),
+            std_parts: HashMap::new(),
         }
     }
 
@@ -1480,10 +1485,7 @@ impl ConvertCtx {
     /// Read a library-part params list: alternating key/value pairs,
     /// `#["size" "DN40" "length" 150]`. Values may be strings, numbers or
     /// booleans.
-    fn part_params(
-        &self,
-        v: &Value,
-    ) -> Result<HashMap<String, serde_json::Value>, String> {
+    fn part_params(&self, v: &Value) -> Result<HashMap<String, serde_json::Value>, String> {
         let Value::Vec(items) = v else {
             return Err(format!(
                 "part params must be a list of alternating keys and values, got {v}"
@@ -1605,15 +1607,25 @@ impl ConvertCtx {
     /// gasket + bolts or centering ring + clamp — added to the hardware list.
     fn convert_std_part(&mut self, value: &Value) -> Result<NodeId, String> {
         let (path, params, pose, joint) = self.std_part_pose(value, 0)?;
-        let sub = vcad_parts::build_part(&path, &params)?;
-        let mut next = self.next_id;
-        let mut alloc = || {
-            let n = next;
-            next += 1;
-            n
+        let mut sorted: Vec<_> = params.iter().collect();
+        sorted.sort_by(|a, b| a.0.cmp(b.0));
+        let key = format!("{path}|{}", serde_json::json!(sorted));
+        let mut root = match self.std_parts.get(&key) {
+            Some(&id) => id,
+            None => {
+                let sub = vcad_parts::build_part(&path, &params)?;
+                let mut next = self.next_id;
+                let mut alloc = || {
+                    let n = next;
+                    next += 1;
+                    n
+                };
+                let id = vcad_parts::splice(&mut self.doc.nodes, &sub, &mut alloc)?;
+                self.next_id = next;
+                self.std_parts.insert(key, id);
+                id
+            }
         };
-        let mut root = vcad_parts::splice(&mut self.doc.nodes, &sub, &mut alloc)?;
-        self.next_id = next;
 
         let e = pose.euler_xyz_deg();
         if e.iter().any(|a| a.abs() > 1e-9) {
@@ -3045,7 +3057,6 @@ fn assert_fields(tag: &str, fields: &[Value], expected: usize) -> Result<(), Str
     }
     Ok(())
 }
-
 
 /// Comma-separated port names, for error messages.
 fn port_names(ports: &[vcad_parts::PortInfo]) -> String {

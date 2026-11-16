@@ -98,17 +98,35 @@ fn described_parts_have_well_formed_ports() {
         let mut names: Vec<_> = info.ports.iter().map(|p| p.name.as_str()).collect();
         names.sort_unstable();
         names.dedup();
-        assert_eq!(names.len(), info.ports.len(), "{}: duplicate port names", entry.meta.id);
+        assert_eq!(
+            names.len(),
+            info.ports.len(),
+            "{}: duplicate port names",
+            entry.meta.id
+        );
         for p in &info.ports {
             let n = |v: [f64; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
             let d = p.axis[0] * p.up[0] + p.axis[1] * p.up[1] + p.axis[2] * p.up[2];
-            assert!((n(p.axis) - 1.0).abs() < 1e-9, "{}:{} axis", entry.meta.id, p.name);
-            assert!((n(p.up) - 1.0).abs() < 1e-9, "{}:{} up", entry.meta.id, p.name);
+            assert!(
+                (n(p.axis) - 1.0).abs() < 1e-9,
+                "{}:{} axis",
+                entry.meta.id,
+                p.name
+            );
+            assert!(
+                (n(p.up) - 1.0).abs() < 1e-9,
+                "{}:{} up",
+                entry.meta.id,
+                p.name
+            );
             assert!(d.abs() < 1e-9, "{}:{} up not ⟂ axis", entry.meta.id, p.name);
             assert!(p.family == "CF" || p.family == "KF");
         }
         assert!(
-            info.metadata.get("bom").and_then(|b| b.as_array()).is_some_and(|b| !b.is_empty()),
+            info.metadata
+                .get("bom")
+                .and_then(|b| b.as_array())
+                .is_some_and(|b| !b.is_empty()),
             "{} has no BOM line",
             entry.meta.id
         );
@@ -121,14 +139,25 @@ fn every_vacuum_size_builds() {
     for s in CF_SIZES {
         let mut p = HashMap::new();
         p.insert("size".to_string(), serde_json::json!(s));
-        for id in ["vacuum.cf.flange", "vacuum.cf.gasket", "vacuum.cf.bolt-set", "vacuum.nipple"] {
+        for id in [
+            "vacuum.cf.flange",
+            "vacuum.cf.gasket",
+            "vacuum.cf.bolt-set",
+            "vacuum.nipple",
+        ] {
             build_part(id, &p).unwrap_or_else(|e| panic!("{id} {s}: {e}"));
         }
     }
     for s in KF_SIZES {
         let mut p = HashMap::new();
         p.insert("size".to_string(), serde_json::json!(s));
-        for id in ["vacuum.kf.flange", "vacuum.kf.centering-ring", "vacuum.kf.clamp", "vacuum.tee", "vacuum.cross"] {
+        for id in [
+            "vacuum.kf.flange",
+            "vacuum.kf.centering-ring",
+            "vacuum.kf.clamp",
+            "vacuum.tee",
+            "vacuum.cross",
+        ] {
             build_part(id, &p).unwrap_or_else(|e| panic!("{id} {s}: {e}"));
         }
     }

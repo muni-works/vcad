@@ -50,32 +50,49 @@ fn port_frame(spec: FlangeSpec, name: &str, face_dist: f64) -> Frame {
     Frame::new(scale(a, face_dist + spec.face_setback()), a, u)
 }
 
-/// Build a multi-port fitting: one tube + flange per `(axis, face_dist)`
-/// arm, starting at `start` along that axis, and a bore through each arm.
+/// Build a multi-port fitting from `(port name, face distance)` arms: one
+/// flange per arm, and per axis one tube + one bore — a single through tube
+/// when both `+` and `−` arms exist (two coaxial tubes meeting at the origin
+/// would be a coplanar-face boolean), a tube from the origin otherwise.
+///
+/// Perpendicular axes get radii 0.05 mm apart (z, then x, then y) so no two
+/// crossing cylinders are equal-radius — the tangent-intersection case the
+/// kernel's surface intersector handles worst. The difference is far below
+/// any catalog tolerance.
 fn arms(
     b: &mut Builder,
     spec: FlangeSpec,
-    arms: &[(&str, f64, f64)],
+    detail: Detail,
+    arms: &[(&str, f64)],
 ) -> Result<vcad_ir::NodeId, String> {
-    let mut parts = Parts::default();
-    let r_out = spec.tube_od() / 2.0;
-    let r_in = spec.bore() / 2.0;
-    for &(name, start, face) in arms {
-        let (a, _) = axis(name);
+    let mut parts = Parts::with_detail(detail);
+    for &(name, face) in arms {
         let f = port_frame(spec, name, face);
         flange_at(b, &mut parts, spec, &f, None);
-        let tube_end = face - spec.thickness() * 0.5;
-        if tube_end > start {
-            parts
-                .solids
-                .push(rod_between(b, r_out, scale(a, start), scale(a, tube_end)));
+    }
+    let face_of = |n: &str| arms.iter().find(|(m, _)| *m == n).map(|(_, f)| *f);
+    for (i, (plus, minus)) in [("+z", "-z"), ("+x", "-x"), ("+y", "-y")]
+        .iter()
+        .enumerate()
+    {
+        let (p, m) = (face_of(plus), face_of(minus));
+        if p.is_none() && m.is_none() {
+            continue;
         }
-        parts.cutters.push(rod_between(
-            b,
-            r_in,
-            scale(a, start - 0.5),
-            scale(a, face + spec.face_setback() + 1.0),
-        ));
+        let shrink = 0.05 * i as f64;
+        let r_out = spec.tube_od() / 2.0 - shrink;
+        let r_in = spec.bore() / 2.0 - shrink;
+        let (a, _) = axis(plus);
+        let tube_end = |f: f64| f - spec.thickness() * 0.5;
+        let bore_end = |f: f64| f + spec.face_setback() + 1.0;
+        let (t0, t1) = (m.map_or(0.0, |f| -tube_end(f)), p.map_or(0.0, tube_end));
+        let (b0, b1) = (m.map_or(-0.5, |f| -bore_end(f)), p.map_or(0.5, bore_end));
+        parts
+            .solids
+            .push(rod_between(b, r_out, scale(a, t0), scale(a, t1)));
+        parts
+            .cutters
+            .push(rod_between(b, r_in, scale(a, b0), scale(a, b1)));
     }
     parts.assemble(b)
 }
@@ -107,9 +124,16 @@ pub const NIPPLE: PartEntry = PartEntry {
                 default: 100.0,
                 unit: "mm",
             },
+            DETAIL_PARAM,
         ],
         xrefs: CF_XREF,
-        synonyms: &["full nipple", "spool", "cf nipple", "kf nipple", "extension tube"],
+        synonyms: &[
+            "full nipple",
+            "spool",
+            "cf nipple",
+            "kf nipple",
+            "extension tube",
+        ],
         version: "1.0",
         thumb: THUMB,
     },
@@ -135,7 +159,12 @@ fn build_nipple(p: &Params) -> Result<Document, String> {
     let l = nipple_len(p, spec)?;
     let mut b = Builder::new();
     // Built centred, then shifted so the -z face sits at z = 0.
-    let root = arms(&mut b, spec, &[("+z", 0.0, l / 2.0), ("-z", 0.0, l / 2.0)])?;
+    let root = arms(
+        &mut b,
+        spec,
+        Detail::parse(&p.str("detail")),
+        &[("+z", l / 2.0), ("-z", l / 2.0)],
+    )?;
     let root = b.translate(root, 0.0, 0.0, l / 2.0);
     Ok(b.finish(root, SS))
 }
@@ -192,8 +221,8 @@ fn multiway(p: &Params, names: &[&str]) -> Result<Document, String> {
     let spec = spec_of(p)?;
     let c = c2f(p, spec)?;
     let mut b = Builder::new();
-    let list: Vec<(&str, f64, f64)> = names.iter().map(|n| (*n, 0.0, c)).collect();
-    let root = arms(&mut b, spec, &list)?;
+    let list: Vec<(&str, f64)> = names.iter().map(|n| (*n, c)).collect();
+    let root = arms(&mut b, spec, Detail::parse(&p.str("detail")), &list)?;
     Ok(b.finish(root, SS))
 }
 
@@ -208,7 +237,11 @@ fn multiway_info(p: &Params, names: &[&str], what: &str) -> Result<PartInfo, Str
     m["center_to_face_mm"] = json!(c);
     m["catalog_center_to_face"] = json!(p.f64("center_to_face") <= 0.0);
     m["bom"] = json!([bom(
-        format!("{} {} {what}, {c} mm center-to-face", spec.family(), spec.size()),
+        format!(
+            "{} {} {what}, {c} mm center-to-face",
+            spec.family(),
+            spec.size()
+        ),
         1
     )]);
     Ok(PartInfo { ports, metadata: m })
@@ -239,6 +272,7 @@ pub const TEE: PartEntry = PartEntry {
                 default: 0.0,
                 unit: "mm",
             },
+            DETAIL_PARAM,
         ],
         xrefs: CF_XREF,
         synonyms: &["tee", "3-way cross", "cf tee", "kf tee"],
@@ -277,9 +311,16 @@ pub const CROSS: PartEntry = PartEntry {
                 default: 0.0,
                 unit: "mm",
             },
+            DETAIL_PARAM,
         ],
         xrefs: CF_XREF,
-        synonyms: &["6-way cross", "4-way cross", "six way cross", "cf cross", "kf cross"],
+        synonyms: &[
+            "6-way cross",
+            "4-way cross",
+            "six way cross",
+            "cf cross",
+            "kf cross",
+        ],
         version: "1.0",
         thumb: THUMB,
     },
@@ -327,6 +368,7 @@ pub const ADAPTER_CF_KF: PartEntry = PartEntry {
                 default: 50.0,
                 unit: "mm",
             },
+            DETAIL_PARAM,
         ],
         xrefs: CF_XREF,
         synonyms: &["conflat to kf", "cf-kf adapter", "cf to nw adapter"],
@@ -362,7 +404,7 @@ fn build_adapter(p: &Params) -> Result<Document, String> {
     let (c, k, l) = adapter_specs(p)?;
     let (fc, fk) = adapter_frames(c, k, l);
     let mut b = Builder::new();
-    let mut parts = Parts::default();
+    let mut parts = Parts::with_detail(Detail::parse(&p.str("detail")));
     flange_at(&mut b, &mut parts, c, &fc, None);
     flange_at(&mut b, &mut parts, k, &fk, None);
     let r_out = c.tube_od().min(k.tube_od()) / 2.0;

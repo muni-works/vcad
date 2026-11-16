@@ -764,7 +764,7 @@
   {
     "name": "search_parts",
     "title": "Search Stdlib Parts",
-    "description": "Search the stdlib parts library (fasteners, bearings, …). Matches across name, category, synonyms, and catalog part numbers (McMaster / ISO / DIN). Returns an array of {id, name, category, params, xrefs, synonyms} — use `id` with `place_part`. Part numbers like '91290A320' or 'ISO 4762' match directly.",
+    "description": "Search the stdlib parts library (fasteners, bearings, vacuum hardware — CF/KF flanges, gaskets, nipples, tees, crosses, spherical cube/octagon chambers, viewports, HV/electrical feedthroughs, valves, gauges). Matches across name, category, synonyms, and catalog part numbers (McMaster / ISO / DIN). Returns an array of {id, name, category, params, xrefs, synonyms} — use `id` with `place_part`. Part numbers like '91290A320' or 'ISO 4762' match directly.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -868,7 +868,6 @@
             "torus",
             "wedge",
             "prism",
-            "spur_gear",
             "union",
             "difference",
             "intersection",
@@ -1239,6 +1238,31 @@
       },
       "required": [
         "document_id"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "describe_part",
+    "title": "Describe Part",
+    "description": "Describe a stdlib part for a given params map: its named mate ports (origin on the seal mid-plane, outward axis, clocking `up`, flange family + size, part-local mm) and machine-readable metadata — dimensions with their catalog source, ratings the user entered (never derived), model-derived figures labelled `*_model` (e.g. HV creepage), `suggested_clearance` entries to pass to check_clearance, and BOM lines. Two ports mate when origins coincide, axes oppose and `up`s are parallel; in loon, `[vac-mate path params port parent parent-port]` does this and adds the joint's gasket/bolts or ring/clamp to the BOM.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Part source path from `search_parts.id`, e.g. 'std:vacuum.chamber.spherical-cube'."
+        },
+        "params": {
+          "type": "object",
+          "description": "Parameter name → value map. Missing params take the part's declared defaults.",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "path"
       ]
     },
     "annotations": {

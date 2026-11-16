@@ -10,8 +10,8 @@
 //! numbers (creepage along the modeled insulator) are labelled
 //! `*_model` — they describe this envelope, not a vendor certification.
 
-use super::flanges::{bom, cf_meta, kf_meta};
 use super::fittings::ALL_SIZES;
+use super::flanges::{bom, cf_meta, kf_meta};
 use super::*;
 use crate::types::{Param, Params, PartEntry, PartInfo, PartMetadata};
 use serde_json::json;
@@ -119,7 +119,8 @@ fn info_viewport(p: &Params) -> Result<PartInfo, String> {
     m["clear_aperture_mm"] = json!(w);
     m["glass"] = json!(p.str("glass"));
     m["glass_thickness_mm_model"] = json!(glass_t(w));
-    m["note"] = json!("glass blocks no neutrons and little hard x-ray; add a shutter for fusor work");
+    m["note"] =
+        json!("glass blocks no neutrons and little hard x-ray; add a shutter for fusor work");
     m["bom"] = json!([bom(format!("{} CF viewport, {}", d.dn, p.str("glass")), 1)]);
     Ok(PartInfo {
         ports: vec![mount().port("seal", FlangeSpec::Cf(d))],
@@ -240,7 +241,12 @@ fn build_hv(p: &Params) -> Result<Document, String> {
     let d = g.d;
     let mut b = Builder::new();
     let mut parts = Parts::default();
-    mount_flange(&mut b, &mut parts, FlangeSpec::Cf(d), Some(2.0 * g.ins_r - 0.2));
+    mount_flange(
+        &mut b,
+        &mut parts,
+        FlangeSpec::Cf(d),
+        Some(2.0 * g.ins_r - 0.2),
+    );
     let z_back = -d.thickness;
     // Air-side insulator (ceramic), through the flange, plus vacuum sleeve.
     let ins = cyl_z(
@@ -405,8 +411,12 @@ fn info_elec(p: &Params) -> Result<PartInfo, String> {
     let (d, pins, _, pin_r, _) = elec_geom(p)?;
     let kind = p.str("kind");
     let tc = match kind.as_str() {
-        "thermocouple-k" => Some(json!({ "type": "K", "conductors": ["chromel", "alumel"], "pairs": pins / 2 })),
-        "thermocouple-j" => Some(json!({ "type": "J", "conductors": ["iron", "constantan"], "pairs": pins / 2 })),
+        "thermocouple-k" => {
+            Some(json!({ "type": "K", "conductors": ["chromel", "alumel"], "pairs": pins / 2 }))
+        }
+        "thermocouple-j" => {
+            Some(json!({ "type": "J", "conductors": ["iron", "constantan"], "pairs": pins / 2 }))
+        }
         _ => None,
     };
     Ok(PartInfo {
@@ -453,7 +463,13 @@ pub const NEEDLE_VALVE: PartEntry = PartEntry {
             },
         ],
         xrefs: CF_XREF,
-        synonyms: &["leak valve", "needle valve", "variable leak valve", "metering valve", "gas inlet valve"],
+        synonyms: &[
+            "leak valve",
+            "needle valve",
+            "variable leak valve",
+            "metering valve",
+            "gas inlet valve",
+        ],
         version: "1.0",
         thumb: THUMB,
     },
@@ -585,9 +601,12 @@ fn build_gauge(p: &Params) -> Result<Document, String> {
     parts
         .solids
         .push(cyl_z(&mut b, spec.tube_od() / 2.0, zb - neck_l, zb + 0.5));
-    parts
-        .solids
-        .push(cyl_z(&mut b, dia / 2.0, zb - neck_l - len, zb - neck_l + 0.5));
+    parts.solids.push(cyl_z(
+        &mut b,
+        dia / 2.0,
+        zb - neck_l - len,
+        zb - neck_l + 0.5,
+    ));
     let root = parts.assemble(&mut b)?;
     Ok(b.finish(root, SS))
 }
