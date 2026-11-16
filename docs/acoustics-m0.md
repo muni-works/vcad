@@ -130,8 +130,86 @@ axisymmetric. A 9.4 L box with a 25 mm-radius port:
   bug: a radiation-impedance mouth (M1) closes it. The lumped band is reported
   alongside every field tuning so the gap is always visible.
 - **Axisymmetric only.** Rectangular boxes, offset ports, and multi-driver
-  layouts are approximated as bodies of revolution; the first non-axisymmetric
-  mode is invisible.
+  layouts are not representable; the first non-axisymmetric mode is
+  invisible. Hand-built specs can still *approximate* a box as a body of
+  revolution, but the document extractor below refuses to: it fails closed
+  on any non-axisymmetric face rather than folding a box into a cylinder.
+
+## From a document: `simulate_cavity` (internal ports, no hand mapping)
+
+`vcad_eval::cavity_extract::extract_cavity` + `vcad_kernel_acoustics::ported::analyze`,
+over MCP as `simulate_cavity` (WASM `simulateCavity`). Point it at two parts
+of a session document — the **enclosure** walls and the enclosed **air** — and
+it measures their analytic BRep faces, reconstructs the exact axisymmetric
+profile, and solves it. The worked case is the "every physics" puck
+(`crates/vcad-eval/tests/fixtures/puck.loon`, a copy of
+`docs/videos/every-physics/puck.loon`): a 104 mm-bore round box, 3" driver
+firing down through a 35 mm cutout, and a 12 mm × 60 mm port **hanging inside**
+the box from the top wall.
+
+**Internal ports are modelled, not mapped.** `Cavity` grew rigid annular
+**obstacles** (`Obstacle`, `CavitySpec.obstacles`): the port tube's wall is a
+solid annulus `12 < r < 14` hanging 57 mm into the box, so the bore's air
+column couples to the annular box air only at its open hanging end — the real
+topology. (Before this, the solver could only put a port *outside* the box,
+and the every-physics PoC hand-mapped the puck to an equivalent-volume
+cylinder with an external port.) The lumped band is mount-aware
+(`PortMount::Internal`: interior end unflanged, mouth flanged by the face);
+only `f_max` moves, since the nominal is one flanged + one unflanged end
+either way.
+
+**Puck numbers** (20 °C, 1 mm grid, 53 × 118 nodes):
+
+| quantity | value |
+|---|---|
+| `V_box` (extracted = air solid, exact profile) | 933,312 mm³ = 0.933 L (π(52²·114 − 14²·57)); mesh volume agrees to < 1% |
+| port | r = 12 mm, L = 60 mm, internal |
+| lumped band (min / nominal / max) | 134.1 / **136.6** / 146.5 Hz — nominal identical to the PoC's 136.6 Hz |
+| field `f_b`, internal port from the document | **151.0 Hz** (1.105 × nominal) |
+| PoC equivalent-volume external-port mapping, same 1 mm grid | 150.5 Hz |
+| PoC mapping on its own 2 mm radial grid | 155.5 Hz |
+
+So for this geometry the equivalent-volume mapping was *not* the error that
+mattered (0.3% from the exact internal-port model on the same grid); the
+PoC's 155.5 Hz was mostly its coarse radial grid inflating the 12 mm bore.
+The field reads 10.5% above the lumped nominal and 3% above the internal
+band top — the known pressure-release-mouth gap (honesty, above).
+
+**Honest limits of the extraction:**
+
+- **What is accepted.** Every face of both parts must be a plane
+  perpendicular to the axis or a cylinder coaxial with it (axis = the
+  enclosure's largest cylinder). Faces like that can only bound full annuli
+  and full cylinder bands, so a part that passes is exactly axisymmetric and
+  its (r, z) cell profile is exact — classified by ray parity against the
+  planar faces' annuli, cross-checked against the tessellated mesh volume
+  (3% gate). Cones, spheres, tori (fillets, flared ports, domed caps) are
+  refused today even when coaxial; a sloped profile would need a sloped
+  segment the solver doesn't have.
+- **Fail-closed, named.** A non-axisymmetric face errors with the part,
+  face index, surface kind and a point on it. Air that doesn't fill the
+  enclosure (a sideways gap), a side vent or annular slot, a second port, a
+  sealed air part, enclosure/air overlap, a port mouth recessed inside the
+  box's axial extent, or driver and port on the same end each error naming
+  where.
+- **The driver plugs its cutout.** The cutout cells are not fluid; the
+  piston sits flush with the inner face of the bottom wall. Piston radius is
+  a document parameter (kept named, so overrides re-price) or a literal;
+  default is the cutout radius, stated in the assumptions. The driver itself
+  (cone mass, suspension, voice-coil — Thiele–Small) is not modelled: this is
+  the box + port tuning `f_b`, not the loaded system response.
+- **Openings.** One port passage (a disk on the axis, walled by enclosure,
+  from the air to the outside) and at most one driver cutout on the opposite
+  end face. If the port vents downward the profile is mirrored so the mouth
+  is the top of the stack.
+- **Grid.** Default spacing is half the smallest feature (here the 2 mm port
+  wall → 1 mm), so every obstacle holds a node; a grid that would drop a wall
+  is refused (`SolveError::ObstacleUnresolved`), never solved leaky. Obstacles
+  use the vertex grid's ±dr/2 face convention (strict radial test, inclusive
+  axial), so wall thickness and bore radius carry an O(dr) error.
+- **Everything in the M0 honesty list still applies**: lossless (Q and the
+  port-velocity peak height are upper bounds), rigid walls, pressure-release
+  mouth (field `f_b` reads high), no radiation into the room.
 
 ## Milestone ladder
 

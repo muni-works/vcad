@@ -123,6 +123,46 @@ pub fn ported_box_tuning_mm(
     }
 }
 
+/// How a port meets the box — which end of it is flanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PortMount {
+    /// The port starts flush in a box wall and vents outward: its interior
+    /// end is flanged by that wall, its exterior end radiates unflanged.
+    /// ([`ported_box_tuning_mm`]'s convention.)
+    Flush,
+    /// The port **hangs inside** the box, its mouth flush with the outside
+    /// of a wall: the interior end is a bare tube end (unflanged), the
+    /// exterior mouth is flanged by the enclosure face.
+    Internal,
+}
+
+/// [`ported_box_tuning_mm`] with the port mount made explicit.
+///
+/// The nominal end correction is one flanged + one unflanged end either way
+/// (`(0.8488 + 0.6133)·a`), so `f_nominal` and `f_min` (both flanged) do not
+/// depend on the mount. `f_max` does: the pressure-release field mouth
+/// omits the exterior radiation mass and keeps only the **interior** end's
+/// correction — flanged for a flush port, unflanged (shorter, so higher f)
+/// for an internal one.
+pub fn ported_box_tuning_mount_mm(
+    medium: &Medium,
+    box_volume_mm3: f64,
+    port_radius_mm: f64,
+    port_length_mm: f64,
+    mount: PortMount,
+) -> TuningBand {
+    let mut band = ported_box_tuning_mm(medium, box_volume_mm3, port_radius_mm, port_length_mm);
+    if mount == PortMount::Internal {
+        let v = box_volume_mm3 * 1e-9;
+        let a = port_radius_mm * 1e-3;
+        let s = std::f64::consts::PI * a * a;
+        let l_min = port_length_mm * 1e-3 + end_correction(a, false);
+        band.f_max_hz = helmholtz_frequency(medium, s, v, l_min);
+    }
+    band
+}
+
 /// Rigid closed-cylinder axial mode `n` (both ends rigid), Hz: `fₙ = n·c/2L`.
 /// The exact eigenvalue the field solver must reproduce.
 pub fn closed_cylinder_axial_hz(medium: &Medium, length_mm: f64, n: usize) -> f64 {
@@ -189,6 +229,18 @@ mod tests {
             "f_b = {}",
             band.f_nominal_hz
         );
+    }
+
+    #[test]
+    fn internal_mount_only_raises_the_band_top() {
+        let air = Medium::air(20.0);
+        let flush = ported_box_tuning_mount_mm(&air, 0.933e6, 12.0, 60.0, PortMount::Flush);
+        let internal = ported_box_tuning_mount_mm(&air, 0.933e6, 12.0, 60.0, PortMount::Internal);
+        assert_eq!(flush, ported_box_tuning_mm(&air, 0.933e6, 12.0, 60.0));
+        assert_eq!(flush.f_nominal_hz, internal.f_nominal_hz);
+        assert_eq!(flush.f_min_hz, internal.f_min_hz);
+        assert!(internal.f_max_hz > flush.f_max_hz);
+        assert!(internal.contains(internal.f_nominal_hz));
     }
 
     #[test]

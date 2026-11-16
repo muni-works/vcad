@@ -295,6 +295,10 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
     title: "Simulate Neutron Shield",
     annotations: RO,
   },
+  simulate_cavity: {
+    title: "Simulate Ported Box (Cavity Acoustics)",
+    annotations: RO,
+  },
   simulate_lattice_gauge: {
     title: "Simulate Lattice Gauge Theory",
     annotations: RO,

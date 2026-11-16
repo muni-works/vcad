@@ -794,6 +794,13 @@ export interface KernelModule {
   getSheetMetalMaterials?: () => string;
   /** Mallet-strike pipeline on a flat free-free bar → JSON. */
   simulateStrikeKernel?: (inputJson: string) => string;
+  /** Document → ported box → bass-reflex analysis (JSON in, JSON string out). */
+  simulateCavity?: (
+    docJson: string,
+    selectionJson: string,
+    optionsJson: string,
+    paramsJson: string,
+  ) => string;
   /** Note name ("C6", "F#4") → Hz. Throws on garbage. */
   noteToHz?: (note: string) => number;
   /** Built-in bend table → JSON `{id, rows}`. */
@@ -1386,6 +1393,7 @@ export class Engine {
       nestSheetMetalParts: (wasmModule as Record<string, unknown>).nestSheetMetalParts as KernelModule["nestSheetMetalParts"],
       getSheetMetalMaterials: (wasmModule as Record<string, unknown>).getSheetMetalMaterials as KernelModule["getSheetMetalMaterials"],
       simulateStrikeKernel: (wasmModule as Record<string, unknown>).simulateStrikeKernel as KernelModule["simulateStrikeKernel"],
+      simulateCavity: (wasmModule as Record<string, unknown>).simulateCavity as KernelModule["simulateCavity"],
       noteToHz: (wasmModule as Record<string, unknown>).noteToHz as KernelModule["noteToHz"],
       getSheetMetalBendTable: (wasmModule as Record<string, unknown>).getSheetMetalBendTable as KernelModule["getSheetMetalBendTable"],
       getSheetMetalShopCatalog: (wasmModule as Record<string, unknown>).getSheetMetalShopCatalog as KernelModule["getSheetMetalShopCatalog"],
@@ -2433,6 +2441,28 @@ export class Engine {
       chain,
       this.kernel as unknown as Parameters<typeof runSheetMetalSequence>[1],
     );
+  }
+
+  /**
+   * Extract a ported (bass-reflex) box from a document's evaluated solids
+   * (`vcad_eval::cavity_extract`) and analyze it
+   * (`vcad_kernel_acoustics::ported::analyze`): lumped band, field-solved
+   * tuning, port volume-velocity curve, `vcad.acoustics-claims/1` claims.
+   * Returns `{extracted, report}`. Fail-closed on non-axisymmetric geometry.
+   */
+  simulateCavity(
+    docJson: string,
+    selectionJson: string,
+    optionsJson: string,
+    paramsJson: string,
+  ): unknown {
+    const fn = this.kernel.simulateCavity;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "simulateCavity is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return JSON.parse(fn(docJson, selectionJson, optionsJson, paramsJson));
   }
 
   /**

@@ -9,6 +9,7 @@
 
 #[cfg(feature = "ecad")]
 pub mod calibration;
+pub mod cavity;
 pub mod circuit_sim;
 #[cfg(feature = "ecad")]
 pub mod design_constraints;

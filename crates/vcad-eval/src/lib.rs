@@ -17,6 +17,7 @@
 //! ```
 
 pub mod cache;
+pub mod cavity_extract;
 pub mod convert;
 pub mod diff;
 pub mod evaluate;

@@ -165,6 +165,7 @@ import { toolDefs as dfmToolDefs } from "./tools/dfm.js";
 import { toolDefs as sheetMetalToolDefs } from "./tools/sheet-metal.js";
 import { toolDefs as flatPatternToolDefs } from "./tools/flat-pattern.js";
 import { toolDefs as acousticsToolDefs } from "./tools/acoustics.js";
+import { toolDefs as cavityToolDefs } from "./tools/cavity.js";
 import {
   toolDefs as importToolDefs,
   registerDocumentStepSources,
@@ -352,6 +353,7 @@ const STATIC_TOOL_DEFS: readonly ToolDef[] = [
   ...sheetMetalToolDefs,
   ...flatPatternToolDefs,
   ...acousticsToolDefs,
+  ...cavityToolDefs,
   ...importToolDefs,
   ...importUrdfToolDefs,
   ...importPcbToolDefs,
@@ -445,6 +447,7 @@ const LIST_TOOL_ORDER: readonly string[] = [
   "analyze_structure",
   "beam_check",
   "simulate_neutron_shield",
+  "simulate_cavity",
   "simulate_lattice_gauge",
   "analyze_tolerance_stackup",
   "simulate_circuit",
