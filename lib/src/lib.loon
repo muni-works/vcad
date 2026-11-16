@@ -44,6 +44,20 @@
 ; `set_parameters` on the resulting document moves every dependent field.
 
 ; ---------------------------------------------------------------------------
+; Arithmetic — `-` and `/` are variadic, like `+` and `*`
+; ---------------------------------------------------------------------------
+;
+; The interpreter's `-` and `/` take exactly two operands and silently drop
+; any more, so `[- 0 r 1]` used to read as `[- 0 r]`. Both fold left here:
+;   [- a b c] = a - b - c       [- a] = -a
+;   [/ a b c] = a / b / c       ([/ a] stays an error, as before)
+[let binary-sub -]
+[let binary-div /]
+[let - [fn [a & rest]
+  [if [empty? rest] [binary-sub 0 a] [fold rest a binary-sub]]]]
+[let / [fn [a b & rest] [fold rest [binary-div a b] binary-div]]]
+
+; ---------------------------------------------------------------------------
 ; Solid — the CSG tree
 ; ---------------------------------------------------------------------------
 
