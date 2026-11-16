@@ -27,7 +27,10 @@ fn minus_folds_left_over_every_argument() {
 fn unary_minus_negates() {
     assert_eq!(num("[- 5]"), -5.0);
     assert_eq!(num("[- 2.5]"), -2.5);
-    assert!(matches!(eval_vcad_to_value("[- 5]", None), Ok(Value::Int(-5))));
+    assert!(matches!(
+        eval_vcad_to_value("[- 5]", None),
+        Ok(Value::Int(-5))
+    ));
 }
 
 #[test]
@@ -68,7 +71,10 @@ fn user_len_does_not_break_the_library() {
     .unwrap();
     assert_eq!(doc.roots.len(), 1);
     // And the user's own `len` is what the user bound.
-    assert_eq!(num("[let len [+ 30 36]]\n[let u [union [cube 1 1 1] [cube 2 2 2]]]\nlen"), 66.0);
+    assert_eq!(
+        num("[let len [+ 30 36]]\n[let u [union [cube 1 1 1] [cube 2 2 2]]]\nlen"),
+        66.0
+    );
 }
 
 #[test]
@@ -122,7 +128,11 @@ fn arithmetic_error_still_points_at_the_user_line() {
     let dir = std::env::temp_dir().join(format!("vcad-loon-arith-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let p = dir.join("bad.loon");
-    std::fs::write(&p, "[let w 10]\n\n[root [cube [- w \"x\" 1] 1 1] \"steel\"]\n").unwrap();
+    std::fs::write(
+        &p,
+        "[let w 10]\n\n[root [cube [- w \"x\" 1] 1 1] \"steel\"]\n",
+    )
+    .unwrap();
     let d = vcad_loon::eval_vcad_file_diagnostic(&p).unwrap_err();
     assert_eq!(d.line, Some(3), "{d}");
 }

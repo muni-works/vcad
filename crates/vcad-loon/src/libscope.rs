@@ -43,9 +43,33 @@ fn alias(name: &str) -> String {
 /// rewritten, even if a builtin of the same name exists: `[%lib%if …]`
 /// would turn a special form into a call.
 const SPECIAL_FORMS: &[&str] = &[
-    "catch-errors", "derive", "do", "effect", "fn", "handle", "if", "impl", "inspect", "let",
-    "loop", "macro", "macro+", "macroexpand", "match", "mut", "pipe", "pub", "recur", "set!",
-    "sig", "test", "trait", "try", "type", "use", "when",
+    "catch-errors",
+    "derive",
+    "do",
+    "effect",
+    "fn",
+    "handle",
+    "if",
+    "impl",
+    "inspect",
+    "let",
+    "loop",
+    "macro",
+    "macro+",
+    "macroexpand",
+    "match",
+    "mut",
+    "pipe",
+    "pub",
+    "recur",
+    "set!",
+    "sig",
+    "test",
+    "trait",
+    "try",
+    "type",
+    "use",
+    "when",
 ];
 
 /// Names bound in the interpreter's global scope before any source runs.
@@ -120,7 +144,10 @@ pub(crate) fn capture(raw: &str) -> Option<String> {
     // Builtins the library references get their alias before anything else
     // runs, including any the library later redefines (`-`, `/`) so a
     // top-level use ahead of the redefinition still sees the builtin.
-    let mut head: Vec<&String> = referenced.iter().filter(|n| builtins.contains(*n)).collect();
+    let mut head: Vec<&String> = referenced
+        .iter()
+        .filter(|n| builtins.contains(*n))
+        .collect();
     head.sort();
     let mut prologue = String::new();
     for n in head {
@@ -279,9 +306,7 @@ impl Walker<'_> {
         let mut i = 0;
         while i + 1 < arms.len() {
             let names = binders(&arms[i]);
-            let guard = arms
-                .get(i + 1)
-                .filter(|g| i + 2 < arms.len() && is_when(g));
+            let guard = arms.get(i + 1).filter(|g| i + 2 < arms.len() && is_when(g));
             if let Some(g) = guard {
                 let body = &arms[i + 2];
                 self.with_scope(names, |w| {
