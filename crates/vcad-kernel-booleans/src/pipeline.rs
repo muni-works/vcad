@@ -1759,21 +1759,22 @@ pub(crate) fn brep_boolean(
                 // a bore fused with a section block cuts the bore's circle
                 // and the block's chords into one cap).
                 if let ssi::IntersectionCurve::Line(l) = single_curve {
-                    let extent = |cutter: &[trim::TrimmedSegment],
-                                  set: &std::sync::Mutex<split::HoleChordSpans>| {
-                        if cutter.is_empty() {
-                            return;
-                        }
-                        let mut set = set.lock().unwrap_or_else(|e| e.into_inner());
-                        set.entry(split::line_key(l)).or_default().extend(
-                            cutter.iter().map(|sg| {
-                                (
-                                    evaluate_curve(single_curve, sg.t_start),
-                                    evaluate_curve(single_curve, sg.t_end),
-                                )
-                            }),
-                        );
-                    };
+                    let extent =
+                        |cutter: &[trim::TrimmedSegment],
+                         set: &std::sync::Mutex<split::HoleChordSpans>| {
+                            if cutter.is_empty() {
+                                return;
+                            }
+                            let mut set = set.lock().unwrap_or_else(|e| e.into_inner());
+                            set.entry(split::line_key(l))
+                                .or_default()
+                                .extend(cutter.iter().map(|sg| {
+                                    (
+                                        evaluate_curve(single_curve, sg.t_start),
+                                        evaluate_curve(single_curve, sg.t_end),
+                                    )
+                                }));
+                        };
                     if split::is_planar_face(&a, face_a) {
                         extent(&segs_b, &hole_chords.0);
                     }
@@ -1982,8 +1983,14 @@ pub(crate) fn brep_boolean(
     };
     let split_results: Vec<SsiPairResult> = pair_results?.into_iter().flatten().collect();
     split::trust_hole_chords(
-        hole_chords.0.into_inner().unwrap_or_else(|e| e.into_inner()),
-        hole_chords.1.into_inner().unwrap_or_else(|e| e.into_inner()),
+        hole_chords
+            .0
+            .into_inner()
+            .unwrap_or_else(|e| e.into_inner()),
+        hole_chords
+            .1
+            .into_inner()
+            .unwrap_or_else(|e| e.into_inner()),
     );
 
     // Merge results into HashMaps

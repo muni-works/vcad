@@ -111,7 +111,12 @@ fn edge_census(mesh: &TriangleMesh) -> (usize, usize, usize) {
                 boundary += 1;
                 if std::env::var_os("CENSUS_DUMP").is_some() {
                     let t = &mesh.indices[ts[0] * 3..ts[0] * 3 + 3];
-                    eprintln!("  boundary tri: {:?} {:?} {:?}", key(t[0]), key(t[1]), key(t[2]));
+                    eprintln!(
+                        "  boundary tri: {:?} {:?} {:?}",
+                        key(t[0]),
+                        key(t[1]),
+                        key(t[2])
+                    );
                 }
             }
             2 => {
@@ -122,7 +127,15 @@ fn edge_census(mesh: &TriangleMesh) -> (usize, usize, usize) {
                     if std::env::var_os("CENSUS_DUMP").is_some() {
                         let t = &mesh.indices[ts[0] * 3..ts[0] * 3 + 3];
                         let u = &mesh.indices[ts[1] * 3..ts[1] * 3 + 3];
-                        eprintln!("  folded: {:?} {:?} {:?} | {:?} {:?} {:?}", key(t[0]), key(t[1]), key(t[2]), key(u[0]), key(u[1]), key(u[2]));
+                        eprintln!(
+                            "  folded: {:?} {:?} {:?} | {:?} {:?} {:?}",
+                            key(t[0]),
+                            key(t[1]),
+                            key(t[2]),
+                            key(u[0]),
+                            key(u[1]),
+                            key(u[2])
+                        );
                     }
                 }
             }
@@ -131,7 +144,6 @@ fn edge_census(mesh: &TriangleMesh) -> (usize, usize, usize) {
     }
     (nonmanifold, folded, boundary)
 }
-
 
 fn zcyl(r: f64, z0: f64, z1: f64) -> BRepSolid {
     transformed(
@@ -198,7 +210,11 @@ fn dump_faces(b: &BRepSolid) {
     .map(|(fid, _, m)| {
         let p = |i: u32| {
             let i = i as usize * 3;
-            [m.vertices[i] as f64, m.vertices[i + 1] as f64, m.vertices[i + 2] as f64]
+            [
+                m.vertices[i] as f64,
+                m.vertices[i + 1] as f64,
+                m.vertices[i + 2] as f64,
+            ]
         };
         let (mut v, mut a) = ([0.0f64; 3], 0.0f64);
         for tri in m.indices.chunks(3) {
@@ -263,7 +279,12 @@ struct Bounds {
 
 /// Check one stage; returns its failures instead of asserting so a test
 /// reports every stage of the chain, not just the first bad one.
-fn check(label: &str, result: &BooleanResult, report: &BooleanReport, bounds: Bounds) -> Vec<String> {
+fn check(
+    label: &str,
+    result: &BooleanResult,
+    report: &BooleanReport,
+    bounds: Bounds,
+) -> Vec<String> {
     let fidelity = report.fidelity;
     let mut fails = Vec::new();
     let dangling = result.as_brep().map(dangling_keys).unwrap_or_default();
@@ -303,7 +324,10 @@ fn check(label: &str, result: &BooleanResult, report: &BooleanReport, bounds: Bo
         ));
     }
     if tris > bounds.max_tris {
-        fails.push(format!("{label}: {tris} triangles (ceiling {})", bounds.max_tris));
+        fails.push(format!(
+            "{label}: {tris} triangles (ceiling {})",
+            bounds.max_tris
+        ));
     }
     fails
 }
@@ -339,18 +363,36 @@ fn can_with_radial_nozzle_then_cavity() {
         "can ∪ nozzle",
         &shell,
         &f,
-        Bounds { volume: v_shell, tol_frac: 1e-3, max_tris: 5500 },
+        Bounds {
+            volume: v_shell,
+            tol_frac: 1e-3,
+            max_tris: 5500,
+        },
     ));
 
-    let (cav, f) = op("cavity", &brep(&shell), &zcyl(76.0, -76.0, 76.0), BooleanOp::Difference);
+    let (cav, f) = op(
+        "cavity",
+        &brep(&shell),
+        &zcyl(76.0, -76.0, 76.0),
+        BooleanOp::Difference,
+    );
     fails.extend(check(
         "− cavity",
         &cav,
         &f,
-        Bounds { volume: v_shell - CAVITY, tol_frac: 1e-3, max_tris: 13000 },
+        Bounds {
+            volume: v_shell - CAVITY,
+            tol_frac: 1e-3,
+            max_tris: 13000,
+        },
     ));
 
-    let (bored, f) = op("y bore", &brep(&cav), &ycyl(19.0, 60.0, 120.0), BooleanOp::Difference);
+    let (bored, f) = op(
+        "y bore",
+        &brep(&cav),
+        &ycyl(19.0, 60.0, 120.0),
+        BooleanOp::Difference,
+    );
     // The bore removes the r=19 column from the cavity wall (r 76) outward
     // to the nozzle end (y 112).
     let v_bored = v_shell - CAVITY - radial_stub(19.0, 76.0, 112.0);
@@ -358,7 +400,11 @@ fn can_with_radial_nozzle_then_cavity() {
         "− y bore",
         &bored,
         &f,
-        Bounds { volume: v_bored, tol_frac: 1e-3, max_tris: 16000 },
+        Bounds {
+            volume: v_bored,
+            tol_frac: 1e-3,
+            max_tris: 16000,
+        },
     ));
 
     // The section removes a quarter of the can and cavity; the nozzle (on
@@ -368,7 +414,11 @@ fn can_with_radial_nozzle_then_cavity() {
         "− quadrant",
         &cut,
         &f,
-        Bounds { volume: v_bored - 0.25 * (CAN - CAVITY), tol_frac: 1e-3, max_tris: 14000 },
+        Bounds {
+            volume: v_bored - 0.25 * (CAN - CAVITY),
+            tol_frac: 1e-3,
+            max_tris: 14000,
+        },
     ));
     assert!(fails.is_empty(), "{fails:#?}");
 }
@@ -397,14 +447,22 @@ fn sectioned_ring() {
         "ring",
         &ring,
         &f,
-        Bounds { volume: v_ring, tol_frac: 1e-3, max_tris: 4000 },
+        Bounds {
+            volume: v_ring,
+            tol_frac: 1e-3,
+            max_tris: 4000,
+        },
     ));
     let (cut, f) = op("section", &brep(&ring), &quadrant(), BooleanOp::Difference);
     fails.extend(check(
         "ring − quadrant",
         &cut,
         &f,
-        Bounds { volume: 0.75 * v_ring, tol_frac: 1e-3, max_tris: 3000 },
+        Bounds {
+            volume: 0.75 * v_ring,
+            tol_frac: 1e-3,
+            max_tris: 3000,
+        },
     ));
     assert!(fails.is_empty(), "{fails:#?}");
 }
@@ -443,7 +501,11 @@ fn sectioned_ring_batched() {
         "disc − (bore ∪ quadrant)",
         &cut,
         &f,
-        Bounds { volume: 0.75 * v_ring, tol_frac: 1e-3, max_tris: 3000 },
+        Bounds {
+            volume: 0.75 * v_ring,
+            tol_frac: 1e-3,
+            max_tris: 3000,
+        },
     ));
     assert!(fails.is_empty(), "{fails:#?}");
 }
@@ -462,12 +524,21 @@ fn sectioned_can_with_cavity() {
         &zcyl(76.0, -76.0, 76.0),
         BooleanOp::Difference,
     );
-    let (cut, f) = op("section", &brep(&hollow), &quadrant(), BooleanOp::Difference);
+    let (cut, f) = op(
+        "section",
+        &brep(&hollow),
+        &quadrant(),
+        BooleanOp::Difference,
+    );
     fails.extend(check(
         "(can − cavity) − quadrant",
         &cut,
         &f,
-        Bounds { volume: 0.75 * (CAN - CAVITY), tol_frac: 1e-3, max_tris: 8000 },
+        Bounds {
+            volume: 0.75 * (CAN - CAVITY),
+            tol_frac: 1e-3,
+            max_tris: 8000,
+        },
     ));
     assert!(fails.is_empty(), "{fails:#?}");
 }
@@ -478,7 +549,12 @@ fn sectioned_can_with_cavity() {
 #[test]
 fn sectioned_can_with_cavity_batched() {
     let mut fails = Vec::new();
-    let (tool, f) = op("tool", &zcyl(76.0, -76.0, 76.0), &quadrant(), BooleanOp::Union);
+    let (tool, f) = op(
+        "tool",
+        &zcyl(76.0, -76.0, 76.0),
+        &quadrant(),
+        BooleanOp::Union,
+    );
     fails.extend(check(
         "cavity ∪ quadrant",
         &tool,
@@ -489,12 +565,21 @@ fn sectioned_can_with_cavity_batched() {
             max_tris: 4000,
         },
     ));
-    let (cut, f) = op("cut", &zcyl(79.5, -79.5, 79.5), &brep(&tool), BooleanOp::Difference);
+    let (cut, f) = op(
+        "cut",
+        &zcyl(79.5, -79.5, 79.5),
+        &brep(&tool),
+        BooleanOp::Difference,
+    );
     fails.extend(check(
         "can − (cavity ∪ quadrant)",
         &cut,
         &f,
-        Bounds { volume: 0.75 * (CAN - CAVITY), tol_frac: 1e-3, max_tris: 8000 },
+        Bounds {
+            volume: 0.75 * (CAN - CAVITY),
+            tol_frac: 1e-3,
+            max_tris: 8000,
+        },
     ));
     assert!(fails.is_empty(), "{fails:#?}");
 }
@@ -521,7 +606,11 @@ fn chamber_batched() {
         "cavity ∪ y bore",
         &bores,
         &f,
-        Bounds { volume: v_bores, tol_frac: 1e-3, max_tris: 6000 },
+        Bounds {
+            volume: v_bores,
+            tol_frac: 1e-3,
+            max_tris: 6000,
+        },
     ));
     let (tool, f) = op("tool", &brep(&bores), &quadrant(), BooleanOp::Union);
     fails.extend(check(
@@ -543,7 +632,11 @@ fn chamber_batched() {
         "shell − tools",
         &cut,
         &f,
-        Bounds { volume: v, tol_frac: 1e-3, max_tris: 14000 },
+        Bounds {
+            volume: v,
+            tol_frac: 1e-3,
+            max_tris: 14000,
+        },
     ));
     assert!(fails.is_empty(), "{fails:#?}");
 }
@@ -570,7 +663,11 @@ fn gauge_port() {
         "gauge port",
         &cut,
         &f,
-        Bounds { volume: v, tol_frac: 1e-3, max_tris: 15000 },
+        Bounds {
+            volume: v,
+            tol_frac: 1e-3,
+            max_tris: 15000,
+        },
     ));
     assert!(fails.is_empty(), "{fails:#?}");
 }
@@ -592,13 +689,22 @@ fn coaxial_ports_sectioned() {
         &zcyl(10.0, 60.0, 90.0),
         BooleanOp::Union,
     );
-    let (bores, f) = op("bores", &zcyl(76.0, -76.0, 76.0), &brep(&ports), BooleanOp::Union);
+    let (bores, f) = op(
+        "bores",
+        &zcyl(76.0, -76.0, 76.0),
+        &brep(&ports),
+        BooleanOp::Union,
+    );
     let v_bores = CAVITY + PI * 400.0 * 74.0 + PI * 100.0 * 14.0;
     fails.extend(check(
         "cavity ∪ pump bore ∪ feedthrough bore",
         &bores,
         &f,
-        Bounds { volume: v_bores, tol_frac: 1e-3, max_tris: 8000 },
+        Bounds {
+            volume: v_bores,
+            tol_frac: 1e-3,
+            max_tris: 8000,
+        },
     ));
     let (tool, f) = op("tool", &brep(&bores), &quadrant(), BooleanOp::Union);
     fails.extend(check(
@@ -615,13 +721,16 @@ fn coaxial_ports_sectioned() {
     // Shell: can + pump nozzle (r 23, z −140..−79.5). Removed: cavity, pump
     // bore through floor and nozzle (r 20, z −140..−76), feedthrough bore
     // through the lid (r 10, z 76..79.5); then a quarter of everything.
-    let v = 0.75
-        * (CAN + PI * 529.0 * 60.5 - CAVITY - PI * 400.0 * 64.0 - PI * 100.0 * 3.5);
+    let v = 0.75 * (CAN + PI * 529.0 * 60.5 - CAVITY - PI * 400.0 * 64.0 - PI * 100.0 * 3.5);
     fails.extend(check(
         "shell − tools",
         &cut,
         &f,
-        Bounds { volume: v, tol_frac: 1e-3, max_tris: 14000 },
+        Bounds {
+            volume: v,
+            tol_frac: 1e-3,
+            max_tris: 14000,
+        },
     ));
     assert!(fails.is_empty(), "{fails:#?}");
 }

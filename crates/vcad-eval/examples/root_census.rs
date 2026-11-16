@@ -58,7 +58,11 @@ fn census(verts: &[f32], idx: &[u32]) -> (usize, usize, usize, f64, usize) {
             if a == b {
                 continue;
             }
-            let (e, fwd) = if a < b { ((a, b), true) } else { ((b, a), false) };
+            let (e, fwd) = if a < b {
+                ((a, b), true)
+            } else {
+                ((b, a), false)
+            };
             adj.entry(e).or_default().push((ti, fwd));
         }
     }
@@ -83,7 +87,9 @@ fn census(verts: &[f32], idx: &[u32]) -> (usize, usize, usize, f64, usize) {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let path = args.next().expect("usage: root_census <file.vcad|file.loon> [segments]");
+    let path = args
+        .next()
+        .expect("usage: root_census <file.vcad|file.loon> [segments]");
     let segments: Option<u32> = args.next().map(|s| s.parse().expect("segments"));
     let doc: vcad_ir::Document = if path.ends_with(".loon") {
         vcad_loon::eval_vcad_file(std::path::Path::new(&path)).expect("evaluate loon")

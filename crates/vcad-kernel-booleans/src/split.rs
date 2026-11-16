@@ -804,7 +804,11 @@ pub fn split_face_by_curve(
                 );
             }
         } else {
-            split_dbg!("sfbc: {} of {} holes crossed cleanly", crossed.len(), parent_inner.len());
+            split_dbg!(
+                "sfbc: {} of {} holes crossed cleanly",
+                crossed.len(),
+                parent_inner.len()
+            );
         }
     }
     {
