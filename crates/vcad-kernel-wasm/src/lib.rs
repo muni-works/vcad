@@ -10818,6 +10818,48 @@ pub fn neutronics_simulate(spec_json: &str, params_json: &str) -> Result<JsValue
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
 }
 
+// ---------------------------------------------------------------------------
+// Document → simulation spec (vcad_eval::sim_extract)
+// ---------------------------------------------------------------------------
+
+/// Extract an axisymmetric `DeviceSpec` from a document's evaluated solids.
+///
+/// `doc_json` is a `vcad_ir::Document`; `selection_json` a
+/// `vcad_eval::sim_extract::DeviceExtraction` (chamber part, electrode
+/// parts + the document parameters naming their potentials/ampere-turns).
+/// Returns `{spec, parameters, cavity, ring_parts}` — feed `spec` and
+/// `parameters` straight to `particleSimulate`. Fail-closed: any shape the
+/// spec can't represent errors with the offending part's name.
+#[wasm_bindgen(js_name = extractDeviceSpec)]
+pub fn extract_device_spec(doc_json: &str, selection_json: &str) -> Result<JsValue, JsError> {
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {e}")))?;
+    let sel: vcad_eval::sim_extract::DeviceExtraction = serde_json::from_str(selection_json)
+        .map_err(|e| JsError::new(&format!("bad extraction selection: {e}")))?;
+    let out = vcad_eval::sim_extract::extract_device_spec(&doc, &sel)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Extract a spherical `ShieldSpec` from a document's evaluated solids.
+///
+/// `selection_json` is a `vcad_eval::sim_extract::ShieldExtraction` (shell
+/// parts, fill material, source, detectors). Returns
+/// `{spec, parameters, center, layer_parts}` — feed `spec` and
+/// `parameters` straight to `neutronicsSimulate`.
+#[wasm_bindgen(js_name = extractShieldSpec)]
+pub fn extract_shield_spec(doc_json: &str, selection_json: &str) -> Result<JsValue, JsError> {
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {e}")))?;
+    let sel: vcad_eval::sim_extract::ShieldExtraction = serde_json::from_str(selection_json)
+        .map_err(|e| JsError::new(&format!("bad extraction selection: {e}")))?;
+    let out = vcad_eval::sim_extract::extract_shield_spec(&doc, &sel)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
 // =============================================================================
 // GLB / STL export (vcad-kernel-export)
 // =============================================================================

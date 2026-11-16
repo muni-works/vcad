@@ -923,6 +923,10 @@ export interface KernelModule {
   photonicsSimulate?: (specJson: string, optionsJson: string) => unknown;
   /** Monte Carlo neutron shielding run (ShieldSpec/params JSON). */
   neutronicsSimulate?: (specJson: string, paramsJson: string) => unknown;
+  /** Document → DeviceSpec extraction (Document/DeviceExtraction JSON). */
+  extractDeviceSpec?: (docJson: string, selectionJson: string) => unknown;
+  /** Document → ShieldSpec extraction (Document/ShieldExtraction JSON). */
+  extractShieldSpec?: (docJson: string, selectionJson: string) => unknown;
   /** Lattice gauge theory Monte Carlo run (SimSpec JSON). */
   latticeGaugeSimulate?: (specJson: string) => unknown;
   /** Static structural analysis of a box solid. */
@@ -1395,6 +1399,8 @@ export class Engine {
       topologyOptimizeBox: (wasmModule as Record<string, unknown>).topologyOptimizeBox as KernelModule["topologyOptimizeBox"],
       topologyOptimizeMesh: (wasmModule as Record<string, unknown>).topologyOptimizeMesh as KernelModule["topologyOptimizeMesh"],
       particleSimulate: (wasmModule as Record<string, unknown>).particleSimulate as KernelModule["particleSimulate"],
+      extractDeviceSpec: (wasmModule as Record<string, unknown>).extractDeviceSpec as KernelModule["extractDeviceSpec"],
+      extractShieldSpec: (wasmModule as Record<string, unknown>).extractShieldSpec as KernelModule["extractShieldSpec"],
       particleOptimize: (wasmModule as Record<string, unknown>).particleOptimize as KernelModule["particleOptimize"],
       toleranceAnalyze: (wasmModule as Record<string, unknown>).toleranceAnalyze as KernelModule["toleranceAnalyze"],
       thermalSolve: (wasmModule as Record<string, unknown>).thermalSolve as KernelModule["thermalSolve"],
@@ -1973,6 +1979,38 @@ export class Engine {
       );
     }
     return fn(specJson, paramsJson);
+  }
+
+  /**
+   * Extract an axisymmetric `DeviceSpec` from a document's evaluated solids
+   * (chamber cavity + toroidal wire rings; potentials/ampere-turns bound to
+   * named document parameters). Returns `{spec, parameters, cavity,
+   * ring_parts}`. Fail-closed; see `vcad_eval::sim_extract`.
+   */
+  extractDeviceSpec(docJson: string, selectionJson: string): unknown {
+    const fn = this.kernel.extractDeviceSpec;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "extractDeviceSpec is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(docJson, selectionJson);
+  }
+
+  /**
+   * Extract a spherical `ShieldSpec` from a document's evaluated solids
+   * (concentric spherical shells → layer stack). Returns `{spec,
+   * parameters, center, layer_parts}`. Fail-closed; see
+   * `vcad_eval::sim_extract`.
+   */
+  extractShieldSpec(docJson: string, selectionJson: string): unknown {
+    const fn = this.kernel.extractShieldSpec;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "extractShieldSpec is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(docJson, selectionJson);
   }
 
   /**
