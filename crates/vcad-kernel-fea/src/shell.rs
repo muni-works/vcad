@@ -20,16 +20,20 @@
 //!   the ends too — what a capped vacuum vessel sees), with
 //!   `Z = L²√(1−ν²)/(r·t)`, `β = nL/(πr)`, `D = Et³/(12(1−ν²))`. We minimize
 //!   over integer `n ≥ 2` circumferential waves rather than a continuous β.
-//! * Eq. 27 for long cylinders that ovalize (`n = 2`, Eq. 26 regime
-//!   `γZ > 4000`): `p = γE/(4(1−ν²))·(t/r)³` (Bresse/Bryan).
-//! * Knockdowns: `√γ = 0.75` (Eq. 28) with the Batdorf form, `γ = 0.90`
-//!   (Eq. 29) for the ovalizing long cylinder.
+//! * Eq. 27 for long cylinders that ovalize (`n = 2`):
+//!   `p = γE/(4(1−ν²))·(t/r)³` (Bresse/Bryan).
+//! * Knockdowns: `√γ = 0.75` (Eq. 28) inside the Batdorf bracket, `γ = 0.90`
+//!   (Eq. 29) when the governing mode ovalizes (`n = 2`), capped by the
+//!   Eq. 28 ratio so a longer tube never reads stronger.
 //!
-//! Shallow-shell (Donnell/Batdorf) theory drops the `−1` of the ring term
-//! (`n²` where Flügge/von Mises has `n² − 1`), so at `n = 2…3` it reads
-//! high by `n²/(n²−1)` — 33 % at `n = 2`. When the minimizing `n` is that
-//! low we scale by `(n²−1)/n²` and say so in a caution; the eigenvalue FE
-//! ([`crate::buckling`]) is the independent check of that correction.
+//! The classical (γ = 1) value is von Mises' thin-shell formula
+//! ([`von_mises_cylinder_pressure`]): Batdorf's shallow-shell form drops the
+//! `−1` of the ring term (`n²` where von Mises has `n² − 1`) and reads high
+//! by up to a third at `n = 2`. SP-8007's knockdown is then applied as its
+//! own ratio — Eq. 19–22 at `√γ = 0.75` over the same form at γ = 1 — so the
+//! cited correction carries over exactly while the perfect-shell number is
+//! the accurate one. The eigenvalue FE ([`crate::buckling`]) reproduces the
+//! classical value within a few percent.
 //!
 //! **Spheres and heads:** classical (Zoelly 1915) bifurcation
 //! `p_cl = 2E/√(3(1−ν²))·(t/R)²`. Measured collapse of real spheres sits at
@@ -41,6 +45,12 @@
 //! a design factor of 4. Heads follow UG-33(d)/(e): a 2:1 ellipsoidal head
 //! is checked as a sphere of outside radius `K₁·D_o`, `K₁ = 0.9`
 //! (Table UG-33.1); a torispherical head as a sphere of its crown radius.
+//!
+//! The SP-8007 equations and factors above were checked against the
+//! monograph's text. The ASME numbers (UG-28(d)'s `A = 0.125/(R_o/t)`,
+//! UG-33's `K₁ = 0.9`, the UG-32 crown-radius limit, the factor of 3 in the
+//! UG-28 cylinder curves) are as commonly published and have **not** been
+//! checked against the code text in this crate; treat them accordingly.
 //!
 //! **What this is not:** a code stamp. UG-28's cylinder rules read factor
 //! `A` off a geometry chart (Fig. G) and `B` off a material chart; we use
@@ -217,9 +227,9 @@ impl ShellCase {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ShellRegime {
-    /// Finite cylinder, Batdorf form (SP-8007 Eq. 19–22, knockdown Eq. 28).
+    /// Finite cylinder, `n ≥ 3` (von Mises classical, SP-8007 Eq. 28 ratio).
     CylinderBatdorf,
-    /// Long ovalizing cylinder (SP-8007 Eq. 26–27, knockdown Eq. 29).
+    /// Governing mode ovalizes, `n = 2` (SP-8007 Eq. 26–27, knockdown Eq. 29).
     CylinderLong,
     /// Sphere or head as an equivalent sphere (Zoelly; UG-28(d)/UG-33).
     Sphere,
@@ -296,7 +306,8 @@ fn batdorf_k(n: f64, l: f64, r: f64, z: f64, gamma: f64, loading: CylinderLoadin
     }
 }
 
-/// Minimum-over-`n` Batdorf pressure (MPa) and its wave count.
+/// Minimum-over-`n` Batdorf pressure (MPa) and its wave count (the raw
+/// Eq. 19–22 value).
 fn batdorf_pressure(
     e: f64,
     nu: f64,
@@ -317,13 +328,6 @@ fn batdorf_pressure(
         }
     }
     best
-}
-
-/// Flügge/von Mises ring-term correction for shallow-shell theory at low
-/// wave numbers: `(n²−1)/n²`.
-fn low_n_factor(n: u32) -> f64 {
-    let n2 = (n * n) as f64;
-    (n2 - 1.0) / n2
 }
 
 /// Classical long-cylinder (ovalizing, `n = 2`) pressure, SP-8007 Eq. 27
@@ -375,11 +379,11 @@ pub fn zoelly_pressure(e: f64, nu: f64, r: f64, t: f64) -> f64 {
     2.0 * e / (3.0 * (1.0 - nu * nu)).sqrt() * (t / r).powi(2)
 }
 
-/// Classical finite-cylinder bifurcation pressure (MPa) and wave count:
-/// SP-8007 Eq. 19–22 at γ = 1, minimized over integer `n ≥ 2`, with the
-/// low-`n` ring-term correction, floored by the long-cylinder limit when
-/// `Z > 4000` (Eq. 26 regime). This is the number an eigenvalue FE of a
-/// perfect, simply supported cylinder should approach.
+/// Classical finite-cylinder bifurcation pressure (MPa) and wave count —
+/// [`von_mises_cylinder_pressure`], the thin-shell formula with the full
+/// `n² − 1` ring term. Its long limit is Bresse/Bryan (SP-8007 Eq. 27 at
+/// γ = 1), so no length switch is needed. This is the number an eigenvalue
+/// FE of a perfect, simply supported, axially free cylinder approaches.
 pub fn classical_cylinder_pressure(
     e: f64,
     nu: f64,
@@ -388,12 +392,57 @@ pub fn classical_cylinder_pressure(
     l: f64,
     loading: CylinderLoading,
 ) -> (f64, u32) {
+    von_mises_cylinder_pressure(e, nu, r_mean, t, l, loading)
+}
+
+/// SP-8007's own knockdown ratio for this geometry: the Batdorf pressure
+/// (Eq. 19–22) with `√γ = 0.75` inside the bracket (Eq. 28) over the same
+/// form at `γ = 1`. Applied to the von Mises classical value.
+pub fn sp8007_knockdown_ratio(
+    e: f64,
+    nu: f64,
+    r_mean: f64,
+    t: f64,
+    l: f64,
+    loading: CylinderLoading,
+) -> f64 {
+    let _ = e; // the ratio is modulus-free
     let z = l * l * (1.0 - nu * nu).sqrt() / (r_mean * t);
-    if z > 4000.0 {
-        return (long_cylinder_pressure(e, nu, r_mean, t), 2);
-    }
-    let (p, n) = batdorf_pressure(e, nu, r_mean, t, l, 1.0, loading);
-    (p * low_n_factor(n), n)
+    // SP-8007 minimizes k over a continuously varying buckle aspect ratio
+    // β (Fig. 4-3); do the same (β ≥ the n = 2 value), which keeps the
+    // ratio smooth in L where an integer-n minimum would kink.
+    let beta_min = 2.0 * l / (std::f64::consts::PI * r_mean);
+    let kmin = |gamma: f64| -> f64 {
+        let k = |lb: f64| {
+            let n = lb.exp() * std::f64::consts::PI * r_mean / l;
+            batdorf_k(n, l, r_mean, z, gamma, loading)
+        };
+        let (lo, hi) = (beta_min.ln(), (beta_min * 1e4).max(1e4).ln());
+        let steps = 4000;
+        let (mut best, mut bx) = (f64::INFINITY, lo);
+        for i in 0..=steps {
+            let x = lo + (hi - lo) * i as f64 / steps as f64;
+            let v = k(x);
+            if v < best {
+                best = v;
+                bx = x;
+            }
+        }
+        // Golden-section polish around the best sample.
+        let h = (hi - lo) / steps as f64;
+        let (mut a, mut b) = ((bx - h).max(lo), (bx + h).min(hi));
+        let g = 0.5 * (5f64.sqrt() - 1.0);
+        for _ in 0..60 {
+            let (c, d) = (b - g * (b - a), a + g * (b - a));
+            if k(c) < k(d) {
+                b = d;
+            } else {
+                a = c;
+            }
+        }
+        k(0.5 * (a + b)).min(best)
+    };
+    (kmin(0.5625) / kmin(1.0)).min(1.0)
 }
 
 /// Run the screen. Fail-closed: the verdict is `Unverifiable` when the
@@ -422,27 +471,26 @@ pub fn check_shell(case: &ShellCase) -> Result<ShellCheck, SpecError> {
                     d_o / t
                 ));
             }
-            let (p_cl, n, regime, p_kd, kd_basis) = if z > 4000.0 {
-                let p_cl = long_cylinder_pressure(e, nu, r, t);
+            let (p_cl, n) = classical_cylinder_pressure(e, nu, r, t, l, loading);
+            let ratio = sp8007_knockdown_ratio(e, nu, r, t, l, loading);
+            let (regime, p_kd, kd_basis) = if n == 2 {
+                // Ovalizing mode: Eq. 29's γ = 0.90, never above the Eq. 28
+                // value (keeps the screen monotone in length at the hand-off).
                 (
-                    p_cl,
-                    2,
                     ShellRegime::CylinderLong,
-                    0.90 * p_cl,
-                    "gamma = 0.90 on the ovalizing long cylinder (NASA/SP-8007-2020/REV 2 \
-                     Eq. 27 with Eq. 29)"
+                    p_cl * ratio.min(0.90),
+                    "governing mode ovalizes (n = 2): gamma = 0.90 (NASA/SP-8007-2020/REV 2 \
+                     Eq. 27 with Eq. 29), capped by the Eq. 28 ratio"
                         .to_string(),
                 )
             } else {
-                let (p_cl, n) = classical_cylinder_pressure(e, nu, r, t, l, loading);
-                // Knockdown enters inside the Batdorf bracket (γ² Z²), not
-                // as a plain multiplier — evaluate Eq. 20/22 again at γ.
-                let (p_kd_raw, n_kd) = batdorf_pressure(e, nu, r, t, l, 0.5625, loading);
-                let p_kd = p_kd_raw * low_n_factor(n_kd);
-                let mut basis =
-                    "sqrt(gamma) = 0.75 inside the Batdorf form (NASA/SP-8007-2020/REV 2 \
-                     Eq. 19-22 with Eq. 28)"
-                        .to_string();
+                let mut basis = format!(
+                    "SP-8007's own knockdown ratio {ratio:.3} for this geometry: the Batdorf \
+                     form (NASA/SP-8007-2020/REV 2 Eq. 19-22) with sqrt(gamma) = 0.75 inside the \
+                     bracket (Eq. 28) over the same form at gamma = 1, applied to the von Mises \
+                     classical value — not a flat 0.75, because gamma multiplies only the \
+                     membrane term"
+                );
                 if 0.5625 * z < 100.0 {
                     basis.push_str(
                         "; gamma·Z < 100 is outside the range Eq. 28 is stated for (short \
@@ -455,17 +503,7 @@ pub fn check_shell(case: &ShellCase) -> Result<ShellCheck, SpecError> {
                         0.5625 * z
                     ));
                 }
-                if n <= 3 || n_kd <= 3 {
-                    cautions.push(format!(
-                        "governing mode has n = {n} waves: shallow-shell theory reads high by \
-                         n²/(n²−1) there, so the classical and knocked-down pressures were \
-                         scaled by (n²−1)/n² (Flügge/von Mises ring term)"
-                    ));
-                }
-                // The long-cylinder bound is a floor on a ring-supported
-                // span's real buckling pressure, never a ceiling — but the
-                // knocked-down number must not exceed the classical one.
-                (p_cl, n, ShellRegime::CylinderBatdorf, p_kd.min(p_cl), basis)
+                (ShellRegime::CylinderBatdorf, p_cl * ratio, basis)
             };
             if matches!(loading, CylinderLoading::Lateral) {
                 cautions.push(
@@ -640,7 +678,8 @@ fn sphere_numbers(
         p_kd.min(p_cl),
         "ASME BPVC VIII-1 UG-28(d) elastic branch: A = 0.125/(Ro/t), B = A·E/2, \
          Pa = B/(Ro/t) = 0.0625·E/(Ro/t)², i.e. collapse 0.25·E·(t/Ro)² with a design factor \
-         of 4 (the sphere knockdown is the ratio to Zoelly's classical value)"
+         of 4 (the sphere knockdown is the ratio to Zoelly's classical value); ASME \
+         numbers as commonly published, not checked against the code text"
             .to_string(),
         p_y,
         sigma,
@@ -808,7 +847,14 @@ pub fn design_claims(set: &crate::receipt::ClaimSet) -> Vec<vcad_receipt::Receip
     set.claims
         .iter()
         .map(|c| {
-            vcad_receipt::ReceiptClaim::pass(
+            // A vessel that does not hold its pressure is a definite answer,
+            // not a provisional pass: the margin claim fails.
+            let ctor = if c.name == "external_pressure_margin" && c.value < 1.0 {
+                vcad_receipt::ReceiptClaim::fail
+            } else {
+                vcad_receipt::ReceiptClaim::pass
+            };
+            ctor(
                 format!("structure.shell.{}", c.name),
                 crate::receipt::RECEIPT_DOMAIN,
                 c.note.clone(),
@@ -905,18 +951,65 @@ mod tests {
 
     #[test]
     fn long_cylinder_limit_is_bresse_with_gamma_090() {
-        // 152.4 x 1 mm, 10 m long: Z ≫ 4000.
+        // 152.4 x 1 mm, 10 m long: ovalizes, classical → Bresse.
         let c = check_shell(&cyl(152.4, 1.0, 10_000.0)).unwrap();
         assert_eq!(c.regime, ShellRegime::CylinderLong);
         let r: f64 = 0.5 * (152.4 - 1.0);
         approx(
             c.classical_pressure_mpa,
-            E_SS / (4.0 * (1.0 - NU_SS * NU_SS)) * (1.0 / r).powi(3),
-            1e-12,
+            long_cylinder_pressure(E_SS, NU_SS, r, 1.0),
+            2e-3,
             "bresse",
         );
-        approx(c.knockdown, 0.90, 1e-12, "eq 29");
+        approx(c.knockdown, 0.90, 2e-3, "eq 29");
         assert_eq!(c.circumferential_waves, Some(2));
+    }
+
+    #[test]
+    fn screen_is_monotone_in_length_with_no_cliff() {
+        // 6" x 1 mm: the knocked-down pressure must fall smoothly with
+        // span — no length switch that drops it several-fold at once.
+        let mut last = check_shell(&cyl(152.4, 1.0, 50.0))
+            .unwrap()
+            .knocked_down_pressure_mpa;
+        let mut l = 50.0;
+        while l < 20_000.0 {
+            let c = check_shell(&cyl(152.4, 1.0, l)).unwrap();
+            let p = c.knocked_down_pressure_mpa;
+            assert!(p <= last * (1.0 + 1e-6), "L {l}: {p} > {last}");
+            assert!(p >= 0.8 * last, "L {l}: cliff {last} -> {p}");
+            last = p;
+            l *= 1.05;
+        }
+    }
+
+    #[test]
+    fn knockdown_ratio_stays_in_the_sp8007_band() {
+        // Including thin walls (r/t ≈ 150) where a length switch would bite:
+        // √γ = 0.75 on the membrane term only, so the ratio lives between
+        // 0.5625 (pure membrane) and 1 (pure bending).
+        for (d, t) in [(104.0, 2.0), (101.0, 1.0), (152.4, 0.5)] {
+            for l in [60.0, 150.0, 300.0, 600.0, 1500.0, 5000.0, 20_000.0] {
+                let c = check_shell(&cyl(d, t, l)).unwrap();
+                assert!(
+                    (0.5..=0.9 + 1e-12).contains(&c.knockdown),
+                    "D {d} t {t} L {l}: knockdown {}",
+                    c.knockdown
+                );
+                assert!(c.knocked_down_pressure_mpa <= c.classical_pressure_mpa);
+            }
+        }
+    }
+
+    #[test]
+    fn failing_vessel_fails_the_receipt() {
+        let case = cyl(152.4, 0.5, 300.0);
+        let c = check_shell(&case).unwrap();
+        assert!(c.applicable() && c.margin < 1.0);
+        let receipt = vcad_receipt::DesignReceipt::with_claims(design_claims(
+            &predicted_claims(&c, &case).unwrap(),
+        ));
+        assert_eq!(receipt.verdict(), vcad_receipt::ReceiptVerdict::Fail);
     }
 
     #[test]
@@ -1037,6 +1130,27 @@ mod tests {
         approx(c.radius_mm, 0.9 * 152.4, 1e-12, "K1 Do");
         let hemi = check_shell(&sphere(152.4, 1.0)).unwrap();
         assert!(c.collapse_pressure_mpa < hemi.collapse_pressure_mpa);
+    }
+
+    #[test]
+    fn mcp_tool_argument_shapes_deserialize() {
+        // The exact shapes shell_buckling_check's schema advertises.
+        for g in [
+            r#"{"type":"cylinder","outer_diameter_mm":152.4,"wall_mm":1,"length_mm":300,"loading":"lateral"}"#,
+            r#"{"type":"cylinder","outer_diameter_mm":152.4,"wall_mm":1,"length_mm":300,"loading":"hydrostatic"}"#,
+            r#"{"type":"sphere","outer_diameter_mm":152.4,"wall_mm":1}"#,
+            r#"{"type":"head","head":{"kind":"hemispherical"},"outer_diameter_mm":152.4,"wall_mm":1}"#,
+            r#"{"type":"head","head":{"kind":"ellipsoidal_2to1"},"outer_diameter_mm":152.4,"wall_mm":1}"#,
+            r#"{"type":"head","head":{"kind":"torispherical","crown_radius_mm":152.4},"outer_diameter_mm":152.4,"wall_mm":1}"#,
+        ] {
+            let json = format!(
+                r#"{{"geometry":{g},"youngs_modulus_mpa":193000,"poisson":0.29,"yield_strength_mpa":205,"external_pressure_mpa":0.101325,"design_factor":3}}"#
+            );
+            let case: ShellCase =
+                serde_json::from_str(&json).unwrap_or_else(|e| panic!("{g}: {e}"));
+            let c = check_shell(&case).unwrap();
+            assert!(c.applicable(), "{g}: {:?}", c.verdict);
+        }
     }
 
     #[test]

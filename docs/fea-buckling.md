@@ -74,47 +74,54 @@ region loads and supports (e.g. the Euler column).
 
 ### Validation
 
+Every number below is printed by the test that asserts it (`cargo test -p
+vcad-kernel-fea --release -- buckling --nocapture`), apart from the sweep
+rows, which come from the ignored `buckling::sweep::cylinder_sweep` test.
+
 | case | reference | FE |
 |---|---|---|
-| fixed-free column 200×10×10 mm, axial tip load | Euler `π²EI/(4L²)` | within 3% |
+| fixed-free column 200×10×10 mm, axial tip load | Euler `π²EI/(4L²)` | gated at 3% |
 | plane-strain ring r=50 t=2, follower pressure | Bresse `E/(4(1−ν²))·(t/r)³` = 3.516 MPa | 3.536 (+0.6%) |
-| same ring, dead pressure | — | +7.9% (unconservative, as expected) |
+| same ring, dead (fixed-direction) pressure | — | +7.9% over follower: unconservative, as expected |
 | complete sphere r=50 t=2 (cube-sphere 6×16², 1 layer) | Zoelly `2E/√(3(1−ν²))·(t/r)²` = 387.3 MPa | 379.1 (−2.1%) |
-| capped cylinder r=50 t=1 L=300, hydrostatic, SS axially free (64×40×2) | von Mises (n = 3) 1.662 MPa | 1.701 (+2.3%) |
-| capped cylinder r=50 t=1 L=100 (n = 5), 64×24×2 → 96×32×2 | von Mises 5.35 MPa | +6.3% → +3.4% (converging from above) |
-| L=1000 (n = 2), 48×40×2 | von Mises 0.494 MPa | 0.507 (+2.6%) |
-| closed-surface `K_L` symmetry, 3-2-1 reaction | exact | ~1e-12 |
+| capped cylinder r=50 t=1 L=300, hydrostatic, SS axially free (64×40×2) | von Mises (n = 3) 1.662 MPa | 1.685 (+1.4%) |
+| closed sphere: `K_L` asymmetry / 3-2-1 reaction residual | 0 | 5.4e-16 / 3.2e-13 |
+| sweep, r=50 t=1 L=100 (n = 5), 64×24×2 → 96×32×2 | von Mises | converging from above, about +3% at the finer mesh |
 
-`von_mises_cylinder_pressure` (Windenburg & Trilling 1934; Timoshenko & Gere
-§11.5, full `n²−1` ring term) is exposed as an independent classical
-reference and reported next to every cylinder screen. The SP-8007 screen's
-classical value sits at or below it (the low-n correction and the
-long-cylinder switch at `Z > 4000` are both conservative: at L=1000 the
-screen uses Bresse 0.440 MPa against von Mises 0.494). The tests gate the FE
-against von Mises at 5% and assert that the screen is not above the FE.
+`von_mises_cylinder_pressure` uses von Mises' thin-shell formula with the
+full `n²−1` ring term, attributed to Windenburg & Trilling (1934) and
+Timoshenko & Gere §11.5. The formula is as commonly published. Its form is
+corroborated independently: its long limit is Bresse exactly (unit test), and
+the eigenvalue FE reproduces it within ~2% at n = 2, 3 and 5. The test gates
+the FE against it at 5%.
 
 ## Shell screen (`shell.rs`)
 
-**Cylinders.** NASA/SP-8007-2020/REV 2, *Buckling of Thin-Walled Circular
-Cylinders*, §External Pressure:
+**Cylinders.** Classical value = von Mises (above). The knockdown comes from
+NASA/SP-8007-2020/REV 2, *Buckling of Thin-Walled Circular Cylinders*,
+§External Pressure, checked against the monograph's text:
 
 - Eq. 19–22, Batdorf form: `N_y = p·r = k·π²D/L²`,
   `k_y = [(1+β²)² + 12γ²Z²/(π⁴(1+β²)²)]/β²` (lateral). For hydrostatic
   loading the leading `β²` becomes `β² + ½`. `Z = L²√(1−ν²)/(rt)`,
-  `β = nL/(πr)`. We minimize over integer `n ≥ 2`.
-- Knockdown `√γ = 0.75` (Eq. 28), applied *inside* the bracket as the
-  monograph does.
-- Long ovalizing cylinders (`Z > 4000`, Eq. 26 regime): Eq. 27
-  `p = γE/(4(1−ν²))·(t/r)³` with `γ = 0.90` (Eq. 29).
-- Shallow-shell theory drops the ring term's `−1` (`n²` where
-  Flügge/von Mises have `n²−1`). The screen scales by `(n²−1)/n²` and
-  states it in a caution when `n ≤ 3`.
-- Design factor 3 by default, the margin UG-28 builds into its cylinder
-  curves. This is **not** a UG-28 calculation: the code reads A off Fig. G
+  `β = nL/(πr)`.
+- Eq. 28: `√γ = 0.75` *inside* the bracket. It multiplies only the membrane
+  term, so the effective knockdown depends on the mode. The screen applies
+  SP-8007's own ratio for the geometry, Batdorf at `√γ = 0.75` over Batdorf at
+  `γ = 1` (both minimized over a continuous β, as the monograph does), to the
+  von Mises classical value. Reported knockdowns run 0.72–0.84 for the 6" tube.
+- Eq. 27/29: when the governing mode ovalizes (`n = 2`), `γ = 0.90`, capped
+  by the Eq. 28 ratio so a longer tube never reads stronger. The screen is
+  monotone in span to 1e-6 with no cliffs (unit test). Batdorf's
+  shallow-shell form, unlike von Mises, drops the ring term's `−1` and reads
+  up to a third high at `n = 2`, which is why it supplies only the ratio.
+- Design factor 3 by default (the margin commonly cited for UG-28's cylinder
+  curves). This is **not** a UG-28 calculation: the code reads A off Fig. G
   and B off a material chart.
 
 **Spheres and heads.** Classical Zoelly bifurcation, plus ASME VIII-1
-UG-28(d)'s elastic branch: `A = 0.125/(Ro/t)`, `B = AE/2`,
+UG-28(d)'s elastic branch, as commonly published (the ASME numbers in this
+section have **not** been checked against the code text in this crate): `A = 0.125/(Ro/t)`, `B = AE/2`,
 `Pa = B/(Ro/t) = 0.0625E/(Ro/t)²`. That allowable is a collapse estimate of
 `0.25E(t/Ro)²` (≈ 0.21 × classical at ν = 0.3: the knockdown) with a factor
 of 4. Heads follow UG-33: hemispherical at `Do/2`, 2:1 ellipsoidal as a sphere
@@ -142,6 +149,9 @@ Pass):
   `discretization_error_buckling_rel`, `bifurcation_pressure_mpa`, and either
   `knocked_down_*` (knockdown supplied in the spec, labelled as an input) or
   `imperfection_knockdown = 1` with a note that NO knockdown was applied.
+- A screen whose margin is below 1 emits its `external_pressure_margin`
+  claim as **Fail**, so the receipt rolls up Fail. The other claims stay
+  predicted.
 
 ## The fusor example: 6" OD 304 SS, one atmosphere outside
 
@@ -153,23 +163,26 @@ eigenvalue on a body-fitted mesh, an unconservative number to compare against
 
 | shell | t mm | classical | knockdown | collapse | allowable | margin | FE bifurcation |
 |---|---|---|---|---|---|---|---|
-| cylinder | 0.5 | 0.154 | 0.73 | 0.113 | 0.038 | **0.37 ✗** | 0.162 |
-| cylinder | 1.0 | 0.852 | 0.83 | 0.709 | 0.237 | 2.33 | 0.902 |
-| cylinder | 1.5 | 2.503 | 0.68 | 1.708 | 0.569 | 5.62 | 2.601 |
-| cylinder | 2.0 | 4.955 | 0.72 | 3.563 | 1.188 | 11.7 | 5.641 |
-| cylinder | 3.0 | 13.04 | 0.84 | 8.233 (yield) | 2.744 | 27.1 | 14.17 |
+| cylinder | 0.5 | 0.157 | 0.75 | 0.118 | 0.039 | **0.39 ✗** | 0.161 |
+| cylinder | 1.0 | 0.883 | 0.83 | 0.735 | 0.245 | 2.42 | 0.894 |
+| cylinder | 1.5 | 2.553 | 0.72 | 1.837 | 0.613 | 6.04 | 2.580 |
+| cylinder | 2.0 | 5.521 | 0.72 | 3.970 | 1.323 | 13.1 | 5.523 |
+| cylinder | 3.0 | 13.94 | 0.84 | 8.233 (yield) | 2.744 | 27.1 | 13.94 |
 | sphere | 0.5 | 10.09 | 0.21 | 2.077 | 0.519 | 5.13 | — |
 | sphere | 1.0 | 40.64 | 0.20 | 5.416 (yield) | 1.354 | 13.4 | — |
 | sphere | 1.5 | 92.04 | 0.20 | 8.151 (yield) | 2.038 | 20.1 | 92.53 |
 | sphere | 3.0 | 375.6 | 0.20 | 16.47 (yield) | 4.117 | 40.6 | 362.5 |
 
+The cylinder FE column (96×48×2 body-fitted bricks) lands within 0–2.5% of
+the classical column at every wall: two independent routes agreeing on the
+perfect-shell number. The knockdown and design factor are what turn it into
+a design answer.
+
 A 0.5 mm, 6" tube between flanges 300 mm apart is the one that fails: its
-perfect-shell number is 1.5 atm, and real tubes collapse below that. Every
+perfect-shell number is 1.5 atm, and real tubes collapse below that. The
+margin claim then lands as a **Fail** on the receipt, not a provisional pass. Every
 sphere passes; spheres are strong in compression and limited by yield, though
 they are also the most imperfection-sensitive shape, and the screen says so.
-The knockdown column varies because SP-8007 applies `√γ` *inside* the Batdorf
-bracket, so its effect depends on how membrane-dominated the mode is.
-
 ## Not done (honest list)
 
 - Wiring into vcad.app's Stress panel (Swift/FFI). MCP carries the screen

@@ -570,7 +570,9 @@ pub enum FaceSelection {
 /// the face) — an external pressure on a vessel's outer skin is positive.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PressureLoad {
-    /// Reference pressure, MPa (scaled by the load factor).
+    /// Reference pressure, MPa (scaled by the load factor). Defaults to
+    /// one atmosphere, so `λ` reads directly as atmospheres of vacuum.
+    #[serde(default = "atm")]
     pub pressure_mpa: f64,
     /// Faces it acts on.
     pub faces: FaceSelection,
@@ -581,6 +583,10 @@ pub struct PressureLoad {
 
 fn yes() -> bool {
     true
+}
+
+fn atm() -> f64 {
+    crate::shell::ATM_MPA
 }
 
 /// A total force spread equally over the nodes in a box (dead load).
@@ -1920,6 +1926,7 @@ mod tests {
         let i = 10.0f64.powi(4) / 12.0;
         let pcr = std::f64::consts::PI.powi(2) * E * i / (4.0 * 200.0 * 200.0);
         let err = rel(r.modes[0].load_factor, pcr);
+        eprintln!("Euler FE {} vs {pcr} ({:+.2}%)", r.modes[0].load_factor, 100.0 * err);
         assert!(
             err.abs() < 0.03,
             "Euler {} vs {pcr} ({:+.2}%)",
@@ -2037,6 +2044,10 @@ mod tests {
             "sphere FE {} vs Zoelly {want} ({:+.2}%)",
             fe.modes[0].load_factor,
             100.0 * err
+        );
+        eprintln!(
+            "sphere K_L asymmetry {:.2e}, 3-2-1 reaction {:?}",
+            fe.load_stiffness_asymmetry, fe.kinematic_reaction_rel
         );
         assert!(
             fe.load_stiffness_asymmetry < 1e-9,

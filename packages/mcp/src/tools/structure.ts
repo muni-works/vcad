@@ -426,12 +426,14 @@ export const toolDefs: ToolDef[] = [
       "the net external pressure (default 1 atm = 0.101325 MPa); get the classical " +
       "(perfect-shell) bifurcation pressure, the IMPERFECTION KNOCKDOWN applied and its " +
       "citation, the knocked-down collapse pressure, the membrane-yield cap, the allowable " +
-      "pressure after a design factor, and the margin. Cylinders: NASA/SP-8007-2020/REV 2 " +
-      "Eq. 19-22 (Batdorf form minimized over integer wave count, sqrt(gamma)=0.75 per " +
-      "Eq. 28) or Eq. 27 for long ovalizing tubes (gamma=0.90, Eq. 29), design factor 3 by " +
-      "default. Spheres/heads: Zoelly classical plus ASME VIII-1 UG-28(d) elastic branch " +
-      "(Pa = 0.0625·E/(Ro/t)^2, i.e. ~0.21x classical with a factor of 4); heads as an " +
-      "equivalent sphere per UG-33 (2:1 ellipsoidal Ro = 0.9·Do). Linear (eigenvalue) " +
+      "pressure after a design factor, and the margin. Cylinders: von Mises classical " +
+      "pressure (full n^2-1 ring term, integer wave count, a cross-check of vcad's eigenvalue " +
+      "FE) knocked down by NASA/SP-8007-2020/REV 2's own ratio (Eq. 19-22 with " +
+      "sqrt(gamma)=0.75 inside the bracket, Eq. 28), or gamma=0.90 when the mode ovalizes " +
+      "(Eq. 29); design factor 3 by default. Spheres/heads: Zoelly classical plus ASME " +
+      "VIII-1 UG-28(d) elastic branch as commonly published (Pa = 0.0625·E/(Ro/t)^2, i.e. " +
+      "~0.21x classical with a factor of 4); heads as an equivalent sphere per UG-33 (2:1 " +
+      "ellipsoidal Ro = 0.9·Do). A margin below 1 lands as a FAIL claim. Linear (eigenvalue) " +
       "buckling is UNCONSERVATIVE for shells — real ones collapse below it — which is why the " +
       "knockdown is stated, not hidden. Fail-closed: D/t < 10 (thick wall) is Unverifiable " +
       "and claims nothing. Claims ride `vcad.fea-claims/1` and unified-receipt " +
