@@ -359,6 +359,16 @@ fn can_with_radial_nozzle_then_cavity() {
         &f,
         Bounds { volume: v_bored, tol_frac: 1e-3, max_tris: 8000 },
     ));
+
+    // The section removes a quarter of the can and cavity; the nozzle (on
+    // +y, centred on x = 0) loses nothing.
+    let (cut, f) = op("section", &brep(&bored), &quadrant(), BooleanOp::Difference);
+    fails.extend(check(
+        "− quadrant",
+        &cut,
+        &f,
+        Bounds { volume: v_bored - 0.25 * (CAN - CAVITY), tol_frac: 1e-3, max_tris: 8000 },
+    ));
     assert!(fails.is_empty(), "{fails:#?}");
 }
 
@@ -490,6 +500,55 @@ fn sectioned_can_with_cavity_batched() {
         &cut,
         &f,
         Bounds { volume: 0.75 * (CAN - CAVITY), tol_frac: 1e-3, max_tris: 8000 },
+    ));
+    assert!(fails.is_empty(), "{fails:#?}");
+}
+
+/// The chamber the way `vcad-eval` cuts it: every tool — cavity, port bore
+/// and section quadrant — fused first, then one difference.
+#[test]
+fn chamber_batched() {
+    let mut fails = Vec::new();
+    let (shell, _) = op(
+        "nozzle",
+        &zcyl(79.5, -79.5, 79.5),
+        &ycyl(22.5, 70.0, 112.0),
+        BooleanOp::Union,
+    );
+    let (bores, f) = op(
+        "bores",
+        &zcyl(76.0, -76.0, 76.0),
+        &ycyl(19.0, 60.0, 120.0),
+        BooleanOp::Union,
+    );
+    let v_bores = CAVITY + radial_stub(19.0, 76.0, 120.0);
+    fails.extend(check(
+        "cavity ∪ y bore",
+        &bores,
+        &f,
+        Bounds { volume: v_bores, tol_frac: 1e-3, max_tris: 6000 },
+    ));
+    let (tool, f) = op("tool", &brep(&bores), &quadrant(), BooleanOp::Union);
+    fails.extend(check(
+        "(cavity ∪ y bore) ∪ quadrant",
+        &tool,
+        &f,
+        Bounds {
+            volume: 400.0 * 400.0 * 800.0 + v_bores - 0.25 * CAVITY,
+            tol_frac: 1e-4,
+            max_tris: 6000,
+        },
+    ));
+    let (cut, f) = op("cut", &brep(&shell), &brep(&tool), BooleanOp::Difference);
+    let v = CAN + radial_stub(22.5, 79.5, 112.0)
+        - CAVITY
+        - radial_stub(19.0, 76.0, 112.0)
+        - 0.25 * (CAN - CAVITY);
+    fails.extend(check(
+        "shell − tools",
+        &cut,
+        &f,
+        Bounds { volume: v, tol_frac: 1e-3, max_tris: 12000 },
     ));
     assert!(fails.is_empty(), "{fails:#?}");
 }

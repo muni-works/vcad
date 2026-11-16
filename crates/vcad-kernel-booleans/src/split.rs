@@ -177,7 +177,12 @@ pub(crate) fn hole_chords_cutting_a(a: bool) {
 /// Does one of the cutter's own spans along `l` cover the stretch `from →
 /// to`?
 fn hole_chord_covered(l: &vcad_kernel_geom::Line3d, from: &Point3, to: &Point3) -> bool {
-    let tol = 1e-6 * (*to - *from).norm().max(1.0);
+    // The spans are trimmed curve segments, whose ends the trimmer leaves a
+    // few 1e-6 short of the cutter face's true edge (a 400 mm section-block
+    // face came back as 76.0000039 … 399.999996). A stretch that starts
+    // exactly on that edge — the hole's rim, where the cutter's own wall
+    // ends — must still count as covered.
+    let tol = (1e-6 * (*to - *from).norm()).max(1e-4);
     let operand = HOLE_CHORD_OPERAND.with(|o| o.get());
     HOLE_CHORDS.with(|h| {
         h.borrow()[operand].get(&line_key(l)).is_some_and(|spans| {
@@ -771,7 +776,13 @@ pub fn split_face_by_curve(
                 loop1_points = l1.clone();
                 loop2_points = l2.clone();
                 consumed_hole = Some(*lp);
+            } else {
+                split_dbg!(
+                    "sfbc: hole chord not covered by the cutter: {entry_point:?} → {p_entry_side:?} … {p_exit_side:?} → {exit_point:?}"
+                );
             }
+        } else {
+            split_dbg!("sfbc: {} of {} holes crossed cleanly", crossed.len(), parent_inner.len());
         }
     }
     {
