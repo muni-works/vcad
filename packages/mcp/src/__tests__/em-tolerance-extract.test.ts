@@ -80,13 +80,11 @@ describe.skipIf(!wasmHasExtract)("document → EM / tolerance extraction tools",
     const res = await call("simulate_em", {
       document_id: motorId,
       extract: motorExtract,
-      options: {
-        gap_probe: { r_inner_mm: 9.75, r_outer_mm: 10.25, z_min_mm: 12, z_max_mm: 16 },
-      },
     });
     expect(res.isError, res.content[0].text).toBeFalsy();
     const out = JSON.parse(res.content[0].text);
     expect(out.extracted.grid.thinnest_feature_mm).toBeCloseTo(0.5, 9);
+    expect(out.extracted.air_gap).toEqual([9.75, 10.25, 12, 16]);
     expect(out.extracted.spec.magnets).toHaveLength(1);
     expect(out.extracted.spec.coils[0].turns).toBe("vc_turns");
     const names = out.claim_sets[0].claims.map((c: { name: string }) => c.name);
@@ -94,6 +92,16 @@ describe.skipIf(!wasmHasExtract)("document → EM / tolerance extraction tools",
     expect(out.qois.gap_flux_t).toBeGreaterThan(0.5);
     expect(out.qois.gap_flux_t).toBeLessThan(2.3);
     expect(out.qois.self_inductance_h).toBeNull();
+  });
+
+  it("a grid coarser than the advice is refused", async () => {
+    const res = await call("simulate_em", {
+      document_id: motorId,
+      extract: motorExtract,
+      options: { nx: 81, ny: 81 },
+    });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("coarser than the advised");
   });
 
   it("a part with no magnetic role fails closed by name", async () => {

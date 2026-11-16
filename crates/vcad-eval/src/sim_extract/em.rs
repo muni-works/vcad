@@ -215,6 +215,12 @@ pub struct ExtractedAxisymMag {
     pub parts: Vec<ExtractedMagPart>,
     /// Advised grid.
     pub grid: GridAdvice,
+    /// The working air gap, `[r_inner, r_outer, z_min, z_max]` mm: the
+    /// narrowest radial air space between magnetic (steel/magnet) annuli
+    /// of different parts that overlap axially, over their common z span
+    /// — the pole-to-plate gap of a speaker motor. `None` when no two
+    /// magnetic parts face each other radially.
+    pub air_gap: Option<[f64; 4]>,
 }
 
 // ---------------------------------------------------------------------------
@@ -696,6 +702,25 @@ pub fn extract_axisym_mag_spec_from_scene(
         }
     }
 
+    // Working air gap: the narrowest radial air space between annuli of
+    // different magnetic parts that overlap axially.
+    let mut air_gap: Option<[f64; 4]> = None;
+    for (pa, a) in &regions {
+        for (pb, b) in &regions {
+            if pa == pb || b[0] < a[1] - tol.length_mm {
+                continue;
+            }
+            let (z0, z1) = (a[2].max(b[2]), a[3].min(b[3]));
+            let sep = b[0] - a[1];
+            if z1 - z0 > tol.length_mm
+                && sep > tol.length_mm
+                && air_gap.is_none_or(|g| sep < g[1] - g[0])
+            {
+                air_gap = Some([a[1], b[0], z0, z1]);
+            }
+        }
+    }
+
     let (ao, aa) = axis.expect("at least one part measured");
     let extent = r_hi.max(z_hi - z_lo);
     let pad = d.pad_factor * extent;
@@ -755,5 +780,6 @@ pub fn extract_axisym_mag_spec_from_scene(
             nx,
             ny,
         },
+        air_gap,
     })
 }

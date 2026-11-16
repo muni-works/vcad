@@ -115,7 +115,9 @@ const stackupExtractSchema = {
     "Derive the stack from `document_id`: the fit is the document's labeled " +
     "clearance assertion (`clearance_specs`), measured analytically from the " +
     "BRep (radial: coaxial bore/shaft, gap = r_bore − r_shaft, negative = " +
-    "interference; axial: opposed parallel planes). Chain coefficients are " +
+    "interference). Lower bound = the assertion's min_mm; a press fit needs " +
+    "`upper_mm` here (ClearanceSpec has no upper bound, and its receipt check " +
+    "reads an interference fit as Violated). Chain coefficients are " +
     "d(gap)/d(parameter) by re-evaluating the document at p ± tolerance; " +
     "parameters that don't move the gap drop out. Tolerances come from the " +
     "document parameters (`tolerance: {plus, minus, sigmaK?}`, loon `:tol`). " +
@@ -129,8 +131,8 @@ const stackupExtractSchema = {
     },
     feature: {
       type: "string" as const,
-      enum: ["radial", "axial"],
-      description: "Fit feature to measure between the groups.",
+      enum: ["radial"],
+      description: "Fit feature to measure between the groups (radial bore/shaft only, for now).",
     },
     fit_window_mm: {
       type: "number" as const,

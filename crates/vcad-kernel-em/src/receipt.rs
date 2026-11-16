@@ -206,11 +206,12 @@ pub fn axisym_gap_flux_claims(
         cross = Some((bl - bl2).abs() / bl.abs().max(1e-30));
         claims.push(claim(
             "bl_n_per_a",
-            bl,
+            bl.abs(),
             "N/A",
-            "force factor of the coil at its rest position (J×B per ampere in the solved \
-             field); static, so no voice-coil inductance modulation or eddy effects; bind \
-             to REW Thiele–Small Bl (added-mass method)",
+            "force factor magnitude of the coil at its rest position (J×B per ampere in the \
+             solved field; the signed value, which follows magnet polarity and winding sense, \
+             is in the solve's qois); static, so no voice-coil inductance modulation or eddy \
+             effects; bind to REW Thiele–Small Bl (added-mass method)",
         ));
     }
     ClaimSet {

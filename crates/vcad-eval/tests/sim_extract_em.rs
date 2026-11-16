@@ -140,6 +140,11 @@ fn speaker_motor_extracts_to_the_hand_built_device() {
         ex.grid
     );
     assert!((ex.grid.dx_mm - 0.25).abs() < 1e-9);
+    // The working gap is found: pole face to top-plate bore, plate span.
+    let g = ex.air_gap.expect("air gap");
+    for (x, y) in g.iter().zip([9.75, 10.25, 12.0, 16.0]) {
+        assert!((x - y).abs() < 1e-9, "{g:?}");
+    }
 }
 
 /// Gap flux and Bl from the extracted device, bracketed by a

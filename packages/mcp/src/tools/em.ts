@@ -299,7 +299,10 @@ export const toolDefs: ToolDef[] = [
           description:
             "Session document to extract an axisym magnetostatic device from " +
             "(instead of `spec`): annuli measured from the document's revolved " +
-            "parts. Requires `extract`. nx/ny default to the advised grid.",
+            "parts. Requires `extract`. nx/ny default to the advised grid (coarser " +
+            "is refused) and `gap_probe` to the detected pole/plate air gap. A " +
+            "saturable-steel motor at 4 cells per 0.5 mm gap is a ~10^5-node " +
+            "Picard solve: minutes, not the sub-second spec-path default.",
         },
         extract: magExtractSchema,
         parameters: {
@@ -459,12 +462,40 @@ export const toolDefs: ToolDef[] = [
         axis: unknown;
         parts: unknown[];
         grid: { nx: number; ny: number; dx_mm: number; thinnest_feature_mm: number };
+        air_gap: [number, number, number, number] | null;
       };
       const parameters = { ...ex.parameters, ...params };
+      const callerOpts = (a.options ?? {}) as Json;
+      // A coarser grid than advised samples the air gap away (materials
+      // sit at cell centres): refuse rather than solve a closed gap.
+      for (const [k, adv] of [
+        ["nx", ex.grid.nx],
+        ["ny", ex.grid.ny],
+      ] as const) {
+        const v = callerOpts[k];
+        if (typeof v === "number" && v < adv) {
+          throw new Error(
+            `simulate_em: options.${k} = ${v} is coarser than the advised ${adv} ` +
+              `(${ex.grid.thinnest_feature_mm} mm thinnest feature); lower ` +
+              "extract.domain.cells_per_feature or shrink the domain instead",
+          );
+        }
+      }
+      const gap = ex.air_gap;
       const options = {
         nx: ex.grid.nx,
         ny: ex.grid.ny,
-        ...((a.options ?? {}) as Json),
+        ...(gap
+          ? {
+              gap_probe: {
+                r_inner_mm: gap[0],
+                r_outer_mm: gap[1],
+                z_min_mm: gap[2],
+                z_max_mm: gap[3],
+              },
+            }
+          : {}),
+        ...callerOpts,
       };
       const spec = { problem: "axisym_magnetostatics", ...ex.spec };
       const out = ctx.engine.emSimulate(
@@ -481,6 +512,7 @@ export const toolDefs: ToolDef[] = [
           axis: ex.axis,
           parts: ex.parts,
           grid: ex.grid,
+          air_gap: ex.air_gap,
         },
       });
     },

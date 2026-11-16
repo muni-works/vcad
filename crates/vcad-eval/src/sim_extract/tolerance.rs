@@ -7,8 +7,8 @@
 //! - **The gap is measured, analytically.** The clearance assertion names
 //!   the two part groups; the fit feature between them is measured from
 //!   the evaluated BRep — a coaxial bore/shaft pair (`radial`: signed gap
-//!   `r_bore − r_shaft`, negative = interference) or a pair of opposed
-//!   parallel planes (`axial`). Mesh clearance is not used: its chord
+//!   `r_bore − r_shaft`, negative = interference). Planar (axial) fits
+//!   are not extracted yet. Mesh clearance is not used: its chord
 //!   error is the size of the tolerances being priced, and it can't sign
 //!   an interference.
 //! - **The chain is derived, not written.** Each literal document
@@ -26,10 +26,13 @@
 //!   zero-tolerance `fixed geometry` contributor so the stack's nominal
 //!   gap equals the measured gap exactly.
 //! - **The requirement is the assertion.** `lower_mm` is the clearance
-//!   assertion's `min_mm` and its label names the requirement; the
-//!   assertion's optional `max_mm` (or the selection's override) gives the
-//!   upper bound a fit needs. A tolerance claim then prices the
-//!   probability that the clearance assertion holds in production.
+//!   assertion's `min_mm` and its label names the requirement. A
+//!   `ClearanceSpec` has no upper bound, so the upper bound a press or
+//!   transition fit needs comes from the selection's `upper_mm`. (Note
+//!   that the clearance *receipt* check refuses any interpenetration, so
+//!   an interference fit's assertion reads Violated there; the stack is
+//!   what prices it.) A tolerance claim then prices the probability that
+//!   the fit requirement holds in production.
 //!
 //! Nominals are carried as [`ParamValue::Named`] so scrubbing a dimension
 //! in the document re-prices the stack without re-extraction — valid while
@@ -40,7 +43,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use vcad_ir::{Document, Expr};
-use vcad_kernel_geom::{CylinderSurface, Plane};
+use vcad_kernel_geom::CylinderSurface;
 use vcad_kernel_tolerance::dist::{DistributionSource, SigmaConvention};
 use vcad_kernel_tolerance::spec::{
     ContributorSpec, DistSpec, ParamValue, RequirementSpec, StackupSpec,
@@ -48,7 +51,7 @@ use vcad_kernel_tolerance::spec::{
 use vcad_kernel_topo::Orientation;
 
 use super::{
-    canonical_axis, d3, dot, find_part, line_angle, off_axis, p3, resolve_env, scale, surface_of,
+    canonical_axis, d3, dot, find_part, line_angle, off_axis, p3, resolve_env, surface_of,
     SimExtractError, Tolerance, V3,
 };
 use crate::{evaluate_document, EvaluatedScene};
@@ -60,9 +63,6 @@ pub enum FitFeature {
     /// A coaxial shaft/bore pair (a lid in a rim, a pin in a hole):
     /// gap = r_bore − r_shaft.
     Radial,
-    /// A pair of opposed parallel planes (a flange on a seat): gap = the
-    /// signed separation along one face's outward normal.
-    Axial,
 }
 
 /// Selection for [`extract_stackup_spec`].
@@ -76,8 +76,8 @@ pub struct StackupExtraction {
     /// fit is by definition close). Default 1.0 mm.
     #[serde(default = "default_window")]
     pub fit_window_mm: f64,
-    /// Upper gap bound, mm (overrides the assertion's `max_mm`). A press
-    /// or transition fit needs one: too much interference cracks the part.
+    /// Upper gap bound, mm (`ClearanceSpec` has none). A press or
+    /// transition fit needs one: too little interference rattles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upper_mm: Option<f64>,
     /// Lower gap bound, mm (overrides the assertion's `min_mm`).
@@ -152,48 +152,33 @@ struct CylFace {
     z: (f64, f64),
 }
 
-struct PlaneFace {
-    origin: V3,
-    normal: V3, // outward
-}
-
-fn cyl_faces(
-    brep: &vcad_kernel::vcad_kernel_primitives::BRepSolid,
-) -> (Vec<CylFace>, Vec<PlaneFace>) {
+fn cyl_faces(brep: &vcad_kernel::vcad_kernel_primitives::BRepSolid) -> Vec<CylFace> {
     let topo = &brep.topology;
     let mut cyls = Vec::new();
-    let mut planes = Vec::new();
     for (fid, f) in topo.faces.iter() {
         let s = surface_of(brep, fid);
-        let any = s.as_any();
-        let reversed = f.orientation == Orientation::Reversed;
-        if let Some(c) = any.downcast_ref::<CylinderSurface>() {
-            let o = p3(&c.center);
-            let a = canonical_axis(d3(&c.axis));
-            let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
-            for lp in std::iter::once(f.outer_loop).chain(f.inner_loops.iter().copied()) {
-                for v in topo.loop_vertices(lp) {
-                    let z = dot(super::sub(p3(&topo.vertices[v].point), o), a);
-                    lo = lo.min(z);
-                    hi = hi.max(z);
-                }
+        let Some(c) = s.as_any().downcast_ref::<CylinderSurface>() else {
+            continue;
+        };
+        let o = p3(&c.center);
+        let a = canonical_axis(d3(&c.axis));
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for lp in std::iter::once(f.outer_loop).chain(f.inner_loops.iter().copied()) {
+            for v in topo.loop_vertices(lp) {
+                let z = dot(super::sub(p3(&topo.vertices[v].point), o), a);
+                lo = lo.min(z);
+                hi = hi.max(z);
             }
-            cyls.push(CylFace {
-                origin: o,
-                axis: a,
-                radius: c.radius,
-                inward: reversed,
-                z: (lo, hi),
-            });
-        } else if let Some(p) = any.downcast_ref::<Plane>() {
-            let n = d3(&p.normal_dir);
-            planes.push(PlaneFace {
-                origin: p3(&p.origin),
-                normal: if reversed { scale(n, -1.0) } else { n },
-            });
         }
+        cyls.push(CylFace {
+            origin: o,
+            axis: a,
+            radius: c.radius,
+            inward: f.orientation == Orientation::Reversed,
+            z: (lo, hi),
+        });
     }
-    (cyls, planes)
+    cyls
 }
 
 /// Measure the fit between the clearance assertion's groups.
@@ -205,20 +190,18 @@ fn measure_fit(
     sel: &StackupExtraction,
 ) -> Result<Fit, SimExtractError> {
     let tol = &sel.tolerance;
-    let load =
-        |ids: &[String]| -> Result<Vec<(String, Vec<CylFace>, Vec<PlaneFace>)>, SimExtractError> {
-            ids.iter()
-                .map(|id| {
-                    let p = find_part(doc, scene, id)?;
-                    let (c, pl) = cyl_faces(p.brep);
-                    Ok((p.name, c, pl))
-                })
-                .collect()
-        };
+    let load = |ids: &[String]| -> Result<Vec<(String, Vec<CylFace>)>, SimExtractError> {
+        ids.iter()
+            .map(|id| {
+                let p = find_part(doc, scene, id)?;
+                Ok((p.name, cyl_faces(p.brep)))
+            })
+            .collect()
+    };
     let (ga, gb) = (load(group_a)?, load(group_b)?);
     let mut fits: Vec<Fit> = Vec::new();
-    for (na, ca, pa) in &ga {
-        for (nb, cb, pb) in &gb {
+    for (na, ca) in &ga {
+        for (nb, cb) in &gb {
             match sel.feature {
                 FitFeature::Radial => {
                     // (shaft, bore) in either group order.
@@ -247,42 +230,15 @@ fn measure_fit(
                         }
                     }
                 }
-                FitFeature::Axial => {
-                    for fa in pa {
-                        for fb in pb {
-                            // Opposed: normals anti-parallel.
-                            if dot(fa.normal, fb.normal) > 0.0
-                                || line_angle(fa.normal, fb.normal) > tol.angle_rad
-                            {
-                                continue;
-                            }
-                            let gap = dot(super::sub(fb.origin, fa.origin), fa.normal);
-                            if gap.abs() <= sel.fit_window_mm {
-                                fits.push(Fit {
-                                    gap,
-                                    parts: [na.clone(), nb.clone()],
-                                });
-                            }
-                        }
-                    }
-                }
             }
         }
     }
     let Some(first) = fits.first().cloned() else {
         return Err(SimExtractError::Invalid(format!(
-            "clearance {:?}: no {:?} fit within ±{} mm between {:?} and {:?} — {}",
-            sel.clearance,
-            sel.feature,
-            sel.fit_window_mm,
-            group_a,
-            group_b,
-            match sel.feature {
-                FitFeature::Radial =>
-                    "needs an outward cylinder in one group coaxial with, and \
-                                       axially overlapping, an inward (bore) cylinder in the other",
-                FitFeature::Axial => "needs two opposed parallel planar faces, one per group",
-            }
+            "clearance {:?}: no {:?} fit within ±{} mm between {:?} and {:?} — needs an outward \
+             cylinder in one group coaxial with, and axially overlapping, an inward (bore) \
+             cylinder in the other",
+            sel.clearance, sel.feature, sel.fit_window_mm, group_a, group_b,
         )));
     };
     let distinct: Vec<f64> = {
@@ -530,7 +486,12 @@ pub fn extract_stackup_spec_from_scene(
     let resolved = spec
         .resolve(&env)
         .map_err(|e| SimExtractError::Invalid(format!("derived stack does not resolve: {e}")))?;
-    debug_assert!((resolved.nominal_gap() - g0).abs() < 1e-9);
+    if (resolved.nominal_gap() - g0).abs() > 1e-9 {
+        return Err(SimExtractError::Invalid(format!(
+            "derived stack's nominal gap {} does not reproduce the measured gap {g0} mm",
+            resolved.nominal_gap()
+        )));
+    }
     Ok(ExtractedStackup {
         spec,
         parameters: env,
