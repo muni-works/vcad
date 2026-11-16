@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-optimize-electrodes-hybrid-adjoint",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "feat",
+  "title": "optimize_electrodes: hybrid adjoint gradients",
+  "summary": "optimize_electrodes takes options.gradient \"hybrid\": adjoint for potentials and ampere-turns, FD for geometry, FD fallback. Iterations report objective and gradient source; FD stays default.",
+  "features": ["particle", "mcp", "adjoint"],
+  "mcpTools": ["optimize_electrodes"]
+}

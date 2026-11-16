@@ -195,6 +195,43 @@ describe.skipIf(!wasmHasParticle)("charged-particle optics tools", () => {
     expect(out.history.length).toBeGreaterThanOrEqual(1);
   });
 
+  it("optimize_electrodes hybrid routes potentials through the adjoint", async () => {
+    const res = (await client.callTool({
+      name: "optimize_electrodes",
+      arguments: {
+        spec: SPEC,
+        parameters: PARAMS,
+        variables: [
+          { name: "cathode_v", lo: -30000, hi: -10000 },
+          { name: "ring_z", lo: 15, hi: 35 },
+        ],
+        options: {
+          nr: 41,
+          nz: 81,
+          particles: 8,
+          max_passes: 6,
+          max_iters: 2,
+          multi_start: false,
+          gradient: "hybrid",
+        },
+      },
+    })) as ToolText;
+    const out = JSON.parse(res.content[0].text);
+
+    expect(out.gradient).toBe("hybrid");
+    expect(out.variable_gradients).toEqual({
+      cathode_v: "adjoint",
+      ring_z: "finite_difference",
+    });
+    expect(out.iterations.length).toBeGreaterThanOrEqual(1);
+    for (const it of out.iterations) {
+      expect(["adjoint", "fd_fallback"]).toContain(it.sources[0]);
+      expect(it.sources[1]).toBe("finite_difference");
+      expect(it.value_after).toBeGreaterThanOrEqual(it.value);
+    }
+    expect(out.best_sigma_v_m3).toBeGreaterThanOrEqual(0);
+  });
+
   it("unbound named parameters fail closed", async () => {
     const res = (await client.callTool({
       name: "simulate_charged_particles",

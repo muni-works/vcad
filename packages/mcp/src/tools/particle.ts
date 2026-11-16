@@ -9,7 +9,8 @@
  * measurements (see `docs/shielded-grid-experiment.md`).
  *
  * `optimize_electrodes` runs multi-start gradient ascent over named spec
- * parameters against predicted D-D yield per ion. Multi-start is the
+ * parameters against predicted D-D yield per ion — FD by default, or a
+ * hybrid (adjoint for potentials / ampere-turns, FD for geometry). Multi-start is the
  * default because the yield landscape is measurably multimodal
  * (recirculation hill vs energy-quality hill — `docs/particle-optics-m0.md`).
  */
@@ -256,6 +257,18 @@ export const optimizeElectrodesSchema = {
             "Three seeds across the box instead of one (the landscape is " +
             "multimodal). Default true.",
         },
+        gradient: {
+          type: "string" as const,
+          enum: ["fd", "hybrid"],
+          description:
+            "Gradient routing. \"fd\" (default): central differences for " +
+            "every variable. \"hybrid\": potentials + ampere-turns take the " +
+            "discrete adjoint (one run per iterate), geometry takes FD; an " +
+            "iteration whose adjoint direction fails to climb is retried on " +
+            "pure FD. The adjoint differentiates a fixed-horizon surrogate " +
+            "with no wire interception, so on shield current it can disagree " +
+            "with the scored objective — each iteration reports its source.",
+        },
       },
     },
   },
@@ -321,9 +334,12 @@ export const toolDefs: ToolDef[] = [
     description:
       "Design electrodes by gradient ascent: optimize named device-spec parameters (e.g. " +
       "shield ampere-turns, ring spacing) against predicted D-D yield per ion, with " +
-      "multi-start FD search (the yield landscape is multimodal — single starts stall on " +
-      "the recirculation hill at ~3x lower yield). Returns the best parameter set, its " +
-      "yield, per-start results, and the ascent history. Candidate configurations that " +
+      "multi-start search (the yield landscape is multimodal — single starts stall on " +
+      "the recirculation hill at ~3x lower yield). Gradients are FD by default; " +
+      "`options.gradient: \"hybrid\"` routes potentials + ampere-turns through the " +
+      "discrete adjoint with FD for geometry and an FD fallback. Returns the best " +
+      "parameter set, its yield, per-start results, the ascent history, and " +
+      "per-iteration records (objective + gradient source per variable). Candidate configurations that " +
       "fail to resolve or converge score 0 rather than aborting. Follow with " +
       "simulate_charged_particles at the winning parameters for full claims. Cost ≈ " +
       "evals × one simulation; defaults run in tens of seconds.",

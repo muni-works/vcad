@@ -27,9 +27,10 @@
 //!    fail-closed surface-residual gates) and traced by the same Boris
 //!    tracer through [`field::FieldSampler`] / [`trace::TraceGeometry`].
 //!    [`spec3d::DeviceSpec3d`] is its serde seam.
-//! 7. [`optimize`] — derivative-free/finite-difference maximization of any
-//!    figure of merit over electrode parameters (M0 stand-in for the
-//!    adjoint; see `docs/particle-optics-m0.md`).
+//! 7. [`optimize`] — finite-difference / adjoint / hybrid maximization of
+//!    any figure of merit over electrode parameters; [`electrode_opt`]
+//!    drives it over a [`spec::DeviceSpec`]'s named parameters (the
+//!    `optimize_electrodes` MCP tool; see `docs/particle-optics-m0.md`).
 //!
 //! **Scope and honesty (M0):** no space charge, no collisions, no neutral
 //! gas — the regime where electrode geometry dominates and where every
@@ -46,6 +47,7 @@ pub mod beam_target;
 pub mod bem;
 pub mod confinement;
 pub mod device;
+pub mod electrode_opt;
 pub mod elliptic;
 pub mod field;
 pub mod fom;

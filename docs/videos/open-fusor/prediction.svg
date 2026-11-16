@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 490" font-family="Inter, Helvetica, Arial, sans-serif"><rect width="1100" height="490" fill="#fcfcfb"/><text x="80" y="52" font-size="15" font-weight="600" fill="#0b0b0b">Predicted neutron rate — hobby fusor, 10 mA, 5 mTorr D₂</text>
+<line x1="80" x2="440" y1="370.0" y2="370.0" stroke="#e4e3df" stroke-width="1"/>
+<text x="72" y="374.0" font-size="11" fill="#52514e" text-anchor="end">10<tspan dy="-5" font-size="8">3</tspan></text>
+<line x1="80" x2="440" y1="295.0" y2="295.0" stroke="#e4e3df" stroke-width="1"/>
+<text x="72" y="299.0" font-size="11" fill="#52514e" text-anchor="end">10<tspan dy="-5" font-size="8">4</tspan></text>
+<line x1="80" x2="440" y1="220.0" y2="220.0" stroke="#e4e3df" stroke-width="1"/>
+<text x="72" y="224.0" font-size="11" fill="#52514e" text-anchor="end">10<tspan dy="-5" font-size="8">5</tspan></text>
+<line x1="80" x2="440" y1="145.0" y2="145.0" stroke="#e4e3df" stroke-width="1"/>
+<text x="72" y="149.0" font-size="11" fill="#52514e" text-anchor="end">10<tspan dy="-5" font-size="8">6</tspan></text>
+<line x1="80" x2="440" y1="70.0" y2="70.0" stroke="#e4e3df" stroke-width="1"/>
+<text x="72" y="74.0" font-size="11" fill="#52514e" text-anchor="end">10<tspan dy="-5" font-size="8">7</tspan></text>
+<text x="110.0" y="388" font-size="11" fill="#52514e" text-anchor="middle">20</text>
+<text x="185.0" y="388" font-size="11" fill="#52514e" text-anchor="middle">25</text>
+<text x="260.0" y="388" font-size="11" fill="#52514e" text-anchor="middle">30</text>
+<text x="335.0" y="388" font-size="11" fill="#52514e" text-anchor="middle">35</text>
+<text x="410.0" y="388" font-size="11" fill="#52514e" text-anchor="middle">40</text>
+<line x1="80" x2="440" y1="370" y2="370" stroke="#52514e" stroke-width="1"/>
+<text x="260.0" y="408" font-size="12" fill="#52514e" text-anchor="middle">cathode voltage (−kV)</text>
+<text transform="translate(34,220.0) rotate(-90)" font-size="12" fill="#52514e" text-anchor="middle">neutrons / s</text>
+<line x1="80" x2="440" y1="92.6" y2="92.6" stroke="#52514e" stroke-width="1.5" stroke-dasharray="5 4"/>
+<text x="436" y="86.6" font-size="11" fill="#52514e" text-anchor="end">amateur record ~5×10⁶</text>
+<polygon points="110.0,228.2 185.0,195.6 260.0,172.0 335.0,153.9 410.0,139.6 410.0,233.7 335.0,247.9 260.0,265.6 185.0,288.7 110.0,320.5" fill="#2a78d6" fill-opacity="0.14"/>
+<polyline points="110.0,228.2 185.0,195.6 260.0,172.0 335.0,153.9 410.0,139.6" fill="none" stroke="#2a78d6" stroke-width="2"/>
+<circle cx="110.0" cy="228.2" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="185.0" cy="195.6" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="260.0" cy="172.0" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="335.0" cy="153.9" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="410.0" cy="139.6" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<text x="418.0" y="143.6" font-size="11" fill="#0b0b0b">CX off (ceiling)</text>
+<polyline points="110.0,320.5 185.0,288.7 260.0,265.6 335.0,247.9 410.0,233.7" fill="none" stroke="#eb6834" stroke-width="2"/>
+<circle cx="110.0" cy="320.5" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="185.0" cy="288.7" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="260.0" cy="265.6" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="335.0" cy="247.9" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="410.0" cy="233.7" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<text x="418.0" y="237.7" font-size="11" fill="#0b0b0b">CX on (floor)</text><text x="640" y="52" font-size="15" font-weight="600" fill="#0b0b0b">Neutron dose at a 5×10⁶ n/s upper-bound source</text>
+<line x1="640" x2="940" y1="370.0" y2="370.0" stroke="#e4e3df" stroke-width="1"/>
+<text x="632" y="374.0" font-size="11" fill="#52514e" text-anchor="end">10<tspan dy="-5" font-size="8">-1</tspan></text>
+<line x1="640" x2="940" y1="295.0" y2="295.0" stroke="#e4e3df" stroke-width="1"/>
+<text x="632" y="299.0" font-size="11" fill="#52514e" text-anchor="end">10<tspan dy="-5" font-size="8">0</tspan></text>
+<line x1="640" x2="940" y1="220.0" y2="220.0" stroke="#e4e3df" stroke-width="1"/>
+<text x="632" y="224.0" font-size="11" fill="#52514e" text-anchor="end">10<tspan dy="-5" font-size="8">1</tspan></text>
+<line x1="640" x2="940" y1="145.0" y2="145.0" stroke="#e4e3df" stroke-width="1"/>
+<text x="632" y="149.0" font-size="11" fill="#52514e" text-anchor="end">10<tspan dy="-5" font-size="8">2</tspan></text>
+<line x1="640" x2="940" y1="70.0" y2="70.0" stroke="#e4e3df" stroke-width="1"/>
+<text x="632" y="74.0" font-size="11" fill="#52514e" text-anchor="end">10<tspan dy="-5" font-size="8">3</tspan></text>
+<text x="660.7" y="388" font-size="11" fill="#52514e" text-anchor="middle">0.5</text>
+<text x="712.4" y="388" font-size="11" fill="#52514e" text-anchor="middle">1</text>
+<text x="815.9" y="388" font-size="11" fill="#52514e" text-anchor="middle">2</text>
+<text x="919.3" y="388" font-size="11" fill="#52514e" text-anchor="middle">3</text>
+<line x1="640" x2="940" y1="370" y2="370" stroke="#52514e" stroke-width="1"/>
+<text x="790.0" y="408" font-size="12" fill="#52514e" text-anchor="middle">distance from chamber center (m)</text>
+<text transform="translate(594,220.0) rotate(-90)" font-size="12" fill="#52514e" text-anchor="middle">H*(10), µSv/h</text>
+<line x1="640" x2="940" y1="265.2" y2="265.2" stroke="#52514e" stroke-width="1.5" stroke-dasharray="5 4"/>
+<text x="936" y="259.2" font-size="11" fill="#52514e" text-anchor="end">2.5 µSv/h design budget</text>
+<polyline points="660.7,116.3 712.4,161.3 815.9,206.3 919.3,232.8" fill="none" stroke="#2a78d6" stroke-width="2"/>
+<circle cx="660.7" cy="116.3" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="712.4" cy="161.3" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="815.9" cy="206.3" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="919.3" cy="232.8" r="4" fill="#2a78d6" stroke="#fcfcfb" stroke-width="2"/>
+<text x="927.3" y="236.8" font-size="11" fill="#0b0b0b">bare</text>
+<polyline points="660.7,186.3 712.4,235.6 815.9,281.3 919.3,307.9" fill="none" stroke="#eb6834" stroke-width="2"/>
+<circle cx="660.7" cy="186.3" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="712.4" cy="235.6" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="815.9" cy="281.3" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<circle cx="919.3" cy="307.9" r="4" fill="#eb6834" stroke="#fcfcfb" stroke-width="2"/>
+<text x="927.3" y="311.9" font-size="11" fill="#0b0b0b">15 cm HDPE</text><text x="80" y="450" font-size="11" fill="#52514e">vcad-kernel-particle + vcad-kernel-neutronics, examples/open_fusor_poc.rs. Band = physics bracket, not a confidence interval; both edges omit the CX chain, volume ionization and beam–beam.</text><text x="80" y="466" font-size="11" fill="#52514e">Ceiling is not grid-converged (1.8→3.3→4.4×10⁵ n/s at h = 1/0.5/0.25 mm); floor converged to ~5%. Dose is neutron-only — no X-rays, no capture gammas, no room return.</text></svg>
