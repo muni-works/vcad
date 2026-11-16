@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-unsaved-work-in-recents",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "feat",
+  "title": "Unsaved work lands in Recents, no recovery prompt",
+  "summary": "vcad.app no longer asks Restore / Not Now / Discard at launch. An Untitled doc closed or quit with edits, or crashed work, shows in Recents marked Unsaved, to reopen or discard.",
+  "features": ["mac-app", "autosave", "recents"],
+  "mcpTools": []
+}
