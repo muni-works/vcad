@@ -42,6 +42,25 @@
 //! deliberately not smoothed over: they stay finite-difference until a
 //! shape-adjoint milestone, as in the particle crate.
 //!
+//! **Radiation (M7).** With radiating faces the forward problem is
+//! R(T) = A·T − b + Q(T) = 0, solved by Newton. The adjoint is the
+//! *linearization at the converged state*: the Jacobian
+//! A + diag(∂Q/∂T) is still symmetric (Q is a per-voxel diagonal), so
+//! the adjoint remains one extra PCG solve, now with the Newton
+//! Jacobian's diagonal. Parameter partials of Q come from the per-face
+//! implicit surface balance (half-cell r in series with the gray
+//! surface, h_s = 4ε_effσT_s³ + h, D = 1 + h_s·r):
+//!
+//! ```text
+//! ∂q/∂ε_eff = A·σ(T_s⁴ − T_∞⁴)/D     ∂q/∂h = A·(T_s − T_∞)/D
+//! ∂q/∂T_∞  = −A·(4ε_effσT_∞³ + h)/D  ∂q/∂k = h_s·q·r/(D·k)
+//! ```
+//!
+//! and the enclosure chain dε_eff/dε = ε_eff²/ε². Emissivity gradients
+//! are reported per slot in [`SmoothMaxGradient::d_emissivity`]; the
+//! parallel film and ambient of a radiation slot ride the existing
+//! `d_film` / `d_ambient` slots. FD-validated in the tests below.
+//!
 //! **Validation** (tests below) follows the frozen-discretization lesson:
 //! k, h, and P perturbations never re-voxelize (the mask depends only on
 //! shapes), so central differences on the same grid are a clean probe;
@@ -49,9 +68,10 @@
 //! noise sits far below the FD resolution.
 
 use crate::model::{Boundary, ThermalModel};
+use crate::model::STEFAN_BOLTZMANN;
 use crate::solve::{
-    assemble_solution, build, pcg, resolve_reference, LinkKind, Solution, SolveError, SolveOptions,
-    EXPOSED_SLOT,
+    assemble_solution, build, pcg, radiation_start, resolve_reference, solve_field, LinkKind,
+    Solution, SolveError, SolveOptions, EXPOSED_SLOT,
 };
 use serde::Serialize;
 
@@ -109,7 +129,12 @@ pub struct SmoothMaxGradient {
     /// coupled gradient that differentiates only the film is missing half
     /// the channel.
     pub d_ambient: [Option<f64>; 7],
-    /// CG iterations of the forward solve.
+    /// dJ/dε per BC slot (surface emissivity as specified, through the
+    /// enclosure exchange when there is one), K. `None` where the slot is
+    /// not a radiation BC.
+    pub d_emissivity: [Option<f64>; 7],
+    /// CG iterations of the forward solve (summed over Newton steps when
+    /// the model radiates).
     pub forward_iterations: usize,
     /// CG iterations of the adjoint solve.
     pub adjoint_iterations: usize,
@@ -134,7 +159,22 @@ pub fn smooth_max_gradient(
 
     let nvox = sys.b.len();
     let zeros = vec![0.0_f64; nvox];
-    let (t, forward_iterations, res_fwd) = pcg(&sys, &sys.diag, &sys.b, &zeros, opts)?;
+    let x0 = if sys.radiates() {
+        radiation_start(&sys)
+    } else {
+        zeros.clone()
+    };
+    let fwd = solve_field(&sys, &sys.diag, &sys.b, &x0, opts, true)?;
+    let (t, forward_iterations, res_fwd) = (fwd.x, fwd.cg_iterations, fwd.residual_rel);
+    let newton_iterations = fwd.newton_iterations;
+    // The adjoint operator: the Newton Jacobian at the converged state
+    // (= A for conduction-only models).
+    let diag_adj: Vec<f64> = sys
+        .diag
+        .iter()
+        .zip(&fwd.jac_rad)
+        .map(|(d, j)| d + j)
+        .collect();
 
     // Objective: p-norm of the positive excess, max-normalized so
     // arbitrary p never overflows.
@@ -162,7 +202,9 @@ pub fn smooth_max_gradient(
 
     if n_active == 0 {
         // Nothing above reference: J = T_ref exactly, gradient zero.
-        let solution = assemble_solution(&sys, model, &t, forward_iterations, res_fwd, model_ref);
+        let mut solution =
+            assemble_solution(&sys, model, &t, forward_iterations, res_fwd, model_ref);
+        solution.newton_iterations = newton_iterations;
         let grad = SmoothMaxGradient {
             value_c: reference_c,
             hard_max_c: hard_max,
@@ -173,6 +215,7 @@ pub fn smooth_max_gradient(
             d_conductivity: vec![[0.0; 3]; model.materials.len()],
             d_film: film_slots(model, |_| 0.0),
             d_ambient: film_slots(model, |_| 0.0),
+            d_emissivity: radiation_slots(model, |_| 0.0),
             forward_iterations,
             adjoint_iterations: 0,
         };
@@ -194,7 +237,7 @@ pub fn smooth_max_gradient(
     }
 
     // One adjoint solve with the SAME operator (A = Aᵀ).
-    let (lam, adjoint_iterations, _res_adj) = pcg(&sys, &sys.diag, &g, &zeros, opts)?;
+    let (lam, adjoint_iterations, _res_adj) = pcg(&sys, &diag_adj, &g, &zeros, opts)?;
 
     // Temperature of any solid voxel (free → solved, pinned → reservoir).
     let t_of = |q: usize| if sys.free[q] { t[q] } else { sys.tfix[q] };
@@ -279,10 +322,32 @@ pub fn smooth_max_gradient(
             }
         }
     }
+    // Radiation faces: dJ/dθ = −λ_p·∂q/∂θ at the converged state.
+    let mut d_eps_acc = [0.0_f64; 7];
+    for l in &sys.rad_links {
+        let f = l.face(t[l.voxel]);
+        let lp = lam[l.voxel];
+        let ts_k = f.ts_c + crate::model::KELVIN_OFFSET_C;
+        let ta_k = l.t_amb_c + crate::model::KELVIN_OFFSET_C;
+        let a = l.area_m2;
+        let dq_deps_eff = a * STEFAN_BOLTZMANN * (ts_k.powi(4) - ta_k.powi(4)) / f.denom;
+        let rs = sys.rad_slots[l.slot].expect("radiation link without its slot");
+        let deff_deps = (rs.eps_eff / rs.emissivity).powi(2);
+        d_eps_acc[l.slot] += -lp * dq_deps_eff * deff_deps;
+        d_film_acc[l.slot] += -lp * a * (f.ts_c - l.t_amb_c) / f.denom;
+        d_ambient_acc[l.slot] +=
+            lp * a * (4.0 * l.eps_eff * STEFAN_BOLTZMANN * ta_k.powi(3) + l.h) / f.denom;
+        let kv = sys.kfield[l.axis][l.voxel];
+        let dq_dk = f.hs * f.q_w * l.r_half / (f.denom * kv);
+        d_conductivity[sys.mat_id[l.voxel]][l.axis] += -lp * dq_dk;
+    }
     let d_film = film_slots(model, |slot| d_film_acc[slot]);
     let d_ambient = film_slots(model, |slot| d_ambient_acc[slot]);
+    let d_emissivity = radiation_slots(model, |slot| d_eps_acc[slot]);
 
-    let solution = assemble_solution(&sys, model, &t, forward_iterations, res_fwd, model_ref);
+    let mut solution =
+        assemble_solution(&sys, model, &t, forward_iterations, res_fwd, model_ref);
+    solution.newton_iterations = newton_iterations;
     Ok((
         solution,
         SmoothMaxGradient {
@@ -295,6 +360,7 @@ pub fn smooth_max_gradient(
             d_conductivity,
             d_film,
             d_ambient,
+            d_emissivity,
             forward_iterations,
             adjoint_iterations,
         },
@@ -316,10 +382,26 @@ fn slot_h(model: &ThermalModel, slot: usize) -> f64 {
     }
 }
 
+/// Per-slot values for every slot with a film coefficient and an ambient
+/// (convection, and radiation — whose parallel film may be 0).
 fn film_slots(model: &ThermalModel, value: impl Fn(usize) -> f64) -> [Option<f64>; 7] {
     let mut out = [None; 7];
     for (slot, o) in out.iter_mut().enumerate() {
-        if matches!(slot_bc(model, slot), Boundary::Convection { .. }) {
+        if matches!(
+            slot_bc(model, slot),
+            Boundary::Convection { .. } | Boundary::Radiation { .. }
+        ) {
+            *o = Some(value(slot));
+        }
+    }
+    out
+}
+
+/// Per-slot values for radiation slots only.
+fn radiation_slots(model: &ThermalModel, value: impl Fn(usize) -> f64) -> [Option<f64>; 7] {
+    let mut out = [None; 7];
+    for (slot, o) in out.iter_mut().enumerate() {
+        if matches!(slot_bc(model, slot), Boundary::Radiation { .. }) {
             *o = Some(value(slot));
         }
     }
@@ -646,5 +728,116 @@ mod tests {
             .unwrap_err();
             assert!(matches!(err, SolveError::InvalidSmoothingExponent));
         }
+    }
+
+    /// The test board with radiation on top: +z radiates (ε = 0.7, with a
+    /// parallel film and a gray enclosure), −z still convects, and the
+    /// source runs hot enough (40 W) that radiation is a first-order loss
+    /// — every radiation gradient path is live.
+    fn radiating_model() -> ThermalModel {
+        let mut m = test_model();
+        m.sources[0].power_w = 40.0;
+        m.domain_faces[5] = Boundary::Radiation {
+            emissivity: 0.7,
+            ambient_c: 25.0,
+            h_w_m2k: 6.0,
+            area_scale: 1.0,
+            enclosure: Some(crate::model::Enclosure {
+                emissivity: 0.4,
+                area_m2: 4.0e-3,
+            }),
+        };
+        m
+    }
+
+    fn rad_field<'a>(m: &'a mut ThermalModel, field: &str) -> &'a mut f64 {
+        match &mut m.domain_faces[5] {
+            Boundary::Radiation {
+                emissivity,
+                ambient_c,
+                h_w_m2k,
+                ..
+            } => match field {
+                "eps" => emissivity,
+                "amb" => ambient_c,
+                _ => h_w_m2k,
+            },
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn radiating_adjoint_matches_finite_differences() {
+        let m = radiating_model();
+        let (sol, grad) =
+            smooth_max_gradient(&m, &tight(), &ObjectiveOptions::default()).unwrap();
+        assert!(sol.newton_iterations > 0);
+        let frac = sol.energy.radiation_out_w / sol.energy.source_w;
+        assert!(frac > 0.2, "radiation should be first-order here: {frac}");
+        // Forward agrees with the plain steady solve.
+        let steady = solve_steady(&m, &tight()).unwrap();
+        assert!((sol.t_max_c - steady.t_max_c).abs() < 1e-8);
+
+        let check = |name: &str, adj: f64, fd: f64, tol: f64| {
+            let rel = (adj - fd).abs() / fd.abs().max(1e-12);
+            assert!(
+                rel < tol,
+                "{name}: adjoint {adj:.9e}, fd {fd:.9e} (rel {rel:.3e})"
+            );
+        };
+        let central = |h: f64, edit: &dyn Fn(&mut ThermalModel, f64)| {
+            let mut up = m.clone();
+            edit(&mut up, h);
+            let mut dn = m.clone();
+            edit(&mut dn, -h);
+            (objective(&up) - objective(&dn)) / (2.0 * h)
+        };
+
+        check(
+            "dJ/dP",
+            grad.d_source_power[0],
+            central(0.05, &|mm, h| mm.sources[0].power_w += h),
+            1e-5,
+        );
+        for (region, axis, h) in [(0usize, 0usize, 0.002), (0, 2, 0.001), (1, 2, 0.2)] {
+            check(
+                &format!("dJ/dk[{region}][{axis}]"),
+                grad.d_conductivity[region][axis],
+                central(h, &|mm, d| mm.materials[region].k_w_mk[axis] += d),
+                2e-4,
+            );
+        }
+        check(
+            "dJ/deps",
+            grad.d_emissivity[5].expect("radiation slot"),
+            central(1e-4, &|mm, d| *rad_field(mm, "eps") += d),
+            1e-5,
+        );
+        check(
+            "dJ/dh (parallel film)",
+            grad.d_film[5].expect("radiation slot"),
+            central(0.01, &|mm, d| *rad_field(mm, "h") += d),
+            1e-5,
+        );
+        check(
+            "dJ/dT_amb (radiation)",
+            grad.d_ambient[5].expect("radiation slot"),
+            central(0.01, &|mm, d| *rad_field(mm, "amb") += d),
+            1e-5,
+        );
+        // The convection slot still differentiates alongside.
+        check(
+            "dJ/dh (convection)",
+            grad.d_film[4].expect("convection slot"),
+            central(0.01, &|mm, d| {
+                if let Boundary::Convection { h_w_m2k, .. } = &mut mm.domain_faces[4] {
+                    *h_w_m2k += d;
+                }
+            }),
+            1e-5,
+        );
+        assert!(grad.d_emissivity[4].is_none());
+        // Hotter-surface emissivity cools the part: dJ/dε < 0.
+        assert!(grad.d_emissivity[5].unwrap() < 0.0);
     }
 }
