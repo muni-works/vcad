@@ -9027,6 +9027,26 @@ pub fn particle_optimize(
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// Magnetic field of posed 3D sources (current loops, solenoids, disc/ring
+/// and block magnets) at query points or on a plane grid.
+///
+/// `scene_json` is a `vcad_kernel_particle::field3d_spec::SceneSpec`
+/// (mm / degrees / A / T), `query_json` a `QuerySpec` (points and/or grid,
+/// optional ∇|B|). Fail-closed: invalid geometry, an oversized grid, or a
+/// query point on a source singularity is an error. Returns a `FieldReport`
+/// (B vectors in tesla, |B|, per-source method + dipole moment).
+#[wasm_bindgen(js_name = magneticField)]
+pub fn magnetic_field(scene_json: &str, query_json: &str) -> Result<JsValue, JsError> {
+    use vcad_kernel::vcad_kernel_particle::field3d_spec as fs;
+    let scene: fs::SceneSpec =
+        serde_json::from_str(scene_json).map_err(|e| JsError::new(&format!("bad scene: {e}")))?;
+    let query: fs::QuerySpec =
+        serde_json::from_str(query_json).map_err(|e| JsError::new(&format!("bad query: {e}")))?;
+    let report = fs::evaluate(&scene, &query).map_err(|e| JsError::new(&e))?;
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&report, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
 // ---------------------------------------------------------------------------
 // Tolerance stackup analysis (vcad-kernel-tolerance)
 // ---------------------------------------------------------------------------

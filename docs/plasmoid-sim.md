@@ -181,7 +181,7 @@ Loon source has no time axis and the sim doesn't read the document `timeline` ye
 
 ## 5. Gap list (ranked)
 
-1. **Posed 3D field sources in the kernel.** Generalize `FieldMap` from "coaxial rings + axisym grid" to a `FieldSource` set:
+1. **Posed 3D field sources in the kernel.** *Addressed* by `vcad_kernel_particle::field3d` (+ the `magnetic_field` MCP tool): a full-rotation `Pose`, exact loop / solenoid / disc-rod-ring / block sources, a superposing `FieldScene` with ∇|B|. `DiscMagnet` moved there unchanged (bit-identical field) and `MagnetPose` is now a wrapper over `Pose`. Still open from this item: time-varying poses (re-pose per step for now) and a sampled cache for speed. Original note: Generalize `FieldMap` from "coaxial rings + axisym grid" to a `FieldSource` set:
    - ring coils, disc, ring and block magnets, each with a `MagnetPose`;
    - time-varying poses;
    - superposition, plus a sampled cache for speed.

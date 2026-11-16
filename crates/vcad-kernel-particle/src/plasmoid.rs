@@ -12,9 +12,10 @@
 //! - [`DiscMagnet`]: an axially magnetized disc is *exactly* a solenoidal
 //!   bound-current sheet `K = M × n̂ = (B_r/μ0) φ̂`, so its field is the sum
 //!   of coaxial current loops — evaluated with the crate's exact
-//!   elliptic-integral loop field ([`crate::field::b_ring`]). Posed
-//!   anywhere in 3D via [`MagnetPose`] (the existing [`crate::field::FieldMap`]
-//!   is coaxial-only, which is why this is a separate source).
+//!   elliptic-integral loop field ([`crate::field::b_ring`]). It lives in
+//!   [`crate::field3d`] (the general posed-source module, re-exported here)
+//!   and is posed in 3D via [`MagnetPose`], a thin wrapper over
+//!   [`crate::field3d::Pose`].
 //! - [`hall_parameter`]: electron magnetization `β = ω_ce / ν_m` from the
 //!   local |B| and a gas collision frequency ([`collision_frequency`]).
 //!   Classical cross-field transport scales as `1/(1+β²)`, so a region with
@@ -43,93 +44,12 @@
 //! E×B term uses the *time-averaged* (rectified) sheath field, which does
 //! not average out.
 
-use crate::constants::{ELECTRON_MASS, ELEMENTARY_CHARGE, MU_0};
-use crate::field::{b_ring, RingCoil};
+use crate::constants::{ELECTRON_MASS, ELEMENTARY_CHARGE};
+use crate::field3d::{norm, Pose};
+pub use crate::field3d::{b_dipole, DiscMagnet};
 
 /// Boltzmann constant, J/K.
 const K_B: f64 = 1.380_649e-23;
-
-/// An axially magnetized cylindrical permanent magnet (disc or rod), SI.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct DiscMagnet {
-    /// Radius, m.
-    pub radius_m: f64,
-    /// Thickness along the magnetization axis, m.
-    pub thickness_m: f64,
-    /// Remanence B_r, tesla (N52 ≈ 1.43).
-    pub remanence_t: f64,
-    /// Number of loops the bound-current sheet is discretized into.
-    pub n_loops: usize,
-}
-
-impl DiscMagnet {
-    /// A 10 mm × 5 mm N52 disc — the classic "tiny neodymium magnet".
-    pub fn n52_10x5() -> Self {
-        Self {
-            radius_m: 5e-3,
-            thickness_m: 5e-3,
-            remanence_t: 1.43,
-            n_loops: 48,
-        }
-    }
-
-    /// Magnetic dipole moment, A·m² (`M·V = B_r V / μ0`).
-    pub fn moment(&self) -> f64 {
-        self.remanence_t / MU_0
-            * std::f64::consts::PI
-            * self.radius_m
-            * self.radius_m
-            * self.thickness_m
-    }
-
-    /// Field in the magnet frame (center at origin, magnetization +z),
-    /// returned as Cartesian `[Bx, By, Bz]`, tesla.
-    pub fn b_local(&self, p: [f64; 3]) -> [f64; 3] {
-        let n = self.n_loops.max(1);
-        let dz = self.thickness_m / n as f64;
-        let at = self.remanence_t / MU_0 * dz;
-        let rho = (p[0] * p[0] + p[1] * p[1]).sqrt();
-        let (mut br, mut bz) = (0.0, 0.0);
-        for i in 0..n {
-            let coil = RingCoil {
-                radius_m: self.radius_m,
-                z_m: -0.5 * self.thickness_m + (i as f64 + 0.5) * dz,
-                ampere_turns: at,
-                wire_radius_m: 0.5 * dz,
-            };
-            let (r, z) = b_ring(&coil, rho, p[2]);
-            br += r;
-            bz += z;
-        }
-        if rho < 1e-15 {
-            return [0.0, 0.0, bz];
-        }
-        [br * p[0] / rho, br * p[1] / rho, bz]
-    }
-
-    /// Closed-form on-axis field `B_z(z)` (magnet frame), tesla — the exact
-    /// solid-cylinder result, valid outside the magnet (`|z| > h/2`).
-    pub fn b_axis_exact(&self, z: f64) -> f64 {
-        let (r, h) = (self.radius_m, self.thickness_m);
-        let a = z + 0.5 * h;
-        let b = z - 0.5 * h;
-        0.5 * self.remanence_t * (a / (r * r + a * a).sqrt() - b / (r * r + b * b).sqrt())
-    }
-}
-
-/// Field of a point dipole with moment `m` (A·m²) along unit `axis`, at
-/// offset `d` from it, tesla.
-pub fn b_dipole(m: f64, axis: [f64; 3], d: [f64; 3]) -> [f64; 3] {
-    let r2 = dot(d, d);
-    let r = r2.sqrt();
-    let mr = m * dot(axis, d) / r;
-    let k = MU_0 / (4.0 * std::f64::consts::PI * r2 * r);
-    [
-        k * (3.0 * mr * d[0] / r - m * axis[0]),
-        k * (3.0 * mr * d[1] / r - m * axis[1]),
-        k * (3.0 * mr * d[2] / r - m * axis[2]),
-    ]
-}
 
 /// Where a magnet is and which way its north pole points, SI.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -141,17 +61,15 @@ pub struct MagnetPose {
 }
 
 impl MagnetPose {
+    /// The equivalent general [`Pose`] (same local frame construction).
+    pub fn pose(&self) -> Pose {
+        Pose::from_axis(self.center_m, self.axis)
+    }
+
     /// World-frame field of `magnet` in this pose at world point `p`.
     pub fn b_world(&self, magnet: &DiscMagnet, p: [f64; 3]) -> [f64; 3] {
-        let w = normalize(self.axis);
-        let (u, v) = basis(w);
-        let d = sub(p, self.center_m);
-        let bl = magnet.b_local([dot(d, u), dot(d, v), dot(d, w)]);
-        [
-            bl[0] * u[0] + bl[1] * v[0] + bl[2] * w[0],
-            bl[0] * u[1] + bl[1] * v[1] + bl[2] * w[1],
-            bl[0] * u[2] + bl[1] * v[2] + bl[2] * w[2],
-        ]
+        let pose = self.pose();
+        pose.vec_to_world(magnet.b_local(pose.to_local(p)))
     }
 }
 
@@ -364,40 +282,10 @@ where
     out
 }
 
-fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
-    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
-}
-fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-fn norm(a: [f64; 3]) -> f64 {
-    dot(a, a).sqrt()
-}
-fn normalize(a: [f64; 3]) -> [f64; 3] {
-    let n = norm(a);
-    [a[0] / n, a[1] / n, a[2] / n]
-}
-/// Orthonormal `(u, v)` completing `w` to a right-handed frame.
-fn basis(w: [f64; 3]) -> ([f64; 3], [f64; 3]) {
-    let a = if w[0].abs() < 0.9 {
-        [1.0, 0.0, 0.0]
-    } else {
-        [0.0, 1.0, 0.0]
-    };
-    let u = normalize(cross(a, w));
-    (u, cross(w, u))
-}
-fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [
-        a[1] * b[2] - a[2] * b[1],
-        a[2] * b[0] - a[0] * b[2],
-        a[0] * b[1] - a[1] * b[0],
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::field3d::sub;
 
     fn rel(a: f64, b: f64) -> f64 {
         (a - b).abs() / b.abs().max(1e-30)
