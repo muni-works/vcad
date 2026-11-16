@@ -20,18 +20,19 @@ extension EditorModel {
         return (min(solveProgress.done, total), total)
     }
 
-    /// The part has not landed yet in the first solve. Roots land in
-    /// document order, so `done` of them are in (a refused root lands too,
-    /// empty — it never spins forever).
+    /// The part has not landed yet in the first solve. Parts land in any
+    /// order as they finish (a refused root lands too, empty — it never
+    /// spins forever).
     func isPartPending(_ part: Int) -> Bool {
-        guard let p = openingParts else { return false }
-        return part >= p.done
+        guard openingParts != nil else { return false }
+        return !landedParts.contains(part)
     }
 
-    /// The part the first solve is working on now.
-    func isPartSolving(_ part: Int) -> Bool {
-        guard let p = openingParts, p.total > 0 else { return false }
-        return part == p.done
+    /// The first part still solving, in document order — the one the open
+    /// is waiting on.
+    var firstPendingPart: Int? {
+        guard let p = openingParts, p.total > 0 else { return nil }
+        return (0..<p.total).first { !landedParts.contains($0) }
     }
 
     /// The name of the `part`-th visible root, as the model tree shows it.
@@ -80,9 +81,9 @@ struct OpeningOverlay: View {
                 }
                 stageText(load, parts).font(.callout)
                 if let parts, parts.total > 1 {
-                    PartStrip(done: parts.done, total: parts.total)
+                    PartStrip(landed: model.landedParts, total: parts.total)
                 } else {
-                    PartStrip(done: 0, total: 1)       // one shimmering bar
+                    PartStrip(landed: [], total: 1)    // one shimmering bar
                 }
             }
             .padding(Theme.Space.l)
@@ -99,8 +100,9 @@ struct OpeningOverlay: View {
             if parts.done >= parts.total {
                 line = "Finishing · \(parts.total) parts"
             } else {
-                let name = model.visiblePartName(parts.done).map { " \($0)" } ?? ""
-                line = "\(load.kind.imports ? "Meshing" : "Evaluating")\(name) · \(parts.done + 1) of \(parts.total)"
+                // Parts solve in parallel; name the first one still out.
+                let name = model.firstPendingPart.flatMap(model.visiblePartName).map { " \($0)" } ?? ""
+                line = "\(load.kind.imports ? "Meshing" : "Evaluating")\(name) · \(parts.done) of \(parts.total) done"
             }
         } else {
             line = load.stageLabel
@@ -119,11 +121,13 @@ struct OpeningOverlay: View {
     }
 }
 
-/// One segment per part: landed parts filled, the solving one shimmering,
-/// the rest waiting. Past a few dozen parts the segments merge into a bar.
+/// One segment per part, in document order: landed parts filled, the rest
+/// shimmering while they solve (in parallel). Past a few dozen parts the
+/// segments merge into a bar.
 private struct PartStrip: View {
-    let done: Int
+    let landed: Set<Int>
     let total: Int
+    private var done: Int { landed.count }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -131,7 +135,7 @@ private struct PartStrip: View {
         HStack(spacing: segmented ? 3 : 0) {
             if segmented {
                 ForEach(0..<total, id: \.self) { i in
-                    segment(i < done ? .landed : i == done ? .solving : .waiting)
+                    segment(landed.contains(i) ? .landed : .solving)
                 }
             } else {
                 GeometryReader { geo in
@@ -147,14 +151,12 @@ private struct PartStrip: View {
         .animation(Motion.snappy, value: done)
     }
 
-    private enum State { case landed, solving, waiting }
+    private enum State { case landed, solving }
 
     @ViewBuilder private func segment(_ s: State) -> some View {
         switch s {
         case .landed:
             Capsule().fill(Color.accentColor)
-        case .waiting:
-            Capsule().fill(.quaternary)
         case .solving:
             if reduceMotion {
                 Capsule().fill(Color.accentColor.opacity(0.45))

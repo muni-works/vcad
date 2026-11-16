@@ -293,18 +293,11 @@ struct BrowserRow: View {
         if quiet {
             Image(systemName: "pencil.and.outline").font(.caption).frame(width: 14)
         } else if let pi = node.partIndex, groupID == nil, model.isPartPending(pi) {
-            // First solve still running: the part being solved spins, the
-            // ones queued behind it wait as a dimmed swatch.
-            if model.isPartSolving(pi) {
-                ProgressView().controlSize(.mini).scaleEffect(0.7)
-                    .frame(width: 14, height: 10)
-                    .accessibilityLabel("Evaluating")
-            } else {
-                Circle().fill(model.browserSwatch(node)).opacity(0.3)
-                    .overlay(Circle().strokeBorder(.primary.opacity(0.18), lineWidth: 0.5))
-                    .frame(width: 10, height: 10).frame(width: 14)
-                    .accessibilityLabel("Waiting to evaluate")
-            }
+            // First solve still running: parts solve in parallel and land in
+            // any order, so every part not in yet spins (its row dimmed).
+            ProgressView().controlSize(.mini).scaleEffect(0.7)
+                .frame(width: 14, height: 10)
+                .accessibilityLabel("Evaluating")
         } else {
             // The material swatch is the icon: it tells parts apart at a glance
             // and matches what the viewport draws.

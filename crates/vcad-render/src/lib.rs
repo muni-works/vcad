@@ -1239,6 +1239,7 @@ fn evaluate_vcad_document_inner(
                     root_cache,
                     mesh_segments,
                     on_root: stamps.on_root(),
+                    on_root_ready: None,
                     clock,
                 },
             )

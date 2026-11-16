@@ -3740,7 +3740,7 @@ final class EditorModel {
         evaluating = nil
         solving = false
         solveProgress = (0, 0)
-        partialMeshes = []; partialBounds = nil
+        partialMeshes = []; partialBounds = nil; landedParts = []
     }
 
     /// The first solve landed (or failed): fold the card away, or keep it up
@@ -4209,6 +4209,8 @@ final class EditorModel {
     var evaluatesOffMainThread = false
     /// True while the kernel is evaluating the document off the main thread.
     var solving = false { didSet { if solving != oldValue { syncProgress() } } }
+    /// Visible-root indices the background solve has landed (any order).
+    var landedParts = Set<Int>()
     /// Progress of the background solve: visible roots landed / total.
     var solveProgress: (done: Int, total: Int) = (0, 0) {
         didSet { if solveProgress != oldValue { syncProgress() } }
@@ -4274,7 +4276,7 @@ final class EditorModel {
         evaluating = data
         solving = true
         solveProgress = (0, 0)
-        partialMeshes = []; partialBounds = nil
+        partialMeshes = []; partialBounds = nil; landedParts = []
         let started = Date()
         let job: OpaquePointer? = data.withUnsafeBytes { raw in
             dir.withUnsafeBufferPointer { d in
@@ -4291,7 +4293,9 @@ final class EditorModel {
         }
         evalJob = job
         evalPoll = Task { @MainActor [weak self] in
-            var landed = 0
+            // Roots land in any order (a fast part doesn't wait behind a slow
+            // one): `taken` are the indices already pulled into the viewport.
+            var taken = Set<Int>()
             var lastRedraw = Date.distantPast
             while !Task.isCancelled {
                 guard let self, self.evalJob == job else { return }
@@ -4308,17 +4312,25 @@ final class EditorModel {
                 // hundreds of parts at once can't hold the main thread.
                 var newParts = false
                 let tick = Date()
-                while landed < done, Date().timeIntervalSince(tick) < 0.03 {
-                    let km = KernelMesh.fromView(vcad_eval_part_mesh(job, landed))
+                var index = 0
+                while taken.count < done, index < total, Date().timeIntervalSince(tick) < 0.03 {
+                    defer { index += 1 }
+                    guard !taken.contains(index), vcad_eval_part_landed(job, index) else { continue }
+                    taken.insert(index)
+                    self.landedParts.insert(index)
+                    if LaunchPerf.enabled {
+                        LaunchPerf.write(String(format: "[PERF] part %d landed %.0f ms since launch",
+                                                index, LaunchPerf.sinceLaunchMs))
+                    }
+                    let km = KernelMesh.fromView(vcad_eval_part_mesh(job, index))
                     if !km.isEmpty {
-                        self.partialMeshes.append((km.resource(name: "part\(landed)"),
-                                                   Self.partColors[landed % Self.partColors.count]))
+                        self.partialMeshes.append((km.resource(name: "part\(index)"),
+                                                   Self.partColors[index % Self.partColors.count]))
                         var b = self.partialBounds ?? (km.minBound, km.maxBound)
                         b.lo = simd_min(b.lo, km.minBound); b.hi = simd_max(b.hi, km.maxBound)
                         self.partialBounds = b
                         newParts = true
                     }
-                    landed += 1
                 }
                 if newParts {
                     LaunchPerf.once("first part landed")
@@ -4353,11 +4365,11 @@ final class EditorModel {
                 }
                 // Each redraw rebuilds every landed part's entity, so on a big
                 // assembly redraw at most once a second while streaming.
-                if newParts, Date().timeIntervalSince(lastRedraw) > (landed > 64 ? 1.0 : 0.1) {
+                if newParts, Date().timeIntervalSince(lastRedraw) > (taken.count > 64 ? 1.0 : 0.1) {
                     self.geometryDirty = true
                     lastRedraw = Date()
                 }
-                try? await Task.sleep(for: .milliseconds(landed < done ? 10 : 100))
+                try? await Task.sleep(for: .milliseconds(taken.count < done ? 10 : 100))
             }
         }
     }
