@@ -783,7 +783,11 @@ fn coplanar_surfaces(solid: &BRepSolid, other: &BRepSolid) -> std::collections::
                 let surface = s.geometry.surfaces.get(f.surface_index)?;
                 (surface.surface_type() == vcad_kernel_geom::SurfaceKind::Plane).then(|| {
                     let at = vcad_kernel_math::Point2::new(0.0, 0.0);
-                    (f.surface_index, surface.evaluate(at), *surface.normal(at).as_ref())
+                    (
+                        f.surface_index,
+                        surface.evaluate(at),
+                        *surface.normal(at).as_ref(),
+                    )
                 })
             })
             .collect()

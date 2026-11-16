@@ -974,72 +974,6 @@ fn defective_edge_count(mesh: &TriangleMesh) -> usize {
         .count()
 }
 
-/// Remove triangles one of whose corners lies on its own opposite edge
-/// (within the stitch tolerance, strictly between that edge's ends).
-/// Returns whether any were removed.
-///
-/// Such a triangle is a spike in a face's boundary: the loop runs out along
-/// an edge and straight back. Where a cross bore meets a cylinder wall, the
-/// wall is partitioned by an edge from a rim vertex to the bore sample at
-/// the limb, and the neighbouring bore sample sits 0.2 µm off that edge — a
-/// 76 mm triangle 0.2 µm wide. It has no area and no meaningful normal, so
-/// every consumer that reads facet normals strokes a full-height crease
-/// along it (the line off the open-fusor viewport bore).
-///
-/// Removing it leaves its long edge's neighbour holding an unsplit edge
-/// with a vertex on it — exactly the T-junction `heal_t_junctions` closes,
-/// which is why this runs immediately before it.
-fn drop_spike_slivers(mesh: &mut TriangleMesh) -> bool {
-    let p = |i: u32| {
-        let k = i as usize * 3;
-        Vec3::new(
-            mesh.vertices[k] as f64,
-            mesh.vertices[k + 1] as f64,
-            mesh.vertices[k + 2] as f64,
-        )
-    };
-    let spike = |t: &[u32]| {
-        (0..3).any(|k| {
-            let (v, a, b) = (p(t[k]), p(t[(k + 1) % 3]), p(t[(k + 2) % 3]));
-            let ab = b - a;
-            let len = ab.norm();
-            if len <= 4.0 * T_JUNCTION_TOL {
-                return false;
-            }
-            let along = (v - a).dot(ab) / len;
-            along > T_JUNCTION_TOL
-                && along < len - T_JUNCTION_TOL
-                && (v - (a + ab * (along / len))).norm() <= T_JUNCTION_TOL
-        })
-    };
-    let n = mesh.indices.len() / 3;
-    let keep: Vec<bool> = mesh.indices.chunks(3).map(|t| !spike(t)).collect();
-    if keep.iter().all(|&k| k) {
-        return false;
-    }
-    let filter = |values: &mut Vec<u32>, per: usize| {
-        if values.len() == n * per {
-            let mut i = 0;
-            values.retain(|_| {
-                let kept = keep[i / per];
-                i += 1;
-                kept
-            });
-        }
-    };
-    filter(&mut mesh.indices, 3);
-    filter(&mut mesh.face_ids, 1);
-    if mesh.face_kinds.len() == n {
-        let mut i = 0;
-        mesh.face_kinds.retain(|_| {
-            let kept = keep[i];
-            i += 1;
-            kept
-        });
-    }
-    true
-}
-
 /// One stitch pass. Returns whether anything changed.
 fn heal_t_junctions_pass(mesh: &mut TriangleMesh) -> bool {
     if mesh.indices.is_empty() {
@@ -7782,6 +7716,47 @@ fn tessellate_trimmed_region(
         uv.extend(l.iter().map(|x| x.1));
     }
 
+    // Fold-backs: three consecutive boundary vertices A, B, C with A (or C)
+    // lying on the segment from B to the other one — the loop runs out
+    // along an edge and straight back. Where a cross bore meets a cylinder
+    // wall, the wall is partitioned by an edge from a rim vertex to the
+    // bore sample at the limb, and the next bore sample sits 0.2 µm off
+    // that edge. The triangle on such a triple is 76 mm long with no area
+    // and no meaningful normal, and every consumer that reads facet normals
+    // strokes a full-height crease along it (the line off the open-fusor
+    // viewport bore). It is left out below; the neighbour across the long
+    // edge then holds a vertex on an unsplit edge, which is exactly the
+    // T-junction the whole-mesh stitch closes.
+    let mut fold_backs: HashSet<[u32; 3]> = HashSet::new();
+    {
+        const ON_EDGE: f64 = 1e-3;
+        let on_segment = |v: Point3, a: Point3, b: Point3| {
+            let ab = b - a;
+            let len = ab.norm();
+            if len <= 4.0 * ON_EDGE {
+                return false;
+            }
+            let along = (v - a).dot(ab) / len;
+            along > ON_EDGE
+                && along < len - ON_EDGE
+                && (v - (a + ab * (along / len))).norm() <= ON_EDGE
+        };
+        let mut base = 0u32;
+        for l in &final_loops {
+            let n = l.len();
+            for i in 0..n {
+                let (ia, ib, ic) = ((i + n - 1) % n, i, (i + 1) % n);
+                let (a, b, c) = (l[ia].0, l[ib].0, l[ic].0);
+                if n > 3 && (on_segment(a, b, c) || on_segment(c, b, a)) {
+                    let mut key = [base + ia as u32, base + ib as u32, base + ic as u32];
+                    key.sort_unstable();
+                    fold_backs.insert(key);
+                }
+            }
+            base += n as u32;
+        }
+    }
+
     let mut tris: Vec<[u32; 3]> = triangulate_polygon_2d(&loops_2d[0], &loops_2d[1..])?;
     let orient = |uv: &[(f64, f64)], t: &[u32; 3]| -> f64 {
         let (a, b, c) = (uv[t[0] as usize], uv[t[1] as usize], uv[t[2] as usize]);
@@ -8023,6 +7998,11 @@ fn tessellate_trimmed_region(
         }
     }
     for t in &tris {
+        let mut key = *t;
+        key.sort_unstable();
+        if fold_backs.contains(&key) {
+            continue;
+        }
         let [a, b, c] = t.map(|v| canon[v as usize]);
         if a == b || b == c || a == c {
             continue;
@@ -8801,19 +8781,7 @@ pub fn tessellate_brep_with(brep: &BRepSolid, params: TessellationParams) -> Tri
     }
 
     weld_coincident_vertices(&mut mesh);
-    // Spike slivers go first, and only when the stitch that follows closes
-    // what removing them opens; otherwise the mesh is healed as it stood.
-    let defects = defective_edge_count(&mesh);
-    let with_spikes = mesh.clone();
-    if drop_spike_slivers(&mut mesh) {
-        heal_t_junctions(&mut mesh);
-        if defective_edge_count(&mesh) > defects {
-            mesh = with_spikes;
-            heal_t_junctions(&mut mesh);
-        }
-    } else {
-        heal_t_junctions(&mut mesh);
-    }
+    heal_t_junctions(&mut mesh);
     fill_tiny_boundary_loops(&mut mesh, 6, &sphere_vert_keys);
     // NOTE: the heavier `repair_watertightness` pipeline is deliberately
     // NOT run here. `tessellate_brep` is called mid-pipeline (boolean
