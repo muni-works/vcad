@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::f64::consts::PI;
 
-use vcad_kernel_geom::{CylinderSurface, GeometryStore, Plane};
+use vcad_kernel_geom::{ConeSurface, CylinderSurface, GeometryStore, Plane};
 use vcad_kernel_math::{Dir3, Point3, Tolerance, Vec3};
 use vcad_kernel_primitives::BRepSolid;
 use vcad_kernel_topo::{HalfEdgeId, Orientation, ShellType, Topology, VertexId};
@@ -240,26 +240,44 @@ pub fn revolve(
                         quantize_pt,
                     ));
                 }
-                RevolveSurfaceType::Cone { .. } => {
-                    // Faceted ring (true cone surfaces TODO).
-                    for j in 0..n_steps {
-                        let theta0 = angle * j as f64 / n_steps as f64;
-                        let theta1 = angle * (j + 1) as f64 / n_steps as f64;
-                        all_faces.extend(build_facet_quad(
-                            &mut topo,
-                            &mut geom,
-                            &mut vertex_cache,
-                            &axis_origin,
-                            axis.as_ref(),
-                            &p_start,
-                            &p_end,
-                            theta0,
-                            theta1,
-                            ccw,
-                            &mut he_map,
-                            quantize_pt,
-                        ));
-                    }
+                RevolveSurfaceType::Cone { apex, half_angle } => {
+                    // One analytic cone face, shaped like the full-cylinder
+                    // face (two circle edges + a seam) — or, with its apex
+                    // on the axis, like a pointed `make_cone` (one circle +
+                    // a seam to the apex). It used to be 32 planar facets:
+                    // every boolean against it then split 32 faces instead
+                    // of one, a coaxial union with a cylinder came back with
+                    // 1000+ faces, and a revolved-triangle ring unioned onto
+                    // a flange took 15x the time of the same ring built as a
+                    // cylinder minus a cone.
+                    // The profile's outward direction: (dt·radial − dr·axis)
+                    // for a CCW profile (see `rt` above), negated otherwise.
+                    let outward_dir = {
+                        let mid = Point3::new(
+                            0.5 * (p_start.x + p_end.x),
+                            0.5 * (p_start.y + p_end.y),
+                            0.5 * (p_start.z + p_end.z),
+                        );
+                        let rad = radial(&mid).normalize();
+                        let d = rad * dt - *axis.as_ref() * dr;
+                        if ccw {
+                            d
+                        } else {
+                            -d
+                        }
+                    };
+                    all_faces.push(build_full_cone_face(
+                        &mut topo,
+                        &mut geom,
+                        apex,
+                        axis.as_ref(),
+                        half_angle,
+                        (&start_verts[i], on_axis[i]),
+                        (&start_verts[next_i], on_axis[next_i]),
+                        outward_dir,
+                        &mut he_map,
+                        quantize_pt,
+                    ));
                 }
             }
         } else {
@@ -428,6 +446,90 @@ where
         }
     }
 
+    face_id
+}
+
+/// Analytic cone face for a full revolution of a segment slanted to the
+/// axis. Topology mirrors [`build_full_cylinder_face`] (degenerate circle
+/// edges at both ends joined by a seam) or, when one end lies on the axis,
+/// the pointed `make_cone` lateral face (one circle edge + the seam to the
+/// apex). `outward_dir` is any direction pointing out of the solid across
+/// this face; it picks the orientation.
+#[allow(clippy::too_many_arguments)]
+fn build_full_cone_face<F>(
+    topo: &mut Topology,
+    geom: &mut GeometryStore,
+    apex: Point3,
+    axis: &Vec3,
+    half_angle: f64,
+    a: (&VertexId, bool),
+    b: (&VertexId, bool),
+    outward_dir: Vec3,
+    he_map: &mut HashMap<([i64; 3], [i64; 3]), HalfEdgeId>,
+    quantize_pt: F,
+) -> vcad_kernel_topo::FaceId
+where
+    F: Fn(Point3) -> [i64; 3],
+{
+    let (pa, pb) = (topo.vertices[*a.0].point, topo.vertices[*b.0].point);
+    // The cone axis runs from the apex toward the material (the base).
+    let base = if a.1 { pb } else { pa };
+    let cone_axis = if (base - apex).dot(axis) >= 0.0 {
+        *axis
+    } else {
+        -*axis
+    };
+    // u = 0 at the seam, which lies in the profile plane.
+    let off_axis = if a.1 { pb } else { pa };
+    let d = off_axis - apex;
+    let ref_dir = d - d.dot(&cone_axis) * cone_axis;
+    let cone = ConeSurface {
+        apex,
+        axis: Dir3::new_normalize(cone_axis),
+        ref_dir: Dir3::new_normalize(ref_dir),
+        half_angle,
+    };
+    // Surface normal at the seam midpoint vs the solid's outward direction.
+    let mid = Point3::new(
+        0.5 * (pa.x + pb.x),
+        0.5 * (pa.y + pb.y),
+        0.5 * (pa.z + pb.z),
+    );
+    let v = (mid - apex).dot(&cone_axis) / half_angle.cos();
+    let n_surf = cone.normal(vcad_kernel_math::Point2::new(0.0, v));
+    let orientation = if n_surf.as_ref().dot(&outward_dir) >= 0.0 {
+        Orientation::Forward
+    } else {
+        Orientation::Reversed
+    };
+    let surf_idx = geom.add_surface(Box::new(cone));
+
+    let hes: Vec<HalfEdgeId> = if a.1 || b.1 {
+        // Pointed: circle at the off-axis end, seam to the apex and back.
+        let (v_base, v_tip) = if a.1 { (*b.0, *a.0) } else { (*a.0, *b.0) };
+        vec![
+            topo.add_half_edge(v_base), // base circle (degenerate)
+            topo.add_half_edge(v_base), // seam to the apex
+            topo.add_half_edge(v_tip),  // seam back
+        ]
+    } else {
+        vec![
+            topo.add_half_edge(*a.0), // circle at a (degenerate)
+            topo.add_half_edge(*a.0), // seam a → b
+            topo.add_half_edge(*b.0), // circle at b (degenerate)
+            topo.add_half_edge(*b.0), // seam b → a
+        ]
+    };
+    let loop_id = topo.add_loop(&hes);
+    let face_id = topo.add_face(loop_id, surf_idx, orientation);
+    for &he_id in &hes {
+        let he = &topo.half_edges[he_id];
+        let origin = topo.vertices[he.origin].point;
+        if let Some(next) = he.next {
+            let dest = topo.vertices[topo.half_edges[next].origin].point;
+            he_map.insert((quantize_pt(origin), quantize_pt(dest)), he_id);
+        }
+    }
     face_id
 }
 

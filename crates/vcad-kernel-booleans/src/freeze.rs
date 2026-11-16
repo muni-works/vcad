@@ -22,19 +22,22 @@ use vcad_kernel_topo::HalfEdgeId;
 
 use crate::split::canonical_arc_points;
 
-/// Give each unpaired full-circle wall rim its planar neighbour as a twin.
+/// Give each unpaired full-circle wall rim its neighbour as a twin.
 ///
-/// A full-turn revolve leaves its wall rims unpaired, and the flat rings
-/// between walls carry a one-vertex outer loop and a sampled inner hole
-/// through the same seam vertex. Pair them the way `make_cylinder` pairs a
-/// wall with its cap, so the freeze below writes one chain to both sides.
+/// A full-turn revolve leaves its wall rims (cylinders and cones) unpaired,
+/// and the flat rings between walls carry a one-vertex outer loop and a
+/// sampled inner hole through the same seam vertex. Pair them the way
+/// `make_cylinder` pairs a wall with its cap, so the freeze below writes one
+/// chain to both sides. Two walls meeting directly (a revolved profile's
+/// vertical edge followed by a slanted one: cylinder above cone) share a
+/// rim through the same seam vertex too, and are paired with each other.
 fn pair_cylinder_rims_with_planes(brep: &mut BRepSolid) {
     let shell = brep.topology.solids[brep.solid_id].outer_shell;
     let faces = brep.topology.shells[shell].faces.clone();
-    let is_kind = |b: &BRepSolid, f: vcad_kernel_topo::FaceId, cyl: bool| {
+    let is_kind = |b: &BRepSolid, f: vcad_kernel_topo::FaceId, wall: bool| {
         let any = b.geometry.surfaces[b.topology.faces[f].surface_index].as_any();
-        if cyl {
-            any.is::<CylinderSurface>()
+        if wall {
+            any.is::<CylinderSurface>() || any.is::<vcad_kernel_geom::ConeSurface>()
         } else {
             any.is::<vcad_kernel_geom::Plane>()
         }
@@ -53,8 +56,38 @@ fn pair_cylinder_rims_with_planes(brep: &mut BRepSolid) {
             }
         }
     }
-    for rim in rims {
+    for (k, &rim) in rims.iter().enumerate() {
+        if brep.topology.half_edges[rim].twin.is_some() {
+            continue; // paired as the partner of an earlier wall rim
+        }
         let v = brep.topology.half_edges[rim].origin;
+        let face_of = |b: &BRepSolid, h: HalfEdgeId| {
+            b.topology.half_edges[h]
+                .loop_id
+                .and_then(|l| b.topology.loops[l].face)
+        };
+        // Wall-to-wall rim: another wall's unpaired rim through the same
+        // seam vertex, on a different face.
+        let partner = rims[k + 1..].iter().copied().find(|&o| {
+            brep.topology.half_edges[o].twin.is_none()
+                && brep.topology.half_edges[o].origin == v
+                && face_of(brep, o) != face_of(brep, rim)
+        });
+        let plane_side = faces.iter().any(|&f| {
+            is_kind(brep, f, false) && {
+                let outer = brep.topology.faces[f].outer_loop;
+                brep.topology.loop_len(outer) == 1
+                    && brep
+                        .topology
+                        .loop_half_edges(outer)
+                        .next()
+                        .is_some_and(|h| brep.topology.half_edges[h].origin == v)
+            }
+        });
+        if let (Some(o), false) = (partner, plane_side) {
+            brep.topology.add_edge(rim, o);
+            continue;
+        }
         for &f in faces.iter().filter(|&&f| is_kind(brep, f, false)) {
             let outer = brep.topology.faces[f].outer_loop;
             let first = brep.topology.loop_half_edges(outer).next();
@@ -104,7 +137,19 @@ fn pair_cylinder_rims_with_planes(brep: &mut BRepSolid) {
 /// vertex chain, so the rebuilt edges pair exactly.
 pub(crate) fn freeze_circle_loops(brep: &mut BRepSolid, segments: u32) {
     pair_cylinder_rims_with_planes(brep);
-    let he_ids: Vec<HalfEdgeId> = brep.topology.half_edges.keys().collect();
+    // Decide which half-edges are genuine analytic circles BEFORE any is
+    // rechained: rechaining one rim grows its loop past the `> 4` guard
+    // below, and a wall's second rim (unpaired, so no twin would carry it
+    // along) was then skipped — left analytic beside a frozen neighbour,
+    // a guaranteed crack (a revolved cone's top rim against the cylinder
+    // above it: 401 open edges).
+    let he_ids: Vec<HalfEdgeId> = brep
+        .topology
+        .half_edges
+        .iter()
+        .filter(|(_, he)| he.loop_id.is_some_and(|l| brep.topology.loop_len(l) <= 4))
+        .map(|(id, _)| id)
+        .collect();
     let mut done: std::collections::HashSet<HalfEdgeId> = std::collections::HashSet::new();
 
     for he_id in he_ids {
@@ -112,10 +157,9 @@ pub(crate) fn freeze_circle_loops(brep: &mut BRepSolid, segments: u32) {
             continue;
         }
         let he = &brep.topology.half_edges[he_id];
-        let loop_id = match he.loop_id {
-            Some(l) => l,
-            None => continue,
-        };
+        if he.loop_id.is_none() {
+            continue;
+        }
         let next = match he.next {
             Some(n) => n,
             None => continue,
@@ -132,9 +176,6 @@ pub(crate) fn freeze_circle_loops(brep: &mut BRepSolid, segments: u32) {
         // legacy loops (1-he cap seam loops, ≤4-he wall rectangles);
         // splicing a ring into a dense loop would thread a phantom
         // full-circle polyline through the middle of the face.
-        if brep.topology.loop_len(loop_id) > 4 {
-            continue;
-        }
         let twin = he.twin;
 
         // Find the cylinder or cone that carries this circle (own face or
