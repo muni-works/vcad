@@ -10062,6 +10062,18 @@
           "type": "boolean",
           "description": "Treat exact surface contact (measured distance within 0.001 mm of zero) as passing even though it is below `min_mm` — for parts designed to touch, e.g. a stage bolted flush to the chamber floor. Penetration beyond the tolerance still fails. Persisted with the spec when `label` is given."
         },
+        "max_mm": {
+          "type": "number",
+          "description": "Fit mode (press / transition fits): upper bound on the gap. The gap is then the signed ANALYTIC radial gap between a coaxial shaft/bore pair (negative = interference), and the check passes when it lies in [min_mm, max_mm] — e.g. min_mm -0.15, max_mm -0.01 for a printed press fit. Geometry without a coaxial cylinder pair fails closed. Persisted with the spec."
+        },
+        "fit": {
+          "type": "string",
+          "enum": [
+            "clearance",
+            "interference"
+          ],
+          "description": "`interference` enables fit mode without an upper bound (a negative min_mm then caps the allowed interference). A bare negative min_mm without this or max_mm still treats any interpenetration as a failure."
+        },
         "joint_state": {
           "type": "object",
           "additionalProperties": {
