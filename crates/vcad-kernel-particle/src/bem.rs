@@ -684,6 +684,9 @@ impl WireField {
                     if r > worst {
                         worst = r;
                         worst_wire = s.wire;
+                        if std::env::var("BEM_DEBUG").is_ok() {
+                            eprintln!("worst {r:.4} wire {} seg {si} frac {frac} k {k} p {:?} phi {phi} len {} a {}", s.wire, p, s.len, w.radius);
+                        }
                     }
                 }
             }
