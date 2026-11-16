@@ -6,7 +6,7 @@
 ; hypothesis (ruler: the hand), not measured.
 ;
 ; The magnet is drawn at its HOLD pose (r = 55 mm, 120°, 10 mm air gap).
-; Loon has no time: the magnet's path lives in the sim's KEYS table
+; The sim doesn't read a document timeline yet: the magnet's path lives in the KEYS table
 ; (examples/plasmoid_magnet.rs), not here.
 
 [let dish-r 85]

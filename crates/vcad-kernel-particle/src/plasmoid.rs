@@ -20,7 +20,8 @@
 //!   Classical cross-field transport scales as `1/(1+β²)`, so a region with
 //!   β ≳ 1 loses electrons more slowly and ionizes more for the same RF
 //!   power — the discharge prefers it. At 1 Torr argon a 10 × 5 mm N52
-//!   disc 10 mm above the glow gives β ≈ 2; at atmosphere β ≈ 0.01 — the
+//!   disc 10 mm above the dish (8 mm above the glow) gives β ≈ 2.9; at
+//!   atmosphere β ≈ 0.004 — the
 //!   model predicts the effect needs a low-pressure glow.
 //!
 //! **Phenomenological.** The filament foot is an overdamped quasi-particle

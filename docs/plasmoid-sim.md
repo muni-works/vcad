@@ -1,6 +1,6 @@
 # plasmoid sim: a racing plasmoid locks to a magnet
 
-![plasmoid sim, 20 s](plasmoid-sim/plasmoid.mp4)
+[![plasmoid sim: locked to the magnet (click for the 20 s mp4)](plasmoid-sim/poster.jpg)](plasmoid-sim/plasmoid.mp4)
 
 The source is a viral clip. A glowing orange-white disc sits on a dish electrode on top of a stacked HV driver, with a pickup ring above. A filament races around the dish. Bring a small neodymium magnet close and the filament's foot pins under the magnet and follows it "like it's on rails".
 
@@ -41,7 +41,7 @@ cargo run --release -p vcad-render -- dish.vcad --jpeg docs/plasmoid-sim/device.
 **What does survive time-averaging:**
 
 1. **Magnetized electron transport.** The electron Hall parameter is `β = ω_ce / ν_m`. Where β ≳ 1, cross-field diffusion drops as `1/(1+β²)`. Electrons stay longer, so the same RF power ionizes more there. The discharge prefers regions of strong |B|, which is the magnetron and magnetized-RF-plasma effect.
-   - Under a 10 × 5 mm N52 disc held 10 mm above the glow, |B| = 61 mT.
+   - Under a 10 × 5 mm N52 disc held 10 mm above the dish (8 mm above the glow sheet), |B| = 61 mT.
    - In argon at 1 Torr (ν_m ≈ 3.7×10⁹ s⁻¹), that gives **β ≈ 2.9**: strongly magnetized.
    - At 1 atm (ν_m ≈ 2.8×10¹² s⁻¹), it gives **β ≈ 0.004**: no effect.
 
@@ -100,7 +100,7 @@ dx/dt = v_race φ̂ + k (r0 − r) r̂             racing ionization wave + pref
 - **Release speed.** The locked foot follows the magnet until the magnet's speed exceeds the pin's spare speed, `μ·max|∇Φ| − v_race` when dragged against the race. At μ = 2μ* this predicts ≈ 0.6 m/s (≈ 11 rad/s on the orbit). The measured transition is between 10 and 15 rad/s. The test asserts it follows at 5 rad/s and breaks away at 20 rad/s.
 - **Lock offset.** The locked foot sits slightly downstream of the footprint, in the race direction.
 - **Predictions a bench could falsify:**
-  - The effect vanishes as pressure rises past roughly β ≈ 1 (tens of Torr for this magnet).
+  - The effect vanishes as pressure rises past β ≈ 1. β scales as 1/p, so that is ≈ 3 Torr for this magnet at this gap.
   - Flipping the magnet doesn't change capture (Φ depends on |B|) but reverses the swirl around the footprint.
   - Lowering the magnet slowly gives capture at a specific gap where μ·max|∇Φ| crosses v_race.
 
@@ -130,7 +130,7 @@ t =  18.08 s: release
 | filament races around the dish | 0–5.9 s: circulates at 1.7 rev/s; no magnet field at the glow |
 | magnet brought close → plasmoid locks | 5.9 s: the magnet reaches its 10 mm gap and the next pass captures the foot (β ≈ 2.6 at the foot) |
 | plasmoid follows the magnet "on rails" | 6–14 s: dragged clockwise *against* the race, then inward to r = 30 mm; stays locked throughout |
-| *(not in clip)* | 14.0 s: a ~1.1 m/s flick beats the pin and the foot is left behind; 14.5 s: recaptured on the next lap |
+| *(not in clip)* | 14.0 s: a flick at ~0.6 m/s mean (0.9 m/s peak) against the race beats the pin, whose spare speed is 1.08 − 0.60 ≈ 0.5 m/s, and the foot is left behind; 14.5 s: recaptured on the next lap |
 | *(not in clip)* | 18.1 s: the magnet lifts away, the foot releases and resumes racing |
 
 ### What is simulated vs drawn
@@ -149,7 +149,7 @@ t =  18.08 s: release
 - the faint secondary streamers;
 - the diffuse disc glow.
 
-The reduced model has no filament geometry. The device is drawn with simple projected primitives that mirror `plasmoid-dish.loon`. vcad has no emissive or bloom path yet (gap #3).
+The reduced model has no filament geometry. The device is drawn with simple projected primitives that mirror `plasmoid-dish.loon`. vcad's renderers have emissive *surfaces* but no volumetric glow or bloom (gap #3).
 
 ### The loon model
 
@@ -162,7 +162,7 @@ The reduced model has no filament geometry. The device is drawn with simple proj
 - the antenna ring on posts;
 - the magnet at its hold pose, on a holder.
 
-Loon has no time, so the magnet's path lives in the example's `KEYS` table, and the dish radius and orbit radius are duplicated as constants (gap #6).
+Loon source has no time axis and the sim doesn't read the document `timeline` yet, so the magnet's path lives in the example's `KEYS` table (gap #7), and the dish radius and orbit radius are duplicated as constants (gap #6).
 
 ![device](plasmoid-sim/device.jpg)
 
@@ -173,10 +173,11 @@ Loon has no time, so the magnet's path lives in the example's `KEYS` table, and 
 | exact loop field (`particle::field::b_ring`, elliptic integrals) | **reused.** It is the magnet's bound-current sheet |
 | Boris pusher / `Tracer` / `FieldMap` | not used. Coaxial-only geometry (rings + axisym Poisson), and individual electron orbits are the wrong level for a luminous structure that moves at ionization-front speed |
 | axisym Poisson | not used. The dish E field enters only as the sign of the rectified sheath field |
-| `vcad-kernel-em` magnets | 2D planar `MagnetBlock` only (bound-current sheets in a cross-section). No 3D posed magnet source |
+| `vcad-kernel-em` magnets | 2D planar `MagnetBlock` only (bound-current sheets in a cross-section); axisym has no magnets. No 3D posed magnet source |
 | MCP `simulate_charged_particles` / `optimize_electrodes` | fusor-specific `DeviceSpec` (rings, grids); no field-source or plasma-foot tool |
-| native app animation / physics | rigid-body / joint playback (phyz). No field-sim tick, no emissive materials, no bloom |
-| `vcad-render` | BRep → raster with opaque materials. No emissive or volumetric output |
+| document `timeline` + MCP `animate` / `render_sequence` / `export_video` | **exists.** Keyframed parameters, joints and visibility, rendered to GLB/GIF/MP4 with a proof HUD. It could carry the magnet path, but there is no hook for a field sim to read a timeline-driven pose |
+| native app animation / physics | rigid-body / joint playback (phyz). No field-sim tick |
+| `vcad-render` materials | **partly exists.** Constant emissive colour + strength on materials (`look` `emission`, honoured by the `--photoreal` path tracer); `emissive_map` is refused by the tracer. No volumetric/participating-media emission, no bloom, no point/line light primitives |
 
 ## 5. Gap list (ranked)
 
@@ -189,8 +190,8 @@ Loon has no time, so the magnet's path lives in the example's `KEYS` table, and 
 2. **Interactive magnet in vcad.app.** The magnet is a part; dragging it updates its pose; a sim tick (≈ 1 kHz RK4, cheap: two 48-loop field sums per step) moves the foot; the viewport draws it.
    - Needs a "live sim" hook in the native app's animation loop, plus an MCP tool (`simulate_plasmoid`, `pose_at` as keyframes) so agents can choreograph it.
    - This is the "drag the magnet and watch it follow" feature.
-3. **Emissive / volumetric rendering.** Plasma, glow discharge, hot parts and LEDs all need:
-   - emissive materials in `vcad-render` and the app viewport;
+3. **Volumetric glow + bloom.** Emissive *surfaces* already exist in the photoreal path tracer. Plasma, glow discharge, arcs and hot gas also need:
+   - emissive volumes or emissive line/point primitives (a filament is not a BRep face), in `vcad-render` and the app viewport;
    - additive point/line splats with bloom.
 
    The Python renderer here is the spec: screen-blend, multi-scale gaussian bloom, orange-to-white `1−exp(−I·k)` tone map. Until then every plasma video is hand-composited.
@@ -206,4 +207,4 @@ Loon has no time, so the magnet's path lives in the example's `KEYS` table, and 
 
    These bind to a `vcad.plasmoid-claims/1` family (predicted → Provisional, never Pass), in the style of the other solver crates.
 6. **BRep → sim binding.** Read the dish radius, the spike position and the magnet pose from the loon document, not duplicated constants. This shares the open-fusor gap ("CAD/sim disconnected").
-7. **Time in loon** (or a keyframe track on parts), so the magnet's path lives in the document instead of in example code.
+7. **Drive the sim from the document timeline.** The IR already has a keyframed `timeline` (parameters, joints, visibility) and `export_video`. Put the magnet's pose on a timeline track and let the plasmoid sim sample it, so the path lives in the document instead of in the example's `KEYS` table.

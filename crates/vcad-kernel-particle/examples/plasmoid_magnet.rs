@@ -33,7 +33,7 @@ const KEYS: &[(f64, f64, f64, f64)] = &[
     (11.0, 0.055, 20.0, GAP),  // drag clockwise, against the race
     (13.0, 0.030, -40.0, GAP), // and inward
     (14.0, 0.050, -70.0, GAP),
-    (14.12, 0.050, -150.0, GAP), // flick: ~1.1 m/s, beats the pin
+    (14.12, 0.050, -150.0, GAP), // flick: ~0.6 m/s mean, 0.9 peak; beats the pin
     (16.0, 0.050, -150.0, GAP),
     (16.5, 0.050, -150.0, GAP),
     (18.0, 0.050, -150.0, GAP),  // re-captured on the next pass
