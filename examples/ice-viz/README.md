@@ -17,7 +17,8 @@ back, 3V3 pour on the front), JLCPCB-compatible rules, DRC-clean.
 - `layout/` — the floorplan (`layout.mjs`: placements plus the hand pre-routes
   for the two core supplies) and `relayout.mjs`, which replays it through the
   MCP server (`set_placement` → `route_nets` → DRC → export) and regenerates
-  `ice-viz.vcad` and `fab/` byte-for-byte: `node layout/relayout.mjs`.
+  `ice-viz.vcad` and `fab/` (identical output on `@vcad/mcp` 0.11.0-main.171):
+  `node layout/relayout.mjs`.
 
 Before ordering: verify the iCE40 SG48 and RP2040 pin maps against the
 datasheets, and eyeball the parametric USB-C/QFN land patterns in KiCad.
