@@ -36,6 +36,7 @@
 
 pub mod adjoint;
 pub mod beam_target;
+pub mod bem;
 pub mod confinement;
 pub mod device;
 pub mod elliptic;
@@ -49,6 +50,7 @@ pub mod receipt;
 pub mod space_charge;
 pub mod spec;
 pub mod trace;
+pub mod wire3d;
 pub mod xsection;
 
 /// Physical constants (SI).

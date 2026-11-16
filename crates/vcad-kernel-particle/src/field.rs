@@ -7,6 +7,52 @@ use crate::device::Device;
 use crate::elliptic::ellip_ke;
 use crate::poisson::Solution;
 
+/// Anything the Boris tracer can push particles through: an electrostatic
+/// potential with its (conservative) field, plus an optional magnetic
+/// field. Implemented by the axisymmetric [`FieldMap`] and by the 3D
+/// thin-wire [`crate::bem::WireField`]. All positions are SI meters.
+pub trait FieldSampler: std::fmt::Debug + Sync {
+    /// Electrostatic potential, volts.
+    fn potential(&self, p: [f64; 3]) -> f64;
+    /// Electric field, V/m — must be −∇ of [`Self::potential`] for the
+    /// tracer's energy diagnostic to mean anything.
+    fn e_cart(&self, p: [f64; 3]) -> [f64; 3];
+    /// Magnetic field, tesla.
+    fn b_cart(&self, p: [f64; 3]) -> [f64; 3];
+    /// Whether [`Self::b_cart`] can be nonzero (lets callers skip B math).
+    fn has_magnetics(&self) -> bool;
+}
+
+impl FieldSampler for FieldMap<'_> {
+    fn potential(&self, p: [f64; 3]) -> f64 {
+        FieldMap::potential(self, p)
+    }
+    fn e_cart(&self, p: [f64; 3]) -> [f64; 3] {
+        FieldMap::e_cart(self, p)
+    }
+    fn b_cart(&self, p: [f64; 3]) -> [f64; 3] {
+        FieldMap::b_cart(self, p)
+    }
+    fn has_magnetics(&self) -> bool {
+        FieldMap::has_magnetics(self)
+    }
+}
+
+impl FieldSampler for crate::bem::WireField {
+    fn potential(&self, p: [f64; 3]) -> f64 {
+        crate::bem::WireField::potential(self, p)
+    }
+    fn e_cart(&self, p: [f64; 3]) -> [f64; 3] {
+        self.e_field(p)
+    }
+    fn b_cart(&self, p: [f64; 3]) -> [f64; 3] {
+        self.b_field(p)
+    }
+    fn has_magnetics(&self) -> bool {
+        self.b_field_present()
+    }
+}
+
 /// A circular current loop, SI units.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RingCoil {
