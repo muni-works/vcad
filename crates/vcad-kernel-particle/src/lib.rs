@@ -20,7 +20,14 @@
 //!    terminate on electrode or wall impact, core passes are counted.
 //! 5. [`fom`] — ensemble statistics: interception fraction, mean
 //!    recirculation count, effective grid transparency.
-//! 6. [`optimize`] — derivative-free/finite-difference maximization of any
+//! 6. **Non-axisymmetric electrodes** — [`wire3d::Device3d`] (wires along
+//!    circles, arcs and polylines: great-circle and latitude/longitude
+//!    globes, stalks) in a grounded sphere, solved by the thin-wire
+//!    boundary-element method in [`bem`] (analytic, conservative field;
+//!    fail-closed surface-residual gates) and traced by the same Boris
+//!    tracer through [`field::FieldSampler`] / [`trace::TraceGeometry`].
+//!    [`spec3d::DeviceSpec3d`] is its serde seam.
+//! 7. [`optimize`] — derivative-free/finite-difference maximization of any
 //!    figure of merit over electrode parameters (M0 stand-in for the
 //!    adjoint; see `docs/particle-optics-m0.md`).
 //!
@@ -49,6 +56,7 @@ pub mod power;
 pub mod receipt;
 pub mod space_charge;
 pub mod spec;
+pub mod spec3d;
 pub mod trace;
 pub mod wire3d;
 pub mod xsection;
