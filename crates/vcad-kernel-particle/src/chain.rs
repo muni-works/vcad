@@ -1430,11 +1430,17 @@ pub fn predict(
     let r_ref = rate(&reference, reading.supply_current_a, g[0], wl[0]).max(1e-300);
     let ratio_of = |r: &ChainResult| rate(r, reading.supply_current_a, g[0], wl[0]) / r_ref;
     // Sampling scatter: the same run with the stratified sampler shifted.
-    let shifted = rerun(&ChainOptions {
-        sample_offset: if base.sample_offset > 0.5 { 0.25 } else { 0.75 },
-        ..warm
-    })?;
-    let noise = ratio_of(&shifted).ln().abs();
+    // Sampling scatter: RMS log-ratio of two runs with the stratified
+    // sampler shifted to either side of the central offset.
+    let mut noise2 = 0.0;
+    for off in [0.2, 0.8] {
+        let shifted = rerun(&ChainOptions {
+            sample_offset: off,
+            ..warm
+        })?;
+        noise2 += 0.5 * ratio_of(&shifted).ln().powi(2);
+    }
+    let noise = noise2.sqrt();
     let mut comps: Vec<BandComponent> = Vec::new();
     let mut push = |name: &str, kind: BandKind, lo: f64, hi: f64, note: String| {
         let rerun = matches!(
@@ -1553,12 +1559,17 @@ pub fn predict(
     {
         let v_hi = reading.cathode_voltage_v * (1.0 + reading.voltage_rel);
         let (dv, sv) = solve_device(device, v_hi, numerics.grid, &numerics.solve)?;
-        let f = rate(
-            &run(&dv, &sv, &base)?,
-            reading.supply_current_a,
-            g[0],
-            wl[0],
-        ) / rate(&vacuum, reading.supply_current_a, g[0], wl[0]).max(1e-300);
+        // Both sides warm-started from the central source on the same
+        // grid (common sample points), vacuum fields.
+        let at = |d: &Device, s: &Solution| -> Result<f64, ChainError> {
+            Ok(rate(
+                &run_from(d, s, &warm, Some(&q_c))?,
+                reading.supply_current_a,
+                g[0],
+                wl[0],
+            ))
+        };
+        let f = at(&dv, &sv)? / at(&dev_c, &sol_c)?.max(1e-300);
         let e = f.ln().abs();
         push(
             "voltage",
