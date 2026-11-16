@@ -16,6 +16,7 @@
 //! }
 //! ```
 
+pub mod antenna_extract;
 pub mod cache;
 pub mod convert;
 pub mod diff;
