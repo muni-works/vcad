@@ -120,10 +120,18 @@ extension EditorModel {
             partMeshCache[id!]?.contentKey != nil || runtimeEmptyParts.contains(id!)
         }
         guard ready else {
+            // An opened document's first solve: the runtime evaluator is
+            // incremental, so it walks the roots serially and publishes one
+            // frame only after the LAST part — fusor.loon sat on an empty
+            // viewport for ~38 s with its tree already filled in. Let the
+            // progressive job draw it (parts land as they finish, with
+            // counts) and hand over to runtime frames once one is ready.
+            if firstSolveStreams { return nil }
             awaitingRuntimeScene = true
             solving = true
             return partialScene()
         }
+        endFirstSolveStream()
         awaitingRuntimeScene = false
         solving = false
         loadError = nil
@@ -160,6 +168,10 @@ extension EditorModel {
                 awaitingRuntimeScene = false
                 solving = false
                 geometryDirty = true
+            } else if firstSolveStreams {
+                // The streamed first solve is on screen: redraw so the
+                // runtime's parts take over from it.
+                geometryDirty = true
             }
             return
         }
@@ -190,6 +202,7 @@ extension EditorModel {
         }
         adoptPickingScene(frame, extras)
         if awaitingRuntimeScene { awaitingRuntimeScene = false; solving = false; geometryDirty = true }
+        else if firstSolveStreams { geometryDirty = true }   // runtime takes over the streamed open
         let collide = collideAfterSeq > 0 && frame.ackedSeq >= collideAfterSeq
         if collide { collideAfterSeq = 0 }
         docParamDirty = true
