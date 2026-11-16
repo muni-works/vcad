@@ -366,6 +366,7 @@ fn brep_of(d: &Document, name: &str) -> vcad_kernel::vcad_kernel_primitives::BRe
         root_cache: None,
         mesh_segments: 0,
         on_root: None,
+        on_root_ready: None,
     };
     let scene = vcad_eval::evaluate_document(d, &opts).unwrap();
     let idx = d
