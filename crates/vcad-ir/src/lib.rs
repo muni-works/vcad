@@ -2991,6 +2991,42 @@ pub enum ThermalStudyBoundary {
         /// Surface temperature, °C.
         temperature_c: StudyValue,
     },
+    /// Gray-diffuse radiation to an ambient (or an enclosing wall), with
+    /// an optional parallel convection film. Nonlinear: the solver
+    /// switches to Newton. Emissivity has no default.
+    #[serde(rename_all = "camelCase")]
+    Radiation {
+        /// Hemispherical total emissivity, (0, 1].
+        emissivity: StudyValue,
+        /// Ambient / surrounding-wall temperature, °C.
+        ambient_c: StudyValue,
+        /// Parallel convection film, W/(m²·K) (omit or 0 in vacuum).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-rs", ts(optional))]
+        h_w_m2k: Option<StudyValue>,
+        /// Staircase area correction (true area / voxel area), default 1.
+        /// A voxelized cylinder wall carries ×4/π extra area at every
+        /// resolution; without this, cooling is over-counted.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-rs", ts(optional))]
+        area_scale: Option<StudyValue>,
+        /// Two-surface gray enclosure (a vacuum chamber wall).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-rs", ts(optional))]
+        enclosure: Option<ThermalStudyEnclosure>,
+    },
+}
+
+/// A gray enclosure fully surrounding a radiating surface.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct ThermalStudyEnclosure {
+    /// Wall emissivity, (0, 1].
+    pub emissivity: StudyValue,
+    /// Wall area, m² (must exceed the radiating area).
+    pub area_m2: StudyValue,
 }
 
 /// A load applied over a world-frame AABB region (kernel node-selection

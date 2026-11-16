@@ -462,3 +462,41 @@ fn puck_in_plane_convergence() {
         }
     }
 }
+
+#[test]
+fn radiating_exposed_faces_cool_the_puck_board() {
+    // Same board + die, but the exposed faces also radiate (ε from a
+    // document parameter) in parallel with the h = 5 film: cooler than
+    // convection alone, and the energy audit still closes.
+    let mut doc = puck();
+    doc.parameters
+        .insert("board_eps".into(), vcad_ir::Parameter::literal(0.9));
+    let sc = scene(&doc);
+    let rad = ThermalStudyBoundary::Radiation {
+        emissivity: StudyValue::Named("board_eps".into()),
+        ambient_c: 25.0.into(),
+        h_w_m2k: Some(5.0.into()),
+        area_scale: None,
+        enclosure: None,
+    };
+    let mut s = poc_study(5.0);
+    s.exposed = rad.clone();
+    s.domain_faces = None; // every face radiates + convects
+    let ex = extract_thermal_spec_from_scene(&doc, &sc, &s).expect("extract");
+    let model = ex.spec.resolve(&ex.parameters).expect("resolve");
+    let sol = solve_steady(&model, &SolveOptions::default()).expect("solve");
+    let mut c = poc_study(5.0);
+    c.domain_faces = None;
+    let (t_conv, _, _) = solve_doc(&doc, &sc, &c);
+    println!(
+        "h = 5 + ε = 0.9 radiation: T_max {:.2} °C (convection only {t_conv:.2}), \
+         radiated {:.3} W of 0.8, Newton {}",
+        sol.t_max_c, sol.energy.radiation_out_w, sol.newton_iterations
+    );
+    assert!(
+        sol.t_max_c < t_conv - 5.0,
+        "radiation should matter at ~80 °C"
+    );
+    assert!(sol.energy.radiation_out_w > 0.1 && sol.energy.radiation_out_w < 0.8);
+    assert!(sol.energy.residual_rel < 1e-6);
+}

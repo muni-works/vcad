@@ -37,6 +37,8 @@ back alongside it. So `spec.resolve(&parameters)` runs as-is, and scrubbing
   "sources": [ { "name": "amp", "part": "die", "powerW": "amp_loss_w" } ],
   "sinks":   [],                          // { part, temperatureC, region? }
   "exposed": { "type": "convection", "hWM2k": 5, "ambientC": 25 },
+  // or { "type": "radiation", "emissivity": "board_eps", "ambientC": 25,
+  //      "hWM2k": 5, "areaScale": 1.0, "enclosure": { "emissivity": .., "areaM2": .. } }
   "domainFaces": [ ... 6 ... ]            // omitted = all take `exposed`
 }
 ```
@@ -214,9 +216,12 @@ FR4 caution above.
   solid↔void face. A part can be a sink (fixed temperature), but it cannot
   have its own film coefficient. "This heatsink's fins see h = 25 while the
   case sees h = 5" needs per-face boundary slots in the solver.
-- **Radiation** follows the solver. The IR boundary enum has adiabatic,
-  convection, and fixed temperature. Radiation joins it once the radiation
-  boundary (PR #1189) is on main.
+- **Radiation is global too.** A `radiation` boundary (emissivity, ambient,
+  optional parallel film, `areaScale`, `enclosure`) works anywhere a
+  boundary goes: `exposed` or a domain face. But one emissivity applies to
+  every exposed face, so a black-anodized heatsink next to bare PLA is out of
+  reach until per-face slots exist. Set `areaScale` on curved parts. Without
+  it the staircase over-counts radiating area and the temperature reads low.
 - **Steady only through the document path.** `transient` with `document_id`
   is refused for now; the table carries ρc_p, so wiring it is mechanical.
 - **Roots only.** Assembly instances are not voxelized.

@@ -54,9 +54,9 @@
 //!
 //! Per-part convection: the solver has one `exposed` boundary for every
 //! solid↔void face, so a part can be a heat sink (fixed temperature) but
-//! not a surface with its own film coefficient. Instances (assembly mode)
-//! are not voxelized — only document roots. Radiation boundaries follow
-//! the solver's radiation support. See `docs/thermal-voxelizer.md`.
+//! not a surface with its own film coefficient (or emissivity). Instances
+//! (assembly mode) are not voxelized — only document roots. See
+//! `docs/thermal-voxelizer.md`.
 
 use std::collections::BTreeMap;
 
@@ -66,7 +66,8 @@ use vcad_ir::{
 };
 use vcad_kernel_thermal::model::VoxelMaterials;
 use vcad_kernel_thermal::spec::{
-    BoundarySpec, FixedSpec, MaterialSpec, ParamValue, ShapeSpec, SourceSpec, ThermalSpec,
+    BoundarySpec, EnclosureSpec, FixedSpec, MaterialSpec, ParamValue, ShapeSpec, SourceSpec,
+    ThermalSpec,
 };
 
 use crate::{evaluate_document, EvalError, EvalOptions, EvaluatedMesh, EvaluatedScene};
@@ -1002,6 +1003,38 @@ fn boundary(b: &ThermalStudyBoundary, env: &BTreeMap<String, f64>, role: &str) -
         ThermalStudyBoundary::FixedTemperature { temperature_c } => {
             BoundarySpec::FixedTemperature {
                 temperature_c: pv(temperature_c, env, &format!("{role} temperature"))?,
+            }
+        }
+        ThermalStudyBoundary::Radiation {
+            emissivity,
+            ambient_c,
+            h_w_m2k,
+            area_scale,
+            enclosure,
+        } => {
+            let opt = |v: &Option<StudyValue>, what: &str| {
+                v.as_ref()
+                    .map(|v| pv(v, env, &format!("{role} {what}")))
+                    .transpose()
+            };
+            BoundarySpec::Radiation {
+                emissivity: pv(emissivity, env, &format!("{role} emissivity"))?,
+                ambient_c: pv(ambient_c, env, &format!("{role} ambient"))?,
+                h_w_m2k: opt(h_w_m2k, "film coefficient")?,
+                area_scale: opt(area_scale, "area scale")?,
+                enclosure: enclosure
+                    .as_ref()
+                    .map(|e| {
+                        Ok::<_, ThermalExtractError>(EnclosureSpec {
+                            emissivity: pv(
+                                &e.emissivity,
+                                env,
+                                &format!("{role} enclosure emissivity"),
+                            )?,
+                            area_m2: pv(&e.area_m2, env, &format!("{role} enclosure area"))?,
+                        })
+                    })
+                    .transpose()?,
             }
         }
     })

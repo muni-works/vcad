@@ -252,16 +252,26 @@ const studyBoundarySchema = {
   required: ["type"],
   description:
     'Boundary: `{"type":"adiabatic"}`, `{"type":"convection","hWM2k":..,' +
-    '"ambientC":..}`, or `{"type":"fixedTemperature","temperatureC":..}`. ' +
+    '"ambientC":..}`, `{"type":"fixedTemperature","temperatureC":..}`, or ' +
+    '`{"type":"radiation","emissivity":..,"ambientC":..}` (gray-diffuse, ' +
+    "optional parallel `hWM2k`, `areaScale` = true/voxel area — a voxelized " +
+    "cylinder over-counts area ~4/pi — and `enclosure` {emissivity, areaM2}). " +
     "Numbers may be document parameter names.",
   properties: {
     type: {
       type: "string" as const,
-      enum: ["adiabatic", "convection", "fixedTemperature"],
+      enum: ["adiabatic", "convection", "fixedTemperature", "radiation"],
     },
     hWM2k: paramValue,
     ambientC: paramValue,
     temperatureC: paramValue,
+    emissivity: paramValue,
+    areaScale: paramValue,
+    enclosure: {
+      type: "object" as const,
+      required: ["emissivity", "areaM2"],
+      properties: { emissivity: paramValue, areaM2: paramValue },
+    },
   },
 };
 
