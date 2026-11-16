@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-15-native-3mf-export",
+  "version": "0.11.0",
+  "date": "2026-11-15",
+  "category": "fix",
+  "title": "3MF export works in vcad.app, no node needed",
+  "summary": "export_cad writes .3mf natively (millimetres, one object per part). Unknown formats name the supported list, and a failed node exporter reports its exit status and stderr.",
+  "features": ["export", "3mf", "mcp", "mac-app"],
+  "mcpTools": ["export_cad"]
+}

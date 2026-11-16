@@ -496,3 +496,73 @@ fn proxied_tools_edit_the_live_app_document() {
     let r = h.ok("upstream_echo", json!({"x": 1}));
     assert!(r["structuredContent"]["echo"].get("document_id").is_none());
 }
+
+/// vcad.app's export path: `export_cad` on the front window writes STL and
+/// 3MF natively (no node), with the same triangles; an unknown extension and
+/// a dead node exporter both say what went wrong.
+#[test]
+fn app_window_exports_3mf_natively_and_failures_explain_themselves() {
+    use std::io::Read as _;
+    let fake = Arc::new(FakeApp::default());
+    let doc = vcad_loon::eval_vcad("[difference [cube 20 20 10] [cylinder 4 30]]", None).unwrap();
+    let front = fake.open(doc, Some("Plate")).unwrap();
+    // A node exporter that dies the way a lone npx does under a GUI PATH.
+    let cfg = ServerConfig {
+        proxy: Some(vcad_mcp::proxy::ProxyConfig {
+            program: "/bin/sh".into(),
+            args: vec![
+                "-c".into(),
+                "echo 'env: node: No such file or directory' >&2; exit 127".into(),
+            ],
+            env: vec![],
+        }),
+        ..ServerConfig::default()
+    };
+    let h = H::new(Server::new(
+        Arc::new(AppStore::with_bridge(fake.clone())),
+        cfg,
+    ));
+    let out = tempfile::tempdir().unwrap();
+    let path = |n: &str| out.path().join(n).to_str().unwrap().to_string();
+
+    let stl = h.ok(
+        "export_cad",
+        json!({"document_id": front.0, "filename": path("plate.stl")}),
+    );
+    assert_eq!(stl["_meta"]["io.vcad/servedBy"], "native");
+    let stl_bytes = std::fs::read(path("plate.stl")).unwrap();
+    let stl_tris = u32::from_le_bytes(stl_bytes[80..84].try_into().unwrap()) as usize;
+    assert!(stl_tris > 12);
+
+    let tmf = h.ok(
+        "export_cad",
+        json!({"document_id": front.0, "filename": path("plate.3mf")}),
+    );
+    assert_eq!(tmf["_meta"]["io.vcad/servedBy"], "native");
+    assert_eq!(tmf["structuredContent"]["format"], "3mf");
+    let mut zip = zip::ZipArchive::new(std::fs::File::open(path("plate.3mf")).unwrap()).unwrap();
+    let mut model = String::new();
+    zip.by_name("3D/3dmodel.model")
+        .unwrap()
+        .read_to_string(&mut model)
+        .unwrap();
+    assert!(model.contains("unit=\"millimeter\""));
+    assert_eq!(model.matches("<triangle ").count(), stl_tris);
+
+    let bad = h.call(
+        "export_cad",
+        json!({"document_id": front.0, "filename": path("plate.obj")}),
+    );
+    assert_eq!(bad["result"]["isError"], true, "{bad}");
+    let msg = bad["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(msg.contains(".obj") && msg.contains(".3mf") && msg.contains(".step"), "{msg}");
+
+    let glb = h.call(
+        "export_cad",
+        json!({"document_id": front.0, "filename": path("plate.glb")}),
+    );
+    let msg = glb["error"]["message"].as_str().unwrap_or_default();
+    assert!(msg.contains(".glb export is served by the node exporter"), "{glb}");
+    assert!(msg.contains("env: node: No such file or directory"), "{glb}");
+    assert!(msg.contains("127"), "{glb}");
+}
