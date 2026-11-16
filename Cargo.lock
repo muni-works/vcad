@@ -5757,6 +5757,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "stl_io",
+ "tang-optim",
  "thiserror 2.0.18",
  "vcad-ecad-pcb",
  "vcad-ir 0.11.0",
