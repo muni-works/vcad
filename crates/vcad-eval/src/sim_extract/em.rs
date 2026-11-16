@@ -322,7 +322,7 @@ fn rev_section(
                 hi = hi.max(z);
             }
         }
-        if !(hi - lo > tol.length_mm) {
+        if (hi - lo).is_nan() || hi - lo <= tol.length_mm {
             return Err(not_repr(
                 part,
                 format!("cylinder r = {r} mm has no axial extent"),
@@ -438,8 +438,8 @@ fn brep_volume(brep: &BRepSolid) -> f64 {
         [v[i] as f64, v[i + 1] as f64, v[i + 2] as f64]
     };
     let mut vol = 0.0;
-    for t in mesh.indices.chunks_exact(3) {
-        let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+    for &[i0, i1, i2] in mesh.indices.as_chunks::<3>().0 {
+        let (a, b, c) = (p(i0), p(i1), p(i2));
         vol += a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
             + a[2] * (b[0] * c[1] - b[1] * c[0]);
     }
@@ -502,7 +502,8 @@ pub fn extract_axisym_mag_spec_from_scene(
         ));
     }
     let d = &sel.domain;
-    if !(d.pad_factor >= 0.0) || !(d.cells_per_feature >= 1.0) {
+    let bad = |v: f64, lo: f64| v.is_nan() || v < lo;
+    if bad(d.pad_factor, 0.0) || bad(d.cells_per_feature, 1.0) {
         return Err(SimExtractError::Invalid(
             "domain.pad_factor must be ≥ 0 and domain.cells_per_feature ≥ 1".into(),
         ));

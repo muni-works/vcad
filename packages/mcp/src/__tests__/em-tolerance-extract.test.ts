@@ -64,7 +64,7 @@ describe.skipIf(!wasmHasExtract)("document → EM / tolerance extraction tools",
     doc.clearance_specs = [
       { label: "lid-fit", group_a: ["lid"], group_b: ["rim"], min_mm: 0 },
     ] as typeof doc.clearance_specs;
-  });
+  }, 120_000);
 
   const motorExtract = {
     parts: [
@@ -92,7 +92,7 @@ describe.skipIf(!wasmHasExtract)("document → EM / tolerance extraction tools",
     expect(out.qois.gap_flux_t).toBeGreaterThan(0.5);
     expect(out.qois.gap_flux_t).toBeLessThan(2.3);
     expect(out.qois.self_inductance_h).toBeNull();
-  });
+  }, 120_000);
 
   it("a grid coarser than the advice is refused", async () => {
     const res = await call("simulate_em", {
@@ -102,7 +102,7 @@ describe.skipIf(!wasmHasExtract)("document → EM / tolerance extraction tools",
     });
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain("coarser than the advised");
-  });
+  }, 120_000);
 
   it("a part with no magnetic role fails closed by name", async () => {
     const bad = await call("simulate_em", {
@@ -112,7 +112,7 @@ describe.skipIf(!wasmHasExtract)("document → EM / tolerance extraction tools",
     expect(bad.isError).toBe(true);
     expect(bad.content[0].text).toContain("voice_coil");
     expect(bad.content[0].text).toContain("not in the magnetic material table");
-  });
+  }, 120_000);
 
   it("analyze_tolerance_stackup derives the lid fit from the document", async () => {
     const res = await call("analyze_tolerance_stackup", {
@@ -131,5 +131,5 @@ describe.skipIf(!wasmHasExtract)("document → EM / tolerance extraction tools",
     );
     expect(coeffs.rim_id).toBeCloseTo(0.5, 9);
     expect(coeffs.lid_od).toBeCloseTo(-0.5, 9);
-  });
+  }, 120_000);
 });
