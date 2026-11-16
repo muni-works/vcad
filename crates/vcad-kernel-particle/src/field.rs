@@ -10,7 +10,7 @@ use crate::poisson::Solution;
 /// Anything the Boris tracer can push particles through: an electrostatic
 /// potential with its (conservative) field, plus an optional magnetic
 /// field. Implemented by the axisymmetric [`FieldMap`] and by the 3D
-/// thin-wire [`crate::bem::WireField`]. All positions are SI meters.
+/// thin-wire `bem::WireField`. All positions are SI meters.
 pub trait FieldSampler: std::fmt::Debug + Sync {
     /// Electrostatic potential, volts.
     fn potential(&self, p: [f64; 3]) -> f64;
@@ -35,21 +35,6 @@ impl FieldSampler for FieldMap<'_> {
     }
     fn has_magnetics(&self) -> bool {
         FieldMap::has_magnetics(self)
-    }
-}
-
-impl FieldSampler for crate::bem::WireField {
-    fn potential(&self, p: [f64; 3]) -> f64 {
-        crate::bem::WireField::potential(self, p)
-    }
-    fn e_cart(&self, p: [f64; 3]) -> [f64; 3] {
-        self.e_field(p)
-    }
-    fn b_cart(&self, p: [f64; 3]) -> [f64; 3] {
-        self.b_field(p)
-    }
-    fn has_magnetics(&self) -> bool {
-        self.b_field_present()
     }
 }
 

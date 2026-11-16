@@ -906,6 +906,21 @@ impl WireField {
     }
 }
 
+impl crate::field::FieldSampler for WireField {
+    fn potential(&self, p: [f64; 3]) -> f64 {
+        WireField::potential(self, p)
+    }
+    fn e_cart(&self, p: [f64; 3]) -> [f64; 3] {
+        self.e_field(p)
+    }
+    fn b_cart(&self, p: [f64; 3]) -> [f64; 3] {
+        self.b_field(p)
+    }
+    fn has_magnetics(&self) -> bool {
+        self.b_field_present()
+    }
+}
+
 /// Collision geometry of a solved [`WireField`] for the Boris tracer:
 /// segment-capsule wire hits, spherical (or far-field) wall.
 #[derive(Debug, Clone)]
