@@ -88,7 +88,8 @@ final class CrashDiagnostics: NSObject, MXMetricManagerSubscriber, @unchecked Se
 
     @MainActor func promptSoon() {
         guard !UserDefaults.standard.bool(forKey: Self.dontAskKey), !prompting, !Self.pending().isEmpty else { return }
-        // Same reason as RecoveryPrompt: let the window come up first.
+        // Let the window come up first: a modal run from inside
+        // applicationDidFinishLaunching returns instantly without a click.
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { MainActor.assumeIsolated { self.prompt() } }
     }
 

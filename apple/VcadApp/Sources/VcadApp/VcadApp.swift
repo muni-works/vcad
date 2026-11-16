@@ -391,7 +391,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
-        MainActor.assumeIsolated { RecoveryPrompt.runIfNeeded(); AgentInstallPrompt.runIfFirstLaunch()
+        MainActor.assumeIsolated { AgentInstallPrompt.runIfFirstLaunch()
             #if DEBUG
             if ProcessInfo.processInfo.environment["VCAD_FAKE_CRASH"] == "1" { CrashDiagnostics.plantFake() }
             #endif
@@ -399,6 +399,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ app: NSApplication) -> Bool { true }
+
+    /// ⌘Q skips the close prompt, and the autosave debounce would never fire:
+    /// write unsaved work now so it lands in Recents for next time.
+    func applicationWillTerminate(_ notification: Notification) {
+        MainActor.assumeIsolated { AppInstance.currentModel?.flushAutosaveNow() }
+    }
 
     /// Implementing `application(_:open:)` below tells AppKit this app opens
     /// documents, which by default suppresses the untitled window at launch —

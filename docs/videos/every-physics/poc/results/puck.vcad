@@ -1,0 +1,350 @@
+{
+  "version": "0.1",
+  "nodes": {
+    "2": {
+      "id": 2,
+      "name": null,
+      "op": {
+        "type": "Translate",
+        "child": 1,
+        "offset": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 3.0
+        }
+      }
+    },
+    "18": {
+      "id": 18,
+      "name": null,
+      "op": {
+        "type": "Cube",
+        "size": {
+          "x": 50.0,
+          "y": 50.0,
+          "z": 1.6
+        }
+      }
+    },
+    "3": {
+      "id": 3,
+      "name": null,
+      "op": {
+        "type": "Difference",
+        "left": 0,
+        "right": 2
+      }
+    },
+    "15": {
+      "id": 15,
+      "name": null,
+      "op": {
+        "type": "Cylinder",
+        "radius": 14.0,
+        "height": 60.0,
+        "segments": 0
+      }
+    },
+    "5": {
+      "id": 5,
+      "name": null,
+      "op": {
+        "type": "Translate",
+        "child": 4,
+        "offset": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": -1.0
+        }
+      }
+    },
+    "10": {
+      "id": 10,
+      "name": null,
+      "op": {
+        "type": "Cylinder",
+        "radius": 12.0,
+        "height": 62.0,
+        "segments": 0
+      }
+    },
+    "13": {
+      "id": 13,
+      "name": null,
+      "op": {
+        "type": "Cylinder",
+        "radius": 52.0,
+        "height": 114.0,
+        "segments": 0
+      }
+    },
+    "6": {
+      "id": 6,
+      "name": null,
+      "op": {
+        "type": "Difference",
+        "left": 3,
+        "right": 5
+      }
+    },
+    "8": {
+      "id": 8,
+      "name": null,
+      "op": {
+        "type": "Translate",
+        "child": 7,
+        "offset": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 60.0
+        }
+      }
+    },
+    "12": {
+      "id": 12,
+      "name": "enclosure",
+      "op": {
+        "type": "Difference",
+        "left": 9,
+        "right": 11
+      }
+    },
+    "0": {
+      "id": 0,
+      "name": null,
+      "op": {
+        "type": "Cylinder",
+        "radius": 55.0,
+        "height": 120.0,
+        "segments": 0
+      }
+    },
+    "14": {
+      "id": 14,
+      "name": null,
+      "op": {
+        "type": "Translate",
+        "child": 13,
+        "offset": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 3.0
+        }
+      }
+    },
+    "19": {
+      "id": 19,
+      "name": null,
+      "op": {
+        "type": "Translate",
+        "child": 18,
+        "offset": {
+          "x": -25.0,
+          "y": -25.0,
+          "z": 43.0
+        }
+      }
+    },
+    "7": {
+      "id": 7,
+      "name": null,
+      "op": {
+        "type": "Cylinder",
+        "radius": 14.0,
+        "height": 60.0,
+        "segments": 0
+      }
+    },
+    "1": {
+      "id": 1,
+      "name": null,
+      "op": {
+        "type": "Cylinder",
+        "radius": 52.0,
+        "height": 114.0,
+        "segments": 0
+      }
+    },
+    "9": {
+      "id": 9,
+      "name": null,
+      "op": {
+        "type": "Union",
+        "left": 6,
+        "right": 8
+      }
+    },
+    "4": {
+      "id": 4,
+      "name": null,
+      "op": {
+        "type": "Cylinder",
+        "radius": 35.0,
+        "height": 5.0,
+        "segments": 0
+      }
+    },
+    "16": {
+      "id": 16,
+      "name": null,
+      "op": {
+        "type": "Translate",
+        "child": 15,
+        "offset": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 60.0
+        }
+      }
+    },
+    "11": {
+      "id": 11,
+      "name": null,
+      "op": {
+        "type": "Translate",
+        "child": 10,
+        "offset": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 59.0
+        }
+      }
+    },
+    "17": {
+      "id": 17,
+      "name": null,
+      "op": {
+        "type": "Difference",
+        "left": 14,
+        "right": 16
+      }
+    }
+  },
+  "materials": {
+    "default": {
+      "name": "default",
+      "color": [
+        0.8,
+        0.8,
+        0.8
+      ],
+      "metallic": 0.0,
+      "roughness": 0.5
+    }
+  },
+  "part_materials": {},
+  "roots": [
+    {
+      "root": 12,
+      "material": "pla"
+    },
+    {
+      "root": 17,
+      "material": "air"
+    },
+    {
+      "root": 19,
+      "material": "fr4"
+    }
+  ],
+  "parameters": {
+    "port_r": {
+      "value": 12.0,
+      "unit": "mm",
+      "min": 6.0,
+      "max": 20.0
+    },
+    "wall": {
+      "value": 3.0,
+      "unit": "mm",
+      "min": 2.0,
+      "max": 6.0
+    },
+    "body_h": {
+      "value": 120.0,
+      "unit": "mm",
+      "min": 80.0,
+      "max": 200.0
+    },
+    "driver_cut_r": {
+      "value": 35.0,
+      "unit": "mm",
+      "min": 22.0,
+      "max": 48.0
+    },
+    "board_w": {
+      "value": 50.0,
+      "unit": "mm",
+      "min": 30.0,
+      "max": 70.0
+    },
+    "board_l": {
+      "value": 50.0,
+      "unit": "mm",
+      "min": 30.0,
+      "max": 70.0
+    },
+    "amp_loss_w": {
+      "value": 0.8,
+      "unit": "W",
+      "min": 0.1,
+      "max": 5.0
+    },
+    "port_wall": {
+      "value": 2.0,
+      "unit": "mm",
+      "min": 1.2,
+      "max": 4.0
+    },
+    "ant_len": {
+      "value": 30.0,
+      "unit": "mm",
+      "min": 20.0,
+      "max": 40.0
+    },
+    "body_r": {
+      "value": 55.0,
+      "unit": "mm",
+      "min": 40.0,
+      "max": 80.0
+    },
+    "port_len": {
+      "value": 60.0,
+      "unit": "mm",
+      "min": 20.0,
+      "max": 100.0
+    },
+    "driver_r": {
+      "value": 32.0,
+      "unit": "mm",
+      "min": 20.0,
+      "max": 45.0
+    }
+  },
+  "bindings": {
+    "2:offset.z": "(0) + (1) * wall",
+    "7:radius": "(0) + (1) * port_r + (1) * port_wall",
+    "13:radius": "(0) + (1) * body_r + (-1) * wall",
+    "0:radius": "(0) + (1) * body_r",
+    "4:radius": "(0) + (1) * driver_cut_r",
+    "7:height": "(0) + (1) * port_len",
+    "10:radius": "(0) + (1) * port_r",
+    "0:height": "(0) + (1) * body_h",
+    "14:offset.z": "(0) + (1) * wall",
+    "15:radius": "(0) + (1) * port_r + (1) * port_wall",
+    "16:offset.z": "(0) + (1) * body_h + (-1) * port_len",
+    "13:height": "(0) + (1) * body_h + (-2) * wall",
+    "1:height": "(0) + (1) * body_h + (-2) * wall",
+    "15:height": "(0) + (1) * port_len",
+    "8:offset.z": "(0) + (1) * body_h + (-1) * port_len",
+    "18:size.x": "(0) + (1) * board_w",
+    "11:offset.z": "(-1) + (1) * body_h + (-1) * port_len",
+    "1:radius": "(0) + (1) * body_r + (-1) * wall",
+    "10:height": "(2) + (1) * port_len",
+    "18:size.y": "(0) + (1) * board_l",
+    "19:offset.x": "(0) + (-0.5) * board_w",
+    "19:offset.y": "(0) + (-0.5) * board_l",
+    "4:height": "(2) + (1) * wall",
+    "19:offset.z": "(40) + (1) * wall"
+  }
+}
