@@ -843,253 +843,26 @@ async function readRaw(args: Json): Promise<{ text: string; sha256: string; name
   return { text, sha256: await sha256Hex(text), ...(name ? { name } : {}) };
 }
 
-// -- Touchstone .s1p (port of vcad_kernel_antenna::nanovna) --------------
-
-interface Cx {
-  re: number;
-  im: number;
-}
-const cx = (re: number, im = 0): Cx => ({ re, im });
-const cadd = (a: Cx, b: Cx): Cx => cx(a.re + b.re, a.im + b.im);
-const csub = (a: Cx, b: Cx): Cx => cx(a.re - b.re, a.im - b.im);
-const cmul = (a: Cx, b: Cx): Cx => cx(a.re * b.re - a.im * b.im, a.re * b.im + a.im * b.re);
-const cdiv = (a: Cx, b: Cx): Cx => {
-  const d = b.re * b.re + b.im * b.im;
-  return cx((a.re * b.re + a.im * b.im) / d, (a.im * b.re - a.re * b.im) / d);
-};
-const cabs = (a: Cx): number => Math.hypot(a.re, a.im);
-const cpolar = (mag: number, deg: number): Cx => {
-  const t = (deg * Math.PI) / 180;
-  return cx(mag * Math.cos(t), mag * Math.sin(t));
-};
-
-export function parseS1p(text: string): { z0: number; samples: Array<[number, Cx]> } {
-  let scale: number | undefined;
-  let format: "RI" | "MA" | "DB" | undefined;
-  let z0 = 50;
-  const samples: Array<[number, Cx]> = [];
-  const lines = text.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!.trim();
-    if (line === "" || line.startsWith("!")) continue;
-    const at = `.s1p line ${i + 1}`;
-    if (line.startsWith("#")) {
-      const toks = line.slice(1).trim().split(/\s+/).map((t) => t.toUpperCase());
-      const units: Record<string, number> = { HZ: 1, KHZ: 1e3, MHZ: 1e6, GHZ: 1e9 };
-      if (!(toks[0]! in units)) throw new Error(`${at}: unsupported frequency unit in option line`);
-      scale = units[toks[0]!];
-      if (toks[1] !== "S") throw new Error(`${at}: option line is not an S-parameter declaration`);
-      if (toks[2] !== "RI" && toks[2] !== "MA" && toks[2] !== "DB") {
-        throw new Error(`${at}: unsupported S-parameter format (RI/MA/DB)`);
-      }
-      format = toks[2];
-      if (toks[4] !== undefined) {
-        z0 = Number(toks[4]);
-        if (!Number.isFinite(z0)) throw new Error(`${at}: bad reference impedance in option line`);
-      }
-      continue;
-    }
-    if (scale === undefined || format === undefined) throw new Error(`${at}: data before the # option line`);
-    const nums = line.split(/\s+/).map(Number);
-    if (nums.some((n) => !Number.isFinite(n))) throw new Error(`${at}: non-numeric data line`);
-    if (nums.length !== 3) throw new Error(`${at}: expected 3 columns (freq, a, b)`);
-    const [f, a, b] = nums as [number, number, number];
-    const s = format === "RI" ? cx(a, b) : format === "MA" ? cpolar(a, b) : cpolar(10 ** (a / 20), b);
-    samples.push([f * scale, s]);
-  }
-  if (samples.length === 0) throw new Error(".s1p: no data rows");
-  return { z0, samples };
+/** Engine surface the importers need (the parsers live in the kernel). */
+export interface MeasurementEngine {
+  importMeasurementFile(format: string, text: string, contextJson: string): unknown;
 }
 
-interface DerivedMeasurement {
-  claim: string;
-  value: number;
-  half_width: number;
-}
-
-/** Library defaults (`NanoVnaTolerances::default()`); the measurer may override. */
-const NANOVNA_TOL = { s11_db: 2.0, freq_rel: 0.02, z_ohm: 10.0, bandwidth_rel: 0.25 };
-
-export function measurementsFromS1p(
-  sweep: { z0: number; samples: Array<[number, Cx]> },
-  claimSet: Json,
-  tolIn: Partial<typeof NANOVNA_TOL> = {},
-): DerivedMeasurement[] {
-  const tol = { ...NANOVNA_TOL, ...tolIn };
-  const band = (claimSet.provenance as Json | undefined)?.band as Json | undefined;
-  const flo = Number(band?.f_lo_hz);
-  const fhi = Number(band?.f_hi_hz);
-  const zref = Number(claimSet.reference_ohm);
-  if (!Number.isFinite(flo) || !Number.isFinite(fhi) || !Number.isFinite(zref)) {
-    throw new Error("antenna claim set lacks provenance.band / reference_ohm — re-attach the full analyze_antenna result");
-  }
-  const rows: Array<[number, Cx, number]> = [];
-  for (const [f, s] of sweep.samples) {
-    if (f < flo || f > fhi) continue;
-    const denom = csub(cx(1), s);
-    if (cabs(denom) < 1e-12) continue;
-    const z = cmul(cdiv(cadd(cx(1), s), denom), cx(sweep.z0));
-    const g = cabs(cdiv(csub(z, cx(zref)), cadd(z, cx(zref))));
-    rows.push([f, z, Math.max(20 * Math.log10(g), -120)]);
-  }
-  if (rows.length < 2) throw new Error(".s1p: fewer than 2 sweep points inside the claimed band");
-  const [fMin, zMin, sMin] = rows.reduce((a, b) => (b[2] < a[2] ? b : a));
-  const out: DerivedMeasurement[] = [
-    { claim: "s11_db_at_band", value: sMin, half_width: tol.s11_db },
-    { claim: "s11_min_freq", value: fMin, half_width: tol.freq_rel * fMin },
-    { claim: "z_in_re", value: zMin.re, half_width: tol.z_ohm },
-    { claim: "z_in_im", value: zMin.im, half_width: tol.z_ohm },
-  ];
-  let fRes: number | undefined;
-  for (let i = 0; i + 1 < rows.length; i++) {
-    const [f0, z0i] = rows[i]!;
-    const [f1, z1i] = rows[i + 1]!;
-    if (z0i.im === 0 || Math.sign(z0i.im) !== Math.sign(z1i.im)) {
-      const t = z0i.im / (z0i.im - z1i.im);
-      fRes = f0 + t * (f1 - f0);
-      break;
-    }
-  }
-  out.push({ claim: "resonance_in_band", value: fRes !== undefined ? 1 : 0, half_width: 0.5 });
-  if (fRes !== undefined) out.push({ claim: "resonant_frequency", value: fRes, half_width: tol.freq_rel * fRes });
-  const below = rows.filter((r) => r[2] < -10);
-  const bw = below.length ? below[below.length - 1]![0] - below[0]![0] : 0;
-  const bwClaim = Array.isArray(claimSet.claims)
-    ? (claimSet.claims as Json[]).find((c) => c.name === "bandwidth_10db")
-    : undefined;
-  const bwPred = typeof bwClaim?.value === "number" ? bwClaim.value : 0;
-  const step = (rows[rows.length - 1]![0] - rows[0]![0]) / (rows.length - 1);
-  out.push({ claim: "bandwidth_10db", value: bw, half_width: Math.max(tol.bandwidth_rel * bwPred, 2 * step) });
-  return out;
-}
-
-// -- REW impedance export → acoustics port tuning f_b ---------------------
-
-/** Rows of numbers from a text export; `*`/`#`/`!` comment lines and one
- *  optional header line are skipped. Fail-closed on any other junk. */
-function numericRows(text: string, minCols: number, what: string): number[][] {
-  const rows: number[][] = [];
-  const lines = text.split(/\r?\n/);
-  let headerSeen = false;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!.trim();
-    if (line === "" || /^[*#!;]/.test(line)) continue;
-    const toks = line.split(/[\s,;\t]+/).filter(Boolean);
-    const nums = toks.map(Number);
-    if (nums.some((n) => !Number.isFinite(n))) {
-      if (!headerSeen && rows.length === 0 && /[a-z]/i.test(line)) {
-        headerSeen = true;
-        continue;
-      }
-      throw new Error(`${what} line ${i + 1}: non-numeric data (${line.slice(0, 60)})`);
-    }
-    if (nums.length < minCols) throw new Error(`${what} line ${i + 1}: expected at least ${minCols} columns`);
-    rows.push(nums);
-  }
-  return rows;
-}
-
-/**
- * Port tuning frequency from a REW impedance export (columns: frequency Hz,
- * |Z| ohm, phase deg). A vented box shows two impedance peaks; f_b is the
- * |Z| minimum between the two largest. Fewer than two peaks is an error, not
- * a guess. Uncertainty floor: half the local frequency step.
- */
-export function tuningFromRewImpedance(text: string): { f_b_hz: number; grid_half_step_hz: number; peaks_hz: [number, number] } {
-  const rows = numericRows(text, 2, "REW impedance export")
-    .map((r) => [r[0]!, r[1]!] as [number, number])
-    .sort((a, b) => a[0] - b[0]);
-  if (rows.length < 5) throw new Error("REW impedance export: need at least 5 rows");
-  const peaks: number[] = [];
-  for (let i = 1; i + 1 < rows.length; i++) {
-    if (rows[i]![1] > rows[i - 1]![1] && rows[i]![1] >= rows[i + 1]![1]) peaks.push(i);
-  }
-  if (peaks.length < 2) {
-    throw new Error(
-      `REW impedance export: found ${peaks.length} impedance peak(s); a vented box shows two — is this a sealed box or a truncated sweep?`,
-    );
-  }
-  const [pa, pb] = [...peaks].sort((a, b) => rows[b]![1] - rows[a]![1]).slice(0, 2).sort((a, b) => a - b) as [number, number];
-  if (pb - pa < 2) throw new Error("REW impedance export: the two peaks are adjacent samples — sweep resolution too coarse");
-  let min = pa + 1;
-  for (let i = pa + 1; i < pb; i++) if (rows[i]![1] < rows[min]![1]) min = i;
-  const half = Math.max(rows[min]![0] - rows[min - 1]![0], rows[min + 1]![0] - rows[min]![0]) / 2;
-  return { f_b_hz: rows[min]![0], grid_half_step_hz: half, peaks_hz: [rows[pa]![0], rows[pb]![0]] };
-}
-
-// -- Thermocouple CSV → thermal temperature -------------------------------
-
-export function temperatureFromThermocoupleCsv(
-  text: string,
-  opts: { column?: string; reduce?: "steady" | "max"; window_s?: number; max_drift_c?: number },
-): { value_c: number; spread_c: number; samples: number; window_s?: number; drift_c?: number; column: string } {
-  const lines = text.split(/\r?\n/).filter((l) => l.trim() !== "" && !/^[#!]/.test(l.trim()));
-  if (lines.length < 2) throw new Error("thermocouple CSV: need a header row and data");
-  const split = (l: string) => l.split(/[,;\t]/).map((t) => t.trim());
-  const header = split(lines[0]!);
-  const clean = (h: string) => h.toLowerCase().replace(/\s*\(.*?\)\s*/g, "").replace(/[^a-z0-9_°]/g, "_");
-  const names = header.map(clean);
-  const ti = names.findIndex((h) => /^(t|time|time_s|t_s|seconds|elapsed|elapsed_s|s)$/.test(h));
-  if (ti < 0) throw new Error(`thermocouple CSV: no time column in header (${header.join(", ")}); name it time_s`);
-  let ci: number;
-  if (opts.column) {
-    ci = header.findIndex((h) => h === opts.column || clean(h) === clean(opts.column!));
-    if (ci < 0) throw new Error(`thermocouple CSV: column ${JSON.stringify(opts.column)} not in header (${header.join(", ")})`);
-  } else {
-    const temps = names.map((h, i) => [h, i] as const).filter(([h, i]) => i !== ti && /temp|tc|°c|_c$|^c$|celsius/.test(h));
-    if (temps.length !== 1) {
-      throw new Error(
-        `thermocouple CSV: ${temps.length === 0 ? "no" : "several"} temperature column(s) in header (${header.join(", ")}); pass \`column\``,
-      );
-    }
-    ci = temps[0]![1];
-  }
-  const data: Array<[number, number]> = [];
-  for (let i = 1; i < lines.length; i++) {
-    const toks = split(lines[i]!);
-    const t = Number(toks[ti]);
-    const v = Number(toks[ci]);
-    if (!Number.isFinite(t) || !Number.isFinite(v)) throw new Error(`thermocouple CSV row ${i + 1}: non-numeric time or temperature`);
-    data.push([t, v]);
-  }
-  if (data.length < 5) throw new Error("thermocouple CSV: need at least 5 samples");
-  const column = header[ci]!;
-  if (opts.reduce === "max") {
-    const vals = data.map((d) => d[1]);
-    const mx = Math.max(...vals);
-    return { value_c: mx, spread_c: 0, samples: data.length, column };
-  }
-  const t0 = data[0]![0];
-  const t1 = data[data.length - 1]![0];
-  const window = opts.window_s ?? (t1 - t0) * 0.1;
-  const win = data.filter((d) => d[0] >= t1 - window);
-  if (win.length < 5) throw new Error(`thermocouple CSV: only ${win.length} samples in the last ${window} s — widen window_s`);
-  const n = win.length;
-  const mt = win.reduce((s, d) => s + d[0], 0) / n;
-  const mv = win.reduce((s, d) => s + d[1], 0) / n;
-  const sxy = win.reduce((s, d) => s + (d[0] - mt) * (d[1] - mv), 0);
-  const sxx = win.reduce((s, d) => s + (d[0] - mt) ** 2, 0);
-  const slope = sxx > 0 ? sxy / sxx : 0;
-  const span = win[n - 1]![0] - win[0]![0];
-  const drift = Math.abs(slope * span);
-  const maxDrift = opts.max_drift_c ?? 0.5;
-  if (drift > maxDrift) {
-    throw new Error(
-      `thermocouple CSV: still drifting ${drift.toFixed(2)} °C over the last ${span.toFixed(0)} s (limit ${maxDrift}) — not at steady state; log longer or pass reduce:"max" for a peak claim`,
-    );
-  }
-  const sd = Math.sqrt(win.reduce((s, d) => s + (d[1] - mv) ** 2, 0) / Math.max(1, n - 1));
-  return { value_c: mv, spread_c: sd, samples: n, window_s: span, drift_c: drift, column };
-}
+/** NanoVNA tolerance overrides (defaults: 2 dB, 2%, 10 ohm, 25%). */
+type NanoVnaTolerances = { s11_db?: number; freq_rel?: number; z_ohm?: number; bandwidth_rel?: number };
 
 const TEMP_UNITS = new Set(["C", "degC", "°C"]);
 
-/** Run a typed importer and record its readings on the ledger. */
-export async function importMeasurement(doc: Document, args: Json) {
+/** Run a typed importer (kernel-side, fail-closed parser) and record its
+ *  readings on the ledger. */
+export async function importMeasurement(doc: Document, args: Json, engine: MeasurementEngine) {
   const format = String(args.format ?? "");
   const ledger = ledgerOf(doc);
   if (!ledger || ledger.entries.length === 0) {
     throw new Error("import_measurement: this document has no claims ledger — attach solver claims first (attach_claims)");
+  }
+  if (!["touchstone_s1p", "rew_impedance", "thermocouple_csv"].includes(format)) {
+    throw new Error(`import_measurement: unknown format ${JSON.stringify(format)} (touchstone_s1p, rew_impedance, thermocouple_csv)`);
   }
   const raw = await readRaw(args);
   const subject = typeof args.subject === "string" ? args.subject : undefined;
@@ -1111,12 +884,15 @@ export async function importMeasurement(doc: Document, args: Json) {
           : "import_measurement: several antenna claim sets are attached — pass `subject` to pick one",
       );
     }
-    const set = JSON.parse(ledger.claim_sets![setIdx[0]!]!.json) as Json;
-    const sweep = parseS1p(raw.text);
-    const ms = measurementsFromS1p(sweep, set, (args.tolerances as Partial<typeof NANOVNA_TOL>) ?? {});
+    const claimSet = JSON.parse(ledger.claim_sets![setIdx[0]!]!.json) as Json;
+    const r = engine.importMeasurementFile(
+      format,
+      raw.text,
+      JSON.stringify({ claim_set: claimSet, ...(args.tolerances ? { tolerances: args.tolerances as NanoVnaTolerances } : {}) }),
+    ) as { points: number; reference_ohm: number; measurements: Array<{ claim: string; value: number; tolerance: number }> };
     const present = new Set(antenna.map((e) => e.claim.id));
-    const used = ms.filter((m) => present.has(`antenna.${m.claim}`));
-    const skipped = ms.filter((m) => !present.has(`antenna.${m.claim}`)).map((m) => m.claim);
+    const used = r.measurements.filter((m) => present.has(`antenna.${m.claim}`));
+    const skipped = r.measurements.filter((m) => !present.has(`antenna.${m.claim}`)).map((m) => m.claim);
     if (used.length === 0) throw new Error("import_measurement: the sweep matched none of the attached antenna claims");
     inputs = used.map((m) => {
       const e = antenna.find((x) => x.claim.id === `antenna.${m.claim}`)!;
@@ -1126,67 +902,73 @@ export async function importMeasurement(doc: Document, args: Json) {
         value: m.value,
         ...(e.predicted.unit ? { unit: e.predicted.unit } : {}),
         uncertainty: 0,
-        instrument: instrument ?? `one-port VNA (.s1p, ${sweep.samples.length} points, z0 ${sweep.z0} ohm)`,
-        band: { kind: "absolute", half_width: m.half_width },
+        instrument: instrument ?? `one-port VNA (.s1p, ${r.points} points, z0 ${r.reference_ohm} ohm)`,
+        band: { kind: "absolute", half_width: m.tolerance },
         ...base,
       };
     });
     derived = {
-      points: sweep.samples.length,
-      reference_ohm: sweep.z0,
+      points: r.points,
+      reference_ohm: r.reference_ohm,
       measurements: used,
       ...(skipped.length ? { skipped_not_attached: skipped } : {}),
       note: "gain and efficiency stay Unmeasured: a reflection-only instrument cannot see them",
     };
   } else if (format === "rew_impedance") {
     const claimId = typeof args.claim_id === "string" ? args.claim_id : "acoustics.tuning_hz";
-    const r = tuningFromRewImpedance(raw.text);
-    const userU = Number(args.uncertainty ?? 0);
-    if (!(Number.isFinite(userU) && userU >= 0)) throw new Error("uncertainty must be >= 0");
+    const band = parseBand(args.band, "acoustics", claimId);
+    const r = engine.importMeasurementFile(
+      format,
+      raw.text,
+      JSON.stringify({ extra_uncertainty_hz: Number(args.uncertainty ?? 0) }),
+    ) as { f_b_hz: number; uncertainty_hz: number };
     inputs = [
       {
         claim_id: claimId,
         ...(subject ? { subject } : {}),
         value: r.f_b_hz,
         unit: "Hz",
-        uncertainty: Math.hypot(userU, r.grid_half_step_hz),
+        uncertainty: r.uncertainty_hz,
         instrument: instrument ?? "REW impedance sweep (vented-box saddle between the two |Z| peaks)",
-        band: parseBand(args.band, "acoustics", claimId),
+        band,
         ...base,
       },
     ];
     derived = { ...r };
-  } else if (format === "thermocouple_csv") {
+  } else {
     if (typeof args.claim_id !== "string") throw new Error("import_measurement: thermocouple_csv needs `claim_id` (e.g. thermal.t_max_c)");
     const e = findEntry(ledger, args.claim_id, subject);
     if (!TEMP_UNITS.has(String(e.predicted.unit ?? ""))) {
       throw new Error(`${args.claim_id} is in ${JSON.stringify(e.predicted.unit ?? "1")}, not a temperature — a thermocouple log can only measure a temperature claim`);
     }
-    const instU = Number(args.instrument_uncertainty_c);
-    if (!(Number.isFinite(instU) && instU >= 0)) {
+    if (typeof args.instrument_uncertainty_c !== "number") {
       throw new Error("import_measurement: thermocouple_csv needs instrument_uncertainty_c (type-K standard limits are ±2.2 °C)");
     }
-    const r = temperatureFromThermocoupleCsv(raw.text, {
-      ...(typeof args.column === "string" ? { column: args.column } : {}),
-      ...(args.reduce === "max" ? { reduce: "max" as const } : {}),
-      ...(typeof args.window_s === "number" ? { window_s: args.window_s } : {}),
-      ...(typeof args.max_drift_c === "number" ? { max_drift_c: args.max_drift_c } : {}),
-    });
+    const band = parseBand(args.band, e.claim.domain, args.claim_id);
+    const r = engine.importMeasurementFile(
+      format,
+      raw.text,
+      JSON.stringify({
+        instrument_uncertainty_c: args.instrument_uncertainty_c,
+        ...(typeof args.column === "string" ? { column: args.column } : {}),
+        ...(typeof args.reduce === "string" ? { reduce: args.reduce } : {}),
+        ...(typeof args.window_s === "number" ? { window_s: args.window_s } : {}),
+        ...(typeof args.max_drift_c === "number" ? { max_drift_c: args.max_drift_c } : {}),
+      }),
+    ) as { value_c: number; uncertainty_c: number; samples: number; column: string };
     inputs = [
       {
         claim_id: args.claim_id,
         ...(e.claim.subject ? { subject: e.claim.subject } : {}),
         value: r.value_c,
         unit: String(e.predicted.unit),
-        uncertainty: Math.hypot(instU, r.spread_c),
+        uncertainty: r.uncertainty_c,
         instrument: instrument ?? `thermocouple log (${r.column}, ${r.samples} samples)`,
-        band: parseBand(args.band, e.claim.domain, args.claim_id),
+        band,
         ...base,
       },
     ];
     derived = { ...r };
-  } else {
-    throw new Error(`import_measurement: unknown format ${JSON.stringify(format)} (touchstone_s1p, rew_impedance, thermocouple_csv)`);
   }
   const res = await recordClaimMeasurements(doc, inputs, { replace });
   return { format, raw_sha256: raw.sha256, derived, ...res };
@@ -1365,11 +1147,11 @@ export const toolDefs: ToolDef[] = [
         replace: { type: "boolean" as const, description: "Overwrite existing measurements." },
       },
     },
-    handler: async (args) => {
+    handler: async (args, ctx) => {
       try {
         const a = args as Json;
         const { doc, documentId } = resolveDocInput(a);
-        const res = await importMeasurement(doc, a);
+        const res = await importMeasurement(doc, a, ctx.engine);
         const scorecard = await documentScorecard(doc);
         return textResult({ ...res, scorecard }, { ...res, scorecard, ...(documentId ? { document_id: documentId } : {}) });
       } catch (e) {

@@ -71,6 +71,7 @@ pub mod medium;
 pub mod optimize;
 pub mod radiation;
 pub mod receipt;
+pub mod rew;
 pub mod spec;
 pub mod strike;
 pub mod sweep;

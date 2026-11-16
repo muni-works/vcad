@@ -15,15 +15,12 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Document } from "@vcad/ir";
 import { buildReceipt, verifyReceipt } from "../tools/ecad.js";
 import { documents, getSession, openDocument } from "../tools/session.js";
+import { Engine } from "@vcad/engine";
 import {
   attachClaims,
   bandHolds,
   designFingerprint,
-  measurementsFromS1p,
-  parseS1p,
-  temperatureFromThermocoupleCsv,
   toolDefs,
-  tuningFromRewImpedance,
 } from "../tools/claims-ledger.js";
 import { toolDefs as printToolDefs } from "../tools/print-check.js";
 
@@ -35,10 +32,18 @@ function out(result: { content: Array<{ type: string; text: string }>; isError?:
   return JSON.parse(result.content[0]!.text);
 }
 
+// The instrument parsers live in the kernel (importMeasurementFile); their
+// unit tests are Rust-side (vcad-kernel-acoustics::rew,
+// vcad-kernel-thermal::thermocouple, vcad-kernel-antenna::nanovna).
+const engine = await Engine.init();
+const wasmHasImporters =
+  typeof (engine as unknown as { kernel?: { importMeasurementFile?: unknown } }).kernel?.importMeasurementFile ===
+  "function";
+
 const tool = (name: string) => {
   const t = [...toolDefs, ...printToolDefs].find((d) => d.name === name);
   if (!t) throw new Error(`no tool ${name}`);
-  return (args: Record<string, unknown>) => t.handler(args, {} as Any) as Promise<Any>;
+  return (args: Record<string, unknown>) => t.handler(args, { engine } as Any) as Promise<Any>;
 };
 const attach = tool("attach_claims");
 const record = tool("record_measurement");
@@ -75,7 +80,18 @@ const thermalResult = {
 
 const antennaSet = {
   schema: "vcad.antenna-claims/1",
-  provenance: { band: { f_lo_hz: 2.3e9, f_hi_hz: 2.6e9, points: 31 }, segments: 41 },
+  provenance: {
+    segments: 41,
+    bases: 40,
+    quad_outer: 4,
+    quad_inner: 8,
+    band: { f_lo_hz: 2.3e9, f_hi_hz: 2.6e9, points: 31 },
+    ground_plane: false,
+    min_seg_len_over_4a: 2.0,
+    max_seg_len_over_lambda8: 0.5,
+    max_ka: 0.02,
+    environment: "free space",
+  },
   reference_ohm: 50,
   claims: [
     { name: "resonant_frequency", value: 2.44e9, unit: "Hz", basis: "predicted", note: "" },
@@ -170,35 +186,8 @@ describe("band math", () => {
   });
 });
 
-describe("typed importers", () => {
-  it("parses a Touchstone sweep and finds the resonance inside the claimed band", () => {
-    const ms = measurementsFromS1p(parseS1p(s1pFixture(2.45e9)), antennaSet as Any);
-    const res = ms.find((m) => m.claim === "resonant_frequency")!;
-    expect(res.value).toBeGreaterThan(2.44e9);
-    expect(res.value).toBeLessThan(2.46e9);
-    expect(ms.find((m) => m.claim === "resonance_in_band")!.value).toBe(1);
-  });
-
-  it("refuses malformed instrument files instead of guessing", () => {
-    expect(() => parseS1p("1 2 3")).toThrow(/before the # option line/);
-    expect(() => parseS1p("# HZ Z RI R 50\n1 2 3")).toThrow(/S-parameter/);
-    expect(() => tuningFromRewImpedance("10 5 0\n11 6 0\n12 7 0\n13 8 0\n14 9 0")).toThrow(/peak/);
-    expect(() => temperatureFromThermocoupleCsv("a,b\n1,2", {})).toThrow();
-    // Still heating: not steady state.
-    const ramp = ["time_s,temp_c", ...Array.from({ length: 50 }, (_, i) => `${i * 10},${20 + i}`)].join("\n");
-    expect(() => temperatureFromThermocoupleCsv(ramp, {})).toThrow(/steady state/);
-  });
-
-  it("reads the REW saddle and the thermocouple plateau", () => {
-    expect(tuningFromRewImpedance(rewFixture()).f_b_hz).toBe(45);
-    const t = temperatureFromThermocoupleCsv(thermocoupleFixture(), {});
-    expect(t.value_c).toBeGreaterThan(61.8);
-    expect(t.value_c).toBeLessThan(62.01);
-  });
-});
-
 describe("claims ledger end to end", () => {
-  it("one receipt carries five domains; measurements score Holds / Violated / Unmeasured; edits read Stale", async () => {
+  it.skipIf(!wasmHasImporters)("one receipt carries five domains; measurements score Holds / Violated / Unmeasured; edits read Stale", async () => {
     const docId = out(openDocument({ initial: emptyDoc() })).document_id as string;
 
     // 1. Freeze predictions from five solvers.

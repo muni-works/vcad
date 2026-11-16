@@ -24,7 +24,7 @@ type Any = any;
 
 const probe = await Engine.init();
 const k = (probe as unknown as { kernel?: Record<string, unknown> }).kernel ?? {};
-const wasmHasSolvers = ["thermalSolve", "emSimulate", "antennaAnalyze", "toleranceAnalyze"].every(
+const wasmHasSolvers = ["thermalSolve", "emSimulate", "antennaAnalyze", "toleranceAnalyze", "importMeasurementFile"].every(
   (n) => typeof k[n] === "function",
 );
 
