@@ -100,8 +100,10 @@ pub enum InitialSource {
     /// A thin shell just inside the chamber wall (every ion gets the full
     /// drop — the most energetic possible source shape).
     EdgeShell,
-    /// Uniform per unit volume inside 1.5× the cathode radius (ions born
-    /// at or inside the grid — the coldest plausible source shape).
+    /// Uniform per unit volume in the shell 1.0–1.5× the cathode radius
+    /// (ions born in the cathode fall just outside the grid — the coldest
+    /// source that still produces free ions; births inside the grid are
+    /// trapped and already counted by the chain).
     NearCathode,
 }
 
@@ -849,7 +851,8 @@ fn initial_source(sol: &Solution, device: &Device, shape: InitialSource) -> Vec<
                     let r = i as f64 * sol.dr;
                     let z = j as f64 * sol.dz - sol.z_half;
                     let s = (r * r + z * z).sqrt();
-                    if s <= 1.5e-3 * device.min_ring_spherical_radius_mm() {
+                    let rc = 1e-3 * device.min_ring_spherical_radius_mm();
+                    if (rc..=1.5 * rc).contains(&s) {
                         node_volume(sol, id)
                     } else {
                         0.0
@@ -1588,7 +1591,10 @@ pub fn predict(
         wl[0],
     );
     {
-        let v_hi = reading.cathode_voltage_v * (1.0 + reading.voltage_rel);
+        // Probe a 10% step (signal ≫ sampling scatter) and scale the
+        // log-excursion linearly down to the meter tolerance.
+        const PROBE: f64 = 0.10;
+        let v_hi = reading.cathode_voltage_v * (1.0 + PROBE);
         let (dv, sv) = solve_device(device, v_hi, numerics.grid, &numerics.solve)?;
         // Both sides warm-started from the central source on the same
         // grid (common sample points), vacuum fields.
@@ -1601,14 +1607,16 @@ pub fn predict(
             ))
         };
         let f = at(&dv, &sv)? / r_vac_warm.max(1e-300);
-        let e = f.ln().abs();
+        let slope = f.ln() / (1.0 + PROBE).ln();
+        let e = (slope * (1.0 + reading.voltage_rel).ln()).abs();
         push(
             "voltage",
             BandKind::Input,
             (-e).exp(),
             e.exp(),
             format!(
-                "meter ±{:.0}%: vacuum ratio {f:.3} at +, symmetrized",
+                "meter ±{:.0}%: d ln R / d ln V = {slope:.2} from a +10% probe (warm, vacuum), \
+                 symmetrized",
                 100.0 * reading.voltage_rel
             ),
         );
