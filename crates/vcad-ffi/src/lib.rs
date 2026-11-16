@@ -72,6 +72,7 @@ pub mod instrument;
 mod json;
 pub mod mcp;
 pub mod pcb;
+pub mod plasmoid;
 pub mod print;
 mod printer;
 pub mod receipts;

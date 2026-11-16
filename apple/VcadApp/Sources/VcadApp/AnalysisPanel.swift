@@ -342,6 +342,11 @@ struct AnalysisCommands: Commands {
                     s.shown = true; s.tab = tab; s.overlayRevision += 1
                 }
             }
+            Divider()
+            // Drag the magnet, watch the plasmoid follow (PlasmoidSim.swift).
+            Button(PlasmoidStore.shared.active ? "Stop Live Plasmoid" : "Live Plasmoid") {
+                PlasmoidStore.shared.toggle()
+            }
         }
     }
 }

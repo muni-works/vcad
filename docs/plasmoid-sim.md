@@ -18,7 +18,8 @@ This doc covers:
 |---|---|
 | model + tests | [`crates/vcad-kernel-particle/src/plasmoid.rs`](../crates/vcad-kernel-particle/src/plasmoid.rs) |
 | demo run | [`examples/plasmoid_magnet.rs`](../crates/vcad-kernel-particle/examples/plasmoid_magnet.rs) |
-| device geometry | [`plasmoid-sim/plasmoid-dish.loon`](plasmoid-sim/plasmoid-dish.loon) |
+| device geometry | [`plasmoid-sim/plasmoid-dish.loon`](plasmoid-sim/plasmoid-dish.loon) (+ [`.vcad`](plasmoid-sim/plasmoid-dish.vcad) for the app) |
+| live drag demo (vcad.app) | [`PlasmoidSim.swift`](../apple/VcadApp/Sources/VcadApp/PlasmoidSim.swift), FFI [`crates/vcad-ffi/src/plasmoid.rs`](../crates/vcad-ffi/src/plasmoid.rs), §3b |
 | renderer / figures | [`render.py`](plasmoid-sim/render.py), [`figures.py`](plasmoid-sim/figures.py) (numpy + PIL + scipy) |
 
 Reproduce on a build box:
@@ -160,11 +161,38 @@ The reduced model has no filament geometry. The device is drawn with simple proj
 - the coil former;
 - two driver pucks;
 - the antenna ring on posts;
-- the magnet at its hold pose, on a holder.
+- the magnet at its hold pose, on a holder (disc + holder are one root named `magnet`, so the app drags them together).
 
 Loon source has no time axis and the sim doesn't read the document `timeline` yet, so the magnet's path lives in the example's `KEYS` table (gap #7), and the dish radius and orbit radius are duplicated as constants (gap #6).
 
 ![device](plasmoid-sim/device.jpg)
+
+## 3b. Live in vcad.app: drag the magnet
+
+Open [`plasmoid-sim/plasmoid-dish.vcad`](plasmoid-sim/plasmoid-dish.vcad) (the loon model through `loon2vcad`), choose **Analyze ▸ Live Plasmoid**, select the magnet and drag it (the move gizmo's XY plane, or ⌥-drag). The foot locks under the magnet when it is close and slow, breaks away on a fast flick, and is recaptured on the racer's next pass. The HUD shows β under the foot, LOCKED / RACING, and a pressure slider: drag it from 1 Torr toward 1 atm and the lock vanishes (β ≈ 0.004).
+
+**What runs live (kernel physics):**
+
+- `PlasmoidStepper` (`plasmoid.rs`): the same RK4 step as `simulate` (one shared function), fed frame by frame. Each display frame passes the magnet pose at the frame's end. The kernel interpolates it from the previous frame's pose across fixed substeps of ≈ 1/2400 s (40 per 60 Hz frame), so a flick reaches the integrator as a smooth path rather than a teleport. A test checks it against `simulate` on a scripted path to 1e-7 m.
+- The mobility is calibrated once at 1 Torr (1.8 μ* at the 10 mm hold gap). The pressure slider changes only ν, and hence β, so raising the pressure kills the lock instead of being renormalized away.
+- "Locked" is `plasmoid::is_locked`: the foot within 8 mm of the footprint, the magnet below 50 mm, and β ≥ 1 at the foot. (The demo example still uses its own distance + height test, so its LOCK/release times above are unchanged.)
+- Each frame is one FFI call (`vcad_plasmoid_advance`) on the main thread. 40 RK4 substeps measured 2.5 ms per frame (release kernel, `PlasmoidSimTests`, on a loaded M-series Mac).
+
+**Read from the document (gap #6, partly):** the parts named `dish`, `spike` and `magnet`. Their bounding boxes give the dish centre and rim plane, the dish radius (bbox half-width, 87 mm, so it includes the 2 mm wall), the spike tip the filament roots on, and the magnet disc (the bottom 5 mm of the `magnet` part). Mid-drag the app reads the gizmo's live offset rather than waiting for the in-place re-eval. The foot is drawn on the bowl surface: the dish mesh is ray-cast under the foot. The model itself still treats the dish as the flat rim plane.
+
+**Still assumed / stubbed:**
+
+- The magnet's grade and size (N52 10 × 5 mm) and its polarity (north down). A rotated magnet part is not reflected.
+- The filament arc, its flicker, the halo and the comet tail are stylization: unlit emissive spheres and cylinders, with no bloom or volumetric glow (gap #3).
+- No `simulate_plasmoid` MCP tool yet, so agents cannot choreograph it.
+
+**Reproduce the capture** (frames written by the app itself; no screen-recording rights needed):
+
+```bash
+VCAD_PLASMOID_SNAPSHOT_DIR=/tmp/plasmoid-live apple/VcadApp/dist/vcad.app/Contents/MacOS/vcad --vcad-open docs/plasmoid-sim/plasmoid-dish.vcad
+```
+
+It drives the magnet through the real move gizmo (`beginGizmoDrag` / `gizmoDragTo` with scripted rays): hold → lock, slow drag → follows, flick → breaks away, hold → recaptured, then 1 atm → gone. Each frame advances exactly 1/30 s of sim time. `VCAD_PLASMOID=1` just turns the live sim on at launch.
 
 ## 4. Audit: what vcad had
 
@@ -187,9 +215,10 @@ Loon source has no time axis and the sim doesn't read the document `timeline` ye
    - superposition, plus a sampled cache for speed.
 
    `plasmoid::DiscMagnet` is the seed. Block magnets need the 3D bound-current-sheet (rectangular loop) field, which is a closed form. Blocks: every interactive demo, plus a proper magnet library for the EM crate's 3D future.
-2. **Interactive magnet in vcad.app.** The magnet is a part; dragging it updates its pose; a sim tick (≈ 1 kHz RK4, cheap: two 48-loop field sums per step) moves the foot; the viewport draws it.
-   - Needs a "live sim" hook in the native app's animation loop, plus an MCP tool (`simulate_plasmoid`, `pose_at` as keyframes) so agents can choreograph it.
-   - This is the "drag the magnet and watch it follow" feature.
+2. **Interactive magnet in vcad.app.** *Addressed* (§3b): Analyze ▸ Live Plasmoid steps `PlasmoidStepper` once per display frame (RK4 at 2.4 kHz, magnet pose interpolated across the frame) from the dragged `magnet` part's live pose, and draws the foot, the filament and the halo with a β / lock / pressure HUD. Still open:
+   - an MCP tool (`simulate_plasmoid`, `pose_at` as keyframes) so agents can choreograph it;
+   - magnet orientation and polarity from the part (north-down is assumed);
+   - real glow (gap #3).
 3. **Volumetric glow + bloom.** Emissive *surfaces* already exist in the photoreal path tracer. Plasma, glow discharge, arcs and hot gas also need:
    - emissive volumes or emissive line/point primitives (a filament is not a BRep face), in `vcad-render` and the app viewport;
    - additive point/line splats with bloom.
@@ -206,5 +235,5 @@ Loon source has no time axis and the sim doesn't read the document `timeline` ye
    - aluminum-slug control (§1).
 
    These bind to a `vcad.plasmoid-claims/1` family (predicted → Provisional, never Pass), in the style of the other solver crates.
-6. **BRep → sim binding.** Read the dish radius, the spike position and the magnet pose from the loon document, not duplicated constants. This shares the open-fusor gap ("CAD/sim disconnected").
+6. **BRep → sim binding.** *Partly addressed* by the app demo (§3b), which reads the dish centre, rim and radius, the spike tip and the magnet pose from the named parts' bounds. The example and the doc figures still use constants (80 mm dish, 55 mm orbit), and the model's dish is still a flat plane, not the bowl. Read the dish radius, the spike position and the magnet pose from the loon document, not duplicated constants. This shares the open-fusor gap ("CAD/sim disconnected").
 7. **Drive the sim from the document timeline.** The IR already has a keyframed `timeline` (parameters, joints, visibility) and `export_video`. Put the magnet's pose on a timeline track and let the plasmoid sim sample it, so the path lives in the document instead of in the example's `KEYS` table.

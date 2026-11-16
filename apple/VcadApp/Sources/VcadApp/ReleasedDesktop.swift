@@ -1251,6 +1251,12 @@ struct ReleasedOverlayView: View {
                 .padding(Theme.Space.l)
                 .modifier(ChromeRegion(key: "fieldHud"))
         }
+        .overlay(alignment: .top) {
+            // Live magnet-steered plasmoid (PlasmoidSim.swift).
+            PlasmoidHud(store: PlasmoidStore.shared)
+                .padding(Theme.Space.l)
+                .modifier(ChromeRegion(key: "plasmoidHud"))
+        }
         .overlay(alignment: .bottomTrailing) {
             // Orientation triad: which way X, Y and Z point right now. Bottom
             // right: the left column's panels (Model, Assembly, Pose) can run
@@ -1937,6 +1943,8 @@ struct ReleasedARView: NSViewRepresentable {
     /// Compressed-field overlay revision (FieldOverlay.swift) — an input so a
     /// load or slice change runs `updateNSView`.
     let fieldRevision: Int
+    /// Live plasmoid frame counter (PlasmoidSim.swift) — re-poses its overlay.
+    let plasmoidTick: Int
     let cncStock: Double
     let poseTick: Int
     /// The model's own "the geometry changed" flag, the same one the studio
@@ -2074,6 +2082,7 @@ struct ReleasedARView: NSViewRepresentable {
         if let parent = ReleaseWindowController.shared.centeringEntity {
             syncCNCOverlay(model.cnc, in: parent, model: model)
             syncFieldOverlay(FieldOverlayStore.shared, in: parent)
+            syncPlasmoidOverlay(PlasmoidStore.shared, in: parent)
             if model.workspace == .manufacture && model.cnc.autoFit && !model.cnc.followSpindle && context.coordinator.framedCNCRevision != cncRevision {
                 context.coordinator.framedCNCRevision = cncRevision
                 Task { @MainActor in
@@ -2794,6 +2803,7 @@ struct ReleasedScene: View {
                        cncOrigin: model.cnc.origin,
                        cncOverlay: model.cnc.overlay,
                        fieldRevision: FieldOverlayStore.shared.revision,
+                       plasmoidTick: PlasmoidStore.shared.tick,
                        cncStock: model.cnc.stockThickness,
                        poseTick: model.poseTick,
                        geometryDirty: model.geometryDirty,
