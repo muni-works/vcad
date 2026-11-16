@@ -265,6 +265,16 @@ impl SegIndex {
     }
 }
 
+/// Surface-residual summary (all relative to the electrode–wall drop).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct ResidualReport {
+    mean: f64,
+    mean_wire: usize,
+    spread: f64,
+    junction_mean: f64,
+    junction_spread: f64,
+}
+
 /// Solved 3D vacuum field of a [`Device3d`]: wire line charges, chamber
 /// images, and (for current-carrying loops) Biot–Savart B. Owns all its
 /// data; sample it through [`crate::field::FieldSampler`].
@@ -441,10 +451,10 @@ pub fn solve(device: &Device3d, opts: &BemOptions) -> Result<WireField, BemError
     };
 
     // --- Surface residual gate -----------------------------------------
-    let (worst, wire, junction) =
-        field.surface_residual(opts.residual_azimuths, opts.junction_zone_factor);
+    let rep = field.surface_residual(opts.residual_azimuths, opts.junction_zone_factor);
+    let (worst, wire) = (rep.mean, rep.mean_wire);
     field.worst_residual = worst;
-    field.worst_junction_residual = junction;
+    field.worst_junction_residual = rep.junction_mean;
     if worst > opts.max_surface_residual {
         return Err(BemError::SurfaceResidual {
             worst,
@@ -656,17 +666,14 @@ impl WireField {
         ratio
     }
 
-    /// Sample the exact-kernel potential on every wire surface. Returns
-    /// `(worst_clear, wire, worst_junction)`: the worst relative residual
-    /// over samples farther than `junction_factor` radii from every
-    /// *other* wire, its wire, and the worst inside those junction zones.
-    fn surface_residual(&self, azimuths: usize, junction_factor: f64) -> (f64, usize, f64) {
-        let mut worst = 0.0_f64;
-        let mut worst_wire = 0;
-        let mut worst_junction = 0.0_f64;
+    /// Sample the exact-kernel potential on rings of points around every
+    /// wire (at each segment midpoint and joint) and summarize.
+    fn surface_residual(&self, azimuths: usize, junction_factor: f64) -> ResidualReport {
+        let mut rep = ResidualReport::default();
         let debug = std::env::var("BEM_DEBUG").is_ok();
         let bins = [1.0, 1.5, 2.0, 3.0, 4.0, 6.0];
-        let mut by_bin = [0.0_f64; 6];
+        let mut mean_bin = [0.0_f64; 6];
+        let mut spread_bin = [0.0_f64; 6];
         for (si, s) in self.segs.iter().enumerate() {
             let w = &self.wires[s.wire];
             let drop = (w.potential - self.wall_potential_v).abs();
@@ -684,6 +691,11 @@ impl WireField {
                     continue;
                 }
                 let c = add(pa, scale(sub(pb, pa), frac));
+                let mut sum = 0.0;
+                let mut count = 0usize;
+                let mut lo = f64::INFINITY;
+                let mut hi = f64::NEG_INFINITY;
+                let mut clearance = f64::INFINITY;
                 for k in 0..azimuths {
                     let ang = 2.0 * std::f64::consts::PI * k as f64 / azimuths as f64;
                     let p = add(c, scale(add(scale(u, ang.cos()), scale(v, ang.sin())), w.radius));
@@ -691,7 +703,6 @@ impl WireField {
                     // conductor (crossings, inner side of bends); measure
                     // the clearance to other wires for junction zoning.
                     let mut buried = false;
-                    let mut other = f64::INFINITY;
                     for &oj in self.index.candidates(p) {
                         let oj = oj as usize;
                         if oj == si {
@@ -705,34 +716,47 @@ impl WireField {
                             break;
                         }
                         if o.wire != s.wire {
-                            other = other.min(d / ao);
+                            clearance = clearance.min(d / ao);
                         }
                     }
                     if buried {
                         continue;
                     }
-                    let phi = self.potential(p);
-                    let r = (phi - w.potential).abs() / drop;
-                    if debug {
-                        for (b, lim) in by_bin.iter_mut().zip(bins) {
-                            if other >= lim {
-                                *b = b.max(r);
-                            }
+                    let r = (self.potential(p) - w.potential) / drop;
+                    sum += r;
+                    count += 1;
+                    lo = lo.min(r);
+                    hi = hi.max(r);
+                }
+                if count == 0 {
+                    continue;
+                }
+                let mean = (sum / count as f64).abs();
+                let spread = 0.5 * (hi - lo);
+                if debug {
+                    for (b, lim) in bins.iter().enumerate() {
+                        if clearance >= *lim {
+                            mean_bin[b] = mean_bin[b].max(mean);
+                            spread_bin[b] = spread_bin[b].max(spread);
                         }
                     }
-                    if other < junction_factor {
-                        worst_junction = worst_junction.max(r);
-                    } else if r > worst {
-                        worst = r;
-                        worst_wire = s.wire;
+                }
+                if clearance < junction_factor {
+                    rep.junction_mean = rep.junction_mean.max(mean);
+                    rep.junction_spread = rep.junction_spread.max(spread);
+                } else {
+                    if mean > rep.mean {
+                        rep.mean = mean;
+                        rep.mean_wire = s.wire;
                     }
+                    rep.spread = rep.spread.max(spread);
                 }
             }
         }
         if debug {
-            eprintln!("BEM residual by clearance-to-other-wire ≥ {bins:?}: {by_bin:?}");
+            eprintln!("BEM clearance bins ≥ {bins:?}\n  |mean| {mean_bin:?}\n  spread {spread_bin:?}");
         }
-        (worst, worst_wire, worst_junction)
+        rep
     }
 
     #[cfg(test)]
