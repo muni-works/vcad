@@ -1,0 +1,15 @@
+Exported document to out/rose-mini.vcad
+vcad document: out/rose-mini.vcad
+  Version: 0.1
+  Nodes: 1639
+  Materials: 15
+  Scene entries: 0
+cache: 11 hit, 112 miss, 112 stored (~/.cache/vcad/geom/vcad-eval_0.11.0_x86_64_7d3db62818ab01cd)
+
+Mesh stats:
+  Total triangles: 0
+  Total vertices: 0
+
+Timing:
+  [TIMING] total:83264ms tess:7625ms asm:83238ms
+           Difference#82:82137ms > Difference#283:68521ms > SweepRotate#282:35904ms > SweepRotate#81:35819ms > Difference#532:23163ms > Difference#774:4758ms > Difference#707:4657ms > Difference#981:4592ms > Difference#1078:279ms > Difference#948:266ms > Translate#1581:245ms > Union#1580:244ms > Difference#1011:231ms > Difference#677:216ms > Translate#1589:194ms > Difference#1588:194ms > Difference#922:193ms > Difference#860:189ms > Difference#1164:189ms > Difference#618:179ms > Difference#962:144ms > Difference#592:136ms > Difference#896:136ms > Difference#644:130ms > Difference#1233:121ms > Difference#1213:110ms > Difference#739:108ms > Difference#1193:107ms > Difference#834:106ms > Translate#1622:106ms > Intersection#1621:106ms > Difference#1138:104ms > Difference#658:104ms > Difference#1043:100ms > Difference#794:92ms > Difference#1098:87ms > Difference#1118:84ms > Difference#814:81ms > Difference#183:59ms > Difference#259:57ms > Union#1638:55ms > Difference#58:45ms > Hull#200:43ms > Difference#384:42ms > Translate#1285:38ms > Intersection#1284:37ms > Hull#401:37ms > Difference#462:28ms > Hull#182:24ms > Union#1077:23ms > Union#773:20ms > Hull#383:17ms > Union#1163:14ms > Union#859:12ms > Union#1010:11ms > Union#676:11ms > Union#921:11ms > Union#617:9ms > Union#643:9ms > Difference#258:9ms > Union#591:9ms > Difference#57:8ms > Union#947:8ms > Union#738:8ms > Union#1192:7ms > Union#1042:7ms > Union#980:7ms > Union#1097:7ms > Union#833:7ms > Union#1137:7ms > Union#706:7ms > Union#1162:6ms > Union#895:5ms > Difference#274:5ms > Difference#73:5ms > Loft#400:5ms > Union#590:4ms > Union#1009:4ms > Union#920:4ms > Translate#1611:4ms > Union#1610:4ms > Union#642:4ms > Union#1212:4ms > Union#616:4ms > Union#793:4ms > Union#832:4ms > Union#737:4ms > Union#858:4ms > Union#1232:4ms > Union#1191:3ms > Loft#1283:3ms > Union#1041:3ms > Union#1061:3ms > Union#1096:3ms > Union#1076:3ms > Extrude#865:3ms > Union#1117:3ms > Loft#125:3ms > Union#813:3ms > Union#1136:3ms > Union#772:3ms > Loft#95:3ms > Loft#430:2ms > Loft#461:2ms > Loft#365:2ms > Union#705:2ms > Loft#326:1ms > Union#894:1ms > Union#846:1ms > Union#946:1ms > Union#1161:1ms > Union#792:1ms > Union#908:1ms > Hull#538:1ms > Union#589:1ms > Union#604:1ms > Union#857:1ms > Extrude#1019:1ms > Union#919:1ms

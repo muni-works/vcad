@@ -1,0 +1,145 @@
+{
+  "part_index": 0,
+  "part_name": "Part 1",
+  "material": "custom",
+  "youngs_modulus_mpa": 70300.0,
+  "poisson": 0.33,
+  "yield_strength_mpa": 193.0,
+  "max_von_mises_mpa": 77.03019474897647,
+  "max_stress_at": [
+    21.68523927529652,
+    42.46666749318441,
+    -56.73454060157141
+  ],
+  "max_displacement_mm": 0.11378142761958224,
+  "max_displacement_at": [
+    15.958124637603753,
+    42.20000076293945,
+    -123.30216177304587
+  ],
+  "safety_factor": null,
+  "converged": false,
+  "reasons": [
+    "THIN-WALLED GEOMETRY — the lattice cannot resolve this part. Its thinnest load-bearing section measures 3.20 mm (5th-percentile solid span, along y), and the finest level solved has a 1.20 mm pitch, so only 2.7 cell(s) sit through that section. 6 cells would need a 0.533 mm pitch, i.e. resolution 216 along the 115 mm longest axis — far past the cap of 192, so no resolution setting reaches it. A staircase at one cell per wall is not an approximation of a thin wall, it is a different part, so this study claims nothing. Route forward: if the member is prismatic (plate, round or rectangular tube, I-section), use `beam_check` — closed-form section properties with Bredt thin-wall torsion and beam bending, which for a constant cross-section is not a fallback but the MORE accurate answer, and it carries the same predicted-basis receipt. Otherwise split the assembly and check the thin members individually, or wait on shell/beam elements (the real fix for thin-walled FEA).",
+    "max von Mises changed 27.0% between the two finest levels (gate 15.0%) — raise resolution, or the peak sits at a stress singularity (sharp re-entrant corner) that linear elasticity cannot price; fillet it"
+  ],
+  "study": {
+    "levels": [
+      {
+        "max_displacement_mm": 0.1152840683267148,
+        "max_displacement_at": [
+          9.92958291371663,
+          42.20000076293945,
+          -125.7009949684143
+        ],
+        "max_von_mises_mpa": 56.20889436498015,
+        "max_stress_at": [
+          21.383812189102166,
+          43.000000953674316,
+          -57.33424890041353
+        ],
+        "compliance_n_mm": 19.036157956205276,
+        "volume_mm3": 11310.026031215242,
+        "nodes": 1610,
+        "tets": 3666,
+        "h_mm": 2.3988331953684487,
+        "grid": [
+          36,
+          1,
+          48
+        ],
+        "iterations": 1595,
+        "residual_rel": 9.012075899074665e-9
+      },
+      {
+        "max_displacement_mm": 0.11378142761958224,
+        "max_displacement_at": [
+          15.958124637603753,
+          42.20000076293945,
+          -123.30216177304587
+        ],
+        "max_von_mises_mpa": 77.03019474897647,
+        "max_stress_at": [
+          21.68523927529652,
+          42.46666749318441,
+          -56.73454060157141
+        ],
+        "compliance_n_mm": 19.477118679341416,
+        "volume_mm3": 11319.281371662819,
+        "nodes": 11360,
+        "tets": 44028,
+        "h_mm": 1.1994165976842244,
+        "grid": [
+          72,
+          3,
+          96
+        ],
+        "iterations": 4679,
+        "residual_rel": 9.957702839134874e-9
+      }
+    ],
+    "displacement_change_rel": 0.013206379446709894,
+    "stress_change_rel": 0.2703005029631317,
+    "verdict": {
+      "verdict": "Unverifiable",
+      "reasons": [
+        "THIN-WALLED GEOMETRY — the lattice cannot resolve this part. Its thinnest load-bearing section measures 3.20 mm (5th-percentile solid span, along y), and the finest level solved has a 1.20 mm pitch, so only 2.7 cell(s) sit through that section. 6 cells would need a 0.533 mm pitch, i.e. resolution 216 along the 115 mm longest axis — far past the cap of 192, so no resolution setting reaches it. A staircase at one cell per wall is not an approximation of a thin wall, it is a different part, so this study claims nothing. Route forward: if the member is prismatic (plate, round or rectangular tube, I-section), use `beam_check` — closed-form section properties with Bredt thin-wall torsion and beam bending, which for a constant cross-section is not a fallback but the MORE accurate answer, and it carries the same predicted-basis receipt. Otherwise split the assembly and check the thin members individually, or wait on shell/beam elements (the real fix for thin-walled FEA).",
+        "max von Mises changed 27.0% between the two finest levels (gate 15.0%) — raise resolution, or the peak sits at a stress singularity (sharp re-entrant corner) that linear elasticity cannot price; fillet it"
+      ]
+    },
+    "safety_factor": null,
+    "thin_wall": {
+      "thickness": {
+        "min_mm": 0.889571249017532,
+        "p05_mm": 3.200000762939453,
+        "median_mm": 11.099212985161863,
+        "thin_axis": "y",
+        "samples": 5320,
+        "longest_bbox_mm": 115.14399337768555
+      },
+      "finest_pitch_mm": 1.1994165976842244,
+      "cells_through_section": 2.6679643829490605,
+      "required_resolution": 216,
+      "resolution_cap": 192,
+      "reachable": false,
+      "blocking_advice": "THIN-WALLED GEOMETRY — the lattice cannot resolve this part. Its thinnest load-bearing section measures 3.20 mm (5th-percentile solid span, along y), and the finest level solved has a 1.20 mm pitch, so only 2.7 cell(s) sit through that section. 6 cells would need a 0.533 mm pitch, i.e. resolution 216 along the 115 mm longest axis — far past the cap of 192, so no resolution setting reaches it. A staircase at one cell per wall is not an approximation of a thin wall, it is a different part, so this study claims nothing. Route forward: if the member is prismatic (plate, round or rectangular tube, I-section), use `beam_check` — closed-form section properties with Bredt thin-wall torsion and beam bending, which for a constant cross-section is not a fallback but the MORE accurate answer, and it carries the same predicted-basis receipt. Otherwise split the assembly and check the thin members individually, or wait on shell/beam elements (the real fix for thin-walled FEA).",
+      "advisory": null
+    },
+    "options": {
+      "levels": 2,
+      "displacement_tol": 0.05,
+      "stress_tol": 0.15,
+      "resolution_cap": 192
+    }
+  },
+  "load_regions": [
+    {
+      "min": [
+        -46.5,
+        41.2,
+        -141.1
+      ],
+      "max": [
+        42.3,
+        46.4,
+        -125.0
+      ]
+    }
+  ],
+  "support_regions": [
+    {
+      "min": [
+        -46.5,
+        41.2,
+        -41.0
+      ],
+      "max": [
+        42.3,
+        46.4,
+        -24.0
+      ]
+    }
+  ],
+  "notes": [],
+  "field": null
+}
