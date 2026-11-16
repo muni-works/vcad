@@ -8877,6 +8877,140 @@ pub fn particle_simulate(
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// Options for [`particle_simulate_3d`] (all fields optional in JSON).
+#[derive(serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct ParticleSim3dOptions {
+    particles: usize,
+    max_passes: u32,
+    ion_current_a: f64,
+    d2_pressure_mtorr: f64,
+    temperature_k: f64,
+    cx_sigma_m2: Option<f64>,
+    /// Tracer step length, mm (default: a quarter of the thinnest wire
+    /// radius, capped at 0.25 mm).
+    step_mm: Option<f64>,
+}
+
+impl Default for ParticleSim3dOptions {
+    fn default() -> Self {
+        Self {
+            particles: 64,
+            max_passes: 25,
+            ion_current_a: 0.010,
+            d2_pressure_mtorr: 2.0,
+            temperature_k: 300.0,
+            cx_sigma_m2: None,
+            step_mm: None,
+        }
+    }
+}
+
+#[derive(serde::Serialize)]
+struct WasmParticleSim3d {
+    stats: vcad_kernel::vcad_kernel_particle::fom::EnsembleStats,
+    /// Fraction of ions that cross the grid at least once (first pass).
+    first_pass_transparency: f64,
+    /// Radial-shadow transparency from the center (no ion optics).
+    geometric_transparency: f64,
+    /// Potential at the device center, V.
+    center_potential_v: f64,
+    /// Beam-on-background D-D neutron rate with no CX attrition, n/s.
+    neutron_rate_ceiling_per_s: f64,
+    /// CX-aware neutron rate (ion + fast-neutral channels), n/s; null
+    /// unless `cx_sigma_m2` is given.
+    neutron_rate_floor_per_s: Option<f64>,
+    unknowns: usize,
+    residual: vcad_kernel::vcad_kernel_particle::bem::ResidualReport,
+    step_mm: f64,
+    /// Why no receipt claims: the claim set's convergence basis is the 2D
+    /// Poisson grid; the 3D solver has its own (residual) basis, not yet
+    /// wired into `vcad.particle-claims/1`.
+    claims: Option<()>,
+    note: &'static str,
+}
+
+/// 3D charged-particle optics: resolve a `vcad_kernel_particle::spec3d::
+/// DeviceSpec3d` (named parameters, fail-closed), solve it with the
+/// thin-wire BEM (refusing geometries that fail the surface-residual
+/// gates), trace a full-sphere Fibonacci deuteron ensemble, and return
+/// figures of merit. No receipt claims are issued for 3D yet (see
+/// `WasmParticleSim3d::note`).
+#[wasm_bindgen(js_name = particleSimulate3d)]
+pub fn particle_simulate_3d(
+    spec_json: &str,
+    params_json: &str,
+    options_json: &str,
+) -> Result<JsValue, JsError> {
+    use vcad_kernel::vcad_kernel_particle as pk;
+    let spec: pk::spec3d::DeviceSpec3d =
+        serde_json::from_str(spec_json).map_err(|e| JsError::new(&format!("bad spec: {e}")))?;
+    let params: std::collections::BTreeMap<String, f64> = if params_json.trim().is_empty() {
+        Default::default()
+    } else {
+        serde_json::from_str(params_json).map_err(|e| JsError::new(&format!("bad params: {e}")))?
+    };
+    let opts: ParticleSim3dOptions = if options_json.trim().is_empty() {
+        Default::default()
+    } else {
+        serde_json::from_str(options_json)
+            .map_err(|e| JsError::new(&format!("bad options: {e}")))?
+    };
+    let device = spec
+        .resolve(&params)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    // Dense least-squares solve is O(N³); keep wasm calls interactive.
+    let bem_opts = pk::bem::BemOptions {
+        max_unknowns: 1500,
+        ..Default::default()
+    };
+    let field = pk::bem::solve(&device, &bem_opts).map_err(|e| JsError::new(&e.to_string()))?;
+    let n_d = pk::xsection::d2_deuteron_density_m3(opts.d2_pressure_mtorr, opts.temperature_k);
+    let topts = pk::trace::TraceOptions {
+        max_passes: opts.max_passes,
+        cx: opts.cx_sigma_m2.map(|sigma| pk::trace::CxModel {
+            sigma_cx_m2: sigma,
+            background_deuteron_density_m3: n_d,
+        }),
+        ..Default::default()
+    };
+    let step = match opts.step_mm {
+        Some(mm) if mm.is_finite() && mm > 0.0 => mm * 1e-3,
+        Some(_) => return Err(JsError::new("step_mm must be finite and positive")),
+        None => field.default_step_length_m(),
+    };
+    let tracer = field.tracer(step, topts);
+    let outcomes = pk::bem::launch_fibonacci(&tracer, pk::trace::DEUTERON, opts.particles);
+    let stats = pk::fom::stats(&outcomes);
+    let first = outcomes.iter().filter(|o| o.core_passes >= 1).count() as f64
+        / outcomes.len().max(1) as f64;
+    let out = WasmParticleSim3d {
+        stats,
+        first_pass_transparency: first,
+        geometric_transparency: device.geometric_transparency(4000),
+        center_potential_v: field.potential([0.0; 3]),
+        neutron_rate_ceiling_per_s: pk::fom::neutron_rate_per_s(
+            stats.mean_ddn_sigma_v_m3,
+            opts.ion_current_a,
+            n_d,
+        ),
+        neutron_rate_floor_per_s: opts.cx_sigma_m2.map(|_| {
+            pk::fom::neutron_rate_from_counts(
+                stats.mean_neutrons_ion_channel + stats.mean_neutrons_cx_channel,
+                opts.ion_current_a,
+            )
+        }),
+        unknowns: field.unknowns(),
+        residual: field.residual_report(),
+        step_mm: step * 1e3,
+        claims: None,
+        note: "3D thin-wire BEM (vcad-kernel-particle::bem). Receipt claims are not issued \
+               for 3D devices yet: vcad.particle-claims/1 is bound to the 2D grid basis.",
+    };
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
 /// Optimize named device parameters against predicted D-D yield per ion.
 ///
 /// `optimize_json`: `{ variables: [{name, lo, hi, start?}], nr?, nz?,
