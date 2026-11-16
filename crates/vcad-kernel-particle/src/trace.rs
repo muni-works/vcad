@@ -12,7 +12,7 @@
 //! supposed to improve.
 
 use crate::device::Device;
-use crate::field::FieldMap;
+use crate::field::{FieldMap, FieldSampler};
 use crate::poisson::Solution;
 
 /// A charged species.
@@ -66,7 +66,8 @@ impl Drive {
 /// How a trace ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fate {
-    /// Intercepted by wire ring `k` (index into `Device::rings`).
+    /// Intercepted by electrode `k` (index into `Device::rings`, or
+    /// `Device3d::wires` for 3D tracers).
     Wire(usize),
     /// Reached the chamber wall or an end cap.
     Wall,
@@ -223,6 +224,39 @@ impl Default for TraceOptions {
     }
 }
 
+/// Collision and step-control geometry for the tracer — everything it
+/// needs besides the field. [`Tracer::new`] builds the axisymmetric
+/// ring + cylinder geometry; 3D devices supply their own (see
+/// [`crate::bem::WireField`]). Positions are SI meters.
+pub trait TraceGeometry: std::fmt::Debug + Send + Sync {
+    /// Index of the electrode whose conductor contains `p`, if any.
+    fn wire_hit(&self, p: [f64; 3]) -> Option<usize>;
+    /// Whether `p` has reached the chamber wall.
+    fn at_wall(&self, p: [f64; 3]) -> bool;
+    /// Near-wire step-refinement ratio: the smallest `(d − a)/(6a)` over
+    /// electrodes (`d` = distance to the wire axis), or ≥ 1 far from all
+    /// of them. The tracer scales its step by this, clamped to [0.1, 1].
+    fn near_wire_ratio(&self, p: [f64; 3]) -> f64;
+    /// Straight-line distance from `p` along `v` to the chamber wall —
+    /// fast-neutral continuation after charge exchange.
+    fn exit_distance(&self, p: [f64; 3], v: [f64; 3]) -> f64;
+}
+
+/// Length and energy scales for a tracer built with
+/// [`Tracer::with_geometry`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TraceScales {
+    /// Field-resolution length, m: the base step is
+    /// `step_fraction × step_length_m / speed`.
+    pub step_length_m: f64,
+    /// Core radius for pass counting, m.
+    pub core_radius_m: f64,
+    /// Launch shell radius, m.
+    pub shell_radius_m: f64,
+    /// Deepest electrode-to-wall potential drop, V (velocity scale).
+    pub potential_drop_v: f64,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct WireHit {
     r0: f64,
@@ -231,14 +265,96 @@ struct WireHit {
     a2: f64,
 }
 
-/// Prepared tracer for one device + solution.
-#[derive(Debug)]
-pub struct Tracer<'a> {
-    fields: &'a FieldMap<'a>,
+/// The axisymmetric device geometry: coaxial wire rings in a closed
+/// cylinder.
+#[derive(Debug, Clone)]
+struct AxisymGeometry {
     wires: Vec<WireHit>,
-    grid: (usize, usize, f64, f64, f64),
     r_wall: f64,
     z_wall: f64,
+}
+
+impl TraceGeometry for AxisymGeometry {
+    fn wire_hit(&self, p: [f64; 3]) -> Option<usize> {
+        let r = (p[0] * p[0] + p[1] * p[1]).sqrt();
+        for (k, w) in self.wires.iter().enumerate() {
+            let dr = r - w.r0;
+            let dz = p[2] - w.z0;
+            if dr * dr + dz * dz <= w.a2 {
+                return Some(k);
+            }
+        }
+        None
+    }
+
+    fn at_wall(&self, p: [f64; 3]) -> bool {
+        let r2 = p[0] * p[0] + p[1] * p[1];
+        r2 > self.r_wall * self.r_wall || p[2].abs() > self.z_wall
+    }
+
+    fn near_wire_ratio(&self, p: [f64; 3]) -> f64 {
+        let r_now = (p[0] * p[0] + p[1] * p[1]).sqrt();
+        let mut factor = 1.0_f64;
+        for w in &self.wires {
+            let drw = r_now - w.r0;
+            let dzw = p[2] - w.z0;
+            let ratio = ((drw * drw + dzw * dzw).sqrt() - w.a) / (6.0 * w.a);
+            if ratio < factor {
+                factor = ratio;
+            }
+        }
+        factor
+    }
+
+    /// Straight-line distance from `p` along `v` to the chamber boundary
+    /// (cylinder wall or either end cap), meters.
+    fn exit_distance(&self, p: [f64; 3], v: [f64; 3]) -> f64 {
+        let speed = dot(v, v).sqrt();
+        if speed < 1e-12 {
+            return 0.0;
+        }
+        let d = scale(v, 1.0 / speed);
+        // Cylinder r = r_wall in the xy plane.
+        let a = d[0] * d[0] + d[1] * d[1];
+        let t_cyl = if a > 1e-18 {
+            let b = p[0] * d[0] + p[1] * d[1];
+            let c = p[0] * p[0] + p[1] * p[1] - self.r_wall * self.r_wall;
+            let disc = b * b - a * c;
+            if disc > 0.0 {
+                let t = (-b + disc.sqrt()) / a;
+                if t > 0.0 {
+                    t
+                } else {
+                    f64::INFINITY
+                }
+            } else {
+                f64::INFINITY
+            }
+        } else {
+            f64::INFINITY
+        };
+        // End caps z = ±z_wall.
+        let t_cap = if d[2] > 1e-18 {
+            (self.z_wall - p[2]) / d[2]
+        } else if d[2] < -1e-18 {
+            (-self.z_wall - p[2]) / d[2]
+        } else {
+            f64::INFINITY
+        };
+        t_cyl.min(t_cap.max(0.0)).max(0.0)
+    }
+}
+
+/// Prepared tracer for one device + field.
+#[derive(Debug)]
+pub struct Tracer<'a> {
+    fields: &'a dyn FieldSampler,
+    geometry: Box<dyn TraceGeometry>,
+    /// (nr, nz, dr, dz, z_half) of the axisymmetric grid, for dwell
+    /// deposits; `None` for tracers without one.
+    grid: Option<(usize, usize, f64, f64, f64)>,
+    /// Axisymmetric wire tori `(r0, z0, a)` (empty for generic geometry).
+    axisym_tori: Vec<(f64, f64, f64)>,
     core_radius: f64,
     shell_radius: f64,
     drop_v: f64,
@@ -259,7 +375,7 @@ impl<'a> Tracer<'a> {
     ) -> Self {
         let h = solution.dr.min(solution.dz);
         let mask_floor = 0.75 * solution.dr.max(solution.dz);
-        let wires = device
+        let wires: Vec<WireHit> = device
             .rings
             .iter()
             .map(|ring| {
@@ -285,16 +401,42 @@ impl<'a> Tracer<'a> {
         let shell_radius = opts.launch_shell_fraction * min_dim;
         let core_radius = 0.35 * device.min_ring_spherical_radius_mm() * 1e-3;
         let drop_v = device.max_potential_drop_v().max(1.0);
+        let axisym_tori = wires.iter().map(|w: &WireHit| (w.r0, w.z0, w.a)).collect();
         Self {
             fields,
-            wires,
-            grid,
-            r_wall,
-            z_wall,
+            axisym_tori,
+            geometry: Box::new(AxisymGeometry {
+                wires,
+                r_wall,
+                z_wall,
+            }),
+            grid: Some(grid),
             core_radius,
             shell_radius,
             drop_v,
             h,
+            opts,
+        }
+    }
+
+    /// Prepare a tracer over any field and collision geometry (3D
+    /// devices). There is no (r, z) grid, so
+    /// [`Self::launch_ensemble_dwell`] returns an empty dwell vector.
+    pub fn with_geometry(
+        fields: &'a dyn FieldSampler,
+        geometry: Box<dyn TraceGeometry>,
+        scales: TraceScales,
+        opts: TraceOptions,
+    ) -> Self {
+        Self {
+            fields,
+            geometry,
+            grid: None,
+            axisym_tori: Vec::new(),
+            core_radius: scales.core_radius_m,
+            shell_radius: scales.shell_radius_m,
+            drop_v: scales.potential_drop_v.max(1.0),
+            h: scales.step_length_m,
             opts,
         }
     }
@@ -318,26 +460,23 @@ impl<'a> Tracer<'a> {
         self.trace_impl(species, pos, vel, None, Some(observer))
     }
 
-    /// Grid geometry `(nr, nz, dr, dz, z_half)` of the solution this
-    /// tracer was built on (for callers depositing on the same grid).
-    pub fn grid(&self) -> (usize, usize, f64, f64, f64) {
+    /// Grid geometry `(nr, nz, dr, dz, z_half)` of the axisymmetric
+    /// solution this tracer was built on (for callers depositing on the
+    /// same grid); `None` for [`Self::with_geometry`] tracers.
+    pub fn grid(&self) -> Option<(usize, usize, f64, f64, f64)> {
         self.grid
     }
 
-    /// Wire hit tori as `(ring_radius_m, z_m, hit_radius_m)`.
+    /// Axisymmetric wire hit tori as `(ring_radius_m, z_m, hit_radius_m)`
+    /// (empty for [`Self::with_geometry`] tracers).
     pub fn wire_tori(&self) -> Vec<(f64, f64, f64)> {
-        self.wires.iter().map(|w| (w.r0, w.z0, w.a)).collect()
-    }
-
-    /// Chamber hit limits `(r_wall_m, z_wall_m)`.
-    pub fn wall_limits(&self) -> (f64, f64) {
-        (self.r_wall, self.z_wall)
+        self.axisym_tori.clone()
     }
 
     /// Straight-line distance from `p` along `v` to the chamber boundary,
     /// m (fast-neutral continuation).
     pub fn exit_distance_m(&self, p: [f64; 3], v: [f64; 3]) -> f64 {
-        self.exit_distance(p, v)
+        self.geometry.exit_distance(p, v)
     }
 
     fn trace_impl(
@@ -398,19 +537,10 @@ impl<'a> Tracer<'a> {
             }
             // Refine the step near wires, where field gradients are the
             // steepest thing in the problem (bounds the energy drift).
-            if !self.wires.is_empty() {
-                let r_now = (p[0] * p[0] + p[1] * p[1]).sqrt();
-                let mut factor = 1.0_f64;
-                for w in &self.wires {
-                    let drw = r_now - w.r0;
-                    let dzw = p[2] - w.z0;
-                    let ratio = ((drw * drw + dzw * dzw).sqrt() - w.a) / (6.0 * w.a);
-                    if ratio < factor {
-                        factor = ratio;
-                    }
-                }
-                dt *= factor.clamp(self.opts.near_wire_min_factor.clamp(1e-4, 1.0), 1.0);
-            }
+            dt *= self
+                .geometry
+                .near_wire_ratio(p)
+                .clamp(self.opts.near_wire_min_factor.clamp(1e-4, 1.0), 1.0);
             let b = self.fields.b_cart(p);
             let bmag = dot(b, b).sqrt();
             let n_sub = ((qm.abs() * bmag * dt / 0.3).ceil() as u64).clamp(1, 64);
@@ -440,8 +570,8 @@ impl<'a> Tracer<'a> {
                 steps += 1;
                 let ds = sq_len([p[0] - p_prev[0], p[1] - p_prev[1], p[2] - p_prev[2]]).sqrt();
 
-                if let Some(d) = dwell.as_deref_mut() {
-                    let (nr, nz, dr, dz, z_half) = self.grid;
+                if let (Some(d), Some((nr, nz, dr, dz, z_half))) = (dwell.as_deref_mut(), self.grid)
+                {
                     let i = ((p[0] * p[0] + p[1] * p[1]).sqrt() / dr).round() as usize;
                     let j = (((p[2] + z_half) / dz).round().max(0.0)) as usize;
                     if i < nr && j < nz {
@@ -467,7 +597,7 @@ impl<'a> Tracer<'a> {
                             let rate_cx = n_bg * cxm.sigma_cx_m2 * speed_now;
                             let p_birth = survival * rate_cx * dth;
                             if p_birth > 0.0 {
-                                let l_exit = self.exit_distance(p, v);
+                                let l_exit = self.geometry.exit_distance(p, v);
                                 n_cx += p_birth * n_bg * sig * l_exit;
                             }
                             survival *= (-rate_cx * dth).exp();
@@ -481,8 +611,7 @@ impl<'a> Tracer<'a> {
                     }
                 }
 
-                let r2 = p[0] * p[0] + p[1] * p[1];
-                if r2 > self.r_wall * self.r_wall || p[2].abs() > self.z_wall {
+                if self.geometry.at_wall(p) {
                     fate = Fate::Wall;
                     break 'outer;
                 }
@@ -500,14 +629,9 @@ impl<'a> Tracer<'a> {
                         break 'outer;
                     }
                 }
-                let r = r2.sqrt();
-                for (k, w) in self.wires.iter().enumerate() {
-                    let dr = r - w.r0;
-                    let dz = p[2] - w.z0;
-                    if dr * dr + dz * dz <= w.a2 {
-                        fate = Fate::Wire(k);
-                        break 'outer;
-                    }
+                if let Some(k) = self.geometry.wire_hit(p) {
+                    fate = Fate::Wire(k);
+                    break 'outer;
                 }
                 let s2 = sq_len(p);
                 let now_inside = s2 < self.core_radius * self.core_radius;
@@ -545,55 +669,19 @@ impl<'a> Tracer<'a> {
         }
     }
 
-    /// Straight-line distance from `p` along `v` to the chamber boundary
-    /// (cylinder wall or either end cap), meters. Used for fast-neutral
-    /// continuation after charge exchange.
-    fn exit_distance(&self, p: [f64; 3], v: [f64; 3]) -> f64 {
-        let speed = dot(v, v).sqrt();
-        if speed < 1e-12 {
-            return 0.0;
-        }
-        let d = scale(v, 1.0 / speed);
-        // Cylinder r = r_wall in the xy plane.
-        let a = d[0] * d[0] + d[1] * d[1];
-        let t_cyl = if a > 1e-18 {
-            let b = p[0] * d[0] + p[1] * d[1];
-            let c = p[0] * p[0] + p[1] * p[1] - self.r_wall * self.r_wall;
-            let disc = b * b - a * c;
-            if disc > 0.0 {
-                let t = (-b + disc.sqrt()) / a;
-                if t > 0.0 {
-                    t
-                } else {
-                    f64::INFINITY
-                }
-            } else {
-                f64::INFINITY
-            }
-        } else {
-            f64::INFINITY
-        };
-        // End caps z = ±z_wall.
-        let t_cap = if d[2] > 1e-18 {
-            (self.z_wall - p[2]) / d[2]
-        } else if d[2] < -1e-18 {
-            (-self.z_wall - p[2]) / d[2]
-        } else {
-            f64::INFINITY
-        };
-        t_cyl.min(t_cap.max(0.0)).max(0.0)
-    }
-
     /// [`Self::launch_ensemble`], additionally accumulating per-node dwell
     /// time (seconds, nearest-node deposit, row-major `i·nz + j`) — the
-    /// input to the space-charge estimator.
+    /// input to the space-charge estimator. Empty for tracers built with
+    /// [`Self::with_geometry`] (no (r, z) grid).
     pub fn launch_ensemble_dwell(
         &self,
         species: Species,
         n: usize,
     ) -> (Vec<TraceOutcome>, Vec<f64>) {
-        let (nr, nz, _, _, _) = self.grid;
-        let mut dwell = vec![0.0_f64; nr * nz];
+        let mut dwell = match self.grid {
+            Some((nr, nz, _, _, _)) => vec![0.0_f64; nr * nz],
+            None => Vec::new(),
+        };
         let n = n.max(2);
         let outcomes = (0..n)
             .map(|k| {

@@ -455,8 +455,14 @@ setting of each knob (from the CSV):
   dwell is not deposited.
 - The cathode is assumed hot, so it retains no deuterium. Beam–beam
   fusion is neglected.
-- The geometry is still the ring stack. The other open-fusor session owns
-  3D grids.
+- The geometry is still the ring stack: the chain deposits births on the
+  axisymmetric (r, z) grid. The 3D globe-grid work
+  (`docs/particle-optics-3d.md`) finds that a 6-great-circle globe
+  recirculates ~3× less than a transparency-matched ring stack, because
+  meridian-plane slit lensing inflates the CX-off ceiling ~2.4×. In the
+  chain, CX ends most ions within a pass or two, so the effect should be
+  smaller, but it is **not yet quantified**. Running the chain on 3D
+  geometry is a follow-up.
 - The space-charge ratio here (≈ 0.02 at −30 kV) is much smaller than the
   0.118 gauge quoted in the open-fusor audit. That gauge priced 10 mA of
   *ion* current in long-lived CX-off orbits (up to 40 passes). Here the

@@ -138,9 +138,35 @@ impl Solution {
     }
 }
 
+/// Shape of the grounded chamber for [`solve_with_chamber`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChamberShape {
+    /// Closed cylinder of radius `chamber_radius_mm` and half-height
+    /// `chamber_half_height_mm` (the [`solve`] default).
+    #[default]
+    Cylinder,
+    /// Sphere of radius `chamber_radius_mm` centered on the origin
+    /// (`chamber_half_height_mm` is ignored). Nodes on or outside the
+    /// sphere are Dirichlet wall nodes — a staircase boundary, O(h). This
+    /// is the axisymmetric twin of [`crate::wire3d::Chamber3d::Sphere`],
+    /// for cross-checking the 3D solver on ring devices.
+    Sphere,
+}
+
 /// Solve the vacuum potential for `device` on an `nr × nz` node grid.
 pub fn solve(
     device: &Device,
+    nr: usize,
+    nz: usize,
+    opts: &SolveOptions,
+) -> Result<Solution, SolveError> {
+    solve_with_chamber(device, ChamberShape::Cylinder, nr, nz, opts)
+}
+
+/// [`solve`] with an explicit chamber shape.
+pub fn solve_with_chamber(
+    device: &Device,
+    chamber: ChamberShape,
     nr: usize,
     nz: usize,
     opts: &SolveOptions,
@@ -149,7 +175,10 @@ pub fn solve(
         return Err(SolveError::GridTooSmall);
     }
     let r_max = device.chamber_radius_mm * 1e-3;
-    let z_half = device.chamber_half_height_mm * 1e-3;
+    let z_half = match chamber {
+        ChamberShape::Cylinder => device.chamber_half_height_mm * 1e-3,
+        ChamberShape::Sphere => r_max,
+    };
     let dr = r_max / (nr - 1) as f64;
     let dz = 2.0 * z_half / (nz - 1) as f64;
     let idx = |i: usize, j: usize| i * nz + j;
@@ -167,6 +196,18 @@ pub fn solve(
         fixed[idx(i, 0)] = true;
         phi[idx(i, nz - 1)] = device.wall_potential_v;
         fixed[idx(i, nz - 1)] = true;
+    }
+    if chamber == ChamberShape::Sphere {
+        for i in 0..nr {
+            let r = i as f64 * dr;
+            for j in 0..nz {
+                let z = -z_half + j as f64 * dz;
+                if r * r + z * z >= r_max * r_max {
+                    phi[idx(i, j)] = device.wall_potential_v;
+                    fixed[idx(i, j)] = true;
+                }
+            }
+        }
     }
 
     // Wire rings: every node inside the wire cross-section is Dirichlet.
