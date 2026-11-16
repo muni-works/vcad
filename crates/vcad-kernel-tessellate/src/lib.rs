@@ -8046,12 +8046,16 @@ fn tessellate_revolved_trimmed(
     let blend_neighbour = std::iter::once(face.outer_loop)
         .chain(face.inner_loops.iter().copied())
         .flat_map(|l| topo.loop_half_edges(l))
+        // `get`, not indexing: a boolean can leave a twin pointing at a
+        // half-edge or loop it has since removed, and a lookup that only
+        // asks "is my neighbour a blend" must not panic on that.
         .filter_map(|he| topo.half_edges[he].twin)
-        .filter_map(|tw| topo.half_edges[tw].loop_id)
-        .filter_map(|l| topo.loops[l].face)
+        .filter_map(|tw| topo.half_edges.get(tw).and_then(|h| h.loop_id))
+        .filter_map(|l| topo.loops.get(l).and_then(|lp| lp.face))
+        .filter_map(|f| topo.faces.get(f))
         .any(|f| {
             matches!(
-                geom.surfaces[topo.faces[f].surface_index].surface_type(),
+                geom.surfaces[f.surface_index].surface_type(),
                 SurfaceKind::Sphere | SurfaceKind::Torus
             )
         });
