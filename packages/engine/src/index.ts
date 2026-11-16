@@ -907,6 +907,8 @@ export interface KernelModule {
   ) => unknown;
   /** Closed-form prismatic member check (BeamCase JSON). */
   feaCheckBeam?: (caseJson: string) => unknown;
+  /** Closed-form shell external-pressure buckling screen (ShellCase JSON). */
+  feaCheckShell?: (caseJson: string) => unknown;
   /** EM field simulation (problem-tagged spec/params/options JSON). */
   emSimulate?: (
     specJson: string,
@@ -919,6 +921,8 @@ export interface KernelModule {
     paramsJson: string,
     optionsJson: string,
   ) => unknown;
+  /** PcbBoard → AntennaSpec extraction (Document/AntennaExtraction JSON). */
+  extractAntennaSpec?: (docJson: string, selectionJson: string) => unknown;
   /** Forward 2D FDTD photonics run (device spec/options JSON). */
   photonicsSimulate?: (specJson: string, optionsJson: string) => unknown;
   /** Monte Carlo neutron shielding run (ShieldSpec/params JSON). */
@@ -1426,8 +1430,10 @@ export class Engine {
       circuitTune: (wasmModule as Record<string, unknown>).circuitTune as KernelModule["circuitTune"],
       feaAnalyzeMesh: (wasmModule as Record<string, unknown>).feaAnalyzeMesh as KernelModule["feaAnalyzeMesh"],
       feaCheckBeam: (wasmModule as Record<string, unknown>).feaCheckBeam as KernelModule["feaCheckBeam"],
+      feaCheckShell: (wasmModule as Record<string, unknown>).feaCheckShell as KernelModule["feaCheckShell"],
       emSimulate: (wasmModule as Record<string, unknown>).emSimulate as KernelModule["emSimulate"],
       antennaAnalyze: (wasmModule as Record<string, unknown>).antennaAnalyze as KernelModule["antennaAnalyze"],
+      extractAntennaSpec: (wasmModule as Record<string, unknown>).extractAntennaSpec as KernelModule["extractAntennaSpec"],
       photonicsSimulate: (wasmModule as Record<string, unknown>).photonicsSimulate as KernelModule["photonicsSimulate"],
       neutronicsSimulate: (wasmModule as Record<string, unknown>).neutronicsSimulate as KernelModule["neutronicsSimulate"],
       latticeGaugeSimulate: (wasmModule as Record<string, unknown>).latticeGaugeSimulate as KernelModule["latticeGaugeSimulate"],
@@ -1920,6 +1926,22 @@ export class Engine {
   }
 
   /**
+   * Closed-form external-pressure buckling screen for a thin cylinder,
+   * sphere or dished head: classical bifurcation pressure, the cited
+   * imperfection knockdown, yield cap, allowable and margin, plus
+   * `vcad.fea-claims/1` predicted claims; see `vcad-kernel-fea::shell`.
+   */
+  feaCheckShell(caseJson: string): unknown {
+    const fn = this.kernel.feaCheckShell;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "feaCheckShell is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(caseJson);
+  }
+
+  /**
    * EM field simulation (2D/axisymmetric finite-volume magnetostatics or
    * electrostatics): inductance, force, torque, capacitance extraction and
    * predicted receipt claims. The spec JSON carries a `problem` tag; see
@@ -1957,6 +1979,23 @@ export class Engine {
       );
     }
     return fn(specJson, paramsJson, optionsJson);
+  }
+
+  /**
+   * Extract a thin-wire `AntennaSpec` from a document's `PcbBoard` node:
+   * antenna-net trace centerlines → wires (radius = width/4), delta-gap
+   * feed at a pad, infinite ground at the pour edge (recorded). Returns
+   * `{spec, parameters, feed, frame, ground, substrate, notes, ...}`.
+   * Fail-closed; see `vcad_eval::antenna_extract`.
+   */
+  extractAntennaSpec(docJson: string, selectionJson: string): unknown {
+    const fn = this.kernel.extractAntennaSpec;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "extractAntennaSpec is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(docJson, selectionJson);
   }
 
   /**

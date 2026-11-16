@@ -16,6 +16,7 @@
 //! }
 //! ```
 
+pub mod antenna_extract;
 pub mod cache;
 pub mod convert;
 pub mod diff;
@@ -129,6 +130,14 @@ pub struct EvalOptions {
     /// its mesh. A progressive viewport draws parts from here while the rest
     /// of the document is still solving; a failed root reports an empty mesh.
     pub on_root: Option<OnRoot>,
+    /// Called as soon as a visible root's final mesh is known, in ANY order:
+    /// a cache hit before the walk starts, or a root the parallel pre-pass
+    /// finished while the in-order walk is still waiting on an earlier one.
+    /// Same `(index, total, mesh)` as [`EvalOptions::on_root`], which still
+    /// fires for every root in order afterwards; a root this skips (failed,
+    /// empty, or not pre-passed) only lands through `on_root`. Lets a
+    /// progressive viewport draw fast parts without waiting behind a slow one.
+    pub on_root_ready: Option<OnRoot>,
 }
 
 /// The tessellation segment count `evaluate_document` uses by default.

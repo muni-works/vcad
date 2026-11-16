@@ -146,6 +146,64 @@ describe.skipIf(!wasmHasThermal)("thermal solve tool", () => {
     }
   });
 
+  it("Radiation boundary: vacuum part sheds its power by radiation", async () => {
+    // A 10 mm cube in vacuum, 1 W, radiating from all faces (eps 0.6):
+    // with no other path, every watt must leave by radiation, and the
+    // surface lands on (P/(eps*sigma*A) + Tamb^4)^(1/4).
+    const radSpec = {
+      origin_mm: [0, 0, 0],
+      size_mm: [10, 10, 10],
+      divisions: [5, 5, 5],
+      materials: [
+        {
+          shape: { type: "Box", min_mm: [0, 0, 0], size_mm: [10, 10, 10] },
+          k_w_mk: [100, 100, 100],
+        },
+      ],
+      sources: [
+        {
+          name: "p",
+          shape: { type: "Box", min_mm: [0, 0, 0], size_mm: [10, 10, 10] },
+          power_w: 1.0,
+        },
+      ],
+      domain_faces: Array(6).fill({
+        type: "Radiation",
+        emissivity: "eps",
+        ambient_c: 25,
+      }),
+    };
+    let res: { isError?: boolean; content: Array<{ text: string }> };
+    res = (await client.callTool({
+      name: "solve_thermal",
+      arguments: { spec: radSpec, parameters: { eps: 0.6 } },
+    })) as typeof res;
+    // A kernel WASM that predates the radiation BC rejects the variant;
+    // skip rather than fail (CI builds WASM from source).
+    if (res.isError && res.content[0].text.includes("unknown variant")) return;
+    expect(res.isError).toBeFalsy();
+    const out = JSON.parse(res.content[0].text);
+    expect(out.newton_iterations).toBeGreaterThan(0);
+    expect(out.radiation.length).toBe(6);
+    expect(Math.abs(out.energy.radiation_out_w - 1.0)).toBeLessThan(1e-6);
+    const sigma = 5.670374419e-8;
+    const ts =
+      Math.pow(1.0 / (0.6 * sigma * 6e-4) + Math.pow(298.15, 4), 0.25) -
+      273.15;
+    expect(Math.abs(out.radiation[0].mean_surface_c - ts)).toBeLessThan(0.1);
+    const names = out.claim_set.claims.map((c: { name: string }) => c.name);
+    expect(names).toContain("radiation_fraction");
+    expect(out.claim_set.provenance.radiation_model).toContain("gray-diffuse");
+
+    // Emissivity out of range fails closed.
+    res = (await client.callTool({
+      name: "solve_thermal",
+      arguments: { spec: radSpec, parameters: { eps: 1.5 } },
+    })) as typeof res;
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("emissivity");
+  });
+
   it("transient without heat capacity fails closed", async () => {
     const wasmHasTransient =
       typeof (

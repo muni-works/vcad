@@ -7430,6 +7430,7 @@ pub(crate) fn evaluate_parsed(
         root_cache: None,
         mesh_segments: 0,
         on_root: None,
+        on_root_ready: None,
     };
 
     let mut scene = match incremental {
@@ -9107,6 +9108,8 @@ struct WasmThermalEnergy {
     fixed_face_out_w: f64,
     convection_out_w: f64,
     fixed_region_out_w: f64,
+    /// Heat out through radiation faces, W (0 for conduction-only).
+    radiation_out_w: f64,
     net_out_w: f64,
     residual_rel: f64,
 }
@@ -9122,6 +9125,10 @@ struct WasmThermalSolve {
     energy: WasmThermalEnergy,
     iterations: usize,
     residual_rel: f64,
+    /// Newton iterations (radiating models; 0 when linear).
+    newton_iterations: usize,
+    /// Per-slot radiation reports (empty for conduction-only).
+    radiation: Vec<vcad_kernel::vcad_kernel_thermal::solve::RadiationReport>,
     claim_set: vcad_kernel::vcad_kernel_thermal::receipt::ClaimSet,
     receipt_claims: Vec<vcad_receipt::ReceiptClaim>,
 }
@@ -9192,11 +9199,14 @@ pub fn thermal_solve(
             fixed_face_out_w: sol.energy.fixed_face_out_w,
             convection_out_w: sol.energy.convection_out_w,
             fixed_region_out_w: sol.energy.fixed_region_out_w,
+            radiation_out_w: sol.energy.radiation_out_w,
             net_out_w: sol.energy.net_out_w,
             residual_rel: sol.energy.residual_rel,
         },
         iterations: sol.iterations,
         residual_rel: sol.residual_rel,
+        newton_iterations: sol.newton_iterations,
+        radiation: sol.radiation.clone(),
         claim_set,
         receipt_claims,
     };
@@ -9423,6 +9433,7 @@ pub fn thermal_solve_transient(
             fixed_face_out_w: fs.energy.fixed_face_out_w,
             convection_out_w: fs.energy.convection_out_w,
             fixed_region_out_w: fs.energy.fixed_region_out_w,
+            radiation_out_w: fs.energy.radiation_out_w,
             net_out_w: fs.energy.net_out_w,
             residual_rel: fs.energy.residual_rel,
         },
@@ -9677,6 +9688,47 @@ pub fn fea_check_beam(case_json: &str) -> Result<JsValue, JsError> {
         }
     };
     let out = WasmBeamCheck {
+        check,
+        claim_set,
+        receipt_claims,
+    };
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
+#[derive(serde::Serialize)]
+struct WasmShellCheck {
+    check: vcad_kernel::vcad_kernel_fea::shell::ShellCheck,
+    claim_set: Option<vcad_kernel::vcad_kernel_fea::receipt::ClaimSet>,
+    receipt_claims: Vec<vcad_receipt::ReceiptClaim>,
+}
+
+/// Closed-form external-pressure buckling screen for a thin cylinder,
+/// sphere or dished head (vacuum chambers, viewport covers): classical
+/// bifurcation pressure, the cited imperfection knockdown (NASA/SP-8007
+/// REV 2 for cylinders, ASME VIII-1 UG-28(d)/UG-33 for spheres and heads),
+/// membrane-yield cap, allowable and margin — with the same fail-closed
+/// applicability gating and predicted-basis claims as the beam route.
+///
+/// `case_json` is a `vcad_kernel_fea::shell::ShellCase`.
+#[wasm_bindgen(js_name = feaCheckShell)]
+pub fn fea_check_shell(case_json: &str) -> Result<JsValue, JsError> {
+    use vcad_kernel::vcad_kernel_fea as fea;
+    let case: fea::shell::ShellCase =
+        serde_json::from_str(case_json).map_err(|e| JsError::new(&format!("bad case: {e}")))?;
+    let check = fea::shell::check_shell(&case).map_err(|e| JsError::new(&e.to_string()))?;
+    let (claim_set, receipt_claims) = match &check.verdict {
+        fea::section::BeamVerdict::Applicable => {
+            let set = fea::shell::predicted_claims(&check, &case)
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            let claims = fea::shell::design_claims(&set);
+            (Some(set), claims)
+        }
+        fea::section::BeamVerdict::Unverifiable { reasons } => {
+            (None, fea::shell::design_claims_unverifiable(reasons))
+        }
+    };
+    let out = WasmShellCheck {
         check,
         claim_set,
         receipt_claims,
@@ -10377,6 +10429,27 @@ pub fn antenna_analyze(
         claim_set,
         receipt_claims,
     };
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Extract a thin-wire `AntennaSpec` from a document's `PcbBoard` node
+/// (antenna-net trace centerlines → wires of radius width/4, feed at a pad,
+/// infinite ground at the pour edge — see `vcad_eval::antenna_extract`).
+///
+/// `doc_json` is a `vcad_ir::Document`; `selection_json` an
+/// `AntennaExtraction` (feed pad, optional net / board node, `f_max_hz`).
+/// Returns `{spec, parameters, feed, frame, ground, substrate, notes, …}` —
+/// feed `spec` and `parameters` straight to `antennaAnalyze`. Fail-closed.
+#[wasm_bindgen(js_name = extractAntennaSpec)]
+pub fn extract_antenna_spec(doc_json: &str, selection_json: &str) -> Result<JsValue, JsError> {
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {e}")))?;
+    let sel: vcad_eval::antenna_extract::AntennaExtraction =
+        serde_json::from_str(selection_json)
+            .map_err(|e| JsError::new(&format!("bad antenna extraction selection: {e}")))?;
+    let out = vcad_eval::antenna_extract::extract_antenna_spec(&doc, &sel)
+        .map_err(|e| JsError::new(&e.to_string()))?;
     let ser = serde_wasm_bindgen::Serializer::json_compatible();
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
 }
