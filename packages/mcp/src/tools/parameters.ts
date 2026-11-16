@@ -10,15 +10,18 @@
  *  - `parameter_gradient` differentiates the mass-property + bounding-box
  *    QoIs with respect to one named parameter (`d QoI / dθ`) through the
  *    Rust differentiable seam — a capability no other CAD MCP exposes.
- *
- * `optimize_parameters` (solve params for a target QoI) is deferred: the
- * kernel ships an L-BFGS optimizer, but wiring a *document* parameter into it
- * (build closure + seeding synthesis + objective) is new Rust API design.
- * See the follow-up issue.
+ *  - `optimize_parameters` minimizes a weighted sum of QoIs over named
+ *    parameters subject to parameter-expression and QoI constraints
+ *    (`vcad_eval::optimize::optimize_document`: augmented Lagrangian over
+ *    projected L-BFGS), returning the optimum, a KKT report, and the full
+ *    trajectory with every gradient component's provenance. Read-only: it
+ *    reports the optimum; `set_parameters` applies it.
  */
 
 import type {
   Engine,
+  OptimizeDocRequest,
+  OptimizeDocResult,
   PartParameterGradient,
   SensitivityReport,
   SensitivityRequest,
@@ -536,6 +539,122 @@ export function sensitivity(input: unknown, engine: Engine): ToolResult {
   });
 }
 
+// ─── optimize_parameters ────────────────────────────────────────────────────────
+
+const qoiRefSchema = {
+  qoi: {
+    type: "string" as const,
+    description: "volume | mass | centroid_x | centroid_y | centroid_z",
+  },
+  part: {
+    type: "number" as const,
+    description: "Solid-part index (omit to sum volume/mass over parts).",
+  },
+};
+
+export const optimizeParametersSchema = {
+  type: "object" as const,
+  properties: {
+    document_id: {
+      type: "string" as const,
+      description: "Session id from open_document.",
+    },
+    document: {
+      type: "object" as const,
+      description: "Inline Document IR to optimize instead of a session (stateless path).",
+    },
+    parameters: {
+      type: "array" as const,
+      description:
+        "Parameters to optimize: [{name, lo, hi}] (min/max accepted as aliases). " +
+        "lo/hi default to the parameter's declared scrub bounds.",
+      items: {
+        type: "object" as const,
+        properties: {
+          name: { type: "string" as const },
+          lo: { type: "number" as const },
+          hi: { type: "number" as const },
+        },
+        required: ["name"],
+      },
+    },
+    objective: {
+      type: "array" as const,
+      description:
+        "Terms summed into the objective: [{qoi, part?, weight?, shape?}]. shape: " +
+        '"linear" (default), {"target": t} for (q−t)², {"hinge_below": t} for max(0,t−q)², ' +
+        '{"hinge_above": t} for max(0,q−t)². Negative weight on a linear term maximizes it.',
+      items: {
+        type: "object" as const,
+        properties: {
+          ...qoiRefSchema,
+          weight: { type: "number" as const },
+          shape: {},
+        },
+        required: ["qoi"],
+      },
+    },
+    constraints: {
+      type: "array" as const,
+      description:
+        'Inequalities. Parameter expressions in the document formula language: {"expr": "port_len <= body_h - 2*wall - 15"}. ' +
+        'QoI bounds: {"qoi": "mass", "op": "<=", "value": 0.05}.',
+      items: { type: "object" as const },
+    },
+    options: {
+      type: "object" as const,
+      description:
+        "density (mass = density·volume; geometry is mm, so kg/m³·1e-9 for kg), max_outer, max_inner, " +
+        "feas_tol, grad_tol, circle_segments, check_seam_fd (central-FD the seam gradients at the optimum).",
+    },
+  },
+  required: ["parameters", "objective"],
+};
+
+export function optimizeParameters(input: unknown, engine: Engine): ToolResult {
+  const args = (input ?? {}) as Record<string, unknown>;
+  const { doc } = resolveDocInput(args);
+  if (!Array.isArray(args.parameters) || args.parameters.length === 0) {
+    throw new Error("`parameters` must be a non-empty array of {name, lo, hi}.");
+  }
+  const parameters = (args.parameters as Array<Record<string, unknown>>).map((p) => {
+    const name = p.name;
+    if (typeof name !== "string") throw new Error("each parameter needs a `name`.");
+    const decl = (doc.parameters ?? {})[name] as Parameter | undefined;
+    if (!decl) throw new Error(`document has no parameter \`${name}\`.`);
+    const num = (...vals: unknown[]) => vals.find((v) => typeof v === "number") as number | undefined;
+    const lo = num(p.lo, p.min, decl.min);
+    const hi = num(p.hi, p.max, decl.max);
+    if (lo === undefined || hi === undefined) {
+      throw new Error(`parameter \`${name}\` needs lo/hi (no declared min/max to default to).`);
+    }
+    return { name, lo, hi };
+  });
+  const objective = Array.isArray(args.objective)
+    ? (args.objective as OptimizeDocRequest["objective"])
+    : [args.objective as OptimizeDocRequest["objective"][number]];
+  const request: OptimizeDocRequest = {
+    parameters,
+    objective,
+    constraints: (args.constraints as OptimizeDocRequest["constraints"]) ?? [],
+    options: (args.options as OptimizeDocRequest["options"]) ?? {},
+  };
+  const result: OptimizeDocResult = engine.optimizeDocument(doc, request);
+  const optimum = Object.fromEntries(result.params.map((n, i) => [n, result.theta[i]]));
+  return jsonResult({
+    optimum,
+    objective: result.objective,
+    stop: result.stop,
+    kkt: result.kkt,
+    seamFdCheck: result.seam_fd_check,
+    samples: result.samples,
+    documentEvals: result.document_evals,
+    wallMs: result.wall_ms,
+    trajectory: result.trajectory,
+    next: "Apply with set_parameters " + JSON.stringify(optimum),
+  });
+}
+
 export const toolDefs: ToolDef[] = [
   {
     name: "list_parameters",
@@ -564,6 +683,15 @@ export const toolDefs: ToolDef[] = [
       "Differentiate a document's QoIs with respect to a single named parameter via the differentiable seam: per solid part, returns d(volume)/d\u03b8, d(mass)/d\u03b8, d(centroid)/d\u03b8 (exact analytic seam derivatives) and d(bbox extents)/d\u03b8 (finite difference), alongside each QoI's value. The parameter must be bound onto some geometry field. \"Solve for the geometry\" starts here.",
     inputSchema: parameterGradientSchema,
     handler: (a, c) => parameterGradient(a, c.engine),
+    behavior: behavior({}),
+  },
+  {
+    name: "optimize_parameters",
+    pack: null,
+    description:
+      "Solve for the geometry: minimize a weighted sum of quantities (volume, mass, centroid) over named parameters, subject to parameter-expression constraints (\"port_len <= body_h - 2*wall - 15\") and QoI bounds. Augmented Lagrangian over box-projected L-BFGS, driven by exact seam gradients. Returns the optimum, a KKT report (feasibility, stationarity, multipliers, active bounds), and the full trajectory — every iterate's parameters, per-term values, and each gradient component labeled with the route that produced it (seam / fd / adjoint / linear). Read-only: apply the optimum with set_parameters. Solver QoIs (modal frequency, …) plug in through the Rust API (vcad_eval::optimize::ScalarQoi, e.g. vcad_sound's modal_f1) and are not exposed over this WASM path.",
+    inputSchema: optimizeParametersSchema,
+    handler: (a, c) => optimizeParameters(a, c.engine),
     behavior: behavior({}),
   },
   {
