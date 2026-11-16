@@ -92,17 +92,49 @@ fn published_gamma_hvls_lead_and_steel() {
     let fe = materials::ss304();
     let narrow_pb = std::f64::consts::LN_2 / pb.linear(662.0).unwrap().total * 10.0;
     assert!((narrow_pb - 5.5).abs() < 0.3, "narrow Pb HVL Cs-137 {narrow_pb} mm");
-    // Broad-beam (with buildup) vs the handbook shielding values
-    // (Radiological Health Handbook / NCRP-49 class): Pb 6.5 mm and
-    // steel 16 mm for Cs-137, Pb 12 mm for Co-60. Buildup must push the
-    // MC HVL above narrow-beam and into the handbook neighborhood.
+    // First broad-beam HVL (with buildup). Handbook shielding tables
+    // (Radiological Health Handbook / NCRP-49 class) give Pb 6.5 mm and
+    // steel ~16 mm for Cs-137. For Co-60 the handbook's 12 mm Pb is the
+    // deep-penetration convention (TVL 40 mm / 3.32); the *first* HVL
+    // with ANS-6.4.3 lead buildup B(1 mfp, 1.25 MeV) ≈ 1.36 solves
+    // B·e^{−x} = ½ at x ≈ 1.0 mfp ≈ 15 mm — that is what the MC must hit.
     let pb_cs = broad_hvl(&pb, 662.0, &[4.0, 5.0, 6.0, 7.0, 8.0, 9.0]);
+    eprintln!("Pb Cs-137: narrow {narrow_pb:.2} mm, MC broad {pb_cs:.2} mm (handbook 6.5)");
     assert!(pb_cs > narrow_pb && (5.6..7.6).contains(&pb_cs), "Pb Cs-137 broad HVL {pb_cs}");
-    let pb_co = broad_hvl(&pb, 1250.0, &[8.0, 10.0, 12.0, 14.0, 16.0]);
-    assert!((10.5..13.8).contains(&pb_co), "Pb Co-60 broad HVL {pb_co}");
+    let pb_co = broad_hvl(&pb, 1250.0, &[8.0, 10.0, 12.0, 14.0, 16.0, 18.0]);
+    let narrow_co = std::f64::consts::LN_2 / pb.linear(1250.0).unwrap().total * 10.0;
+    eprintln!("Pb Co-60: narrow {narrow_co:.2} mm, MC broad {pb_co:.2} mm (ANS-buildup first HVL ≈ 15)");
+    assert!(pb_co > narrow_co && (13.0..17.0).contains(&pb_co), "Pb Co-60 broad HVL {pb_co}");
     let fe_cs = broad_hvl(&fe, 662.0, &[10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 22.0]);
     let narrow_fe = std::f64::consts::LN_2 / fe.linear(662.0).unwrap().total * 10.0;
+    eprintln!("steel Cs-137: narrow {narrow_fe:.2} mm, MC broad {fe_cs:.2} mm (handbook ~16)");
     assert!(fe_cs > narrow_fe && (12.5..19.0).contains(&fe_cs), "steel Cs-137 broad HVL {fe_cs}");
+}
+
+/// Additional lead thickness halving the narrow-beam kerma transmission
+/// once the beam is already attenuated to `depth` (the hardened-beam
+/// HVL that barrier-design tables quote).
+fn deep_lead_hvl(spectrum: &Spectrum, prefilter: &[Slab], depth: f64) -> f64 {
+    let pb = materials::lead();
+    let base = transport::kerma_transmission(prefilter, spectrum);
+    let t_at = |x: f64| {
+        let mut s = prefilter.to_vec();
+        s.push(Slab::new(pb.clone(), x));
+        transport::kerma_transmission(&s, spectrum) / base
+    };
+    let solve = |target: f64| {
+        let (mut lo, mut hi) = (1e-6f64, 100.0f64);
+        for _ in 0..200 {
+            let m = (lo * hi).sqrt();
+            if t_at(m) > target {
+                lo = m
+            } else {
+                hi = m
+            }
+        }
+        lo
+    };
+    solve(0.5 * depth) - solve(depth)
 }
 
 #[test]
@@ -117,15 +149,23 @@ fn published_xray_hvls() {
     };
     let al = materials::aluminum();
     let pre = vec![Slab::new(al.clone(), 2.5)];
-    // NCRP-147 / IEC tube data: ~100 kVp with 2.5 mm Al → HVL ≈ 2.5–4 mm Al;
-    // lead HVL ≈ 0.27 mm at 100 kVp, ≈ 0.06–0.1 mm at 50 kVp.
+    // First Al HVL of a 100 kVp beam with 2.5 mm Al: 2.5–4 mm Al (IEC /
+    // NCRP-102 tube data).
     let al_100 = hvl_mm(&al, &pre, &spec(100.0));
+    let pb_first = hvl_mm(&materials::lead(), &pre, &spec(100.0));
+    // Barrier tables (NCRP-49/147) quote the *hardened* lead HVL:
+    // ≈ 0.25–0.27 mm at 100 kVp, ≈ 0.06 mm at 50 kVp. The transmission
+    // window just below the Pb K edge (70–88 keV, HVL ≈ 0.25 mm) is
+    // what sets it — a sharp test of the edge data and Kramers shape.
+    let pb_100 = deep_lead_hvl(&spec(100.0), &pre, 1.0e-3);
+    let pb_50 = deep_lead_hvl(&spec(50.0), &pre, 1.0e-3);
+    eprintln!(
+        "x-ray HVLs: Al@100kVp {al_100:.2} mm; Pb@100kVp first {pb_first:.3} mm, hardened {pb_100:.3} mm; Pb@50kVp hardened {pb_50:.3} mm"
+    );
     assert!((2.0..4.5).contains(&al_100), "Al HVL @100 kVp {al_100} mm");
-    let pb_100 = hvl_mm(&materials::lead(), &pre, &spec(100.0));
-    assert!((0.12..0.40).contains(&pb_100), "Pb HVL @100 kVp {pb_100} mm");
-    let pb_50 = hvl_mm(&materials::lead(), &pre, &spec(50.0));
-    assert!((0.03..0.12).contains(&pb_50), "Pb HVL @50 kVp {pb_50} mm");
-    assert!(pb_50 < pb_100);
+    assert!(pb_first < pb_100, "beam hardening must lengthen the HVL");
+    assert!((0.18..0.34).contains(&pb_100), "hardened Pb HVL @100 kVp {pb_100} mm (tables 0.25-0.27)");
+    assert!((0.035..0.09).contains(&pb_50), "hardened Pb HVL @50 kVp {pb_50} mm (tables ~0.06)");
 }
 
 #[test]
@@ -140,7 +180,19 @@ fn buildup_behaves() {
     c.batches = 10;
     let r = run(&Spectrum::line(1000.0, 1.0), &c).unwrap();
     let b = r.detectors[0].buildup_h10;
+    eprintln!("water 1 MeV 2 mfp slab buildup {b:.3} (ANS-6.4.3 infinite medium 3.71)");
     assert!(b > 1.3 && b < 3.71, "water 1 MeV 2 mfp buildup {b}");
+    // Lead, 1 MeV, 1 mfp: ANS-6.4.3 infinite-medium point-isotropic
+    // exposure buildup 1.37; a finite slab with void behind sits a bit
+    // below it.
+    let pb = materials::lead();
+    let mfp = 1.0 / pb.linear(1000.0).unwrap().total * 10.0;
+    let mut c = PathConfig::new(vec![Slab::new(pb, mfp)], vec![mfp + 500.0]);
+    c.histories_per_batch = 20_000;
+    c.batches = 10;
+    let b = run(&Spectrum::line(1000.0, 1.0), &c).unwrap().detectors[0].buildup_h10;
+    eprintln!("lead 1 MeV 1 mfp slab buildup {b:.3} (ANS-6.4.3 infinite medium 1.37)");
+    assert!(b > 1.1 && b < 1.45, "lead 1 MeV 1 mfp buildup {b}");
     // Lead at 30 keV is photoabsorption-dominated: buildup ≈ 1.
     let mut c = PathConfig::new(vec![Slab::new(materials::lead(), 0.1)], vec![500.0]);
     c.histories_per_batch = 5_000;
