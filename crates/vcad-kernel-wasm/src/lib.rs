@@ -9295,9 +9295,20 @@ pub fn thermal_solve(
         max_iters: opts.max_iters,
     };
     let sol = th::solve::solve_steady(&model, &sopts).map_err(|e| JsError::new(&e.to_string()))?;
-    let claim_set = th::receipt::predicted_claims(&model, &sol, &sopts);
+    let out = thermal_summary(&model, &sol, &sopts);
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
+fn thermal_summary(
+    model: &vcad_kernel::vcad_kernel_thermal::model::ThermalModel,
+    sol: &vcad_kernel::vcad_kernel_thermal::solve::Solution,
+    sopts: &vcad_kernel::vcad_kernel_thermal::solve::SolveOptions,
+) -> WasmThermalSolve {
+    use vcad_kernel::vcad_kernel_thermal as th;
+    let claim_set = th::receipt::predicted_claims(model, sol, sopts);
     let receipt_claims = th::receipt::design_claims(&claim_set);
-    let out = WasmThermalSolve {
+    WasmThermalSolve {
         divisions: sol.divisions,
         voxel_mm: sol.voxel_mm,
         t_max_c: sol.t_max_c,
@@ -9326,6 +9337,100 @@ pub fn thermal_solve(
         residual_rel: sol.residual_rel,
         claim_set,
         receipt_claims,
+    }
+}
+
+#[derive(serde::Serialize)]
+struct WasmThermalExtracted {
+    grid: vcad_eval::thermal_extract::ThermalGrid,
+    parts: Vec<vcad_eval::thermal_extract::VoxelizedPart>,
+    parameters: std::collections::BTreeMap<String, f64>,
+    sources: Vec<vcad_kernel::vcad_kernel_thermal::spec::SourceSpec>,
+    fixed: Vec<vcad_kernel::vcad_kernel_thermal::spec::FixedSpec>,
+}
+
+#[derive(serde::Serialize)]
+struct WasmThermalDocSolve {
+    #[serde(flatten)]
+    solve: WasmThermalSolve,
+    extracted: WasmThermalExtracted,
+}
+
+/// Steady thermal solve of a document's own parts.
+///
+/// `doc_json` is a `vcad_ir::Document`. The study is `study_json` (a
+/// `vcad_ir::ThermalStudy`) when non-empty, else the document's thermal
+/// analysis study `study_id` (or its only one). The selected parts are
+/// voxelized (`vcad_eval::thermal_extract`), the spec resolved against the
+/// document's parameters overlaid with `params_json`, and solved. Returns
+/// the `thermalSolve` summary plus `extracted` (grid, per-part voxel
+/// audit, sources/sinks as solved) — not the per-voxel index field.
+#[wasm_bindgen(js_name = thermalSolveDocument)]
+pub fn thermal_solve_document(
+    doc_json: &str,
+    study_json: &str,
+    study_id: &str,
+    params_json: &str,
+    options_json: &str,
+) -> Result<JsValue, JsError> {
+    use vcad_eval::thermal_extract as tx;
+    use vcad_kernel::vcad_kernel_thermal as th;
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {e}")))?;
+    let inline: Option<vcad_ir::ThermalStudy> = if study_json.trim().is_empty() {
+        None
+    } else {
+        Some(
+            serde_json::from_str(study_json)
+                .map_err(|e| JsError::new(&format!("bad thermal study: {e}")))?,
+        )
+    };
+    let study = match &inline {
+        Some(s) => s,
+        None => tx::find_thermal_study(
+            &doc,
+            (!study_id.trim().is_empty()).then_some(study_id.trim()),
+        )
+        .map_err(|e| JsError::new(&e.to_string()))?,
+    };
+    let overrides: std::collections::BTreeMap<String, f64> = if params_json.trim().is_empty() {
+        Default::default()
+    } else {
+        serde_json::from_str(params_json).map_err(|e| JsError::new(&format!("bad params: {e}")))?
+    };
+    let opts: ThermalOptions = if options_json.trim().is_empty() {
+        Default::default()
+    } else {
+        serde_json::from_str(options_json)
+            .map_err(|e| JsError::new(&format!("bad options: {e}")))?
+    };
+    let ex = tx::extract_thermal_spec(&doc, study).map_err(|e| JsError::new(&e.to_string()))?;
+    let mut params = ex.parameters.clone();
+    params.extend(overrides);
+    let n_voxels: usize = ex.grid.divisions.iter().product();
+    if n_voxels > 2_000_000 {
+        return Err(JsError::new(&format!(
+            "grid too large for the MCP tier: {n_voxels} voxels (cap 2,000,000) — coarsen the study grid"
+        )));
+    }
+    let model = ex
+        .spec
+        .resolve(&params)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let sopts = th::solve::SolveOptions {
+        tol: opts.tol,
+        max_iters: opts.max_iters,
+    };
+    let sol = th::solve::solve_steady(&model, &sopts).map_err(|e| JsError::new(&e.to_string()))?;
+    let out = WasmThermalDocSolve {
+        solve: thermal_summary(&model, &sol, &sopts),
+        extracted: WasmThermalExtracted {
+            grid: ex.grid,
+            parts: ex.parts,
+            parameters: params,
+            sources: ex.spec.sources,
+            fixed: ex.spec.fixed,
+        },
     };
     let ser = serde_wasm_bindgen::Serializer::json_compatible();
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))

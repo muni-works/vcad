@@ -153,7 +153,7 @@ contributors: Array<StudyContributor>,
 /**
  * The requirement the chain must satisfy.
  */
-requirement: StudyRequirement, };
+requirement: StudyRequirement, } | { "type": "thermal" } & ThermalStudy;
 
 /**
  * A stable reference to a piece of geometry a constraint grips.
@@ -6323,6 +6323,12 @@ region: StudyRegion,
 fix: [boolean, boolean, boolean], };
 
 /**
+ * A number, or the name of a document parameter (`doc.parameters`) bound
+ * when the study is extracted. Unbound names fail closed.
+ */
+export type StudyValue = number | string;
+
+/**
  * A builtin symbol definition for schematic component placement.
  */
 export type SymbolDef = { 
@@ -6366,6 +6372,19 @@ export type SymbolGraphic = { "type": "rect", x: number, y: number, width: numbe
 export type TextAlignment = "left" | "center" | "right";
 
 /**
+ * In-plane / through-plane conductivity of a laminate, W/(m·K).
+ */
+export type ThermalLaminate = { 
+/**
+ * Conductivity along the two in-plane axes.
+ */
+inPlaneWMk: StudyValue, 
+/**
+ * Conductivity along the through-plane (thinnest) axis.
+ */
+throughPlaneWMk: StudyValue, };
+
+/**
  * An exposed thermal pad under a no-lead package.
  */
 export type ThermalPad = { 
@@ -6382,6 +6401,149 @@ width: number, };
  * Thermal relief style for zone connections.
  */
 export type ThermalReliefStyle = "Direct" | "Relief" | "None";
+
+/**
+ * A heat-conduction study over the document's own parts.
+ *
+ * The selected parts are voxelized onto a grid spanning their union
+ * bounding box (plus `padding_mm` of void); each voxel takes the material
+ * of the part that fills it. Power sources and heat sinks name parts, so
+ * moving or resizing a part moves its heat with it. Numbers that are
+ * [`StudyValue::Named`] read the document's parameters (an amplifier's
+ * loss declared with `defparam` drives the source directly).
+ */
+export type ThermalStudy = { 
+/**
+ * Parts to voxelize (root node name or stable part id). Explicit and
+ * non-empty: parts not listed are void (perfectly insulating).
+ */
+parts: Array<string>, 
+/**
+ * Voxel counts per axis. Exactly one of `divisions` / `pitch_mm`.
+ */
+divisions?: [number, number, number], 
+/**
+ * Target voxel pitch per axis, mm; each axis gets the smallest whole
+ * number of voxels at or below this pitch that spans the domain
+ * exactly.
+ */
+pitchMm?: [number, number, number], 
+/**
+ * Void margin added around the parts' union bounding box, mm
+ * (default 0: the domain faces are the parts' outer faces).
+ */
+paddingMm?: number, 
+/**
+ * Thin-wall guard: a part thinner than this many voxels along an axis
+ * is refused rather than voxelized (default 2).
+ */
+minVoxelsAcross?: number, 
+/**
+ * Per-part thermal-property overrides (beat the material table).
+ */
+materials: Array<ThermalStudyMaterial>, 
+/**
+ * Power sources, each tied to a part.
+ */
+sources: Array<ThermalStudySource>, 
+/**
+ * Heat sinks: parts (or sub-regions) held at a fixed temperature.
+ */
+sinks: Array<ThermalStudySink>, 
+/**
+ * Boundary on every solid face that touches void (default adiabatic).
+ */
+exposed: ThermalStudyBoundary, 
+/**
+ * Boundary per domain face `[-x, +x, -y, +y, -z, +z]`; omitted = every
+ * domain face takes `exposed` (with zero padding the domain faces are
+ * the parts' own outer faces).
+ */
+domainFaces?: Array<ThermalStudyBoundary>, 
+/**
+ * θ reference temperature, °C (omitted = derived from the ambients).
+ */
+referenceC?: StudyValue, };
+
+/**
+ * A thermal boundary condition.
+ */
+export type ThermalStudyBoundary = { "type": "adiabatic" } | { "type": "convection", 
+/**
+ * Film coefficient, W/(m²·K) — supplied, not derived.
+ */
+hWM2k: StudyValue, 
+/**
+ * Ambient temperature, °C.
+ */
+ambientC: StudyValue, } | { "type": "fixedTemperature", 
+/**
+ * Surface temperature, °C.
+ */
+temperatureC: StudyValue, };
+
+/**
+ * Thermal properties for one part, overriding the material table.
+ * Give exactly one of `k_w_mk` / `laminate`.
+ */
+export type ThermalStudyMaterial = { 
+/**
+ * Part name or part id.
+ */
+part: string, 
+/**
+ * Conductivity, W/(m·K): one value (isotropic) or three (world
+ * `[x, y, z]`).
+ */
+kWMk?: Array<StudyValue>, 
+/**
+ * Laminate (circuit board): in-plane / through-plane conductivity;
+ * the through-plane axis is the part's thinnest bounding-box axis.
+ */
+laminate?: ThermalLaminate, 
+/**
+ * Volumetric heat capacity ρ·c_p, J/(m³·K).
+ */
+heatCapacityJM3k?: StudyValue, };
+
+/**
+ * A part (or sub-region of one) held at a fixed temperature.
+ */
+export type ThermalStudySink = { 
+/**
+ * The part to pin.
+ */
+part: string, 
+/**
+ * Pinned temperature, °C.
+ */
+temperatureC: StudyValue, 
+/**
+ * Optional world-frame sub-region of the part.
+ */
+region?: StudyRegion, };
+
+/**
+ * A power source deposited uniformly in a part.
+ */
+export type ThermalStudySource = { 
+/**
+ * Source name for reporting ("amp", "U7").
+ */
+name: string, 
+/**
+ * The part the heat is deposited in.
+ */
+part: string, 
+/**
+ * Total power, W.
+ */
+powerW: StudyValue, 
+/**
+ * Optional world-frame sub-region of the part (e.g. one face's
+ * footprint); omitted = the whole part.
+ */
+region?: StudyRegion, };
 
 /**
  * The document's time axis: duration, sampling rate, animated tracks, and

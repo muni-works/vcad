@@ -2811,6 +2811,186 @@ pub enum AnalysisStudyKind {
         /// The requirement the chain must satisfy.
         requirement: StudyRequirement,
     },
+    /// Steady heat conduction (`vcad-kernel-thermal`) over the document's
+    /// own parts: `vcad_eval::thermal_extract` voxelizes the selected parts
+    /// and emits a `ThermalSpec`. See [`ThermalStudy`].
+    Thermal(ThermalStudy),
+}
+
+/// A number, or the name of a document parameter (`doc.parameters`) bound
+/// when the study is extracted. Unbound names fail closed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub enum StudyValue {
+    /// A literal number.
+    Literal(f64),
+    /// The name of a document parameter.
+    Named(String),
+}
+
+impl From<f64> for StudyValue {
+    fn from(v: f64) -> Self {
+        StudyValue::Literal(v)
+    }
+}
+
+/// A heat-conduction study over the document's own parts.
+///
+/// The selected parts are voxelized onto a grid spanning their union
+/// bounding box (plus `padding_mm` of void); each voxel takes the material
+/// of the part that fills it. Power sources and heat sinks name parts, so
+/// moving or resizing a part moves its heat with it. Numbers that are
+/// [`StudyValue::Named`] read the document's parameters (an amplifier's
+/// loss declared with `defparam` drives the source directly).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct ThermalStudy {
+    /// Parts to voxelize (root node name or stable part id). Explicit and
+    /// non-empty: parts not listed are void (perfectly insulating).
+    pub parts: Vec<String>,
+    /// Voxel counts per axis. Exactly one of `divisions` / `pitch_mm`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub divisions: Option<[u32; 3]>,
+    /// Target voxel pitch per axis, mm; each axis gets the smallest whole
+    /// number of voxels at or below this pitch that spans the domain
+    /// exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub pitch_mm: Option<[f64; 3]>,
+    /// Void margin added around the parts' union bounding box, mm
+    /// (default 0: the domain faces are the parts' outer faces).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub padding_mm: Option<f64>,
+    /// Thin-wall guard: a part thinner than this many voxels along an axis
+    /// is refused rather than voxelized (default 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub min_voxels_across: Option<f64>,
+    /// Per-part thermal-property overrides (beat the material table).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub materials: Vec<ThermalStudyMaterial>,
+    /// Power sources, each tied to a part.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<ThermalStudySource>,
+    /// Heat sinks: parts (or sub-regions) held at a fixed temperature.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sinks: Vec<ThermalStudySink>,
+    /// Boundary on every solid face that touches void (default adiabatic).
+    #[serde(default)]
+    pub exposed: ThermalStudyBoundary,
+    /// Boundary per domain face `[-x, +x, -y, +y, -z, +z]`; omitted = every
+    /// domain face takes `exposed` (with zero padding the domain faces are
+    /// the parts' own outer faces).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub domain_faces: Option<Vec<ThermalStudyBoundary>>,
+    /// θ reference temperature, °C (omitted = derived from the ambients).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub reference_c: Option<StudyValue>,
+}
+
+/// Thermal properties for one part, overriding the material table.
+/// Give exactly one of `k_w_mk` / `laminate`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct ThermalStudyMaterial {
+    /// Part name or part id.
+    pub part: String,
+    /// Conductivity, W/(m·K): one value (isotropic) or three (world
+    /// `[x, y, z]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub k_w_mk: Option<Vec<StudyValue>>,
+    /// Laminate (circuit board): in-plane / through-plane conductivity;
+    /// the through-plane axis is the part's thinnest bounding-box axis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub laminate: Option<ThermalLaminate>,
+    /// Volumetric heat capacity ρ·c_p, J/(m³·K).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub heat_capacity_j_m3k: Option<StudyValue>,
+}
+
+/// In-plane / through-plane conductivity of a laminate, W/(m·K).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct ThermalLaminate {
+    /// Conductivity along the two in-plane axes.
+    pub in_plane_w_mk: StudyValue,
+    /// Conductivity along the through-plane (thinnest) axis.
+    pub through_plane_w_mk: StudyValue,
+}
+
+/// A power source deposited uniformly in a part.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct ThermalStudySource {
+    /// Source name for reporting ("amp", "U7").
+    pub name: String,
+    /// The part the heat is deposited in.
+    pub part: String,
+    /// Total power, W.
+    pub power_w: StudyValue,
+    /// Optional world-frame sub-region of the part (e.g. one face's
+    /// footprint); omitted = the whole part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub region: Option<StudyRegion>,
+}
+
+/// A part (or sub-region of one) held at a fixed temperature.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct ThermalStudySink {
+    /// The part to pin.
+    pub part: String,
+    /// Pinned temperature, °C.
+    pub temperature_c: StudyValue,
+    /// Optional world-frame sub-region of the part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub region: Option<StudyRegion>,
+}
+
+/// A thermal boundary condition.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub enum ThermalStudyBoundary {
+    /// No heat crosses the face.
+    #[default]
+    Adiabatic,
+    /// Newton cooling: film coefficient + ambient.
+    #[serde(rename_all = "camelCase")]
+    Convection {
+        /// Film coefficient, W/(m²·K) — supplied, not derived.
+        h_w_m2k: StudyValue,
+        /// Ambient temperature, °C.
+        ambient_c: StudyValue,
+    },
+    /// The face is held at a temperature.
+    #[serde(rename_all = "camelCase")]
+    FixedTemperature {
+        /// Surface temperature, °C.
+        temperature_c: StudyValue,
+    },
 }
 
 /// A load applied over a world-frame AABB region (kernel node-selection

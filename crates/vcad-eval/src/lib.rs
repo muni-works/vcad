@@ -30,6 +30,7 @@ pub mod sensitivity;
 pub mod sheet_build;
 pub mod step_doc;
 pub mod step_sources;
+pub mod thermal_extract;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod timings;
 
