@@ -330,7 +330,7 @@ impl SegIndex {
         let mut idx = [0usize; 3];
         for d in 0..3 {
             let x = (p[d] - self.origin[d]) / self.cell;
-            if !(x >= 0.0) || x >= self.dims[d] as f64 {
+            if x.is_nan() || x < 0.0 || x >= self.dims[d] as f64 {
                 return &[];
             }
             idx[d] = x as usize;
@@ -409,7 +409,7 @@ pub fn solve(device: &Device3d, opts: &BemOptions) -> Result<WireField, BemError
         opts.max_azimuthal_spread,
         opts.junction_zone_factor,
     ];
-    if gates.iter().any(|g| !(*g > 0.0)) || opts.residual_azimuths < 3 {
+    if gates.iter().any(|g| g.is_nan() || *g <= 0.0) || opts.residual_azimuths < 3 {
         return Err(BemError::InvalidOptions(
             "residual gates and junction_zone_factor must be > 0; residual_azimuths ≥ 3".into(),
         ));
@@ -623,7 +623,7 @@ pub fn solve(device: &Device3d, opts: &BemOptions) -> Result<WireField, BemError
             opts.max_azimuthal_spread,
         ),
     ] {
-        if !(worst <= threshold) {
+        if worst.is_nan() || worst > threshold {
             return Err(BemError::SurfaceResidual {
                 kind,
                 worst,
