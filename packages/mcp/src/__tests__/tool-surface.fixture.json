@@ -2254,6 +2254,87 @@
     }
   },
   {
+    "name": "optimize_parameters",
+    "title": "Optimize Parameters",
+    "description": "Solve for the geometry: minimize a weighted sum of quantities (volume, mass, centroid) over named parameters, subject to parameter-expression constraints (\"port_len <= body_h - 2*wall - 15\") and QoI bounds. Augmented Lagrangian over box-projected L-BFGS, driven by exact seam gradients. Returns the optimum, a KKT report (feasibility, stationarity, multipliers, active bounds), and the full trajectory — every iterate's parameters, per-term values, and each gradient component labeled with the route that produced it (seam / fd / adjoint / linear). Read-only: apply the optimum with set_parameters. Solver QoIs (modal frequency, …) plug in through the Rust API (vcad_eval::optimize::ScalarQoi, e.g. vcad_sound's modal_f1) and are not exposed over this WASM path.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "description": "Session id from open_document."
+        },
+        "document": {
+          "type": "object",
+          "description": "Inline Document IR to optimize instead of a session (stateless path)."
+        },
+        "parameters": {
+          "type": "array",
+          "description": "Parameters to optimize: [{name, lo, hi}] (min/max accepted as aliases). lo/hi default to the parameter's declared scrub bounds.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "lo": {
+                "type": "number"
+              },
+              "hi": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        },
+        "objective": {
+          "type": "array",
+          "description": "Terms summed into the objective: [{qoi, part?, weight?, shape?}]. shape: \"linear\" (default), {\"target\": t} for (q−t)², {\"hinge_below\": t} for max(0,t−q)², {\"hinge_above\": t} for max(0,q−t)². Negative weight on a linear term maximizes it.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "qoi": {
+                "type": "string",
+                "description": "volume | mass | centroid_x | centroid_y | centroid_z"
+              },
+              "part": {
+                "type": "number",
+                "description": "Solid-part index (omit to sum volume/mass over parts)."
+              },
+              "weight": {
+                "type": "number"
+              },
+              "shape": {}
+            },
+            "required": [
+              "qoi"
+            ]
+          }
+        },
+        "constraints": {
+          "type": "array",
+          "description": "Inequalities. Parameter expressions in the document formula language: {\"expr\": \"port_len <= body_h - 2*wall - 15\"}. QoI bounds: {\"qoi\": \"mass\", \"op\": \"<=\", \"value\": 0.05}.",
+          "items": {
+            "type": "object"
+          }
+        },
+        "options": {
+          "type": "object",
+          "description": "density (mass = density·volume; geometry is mm, so kg/m³·1e-9 for kg), max_outer, max_inner, feas_tol, grad_tol, circle_segments, check_seam_fd (central-FD the seam gradients at the optimum)."
+        }
+      },
+      "required": [
+        "parameters",
+        "objective"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
     "name": "add_constraint",
     "title": "Add Constraint",
     "description": "Add solver-enforced geometric constraints to the document and solve immediately — KiCad-v11-class constraints generalized to the whole design: PCB footprints and board outline, sketch points, and named mechanical part edges (cross-domain: 'USB connector coincident with the enclosure cutout'). Dimensional values accept formulas over document parameters; set_parameters re-solves. `driven: true` makes a reference dimension (measured, back-annotated, never enforced). Constraints persist and re-verify via build_receipt / verify_receipt as constraint.* claims (Holds/Stale/Violated). The solver moves footprints, outline vertices, and sketch points — never copper or part geometry; re-run route_nets when moved footprints were routed.",
