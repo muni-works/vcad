@@ -167,6 +167,8 @@ pub struct DetectorResult {
     pub fluence_cm2_s: Estimate,
     /// Uncollided H*(10), µSv/h (exact).
     pub uncollided_h10_usv_h: f64,
+    /// Uncollided air kerma, µGy/h (exact).
+    pub uncollided_kerma_ugy_h: f64,
     /// Dose buildup factor, total / uncollided H*(10).
     pub buildup_h10: f64,
     /// Fraction of uncollided H*(10) from the top 10% of the spectrum's
@@ -283,8 +285,9 @@ const GL4: [(f64, f64); 4] = [
     (0.861_136_311_594_052_6, 0.347_854_845_137_453_9),
 ];
 
-/// Visit (energy, photons/s) quadrature nodes of a spectrum.
-fn for_each_node(spectrum: &Spectrum, mut f: impl FnMut(f64, f64)) {
+/// Visit (energy, photons/s) quadrature nodes of a spectrum (lines
+/// exactly, bins by 4-point Gauss–Legendre).
+pub fn for_each_node(spectrum: &Spectrum, mut f: impl FnMut(f64, f64)) {
     for b in &spectrum.bins {
         if b.is_line() {
             f(b.lo_kev, b.rate_per_s);
@@ -592,6 +595,7 @@ pub fn run(spectrum: &Spectrum, cfg: &PathConfig) -> Result<PathResult, Transpor
                 kerma_ugy_h: combine(u_k[d], &s_k[d], to_ugy),
                 fluence_cm2_s: combine(u_f[d], &s_f[d], 1.0),
                 uncollided_h10_usv_h: u_h[d] * to_usv,
+                uncollided_kerma_ugy_h: u_k[d] * to_ugy,
                 buildup_h10: if u_h[d] > 0.0 {
                     h.mean / (u_h[d] * to_usv)
                 } else {
@@ -633,6 +637,98 @@ pub fn run(spectrum: &Spectrum, cfg: &PathConfig) -> Result<PathResult, Transpor
     })
 }
 
+/// Uncollided dose from a uniform, isotropic spherical-shell emitter
+/// on the inner face of a spherical wall, at a detector outside it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShellUncollided {
+    /// H*(10) rate, µSv/h.
+    pub h10_usv_h: f64,
+    /// Air kerma rate, µGy/h.
+    pub kerma_ugy_h: f64,
+    /// H*(10)-weighted wall optical depth along the actual (oblique)
+    /// rays — the τ that enters the data band.
+    pub tau_wall: f64,
+    /// Fraction of H*(10) from the top 10% of the spectrum.
+    pub tip_fraction: f64,
+}
+
+/// Exact-geometry uncollided term for a spherical chamber whose inner
+/// surface (radius `a_mm`) emits `spectrum` uniformly and isotropically,
+/// seen through a wall `wall` from a detector at `r_det_mm` from the
+/// center.
+///
+/// The chamber interior is vacuum, so every ray to the detector crosses
+/// the wall exactly once. A ray leaving the inner sphere at angle α to
+/// the local normal (and, by chord symmetry, an inward ray that exits on
+/// the far side at the same angle) crosses the wall along
+/// L = √((a+t)² − a²sin²α) − a|cos α| — exact, including grazing rays.
+/// Integrated over emission polar angle θ about the detector axis:
+///
+/// φ(E) = (S(E)/2) ∫₀^π sinθ · e^{−μL(θ)} · e^{−μ_air(R−a−t)} / (4π d²) dθ,
+/// d² = R² + a² − 2aR cosθ.
+///
+/// With μ = 0 this is the shell formula S/(8πaR)·ln((R+a)/(R−a)); for
+/// R ≫ a and t ≪ a it is S·E₂(μt)/(4πR²) — **not** S·e^{−μt}/(4πR²),
+/// the normal-incidence shortcut, which overstates thick-wall dose by
+/// ~(τ+2)× at τ ≈ 5.
+pub fn shell_uncollided(
+    spectrum: &Spectrum,
+    wall: &Slab,
+    a_mm: f64,
+    r_det_mm: f64,
+) -> ShellUncollided {
+    const N: usize = 4000;
+    let (a, t, r) = (a_mm * 0.1, wall.thickness_mm * 0.1, r_det_mm * 0.1);
+    let air = materials::air();
+    let e_hi = spectrum.max_kev();
+    let e_lo = spectrum.min_kev();
+    let tip_threshold = e_hi - 0.1 * (e_hi - e_lo).max(0.0);
+    // Geometry per θ node: (weight sinθ dθ / d², L).
+    let geo: Vec<(f64, f64)> = (0..N)
+        .map(|i| {
+            let th = std::f64::consts::PI * (i as f64 + 0.5) / N as f64;
+            let (st, ct) = th.sin_cos();
+            let d2 = r * r + a * a - 2.0 * a * r * ct;
+            let d = d2.sqrt();
+            let cos_a = ((r * ct - a) / d).abs();
+            let sin2 = 1.0 - cos_a * cos_a;
+            let l = ((a + t).powi(2) - a * a * sin2).sqrt() - a * cos_a;
+            (st * (std::f64::consts::PI / N as f64) / d2, l)
+        })
+        .collect();
+    let (mut h, mut k, mut tau_w, mut tip) = (0.0, 0.0, 0.0, 0.0);
+    for_each_node(spectrum, |e, w| {
+        let mu = wall
+            .material
+            .linear(e)
+            .map(|l| l.total)
+            .unwrap_or(f64::INFINITY);
+        let ta = air.linear(e).map(|l| l.total).unwrap_or(0.0) * (r - a - t).max(0.0);
+        let (mut phi, mut phi_tau) = (0.0, 0.0);
+        for (g, l) in &geo {
+            let x = g * (-mu * l).exp();
+            phi += x;
+            phi_tau += x * mu * l;
+        }
+        let scale = 0.5 * w * (-ta).exp() / (4.0 * std::f64::consts::PI);
+        let hh = h10_psv_cm2(e) * phi * scale;
+        h += hh;
+        k += kerma_pgy_cm2(e) * phi * scale;
+        if phi > 0.0 {
+            tau_w += hh * phi_tau / phi;
+        }
+        if e >= tip_threshold {
+            tip += hh;
+        }
+    });
+    ShellUncollided {
+        h10_usv_h: h * PSV_PER_S_TO_USV_PER_H,
+        kerma_ugy_h: k * PSV_PER_S_TO_USV_PER_H,
+        tau_wall: if h > 0.0 { tau_w / h } else { 0.0 },
+        tip_fraction: if h > 0.0 { tip / h } else { 0.0 },
+    }
+}
+
 /// Rotate a unit direction by polar cosine `mu` and azimuth `phi`.
 fn rotate(d: [f64; 3], mu: f64, phi: f64) -> [f64; 3] {
     let st = (1.0 - mu * mu).max(0.0).sqrt();
@@ -661,6 +757,53 @@ mod tests {
         assert!((n - 1.0).abs() < 1e-12);
         let c = d[0] * r[0] + d[1] * r[1] + d[2] * r[2];
         assert!((c - 0.2).abs() < 1e-12);
+    }
+
+    fn e2(x: f64) -> f64 {
+        // E₂(x) = ∫₀¹ e^{−x/u} du, midpoint rule.
+        let n = 200_000;
+        (0..n)
+            .map(|i| (-x / ((i as f64 + 0.5) / n as f64)).exp() / n as f64)
+            .sum()
+    }
+
+    #[test]
+    fn shell_quadrature_limits() {
+        let h = |e: f64| h10_psv_cm2(e) * PSV_PER_S_TO_USV_PER_H;
+        let s = Spectrum::line(1000.0, 1.0e6);
+        // μ → 0 (vanishing wall): the analytic shell formula.
+        let thin = Slab::new(materials::air(), 1.0e-9);
+        let (a, r) = (76.0, 600.0);
+        let got = shell_uncollided(&s, &thin, a, r).h10_usv_h;
+        let mu_air = materials::air().linear(1000.0).unwrap().total;
+        let want = 1.0e6 / (8.0 * std::f64::consts::PI * 7.6 * 60.0)
+            * ((60.0 + 7.6) / (60.0 - 7.6f64)).ln()
+            * (-mu_air * (60.0 - 7.6)).exp()
+            * h(1000.0);
+        assert!((got / want - 1.0).abs() < 1e-4, "{got} vs {want}");
+        // Far field, thin wall: S·E₂(μt)/(4πR²), not e^{−μt}.
+        let fe = materials::ss304();
+        let mu = fe.linear(100.0).unwrap().total;
+        let t_mm = 5.0 / mu * 10.0; // τ = 5 at normal incidence
+        let s = Spectrum::line(100.0, 1.0);
+        let wall = Slab::new(fe, t_mm);
+        let (a, r) = (1.0e4, 1.0e6);
+        let got = shell_uncollided(&s, &wall, a, r);
+        let mu_air = materials::air().linear(100.0).unwrap().total;
+        let base = 1.0 / (4.0 * std::f64::consts::PI * (r * 0.1).powi(2))
+            * (-mu_air * (r - a - t_mm) * 0.1).exp()
+            * h(100.0);
+        let ratio = got.h10_usv_h / base;
+        assert!(
+            (ratio / e2(5.0) - 1.0).abs() < 0.02,
+            "ratio {ratio} vs E2(5) {}",
+            e2(5.0)
+        );
+        assert!(
+            ratio < 0.5 * (-5.0f64).exp(),
+            "oblique rays must attenuate more than normal"
+        );
+        assert!(got.tau_wall > 5.0);
     }
 
     #[test]

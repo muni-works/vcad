@@ -19,7 +19,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::report::{compose, BandTerm, DoseReport};
+use crate::report::{BandTerm, DoseReport};
 use crate::spec::Evaluation;
 use crate::transport::PhotonProvenance;
 
@@ -202,11 +202,12 @@ pub fn predicted_claims(ev: &Evaluation) -> Result<ClaimSet, ClaimError> {
     })
 }
 
-/// Neutron + photon total dose per label. The neutron claim's band is
-/// the neutronics library's ±30% (×/÷ 1.3) composed with nothing else
-/// (its MC error rides in `rse`); totals add means, add absolute
-/// sigmas linearly, and take the band of the sum as the
-/// dose-weighted log-band (a conservative mixture rule).
+/// Neutron + photon total dose per label. Means add; absolute MC
+/// sigmas add linearly; the band edges add **edge-wise** —
+/// high = N·b_n + P·b_p, low = N/b_n + P/b_p — which is exact for two
+/// independently banded terms at their extremes (a dose-weighted
+/// log-mixture would understate `high` whenever the bands differ).
+/// The neutron band is the neutronics library's ×/÷1.3.
 pub fn combined_claims(
     neutron: &vcad_kernel_neutronics::receipt::ClaimSet,
     photon_reports: &[&DoseReport],
@@ -230,8 +231,9 @@ pub fn combined_claims(
         let pb = r.band_factor();
         let total = n.value + r.h10_usv_h.mean;
         let sigma = n.value * n.rse + r.h10_usv_h.abs_sigma();
-        let ln_b = (n.value * nb.ln() + r.h10_usv_h.mean * pb.ln()) / total;
-        let b = ln_b.exp();
+        let high = n.value * nb + r.h10_usv_h.mean * pb;
+        let low = n.value / nb + r.h10_usv_h.mean / pb;
+        let b = (high / total).max(total / low);
         let mut terms = vec![BandTerm::factor(
             "neutron dose: design-estimate library",
             nb,
@@ -242,17 +244,16 @@ pub fn combined_claims(
             value: total,
             rse: sigma / total,
             band_factor: b,
-            low: total / b,
-            high: total * b,
+            low,
+            high,
             band_terms: terms,
             unit: "uSv/h".into(),
             basis: "predicted".into(),
             note: format!(
-                "neutron {:.3e} (vcad.neutronics-claims/1) + photon {:.3e} uSv/h; band = dose-weighted \
-                 log mixture of neutron x/{nb} and photon x/{pb:.2} (composed {:.2})",
+                "neutron {:.3e} (vcad.neutronics-claims/1) + photon {:.3e} uSv/h; band edges summed \
+                 edge-wise from neutron x/{nb} and photon x/{pb:.2}",
                 n.value,
-                r.h10_usv_h.mean,
-                compose(&r.band)
+                r.h10_usv_h.mean
             ),
         });
     }

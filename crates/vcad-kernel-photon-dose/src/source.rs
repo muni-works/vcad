@@ -17,7 +17,7 @@
 //! close to isotropic because the electrons diffuse in the target before
 //! they radiate; the residual anisotropy is inside the source band).
 //!
-//! **Validity band**, enforced: 10 kV ≤ V ≤ 150 kV (below 10 kV nothing
+//! **Validity band**, enforced: 10 kV < V ≤ 150 kV (at or below 10 kV nothing
 //! relevant to H*(10) is produced; above ~150 kV relativistic forward
 //! peaking and the Kramers shape both degrade). Systematic band on the
 //! yield: ×/÷ [`KRAMERS_BAND`] (covers the k spread and Kramers'
@@ -140,8 +140,8 @@ impl std::fmt::Display for SourceError {
         match self {
             SourceError::VoltageOutOfBand(v) => write!(
                 f,
-                "{v} kV outside the Kramers validity band {:?} kV",
-                BREMS_KV_RANGE
+                "{v} kV outside the Kramers validity band ({}, {}] kV",
+                BREMS_KV_RANGE.0, BREMS_KV_RANGE.1
             ),
             SourceError::BadCurrent(i) => write!(f, "electron current {i} mA must be > 0"),
             SourceError::BadElectronFraction(x) => {
@@ -173,7 +173,9 @@ impl ThickTarget {
         electron_current_ma: f64,
         target: Material,
     ) -> Result<Self, SourceError> {
-        if !(BREMS_KV_RANGE.0..=BREMS_KV_RANGE.1).contains(&voltage_kv) {
+        // Strictly above 10 kV: at exactly 10 kV no photon reaches the
+        // 10 keV dose-table floor, so there is nothing to price.
+        if !(voltage_kv > BREMS_KV_RANGE.0 && voltage_kv <= BREMS_KV_RANGE.1) {
             return Err(SourceError::VoltageOutOfBand(voltage_kv));
         }
         if !(electron_current_ma.is_finite() && electron_current_ma > 0.0) {
@@ -271,6 +273,11 @@ mod tests {
     #[test]
     fn band_enforced() {
         assert!(ThickTarget::new(5.0, 1.0, materials::ss304()).is_err());
+        assert!(ThickTarget::new(10.0, 1.0, materials::ss304()).is_err());
+        assert!(ThickTarget::new(10.5, 1.0, materials::ss304())
+            .unwrap()
+            .spectrum(10.0, 4)
+            .is_ok());
         assert!(ThickTarget::new(200.0, 1.0, materials::ss304()).is_err());
         assert!(ThickTarget::new(40.0, 0.0, materials::ss304()).is_err());
         let t = ThickTarget::new(40.0, 1.0, materials::ss304()).unwrap();

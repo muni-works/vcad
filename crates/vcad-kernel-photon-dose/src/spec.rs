@@ -20,10 +20,10 @@
 //!
 //! - *Wall path*: all wall emission exits through one wall thickness
 //!   (the chamber is vacuum). A uniform spherical shell source of radius
-//!   a gives, unattenuated, φ = S/(8πaR)·ln((R+a)/(R−a)) at distance R
-//!   from the center; the slab transport at the same distance from the
-//!   wall supplies attenuation and buildup at **normal** incidence
-//!   (oblique rays see more steel → conservative).
+//!   a is integrated exactly over emission angle with each ray's true
+//!   oblique path through the wall ([`transport::shell_uncollided`]; it
+//!   reduces to S/(8πaR)·ln((R+a)/(R−a)) unattenuated and to S·E₂(μt)/4πR²
+//!   in the far field); the slab Monte Carlo supplies the buildup factor.
 //! - *Viewport path*: two equal-geometry terms, both an equivalent point
 //!   source at the viewport's inner face: electrons striking the glass
 //!   itself (f·S_glass, times a `beaming_factor` for star-mode jets aimed
@@ -36,6 +36,7 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use vcad_kernel_neutronics::tally::Estimate;
 
 use crate::materials::{self, Material};
 use crate::report::{self, BandTerm, Component, DoseReport};
@@ -505,13 +506,13 @@ pub fn evaluate_chamber(
     scored &= wall_res.scatter_scored;
     provenance.get_or_insert(wall_res.provenance.clone());
 
-    // Shell-source geometry factor: (shell φ) / (slab-point φ).
-    let a = a_mm * 0.1;
-    let shell = |z_mm: f64| {
-        let z = z_mm * 0.1;
-        let r = a + z; // detector radius from the chamber center (wall thickness inside z)
-        z * z / (2.0 * a * r) * ((r + a) / (r - a)).ln()
-    };
+    // Wall path = exact-geometry uncollided shell integral (oblique
+    // rays, see `transport::shell_uncollided`) × the slab MC's buildup
+    // at normal incidence (buildup grows with τ, so taking it at the
+    // shortest path slightly under-counts scatter on oblique rays — at
+    // B ≈ 1.0–1.1 through steel at tens of keV this is a few percent,
+    // inside the data band).
+    let wall_slab = Slab::new(wall_mat.clone(), wall_t);
 
     // Viewport path run.
     let vp_run: Option<(PathResult, PathConfig, f64)> = match &vp {
@@ -548,9 +549,31 @@ pub fn evaluate_chamber(
     let mut vi = 0;
     for (k, (det, (d, path))) in spec.detectors.iter().zip(&dists).enumerate() {
         let wr = &wall_res.detectors[k];
-        let g = shell(wall_t + wall_gaps[k]);
-        let wall_h = wr.h10_usv_h.scaled(g);
-        let wall_k = wr.kerma_ugy_h.scaled(g);
+        let sh =
+            transport::shell_uncollided(&s_wall, &wall_slab, a_mm, a_mm + wall_t + wall_gaps[k]);
+        let bk = if wr.uncollided_kerma_ugy_h > 0.0 {
+            wr.kerma_ugy_h.mean / wr.uncollided_kerma_ugy_h
+        } else {
+            1.0
+        };
+        let wall_h = Estimate {
+            mean: sh.h10_usv_h * wr.buildup_h10,
+            ..wr.h10_usv_h
+        };
+        let wall_k = Estimate {
+            mean: sh.kerma_ugy_h * bk,
+            ..wr.kerma_ugy_h
+        };
+        let wall_terms = |band: &mut Vec<BandTerm>| {
+            band.push(BandTerm {
+                name: format!(
+                    "attenuation data: {} {wall_t} mm (oblique-ray tau {:.2})",
+                    wall_mat.name, sh.tau_wall
+                ),
+                ln_factor: wall_mat.mu_rel_uncertainty * sh.tau_wall,
+            });
+            band.extend(report::tip_term(sh.tip_fraction));
+        };
         let mut band = source_terms("brems");
         band.push(BandTerm::factor(
             "uniform electron loading of the chamber wall (star-mode jets concentrate it)",
@@ -558,8 +581,7 @@ pub fn evaluate_chamber(
         ));
         match path {
             ChamberPath::Wall => {
-                band.extend(report::data_terms(&wall_cfg, wr));
-                band.extend(report::tip_term(wr.tip_fraction));
+                wall_terms(&mut band);
                 reports.push(DoseReport {
                     label: det.label.clone(),
                     distance_mm: *d,
@@ -573,7 +595,8 @@ pub fn evaluate_chamber(
                     }],
                     geometry_note: format!(
                         "{d} mm from the wall's outer face; uniform spherical shell source r = {a_mm} mm, \
-                         normal-incidence slab attenuation (shell factor {g:.3})"
+                         exact oblique-ray uncollided integral x slab buildup {:.3}",
+                        wr.buildup_h10
                     ),
                 });
             }
@@ -586,8 +609,7 @@ pub fn evaluate_chamber(
                     band.extend(report::data_terms(cfg, r));
                     band.extend(report::tip_term(r.tip_fraction));
                 } else {
-                    band.extend(report::data_terms(&wall_cfg, wr));
-                    band.extend(report::tip_term(wr.tip_fraction));
+                    wall_terms(&mut band);
                 }
                 let stack_desc: Vec<String> = cfg
                     .slabs

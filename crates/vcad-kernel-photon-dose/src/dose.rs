@@ -1,8 +1,15 @@
 //! Photon fluence → ambient dose equivalent H*(10) and air kerma.
 //!
-//! Conversion coefficients from ICRP Publication 74 (1996), Table A.1
-//! (air kerma per fluence, K_a/Φ) and Table A.21 (H*(10)/Φ), 10 keV –
-//! 10 MeV, log-log interpolated. The table ends at 10 keV; below it
+//! Conversion coefficients from ICRP Publication 74 (1996) — air kerma
+//! per fluence (K_a/Φ) and H*(10)/Φ for photons, 10 keV – 10 MeV,
+//! log-log interpolated. **Transcribed at design-estimate precision**,
+//! not machine-read from the publication (same convention as the
+//! neutronics crate's ICRP-74 neutron table). The K_a/Φ column is
+//! cross-checked in-crate against E·(μ_en/ρ)_air from the verbatim NIST
+//! data (within 6% from 100 keV to 3 MeV); the H*(10) column has no
+//! independent in-crate check, and at 10–40 keV — where the fusor
+//! result lives — it should be verified against ICRP 74 / ICRU 57
+//! before any number leaves "design estimate". The table ends at 10 keV; below it
 //! H*(10) is effectively zero (10 mm of tissue stops those photons) and
 //! both functions return **0** — which is why the bremsstrahlung source
 //! fails closed when the shield passes a non-negligible part of its
