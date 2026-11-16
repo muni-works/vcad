@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-arc-extrude-revolve-cone-fixes",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "fix",
+  "title": "Holed arc extrudes and revolved cones are exact",
+  "summary": "Extrudes with hole loops no longer lose 2.5% of a circle's area; revolved slanted edges are true cones, not 32 facets, so booleans on them stay small and fast.",
+  "features": ["kernel", "sketch", "extrude", "revolve", "booleans"],
+  "mcpTools": []
+}
