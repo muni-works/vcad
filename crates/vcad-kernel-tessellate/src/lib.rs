@@ -5924,6 +5924,32 @@ fn tessellate_spherical_cap(
     let is_large_cap = avg_angle > 0.85 * PI;
 
     if is_large_cap {
+        // The ring-based path below stitches the boundary to a fixed
+        // 32-point ring by nearest angle, which leaves gaps as soon as the
+        // boundary is denser than that ring — a rod's 89-point seam on a
+        // ball: 136 open edges and a ball 16% under volume, at any segment
+        // count. Such a cap is a general spherical region with one boundary
+        // loop, and the region tessellator keeps the boundary exactly as
+        // given and follows the tessellation parameters.
+        //
+        // Only such caps go there. The region tessellator works in a
+        // stereographic chart centred on the hole, whose extent grows as
+        // cot(ρ/2) of the hole's angular radius ρ, and its refinement did
+        // not finish on a near-tangent bite (ρ ~ 1e-2: four torture cases
+        // hung) nor on a coarse 9-vertex hole (rand-396). Those keep the
+        // ring-based path, which closes on a boundary no denser than its
+        // ring.
+        const LEGACY_RING: usize = 32;
+        const MIN_HOLE_ANGLE: f64 = 0.05;
+        if loop_verts.len() > LEGACY_RING && PI - avg_angle >= MIN_HOLE_ANGLE {
+            if let Some(sphere) = surface.as_any().downcast_ref::<SphereSurface>() {
+                if let Some(mesh) =
+                    tessellate_spherical_region(sphere, &[loop_verts.to_vec()], params, reversed)
+                {
+                    return mesh;
+                }
+            }
+        }
         // `tessellate_large_spherical_cap` was written under the legacy
         // convention where `cap_dir` points to the boundary side and
         // `anti_pole = -cap_dir` is the cap interior pole. Our winding

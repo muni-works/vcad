@@ -225,6 +225,14 @@ fn rod_ending_at_ball_centre_unions_analytically() {
                 truth,
                 tol(segments),
             ));
+            // Bottom cap, wall, ball. The rod's top cap lies inside the
+            // ball; its plane must not split the ball along its equator.
+            if report.faces != 3 {
+                fails.push(format!(
+                    "{label} @{segments}: {} faces, expected 3",
+                    report.faces
+                ));
+            }
         }
     }
     assert!(fails.is_empty(), "{}", fails.join("\n"));

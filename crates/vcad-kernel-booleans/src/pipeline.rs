@@ -1407,27 +1407,6 @@ pub(crate) fn brep_boolean(
             // along the far one would cut a cap nothing bounds). Each
             // survivor is an ordinary circle split of both curved faces.
             if let ssi::IntersectionCurve::TwoCircles(c1, c2) = &curve {
-                // `trim::point_in_face` reads an UNTRIMMED sphere (a pole
-                // loop of two positions, no holes) through its degenerate UV
-                // polygon and is only right near the seam; every point of
-                // the sphere is on such a face.
-                let on_face = |solid: &BRepSolid, fid: FaceId, p: &Point3| {
-                    let face = &solid.topology.faces[fid];
-                    let whole_sphere =
-                        face.inner_loops.is_empty() && split::is_spherical_face(solid, fid) && {
-                            let mut seen: Vec<Point3> = Vec::new();
-                            for he in solid.topology.loop_half_edges(face.outer_loop) {
-                                let v = solid.topology.vertices
-                                    [solid.topology.half_edges[he].origin]
-                                    .point;
-                                if !seen.iter().any(|u| (*u - v).norm() < 1e-9) {
-                                    seen.push(v);
-                                }
-                            }
-                            seen.len() <= 2
-                        };
-                    whole_sphere || trim::point_in_face(solid, fid, p)
-                };
                 let on_both = |c: &vcad_kernel_geom::Circle3d| {
                     (0..16).any(|k| {
                         let theta = 2.0 * std::f64::consts::PI * (k as f64 + 0.5) / 16.0;
@@ -1435,7 +1414,7 @@ pub(crate) fn brep_boolean(
                             + c.radius
                                 * (theta.cos() * c.x_dir.into_inner()
                                     + theta.sin() * c.y_dir.into_inner());
-                        on_face(&a, face_a, &p) && on_face(&b, face_b, &p)
+                        trim::point_in_face(&a, face_a, &p) && trim::point_in_face(&b, face_b, &p)
                     })
                 };
                 // The cylinder wall realizes the circle on its own frozen
@@ -1643,12 +1622,37 @@ pub(crate) fn brep_boolean(
                     }
                     false
                 };
+                // The centre test has a blind spot of its own: a face that
+                // lies wholly INSIDE the circle contains its centre and never
+                // comes near its rim. A rod's cap at the centre of a ball is
+                // exactly that — the cap's plane meets the ball in its
+                // equator, five times the cap's radius away — and anchoring
+                // on the centre split the ball along an equator nothing
+                // bounds. The disc is convex, so a face whose every boundary
+                // vertex is strictly inside the circle is inside it whole.
+                let inside_circle = |solid: &BRepSolid, fid: FaceId| -> bool {
+                    let reach = circle.radius - (circle.radius * 1e-6).max(1e-9);
+                    let mut any = false;
+                    for he in solid
+                        .topology
+                        .loop_half_edges(solid.topology.faces[fid].outer_loop)
+                    {
+                        any = true;
+                        let v = solid.topology.vertices[solid.topology.half_edges[he].origin].point;
+                        if (v - circle.center).norm() >= reach {
+                            return false;
+                        }
+                    }
+                    any
+                };
                 let b_anchors_circle = !split::is_planar_face(&b, face_b)
-                    || trim::point_in_face(&b, face_b, &circle.center)
+                    || (trim::point_in_face(&b, face_b, &circle.center)
+                        && !inside_circle(&b, face_b))
                     || seated(&b, face_b)
                     || crosses(&b, face_b);
                 let a_anchors_circle = !split::is_planar_face(&a, face_a)
-                    || trim::point_in_face(&a, face_a, &circle.center)
+                    || (trim::point_in_face(&a, face_a, &circle.center)
+                        && !inside_circle(&a, face_a))
                     || seated(&a, face_a)
                     || crosses(&a, face_a);
 
