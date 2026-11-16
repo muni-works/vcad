@@ -47,6 +47,10 @@ pub fn value_to_document_in(
         Value::Adt(tag, fields) if tag == "NamedSceneEntry" && fields.len() == 3 => {
             push_named_entry(&mut ctx, fields)?;
         }
+        // Physical properties for a material key (`[material-physics ...]`)
+        Value::Adt(tag, fields) if tag == "MaterialPhysics" && fields.len() == 2 => {
+            ctx.material_physics(fields)?;
+        }
         // Emissive material definition (standalone)
         Value::Adt(tag, fields) if tag == "MaterialE" && fields.len() == 20 => {
             let mat = ctx.emissive_material(fields)?;
@@ -93,6 +97,10 @@ pub fn value_to_document_in(
             ))
         }
     }
+
+    // `material-physics` forms land last, so they merge into a `material`
+    // definition however the two are ordered in the source.
+    ctx.apply_material_physics();
 
     // Add default material if any root references it and it's missing
     if !ctx.doc.roots.is_empty() && !ctx.doc.materials.contains_key("default") {
@@ -214,6 +222,9 @@ fn merge_value_into_doc(ctx: &mut ConvertCtx, value: &Value) -> Result<(), Strin
         }
         Value::Adt(tag, fields) if tag == "NamedSceneEntry" && fields.len() == 3 => {
             push_named_entry(ctx, fields)?;
+        }
+        Value::Adt(tag, fields) if tag == "MaterialPhysics" && fields.len() == 2 => {
+            ctx.material_physics(fields)?;
         }
         Value::Adt(tag, fields) if tag == "MaterialE" && fields.len() == 20 => {
             let mat = ctx.emissive_material(fields)?;
@@ -1142,6 +1153,8 @@ struct ConvertCtx {
     /// part (three identical reducers) shares one sub-graph, so the
     /// evaluator — which caches per node — builds it once.
     std_parts: HashMap<String, NodeId>,
+    /// `material-physics` forms: (key, density, properties), in source order.
+    physics: Vec<(String, Option<f64>, MaterialPhysical)>,
 }
 
 impl ConvertCtx {
@@ -1163,6 +1176,157 @@ impl ConvertCtx {
             fixed_vias: Vec::new(),
             fixed_traces: Vec::new(),
             std_parts: HashMap::new(),
+            physics: Vec::new(),
+        }
+    }
+
+    /// `[material-physics "key" :opt value ...]` (the `MaterialPhysics` ADT)
+    /// → queued physical properties for material `key`. Options (all
+    /// optional; units fixed): `:library "pla"`, `:density` kg/m³,
+    /// `:youngs-modulus` MPa, `:poisson`, `:yield-strength` MPa,
+    /// `:thermal-conductivity` W/(m·K) (or `:k-in-plane` + `:k-through-plane`),
+    /// `:specific-heat` J/(kg·K), `:emissivity`, `:permittivity` (relative),
+    /// `:loss-tangent`, `:permeability` (relative), `:remanence` T,
+    /// `:resistivity` Ω·m.
+    fn material_physics(&mut self, fields: &[Value]) -> Result<(), String> {
+        const TAG: &str = "material-physics";
+        let key = self.str_val(&fields[0])?;
+        if key.trim().is_empty() {
+            return Err(format!("{TAG}: material key must not be empty"));
+        }
+        let items: Vec<Value> = match &fields[1] {
+            Value::Vec(items) => items.iter().cloned().collect(),
+            Value::Unit => Vec::new(),
+            other => return Err(format!("{TAG}: bad options {other}")),
+        };
+        let mut density = None;
+        let mut p = MaterialPhysical::default();
+        let (mut k_in, mut k_through) = (None, None);
+        let mut i = 0;
+        while i < items.len() {
+            let Value::Keyword(k) = &items[i] else {
+                return Err(format!(
+                    "{TAG}: expected a keyword option like :youngs-modulus, got {}",
+                    items[i]
+                ));
+            };
+            let opt = k.trim_start_matches(':').to_string();
+            let val = items
+                .get(i + 1)
+                .ok_or_else(|| format!("{TAG}: :{opt} needs a value"))?;
+            let num = || -> Result<f64, String> {
+                let v = self
+                    .f64_val(val)
+                    .map_err(|_| format!("{TAG}: :{opt} expects a number, got {val}"))?;
+                if !v.is_finite() || v < 0.0 {
+                    return Err(format!("{TAG}: :{opt} must be finite and >= 0, got {v}"));
+                }
+                Ok(v)
+            };
+            match opt.as_str() {
+                "library" => {
+                    let id = match val {
+                        Value::Str(s) => s.to_string(),
+                        Value::Keyword(s) => s.trim_start_matches(':').to_string(),
+                        _ => return Err(format!("{TAG}: :library expects a string, got {val}")),
+                    };
+                    if vcad_ir::materials::library_by_id(&id).is_none() {
+                        let known: Vec<_> =
+                            vcad_ir::materials::LIBRARY.iter().map(|m| m.id).collect();
+                        return Err(format!(
+                            "{TAG}: unknown :library {id:?} (known: {})",
+                            known.join(", ")
+                        ));
+                    }
+                    p.library = Some(id);
+                }
+                "density" => density = Some(num()?),
+                "youngs-modulus" => p.youngs_modulus_mpa = Some(num()?),
+                "poisson" => p.poisson = Some(num()?),
+                "yield-strength" => p.yield_strength_mpa = Some(num()?),
+                "thermal-conductivity" => {
+                    p.thermal_conductivity_w_mk = Some(ThermalConductivity::Isotropic(num()?))
+                }
+                "k-in-plane" => k_in = Some(num()?),
+                "k-through-plane" => k_through = Some(num()?),
+                "specific-heat" => p.specific_heat_j_kgk = Some(num()?),
+                "emissivity" => p.emissivity = Some(num()?),
+                "permittivity" => p.relative_permittivity = Some(num()?),
+                "loss-tangent" => p.loss_tangent = Some(num()?),
+                "permeability" => p.relative_permeability = Some(num()?),
+                "remanence" => p.remanence_t = Some(num()?),
+                "resistivity" => p.resistivity_ohm_m = Some(num()?),
+                _ => {
+                    return Err(format!(
+                        "{TAG}: unknown option :{opt} (library, density, youngs-modulus, \
+                         poisson, yield-strength, thermal-conductivity, k-in-plane, \
+                         k-through-plane, specific-heat, emissivity, permittivity, \
+                         loss-tangent, permeability, remanence, resistivity)"
+                    ))
+                }
+            }
+            i += 2;
+        }
+        match (k_in, k_through) {
+            (None, None) => {}
+            (Some(in_plane), Some(through_plane)) => {
+                if p.thermal_conductivity_w_mk.is_some() {
+                    return Err(format!(
+                        "{TAG}: give :thermal-conductivity or :k-in-plane + :k-through-plane, not both"
+                    ));
+                }
+                p.thermal_conductivity_w_mk = Some(ThermalConductivity::Anisotropic {
+                    in_plane,
+                    through_plane,
+                });
+            }
+            _ => {
+                return Err(format!(
+                    "{TAG}: :k-in-plane and :k-through-plane go together"
+                ))
+            }
+        }
+        self.physics.push((key, density, p));
+        Ok(())
+    }
+
+    /// Merge queued `material-physics` forms into `doc.materials`, creating
+    /// a plain material for a key no `material` form defined. Later forms
+    /// override earlier ones property by property.
+    fn apply_material_physics(&mut self) {
+        for (key, density, p) in std::mem::take(&mut self.physics) {
+            let def = self
+                .doc
+                .materials
+                .entry(key.clone())
+                .or_insert_with(|| MaterialDef {
+                    name: key.clone(),
+                    color: [0.8, 0.8, 0.8],
+                    metallic: 0.0,
+                    roughness: 0.5,
+                    ..Default::default()
+                });
+            if density.is_some() {
+                def.density = density;
+            }
+            let into = def.physical.get_or_insert_with(Default::default);
+            macro_rules! over {
+                ($($f:ident),*) => { $( if p.$f.is_some() { into.$f = p.$f.clone(); } )* };
+            }
+            over!(
+                library,
+                youngs_modulus_mpa,
+                poisson,
+                yield_strength_mpa,
+                thermal_conductivity_w_mk,
+                specific_heat_j_kgk,
+                emissivity,
+                relative_permittivity,
+                loss_tangent,
+                relative_permeability,
+                remanence_t,
+                resistivity_ohm_m
+            );
         }
     }
 
