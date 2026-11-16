@@ -1001,6 +1001,12 @@ fn mesh_fallback_untimed(
     // grid came out at 150 000 triangles and 37 000 non-manifold edges. It
     // remains the fallback for what the conforming boolean declines (an
     // operand that is not itself closed).
+    //
+    // First-generation fallbacks (`refine == true`) keep the BSP boolean
+    // and its repair pipeline: measured on the torture track, routing them
+    // here too fixed one case (chain-17) and broke two
+    // (sliv-cube-overlap-t2-i, tan-cyl-inscribed-u) whose near-coincident
+    // operand vertices the soup wrapper then welds.
     let conformed = (!refine && std::env::var_os("VCAD_NO_CONFORMING_BOOLEAN").is_none())
         .then(|| crate::mesh::conform::conforming_csg(mesh_a, mesh_b, op))
         .flatten()
