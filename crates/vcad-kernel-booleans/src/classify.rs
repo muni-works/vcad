@@ -391,14 +391,20 @@ pub fn face_sample_point(brep: &BRepSolid, face_id: FaceId) -> Point3 {
                             return;
                         }
                     }
-                    let p3 = v0 + x * u_axis + y * v_axis;
-                    if !point_in_face(brep, face_id, &p3) {
-                        return;
-                    }
+                    // Clearance first: it is a cheap 2D scan, while
+                    // `point_in_face` re-projects every loop of the face.
+                    // Only a candidate that would beat the current best
+                    // needs the containment test — the same winner as
+                    // testing containment first, at a fraction of the
+                    // calls (20 candidates per outer edge otherwise each
+                    // pay a full projection: cubic on dense rims).
                     let d = boundary_dist(x, y);
                     if d > best_dist {
-                        best_dist = d;
-                        best_point = Some(p3);
+                        let p3 = v0 + x * u_axis + y * v_axis;
+                        if point_in_face(brep, face_id, &p3) {
+                            best_dist = d;
+                            best_point = Some(p3);
+                        }
                     }
                 };
 

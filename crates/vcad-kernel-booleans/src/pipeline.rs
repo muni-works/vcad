@@ -2297,65 +2297,76 @@ pub(crate) fn brep_boolean(
     let classes_a = classify::classify_all_faces_with_mesh(&a, &b, &mesh_b);
     let classes_b = classify::classify_all_faces_with_mesh(&b, &a, &mesh_a);
 
-    debug_bool!("\nClassification of A faces:");
-    for (fid, _class) in &classes_a {
-        let _sample = classify::face_sample_point(&a, *fid);
-        let face = &a.topology.faces[*fid];
-        let _surf = &a.geometry.surfaces[face.surface_index];
-        debug_bool!(
-            "  {:?}: {:?} sample=({:.2},{:.2},{:.2}) -> {:?}",
-            fid,
-            _surf.surface_type(),
-            _sample.x,
-            _sample.y,
-            _sample.z,
-            _class
-        );
-    }
-    debug_bool!("\nClassification of B faces:");
-    for (fid, _class) in &classes_b {
-        let _sample = classify::face_sample_point(&b, *fid);
-        debug_bool!(
-            "  {:?}: sample=({:.2},{:.2},{:.2}) -> {:?}",
-            fid,
-            _sample.x,
-            _sample.y,
-            _sample.z,
-            _class
-        );
+    // Debug-only dumps. `face_sample_point` is the expensive part of
+    // classification (it scores many candidates per face), and these loops
+    // run it on every face of both operands again just to print — keep
+    // them out of non-debug builds (on the puck enclosure they were ~2/3
+    // of each boolean's wall time).
+    #[cfg(feature = "debug-boolean")]
+    {
+        debug_bool!("\nClassification of A faces:");
+        for (fid, _class) in &classes_a {
+            let _sample = classify::face_sample_point(&a, *fid);
+            let face = &a.topology.faces[*fid];
+            let _surf = &a.geometry.surfaces[face.surface_index];
+            debug_bool!(
+                "  {:?}: {:?} sample=({:.2},{:.2},{:.2}) -> {:?}",
+                fid,
+                _surf.surface_type(),
+                _sample.x,
+                _sample.y,
+                _sample.z,
+                _class
+            );
+        }
+        debug_bool!("\nClassification of B faces:");
+        for (fid, _class) in &classes_b {
+            let _sample = classify::face_sample_point(&b, *fid);
+            debug_bool!(
+                "  {:?}: sample=({:.2},{:.2},{:.2}) -> {:?}",
+                fid,
+                _sample.x,
+                _sample.y,
+                _sample.z,
+                _class
+            );
+        }
     }
 
     // 4. Select and sew
     let (keep_a, keep_b, reverse_b) = classify::select_faces(op, &classes_a, &classes_b);
 
-    debug_bool!("\n--- Stage 4: Selection (op={:?}) ---", op);
-    debug_bool!("Keep {} A faces:", keep_a.len());
-    for fid in &keep_a {
-        let face = &a.topology.faces[*fid];
-        let _surf = &a.geometry.surfaces[face.surface_index];
-        let _sample = classify::face_sample_point(&a, *fid);
-        debug_bool!(
-            "  {:?}: {:?} sample=({:.2},{:.2},{:.2})",
-            fid,
-            _surf.surface_type(),
-            _sample.x,
-            _sample.y,
-            _sample.z
-        );
-    }
-    debug_bool!("Keep {} B faces (reverse_b={}):", keep_b.len(), reverse_b);
-    for fid in &keep_b {
-        let face = &b.topology.faces[*fid];
-        let _surf = &b.geometry.surfaces[face.surface_index];
-        let _sample = classify::face_sample_point(&b, *fid);
-        debug_bool!(
-            "  {:?}: {:?} sample=({:.2},{:.2},{:.2})",
-            fid,
-            _surf.surface_type(),
-            _sample.x,
-            _sample.y,
-            _sample.z
-        );
+    #[cfg(feature = "debug-boolean")]
+    {
+        debug_bool!("\n--- Stage 4: Selection (op={:?}) ---", op);
+        debug_bool!("Keep {} A faces:", keep_a.len());
+        for fid in &keep_a {
+            let face = &a.topology.faces[*fid];
+            let _surf = &a.geometry.surfaces[face.surface_index];
+            let _sample = classify::face_sample_point(&a, *fid);
+            debug_bool!(
+                "  {:?}: {:?} sample=({:.2},{:.2},{:.2})",
+                fid,
+                _surf.surface_type(),
+                _sample.x,
+                _sample.y,
+                _sample.z
+            );
+        }
+        debug_bool!("Keep {} B faces (reverse_b={}):", keep_b.len(), reverse_b);
+        for fid in &keep_b {
+            let face = &b.topology.faces[*fid];
+            let _surf = &b.geometry.surfaces[face.surface_index];
+            let _sample = classify::face_sample_point(&b, *fid);
+            debug_bool!(
+                "  {:?}: {:?} sample=({:.2},{:.2},{:.2})",
+                fid,
+                _surf.surface_type(),
+                _sample.x,
+                _sample.y,
+                _sample.z
+            );
+        }
     }
 
     let result = sew::sew_faces(&a, &keep_a, &b, &keep_b, reverse_b, 1e-6);

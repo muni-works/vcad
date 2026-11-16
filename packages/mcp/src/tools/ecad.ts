@@ -57,6 +57,13 @@ import {
   pruneOutlineConstraints,
   verifyConstraintClaims,
 } from "./constraint-claims.js";
+import {
+  designFingerprint,
+  documentScorecard,
+  hasLedgerClaims,
+  ledgerReceiptClaims,
+  verifyLedgerClaims,
+} from "./claims-ledger.js";
 import { getNodePcb, getPcbNodeIds, buildEntry, agentView, diffViolations } from "@vcad/core";
 import {
   computeRatsnest,
@@ -14485,10 +14492,9 @@ export async function verifySubstitution(args: Record<string, unknown>) {
  * provenance text, rewritten by a save without touching the design.
  */
 async function documentStateHash(doc: Document): Promise<string> {
-  const { source: _source, ...design } = doc as Document & { source?: unknown };
-  // WebCrypto, not node:crypto: this module stays loadable in browser bundles.
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(design)));
-  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+  // The claims ledger is excluded too: recording a bench measurement is not a
+  // design change (see claims-ledger.ts).
+  return designFingerprint(doc);
 }
 
 /** Build a re-runnable verification Receipt for the session's PCB. When an
@@ -14497,40 +14503,50 @@ async function documentStateHash(doc: Document): Promise<string> {
  *  case it ships in, not just that copper passes DRC. */
 export async function buildReceipt(args: Record<string, unknown>, engine?: Engine) {
   const ctx = resolveDocInput(args);
+  const ledgerClaims = await ledgerReceiptClaims(ctx.doc);
+  const scorecard = ledgerClaims.length > 0 ? await documentScorecard(ctx.doc) : undefined;
   const pcb = getDocPcb(ctx.doc);
   const clearanceSpecs = ctx.doc.clearance_specs ?? [];
   if (!pcb) {
-    if (clearanceSpecs.length === 0 && (ctx.doc.constraints ?? []).length === 0) {
+    if (clearanceSpecs.length === 0 && (ctx.doc.constraints ?? []).length === 0 && ledgerClaims.length === 0) {
       return {
         content: [
           {
             type: "text" as const,
-            text: "Error: Document has no PCB, no clearance specs, and no design constraints — nothing to certify. (Persist assertions with check_clearance + label or add_constraint first.)",
+            text: "Error: Document has no PCB, no clearance specs, no design constraints, and no claims ledger — nothing to certify. (Persist assertions with check_clearance + label or add_constraint, or attach solver claims with attach_claims, first.)",
           },
         ],
         isError: true,
       };
     }
-    // Mechanical-only receipt: re-measure every persisted clearance spec
-    // and design constraint.
+    // Mechanical/solver-only receipt: re-measure every persisted clearance
+    // spec and design constraint, and carry every claims-ledger row.
     const unified: DesignReceipt = {
       schema: RECEIPT_SCHEMA,
       ...(ctx.documentId ? { document_id: ctx.documentId } : {}),
       claims: [
-        ...clearanceReceiptClaims(ctx.doc, engine),
-        ...(await constraintReceiptClaims(ctx.doc)),
+        ...(clearanceSpecs.length > 0 ? clearanceReceiptClaims(ctx.doc, engine) : []),
+        ...((ctx.doc.constraints ?? []).length > 0 ? await constraintReceiptClaims(ctx.doc) : []),
+        ...ledgerClaims,
       ],
     };
     await bindReceiptToDocument(unified, ctx.doc);
+    // The design the ledger's predictions were scored against.
+    if (ledgerClaims.length > 0) unified.document_fingerprint = await designFingerprint(ctx.doc);
     return {
       content: [
         {
           type: "text" as const,
-          text: JSON.stringify({ unified, unified_summary: summarize(unified) }),
+          text: JSON.stringify({
+            unified,
+            unified_summary: summarize(unified),
+            ...(scorecard ? { scorecard } : {}),
+          }),
         },
       ],
       structuredContent: {
         unified,
+        ...(scorecard ? { scorecard } : {}),
         ...(ctx.documentId ? { document_id: ctx.documentId } : {}),
       },
     };
@@ -14599,6 +14615,9 @@ export async function buildReceipt(args: Record<string, unknown>, engine?: Engin
   if ((ctx.doc.constraints ?? []).length > 0) {
     unified.claims.push(...(await constraintReceiptClaims(ctx.doc)));
   }
+  // Every solver prediction (and its bench measurement) on the claims ledger.
+  unified.claims.push(...ledgerClaims);
+  if (ledgerClaims.length > 0) unified.document_fingerprint = await designFingerprint(ctx.doc);
 
   await bindReceiptToDocument(unified, ctx.doc);
   await bindReceiptToDocument(receipt, ctx.doc);
@@ -14619,12 +14638,14 @@ export async function buildReceipt(args: Record<string, unknown>, engine?: Engin
           ...textPayload,
           unified,
           unified_summary: summarize(unified),
+          ...(scorecard ? { scorecard } : {}),
         }),
       },
     ],
     structuredContent: {
       receipt,
       unified,
+      ...(scorecard ? { scorecard } : {}),
       power_integrity_ok: powerIntegrityOk,
       ...(planeWarnings.length ? { disconnected_planes: planeWarnings } : {}),
       ...(enclosureFit ? { enclosure_fit: enclosureFit } : {}),
@@ -14708,13 +14729,14 @@ export async function verifyReceipt(args: Record<string, unknown>, engine?: Engi
   }
   const clearanceReceipt = unified && hasClearanceClaims(unified) ? unified : undefined;
   const constraintReceipt = unified && hasConstraintClaims(unified) ? unified : undefined;
+  const ledgerReceipt = unified && hasLedgerClaims(unified) ? unified : undefined;
 
-  if (!legacy && !clearanceReceipt && !constraintReceipt) {
+  if (!legacy && !clearanceReceipt && !constraintReceipt && !ledgerReceipt) {
     return {
       content: [
         {
           type: "text" as const,
-          text: "Error: `receipt` carries nothing re-verifiable — pass a PCB Receipt (board_hash) or a unified DesignReceipt with mech.clearance or constraint.* claims, as produced by build_receipt.",
+          text: "Error: `receipt` carries nothing re-verifiable — pass a PCB Receipt (board_hash) or a unified DesignReceipt with mech.clearance, constraint.*, or claims-ledger claims, as produced by build_receipt.",
         },
       ],
       isError: true,
@@ -14770,6 +14792,14 @@ export async function verifyReceipt(args: Record<string, unknown>, engine?: Engi
     statuses.push(constraintChecks.status);
   }
 
+  // Solver predictions + bench measurements: re-classify every ledger row in
+  // the receipt's order and render the scorecard.
+  let ledgerChecks: Awaited<ReturnType<typeof verifyLedgerClaims>> | undefined;
+  if (ledgerReceipt) {
+    ledgerChecks = await verifyLedgerClaims(ctx.doc, ledgerReceipt);
+    statuses.push(ledgerChecks.status);
+  }
+
   // Hash after the claims ran: re-measuring can normalize the document's specs.
   const boundHash = [raw, legacy, unified]
     .map((r) => (r as Record<string, unknown> | undefined)?.[DOCUMENT_STATE_FIELD])
@@ -14799,6 +14829,20 @@ export async function verifyReceipt(args: Record<string, unknown>, engine?: Engi
     ...(boardHash ? { board_hash: boardHash } : {}),
     ...(clearance ? { clearance } : {}),
     ...(constraintChecks ? { constraints: constraintChecks } : {}),
+    ...(ledgerChecks
+      ? {
+          claims_ledger: {
+            status: ledgerChecks.status,
+            ...(ledgerChecks.unreceipted.length
+              ? {
+                  unreceipted: ledgerChecks.unreceipted,
+                  note: "The ledger holds claims this receipt does not carry — rebuild the receipt to certify them.",
+                }
+              : {}),
+          },
+          scorecard: ledgerChecks.scorecard,
+        }
+      : {}),
   };
   return {
     content: [{ type: "text" as const, text: JSON.stringify(payload) }],
@@ -16024,7 +16068,7 @@ export const toolDefs: ToolDef[] = [
     name: "build_receipt",
     pack: "ecad",
     description:
-      "Build a re-runnable verification Receipt for the session PCB: a content hash, the DRC backend, a canonicalized DRC summary, and per-part provenance \u2014 a durable proof that round-trips and re-verifies later as Holds / Stale / Violated. Persisted clearance specs (check_clearance with a label) join the unified ledger as mech.clearance claims \u2014 a CAD-only session with specs gets a mechanical receipt, no PCB needed. Renders as an audit ledger in the inline viewer.",
+      "Build a re-runnable verification Receipt for the session PCB: a content hash, the DRC backend, a canonicalized DRC summary, and per-part provenance \u2014 a durable proof that round-trips and re-verifies later as Holds / Stale / Violated. Persisted clearance specs (check_clearance with a label) join the unified ledger as mech.clearance claims \u2014 a CAD-only session with specs gets a mechanical receipt, no PCB needed. Every claims-ledger row (solver predictions frozen with attach_claims, measurements bound with record_measurement / import_measurement) lands in the same receipt \u2014 unmeasured predictions Provisional, measured Holds pass / Violated fail, Stale unverifiable \u2014 with a `scorecard` (markdown + JSON). Renders as an audit ledger in the inline viewer.",
     inputSchema: buildReceiptSchema,
     handler: (a, c) =>
       buildReceipt(a, c.engine) as ToolResult | Promise<ToolResult>,
@@ -16034,7 +16078,7 @@ export const toolDefs: ToolDef[] = [
     name: "verify_receipt",
     pack: "ecad",
     description:
-      "Re-run a prior receipt (from build_receipt) against the session's current document and return the verdict \u2014 Holds (document unchanged, claims clean), Stale (document changed but the claims still hold), or Violated. The receipt is bound to the document state it was built on, so any edit — even one its claims don't measure — reads Stale, and `document_state` says why. Covers the PCB Receipt (board hash + DRC diff) and mech.clearance claims (re-measured against current geometry); worst verdict wins. Powers the ledger's Re-run button.",
+      "Re-run a prior receipt (from build_receipt) against the session's current document and return the verdict \u2014 Holds (document unchanged, claims clean), Stale (document changed but the claims still hold), or Violated. The receipt is bound to the document state it was built on, so any edit — even one its claims don't measure — reads Stale, and `document_state` says why. Covers the PCB Receipt (board hash + DRC diff), mech.clearance claims (re-measured against current geometry), and claims-ledger rows (re-classified Holds / Violated / Unmeasured / Stale, returned as a `scorecard` table in receipt order); worst verdict wins. Powers the ledger's Re-run button.",
     inputSchema: verifyReceiptSchema,
     handler: (a, c) => verifyReceipt(a, c.engine) as ToolResult | Promise<ToolResult>,
     behavior: behavior({ widgetCallable: true }),

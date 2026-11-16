@@ -147,6 +147,8 @@ mod tests {
             ddp_sigma_v_m3: 2.4e-31,
             neutrons_ion_channel: 1.0e-12,
             neutrons_cx_channel: 3.0e-12,
+            final_pos: [0.0; 3],
+            final_vel: [0.0; 3],
         }
     }
 

@@ -212,6 +212,7 @@ pub const LONG_RUNNING_TOOLS: &[&str] = &[
     "simulate_photonics",
     "simulate_charged_particles",
     "simulate_neutron_shield",
+    "simulate_cavity",
     "simulate_lattice_gauge",
     "md_run",
     "minimize_energy",

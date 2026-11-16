@@ -30,6 +30,7 @@ vcad-kernel-topo.workspace = true
 # Both are leaf crates (serde + vcad-receipt) and publish before vcad-eval.
 vcad-kernel-particle.workspace = true
 vcad-kernel-neutronics.workspace = true
+vcad-kernel-acoustics.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

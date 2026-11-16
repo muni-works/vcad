@@ -108,6 +108,41 @@ pub struct TraceOutcome {
     /// charge-exchange events (straight-line continuation at full energy).
     /// Zero unless a [`CxModel`] is set.
     pub neutrons_cx_channel: f64,
+    /// Position at termination, m (the impact point for wire/wall fates).
+    pub final_pos: [f64; 3],
+    /// Velocity at termination, m/s (synchronized with `final_pos`).
+    pub final_vel: [f64; 3],
+}
+
+/// Time integrator for [`Tracer`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Integrator {
+    /// Synchronized kick–rotate–drift–rotate–kick (velocity-Verlet form of
+    /// Boris): positions and velocities live at the same instant, so the
+    /// energy diagnostic is exact and the scheme stays second order when
+    /// the adaptive step changes from one step to the next. Default.
+    Synchronized,
+    /// The original staggered Boris leapfrog (velocity at half steps).
+    /// First order under per-step adaptive `dt` — kept for bit-for-bit
+    /// comparison with pre-M7 results.
+    Leapfrog,
+}
+
+/// One integrator step, as seen by a [`Tracer::trace_observed`] observer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StepEvent {
+    /// Position after the step, m.
+    pub pos: [f64; 3],
+    /// Velocity after the step (synchronized), m/s.
+    pub vel: [f64; 3],
+    /// Step duration, s.
+    pub dt_s: f64,
+    /// Path length of the step, m.
+    pub ds_m: f64,
+    /// Kinetic energy after the step, eV.
+    pub kinetic_ev: f64,
+    /// Elapsed flight time, s.
+    pub time_s: f64,
 }
 
 /// A traced particle with its recorded flight path.
@@ -181,8 +216,16 @@ impl PathRecorder {
 /// weighted by the probability the ion has not yet charge-exchanged) and
 /// the fast-neutral channel (the CX product flies straight at full energy
 /// and keeps fusing until it exits). The CX chain (each event also births
-/// a cold ion that re-accelerates) is not yet modeled, so both channels
+/// a cold ion that re-accelerates) is not modeled here, so both channels
 /// are floors.
+///
+/// **Superseded for yield predictions by [`crate::chain`]** (CX chain,
+/// energy-dependent cited σ, molecular species, ionization source, supply
+/// partition). Note the convention: this legacy model multiplies σ_cx by
+/// the *deuteron* density, while the CX target is the D₂ *molecule*
+/// (half that) — at a physical σ_cx it double-counts attrition. Kept
+/// unchanged because the wasm/MCP `simulate_charged_particles` surface
+/// passes these fields.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CxModel {
     /// Charge-exchange cross section, m².
@@ -211,6 +254,17 @@ pub struct TraceOptions {
     /// fields. Under drive the energy-drift diagnostic is not
     /// accumulated (the drive does work by design).
     pub drive: Option<Drive>,
+    /// Time integrator (default [`Integrator::Synchronized`]).
+    pub integrator: Integrator,
+    /// Cap on the fractional speed change per step, `|a|·dt ≤ f·|v|`
+    /// (applied where the particle is already moving). Bounds the local
+    /// error where the field is steep but the particle is not near a wire
+    /// mask — the far-field complement of the near-wire refinement.
+    pub accel_fraction: f64,
+    /// Minimum near-wire step factor (the step shrinks linearly with
+    /// distance to the wire surface down to this fraction of the base
+    /// step).
+    pub near_wire_min_factor: f64,
 }
 
 impl Default for TraceOptions {
@@ -223,6 +277,9 @@ impl Default for TraceOptions {
             time_budget_factor: 12.0,
             cx: None,
             drive: None,
+            integrator: Integrator::Synchronized,
+            accel_fraction: 0.05,
+            near_wire_min_factor: 0.1,
         }
     }
 }
@@ -356,6 +413,8 @@ pub struct Tracer<'a> {
     /// (nr, nz, dr, dz, z_half) of the axisymmetric grid, for dwell
     /// deposits; `None` for tracers without one.
     grid: Option<(usize, usize, f64, f64, f64)>,
+    /// Axisymmetric wire tori `(r0, z0, a)` (empty for generic geometry).
+    axisym_tori: Vec<(f64, f64, f64)>,
     core_radius: f64,
     shell_radius: f64,
     drop_v: f64,
@@ -376,7 +435,7 @@ impl<'a> Tracer<'a> {
     ) -> Self {
         let h = solution.dr.min(solution.dz);
         let mask_floor = 0.75 * solution.dr.max(solution.dz);
-        let wires = device
+        let wires: Vec<WireHit> = device
             .rings
             .iter()
             .map(|ring| {
@@ -402,8 +461,10 @@ impl<'a> Tracer<'a> {
         let shell_radius = opts.launch_shell_fraction * min_dim;
         let core_radius = 0.35 * device.min_ring_spherical_radius_mm() * 1e-3;
         let drop_v = device.max_potential_drop_v().max(1.0);
+        let axisym_tori = wires.iter().map(|w: &WireHit| (w.r0, w.z0, w.a)).collect();
         Self {
             fields,
+            axisym_tori,
             geometry: Box::new(AxisymGeometry {
                 wires,
                 r_wall,
@@ -431,6 +492,7 @@ impl<'a> Tracer<'a> {
             fields,
             geometry,
             grid: None,
+            axisym_tori: Vec::new(),
             core_radius: scales.core_radius_m,
             shell_radius: scales.shell_radius_m,
             drop_v: scales.potential_drop_v.max(1.0),
@@ -442,6 +504,39 @@ impl<'a> Tracer<'a> {
     /// Trace one particle from `pos` (m) with velocity `vel` (m/s).
     pub fn trace_from(&self, species: Species, pos: [f64; 3], vel: [f64; 3]) -> TraceOutcome {
         self.trace_impl(species, pos, vel, None, None)
+    }
+
+    /// Trace one particle, calling `observer` after every integrator step.
+    /// The observer returns `false` to stop the trace (reported as
+    /// [`Fate::Survived`]; the observer knows why it stopped). This is the
+    /// seam [`crate::chain`] hangs its collision physics on.
+    pub fn trace_observed(
+        &self,
+        species: Species,
+        pos: [f64; 3],
+        vel: [f64; 3],
+        observer: &mut dyn FnMut(&StepEvent) -> bool,
+    ) -> TraceOutcome {
+        self.trace_impl(species, pos, vel, None, Some(observer))
+    }
+
+    /// Grid geometry `(nr, nz, dr, dz, z_half)` of the axisymmetric
+    /// solution this tracer was built on (for callers depositing on the
+    /// same grid); `None` for [`Self::with_geometry`] tracers.
+    pub fn grid(&self) -> Option<(usize, usize, f64, f64, f64)> {
+        self.grid
+    }
+
+    /// Axisymmetric wire hit tori as `(ring_radius_m, z_m, hit_radius_m)`
+    /// (empty for [`Self::with_geometry`] tracers).
+    pub fn wire_tori(&self) -> Vec<(f64, f64, f64)> {
+        self.axisym_tori.clone()
+    }
+
+    /// Straight-line distance from `p` along `v` to the chamber boundary,
+    /// m (fast-neutral continuation).
+    pub fn exit_distance_m(&self, p: [f64; 3], v: [f64; 3]) -> f64 {
+        self.geometry.exit_distance(p, v)
     }
 
     /// [`Self::trace_from`], additionally recording the flight path as a
@@ -460,7 +555,12 @@ impl<'a> Tracer<'a> {
         max_points: usize,
     ) -> TracePath {
         let mut rec = PathRecorder::new(spacing_mm, max_points);
-        let outcome = self.trace_impl(species, pos, vel, None, Some(&mut rec));
+        rec.push(pos);
+        let outcome = self.trace_observed(species, pos, vel, &mut |ev| {
+            rec.push(ev.pos);
+            true
+        });
+        rec.end(outcome.final_pos);
         TracePath {
             outcome,
             points_mm: rec.finish(),
@@ -507,7 +607,7 @@ impl<'a> Tracer<'a> {
         pos: [f64; 3],
         vel: [f64; 3],
         mut dwell: Option<&mut [f64]>,
-        mut path: Option<&mut PathRecorder>,
+        mut observer: Option<&mut dyn FnMut(&StepEvent) -> bool>,
     ) -> TraceOutcome {
         let mut p = pos;
         let mut v = vel;
@@ -536,48 +636,70 @@ impl<'a> Tracer<'a> {
         let deuteron_like =
             species.charge_c > 0.0 && (species.mass_kg / DEUTERON.mass_kg - 1.0).abs() < 0.01;
         let cx = if deuteron_like { self.opts.cx } else { None };
-        if let Some(rec) = path.as_deref_mut() {
-            rec.push(p);
-        }
+
+        let synced = self.opts.integrator == Integrator::Synchronized;
+        let field_at = |p: [f64; 3], t: f64| -> [f64; 3] {
+            let e = self.fields.e_cart(p);
+            match &self.opts.drive {
+                Some(d) => scale(e, d.scale(t)),
+                None => e,
+            }
+        };
+        // Synchronized scheme caches E at the current position.
+        let mut e_now = field_at(p, 0.0);
 
         'outer: while time < t_max && steps < MAX_STEPS {
             let speed = dot(v, v).sqrt();
             let mut dt = self.opts.step_fraction * self.h / speed.max(0.05 * v_ref);
+            if synced && self.opts.accel_fraction > 0.0 && speed > 0.05 * v_ref {
+                let a = qm.abs() * dot(e_now, e_now).sqrt();
+                if a > 0.0 {
+                    dt = dt.min(self.opts.accel_fraction * speed / a);
+                }
+            }
             // Refine the step near wires, where field gradients are the
             // steepest thing in the problem (bounds the energy drift).
-            dt *= self.geometry.near_wire_ratio(p).clamp(0.1, 1.0);
+            dt *= self
+                .geometry
+                .near_wire_ratio(p)
+                .clamp(self.opts.near_wire_min_factor.clamp(1e-4, 1.0), 1.0);
             let b = self.fields.b_cart(p);
             let bmag = dot(b, b).sqrt();
             let n_sub = ((qm.abs() * bmag * dt / 0.3).ceil() as u64).clamp(1, 64);
             let dth = dt / n_sub as f64;
             for _ in 0..n_sub {
-                let mut e = self.fields.e_cart(p);
-                if let Some(d) = &self.opts.drive {
-                    let sc = d.scale(time);
-                    e = [e[0] * sc, e[1] * sc, e[2] * sc];
+                let p_prev = p;
+                if synced {
+                    // kick(½) – rotate(½) – drift – rotate(½) – kick(½)
+                    let half = 0.5 * qm * dth;
+                    let v1 = add(v, scale(e_now, half));
+                    let v2 = boris_rotate(v1, self.fields.b_cart(p), 0.5 * half);
+                    p = add(p, scale(v2, dth));
+                    time += dth;
+                    let v3 = boris_rotate(v2, self.fields.b_cart(p), 0.5 * half);
+                    e_now = field_at(p, time);
+                    v = add(v3, scale(e_now, half));
+                } else {
+                    let e = field_at(p, time);
+                    let b = self.fields.b_cart(p);
+                    let half = 0.5 * qm * dth;
+                    let vm = add(v, scale(e, half));
+                    let vp = boris_rotate(vm, b, half);
+                    v = add(vp, scale(e, half));
+                    p = add(p, scale(v, dth));
+                    time += dth;
                 }
-                let b = self.fields.b_cart(p);
-                let half = 0.5 * qm * dth;
-                let vm = add(v, scale(e, half));
-                let t = scale(b, half);
-                let t2 = dot(t, t);
-                let vprime = add(vm, cross(vm, t));
-                let s = 2.0 / (1.0 + t2);
-                let vp = add(vm, scale(cross(vprime, t), s));
-                v = add(vp, scale(e, half));
-                p = add(p, scale(v, dth));
-                time += dth;
                 steps += 1;
+                let ds = sq_len([p[0] - p_prev[0], p[1] - p_prev[1], p[2] - p_prev[2]]).sqrt();
 
-                if let Some(rec) = path.as_deref_mut() {
-                    rec.push(p);
-                }
                 if let (Some(d), Some((nr, nz, dr, dz, z_half))) = (dwell.as_deref_mut(), self.grid)
                 {
                     let i = ((p[0] * p[0] + p[1] * p[1]).sqrt() / dr).round() as usize;
                     let j = (((p[2] + z_half) / dz).round().max(0.0)) as usize;
                     if i < nr && j < nz {
-                        d[i * nz + j] += dth;
+                        // Expected population: weight by CX survival
+                        // (1 when no CX model is set).
+                        d[i * nz + j] += survival * dth;
                     }
                 }
 
@@ -615,6 +737,20 @@ impl<'a> Tracer<'a> {
                     fate = Fate::Wall;
                     break 'outer;
                 }
+                if let Some(obs) = observer.as_deref_mut() {
+                    let ev = StepEvent {
+                        pos: p,
+                        vel: v,
+                        dt_s: dth,
+                        ds_m: ds,
+                        kinetic_ev: 0.5 * species.mass_kg * dot(v, v)
+                            / crate::constants::ELEMENTARY_CHARGE,
+                        time_s: time,
+                    };
+                    if !obs(&ev) {
+                        break 'outer;
+                    }
+                }
                 if let Some(k) = self.geometry.wire_hit(p) {
                     fate = Fate::Wire(k);
                     break 'outer;
@@ -639,9 +775,6 @@ impl<'a> Tracer<'a> {
             }
         }
 
-        if let Some(rec) = path {
-            rec.end(p);
-        }
         TraceOutcome {
             fate,
             core_passes: passes,
@@ -653,6 +786,8 @@ impl<'a> Tracer<'a> {
             ddp_sigma_v_m3: sigv_p,
             neutrons_ion_channel: n_ion,
             neutrons_cx_channel: n_cx,
+            final_pos: p,
+            final_vel: v,
         }
     }
 
@@ -706,6 +841,20 @@ impl<'a> Tracer<'a> {
     pub fn shell_radius_m(&self) -> f64 {
         self.shell_radius
     }
+}
+
+/// Boris rotation of `v` about `B` with `t = (q/m)·B·τ` already scaled
+/// by the caller's `τ` (`half` = ½·(q/m)·dt rotates by ≈ ω·dt).
+#[inline]
+fn boris_rotate(v: [f64; 3], b: [f64; 3], half_qm_dt: f64) -> [f64; 3] {
+    if b == [0.0, 0.0, 0.0] {
+        return v;
+    }
+    let t = scale(b, half_qm_dt);
+    let t2 = dot(t, t);
+    let vprime = add(v, cross(v, t));
+    let s = 2.0 / (1.0 + t2);
+    add(v, scale(cross(vprime, t), s))
 }
 
 #[inline]
@@ -781,6 +930,31 @@ mod tests {
                 o.core_passes
             );
         }
+    }
+
+    #[test]
+    fn synchronized_integrator_beats_leapfrog_at_equal_step() {
+        // Same geometry, same step: the synchronized scheme must cut the
+        // worst-case energy drift by a large factor (19% → 0.17% on the
+        // production open-fusor grid; see examples/integrator_drift.rs).
+        let device = Device::classic_fusor(76.0, 19.0, 4, 1.0, -30_000.0);
+        let sol = solve(&device, 77, 153, &SolveOptions::default()).unwrap();
+        let fields = FieldMap::new(&device, &sol);
+        let worst = |integrator: Integrator| {
+            let opts = TraceOptions {
+                max_passes: 10,
+                integrator,
+                ..TraceOptions::default()
+            };
+            Tracer::new(&device, &fields, &sol, opts)
+                .launch_ensemble(DEUTERON, 12)
+                .iter()
+                .map(|o| o.energy_drift_rel)
+                .fold(0.0, f64::max)
+        };
+        let (lf, sy) = (worst(Integrator::Leapfrog), worst(Integrator::Synchronized));
+        assert!(sy < 0.2 * lf, "synchronized {sy:.4} vs leapfrog {lf:.4}");
+        assert!(sy < 0.02, "synchronized drift {sy:.4}");
     }
 
     #[test]

@@ -197,6 +197,7 @@ fn impedance_termination_absorbs_the_resonance() {
             z1_mm: l,
             radius_mm: 20.0,
         }],
+        obstacles: Vec::new(),
         bottom: EndCondition::Rigid,
         top: EndCondition::Impedance { admittance: beta },
         medium: air,
