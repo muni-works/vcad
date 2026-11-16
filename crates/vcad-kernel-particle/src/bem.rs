@@ -72,6 +72,10 @@ pub struct BemOptions {
     /// cannot resolve charge there, so they are excluded from the gate and
     /// reported separately ([`WireField::worst_junction_residual`]).
     pub junction_zone_factor: f64,
+    /// Collocation stations per segment (≥ 1). One = square midpoint
+    /// collocation; more = least squares over stations that include the
+    /// segment joints, which tames the thin-wire error at crossings.
+    pub stations_per_segment: usize,
     /// Refuse problems with more unknowns than this (dense O(N³) solve).
     pub max_unknowns: usize,
 }
@@ -84,7 +88,8 @@ impl Default for BemOptions {
             max_surface_residual: 0.05,
             residual_azimuths: 8,
             junction_zone_factor: 3.0,
-            max_unknowns: 4000,
+            stations_per_segment: 4,
+            max_unknowns: 3000,
         }
     }
 }
@@ -308,6 +313,11 @@ pub fn solve(device: &Device3d, opts: &BemOptions) -> Result<WireField, BemError
             "max_sag_fraction must be in (0, 1]".into(),
         ));
     }
+    if opts.stations_per_segment == 0 {
+        return Err(BemError::InvalidOptions(
+            "stations_per_segment must be ≥ 1".into(),
+        ));
+    }
     if !(opts.max_surface_residual > 0.0) || opts.residual_azimuths < 3 {
         return Err(BemError::InvalidOptions(
             "max_surface_residual must be > 0 and residual_azimuths ≥ 3".into(),
@@ -394,32 +404,76 @@ pub fn solve(device: &Device3d, opts: &BemOptions) -> Result<WireField, BemError
         }
     }
 
-    // --- Collocation matrix (dimensionless; λ = x / k) -------------------
-    let mids: Vec<[f64; 3]> = segs
-        .iter()
-        .map(|s| scale(add(verts[s.a], verts[s.b]), 0.5))
-        .collect();
-    let mut a_mat = tang_la::DMat::<f64>::zeros(n, n);
-    for i in 0..n {
-        let x = mids[i];
+    // --- Collocation (dimensionless; λ = x / k) ------------------------
+    //
+    // Stations at `stations_per_segment` evenly spaced fractions of every
+    // segment, starting at the joint (fraction 0) — so joints, where two
+    // piecewise-constant charges meet and where crossings concentrate the
+    // thin-wire error, are matched too. With more than one station the
+    // system is overdetermined and solved in the least-squares sense
+    // (normal equations, Cholesky); one station is classic square
+    // midpoint collocation (LU).
+    let n_st = opts.stations_per_segment;
+    let mut stations: Vec<([f64; 3], usize)> = Vec::with_capacity(n * n_st);
+    for (i, s) in segs.iter().enumerate() {
+        let w = &wires[s.wire];
+        for k in 0..n_st {
+            let frac = if n_st == 1 {
+                0.5
+            } else {
+                k as f64 / n_st as f64
+            };
+            // The free end of an open wire carries no end-cap charge in
+            // the thin-wire model; don't ask it to hold the potential.
+            if frac == 0.0 && !w.closed && s.a == w.v0 {
+                continue;
+            }
+            stations.push((add(verts[s.a], scale(sub(verts[s.b], verts[s.a]), frac)), i));
+        }
+    }
+    let m = stations.len();
+    let mut a_mat = tang_la::DMat::<f64>::zeros(m, n);
+    for (row, &(x, i)) in stations.iter().enumerate() {
         let ai = wires[segs[i].wire].radius;
         for (j, s) in segs.iter().enumerate() {
-            let v = reduced_kernel(x, verts[s.a], verts[s.b], s.len, ai);
-            a_mat.set(i, j, v);
+            a_mat.set(row, j, reduced_kernel(x, verts[s.a], verts[s.b], s.len, ai));
         }
         if let Some(rc) = chamber_radius_m {
             let xx = dot(x, x);
             for im in &images {
                 let d = xx * im.c2 - 2.0 * dot(x, im.y) + rc * rc;
-                *a_mat.get_mut(i, im.seg) -= im.weight / d.sqrt();
+                *a_mat.get_mut(row, im.seg) -= im.weight / d.sqrt();
             }
         }
     }
-    let rhs = tang_la::DVec::from_fn(n, |i| {
-        wires[segs[i].wire].potential - device.wall_potential_v
-    });
-    let lu = tang_la::Lu::new(&a_mat).ok_or(BemError::Singular)?;
-    let x = lu.solve(&rhs);
+    let rhs: Vec<f64> = stations
+        .iter()
+        .map(|&(_, i)| wires[segs[i].wire].potential - device.wall_potential_v)
+        .collect();
+    let x = if m == n {
+        let lu = tang_la::Lu::new(&a_mat).ok_or(BemError::Singular)?;
+        lu.solve(&tang_la::DVec::from_slice(&rhs))
+    } else {
+        // Normal equations G = AᵀA, b = Aᵀr (A is column-major: column j
+        // is the response of every station to segment j).
+        let mut g = tang_la::DMat::<f64>::zeros(n, n);
+        for i in 0..n {
+            let ci = a_mat.col(i);
+            for j in 0..=i {
+                let cj = a_mat.col(j);
+                let v: f64 = ci.iter().zip(cj).map(|(p, q)| p * q).sum();
+                g.set(i, j, v);
+                g.set(j, i, v);
+            }
+        }
+        let b = tang_la::DVec::from_fn(n, |j| {
+            a_mat.col(j).iter().zip(&rhs).map(|(p, q)| p * q).sum()
+        });
+        match tang_la::Cholesky::new(&g) {
+            Some(ch) => ch.solve(&b),
+            None => tang_la::Lu::new(&g).ok_or(BemError::Singular)?.solve(&b),
+        }
+    };
     for (i, s) in segs.iter_mut().enumerate() {
         s.lambda = x.as_slice()[i] / K_E;
         if !s.lambda.is_finite() {
