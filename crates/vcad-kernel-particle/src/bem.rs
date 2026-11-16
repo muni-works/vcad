@@ -879,6 +879,112 @@ impl WireField {
     }
 }
 
+/// Collision geometry of a solved [`WireField`] for the Boris tracer:
+/// segment-capsule wire hits, spherical (or far-field) wall.
+#[derive(Debug, Clone, Copy)]
+pub struct WireGeometry<'a> {
+    field: &'a WireField,
+    wall_radius_m: f64,
+}
+
+impl crate::trace::TraceGeometry for WireGeometry<'_> {
+    fn wire_hit(&self, p: [f64; 3]) -> Option<usize> {
+        self.field.wire_hit(p)
+    }
+
+    fn at_wall(&self, p: [f64; 3]) -> bool {
+        dot(p, p) > self.wall_radius_m * self.wall_radius_m
+    }
+
+    fn near_wire_ratio(&self, p: [f64; 3]) -> f64 {
+        self.field.near_wire_ratio(p)
+    }
+
+    fn exit_distance(&self, p: [f64; 3], v: [f64; 3]) -> f64 {
+        let speed = norm(v);
+        if speed < 1e-12 {
+            return 0.0;
+        }
+        let d = scale(v, 1.0 / speed);
+        let b = dot(p, d);
+        let c = dot(p, p) - self.wall_radius_m * self.wall_radius_m;
+        let disc = b * b - c;
+        if disc <= 0.0 {
+            return 0.0;
+        }
+        (-b + disc.sqrt()).max(0.0)
+    }
+}
+
+impl WireField {
+    /// Smallest distance of any wire centerline vertex from the origin, m
+    /// (sizes the tracer's core region, like the 2D path).
+    pub fn min_wire_spherical_radius_m(&self) -> f64 {
+        self.verts.iter().map(|v| norm(*v)).fold(f64::INFINITY, f64::min)
+    }
+
+    /// The wall radius the tracer uses, m: the chamber sphere less half a
+    /// step, or — unbounded — four times the electrode extent.
+    pub fn trace_wall_radius_m(&self, step_length_m: f64) -> f64 {
+        match self.chamber_radius_m {
+            Some(r) => r - 0.5 * step_length_m,
+            None => 4.0 * self.extent_m,
+        }
+    }
+
+    /// Default tracer step length, m: half the smallest wire radius,
+    /// capped at 0.5 mm. Wires are the only fine structure of the field;
+    /// the tracer also refines its step within 7 radii of a wire.
+    pub fn default_step_length_m(&self) -> f64 {
+        (0.5 * self.min_wire_radius_m).min(0.5e-3)
+    }
+
+    /// A Boris tracer over this field with segment-capsule wire hits and a
+    /// spherical wall. `step_length_m` plays the role of the 2D grid
+    /// spacing (see [`Self::default_step_length_m`]). Core radius is 0.35×
+    /// the innermost wire radius; launch shell is
+    /// `opts.launch_shell_fraction` × the chamber radius.
+    pub fn tracer(
+        &self,
+        step_length_m: f64,
+        opts: crate::trace::TraceOptions,
+    ) -> crate::trace::Tracer<'_> {
+        let wall = self.trace_wall_radius_m(step_length_m);
+        let reference = self.chamber_radius_m.unwrap_or(wall);
+        crate::trace::Tracer::with_geometry(
+            self,
+            Box::new(WireGeometry {
+                field: self,
+                wall_radius_m: wall,
+            }),
+            crate::trace::TraceScales {
+                step_length_m,
+                core_radius_m: 0.35 * self.min_wire_spherical_radius_m(),
+                shell_radius_m: opts.launch_shell_fraction * reference,
+                potential_drop_v: self.max_drop_v,
+            },
+            opts,
+        )
+    }
+}
+
+/// Launch `n` particles at rest on the tracer's launch shell along
+/// deterministic Fibonacci directions — full-sphere coverage with no
+/// preferred meridian, which a non-axisymmetric grid requires (the
+/// axisymmetric [`crate::trace::Tracer::launch_ensemble`] samples a single
+/// meridian plane).
+pub fn launch_fibonacci(
+    tracer: &crate::trace::Tracer<'_>,
+    species: crate::trace::Species,
+    n: usize,
+) -> Vec<crate::trace::TraceOutcome> {
+    let r = tracer.shell_radius_m();
+    crate::wire3d::fibonacci_sphere(n)
+        .into_iter()
+        .map(|d| tracer.trace_from(species, scale(d, r), [0.0; 3]))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
