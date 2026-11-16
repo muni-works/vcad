@@ -19,8 +19,12 @@ final class PlasmoidSimTests: XCTestCase {
 
     func testBindsByPartName() {
         let b = PlasmoidBinding.find(names: ["Dish", "spike", "coil", "magnet"])
-        XCTAssertEqual(b, PlasmoidBinding(dishPart: 0, magnetPart: 3, spikePart: 1))
+        XCTAssertEqual(b, PlasmoidBinding(dishPart: 0, magnetParts: [3], spikePart: 1))
         XCTAssertNil(PlasmoidBinding.find(names: ["Box", "magnet"]))
+        // Every `magnet…` part is bound, in part order.
+        let multi = PlasmoidBinding.find(names: ["magnet", "dish", "Magnet-2", "holder", "magnet_b"])
+        XCTAssertEqual(multi?.magnetParts, [0, 2, 4])
+        XCTAssertEqual(multi?.magnetPart, 0)
     }
 
     func testFrameMath() {
@@ -98,6 +102,31 @@ final class PlasmoidSimTests: XCTestCase {
         let msPerFrame = (CFAbsoluteTimeGetCurrent() - t0) * 1000 / 60
         print(String(format: "[plasmoid] %.2f ms per 1/60 s frame (40 substeps)", msPerFrame))
         XCTAssertLessThan(msPerFrame, 16, "a frame of sim must fit in a frame")
+        store.stop()
+    }
+
+    /// Two magnet parts on the orbit: the racer locks under the first it
+    /// meets (magnet 2 at 90°); flick that one away and it is handed to
+    /// magnet 1 at 180° — the readout says which.
+    func testTwoMagnetsHandTheFootOver() {
+        let store = PlasmoidStore()
+        store.active = true
+        let fdt = 1.0 / 60.0
+        let r0 = 87.0 * 0.055 / 0.08
+        let m1 = PlasmoidBinding.magnetCenter(wand(x: -r0, y: 0), liveCenter: nil)
+        var ang = Double.pi / 2
+        func m2() -> SIMD3<Double> {
+            PlasmoidBinding.magnetCenter(wand(x: r0 * cos(ang), y: r0 * sin(ang)), liveCenter: nil)
+        }
+        for _ in 0..<90 { store.step(dt: fdt, dish: dish, spike: spike, magnetCenters: [m1, m2()]) }
+        XCTAssertEqual(store.readout.lockedMagnet, 1, "should lock under the magnet at 90° first")
+        XCTAssertEqual(store.readout.magnetCount, 2)
+        for _ in 0..<7 {
+            ang -= 25 * fdt
+            store.step(dt: fdt, dish: dish, spike: spike, magnetCenters: [m1, m2()])
+        }
+        for _ in 0..<60 { store.step(dt: fdt, dish: dish, spike: spike, magnetCenters: [m1, m2()]) }
+        XCTAssertEqual(store.readout.lockedMagnet, 0, "should be handed to the magnet at 180°")
         store.stop()
     }
 

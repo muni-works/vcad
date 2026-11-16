@@ -369,21 +369,20 @@ where
     out
 }
 
-/// One RK4 step of the foot from `p` at time `t` (pose sampled at `t`,
+/// One RK4 step of the foot from `p` at time `t` (field sampled at `t`,
 /// `t + dt/2` and `t + dt`), then the dish clamp. Shared by [`simulate`]
 /// and [`PlasmoidStepper`] so the two cannot drift.
-fn rk4_step<F>(
+fn rk4_step_scene<F>(
     params: &PlasmaParams,
-    magnet: &DiscMagnet,
-    pose_at: &F,
+    field_at: &F,
     t: f64,
     mut p: [f64; 2],
     dt: f64,
 ) -> [f64; 2]
 where
-    F: Fn(f64) -> Option<MagnetPose>,
+    F: Fn(f64) -> Option<FieldScene>,
 {
-    let f = |tt: f64, q: [f64; 2]| params.velocity(magnet, pose_at(tt).as_ref(), q);
+    let f = |tt: f64, q: [f64; 2]| params.velocity_in(field_at(tt).as_ref(), q);
     let k1 = f(t, p);
     let k2 = f(
         t + 0.5 * dt,
@@ -405,6 +404,22 @@ where
     p
 }
 
+/// [`rk4_step_scene`] for one disc magnet (bit-identical: `velocity` is
+/// `velocity_in` on the magnet's one-source scene).
+fn rk4_step<F>(
+    params: &PlasmaParams,
+    magnet: &DiscMagnet,
+    pose_at: &F,
+    t: f64,
+    p: [f64; 2],
+    dt: f64,
+) -> [f64; 2]
+where
+    F: Fn(f64) -> Option<MagnetPose>,
+{
+    rk4_step_scene(params, &|tt| pose_at(tt).map(|q| q.scene(magnet)), t, p, dt)
+}
+
 /// Horizontal foot–footprint distance under which the foot counts as
 /// locked to the magnet, m (the demo example's criterion).
 pub const LOCK_RADIUS_M: f64 = 8e-3;
@@ -421,10 +436,72 @@ pub const LOCK_MIN_BETA: f64 = 1.0;
 /// magnet at `pose`: within [`LOCK_RADIUS_M`] of its footprint, the magnet
 /// held low, and the glow magnetized (β ≥ [`LOCK_MIN_BETA`]).
 pub fn is_locked(pos: [f64; 2], beta: f64, pose: Option<&MagnetPose>) -> bool {
-    let Some(q) = pose else { return false };
-    let c = q.center_m;
+    pose.is_some_and(|q| near_footprint(pos, q.center_m)) && beta >= LOCK_MIN_BETA
+}
+
+/// The source in `scene` the foot is locked under, if any: the nearest
+/// source whose footprint is within [`LOCK_RADIUS_M`] (held below
+/// [`LOCK_MAX_HEIGHT_M`]), with the glow magnetized (β ≥ [`LOCK_MIN_BETA`]).
+pub fn locked_source(pos: [f64; 2], beta: f64, scene: Option<&FieldScene>) -> Option<usize> {
+    if beta < LOCK_MIN_BETA {
+        return None;
+    }
+    let scene = scene?;
+    let d2 = |c: [f64; 3]| (pos[0] - c[0]).powi(2) + (pos[1] - c[1]).powi(2);
+    scene
+        .sources
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| near_footprint(pos, s.pose.position_m))
+        .min_by(|a, b| d2(a.1.pose.position_m).total_cmp(&d2(b.1.pose.position_m)))
+        .map(|(i, _)| i)
+}
+
+fn near_footprint(pos: [f64; 2], c: [f64; 3]) -> bool {
     let d = ((pos[0] - c[0]).powi(2) + (pos[1] - c[1]).powi(2)).sqrt();
-    d < LOCK_RADIUS_M && c[2] < LOCK_MAX_HEIGHT_M && beta >= LOCK_MIN_BETA
+    d < LOCK_RADIUS_M && c[2] < LOCK_MAX_HEIGHT_M
+}
+
+/// `a` → `b` at `u ∈ [0, 1]`: positions linearly, orientation by lerping
+/// the local z and x axes and re-orthonormalizing (exact when they agree,
+/// smooth for the small per-frame turns a hand drag makes).
+pub fn lerp_pose(a: &Pose, b: &Pose, u: f64) -> Pose {
+    let l = |x: f64, y: f64| x + (y - x) * u;
+    let lv = |p: [f64; 3], q: [f64; 3]| [l(p[0], q[0]), l(p[1], q[1]), l(p[2], q[2])];
+    let col = |r: &[[f64; 3]; 3], j: usize| [r[0][j], r[1][j], r[2][j]];
+    let position_m = lv(a.position_m, b.position_m);
+    if a.rotation == b.rotation {
+        return Pose {
+            position_m,
+            rotation: a.rotation,
+        };
+    }
+    let z = lv(col(&a.rotation, 2), col(&b.rotation, 2));
+    let x = lv(col(&a.rotation, 0), col(&b.rotation, 0));
+    Pose::from_axis_and_x(position_m, z, x).unwrap_or(if u < 0.5 {
+        Pose { position_m, ..*a }
+    } else {
+        Pose { position_m, ..*b }
+    })
+}
+
+/// Scene `a` → `b` at `u`: source by source when both hold the same
+/// sources in the same order (only poses moved — the frame-to-frame case),
+/// otherwise `b` outright.
+pub fn lerp_scene(a: &FieldScene, b: &FieldScene, u: f64) -> FieldScene {
+    let same = a.sources.len() == b.sources.len()
+        && a.sources
+            .iter()
+            .zip(&b.sources)
+            .all(|(p, q)| p.source == q.source);
+    if !same {
+        return b.clone();
+    }
+    let mut out = FieldScene::new();
+    for (p, q) in a.sources.iter().zip(&b.sources) {
+        out.push(q.source, lerp_pose(&p.pose, &q.pose, u));
+    }
+    out
 }
 
 /// Snapshot of a live [`PlasmoidStepper`].
@@ -434,33 +511,38 @@ pub struct PlasmoidState {
     pub t_s: f64,
     /// Foot position on the dish, m.
     pub pos_m: [f64; 2],
-    /// Hall parameter at the foot (0 with no magnet).
+    /// Hall parameter at the foot (0 with no field).
     pub beta: f64,
-    /// Foot locked to the magnet ([`is_locked`]).
+    /// Foot locked under a source ([`locked_source`]).
     pub locked: bool,
+    /// Which source of the scene it is locked under.
+    pub locked_source: Option<usize>,
 }
 
-/// Incremental (live) integration of the same model as [`simulate`], for a
-/// magnet whose pose is only known as it happens — e.g. dragged by hand in
-/// the app. Each [`advance`](Self::advance) call takes the magnet pose at
-/// the start and end of a frame and integrates fixed RK4 substeps with the
-/// pose linearly interpolated between them, so a fast flick still reaches
-/// the integrator as a smooth path rather than one teleport per frame.
+/// Incremental (live) integration of the same model as [`simulate`] /
+/// [`simulate_scene`], for a field only known as it happens — magnets
+/// dragged by hand in the app. Each [`advance_scene`](Self::advance_scene)
+/// call takes the field at the start and end of a frame — any
+/// [`FieldScene`]: several magnets, blocks, coils — and integrates fixed RK4
+/// substeps with every source's pose interpolated between them, so a fast
+/// flick still reaches the integrator as a smooth path rather than one
+/// teleport per frame.
 #[derive(Debug, Clone)]
 pub struct PlasmoidStepper {
     /// Model parameters (pressure can be changed with
     /// [`set_pressure_torr`](Self::set_pressure_torr)).
     pub params: PlasmaParams,
-    /// The magnet.
+    /// The disc magnet the single-magnet [`advance`](Self::advance) /
+    /// [`state`](Self::state) API poses.
     pub magnet: DiscMagnet,
     start: [f64; 2],
     pos: [f64; 2],
     t: f64,
-    last_pose: Option<MagnetPose>,
+    last: Option<FieldScene>,
 }
 
 impl PlasmoidStepper {
-    /// A stepper with the foot at `start` (m) and no magnet seen yet.
+    /// A stepper with the foot at `start` (m) and no field seen yet.
     pub fn new(params: PlasmaParams, magnet: DiscMagnet, start: [f64; 2]) -> Self {
         Self {
             params,
@@ -468,14 +550,14 @@ impl PlasmoidStepper {
             start,
             pos: start,
             t: 0.0,
-            last_pose: None,
+            last: None,
         }
     }
 
     /// The demo configuration: argon at `pressure_torr` on a dish of
     /// `dish_radius_m`, the racer on an orbit at `orbit_frac` of the dish
     /// radius, and the mobility calibrated *once* at 1 Torr to `margin × μ*`
-    /// for the magnet held `gap_m` above the orbit. Pressure changes later
+    /// for `magnet` held `gap_m` above the orbit. Pressure changes later
     /// move only ν (hence β), never μ — so raising the pressure makes the
     /// lock vanish instead of being renormalized away.
     pub fn demo(
@@ -508,14 +590,49 @@ impl PlasmoidStepper {
     pub fn reset(&mut self) {
         self.pos = self.start;
         self.t = 0.0;
-        self.last_pose = None;
+        self.last = None;
     }
 
-    /// Advance by `substeps` RK4 steps of `dt` each, the magnet pose moving
-    /// linearly from `from` to `to` over the interval. `to = None` means no
-    /// magnet for the whole interval; `from = None` reuses the pose the
-    /// previous call ended on (or `to`, on the first call), which is what
-    /// a frame loop wants.
+    /// Advance by `substeps` RK4 steps of `dt` each, the field moving from
+    /// `from` to `to` over the interval ([`lerp_scene`]). `to = None` means
+    /// no field for the whole interval; `from = None` reuses the scene the
+    /// previous call ended on (or `to`, on the first call), which is what a
+    /// frame loop wants.
+    pub fn advance_scene(
+        &mut self,
+        from: Option<FieldScene>,
+        to: Option<FieldScene>,
+        dt: f64,
+        substeps: usize,
+    ) -> PlasmoidState {
+        let from = from.or_else(|| self.last.clone()).or_else(|| to.clone());
+        let t0 = self.t;
+        let span = dt * substeps as f64;
+        let field_at = |t: f64| -> Option<FieldScene> {
+            let (a, b) = (from.as_ref()?, to.as_ref()?);
+            let u = if span > 0.0 {
+                ((t - t0) / span).clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            Some(if u == 1.0 {
+                b.clone()
+            } else {
+                lerp_scene(a, b, u)
+            })
+        };
+        for k in 0..substeps {
+            let t = t0 + k as f64 * dt;
+            self.pos = rk4_step_scene(&self.params, &field_at, t, self.pos, dt);
+        }
+        self.t = t0 + span;
+        let state = self.state_in(to.as_ref());
+        self.last = to;
+        state
+    }
+
+    /// [`advance_scene`](Self::advance_scene) for the one disc magnet
+    /// [`magnet`](Self::magnet) at `from` → `to`.
     pub fn advance(
         &mut self,
         from: Option<MagnetPose>,
@@ -523,56 +640,33 @@ impl PlasmoidStepper {
         dt: f64,
         substeps: usize,
     ) -> PlasmoidState {
-        let from = from.or(self.last_pose).or(to);
-        let t0 = self.t;
-        let span = dt * substeps as f64;
-        let pose_at = |t: f64| -> Option<MagnetPose> {
-            let (a, b) = (from?, to?);
-            let u = if span > 0.0 {
-                ((t - t0) / span).clamp(0.0, 1.0)
-            } else {
-                1.0
-            };
-            let l = |x: f64, y: f64| x + (y - x) * u;
-            Some(MagnetPose {
-                center_m: [
-                    l(a.center_m[0], b.center_m[0]),
-                    l(a.center_m[1], b.center_m[1]),
-                    l(a.center_m[2], b.center_m[2]),
-                ],
-                axis: [
-                    l(a.axis[0], b.axis[0]),
-                    l(a.axis[1], b.axis[1]),
-                    l(a.axis[2], b.axis[2]),
-                ],
-            })
-        };
-        for k in 0..substeps {
-            let t = t0 + k as f64 * dt;
-            self.pos = rk4_step(&self.params, &self.magnet, &pose_at, t, self.pos, dt);
-        }
-        self.t = t0 + span;
-        self.last_pose = to;
-        self.state(to.as_ref())
+        let m = self.magnet;
+        self.advance_scene(
+            from.map(|q| q.scene(&m)),
+            to.map(|q| q.scene(&m)),
+            dt,
+            substeps,
+        )
     }
 
-    /// The current state with the magnet at `pose`.
-    pub fn state(&self, pose: Option<&MagnetPose>) -> PlasmoidState {
-        let beta = pose
-            .map(|q| {
-                let b = q.b_world(
-                    &self.magnet,
-                    [self.pos[0], self.pos[1], self.params.glow_height_m],
-                );
-                hall_parameter(norm(b), self.params.nu_per_s)
-            })
+    /// The current state in `field`.
+    pub fn state_in(&self, field: Option<&FieldScene>) -> PlasmoidState {
+        let beta = field
+            .map(|f| self.params.beta_in(f, self.pos[0], self.pos[1]))
             .unwrap_or(0.0);
+        let locked_source = locked_source(self.pos, beta, field);
         PlasmoidState {
             t_s: self.t,
             pos_m: self.pos,
             beta,
-            locked: is_locked(self.pos, beta, pose),
+            locked: locked_source.is_some(),
+            locked_source,
         }
+    }
+
+    /// The current state with the disc magnet at `pose`.
+    pub fn state(&self, pose: Option<&MagnetPose>) -> PlasmoidState {
+        self.state_in(pose.map(|q| q.scene(&self.magnet)).as_ref())
     }
 }
 
@@ -915,5 +1009,99 @@ mod tests {
         let atm = run(760.0);
         assert!(atm.iter().all(|s| !s.1), "1 atm locked");
         assert!(atm.iter().all(|s| s.2 < 0.01));
+    }
+
+    /// Two disc magnets plus a block, frame-fed: the stepper reproduces
+    /// `simulate_scene` on the same piecewise-linear multi-source path.
+    #[test]
+    fn stepper_matches_simulate_scene_with_several_sources() {
+        let m = DiscMagnet::n52_10x5();
+        let mut p = PlasmaParams::argon_dish(1.0);
+        let r0 = p.orbit_radius_m;
+        p.mobility_m2_s = 1.8 * p.depinning_mobility(&m, &pose_above(0.0, r0, 10e-3, &m));
+        let block = FieldSource::BlockMagnet {
+            size_m: [10e-3, 10e-3, 5e-3],
+            remanence_t: 1.43,
+        };
+        let frame = 1.0 / 60.0;
+        let n_frames = 120usize;
+        // Knot scenes: magnet A drags clockwise, B sits still, the block
+        // slides in along x.
+        let knot = |i: usize| {
+            let t = i as f64 * frame;
+            let a = std::f64::consts::FRAC_PI_2 - 2.0 * t;
+            let pa = pose_above(r0 * a.cos(), r0 * a.sin(), 10e-3, &m);
+            let pb = pose_above(-r0, 0.0, 10e-3, &m);
+            FieldScene::new()
+                .with(m.as_source(), pa.pose())
+                .with(m.as_source(), pb.pose())
+                .with(
+                    block,
+                    Pose::from_axis([0.07 - 0.1 * t, -0.03, 0.0125], [0.0, 0.0, -1.0]),
+                )
+        };
+        let field_at = |t: f64| {
+            let i = ((t / frame).floor() as usize).min(n_frames - 1);
+            Some(lerp_scene(
+                &knot(i),
+                &knot(i + 1),
+                (t - i as f64 * frame) / frame,
+            ))
+        };
+        let sub = 40usize;
+        let dt = frame / sub as f64;
+        let reference = simulate_scene(&p, field_at, [r0, 0.0], n_frames as f64 * frame, dt, sub);
+        let mut st = PlasmoidStepper::new(p, m, [r0, 0.0]);
+        for i in 0..n_frames {
+            let s = st.advance_scene(Some(knot(i)), Some(knot(i + 1)), dt, sub);
+            let r = reference[i + 1];
+            let err =
+                ((s.pos_m[0] - r.pos_m[0]).powi(2) + (s.pos_m[1] - r.pos_m[1]).powi(2)).sqrt();
+            assert!(err < 1e-7, "frame {i}: {err} m off simulate_scene");
+        }
+    }
+
+    /// Two magnets on the orbit: the racer locks under the first it meets;
+    /// flick that one away and the foot races on to the second and locks
+    /// there — `locked_source` says which.
+    #[test]
+    fn two_magnets_hand_the_foot_over() {
+        let m = DiscMagnet::n52_10x5();
+        let mut st = PlasmoidStepper::demo(m, 0.08, 0.6875, 10e-3, 1.8, 1.0);
+        let r0 = st.params.orbit_radius_m;
+        let scene = |a: f64| {
+            FieldScene::new()
+                .with(
+                    m.as_source(),
+                    pose_above(r0 * a.cos(), r0 * a.sin(), 10e-3, &m).pose(),
+                )
+                .with(m.as_source(), pose_above(-r0, 0.0, 10e-3, &m).pose())
+        };
+        let frame = 1.0 / 60.0;
+        // Racer starts at angle 0 going CCW: meets magnet 0 at 90° first.
+        let mut a = std::f64::consts::FRAC_PI_2;
+        let mut first = None;
+        for _ in 0..90 {
+            let s = st.advance_scene(None, Some(scene(a)), frame / 40.0, 40);
+            first = first.or(s.locked_source);
+        }
+        assert_eq!(
+            first,
+            Some(0),
+            "should lock under the first magnet it meets"
+        );
+        // Flick magnet 0 clockwise, away (25 rad/s for 0.12 s → ~−82°),
+        // then hold: the foot races on and is caught by magnet 1 at 180°.
+        for _ in 0..7 {
+            a -= 25.0 * frame;
+            st.advance_scene(None, Some(scene(a)), frame / 40.0, 40);
+        }
+        let mut last = None;
+        for _ in 0..60 {
+            last = st
+                .advance_scene(None, Some(scene(a)), frame / 40.0, 40)
+                .locked_source;
+        }
+        assert_eq!(last, Some(1), "should be held by the second magnet");
     }
 }

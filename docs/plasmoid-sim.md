@@ -177,7 +177,7 @@ Open [`plasmoid-sim/plasmoid-dish.vcad`](plasmoid-sim/plasmoid-dish.vcad) (the l
 
 **What runs live (kernel physics):**
 
-- `PlasmoidStepper` (`plasmoid.rs`): the same RK4 step as `simulate` (one shared function), fed frame by frame. Each display frame passes the magnet pose at the frame's end. The kernel interpolates it from the previous frame's pose across fixed substeps of ≈ 1/2400 s (40 per 60 Hz frame), so a flick reaches the integrator as a smooth path rather than a teleport. A test checks it against `simulate` on a scripted path to 1e-7 m.
+- `PlasmoidStepper` (`plasmoid.rs`) runs on a `FieldScene`, so several magnets (or blocks, coils) superpose. It uses the same RK4 step as `simulate` / `simulate_scene` (one shared function), fed frame by frame. Each source's pose is interpolated across the frame (`lerp_scene`), and `locked_source` reports which source holds the foot. Each display frame passes the magnet pose at the frame's end. The kernel interpolates it from the previous frame's pose across fixed substeps of ≈ 1/2400 s (40 per 60 Hz frame), so a flick reaches the integrator as a smooth path rather than a teleport. A test checks it against `simulate` on a scripted path to 1e-7 m.
 - The mobility is calibrated once at 1 Torr (1.8 μ* at the 10 mm hold gap). The pressure slider changes only ν, and hence β, so raising the pressure kills the lock instead of being renormalized away.
 - "Locked" is `plasmoid::is_locked`: the foot within 8 mm of the footprint, the magnet below 50 mm, and β ≥ 1 at the foot. (The demo example still uses its own distance + height test, so its LOCK/release times above are unchanged.)
 - Each frame is one FFI call (`vcad_plasmoid_advance`) on the store's own serial queue, never the main thread. Frames are dropped while a step is in flight, so a slow step cannot pile up a backlog. Each frame integrates the wall-clock time since the last one, capped at 50 ms: a stall slows sim time rather than teleporting the magnet. The first version stepped on the main thread and death-spiralled (slower frame → more substeps → slower frame), starving the UI. 40 RK4 substeps measured 2.5 ms per frame (release kernel, `PlasmoidSimTests`, on a loaded M-series Mac).
@@ -186,11 +186,15 @@ Open [`plasmoid-sim/plasmoid-dish.vcad`](plasmoid-sim/plasmoid-dish.vcad) (the l
 
 Dragging is cheap enough to feel live. In the scripted capture, one drag event (the document's in-place re-eval + scene refresh) took a median of 3.3 ms (45 ms max). The live loop ran at ~30 Hz (≈ 80 substeps/frame) on a loaded Mac.
 
-**Read from the document (gap #6, partly):** the parts named `dish`, `spike` and `magnet`. Their bounding boxes give the dish centre and rim plane, the dish radius (bbox half-width, 87 mm, so it includes the 2 mm wall), the spike tip the filament roots on, and the magnet disc (the bottom 5 mm of the `magnet` part). Mid-drag the app reads the gizmo's live offset rather than waiting for the in-place re-eval. The foot is drawn on the bowl surface: the dish mesh is ray-cast under the foot. The model itself still treats the dish as the flat rim plane: at the 60 mm orbit the real bowl is ~10 mm below the rim, so the true magnet–glow gap is ~20 mm, not the 10 mm the model sees.
+**Several magnets.** Every part whose name starts with `magnet` (`magnet`, `magnet-2`, …) is bound and superposed. The HUD says which one holds the foot (LOCKED · 1), and dragging any of them works. Flick the holding magnet away and the racer is handed to the next one it meets (tested in Rust and Swift).
+
+![two magnets in vcad.app: the foot locked under magnet 1](plasmoid-sim/live-two-magnets.jpg)
+
+**Read from the document (gap #6, partly):** the parts named `dish`, `spike` and `magnet…`. Their bounding boxes give the dish centre and rim plane, the dish radius (bbox half-width, 87 mm, so it includes the 2 mm wall), the spike tip the filament roots on, and the magnet disc (the bottom 5 mm of the `magnet` part). Mid-drag the app reads the gizmo's live offset rather than waiting for the in-place re-eval. The foot is drawn on the bowl surface: the dish mesh is ray-cast under the foot. The model itself still treats the dish as the flat rim plane: at the 60 mm orbit the real bowl is ~10 mm below the rim, so the true magnet–glow gap is ~20 mm, not the 10 mm the model sees.
 
 **Still assumed / stubbed:**
 
-- The magnet's grade and size (N52 10 × 5 mm) and its polarity (north down). A rotated magnet part is not reflected.
+- Every magnet's grade and size (N52 10 × 5 mm) and its polarity (north down). A rotated magnet part is not reflected. The kernel and FFI take any axis per magnet, but the app doesn't read part rotations yet.
 - The filament arc, its flicker, the halo and the comet tail are stylization: unlit emissive spheres and cylinders, with no bloom or volumetric glow (gap #3).
 - No `simulate_plasmoid` MCP tool yet, so agents cannot choreograph it.
 - Opening this document, the `magnet` part sometimes isn't drawn until the next scene refresh (a pre-existing load race, not plasmoid-specific). Starting the live plasmoid forces one refresh and selects the magnet.

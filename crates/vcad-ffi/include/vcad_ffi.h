@@ -932,7 +932,8 @@ typedef struct VcadPlasmoidState {
   double x_mm;     /* foot, dish frame */
   double y_mm;
   double beta;     /* electron Hall parameter at the foot (0: no magnet) */
-  uint8_t locked;  /* 1: foot locked under the magnet */
+  uint8_t locked;  /* 1: foot locked under a magnet */
+  int32_t locked_magnet; /* index of that magnet, -1 when not locked */
 } VcadPlasmoidState;
 /* N52 10x5 mm disc magnet, argon. NULL + vcad_last_error on bad input. */
 VcadPlasmoid *vcad_plasmoid_create(double dish_radius_mm, double pressure_torr);
@@ -946,6 +947,13 @@ double vcad_plasmoid_orbit_radius_mm(const VcadPlasmoid *sim);
  * call's pose to this one across the frame. */
 VcadPlasmoidState vcad_plasmoid_advance(VcadPlasmoid *sim, const double *magnet,
                                         double frame_dt_s, uint32_t substeps);
+/* Same with `count` magnets superposed (a FieldScene): `magnets` is
+ * 6 x count doubles laid out as above; count 0 = no magnet. Each moves
+ * linearly from its previous pose while the count is unchanged.
+ * locked_magnet indexes `magnets`. */
+VcadPlasmoidState vcad_plasmoid_advance_multi(VcadPlasmoid *sim, const double *magnets,
+                                              size_t count, double frame_dt_s,
+                                              uint32_t substeps);
 
 #ifdef __cplusplus
 }
