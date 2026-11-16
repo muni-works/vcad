@@ -34,7 +34,7 @@ pub const APP_RESOLUTION_CAP: usize = 192;
 /// Elastic constants for a material preset.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct MaterialPreset {
-    /// Preset id.
+    /// Preset id (a [`vcad_ir::materials::LIBRARY`] id).
     pub id: &'static str,
     /// Display name.
     pub label: &'static str,
@@ -46,97 +46,62 @@ pub struct MaterialPreset {
     pub yield_strength_mpa: f64,
 }
 
-/// Built-in presets (room-temperature handbook values).
-pub const MATERIALS: &[MaterialPreset] = &[
-    MaterialPreset {
-        id: "aluminum_6061",
-        label: "Aluminum 6061-T6",
-        youngs_modulus_mpa: 69_000.0,
-        poisson: 0.33,
-        yield_strength_mpa: 276.0,
-    },
-    MaterialPreset {
-        id: "steel",
-        label: "Steel (1018)",
-        youngs_modulus_mpa: 205_000.0,
-        poisson: 0.29,
-        yield_strength_mpa: 370.0,
-    },
-    MaterialPreset {
-        id: "stainless_304",
-        label: "Stainless 304",
-        youngs_modulus_mpa: 193_000.0,
-        poisson: 0.29,
-        yield_strength_mpa: 215.0,
-    },
-    MaterialPreset {
-        id: "titanium",
-        label: "Titanium Ti-6Al-4V",
-        youngs_modulus_mpa: 114_000.0,
-        poisson: 0.34,
-        yield_strength_mpa: 880.0,
-    },
-    MaterialPreset {
-        id: "brass",
-        label: "Brass C360",
-        youngs_modulus_mpa: 97_000.0,
-        poisson: 0.31,
-        yield_strength_mpa: 310.0,
-    },
-    MaterialPreset {
-        id: "pla",
-        label: "PLA",
-        youngs_modulus_mpa: 3_500.0,
-        poisson: 0.36,
-        yield_strength_mpa: 50.0,
-    },
-    MaterialPreset {
-        id: "petg",
-        label: "PETG",
-        youngs_modulus_mpa: 2_100.0,
-        poisson: 0.38,
-        yield_strength_mpa: 50.0,
-    },
-    MaterialPreset {
-        id: "abs",
-        label: "ABS",
-        youngs_modulus_mpa: 2_200.0,
-        poisson: 0.35,
-        yield_strength_mpa: 40.0,
-    },
-    MaterialPreset {
-        id: "nylon",
-        label: "Nylon PA12",
-        youngs_modulus_mpa: 1_700.0,
-        poisson: 0.39,
-        yield_strength_mpa: 48.0,
-    },
+/// Library ids offered as presets, in picker order.
+const PRESET_IDS: &[&str] = &[
+    "aluminum_6061",
+    "steel",
+    "stainless_304",
+    "titanium",
+    "brass",
+    "copper",
+    "pla",
+    "petg",
+    "abs",
+    "nylon",
+    "fr4",
 ];
 
-/// Best preset for a document material key (`"aluminum"`, `"pla_red"`, …).
-pub fn preset_for(material: &str) -> &'static MaterialPreset {
-    let m = material.to_ascii_lowercase();
-    let pick = |id: &str| MATERIALS.iter().find(|p| p.id == id);
-    let found = if m.contains("stainless") {
-        pick("stainless_304")
-    } else if m.contains("steel") || m.contains("iron") {
-        pick("steel")
-    } else if m.contains("titan") {
-        pick("titanium")
-    } else if m.contains("brass") || m.contains("bronze") {
-        pick("brass")
-    } else if m.contains("petg") {
-        pick("petg")
-    } else if m.contains("pla") {
-        pick("pla")
-    } else if m.contains("abs") {
-        pick("abs")
-    } else if m.contains("nylon") || m.contains("pa12") {
-        pick("nylon")
-    } else {
-        None
-    };
-    found.unwrap_or(&MATERIALS[0])
+/// Built-in presets: the shared material library's structural entries
+/// (every one has E, ν and a yield strength).
+pub fn presets() -> Vec<MaterialPreset> {
+    PRESET_IDS.iter().filter_map(|id| preset(id)).collect()
+}
+
+/// The preset with library id `id`.
+pub fn preset(id: &str) -> Option<MaterialPreset> {
+    let m = vcad_ir::materials::library_by_id(id)?;
+    Some(MaterialPreset {
+        id: m.id,
+        label: m.label,
+        youngs_modulus_mpa: m.youngs_modulus_mpa?,
+        poisson: m.poisson?,
+        yield_strength_mpa: m.yield_strength_mpa?,
+    })
+}
+
+/// Elastic constants of document material `key`, through
+/// [`vcad_ir::materials::resolve_material`] (document properties, then the
+/// library). E and ν are required — an unknown material is an error, never a
+/// silent aluminium. A missing yield strength only drops the safety factor
+/// (noted).
+fn material_from_doc(
+    doc: &vcad_ir::Document,
+    key: &str,
+    notes: &mut Vec<String>,
+) -> Result<(String, f64, f64, Option<f64>), String> {
+    let hint = "pick a material preset, or set the material's physical properties";
+    let m = vcad_ir::materials::resolve_material(doc, key).map_err(|e| format!("{e} ({hint})"))?;
+    let e = m
+        .youngs_modulus_mpa()
+        .map_err(|e| format!("{e} ({hint})"))?;
+    let nu = m.poisson().map_err(|e| format!("{e} ({hint})"))?;
+    let ys = m.yield_strength_mpa().ok();
+    if ys.is_none() {
+        notes.push(format!(
+            "material `{key}` has no yield strength — no safety factor"
+        ));
+    }
+    Ok((m.label.clone(), e, nu, ys))
 }
 
 /// Where a load or support acts: picked faces and/or an explicit box.
@@ -446,6 +411,7 @@ pub fn prepare(
         )
     })?;
     let pname = part_name(doc, roots[req.part_index], req.part_index);
+    let mut notes = Vec::new();
     let (label, e, nu, ys) = match (&req.elastic, &req.material) {
         (Some(m), _) => (
             "custom".to_string(),
@@ -454,10 +420,12 @@ pub fn prepare(
             m.yield_strength_mpa,
         ),
         (None, Some(id)) => {
-            let p = MATERIALS
-                .iter()
-                .find(|p| p.id == id)
-                .ok_or_else(|| format!("unknown material preset `{id}`"))?;
+            let p = preset(id).ok_or_else(|| {
+                format!(
+                    "unknown material preset `{id}` (known: {})",
+                    PRESET_IDS.join(", ")
+                )
+            })?;
             (
                 p.label.to_string(),
                 p.youngs_modulus_mpa,
@@ -465,15 +433,7 @@ pub fn prepare(
                 Some(p.yield_strength_mpa),
             )
         }
-        (None, None) => {
-            let p = preset_for(&part.material);
-            (
-                p.label.to_string(),
-                p.youngs_modulus_mpa,
-                p.poisson,
-                Some(p.yield_strength_mpa),
-            )
-        }
+        (None, None) => material_from_doc(doc, &part.material, &mut notes)?,
     };
     let finest = req
         .resolution
@@ -484,7 +444,6 @@ pub fn prepare(
             "finest lattice level would be {finest} cells (cap {APP_RESOLUTION_CAP}) — lower resolution or levels"
         ));
     }
-    let mut notes = Vec::new();
     let mut boxes = None;
     let solid = part.solid.as_ref();
     let need_solid = || solid.ok_or("part has no solid — use explicit regions".to_string());
@@ -728,7 +687,7 @@ pub extern "C" fn vcad_fea_solve_progress(
 /// yield_strength_mpa}]`).
 #[no_mangle]
 pub extern "C" fn vcad_fea_materials() -> *mut c_char {
-    json_out(&MATERIALS)
+    json_out(&presets())
 }
 
 #[cfg(test)]
@@ -783,7 +742,7 @@ mod tests {
         mesh.indices = m.indices;
         let spec = fea::spec::FeaSpec {
             resolution: 20,
-            youngs_modulus_mpa: 69_000.0,
+            youngs_modulus_mpa: 68_900.0,
             poisson: 0.33,
             yield_strength_mpa: Some(276.0),
             loads: vec![fea::spec::Load {
@@ -820,7 +779,7 @@ mod tests {
         // δ = F·L³ / (3·E·I) ≈ 0.580 mm. Linear tets on a lattice are stiff and
         // smear the root concentration, so the band is generous.
         let sigma = 100.0 * 100.0 * 5.0 / (10.0 * 1000.0 / 12.0);
-        let delta = 100.0 * 1e6 / (3.0 * 69_000.0 * (10.0 * 1000.0 / 12.0));
+        let delta = 100.0 * 1e6 / (3.0 * 68_900.0 * (10.0 * 1000.0 / 12.0));
         eprintln!(
             "cantilever: σ_max {:.2} MPa (beam {:.1}), δ_max {:.4} mm (beam {:.4}), converged {}",
             app.max_von_mises_mpa, sigma, app.max_displacement_mm, delta, app.converged
@@ -885,6 +844,61 @@ mod tests {
         assert!(out["max_von_mises_mpa"].as_f64().unwrap() > 0.0);
         assert_eq!(out["material"], "Aluminum 6061-T6");
         let mats: Value = serde_json::from_str(&take(vcad_fea_materials())).unwrap();
-        assert!(mats.as_array().unwrap().len() >= 5);
+        let mats = mats.as_array().unwrap();
+        // every preset the picker offers is complete (Swift decodes yield as
+        // a non-optional Double) and the long-standing ids survive
+        assert_eq!(mats.len(), PRESET_IDS.len());
+        for m in mats {
+            assert!(m["yield_strength_mpa"].as_f64().is_some(), "{m}");
+        }
+        for id in [
+            "aluminum_6061",
+            "steel",
+            "stainless_304",
+            "titanium",
+            "brass",
+            "pla",
+            "petg",
+            "abs",
+            "nylon",
+        ] {
+            assert!(mats.iter().any(|m| m["id"] == id), "{id}");
+        }
+    }
+
+    #[test]
+    fn unknown_part_material_fails_closed() {
+        // Was: silently solved as aluminium.
+        let doc = vcad_loon::eval_vcad("[root [cube 100 10 10] \"unobtainium\"]", None).unwrap();
+        let req = cantilever_req(&doc);
+        let err = solve(&doc, &req).unwrap_err();
+        assert!(
+            err.contains("unobtainium") && err.contains("preset"),
+            "{err}"
+        );
+        // an explicit preset still solves it
+        let mut req = cantilever_req(&doc);
+        req.material = Some("steel".into());
+        assert_eq!(solve(&doc, &req).unwrap().material, "Steel (1018)");
+    }
+
+    #[test]
+    fn document_physical_properties_reach_the_solver() {
+        let mut doc = bracket();
+        doc.materials.insert(
+            "aluminum".into(),
+            vcad_ir::MaterialDef {
+                name: "aluminum".into(),
+                physical: Some(vcad_ir::MaterialPhysical {
+                    youngs_modulus_mpa: Some(50_000.0),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        let (spec, _, _) = prepare(&doc, &cantilever_req(&doc)).unwrap();
+        assert_eq!(spec.youngs_modulus_mpa, 50_000.0);
+        assert_eq!(spec.poisson, 0.33, "ν from the library");
+        assert_eq!(spec.yield_strength_mpa, Some(276.0));
     }
 }

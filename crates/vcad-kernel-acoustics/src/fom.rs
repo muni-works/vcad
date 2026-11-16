@@ -99,6 +99,23 @@ pub fn driven_tuning_hz(
         r_mm: 0.0,
         z_mm: port.z0_mm - 1.0,
     };
+    driven_tuning_hz_at(cavity, nr, nz, probe, f_lo, f_hi, n)
+}
+
+/// [`driven_tuning_hz`] with an explicit probe point. Needed when the probe
+/// [`driven_tuning_hz`] picks (on axis just below the last segment) is not in
+/// the box air — e.g. an internal port, where that point is inside the port
+/// bore close to the mouth (near a pressure node of the Helmholtz mode).
+/// Put `probe` in the bulk box air.
+pub fn driven_tuning_hz_at(
+    cavity: &Cavity,
+    nr: usize,
+    nz: usize,
+    probe: Probe,
+    f_lo: f64,
+    f_hi: f64,
+    n: usize,
+) -> Option<f64> {
     let peaks = resonances(
         cavity,
         nr,

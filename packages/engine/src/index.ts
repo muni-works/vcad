@@ -794,6 +794,13 @@ export interface KernelModule {
   getSheetMetalMaterials?: () => string;
   /** Mallet-strike pipeline on a flat free-free bar → JSON. */
   simulateStrikeKernel?: (inputJson: string) => string;
+  /** Document → ported box → bass-reflex analysis (JSON in, JSON string out). */
+  simulateCavity?: (
+    docJson: string,
+    selectionJson: string,
+    optionsJson: string,
+    paramsJson: string,
+  ) => string;
   /** Note name ("C6", "F#4") → Hz. Throws on garbage. */
   noteToHz?: (note: string) => number;
   /** Built-in bend table → JSON `{id, rows}`. */
@@ -828,6 +835,12 @@ export interface KernelModule {
   ) => unknown;
   /** Charged-particle optics simulation (DeviceSpec/params/options JSON). */
   particleSimulate?: (
+    specJson: string,
+    paramsJson: string,
+    optionsJson: string,
+  ) => unknown;
+  /** 3D (non-axisymmetric) charged-particle optics (DeviceSpec3d JSON). */
+  particleSimulate3d?: (
     specJson: string,
     paramsJson: string,
     optionsJson: string,
@@ -921,6 +934,8 @@ export interface KernelModule {
     paramsJson: string,
     optionsJson: string,
   ) => unknown;
+  /** Raw instrument file → claims-ledger measurements (format/text/context JSON). */
+  importMeasurementFile?: (format: string, text: string, contextJson: string) => unknown;
   /** PcbBoard → AntennaSpec extraction (Document/AntennaExtraction JSON). */
   extractAntennaSpec?: (docJson: string, selectionJson: string) => unknown;
   /** Forward 2D FDTD photonics run (device spec/options JSON). */
@@ -1400,6 +1415,7 @@ export class Engine {
       nestSheetMetalParts: (wasmModule as Record<string, unknown>).nestSheetMetalParts as KernelModule["nestSheetMetalParts"],
       getSheetMetalMaterials: (wasmModule as Record<string, unknown>).getSheetMetalMaterials as KernelModule["getSheetMetalMaterials"],
       simulateStrikeKernel: (wasmModule as Record<string, unknown>).simulateStrikeKernel as KernelModule["simulateStrikeKernel"],
+      simulateCavity: (wasmModule as Record<string, unknown>).simulateCavity as KernelModule["simulateCavity"],
       noteToHz: (wasmModule as Record<string, unknown>).noteToHz as KernelModule["noteToHz"],
       getSheetMetalBendTable: (wasmModule as Record<string, unknown>).getSheetMetalBendTable as KernelModule["getSheetMetalBendTable"],
       getSheetMetalShopCatalog: (wasmModule as Record<string, unknown>).getSheetMetalShopCatalog as KernelModule["getSheetMetalShopCatalog"],
@@ -1409,6 +1425,7 @@ export class Engine {
       topologyOptimizeBox: (wasmModule as Record<string, unknown>).topologyOptimizeBox as KernelModule["topologyOptimizeBox"],
       topologyOptimizeMesh: (wasmModule as Record<string, unknown>).topologyOptimizeMesh as KernelModule["topologyOptimizeMesh"],
       particleSimulate: (wasmModule as Record<string, unknown>).particleSimulate as KernelModule["particleSimulate"],
+      particleSimulate3d: (wasmModule as Record<string, unknown>).particleSimulate3d as KernelModule["particleSimulate3d"],
       extractDeviceSpec: (wasmModule as Record<string, unknown>).extractDeviceSpec as KernelModule["extractDeviceSpec"],
       extractShieldSpec: (wasmModule as Record<string, unknown>).extractShieldSpec as KernelModule["extractShieldSpec"],
       extractAxisymMagSpec: (wasmModule as Record<string, unknown>).extractAxisymMagSpec as KernelModule["extractAxisymMagSpec"],
@@ -1433,6 +1450,7 @@ export class Engine {
       feaCheckShell: (wasmModule as Record<string, unknown>).feaCheckShell as KernelModule["feaCheckShell"],
       emSimulate: (wasmModule as Record<string, unknown>).emSimulate as KernelModule["emSimulate"],
       antennaAnalyze: (wasmModule as Record<string, unknown>).antennaAnalyze as KernelModule["antennaAnalyze"],
+      importMeasurementFile: (wasmModule as Record<string, unknown>).importMeasurementFile as KernelModule["importMeasurementFile"],
       extractAntennaSpec: (wasmModule as Record<string, unknown>).extractAntennaSpec as KernelModule["extractAntennaSpec"],
       photonicsSimulate: (wasmModule as Record<string, unknown>).photonicsSimulate as KernelModule["photonicsSimulate"],
       neutronicsSimulate: (wasmModule as Record<string, unknown>).neutronicsSimulate as KernelModule["neutronicsSimulate"],
@@ -1728,6 +1746,28 @@ export class Engine {
   }
 
   /**
+   * 3D charged-particle optics: solve a non-axisymmetric wire-electrode
+   * device (great-circle / lat-long globes, arbitrary circles, arcs,
+   * polylines) in a grounded sphere with the thin-wire BEM, trace a
+   * full-sphere deuteron ensemble, and return figures of merit plus the
+   * solver's surface-residual report. Inputs are JSON strings
+   * (DeviceSpec3d, named parameter bindings, options).
+   */
+  particleSimulate3d(
+    specJson: string,
+    paramsJson: string,
+    optionsJson: string,
+  ): unknown {
+    const fn = this.kernel.particleSimulate3d;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "particleSimulate3d is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(specJson, paramsJson, optionsJson);
+  }
+
+  /**
    * Multi-start gradient ascent over named device-spec parameters against
    * predicted D-D yield per ion. Inputs are JSON strings; see
    * `vcad-kernel-particle::electrode_opt` (`gradient: "fd" | "hybrid"`).
@@ -1979,6 +2019,23 @@ export class Engine {
       );
     }
     return fn(specJson, paramsJson, optionsJson);
+  }
+
+  /**
+   * Reduce a raw instrument file to measurements for the claims ledger:
+   * `touchstone_s1p` (NanoVNA → antenna), `rew_impedance` (REW → port tuning
+   * f_b), `thermocouple_csv` (log → one temperature). Fail-closed parsers
+   * live in the kernel crates; see `importMeasurementFile` in
+   * `vcad-kernel-wasm`.
+   */
+  importMeasurementFile(format: string, text: string, contextJson: string): unknown {
+    const fn = this.kernel.importMeasurementFile;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "importMeasurementFile is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(format, text, contextJson);
   }
 
   /**
@@ -2563,6 +2620,28 @@ export class Engine {
       chain,
       this.kernel as unknown as Parameters<typeof runSheetMetalSequence>[1],
     );
+  }
+
+  /**
+   * Extract a ported (bass-reflex) box from a document's evaluated solids
+   * (`vcad_eval::cavity_extract`) and analyze it
+   * (`vcad_kernel_acoustics::ported::analyze`): lumped band, field-solved
+   * tuning, port volume-velocity curve, `vcad.acoustics-claims/1` claims.
+   * Returns `{extracted, report}`. Fail-closed on non-axisymmetric geometry.
+   */
+  simulateCavity(
+    docJson: string,
+    selectionJson: string,
+    optionsJson: string,
+    paramsJson: string,
+  ): unknown {
+    const fn = this.kernel.simulateCavity;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "simulateCavity is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return JSON.parse(fn(docJson, selectionJson, optionsJson, paramsJson));
   }
 
   /**

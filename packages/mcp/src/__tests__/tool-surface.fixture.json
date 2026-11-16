@@ -2542,123 +2542,393 @@
   {
     "name": "simulate_charged_particles",
     "title": "Simulate Charged Particles",
-    "description": "Charged-particle optics for axisymmetric electrode devices (fusors, magnetically shielded-grid IEC, ring traps): solve the electrostatic field + ring-coil magnetics, trace a deuteron ensemble (Boris integrator, Bosch-Hale D-D yield weighting), and report interception fraction (the cathode-ammeter observable), recirculation, predicted neutron rate, fusion power, Q, and distance-to-Lawson — as data plus `vcad.particle-claims/1` and unified-receipt claims. Predictions carry basis \"predicted\" and roll up Provisional until bench-measured. Vacuum single-particle optics: no space charge, no CX chain (optional single-generation CX via `options.cx_sigma_m2`); neutron rates are floors. Deterministic. Cost scales with grid × particles × passes — defaults run in seconds.",
+    "description": "Charged-particle optics for axisymmetric electrode devices (fusors, magnetically shielded-grid IEC, ring traps): solve the electrostatic field + ring-coil magnetics, trace a deuteron ensemble (Boris integrator, Bosch-Hale D-D yield weighting), and report interception fraction (the cathode-ammeter observable), recirculation, predicted neutron rate, fusion power, Q, and distance-to-Lawson — as data plus `vcad.particle-claims/1` and unified-receipt claims. Predictions carry basis \"predicted\" and roll up Provisional until bench-measured. Vacuum single-particle optics: no space charge, no CX chain (optional single-generation CX via `options.cx_sigma_m2`); neutron rates are floors. Deterministic. Cost scales with grid × particles × passes — defaults run in seconds. A 3D spec (`chamber` + `electrodes`) models real globe grids (great circles, latitude + meridian wires) in a grounded sphere via the thin-wire BEM and a full-sphere launch; it returns stats, neutron-rate floor/ceiling and the solver's surface-residual report, without receipt claims (3D claims are not wired yet).",
     "inputSchema": {
       "type": "object",
       "properties": {
         "spec": {
-          "type": "object",
-          "required": [
-            "chamber_radius_mm",
-            "chamber_half_height_mm",
-            "rings"
-          ],
-          "description": "Axisymmetric device: grounded cylindrical chamber + biased (optionally current-carrying) wire rings, coaxial with Z. Units mm / volts / ampere-turns. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error). Pass this OR `document_id` + `extract`.",
-          "properties": {
-            "chamber_radius_mm": {
-              "description": "A number, or the name of a named parameter bound via `parameters`.",
-              "anyOf": [
-                {
-                  "type": "number"
+          "description": "An axisymmetric ring device (`rings`) or a 3D wire device (`chamber` + `electrodes`). Pass this OR `document_id` + `extract` (extraction is axisymmetric only).",
+          "anyOf": [
+            {
+              "type": "object",
+              "required": [
+                "chamber_radius_mm",
+                "chamber_half_height_mm",
+                "rings"
+              ],
+              "description": "Axisymmetric device: grounded cylindrical chamber + biased (optionally current-carrying) wire rings, coaxial with Z. Units mm / volts / ampere-turns. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error).",
+              "properties": {
+                "chamber_radius_mm": {
+                  "description": "A number, or the name of a named parameter bound via `parameters`.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
                 },
-                {
-                  "type": "string"
-                }
-              ]
-            },
-            "chamber_half_height_mm": {
-              "description": "A number, or the name of a named parameter bound via `parameters`.",
-              "anyOf": [
-                {
-                  "type": "number"
+                "chamber_half_height_mm": {
+                  "description": "A number, or the name of a named parameter bound via `parameters`.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
                 },
-                {
-                  "type": "string"
-                }
-              ]
-            },
-            "wall_potential_v": {
-              "description": "Chamber wall potential, volts. Default 0 (grounded).",
-              "anyOf": [
-                {
-                  "type": "number"
+                "wall_potential_v": {
+                  "description": "Chamber wall potential, volts. Default 0 (grounded).",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
                 },
-                {
-                  "type": "string"
+                "rings": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "ring_radius_mm",
+                      "z_mm",
+                      "wire_radius_mm",
+                      "potential_v"
+                    ],
+                    "properties": {
+                      "ring_radius_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "z_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "wire_radius_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "potential_v": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "ampere_turns": {
+                        "description": "Circulating current, ampere-turns (+ = CCW viewed from +Z). Default 0. This is the magnetic grid-shielding knob.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      }
+                    }
+                  }
                 }
-              ]
+              }
             },
-            "rings": {
-              "type": "array",
-              "minItems": 1,
-              "items": {
-                "type": "object",
-                "required": [
-                  "ring_radius_mm",
-                  "z_mm",
-                  "wire_radius_mm",
-                  "potential_v"
-                ],
-                "properties": {
-                  "ring_radius_mm": {
-                    "description": "A number, or the name of a named parameter bound via `parameters`.",
-                    "anyOf": [
-                      {
+            {
+              "type": "object",
+              "required": [
+                "chamber",
+                "electrodes"
+              ],
+              "description": "Non-axisymmetric (3D) device: thin-wire electrodes along arbitrary paths inside a grounded sphere — real fusor globe grids (great circles, latitude + meridian), stalks, rings. Solved by the thin-wire boundary-element method; refused (fail-closed) if the wire model's surface-residual gates fail. Units mm / volts. Unknown fields are errors. Any numeric field may be a parameter name bound in `parameters`.",
+              "properties": {
+                "chamber": {
+                  "type": "object",
+                  "required": [
+                    "kind"
+                  ],
+                  "description": "`{\"kind\":\"sphere\",\"radius_mm\":…}` (grounded sphere about the origin) or `{\"kind\":\"unbounded\"}`.",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "sphere",
+                        "unbounded"
+                      ]
+                    },
+                    "radius_mm": {
+                      "description": "A number, or the name of a named parameter bound via `parameters`.",
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    }
+                  }
+                },
+                "wall_potential_v": {
+                  "description": "A number, or the name of a named parameter bound via `parameters`.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "electrodes": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "wire_radius_mm",
+                      "potential_v"
+                    ],
+                    "description": "One of: great_circle_globe {grid_radius_mm, layout (\"orthogonal3\"|\"cuboctahedral4\"|\"icosidodecahedral6\") | normals: [[x,y,z],…]}; lat_long_globe {grid_radius_mm, n_lat, n_long}; circle {center_mm, normal, radius_mm, ampere_turns?}; arc {center_mm, normal, start_mm, sweep_deg}; polyline {points_mm, closed?}; ring {ring_radius_mm, z_mm, ampere_turns?}. All take wire_radius_mm and potential_v.",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "great_circle_globe",
+                          "lat_long_globe",
+                          "circle",
+                          "arc",
+                          "polyline",
+                          "ring"
+                        ]
+                      },
+                      "wire_radius_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "potential_v": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "grid_radius_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "layout": {
+                        "type": "string",
+                        "enum": [
+                          "orthogonal3",
+                          "cuboctahedral4",
+                          "icosidodecahedral6"
+                        ]
+                      },
+                      "normals": {
+                        "type": "array",
+                        "items": {
+                          "type": "array",
+                          "minItems": 3,
+                          "maxItems": 3,
+                          "items": {
+                            "description": "A number, or the name of a named parameter bound via `parameters`.",
+                            "anyOf": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      "n_lat": {
                         "type": "number"
                       },
-                      {
-                        "type": "string"
-                      }
-                    ]
-                  },
-                  "z_mm": {
-                    "description": "A number, or the name of a named parameter bound via `parameters`.",
-                    "anyOf": [
-                      {
+                      "n_long": {
                         "type": "number"
                       },
-                      {
-                        "type": "string"
-                      }
-                    ]
-                  },
-                  "wire_radius_mm": {
-                    "description": "A number, or the name of a named parameter bound via `parameters`.",
-                    "anyOf": [
-                      {
-                        "type": "number"
+                      "center_mm": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                          "description": "A number, or the name of a named parameter bound via `parameters`.",
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        }
                       },
-                      {
-                        "type": "string"
-                      }
-                    ]
-                  },
-                  "potential_v": {
-                    "description": "A number, or the name of a named parameter bound via `parameters`.",
-                    "anyOf": [
-                      {
-                        "type": "number"
+                      "normal": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                          "description": "A number, or the name of a named parameter bound via `parameters`.",
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        }
                       },
-                      {
-                        "type": "string"
-                      }
-                    ]
-                  },
-                  "ampere_turns": {
-                    "description": "Circulating current, ampere-turns (+ = CCW viewed from +Z). Default 0. This is the magnetic grid-shielding knob.",
-                    "anyOf": [
-                      {
-                        "type": "number"
+                      "start_mm": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                          "description": "A number, or the name of a named parameter bound via `parameters`.",
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        }
                       },
-                      {
-                        "type": "string"
+                      "radius_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "sweep_deg": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "points_mm": {
+                        "type": "array",
+                        "items": {
+                          "type": "array",
+                          "minItems": 3,
+                          "maxItems": 3,
+                          "items": {
+                            "description": "A number, or the name of a named parameter bound via `parameters`.",
+                            "anyOf": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      "closed": {
+                        "type": "boolean"
+                      },
+                      "ring_radius_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "z_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "ampere_turns": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
                       }
-                    ]
+                    }
                   }
                 }
               }
             }
-          }
+          ]
         },
         "document_id": {
           "type": "string",
@@ -2748,6 +3018,10 @@
             "cx_sigma_m2": {
               "type": "number",
               "description": "Enable charge-exchange channels with this constant cross section, m² (order 1e-19 for D⁺ on D₂ in the keV band). Omitted = CX off; the neutron-rate claim then reports the beam-on-background floor."
+            },
+            "step_mm": {
+              "type": "number",
+              "description": "3D specs only: tracer step length, mm. Default a quarter of the thinnest wire radius, capped at 0.25 mm. (nr/nz apply to 2D specs only.)"
             }
           }
         }
@@ -6101,6 +6375,101 @@
     }
   },
   {
+    "name": "simulate_cavity",
+    "title": "Simulate Ported Box (Cavity Acoustics)",
+    "description": "Bass-reflex (ported box) tuning from a session document: measures the enclosure and enclosed-air parts' BRep, reconstructs the exact axisymmetric field geometry (box, port bore, an INTERNAL port's tube wall as a rigid annular obstacle — no equivalent-volume mapping), and returns the lumped tuning band (V_box = the air part's volume; mount-aware end corrections), the field-solved tuning f_b, the port volume-velocity curve, and `vcad.acoustics-claims/1` predicted claims. Fail-closed: any face that is not a plane perpendicular to the axis or a coaxial cylinder (box enclosure, off-axis port, fillet) errors naming the face; a gap between air and wall, a side vent, or a second port errors naming where. Model: linear, lossless (Q optimistic), rigid walls and piston, pressure-release port mouth (field f_b reads above the lumped nominal). Predictions carry basis \"predicted\" and roll up Provisional until a mic + swept-sine measurement binds them. Seconds at ~1 mm grid.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "description": "Session document holding the speaker."
+        },
+        "enclosure": {
+          "type": "string",
+          "description": "The enclosure walls part: name or part id (or, when no part has that name, the material of exactly one part)."
+        },
+        "air": {
+          "type": "string",
+          "description": "The enclosed box air part (cavity minus the port tube): name, part id, or unique material such as \"air\". Its volume is the lumped V_box."
+        },
+        "driver_radius": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "Driver piston radius: mm, or the name of a document parameter (stays bound, so `parameters` overrides re-price it). Default: the driver cutout radius."
+        },
+        "temp_c": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "Air temperature °C, or a parameter name. Default 20."
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          },
+          "description": "Overrides for the document's parameter values when resolving named spec fields (driver_radius / temp_c). Geometry is measured from the document as evaluated — change geometry with set_parameters."
+        },
+        "options": {
+          "type": "object",
+          "description": "Solver knobs (all optional).",
+          "properties": {
+            "grid_mm": {
+              "type": "number",
+              "description": "Node spacing mm (default: half the smallest feature, so every port wall holds a node; a coarser grid that drops a wall fails closed)."
+            },
+            "search_hz": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "Tuning search band [lo, hi] Hz (default 0.5·f_min … 2·f_max)."
+            },
+            "curve_hz": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "Port velocity curve band [lo, hi] Hz (default: search band)."
+            },
+            "curve_points": {
+              "type": "number",
+              "description": "Port velocity curve samples (default 60)."
+            },
+            "sweep_points": {
+              "type": "number",
+              "description": "Coarse tuning-sweep samples before refinement (default 48)."
+            }
+          }
+        }
+      },
+      "required": [
+        "document_id",
+        "enclosure",
+        "air"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
     "name": "simulate_lattice_gauge",
     "title": "Simulate Lattice Gauge Theory",
     "description": "Lattice gauge theory Monte Carlo (quenched Wilson action, SU(2) or SU(3)): confinement from first principles on a laptop-scale 4D lattice. Returns the average plaquette, Wilson loops, Creutz ratios + static potential + Cornell fit (the string tension sigma*a^2), the Polyakov deconfinement order parameter, and optionally viewport-ready field snapshots (action density, Polyakov field, cooled topological charge) and the static-pair flux-tube profile — every observable a binned-jackknife mean +- error, bit-deterministic per seed. Fail-closed: starved statistics refuse to mint vcad.qcd-claims/1 (raise measurement_sweeps); logs require loops resolved >= 3-sigma from zero. Honesty bounds ride every claim: quenched (no dynamical fermions), lattice units at fixed coupling (no continuum limit) — model physics, not physical-QCD numbers. Cost ~ volume x sweeps (x6 for SU(3)); 6^4 with 150 sweeps runs in seconds. Recipes: confinement demo = Su2, [6,6,6,4], beta 2.2, flux_tube {separation 2}; deconfinement = [6,6,6,2], measure_polyakov, beta scan across ~1.88 (Su2) / ~5.1 (Su3); instantons = Su2, beta 2.4, snapshot_cooling 30.",
@@ -7040,7 +7409,7 @@
   {
     "name": "record_measurement",
     "title": "Record Measurement",
-    "description": "Record as-built measurements (caliper dimensions, scale mass) of a printed part against its predict_print snapshot and emit the receipt-vs-reality delta report: per-feature deltas with tolerances, per-axis scale factors (X/Y/Z shrinkage), hole undersize and thin-wall flow offsets, and concrete printer-profile suggestions. Accepts the prediction inline (from a saved prediction.json) when the session's warm instance is gone. Partial measurements are fine.",
+    "description": "Record as-built measurements (caliper dimensions, scale mass) of a printed part against its predict_print snapshot and emit the receipt-vs-reality delta report: per-feature deltas with tolerances, per-axis scale factors (X/Y/Z shrinkage), hole undersize and thin-wall flow offsets, and concrete printer-profile suggestions. Accepts the prediction inline (from a saved prediction.json) when the session's warm instance is gone. Partial measurements are fine. Claim mode (pass `claim_id` or `claim_measurements` instead of `measurements`): bind a bench reading — value, unit, uncertainty, instrument, band, raw-file hash — to a frozen solver prediction on the document's claims ledger (see attach_claims); compared fail-closed with the domain's own band rule, returning the Holds / Violated / Unmeasured / Stale scorecard. A claim_id not on the ledger is an error.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -7070,11 +7439,59 @@
         "prediction": {
           "type": "object",
           "description": "A full PrintPrediction (as returned by predict_print) to measure against. Overrides the cached prediction — use this to replay a prediction.json after the session's warm instance recycled."
+        },
+        "claim_id": {
+          "type": "string",
+          "description": "Claim mode: the ledger claim this reading measures (e.g. thermal.t_max_c, antenna.resonant_frequency). With claim_id, `value`, `uncertainty`, `instrument`, and `band` are required; `measurements` is not used. A claim_id that is not on the document's claims ledger is an error."
+        },
+        "subject": {
+          "type": "string",
+          "description": "Claim mode: disambiguates a claim attached under several subjects/labels."
+        },
+        "value": {
+          "type": "number",
+          "description": "Claim mode: measured value, in the prediction's unit."
+        },
+        "unit": {
+          "type": "string",
+          "description": "Claim mode: unit (must match the prediction's unit)."
+        },
+        "uncertainty": {
+          "type": "number",
+          "description": "Claim mode: one-sigma absolute uncertainty, same unit."
+        },
+        "instrument": {
+          "type": "string",
+          "description": "Claim mode: what measured it, and how."
+        },
+        "band": {
+          "type": "object",
+          "description": "Acceptance band the measurer commits to. Thermal / EM / acoustics / flow use {band_factor} (holds when measured ∈ [p/band − u, p·band + u]); antenna / tolerance use {half_width} (holds when |measured − p| ≤ half_width + u [+ the prediction's own u]). Required — vcad never invents one.",
+          "properties": {
+            "band_factor": {
+              "type": "number"
+            },
+            "half_width": {
+              "type": "number"
+            }
+          }
+        },
+        "raw_sha256": {
+          "type": "string",
+          "description": "Claim mode: SHA-256 of the raw instrument file, for the audit trail."
+        },
+        "claim_measurements": {
+          "type": "array",
+          "description": "Claim mode, several at once (all-or-nothing): [{claim_id, value, uncertainty, instrument, band, unit?, subject?, raw_sha256?}].",
+          "items": {
+            "type": "object"
+          }
+        },
+        "replace": {
+          "type": "boolean",
+          "description": "Claim mode: overwrite an existing measurement."
         }
-      },
-      "required": [
-        "measurements"
-      ]
+      }
     },
     "annotations": {
       "readOnlyHint": false
@@ -12053,7 +12470,7 @@
   {
     "name": "build_receipt",
     "title": "Build Receipt",
-    "description": "Build a re-runnable verification Receipt for the session PCB: a content hash, the DRC backend, a canonicalized DRC summary, and per-part provenance — a durable proof that round-trips and re-verifies later as Holds / Stale / Violated. Persisted clearance specs (check_clearance with a label) join the unified ledger as mech.clearance claims — a CAD-only session with specs gets a mechanical receipt, no PCB needed. Renders as an audit ledger in the inline viewer.",
+    "description": "Build a re-runnable verification Receipt for the session PCB: a content hash, the DRC backend, a canonicalized DRC summary, and per-part provenance — a durable proof that round-trips and re-verifies later as Holds / Stale / Violated. Persisted clearance specs (check_clearance with a label) join the unified ledger as mech.clearance claims — a CAD-only session with specs gets a mechanical receipt, no PCB needed. Every claims-ledger row (solver predictions frozen with attach_claims, measurements bound with record_measurement / import_measurement) lands in the same receipt — unmeasured predictions Provisional, measured Holds pass / Violated fail, Stale unverifiable — with a `scorecard` (markdown + JSON). Renders as an audit ledger in the inline viewer.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -12084,6 +12501,9 @@
         "receipt": {
           "type": "object"
         },
+        "scorecard": {
+          "type": "object"
+        },
         "document_id": {
           "type": "string"
         }
@@ -12105,7 +12525,7 @@
   {
     "name": "verify_receipt",
     "title": "Verify Receipt",
-    "description": "Re-run a prior receipt (from build_receipt) against the session's current document and return the verdict — Holds (document unchanged, claims clean), Stale (document changed but the claims still hold), or Violated. The receipt is bound to the document state it was built on, so any edit — even one its claims don't measure — reads Stale, and `document_state` says why. Covers the PCB Receipt (board hash + DRC diff) and mech.clearance claims (re-measured against current geometry); worst verdict wins. Powers the ledger's Re-run button.",
+    "description": "Re-run a prior receipt (from build_receipt) against the session's current document and return the verdict — Holds (document unchanged, claims clean), Stale (document changed but the claims still hold), or Violated. The receipt is bound to the document state it was built on, so any edit — even one its claims don't measure — reads Stale, and `document_state` says why. Covers the PCB Receipt (board hash + DRC diff), mech.clearance claims (re-measured against current geometry), and claims-ledger rows (re-classified Holds / Violated / Unmeasured / Stale, returned as a `scorecard` table in receipt order); worst verdict wins. Powers the ledger's Re-run button.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -12138,6 +12558,140 @@
     },
     "_meta": {
       "openai/widgetAccessible": true
+    }
+  },
+  {
+    "name": "attach_claims",
+    "title": "Attach Solver Claims",
+    "description": "Freeze solver predictions onto the document's claims ledger (vcad.claims-ledger/1) so ONE receipt carries every domain: pass the result of solve_thermal, analyze_antenna, simulate_em, analyze_structure, beam_check, analyze_tolerance_stackup, simulate_flow, parameter_gradient — anything returning `receipt_claims` or a unified claim array (e.g. acoustics claims from vcad-kernel-acoustics, which has no MCP solver yet). Each claim keeps its oracle id/version and solver provenance; the numeric prediction, a prediction hash, and the design fingerprint are frozen. Predictions roll up Provisional, never Pass, until record_measurement / import_measurement binds hardware readings. Re-attaching a different value for a frozen claim is refused unless supersede:true (a measured row then reads Stale). Use `label` to attach two runs of one solver. build_receipt then includes every ledger row.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "description": "Session id of the document that owns the ledger."
+        },
+        "claims": {
+          "description": "A solver result (with receipt_claims / claim_set), an array of results, or an array of unified receipt claims."
+        },
+        "source_tool": {
+          "type": "string",
+          "description": "The tool that produced the claims (e.g. solve_thermal) — provenance."
+        },
+        "label": {
+          "type": "string",
+          "description": "Subject for claims that carry none, e.g. 'driver_coil' — namespaces repeat runs."
+        },
+        "supersede": {
+          "type": "boolean",
+          "description": "Replace already-frozen predictions (measured rows then read Stale)."
+        }
+      },
+      "required": [
+        "claims"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false
+    }
+  },
+  {
+    "name": "import_measurement",
+    "title": "Import Measurement",
+    "description": "Import a raw instrument file and bind its readings to the document's frozen predictions (claims ledger), fail-closed. Formats: `touchstone_s1p` (NanoVNA one-port sweep → antenna s11/z_in/resonance/bandwidth claims, NanoVNA default tolerances, overridable via `tolerances`), `rew_impedance` (REW 'export impedance as text' → acoustics port tuning f_b = the |Z| saddle between the two peaks; needs `band`), `thermocouple_csv` (header row with a time column + a temperature column → steady-state mean of the last window, refused if still drifting; or reduce:'max' for a peak claim; needs `claim_id`, `band`, `instrument_uncertainty_c`). The raw file's SHA-256 is recorded with every reading. Returns the updated scorecard (Holds / Violated / Unmeasured / Stale per claim).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string"
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "touchstone_s1p",
+            "rew_impedance",
+            "thermocouple_csv"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "description": "The instrument file's contents."
+        },
+        "path": {
+          "type": "string",
+          "description": "Or a path to it, relative to the server's working directory."
+        },
+        "file_name": {
+          "type": "string",
+          "description": "Name to record for an inline `text` file."
+        },
+        "claim_id": {
+          "type": "string",
+          "description": "Target claim (rew_impedance defaults to acoustics.tuning_hz; required for thermocouple_csv)."
+        },
+        "subject": {
+          "type": "string",
+          "description": "Disambiguates a claim attached under several labels."
+        },
+        "band": {
+          "type": "object",
+          "description": "Acceptance band the measurer commits to. Thermal / EM / acoustics / flow use {band_factor} (holds when measured ∈ [p/band − u, p·band + u]); antenna / tolerance use {half_width} (holds when |measured − p| ≤ half_width + u [+ the prediction's own u]). Required — vcad never invents one.",
+          "properties": {
+            "band_factor": {
+              "type": "number"
+            },
+            "half_width": {
+              "type": "number"
+            }
+          }
+        },
+        "uncertainty": {
+          "type": "number",
+          "description": "rew_impedance: extra one-sigma uncertainty, Hz (combined with the sweep grid)."
+        },
+        "instrument_uncertainty_c": {
+          "type": "number",
+          "description": "thermocouple_csv: probe + meter one-sigma uncertainty, °C."
+        },
+        "column": {
+          "type": "string",
+          "description": "thermocouple_csv: temperature column name when the header has several."
+        },
+        "reduce": {
+          "type": "string",
+          "enum": [
+            "steady",
+            "max"
+          ],
+          "description": "thermocouple_csv: steady-state mean (default) or peak."
+        },
+        "window_s": {
+          "type": "number",
+          "description": "thermocouple_csv: steady-state window, s (default last 10% of the log)."
+        },
+        "max_drift_c": {
+          "type": "number",
+          "description": "thermocouple_csv: allowed drift over the window, °C (default 0.5)."
+        },
+        "tolerances": {
+          "type": "object",
+          "description": "touchstone_s1p: {s11_db, freq_rel, z_ohm, bandwidth_rel} overriding the NanoVNA defaults (2 dB, 2%, 10 ohm, 25%)."
+        },
+        "instrument": {
+          "type": "string",
+          "description": "Instrument provenance override."
+        },
+        "replace": {
+          "type": "boolean",
+          "description": "Overwrite existing measurements."
+        }
+      },
+      "required": [
+        "format"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false
     }
   },
   {

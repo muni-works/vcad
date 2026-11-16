@@ -30,6 +30,7 @@ vcad-kernel-topo.workspace = true
 # Both are leaf crates (serde + vcad-receipt) and publish before vcad-eval.
 vcad-kernel-particle.workspace = true
 vcad-kernel-neutronics.workspace = true
+vcad-kernel-acoustics.workspace = true
 # AxisymSpec (sim_extract::em) and StackupSpec (sim_extract::tolerance):
 # leaf crates as well.
 vcad-kernel-em.workspace = true

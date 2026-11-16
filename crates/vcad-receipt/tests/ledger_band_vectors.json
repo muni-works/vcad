@@ -1,0 +1,16 @@
+{
+  "about": "Acceptance-band vectors shared by vcad-receipt::ledger (Rust) and packages/mcp claims-ledger (TypeScript). Both test suites assert every case; edit here, never in one language only.",
+  "cases": [
+    { "name": "factor inside", "band": { "kind": "factor", "band_factor": 1.25 }, "predicted": 60.0, "measured": 70.0, "uncertainty": 0.0, "holds": true },
+    { "name": "factor above", "band": { "kind": "factor", "band_factor": 1.25 }, "predicted": 60.0, "measured": 76.0, "uncertainty": 0.0, "holds": false },
+    { "name": "factor below", "band": { "kind": "factor", "band_factor": 1.25 }, "predicted": 60.0, "measured": 47.0, "uncertainty": 0.0, "holds": false },
+    { "name": "factor rescued by uncertainty", "band": { "kind": "factor", "band_factor": 1.25 }, "predicted": 60.0, "measured": 76.0, "uncertainty": 1.5, "holds": true },
+    { "name": "factor exact edge", "band": { "kind": "factor", "band_factor": 2.0 }, "predicted": 10.0, "measured": 20.0, "uncertainty": 0.0, "holds": true },
+    { "name": "factor negative prediction", "band": { "kind": "factor", "band_factor": 1.2 }, "predicted": -10.0, "measured": -11.0, "uncertainty": 0.0, "holds": true },
+    { "name": "factor 1 needs exact or uncertainty", "band": { "kind": "factor", "band_factor": 1.0 }, "predicted": 45.0, "measured": 45.5, "uncertainty": 0.25, "holds": false },
+    { "name": "absolute inside", "band": { "kind": "absolute", "half_width": 5.0e7 }, "predicted": 2.44e9, "measured": 2.47e9, "uncertainty": 0.0, "holds": true },
+    { "name": "absolute outside", "band": { "kind": "absolute", "half_width": 5.0e7 }, "predicted": 2.44e9, "measured": 2.31e9, "uncertainty": 0.0, "holds": false },
+    { "name": "absolute widened by both uncertainties", "band": { "kind": "absolute", "half_width": 0.02 }, "predicted": 0.12, "measured": 0.155, "uncertainty": 0.01, "prediction_uncertainty": 0.01, "holds": true },
+    { "name": "absolute zero width exact", "band": { "kind": "absolute", "half_width": 0.0 }, "predicted": 1.0, "measured": 1.0, "uncertainty": 0.0, "holds": true }
+  ]
+}
