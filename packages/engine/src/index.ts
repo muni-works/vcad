@@ -776,6 +776,8 @@ export interface KernelModule {
   ) => unknown;
   /** Ranked, trust-bounded sensitivity table for a set of parameters. */
   documentSensitivities?: (docJson: string, requestJson: string) => unknown;
+  /** Document-level optimizer over named parameters (trajectory + KKT). */
+  optimizeDocument?: (docJson: string, requestJson: string) => unknown;
   /** JSON-serialized parts manifest for the stdlib. */
   getPartsManifest?: () => string;
   /** Build a stdlib part's sub-document given path and params JSON. */
@@ -1171,6 +1173,111 @@ export interface SensitivityReport {
   claims: unknown[];
 }
 
+/** A quantity of interest: name + optional solid-part index. */
+export interface OptimizeQoiRef {
+  /** `volume`, `mass`, `centroid_x|y|z` (built-in seam QoIs). */
+  qoi: string;
+  part?: number;
+}
+
+/** How a QoI enters the objective. */
+export type OptimizeTermShape =
+  | "linear"
+  | { target: number }
+  | { hinge_below: number }
+  | { hinge_above: number };
+
+/** Request shape for {@link Engine.optimizeDocument} (mirrors `vcad_eval::optimize::OptimizeDocRequest`). */
+export interface OptimizeDocRequest {
+  parameters: Array<{ name: string; lo: number; hi: number }>;
+  objective: Array<OptimizeQoiRef & { weight?: number; shape?: OptimizeTermShape }>;
+  constraints?: Array<
+    | { expr: string; scale?: number }
+    | (OptimizeQoiRef & { op: "<=" | ">="; value: number })
+  >;
+  options?: Record<string, number | boolean>;
+}
+
+/** Route that produced one gradient component. */
+export type OptimizeProvenance =
+  | { route: "seam" }
+  | { route: "fd"; step: number; scheme: "central" | "forward" | "backward" }
+  | { route: "seam_fd"; step: number; scheme: "central" | "forward" | "backward" }
+  | { route: "adjoint" }
+  | { route: "linear" };
+
+/** One gradient component `∂q/∂θ_k` with its provenance. */
+export interface OptimizeGradComponent {
+  param: string;
+  value: number;
+  provenance: OptimizeProvenance;
+}
+
+/** One accepted iterate of {@link Engine.optimizeDocument}. */
+export interface OptimizeTrajectoryStep {
+  iter: number;
+  round: number;
+  theta: number[];
+  objective: number;
+  merit: number;
+  max_violation: number;
+  objective_gradient: OptimizeGradComponent[];
+  terms: Array<{
+    label: string;
+    qoi_value: number;
+    contribution: number;
+    gradient: OptimizeGradComponent[];
+  }>;
+  constraints: Array<{
+    label: string;
+    g: number;
+    multiplier: number;
+    gradient: OptimizeGradComponent[];
+  }>;
+  qois: Array<OptimizeQoiRef & { value: number; gradient: OptimizeGradComponent[] }>;
+  cost: {
+    wall_ms: number;
+    base_eval_ms: number;
+    document_evals: number;
+    plugin_evals: number;
+    reused_solids: number;
+  };
+}
+
+/** Result of {@link Engine.optimizeDocument}. */
+export interface OptimizeDocResult {
+  params: string[];
+  theta: number[];
+  objective: number;
+  trajectory: OptimizeTrajectoryStep[];
+  stop: "converged" | "max_rounds" | "stalled";
+  kkt: {
+    max_violation: number;
+    stationarity: number;
+    complementarity: number;
+    multipliers: number[];
+    active_bounds: Array<[string, string]>;
+    feasible: boolean;
+    satisfied: boolean;
+    kkt_tol: number;
+  };
+  seam_fd_check: Array<{
+    qoi: string;
+    param: string;
+    seam: number;
+    fd: number;
+    step: number;
+    rel_error: number;
+  }>;
+  /** Parameter vectors sampled with gradients. */
+  samples: number;
+  /** Line-search trials sampled for their value only. */
+  value_samples: number;
+  document_evals: number;
+  plugin_evals: number;
+  wall_ms: number;
+}
+
 /** Request shape for {@link Engine.documentSensitivities}. */
 export interface SensitivityRequest {
   /** Parameters to differentiate. Omit for every named parameter. */
@@ -1400,6 +1507,7 @@ export class Engine {
       evalVcadSourceParametric: (wasmModule as Record<string, unknown>).evalVcadSourceParametric as KernelModule["evalVcadSourceParametric"],
       documentParameterGradient: (wasmModule as Record<string, unknown>).documentParameterGradient as KernelModule["documentParameterGradient"],
       documentSensitivities: (wasmModule as Record<string, unknown>).documentSensitivities as KernelModule["documentSensitivities"],
+      optimizeDocument: (wasmModule as Record<string, unknown>).optimizeDocument as KernelModule["optimizeDocument"],
       getPartsManifest: (wasmModule as Record<string, unknown>).getPartsManifest as KernelModule["getPartsManifest"],
       buildPart: (wasmModule as Record<string, unknown>).buildPart as KernelModule["buildPart"],
       evaluateSheetMetalChain: (wasmModule as Record<string, unknown>).evaluateSheetMetalChain as KernelModule["evaluateSheetMetalChain"],
@@ -1522,6 +1630,24 @@ export class Engine {
       JSON.stringify(doc),
       JSON.stringify(request),
     ) as SensitivityReport;
+  }
+
+  /**
+   * Optimize named document parameters: minimize a weighted sum of QoIs
+   * subject to parameter-expression and QoI constraints, by augmented
+   * Lagrangian over projected L-BFGS. Returns the optimum, a KKT report and
+   * the full trajectory, every gradient component labeled with the route
+   * that produced it (`seam`, `fd`, `adjoint`, `linear`). The browser kernel
+   * carries the built-in seam QoIs only (volume, mass, centroid).
+   */
+  optimizeDocument(doc: Document, request: OptimizeDocRequest): OptimizeDocResult {
+    const fn = this.kernel.optimizeDocument;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "kernel WASM is missing optimizeDocument — rebuild @vcad/kernel-wasm",
+      );
+    }
+    return fn(JSON.stringify(doc), JSON.stringify(request)) as OptimizeDocResult;
   }
 
   /**

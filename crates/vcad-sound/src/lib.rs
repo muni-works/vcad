@@ -32,6 +32,8 @@ use vcad_ir::Document;
 use vcad_kernel_fea::modal::{modal_analysis, ModalResult, ModalSpec};
 use vcad_kernel_tessellate::TriangleMesh;
 
+pub mod optimize;
+
 /// Elastic constants for a part, read through
 /// [`vcad_ir::materials::resolve_material`].
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -328,6 +330,31 @@ pub fn part_modes_mesh(
     positions: &[f32],
     indices: &[u32],
 ) -> Result<PartModes, SoundError> {
+    part_modes_mesh_pinned(doc, req, positions, indices, None)
+}
+
+/// The solver discretization [`part_modes_mesh`] would pick for this mesh:
+/// `(resolution, max pitch per axis in mm)`.
+pub fn modal_discretization(
+    positions: &[f32],
+    indices: &[u32],
+    quality: Quality,
+) -> (usize, [f64; 3]) {
+    pitch_for(&tri_mesh(positions, indices), quality)
+}
+
+/// [`part_modes_mesh`] with the discretization pinned (from
+/// [`modal_discretization`] at some reference geometry) instead of re-derived
+/// from this mesh. Finite differences of a frequency need this: re-deriving
+/// the pitch at every probe makes the cell size jump with the geometry, and
+/// the jump swamps the derivative.
+pub fn part_modes_mesh_pinned(
+    doc: &Document,
+    req: &ModesRequest,
+    positions: &[f32],
+    indices: &[u32],
+    pinned: Option<(usize, [f64; 3])>,
+) -> Result<PartModes, SoundError> {
     let t0 = std::time::Instant::now();
     let (material, material_note) = match req.material.as_deref() {
         Some(k) => with_fallback(resolve_sound_material(doc, k)),
@@ -335,7 +362,7 @@ pub fn part_modes_mesh(
     };
     let material_known = material_note.is_none();
     let mesh = tri_mesh(positions, indices);
-    let (resolution, pitch) = pitch_for(&mesh, req.quality);
+    let (resolution, pitch) = pinned.unwrap_or_else(|| pitch_for(&mesh, req.quality));
     let spec = ModalSpec {
         resolution,
         max_pitch_mm: Some(pitch),

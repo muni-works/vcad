@@ -24,6 +24,7 @@ vcad-kernel-text.workspace = true
 vcad-kernel-tessellate.workspace = true
 vcad-kernel-diff.workspace = true
 vcad-kernel-adjoint.workspace = true
+tang-optim.workspace = true
 vcad-kernel-geom.workspace = true
 vcad-kernel-topo.workspace = true
 # Solver schemas the sim_extract module emits (DeviceSpec / ShieldSpec).

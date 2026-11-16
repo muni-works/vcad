@@ -171,6 +171,7 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
   },
   parameter_gradient: { title: "Parameter Gradient", annotations: RO },
   sensitivity: { title: "Sensitivity", annotations: RO },
+  optimize_parameters: { title: "Optimize Parameters", annotations: RO },
 
   // ── Design constraints (document-level geometric solver) ───────────────
   add_constraint: { title: "Add Constraint", annotations: RW },
