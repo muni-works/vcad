@@ -90,7 +90,8 @@ fn pair_is_analytic(a: &dyn Surface, b: &dyn Surface) -> bool {
             };
             match (
                 cyl.as_any().downcast_ref::<CylinderSurface>(),
-                sph.as_any().downcast_ref::<vcad_kernel_geom::SphereSurface>(),
+                sph.as_any()
+                    .downcast_ref::<vcad_kernel_geom::SphereSurface>(),
             ) {
                 (Some(c), Some(s)) => crate::ssi::cylinder_sphere_coaxial(c, s),
                 _ => false,

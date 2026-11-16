@@ -281,7 +281,10 @@ impl Arrangement {
                 for v in [a, b] {
                     if !cdt.gid.contains(&v) {
                         let p = add(&mut cdt, v, 0);
-                        note("interior point on the triangle boundary", cdt.insert_interior(p))?;
+                        note(
+                            "interior point on the triangle boundary",
+                            cdt.insert_interior(p),
+                        )?;
                     }
                 }
             }
@@ -451,7 +454,8 @@ impl Cdt {
                     if x > y || self.fixed.contains(&Self::key(x, y)) {
                         continue;
                     }
-                    let (Some((_, o1)), Some((_, o2))) = (self.with_edge(x, y), self.with_edge(y, x))
+                    let (Some((_, o1)), Some((_, o2))) =
+                        (self.with_edge(x, y), self.with_edge(y, x))
                     else {
                         continue;
                     };
@@ -807,9 +811,15 @@ pub fn conforming_csg(
             .collect();
         (!tris.is_empty() && oriented_closed(&tris)).then_some(tris)
     };
-    let tris_a = note("operand A is not a closed manifold", load(mesh_a, &mut original))?;
+    let tris_a = note(
+        "operand A is not a closed manifold",
+        load(mesh_a, &mut original),
+    )?;
     let first_b = original.len();
-    let tris_b = note("operand B is not a closed manifold", load(mesh_b, &mut original))?;
+    let tris_b = note(
+        "operand B is not a closed manifold",
+        load(mesh_b, &mut original),
+    )?;
     if original.iter().flatten().any(|c| !c.is_finite()) {
         return None;
     }
@@ -922,7 +932,10 @@ pub fn conforming_csg(
     let tris = if std::env::var_os("VCAD_CONFORM_NO_CLEAN").is_some() {
         out
     } else {
-        note("slivers could not be collapsed", clean(&stored, &out, &is_new))?
+        note(
+            "slivers could not be collapsed",
+            clean(&stored, &out, &is_new),
+        )?
     };
 
     // Whatever still shares a position is one vertex. Two sheets left face
@@ -1032,7 +1045,10 @@ mod tests {
     #[test]
     fn cylinder_through_sphere() {
         let a = tessellate_brep(&make_sphere(10.0, 32), 32);
-        let b = shifted(&tessellate_brep(&make_cylinder(3.0, 40.0, 32), 32), [0.7, 0.3, -20.0]);
+        let b = shifted(
+            &tessellate_brep(&make_cylinder(3.0, 40.0, 32), 32),
+            [0.7, 0.3, -20.0],
+        );
         let dif = conforming_csg(&a, &b, BooleanOp::Difference).expect("difference");
         assert!(closed(&dif));
         let removed = volume(&a) - volume(&dif);

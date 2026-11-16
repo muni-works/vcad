@@ -109,7 +109,11 @@ fn edge_census(mesh: &TriangleMesh) -> (usize, usize, usize) {
             if a == b {
                 continue;
             }
-            let (e, fwd) = if a < b { ((a, b), true) } else { ((b, a), false) };
+            let (e, fwd) = if a < b {
+                ((a, b), true)
+            } else {
+                ((b, a), false)
+            };
             adj.entry(e).or_default().push((ti, fwd));
         }
     }

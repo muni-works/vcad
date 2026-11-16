@@ -1413,9 +1413,8 @@ pub(crate) fn brep_boolean(
                 // the sphere is on such a face.
                 let on_face = |solid: &BRepSolid, fid: FaceId, p: &Point3| {
                     let face = &solid.topology.faces[fid];
-                    let whole_sphere = face.inner_loops.is_empty()
-                        && split::is_spherical_face(solid, fid)
-                        && {
+                    let whole_sphere =
+                        face.inner_loops.is_empty() && split::is_spherical_face(solid, fid) && {
                             let mut seen: Vec<Point3> = Vec::new();
                             for he in solid.topology.loop_half_edges(face.outer_loop) {
                                 let v = solid.topology.vertices

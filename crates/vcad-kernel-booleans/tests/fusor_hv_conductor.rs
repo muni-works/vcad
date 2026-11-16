@@ -96,7 +96,11 @@ fn edge_census(mesh: &TriangleMesh) -> (usize, usize, usize) {
             if a == b {
                 continue;
             }
-            let (e, fwd) = if a < b { ((a, b), true) } else { ((b, a), false) };
+            let (e, fwd) = if a < b {
+                ((a, b), true)
+            } else {
+                ((b, a), false)
+            };
             adj.entry(e).or_default().push((ti, fwd));
         }
     }
@@ -155,7 +159,10 @@ fn check(
                 b.geometry.surfaces[f.surface_index].surface_type(),
                 f.orientation,
                 outer.len(),
-                f.inner_loops.iter().map(|&l| pts(l).len()).collect::<Vec<_>>(),
+                f.inner_loops
+                    .iter()
+                    .map(|&l| pts(l).len())
+                    .collect::<Vec<_>>(),
                 zs.iter().cloned().fold(f64::INFINITY, f64::min),
                 zs.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
             );
@@ -234,9 +241,27 @@ fn rod_through_ball() {
         let core = PI * 2.56 * 2.0 * h + 2.0 * cap(8.0, h);
         let (rod_v, ball_v) = (PI * 2.56 * 40.0, 4.0 / 3.0 * PI * 512.0);
         for (label, op, a, b, truth) in [
-            ("rod ∪ ball", BooleanOp::Union, &rod, &ball, rod_v + ball_v - core),
-            ("ball − rod", BooleanOp::Difference, &ball, &rod, ball_v - core),
-            ("rod − ball", BooleanOp::Difference, &rod, &ball, rod_v - core),
+            (
+                "rod ∪ ball",
+                BooleanOp::Union,
+                &rod,
+                &ball,
+                rod_v + ball_v - core,
+            ),
+            (
+                "ball − rod",
+                BooleanOp::Difference,
+                &ball,
+                &rod,
+                ball_v - core,
+            ),
+            (
+                "rod − ball",
+                BooleanOp::Difference,
+                &rod,
+                &ball,
+                rod_v - core,
+            ),
             ("rod ∩ ball", BooleanOp::Intersection, &rod, &ball, core),
         ] {
             let (result, report) = boolean_op_reported(a, b, op, segments).expect("boolean");
