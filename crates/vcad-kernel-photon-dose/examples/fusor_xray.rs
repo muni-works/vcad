@@ -105,6 +105,23 @@ fn main() {
         println!();
     }
 
+    // The wall is not automatically safe at 40 kV: thickness sweep.
+    println!("=== wall thickness sweep, −40 kV, 10 mA, H*(10) at 1 m from the wall ===");
+    for t_mm in [1.65, 2.0, 3.0, 4.0, 6.0] {
+        let mut spec = chamber(40.0, WINDOWS[0].1);
+        spec.wall.thickness_mm = t_mm.into();
+        let ev = evaluate_chamber(&spec, &p).unwrap();
+        let r = ev.reports.iter().find(|r| r.label == "wall-1m").unwrap();
+        println!(
+            "    {t_mm:>4} mm SS304  {:.3e} ± {:.2}%  [{:.2e} – {:.2e}] µSv/h",
+            r.h10_usv_h.mean,
+            r.h10_usv_h.rse * 100.0,
+            r.h10_low(),
+            r.h10_high()
+        );
+    }
+    println!();
+
     let t = ThickTarget::new(40.0, 1.0, materials::ss304()).unwrap();
     let s = t.spectrum(10.0, 120).unwrap();
     println!(
