@@ -223,6 +223,44 @@ struct Image {
     q: f64,
 }
 
+/// Owned segment-capsule geometry for hit tests and near-wire distance
+/// queries (shared with tracers via `Arc`, so a tracer's collision
+/// geometry borrows nothing).
+#[derive(Debug, Clone)]
+struct WireHits {
+    verts: Vec<[f64; 3]>,
+    /// (vertex a, vertex b, wire) per segment.
+    segs: Vec<(usize, usize, usize)>,
+    radii: Vec<f64>,
+    index: SegIndex,
+}
+
+impl WireHits {
+    fn wire_hit(&self, x: [f64; 3]) -> Option<usize> {
+        for &si in self.index.candidates(x) {
+            let (a, b, w) = self.segs[si as usize];
+            if point_segment_distance(x, self.verts[a], self.verts[b]) <= self.radii[w] {
+                return Some(w);
+            }
+        }
+        None
+    }
+
+    fn near_wire_ratio(&self, x: [f64; 3]) -> f64 {
+        let mut ratio = 1.0_f64;
+        for &si in self.index.candidates(x) {
+            let (a, b, w) = self.segs[si as usize];
+            let rad = self.radii[w];
+            let d = point_segment_distance(x, self.verts[a], self.verts[b]);
+            let r = (d - rad) / ((NEAR_WIRE_FACTOR - 1.0) * rad);
+            if r < ratio {
+                ratio = r;
+            }
+        }
+        ratio
+    }
+}
+
 /// Uniform-grid spatial index of segments for hit tests and near-wire
 /// distance queries.
 #[derive(Debug, Clone)]
@@ -340,7 +378,7 @@ pub struct WireField {
     chamber_radius_m: Option<f64>,
     wall_potential_v: f64,
     max_drop_v: f64,
-    index: SegIndex,
+    hits: std::sync::Arc<WireHits>,
     has_current: bool,
     residual: ResidualReport,
     min_wire_radius_m: f64,
@@ -539,6 +577,12 @@ pub fn solve(device: &Device3d, opts: &BemOptions) -> Result<WireField, BemError
 
     let radii: Vec<f64> = wires.iter().map(|w| w.radius).collect();
     let index = SegIndex::build(&verts, &segs, &radii, &wires);
+    let hits = std::sync::Arc::new(WireHits {
+        verts: verts.clone(),
+        segs: segs.iter().map(|s| (s.a, s.b, s.wire)).collect(),
+        radii: radii.clone(),
+        index,
+    });
     let extent_m = verts.iter().map(|v| norm(*v)).fold(0.0, f64::max)
         + radii.iter().copied().fold(0.0, f64::max);
     let mut field = WireField {
@@ -551,7 +595,7 @@ pub fn solve(device: &Device3d, opts: &BemOptions) -> Result<WireField, BemError
         chamber_radius_m,
         wall_potential_v: device.wall_potential_v,
         max_drop_v: device.max_potential_drop_v(),
-        index,
+        hits,
         residual: ResidualReport::default(),
         extent_m,
     };
@@ -765,31 +809,14 @@ impl WireField {
 
     /// Index of the wire whose conductor contains `x`, if any.
     pub fn wire_hit(&self, x: [f64; 3]) -> Option<usize> {
-        for &si in self.index.candidates(x) {
-            let s = &self.segs[si as usize];
-            let a = self.wires[s.wire].radius;
-            if point_segment_distance(x, self.verts[s.a], self.verts[s.b]) <= a {
-                return Some(s.wire);
-            }
-        }
-        None
+        self.hits.wire_hit(x)
     }
 
     /// Smallest `(d − a) / (6a)` over nearby wires (d = distance to the
     /// wire axis), or 1 when no wire is within [`NEAR_WIRE_FACTOR`] radii —
     /// the tracer's near-wire step-refinement ratio.
     pub fn near_wire_ratio(&self, x: [f64; 3]) -> f64 {
-        let mut ratio = 1.0_f64;
-        for &si in self.index.candidates(x) {
-            let s = &self.segs[si as usize];
-            let a = self.wires[s.wire].radius;
-            let d = point_segment_distance(x, self.verts[s.a], self.verts[s.b]);
-            let r = (d - a) / ((NEAR_WIRE_FACTOR - 1.0) * a);
-            if r < ratio {
-                ratio = r;
-            }
-        }
-        ratio
+        self.hits.near_wire_ratio(x)
     }
 
     /// Sample the exact-kernel potential on rings of points around every
@@ -825,7 +852,7 @@ impl WireField {
                     // conductor (crossings, inner side of bends); measure
                     // the clearance to other wires for junction zoning.
                     let mut buried = false;
-                    for &oj in self.index.candidates(p) {
+                    for &oj in self.hits.index.candidates(p) {
                         let oj = oj as usize;
                         if oj == si {
                             continue;
@@ -881,15 +908,15 @@ impl WireField {
 
 /// Collision geometry of a solved [`WireField`] for the Boris tracer:
 /// segment-capsule wire hits, spherical (or far-field) wall.
-#[derive(Debug, Clone, Copy)]
-pub struct WireGeometry<'a> {
-    field: &'a WireField,
+#[derive(Debug, Clone)]
+pub struct WireGeometry {
+    hits: std::sync::Arc<WireHits>,
     wall_radius_m: f64,
 }
 
-impl crate::trace::TraceGeometry for WireGeometry<'_> {
+impl crate::trace::TraceGeometry for WireGeometry {
     fn wire_hit(&self, p: [f64; 3]) -> Option<usize> {
-        self.field.wire_hit(p)
+        self.hits.wire_hit(p)
     }
 
     fn at_wall(&self, p: [f64; 3]) -> bool {
@@ -897,7 +924,7 @@ impl crate::trace::TraceGeometry for WireGeometry<'_> {
     }
 
     fn near_wire_ratio(&self, p: [f64; 3]) -> f64 {
-        self.field.near_wire_ratio(p)
+        self.hits.near_wire_ratio(p)
     }
 
     fn exit_distance(&self, p: [f64; 3], v: [f64; 3]) -> f64 {
@@ -954,7 +981,7 @@ impl WireField {
         crate::trace::Tracer::with_geometry(
             self,
             Box::new(WireGeometry {
-                field: self,
+                hits: self.hits.clone(),
                 wall_radius_m: wall,
             }),
             crate::trace::TraceScales {

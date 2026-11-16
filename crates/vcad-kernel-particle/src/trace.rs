@@ -292,7 +292,7 @@ impl TraceGeometry for AxisymGeometry {
 #[derive(Debug)]
 pub struct Tracer<'a> {
     fields: &'a dyn FieldSampler,
-    geometry: Box<dyn TraceGeometry + 'a>,
+    geometry: Box<dyn TraceGeometry>,
     /// (nr, nz, dr, dz, z_half) of the axisymmetric grid, for dwell
     /// deposits; `None` for tracers without one.
     grid: Option<(usize, usize, f64, f64, f64)>,
@@ -363,7 +363,7 @@ impl<'a> Tracer<'a> {
     /// [`Self::launch_ensemble_dwell`] returns an empty dwell vector.
     pub fn with_geometry(
         fields: &'a dyn FieldSampler,
-        geometry: Box<dyn TraceGeometry + 'a>,
+        geometry: Box<dyn TraceGeometry>,
         scales: TraceScales,
         opts: TraceOptions,
     ) -> Self {
