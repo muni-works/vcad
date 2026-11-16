@@ -611,18 +611,142 @@ impl Skyline {
     }
 }
 
+// ─── Exact preconditioner: fill-reducing sparse Cholesky (native) ──────────
+
+/// `A = L·Lᵀ` with an AMD fill-reducing ordering and a supernodal factor
+/// (faer), run sequentially.
+///
+/// RCM keeps the skyline profile small on compact parts, but a thin-walled
+/// shell with end caps defeats it: the cap disks put thousands of DOFs in
+/// one bandwidth. On the every-physics puck (84k DOFs, a 3 mm cylindrical
+/// shell) the profile is 107M entries, the skyline gave up, and the IC0
+/// fallback left LOBPCG crawling (relative residual still 7e-3 after 1000
+/// iterations against a 1e-5 target). The AMD factor of the same matrix
+/// fits easily, and even where the skyline fits (the 18k-DOF Preview mesh)
+/// it factors in 0.05 s instead of 1.2 s and solves ~15x faster.
+///
+/// Sequential on purpose: faer's rayon path was 2-4x *slower* than serial
+/// for these sizes on a loaded machine (fine-grained supernodes, threads
+/// fighting other work), and the block of residuals is already one call.
+#[cfg(not(target_arch = "wasm32"))]
+struct SparseLlt {
+    symbolic: faer::sparse::linalg::cholesky::SymbolicCholesky<usize>,
+    values: Vec<f64>,
+    n: usize,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SparseLlt {
+    fn factor(a: &CsrMatrix<f64>) -> Option<SparseLlt> {
+        use faer::dyn_stack::{MemBuffer, MemStack};
+        use faer::sparse::linalg::cholesky::factorize_symbolic_cholesky;
+        use faer::sparse::{SparseColMatRef, SymbolicSparseColMatRef};
+        let n = a.nrows;
+        if a.ncols != n || a.row_ptrs.len() != n + 1 || a.col_indices.len() != a.values.len() {
+            return None;
+        }
+        // `A` is symmetric, so its CSR arrays (rows sorted, duplicates
+        // merged by `CooMatrix::to_csr`) are a valid CSC view of `A`.
+        let sym =
+            SymbolicSparseColMatRef::new_checked(n, n, &a.row_ptrs, None, &a.col_indices);
+        let mat = SparseColMatRef::new(sym, &a.values);
+        let symbolic = factorize_symbolic_cholesky(
+            sym,
+            faer::Side::Lower,
+            Default::default(),
+            Default::default(),
+        )
+        .ok()?;
+        let mut values = Vec::new();
+        values.try_reserve_exact(symbolic.len_val()).ok()?;
+        values.resize(symbolic.len_val(), 0.0);
+        let par = faer::Par::Seq;
+        let mut buf = MemBuffer::try_new(
+            symbolic.factorize_numeric_llt_scratch::<f64>(par, Default::default()),
+        )
+        .ok()?;
+        symbolic
+            .factorize_numeric_llt::<f64>(
+                &mut values,
+                mat,
+                faer::Side::Lower,
+                Default::default(),
+                par,
+                MemStack::new(&mut buf),
+                Default::default(),
+            )
+            .ok()?;
+        Some(SparseLlt {
+            symbolic,
+            values,
+            n,
+        })
+    }
+
+    /// Solve `A z_j = r_j` for every column at once (one blocked pass).
+    fn solve_block(&self, rs: &[Vec<f64>]) -> Vec<Vec<f64>> {
+        use faer::dyn_stack::{MemBuffer, MemStack};
+        use faer::sparse::linalg::cholesky::LltRef;
+        let par = faer::Par::Seq;
+        let mut rhs = faer::Mat::<f64>::from_fn(self.n, rs.len(), |i, j| rs[j][i]);
+        let mut buf = MemBuffer::new(self.symbolic.solve_in_place_scratch::<f64>(rs.len(), par));
+        LltRef::new(&self.symbolic, &self.values).solve_in_place_with_conj(
+            faer::Conj::No,
+            rhs.as_mut(),
+            par,
+            MemStack::new(&mut buf),
+        );
+        (0..rs.len())
+            .map(|j| (0..self.n).map(|i| rhs[(i, j)]).collect())
+            .collect()
+    }
+}
+
 enum Precond {
     Exact(Skyline),
+    #[cfg(not(target_arch = "wasm32"))]
+    Sparse(SparseLlt),
     Ic0(tang_sparse::Ic0),
     Jacobi(tang_sparse::Jacobi),
 }
 
 impl Precond {
-    fn apply(&self, r: &[f64], z: &mut [f64]) {
+    /// The preconditioner for `A = K + σM`: (native) the fill-reducing
+    /// sparse factor, else the skyline factor when its RCM profile fits
+    /// (~400 MB), else incomplete Cholesky, else Jacobi. The exact factors
+    /// make LOBPCG converge in tens of iterations; IC0 can stall on thin
+    /// shells.
+    fn new(a: &CsrMatrix<f64>) -> Precond {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(f) = SparseLlt::factor(a) {
+            return Precond::Sparse(f);
+        }
+        if let Some(f) = Skyline::factor(a, 50_000_000) {
+            return Precond::Exact(f);
+        }
+        match tang_sparse::Ic0::new(a) {
+            Ok(p) => Precond::Ic0(p),
+            Err(_) => Precond::Jacobi(tang_sparse::Jacobi::from_csr(a)),
+        }
+    }
+
+    /// `z_j = T r_j` for every residual.
+    fn apply_block(&self, rs: &[Vec<f64>]) -> Vec<Vec<f64>> {
+        let each = |apply: &dyn Fn(&[f64], &mut [f64])| -> Vec<Vec<f64>> {
+            rs.iter()
+                .map(|r| {
+                    let mut z = vec![0.0; r.len()];
+                    apply(r, &mut z);
+                    z
+                })
+                .collect()
+        };
         match self {
-            Precond::Exact(p) => p.solve(r, z),
-            Precond::Ic0(p) => p.apply(r, z),
-            Precond::Jacobi(p) => p.apply(r, z),
+            Precond::Exact(p) => each(&|r, z| p.solve(r, z)),
+            #[cfg(not(target_arch = "wasm32"))]
+            Precond::Sparse(p) => p.solve_block(rs),
+            Precond::Ic0(p) => each(&|r, z| p.apply(r, z)),
+            Precond::Jacobi(p) => each(&|r, z| p.apply(r, z)),
         }
     }
 }
@@ -782,8 +906,9 @@ fn lobpcg(
         }
         let _ = nw;
         x = xnew;
-        // Residuals R = K x − λ M x, preconditioned.
-        let mut wn = Vec::with_capacity(block);
+        // Residuals R = K x − λ M x, preconditioned (all at once: a sparse
+        // factor solves the whole block in one pass).
+        let mut rs = Vec::with_capacity(block);
         worst = 0.0f64;
         for (jj, xv) in x.iter().enumerate() {
             let mut kx = vec![0.0; n];
@@ -799,10 +924,7 @@ fn lobpcg(
             if jj < want {
                 worst = worst.max(rel);
             }
-            let mut z = vec![0.0; n];
-            precond.apply(&r, &mut z);
-            project_out(&mut z, deflate, &mz);
-            wn.push(z);
+            rs.push(r);
         }
         if worst < tol {
             return Ok(Eigs {
@@ -810,6 +932,10 @@ fn lobpcg(
                 vecs: x,
                 iterations: it + 1,
             });
+        }
+        let mut wn = precond.apply_block(&rs);
+        for z in wn.iter_mut() {
+            project_out(z, deflate, &mz);
         }
         w = wn;
         p = pnew;
@@ -972,15 +1098,7 @@ pub fn modal_on_mesh(hex: &HexMesh, spec: &ModalSpec) -> Result<ModalResult, Mod
     // rigid-mode near-singularity can't zero a pivot in the factor.
     let sigma = 1e-4 * kd / md.max(1e-300);
     let a = shifted(&sys.k, &sys.m, sigma);
-    // Exact factor when the RCM profile fits (~400 MB budget); LOBPCG then
-    // converges in tens of iterations. Otherwise incomplete Cholesky.
-    let precond = match Skyline::factor(&a, 50_000_000) {
-        Some(f) => Precond::Exact(f),
-        None => match tang_sparse::Ic0::new(&a) {
-            Ok(p) => Precond::Ic0(p),
-            Err(_) => Precond::Jacobi(tang_sparse::Jacobi::from_csr(&a)),
-        },
-    };
+    let precond = Precond::new(&a);
     // λ_ref ≈ 1e-8 × the element-level ω² (diag K / diag M): ~10 Hz on a
     // millimetre-scale metal mesh.
     let eig = lobpcg(
