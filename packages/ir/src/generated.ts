@@ -4787,7 +4787,81 @@ emissiveMapU?: [number, number, number],
  * pixel (0,0), so on a face in the XY plane shown upright to a camera
  * looking along +Y, `u` runs along +X and `v` along −Y.
  */
-emissiveMapV?: [number, number, number], };
+emissiveMapV?: [number, number, number], 
+/**
+ * Physical properties the solvers read (elastic, thermal, dielectric,
+ * magnetic, electrical). Every field is optional: a property the
+ * document leaves out falls back to the [`materials`] library entry for
+ * this material, and a property neither supplies is a typed error from
+ * [`materials::resolve_material`] — never a silent default. Density is
+ * not repeated here; it is [`density`](Self::density) above.
+ */
+physical?: MaterialPhysical, };
+
+/**
+ * Physical properties of a material, as read by the solvers (FEA, modal,
+ * thermal, EM, antenna, acoustics). All optional and all SI-or-MPa, named
+ * with their unit so a number can't be read in the wrong one.
+ *
+ * JSON keys are camelCase (`youngsModulusMpa`); the snake_case spelling is
+ * accepted on input. A property left out here is filled from the library
+ * entry named by [`library`](Self::library), else matched from the material
+ * key / name — see [`materials::resolve_material`].
+ */
+export type MaterialPhysical = { 
+/**
+ * Library id to inherit unset properties from (`"pla"`, `"fr4"`,
+ * `"n42"`, …; see [`materials::LIBRARY`]). When set it must name a
+ * library entry — an unknown id is an error, not a fallback. When unset
+ * the library entry is matched from the material key, then its name.
+ */
+library?: string, 
+/**
+ * Young's modulus E, MPa.
+ */
+youngsModulusMpa?: number, 
+/**
+ * Poisson's ratio ν (dimensionless).
+ */
+poisson?: number, 
+/**
+ * Yield (or, for brittle materials, ultimate tensile) strength, MPa.
+ */
+yieldStrengthMpa?: number, 
+/**
+ * Thermal conductivity k, W/(m·K): a number (isotropic) or
+ * `{inPlane, throughPlane}` for a laminate such as FR4.
+ */
+thermalConductivityWMk?: ThermalConductivity, 
+/**
+ * Specific heat capacity c_p, J/(kg·K).
+ */
+specificHeatJKgk?: number, 
+/**
+ * Total hemispherical emissivity ε, 0..1 (radiation boundary).
+ */
+emissivity?: number, 
+/**
+ * Relative permittivity ε_r (dimensionless; 1 = vacuum).
+ */
+relativePermittivity?: number, 
+/**
+ * Dielectric loss tangent tan δ (dimensionless).
+ */
+lossTangent?: number, 
+/**
+ * Relative permeability μ_r (dimensionless; linear, unsaturated — for
+ * a permanent magnet, the recoil permeability).
+ */
+relativePermeability?: number, 
+/**
+ * Remanent flux density B_r of a permanent magnet, T.
+ */
+remanenceT?: number, 
+/**
+ * Electrical resistivity ρ_e, Ω·m.
+ */
+resistivityOhmM?: number, };
 
 /**
  * A molecular / atomic system: the optional `molecule` domain on a `Document`.
@@ -6364,6 +6438,24 @@ export type SymbolGraphic = { "type": "rect", x: number, y: number, width: numbe
  * Text alignment options for 2D text geometry.
  */
 export type TextAlignment = "left" | "center" | "right";
+
+/**
+ * Thermal conductivity, W/(m·K): isotropic, or split into in-plane and
+ * through-plane values for a laminate (FR4, a printed part's layers).
+ *
+ * The material does not know which way "through" points — the extractor
+ * that meshes the part supplies that axis (a board's normal, a print's
+ * build direction).
+ */
+export type ThermalConductivity = number | { 
+/**
+ * Conductivity along the plane, W/(m·K).
+ */
+inPlane: number, 
+/**
+ * Conductivity through the plane, W/(m·K).
+ */
+throughPlane: number, };
 
 /**
  * An exposed thermal pad under a no-lead package.

@@ -17,6 +17,7 @@ pub mod expr_parser;
 pub mod file_io;
 pub mod gear;
 pub mod instrument;
+pub mod materials;
 pub mod mates;
 pub mod molecule;
 pub mod parameters;
@@ -1898,6 +1899,177 @@ pub struct MaterialDef {
     )]
     #[cfg_attr(feature = "ts-rs", ts(rename = "emissiveMapV", optional))]
     pub emissive_map_v: Option<[f64; 3]>,
+    /// Physical properties the solvers read (elastic, thermal, dielectric,
+    /// magnetic, electrical). Every field is optional: a property the
+    /// document leaves out falls back to the [`materials`] library entry for
+    /// this material, and a property neither supplies is a typed error from
+    /// [`materials::resolve_material`] — never a silent default. Density is
+    /// not repeated here; it is [`density`](Self::density) above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub physical: Option<MaterialPhysical>,
+}
+
+/// Physical properties of a material, as read by the solvers (FEA, modal,
+/// thermal, EM, antenna, acoustics). All optional and all SI-or-MPa, named
+/// with their unit so a number can't be read in the wrong one.
+///
+/// JSON keys are camelCase (`youngsModulusMpa`); the snake_case spelling is
+/// accepted on input. A property left out here is filled from the library
+/// entry named by [`library`](Self::library), else matched from the material
+/// key / name — see [`materials::resolve_material`].
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-rs",
+    ts(export, export_to = "bindings/", rename_all = "camelCase")
+)]
+pub struct MaterialPhysical {
+    /// Library id to inherit unset properties from (`"pla"`, `"fr4"`,
+    /// `"n42"`, …; see [`materials::LIBRARY`]). When set it must name a
+    /// library entry — an unknown id is an error, not a fallback. When unset
+    /// the library entry is matched from the material key, then its name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub library: Option<String>,
+    /// Young's modulus E, MPa.
+    #[serde(
+        default,
+        alias = "youngs_modulus_mpa",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub youngs_modulus_mpa: Option<f64>,
+    /// Poisson's ratio ν (dimensionless).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub poisson: Option<f64>,
+    /// Yield (or, for brittle materials, ultimate tensile) strength, MPa.
+    #[serde(
+        default,
+        alias = "yield_strength_mpa",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub yield_strength_mpa: Option<f64>,
+    /// Thermal conductivity k, W/(m·K): a number (isotropic) or
+    /// `{inPlane, throughPlane}` for a laminate such as FR4.
+    #[serde(
+        default,
+        alias = "thermal_conductivity_w_mk",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub thermal_conductivity_w_mk: Option<ThermalConductivity>,
+    /// Specific heat capacity c_p, J/(kg·K).
+    #[serde(
+        default,
+        alias = "specific_heat_j_kgk",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub specific_heat_j_kgk: Option<f64>,
+    /// Total hemispherical emissivity ε, 0..1 (radiation boundary).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub emissivity: Option<f64>,
+    /// Relative permittivity ε_r (dimensionless; 1 = vacuum).
+    #[serde(
+        default,
+        alias = "relative_permittivity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub relative_permittivity: Option<f64>,
+    /// Dielectric loss tangent tan δ (dimensionless).
+    #[serde(
+        default,
+        alias = "loss_tangent",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub loss_tangent: Option<f64>,
+    /// Relative permeability μ_r (dimensionless; linear, unsaturated — for
+    /// a permanent magnet, the recoil permeability).
+    #[serde(
+        default,
+        alias = "relative_permeability",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub relative_permeability: Option<f64>,
+    /// Remanent flux density B_r of a permanent magnet, T.
+    #[serde(
+        default,
+        alias = "remanence_t",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub remanence_t: Option<f64>,
+    /// Electrical resistivity ρ_e, Ω·m.
+    #[serde(
+        default,
+        alias = "resistivity_ohm_m",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub resistivity_ohm_m: Option<f64>,
+}
+
+/// Thermal conductivity, W/(m·K): isotropic, or split into in-plane and
+/// through-plane values for a laminate (FR4, a printed part's layers).
+///
+/// The material does not know which way "through" points — the extractor
+/// that meshes the part supplies that axis (a board's normal, a print's
+/// build direction).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/", untagged))]
+pub enum ThermalConductivity {
+    /// Same in every direction.
+    Isotropic(f64),
+    /// Different along the plane and through it.
+    Anisotropic {
+        /// Conductivity along the plane, W/(m·K).
+        #[serde(rename = "inPlane", alias = "in_plane")]
+        #[cfg_attr(feature = "ts-rs", ts(rename = "inPlane"))]
+        in_plane: f64,
+        /// Conductivity through the plane, W/(m·K).
+        #[serde(rename = "throughPlane", alias = "through_plane")]
+        #[cfg_attr(feature = "ts-rs", ts(rename = "throughPlane"))]
+        through_plane: f64,
+    },
+}
+
+impl ThermalConductivity {
+    /// In-plane conductivity (the isotropic value when isotropic).
+    pub fn in_plane(&self) -> f64 {
+        match *self {
+            Self::Isotropic(k) => k,
+            Self::Anisotropic { in_plane, .. } => in_plane,
+        }
+    }
+    /// Through-plane conductivity (the isotropic value when isotropic).
+    pub fn through_plane(&self) -> f64 {
+        match *self {
+            Self::Isotropic(k) => k,
+            Self::Anisotropic { through_plane, .. } => through_plane,
+        }
+    }
+    /// A single scalar for an isotropic solver: the isotropic value, or the
+    /// geometric mean of in-plane and through-plane for a laminate. Callers
+    /// that care about the anisotropy should read the two components.
+    pub fn effective(&self) -> f64 {
+        match *self {
+            Self::Isotropic(k) => k,
+            Self::Anisotropic {
+                in_plane,
+                through_plane,
+            } => (in_plane * through_plane).sqrt(),
+        }
+    }
 }
 
 impl MaterialDef {
