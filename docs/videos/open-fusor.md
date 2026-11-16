@@ -234,7 +234,7 @@ count-rate plot.
    and their shelf life is limited (order close to the run).
 3. **D₂**: needs a gas-supplier account. some won't ship to residences.
 4. **turbo** (if used): used units need a bearing check.
-5. **regulatory answer from the state radiation program** (see §5). could
+5. **regulatory answer from the Ohio Department of Health** (see §5). could
    be the longest lead of all.
 
 ---
@@ -280,13 +280,18 @@ with radiation-safety credentials.
   upper bound (60 µSv/h) exceeds the hourly figure, so the shielded
   configuration + distance is mandatory, and the area around the machine
   has to be controlled during runs.
-- **who regulates a fusor.** in practice the **state radiation control
-  program**. most states regulate radiation-producing machines (x-ray
-  devices / accelerators) by registration, and a fusor accelerates ions
-  through a high potential in vacuum. whether Cam's state classifies it as
-  a registrable radiation-producing machine is **unverified, and is the
-  single most important call to make.** the authority is the state
-  radiation control program, not fusor.net.
+- **who regulates a fusor: Ohio.** Cam is in Ohio, which is an NRC
+  Agreement State, so the authority is the **Ohio Department of Health,
+  Bureau of Radiation Protection**, not the NRC and not fusor.net. Ohio
+  registers handlers of *radiation-generating equipment* under
+  [OAC 3701:1-38-03](https://codes.ohio.gov/ohio-administrative-code/rule-3701:1-38-03),
+  with operating rules in chapter
+  [3701:1-66](https://codes.ohio.gov/ohio-administrative-code/chapter-3701:1-66)
+  (amended 2024). a fusor accelerates ions through ~40 kV in vacuum and
+  emits x-rays, so it plausibly counts as radiation-generating equipment.
+  **whether ODH requires registration for a hobby fusor is unverified, and
+  is the single most important call to make.** ask ODH in writing before
+  first HV and keep the answer with the build log.
 - **NRC.** the NRC chose (2023) to regulate fusion machines under the
   byproduct-material framework, and published a proposed rule (10 CFR Part
   30, Federal Register 2026-02-26) aimed at **commercial** fusion and the
@@ -303,8 +308,9 @@ with radiation-safety credentials.
   zoning question.
 
 ### filming blockers (each one stops filming)
-- [ ] state radiation program answer in hand (registration done, or
-      written "not required")
+- [ ] Ohio Department of Health (Bureau of Radiation Protection) answer
+      in hand: registration under OAC 3701:1-38 done, or written "not
+      required"
 - [ ] x-ray survey at every voltage step, logged, with the camera position
       included. **no camera at a bare glass viewport above ~15 kV**
 - [ ] second trained person present for every HV-on minute (camera op ≠
