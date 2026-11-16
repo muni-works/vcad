@@ -220,7 +220,9 @@ pub fn run(
                 "Fewest axis-aligned setups that reach every reachable face: {}. \
                  The listed faces are the ones the first setup can't reach. \
                  Each extra setup is a re-fixture and a datum transfer; fold \
-                 features onto fewer sides to save them.",
+                 features onto fewer sides to save them. Reach is zero-radius \
+                 line of sight with no flute-length limit, so treat the count \
+                 as a lower bound.",
                 breakdown.join("; ")
             ))
             .with_faces(extra.clone())
@@ -411,7 +413,7 @@ struct WallReport {
 /// Thin walls, one per pair of opposing regions.
 ///
 /// Each sample casts inward along its normal. A hit counts as a wall only
-/// when it lands on a different, non-adjacent region whose surface faces
+/// when it lands on a different, non-adjacent face whose surface faces
 /// back (a wedge corner where two faces meet is not a wall), and only when
 /// it is thicker than `artifact` — anything thinner is sliver / folded
 /// boolean debris below the tessellation tolerance, not a wall. When both
@@ -463,7 +465,10 @@ fn thin_walls(
             let Some(rb) = regions.region(g) else {
                 continue;
             };
-            if ra == rb || regions.adjacency[ra].contains(&rb) {
+            // The same face, or one touching it, is a wedge corner, not a
+            // wall. Judged per face, not per region: a rib whose two sides
+            // join over a faceted round top is one region, and still thin.
+            if g == f || probe.adjacency[f].contains(&g) {
                 continue;
             }
             if probe.normals[hit.tri as usize].dot(s.normal) > -0.5 {

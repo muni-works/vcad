@@ -595,6 +595,102 @@ mod tests {
         assert_eq!(r.score, 100);
     }
 
+    /// Grouping, made visible: with only +Z allowed, everything +Z can't see
+    /// is an error — and it must come back per feature (bottom face, the
+    /// screw holes' walls, counterbores, floors), a couple of dozen issues,
+    /// not one per facet of the triangulated boolean output.
+    #[test]
+    fn cnc_clamp_top_only_reports_per_feature() {
+        let src = include_str!("../../vcad-kernel-dfm/tests/fixtures/cross_drilled_clamp.loon");
+        let pack = dfm::DefaultPacks::source(Process::Cnc3Axis).replace(
+            r#"axes = ["+z", "-z", "+x", "-x", "+y", "-y"]"#,
+            r#"axes = ["+z"]"#,
+        );
+        assert!(pack.contains(r#"axes = ["+z"]"#));
+        let r = check_document(
+            &doc(src),
+            &json!({ "process": "cnc_3axis", "rule_pack_toml": pack }),
+        )
+        .unwrap();
+        let bad = r
+            .issues
+            .iter()
+            .filter(|i| i.issue.rule == "cnc.tool_inaccessibility")
+            .count();
+        eprintln!("+Z-only unreachable features: {bad}");
+        assert!((5..=40).contains(&bad), "{bad} unreachable issues");
+        let ids: std::collections::HashSet<_> = r.issues.iter().map(|i| &i.issue.id).collect();
+        assert_eq!(ids.len(), r.issues.len());
+    }
+
+    fn has_cylinder(d: &Document) -> bool {
+        use vcad_kernel::vcad_kernel_geom::SurfaceKind;
+        evaluate(d).unwrap().parts.iter().any(|p| {
+            p.solid.as_ref().and_then(|s| s.as_brep()).is_some_and(|b| {
+                b.topology.faces.iter().any(|(_, f)| {
+                    b.geometry.surfaces[f.surface_index].surface_type() == SurfaceKind::Cylinder
+                })
+            })
+        })
+    }
+
+    /// A drilled Ø5.5 hole is not an internal corner; an R1 pocket corner is.
+    #[test]
+    fn cnc_drilled_hole_is_not_a_corner_radius_but_a_pocket_corner_is() {
+        let hole = doc(
+            "[root [difference [translate 20 15 -1 [cylinder 2.75 22]] [cube 40 30 20]] \"aluminum\"]",
+        );
+        assert!(has_cylinder(&hole), "control needs an analytic cylinder");
+        let r = check_document(&hole, &json!({ "process": "cnc_3axis" })).unwrap();
+        assert!(
+            r.issues
+                .iter()
+                .all(|i| i.issue.rule != "cnc.internal_radius_too_small"),
+            "{:#?}",
+            r.issues
+        );
+
+        let pocket = doc(
+            "[let c [fn [x y] [translate x y 5 [cylinder 1 10]]]]
+             [let p [union [union [translate 11 10 5 [cube 18 10 10]] [translate 10 11 5 [cube 20 8 10]]]
+                           [union [union [c 11 11] [c 29 11]] [union [c 11 19] [c 29 19]]]]]
+             [root [difference p [cube 40 30 10]] \"aluminum\"]",
+        );
+        assert!(
+            has_cylinder(&pocket),
+            "control needs analytic corner cylinders"
+        );
+        let r = check_document(&pocket, &json!({ "process": "cnc_3axis" })).unwrap();
+        let corners: Vec<_> = r
+            .issues
+            .iter()
+            .filter(|i| i.issue.rule == "cnc.internal_radius_too_small")
+            .collect();
+        assert!(!corners.is_empty() && corners.len() <= 4, "{:#?}", r.issues);
+        assert!(corners
+            .iter()
+            .all(|i| (i.issue.measured - 1.0).abs() < 1e-6));
+    }
+
+    /// A 0.6 mm rib with a rounded top: on faceted output both sides and
+    /// the round chain into one region, which must not hide the wall.
+    #[test]
+    fn cnc_thin_rib_with_round_top_is_flagged() {
+        let r = cnc("[let rib [union [translate 0 9.7 5 [cube 30 0.6 10]]
+                             [translate 0 10 15 [rotate 0 90 0 [cylinder 0.35 30]]]]]
+             [root [union rib [cube 30 20 5]] \"aluminum\"]");
+        let thin: Vec<_> = r
+            .issues
+            .iter()
+            .filter(|i| i.issue.rule == "cnc.thin_wall")
+            .collect();
+        assert!(!thin.is_empty(), "{:#?}", r.rule_results);
+        assert!(
+            thin.iter().any(|w| (w.issue.measured - 0.6).abs() < 0.02),
+            "{thin:#?}"
+        );
+    }
+
     /// Negative control: a blind hole at 45° has no axis-aligned line of
     /// sight to its floor or most of its wall — still an error, reported
     /// once per feature rather than per face.
@@ -638,6 +734,35 @@ mod tests {
         }
         let ids: std::collections::HashSet<_> = r.issues.iter().map(|i| &i.issue.id).collect();
         assert_eq!(ids.len(), r.issues.len());
+    }
+
+    /// `cargo test -p vcad-ffi --release --lib cnc_clamp_timing -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn cnc_clamp_timing() {
+        let src = include_str!("../../vcad-kernel-dfm/tests/fixtures/cross_drilled_clamp.loon");
+        let d = doc(src);
+        let t = std::time::Instant::now();
+        let scene = evaluate(&d).unwrap();
+        eprintln!("evaluate: {:?}", t.elapsed());
+        let b = scene.parts[0]
+            .solid
+            .as_ref()
+            .and_then(|s| s.as_brep())
+            .unwrap();
+        let pack = RulePack::default_for(Process::Cnc3Axis);
+        let mut best = std::time::Duration::MAX;
+        let mut n = 0;
+        for _ in 0..3 {
+            let t = std::time::Instant::now();
+            let rep = dfm::run_dfm(b, None, Process::Cnc3Axis, &pack);
+            best = best.min(t.elapsed());
+            n = rep.issues.len();
+        }
+        eprintln!(
+            "faces: {}  run_dfm (best of 3): {best:?}  issues: {n}",
+            b.topology.faces.len()
+        );
     }
 
     #[test]

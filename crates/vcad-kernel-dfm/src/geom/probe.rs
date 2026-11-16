@@ -65,7 +65,7 @@ pub struct Probe {
     pub tri_face: Vec<usize>,
     /// Triangle indices per kernel face index.
     pub face_tris: Vec<Vec<u32>>,
-    /// Kernel face index → kernel face indices sharing an edge with it.
+    /// Kernel face index → kernel face indices sharing a mesh vertex with it.
     pub adjacency: Vec<HashSet<usize>>,
     /// Largest bbox extent, mm (scale for epsilons).
     pub scale: f64,
@@ -156,9 +156,12 @@ impl Probe {
         }
 
         // Face adjacency from the mesh itself: two faces are neighbours when
-        // their triangles share an edge (welded at 1 µm). Works the same for
-        // analytic B-reps and for triangulated ones whose topology carries
-        // no useful twins.
+        // their triangles share a vertex (welded at 1 µm). Shared *edges*
+        // are not enough: boolean output is full of T-junctions, where one
+        // side's edge is split and the other's isn't, and edge matching left
+        // a triangulated part in ~17k disconnected "regions". Works the same
+        // for analytic B-reps and for triangulated ones whose topology
+        // carries no useful twins.
         let q = |p: &Point3| {
             (
                 (p.x * 1e3).round() as i64,
@@ -166,28 +169,25 @@ impl Probe {
                 (p.z * 1e3).round() as i64,
             )
         };
-        let mut edge_faces: HashMap<_, usize> = HashMap::with_capacity(tris.len() * 2);
-        let mut adjacency = vec![HashSet::new(); n_faces];
+        let mut vertex_faces: HashMap<_, Vec<usize>> = HashMap::with_capacity(tris.len());
         for (t, tri) in tris.iter().enumerate() {
             let f = tri_face[t];
             if f >= n_faces {
                 continue;
             }
-            for k in 0..3 {
-                let (u, w) = (q(&tri[k]), q(&tri[(k + 1) % 3]));
-                if u == w {
-                    continue;
+            for p in tri {
+                let fs = vertex_faces.entry(q(p)).or_default();
+                if !fs.contains(&f) {
+                    fs.push(f);
                 }
-                let key = if u < w { (u, w) } else { (w, u) };
-                match edge_faces.get(&key) {
-                    Some(&g) if g != f => {
-                        adjacency[f].insert(g);
-                        adjacency[g].insert(f);
-                    }
-                    Some(_) => {}
-                    None => {
-                        edge_faces.insert(key, f);
-                    }
+            }
+        }
+        let mut adjacency = vec![HashSet::new(); n_faces];
+        for fs in vertex_faces.values() {
+            for (i, &f) in fs.iter().enumerate() {
+                for &g in &fs[i + 1..] {
+                    adjacency[f].insert(g);
+                    adjacency[g].insert(f);
                 }
             }
         }
@@ -479,6 +479,20 @@ impl Regions {
                 (f.surface_index, plane)
             })
             .collect();
+        let mut cyls: Vec<Option<vcad_kernel_geom::CylinderSurface>> = brep
+            .topology
+            .faces
+            .iter()
+            .map(|(_, f)| {
+                brep.geometry
+                    .surfaces
+                    .get(f.surface_index)?
+                    .as_any()
+                    .downcast_ref::<vcad_kernel_geom::CylinderSurface>()
+                    .cloned()
+            })
+            .collect();
+        cyls.resize(n, None);
         let area: Vec<f64> = (0..n).map(|f| probe.face_area(f)).collect();
         let normal: Vec<Vec3> = (0..n)
             .map(|f| {
@@ -510,7 +524,8 @@ impl Regions {
                 if g <= f || sliver[f] || sliver[g] {
                     continue;
                 }
-                let same_surface = surf.get(f).map(|s| s.0) == surf.get(g).map(|s| s.0);
+                let same_surface = surf.get(f).map(|s| s.0) == surf.get(g).map(|s| s.0)
+                    || matches!((&cyls[f], &cyls[g]), (Some(a), Some(b)) if same_cylinder(a, b));
                 let smooth_planes = surf.get(f).is_some_and(|s| s.1)
                     && surf.get(g).is_some_and(|s| s.1)
                     && normal[f].dot(normal[g]) >= cos_smooth;
@@ -594,6 +609,27 @@ impl Regions {
     pub fn region(&self, face: usize) -> Option<usize> {
         self.of_face.get(face).copied().filter(|&r| r != usize::MAX)
     }
+}
+
+/// Whether faces `f` and `g` lie on the same cylinder (coaxial, equal
+/// radius) though they carry separate surface objects — a hole wall split
+/// into halves by a boolean.
+fn same_cylinder(
+    a: &vcad_kernel_geom::CylinderSurface,
+    b: &vcad_kernel_geom::CylinderSurface,
+) -> bool {
+    let tol = 1e-6 * a.radius.max(1.0);
+    let (aa, ba) = (a.axis.as_ref(), b.axis.as_ref());
+    let axis_a = Vec3::new(aa.x, aa.y, aa.z);
+    let axis_b = Vec3::new(ba.x, ba.y, ba.z);
+    let d = Vec3::new(
+        b.center.x - a.center.x,
+        b.center.y - a.center.y,
+        b.center.z - a.center.z,
+    );
+    (a.radius - b.radius).abs() <= tol
+        && axis_a.dot(axis_b).abs() > 1.0 - 1e-9
+        && (d - axis_a * d.dot(axis_a)).norm() <= tol
 }
 
 #[inline]

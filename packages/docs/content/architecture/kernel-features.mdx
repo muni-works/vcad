@@ -467,7 +467,7 @@ Cross-checks: with the undercut, holes and corrections off, the FEM reproduces t
 
 - **CAM** — `vcad-kernel-cam` generates 2.5D machining toolpaths with a G-code post-processor.
 - **Stock simulation** — `vcad-kernel-stocksim` verifies toolpaths against an octree-SDF stock model, acting as a fail-closed oracle for CAM output.
-- **DFM** — `vcad-kernel-dfm` checks designs against manufacturability rule packs (minimum wall thickness, drill standards, etc.) and suggests fixes.
+- **DFM** — `vcad-kernel-dfm` checks designs against manufacturability rule packs (minimum wall thickness, drill standards, etc.) and suggests fixes. Findings are grouped per feature, not per B-rep face, so a triangulated boolean result reads the same as an analytic one. For 3-axis CNC it plans setups: the fewest of ±X/±Y/±Z with line of sight to every face, reported once ("needs 2 setups: +Z, −Y"); only features no axis reaches are errors. Reach is zero-radius line of sight with no flute-length limit, so the count is a lower bound.
 - **Cost** — `vcad-kernel-cost` estimates manufacturing cost with a shared model used by quoting tools.
 
 ## One Kernel, Every Surface
