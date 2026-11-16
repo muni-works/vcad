@@ -184,8 +184,11 @@ const VOLUME_RTOL: f64 = 0.10;
 const OVERLAP_RTOL: f64 = 0.25;
 
 /// Relative tessellation slack on the larger operand's exact volume in
-/// [`overlap_prediction_agrees`].
-const OPERAND_RTOL: f64 = 0.02;
+/// [`overlap_prediction_agrees`]: the operand meshes and the result's are
+/// tessellated on different schedules. Kept small because on a thin-walled
+/// part this check is the only judge (the full-box grid always trips
+/// there), and the slack must stay below the volume of a skipped port.
+const OPERAND_RTOL: f64 = 0.005;
 
 /// Probes used when testing whether two operands share interior volume.
 const OVERLAP_PROBES: usize = 1728;
@@ -630,5 +633,72 @@ mod tests {
         let mesh_a = tessellate_brep(&a, SEGMENTS);
         let mesh_b = tessellate_brep(&b, SEGMENTS);
         assert!(!difference_removed_nothing(&mesh_a, &mesh_a, &mesh_b));
+    }
+
+    /// A thin-walled vessel with a port bore: the full-box probe grid
+    /// cannot resolve the 3.5 mm wall and misjudges every result, so the
+    /// overlap-based second opinion is the only judge. It must acquit the
+    /// correct cut and still condemn a skipped one.
+    #[test]
+    fn thin_wall_port_bore_is_judged_on_its_overlap() {
+        use crate::{boolean_op, BooleanOp};
+        use vcad_kernel_primitives::make_cylinder;
+
+        let moved = |mut c: BRepSolid, t: Transform| {
+            for (_, v) in &mut c.topology.vertices {
+                v.point = t.apply_point(&v.point);
+            }
+            c.geometry.surfaces = c
+                .geometry
+                .surfaces
+                .drain(..)
+                .map(|s| s.transform(&t))
+                .collect();
+            c
+        };
+        let z = |r: f64, z0: f64, z1: f64| {
+            moved(
+                make_cylinder(r, z1 - z0, SEGMENTS),
+                Transform::translation(0.0, 0.0, z0),
+            )
+        };
+        let y = |r: f64, y0: f64, y1: f64| {
+            moved(
+                make_cylinder(r, y1 - y0, SEGMENTS),
+                Transform::translation(0.0, y0, 0.0)
+                    .then(&Transform::rotation_x(-std::f64::consts::FRAC_PI_2)),
+            )
+        };
+        let cut = |a: &BRepSolid, b: &BRepSolid, op| {
+            boolean_op(a, b, op, SEGMENTS)
+                .expect("boolean")
+                .into_brep()
+                .expect("brep")
+        };
+        let shell = cut(
+            &z(79.5, -79.5, 79.5),
+            &y(22.5, 70.0, 112.0),
+            BooleanOp::Union,
+        );
+        let shell = cut(&shell, &z(76.0, -76.0, 76.0), BooleanOp::Difference);
+        let bore = y(19.0, 60.0, 120.0);
+        let bored = cut(&shell, &bore, BooleanOp::Difference);
+
+        let mesh_shell = tessellate_brep(&shell, SEGMENTS);
+        let mesh_bore = tessellate_brep(&bore, SEGMENTS);
+        let mesh_bored = tessellate_brep(&bored, SEGMENTS);
+        let op = BooleanOp::Difference;
+        assert!(
+            !volume_disagrees_grossly(&mesh_bored, &mesh_shell, &mesh_bore, op),
+            "the correct cut was condemned"
+        );
+        assert!(
+            volume_disagrees_grossly(&mesh_shell, &mesh_shell, &mesh_bore, op),
+            "a skipped bore (the minuend, verbatim) was acquitted"
+        );
+        assert!(
+            volume_disagrees_grossly(&mesh_bore, &mesh_shell, &mesh_bore, op),
+            "the tool returned in place of the result was acquitted"
+        );
     }
 }

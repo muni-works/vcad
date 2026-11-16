@@ -163,8 +163,8 @@ fn xcyl(r: f64, x0: f64, x1: f64) -> BRepSolid {
     transformed(make_cylinder(r, x1 - x0, SEGMENTS), &t)
 }
 
-/// Every twin / loop / face key reachable from a live half-edge must be
-/// live, and twins must be mutual.
+/// Every twin / loop / face key a live half-edge names must be live, and
+/// twins must be mutual.
 fn dangling_keys(b: &BRepSolid) -> Vec<String> {
     let t = &b.topology;
     let mut bad = Vec::new();
@@ -175,8 +175,7 @@ fn dangling_keys(b: &BRepSolid) -> Vec<String> {
                 Some(x) if x.twin != Some(he) => bad.push(format!("{he:?}: twin not mutual")),
                 _ => {}
             },
-            // An unpaired half-edge is not dangling: the kernel leaves
-            // some seam chains unpaired and welds them at tessellation.
+            // Unpaired half-edges are not checked here: only dead keys.
             None => {}
         }
         match h.loop_id {
@@ -190,7 +189,7 @@ fn dangling_keys(b: &BRepSolid) -> Vec<String> {
                     _ => {}
                 },
             },
-            // Nor is an orphan half-edge a split left behind in the arena.
+            // Nor are half-edges outside any loop.
             None => {}
         }
     }

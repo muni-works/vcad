@@ -126,6 +126,47 @@ fn census(verts: &[f32], idx: &[u32]) -> (usize, usize, usize, f64, usize) {
     (nonmanifold, folded, boundary, vol, slivers)
 }
 
+/// Triangles whose winding opposes their own vertex normals — what the
+/// viewport shades with, so a non-zero count is a black or inside-out facet.
+fn opposed_normals(verts: &[f32], normals: Option<&[f32]>, idx: &[u32]) -> usize {
+    let Some(normals) = normals.filter(|n| n.len() == verts.len()) else {
+        return 0;
+    };
+    let v = |a: &[f32], i: u32| {
+        let i = i as usize * 3;
+        [a[i] as f64, a[i + 1] as f64, a[i + 2] as f64]
+    };
+    idx.chunks(3)
+        .filter(|t| {
+            let (a, b, c) = (v(verts, t[0]), v(verts, t[1]), v(verts, t[2]));
+            let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let n = [
+                u[1] * w[2] - u[2] * w[1],
+                u[2] * w[0] - u[0] * w[2],
+                u[0] * w[1] - u[1] * w[0],
+            ];
+            let (na, nb, nc) = (v(normals, t[0]), v(normals, t[1]), v(normals, t[2]));
+            let dot: f64 = (0..3).map(|k| n[k] * (na[k] + nb[k] + nc[k])).sum();
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            // Zero-area triangles have no winding to oppose.
+            len > 1e-9 && dot < 0.0
+        })
+        .count()
+}
+
+/// Volume of a radius-`r` cylinder on a radial axis, from the surface of a
+/// perpendicular radius-`big` cylinder (axes meeting) out to distance `end`.
+fn radial_stub(r: f64, big: f64, end: f64) -> f64 {
+    let n = 20000;
+    (0..n)
+        .map(|i| {
+            let x = -r + (i as f64 + 0.5) * 2.0 * r / n as f64;
+            2.0 * (r * r - x * x).sqrt() * (end - (big * big - x * x).sqrt()) * 2.0 * r / n as f64
+        })
+        .sum()
+}
+
 #[test]
 fn fusor_chamber_and_flanges_are_clean_analytic() {
     let doc = vcad_loon::eval_vcad(SOURCE, None).expect("loon");
@@ -137,13 +178,21 @@ fn fusor_chamber_and_flanges_are_clean_analytic() {
     assert!(scene.failures.is_empty(), "{:?}", scene.failures);
     assert_eq!(scene.parts.len(), 3);
 
-    // Chamber volume: the can and its three nozzles, less the cavity and
-    // five bores, less the quadrant — pinned from the clean result (the
-    // kernel-level tests check each port against closed-form truth).
+    // Chamber, closed form. The section quadrant (x > 0, y < 0) takes a
+    // quarter of everything coaxial — can, cavity, pump nozzle and bore,
+    // feedthrough bore — and misses the viewport (+y) and gauge (−x) ports.
+    let cyl = |r: f64, h: f64| PI * r * r * h;
+    let chamber = 0.75 * (cyl(79.5, 159.0) - cyl(76.0, 152.0))
+        + radial_stub(22.5, 79.5, 112.0)
+        - radial_stub(19.0, 76.0, 112.0)
+        + radial_stub(14.0, 79.5, 112.0)
+        - radial_stub(11.0, 76.0, 112.0)
+        + 0.75 * (cyl(23.0, 60.5) - cyl(20.0, 64.0))
+        - 0.75 * cyl(10.0, 3.5);
     // Flanges: three quarters of an annulus.
     let ring = |r_out: f64, r_in: f64, h: f64| 0.75 * PI * (r_out * r_out - r_in * r_in) * h;
     let expect = [
-        ("chamber", 331_290.0, 25_000usize),
+        ("chamber", chamber, 25_000usize),
         ("lid-flange", ring(57.0, 10.0, 17.5), 4_000),
         ("pump-flange", ring(27.5, 20.0, 6.0), 4_000),
     ];
@@ -171,6 +220,13 @@ fn fusor_chamber_and_flanges_are_clean_analytic() {
         }
         if tris > max_tris {
             fails.push(format!("{name}: {tris} triangles (ceiling {max_tris})"));
+        }
+        let opposed = opposed_normals(&m.positions, m.normals.as_deref(), &m.indices);
+        if m.normals.is_none() || opposed != 0 {
+            fails.push(format!(
+                "{name}: {opposed} triangles wound against their vertex normals (normals present: {})",
+                m.normals.is_some()
+            ));
         }
     }
     assert!(fails.is_empty(), "{fails:#?}");

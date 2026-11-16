@@ -85,6 +85,35 @@ fn census(verts: &[f32], idx: &[u32]) -> (usize, usize, usize, f64, usize) {
     (nonmanifold, folded, boundary, vol, slivers)
 }
 
+/// Triangles whose winding opposes their own vertex normals — what the
+/// viewport shades with, so a non-zero count is a black or inside-out facet.
+fn opposed_normals(verts: &[f32], normals: Option<&[f32]>, idx: &[u32]) -> usize {
+    let Some(normals) = normals.filter(|n| n.len() == verts.len()) else {
+        return 0;
+    };
+    let v = |a: &[f32], i: u32| {
+        let i = i as usize * 3;
+        [a[i] as f64, a[i + 1] as f64, a[i + 2] as f64]
+    };
+    idx.chunks(3)
+        .filter(|t| {
+            let (a, b, c) = (v(verts, t[0]), v(verts, t[1]), v(verts, t[2]));
+            let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let w = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            let n = [
+                u[1] * w[2] - u[2] * w[1],
+                u[2] * w[0] - u[0] * w[2],
+                u[0] * w[1] - u[1] * w[0],
+            ];
+            let (na, nb, nc) = (v(normals, t[0]), v(normals, t[1]), v(normals, t[2]));
+            let dot: f64 = (0..3).map(|k| n[k] * (na[k] + nb[k] + nc[k])).sum();
+            let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+            // Zero-area triangles have no winding to oppose.
+            len > 1e-9 && dot < 0.0
+        })
+        .count()
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
     let path = args
@@ -119,6 +148,7 @@ fn main() {
             .unwrap_or_else(|| format!("part_{i}"));
         let m = &part.mesh;
         let (nm, folded, boundary, vol, slivers) = census(&m.positions, &m.indices);
+        let opposed = opposed_normals(&m.positions, m.normals.as_deref(), &m.indices);
         let (fidelity, faces) = match &part.solid {
             Some(s) => (
                 s.fidelity().as_str().to_string(),
@@ -128,7 +158,7 @@ fn main() {
         };
         println!(
             "{name:18} tris {:7} slivers {slivers:6} vol {vol:12.1} nonmanifold {nm:4} folded {folded:4} \
-             boundary {boundary:4} brep-faces {faces:5} {fidelity}",
+             boundary {boundary:4} opposed-normals {opposed:4} brep-faces {faces:5} {fidelity}",
             m.indices.len() / 3
         );
         if let Some(s) = &part.solid {
