@@ -324,3 +324,42 @@ fn sectioned_ring() {
     ));
     assert!(fails.is_empty(), "{fails:#?}");
 }
+
+/// The same flange the way `vcad-eval` cuts it: a difference chain is
+/// batched into one cut by the union of its tools — here the bore fused
+/// with the quadrant whose corner edge is the bore's own axis.
+#[test]
+fn sectioned_ring_batched() {
+    let mut fails = Vec::new();
+    let (tool, f) = op(
+        "tool",
+        &zcyl(10.0, 70.0, 110.0),
+        &quadrant(),
+        BooleanOp::Union,
+    );
+    let v_bore = PI * 100.0 * 40.0;
+    fails.extend(check(
+        "bore ∪ quadrant",
+        &tool,
+        &f,
+        Bounds {
+            volume: 400.0 * 400.0 * 800.0 + 0.75 * v_bore,
+            tol_frac: 1e-4,
+            max_tris: 1500,
+        },
+    ));
+    let (cut, f) = op(
+        "cut",
+        &zcyl(57.0, 79.5, 97.0),
+        &brep(&tool),
+        BooleanOp::Difference,
+    );
+    let v_ring = PI * (57.0 * 57.0 - 10.0 * 10.0) * 17.5;
+    fails.extend(check(
+        "disc − (bore ∪ quadrant)",
+        &cut,
+        &f,
+        Bounds { volume: 0.75 * v_ring, tol_frac: 1e-3, max_tris: 1500 },
+    ));
+    assert!(fails.is_empty(), "{fails:#?}");
+}

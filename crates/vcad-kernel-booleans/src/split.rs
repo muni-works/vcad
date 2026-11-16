@@ -150,22 +150,37 @@ pub(crate) fn line_key(l: &vcad_kernel_geom::Line3d) -> [u64; 6] {
 pub(crate) type HoleChordSpans = std::collections::HashMap<[u64; 6], Vec<(Point3, Point3)>>;
 
 thread_local! {
-    static HOLE_CHORDS: std::cell::RefCell<HoleChordSpans> =
-        std::cell::RefCell::new(HoleChordSpans::new());
+    /// Covered spans for cuts on operand A's faces (`[0]`, the extents of
+    /// B's faces) and on operand B's (`[1]`).
+    static HOLE_CHORDS: std::cell::RefCell<[HoleChordSpans; 2]> =
+        std::cell::RefCell::new([HoleChordSpans::new(), HoleChordSpans::new()]);
+    /// Which operand's faces are being split: indexes `HOLE_CHORDS`.
+    static HOLE_CHORD_OPERAND: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Install the current boolean's covered spans: a cut may pass through a
-/// planar face's hole only when its whole chord lies inside one of them.
-pub(crate) fn trust_hole_chords(spans: HoleChordSpans) {
-    HOLE_CHORDS.with(|h| *h.borrow_mut() = spans);
+/// planar face's hole only where the OTHER operand's face really cuts (see
+/// `split_face_by_curve`). `cutting_a` holds the extents of B's faces
+/// along each SSI line, `cutting_b` those of A's. They are kept apart
+/// because a face's own extent along the line is exactly its material
+/// stretches — consulted for its own cut it would vouch for every chord.
+pub(crate) fn trust_hole_chords(cutting_a: HoleChordSpans, cutting_b: HoleChordSpans) {
+    HOLE_CHORDS.with(|h| *h.borrow_mut() = [cutting_a, cutting_b]);
+}
+
+/// Select whose faces the splits that follow belong to: operand A
+/// (`true`) or operand B.
+pub(crate) fn hole_chords_cutting_a(a: bool) {
+    HOLE_CHORD_OPERAND.with(|o| o.set(usize::from(!a)));
 }
 
 /// Does one of the cutter's own spans along `l` cover the stretch `from →
 /// to`?
 fn hole_chord_covered(l: &vcad_kernel_geom::Line3d, from: &Point3, to: &Point3) -> bool {
     let tol = 1e-6 * (*to - *from).norm().max(1.0);
+    let operand = HOLE_CHORD_OPERAND.with(|o| o.get());
     HOLE_CHORDS.with(|h| {
-        h.borrow().get(&line_key(l)).is_some_and(|spans| {
+        h.borrow()[operand].get(&line_key(l)).is_some_and(|spans| {
             spans.iter().any(|(a, b)| {
                 let ab = *b - *a;
                 let len2 = ab.norm_squared();
@@ -222,30 +237,50 @@ fn merge_crossed_hole(
     let side = |p: &Point3| (*p - *entry).dot(side_dir);
     let scale = len2.sqrt();
     let eps = 1e-9 * scale.max(1.0);
-    // Crossings of the chord with hole edges: (t along chord, edge index, point).
-    let mut hits: Vec<(f64, usize, Point3)> = Vec::new();
+    // Crossings of the chord with the hole: (t along chord, last hole
+    // vertex before it, first hole vertex after it, point). A crossing is
+    // either inside an edge whose ends lie strictly on opposite sides, or AT
+    // a hole vertex lying on the cut with its neighbours on opposite sides.
+    // The second kind is the rule, not the exception, for a section plane
+    // through a bore's axis: the bore's frozen rim has vertices at the
+    // canonical angles, and an axis-aligned plane hits two of them exactly
+    // (the open-fusor flanges; refusing these left their caps uncut).
+    let sides: Vec<f64> = hole.iter().map(side).collect();
+    let on_cut = |i: usize| sides[i].abs() <= eps;
+    let mut hits: Vec<(f64, usize, usize, Point3)> = Vec::new();
     for i in 0..m {
-        let (a, b) = (hole[i], hole[(i + 1) % m]);
-        let (sa, sb) = (side(&a), side(&b));
-        if sa.abs() <= eps || sb.abs() <= eps {
-            return None; // a hole vertex on the cut: not a clean crossing
-        }
-        if (sa > 0.0) == (sb > 0.0) {
+        let j = (i + 1) % m;
+        let (p, before, after) = if on_cut(i) {
+            let (prev, next) = ((i + m - 1) % m, j);
+            if on_cut(prev) || on_cut(next) {
+                split_dbg!("merge_crossed_hole: hole edge along the cut");
+                return None; // a hole edge runs along the cut
+            }
+            if (sides[prev] > 0.0) == (sides[next] > 0.0) {
+                split_dbg!("merge_crossed_hole: hole vertex grazes the cut");
+                return None; // the hole touches the cut without crossing
+            }
+            (hole[i], prev, next)
+        } else if !on_cut(j) && (sides[i] > 0.0) != (sides[j] > 0.0) {
+            let (a, b) = (hole[i], hole[j]);
+            (a + (b - a) * (sides[i] / (sides[i] - sides[j])), i, j)
+        } else {
             continue;
-        }
-        let p = a + (b - a) * (sa / (sa - sb));
+        };
         let t = (p - *entry).dot(d) / len2;
         if !(1e-9..=1.0 - 1e-9).contains(&t) {
+            split_dbg!("merge_crossed_hole: hole reaches past the cut's ends");
             return None; // the hole reaches past the cut's ends
         }
-        hits.push((t, i, p));
+        hits.push((t, before, after, p));
     }
     if hits.len() != 2 {
+        split_dbg!("merge_crossed_hole: {} crossings", hits.len());
         return None;
     }
     hits.sort_by(|x, y| x.0.total_cmp(&y.0));
-    let (_, i1, mut p1) = hits[0];
-    let (_, i2, mut p2) = hits[1];
+    let (_, before1, after1, mut p1) = hits[0];
+    let (_, before2, after2, mut p2) = hits[1];
     // A frozen circular hole (every vertex equidistant from its centroid)
     // is bounded by a wall whose own split along this plane lands ON the
     // circle, not on the polygon's chord a sag below it. Put the crossings
@@ -276,20 +311,20 @@ fn merge_crossed_hole(
         }
     }
     // Hole arcs between the crossings, walking the hole's own order.
-    let arc = |from_edge: usize, to_edge: usize| -> Vec<Point3> {
+    let arc = |from: usize, to: usize| -> Vec<Point3> {
         let mut out = Vec::new();
-        let mut k = (from_edge + 1) % m;
+        let mut k = from;
         loop {
             out.push(hole[k]);
-            if k == to_edge {
+            if k == to {
                 break;
             }
             k = (k + 1) % m;
         }
         out
     };
-    let arc_12 = arc(i1, i2); // p1 → … → p2
-    let arc_21 = arc(i2, i1); // p2 → … → p1
+    let arc_12 = arc(after1, before2); // p1 → … → p2
+    let arc_21 = arc(after2, before1); // p2 → … → p1
     let interior_side =
         |lp: &[Point3]| lp.iter().map(side).find(|s| s.abs() > eps).map(f64::signum);
     let (s1, s2) = (interior_side(loop1)?, interior_side(loop2)?);
@@ -772,6 +807,7 @@ pub fn split_face_by_curve(
                 d = d.min((c - (w[0] + t * ab)).norm());
             }
             if d < r + 1e-6 {
+                split_dbg!("sfbc: cut meets a hole it may not cross (d {d:.4} r {r:.4})");
                 return SplitResult {
                     sub_faces: vec![face_id],
                 };
