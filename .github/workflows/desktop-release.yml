@@ -45,7 +45,10 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=desktop-v$version" >> "$GITHUB_OUTPUT"
           # CFBundleVersion must increase on every release Sparkle sees.
-          echo "build=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          # Offset past hand-built local releases (1.0.2 shipped as 3250);
+          # a bare run_number (9 for 1.0.3-beta.4) sorts below them, and
+          # Sparkle would never offer the update to anyone already installed.
+          echo "build=$((10000 + ${{ github.run_number }}))" >> "$GITHUB_OUTPUT"
 
       # vcad needs tang + phyz at sibling paths (see CLAUDE.md).
       - uses: actions/checkout@v4
