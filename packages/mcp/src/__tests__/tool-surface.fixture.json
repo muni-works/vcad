@@ -868,7 +868,6 @@
             "torus",
             "wedge",
             "prism",
-            "spur_gear",
             "union",
             "difference",
             "intersection",
@@ -6347,7 +6346,7 @@
   {
     "name": "record_measurement",
     "title": "Record Measurement",
-    "description": "Record as-built measurements (caliper dimensions, scale mass) of a printed part against its predict_print snapshot and emit the receipt-vs-reality delta report: per-feature deltas with tolerances, per-axis scale factors (X/Y/Z shrinkage), hole undersize and thin-wall flow offsets, and concrete printer-profile suggestions. Accepts the prediction inline (from a saved prediction.json) when the session's warm instance is gone. Partial measurements are fine.",
+    "description": "Record as-built measurements (caliper dimensions, scale mass) of a printed part against its predict_print snapshot and emit the receipt-vs-reality delta report: per-feature deltas with tolerances, per-axis scale factors (X/Y/Z shrinkage), hole undersize and thin-wall flow offsets, and concrete printer-profile suggestions. Accepts the prediction inline (from a saved prediction.json) when the session's warm instance is gone. Partial measurements are fine. Claim mode (pass `claim_id` or `claim_measurements` instead of `measurements`): bind a bench reading — value, unit, uncertainty, instrument, band, raw-file hash — to a frozen solver prediction on the document's claims ledger (see attach_claims); compared fail-closed with the domain's own band rule, returning the Holds / Violated / Unmeasured / Stale scorecard. A claim_id not on the ledger is an error.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -6377,11 +6376,59 @@
         "prediction": {
           "type": "object",
           "description": "A full PrintPrediction (as returned by predict_print) to measure against. Overrides the cached prediction — use this to replay a prediction.json after the session's warm instance recycled."
+        },
+        "claim_id": {
+          "type": "string",
+          "description": "Claim mode: the ledger claim this reading measures (e.g. thermal.t_max_c, antenna.resonant_frequency). With claim_id, `value`, `uncertainty`, `instrument`, and `band` are required; `measurements` is not used. A claim_id that is not on the document's claims ledger is an error."
+        },
+        "subject": {
+          "type": "string",
+          "description": "Claim mode: disambiguates a claim attached under several subjects/labels."
+        },
+        "value": {
+          "type": "number",
+          "description": "Claim mode: measured value, in the prediction's unit."
+        },
+        "unit": {
+          "type": "string",
+          "description": "Claim mode: unit (must match the prediction's unit)."
+        },
+        "uncertainty": {
+          "type": "number",
+          "description": "Claim mode: one-sigma absolute uncertainty, same unit."
+        },
+        "instrument": {
+          "type": "string",
+          "description": "Claim mode: what measured it, and how."
+        },
+        "band": {
+          "type": "object",
+          "description": "Acceptance band the measurer commits to. Thermal / EM / acoustics / flow use {band_factor} (holds when measured ∈ [p/band − u, p·band + u]); antenna / tolerance use {half_width} (holds when |measured − p| ≤ half_width + u [+ the prediction's own u]). Required — vcad never invents one.",
+          "properties": {
+            "band_factor": {
+              "type": "number"
+            },
+            "half_width": {
+              "type": "number"
+            }
+          }
+        },
+        "raw_sha256": {
+          "type": "string",
+          "description": "Claim mode: SHA-256 of the raw instrument file, for the audit trail."
+        },
+        "claim_measurements": {
+          "type": "array",
+          "description": "Claim mode, several at once (all-or-nothing): [{claim_id, value, uncertainty, instrument, band, unit?, subject?, raw_sha256?}].",
+          "items": {
+            "type": "object"
+          }
+        },
+        "replace": {
+          "type": "boolean",
+          "description": "Claim mode: overwrite an existing measurement."
         }
-      },
-      "required": [
-        "measurements"
-      ]
+      }
     },
     "annotations": {
       "readOnlyHint": false
@@ -11367,6 +11414,17 @@
         "clearance": {
           "type": "number",
           "description": "Enclosure-fit clearance in mm (default 0.5); only used with enclosure_document_id."
+        },
+        "attach_claims": {
+          "description": "Solver claim sets to freeze onto the document's claims ledger before building (same as attach_claims): a solve_thermal / analyze_antenna / simulate_em / analyze_structure / analyze_tolerance_stackup / acoustics / DFM result (anything with receipt_claims), an array of them, or a claim array. Every ledger row lands in the receipt: unmeasured predictions roll up Provisional, measured ones Holds→pass / Violated→fail, Stale→unverifiable."
+        },
+        "attach_source_tool": {
+          "type": "string",
+          "description": "Provenance for attach_claims: the tool that produced them (e.g. solve_thermal)."
+        },
+        "attach_label": {
+          "type": "string",
+          "description": "Subject for attach_claims claims that carry none (namespaces repeat runs of one solver)."
         }
       }
     },
@@ -11379,13 +11437,19 @@
         "receipt": {
           "type": "object"
         },
+        "scorecard": {
+          "type": "object"
+        },
+        "attached": {
+          "type": "object"
+        },
         "document_id": {
           "type": "string"
         }
       }
     },
     "annotations": {
-      "readOnlyHint": true
+      "readOnlyHint": false
     },
     "_meta": {
       "ui": {
@@ -11433,6 +11497,140 @@
     },
     "_meta": {
       "openai/widgetAccessible": true
+    }
+  },
+  {
+    "name": "attach_claims",
+    "title": "Attach Solver Claims",
+    "description": "Freeze solver predictions onto the document's claims ledger (vcad.claims-ledger/1) so ONE receipt carries every domain: pass the result of solve_thermal, analyze_antenna, simulate_em, analyze_structure, beam_check, analyze_tolerance_stackup, simulate_flow, the acoustics solvers, DFM, mass/gradient — anything returning `receipt_claims` (or a claim array). Each claim keeps its oracle id/version and solver provenance; the numeric prediction, a prediction hash, and the design fingerprint are frozen. Predictions roll up Provisional, never Pass, until record_measurement / import_measurement binds hardware readings. Re-attaching a different value for a frozen claim is refused unless supersede:true (a measured row then reads Stale). Use `label` to attach two runs of one solver. build_receipt then includes every ledger row.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "description": "Session id of the document that owns the ledger."
+        },
+        "claims": {
+          "description": "A solver result (with receipt_claims / claim_set), an array of results, or an array of unified receipt claims."
+        },
+        "source_tool": {
+          "type": "string",
+          "description": "The tool that produced the claims (e.g. solve_thermal) — provenance."
+        },
+        "label": {
+          "type": "string",
+          "description": "Subject for claims that carry none, e.g. 'driver_coil' — namespaces repeat runs."
+        },
+        "supersede": {
+          "type": "boolean",
+          "description": "Replace already-frozen predictions (measured rows then read Stale)."
+        }
+      },
+      "required": [
+        "claims"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false
+    }
+  },
+  {
+    "name": "import_measurement",
+    "title": "Import Measurement",
+    "description": "Import a raw instrument file and bind its readings to the document's frozen predictions (claims ledger), fail-closed. Formats: `touchstone_s1p` (NanoVNA one-port sweep → antenna s11/z_in/resonance/bandwidth claims, NanoVNA default tolerances, overridable via `tolerances`), `rew_impedance` (REW 'export impedance as text' → acoustics port tuning f_b = the |Z| saddle between the two peaks; needs `band`), `thermocouple_csv` (header row with a time column + a temperature column → steady-state mean of the last window, refused if still drifting; or reduce:'max' for a peak claim; needs `claim_id`, `band`, `instrument_uncertainty_c`). The raw file's SHA-256 is recorded with every reading. Returns the updated scorecard (Holds / Violated / Unmeasured / Stale per claim).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string"
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "touchstone_s1p",
+            "rew_impedance",
+            "thermocouple_csv"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "description": "The instrument file's contents."
+        },
+        "path": {
+          "type": "string",
+          "description": "Or a path to it, relative to the server's working directory."
+        },
+        "file_name": {
+          "type": "string",
+          "description": "Name to record for an inline `text` file."
+        },
+        "claim_id": {
+          "type": "string",
+          "description": "Target claim (rew_impedance defaults to acoustics.tuning_hz; required for thermocouple_csv)."
+        },
+        "subject": {
+          "type": "string",
+          "description": "Disambiguates a claim attached under several labels."
+        },
+        "band": {
+          "type": "object",
+          "description": "Acceptance band the measurer commits to. Thermal / EM / acoustics / flow use {band_factor} (holds when measured ∈ [p/band − u, p·band + u]); antenna / tolerance use {half_width} (holds when |measured − p| ≤ half_width + u [+ the prediction's own u]). Required — vcad never invents one.",
+          "properties": {
+            "band_factor": {
+              "type": "number"
+            },
+            "half_width": {
+              "type": "number"
+            }
+          }
+        },
+        "uncertainty": {
+          "type": "number",
+          "description": "rew_impedance: extra one-sigma uncertainty, Hz (combined with the sweep grid)."
+        },
+        "instrument_uncertainty_c": {
+          "type": "number",
+          "description": "thermocouple_csv: probe + meter one-sigma uncertainty, °C."
+        },
+        "column": {
+          "type": "string",
+          "description": "thermocouple_csv: temperature column name when the header has several."
+        },
+        "reduce": {
+          "type": "string",
+          "enum": [
+            "steady",
+            "max"
+          ],
+          "description": "thermocouple_csv: steady-state mean (default) or peak."
+        },
+        "window_s": {
+          "type": "number",
+          "description": "thermocouple_csv: steady-state window, s (default last 10% of the log)."
+        },
+        "max_drift_c": {
+          "type": "number",
+          "description": "thermocouple_csv: allowed drift over the window, °C (default 0.5)."
+        },
+        "tolerances": {
+          "type": "object",
+          "description": "touchstone_s1p: {s11_db, freq_rel, z_ohm, bandwidth_rel} overriding the NanoVNA defaults (2 dB, 2%, 10 ohm, 25%)."
+        },
+        "instrument": {
+          "type": "string",
+          "description": "Instrument provenance override."
+        },
+        "replace": {
+          "type": "boolean",
+          "description": "Overwrite existing measurements."
+        }
+      },
+      "required": [
+        "format"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false
     }
   },
   {

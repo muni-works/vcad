@@ -344,10 +344,14 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
   verify_substitution: { title: "Verify Substitution", annotations: RO_NET },
   build_receipt: {
     title: "Build Receipt",
-    annotations: RO,
+    // Read-write: `attach_claims` freezes solver claims onto the document's
+    // claims ledger before building.
+    annotations: RW,
     outputSchema: objectOut({
       unified: { type: "object" },
       receipt: { type: "object" },
+      scorecard: { type: "object" },
+      attached: { type: "object" },
       document_id: { type: "string" },
     }),
   },
@@ -359,6 +363,8 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
       document_id: { type: "string" },
     }),
   },
+  attach_claims: { title: "Attach Solver Claims", annotations: RW },
+  import_measurement: { title: "Import Measurement", annotations: RW },
   route_diff_pair: { title: "Route Differential Pair", annotations: RW },
   length_match_traces: { title: "Length Match Traces", annotations: RW },
   critique_route: { title: "Critique Route", annotations: RO },

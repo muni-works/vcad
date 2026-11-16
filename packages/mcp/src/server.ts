@@ -143,6 +143,7 @@ import { toolDefs as parametersToolDefs, setParameterAssetResolver } from "./too
 import { resolveLoonAssets } from "./tools/loon-assets.js";
 import { toolDefs as designConstraintsToolDefs } from "./tools/design-constraints.js";
 import { toolDefs as printCheckToolDefs } from "./tools/print-check.js";
+import { toolDefs as claimsLedgerToolDefs } from "./tools/claims-ledger.js";
 import { toolDefs as renderToolDefs } from "./tools/render.js";
 import { toolDefs as verifyToolDefs } from "./tools/verify.js";
 import { toolDefs as verifySpecToolDefs } from "./tools/verify-spec.js";
@@ -330,6 +331,7 @@ const STATIC_TOOL_DEFS: readonly ToolDef[] = [
   ...parametersToolDefs,
   ...designConstraintsToolDefs,
   ...printCheckToolDefs,
+  ...claimsLedgerToolDefs,
   ...renderToolDefs,
   ...verifyToolDefs,
   ...verifySpecToolDefs,
@@ -556,6 +558,8 @@ const LIST_TOOL_ORDER: readonly string[] = [
   "verify_substitution",
   "build_receipt",
   "verify_receipt",
+  "attach_claims",
+  "import_measurement",
   "route_diff_pair",
   "length_match_traces",
   "critique_route",

@@ -57,6 +57,14 @@ import {
   pruneOutlineConstraints,
   verifyConstraintClaims,
 } from "./constraint-claims.js";
+import {
+  attachClaims,
+  designFingerprint,
+  documentScorecard,
+  hasLedgerClaims,
+  ledgerReceiptClaims,
+  verifyLedgerClaims,
+} from "./claims-ledger.js";
 import { getNodePcb, getPcbNodeIds, buildEntry, agentView, diffViolations } from "@vcad/core";
 import {
   computeRatsnest,
@@ -14370,6 +14378,21 @@ export const buildReceiptSchema = {
       type: "number",
       description: "Enclosure-fit clearance in mm (default 0.5); only used with enclosure_document_id.",
     },
+    attach_claims: {
+      description:
+        "Solver claim sets to freeze onto the document's claims ledger before building (same as attach_claims): " +
+        "a solve_thermal / analyze_antenna / simulate_em / analyze_structure / analyze_tolerance_stackup / acoustics / " +
+        "DFM result (anything with receipt_claims), an array of them, or a claim array. Every ledger row lands in the " +
+        "receipt: unmeasured predictions roll up Provisional, measured ones Holds→pass / Violated→fail, Stale→unverifiable.",
+    },
+    attach_source_tool: {
+      type: "string",
+      description: "Provenance for attach_claims: the tool that produced them (e.g. solve_thermal).",
+    },
+    attach_label: {
+      type: "string",
+      description: "Subject for attach_claims claims that carry none (namespaces repeat runs of one solver).",
+    },
   },
 } as const;
 
@@ -14485,10 +14508,9 @@ export async function verifySubstitution(args: Record<string, unknown>) {
  * provenance text, rewritten by a save without touching the design.
  */
 async function documentStateHash(doc: Document): Promise<string> {
-  const { source: _source, ...design } = doc as Document & { source?: unknown };
-  // WebCrypto, not node:crypto: this module stays loadable in browser bundles.
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(design)));
-  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+  // The claims ledger is excluded too: recording a bench measurement is not a
+  // design change (see claims-ledger.ts).
+  return designFingerprint(doc);
 }
 
 /** Build a re-runnable verification Receipt for the session's PCB. When an
@@ -14497,40 +14519,66 @@ async function documentStateHash(doc: Document): Promise<string> {
  *  case it ships in, not just that copper passes DRC. */
 export async function buildReceipt(args: Record<string, unknown>, engine?: Engine) {
   const ctx = resolveDocInput(args);
+  let attached: Awaited<ReturnType<typeof attachClaims>> | undefined;
+  if (args.attach_claims !== undefined && args.attach_claims !== null) {
+    try {
+      attached = await attachClaims(ctx.doc, args.attach_claims, {
+        ...(typeof args.attach_source_tool === "string" ? { source_tool: args.attach_source_tool } : {}),
+        ...(typeof args.attach_label === "string" ? { label: args.attach_label } : {}),
+      });
+    } catch (e) {
+      return {
+        content: [{ type: "text" as const, text: `Error: ${e instanceof Error ? e.message : String(e)}` }],
+        isError: true,
+      };
+    }
+  }
+  const ledgerClaims = await ledgerReceiptClaims(ctx.doc);
+  const scorecard = ledgerClaims.length > 0 ? await documentScorecard(ctx.doc) : undefined;
   const pcb = getDocPcb(ctx.doc);
   const clearanceSpecs = ctx.doc.clearance_specs ?? [];
   if (!pcb) {
-    if (clearanceSpecs.length === 0 && (ctx.doc.constraints ?? []).length === 0) {
+    if (clearanceSpecs.length === 0 && (ctx.doc.constraints ?? []).length === 0 && ledgerClaims.length === 0) {
       return {
         content: [
           {
             type: "text" as const,
-            text: "Error: Document has no PCB, no clearance specs, and no design constraints — nothing to certify. (Persist assertions with check_clearance + label or add_constraint first.)",
+            text: "Error: Document has no PCB, no clearance specs, no design constraints, and no claims ledger — nothing to certify. (Persist assertions with check_clearance + label or add_constraint, or attach solver claims with attach_claims, first.)",
           },
         ],
         isError: true,
       };
     }
-    // Mechanical-only receipt: re-measure every persisted clearance spec
-    // and design constraint.
+    // Mechanical/solver-only receipt: re-measure every persisted clearance
+    // spec and design constraint, and carry every claims-ledger row.
     const unified: DesignReceipt = {
       schema: RECEIPT_SCHEMA,
       ...(ctx.documentId ? { document_id: ctx.documentId } : {}),
       claims: [
-        ...clearanceReceiptClaims(ctx.doc, engine),
-        ...(await constraintReceiptClaims(ctx.doc)),
+        ...(clearanceSpecs.length > 0 ? clearanceReceiptClaims(ctx.doc, engine) : []),
+        ...((ctx.doc.constraints ?? []).length > 0 ? await constraintReceiptClaims(ctx.doc) : []),
+        ...ledgerClaims,
       ],
     };
     await bindReceiptToDocument(unified, ctx.doc);
+    // The design the ledger's predictions were scored against.
+    if (ledgerClaims.length > 0) unified.document_fingerprint = await designFingerprint(ctx.doc);
     return {
       content: [
         {
           type: "text" as const,
-          text: JSON.stringify({ unified, unified_summary: summarize(unified) }),
+          text: JSON.stringify({
+            unified,
+            unified_summary: summarize(unified),
+            ...(scorecard ? { scorecard } : {}),
+            ...(attached ? { attached } : {}),
+          }),
         },
       ],
       structuredContent: {
         unified,
+        ...(scorecard ? { scorecard } : {}),
+        ...(attached ? { attached } : {}),
         ...(ctx.documentId ? { document_id: ctx.documentId } : {}),
       },
     };
@@ -14599,6 +14647,9 @@ export async function buildReceipt(args: Record<string, unknown>, engine?: Engin
   if ((ctx.doc.constraints ?? []).length > 0) {
     unified.claims.push(...(await constraintReceiptClaims(ctx.doc)));
   }
+  // Every solver prediction (and its bench measurement) on the claims ledger.
+  unified.claims.push(...ledgerClaims);
+  if (ledgerClaims.length > 0) unified.document_fingerprint = await designFingerprint(ctx.doc);
 
   await bindReceiptToDocument(unified, ctx.doc);
   await bindReceiptToDocument(receipt, ctx.doc);
@@ -14619,12 +14670,16 @@ export async function buildReceipt(args: Record<string, unknown>, engine?: Engin
           ...textPayload,
           unified,
           unified_summary: summarize(unified),
+          ...(scorecard ? { scorecard } : {}),
+          ...(attached ? { attached } : {}),
         }),
       },
     ],
     structuredContent: {
       receipt,
       unified,
+      ...(scorecard ? { scorecard } : {}),
+      ...(attached ? { attached } : {}),
       power_integrity_ok: powerIntegrityOk,
       ...(planeWarnings.length ? { disconnected_planes: planeWarnings } : {}),
       ...(enclosureFit ? { enclosure_fit: enclosureFit } : {}),
@@ -14708,13 +14763,14 @@ export async function verifyReceipt(args: Record<string, unknown>, engine?: Engi
   }
   const clearanceReceipt = unified && hasClearanceClaims(unified) ? unified : undefined;
   const constraintReceipt = unified && hasConstraintClaims(unified) ? unified : undefined;
+  const ledgerReceipt = unified && hasLedgerClaims(unified) ? unified : undefined;
 
-  if (!legacy && !clearanceReceipt && !constraintReceipt) {
+  if (!legacy && !clearanceReceipt && !constraintReceipt && !ledgerReceipt) {
     return {
       content: [
         {
           type: "text" as const,
-          text: "Error: `receipt` carries nothing re-verifiable — pass a PCB Receipt (board_hash) or a unified DesignReceipt with mech.clearance or constraint.* claims, as produced by build_receipt.",
+          text: "Error: `receipt` carries nothing re-verifiable — pass a PCB Receipt (board_hash) or a unified DesignReceipt with mech.clearance, constraint.*, or claims-ledger claims, as produced by build_receipt.",
         },
       ],
       isError: true,
@@ -14770,6 +14826,14 @@ export async function verifyReceipt(args: Record<string, unknown>, engine?: Engi
     statuses.push(constraintChecks.status);
   }
 
+  // Solver predictions + bench measurements: re-classify every ledger row in
+  // the receipt's order and render the scorecard.
+  let ledgerChecks: Awaited<ReturnType<typeof verifyLedgerClaims>> | undefined;
+  if (ledgerReceipt) {
+    ledgerChecks = await verifyLedgerClaims(ctx.doc, ledgerReceipt);
+    statuses.push(ledgerChecks.status);
+  }
+
   // Hash after the claims ran: re-measuring can normalize the document's specs.
   const boundHash = [raw, legacy, unified]
     .map((r) => (r as Record<string, unknown> | undefined)?.[DOCUMENT_STATE_FIELD])
@@ -14799,6 +14863,20 @@ export async function verifyReceipt(args: Record<string, unknown>, engine?: Engi
     ...(boardHash ? { board_hash: boardHash } : {}),
     ...(clearance ? { clearance } : {}),
     ...(constraintChecks ? { constraints: constraintChecks } : {}),
+    ...(ledgerChecks
+      ? {
+          claims_ledger: {
+            status: ledgerChecks.status,
+            ...(ledgerChecks.unreceipted.length
+              ? {
+                  unreceipted: ledgerChecks.unreceipted,
+                  note: "The ledger holds claims this receipt does not carry — rebuild the receipt to certify them.",
+                }
+              : {}),
+          },
+          scorecard: ledgerChecks.scorecard,
+        }
+      : {}),
   };
   return {
     content: [{ type: "text" as const, text: JSON.stringify(payload) }],
