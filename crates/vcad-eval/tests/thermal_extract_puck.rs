@@ -226,7 +226,7 @@ fn study_persists_on_the_document() {
     doc.analysis_studies.push(AnalysisStudy {
         id: "amp-thermal".into(),
         name: "amp on board".into(),
-        study: AnalysisStudyKind::Thermal(poc_study(5.0)),
+        study: AnalysisStudyKind::Thermal(Box::new(poc_study(5.0))),
         baseline: None,
     });
     // Round-trips through .vcad JSON.

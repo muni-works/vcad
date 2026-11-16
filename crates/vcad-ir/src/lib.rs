@@ -2813,8 +2813,10 @@ pub enum AnalysisStudyKind {
     },
     /// Steady heat conduction (`vcad-kernel-thermal`) over the document's
     /// own parts: `vcad_eval::thermal_extract` voxelizes the selected parts
-    /// and emits a `ThermalSpec`. See [`ThermalStudy`].
-    Thermal(ThermalStudy),
+    /// and emits a `ThermalSpec`. See [`ThermalStudy`]. Boxed: it dwarfs
+    /// the other variants (`clippy::large_enum_variant`); serde and ts-rs
+    /// see through the box, so the JSON shape is unchanged.
+    Thermal(Box<ThermalStudy>),
 }
 
 /// A number, or the name of a document parameter (`doc.parameters`) bound

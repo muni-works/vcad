@@ -480,7 +480,7 @@ pub fn find_thermal_study<'a>(doc: &'a Document, id: Option<&str>) -> R<&'a Ther
         .analysis_studies
         .iter()
         .filter_map(|s| match &s.study {
-            vcad_ir::AnalysisStudyKind::Thermal(t) => Some((s.id.as_str(), t)),
+            vcad_ir::AnalysisStudyKind::Thermal(t) => Some((s.id.as_str(), &**t)),
             _ => None,
         })
         .collect();
