@@ -394,6 +394,9 @@ fn to_value<T: Serialize>(v: &T) -> Value {
 
 /// `simulate_charged_particles`.
 pub fn simulate(args: &Value, hooks: &Hooks) -> Result<Value, ToolError> {
+    if args.get("spec").is_some_and(crate::particle3d::is_3d) {
+        return crate::particle3d::simulate(args, hooks);
+    }
     let a: SimArgs =
         serde_json::from_value(args.clone()).map_err(|e| ToolError::Invalid(format!("{e}")))?;
     let sec = section_opts(args)?;

@@ -23,6 +23,7 @@ use serde_json::{json, Value};
 pub mod compare;
 pub mod neutronics;
 pub mod particle;
+pub mod particle3d;
 pub mod section;
 
 /// Progress + cancellation for a running tool.
@@ -145,6 +146,38 @@ fn param_value_schema() -> Value {
     })
 }
 
+/// 3D wire device (`DeviceSpec3d`), the #1193 schema.
+fn device_spec_3d_schema() -> Value {
+    let pv = param_value_schema();
+    let vec3 = json!({"type": "array", "minItems": 3, "maxItems": 3, "items": pv});
+    json!({
+        "type": "object", "required": ["chamber", "electrodes"],
+        "description": "Non-axisymmetric (3D) device: thin-wire electrodes along arbitrary paths inside a grounded sphere — real fusor globe grids (great circles, latitude + meridian), stalks, rings. Solved by the thin-wire boundary-element method; refused (fail-closed) if the wire model's surface-residual gates fail. Units mm / volts. Unknown fields are errors. Any numeric field may be a parameter name bound in `parameters`.",
+        "properties": {
+            "chamber": {"type": "object", "required": ["kind"],
+                "description": "`{\"kind\":\"sphere\",\"radius_mm\":…}` (grounded sphere about the origin) or `{\"kind\":\"unbounded\"}`.",
+                "properties": {"kind": {"type": "string", "enum": ["sphere", "unbounded"]}, "radius_mm": pv}},
+            "wall_potential_v": pv,
+            "electrodes": {"type": "array", "minItems": 1, "items": {
+                "type": "object", "required": ["kind", "wire_radius_mm", "potential_v"],
+                "description": "One of: great_circle_globe {grid_radius_mm, layout (\"orthogonal3\"|\"cuboctahedral4\"|\"icosidodecahedral6\") | normals: [[x,y,z],…]}; lat_long_globe {grid_radius_mm, n_lat, n_long}; circle {center_mm, normal, radius_mm, ampere_turns?}; arc {center_mm, normal, start_mm, sweep_deg}; polyline {points_mm, closed?}; ring {ring_radius_mm, z_mm, ampere_turns?}. All take wire_radius_mm and potential_v.",
+                "properties": {
+                    "kind": {"type": "string", "enum": ["great_circle_globe", "lat_long_globe", "circle", "arc", "polyline", "ring"]},
+                    "wire_radius_mm": pv, "potential_v": pv, "grid_radius_mm": pv,
+                    "layout": {"type": "string", "enum": ["orthogonal3", "cuboctahedral4", "icosidodecahedral6"]},
+                    "normals": {"type": "array", "items": vec3},
+                    "n_lat": {"type": "number"}, "n_long": {"type": "number"},
+                    "center_mm": vec3, "normal": vec3, "start_mm": vec3,
+                    "radius_mm": pv, "sweep_deg": pv,
+                    "points_mm": {"type": "array", "items": vec3},
+                    "closed": {"type": "boolean"},
+                    "ring_radius_mm": pv, "z_mm": pv, "ampere_turns": pv
+                }
+            }}
+        }
+    })
+}
+
 fn device_spec_schema() -> Value {
     let pv = param_value_schema();
     json!({
@@ -189,6 +222,7 @@ pub fn descriptors() -> Vec<Value> {
         "nz": {"type": "number", "description": "Axial grid nodes. Default 201."},
         "particles": {"type": "number", "description": "Deuteron ensemble size. Default 64."},
         "max_passes": {"type": "number", "description": "Core-pass cap (censoring boundary). Default 25."},
+        "step_mm": {"type": "number", "description": "3D specs only: tracer step length, mm. Default a quarter of the thinnest wire radius, capped at 0.25 mm. (nr/nz apply to 2D specs only.)"},
         "cx_sigma_m2": {"type": "number", "description": "Enable single-generation charge exchange with this constant cross section, m² (order 1e-19 for D⁺ on D₂ in the keV band). With CX on, the result's `prediction` reports a floor (CX on) … ceiling (CX off) bracket from the same traces."}
     });
     if let (Some(o), Some(p)) = (sim_opts.as_object_mut(), op_point_props().as_object()) {
@@ -212,11 +246,14 @@ pub fn descriptors() -> Vec<Value> {
     vec![
         json!({
             "name": "simulate_charged_particles",
-            "description": "Charged-particle optics for axisymmetric electrode devices (fusors, magnetically shielded-grid IEC, ring traps): solve the electrostatic field + ring-coil magnetics, trace a deuteron ensemble (Boris integrator, Bosch-Hale D-D yield weighting), and report interception fraction (the cathode-ammeter observable), recirculation, predicted neutron rate, fusion power, Q and distance-to-Lawson — as data plus `vcad.particle-claims/1` and unified-receipt claims (basis \"predicted\": Provisional until bench-measured; bind readings with compare_measurements). With `options.cx_sigma_m2` the result's `prediction` is a floor (CX on) … ceiling (CX off) bracket from one ensemble. `sweep.kv` adds a voltage sweep (the same bracket per point). `section: true` adds equipotential contours and deuteron tracks for drawing; in vcad.app they appear in Analysis → Fields over the device section. Vacuum single-particle optics: no space charge, no CX chain; neutron rates are floors. Deterministic. Cost ∝ grid × particles × passes; defaults run in seconds.",
+            "description": "Charged-particle optics for axisymmetric electrode devices (fusors, magnetically shielded-grid IEC, ring traps): solve the electrostatic field + ring-coil magnetics, trace a deuteron ensemble (Boris integrator, Bosch-Hale D-D yield weighting), and report interception fraction (the cathode-ammeter observable), recirculation, predicted neutron rate, fusion power, Q and distance-to-Lawson — as data plus `vcad.particle-claims/1` and unified-receipt claims (basis \"predicted\": Provisional until bench-measured; bind readings with compare_measurements). With `options.cx_sigma_m2` the result's `prediction` is a floor (CX on) … ceiling (CX off) bracket from one ensemble. `sweep.kv` adds a voltage sweep (the same bracket per point). `section: true` adds equipotential contours and deuteron tracks for drawing; in vcad.app they appear in Analysis → Fields over the device section. Vacuum single-particle optics: no space charge, no CX chain; neutron rates are floors. Deterministic. Cost ∝ grid × particles × passes; defaults run in seconds. A 3D spec (`chamber` + `electrodes`) models real globe grids (great circles, latitude + meridian wires) in a grounded sphere via the thin-wire BEM and a full-sphere launch; it returns stats, the neutron-rate floor/ceiling and the solver's surface-residual report, without receipt claims (3D claims are not wired yet), and is not drawn in the Fields panel yet.",
             "inputSchema": {
                 "type": "object", "required": ["spec"],
                 "properties": {
-                    "spec": device_spec_schema(),
+                    "spec": {
+                        "description": "An axisymmetric ring device (`rings`, or the `classic_fusor` shorthand) or a 3D wire device (`chamber` + `electrodes`).",
+                        "anyOf": [device_spec_schema(), device_spec_3d_schema()]
+                    },
                     "parameters": params_schema(),
                     "options": {"type": "object", "properties": sim_opts},
                     "section": {"description": "true, or {tracks, contours, max_points, spacing_mm}: also return the section drawing data (potential grid, equipotentials, wires, tracks in the y = 0 plane, x = signed r). Off by default: it is large.", "anyOf": [{"type": "boolean"}, {"type": "object"}]},

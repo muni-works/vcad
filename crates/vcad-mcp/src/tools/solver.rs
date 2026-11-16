@@ -125,11 +125,14 @@ fn run(ctx: &ToolCtx, name: &str, args: Value) -> Result<ToolOutput, ToolError> 
                 o.insert("extracted".into(), ex);
             }
             // Best effort: the panel is a view of the result, never a gate.
-            let _ = ctx.store.host_call(
-                SHOW_RESULT,
-                &json!({"tool": name, "args": args, "result": full}),
-                &Value::Null,
-            );
+            // 3D (globe) runs have no section/claims the panel can draw yet.
+            if full.get("device_kind").and_then(Value::as_str) != Some("3d") {
+                let _ = ctx.store.host_call(
+                    SHOW_RESULT,
+                    &json!({"tool": name, "args": args, "result": full}),
+                    &Value::Null,
+                );
+            }
             Ok(ToolOutput::structured(st::compact_for_agent(name, full)))
         }
         // Tool-level isError (like every native tool), so the agent reads why.
