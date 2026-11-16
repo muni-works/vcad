@@ -767,6 +767,7 @@ pub fn split_face_by_curve(
                 || hole_chord_covered(l, entry_point, &p_entry_side)
                 || hole_chord_covered(l, &p_exit_side, exit_point)
             {
+                split_dbg!("sfbc: cut passes through a hole ({entry_point:?} → {exit_point:?})");
                 loop1_points = l1.clone();
                 loop2_points = l2.clone();
                 consumed_hole = Some(*lp);

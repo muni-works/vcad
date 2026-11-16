@@ -184,6 +184,76 @@ fn dangling_keys(b: &BRepSolid) -> Vec<String> {
     bad
 }
 
+/// Debug aid (`CENSUS_FACES=1`): one line per face — surface kind,
+/// orientation, loop sizes, bounding box and the outer loop's Newell normal.
+fn dump_faces(b: &BRepSolid) {
+    let t = &b.topology;
+    // Per-face mesh area vector (Σ triangle normals × area) and unsigned area.
+    let mesh_area: HashMap<_, _> = vcad_kernel_tessellate::tessellate_brep_by_face(
+        b,
+        &vcad_kernel_tessellate::TessellationParams::from_segments(SEGMENTS),
+    )
+    .into_iter()
+    .map(|(fid, _, m)| {
+        let p = |i: u32| {
+            let i = i as usize * 3;
+            [m.vertices[i] as f64, m.vertices[i + 1] as f64, m.vertices[i + 2] as f64]
+        };
+        let (mut v, mut a) = ([0.0f64; 3], 0.0f64);
+        for tri in m.indices.chunks(3) {
+            let (x, y, z) = (p(tri[0]), p(tri[1]), p(tri[2]));
+            let u = [y[0] - x[0], y[1] - x[1], y[2] - x[2]];
+            let w = [z[0] - x[0], z[1] - x[1], z[2] - x[2]];
+            let n = [
+                u[1] * w[2] - u[2] * w[1],
+                u[2] * w[0] - u[0] * w[2],
+                u[0] * w[1] - u[1] * w[0],
+            ];
+            for c in 0..3 {
+                v[c] += n[c] / 2.0;
+            }
+            a += (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt() / 2.0;
+        }
+        (fid, (v, a, m.indices.len() / 3))
+    })
+    .collect();
+    for (fid, f) in &t.faces {
+        let pts = |l| -> Vec<vcad_kernel_math::Point3> {
+            t.loop_half_edges(l)
+                .map(|he| t.vertices[t.half_edges[he].origin].point)
+                .collect()
+        };
+        let outer = pts(f.outer_loop);
+        let (mut lo, mut hi) = ([f64::MAX; 3], [f64::MIN; 3]);
+        let mut n = [0.0f64; 3];
+        for (i, p) in outer.iter().enumerate() {
+            let q = outer[(i + 1) % outer.len()];
+            n[0] += (p.y - q.y) * (p.z + q.z);
+            n[1] += (p.z - q.z) * (p.x + q.x);
+            n[2] += (p.x - q.x) * (p.y + q.y);
+            for (c, v) in [p.x, p.y, p.z].into_iter().enumerate() {
+                lo[c] = lo[c].min(v);
+                hi[c] = hi[c].max(v);
+            }
+        }
+        eprintln!(
+            "  {fid:?} {:?} {:?} outer {} inner {:?} bbox [{:.1},{:.1},{:.1}]..[{:.1},{:.1},{:.1}] newell/2 [{:.0},{:.0},{:.0}]",
+            b.geometry.surfaces[f.surface_index].surface_type(),
+            f.orientation,
+            outer.len(),
+            f.inner_loops.iter().map(|&l| pts(l).len()).collect::<Vec<_>>(),
+            lo[0], lo[1], lo[2], hi[0], hi[1], hi[2],
+            n[0] / 2.0, n[1] / 2.0, n[2] / 2.0
+        );
+        if let Some((v, a, tris)) = mesh_area.get(&fid) {
+            eprintln!(
+                "      mesh: {tris} tris, area {a:.0}, area vector [{:.0},{:.0},{:.0}]",
+                v[0], v[1], v[2]
+            );
+        }
+    }
+}
+
 struct Bounds {
     volume: f64,
     tol_frac: f64,
@@ -202,6 +272,9 @@ fn check(label: &str, result: &BooleanResult, report: &BooleanReport, bounds: Bo
             dangling.len(),
             &dangling[..dangling.len().min(4)]
         ));
+    }
+    if std::env::var_os("CENSUS_FACES").is_some() {
+        dump_faces(result.as_brep().expect("brep"));
     }
     let mesh = result.to_mesh(SEGMENTS);
     let vol = signed_volume(&mesh);
@@ -360,6 +433,63 @@ fn sectioned_ring_batched() {
         &cut,
         &f,
         Bounds { volume: 0.75 * v_ring, tol_frac: 1e-3, max_tris: 1500 },
+    ));
+    assert!(fails.is_empty(), "{fails:#?}");
+}
+
+/// A closed can with an internal cavity, quadrant cut away. The cavity's
+/// extended wall leaves the can's caps split into a disc and an annulus, so
+/// each section plane crosses a holed cap through hole vertices lying
+/// exactly on the cut, and the quarter-annulus pieces are thin concave
+/// polygons (three of six used to tessellate inside-out).
+#[test]
+fn sectioned_can_with_cavity() {
+    let mut fails = Vec::new();
+    let (hollow, _) = op(
+        "cavity",
+        &zcyl(79.5, -79.5, 79.5),
+        &zcyl(76.0, -76.0, 76.0),
+        BooleanOp::Difference,
+    );
+    let (cut, f) = op("section", &brep(&hollow), &quadrant(), BooleanOp::Difference);
+    fails.extend(check(
+        "(can − cavity) − quadrant",
+        &cut,
+        &f,
+        Bounds { volume: 0.75 * (CAN - CAVITY), tol_frac: 1e-3, max_tris: 8000 },
+    ));
+    assert!(fails.is_empty(), "{fails:#?}");
+}
+
+/// The same part batched the way `vcad-eval` first tries a difference
+/// chain: can − (cavity ∪ quadrant).
+///
+/// Known defect, not fixed here: the analytic result is right to 0.04% but
+/// comes back with 9 unpaired and 3 overused edges, the watertightness swap
+/// trades it for the mesh fallback, and the fallback's 32-gon soup is 4.6%
+/// short. `vcad-eval` sees the soup, discards the batch and cuts in authored
+/// order (the test above), so documents are unaffected.
+#[test]
+#[ignore = "batched cavity ∪ quadrant cut is cracked and swapped for soup"]
+fn sectioned_can_with_cavity_batched() {
+    let mut fails = Vec::new();
+    let (tool, f) = op("tool", &zcyl(76.0, -76.0, 76.0), &quadrant(), BooleanOp::Union);
+    fails.extend(check(
+        "cavity ∪ quadrant",
+        &tool,
+        &f,
+        Bounds {
+            volume: 400.0 * 400.0 * 800.0 + 0.75 * CAVITY,
+            tol_frac: 1e-4,
+            max_tris: 4000,
+        },
+    ));
+    let (cut, f) = op("cut", &zcyl(79.5, -79.5, 79.5), &brep(&tool), BooleanOp::Difference);
+    fails.extend(check(
+        "can − (cavity ∪ quadrant)",
+        &cut,
+        &f,
+        Bounds { volume: 0.75 * (CAN - CAVITY), tol_frac: 1e-3, max_tris: 8000 },
     ));
     assert!(fails.is_empty(), "{fails:#?}");
 }

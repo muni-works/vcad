@@ -2682,17 +2682,24 @@ fn tessellate_concave_polygon(verts: &[Point3], reversed: bool) -> TriangleMesh 
         return TriangleMesh::new();
     }
 
-    // Build 2D projection for ear clipping.
-    // Compute the face plane from first 3 non-collinear vertices.
+    // Build 2D projection for ear clipping. The frame's normal must follow
+    // the loop's winding, so take it from Newell's area-weighted sum, not
+    // from the first corner: a cross product of the first two edges flips
+    // sign whenever vertex 0 sits on a reflex stretch, and the triangles
+    // then wind into the solid. A quarter of an annulus (a ring cap cut by
+    // two section planes) starts on its inner arc half the time — three of
+    // the six quarter-ring caps of a sectioned can came out inside-out.
+    // `tessellate_planar_face_with_holes` already does this.
     let e1 = verts[1] - verts[0];
-    let e2 = verts[2] - verts[0];
-    let mut face_normal = e1.cross(e2);
-    for i in 3..n {
-        if face_normal.norm() > 1e-12 {
-            break;
+    let mut face_normal = newell_normal(verts);
+    if face_normal.norm() < 1e-12 {
+        face_normal = e1.cross(verts[2] - verts[0]);
+        for v in &verts[3..] {
+            if face_normal.norm() > 1e-12 {
+                break;
+            }
+            face_normal = e1.cross(*v - verts[0]);
         }
-        let ei = verts[i] - verts[0];
-        face_normal = e1.cross(ei);
     }
 
     if face_normal.norm() < 1e-12 {
