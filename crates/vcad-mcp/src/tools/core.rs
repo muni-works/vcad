@@ -447,9 +447,9 @@ pub(crate) fn threemf_bytes(meshes: &[(Vec<f32>, Vec<u32>)]) -> std::io::Result<
         }
         let id = ids.len() + 1;
         ids.push(id);
-        let _ = write!(
+        let _ = writeln!(
             model,
-            "<object id=\"{id}\" type=\"model\" name=\"part {id}\"><mesh><vertices>\n"
+            "<object id=\"{id}\" type=\"model\" name=\"part {id}\"><mesh><vertices>"
         );
         for v in pos.as_chunks::<3>().0 {
             let _ = writeln!(
