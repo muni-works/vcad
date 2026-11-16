@@ -35,8 +35,30 @@
 //! right-hand-side norm** (sources + boundary drives), the scale-invariant
 //! choice: an absolute epsilon would read a milliwatt problem as converged
 //! at iteration zero.
+//!
+//! **Radiation (M7).** A [`Boundary::Radiation`] face adds a nonlinear
+//! surface loss q(T_p) per face: the half-cell resistance r = d/(2k) in
+//! series with the gray surface q″ = ε_eff·σ·(T_s⁴ − T_∞⁴) + h·(T_s − T_∞),
+//! with the surface temperature T_s solved per face by safeguarded
+//! Newton–bisection (q″ is monotone in T_s, so the root is bracketed by
+//! T_∞ and T_p). The global system R(T) = A·T − b + Q(T) = 0 is then
+//! solved by **Newton**: the Jacobian is A + diag(∂Q/∂T_p) — still SPD,
+//! since ∂Q/∂T_p = A_f·h_s/(1 + h_s·r) > 0 with h_s = 4ε_effσT_s³ + h — so
+//! every Newton step is one more PCG solve with the same matrix-free
+//! operator and a bigger diagonal. The steady solve starts from a uniform
+//! field at the radiation ambient, whose first Newton step is the problem
+//! linearized at ambient (a supersolution: T⁴ is convex, so linearizing
+//! at T_∞ under-counts cooling); from above, Newton on a convex monotone
+//! loss descends monotonically. Later steps are backtracked on ‖R‖.
+//! Inner tolerances follow Eisenstat–Walker (η = min(0.1, ‖R‖_rel),
+//! never tighter than needed for the outer tolerance). The stopping test
+//! is ‖R‖ ≤ tol·max(‖b‖, ‖Q‖) — the same scale-invariant criterion, with
+//! the radiated flux standing in for b when a part radiates with no
+//! source of its own. Conduction-only models never touch this path.
 
-use crate::model::{face_index, Boundary, ModelError, ThermalModel};
+use crate::model::{
+    face_index, Boundary, Enclosure, ModelError, ThermalModel, KELVIN_OFFSET_C, STEFAN_BOLTZMANN,
+};
 use serde::Serialize;
 
 /// BC-slot index used for `ThermalModel::exposed` in convection links and
@@ -95,6 +117,18 @@ pub enum SolveError {
     BadScheduleOverride(String),
     /// The smooth-max exponent must be finite and > 1.
     InvalidSmoothingExponent,
+    /// The Newton iteration for a radiating model did not reach `tol`
+    /// (iteration cap, or a line search that could not reduce ‖R‖).
+    NonlinearNotConverged {
+        /// Final relative nonlinear residual.
+        residual_rel: f64,
+        /// Newton iterations performed.
+        iterations: usize,
+    },
+    /// The requested path does not support radiation faces yet (the
+    /// string names it) — fail-closed rather than silently dropping the
+    /// nonlinear loss.
+    RadiationUnsupported(String),
 }
 
 impl std::fmt::Display for SolveError {
@@ -127,6 +161,19 @@ impl std::fmt::Display for SolveError {
             SolveError::InvalidSmoothingExponent => {
                 write!(f, "smooth-max exponent p must be finite and > 1")
             }
+            SolveError::NonlinearNotConverged {
+                residual_rel,
+                iterations,
+            } => write!(
+                f,
+                "radiation Newton iteration not converged after {iterations} iterations \
+                 (relative residual {residual_rel:.3e})"
+            ),
+            SolveError::RadiationUnsupported(what) => write!(
+                f,
+                "{what} does not support radiation boundaries yet (the nonlinear surface loss \
+                 would be silently dropped)"
+            ),
         }
     }
 }
@@ -172,7 +219,10 @@ pub struct EnergyBalance {
     pub convection_out_w: f64,
     /// Net heat out into fixed-temperature reservoirs, W.
     pub fixed_region_out_w: f64,
-    /// Sum of the three outflows, W.
+    /// Net heat out through radiation faces (radiative plus any parallel
+    /// film on those faces), W. Zero for conduction-only models.
+    pub radiation_out_w: f64,
+    /// Sum of the four outflows, W.
     pub net_out_w: f64,
     /// |source − net out| / max(|source|, gross flow).
     pub residual_rel: f64,
@@ -208,6 +258,39 @@ pub struct Solution {
     pub reservoirs: Vec<ReservoirReport>,
     /// Energy balance of the solved field.
     pub energy: EnergyBalance,
+    /// Newton iterations of the nonlinear (radiation) solve; 0 when the
+    /// model is linear. `iterations` is then the CG total across steps.
+    pub newton_iterations: usize,
+    /// Per-slot radiation reports (empty for conduction-only models).
+    pub radiation: Vec<RadiationReport>,
+}
+
+/// What one radiating BC slot did.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RadiationReport {
+    /// Slot label (`-x … +z`, `exposed`).
+    pub label: String,
+    /// Surface emissivity as specified.
+    pub emissivity: f64,
+    /// Effective emissivity after the enclosure exchange (= ε without
+    /// an enclosure).
+    pub effective_emissivity: f64,
+    /// Parallel film coefficient on these faces, W/(m²·K).
+    pub h_w_m2k: f64,
+    /// Radiating voxel-face count.
+    pub faces: usize,
+    /// Raw voxel-staircase area of the slot, m² (before `area_scale`).
+    pub voxel_area_m2: f64,
+    /// Radiating area actually used, m² (= voxel area × `area_scale`).
+    pub area_m2: f64,
+    /// Heat leaving through the slot, W (radiation + parallel film).
+    pub heat_out_w: f64,
+    /// Of which radiation alone, W.
+    pub radiated_w: f64,
+    /// Area-weighted mean surface temperature of the slot, °C.
+    pub mean_surface_c: f64,
+    /// Hottest face surface temperature, °C.
+    pub max_surface_c: f64,
 }
 
 impl Solution {
@@ -263,6 +346,113 @@ pub(crate) struct BcLink {
     pub(crate) kind: LinkKind,
 }
 
+/// A nonlinear radiation face: half-cell resistance in series with a gray
+/// surface (+ optional parallel film) to an ambient.
+#[derive(Clone)]
+pub(crate) struct RadLink {
+    pub(crate) voxel: usize,
+    pub(crate) axis: usize,
+    /// Radiating area (voxel face × `area_scale`), m².
+    pub(crate) area_m2: f64,
+    /// Half-cell resistance per unit area d/(2k), m²·K/W.
+    pub(crate) r_half: f64,
+    /// Effective emissivity (enclosure applied).
+    pub(crate) eps_eff: f64,
+    /// Parallel film, W/(m²·K).
+    pub(crate) h: f64,
+    /// Ambient, °C.
+    pub(crate) t_amb_c: f64,
+    /// BC slot (0..=5 domain faces, 6 exposed).
+    pub(crate) slot: usize,
+}
+
+/// One face's solved surface state.
+pub(crate) struct RadFace {
+    /// Surface temperature, °C.
+    pub(crate) ts_c: f64,
+    /// Heat out, W.
+    pub(crate) q_w: f64,
+    /// Radiative part of `q_w`, W.
+    pub(crate) q_rad_w: f64,
+    /// ∂q/∂T_p, W/K.
+    pub(crate) dq_dtp: f64,
+    /// 1 + h_s·r (the series denominator, for the adjoint's partials).
+    pub(crate) denom: f64,
+    /// h_s = ∂q″/∂T_s, W/(m²·K).
+    pub(crate) hs: f64,
+}
+
+impl RadLink {
+    /// Solve the surface temperature for voxel temperature `tp_c` and
+    /// return the flux and its derivative. q″(T_s) is monotone, and the
+    /// root lies between T_∞ and T_p, so Newton safeguarded by bisection
+    /// always converges.
+    pub(crate) fn face(&self, tp_c: f64) -> RadFace {
+        let ta_k = self.t_amb_c + KELVIN_OFFSET_C;
+        let ta4 = ta_k.powi(4);
+        let es = self.eps_eff * STEFAN_BOLTZMANN;
+        let r = self.r_half;
+        // Surface flux per area and its slope at T_s (°C); the kelvin
+        // temperature is clamped at 0 so the loss stays monotone even if
+        // an iterate dips below absolute zero.
+        let flux = |ts_c: f64| {
+            let tk = (ts_c + KELVIN_OFFSET_C).max(0.0);
+            let rad = es * (tk.powi(4) - ta4);
+            let f = rad + self.h * (ts_c - self.t_amb_c);
+            let df = 4.0 * es * tk.powi(3) + self.h;
+            (f, df, rad)
+        };
+        let (mut lo, mut hi) = if tp_c >= self.t_amb_c {
+            (self.t_amb_c, tp_c)
+        } else {
+            (tp_c, self.t_amb_c)
+        };
+        // Start from the voxel temperature (the r → 0 answer).
+        let mut ts = tp_c;
+        for _ in 0..100 {
+            let (f, df, _) = flux(ts);
+            let g = f - (tp_c - ts) / r;
+            if g > 0.0 {
+                hi = ts;
+            } else {
+                lo = ts;
+            }
+            let dg = df + 1.0 / r;
+            let mut next = ts - g / dg;
+            if !(next > lo && next < hi) {
+                next = 0.5 * (lo + hi);
+            }
+            let step = (next - ts).abs();
+            ts = next;
+            if step <= 1e-13 * (1.0 + ts.abs()) || hi - lo <= 1e-13 * (1.0 + ts.abs()) {
+                break;
+            }
+        }
+        let (f, df, rad) = flux(ts);
+        let denom = 1.0 + df * r;
+        RadFace {
+            ts_c: ts,
+            q_w: self.area_m2 * f,
+            q_rad_w: self.area_m2 * rad,
+            dq_dtp: self.area_m2 * df / denom,
+            denom,
+            hs: df,
+        }
+    }
+}
+
+/// Per-slot radiation bookkeeping fixed at build time.
+#[derive(Clone, Copy)]
+pub(crate) struct RadSlot {
+    pub(crate) emissivity: f64,
+    pub(crate) eps_eff: f64,
+    pub(crate) h: f64,
+    pub(crate) faces: usize,
+    pub(crate) voxel_area_m2: f64,
+    pub(crate) area_m2: f64,
+    pub(crate) enclosure: Option<Enclosure>,
+}
+
 /// The assembled discrete system (crate-internal; the transient solver
 /// reuses it with a time term added to the diagonal).
 pub(crate) struct System {
@@ -291,6 +481,10 @@ pub(crate) struct System {
     pub(crate) d_m: [f64; 3],
     /// Face area per axis, m².
     pub(crate) area: [f64; 3],
+    /// Nonlinear radiation faces (empty for conduction-only models).
+    pub(crate) rad_links: Vec<RadLink>,
+    /// Radiation bookkeeping per BC slot (0..=5 domain faces, 6 exposed).
+    pub(crate) rad_slots: [Option<RadSlot>; 7],
 }
 
 impl System {
@@ -339,10 +533,18 @@ impl System {
     /// (Dirichlet faces, convection faces, reservoir contacts) for the
     /// free-node temperature vector `t`, W.
     pub(crate) fn boundary_outflow_w(&self, t: &[f64]) -> f64 {
-        self.links
+        let linear: f64 = self
+            .links
             .iter()
             .map(|l| l.g * (t[l.voxel] - l.t_ref))
-            .sum()
+            .sum();
+        let rad: f64 = self.rad_links.iter().map(|l| l.face(t[l.voxel]).q_w).sum();
+        linear + rad
+    }
+
+    /// Is any face radiating (the nonlinear path)?
+    pub(crate) fn radiates(&self) -> bool {
+        !self.rad_links.is_empty()
     }
 }
 
@@ -361,10 +563,18 @@ pub(crate) fn build(model: &ThermalModel) -> Result<System, SolveError> {
         .iter()
         .chain(std::iter::once(&model.exposed))
     {
-        if let Boundary::Convection { h_w_m2k, .. } = bc {
-            if *h_w_m2k <= 0.0 {
+        match bc {
+            Boundary::Convection { h_w_m2k, .. } if *h_w_m2k <= 0.0 => {
                 return Err(ModelError::NonPositiveFilmCoefficient.into());
             }
+            Boundary::Radiation {
+                emissivity,
+                ambient_c,
+                h_w_m2k,
+                area_scale,
+                enclosure,
+            } => validate_radiation(*emissivity, *ambient_c, *h_w_m2k, *area_scale, *enclosure)?,
+            _ => {}
         }
     }
 
@@ -498,6 +708,7 @@ pub(crate) fn build(model: &ThermalModel) -> Result<System, SolveError> {
     let mut g_pos = [vec![0.0; nvox], vec![0.0; nvox], vec![0.0; nvox]];
     let mut diag = vec![0.0_f64; nvox];
     let mut links: Vec<BcLink> = Vec::new();
+    let mut rad_links: Vec<RadLink> = Vec::new();
     let mut grounded = vec![false; nvox];
     for k in 0..nz {
         for j in 0..ny {
@@ -621,10 +832,86 @@ pub(crate) fn build(model: &ThermalModel) -> Result<System, SolveError> {
                                     kind: LinkKind::Convection(slot),
                                 });
                             }
+                            Boundary::Radiation {
+                                emissivity,
+                                ambient_c,
+                                h_w_m2k,
+                                area_scale,
+                                ..
+                            } => {
+                                grounded[p] = true;
+                                rad_links.push(RadLink {
+                                    voxel: p,
+                                    axis,
+                                    area_m2: area[axis] * area_scale,
+                                    r_half: half,
+                                    // Enclosure exchange is applied below,
+                                    // once the slot's total area is known.
+                                    eps_eff: emissivity,
+                                    h: h_w_m2k,
+                                    t_amb_c: ambient_c,
+                                    slot,
+                                });
+                            }
                         }
                     }
                 }
             }
+        }
+    }
+
+    // Radiation slots: total area, then the two-surface enclosure
+    // exchange (needs the slot's whole radiating area, so it is applied
+    // after every face is known).
+    let mut rad_slots: [Option<RadSlot>; 7] = [None; 7];
+    for l in &rad_links {
+        let bc = if l.slot == EXPOSED_SLOT {
+            model.exposed
+        } else {
+            model.domain_faces[l.slot]
+        };
+        let Boundary::Radiation {
+            emissivity,
+            h_w_m2k,
+            area_scale,
+            enclosure,
+            ..
+        } = bc
+        else {
+            unreachable!("radiation link from a non-radiation slot");
+        };
+        let slot = rad_slots[l.slot].get_or_insert(RadSlot {
+            emissivity,
+            eps_eff: emissivity,
+            h: h_w_m2k,
+            faces: 0,
+            voxel_area_m2: 0.0,
+            area_m2: 0.0,
+            enclosure,
+        });
+        slot.faces += 1;
+        slot.area_m2 += l.area_m2;
+        slot.voxel_area_m2 += l.area_m2 / area_scale;
+    }
+    for (slot_index, rs) in rad_slots.iter_mut().enumerate() {
+        let Some(rs) = rs else { continue };
+        if let Some(enc) = rs.enclosure {
+            if enc.area_m2 <= rs.area_m2 {
+                return Err(ModelError::InvalidRadiation(format!(
+                    "slot {}: enclosure area {:.4e} m2 must exceed the enclosed radiating area \
+                     {:.4e} m2",
+                    slot_label(slot_index),
+                    enc.area_m2,
+                    rs.area_m2
+                ))
+                .into());
+            }
+            rs.eps_eff = effective_emissivity(rs.emissivity, rs.area_m2, enc);
+        }
+    }
+    for l in &mut rad_links {
+        if let Some(rs) = rad_slots[l.slot] {
+            l.eps_eff = rs.eps_eff;
         }
     }
 
@@ -645,12 +932,60 @@ pub(crate) fn build(model: &ThermalModel) -> Result<System, SolveError> {
         kfield,
         d_m,
         area,
+        rad_links,
+        rad_slots,
     };
 
     // Fail closed on floating components: BFS over free voxels through
     // positive pair conductances; every component must touch a reference.
     check_grounding(&sys, &grounded, model)?;
     Ok(sys)
+}
+
+/// Label of a BC slot (`-x … +z`, `exposed`).
+pub(crate) fn slot_label(slot: usize) -> &'static str {
+    ["-x", "+x", "-y", "+y", "-z", "+z", "exposed"][slot]
+}
+
+/// Two-surface gray enclosure: ε_eff = 1/(1/ε + (A_s/A_w)(1/ε_w − 1)).
+pub(crate) fn effective_emissivity(emissivity: f64, area_m2: f64, enc: Enclosure) -> f64 {
+    1.0 / (1.0 / emissivity + area_m2 / enc.area_m2 * (1.0 / enc.emissivity - 1.0))
+}
+
+fn validate_radiation(
+    emissivity: f64,
+    ambient_c: f64,
+    h_w_m2k: f64,
+    area_scale: f64,
+    enclosure: Option<Enclosure>,
+) -> Result<(), ModelError> {
+    let bad = |why: String| Err(ModelError::InvalidRadiation(why));
+    if !(emissivity > 0.0 && emissivity <= 1.0) {
+        return bad(format!("emissivity {emissivity} must be in (0, 1]"));
+    }
+    if !(ambient_c.is_finite() && ambient_c > -KELVIN_OFFSET_C) {
+        return bad(format!(
+            "ambient {ambient_c} C must be finite and above absolute zero"
+        ));
+    }
+    if !(h_w_m2k.is_finite() && h_w_m2k >= 0.0) {
+        return bad(format!("parallel film h = {h_w_m2k} must be >= 0"));
+    }
+    if !(area_scale.is_finite() && area_scale > 0.0) {
+        return bad(format!("area_scale {area_scale} must be > 0"));
+    }
+    if let Some(enc) = enclosure {
+        if !(enc.emissivity > 0.0 && enc.emissivity <= 1.0) {
+            return bad(format!(
+                "enclosure emissivity {} must be in (0, 1]",
+                enc.emissivity
+            ));
+        }
+        if !(enc.area_m2.is_finite() && enc.area_m2 > 0.0) {
+            return bad(format!("enclosure area {} m2 must be > 0", enc.area_m2));
+        }
+    }
+    Ok(())
 }
 
 fn check_grounding(
@@ -752,6 +1087,192 @@ pub(crate) fn pcg(
     }
 }
 
+/// A solved free-node field (linear or Newton).
+pub(crate) struct FieldSolve {
+    pub(crate) x: Vec<f64>,
+    /// CG iterations (summed over Newton steps).
+    pub(crate) cg_iterations: usize,
+    /// Final relative residual (linear: CG; nonlinear: Newton).
+    pub(crate) residual_rel: f64,
+    pub(crate) newton_iterations: usize,
+    /// ∂Q/∂T_p per voxel at the solution (zeros when linear) — the
+    /// Jacobian's extra diagonal, reused by the adjoint.
+    pub(crate) jac_rad: Vec<f64>,
+}
+
+/// Newton iteration cap for radiating solves.
+const MAX_NEWTON: usize = 200;
+
+/// Solve (diag − offdiag)·x − rhs + Q(x) = 0 on the free voxels. Without
+/// radiation faces this is exactly one PCG solve. `trust_first` accepts
+/// the first Newton step without a line search (the steady solve's
+/// linearized-at-ambient supersolution; see the module docs).
+pub(crate) fn solve_field(
+    sys: &System,
+    diag: &[f64],
+    rhs: &[f64],
+    x0: &[f64],
+    opts: &SolveOptions,
+    trust_first: bool,
+) -> Result<FieldSolve, SolveError> {
+    let n = rhs.len();
+    if !sys.radiates() {
+        let (x, cg_iterations, residual_rel) = pcg(sys, diag, rhs, x0, opts)?;
+        return Ok(FieldSolve {
+            x,
+            cg_iterations,
+            residual_rel,
+            newton_iterations: 0,
+            jac_rad: vec![0.0; n],
+        });
+    }
+    let rhs_norm = rhs
+        .iter()
+        .zip(&sys.free)
+        .filter(|(_, &f)| f)
+        .map(|(v, _)| v * v)
+        .sum::<f64>()
+        .sqrt();
+    // Residual R(x) and the radiation Jacobian diagonal. Returns
+    // (‖R‖, relative residual ‖R‖/max(‖b‖, ‖Q‖), roundoff floor). The
+    // line search compares the *absolute* norm (the relative one is not
+    // monotone along a Newton path: far above the root ‖Q‖ dominates
+    // both numerator and denominator). The floor is the residual the
+    // arithmetic can resolve — R cancels terms of size ~diag·|x| — so a
+    // tolerance below it is clamped to it rather than chased forever.
+    let eval = |x: &[f64], r: &mut [f64], jac: &mut [f64]| -> (f64, f64, f64) {
+        sys.apply(diag, x, r);
+        for p in 0..n {
+            if sys.free[p] {
+                r[p] -= rhs[p];
+            } else {
+                r[p] = 0.0;
+            }
+        }
+        jac.iter_mut().for_each(|j| *j = 0.0);
+        let mut qv = vec![0.0_f64; n];
+        for l in &sys.rad_links {
+            let f = l.face(x[l.voxel]);
+            r[l.voxel] += f.q_w;
+            qv[l.voxel] += f.q_w;
+            jac[l.voxel] += f.dq_dtp;
+        }
+        let q_norm = qv.iter().map(|v| v * v).sum::<f64>().sqrt();
+        let r_norm = r.iter().map(|v| v * v).sum::<f64>().sqrt();
+        let ax_norm = (0..n)
+            .filter(|&p| sys.free[p])
+            .map(|p| (2.0 * (diag[p] + jac[p]) * x[p].abs()).powi(2))
+            .sum::<f64>()
+            .sqrt();
+        let scale = rhs_norm.max(q_norm).max(1e-300);
+        (
+            r_norm,
+            r_norm / scale,
+            64.0 * f64::EPSILON * ax_norm / scale,
+        )
+    };
+
+    let mut x = x0.to_vec();
+    let mut r = vec![0.0_f64; n];
+    let mut jac = vec![0.0_f64; n];
+    let (mut r_norm, mut rel, mut floor) = eval(&x, &mut r, &mut jac);
+    let mut cg_total = 0usize;
+    let zeros = vec![0.0_f64; n];
+    let mut x_try = vec![0.0_f64; n];
+    let mut r_try = vec![0.0_f64; n];
+    let mut jac_try = vec![0.0_f64; n];
+    for it in 0..MAX_NEWTON {
+        if rel <= opts.tol.max(floor) {
+            return Ok(FieldSolve {
+                x,
+                cg_iterations: cg_total,
+                residual_rel: rel,
+                newton_iterations: it,
+                jac_rad: jac,
+            });
+        }
+        let diag_j: Vec<f64> = diag.iter().zip(&jac).map(|(d, j)| d + j).collect();
+        let neg_r: Vec<f64> = r.iter().map(|v| -v).collect();
+        // Eisenstat–Walker forcing: loose while far, never tighter than
+        // the outer tolerance needs.
+        let eta = rel.min(0.1).max(0.5 * opts.tol / rel).clamp(1e-14, 0.1);
+        let (delta, cg_it, _) = pcg(
+            sys,
+            &diag_j,
+            &neg_r,
+            &zeros,
+            &SolveOptions {
+                tol: eta,
+                max_iters: opts.max_iters,
+            },
+        )?;
+        cg_total += cg_it;
+        let mut lambda = 1.0_f64;
+        let mut accepted = false;
+        for _ in 0..40 {
+            for p in 0..n {
+                x_try[p] = if sys.free[p] {
+                    x[p] + lambda * delta[p]
+                } else {
+                    x[p]
+                };
+            }
+            let (r_norm_try, rel_try, floor_try) = eval(&x_try, &mut r_try, &mut jac_try);
+            if (it == 0 && trust_first) || r_norm_try < r_norm * (1.0 - 1e-4 * lambda) {
+                std::mem::swap(&mut x, &mut x_try);
+                std::mem::swap(&mut r, &mut r_try);
+                std::mem::swap(&mut jac, &mut jac_try);
+                (r_norm, rel, floor) = (r_norm_try, rel_try, floor_try);
+                accepted = true;
+                break;
+            }
+            lambda *= 0.5;
+        }
+        if !accepted {
+            // Stagnation within a few ulps of the floor is convergence
+            // to the precision the arithmetic allows.
+            if rel <= opts.tol.max(16.0 * floor) {
+                return Ok(FieldSolve {
+                    x,
+                    cg_iterations: cg_total,
+                    residual_rel: rel,
+                    newton_iterations: it,
+                    jac_rad: jac,
+                });
+            }
+            return Err(SolveError::NonlinearNotConverged {
+                residual_rel: rel,
+                iterations: it + 1,
+            });
+        }
+    }
+    if rel <= opts.tol.max(floor) {
+        return Ok(FieldSolve {
+            x,
+            cg_iterations: cg_total,
+            residual_rel: rel,
+            newton_iterations: MAX_NEWTON,
+            jac_rad: jac,
+        });
+    }
+    Err(SolveError::NonlinearNotConverged {
+        residual_rel: rel,
+        iterations: MAX_NEWTON,
+    })
+}
+
+/// The steady solve's Newton starting field: uniform at the mean
+/// radiation ambient (its first Newton step is the problem linearized at
+/// ambient).
+pub(crate) fn radiation_start(sys: &System) -> Vec<f64> {
+    let n = sys.b.len();
+    let mean =
+        sys.rad_links.iter().map(|l| l.t_amb_c).sum::<f64>() / sys.rad_links.len().max(1) as f64;
+    (0..n)
+        .map(|p| if sys.free[p] { mean } else { 0.0 })
+        .collect()
+}
+
 /// Resolve the θ reference: an explicit `reference_c` wins; otherwise the
 /// convection ambients must be unique. With sources present and no
 /// resolvable reference, this is an error (fail-closed).
@@ -764,13 +1285,17 @@ pub(crate) fn resolve_reference(
     }
     let mut ambient: Option<f64> = None;
     let mut unique = true;
-    for l in &sys.links {
-        if matches!(l.kind, LinkKind::Convection(_)) {
-            match ambient {
-                None => ambient = Some(l.t_ref),
-                Some(a) if (a - l.t_ref).abs() > 1e-9 => unique = false,
-                _ => {}
-            }
+    let ambients = sys
+        .links
+        .iter()
+        .filter(|l| matches!(l.kind, LinkKind::Convection(_)))
+        .map(|l| l.t_ref)
+        .chain(sys.rad_links.iter().map(|l| l.t_amb_c));
+    for t_ref in ambients {
+        match ambient {
+            None => ambient = Some(t_ref),
+            Some(a) if (a - t_ref).abs() > 1e-9 => unique = false,
+            _ => {}
         }
     }
     match (ambient, unique) {
@@ -780,10 +1305,39 @@ pub(crate) fn resolve_reference(
     }
 }
 
+/// Voxel-staircase radiating area per radiation slot, `(label, m²)` —
+/// geometry only (the system is built and validated, nothing is solved).
+/// The area is *before* `area_scale`, so `area_scale = true_area / this`
+/// is the staircase correction for a part whose true surface area is
+/// known analytically or from the BRep.
+pub fn radiation_areas(model: &ThermalModel) -> Result<Vec<(String, f64)>, SolveError> {
+    let sys = build(model)?;
+    Ok(sys
+        .rad_slots
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, rs)| rs.map(|rs| (slot_label(slot).to_string(), rs.voxel_area_m2)))
+        .collect())
+}
+
 /// Solve the steady conduction problem.
 pub fn solve_steady(model: &ThermalModel, opts: &SolveOptions) -> Result<Solution, SolveError> {
     let sys = build(model)?;
     let reference_c = resolve_reference(&sys, model)?;
+    if sys.radiates() {
+        let x0 = radiation_start(&sys);
+        let fs = solve_field(&sys, &sys.diag, &sys.b, &x0, opts, true)?;
+        let mut sol = assemble_solution(
+            &sys,
+            model,
+            &fs.x,
+            fs.cg_iterations,
+            fs.residual_rel,
+            reference_c,
+        );
+        sol.newton_iterations = fs.newton_iterations;
+        return Ok(sol);
+    }
     let (x, iterations, residual_rel) = steady_field(model, &sys, opts)?;
     Ok(assemble_solution(
         &sys,
@@ -923,13 +1477,46 @@ pub(crate) fn assemble_solution(
             }
         }
     }
-    let net_out_w = fixed_face_out_w + convection_out_w + fixed_region_out_w;
+    // Radiation faces: per-slot reports and the fourth outflow.
+    let mut radiation_out_w = 0.0;
+    let mut radiation = Vec::new();
+    for (slot, rs) in sys.rad_slots.iter().enumerate() {
+        let Some(rs) = rs else { continue };
+        let mut heat = 0.0;
+        let mut radiated = 0.0;
+        let mut ts_area = 0.0;
+        let mut ts_max = f64::NEG_INFINITY;
+        for l in sys.rad_links.iter().filter(|l| l.slot == slot) {
+            let f = l.face(t_c[l.voxel]);
+            heat += f.q_w;
+            radiated += f.q_rad_w;
+            ts_area += f.ts_c * l.area_m2;
+            ts_max = ts_max.max(f.ts_c);
+            gross += f.q_w.abs();
+        }
+        radiation_out_w += heat;
+        radiation.push(RadiationReport {
+            label: slot_label(slot).to_string(),
+            emissivity: rs.emissivity,
+            effective_emissivity: rs.eps_eff,
+            h_w_m2k: rs.h,
+            faces: rs.faces,
+            voxel_area_m2: rs.voxel_area_m2,
+            area_m2: rs.area_m2,
+            heat_out_w: heat,
+            radiated_w: radiated,
+            mean_surface_c: ts_area / rs.area_m2,
+            max_surface_c: ts_max,
+        });
+    }
+    let net_out_w = fixed_face_out_w + convection_out_w + fixed_region_out_w + radiation_out_w;
     let scale = sys.source_w_total.abs().max(gross).max(1e-30);
     let energy = EnergyBalance {
         source_w: sys.source_w_total,
         fixed_face_out_w,
         convection_out_w,
         fixed_region_out_w,
+        radiation_out_w,
         net_out_w,
         residual_rel: (sys.source_w_total - net_out_w).abs() / scale,
     };
@@ -948,6 +1535,8 @@ pub(crate) fn assemble_solution(
         sources,
         reservoirs,
         energy,
+        newton_iterations: 0,
+        radiation,
     }
 }
 

@@ -187,6 +187,54 @@ ensembles on a 101×201 mesh. Findings:
   probes). Shape parameters (ring position/radius) remain FD/hybrid — the
   Dirichlet mask is discrete; smooth shape adjoints are the M3+ seam
   (boundary-value differentiation on a frozen mask).
+
+  **Wired into `optimize_electrodes` (2026-11-16), and measured not to
+  win yet.** `electrode_opt::optimize_electrodes` (the MCP tool's engine,
+  now in this crate with the wasm entry a thin shim) takes
+  `gradient: "hybrid"`: `parameter_roles()` routes potentials +
+  ampere-turns through one `yield_gradient` run per iterate (chained back
+  to names by `DeviceSpec::adjoint_gradient_by_name`, so a shared
+  `cathode_v` sums both rings), geometry through FD, and
+  `optimize::maximize_hybrid` retries an iteration on pure FD when the
+  adjoint direction fails to climb. Line searches and every reported
+  number stay in the **tracer** objective. The adjoint differentiates
+  its own surrogate J (fixed step and horizon, **no wire termination**),
+  not that objective. Probe on the shielded two-ring
+  (`examples/adjoint_probe.rs`, 81×161, default adjoint config, 10% A·t
+  / 5% V secants) shows two separate problems:
+  (1) **J is rough at search scale.** The pointwise adjoint disagrees with
+  J's *own* secant (sign flips on dJ/dI and dJ/dV at 20 kA·t and on
+  dJ/dI at 80 kA·t, and a 7× magnitude miss at −15 kV), the long-horizon
+  chaos the M2 note already warned about;
+  (2) **J's trend differs from the tracer's on shield current.** J's
+  secant has the opposite sign to the tracer's ∂ln f/∂I at 3 of 4 points,
+  while the V trends agree at all 4. Interception blindness is the
+  likely cause, but that is a hypothesis.
+  Benchmark (`examples/adjoint_vs_fd.rs`, the MCP defaults: 81×161,
+  48 particles, 20 passes, 8 iterations, 3 starts, one run each, one
+  after the other on a shared host):
+
+  | case | mode | best tracer yield (m³) | wall | tracer evals | adjoint runs |
+  |---|---|---|---|---|---|
+  | A: bias + ±shield A·t | FD | **1.216e-31** | 240 s | 201 | 0 |
+  | A | hybrid | 1.080e-31 (−11%) | 134 s | 171 | 22 |
+  | A | hybrid, 10-crossing horizon | 1.689e-32 | 239 s | 131 | 17 |
+  | B: ±shield A·t + ring z | FD | **3.545e-32** | 218 s | 192 | 0 |
+  | B | hybrid | 3.465e-32 (−2%) | 246 s | 234 | 22 |
+
+  Wall time is **not** a clean gradient-cost comparison. A tracer eval
+  costs 0.12 s at 20 kA·t and 4.6 s at 160 kA·t, and the two searches
+  sampled different regions (case-A FD averaged 1.2 s/eval, hybrid
+  0.8 s). The like-for-like number is per gradient: one adjoint run took
+  0.25–0.6 s, against 2 tracer evals per variable. Hybrid directions are
+  often *accepted*, but only as small gains, so they never trigger the
+  fallback, and two of the three case-A starts stall an order of
+  magnitude low. **FD stays the default.** For the adjoint to pay off it
+  would need both a smoothed objective (shorter horizon or ensemble
+  smoothing at the step scale) and a differentiable interception term
+  (e.g. soft wire absorption exp(−∫κ(d_wire) dt)), so that J tracks the
+  tracer. That's the follow-up, and every iteration record carries
+  per-variable `sources` to measure it with.
 - **M3 — parameter seam. DONE** (`spec::DeviceSpec`). Serde schema in
   which every numeric field is a literal **or a named document parameter**;
   fail-closed resolution (unbound name = error, never a default);

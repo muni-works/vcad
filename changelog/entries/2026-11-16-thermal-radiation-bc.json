@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-thermal-radiation-bc",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "feat",
+  "title": "Thermal solver models surface radiation",
+  "summary": "solve_thermal takes a Radiation boundary: gray-diffuse emissivity to an ambient or an enclosing wall, solved by Newton, with adjoint gradients and radiated-power claims.",
+  "features": ["thermal", "radiation", "fea", "receipt"],
+  "mcpTools": ["solve_thermal"]
+}

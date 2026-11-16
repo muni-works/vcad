@@ -2716,7 +2716,7 @@
   {
     "name": "optimize_electrodes",
     "title": "Optimize Electrodes",
-    "description": "Design electrodes by gradient ascent: optimize named device-spec parameters (e.g. shield ampere-turns, ring spacing) against predicted D-D yield per ion, with multi-start FD search (the yield landscape is multimodal — single starts stall on the recirculation hill at ~3x lower yield). Returns the best parameter set, its yield, per-start results, and the ascent history. Candidate configurations that fail to resolve or converge score 0 rather than aborting. Follow with simulate_charged_particles at the winning parameters for full claims. Cost ≈ evals × one simulation; defaults run in tens of seconds.",
+    "description": "Design electrodes by gradient ascent: optimize named device-spec parameters (e.g. shield ampere-turns, ring spacing) against predicted D-D yield per ion, with multi-start search (the yield landscape is multimodal — single starts stall on the recirculation hill at ~3x lower yield). Gradients are FD by default; `options.gradient: \"hybrid\"` routes potentials + ampere-turns through the discrete adjoint with FD for geometry and an FD fallback. Returns the best parameter set, its yield, per-start results, the ascent history, and per-iteration records (objective + gradient source per variable). Candidate configurations that fail to resolve or converge score 0 rather than aborting. Follow with simulate_charged_particles at the winning parameters for full claims. Cost ≈ evals × one simulation; defaults run in tens of seconds.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2895,6 +2895,14 @@
             "multi_start": {
               "type": "boolean",
               "description": "Three seeds across the box instead of one (the landscape is multimodal). Default true."
+            },
+            "gradient": {
+              "type": "string",
+              "enum": [
+                "fd",
+                "hybrid"
+              ],
+              "description": "Gradient routing. \"fd\" (default): central differences for every variable. \"hybrid\": potentials + ampere-turns take the discrete adjoint (one run per iterate), geometry takes FD; an iteration whose adjoint direction fails to climb is retried on pure FD. The adjoint differentiates a fixed-horizon surrogate with no wire interception, so on shield current it can disagree with the scored objective — each iteration reports its source."
             }
           }
         }
@@ -3992,7 +4000,7 @@
   {
     "name": "solve_thermal",
     "title": "Solve Thermal",
-    "description": "Heat-conduction FEA on a voxel grid: harmonic-mean finite volumes + PCG, returning T_max and its location, per-source theta_ja (K/W, junction-to-ambient), reservoir loads, and an energy-balance audit — as data plus `vcad.thermal-claims/1` and unified-receipt claims. Predictions carry basis \"predicted\" and roll up Provisional until hardware is measured. Steady state by default; pass `transient` for backward-Euler time stepping over a piecewise-constant drive schedule (RTP ramp/soak/cool, ambient steps, duty cycles — needs per-material `heat_capacity_j_m3k`), which returns T_max/per-source time series and the run-integrated energy audit. Conduction only: convection enters as film coefficients you supply (h values are the dominant uncertainty), no radiation, no fluid flow. Full temperature fields are not returned (summaries + claims are). Cost scales with voxel count (capped at 2M; transient runs also capped at 20k steps and 1e9 voxel-steps); a 20x20x2 board solves instantly, 100x100x13 in seconds. Instead of a hand-written `spec`, pass `document_id` to solve the document's own parts: its thermal analysis study (`study_id`, or the only one) or an inline `study` voxelizes the selected parts from their tessellations, ties sources/sinks to parts, and reads named document parameters (steady only).",
+    "description": "Heat-conduction FEA on a voxel grid: harmonic-mean finite volumes + PCG, returning T_max and its location, per-source theta_ja (K/W, junction-to-ambient), reservoir loads, and an energy-balance audit — as data plus `vcad.thermal-claims/1` and unified-receipt claims. Predictions carry basis \"predicted\" and roll up Provisional until hardware is measured. Steady state by default; pass `transient` for backward-Euler time stepping over a piecewise-constant drive schedule (RTP ramp/soak/cool, ambient steps, duty cycles — needs per-material `heat_capacity_j_m3k`), which returns T_max/per-source time series and the run-integrated energy audit. Conduction plus optional gray-diffuse surface radiation (`Radiation` boundary: emissivity you supply, radiating to an ambient or an enclosing wall; solved by Newton; reports per-slot radiated W and a `radiation_fraction` claim). Convection enters as film coefficients you supply (h and emissivity are the dominant uncertainties); no surface-to-surface exchange between parts of the model, no fluid flow. Full temperature fields are not returned (summaries + claims are). Cost scales with voxel count (capped at 2M; transient runs also capped at 20k steps and 1e9 voxel-steps); a 20x20x2 board solves instantly, 100x100x13 in seconds.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -4004,7 +4012,7 @@
             "divisions",
             "materials"
           ],
-          "description": "Voxelized conduction domain: an axis-aligned box discretized into `divisions` voxels, with material regions (per-axis k), power sources, optional fixed-temperature regions, and per-face boundary conditions `[-x,+x,-y,+y,-z,+z]`. Units mm / W / degC. Any numeric field (except `divisions`) may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error). Pass this OR `document_id`.",
+          "description": "Voxelized conduction domain: an axis-aligned box discretized into `divisions` voxels, with material regions (per-axis k), power sources, optional fixed-temperature regions, and per-face boundary conditions `[-x,+x,-y,+y,-z,+z]`. Units mm / W / degC. Any numeric field (except `divisions`) may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error).",
           "properties": {
             "origin_mm": {
               "type": "array",
@@ -4466,14 +4474,15 @@
                 "required": [
                   "type"
                 ],
-                "description": "Boundary condition: `{\"type\":\"Adiabatic\"}`, `{\"type\":\"FixedTemperature\",\"temperature_c\":..}`, or `{\"type\":\"Convection\",\"h_w_m2k\":..,\"ambient_c\":..}`.",
+                "description": "Boundary condition: `{\"type\":\"Adiabatic\"}`, `{\"type\":\"FixedTemperature\",\"temperature_c\":..}`, `{\"type\":\"Convection\",\"h_w_m2k\":..,\"ambient_c\":..}`, or `{\"type\":\"Radiation\",\"emissivity\":..,\"ambient_c\":..}` (gray-diffuse eps*sigma*(Ts^4-Tamb^4), optional parallel `h_w_m2k` (0 in vacuum), optional `area_scale` = true/voxel surface area (a voxel staircase over-counts curved area ~4/pi for cylinders, ~1.5 for spheres, which over-cools: the result reports `voxel_area_m2` per slot so you can compute it), optional `enclosure` {emissivity, area_m2} for a two-surface gray enclosure such as a grid inside a vacuum chamber whose wall temperature is `ambient_c`). Any radiation face makes the solve nonlinear (Newton); temperatures must be degC.",
                 "properties": {
                   "type": {
                     "type": "string",
                     "enum": [
                       "Adiabatic",
                       "FixedTemperature",
-                      "Convection"
+                      "Convection",
+                      "Radiation"
                     ]
                   },
                   "temperature_c": {
@@ -4508,6 +4517,60 @@
                         "type": "string"
                       }
                     ]
+                  },
+                  "emissivity": {
+                    "description": "Radiation: surface emissivity in (0, 1]. Required.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "area_scale": {
+                    "description": "Radiation: radiating-area multiplier (> 0), default 1.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "enclosure": {
+                    "type": "object",
+                    "required": [
+                      "emissivity",
+                      "area_m2"
+                    ],
+                    "description": "Radiation: enclosing wall (view factor 1). eps_eff = 1/(1/eps + (A_s/A_w)(1/eps_w - 1)); A_w must exceed the slot's radiating area.",
+                    "properties": {
+                      "emissivity": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "area_m2": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      }
+                    }
                   }
                 }
               },
@@ -4525,7 +4588,8 @@
                   "enum": [
                     "Adiabatic",
                     "FixedTemperature",
-                    "Convection"
+                    "Convection",
+                    "Radiation"
                   ]
                 },
                 "temperature_c": {
@@ -4560,88 +4624,49 @@
                       "type": "string"
                     }
                   ]
-                }
-              }
-            },
-            "reference_c": {
-              "description": "Explicit theta reference temperature; usually inferred from the single ambient.",
-              "anyOf": [
-                {
-                  "type": "number"
                 },
-                {
-                  "type": "string"
-                }
-              ]
-            }
-          }
-        },
-        "document_id": {
-          "type": "string",
-          "description": "Session document to solve (instead of `spec`): the study's parts are voxelized from the document's own evaluated geometry."
-        },
-        "study_id": {
-          "type": "string",
-          "description": "With `document_id`: id of the thermal study in `document.analysis_studies` (default: the only one)."
-        },
-        "study": {
-          "type": "object",
-          "required": [
-            "parts"
-          ],
-          "description": "A thermal study over the document's own parts (the same shape as a `thermal` entry in `document.analysis_studies`). The listed parts are voxelized from their tessellations onto a grid spanning their union bounding box; each voxel takes the material of the part filling most of it (solid when >= half full). Sources and sinks name parts; numbers may be document parameter names (e.g. a `defparam amp_loss_w`). Fail-closed, naming the part: a part thinner than `minVoxelsAcross` voxels (default 2) along any axis, overlapping parts, an open mesh, a material with no thermal properties and no override, a source box that would also cover another part.",
-          "properties": {
-            "parts": {
-              "type": "array",
-              "minItems": 1,
-              "items": {
-                "type": "string"
-              },
-              "description": "Parts to voxelize (name or part id). Unlisted parts are void."
-            },
-            "divisions": {
-              "type": "array",
-              "minItems": 3,
-              "maxItems": 3,
-              "items": {
-                "type": "number"
-              },
-              "description": "Voxels per axis. Give this OR `pitchMm`."
-            },
-            "pitchMm": {
-              "type": "array",
-              "minItems": 3,
-              "maxItems": 3,
-              "items": {
-                "type": "number"
-              },
-              "description": "Target voxel pitch per axis, mm (rounded down to span the domain exactly)."
-            },
-            "paddingMm": {
-              "type": "number",
-              "description": "Void margin around the parts, mm. Default 0."
-            },
-            "minVoxelsAcross": {
-              "type": "number",
-              "description": "Thin-wall guard, voxels. Default 2."
-            },
-            "materials": {
-              "type": "array",
-              "description": "Per-part overrides of the built-in table (keyed by the part's material string: pla, petg, abs, nylon, fr4, aluminium, copper, steel, stainless, brass, silicon, glass, air, ...). Give `kWMk` (1 or 3 world-axis values) OR `laminate` (through-plane = the part's thinnest axis). A real PCB with copper planes needs `laminate` (~15 in-plane / ~0.4 through) — the table's fr4 is bare laminate.",
-              "items": {
-                "type": "object",
-                "required": [
-                  "part"
-                ],
-                "properties": {
-                  "part": {
-                    "type": "string"
-                  },
-                  "kWMk": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 3,
-                    "items": {
+                "emissivity": {
+                  "description": "Radiation: surface emissivity in (0, 1]. Required.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "area_scale": {
+                  "description": "Radiation: radiating-area multiplier (> 0), default 1.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "enclosure": {
+                  "type": "object",
+                  "required": [
+                    "emissivity",
+                    "area_m2"
+                  ],
+                  "description": "Radiation: enclosing wall (view factor 1). eps_eff = 1/(1/eps + (A_s/A_w)(1/eps_w - 1)); A_w must exceed the slot's radiating area.",
+                  "properties": {
+                    "emissivity": {
+                      "description": "A number, or the name of a named parameter bound via `parameters`.",
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "area_m2": {
                       "description": "A number, or the name of a named parameter bound via `parameters`.",
                       "anyOf": [
                         {
@@ -4652,269 +4677,12 @@
                         }
                       ]
                     }
-                  },
-                  "laminate": {
-                    "type": "object",
-                    "required": [
-                      "inPlaneWMk",
-                      "throughPlaneWMk"
-                    ],
-                    "properties": {
-                      "inPlaneWMk": {
-                        "description": "A number, or the name of a named parameter bound via `parameters`.",
-                        "anyOf": [
-                          {
-                            "type": "number"
-                          },
-                          {
-                            "type": "string"
-                          }
-                        ]
-                      },
-                      "throughPlaneWMk": {
-                        "description": "A number, or the name of a named parameter bound via `parameters`.",
-                        "anyOf": [
-                          {
-                            "type": "number"
-                          },
-                          {
-                            "type": "string"
-                          }
-                        ]
-                      }
-                    }
-                  },
-                  "heatCapacityJM3k": {
-                    "description": "A number, or the name of a named parameter bound via `parameters`.",
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "string"
-                      }
-                    ]
                   }
                 }
               }
             },
-            "sources": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "required": [
-                  "name",
-                  "part",
-                  "powerW"
-                ],
-                "properties": {
-                  "name": {
-                    "type": "string"
-                  },
-                  "part": {
-                    "type": "string"
-                  },
-                  "powerW": {
-                    "description": "A number, or the name of a named parameter bound via `parameters`.",
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "string"
-                      }
-                    ]
-                  },
-                  "region": {
-                    "type": "object",
-                    "required": [
-                      "min",
-                      "max"
-                    ],
-                    "description": "World-frame AABB sub-region of the part, mm.",
-                    "properties": {
-                      "min": {
-                        "type": "array",
-                        "minItems": 3,
-                        "maxItems": 3,
-                        "items": {
-                          "type": "number"
-                        }
-                      },
-                      "max": {
-                        "type": "array",
-                        "minItems": 3,
-                        "maxItems": 3,
-                        "items": {
-                          "type": "number"
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            },
-            "sinks": {
-              "type": "array",
-              "description": "Heat sinks: parts (or sub-regions) held at a fixed temperature.",
-              "items": {
-                "type": "object",
-                "required": [
-                  "part",
-                  "temperatureC"
-                ],
-                "properties": {
-                  "part": {
-                    "type": "string"
-                  },
-                  "temperatureC": {
-                    "description": "A number, or the name of a named parameter bound via `parameters`.",
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "string"
-                      }
-                    ]
-                  },
-                  "region": {
-                    "type": "object",
-                    "required": [
-                      "min",
-                      "max"
-                    ],
-                    "description": "World-frame AABB sub-region of the part, mm.",
-                    "properties": {
-                      "min": {
-                        "type": "array",
-                        "minItems": 3,
-                        "maxItems": 3,
-                        "items": {
-                          "type": "number"
-                        }
-                      },
-                      "max": {
-                        "type": "array",
-                        "minItems": 3,
-                        "maxItems": 3,
-                        "items": {
-                          "type": "number"
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            },
-            "exposed": {
-              "type": "object",
-              "required": [
-                "type"
-              ],
-              "description": "Boundary on every solid face touching void. Default adiabatic.",
-              "properties": {
-                "type": {
-                  "type": "string",
-                  "enum": [
-                    "adiabatic",
-                    "convection",
-                    "fixedTemperature"
-                  ]
-                },
-                "hWM2k": {
-                  "description": "A number, or the name of a named parameter bound via `parameters`.",
-                  "anyOf": [
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "string"
-                    }
-                  ]
-                },
-                "ambientC": {
-                  "description": "A number, or the name of a named parameter bound via `parameters`.",
-                  "anyOf": [
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "string"
-                    }
-                  ]
-                },
-                "temperatureC": {
-                  "description": "A number, or the name of a named parameter bound via `parameters`.",
-                  "anyOf": [
-                    {
-                      "type": "number"
-                    },
-                    {
-                      "type": "string"
-                    }
-                  ]
-                }
-              }
-            },
-            "domainFaces": {
-              "type": "array",
-              "minItems": 6,
-              "maxItems": 6,
-              "items": {
-                "type": "object",
-                "required": [
-                  "type"
-                ],
-                "description": "Boundary: `{\"type\":\"adiabatic\"}`, `{\"type\":\"convection\",\"hWM2k\":..,\"ambientC\":..}`, or `{\"type\":\"fixedTemperature\",\"temperatureC\":..}`. Numbers may be document parameter names.",
-                "properties": {
-                  "type": {
-                    "type": "string",
-                    "enum": [
-                      "adiabatic",
-                      "convection",
-                      "fixedTemperature"
-                    ]
-                  },
-                  "hWM2k": {
-                    "description": "A number, or the name of a named parameter bound via `parameters`.",
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "string"
-                      }
-                    ]
-                  },
-                  "ambientC": {
-                    "description": "A number, or the name of a named parameter bound via `parameters`.",
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "string"
-                      }
-                    ]
-                  },
-                  "temperatureC": {
-                    "description": "A number, or the name of a named parameter bound via `parameters`.",
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "string"
-                      }
-                    ]
-                  }
-                }
-              },
-              "description": "Per domain face `[-x,+x,-y,+y,-z,+z]`; omitted = all take `exposed`."
-            },
-            "referenceC": {
-              "description": "A number, or the name of a named parameter bound via `parameters`.",
+            "reference_c": {
+              "description": "Explicit theta reference temperature; usually inferred from the single ambient.",
               "anyOf": [
                 {
                   "type": "number"
@@ -5005,7 +4773,7 @@
                         }
                       ]
                     },
-                    "description": "Boundary-temperature overrides by face label (\"-x\",\"+x\",\"-y\",\"+y\",\"-z\",\"+z\",\"exposed\"): retunes a FixedTemperature face's temperature or a Convection face's ambient. Overriding an adiabatic face errors (fail-closed)."
+                    "description": "Boundary-temperature overrides by face label (\"-x\",\"+x\",\"-y\",\"+y\",\"-z\",\"+z\",\"exposed\"): retunes a FixedTemperature face's temperature or a Convection/Radiation face's ambient. Overriding an adiabatic face errors (fail-closed)."
                   },
                   "fixed_temperature_c": {
                     "type": "object",
@@ -5032,14 +4800,14 @@
           "additionalProperties": {
             "type": "number"
           },
-          "description": "Bindings for named spec parameters, `{name: value}`. With `document_id` these override the document's parameter values."
+          "description": "Bindings for named spec parameters, `{name: value}`."
         },
         "options": {
           "type": "object",
           "properties": {
             "tol": {
               "type": "number",
-              "description": "PCG relative tolerance. Default 1e-8."
+              "description": "Relative tolerance (PCG, and the Newton residual when a face radiates). Default 1e-8."
             },
             "max_iters": {
               "type": "number",
@@ -5047,7 +4815,10 @@
             }
           }
         }
-      }
+      },
+      "required": [
+        "spec"
+      ]
     },
     "annotations": {
       "readOnlyHint": true
