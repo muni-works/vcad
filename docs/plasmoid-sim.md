@@ -169,6 +169,10 @@ Loon source has no time axis and the sim doesn't read the document `timeline` ye
 
 ## 3b. Live in vcad.app: drag the magnet
 
+[![live drag in vcad.app: locked, dragged, flicked away, recaptured (click for the clip)](plasmoid-sim/live-drag-strip.jpg)](plasmoid-sim/live-drag.mp4)
+
+*Frames written by vcad.app itself while the magnet is driven through the real move gizmo. Left to right: locked under the held magnet; following a slow drag; a flick leaves the foot behind (the tail is the foot racing off); recaptured on the next pass. The foot sits in the bowl, ~20 mm below the magnet, so from this camera it reads as "in front of" the wand.*
+
 Open [`plasmoid-sim/plasmoid-dish.vcad`](plasmoid-sim/plasmoid-dish.vcad) (the loon model through `loon2vcad`), choose **Analyze ▸ Live Plasmoid**, select the magnet and drag it (the move gizmo's XY plane, or ⌥-drag). The foot locks under the magnet when it is close and slow, breaks away on a fast flick, and is recaptured on the racer's next pass. The HUD shows β under the foot, LOCKED / RACING, and a pressure slider: drag it from 1 Torr toward 1 atm and the lock vanishes (β ≈ 0.004).
 
 **What runs live (kernel physics):**
@@ -178,7 +182,7 @@ Open [`plasmoid-sim/plasmoid-dish.vcad`](plasmoid-sim/plasmoid-dish.vcad) (the l
 - "Locked" is `plasmoid::is_locked`: the foot within 8 mm of the footprint, the magnet below 50 mm, and β ≥ 1 at the foot. (The demo example still uses its own distance + height test, so its LOCK/release times above are unchanged.)
 - Each frame is one FFI call (`vcad_plasmoid_advance`) on the main thread. 40 RK4 substeps measured 2.5 ms per frame (release kernel, `PlasmoidSimTests`, on a loaded M-series Mac).
 
-**Read from the document (gap #6, partly):** the parts named `dish`, `spike` and `magnet`. Their bounding boxes give the dish centre and rim plane, the dish radius (bbox half-width, 87 mm, so it includes the 2 mm wall), the spike tip the filament roots on, and the magnet disc (the bottom 5 mm of the `magnet` part). Mid-drag the app reads the gizmo's live offset rather than waiting for the in-place re-eval. The foot is drawn on the bowl surface: the dish mesh is ray-cast under the foot. The model itself still treats the dish as the flat rim plane.
+**Read from the document (gap #6, partly):** the parts named `dish`, `spike` and `magnet`. Their bounding boxes give the dish centre and rim plane, the dish radius (bbox half-width, 87 mm, so it includes the 2 mm wall), the spike tip the filament roots on, and the magnet disc (the bottom 5 mm of the `magnet` part). Mid-drag the app reads the gizmo's live offset rather than waiting for the in-place re-eval. The foot is drawn on the bowl surface: the dish mesh is ray-cast under the foot. The model itself still treats the dish as the flat rim plane: at the 60 mm orbit the real bowl is ~10 mm below the rim, so the true magnet–glow gap is ~20 mm, not the 10 mm the model sees.
 
 **Still assumed / stubbed:**
 

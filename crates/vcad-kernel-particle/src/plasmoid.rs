@@ -641,8 +641,8 @@ mod tests {
         let n_frames = 240usize; // 4 s
         let knot = |i: usize| {
             let t = i as f64 * frame;
-            let a = std::f64::consts::FRAC_PI_2 - 3.0 * (t - 1.0).max(0.0)
-                - 15.0 * (t - 3.2).max(0.0);
+            let a =
+                std::f64::consts::FRAC_PI_2 - 3.0 * (t - 1.0).max(0.0) - 15.0 * (t - 3.2).max(0.0);
             let gap = if t < 0.5 { 0.2 } else { 10e-3 };
             pose_above(r0 * a.cos(), r0 * a.sin(), gap, &m)
         };
@@ -662,13 +662,22 @@ mod tests {
         };
         let sub = 40usize;
         let dt = frame / sub as f64;
-        let reference = simulate(&p, &m, lerp_pose, [r0, 0.0], n_frames as f64 * frame, dt, sub);
+        let reference = simulate(
+            &p,
+            &m,
+            lerp_pose,
+            [r0, 0.0],
+            n_frames as f64 * frame,
+            dt,
+            sub,
+        );
         let mut st = PlasmoidStepper::new(p, m, [r0, 0.0]);
         let mut locked_frames = 0;
         for i in 0..n_frames {
             let s = st.advance(Some(knot(i)), Some(knot(i + 1)), dt, sub);
             let r = reference[i + 1];
-            let err = ((s.pos_m[0] - r.pos_m[0]).powi(2) + (s.pos_m[1] - r.pos_m[1]).powi(2)).sqrt();
+            let err =
+                ((s.pos_m[0] - r.pos_m[0]).powi(2) + (s.pos_m[1] - r.pos_m[1]).powi(2)).sqrt();
             assert!(err < 1e-7, "frame {i}: {err} m off simulate");
             assert!(rel(s.beta + 1e-12, r.beta + 1e-12) < 1e-4, "frame {i}: β");
             locked_frames += s.locked as usize;
@@ -712,13 +721,29 @@ mod tests {
             let w: Vec<_> = l.iter().filter(|s| s.0 >= a && s.0 < b).collect();
             w.iter().filter(|s| s.1).count() as f64 / w.len() as f64
         };
-        assert!(frac(2.0, 3.0, &low) > 0.95, "held: {}", frac(2.0, 3.0, &low));
-        assert!(frac(3.5, 6.0, &low) > 0.95, "slow drag: {}", frac(3.5, 6.0, &low));
+        assert!(
+            frac(2.0, 3.0, &low) > 0.95,
+            "held: {}",
+            frac(2.0, 3.0, &low)
+        );
+        assert!(
+            frac(3.5, 6.0, &low) > 0.95,
+            "slow drag: {}",
+            frac(3.5, 6.0, &low)
+        );
         // The flick leaves the foot behind at once…
-        assert!(frac(6.02, 6.17, &low) == 0.0, "after flick: {}", frac(6.02, 6.17, &low));
+        assert!(
+            frac(6.02, 6.17, &low) == 0.0,
+            "after flick: {}",
+            frac(6.02, 6.17, &low)
+        );
         // …and the racer, meeting the (now still) magnet head-on, is
         // recaptured on its next pass (≈ 0.2 s later) and stays.
-        assert!(frac(6.5, 10.0, &low) > 0.99, "recaptured: {}", frac(6.5, 10.0, &low));
+        assert!(
+            frac(6.5, 10.0, &low) > 0.99,
+            "recaptured: {}",
+            frac(6.5, 10.0, &low)
+        );
         let atm = run(760.0);
         assert!(atm.iter().all(|s| !s.1), "1 atm locked");
         assert!(atm.iter().all(|s| s.2 < 0.01));

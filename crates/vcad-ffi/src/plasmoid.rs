@@ -49,7 +49,10 @@ const MARGIN: f64 = 1.8;
 /// orbit. The pin strength is calibrated once at 1 Torr; changing the
 /// pressure later changes only β. Returns NULL on bad input.
 #[no_mangle]
-pub extern "C" fn vcad_plasmoid_create(dish_radius_mm: f64, pressure_torr: f64) -> *mut VcadPlasmoid {
+pub extern "C" fn vcad_plasmoid_create(
+    dish_radius_mm: f64,
+    pressure_torr: f64,
+) -> *mut VcadPlasmoid {
     clear_error();
     if !(dish_radius_mm.is_finite() && dish_radius_mm > 1.0) {
         set_error("vcad_plasmoid_create: dish radius must be > 1 mm");
