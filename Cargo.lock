@@ -6554,6 +6554,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "vcad-kernel-photon-dose"
+version = "0.11.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "vcad-kernel-neutronics 0.11.0",
+ "vcad-receipt 0.11.0",
+]
+
+[[package]]
 name = "vcad-kernel-photonics"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

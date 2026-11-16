@@ -5,7 +5,7 @@ import Foundation
 import SwiftUI
 
 // The editor side of LocalHistory.swift: autosave scheduling, version
-// history for the open document, and the launch-time recovery prompt.
+// history for the open document, and unsaved work listed in Recents.
 
 extension EditorModel {
     /// Autosave is off inside unit tests unless a test points LocalData at a
@@ -45,7 +45,21 @@ extension EditorModel {
     }
 
     /// "Don't Save" on close: the user chose to throw the edits away.
-    func discardAutosave() { autosaver?.discard() }
+    /// Also clears the dirty flag, so the quit-time flush doesn't write the
+    /// discarded edits straight back.
+    func discardAutosave() { autosaver?.discard(); documentDirty = false }
+
+    /// Write the current unsaved state NOW, bypassing the debounce — for
+    /// close and quit, where the 2 s timer would never fire. The autosave it
+    /// leaves behind is what lists the document in Recents next time.
+    func flushAutosaveNow() {
+        guard Self.autosaveEnabled, documentDirty, usesDocumentTree, let json = documentJSON else { return }
+        let saver = autosaver ?? Autosaver()
+        autosaver = saver
+        nonisolated(unsafe) let copy = json
+        saver.schedule(name: documentName, documentPath: documentURL?.path) { DocEdit.serializePretty(copy) }
+        saver.flush()
+    }
 
     var versionHistory: VersionHistory? { documentURL.map { VersionHistory(documentURL: $0) } }
 
@@ -77,67 +91,40 @@ extension EditorModel {
     }
 }
 
-// MARK: - Recovery prompt
+// MARK: - Unsaved work in Recents
 
 #if os(macOS)
+/// Unsaved work left by a closed, quit or crashed instance. There is no
+/// launch-time prompt: it shows up in Recents (Welcome + File ▸ Open Recent)
+/// marked unsaved, and stays there until reopened or discarded. A modal at
+/// launch used to block every UI/perf/snapshot/agent-driven run.
 @MainActor
-enum RecoveryPrompt {
-    /// At launch: if a previous instance died with unsaved work, offer it back.
-    static func runIfNeeded() {
-        guard EditorModel.autosaveEnabled, !Recovery.orphans().isEmpty else { return }
-        // Let the editor window come up first. A modal run from inside
-        // applicationDidFinishLaunching returned instantly with the LAST
-        // button's code (seen live: response 1002, no click), which once
-        // silently discarded recovered work.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { run() }
+enum UnsavedRecents {
+    static func list(for model: EditorModel?) -> [AutosaveEntry] {
+        guard EditorModel.autosaveEnabled else { return [] }
+        return Recovery.unsaved(excluding: model?.autosaver?.id)
     }
 
-    static func run() {
-        let orphans = Recovery.orphans()
-        guard !orphans.isEmpty else { return }
-        NSApp.activate(ignoringOtherApps: true)
-        let response = makeAlert(orphans).runModal()
-        switch response {
-        case .alertFirstButtonReturn: restore(orphans)
-        case .alertThirdButtonReturn where confirmDiscard(orphans.count):
-            orphans.forEach { Recovery.discard($0) }
-        default: break     // Not Now (or anything unexpected): keep them for next launch
-        }
+    /// Reopen: materialize the autosave as a file (untitled work lands in
+    /// ~/Documents/vcad Recovered/, edits to a file beside it as a
+    /// "(Recovered)" copy — the original is never touched) and open it.
+    static func open(_ e: AutosaveEntry, from model: EditorModel) {
+        do { AppInstance.opening(try Recovery.materialize(e), from: model) }
+        catch { model.loadError = "Couldn’t reopen “\(e.name)”: \(error.localizedDescription)" }
     }
 
-    /// Discarding recovered work can't be undone, so it takes a second, explicit yes.
-    static func confirmDiscard(_ count: Int) -> Bool {
+    /// Discarding unsaved work can't be undone, so it takes an explicit yes.
+    @discardableResult
+    static func discard(_ e: AutosaveEntry) -> Bool {
         let a = NSAlert()
-        a.messageText = count == 1 ? "Discard the unsaved changes?" : "Discard unsaved changes to \(count) documents?"
+        a.messageText = "Discard the unsaved changes to “\(e.name)”?"
         a.informativeText = "This can’t be undone."
         a.alertStyle = .critical
         a.addButton(withTitle: "Keep")
         a.addButton(withTitle: "Discard").hasDestructiveAction = true
-        return a.runModal() == .alertSecondButtonReturn
-    }
-
-    static func makeAlert(_ orphans: [AutosaveEntry]) -> NSAlert {
-        let alert = NSAlert()
-        alert.messageText = orphans.count == 1
-            ? "Restore unsaved changes to “\(orphans[0].name)”?"
-            : "Restore \(orphans.count) documents with unsaved changes?"
-        let f = RelativeDateTimeFormatter()
-        let lines = orphans.prefix(6).map { "• \($0.name) — autosaved \(f.localizedString(for: $0.savedAt, relativeTo: Date()))" }
-        alert.informativeText = "vcad quit before these were saved.\n\n" + lines.joined(separator: "\n")
-            + "\n\nRestored work opens as a “(Recovered)” copy; your original files are untouched."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Restore")
-        alert.addButton(withTitle: "Not Now")
-        alert.addButton(withTitle: "Discard")
-        return alert
-    }
-
-    static func restore(_ orphans: [AutosaveEntry]) {
-        let urls = orphans.compactMap { try? Recovery.materialize($0) }
-        guard let first = urls.first else { return }
-        if let model = AppInstance.currentModel { model.openDocument(first) }
-        else { AppInstance.pendingOpen.append(first) }
-        for url in urls.dropFirst() { AppInstance.open(document: url) }
+        guard a.runModal() == .alertSecondButtonReturn else { return false }
+        Recovery.discard(e)
+        return true
     }
 }
 
