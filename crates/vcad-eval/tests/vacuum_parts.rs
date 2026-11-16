@@ -341,3 +341,37 @@ fn kf25_blank_flange_matches_closed_form() {
         "KF25 flange volume {vol:.0} vs closed form {expect:.0}"
     );
 }
+
+/// Every port of a multi-port fitting lies on the evaluated part's bounding
+/// box, at the face its axis points through. Catches a frame placed with the
+/// wrong Euler convention: `CsgOp::Rotate` builds Rx·Ry·Rz (Z acts first),
+/// and decomposing frames as Rz·Ry·Rx put the cross's x tube along −y and its
+/// +x flange 13 mm beyond the port.
+fn ports_on_bbox(path: &str, p: Value) {
+    let (_, lo, hi) = eval_part(path, p.clone());
+    let info = part_info(path, &params(p)).unwrap();
+    for port in &info.ports {
+        let k = (0..3)
+            .max_by(|&a, &b| port.axis[a].abs().total_cmp(&port.axis[b].abs()))
+            .unwrap();
+        let face = if port.axis[k] > 0.0 { hi[k] } else { lo[k] };
+        assert!(
+            (port.origin[k] - face).abs() < 1.0,
+            "{path}: port {} at {:?} is off the bbox face {face:.2} (bbox {lo:?}..{hi:?})",
+            port.name,
+            port.origin
+        );
+    }
+}
+
+#[test]
+#[ignore = "kernel leaves a 1 mm bore lip past the +z flange face (a crossing-cylinder saddle strip the flange plane fails to split); un-ignore once the kernel splits it"]
+fn tee_ports_lie_on_its_bbox() {
+    ports_on_bbox("vacuum.tee", json!({}));
+}
+
+#[test]
+#[ignore = "minutes of boolean time; run with --ignored"]
+fn cross_ports_lie_on_its_bbox() {
+    ports_on_bbox("vacuum.cross", json!({}));
+}

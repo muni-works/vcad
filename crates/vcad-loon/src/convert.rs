@@ -3231,14 +3231,15 @@ fn port_names(ports: &[vcad_parts::PortInfo]) -> String {
         .join(", ")
 }
 
-/// R = Rz·Ry·Rx for XYZ Euler angles in degrees (the `CsgOp::Rotate` order).
+/// R = Rx·Ry·Rz for XYZ Euler angles in degrees — the matrix `CsgOp::Rotate`
+/// builds (Z acts on the part first, X last).
 fn euler_xyz_matrix(e: Vec3) -> [[f64; 3]; 3] {
     let (a, b, c) = (e.x.to_radians(), e.y.to_radians(), e.z.to_radians());
     let (sa, ca, sb, cb, sc, cc) = (a.sin(), a.cos(), b.sin(), b.cos(), c.sin(), c.cos());
     [
-        [cc * cb, cc * sb * sa - sc * ca, cc * sb * ca + sc * sa],
-        [sc * cb, sc * sb * sa + cc * ca, sc * sb * ca - cc * sa],
-        [-sb, cb * sa, cb * ca],
+        [cb * cc, -cb * sc, sb],
+        [ca * sc + sa * sb * cc, ca * cc - sa * sb * sc, -sa * cb],
+        [sa * sc - ca * sb * cc, sa * cc + ca * sb * sc, ca * cb],
     ]
 }
 
