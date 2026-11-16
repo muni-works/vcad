@@ -13,6 +13,7 @@ use vcad_ir::Document;
 
 mod convert;
 pub mod diag;
+mod libscope;
 pub use diag::{eval_vcad_file_diagnostic, LoonDiagnostic};
 pub mod fastener;
 pub use vcad_ir::gear;
@@ -27,6 +28,13 @@ pub use modules::{lib_dirs, LibPathProvider, LIB_PATH_VAR};
 /// The bundled vcad loon library source. `bundled/` symlinks into the repo's
 /// `lib/`, so `cargo package` ships the file inside the crate.
 pub const VCAD_LIB_SOURCE: &str = include_str!("../bundled/lib.loon");
+
+/// [`VCAD_LIB_SOURCE`] as it is evaluated: its references to builtins and
+/// to its own globals go through private aliases, so a user binding named
+/// `len` or `union` cannot change what the library calls. See `libscope`.
+fn lib_source() -> &'static str {
+    libscope::captured_lib(VCAD_LIB_SOURCE)
+}
 
 /// Evaluate a `.vcad` loon source string and produce a Document.
 ///
@@ -144,9 +152,10 @@ fn parse_program(source: &str) -> Result<Vec<loon_lang::ast::Expr>, String> {
     // silently keep only the final one. Rewrite such programs so every
     // top-level value expression is collected into the document.
     let (user_source, segments) = collect_top_level_values(source);
-    let full_source = format!("{VCAD_LIB_SOURCE}\n\n{user_source}");
+    let lib = lib_source();
+    let full_source = format!("{lib}\n\n{user_source}");
     diag::set_map(diag::SourceMap {
-        prefix_len: VCAD_LIB_SOURCE.len() + 2,
+        prefix_len: lib.len() + 2,
         segments,
     });
     diag::clear_failure();
@@ -168,7 +177,7 @@ fn run_program(
     // Imported modules get the vcad library too, so `[use ...]` code can
     // speak the same vocabulary as the root program.
     diag::clear_failure();
-    loon_lang::interp::eval_program_with_modules(exprs, base_dir, provider, Some(VCAD_LIB_SOURCE))
+    loon_lang::interp::eval_program_with_modules(exprs, base_dir, provider, Some(lib_source()))
         .map_err(|e| {
             diag::record_failure(
                 e.span

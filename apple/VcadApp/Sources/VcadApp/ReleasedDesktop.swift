@@ -2417,9 +2417,12 @@ struct ReleasedARView: NSViewRepresentable {
             let total = model.docPartMeshes.enumerated()
                 .filter { model.isPartVisible($0.offset) }.reduce(0) { $0 + $1.element.indices.count / 3 }
             let stride = max(1, total / 300_000)
+            // Reserve once: a per-part `reserveCapacity(count + n)` asks for an
+            // exact size, so every part reallocated and copied the whole
+            // array — O(parts²) memmove (~0.5 s on main for 900 parts).
+            out.reserveCapacity(3 * (total / stride + model.docPartMeshes.count))
             for (i, m) in model.docPartMeshes.enumerated() where model.isPartVisible(i) {
                 let n = m.indices.count / 3
-                out.reserveCapacity(out.count + 3 * (n / stride + 1))
                 var t = 0
                 while t < n {
                     let a = Int(m.indices[3 * t]), b = Int(m.indices[3 * t + 1]), c = Int(m.indices[3 * t + 2])

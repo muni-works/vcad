@@ -62,7 +62,7 @@ func analysisSmoke() async {
         m.picking.select(tipHit?.ref, additive: false)
         store.setPickTarget(nil, m)
         let sup = store.feaSupports[0].faces, ld = store.feaLoads[0].faces
-        let faces = store.faces(m)
+        let faces = await store.loadFaces(m)
         let label = { (ids: [UInt32]) in ids.compactMap { id in faces.first { $0.id == id }?.label }.joined(separator: ", ") }
         check(sup.count == 1 && ld.count == 1 && sup != ld && m.picking.filter == .standard,
               "fea faces picked in viewport: support [\(label(sup))], load [\(label(ld))]")

@@ -415,6 +415,21 @@ fn point_in_face_inner(brep: &BRepSolid, face_id: FaceId, point_3d: &Point3) -> 
             }
         }
 
+        // A full-wrap band whose rims are NOT constant-v (a bore wall
+        // bounded by a crossing bore's Steinmetz arc, or by an oblique
+        // cut) is the same annular domain the frozen-band test above
+        // handles, and the UV polygon below cannot represent it either:
+        // the seam cut tears it, and most of the band reads as outside.
+        // Measured on a bore wall crossed by an equal-radius bore: a
+        // generator spanning x 22.6..40 on the face trimmed to 22.6..23.3.
+        // Test it against its own two chains instead.
+        if unique_verts.len() >= 8 && face.inner_loops.is_empty() {
+            if let Some(inside) = crate::cyl_band::full_wrap_band_contains(brep, face_id, point_3d)
+            {
+                return inside;
+            }
+        }
+
         // Fall through to general polygon test for partial cylinder faces
         let outer_uv = project_points_to_uv(surface.as_ref(), &outer_verts_3d);
         let (outer_uv, seam_cut) = unwrap_cylindrical_loop(&outer_uv);

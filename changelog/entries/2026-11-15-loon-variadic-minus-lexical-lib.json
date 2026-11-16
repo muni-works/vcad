@@ -1,0 +1,11 @@
+{
+  "id": "2026-11-15-loon-variadic-minus-lexical-lib",
+  "version": "0.11.0",
+  "date": "2026-11-15",
+  "category": "fix",
+  "title": "loon: variadic - and /, library immune to shadowing",
+  "summary": "[- a b c] no longer drops c and [- x] negates. A user binding named len, fold or union no longer breaks the library's booleans (\"not callable: 66\").",
+  "features": [
+    "loon"
+  ]
+}

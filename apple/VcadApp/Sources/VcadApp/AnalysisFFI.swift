@@ -59,13 +59,10 @@ enum AnalysisFFI {
         return try JSONDecoder().decode(DfmReport.self, from: out)
     }
 
-    /// The patched document IR.
-    static func dfmApply(doc: Data, patch: DfmPatch) throws -> [String: Any] {
-        let out = try call(vcad_dfm_apply_patch, doc: doc, request: try JSONEncoder().encode(patch))
-        guard let json = try JSONSerialization.jsonObject(with: out) as? [String: Any] else {
-            throw Failure(message: "patched document is not an object")
-        }
-        return json
+    /// The patched document IR, as JSON bytes (`DocumentEngine.loadIR(json:)`
+    /// takes them as-is: no parse + re-serialize round trip on main).
+    static func dfmApply(doc: Data, patch: DfmPatch) throws -> Data {
+        try call(vcad_dfm_apply_patch, doc: doc, request: try JSONEncoder().encode(patch))
     }
 
     static let dfmProcesses: [String] = {

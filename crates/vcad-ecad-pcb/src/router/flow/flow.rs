@@ -858,8 +858,7 @@ impl<'g> FlowGraph<'g> {
             if self.face_ok(l, f, net) {
                 out.push(self.node(l, f));
             }
-            for k in 0..3 {
-                let g = lg.tri_nbr[f as usize][k];
+            for &g in &lg.tri_nbr[f as usize] {
                 if g != NONE {
                     stack.push(g);
                 }

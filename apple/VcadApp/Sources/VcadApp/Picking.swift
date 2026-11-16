@@ -439,6 +439,25 @@ extension EditorModel {
         return data
     }
 
+    /// `pickingDocumentData` for async callers (analysis runs): a cache miss
+    /// — right after an edit, before the runtime's frame brings its bytes —
+    /// serializes on a background thread instead of blocking main. Whatever
+    /// lands first for this revision (these bytes or the frame's) stays the
+    /// revision's key, so staleness checks keep comparing equal bytes.
+    func documentDataOffMain() async -> Data? {
+        if let c = documentBytesCache, c.revision == documentRevision { return c.data }
+        guard let doc = documentJSON else { return nil }
+        let rev = documentRevision
+        struct Box: @unchecked Sendable { let doc: [String: Any] }
+        let box = Box(doc: doc)
+        let data = await Task.detached(priority: .userInitiated) {
+            try? JSONSerialization.data(withJSONObject: box.doc, options: [.sortedKeys])
+        }.value
+        if let c = documentBytesCache, c.revision == rev { return c.data }   // a frame landed meanwhile
+        if let data, rev == documentRevision { documentBytesCache = (rev, data) }
+        return data
+    }
+
     /// Pick a face/edge of `part` along a kernel-space ray. With the camera's
     /// distance (mm) and the viewport height (points), the edge tolerance is
     /// about 6 px on screen at any zoom; without them it falls back to a
