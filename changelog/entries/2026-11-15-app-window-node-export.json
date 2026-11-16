@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-15-app-window-node-export",
+  "version": "0.11.0",
+  "date": "2026-11-15",
+  "category": "fix",
+  "title": "vcad.app: GLB/STEP export of the open window works",
+  "summary": "export_cad to .glb or .step on app_window#N no longer fails with Unknown document_id: the core now hands the node exporter a session id it can load.",
+  "features": ["mcp", "export", "desktop"],
+  "mcpTools": ["export_cad"]
+}
