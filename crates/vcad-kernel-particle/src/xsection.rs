@@ -222,6 +222,8 @@ pub fn d3_formation_m2(e_amu_ev: f64) -> f64 {
 /// Collision-induced dissociation of a fast D₂⁺ on D₂ (→ D⁺ + D + D₂), m²,
 /// at D₂⁺ energy per amu (Jül-4105 Eq. 209 at equal velocity; reliability
 /// stated as low above 30–40 keV H₂⁺ lab energy).
+// 0.318 is a fitted exponent (Jül-4105 Eq. 209c), not 1/π.
+#[allow(clippy::approx_constant)]
 pub fn cid_d2plus_m2(e_amu_ev: f64) -> f64 {
     let e = 2.0 * e_amu_ev;
     if e <= 2.0 {
