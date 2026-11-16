@@ -42,6 +42,7 @@ pub mod elliptic;
 pub mod field;
 pub mod fom;
 pub mod optimize;
+pub mod plasmoid;
 pub mod poisson;
 pub mod pops;
 pub mod power;
