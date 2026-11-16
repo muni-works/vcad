@@ -993,11 +993,32 @@ fn mesh_fallback_untimed(
     quadrics: &QuadricCtx,
     refine: bool,
 ) -> Result<BooleanResult, BooleanError> {
-    let mut out = crate::mesh::csg::mesh_csg(mesh_a, mesh_b, op);
-    // First projection runs on the pristine topology: the constraint each
-    // vertex lives under is read off its incident triangle normals, so it
-    // must be decided before any repair deletes or moves anything.
-    quadrics.project_mesh(&mut out);
+    // Soup operands (`refine == false`: a hull, an imported mesh, an
+    // earlier fallback's result) get the conforming boolean first: closed
+    // manifolds in, a closed manifold out, cut only where the operands
+    // cross. The BSP boolean below shatters such operands along whole
+    // carrier planes and a chain of them compounds — the open-fusor cathode
+    // grid came out at 150 000 triangles and 37 000 non-manifold edges. It
+    // remains the fallback for what the conforming boolean declines (an
+    // operand that is not itself closed).
+    let conformed = (!refine && std::env::var_os("VCAD_NO_CONFORMING_BOOLEAN").is_none())
+        .then(|| crate::mesh::conform::conforming_csg(mesh_a, mesh_b, op))
+        .flatten()
+        .filter(|m| validate_boolean_result(m).is_ok());
+    let mut out = match conformed {
+        // Its vertices are the operands' own plus points on their facets:
+        // nothing was displaced, so there is nothing to re-project.
+        Some(out) => out,
+        None => {
+            let mut out = crate::mesh::csg::mesh_csg(mesh_a, mesh_b, op);
+            // First projection runs on the pristine topology: the constraint
+            // each vertex lives under is read off its incident triangle
+            // normals, so it must be decided before any repair deletes or
+            // moves anything.
+            quadrics.project_mesh(&mut out);
+            out
+        }
+    };
     if refine {
         // Kept "In" fragments can include an operand's interior structure
         // — strip membranes from the result as well; then close what the
