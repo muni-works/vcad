@@ -309,8 +309,9 @@ impl Profile {
                          approximation (J = 2·I, tau = T·r/J)"
                             .into(),
                         format!(
-                            "d/t = {:.1}; local wall buckling and ovalization are NOT checked \
-                             and govern thin tubes in bending",
+                            "d/t = {:.1}; local wall buckling and ovalization in bending are \
+                             NOT checked here and govern thin tubes in bending (external-pressure \
+                             buckling of a tube is the shell screen, crate::shell)",
                             d / t
                         ),
                     ],

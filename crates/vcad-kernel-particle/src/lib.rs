@@ -20,19 +20,32 @@
 //!    terminate on electrode or wall impact, core passes are counted.
 //! 5. [`fom`] — ensemble statistics: interception fraction, mean
 //!    recirculation count, effective grid transparency.
-//! 6. [`optimize`] — derivative-free/finite-difference maximization of any
-//!    figure of merit over electrode parameters (M0 stand-in for the
-//!    adjoint; see `docs/particle-optics-m0.md`).
+//! 6. **Non-axisymmetric electrodes** — [`wire3d::Device3d`] (wires along
+//!    circles, arcs and polylines: great-circle and latitude/longitude
+//!    globes, stalks) in a grounded sphere, solved by the thin-wire
+//!    boundary-element method in [`bem`] (analytic, conservative field;
+//!    fail-closed surface-residual gates) and traced by the same Boris
+//!    tracer through [`field::FieldSampler`] / [`trace::TraceGeometry`].
+//!    [`spec3d::DeviceSpec3d`] is its serde seam.
+//! 7. [`optimize`] — finite-difference / adjoint / hybrid maximization of
+//!    any figure of merit over electrode parameters; [`electrode_opt`]
+//!    drives it over a [`spec::DeviceSpec`]'s named parameters (the
+//!    `optimize_electrodes` MCP tool; see `docs/particle-optics-m0.md`).
 //!
 //! Beyond the axisymmetric pipeline, [`field3d`] superposes coils and
 //! permanent magnets (loops, solenoids, disc/ring and block magnets) at
 //! arbitrary 3D poses, with a mm/degree JSON seam in [`field3d_spec`].
 //!
-//! **Scope and honesty (M0):** no space charge, no collisions, no neutral
-//! gas — the regime where electrode geometry dominates and where every
-//! classic electrode-design tool (SIMION lineage) operates. Self-consistent
-//! plasma effects are explicitly out of scope until a later milestone; see
-//! the milestone ladder in `docs/particle-optics-m0.md`.
+//! **Scope and honesty.** The core is vacuum-field single-particle optics
+//! — the regime where electrode geometry dominates and where every classic
+//! electrode-design tool (SIMION lineage) operates. Later milestones add,
+//! each as a separate opt-in layer: a space-charge gauge and PIC-lite
+//! self-consistency ([`space_charge`]), a discrete adjoint ([`adjoint`]),
+//! and, for gas-fed fusors, the charge-exchange chain with neutral-gas
+//! collisions, an ionization source, the supply-current partition and a
+//! two-sided yield band ([`chain`], M7). There is no kinetic plasma model
+//! and no electron space charge; see the milestone ladder in
+//! `docs/particle-optics-m0.md`.
 //!
 //! Units: public geometry is **millimeters** (vcad convention); everything
 //! internal is SI (meters, volts, tesla, seconds); particle energies are
@@ -40,8 +53,11 @@
 
 pub mod adjoint;
 pub mod beam_target;
+pub mod bem;
+pub mod chain;
 pub mod confinement;
 pub mod device;
+pub mod electrode_opt;
 pub mod elliptic;
 pub mod field;
 pub mod field3d;
@@ -55,7 +71,9 @@ pub mod power;
 pub mod receipt;
 pub mod space_charge;
 pub mod spec;
+pub mod spec3d;
 pub mod trace;
+pub mod wire3d;
 pub mod xsection;
 
 /// Physical constants (SI).

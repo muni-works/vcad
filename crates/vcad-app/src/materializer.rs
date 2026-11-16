@@ -587,6 +587,7 @@ fn materialize_doc_extras(doc: &mut Document, feature: &FeatureState) {
         clearance_specs,
         constraints,
         analysis_studies,
+        claims_ledger,
         drawing,
         hardware,
         source,

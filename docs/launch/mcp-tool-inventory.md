@@ -223,10 +223,12 @@ Totals after Phase A: 33 host hook (Swift UI, dispatched by Rust core), 41 nativ
 | `sheet_metal_sequence` | node |  |  | node proxy | S — sheet-metal.ts ~8 lines, pure TS |
 | `sheet_metal_suggest_fix` | node |  |  | node proxy | S — sheet-metal.ts ~8 lines, pure TS |
 | `sheet_metal_unfold` | node |  |  | node proxy | S — sheet-metal.ts ~8 lines, pure TS |
+| `shell_buckling_check` | node |  |  | node proxy | M — structure.ts ~110 lines, pure TS |
 | `show_in_app` | node |  |  | node proxy | M — app-link.ts ~131 lines, pure TS |
 | `simulate_charged_particles` | node |  |  | node proxy | S — particle.ts ~25 lines, pure TS |
 | `simulate_circuit` | node |  |  | node proxy | M — circuit.ts ~130 lines, pure TS |
 | `simulate_em` | node |  |  | node proxy | M — em.ts ~141 lines, pure TS |
+| `simulate_cavity` | node |  |  | node proxy | S — cavity.ts, wraps Rust/WASM (vcad-eval cavity_extract + acoustics ported) |
 | `simulate_flow` | node |  |  | node proxy | S — flow.ts ~69 lines, pure TS |
 | `simulate_lattice_gauge` | node |  |  | node proxy | S — qcd.ts ~31 lines, pure TS |
 | `simulate_neutron_shield` | node |  |  | node proxy | S — neutronics.ts ~37 lines, pure TS |

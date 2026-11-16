@@ -54,7 +54,71 @@ const PARAMS = {
   shield_at_neg: -20000,
 };
 
+const wasmHasParticle3d =
+  typeof (
+    probeEngine as unknown as {
+      kernel?: { particleSimulate3d?: unknown };
+    }
+  ).kernel?.particleSimulate3d === "function";
+
+const GLOBE_SPEC = {
+  chamber: { kind: "sphere", radius_mm: 76 },
+  electrodes: [
+    {
+      kind: "great_circle_globe",
+      layout: "icosidodecahedral6",
+      grid_radius_mm: "grid_r",
+      wire_radius_mm: 1,
+      potential_v: "cathode_v",
+    },
+  ],
+};
+
 type ToolText = { content: Array<{ type: string; text: string }> };
+
+describe.skipIf(!wasmHasParticle3d)("3D charged-particle optics", () => {
+  let client: Client;
+
+  beforeAll(async () => {
+    documents.clear();
+    const engine = await Engine.init();
+    const server = await createServer(engine, { user: null });
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    client = new Client(
+      { name: "particle-tools-3d", version: "0.0.0" },
+      { capabilities: {} },
+    );
+    await Promise.all([client.connect(clientT), server.connect(serverT)]);
+  });
+
+  it("simulate_charged_particles accepts a 6-great-circle globe", async () => {
+    const res = (await client.callTool({
+      name: "simulate_charged_particles",
+      arguments: {
+        spec: GLOBE_SPEC,
+        parameters: { grid_r: 19, cathode_v: -30000 },
+        options: { particles: 8, max_passes: 3, step_mm: 0.5 },
+      },
+    })) as ToolText;
+    const out = JSON.parse(res.content[0].text);
+    expect(out.unknowns).toBeGreaterThan(100);
+    expect(out.geometric_transparency).toBeGreaterThan(0.65);
+    expect(out.geometric_transparency).toBeLessThan(0.76);
+    expect(out.center_potential_v).toBeLessThan(-25000);
+    expect(out.stats.n).toBe(8);
+    expect(out.residual.mean).toBeLessThan(0.02);
+    expect(out.claims).toBeNull();
+  });
+
+  it("fails closed on an unbound parameter", async () => {
+    const res = (await client.callTool({
+      name: "simulate_charged_particles",
+      arguments: { spec: GLOBE_SPEC, parameters: { grid_r: 19 } },
+    })) as ToolText & { isError?: boolean };
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("cathode_v");
+  });
+});
 
 describe.skipIf(!wasmHasParticle)("charged-particle optics tools", () => {
   let client: Client;
@@ -129,6 +193,43 @@ describe.skipIf(!wasmHasParticle)("charged-particle optics tools", () => {
     expect(out.evals).toBeGreaterThanOrEqual(3);
     expect(out.starts.length).toBe(1);
     expect(out.history.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("optimize_electrodes hybrid routes potentials through the adjoint", async () => {
+    const res = (await client.callTool({
+      name: "optimize_electrodes",
+      arguments: {
+        spec: SPEC,
+        parameters: PARAMS,
+        variables: [
+          { name: "cathode_v", lo: -30000, hi: -10000 },
+          { name: "ring_z", lo: 15, hi: 35 },
+        ],
+        options: {
+          nr: 41,
+          nz: 81,
+          particles: 8,
+          max_passes: 6,
+          max_iters: 2,
+          multi_start: false,
+          gradient: "hybrid",
+        },
+      },
+    })) as ToolText;
+    const out = JSON.parse(res.content[0].text);
+
+    expect(out.gradient).toBe("hybrid");
+    expect(out.variable_gradients).toEqual({
+      cathode_v: "adjoint",
+      ring_z: "finite_difference",
+    });
+    expect(out.iterations.length).toBeGreaterThanOrEqual(1);
+    for (const it of out.iterations) {
+      expect(["adjoint", "fd_fallback"]).toContain(it.sources[0]);
+      expect(it.sources[1]).toBe("finite_difference");
+      expect(it.value_after).toBeGreaterThanOrEqual(it.value);
+    }
+    expect(out.best_sigma_v_m3).toBeGreaterThanOrEqual(0);
   });
 
   it("unbound named parameters fail closed", async () => {

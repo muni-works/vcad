@@ -43,7 +43,8 @@ final class WelcomeWindowController: NSObject, NSWindowDelegate {
         let dir = SampleLibrary.directory()
         let samples = dir.map(SampleLibrary.load(from:)) ?? []
         let state = WelcomeState(samples: samples, directory: dir,
-                                 recents: WelcomeRecents.list(paths: model.recents.map(\.path)))
+                                 recents: WelcomeRecents.merge(unsaved: UnsavedRecents.list(for: model),
+                                                               files: WelcomeRecents.list(paths: model.recents.map(\.path))))
         let actions = WelcomeActions(
             newDocument: { [weak self] in self?.close(); AppInstance.open() },
             open: { [weak self] in self?.close(); openPanel(model) },
@@ -53,7 +54,12 @@ final class WelcomeWindowController: NSObject, NSWindowDelegate {
                 self?.close(); self?.describe?()
             } : nil,
             shortcuts: { [weak self] in self?.close(); GlassUI.shared.shortcutsShown = true },
-            openRecent: { [weak self] url in self?.close(); AppInstance.opening(url, from: model) },
+            openRecent: { [weak self] r in
+                self?.close()
+                if let e = r.unsaved { UnsavedRecents.open(e, from: model) }
+                else { AppInstance.opening(r.url, from: model) }
+            },
+            discardUnsaved: { r in r.unsaved.map { UnsavedRecents.discard($0) } ?? false },
             openSample: { [weak self] sample in self?.openSample(sample) },
             connectAgent: { AgentInstallPrompt.run() },
             whatsNew: {
@@ -168,7 +174,9 @@ struct WelcomeActions {
     var fromPhotos: () -> Void
     var describe: (() -> Void)?
     var shortcuts: () -> Void
-    var openRecent: (URL) -> Void
+    var openRecent: (WelcomeRecent) -> Void
+    /// Throw away an unsaved recent; true when the user confirmed.
+    var discardUnsaved: (WelcomeRecent) -> Bool
     var openSample: (SampleProject) -> Void
     var connectAgent: () -> Void
     var whatsNew: () -> Void
@@ -179,7 +187,7 @@ struct WelcomeActions {
 final class WelcomeState {
     let samples: [SampleProject]
     let directory: URL?
-    let recents: [WelcomeRecent]
+    var recents: [WelcomeRecent]
     var agent: WelcomeAgentState = .notConnected(detected: [])
     var showAtLaunch: Bool = WelcomePrefs.showAtLaunch() {
         didSet { WelcomePrefs.setShowAtLaunch(showAtLaunch) }
@@ -449,18 +457,27 @@ struct WelcomeView: View {
             Eyebrow("Recent")
             LazyVGrid(columns: grid, spacing: Theme.Space.m) {
                 ForEach(Array(state.recents.enumerated()), id: \.element.id) { i, r in
+                    let context = WelcomeRecents.context(parts: thumbs.parts[r.url.path], modified: r.modified)
                     WelcomeCard(title: r.name,
-                                detail: WelcomeRecents.context(parts: thumbs.parts[r.url.path], modified: r.modified),
+                                detail: r.unsaved == nil ? context : ["Unsaved", context].filter { !$0.isEmpty }.joined(separator: " · "),
                                 image: thumbs.images[r.url.path], fallbackSymbol: symbol(for: r.url),
-                                focused: focus == .recent(i)) { actions.openRecent(r.url) }
+                                focused: focus == .recent(i)) { actions.openRecent(r) }
                         .focusable()
                         .focusEffectDisabled()
                         .focused($focus, equals: .recent(i))
-                        .onKeyPress(.return) { actions.openRecent(r.url); return .handled }
-                        .onKeyPress(.space) { actions.openRecent(r.url); return .handled }
+                        .onKeyPress(.return) { actions.openRecent(r); return .handled }
+                        .onKeyPress(.space) { actions.openRecent(r); return .handled }
                         .onMoveCommand { move($0, from: .recent(i)) }
-                        .accessibilityLabel("Open recent \(r.name)")
-                        .help(r.url.path)
+                        .accessibilityLabel(r.unsaved == nil ? "Open recent \(r.name)" : "Open unsaved \(r.name)")
+                        .help(r.unsaved == nil ? r.url.path : "Unsaved changes — reopens as a “(Recovered)” copy")
+                        .contextMenu {
+                            Button(r.unsaved == nil ? "Open" : "Reopen") { actions.openRecent(r) }
+                            if r.unsaved != nil {
+                                Button("Discard Unsaved Changes…", role: .destructive) {
+                                    if actions.discardUnsaved(r) { state.recents.removeAll { $0.id == r.id } }
+                                }
+                            }
+                        }
                 }
             }
         }

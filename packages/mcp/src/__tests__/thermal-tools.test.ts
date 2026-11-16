@@ -146,6 +146,64 @@ describe.skipIf(!wasmHasThermal)("thermal solve tool", () => {
     }
   });
 
+  it("Radiation boundary: vacuum part sheds its power by radiation", async () => {
+    // A 10 mm cube in vacuum, 1 W, radiating from all faces (eps 0.6):
+    // with no other path, every watt must leave by radiation, and the
+    // surface lands on (P/(eps*sigma*A) + Tamb^4)^(1/4).
+    const radSpec = {
+      origin_mm: [0, 0, 0],
+      size_mm: [10, 10, 10],
+      divisions: [5, 5, 5],
+      materials: [
+        {
+          shape: { type: "Box", min_mm: [0, 0, 0], size_mm: [10, 10, 10] },
+          k_w_mk: [100, 100, 100],
+        },
+      ],
+      sources: [
+        {
+          name: "p",
+          shape: { type: "Box", min_mm: [0, 0, 0], size_mm: [10, 10, 10] },
+          power_w: 1.0,
+        },
+      ],
+      domain_faces: Array(6).fill({
+        type: "Radiation",
+        emissivity: "eps",
+        ambient_c: 25,
+      }),
+    };
+    let res: { isError?: boolean; content: Array<{ text: string }> };
+    res = (await client.callTool({
+      name: "solve_thermal",
+      arguments: { spec: radSpec, parameters: { eps: 0.6 } },
+    })) as typeof res;
+    // A kernel WASM that predates the radiation BC rejects the variant;
+    // skip rather than fail (CI builds WASM from source).
+    if (res.isError && res.content[0].text.includes("unknown variant")) return;
+    expect(res.isError).toBeFalsy();
+    const out = JSON.parse(res.content[0].text);
+    expect(out.newton_iterations).toBeGreaterThan(0);
+    expect(out.radiation.length).toBe(6);
+    expect(Math.abs(out.energy.radiation_out_w - 1.0)).toBeLessThan(1e-6);
+    const sigma = 5.670374419e-8;
+    const ts =
+      Math.pow(1.0 / (0.6 * sigma * 6e-4) + Math.pow(298.15, 4), 0.25) -
+      273.15;
+    expect(Math.abs(out.radiation[0].mean_surface_c - ts)).toBeLessThan(0.1);
+    const names = out.claim_set.claims.map((c: { name: string }) => c.name);
+    expect(names).toContain("radiation_fraction");
+    expect(out.claim_set.provenance.radiation_model).toContain("gray-diffuse");
+
+    // Emissivity out of range fails closed.
+    res = (await client.callTool({
+      name: "solve_thermal",
+      arguments: { spec: radSpec, parameters: { eps: 1.5 } },
+    })) as typeof res;
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("emissivity");
+  });
+
   it("transient without heat capacity fails closed", async () => {
     const wasmHasTransient =
       typeof (
@@ -199,5 +257,108 @@ describe.skipIf(!wasmHasThermal)("thermal solve tool", () => {
       },
     })) as { isError?: boolean; content: Array<{ text: string }> };
     expect(res.isError).toBe(true);
+  });
+});
+
+/**
+ * `solve_thermal` with `document_id`: the board and die are parts of a loon
+ * document, voxelized by `vcad_eval::thermal_extract`; the die's power is
+ * the document's own `amp_loss_w` parameter.
+ */
+const wasmHasThermalDoc =
+  typeof (
+    probeEngine as unknown as {
+      kernel?: { thermalSolveDocument?: unknown };
+    }
+  ).kernel?.thermalSolveDocument === "function";
+
+const BOARD_LOON =
+  "[defparam amp_loss_w 0.8]\n" +
+  "[let board [translate -25 -25 43 [cube 50 50 1.6]]]\n[root board \"fr4\"]\n" +
+  "[let die [translate -2.5 -2.5 44.6 [cube 5 5 1]]]\n[root die \"silicon\"]\n";
+
+const conv = (h: number) => ({ type: "convection", hWM2k: h, ambientC: 25 });
+const STUDY = {
+  parts: ["board", "die"],
+  divisions: [50, 50, 13],
+  materials: [
+    { part: "board", laminate: { inPlaneWMk: 15, throughPlaneWMk: 0.4 } },
+    { part: "die", kWMk: [120] },
+  ],
+  sources: [{ name: "amp", part: "die", powerW: "amp_loss_w" }],
+  exposed: conv(5),
+  domainFaces: [
+    { type: "adiabatic" },
+    { type: "adiabatic" },
+    { type: "adiabatic" },
+    { type: "adiabatic" },
+    conv(5),
+    conv(5),
+  ],
+};
+
+type ToolOut = { isError?: boolean; content: Array<{ type: string; text: string }> };
+
+describe.skipIf(!wasmHasThermalDoc)("solve_thermal on a document", () => {
+  let call: (name: string, args: Record<string, unknown>) => Promise<ToolOut>;
+  let id: string;
+
+  beforeAll(async () => {
+    documents.clear();
+    const engine = await Engine.init();
+    const server = await createServer(engine, { user: null });
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "thermal-doc", version: "0.0.0" }, { capabilities: {} });
+    await Promise.all([client.connect(clientT), server.connect(serverT)]);
+    call = async (name, args) => (await client.callTool({ name, arguments: args })) as ToolOut;
+    id = JSON.parse((await call("open_document", {})).content[0].text).document_id;
+    const created = await call("create_cad_loon", { document_id: id, mode: "add", source: BOARD_LOON });
+    expect(created.isError, created.content[0]?.text).toBeFalsy();
+  });
+
+  it("voxelizes the parts: the amp-on-board on the every-physics PoC grid", async () => {
+    const res = await call("solve_thermal", { document_id: id, study: STUDY });
+    expect(res.isError, res.content[0].text).toBeFalsy();
+    const out = JSON.parse(res.content[0].text);
+    // Same answer as the Rust puck test on this grid (82.53 °C). The PoC's
+    // hand painting printed 80.6: its closed boxes give the die a 36 mm²
+    // footprint where the 1/2-fill voxelizer gives 32 (corners a quarter
+    // full) — see docs/thermal-voxelizer.md.
+    expect(out.t_max_c).toBeCloseTo(82.53, 1);
+    expect(out.sources[0].name).toBe("amp");
+    expect(Math.abs(out.energy.residual_rel)).toBeLessThan(1e-6);
+    expect(out.extracted.document_id).toBe(id);
+    expect(out.extracted.grid.divisions).toEqual([50, 50, 13]);
+    const [board, die] = out.extracted.parts;
+    expect(board.voxels).toBe(50 * 50 * 8);
+    expect(board.laminate_axis).toBe(2);
+    expect(die.voxels).toBe((36 - 4) * 5);
+    expect(out.extracted.parameters.amp_loss_w).toBe(0.8);
+    for (const c of out.receipt_claims) expect(c.basis).toBe("predicted");
+  });
+
+  it("caller parameters override the document's (linear in power)", async () => {
+    const a = JSON.parse((await call("solve_thermal", { document_id: id, study: STUDY })).content[0].text);
+    const b = JSON.parse(
+      (await call("solve_thermal", { document_id: id, study: STUDY, parameters: { amp_loss_w: 1.6 } }))
+        .content[0].text,
+    );
+    expect((b.t_max_c - 25) / (a.t_max_c - 25)).toBeCloseTo(2, 6);
+  });
+
+  it("fails closed on a too-coarse grid, naming the part", async () => {
+    const res = await call("solve_thermal", {
+      document_id: id,
+      study: { ...STUDY, divisions: [50, 50, 3] },
+    });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('"board"');
+    expect(res.content[0].text).toContain("thick along z");
+  });
+
+  it("without a study, says the document has none", async () => {
+    const res = await call("solve_thermal", { document_id: id });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("no thermal analysis study");
   });
 });

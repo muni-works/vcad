@@ -2254,6 +2254,87 @@
     }
   },
   {
+    "name": "optimize_parameters",
+    "title": "Optimize Parameters",
+    "description": "Solve for the geometry: minimize a weighted sum of quantities (volume, mass, centroid) over named parameters, subject to parameter-expression constraints (\"port_len <= body_h - 2*wall - 15\") and QoI bounds. Augmented Lagrangian over box-projected L-BFGS, driven by exact seam gradients. Returns the optimum, a KKT report (feasibility, stationarity, multipliers, active bounds), and the full trajectory — every iterate's parameters, per-term values, and each gradient component labeled with the route that produced it (seam / seam_fd / fd / adjoint / linear). Read-only: apply the optimum with set_parameters. Solver QoIs (modal frequency, …) plug in through the Rust API (vcad_eval::optimize::ScalarQoi, e.g. vcad_sound's modal_f1) and are not exposed over this WASM path.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "description": "Session id from open_document."
+        },
+        "document": {
+          "type": "object",
+          "description": "Inline Document IR to optimize instead of a session (stateless path)."
+        },
+        "parameters": {
+          "type": "array",
+          "description": "Parameters to optimize: [{name, lo, hi}] (min/max accepted as aliases). lo/hi default to the parameter's declared scrub bounds.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "lo": {
+                "type": "number"
+              },
+              "hi": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        },
+        "objective": {
+          "type": "array",
+          "description": "Terms summed into the objective: [{qoi, part?, weight?, shape?}]. shape: \"linear\" (default), {\"target\": t} for (q−t)², {\"hinge_below\": t} for max(0,t−q)², {\"hinge_above\": t} for max(0,q−t)². Negative weight on a linear term maximizes it.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "qoi": {
+                "type": "string",
+                "description": "volume | mass | centroid_x | centroid_y | centroid_z"
+              },
+              "part": {
+                "type": "number",
+                "description": "Solid-part index (omit to sum volume/mass over parts)."
+              },
+              "weight": {
+                "type": "number"
+              },
+              "shape": {}
+            },
+            "required": [
+              "qoi"
+            ]
+          }
+        },
+        "constraints": {
+          "type": "array",
+          "description": "Inequalities. Parameter expressions in the document formula language: {\"expr\": \"port_len <= body_h - 2*wall - 15\"}. QoI bounds: {\"qoi\": \"mass\", \"op\": \"<=\", \"value\": 0.05}.",
+          "items": {
+            "type": "object"
+          }
+        },
+        "options": {
+          "type": "object",
+          "description": "density (mass = density·volume; geometry is mm, so kg/m³·1e-9 for kg), max_outer, max_inner, feas_tol, grad_tol, circle_segments, check_seam_fd (central-FD the seam gradients at the optimum)."
+        }
+      },
+      "required": [
+        "parameters",
+        "objective"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
     "name": "add_constraint",
     "title": "Add Constraint",
     "description": "Add solver-enforced geometric constraints to the document and solve immediately — KiCad-v11-class constraints generalized to the whole design: PCB footprints and board outline, sketch points, and named mechanical part edges (cross-domain: 'USB connector coincident with the enclosure cutout'). Dimensional values accept formulas over document parameters; set_parameters re-solves. `driven: true` makes a reference dimension (measured, back-annotated, never enforced). Constraints persist and re-verify via build_receipt / verify_receipt as constraint.* claims (Holds/Stale/Violated). The solver moves footprints, outline vertices, and sketch points — never copper or part geometry; re-run route_nets when moved footprints were routed.",
@@ -2542,118 +2623,435 @@
   {
     "name": "simulate_charged_particles",
     "title": "Simulate Charged Particles",
-    "description": "Charged-particle optics for axisymmetric electrode devices (fusors, magnetically shielded-grid IEC, ring traps): solve the electrostatic field + ring-coil magnetics, trace a deuteron ensemble (Boris integrator, Bosch-Hale D-D yield weighting), and report interception fraction (the cathode-ammeter observable), recirculation, predicted neutron rate, fusion power, Q, and distance-to-Lawson — as data plus `vcad.particle-claims/1` and unified-receipt claims. Predictions carry basis \"predicted\" and roll up Provisional until bench-measured. Vacuum single-particle optics: no space charge, no CX chain (optional single-generation CX via `options.cx_sigma_m2`); neutron rates are floors. Deterministic. Cost scales with grid × particles × passes — defaults run in seconds.",
+    "description": "Charged-particle optics for axisymmetric electrode devices (fusors, magnetically shielded-grid IEC, ring traps): solve the electrostatic field + ring-coil magnetics, trace a deuteron ensemble (Boris integrator, Bosch-Hale D-D yield weighting), and report interception fraction (the cathode-ammeter observable), recirculation, predicted neutron rate, fusion power, Q, and distance-to-Lawson — as data plus `vcad.particle-claims/1` and unified-receipt claims. Predictions carry basis \"predicted\" and roll up Provisional until bench-measured. Vacuum single-particle optics: no space charge, no CX chain (optional single-generation CX via `options.cx_sigma_m2`); neutron rates are floors. Deterministic. Cost scales with grid × particles × passes — defaults run in seconds. A 3D spec (`chamber` + `electrodes`) models real globe grids (great circles, latitude + meridian wires) in a grounded sphere via the thin-wire BEM and a full-sphere launch; it returns stats, neutron-rate floor/ceiling and the solver's surface-residual report, without receipt claims (3D claims are not wired yet).",
     "inputSchema": {
       "type": "object",
       "properties": {
         "spec": {
+          "description": "An axisymmetric ring device (`rings`) or a 3D wire device (`chamber` + `electrodes`). Pass this OR `document_id` + `extract` (extraction is axisymmetric only).",
+          "anyOf": [
+            {
+              "type": "object",
+              "required": [
+                "chamber_radius_mm",
+                "chamber_half_height_mm",
+                "rings"
+              ],
+              "description": "Axisymmetric device: grounded cylindrical chamber + biased (optionally current-carrying) wire rings, coaxial with Z. Units mm / volts / ampere-turns. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error).",
+              "properties": {
+                "chamber_radius_mm": {
+                  "description": "A number, or the name of a named parameter bound via `parameters`.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "chamber_half_height_mm": {
+                  "description": "A number, or the name of a named parameter bound via `parameters`.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "wall_potential_v": {
+                  "description": "Chamber wall potential, volts. Default 0 (grounded).",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "rings": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "ring_radius_mm",
+                      "z_mm",
+                      "wire_radius_mm",
+                      "potential_v"
+                    ],
+                    "properties": {
+                      "ring_radius_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "z_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "wire_radius_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "potential_v": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "ampere_turns": {
+                        "description": "Circulating current, ampere-turns (+ = CCW viewed from +Z). Default 0. This is the magnetic grid-shielding knob.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            {
+              "type": "object",
+              "required": [
+                "chamber",
+                "electrodes"
+              ],
+              "description": "Non-axisymmetric (3D) device: thin-wire electrodes along arbitrary paths inside a grounded sphere — real fusor globe grids (great circles, latitude + meridian), stalks, rings. Solved by the thin-wire boundary-element method; refused (fail-closed) if the wire model's surface-residual gates fail. Units mm / volts. Unknown fields are errors. Any numeric field may be a parameter name bound in `parameters`.",
+              "properties": {
+                "chamber": {
+                  "type": "object",
+                  "required": [
+                    "kind"
+                  ],
+                  "description": "`{\"kind\":\"sphere\",\"radius_mm\":…}` (grounded sphere about the origin) or `{\"kind\":\"unbounded\"}`.",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "sphere",
+                        "unbounded"
+                      ]
+                    },
+                    "radius_mm": {
+                      "description": "A number, or the name of a named parameter bound via `parameters`.",
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    }
+                  }
+                },
+                "wall_potential_v": {
+                  "description": "A number, or the name of a named parameter bound via `parameters`.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "electrodes": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": [
+                      "kind",
+                      "wire_radius_mm",
+                      "potential_v"
+                    ],
+                    "description": "One of: great_circle_globe {grid_radius_mm, layout (\"orthogonal3\"|\"cuboctahedral4\"|\"icosidodecahedral6\") | normals: [[x,y,z],…]}; lat_long_globe {grid_radius_mm, n_lat, n_long}; circle {center_mm, normal, radius_mm, ampere_turns?}; arc {center_mm, normal, start_mm, sweep_deg}; polyline {points_mm, closed?}; ring {ring_radius_mm, z_mm, ampere_turns?}. All take wire_radius_mm and potential_v.",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "great_circle_globe",
+                          "lat_long_globe",
+                          "circle",
+                          "arc",
+                          "polyline",
+                          "ring"
+                        ]
+                      },
+                      "wire_radius_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "potential_v": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "grid_radius_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "layout": {
+                        "type": "string",
+                        "enum": [
+                          "orthogonal3",
+                          "cuboctahedral4",
+                          "icosidodecahedral6"
+                        ]
+                      },
+                      "normals": {
+                        "type": "array",
+                        "items": {
+                          "type": "array",
+                          "minItems": 3,
+                          "maxItems": 3,
+                          "items": {
+                            "description": "A number, or the name of a named parameter bound via `parameters`.",
+                            "anyOf": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      "n_lat": {
+                        "type": "number"
+                      },
+                      "n_long": {
+                        "type": "number"
+                      },
+                      "center_mm": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                          "description": "A number, or the name of a named parameter bound via `parameters`.",
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        }
+                      },
+                      "normal": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                          "description": "A number, or the name of a named parameter bound via `parameters`.",
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        }
+                      },
+                      "start_mm": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                          "description": "A number, or the name of a named parameter bound via `parameters`.",
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        }
+                      },
+                      "radius_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "sweep_deg": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "points_mm": {
+                        "type": "array",
+                        "items": {
+                          "type": "array",
+                          "minItems": 3,
+                          "maxItems": 3,
+                          "items": {
+                            "description": "A number, or the name of a named parameter bound via `parameters`.",
+                            "anyOf": [
+                              {
+                                "type": "number"
+                              },
+                              {
+                                "type": "string"
+                              }
+                            ]
+                          }
+                        }
+                      },
+                      "closed": {
+                        "type": "boolean"
+                      },
+                      "ring_radius_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "z_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "ampere_turns": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        "document_id": {
+          "type": "string",
+          "description": "Session document to extract the device from (instead of `spec`): the chamber and grid are measured from the document's own evaluated solids, so the simulation runs on the geometry the drawings show. Requires `extract`."
+        },
+        "extract": {
           "type": "object",
           "required": [
-            "chamber_radius_mm",
-            "chamber_half_height_mm",
-            "rings"
+            "chamber",
+            "electrodes"
           ],
-          "description": "Axisymmetric device: grounded cylindrical chamber + biased (optionally current-carrying) wire rings, coaxial with Z. Units mm / volts / ampere-turns. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error).",
+          "description": "Which parts of `document_id` are the device. Geometry is measured from the BRep (literals); potentials and ampere-turns are NAMED DOCUMENT PARAMETERS (loon `defparam`), so scrubbing them in the document re-prices the run. Fail-closed: anything the axisymmetric device can't hold — a ring off the chamber axis (globe/meridian grids), crossing or trimmed wires, a stalk fused into the grid part, a non-cylindrical or ported chamber, an undeclared parameter — errors naming the part.",
           "properties": {
-            "chamber_radius_mm": {
-              "description": "A number, or the name of a named parameter bound via `parameters`.",
-              "anyOf": [
-                {
-                  "type": "number"
-                },
-                {
-                  "type": "string"
-                }
-              ]
+            "chamber": {
+              "type": "string",
+              "description": "Chamber part (name or part id), modelled as a closed can: outer cylinder minus a coaxial inner cylinder. Its cavity sets the device radius, half-height, axis and origin."
             },
-            "chamber_half_height_mm": {
-              "description": "A number, or the name of a named parameter bound via `parameters`.",
-              "anyOf": [
-                {
-                  "type": "number"
-                },
-                {
-                  "type": "string"
-                }
-              ]
+            "wall_potential": {
+              "type": "string",
+              "description": "Document parameter holding the wall potential, V. Omitted = grounded."
             },
-            "wall_potential_v": {
-              "description": "Chamber wall potential, volts. Default 0 (grounded).",
-              "anyOf": [
-                {
-                  "type": "number"
-                },
-                {
-                  "type": "string"
-                }
-              ]
-            },
-            "rings": {
+            "electrodes": {
               "type": "array",
               "minItems": 1,
               "items": {
                 "type": "object",
                 "required": [
-                  "ring_radius_mm",
-                  "z_mm",
-                  "wire_radius_mm",
-                  "potential_v"
+                  "part",
+                  "potential"
                 ],
                 "properties": {
-                  "ring_radius_mm": {
-                    "description": "A number, or the name of a named parameter bound via `parameters`.",
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "string"
-                      }
-                    ]
+                  "part": {
+                    "type": "string",
+                    "description": "Electrode part (name or part id) holding only complete, separate toroidal wire rings coaxial with the chamber."
                   },
-                  "z_mm": {
-                    "description": "A number, or the name of a named parameter bound via `parameters`.",
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "string"
-                      }
-                    ]
-                  },
-                  "wire_radius_mm": {
-                    "description": "A number, or the name of a named parameter bound via `parameters`.",
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "string"
-                      }
-                    ]
-                  },
-                  "potential_v": {
-                    "description": "A number, or the name of a named parameter bound via `parameters`.",
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "string"
-                      }
-                    ]
+                  "potential": {
+                    "type": "string",
+                    "description": "Document parameter holding the potential, V."
                   },
                   "ampere_turns": {
-                    "description": "Circulating current, ampere-turns (+ = CCW viewed from +Z). Default 0. This is the magnetic grid-shielding knob.",
-                    "anyOf": [
-                      {
-                        "type": "number"
-                      },
-                      {
-                        "type": "string"
-                      }
-                    ]
+                    "type": "string",
+                    "description": "Document parameter holding the ring current, ampere-turns (+ = CCW viewed from +axis). Every ring in the part shares it; put opposed-current rings in separate parts."
                   }
                 }
               }
@@ -2665,7 +3063,7 @@
           "additionalProperties": {
             "type": "number"
           },
-          "description": "Bindings for named spec parameters, `{name: value}`."
+          "description": "Bindings for named spec parameters, `{name: value}`. With `document_id` these override the document's parameter values."
         },
         "options": {
           "type": "object",
@@ -2701,13 +3099,14 @@
             "cx_sigma_m2": {
               "type": "number",
               "description": "Enable charge-exchange channels with this constant cross section, m² (order 1e-19 for D⁺ on D₂ in the keV band). Omitted = CX off; the neutron-rate claim then reports the beam-on-background floor."
+            },
+            "step_mm": {
+              "type": "number",
+              "description": "3D specs only: tracer step length, mm. Default a quarter of the thinnest wire radius, capped at 0.25 mm. (nr/nz apply to 2D specs only.)"
             }
           }
         }
-      },
-      "required": [
-        "spec"
-      ]
+      }
     },
     "annotations": {
       "readOnlyHint": true
@@ -2716,7 +3115,7 @@
   {
     "name": "optimize_electrodes",
     "title": "Optimize Electrodes",
-    "description": "Design electrodes by gradient ascent: optimize named device-spec parameters (e.g. shield ampere-turns, ring spacing) against predicted D-D yield per ion, with multi-start FD search (the yield landscape is multimodal — single starts stall on the recirculation hill at ~3x lower yield). Returns the best parameter set, its yield, per-start results, and the ascent history. Candidate configurations that fail to resolve or converge score 0 rather than aborting. Follow with simulate_charged_particles at the winning parameters for full claims. Cost ≈ evals × one simulation; defaults run in tens of seconds.",
+    "description": "Design electrodes by gradient ascent: optimize named device-spec parameters (e.g. shield ampere-turns, ring spacing) against predicted D-D yield per ion, with multi-start search (the yield landscape is multimodal — single starts stall on the recirculation hill at ~3x lower yield). Gradients are FD by default; `options.gradient: \"hybrid\"` routes potentials + ampere-turns through the discrete adjoint with FD for geometry and an FD fallback. Returns the best parameter set, its yield, per-start results, the ascent history, and per-iteration records (objective + gradient source per variable). Candidate configurations that fail to resolve or converge score 0 rather than aborting. Follow with simulate_charged_particles at the winning parameters for full claims. Cost ≈ evals × one simulation; defaults run in tens of seconds.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -2727,7 +3126,7 @@
             "chamber_half_height_mm",
             "rings"
           ],
-          "description": "Axisymmetric device: grounded cylindrical chamber + biased (optionally current-carrying) wire rings, coaxial with Z. Units mm / volts / ampere-turns. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error).",
+          "description": "Axisymmetric device: grounded cylindrical chamber + biased (optionally current-carrying) wire rings, coaxial with Z. Units mm / volts / ampere-turns. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error). Pass this OR `document_id` + `extract`.",
           "properties": {
             "chamber_radius_mm": {
               "description": "A number, or the name of a named parameter bound via `parameters`.",
@@ -2834,12 +3233,59 @@
             }
           }
         },
+        "document_id": {
+          "type": "string",
+          "description": "Session document to extract the device from (instead of `spec`): the chamber and grid are measured from the document's own evaluated solids, so the simulation runs on the geometry the drawings show. Requires `extract`."
+        },
+        "extract": {
+          "type": "object",
+          "required": [
+            "chamber",
+            "electrodes"
+          ],
+          "description": "Which parts of `document_id` are the device. Geometry is measured from the BRep (literals); potentials and ampere-turns are NAMED DOCUMENT PARAMETERS (loon `defparam`), so scrubbing them in the document re-prices the run. Fail-closed: anything the axisymmetric device can't hold — a ring off the chamber axis (globe/meridian grids), crossing or trimmed wires, a stalk fused into the grid part, a non-cylindrical or ported chamber, an undeclared parameter — errors naming the part.",
+          "properties": {
+            "chamber": {
+              "type": "string",
+              "description": "Chamber part (name or part id), modelled as a closed can: outer cylinder minus a coaxial inner cylinder. Its cavity sets the device radius, half-height, axis and origin."
+            },
+            "wall_potential": {
+              "type": "string",
+              "description": "Document parameter holding the wall potential, V. Omitted = grounded."
+            },
+            "electrodes": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "part",
+                  "potential"
+                ],
+                "properties": {
+                  "part": {
+                    "type": "string",
+                    "description": "Electrode part (name or part id) holding only complete, separate toroidal wire rings coaxial with the chamber."
+                  },
+                  "potential": {
+                    "type": "string",
+                    "description": "Document parameter holding the potential, V."
+                  },
+                  "ampere_turns": {
+                    "type": "string",
+                    "description": "Document parameter holding the ring current, ampere-turns (+ = CCW viewed from +axis). Every ring in the part shares it; put opposed-current rings in separate parts."
+                  }
+                }
+              }
+            }
+          }
+        },
         "parameters": {
           "type": "object",
           "additionalProperties": {
             "type": "number"
           },
-          "description": "Bindings for named spec parameters, `{name: value}`."
+          "description": "Bindings for named spec parameters, `{name: value}`. With `document_id` these override the document's parameter values; only parameters the extracted spec names (potentials, ampere-turns) can be optimized — geometry is measured literals."
         },
         "variables": {
           "type": "array",
@@ -2895,12 +3341,19 @@
             "multi_start": {
               "type": "boolean",
               "description": "Three seeds across the box instead of one (the landscape is multimodal). Default true."
+            },
+            "gradient": {
+              "type": "string",
+              "enum": [
+                "fd",
+                "hybrid"
+              ],
+              "description": "Gradient routing. \"fd\" (default): central differences for every variable. \"hybrid\": potentials + ampere-turns take the discrete adjoint (one run per iterate), geometry takes FD; an iteration whose adjoint direction fails to climb is retried on pure FD. The adjoint differentiates a fixed-horizon surrogate with no wire interception, so on shield current it can disagree with the scored objective — each iteration reports its source."
             }
           }
         }
       },
       "required": [
-        "spec",
         "variables"
       ]
     },
@@ -3990,7 +4443,7 @@
   {
     "name": "analyze_antenna",
     "title": "Analyze Antenna",
-    "description": "Thin-wire method-of-moments antenna analysis over a frequency band: per-frequency Z_in and S11 sweep rows, minimum-S11 point, in-band resonance (Im Z = 0), -10 dB bandwidth, far-field peak gain (37x72 pattern scan), and a radiation-efficiency energy cross-check — as data plus `vcad.antenna-claims/1` and unified-receipt claims. Predictions carry basis \"predicted\" and roll up Provisional until a VNA sweep is bound. Free-space PEC wires (optional infinite ground plane): no dielectric substrate (PCB antennas read a few percent high in frequency), no conductor loss (gain = directivity), thin-wire validity gates enforced fail-closed (segment >= 4a, segment <= lambda/8, ka <= 0.1). Deterministic. Cost ~O(segments^3) per frequency x band points (segment cap 600); a 30-segment dipole over 46 points runs in seconds.",
+    "description": "Thin-wire method-of-moments antenna analysis over a frequency band: per-frequency Z_in and S11 sweep rows, minimum-S11 point, in-band resonance (Im Z = 0), -10 dB bandwidth, far-field peak gain (37x72 pattern scan), and a radiation-efficiency energy cross-check — as data plus `vcad.antenna-claims/1` and unified-receipt claims. Predictions carry basis \"predicted\" and roll up Provisional until a VNA sweep is bound. Pass `spec` (hand-built wires), or `document_id` + `extract` to read the antenna from the document's PCB board (traces -> wires, pad feed, infinite ground at the pour edge; approximation + board eps_r/thickness returned under `extracted`). Free-space PEC wires (optional infinite ground plane): no dielectric substrate (FR-4 PCB antennas resonate ~20-30% BELOW the prediction), no conductor loss (gain = directivity), thin-wire validity gates enforced fail-closed (segment >= 4a, segment <= lambda/8, ka <= 0.1). Deterministic. Cost ~O(segments^3) per frequency x band points (segment cap 600); a 30-segment dipole over 46 points runs in seconds.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -4000,7 +4453,7 @@
             "elements",
             "feed_mm"
           ],
-          "description": "Thin-wire antenna: straight wires, polyline paths, and closed loops, with a delta-gap feed at the basis nearest `feed_mm`. Units mm. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error).",
+          "description": "Thin-wire antenna: straight wires, polyline paths, and closed loops, with a delta-gap feed at the basis nearest `feed_mm`. Units mm. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error). Pass this OR `document_id` + `extract`.",
           "properties": {
             "ground_plane": {
               "type": "boolean",
@@ -4120,12 +4573,63 @@
             }
           }
         },
+        "document_id": {
+          "type": "string",
+          "description": "Session document whose PcbBoard holds the antenna (instead of `spec`). Requires `extract`."
+        },
+        "extract": {
+          "type": "object",
+          "required": [
+            "feed"
+          ],
+          "description": "Which copper of `document_id`'s PcbBoard is the antenna. Every trace on the antenna net becomes a round wire of radius width/4; the feed is a delta gap between the feed pad and the ground pour; the pour becomes an INFINITE PEC plane at its edge nearest the feed (image theory — recorded with the pour's real size in wavelengths). Fail-closed: arcs, vias, zones or extra pads on the antenna net, copper on two layers, floating islands, copper over/behind the pour edge (feedlines), a pour wrapping the antenna, or a feed that isn't a free trace end on the pad all error.",
+          "properties": {
+            "feed": {
+              "type": "object",
+              "required": [
+                "footprint",
+                "pad"
+              ],
+              "description": "Feed pad, e.g. the U.FL signal pad.",
+              "properties": {
+                "footprint": {
+                  "type": "string",
+                  "description": "Reference, e.g. J1."
+                },
+                "pad": {
+                  "type": "string",
+                  "description": "Pad number, e.g. 1."
+                }
+              }
+            },
+            "net": {
+              "type": "string",
+              "description": "Antenna net. Default: the feed pad's net."
+            },
+            "ground_net": {
+              "type": "string",
+              "description": "Net of the ground pour. Default GND."
+            },
+            "board_node": {
+              "type": "number",
+              "description": "PcbBoard node id. Default: the document's only board."
+            },
+            "segments_per_wavelength": {
+              "type": "number",
+              "description": "Segmentation at band top (>= 8). Default 20."
+            },
+            "max_feed_gap_mm": {
+              "type": "number",
+              "description": "Largest feed-pad-to-pour-edge gap accepted, mm. Default 2."
+            }
+          }
+        },
         "parameters": {
           "type": "object",
           "additionalProperties": {
             "type": "number"
           },
-          "description": "Bindings for named spec parameters, `{name: value}`."
+          "description": "Bindings for named spec parameters, `{name: value}` (an extracted board spec is all literals)."
         },
         "band": {
           "type": "object",
@@ -4134,7 +4638,7 @@
             "f_hi_hz",
             "points"
           ],
-          "description": "Frequency band to sweep and make claims over.",
+          "description": "Frequency band to sweep and make claims over (with `document_id`, `f_hi_hz` also sets the extracted segmentation).",
           "properties": {
             "f_lo_hz": {
               "type": "number"
@@ -4171,7 +4675,6 @@
         }
       },
       "required": [
-        "spec",
         "band"
       ]
     },
@@ -4182,7 +4685,7 @@
   {
     "name": "solve_thermal",
     "title": "Solve Thermal",
-    "description": "Heat-conduction FEA on a voxel grid: harmonic-mean finite volumes + PCG, returning T_max and its location, per-source theta_ja (K/W, junction-to-ambient), reservoir loads, and an energy-balance audit — as data plus `vcad.thermal-claims/1` and unified-receipt claims. Predictions carry basis \"predicted\" and roll up Provisional until hardware is measured. Steady state by default; pass `transient` for backward-Euler time stepping over a piecewise-constant drive schedule (RTP ramp/soak/cool, ambient steps, duty cycles — needs per-material `heat_capacity_j_m3k`), which returns T_max/per-source time series and the run-integrated energy audit. Conduction only: convection enters as film coefficients you supply (h values are the dominant uncertainty), no radiation, no fluid flow. Full temperature fields are not returned (summaries + claims are). Cost scales with voxel count (capped at 2M; transient runs also capped at 20k steps and 1e9 voxel-steps); a 20x20x2 board solves instantly, 100x100x13 in seconds.",
+    "description": "Heat-conduction FEA on a voxel grid: harmonic-mean finite volumes + PCG, returning T_max and its location, per-source theta_ja (K/W, junction-to-ambient), reservoir loads, and an energy-balance audit — as data plus `vcad.thermal-claims/1` and unified-receipt claims. Predictions carry basis \"predicted\" and roll up Provisional until hardware is measured. Steady state by default; pass `transient` for backward-Euler time stepping over a piecewise-constant drive schedule (RTP ramp/soak/cool, ambient steps, duty cycles — needs per-material `heat_capacity_j_m3k`), which returns T_max/per-source time series and the run-integrated energy audit. Conduction plus optional gray-diffuse surface radiation (`Radiation` boundary: emissivity you supply, radiating to an ambient or an enclosing wall; solved by Newton; reports per-slot radiated W and a `radiation_fraction` claim). Convection enters as film coefficients you supply (h and emissivity are the dominant uncertainties); no surface-to-surface exchange between parts of the model, no fluid flow. Full temperature fields are not returned (summaries + claims are). Cost scales with voxel count (capped at 2M; transient runs also capped at 20k steps and 1e9 voxel-steps); a 20x20x2 board solves instantly, 100x100x13 in seconds. Instead of a hand-written `spec`, pass `document_id` to solve the document's own parts: its thermal analysis study (`study_id`, or the only one) or an inline `study` voxelizes the selected parts from their tessellations, ties sources/sinks to parts, and reads named document parameters (steady only).",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -4194,7 +4697,7 @@
             "divisions",
             "materials"
           ],
-          "description": "Voxelized conduction domain: an axis-aligned box discretized into `divisions` voxels, with material regions (per-axis k), power sources, optional fixed-temperature regions, and per-face boundary conditions `[-x,+x,-y,+y,-z,+z]`. Units mm / W / degC. Any numeric field (except `divisions`) may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error).",
+          "description": "Voxelized conduction domain: an axis-aligned box discretized into `divisions` voxels, with material regions (per-axis k), power sources, optional fixed-temperature regions, and per-face boundary conditions `[-x,+x,-y,+y,-z,+z]`. Units mm / W / degC. Any numeric field (except `divisions`) may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error). Pass this OR `document_id`.",
           "properties": {
             "origin_mm": {
               "type": "array",
@@ -4656,14 +5159,15 @@
                 "required": [
                   "type"
                 ],
-                "description": "Boundary condition: `{\"type\":\"Adiabatic\"}`, `{\"type\":\"FixedTemperature\",\"temperature_c\":..}`, or `{\"type\":\"Convection\",\"h_w_m2k\":..,\"ambient_c\":..}`.",
+                "description": "Boundary condition: `{\"type\":\"Adiabatic\"}`, `{\"type\":\"FixedTemperature\",\"temperature_c\":..}`, `{\"type\":\"Convection\",\"h_w_m2k\":..,\"ambient_c\":..}`, or `{\"type\":\"Radiation\",\"emissivity\":..,\"ambient_c\":..}` (gray-diffuse eps*sigma*(Ts^4-Tamb^4), optional parallel `h_w_m2k` (0 in vacuum), optional `area_scale` = true/voxel surface area (a voxel staircase over-counts curved area ~4/pi for cylinders, ~1.5 for spheres, which over-cools: the result reports `voxel_area_m2` per slot so you can compute it), optional `enclosure` {emissivity, area_m2} for a two-surface gray enclosure such as a grid inside a vacuum chamber whose wall temperature is `ambient_c`). Any radiation face makes the solve nonlinear (Newton); temperatures must be degC.",
                 "properties": {
                   "type": {
                     "type": "string",
                     "enum": [
                       "Adiabatic",
                       "FixedTemperature",
-                      "Convection"
+                      "Convection",
+                      "Radiation"
                     ]
                   },
                   "temperature_c": {
@@ -4698,6 +5202,60 @@
                         "type": "string"
                       }
                     ]
+                  },
+                  "emissivity": {
+                    "description": "Radiation: surface emissivity in (0, 1]. Required.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "area_scale": {
+                    "description": "Radiation: radiating-area multiplier (> 0), default 1.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "enclosure": {
+                    "type": "object",
+                    "required": [
+                      "emissivity",
+                      "area_m2"
+                    ],
+                    "description": "Radiation: enclosing wall (view factor 1). eps_eff = 1/(1/eps + (A_s/A_w)(1/eps_w - 1)); A_w must exceed the slot's radiating area.",
+                    "properties": {
+                      "emissivity": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "area_m2": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      }
+                    }
                   }
                 }
               },
@@ -4715,7 +5273,8 @@
                   "enum": [
                     "Adiabatic",
                     "FixedTemperature",
-                    "Convection"
+                    "Convection",
+                    "Radiation"
                   ]
                 },
                 "temperature_c": {
@@ -4750,11 +5309,523 @@
                       "type": "string"
                     }
                   ]
+                },
+                "emissivity": {
+                  "description": "Radiation: surface emissivity in (0, 1]. Required.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "area_scale": {
+                  "description": "Radiation: radiating-area multiplier (> 0), default 1.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "enclosure": {
+                  "type": "object",
+                  "required": [
+                    "emissivity",
+                    "area_m2"
+                  ],
+                  "description": "Radiation: enclosing wall (view factor 1). eps_eff = 1/(1/eps + (A_s/A_w)(1/eps_w - 1)); A_w must exceed the slot's radiating area.",
+                  "properties": {
+                    "emissivity": {
+                      "description": "A number, or the name of a named parameter bound via `parameters`.",
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "area_m2": {
+                      "description": "A number, or the name of a named parameter bound via `parameters`.",
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    }
+                  }
                 }
               }
             },
             "reference_c": {
               "description": "Explicit theta reference temperature; usually inferred from the single ambient.",
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        "document_id": {
+          "type": "string",
+          "description": "Session document to solve (instead of `spec`): the study's parts are voxelized from the document's own evaluated geometry."
+        },
+        "study_id": {
+          "type": "string",
+          "description": "With `document_id`: id of the thermal study in `document.analysis_studies` (default: the only one)."
+        },
+        "study": {
+          "type": "object",
+          "required": [
+            "parts"
+          ],
+          "description": "A thermal study over the document's own parts (the same shape as a `thermal` entry in `document.analysis_studies`). The listed parts are voxelized from their tessellations onto a grid spanning their union bounding box; each voxel takes the material of the part filling most of it (solid when >= half full). Sources and sinks name parts; numbers may be document parameter names (e.g. a `defparam amp_loss_w`). Fail-closed, naming the part: a part thinner than `minVoxelsAcross` voxels (default 2) along any axis, overlapping parts, an open mesh, a material with no thermal properties and no override, a source box that would also cover another part.",
+          "properties": {
+            "parts": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "string"
+              },
+              "description": "Parts to voxelize (name or part id). Unlisted parts are void."
+            },
+            "divisions": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": {
+                "type": "number"
+              },
+              "description": "Voxels per axis. Give this OR `pitchMm`."
+            },
+            "pitchMm": {
+              "type": "array",
+              "minItems": 3,
+              "maxItems": 3,
+              "items": {
+                "type": "number"
+              },
+              "description": "Target voxel pitch per axis, mm (rounded down to span the domain exactly)."
+            },
+            "paddingMm": {
+              "type": "number",
+              "description": "Void margin around the parts, mm. Default 0."
+            },
+            "minVoxelsAcross": {
+              "type": "number",
+              "description": "Thin-wall guard, voxels. Default 2."
+            },
+            "materials": {
+              "type": "array",
+              "description": "Per-part overrides of the built-in table (keyed by the part's material string: pla, petg, abs, nylon, fr4, aluminium, copper, steel, stainless, brass, silicon, glass, air, ...). Give `kWMk` (1 or 3 world-axis values) OR `laminate` (through-plane = the part's thinnest axis). A real PCB with copper planes needs `laminate` (~15 in-plane / ~0.4 through) — the table's fr4 is bare laminate.",
+              "items": {
+                "type": "object",
+                "required": [
+                  "part"
+                ],
+                "properties": {
+                  "part": {
+                    "type": "string"
+                  },
+                  "kWMk": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 3,
+                    "items": {
+                      "description": "A number, or the name of a named parameter bound via `parameters`.",
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    }
+                  },
+                  "laminate": {
+                    "type": "object",
+                    "required": [
+                      "inPlaneWMk",
+                      "throughPlaneWMk"
+                    ],
+                    "properties": {
+                      "inPlaneWMk": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "throughPlaneWMk": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      }
+                    }
+                  },
+                  "heatCapacityJM3k": {
+                    "description": "A number, or the name of a named parameter bound via `parameters`.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "sources": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "part",
+                  "powerW"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "part": {
+                    "type": "string"
+                  },
+                  "powerW": {
+                    "description": "A number, or the name of a named parameter bound via `parameters`.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "region": {
+                    "type": "object",
+                    "required": [
+                      "min",
+                      "max"
+                    ],
+                    "description": "World-frame AABB sub-region of the part, mm.",
+                    "properties": {
+                      "min": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                          "type": "number"
+                        }
+                      },
+                      "max": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                          "type": "number"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "sinks": {
+              "type": "array",
+              "description": "Heat sinks: parts (or sub-regions) held at a fixed temperature.",
+              "items": {
+                "type": "object",
+                "required": [
+                  "part",
+                  "temperatureC"
+                ],
+                "properties": {
+                  "part": {
+                    "type": "string"
+                  },
+                  "temperatureC": {
+                    "description": "A number, or the name of a named parameter bound via `parameters`.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "region": {
+                    "type": "object",
+                    "required": [
+                      "min",
+                      "max"
+                    ],
+                    "description": "World-frame AABB sub-region of the part, mm.",
+                    "properties": {
+                      "min": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                          "type": "number"
+                        }
+                      },
+                      "max": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                          "type": "number"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "exposed": {
+              "type": "object",
+              "required": [
+                "type"
+              ],
+              "description": "Boundary on every solid face touching void. Default adiabatic.",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "adiabatic",
+                    "convection",
+                    "fixedTemperature",
+                    "radiation"
+                  ]
+                },
+                "hWM2k": {
+                  "description": "A number, or the name of a named parameter bound via `parameters`.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "ambientC": {
+                  "description": "A number, or the name of a named parameter bound via `parameters`.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "temperatureC": {
+                  "description": "A number, or the name of a named parameter bound via `parameters`.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "emissivity": {
+                  "description": "A number, or the name of a named parameter bound via `parameters`.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "areaScale": {
+                  "description": "A number, or the name of a named parameter bound via `parameters`.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "enclosure": {
+                  "type": "object",
+                  "required": [
+                    "emissivity",
+                    "areaM2"
+                  ],
+                  "properties": {
+                    "emissivity": {
+                      "description": "A number, or the name of a named parameter bound via `parameters`.",
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "areaM2": {
+                      "description": "A number, or the name of a named parameter bound via `parameters`.",
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    }
+                  }
+                }
+              }
+            },
+            "domainFaces": {
+              "type": "array",
+              "minItems": 6,
+              "maxItems": 6,
+              "items": {
+                "type": "object",
+                "required": [
+                  "type"
+                ],
+                "description": "Boundary: `{\"type\":\"adiabatic\"}`, `{\"type\":\"convection\",\"hWM2k\":..,\"ambientC\":..}`, `{\"type\":\"fixedTemperature\",\"temperatureC\":..}`, or `{\"type\":\"radiation\",\"emissivity\":..,\"ambientC\":..}` (gray-diffuse, optional parallel `hWM2k`, `areaScale` = true/voxel area — a voxelized cylinder over-counts area ~4/pi — and `enclosure` {emissivity, areaM2}). Numbers may be document parameter names.",
+                "properties": {
+                  "type": {
+                    "type": "string",
+                    "enum": [
+                      "adiabatic",
+                      "convection",
+                      "fixedTemperature",
+                      "radiation"
+                    ]
+                  },
+                  "hWM2k": {
+                    "description": "A number, or the name of a named parameter bound via `parameters`.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "ambientC": {
+                    "description": "A number, or the name of a named parameter bound via `parameters`.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "temperatureC": {
+                    "description": "A number, or the name of a named parameter bound via `parameters`.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "emissivity": {
+                    "description": "A number, or the name of a named parameter bound via `parameters`.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "areaScale": {
+                    "description": "A number, or the name of a named parameter bound via `parameters`.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "enclosure": {
+                    "type": "object",
+                    "required": [
+                      "emissivity",
+                      "areaM2"
+                    ],
+                    "properties": {
+                      "emissivity": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "areaM2": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              },
+              "description": "Per domain face `[-x,+x,-y,+y,-z,+z]`; omitted = all take `exposed`."
+            },
+            "referenceC": {
+              "description": "A number, or the name of a named parameter bound via `parameters`.",
               "anyOf": [
                 {
                   "type": "number"
@@ -4845,7 +5916,7 @@
                         }
                       ]
                     },
-                    "description": "Boundary-temperature overrides by face label (\"-x\",\"+x\",\"-y\",\"+y\",\"-z\",\"+z\",\"exposed\"): retunes a FixedTemperature face's temperature or a Convection face's ambient. Overriding an adiabatic face errors (fail-closed)."
+                    "description": "Boundary-temperature overrides by face label (\"-x\",\"+x\",\"-y\",\"+y\",\"-z\",\"+z\",\"exposed\"): retunes a FixedTemperature face's temperature or a Convection/Radiation face's ambient. Overriding an adiabatic face errors (fail-closed)."
                   },
                   "fixed_temperature_c": {
                     "type": "object",
@@ -4872,14 +5943,14 @@
           "additionalProperties": {
             "type": "number"
           },
-          "description": "Bindings for named spec parameters, `{name: value}`."
+          "description": "Bindings for named spec parameters, `{name: value}`. With `document_id` these override the document's parameter values."
         },
         "options": {
           "type": "object",
           "properties": {
             "tol": {
               "type": "number",
-              "description": "PCG relative tolerance. Default 1e-8."
+              "description": "Relative tolerance (PCG, and the Newton residual when a face radiates). Default 1e-8."
             },
             "max_iters": {
               "type": "number",
@@ -4887,10 +5958,7 @@
             }
           }
         }
-      },
-      "required": [
-        "spec"
-      ]
+      }
     },
     "annotations": {
       "readOnlyHint": true
@@ -5493,6 +6561,102 @@
     }
   },
   {
+    "name": "shell_buckling_check",
+    "title": "Check Shell Buckling",
+    "description": "External-pressure BUCKLING screen for a thin shell — the governing failure mode of a vacuum chamber, viewport cover, or welded tube/sphere/dished head, and one that analyze_structure cannot see (a static solve has no buckling in it). Give a cylinder (OD, wall, unsupported length between flanges/rings, hydrostatic or lateral loading), a sphere, or a head (hemispherical, 2:1 ellipsoidal, torispherical), a material, and the net external pressure (default 1 atm = 0.101325 MPa); get the classical (perfect-shell) bifurcation pressure, the IMPERFECTION KNOCKDOWN applied and its citation, the knocked-down collapse pressure, the membrane-yield cap, the allowable pressure after a design factor, and the margin. Cylinders: von Mises classical pressure (full n^2-1 ring term, integer wave count, a cross-check of vcad's eigenvalue FE) knocked down by NASA/SP-8007-2020/REV 2's own ratio (Eq. 19-22 with sqrt(gamma)=0.75 inside the bracket, Eq. 28), or gamma=0.90 when the mode ovalizes (Eq. 29); design factor 3 by default. Spheres/heads: Zoelly classical plus ASME VIII-1 UG-28(d) elastic branch as commonly published (Pa = 0.0625·E/(Ro/t)^2, i.e. ~0.21x classical with a factor of 4); heads as an equivalent sphere per UG-33 (2:1 ellipsoidal Ro = 0.9·Do). A margin below 1 lands as a FAIL claim. Linear (eigenvalue) buckling is UNCONSERVATIVE for shells — real ones collapse below it — which is why the knockdown is stated, not hidden. Fail-closed: D/t < 10 (thick wall) is Unverifiable and claims nothing. Claims ride `vcad.fea-claims/1` and unified-receipt `structure.shell.*` with basis \"predicted\" (Provisional until tested). A SCREEN, not ASME code compliance: UG-28 cylinder charts and elastic-plastic collapse are not reproduced; knuckles, nozzles, ports and out-of-roundness are not checked. Needs no document.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "geometry": {
+          "type": "object",
+          "required": [
+            "type",
+            "outer_diameter_mm",
+            "wall_mm"
+          ],
+          "description": "One of: {\"type\":\"cylinder\",outer_diameter_mm,wall_mm,length_mm,loading?} (length = unsupported span between flanges or stiffening rings; loading \"hydrostatic\" (default, a capped vessel) or \"lateral\"), {\"type\":\"sphere\",outer_diameter_mm,wall_mm}, or {\"type\":\"head\",head:{\"kind\":\"hemispherical\"|\"ellipsoidal_2to1\"|\"torispherical\",crown_radius_mm?},outer_diameter_mm,wall_mm}.",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "cylinder",
+                "sphere",
+                "head"
+              ]
+            },
+            "outer_diameter_mm": {
+              "type": "number",
+              "description": "Outside diameter, mm."
+            },
+            "wall_mm": {
+              "type": "number",
+              "description": "Wall thickness, mm."
+            },
+            "length_mm": {
+              "type": "number",
+              "description": "Cylinder only: unsupported length between rings/flanges, mm."
+            },
+            "loading": {
+              "type": "string",
+              "enum": [
+                "hydrostatic",
+                "lateral"
+              ]
+            },
+            "head": {
+              "type": "object",
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "hemispherical",
+                    "ellipsoidal_2to1",
+                    "torispherical"
+                  ]
+                },
+                "crown_radius_mm": {
+                  "type": "number",
+                  "description": "Torispherical only: outside crown radius, mm."
+                }
+              }
+            }
+          }
+        },
+        "youngs_modulus_mpa": {
+          "type": "number",
+          "description": "Young's modulus, MPa (304/316 stainless ~193000, 6061 ~69000)."
+        },
+        "poisson": {
+          "type": "number",
+          "description": "Poisson's ratio (steel ~0.29)."
+        },
+        "yield_strength_mpa": {
+          "type": "number",
+          "description": "Yield strength, MPa (304 annealed ~205). Caps collapse at membrane yield; without it the cap is skipped and a caution says so."
+        },
+        "external_pressure_mpa": {
+          "type": "number",
+          "description": "Net external pressure, MPa. Default 0.101325 (1 atm, vacuum inside)."
+        },
+        "design_factor": {
+          "type": "number",
+          "description": "Design factor on the knocked-down cylinder collapse pressure (default 3). Spheres/heads use UG-28(d)'s built-in factor of 4."
+        }
+      },
+      "required": [
+        "geometry",
+        "youngs_modulus_mpa",
+        "poisson"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
     "name": "simulate_neutron_shield",
     "title": "Simulate Neutron Shield",
     "description": "Monte Carlo neutron shielding run (analog transport, 5-group multigroup library with exact elastic kinematics): spherical layer stack around a point source (D-D band), H*(10) dose rate at each detector shell WITH 1-sigma batch error bars (rse), attenuation factor vs bare source, thermal flux, and absorbed/leakage balance — as data plus `vcad.neutronics-claims/1` and unified-receipt claims. Fail-closed: truncated histories or a tally that scored nothing refuses claims (raise histories). Predictions carry basis \"predicted\" and roll up Provisional until surveyed. Design-estimate physics: 5-group library (not ENDF continuous-energy), spherical geometry only, no gamma dose, no activation, source energy capped at 3 MeV (no D-T). Deterministic per seed. Cost ~histories (cap 5M); error bars shrink as 1/sqrt(N). The 400k default runs in seconds.",
@@ -5506,7 +6670,7 @@
             "source",
             "detectors"
           ],
-          "description": "Spherical shield: concentric layers from r=0 outward around a point source, with detector shells that must each sit strictly inside one layer (put them in air gaps). Units mm. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error).",
+          "description": "Spherical shield: concentric layers from r=0 outward around a point source, with detector shells that must each sit strictly inside one layer (put them in air gaps). Units mm. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error). Pass this OR `document_id` + `extract`.",
           "properties": {
             "layers": {
               "type": "array",
@@ -5626,16 +6790,248 @@
             }
           }
         },
+        "document_id": {
+          "type": "string",
+          "description": "Session document to extract the shield from (instead of `spec`): the layer stack is measured from the document's own evaluated solids. Requires `extract`."
+        },
+        "extract": {
+          "type": "object",
+          "required": [
+            "shells",
+            "source",
+            "detectors"
+          ],
+          "description": "Which parts of `document_id` are the shield. Each shell part must be a concentric spherical shell (sphere minus a smaller concentric sphere, or a solid ball); thicknesses are measured from the BRep. Fail-closed: a cylindrical/box shield, an off-centre or overlapping shell, or a material outside the library errors naming the part — the transport is 1-D spherical, so nothing is folded into a sphere silently.",
+          "properties": {
+            "shells": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "part"
+                ],
+                "properties": {
+                  "part": {
+                    "type": "string",
+                    "description": "Shell part (name or part id)."
+                  },
+                  "material": {
+                    "type": "string",
+                    "description": "Library material (hdpe, paraffin, borated-hdpe-5, water, lead, concrete, air, void). Omitted = the part's document material."
+                  }
+                }
+              }
+            },
+            "fill_material": {
+              "type": "string",
+              "description": "Material for the core, the gaps between shells and the world beyond the last shell. Default \"air\"."
+            },
+            "source": {
+              "type": "object",
+              "required": [
+                "rate_n_per_s",
+                "energy_ev"
+              ],
+              "description": "Isotropic point source at r=0. Energy must lie in the 5-group structure [1e-4, 3e6] eV — D-D 2.45e6 eV is in range; D-T 14.1 MeV is rejected.",
+              "properties": {
+                "rate_n_per_s": {
+                  "description": "A number, or the name of a named parameter bound via `parameters`.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "energy_ev": {
+                  "description": "A number, or the name of a named parameter bound via `parameters`.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                }
+              }
+            },
+            "detectors": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "label",
+                  "radius_mm"
+                ],
+                "properties": {
+                  "label": {
+                    "type": "string"
+                  },
+                  "radius_mm": {
+                    "description": "A number, or the name of a named parameter bound via `parameters`.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "half_width_mm": {
+                    "description": "Shell half-thickness. Default 20 mm.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "world_radius_mm": {
+              "type": "number",
+              "description": "Outer radius of the modelled world, mm. Default: 10% past the outermost detector shell."
+            },
+            "center": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 3,
+              "maxItems": 3,
+              "description": "Source point [x, y, z] mm (e.g. the chamber centre); every shell must be centred on it. Default: the shells' common centre."
+            },
+            "run": {
+              "type": "object",
+              "description": "Monte Carlo controls (deterministic for a given seed).",
+              "properties": {
+                "histories_per_batch": {
+                  "type": "number",
+                  "description": "Default 20000."
+                },
+                "batches": {
+                  "type": "number",
+                  "description": "Error-bar batches (>= 2). Default 20."
+                },
+                "seed": {
+                  "type": "number",
+                  "description": "Default 20260717."
+                }
+              }
+            }
+          }
+        },
         "parameters": {
           "type": "object",
           "additionalProperties": {
             "type": "number"
           },
-          "description": "Bindings for named spec parameters, `{name: value}`."
+          "description": "Bindings for named spec parameters, `{name: value}`. With `document_id` these override the document's parameter values."
+        }
+      }
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "simulate_cavity",
+    "title": "Simulate Ported Box (Cavity Acoustics)",
+    "description": "Bass-reflex (ported box) tuning from a session document: measures the enclosure and enclosed-air parts' BRep, reconstructs the exact axisymmetric field geometry (box, port bore, an INTERNAL port's tube wall as a rigid annular obstacle — no equivalent-volume mapping), and returns the lumped tuning band (V_box = the air part's volume; mount-aware end corrections), the field-solved tuning f_b, the port volume-velocity curve, and `vcad.acoustics-claims/1` predicted claims. Fail-closed: any face that is not a plane perpendicular to the axis or a coaxial cylinder (box enclosure, off-axis port, fillet) errors naming the face; a gap between air and wall, a side vent, or a second port errors naming where. Model: linear, lossless (Q optimistic), rigid walls and piston, pressure-release port mouth (field f_b reads above the lumped nominal). Predictions carry basis \"predicted\" and roll up Provisional until a mic + swept-sine measurement binds them. Seconds at ~1 mm grid.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "description": "Session document holding the speaker."
+        },
+        "enclosure": {
+          "type": "string",
+          "description": "The enclosure walls part: name or part id (or, when no part has that name, the material of exactly one part)."
+        },
+        "air": {
+          "type": "string",
+          "description": "The enclosed box air part (cavity minus the port tube): name, part id, or unique material such as \"air\". Its volume is the lumped V_box."
+        },
+        "driver_radius": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "Driver piston radius: mm, or the name of a document parameter (stays bound, so `parameters` overrides re-price it). Default: the driver cutout radius."
+        },
+        "temp_c": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "description": "Air temperature °C, or a parameter name. Default 20."
+        },
+        "parameters": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number"
+          },
+          "description": "Overrides for the document's parameter values when resolving named spec fields (driver_radius / temp_c). Geometry is measured from the document as evaluated — change geometry with set_parameters."
+        },
+        "options": {
+          "type": "object",
+          "description": "Solver knobs (all optional).",
+          "properties": {
+            "grid_mm": {
+              "type": "number",
+              "description": "Node spacing mm (default: half the smallest feature, so every port wall holds a node; a coarser grid that drops a wall fails closed)."
+            },
+            "search_hz": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "Tuning search band [lo, hi] Hz (default 0.5·f_min … 2·f_max)."
+            },
+            "curve_hz": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2,
+              "description": "Port velocity curve band [lo, hi] Hz (default: search band)."
+            },
+            "curve_points": {
+              "type": "number",
+              "description": "Port velocity curve samples (default 60)."
+            },
+            "sweep_points": {
+              "type": "number",
+              "description": "Coarse tuning-sweep samples before refinement (default 48)."
+            }
+          }
         }
       },
       "required": [
-        "spec"
+        "document_id",
+        "enclosure",
+        "air"
       ]
     },
     "annotations": {
@@ -6537,7 +7933,7 @@
   {
     "name": "record_measurement",
     "title": "Record Measurement",
-    "description": "Record as-built measurements (caliper dimensions, scale mass) of a printed part against its predict_print snapshot and emit the receipt-vs-reality delta report: per-feature deltas with tolerances, per-axis scale factors (X/Y/Z shrinkage), hole undersize and thin-wall flow offsets, and concrete printer-profile suggestions. Accepts the prediction inline (from a saved prediction.json) when the session's warm instance is gone. Partial measurements are fine.",
+    "description": "Record as-built measurements (caliper dimensions, scale mass) of a printed part against its predict_print snapshot and emit the receipt-vs-reality delta report: per-feature deltas with tolerances, per-axis scale factors (X/Y/Z shrinkage), hole undersize and thin-wall flow offsets, and concrete printer-profile suggestions. Accepts the prediction inline (from a saved prediction.json) when the session's warm instance is gone. Partial measurements are fine. Claim mode (pass `claim_id` or `claim_measurements` instead of `measurements`): bind a bench reading — value, unit, uncertainty, instrument, band, raw-file hash — to a frozen solver prediction on the document's claims ledger (see attach_claims); compared fail-closed with the domain's own band rule, returning the Holds / Violated / Unmeasured / Stale scorecard. A claim_id not on the ledger is an error.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -6567,11 +7963,59 @@
         "prediction": {
           "type": "object",
           "description": "A full PrintPrediction (as returned by predict_print) to measure against. Overrides the cached prediction — use this to replay a prediction.json after the session's warm instance recycled."
+        },
+        "claim_id": {
+          "type": "string",
+          "description": "Claim mode: the ledger claim this reading measures (e.g. thermal.t_max_c, antenna.resonant_frequency). With claim_id, `value`, `uncertainty`, `instrument`, and `band` are required; `measurements` is not used. A claim_id that is not on the document's claims ledger is an error."
+        },
+        "subject": {
+          "type": "string",
+          "description": "Claim mode: disambiguates a claim attached under several subjects/labels."
+        },
+        "value": {
+          "type": "number",
+          "description": "Claim mode: measured value, in the prediction's unit."
+        },
+        "unit": {
+          "type": "string",
+          "description": "Claim mode: unit (must match the prediction's unit)."
+        },
+        "uncertainty": {
+          "type": "number",
+          "description": "Claim mode: one-sigma absolute uncertainty, same unit."
+        },
+        "instrument": {
+          "type": "string",
+          "description": "Claim mode: what measured it, and how."
+        },
+        "band": {
+          "type": "object",
+          "description": "Acceptance band the measurer commits to. Thermal / EM / acoustics / flow use {band_factor} (holds when measured ∈ [p/band − u, p·band + u]); antenna / tolerance use {half_width} (holds when |measured − p| ≤ half_width + u [+ the prediction's own u]). Required — vcad never invents one.",
+          "properties": {
+            "band_factor": {
+              "type": "number"
+            },
+            "half_width": {
+              "type": "number"
+            }
+          }
+        },
+        "raw_sha256": {
+          "type": "string",
+          "description": "Claim mode: SHA-256 of the raw instrument file, for the audit trail."
+        },
+        "claim_measurements": {
+          "type": "array",
+          "description": "Claim mode, several at once (all-or-nothing): [{claim_id, value, uncertainty, instrument, band, unit?, subject?, raw_sha256?}].",
+          "items": {
+            "type": "object"
+          }
+        },
+        "replace": {
+          "type": "boolean",
+          "description": "Claim mode: overwrite an existing measurement."
         }
-      },
-      "required": [
-        "measurements"
-      ]
+      }
     },
     "annotations": {
       "readOnlyHint": false
@@ -11538,7 +12982,7 @@
   {
     "name": "build_receipt",
     "title": "Build Receipt",
-    "description": "Build a re-runnable verification Receipt for the session PCB: a content hash, the DRC backend, a canonicalized DRC summary, and per-part provenance — a durable proof that round-trips and re-verifies later as Holds / Stale / Violated. Persisted clearance specs (check_clearance with a label) join the unified ledger as mech.clearance claims — a CAD-only session with specs gets a mechanical receipt, no PCB needed. Renders as an audit ledger in the inline viewer.",
+    "description": "Build a re-runnable verification Receipt for the session PCB: a content hash, the DRC backend, a canonicalized DRC summary, and per-part provenance — a durable proof that round-trips and re-verifies later as Holds / Stale / Violated. Persisted clearance specs (check_clearance with a label) join the unified ledger as mech.clearance claims — a CAD-only session with specs gets a mechanical receipt, no PCB needed. Every claims-ledger row (solver predictions frozen with attach_claims, measurements bound with record_measurement / import_measurement) lands in the same receipt — unmeasured predictions Provisional, measured Holds pass / Violated fail, Stale unverifiable — with a `scorecard` (markdown + JSON). Renders as an audit ledger in the inline viewer.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -11569,6 +13013,9 @@
         "receipt": {
           "type": "object"
         },
+        "scorecard": {
+          "type": "object"
+        },
         "document_id": {
           "type": "string"
         }
@@ -11590,7 +13037,7 @@
   {
     "name": "verify_receipt",
     "title": "Verify Receipt",
-    "description": "Re-run a prior receipt (from build_receipt) against the session's current document and return the verdict — Holds (document unchanged, claims clean), Stale (document changed but the claims still hold), or Violated. The receipt is bound to the document state it was built on, so any edit — even one its claims don't measure — reads Stale, and `document_state` says why. Covers the PCB Receipt (board hash + DRC diff) and mech.clearance claims (re-measured against current geometry); worst verdict wins. Powers the ledger's Re-run button.",
+    "description": "Re-run a prior receipt (from build_receipt) against the session's current document and return the verdict — Holds (document unchanged, claims clean), Stale (document changed but the claims still hold), or Violated. The receipt is bound to the document state it was built on, so any edit — even one its claims don't measure — reads Stale, and `document_state` says why. Covers the PCB Receipt (board hash + DRC diff), mech.clearance claims (re-measured against current geometry), and claims-ledger rows (re-classified Holds / Violated / Unmeasured / Stale, returned as a `scorecard` table in receipt order); worst verdict wins. Powers the ledger's Re-run button.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -11623,6 +13070,140 @@
     },
     "_meta": {
       "openai/widgetAccessible": true
+    }
+  },
+  {
+    "name": "attach_claims",
+    "title": "Attach Solver Claims",
+    "description": "Freeze solver predictions onto the document's claims ledger (vcad.claims-ledger/1) so ONE receipt carries every domain: pass the result of solve_thermal, analyze_antenna, simulate_em, analyze_structure, beam_check, analyze_tolerance_stackup, simulate_flow, parameter_gradient — anything returning `receipt_claims` or a unified claim array (e.g. acoustics claims from vcad-kernel-acoustics, which has no MCP solver yet). Each claim keeps its oracle id/version and solver provenance; the numeric prediction, a prediction hash, and the design fingerprint are frozen. Predictions roll up Provisional, never Pass, until record_measurement / import_measurement binds hardware readings. Re-attaching a different value for a frozen claim is refused unless supersede:true (a measured row then reads Stale). Use `label` to attach two runs of one solver. build_receipt then includes every ledger row.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "description": "Session id of the document that owns the ledger."
+        },
+        "claims": {
+          "description": "A solver result (with receipt_claims / claim_set), an array of results, or an array of unified receipt claims."
+        },
+        "source_tool": {
+          "type": "string",
+          "description": "The tool that produced the claims (e.g. solve_thermal) — provenance."
+        },
+        "label": {
+          "type": "string",
+          "description": "Subject for claims that carry none, e.g. 'driver_coil' — namespaces repeat runs."
+        },
+        "supersede": {
+          "type": "boolean",
+          "description": "Replace already-frozen predictions (measured rows then read Stale)."
+        }
+      },
+      "required": [
+        "claims"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false
+    }
+  },
+  {
+    "name": "import_measurement",
+    "title": "Import Measurement",
+    "description": "Import a raw instrument file and bind its readings to the document's frozen predictions (claims ledger), fail-closed. Formats: `touchstone_s1p` (NanoVNA one-port sweep → antenna s11/z_in/resonance/bandwidth claims, NanoVNA default tolerances, overridable via `tolerances`), `rew_impedance` (REW 'export impedance as text' → acoustics port tuning f_b = the |Z| saddle between the two peaks; needs `band`), `thermocouple_csv` (header row with a time column + a temperature column → steady-state mean of the last window, refused if still drifting; or reduce:'max' for a peak claim; needs `claim_id`, `band`, `instrument_uncertainty_c`). The raw file's SHA-256 is recorded with every reading. Returns the updated scorecard (Holds / Violated / Unmeasured / Stale per claim).",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string"
+        },
+        "format": {
+          "type": "string",
+          "enum": [
+            "touchstone_s1p",
+            "rew_impedance",
+            "thermocouple_csv"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "description": "The instrument file's contents."
+        },
+        "path": {
+          "type": "string",
+          "description": "Or a path to it, relative to the server's working directory."
+        },
+        "file_name": {
+          "type": "string",
+          "description": "Name to record for an inline `text` file."
+        },
+        "claim_id": {
+          "type": "string",
+          "description": "Target claim (rew_impedance defaults to acoustics.tuning_hz; required for thermocouple_csv)."
+        },
+        "subject": {
+          "type": "string",
+          "description": "Disambiguates a claim attached under several labels."
+        },
+        "band": {
+          "type": "object",
+          "description": "Acceptance band the measurer commits to. Thermal / EM / acoustics / flow use {band_factor} (holds when measured ∈ [p/band − u, p·band + u]); antenna / tolerance use {half_width} (holds when |measured − p| ≤ half_width + u [+ the prediction's own u]). Required — vcad never invents one.",
+          "properties": {
+            "band_factor": {
+              "type": "number"
+            },
+            "half_width": {
+              "type": "number"
+            }
+          }
+        },
+        "uncertainty": {
+          "type": "number",
+          "description": "rew_impedance: extra one-sigma uncertainty, Hz (combined with the sweep grid)."
+        },
+        "instrument_uncertainty_c": {
+          "type": "number",
+          "description": "thermocouple_csv: probe + meter one-sigma uncertainty, °C."
+        },
+        "column": {
+          "type": "string",
+          "description": "thermocouple_csv: temperature column name when the header has several."
+        },
+        "reduce": {
+          "type": "string",
+          "enum": [
+            "steady",
+            "max"
+          ],
+          "description": "thermocouple_csv: steady-state mean (default) or peak."
+        },
+        "window_s": {
+          "type": "number",
+          "description": "thermocouple_csv: steady-state window, s (default last 10% of the log)."
+        },
+        "max_drift_c": {
+          "type": "number",
+          "description": "thermocouple_csv: allowed drift over the window, °C (default 0.5)."
+        },
+        "tolerances": {
+          "type": "object",
+          "description": "touchstone_s1p: {s11_db, freq_rel, z_ohm, bandwidth_rel} overriding the NanoVNA defaults (2 dB, 2%, 10 ohm, 25%)."
+        },
+        "instrument": {
+          "type": "string",
+          "description": "Instrument provenance override."
+        },
+        "replace": {
+          "type": "boolean",
+          "description": "Overwrite existing measurements."
+        }
+      },
+      "required": [
+        "format"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": false
     }
   },
   {

@@ -776,6 +776,8 @@ export interface KernelModule {
   ) => unknown;
   /** Ranked, trust-bounded sensitivity table for a set of parameters. */
   documentSensitivities?: (docJson: string, requestJson: string) => unknown;
+  /** Document-level optimizer over named parameters (trajectory + KKT). */
+  optimizeDocument?: (docJson: string, requestJson: string) => unknown;
   /** JSON-serialized parts manifest for the stdlib. */
   getPartsManifest?: () => string;
   /** Build a stdlib part's sub-document given path and params JSON. */
@@ -794,6 +796,13 @@ export interface KernelModule {
   getSheetMetalMaterials?: () => string;
   /** Mallet-strike pipeline on a flat free-free bar → JSON. */
   simulateStrikeKernel?: (inputJson: string) => string;
+  /** Document → ported box → bass-reflex analysis (JSON in, JSON string out). */
+  simulateCavity?: (
+    docJson: string,
+    selectionJson: string,
+    optionsJson: string,
+    paramsJson: string,
+  ) => string;
   /** Note name ("C6", "F#4") → Hz. Throws on garbage. */
   noteToHz?: (note: string) => number;
   /** Built-in bend table → JSON `{id, rows}`. */
@@ -832,6 +841,12 @@ export interface KernelModule {
     paramsJson: string,
     optionsJson: string,
   ) => unknown;
+  /** 3D (non-axisymmetric) charged-particle optics (DeviceSpec3d JSON). */
+  particleSimulate3d?: (
+    specJson: string,
+    paramsJson: string,
+    optionsJson: string,
+  ) => unknown;
   /** Charged-particle yield optimization over named spec parameters. */
   particleOptimize?: (
     specJson: string,
@@ -849,6 +864,14 @@ export interface KernelModule {
   /** Steady heat-conduction solve (ThermalSpec/params/options JSON). */
   thermalSolve?: (
     specJson: string,
+    paramsJson: string,
+    optionsJson: string,
+  ) => unknown;
+  /** Steady thermal solve of a document's own parts (Document/ThermalStudy JSON). */
+  thermalSolveDocument?: (
+    docJson: string,
+    studyJson: string,
+    studyId: string,
     paramsJson: string,
     optionsJson: string,
   ) => unknown;
@@ -909,6 +932,8 @@ export interface KernelModule {
   ) => unknown;
   /** Closed-form prismatic member check (BeamCase JSON). */
   feaCheckBeam?: (caseJson: string) => unknown;
+  /** Closed-form shell external-pressure buckling screen (ShellCase JSON). */
+  feaCheckShell?: (caseJson: string) => unknown;
   /** EM field simulation (problem-tagged spec/params/options JSON). */
   emSimulate?: (
     specJson: string,
@@ -921,10 +946,18 @@ export interface KernelModule {
     paramsJson: string,
     optionsJson: string,
   ) => unknown;
+  /** Raw instrument file → claims-ledger measurements (format/text/context JSON). */
+  importMeasurementFile?: (format: string, text: string, contextJson: string) => unknown;
+  /** PcbBoard → AntennaSpec extraction (Document/AntennaExtraction JSON). */
+  extractAntennaSpec?: (docJson: string, selectionJson: string) => unknown;
   /** Forward 2D FDTD photonics run (device spec/options JSON). */
   photonicsSimulate?: (specJson: string, optionsJson: string) => unknown;
   /** Monte Carlo neutron shielding run (ShieldSpec/params JSON). */
   neutronicsSimulate?: (specJson: string, paramsJson: string) => unknown;
+  /** Document → DeviceSpec extraction (Document/DeviceExtraction JSON). */
+  extractDeviceSpec?: (docJson: string, selectionJson: string) => unknown;
+  /** Document → ShieldSpec extraction (Document/ShieldExtraction JSON). */
+  extractShieldSpec?: (docJson: string, selectionJson: string) => unknown;
   /** Lattice gauge theory Monte Carlo run (SimSpec JSON). */
   latticeGaugeSimulate?: (specJson: string) => unknown;
   /** Static structural analysis of a box solid. */
@@ -1148,6 +1181,111 @@ export interface SensitivityReport {
   allUsable: boolean;
   /** One receipt claim per row. */
   claims: unknown[];
+}
+
+/** A quantity of interest: name + optional solid-part index. */
+export interface OptimizeQoiRef {
+  /** `volume`, `mass`, `centroid_x|y|z` (built-in seam QoIs). */
+  qoi: string;
+  part?: number;
+}
+
+/** How a QoI enters the objective. */
+export type OptimizeTermShape =
+  | "linear"
+  | { target: number }
+  | { hinge_below: number }
+  | { hinge_above: number };
+
+/** Request shape for {@link Engine.optimizeDocument} (mirrors `vcad_eval::optimize::OptimizeDocRequest`). */
+export interface OptimizeDocRequest {
+  parameters: Array<{ name: string; lo: number; hi: number }>;
+  objective: Array<OptimizeQoiRef & { weight?: number; shape?: OptimizeTermShape }>;
+  constraints?: Array<
+    | { expr: string; scale?: number }
+    | (OptimizeQoiRef & { op: "<=" | ">="; value: number })
+  >;
+  options?: Record<string, number | boolean>;
+}
+
+/** Route that produced one gradient component. */
+export type OptimizeProvenance =
+  | { route: "seam" }
+  | { route: "fd"; step: number; scheme: "central" | "forward" | "backward" }
+  | { route: "seam_fd"; step: number; scheme: "central" | "forward" | "backward" }
+  | { route: "adjoint" }
+  | { route: "linear" };
+
+/** One gradient component `∂q/∂θ_k` with its provenance. */
+export interface OptimizeGradComponent {
+  param: string;
+  value: number;
+  provenance: OptimizeProvenance;
+}
+
+/** One accepted iterate of {@link Engine.optimizeDocument}. */
+export interface OptimizeTrajectoryStep {
+  iter: number;
+  round: number;
+  theta: number[];
+  objective: number;
+  merit: number;
+  max_violation: number;
+  objective_gradient: OptimizeGradComponent[];
+  terms: Array<{
+    label: string;
+    qoi_value: number;
+    contribution: number;
+    gradient: OptimizeGradComponent[];
+  }>;
+  constraints: Array<{
+    label: string;
+    g: number;
+    multiplier: number;
+    gradient: OptimizeGradComponent[];
+  }>;
+  qois: Array<OptimizeQoiRef & { value: number; gradient: OptimizeGradComponent[] }>;
+  cost: {
+    wall_ms: number;
+    base_eval_ms: number;
+    document_evals: number;
+    plugin_evals: number;
+    reused_solids: number;
+  };
+}
+
+/** Result of {@link Engine.optimizeDocument}. */
+export interface OptimizeDocResult {
+  params: string[];
+  theta: number[];
+  objective: number;
+  trajectory: OptimizeTrajectoryStep[];
+  stop: "converged" | "max_rounds" | "stalled";
+  kkt: {
+    max_violation: number;
+    stationarity: number;
+    complementarity: number;
+    multipliers: number[];
+    active_bounds: Array<[string, string]>;
+    feasible: boolean;
+    satisfied: boolean;
+    kkt_tol: number;
+  };
+  seam_fd_check: Array<{
+    qoi: string;
+    param: string;
+    seam: number;
+    fd: number;
+    step: number;
+    rel_error: number;
+  }>;
+  /** Parameter vectors sampled with gradients. */
+  samples: number;
+  /** Line-search trials sampled for their value only. */
+  value_samples: number;
+  document_evals: number;
+  plugin_evals: number;
+  wall_ms: number;
 }
 
 /** Request shape for {@link Engine.documentSensitivities}. */
@@ -1379,6 +1517,7 @@ export class Engine {
       evalVcadSourceParametric: (wasmModule as Record<string, unknown>).evalVcadSourceParametric as KernelModule["evalVcadSourceParametric"],
       documentParameterGradient: (wasmModule as Record<string, unknown>).documentParameterGradient as KernelModule["documentParameterGradient"],
       documentSensitivities: (wasmModule as Record<string, unknown>).documentSensitivities as KernelModule["documentSensitivities"],
+      optimizeDocument: (wasmModule as Record<string, unknown>).optimizeDocument as KernelModule["optimizeDocument"],
       getPartsManifest: (wasmModule as Record<string, unknown>).getPartsManifest as KernelModule["getPartsManifest"],
       buildPart: (wasmModule as Record<string, unknown>).buildPart as KernelModule["buildPart"],
       evaluateSheetMetalChain: (wasmModule as Record<string, unknown>).evaluateSheetMetalChain as KernelModule["evaluateSheetMetalChain"],
@@ -1388,6 +1527,7 @@ export class Engine {
       nestSheetMetalParts: (wasmModule as Record<string, unknown>).nestSheetMetalParts as KernelModule["nestSheetMetalParts"],
       getSheetMetalMaterials: (wasmModule as Record<string, unknown>).getSheetMetalMaterials as KernelModule["getSheetMetalMaterials"],
       simulateStrikeKernel: (wasmModule as Record<string, unknown>).simulateStrikeKernel as KernelModule["simulateStrikeKernel"],
+      simulateCavity: (wasmModule as Record<string, unknown>).simulateCavity as KernelModule["simulateCavity"],
       noteToHz: (wasmModule as Record<string, unknown>).noteToHz as KernelModule["noteToHz"],
       getSheetMetalBendTable: (wasmModule as Record<string, unknown>).getSheetMetalBendTable as KernelModule["getSheetMetalBendTable"],
       getSheetMetalShopCatalog: (wasmModule as Record<string, unknown>).getSheetMetalShopCatalog as KernelModule["getSheetMetalShopCatalog"],
@@ -1397,11 +1537,15 @@ export class Engine {
       topologyOptimizeBox: (wasmModule as Record<string, unknown>).topologyOptimizeBox as KernelModule["topologyOptimizeBox"],
       topologyOptimizeMesh: (wasmModule as Record<string, unknown>).topologyOptimizeMesh as KernelModule["topologyOptimizeMesh"],
       particleSimulate: (wasmModule as Record<string, unknown>).particleSimulate as KernelModule["particleSimulate"],
+      particleSimulate3d: (wasmModule as Record<string, unknown>).particleSimulate3d as KernelModule["particleSimulate3d"],
+      extractDeviceSpec: (wasmModule as Record<string, unknown>).extractDeviceSpec as KernelModule["extractDeviceSpec"],
+      extractShieldSpec: (wasmModule as Record<string, unknown>).extractShieldSpec as KernelModule["extractShieldSpec"],
       particleOptimize: (wasmModule as Record<string, unknown>).particleOptimize as KernelModule["particleOptimize"],
       magneticField: (wasmModule as Record<string, unknown>).magneticField as KernelModule["magneticField"],
       toleranceAnalyze: (wasmModule as Record<string, unknown>).toleranceAnalyze as KernelModule["toleranceAnalyze"],
       thermalSolve: (wasmModule as Record<string, unknown>).thermalSolve as KernelModule["thermalSolve"],
       thermalSolveTransient: (wasmModule as Record<string, unknown>).thermalSolveTransient as KernelModule["thermalSolveTransient"],
+      thermalSolveDocument: (wasmModule as Record<string, unknown>).thermalSolveDocument as KernelModule["thermalSolveDocument"],
       simulateFlow: (wasmModule as Record<string, unknown>).simulateFlow as KernelModule["simulateFlow"],
       documentDiff: (wasmModule as Record<string, unknown>).documentDiff as KernelModule["documentDiff"],
       documentDiffApply: (wasmModule as Record<string, unknown>).documentDiffApply as KernelModule["documentDiffApply"],
@@ -1414,8 +1558,11 @@ export class Engine {
       circuitTune: (wasmModule as Record<string, unknown>).circuitTune as KernelModule["circuitTune"],
       feaAnalyzeMesh: (wasmModule as Record<string, unknown>).feaAnalyzeMesh as KernelModule["feaAnalyzeMesh"],
       feaCheckBeam: (wasmModule as Record<string, unknown>).feaCheckBeam as KernelModule["feaCheckBeam"],
+      feaCheckShell: (wasmModule as Record<string, unknown>).feaCheckShell as KernelModule["feaCheckShell"],
       emSimulate: (wasmModule as Record<string, unknown>).emSimulate as KernelModule["emSimulate"],
       antennaAnalyze: (wasmModule as Record<string, unknown>).antennaAnalyze as KernelModule["antennaAnalyze"],
+      importMeasurementFile: (wasmModule as Record<string, unknown>).importMeasurementFile as KernelModule["importMeasurementFile"],
+      extractAntennaSpec: (wasmModule as Record<string, unknown>).extractAntennaSpec as KernelModule["extractAntennaSpec"],
       photonicsSimulate: (wasmModule as Record<string, unknown>).photonicsSimulate as KernelModule["photonicsSimulate"],
       neutronicsSimulate: (wasmModule as Record<string, unknown>).neutronicsSimulate as KernelModule["neutronicsSimulate"],
       latticeGaugeSimulate: (wasmModule as Record<string, unknown>).latticeGaugeSimulate as KernelModule["latticeGaugeSimulate"],
@@ -1495,6 +1642,24 @@ export class Engine {
       JSON.stringify(doc),
       JSON.stringify(request),
     ) as SensitivityReport;
+  }
+
+  /**
+   * Optimize named document parameters: minimize a weighted sum of QoIs
+   * subject to parameter-expression and QoI constraints, by augmented
+   * Lagrangian over projected L-BFGS. Returns the optimum, a KKT report and
+   * the full trajectory, every gradient component labeled with the route
+   * that produced it (`seam`, `fd`, `adjoint`, `linear`). The browser kernel
+   * carries the built-in seam QoIs only (volume, mass, centroid).
+   */
+  optimizeDocument(doc: Document, request: OptimizeDocRequest): OptimizeDocResult {
+    const fn = this.kernel.optimizeDocument;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "kernel WASM is missing optimizeDocument — rebuild @vcad/kernel-wasm",
+      );
+    }
+    return fn(JSON.stringify(doc), JSON.stringify(request)) as OptimizeDocResult;
   }
 
   /**
@@ -1710,9 +1875,31 @@ export class Engine {
   }
 
   /**
+   * 3D charged-particle optics: solve a non-axisymmetric wire-electrode
+   * device (great-circle / lat-long globes, arbitrary circles, arcs,
+   * polylines) in a grounded sphere with the thin-wire BEM, trace a
+   * full-sphere deuteron ensemble, and return figures of merit plus the
+   * solver's surface-residual report. Inputs are JSON strings
+   * (DeviceSpec3d, named parameter bindings, options).
+   */
+  particleSimulate3d(
+    specJson: string,
+    paramsJson: string,
+    optionsJson: string,
+  ): unknown {
+    const fn = this.kernel.particleSimulate3d;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "particleSimulate3d is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(specJson, paramsJson, optionsJson);
+  }
+
+  /**
    * Multi-start gradient ascent over named device-spec parameters against
    * predicted D-D yield per ion. Inputs are JSON strings; see
-   * `vcad-kernel-particle::optimize`.
+   * `vcad-kernel-particle::electrode_opt` (`gradient: "fd" | "hybrid"`).
    */
   particleOptimize(
     specJson: string,
@@ -1782,6 +1969,30 @@ export class Engine {
       );
     }
     return fn(specJson, paramsJson, optionsJson);
+  }
+
+  /**
+   * Steady thermal solve of a document's own parts: the study's parts are
+   * voxelized from their tessellations (`vcad_eval::thermal_extract`),
+   * sources/sinks tied to parts, and solved. `studyJson` is an inline
+   * `ThermalStudy` ("" = use the document's study `studyId`, or its only
+   * thermal study). Returns the `thermalSolve` summary plus `extracted`
+   * (grid, per-part voxel audit, sources/sinks as solved).
+   */
+  thermalSolveDocument(
+    docJson: string,
+    studyJson: string,
+    studyId: string,
+    paramsJson: string,
+    optionsJson: string,
+  ): unknown {
+    const fn = this.kernel.thermalSolveDocument;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "thermalSolveDocument is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(docJson, studyJson, studyId, paramsJson, optionsJson);
   }
 
   /**
@@ -1924,6 +2135,22 @@ export class Engine {
   }
 
   /**
+   * Closed-form external-pressure buckling screen for a thin cylinder,
+   * sphere or dished head: classical bifurcation pressure, the cited
+   * imperfection knockdown, yield cap, allowable and margin, plus
+   * `vcad.fea-claims/1` predicted claims; see `vcad-kernel-fea::shell`.
+   */
+  feaCheckShell(caseJson: string): unknown {
+    const fn = this.kernel.feaCheckShell;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "feaCheckShell is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(caseJson);
+  }
+
+  /**
    * EM field simulation (2D/axisymmetric finite-volume magnetostatics or
    * electrostatics): inductance, force, torque, capacitance extraction and
    * predicted receipt claims. The spec JSON carries a `problem` tag; see
@@ -1964,6 +2191,40 @@ export class Engine {
   }
 
   /**
+   * Reduce a raw instrument file to measurements for the claims ledger:
+   * `touchstone_s1p` (NanoVNA → antenna), `rew_impedance` (REW → port tuning
+   * f_b), `thermocouple_csv` (log → one temperature). Fail-closed parsers
+   * live in the kernel crates; see `importMeasurementFile` in
+   * `vcad-kernel-wasm`.
+   */
+  importMeasurementFile(format: string, text: string, contextJson: string): unknown {
+    const fn = this.kernel.importMeasurementFile;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "importMeasurementFile is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(format, text, contextJson);
+  }
+
+  /**
+   * Extract a thin-wire `AntennaSpec` from a document's `PcbBoard` node:
+   * antenna-net trace centerlines → wires (radius = width/4), delta-gap
+   * feed at a pad, infinite ground at the pour edge (recorded). Returns
+   * `{spec, parameters, feed, frame, ground, substrate, notes, ...}`.
+   * Fail-closed; see `vcad_eval::antenna_extract`.
+   */
+  extractAntennaSpec(docJson: string, selectionJson: string): unknown {
+    const fn = this.kernel.extractAntennaSpec;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "extractAntennaSpec is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(docJson, selectionJson);
+  }
+
+  /**
    * Forward 2D TM FDTD photonics run: rect-composed device, slab-mode
    * source, transmission spectrum, and predicted receipt claims. Inputs
    * are JSON strings (device spec, options); see `vcad-kernel-photonics`.
@@ -1992,6 +2253,38 @@ export class Engine {
       );
     }
     return fn(specJson, paramsJson);
+  }
+
+  /**
+   * Extract an axisymmetric `DeviceSpec` from a document's evaluated solids
+   * (chamber cavity + toroidal wire rings; potentials/ampere-turns bound to
+   * named document parameters). Returns `{spec, parameters, cavity,
+   * ring_parts}`. Fail-closed; see `vcad_eval::sim_extract`.
+   */
+  extractDeviceSpec(docJson: string, selectionJson: string): unknown {
+    const fn = this.kernel.extractDeviceSpec;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "extractDeviceSpec is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(docJson, selectionJson);
+  }
+
+  /**
+   * Extract a spherical `ShieldSpec` from a document's evaluated solids
+   * (concentric spherical shells → layer stack). Returns `{spec,
+   * parameters, center, layer_parts}`. Fail-closed; see
+   * `vcad_eval::sim_extract`.
+   */
+  extractShieldSpec(docJson: string, selectionJson: string): unknown {
+    const fn = this.kernel.extractShieldSpec;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "extractShieldSpec is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(docJson, selectionJson);
   }
 
   /**
@@ -2452,6 +2745,28 @@ export class Engine {
       chain,
       this.kernel as unknown as Parameters<typeof runSheetMetalSequence>[1],
     );
+  }
+
+  /**
+   * Extract a ported (bass-reflex) box from a document's evaluated solids
+   * (`vcad_eval::cavity_extract`) and analyze it
+   * (`vcad_kernel_acoustics::ported::analyze`): lumped band, field-solved
+   * tuning, port volume-velocity curve, `vcad.acoustics-claims/1` claims.
+   * Returns `{extracted, report}`. Fail-closed on non-axisymmetric geometry.
+   */
+  simulateCavity(
+    docJson: string,
+    selectionJson: string,
+    optionsJson: string,
+    paramsJson: string,
+  ): unknown {
+    const fn = this.kernel.simulateCavity;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "simulateCavity is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return JSON.parse(fn(docJson, selectionJson, optionsJson, paramsJson));
   }
 
   /**

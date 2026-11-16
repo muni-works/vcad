@@ -32,6 +32,10 @@ AnalysisStudyKind =
   | Structural { resolution, youngs_modulus_mpa, poisson, yield_strength_mpa?,
                  loads: [StudyLoad], supports: [StudySupport] }
   | Tolerance  { contributors: [StudyContributor], requirement: StudyRequirement }
+  | Thermal(ThermalStudy { parts, divisions? | pitch_mm?, materials, sources,
+                           sinks, exposed, domain_faces?, reference_c? })
+                 // run by solve_thermal via vcad_eval::thermal_extract;
+                 // no web-panel runner yet (docs/thermal-voxelizer.md)
 StudyLoad      { region: StudyRegion, force: [f64;3] }
 StudySupport   { region: StudyRegion, fix: [bool;3] }
 StudyRegion    { min: [f64;3], max: [f64;3] }   // world-frame AABB (kernel contract)

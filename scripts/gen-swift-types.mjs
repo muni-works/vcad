@@ -32,11 +32,13 @@ const check = process.argv.includes("--check");
 // types the engine vocabulary references by name.
 const SOURCES = [
   { crate: "vcad-app", types: null },
-  { crate: "vcad-ir", types: ["MaterialDef"] },
+  { crate: "vcad-ir", types: ["MaterialDef", "MaterialPhysical"] },
 ];
 // Referenced but deliberately untyped in Swift: the IR document is huge and
-// the editor reads it as a JSON tree.
-const OPAQUE = new Set(["Document"]);
+// the editor reads it as a JSON tree. `ThermalConductivity` is an untagged
+// number-or-object union, which this generator doesn't map; the app reads it
+// as JSON.
+const OPAQUE = new Set(["Document", "ThermalConductivity"]);
 // ts-rs renders every Rust integer as `number`; these fields are integers.
 const isIntField = (name) => ["segments", "count", "index"].includes(name) || /NodeIds?$/.test(name);
 

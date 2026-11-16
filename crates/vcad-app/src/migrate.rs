@@ -803,6 +803,7 @@ pub const DOC_EXTRA_FIELDS: &[&str] = &[
     "clearance_specs",
     "constraints",
     "analysis_studies",
+    "claims_ledger",
     "drawing",
     "hardware",
     "source",
@@ -1860,6 +1861,27 @@ mod tests {
         })).expect("instrument fixture");
         let out = crate::materializer::materialize(&migrate_v1(&doc)).document;
         assert_eq!(out.instrument, doc.instrument);
+    }
+
+    #[test]
+    fn claims_ledger_survives_the_crdt_round_trip() {
+        let doc: Document = serde_json::from_value(serde_json::json!({
+            "version": "0.1", "materials": {}, "part_materials": {},
+            "nodes": {"1": {"id": 1, "name": "can", "op": {"type": "Cube", "size": {"x": 10.0, "y": 10.0, "z": 10.0}}}},
+            "roots": [{"root": 1, "material": "default"}],
+            "claims_ledger": {"schema": "vcad.claims-ledger/1", "entries": [{
+                "claim": {"id": "thermal.t_max_c", "domain": "thermal", "description": "T_max",
+                          "oracle": {"id": "vcad-kernel-thermal/solve", "version": "0.11.0"},
+                          "verdict": "provisional", "basis": "predicted"},
+                "predicted": {"value": 58.4, "unit": "C"},
+                "prediction_sha256": "aa",
+                "measurement": {"value": 62.0, "unit": "C", "uncertainty": 1.1, "instrument": "type-K",
+                                "band": {"kind": "factor", "band_factor": 1.25}, "prediction_sha256": "aa"}
+            }]},
+        })).expect("ledger fixture");
+        assert!(doc.claims_ledger.is_some());
+        let out = crate::materializer::materialize(&migrate_v1(&doc)).document;
+        assert_eq!(out.claims_ledger, doc.claims_ledger);
     }
 
     #[test]

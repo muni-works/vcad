@@ -10,7 +10,7 @@
 //! 1. A **named document parameter** (the `parameters` + `bindings` sidecar
 //!    the product's parametric documents already carry) is the θ.
 //! 2. The **build closure** clones the document, overwrites the parameter's
-//!    value, and runs [`evaluate_document`] — the
+//!    value, and runs [`crate::evaluate_document`] — the
 //!    same resolve-and-walk every other consumer uses.
 //! 3. **Seeding synthesis** (M6) machine-derives how θ moves every surface;
 //!    the frozen-plan seam prices the mass-property derivatives exactly.
@@ -21,6 +21,10 @@
 //! evaluating to a [`Document`] first (`vcad_loon::eval_vcad`) and binding
 //! the parameter onto the produced nodes (exercised in the tests).
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use vcad_ir::{Document, Expr};
 use vcad_kernel::vcad_kernel_primitives::BRepSolid;
 use vcad_kernel_diff::{
@@ -30,7 +34,9 @@ use vcad_kernel_diff::{
 use vcad_kernel_tessellate::frozen::capture_plan;
 use vcad_kernel_tessellate::TessellationParams;
 
-use crate::{evaluate_document, EvalError, EvalOptions, EvaluatedMesh};
+use crate::evaluate::evaluate_document_incremental;
+use crate::incremental::IncrementalCache;
+use crate::{EvalError, EvalOptions, EvaluatedMesh};
 
 /// Gradient of one solid part's mass properties with respect to a document
 /// parameter.
@@ -76,25 +82,80 @@ pub enum DocDiffError {
     Seam(#[from] DiffError),
 }
 
-/// Evaluate the document with `parameter = value` and collect the BRep solid
-/// of every part that has one (skipping mesh-only or empty parts).
-fn solids_at(
-    doc: &Document,
-    parameter: &str,
-    value: f64,
-    options: &EvalOptions,
-) -> Result<Vec<BRepSolid>, DocDiffError> {
-    let mut d = doc.clone();
-    match d.parameters.get_mut(parameter) {
-        Some(p) => p.value = Expr::Number(value),
-        None => return Err(DocDiffError::UnknownParameter(parameter.to_string())),
+/// The solid parts of one evaluation of the document at a parameter value:
+/// each part's BRep and the AABB extents of its tessellated mesh, in scene
+/// order (parts without a BRep solid are skipped and consume no index).
+struct Probe {
+    solids: Vec<BRepSolid>,
+    bboxes: Vec<[f64; 3]>,
+}
+
+/// Evaluations of `doc` at values of one parameter, each distinct value
+/// evaluated once.
+///
+/// A gradient asks for the same few values (θ, θ ± h) over and over: the
+/// part-count pre-check, then seeding synthesis once *per part*, each of
+/// which rebuilds θ, θ + h and θ − h. Without the memo a three-part document
+/// costs 12 full evaluations for 3 distinct values. Evaluation is
+/// deterministic, so returning the stored result is exactly what a re-run
+/// would produce — and it guarantees the synthesis base is bit-identical to
+/// the part the frozen plan is captured on.
+///
+/// Distinct values share an [`IncrementalCache`]: subtrees the parameter does
+/// not reach (a root it never touches, the untouched operands of a boolean)
+/// are carried over instead of rebuilt. Results equal a cold evaluation.
+struct ProbeEvaluator<'a> {
+    doc: &'a Document,
+    parameter: &'a str,
+    options: EvalOptions,
+    incremental: RefCell<IncrementalCache>,
+    memo: RefCell<HashMap<u64, Rc<Probe>>>,
+}
+
+impl<'a> ProbeEvaluator<'a> {
+    fn new(doc: &'a Document, parameter: &'a str) -> Self {
+        Self {
+            doc,
+            parameter,
+            options: EvalOptions {
+                skip_clash_detection: true,
+                clock: None,
+                root_cache: None,
+                mesh_segments: 0,
+                on_root: None,
+                on_root_ready: None,
+            },
+            incremental: RefCell::new(IncrementalCache::new()),
+            memo: RefCell::new(HashMap::new()),
+        }
     }
-    let scene = evaluate_document(&d, options)?;
-    Ok(scene
-        .parts
-        .iter()
-        .filter_map(|p| p.solid.as_ref().and_then(|s| s.as_brep()).cloned())
-        .collect())
+
+    /// The document evaluated with `parameter = value`.
+    fn at(&self, value: f64) -> Result<Rc<Probe>, DocDiffError> {
+        if let Some(p) = self.memo.borrow().get(&value.to_bits()) {
+            return Ok(Rc::clone(p));
+        }
+        let mut d = self.doc.clone();
+        match d.parameters.get_mut(self.parameter) {
+            Some(p) => p.value = Expr::Number(value),
+            None => return Err(DocDiffError::UnknownParameter(self.parameter.to_string())),
+        }
+        let scene =
+            evaluate_document_incremental(&d, &self.options, &mut self.incremental.borrow_mut())?;
+        let (solids, bboxes) = scene
+            .parts
+            .iter()
+            .filter_map(|p| {
+                let brep = p.solid.as_ref().and_then(|s| s.as_brep())?;
+                Some((brep.clone(), mesh_extents(&p.mesh)))
+            })
+            .unzip();
+        let probe = Rc::new(Probe { solids, bboxes });
+        self.memo
+            .borrow_mut()
+            .insert(value.to_bits(), Rc::clone(&probe));
+        Ok(probe)
+    }
 }
 
 /// Differentiate every solid part's mass properties with respect to a named
@@ -107,8 +168,9 @@ fn solids_at(
 /// returned derivatives are analytic seam evaluations, not finite
 /// differences.
 ///
-/// The document is re-evaluated three times (θ, θ ± h for synthesis probes)
-/// plus one frozen-plan capture and one seam pass per solid part. Parameter
+/// The document is evaluated three times (θ, θ ± h for synthesis probes —
+/// each distinct value once, however many parts) plus one frozen-plan
+/// capture and one seam pass per solid part. Parameter
 /// values that change the part count or a part's topology between θ − h and
 /// θ + h error rather than returning a wrong gradient.
 pub fn document_parameter_gradient(
@@ -118,46 +180,59 @@ pub fn document_parameter_gradient(
     tess: &TessellationParams,
     probe_step: f64,
 ) -> Result<Vec<DocumentPartGradient>, DocDiffError> {
-    let options = EvalOptions {
-        skip_clash_detection: true,
-        clock: None,
-        root_cache: None,
-        mesh_segments: 0,
-        on_root: None,
-    };
     let env = vcad_ir::resolve_parameters(&doc.parameters)
         .map_err(|e| DocDiffError::Resolve(e.to_string()))?;
     let theta0 = *env
         .get(parameter)
         .ok_or_else(|| DocDiffError::UnknownParameter(parameter.to_string()))?;
+    gradient_with(
+        &ProbeEvaluator::new(doc, parameter),
+        theta0,
+        density,
+        tess,
+        probe_step,
+    )
+}
 
-    let base = solids_at(doc, parameter, theta0, &options)?;
-    if base.is_empty() {
+/// [`document_parameter_gradient`] over a shared [`ProbeEvaluator`].
+fn gradient_with(
+    probes: &ProbeEvaluator<'_>,
+    theta0: f64,
+    density: f64,
+    tess: &TessellationParams,
+    probe_step: f64,
+) -> Result<Vec<DocumentPartGradient>, DocDiffError> {
+    let base = probes.at(theta0)?;
+    if base.solids.is_empty() {
         return Err(DocDiffError::NoSolidParts);
     }
 
     // Pre-validate the synthesis probes: both must evaluate cleanly and hold
     // the part count, because the synthesis closure below cannot propagate
     // errors (`synthesize_seeding` takes an infallible build function).
+    // The memo makes these the only evaluations the synthesis below needs.
     for probe in [theta0 - probe_step, theta0 + probe_step] {
-        let parts = solids_at(doc, parameter, probe, &options)?;
-        if parts.len() != base.len() {
+        let parts = probes.at(probe)?;
+        if parts.solids.len() != base.solids.len() {
             return Err(DocDiffError::PartCountChanged {
-                base: base.len(),
-                probe: parts.len(),
+                base: base.solids.len(),
+                probe: parts.solids.len(),
             });
         }
     }
 
-    let mut out = Vec::with_capacity(base.len());
-    for (i, brep) in base.iter().enumerate() {
+    let mut out = Vec::with_capacity(base.solids.len());
+    for (i, brep) in base.solids.iter().enumerate() {
         // Build closure for this part alone. Probe failures were ruled out
-        // above, so the expects are unreachable under the validated contract.
+        // above (and every value it asks for is memoized), so the expects
+        // are unreachable under the validated contract.
         let build = |theta: &[f64]| -> BRepSolid {
-            solids_at(doc, parameter, theta[0], &options)
+            probes
+                .at(theta[0])
                 .expect("probe evaluation validated above")
-                .into_iter()
-                .nth(i)
+                .solids
+                .get(i)
+                .cloned()
                 .expect("part count validated above")
         };
         let seeding = synthesize_seeding(&build, &[theta0], 0, probe_step)?;
@@ -227,28 +302,6 @@ fn mesh_extents(mesh: &EvaluatedMesh) -> [f64; 3] {
     ]
 }
 
-/// Evaluate the document with `parameter = value` and collect the AABB extents
-/// of every part that has a BRep solid, in the same order as [`solids_at`].
-fn solid_part_bboxes(
-    doc: &Document,
-    parameter: &str,
-    value: f64,
-    options: &EvalOptions,
-) -> Result<Vec<[f64; 3]>, DocDiffError> {
-    let mut d = doc.clone();
-    match d.parameters.get_mut(parameter) {
-        Some(p) => p.value = Expr::Number(value),
-        None => return Err(DocDiffError::UnknownParameter(parameter.to_string())),
-    }
-    let scene = evaluate_document(&d, options)?;
-    Ok(scene
-        .parts
-        .iter()
-        .filter(|p| p.solid.as_ref().and_then(|s| s.as_brep()).is_some())
-        .map(|p| mesh_extents(&p.mesh))
-        .collect())
-}
-
 /// Differentiate the MCP-facing QoI family (volume, mass, centroid, bbox
 /// extents) of every solid part with respect to a named document parameter.
 ///
@@ -265,20 +318,16 @@ pub fn document_parameter_qoi_gradient(
     tess: &TessellationParams,
     probe_step: f64,
 ) -> Result<Vec<PartQoiGradient>, DocDiffError> {
-    let options = EvalOptions {
-        skip_clash_detection: true,
-        clock: None,
-        root_cache: None,
-        mesh_segments: 0,
-        on_root: None,
-    };
     let env = vcad_ir::resolve_parameters(&doc.parameters)
         .map_err(|e| DocDiffError::Resolve(e.to_string()))?;
     let theta0 = *env
         .get(parameter)
         .ok_or_else(|| DocDiffError::UnknownParameter(parameter.to_string()))?;
 
-    let analytic = document_parameter_gradient(doc, parameter, density, tess, probe_step)?;
+    // One evaluator for both halves: the bbox base at θ is the evaluation
+    // the seam already made.
+    let probes = ProbeEvaluator::new(doc, parameter);
+    let analytic = gradient_with(&probes, theta0, density, tess, probe_step)?;
 
     // Central finite differences for the (non-smooth) bounding-box extents.
     // Mesh positions are f32, so the synthesis `probe_step` (~1e-4) is far too
@@ -286,9 +335,10 @@ pub fn document_parameter_qoi_gradient(
     // geometry-relative step so the extent change dominates the noise floor
     // while staying inside the part's topology neighbourhood.
     let bbox_step = probe_step.max(theta0.abs() * 1e-3).max(1e-3);
-    let base = solid_part_bboxes(doc, parameter, theta0, &options)?;
-    let plus = solid_part_bboxes(doc, parameter, theta0 + bbox_step, &options)?;
-    let minus = solid_part_bboxes(doc, parameter, theta0 - bbox_step, &options)?;
+    let base = probes.at(theta0)?;
+    let plus = probes.at(theta0 + bbox_step)?;
+    let minus = probes.at(theta0 - bbox_step)?;
+    let (base, plus, minus) = (&base.bboxes, &plus.bboxes, &minus.bboxes);
     for probe in [base.len(), plus.len(), minus.len()] {
         if probe != analytic.len() {
             return Err(DocDiffError::PartCountChanged {

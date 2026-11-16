@@ -7,6 +7,21 @@
 /* eslint-disable */
 
 /**
+ * How a measurement is accepted against a prediction. The measurer owns
+ * the band (instrument accuracy + design acceptance) — every domain crate
+ * says so — but each domain fixes the *shape* of the rule.
+ */
+export type AcceptanceBand = { "kind": "factor", 
+/**
+ * Band factor, ≥ 1.
+ */
+band_factor: number, } | { "kind": "absolute", 
+/**
+ * Acceptance half-width, in the claim's unit, ≥ 0.
+ */
+half_width: number, };
+
+/**
  * The agent manifest hosts load (`vcad_agent_manifest`).
  */
 export type AgentManifest = { 
@@ -153,7 +168,7 @@ contributors: Array<StudyContributor>,
 /**
  * The requirement the chain must satisfy.
  */
-requirement: StudyRequirement, };
+requirement: StudyRequirement, } | { "type": "thermal" } & ThermalStudy;
 
 /**
  * A stable reference to a piece of geometry a constraint grips.
@@ -621,6 +636,23 @@ export type ClaimValue = number | boolean | string;
  * a pass and never silently dropped.
  */
 export type ClaimVerdict = "pass" | "provisional" | "fail" | "unverifiable";
+
+/**
+ * The document-persisted ledger.
+ */
+export type ClaimsLedger = { 
+/**
+ * [`LEDGER_SCHEMA`].
+ */
+schema: string, 
+/**
+ * Entries, in attach order (the scorecard's row order).
+ */
+entries: Array<LedgerEntry>, 
+/**
+ * Native claim sets referenced by [`LedgerEntry::claim_set`].
+ */
+claim_sets?: Array<NativeClaimSet>, };
 
 /**
  * A named clearance assertion between two part groups, with its measured
@@ -2015,6 +2047,14 @@ constraints?: Array<DesignConstraint>,
  * a study whose stored baseline no longer reproduces is Stale/Violated.
  */
 analysis_studies?: Array<AnalysisStudy>, 
+/**
+ * Every solver's frozen predictions and their bench measurements
+ * (`vcad.claims-ledger/1`): one ledger per document, so one receipt can
+ * carry thermal, EM, antenna, acoustics, tolerance … claims and later
+ * score each against hardware. Excluded from the document fingerprint
+ * (recording a measurement is not a design change).
+ */
+claims_ledger?: ClaimsLedger, 
 /**
  * Drawing sheet settings: title block, section lines, BOM visibility.
  */
@@ -4507,6 +4547,109 @@ drill: number, } | { "type": "Castellated",
 drill: number, };
 
 /**
+ * One frozen prediction, plus its measurement once bound.
+ */
+export type LedgerEntry = { 
+/**
+ * The unified claim exactly as the solver emitted it (oracle id and
+ * version, basis, solver provenance in `details`).
+ */
+claim: ReceiptClaim, 
+/**
+ * The frozen numeric prediction. Solver adapters put the computed value
+ * in `claim.measured` ("what the oracle computed"); freezing lifts it
+ * here so the comparison never has to guess which field holds it.
+ */
+predicted: ClaimQuantity, 
+/**
+ * The prediction's own uncertainty, when the claim family carries one
+ * (tolerance stackups), same unit.
+ */
+prediction_uncertainty?: number, 
+/**
+ * Hash over the frozen prediction (claim identity, oracle, value, unit,
+ * uncertainty), computed by the producer over one canonical form.
+ */
+prediction_sha256: string, 
+/**
+ * Fingerprint of the design the prediction was priced on.
+ */
+document_fingerprint?: string, 
+/**
+ * Native claim-set schema the claim came from (`vcad.thermal-claims/1`).
+ */
+claim_set_schema?: string, 
+/**
+ * Index into [`ClaimsLedger::claim_sets`] of the native set this claim
+ * came from (typed importers read domain context from it).
+ */
+claim_set?: number, 
+/**
+ * The tool that produced the claim (`"solve_thermal"`).
+ */
+source_tool?: string, 
+/**
+ * RFC 3339 time the prediction was frozen.
+ */
+attached_at?: string, 
+/**
+ * The bound measurement, once recorded.
+ */
+measurement?: LedgerMeasurement, };
+
+/**
+ * One bench reading bound to one ledger entry.
+ */
+export type LedgerMeasurement = { 
+/**
+ * Measured value, in the prediction's unit.
+ */
+value: number, 
+/**
+ * Unit label (must match the frozen prediction's unit).
+ */
+unit?: string, 
+/**
+ * One-sigma absolute uncertainty, same unit, ≥ 0.
+ */
+uncertainty: number, 
+/**
+ * Instrument provenance ("NanoVNA-H4 SOL-cal at SMA", "type-K TC epoxied").
+ */
+instrument: string, 
+/**
+ * Acceptance band the measurer committed to.
+ */
+band: AcceptanceBand, 
+/**
+ * SHA-256 (hex) of the raw instrument file, when one was imported.
+ */
+raw_sha256?: string, 
+/**
+ * Raw file name, for the audit trail.
+ */
+raw_name?: string, 
+/**
+ * Typed importer that produced this reading (`"touchstone_s1p"`,
+ * `"rew_impedance"`, `"thermocouple_csv"`); absent for a hand entry.
+ */
+importer?: string, 
+/**
+ * RFC 3339 time of recording.
+ */
+recorded_at?: string, 
+/**
+ * The `prediction_sha256` this reading was compared against. If the
+ * entry's prediction hash moves, the row reads Stale.
+ */
+prediction_sha256: string, };
+
+/**
+ * Per-row verdict.
+ */
+export type LedgerRow = "holds" | "violated" | "unmeasured" | "stale";
+
+/**
  * A light source in the scene.
  */
 export type Light = { 
@@ -4787,7 +4930,81 @@ emissiveMapU?: [number, number, number],
  * pixel (0,0), so on a face in the XY plane shown upright to a camera
  * looking along +Y, `u` runs along +X and `v` along −Y.
  */
-emissiveMapV?: [number, number, number], };
+emissiveMapV?: [number, number, number], 
+/**
+ * Physical properties the solvers read (elastic, thermal, dielectric,
+ * magnetic, electrical). Every field is optional: a property the
+ * document leaves out falls back to the [`materials`] library entry for
+ * this material, and a property neither supplies is a typed error from
+ * [`materials::resolve_material`] — never a silent default. Density is
+ * not repeated here; it is [`density`](Self::density) above.
+ */
+physical?: MaterialPhysical, };
+
+/**
+ * Physical properties of a material, as read by the solvers (FEA, modal,
+ * thermal, EM, antenna, acoustics). All optional and all SI-or-MPa, named
+ * with their unit so a number can't be read in the wrong one.
+ *
+ * JSON keys are camelCase (`youngsModulusMpa`); the snake_case spelling is
+ * accepted on input. A property left out here is filled from the library
+ * entry named by [`library`](Self::library), else matched from the material
+ * key / name — see [`materials::resolve_material`].
+ */
+export type MaterialPhysical = { 
+/**
+ * Library id to inherit unset properties from (`"pla"`, `"fr4"`,
+ * `"n42"`, …; see [`materials::LIBRARY`]). When set it must name a
+ * library entry — an unknown id is an error, not a fallback. When unset
+ * the library entry is matched from the material key, then its name.
+ */
+library?: string, 
+/**
+ * Young's modulus E, MPa.
+ */
+youngsModulusMpa?: number, 
+/**
+ * Poisson's ratio ν (dimensionless).
+ */
+poisson?: number, 
+/**
+ * Yield (or, for brittle materials, ultimate tensile) strength, MPa.
+ */
+yieldStrengthMpa?: number, 
+/**
+ * Thermal conductivity k, W/(m·K): a number (isotropic) or
+ * `{inPlane, throughPlane}` for a laminate such as FR4.
+ */
+thermalConductivityWMk?: ThermalConductivity, 
+/**
+ * Specific heat capacity c_p, J/(kg·K).
+ */
+specificHeatJKgk?: number, 
+/**
+ * Total hemispherical emissivity ε, 0..1 (radiation boundary).
+ */
+emissivity?: number, 
+/**
+ * Relative permittivity ε_r (dimensionless; 1 = vacuum).
+ */
+relativePermittivity?: number, 
+/**
+ * Dielectric loss tangent tan δ (dimensionless).
+ */
+lossTangent?: number, 
+/**
+ * Relative permeability μ_r (dimensionless; linear, unsaturated — for
+ * a permanent magnet, the recoil permeability).
+ */
+relativePermeability?: number, 
+/**
+ * Remanent flux density B_r of a permanent magnet, T.
+ */
+remanenceT?: number, 
+/**
+ * Electrical resistivity ρ_e, Ω·m.
+ */
+resistivityOhmM?: number, };
 
 /**
  * A molecular / atomic system: the optional `molecule` domain on a `Document`.
@@ -4845,6 +5062,21 @@ direction: Vec3,
  * Edge length at pick time (mm).
  */
 length: number, };
+
+/**
+ * A native claim set, kept verbatim (as JSON text) for importers that need
+ * domain context the unified claim drops (antenna band + reference
+ * impedance, tolerance uncertainties).
+ */
+export type NativeClaimSet = { 
+/**
+ * Schema tag, e.g. `vcad.antenna-claims/1`.
+ */
+schema: string, 
+/**
+ * The claim set serialized as JSON.
+ */
+json: string, };
 
 /**
  * A named electrical connection.
@@ -6236,6 +6468,11 @@ role?: LayerRole,
 roleInferred?: boolean, };
 
 /**
+ * Why a row is Stale.
+ */
+export type StaleReason = "prediction_changed" | "design_changed";
+
+/**
  * One contributor in a linear tolerance chain.
  */
 export type StudyContributor = { 
@@ -6323,6 +6560,12 @@ region: StudyRegion,
 fix: [boolean, boolean, boolean], };
 
 /**
+ * A number, or the name of a document parameter (`doc.parameters`) bound
+ * when the study is extracted. Unbound names fail closed.
+ */
+export type StudyValue = number | string;
+
+/**
  * A builtin symbol definition for schematic component placement.
  */
 export type SymbolDef = { 
@@ -6366,6 +6609,37 @@ export type SymbolGraphic = { "type": "rect", x: number, y: number, width: numbe
 export type TextAlignment = "left" | "center" | "right";
 
 /**
+ * Thermal conductivity, W/(m·K): isotropic, or split into in-plane and
+ * through-plane values for a laminate (FR4, a printed part's layers).
+ *
+ * The material does not know which way "through" points — the extractor
+ * that meshes the part supplies that axis (a board's normal, a print's
+ * build direction).
+ */
+export type ThermalConductivity = number | { 
+/**
+ * Conductivity along the plane, W/(m·K).
+ */
+inPlane: number, 
+/**
+ * Conductivity through the plane, W/(m·K).
+ */
+throughPlane: number, };
+
+/**
+ * In-plane / through-plane conductivity of a laminate, W/(m·K).
+ */
+export type ThermalLaminate = { 
+/**
+ * Conductivity along the two in-plane axes.
+ */
+inPlaneWMk: StudyValue, 
+/**
+ * Conductivity along the through-plane (thinnest) axis.
+ */
+throughPlaneWMk: StudyValue, };
+
+/**
  * An exposed thermal pad under a no-lead package.
  */
 export type ThermalPad = { 
@@ -6382,6 +6656,184 @@ width: number, };
  * Thermal relief style for zone connections.
  */
 export type ThermalReliefStyle = "Direct" | "Relief" | "None";
+
+/**
+ * A heat-conduction study over the document's own parts.
+ *
+ * The selected parts are voxelized onto a grid spanning their union
+ * bounding box (plus `padding_mm` of void); each voxel takes the material
+ * of the part that fills it. Power sources and heat sinks name parts, so
+ * moving or resizing a part moves its heat with it. Numbers that are
+ * [`StudyValue::Named`] read the document's parameters (an amplifier's
+ * loss declared with `defparam` drives the source directly).
+ */
+export type ThermalStudy = { 
+/**
+ * Parts to voxelize (root node name or stable part id). Explicit and
+ * non-empty: parts not listed are void (perfectly insulating).
+ */
+parts: Array<string>, 
+/**
+ * Voxel counts per axis. Exactly one of `divisions` / `pitch_mm`.
+ */
+divisions?: [number, number, number], 
+/**
+ * Target voxel pitch per axis, mm; each axis gets the smallest whole
+ * number of voxels at or below this pitch that spans the domain
+ * exactly.
+ */
+pitchMm?: [number, number, number], 
+/**
+ * Void margin added around the parts' union bounding box, mm
+ * (default 0: the domain faces are the parts' outer faces).
+ */
+paddingMm?: number, 
+/**
+ * Thin-wall guard: a part thinner than this many voxels along an axis
+ * is refused rather than voxelized (default 2).
+ */
+minVoxelsAcross?: number, 
+/**
+ * Per-part thermal-property overrides (beat the material table).
+ */
+materials: Array<ThermalStudyMaterial>, 
+/**
+ * Power sources, each tied to a part.
+ */
+sources: Array<ThermalStudySource>, 
+/**
+ * Heat sinks: parts (or sub-regions) held at a fixed temperature.
+ */
+sinks: Array<ThermalStudySink>, 
+/**
+ * Boundary on every solid face that touches void (default adiabatic).
+ */
+exposed: ThermalStudyBoundary, 
+/**
+ * Boundary per domain face `[-x, +x, -y, +y, -z, +z]`; omitted = every
+ * domain face takes `exposed` (with zero padding the domain faces are
+ * the parts' own outer faces).
+ */
+domainFaces?: Array<ThermalStudyBoundary>, 
+/**
+ * θ reference temperature, °C (omitted = derived from the ambients).
+ */
+referenceC?: StudyValue, };
+
+/**
+ * A thermal boundary condition.
+ */
+export type ThermalStudyBoundary = { "type": "adiabatic" } | { "type": "convection", 
+/**
+ * Film coefficient, W/(m²·K) — supplied, not derived.
+ */
+hWM2k: StudyValue, 
+/**
+ * Ambient temperature, °C.
+ */
+ambientC: StudyValue, } | { "type": "fixedTemperature", 
+/**
+ * Surface temperature, °C.
+ */
+temperatureC: StudyValue, } | { "type": "radiation", 
+/**
+ * Hemispherical total emissivity, (0, 1].
+ */
+emissivity: StudyValue, 
+/**
+ * Ambient / surrounding-wall temperature, °C.
+ */
+ambientC: StudyValue, 
+/**
+ * Parallel convection film, W/(m²·K) (omit or 0 in vacuum).
+ */
+hWM2k?: StudyValue, 
+/**
+ * Staircase area correction (true area / voxel area), default 1.
+ * A voxelized cylinder wall carries ×4/π extra area at every
+ * resolution; without this, cooling is over-counted.
+ */
+areaScale?: StudyValue, 
+/**
+ * Two-surface gray enclosure (a vacuum chamber wall).
+ */
+enclosure?: ThermalStudyEnclosure, };
+
+/**
+ * A gray enclosure fully surrounding a radiating surface.
+ */
+export type ThermalStudyEnclosure = { 
+/**
+ * Wall emissivity, (0, 1].
+ */
+emissivity: StudyValue, 
+/**
+ * Wall area, m² (must exceed the radiating area).
+ */
+areaM2: StudyValue, };
+
+/**
+ * Thermal properties for one part, overriding the material table.
+ * Give exactly one of `k_w_mk` / `laminate`.
+ */
+export type ThermalStudyMaterial = { 
+/**
+ * Part name or part id.
+ */
+part: string, 
+/**
+ * Conductivity, W/(m·K): one value (isotropic) or three (world
+ * `[x, y, z]`).
+ */
+kWMk?: Array<StudyValue>, 
+/**
+ * Laminate (circuit board): in-plane / through-plane conductivity;
+ * the through-plane axis is the part's thinnest bounding-box axis.
+ */
+laminate?: ThermalLaminate, 
+/**
+ * Volumetric heat capacity ρ·c_p, J/(m³·K).
+ */
+heatCapacityJM3k?: StudyValue, };
+
+/**
+ * A part (or sub-region of one) held at a fixed temperature.
+ */
+export type ThermalStudySink = { 
+/**
+ * The part to pin.
+ */
+part: string, 
+/**
+ * Pinned temperature, °C.
+ */
+temperatureC: StudyValue, 
+/**
+ * Optional world-frame sub-region of the part.
+ */
+region?: StudyRegion, };
+
+/**
+ * A power source deposited uniformly in a part.
+ */
+export type ThermalStudySource = { 
+/**
+ * Source name for reporting ("amp", "U7").
+ */
+name: string, 
+/**
+ * The part the heat is deposited in.
+ */
+part: string, 
+/**
+ * Total power, W.
+ */
+powerW: StudyValue, 
+/**
+ * Optional world-frame sub-region of the part (e.g. one face's
+ * footprint); omitted = the whole part.
+ */
+region?: StudyRegion, };
 
 /**
  * The document's time axis: duration, sampling rate, animated tracks, and

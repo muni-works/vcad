@@ -143,6 +143,7 @@ import { toolDefs as parametersToolDefs, setParameterAssetResolver } from "./too
 import { resolveLoonAssets } from "./tools/loon-assets.js";
 import { toolDefs as designConstraintsToolDefs } from "./tools/design-constraints.js";
 import { toolDefs as printCheckToolDefs } from "./tools/print-check.js";
+import { toolDefs as claimsLedgerToolDefs } from "./tools/claims-ledger.js";
 import { toolDefs as renderToolDefs } from "./tools/render.js";
 import { toolDefs as verifyToolDefs } from "./tools/verify.js";
 import { toolDefs as verifySpecToolDefs } from "./tools/verify-spec.js";
@@ -165,6 +166,7 @@ import { toolDefs as dfmToolDefs } from "./tools/dfm.js";
 import { toolDefs as sheetMetalToolDefs } from "./tools/sheet-metal.js";
 import { toolDefs as flatPatternToolDefs } from "./tools/flat-pattern.js";
 import { toolDefs as acousticsToolDefs } from "./tools/acoustics.js";
+import { toolDefs as cavityToolDefs } from "./tools/cavity.js";
 import {
   toolDefs as importToolDefs,
   registerDocumentStepSources,
@@ -330,6 +332,7 @@ const STATIC_TOOL_DEFS: readonly ToolDef[] = [
   ...parametersToolDefs,
   ...designConstraintsToolDefs,
   ...printCheckToolDefs,
+  ...claimsLedgerToolDefs,
   ...renderToolDefs,
   ...verifyToolDefs,
   ...verifySpecToolDefs,
@@ -352,6 +355,7 @@ const STATIC_TOOL_DEFS: readonly ToolDef[] = [
   ...sheetMetalToolDefs,
   ...flatPatternToolDefs,
   ...acousticsToolDefs,
+  ...cavityToolDefs,
   ...importToolDefs,
   ...importUrdfToolDefs,
   ...importPcbToolDefs,
@@ -373,6 +377,9 @@ const STATIC_TOOL_DEFS: readonly ToolDef[] = [
  * is presentation only — dispatch and behavior key off the def, not this list.
  * A boot-time check asserts this covers `STATIC_TOOL_DEFS` + `server_info`.
  */
+/** Tools whose only document write is the claims ledger — never a source divergence. */
+const LEDGER_WRITERS: ReadonlySet<string> = new Set(["attach_claims", "import_measurement", "record_measurement"]);
+
 const LIST_TOOL_ORDER: readonly string[] = [
   // ── Session lifecycle ──────────────────────────────────────
   "open_document",
@@ -426,6 +433,7 @@ const LIST_TOOL_ORDER: readonly string[] = [
   "set_parameters",
   "parameter_gradient",
   "sensitivity",
+  "optimize_parameters",
   // ── Design constraints (document-level geometric solver) ───
   "add_constraint",
   "delete_constraint",
@@ -445,7 +453,9 @@ const LIST_TOOL_ORDER: readonly string[] = [
   "simulate_flow",
   "analyze_structure",
   "beam_check",
+  "shell_buckling_check",
   "simulate_neutron_shield",
+  "simulate_cavity",
   "simulate_lattice_gauge",
   "analyze_tolerance_stackup",
   "simulate_circuit",
@@ -557,6 +567,8 @@ const LIST_TOOL_ORDER: readonly string[] = [
   "verify_substitution",
   "build_receipt",
   "verify_receipt",
+  "attach_claims",
+  "import_measurement",
   "route_diff_pair",
   "length_match_traces",
   "critique_route",
@@ -1591,6 +1603,8 @@ export async function createServer(
           writtenId === incomingId &&
           (name !== "create_cad_loon" || args.mode === "add") &&
           name !== "undo" &&
+          // Claims-ledger writes record predictions/measurements, not design.
+          !LEDGER_WRITERS.has(name) &&
           markSourceDiverged(incomingId, name)
         ) {
           noteSourceDivergence(result, incomingId);
