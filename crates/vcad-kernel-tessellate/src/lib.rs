@@ -5002,6 +5002,19 @@ fn tessellate_ruled_two_chain(
     };
     let ia: Vec<u32> = pts_a.iter().map(&mut push_vert).collect();
     let ib: Vec<u32> = pts_b.iter().map(&mut push_vert).collect();
+    // The zipper is only a triangulation while every triangle it emits
+    // winds the same way in the unrolled (arc length, height) plane. That
+    // holds for rails of moderate slope, not for one that turns vertical:
+    // the wall below a cross bore is bounded above by the bore's lower
+    // half-ellipse, whose limbs run along the rulings, and a rim vertex
+    // just inside the limb gets fanned to limb samples it cannot see —
+    // overlapping, inside-out slivers (black facets beside the open-fusor
+    // gauge port). Such a strip is left to the general trimmed path.
+    let radius = cyl.radius.abs();
+    let signed_area = |p: (f64, f64), q: (f64, f64), r: (f64, f64)| {
+        radius * ((q.0 - p.0) * (r.1 - p.1) - (r.0 - p.0) * (q.1 - p.1))
+    };
+    let (mut most_positive, mut most_negative) = (0.0f64, 0.0f64);
     let (mut i, mut j) = (0usize, 0usize);
     while i + 1 < ia.len() || j + 1 < ib.len() {
         let advance_a = if i + 1 >= ia.len() {
@@ -5012,15 +5025,23 @@ fn tessellate_ruled_two_chain(
             // Advance the rail whose next vertex has the smaller u.
             chain_a[i + 1].0 <= chain_b[j + 1].0
         };
-        if advance_a {
+        let area = if advance_a {
             mesh.indices.extend_from_slice(&[ia[i], ia[i + 1], ib[j]]);
             i += 1;
+            signed_area(chain_a[i - 1], chain_a[i], chain_b[j])
         } else {
             mesh.indices.extend_from_slice(&[ia[i], ib[j + 1], ib[j]]);
             j += 1;
-        }
+            signed_area(chain_a[i], chain_b[j], chain_b[j - 1])
+        };
+        most_positive = most_positive.max(area);
+        most_negative = most_negative.min(area);
     }
     let _ = grid;
+    // Rounding-level areas of either sign are collinear runs, not folds.
+    if most_positive.min(-most_negative) > 1e-9 * most_positive.max(-most_negative) {
+        return None;
+    }
 
     // Orient the strip so triangle normals agree with the (possibly
     // reversed) outward radial direction: check one non-degenerate

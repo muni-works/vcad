@@ -472,15 +472,9 @@ fn sectioned_can_with_cavity() {
 }
 
 /// The same part batched the way `vcad-eval` first tries a difference
-/// chain: can − (cavity ∪ quadrant).
-///
-/// Known defect, not fixed here: the analytic result is right to 0.04% but
-/// comes back with 9 unpaired and 3 overused edges, the watertightness swap
-/// trades it for the mesh fallback, and the fallback's 32-gon soup is 4.6%
-/// short. `vcad-eval` sees the soup, discards the batch and cuts in authored
-/// order (the test above), so documents are unaffected.
+/// chain: can − (cavity ∪ quadrant). The analytic result used to come back
+/// with 9 unpaired edges and be swapped for a 32-gon soup 4.6% short.
 #[test]
-#[ignore = "batched cavity ∪ quadrant cut is cracked and swapped for soup"]
 fn sectioned_can_with_cavity_batched() {
     let mut fails = Vec::new();
     let (tool, f) = op("tool", &zcyl(76.0, -76.0, 76.0), &quadrant(), BooleanOp::Union);
@@ -544,6 +538,84 @@ fn chamber_batched() {
         - CAVITY
         - radial_stub(19.0, 76.0, 112.0)
         - 0.25 * (CAN - CAVITY);
+    fails.extend(check(
+        "shell − tools",
+        &cut,
+        &f,
+        Bounds { volume: v, tol_frac: 1e-3, max_tris: 12000 },
+    ));
+    assert!(fails.is_empty(), "{fails:#?}");
+}
+
+/// Gauge port: a small radial nozzle and bore along −X.
+#[test]
+fn gauge_port() {
+    let mut fails = Vec::new();
+    let (shell, _) = op(
+        "nozzle",
+        &zcyl(79.5, -79.5, 79.5),
+        &xcyl(14.0, -112.0, -70.0),
+        BooleanOp::Union,
+    );
+    let (tool, _) = op(
+        "bores",
+        &zcyl(76.0, -76.0, 76.0),
+        &xcyl(11.0, -120.0, -60.0),
+        BooleanOp::Union,
+    );
+    let (cut, f) = op("cut", &brep(&shell), &brep(&tool), BooleanOp::Difference);
+    let v = CAN + radial_stub(14.0, 79.5, 112.0) - CAVITY - radial_stub(11.0, 76.0, 112.0);
+    fails.extend(check(
+        "gauge port",
+        &cut,
+        &f,
+        Bounds { volume: v, tol_frac: 1e-3, max_tris: 12000 },
+    ));
+    assert!(fails.is_empty(), "{fails:#?}");
+}
+
+/// Pump port (coaxial nozzle + bore through the floor) and feedthrough bore
+/// (coaxial through the lid), sectioned.
+#[test]
+fn coaxial_ports_sectioned() {
+    let mut fails = Vec::new();
+    let (shell, _) = op(
+        "nozzle",
+        &zcyl(79.5, -79.5, 79.5),
+        &zcyl(23.0, -140.0, -70.0),
+        BooleanOp::Union,
+    );
+    let (ports, _) = op(
+        "ports",
+        &zcyl(20.0, -150.0, -60.0),
+        &zcyl(10.0, 60.0, 90.0),
+        BooleanOp::Union,
+    );
+    let (bores, f) = op("bores", &zcyl(76.0, -76.0, 76.0), &brep(&ports), BooleanOp::Union);
+    let v_bores = CAVITY + PI * 400.0 * 74.0 + PI * 100.0 * 14.0;
+    fails.extend(check(
+        "cavity ∪ pump bore ∪ feedthrough bore",
+        &bores,
+        &f,
+        Bounds { volume: v_bores, tol_frac: 1e-3, max_tris: 8000 },
+    ));
+    let (tool, f) = op("tool", &brep(&bores), &quadrant(), BooleanOp::Union);
+    fails.extend(check(
+        "bores ∪ quadrant",
+        &tool,
+        &f,
+        Bounds {
+            volume: 400.0 * 400.0 * 800.0 + 0.75 * v_bores,
+            tol_frac: 1e-4,
+            max_tris: 8000,
+        },
+    ));
+    let (cut, f) = op("cut", &brep(&shell), &brep(&tool), BooleanOp::Difference);
+    // Shell: can + pump nozzle (r 23, z −140..−79.5). Removed: cavity, pump
+    // bore through floor and nozzle (r 20, z −140..−76), feedthrough bore
+    // through the lid (r 10, z 76..79.5); then a quarter of everything.
+    let v = 0.75
+        * (CAN + PI * 529.0 * 60.5 - CAVITY - PI * 400.0 * 64.0 - PI * 100.0 * 3.5);
     fails.extend(check(
         "shell − tools",
         &cut,
