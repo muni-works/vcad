@@ -931,6 +931,8 @@ export interface KernelModule {
   extractAxisymMagSpec?: (docJson: string, selectionJson: string) => unknown;
   /** Document → StackupSpec extraction (Document/StackupExtraction JSON). */
   extractStackupSpec?: (docJson: string, selectionJson: string) => unknown;
+  /** Signed analytic radial fit gap between two part groups. */
+  signedRadialGap?: (docJson: string, queryJson: string) => unknown;
   /** Lattice gauge theory Monte Carlo run (SimSpec JSON). */
   latticeGaugeSimulate?: (specJson: string) => unknown;
   /** Static structural analysis of a box solid. */
@@ -1407,6 +1409,7 @@ export class Engine {
       extractShieldSpec: (wasmModule as Record<string, unknown>).extractShieldSpec as KernelModule["extractShieldSpec"],
       extractAxisymMagSpec: (wasmModule as Record<string, unknown>).extractAxisymMagSpec as KernelModule["extractAxisymMagSpec"],
       extractStackupSpec: (wasmModule as Record<string, unknown>).extractStackupSpec as KernelModule["extractStackupSpec"],
+      signedRadialGap: (wasmModule as Record<string, unknown>).signedRadialGap as KernelModule["signedRadialGap"],
       particleOptimize: (wasmModule as Record<string, unknown>).particleOptimize as KernelModule["particleOptimize"],
       toleranceAnalyze: (wasmModule as Record<string, unknown>).toleranceAnalyze as KernelModule["toleranceAnalyze"],
       thermalSolve: (wasmModule as Record<string, unknown>).thermalSolve as KernelModule["thermalSolve"],
@@ -2040,6 +2043,19 @@ export class Engine {
    * fit_parts, contributors, independent, fixed_geometry_mm}`. Fail-closed;
    * see `vcad_eval::sim_extract::tolerance`.
    */
+  signedRadialGap(
+    docJson: string,
+    query: { label: string; group_a: string[]; group_b: string[]; fit_window_mm: number },
+  ): { gap_mm: number; parts: [string, string] } {
+    const fn = this.kernel.signedRadialGap;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "signedRadialGap is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(docJson, JSON.stringify(query)) as { gap_mm: number; parts: [string, string] };
+  }
+
   extractStackupSpec(docJson: string, selectionJson: string): unknown {
     const fn = this.kernel.extractStackupSpec;
     if (typeof fn !== "function") {

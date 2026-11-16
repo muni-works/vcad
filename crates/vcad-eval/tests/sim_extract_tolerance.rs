@@ -35,6 +35,8 @@ fn doc_from(src: &str) -> Document {
         allow_contact: None,
         sweep: None,
         baseline_mm: None,
+        max_mm: None,
+        fit: None,
     });
     d
 }

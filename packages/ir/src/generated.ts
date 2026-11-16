@@ -646,9 +646,22 @@ group_b: Array<string>,
  */
 required_mm: number, 
 /**
- * Measured minimum distance in mm (negative = penetration depth).
+ * Measured minimum distance in mm (negative = penetration depth). For
+ * a fit-mode assertion (`max_mm` set), the signed analytic radial gap.
  */
 measured_mm: number, 
+/**
+ * Upper bound on the measured gap, mm (fit-mode assertions: press /
+ * transition fits). Absent = minimum-clearance semantics.
+ */
+max_mm?: number, 
+/**
+ * True when `measured_mm` is the signed analytic radial gap of a
+ * fit-mode assertion (interference allowed down to `required_mm`)
+ * rather than a mesh clearance — re-verification must re-measure it
+ * the same way.
+ */
+analytic_fit?: boolean, 
 /**
  * Whether the measured distance satisfies the requirement.
  */
@@ -676,6 +689,11 @@ worst_pose?: Array<JointPose>,
 poses_checked?: number, };
 
 /**
+ * Fit kind of a [`ClearanceSpec`].
+ */
+export type ClearanceFit = "clearance" | "interference";
+
+/**
  * A named minimum-clearance assertion between two groups of parts.
  *
  * Persisted on the document so safety-critical distances (rotor air gaps,
@@ -698,8 +716,27 @@ group_b: Array<string>,
 /**
  * Required minimum separation in mm: the assertion holds when the
  * measured minimum distance between the groups is at least this value.
+ * Negative values (allowed interference) only mean something in fit
+ * mode — see [`ClearanceSpec::is_fit`]; otherwise any interpenetration
+ * is a violation regardless of sign.
  */
 min_mm: number, 
+/**
+ * Upper bound on the measured gap, mm. Setting it puts the assertion
+ * in **fit mode** ([`ClearanceSpec::is_fit`]): the gap is the signed
+ * analytic radial gap between coaxial cylinders (negative =
+ * interference) and must lie in `[min_mm, max_mm]` — a press or
+ * transition fit. Geometry that can't be measured that way fails
+ * closed. Absent = classic minimum-clearance semantics.
+ */
+max_mm?: number, 
+/**
+ * Explicit fit kind. `interference` puts the assertion in fit mode
+ * without an upper bound (a negative `min_mm` then caps the allowed
+ * interference); `clearance` (or absent, with no `max_mm`) keeps the
+ * classic semantics.
+ */
+fit?: ClearanceFit, 
 /**
  * Named allowed contact: when true, surfaces touching (measured
  * distance within the contact tolerance of zero) satisfy the assertion

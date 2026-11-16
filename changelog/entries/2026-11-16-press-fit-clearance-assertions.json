@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-press-fit-clearance-assertions",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "feat",
+  "title": "Press fits verify green: fit-mode clearance assertions",
+  "summary": "A clearance assertion with max_mm (or fit: interference) checks the signed analytic shaft/bore gap against [min, max], so a correct press fit holds on the receipt; unmeasurable geometry fails closed.",
+  "features": ["receipts", "clearance", "tolerance", "mcp"],
+  "mcpTools": ["check_clearance", "build_receipt", "verify_receipt", "analyze_tolerance_stackup"]
+}

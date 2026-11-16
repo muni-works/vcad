@@ -10941,6 +10941,38 @@ pub fn extract_stackup_spec(doc_json: &str, selection_json: &str) -> Result<JsVa
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
 }
 
+#[derive(serde::Deserialize)]
+struct WasmFitGapQuery {
+    label: String,
+    group_a: Vec<String>,
+    group_b: Vec<String>,
+    fit_window_mm: f64,
+}
+
+/// Signed analytic radial gap between two part groups' coaxial shaft/bore
+/// pair — the fit-mode measurement of a `ClearanceSpec` (press /
+/// transition fits). `query_json` is `{label, group_a, group_b,
+/// fit_window_mm}`; returns `{gap_mm, parts}` (negative = interference).
+/// Errors (no candidate pair, ambiguous pairs, no analytic BRep) are
+/// fail-closed: the caller must treat them as unverifiable.
+#[wasm_bindgen(js_name = signedRadialGap)]
+pub fn signed_radial_gap(doc_json: &str, query_json: &str) -> Result<JsValue, JsError> {
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {e}")))?;
+    let q: WasmFitGapQuery = serde_json::from_str(query_json)
+        .map_err(|e| JsError::new(&format!("bad fit-gap query: {e}")))?;
+    let out = vcad_eval::sim_extract::tolerance::signed_radial_gap_of(
+        &doc,
+        &q.label,
+        &q.group_a,
+        &q.group_b,
+        q.fit_window_mm,
+    )
+    .map_err(|e| JsError::new(&e.to_string()))?;
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
 // =============================================================================
 // GLB / STL export (vcad-kernel-export)
 // =============================================================================

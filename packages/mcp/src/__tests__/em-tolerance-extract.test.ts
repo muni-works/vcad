@@ -37,12 +37,23 @@ const FIT =
   '[root-named [difference [translate 0 0 14 [cylinder [* 0.5 rim_id] 7]] [cylinder 35 20]] "pla" "rim"]\n' +
   '[root-named [union [translate 0 0 14 [cylinder [* 0.5 lid_od] 6.5]] [translate 0 0 20 [cylinder 35 2]]] "pla" "lid"]';
 
-type ToolOut = { isError?: boolean; content: Array<{ type: string; text: string }> };
+// Lid pressed into a rim: 0.075 mm radial interference.
+const PRESS =
+  '[defparam rim_id 60.0 :tol 0.1]\n[defparam lid_od 60.15 :tol 0.1]\n' +
+  '[root-named [difference [translate 0 0 14 [cylinder [* 0.5 rim_id] 7]] [cylinder 35 20]] "pla" "rim"]\n' +
+  '[root-named [union [translate 0 0 14 [cylinder [* 0.5 lid_od] 6.5]] [translate 0 0 20 [cylinder 35 2]]] "pla" "lid"]';
+
+type ToolOut = {
+  isError?: boolean;
+  content: Array<{ type: string; text: string }>;
+  structuredContent?: Record<string, unknown>;
+};
 
 describe.skipIf(!wasmHasExtract)("document → EM / tolerance extraction tools", () => {
   let call: (name: string, args: Record<string, unknown>) => Promise<ToolOut>;
   let motorId: string;
   let fitId: string;
+  let pressId: string;
 
   beforeAll(async () => {
     documents.clear();
@@ -60,6 +71,7 @@ describe.skipIf(!wasmHasExtract)("document → EM / tolerance extraction tools",
     };
     motorId = await open(MOTOR);
     fitId = await open(FIT);
+    pressId = await open(PRESS);
     const doc = getSession(fitId);
     doc.clearance_specs = [
       { label: "lid-fit", group_a: ["lid"], group_b: ["rim"], min_mm: 0 },
@@ -131,5 +143,44 @@ describe.skipIf(!wasmHasExtract)("document → EM / tolerance extraction tools",
     );
     expect(coeffs.rim_id).toBeCloseTo(0.5, 9);
     expect(coeffs.lid_od).toBeCloseTo(-0.5, 9);
+  }, 120_000);
+  it("a press fit asserted in fit mode reads green on the receipt", async () => {
+    const cl = await call("check_clearance", {
+      document_id: pressId,
+      group_a: ["lid"],
+      group_b: ["rim"],
+      min_mm: -0.15,
+      max_mm: -0.01,
+      label: "lid-press",
+    });
+    expect(cl.isError, cl.content[0].text).toBeFalsy();
+    const c = JSON.parse(cl.content[0].text);
+    expect(c.pass).toBe(true);
+    expect(c.measured_mm).toBeCloseTo(-0.075, 9);
+    expect(c.fit_mode).toBe(true);
+
+    const rec = await call("build_receipt", { document_id: pressId });
+    expect(rec.isError, rec.content[0].text).toBeFalsy();
+    const unified = (rec.structuredContent?.unified ?? JSON.parse(rec.content[0].text).unified) as {
+      claims: Array<{ id: string; verdict: string; details?: string }>;
+    };
+    const claim = unified.claims.find((x) => x.id === "mech.clearance.lid-press")!;
+    expect(claim.verdict).toBe("pass");
+    const det = JSON.parse(claim.details!);
+    expect(det.analytic_fit).toBe(true);
+    expect(det.max_mm).toBe(-0.01);
+
+    const ver = await call("verify_receipt", { document_id: pressId, receipt: unified });
+    expect(ver.isError, ver.content[0].text).toBeFalsy();
+    expect(ver.content[0].text).not.toContain("Violated");
+
+    // The same interference with a bare negative min (no max/fit) stays red.
+    const legacy = await call("check_clearance", {
+      document_id: pressId,
+      group_a: ["lid"],
+      group_b: ["rim"],
+      min_mm: -0.15,
+    });
+    expect(JSON.parse(legacy.content[0].text).pass).toBe(false);
   }, 120_000);
 });

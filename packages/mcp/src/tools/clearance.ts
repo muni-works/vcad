@@ -139,6 +139,17 @@ export const checkClearanceSchema = {
       description:
         "Treat exact surface contact (measured distance within 0.001 mm of zero) as passing even though it is below `min_mm` — for parts designed to touch, e.g. a stage bolted flush to the chamber floor. Penetration beyond the tolerance still fails. Persisted with the spec when `label` is given.",
     },
+    max_mm: {
+      type: "number" as const,
+      description:
+        "Fit mode (press / transition fits): upper bound on the gap. The gap is then the signed ANALYTIC radial gap between a coaxial shaft/bore pair (negative = interference), and the check passes when it lies in [min_mm, max_mm] — e.g. min_mm -0.15, max_mm -0.01 for a printed press fit. Geometry without a coaxial cylinder pair fails closed. Persisted with the spec.",
+    },
+    fit: {
+      type: "string" as const,
+      enum: ["clearance", "interference"],
+      description:
+        "`interference` enables fit mode without an upper bound (a negative min_mm then caps the allowed interference). A bare negative min_mm without this or max_mm still treats any interpenetration as a failure.",
+    },
     joint_state: jointStateSchemaProp,
     sweep: sweepSchemaProp,
     include_samples: {
@@ -665,11 +676,36 @@ export async function checkClearance(args: Record<string, unknown>, engine: Engi
   const minMm = typeof args.min_mm === "number" ? args.min_mm : NaN;
   if (!Number.isFinite(minMm)) return err("Pass `min_mm`, the required minimum separation in mm.");
 
+  const maxMm = typeof args.max_mm === "number" && Number.isFinite(args.max_mm) ? args.max_mm : undefined;
+  const fitKind = args.fit === "interference" || args.fit === "clearance" ? args.fit : undefined;
+  const fitMode = isFitSpec({ max_mm: maxMm, fit: fitKind });
+  if (fitMode && sweep && sweep.length > 0) {
+    return err("Fit mode (`max_mm` / `fit: interference`) is a single-pose analytic gap; drop `sweep`.");
+  }
+  if (maxMm !== undefined && maxMm <= minMm) return err("`max_mm` must exceed `min_mm`.");
+
   const { result, error } = computeGroupClearance(doc, engine, groupA, groupB, sweep);
   if (error || !result) return err(error ?? "Clearance could not be computed.");
 
-  const verdict = clearanceVerdict(result.distance_mm);
-  const pass = clearanceHolds(result.distance_mm, minMm, allowContact, result.intersecting);
+  let fitGap: number | undefined;
+  if (fitMode) {
+    const m = measureFitGap(
+      doc,
+      engine,
+      label ?? "fit",
+      result.group_a.map((p) => p.id),
+      result.group_b.map((p) => p.id),
+      minMm,
+      maxMm,
+    );
+    if (m.gap === undefined) return err(m.error ?? "fit gap could not be measured");
+    fitGap = m.gap;
+  }
+  const verdict = clearanceVerdict(fitGap ?? result.distance_mm);
+  const pass =
+    fitGap !== undefined
+      ? fitHolds(fitGap, minMm, maxMm)
+      : clearanceHolds(result.distance_mm, minMm, allowContact, result.intersecting);
   let specSaved = false;
   if (label) {
     // Persist by resolved part ids so the assertion survives renames.
@@ -678,6 +714,8 @@ export async function checkClearance(args: Record<string, unknown>, engine: Engi
       group_a: result.group_a.map((p) => p.id),
       group_b: result.group_b.map((p) => p.id),
       min_mm: minMm,
+      ...(maxMm !== undefined ? { max_mm: maxMm } : {}),
+      ...(fitKind ? { fit: fitKind } : {}),
       ...(allowContact ? { allow_contact: true } : {}),
       ...(sweep && sweep.length > 0 ? { sweep } : {}),
     });
@@ -689,7 +727,9 @@ export async function checkClearance(args: Record<string, unknown>, engine: Engi
     document_id: documentId,
     ...(label ? { label } : {}),
     required_mm: minMm,
-    measured_mm: result.distance_mm,
+    ...(maxMm !== undefined ? { max_mm: maxMm } : {}),
+    measured_mm: fitGap ?? result.distance_mm,
+    ...(fitGap !== undefined ? { fit_mode: true, mesh_distance_mm: result.distance_mm } : {}),
     pass,
     verdict,
     ...(allowContact ? { allow_contact: true } : {}),
@@ -824,6 +864,52 @@ export function migrateClearanceSpecs(doc: Document): void {
   }
 }
 
+/**
+ * Fit mode (press / transition fits): an assertion with `max_mm`, or
+ * `fit: "interference"`, is measured as the signed analytic radial gap of a
+ * coaxial shaft/bore pair (negative = interference) and must lie in
+ * `[min_mm, max_mm]`. A bare negative `min_mm` never relaxes the
+ * no-interpenetration rule. Mirrors `vcad-receipt-verify`.
+ */
+function isFitSpec(spec: { max_mm?: number | null; fit?: string | null }): boolean {
+  return typeof spec.max_mm === "number" || spec.fit === "interference";
+}
+
+function fitDescription(label: string, min: number, max: number | undefined): string {
+  return max === undefined
+    ? `fit "${label}" gap at least ${min} mm (interference allowed)`
+    : `fit "${label}" gap within [${min}, ${max}] mm`;
+}
+
+/** Analytic fit gap; any failure is returned as an error (fail-closed). */
+function measureFitGap(
+  doc: Document,
+  engine: Engine,
+  label: string,
+  groupA: string[],
+  groupB: string[],
+  min: number,
+  max: number | undefined,
+): { gap?: number; error?: string } {
+  try {
+    const r = engine.signedRadialGap(JSON.stringify(doc), {
+      label,
+      group_a: groupA,
+      group_b: groupB,
+      fit_window_mm: 1 + Math.max(Math.abs(min), Math.abs(max ?? 0)),
+    });
+    return { gap: r.gap_mm };
+  } catch (e) {
+    return {
+      error: `fit gap is not analytically measurable: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+}
+
+function fitHolds(gap: number, min: number, max: number | undefined): boolean {
+  return gap >= min && (max === undefined || gap <= max);
+}
+
 export function clearanceReceiptClaims(doc: Document, engine: Engine | undefined): ReceiptClaim[] {
   migrateClearanceSpecs(doc);
   const specs = doc.clearance_specs ?? [];
@@ -834,6 +920,47 @@ export function clearanceReceiptClaims(doc: Document, engine: Engine | undefined
       ? `clearance "${spec.label}" at least ${spec.min_mm} mm across the swept range of motion`
       : `clearance "${spec.label}" at least ${spec.min_mm} mm`;
     const subject = `${spec.group_a.join("+")} vs ${spec.group_b.join("+")}`;
+    if (engine && isFitSpec(spec)) {
+      const max = typeof spec.max_mm === "number" ? spec.max_mm : undefined;
+      const fitDesc = fitDescription(spec.label, spec.min_mm, max);
+      const { gap, error } = measureFitGap(
+        doc,
+        engine,
+        spec.label,
+        spec.group_a,
+        spec.group_b,
+        spec.min_mm,
+        max,
+      );
+      if (gap === undefined) {
+        return {
+          ...unverifiableClaim(id, MECH_DOMAIN, fitDesc, CLEARANCE_ORACLE, error ?? "unmeasurable"),
+          subject,
+        };
+      }
+      const fitAssertion: ClearanceClaim = {
+        label: spec.label,
+        group_a: spec.group_a,
+        group_b: spec.group_b,
+        required_mm: spec.min_mm,
+        measured_mm: gap,
+        holds: fitHolds(gap, spec.min_mm, max),
+        analytic_fit: true,
+        ...(max !== undefined ? { max_mm: max } : {}),
+        poses_checked: 1,
+      };
+      return {
+        id,
+        domain: MECH_DOMAIN,
+        description: fitDesc,
+        subject,
+        oracle: CLEARANCE_ORACLE,
+        verdict: fitAssertion.holds ? ("pass" as const) : ("fail" as const),
+        predicted: { value: spec.min_mm, unit: "mm" },
+        measured: { value: gap, unit: "mm" },
+        details: JSON.stringify(fitAssertion),
+      };
+    }
     if (!engine) {
       return {
         ...unverifiableClaim(
@@ -939,6 +1066,42 @@ export function verifyClearanceClaims(
         status: "Violated",
         reason: "stored claim carries no re-verifiable payload (details is not a ClearanceClaim)",
       });
+      continue;
+    }
+    if (stored.analytic_fit === true) {
+      const max = typeof stored.max_mm === "number" ? stored.max_mm : undefined;
+      const { gap, error } = measureFitGap(
+        doc,
+        engine,
+        label,
+        stored.group_a,
+        stored.group_b,
+        stored.required_mm,
+        max,
+      );
+      const common = {
+        label,
+        required_mm: stored.required_mm,
+        stored_mm: stored.measured_mm,
+        ...(gap !== undefined ? { measured_mm: gap } : {}),
+      };
+      if (gap === undefined) {
+        checks.push({ ...common, status: "Violated", reason: error });
+      } else if (!fitHolds(gap, stored.required_mm, max)) {
+        checks.push({
+          ...common,
+          status: "Violated",
+          reason: `fit gap ${gap} mm is outside [${stored.required_mm}, ${max ?? "∞"}] mm`,
+        });
+      } else if (Math.abs(gap - stored.measured_mm) > STALE_EPS_MM) {
+        checks.push({
+          ...common,
+          status: "Stale",
+          reason: "geometry changed since the receipt was built, but the fit still holds",
+        });
+      } else {
+        checks.push({ ...common, status: "Holds" });
+      }
       continue;
     }
     const { result, error } = computeGroupClearance(

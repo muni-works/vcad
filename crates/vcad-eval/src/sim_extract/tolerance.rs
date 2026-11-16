@@ -26,13 +26,13 @@
 //!   zero-tolerance `fixed geometry` contributor so the stack's nominal
 //!   gap equals the measured gap exactly.
 //! - **The requirement is the assertion.** `lower_mm` is the clearance
-//!   assertion's `min_mm` and its label names the requirement. A
-//!   `ClearanceSpec` has no upper bound, so the upper bound a press or
-//!   transition fit needs comes from the selection's `upper_mm`. (Note
-//!   that the clearance *receipt* check refuses any interpenetration, so
-//!   an interference fit's assertion reads Violated there; the stack is
-//!   what prices it.) A tolerance claim then prices the probability that
-//!   the fit requirement holds in production.
+//!   assertion's `min_mm`, its optional `max_mm` the upper bound a press
+//!   or transition fit needs (the selection's `upper_mm`/`lower_mm`
+//!   override either), and its label names the requirement. A fit-mode
+//!   assertion (`max_mm` or `fit: "interference"`) is re-verified on the
+//!   receipt with this same analytic gap, so the receipt verdict and the
+//!   stack talk about the same number; a tolerance claim then prices the
+//!   probability that the assertion holds in production.
 //!
 //! Nominals are carried as [`ParamValue::Named`] so scrubbing a dimension
 //! in the document re-prices the stack without re-extraction — valid while
@@ -76,8 +76,8 @@ pub struct StackupExtraction {
     /// fit is by definition close). Default 1.0 mm.
     #[serde(default = "default_window")]
     pub fit_window_mm: f64,
-    /// Upper gap bound, mm (`ClearanceSpec` has none). A press or
-    /// transition fit needs one: too little interference rattles.
+    /// Upper gap bound, mm (overrides the assertion's `max_mm`). A press
+    /// or transition fit needs one: too little interference rattles.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upper_mm: Option<f64>,
     /// Lower gap bound, mm (overrides the assertion's `min_mm`).
@@ -259,6 +259,59 @@ fn measure_fit(
         )));
     }
     Ok(first)
+}
+
+/// A signed analytic radial fit gap between two part groups.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RadialGap {
+    /// `r_bore − r_shaft`, mm (negative = interference).
+    pub gap_mm: f64,
+    /// The parts carrying the shaft/bore pair, `[group_a part, group_b part]`.
+    pub parts: [String; 2],
+}
+
+/// Measure the signed radial gap between a coaxial shaft/bore pair, one
+/// cylinder in each group, analytically from the evaluated BRep (the
+/// fit-mode measurement of a [`vcad_ir::ClearanceSpec`]). Only pairs with
+/// `|gap| ≤ fit_window_mm` are candidates; no candidate, more than one
+/// distinct gap, or a part without analytic BRep geometry is an error —
+/// never a guess.
+pub fn signed_radial_gap(
+    doc: &Document,
+    scene: &EvaluatedScene,
+    label: &str,
+    group_a: &[String],
+    group_b: &[String],
+    fit_window_mm: f64,
+) -> Result<RadialGap, SimExtractError> {
+    let sel = StackupExtraction {
+        clearance: label.to_string(),
+        feature: FitFeature::Radial,
+        fit_window_mm,
+        upper_mm: None,
+        lower_mm: None,
+        process_tolerance_mm: None,
+        parameters: None,
+        tolerance: Tolerance::default(),
+    };
+    let f = measure_fit(doc, scene, group_a, group_b, &sel)?;
+    Ok(RadialGap {
+        gap_mm: f.gap,
+        parts: f.parts,
+    })
+}
+
+/// [`signed_radial_gap`] on a fresh evaluation of `doc` (BRep solids kept;
+/// no root cache).
+pub fn signed_radial_gap_of(
+    doc: &Document,
+    label: &str,
+    group_a: &[String],
+    group_b: &[String],
+    fit_window_mm: f64,
+) -> Result<RadialGap, SimExtractError> {
+    let scene = evaluate_document(doc, &eval_opts())?;
+    signed_radial_gap(doc, &scene, label, group_a, group_b, fit_window_mm)
 }
 
 fn eval_opts() -> crate::EvalOptions {
@@ -469,7 +522,7 @@ pub fn extract_stackup_spec_from_scene(
         source: DistributionSource::default(),
     });
     let lower = sel.lower_mm.unwrap_or(cs.min_mm);
-    let upper = sel.upper_mm;
+    let upper = sel.upper_mm.or(cs.max_mm);
     let spec = StackupSpec {
         name: format!(
             "{} ({:?} fit {} / {})",

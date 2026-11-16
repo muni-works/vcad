@@ -2709,7 +2709,26 @@ pub struct ClearanceSpec {
     pub group_b: Vec<String>,
     /// Required minimum separation in mm: the assertion holds when the
     /// measured minimum distance between the groups is at least this value.
+    /// Negative values (allowed interference) only mean something in fit
+    /// mode — see [`ClearanceSpec::is_fit`]; otherwise any interpenetration
+    /// is a violation regardless of sign.
     pub min_mm: f64,
+    /// Upper bound on the measured gap, mm. Setting it puts the assertion
+    /// in **fit mode** ([`ClearanceSpec::is_fit`]): the gap is the signed
+    /// analytic radial gap between coaxial cylinders (negative =
+    /// interference) and must lie in `[min_mm, max_mm]` — a press or
+    /// transition fit. Geometry that can't be measured that way fails
+    /// closed. Absent = classic minimum-clearance semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub max_mm: Option<f64>,
+    /// Explicit fit kind. `interference` puts the assertion in fit mode
+    /// without an upper bound (a negative `min_mm` then caps the allowed
+    /// interference); `clearance` (or absent, with no `max_mm`) keeps the
+    /// classic semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub fit: Option<ClearanceFit>,
     /// Named allowed contact: when true, surfaces touching (measured
     /// distance within the contact tolerance of zero) satisfy the assertion
     /// even though it is below `min_mm` — e.g. a stage bolted flush to the
@@ -2732,6 +2751,28 @@ pub struct ClearanceSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts-rs", ts(optional))]
     pub baseline_mm: Option<f64>,
+}
+
+impl ClearanceSpec {
+    /// Fit mode: measured as a signed analytic radial gap and checked
+    /// against `[min_mm, max_mm]`. On only when `max_mm` is set or `fit` is
+    /// `interference` — a bare negative `min_mm` never relaxes the
+    /// no-interpenetration rule.
+    pub fn is_fit(&self) -> bool {
+        self.max_mm.is_some() || self.fit == Some(ClearanceFit::Interference)
+    }
+}
+
+/// Fit kind of a [`ClearanceSpec`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub enum ClearanceFit {
+    /// Classic minimum clearance (the default).
+    Clearance,
+    /// Interference (press) fit: interpenetration down to `min_mm` allowed.
+    Interference,
 }
 
 /// One axis of a range-of-motion sweep: a joint driven from `from` to `to`
