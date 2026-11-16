@@ -15,13 +15,18 @@
 //!   exact Dirichlet Green's function `1/|x−y| − (R/|y|)/|x−y*|` — so the
 //!   wall costs no unknowns and φ = V_wall on it identically.
 //! * **Collocation.** The standard thin-wire *reduced kernel*: charge on
-//!   the axis, potential matched to the electrode voltage at each segment
-//!   midpoint on the wire surface (`1/√(d² + a²)`, integrated in closed
-//!   form). Segments are ≥ 4 wire radii long (the thin-wire validity
-//!   limit used by `vcad-kernel-antenna`).
-//! * **Linear solve.** Dense LU with partial pivoting from `tang-la`. At
-//!   these sizes (N ≲ 4000, O(N³/3)) a direct solve beats an iterative one
-//!   and needs no preconditioner; no new solver is needed in `tang`.
+//!   the axis, potential matched to the electrode voltage on the wire
+//!   (`1/√(d² + a²)`, integrated in closed form). Segments are ≥ 4 wire
+//!   radii long (the thin-wire validity limit used by
+//!   `vcad-kernel-antenna`). The potential is matched at several stations
+//!   per segment **including the joints**, in the least-squares sense:
+//!   midpoint-only collocation leaves a ~70% potential bulge at wire
+//!   crossings (both wires' charge counted at full density between
+//!   collocation points); matching at joints cuts it to a few percent.
+//! * **Linear solve.** Dense normal equations + Cholesky (or LU for
+//!   square collocation) from `tang-la`. At these sizes (N ≲ 3000) a
+//!   direct solve beats an iterative one and needs no preconditioner; no
+//!   new solver is needed in `tang`.
 //! * **Field.** The exact potential of a uniform straight line segment,
 //!   `kλ ln((r₁+r₂+L)/(r₁+r₂−L))`, and its exact gradient, plus image
 //!   point charges from Gauss–Legendre quadrature along each segment
@@ -33,12 +38,19 @@
 //! # Fail-closed gates
 //!
 //! After the solve the potential is re-evaluated with the exact field
-//! kernel on the wire *surface* (several azimuths at every segment midpoint
-//! and joint, skipping points buried inside a crossing wire). The worst
-//! deviation from the electrode voltage, relative to the electrode–wall
-//! drop, is reported and the solve is refused above
-//! [`BemOptions::max_surface_residual`]. This is what catches a junction
-//! or a too-coarse discretization the thin-wire model cannot represent.
+//! kernel on the wire *surface* (a ring of points at every segment midpoint
+//! and joint, skipping points buried inside a crossing wire) and reduced
+//! to a [`ResidualReport`]: the ring-mean residual away from junctions,
+//! the same inside junction zones, and the azimuthal spread (the missing
+//! transverse-dipole response of an on-axis line charge). Each has its own
+//! gate in [`BemOptions`]; the solve is refused if any fails. This is what
+//! catches a junction or a too-coarse discretization the thin-wire model
+//! cannot represent.
+//!
+//! Known limit (documented, gated): the near-wire field within a few wire
+//! radii carries the azimuthal-spread error (≈ 3–4% of ΔV for a 1 mm wire
+//! on a 19 mm globe). Higher-order (dipole) thin-wire unknowns would remove
+//! it; the far field is unaffected at O((a/d)²).
 
 use crate::constants::{EPSILON_0, MU_0};
 use crate::wire3d::{
@@ -62,15 +74,19 @@ pub struct BemOptions {
     /// Largest chord sagitta on curved paths, as a fraction of the wire
     /// radius.
     pub max_sag_fraction: f64,
-    /// Fail-closed gate on the worst surface-potential residual, relative
-    /// to the electrode–wall drop.
+    /// Gate on [`ResidualReport::mean`] (ring-mean surface residual away
+    /// from junctions), relative to the electrode–wall drop.
     pub max_surface_residual: f64,
+    /// Gate on [`ResidualReport::junction_mean`].
+    pub max_junction_residual: f64,
+    /// Gate on [`ResidualReport::spread`].
+    pub max_azimuthal_spread: f64,
     /// Azimuthal sample count around the wire for the residual gate.
     pub residual_azimuths: usize,
-    /// Surface samples closer than this many wire radii to a *different*
-    /// wire lie in a junction zone (crossing, weld): the thin-wire model
-    /// cannot resolve charge there, so they are excluded from the gate and
-    /// reported separately ([`WireField::worst_junction_residual`]).
+    /// Stations within this many wire radii of a *different* wire lie in
+    /// a junction zone (crossing, weld), where the thin-wire model resolves
+    /// charge least well; they are gated separately
+    /// ([`Self::max_junction_residual`]).
     pub junction_zone_factor: f64,
     /// Collocation stations per segment (≥ 1). One = square midpoint
     /// collocation; more = least squares over stations that include the
@@ -85,7 +101,9 @@ impl Default for BemOptions {
         Self {
             segment_length_factor: 4.0,
             max_sag_fraction: 0.1,
-            max_surface_residual: 0.05,
+            max_surface_residual: 0.02,
+            max_junction_residual: 0.10,
+            max_azimuthal_spread: 0.10,
             residual_azimuths: 8,
             junction_zone_factor: 3.0,
             stations_per_segment: 4,
@@ -110,8 +128,10 @@ pub enum BemError {
     },
     /// The collocation matrix is numerically singular.
     Singular,
-    /// The surface-potential residual gate failed.
+    /// A surface-potential residual gate failed.
     SurfaceResidual {
+        /// Which gate.
+        kind: ResidualKind,
         /// Worst relative residual found.
         worst: f64,
         /// Wire on which it occurred.
@@ -133,13 +153,14 @@ impl std::fmt::Display for BemError {
             ),
             BemError::Singular => write!(f, "collocation matrix is singular"),
             BemError::SurfaceResidual {
+                kind,
                 worst,
                 wire,
                 threshold,
             } => write!(
                 f,
-                "surface-potential residual {:.2}% on wire {wire} exceeds the {:.2}% gate — the \
-                 thin-wire model does not represent this geometry at this resolution",
+                "{kind:?} surface-potential residual {:.2}% on wire {wire} exceeds the {:.2}% \
+                 gate — the thin-wire model does not represent this geometry at this resolution",
                 worst * 100.0,
                 threshold * 100.0
             ),
@@ -148,6 +169,17 @@ impl std::fmt::Display for BemError {
 }
 
 impl std::error::Error for BemError {}
+
+/// Which surface-residual gate ([`ResidualReport`]) failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResidualKind {
+    /// Ring-mean residual away from junctions.
+    Mean,
+    /// Ring-mean residual inside a junction zone.
+    Junction,
+    /// Azimuthal variation around the wire (missing dipole response).
+    AzimuthalSpread,
+}
 
 impl From<GeometryError> for BemError {
     fn from(e: GeometryError) -> Self {
@@ -270,14 +302,30 @@ impl SegIndex {
     }
 }
 
-/// Surface-residual summary (all relative to the electrode–wall drop).
+/// Surface-residual summary, all relative to the electrode–wall drop.
+///
+/// At every station (segment midpoint and joint) the exact-kernel
+/// potential is sampled on a ring of points around the wire surface.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
-struct ResidualReport {
-    mean: f64,
-    mean_wire: usize,
-    spread: f64,
-    junction_mean: f64,
-    junction_spread: f64,
+pub struct ResidualReport {
+    /// Worst |ring-mean − V| away from junctions: the monopole
+    /// consistency the thin-wire model claims. Gated by
+    /// [`BemOptions::max_surface_residual`].
+    pub mean: f64,
+    /// Wire on which [`Self::mean`] occurs.
+    pub mean_wire: usize,
+    /// Worst |ring-mean − V| inside junction zones (crossings). Gated by
+    /// [`BemOptions::max_junction_residual`].
+    pub junction_mean: f64,
+    /// Wire on which [`Self::junction_mean`] occurs.
+    pub junction_wire: usize,
+    /// Worst half peak-to-peak variation around a ring: the missing
+    /// transverse-dipole (proximity) response of an on-axis line charge,
+    /// ~ a·|E_ext|/ΔV. Bounds the near-wire field error within a few wire
+    /// radii. Gated by [`BemOptions::max_azimuthal_spread`].
+    pub spread: f64,
+    /// Wire on which [`Self::spread`] occurs.
+    pub spread_wire: usize,
 }
 
 /// Solved 3D vacuum field of a [`Device3d`]: wire line charges, chamber
@@ -294,8 +342,7 @@ pub struct WireField {
     max_drop_v: f64,
     index: SegIndex,
     has_current: bool,
-    worst_residual: f64,
-    worst_junction_residual: f64,
+    residual: ResidualReport,
     min_wire_radius_m: f64,
     extent_m: f64,
 }
@@ -318,9 +365,15 @@ pub fn solve(device: &Device3d, opts: &BemOptions) -> Result<WireField, BemError
             "stations_per_segment must be ≥ 1".into(),
         ));
     }
-    if !(opts.max_surface_residual > 0.0) || opts.residual_azimuths < 3 {
+    let gates = [
+        opts.max_surface_residual,
+        opts.max_junction_residual,
+        opts.max_azimuthal_spread,
+        opts.junction_zone_factor,
+    ];
+    if gates.iter().any(|g| !(*g > 0.0)) || opts.residual_azimuths < 3 {
         return Err(BemError::InvalidOptions(
-            "max_surface_residual must be > 0 and residual_azimuths ≥ 3".into(),
+            "residual gates and junction_zone_factor must be > 0; residual_azimuths ≥ 3".into(),
         ));
     }
 
@@ -499,22 +552,41 @@ pub fn solve(device: &Device3d, opts: &BemOptions) -> Result<WireField, BemError
         wall_potential_v: device.wall_potential_v,
         max_drop_v: device.max_potential_drop_v(),
         index,
-        worst_residual: 0.0,
-        worst_junction_residual: 0.0,
+        residual: ResidualReport::default(),
         extent_m,
     };
 
     // --- Surface residual gate -----------------------------------------
     let rep = field.surface_residual(opts.residual_azimuths, opts.junction_zone_factor);
-    let (worst, wire) = (rep.mean, rep.mean_wire);
-    field.worst_residual = worst;
-    field.worst_junction_residual = rep.junction_mean;
-    if worst > opts.max_surface_residual {
-        return Err(BemError::SurfaceResidual {
-            worst,
-            wire,
-            threshold: opts.max_surface_residual,
-        });
+    field.residual = rep;
+    for (kind, worst, wire, threshold) in [
+        (
+            ResidualKind::Mean,
+            rep.mean,
+            rep.mean_wire,
+            opts.max_surface_residual,
+        ),
+        (
+            ResidualKind::Junction,
+            rep.junction_mean,
+            rep.junction_wire,
+            opts.max_junction_residual,
+        ),
+        (
+            ResidualKind::AzimuthalSpread,
+            rep.spread,
+            rep.spread_wire,
+            opts.max_azimuthal_spread,
+        ),
+    ] {
+        if !(worst <= threshold) {
+            return Err(BemError::SurfaceResidual {
+                kind,
+                worst,
+                wire,
+                threshold,
+            });
+        }
     }
     Ok(field)
 }
@@ -541,15 +613,15 @@ impl WireField {
         self.segs.len()
     }
 
-    /// Worst relative surface-potential residual found by the gate.
+    /// Worst ring-mean surface residual away from junctions (the gated
+    /// monopole-consistency number).
     pub fn worst_surface_residual(&self) -> f64 {
-        self.worst_residual
+        self.residual.mean
     }
 
-    /// Worst relative surface residual inside junction zones (excluded
-    /// from the gate; see [`BemOptions::junction_zone_factor`]).
-    pub fn worst_junction_residual(&self) -> f64 {
-        self.worst_junction_residual
+    /// The full surface-residual report.
+    pub fn residual_report(&self) -> ResidualReport {
+        self.residual
     }
 
     /// Total free charge on wire `k`, coulombs.
@@ -724,10 +796,6 @@ impl WireField {
     /// wire (at each segment midpoint and joint) and summarize.
     fn surface_residual(&self, azimuths: usize, junction_factor: f64) -> ResidualReport {
         let mut rep = ResidualReport::default();
-        let debug = std::env::var("BEM_DEBUG").is_ok();
-        let bins = [1.0, 1.5, 2.0, 3.0, 4.0, 6.0];
-        let mut mean_bin = [0.0_f64; 6];
-        let mut spread_bin = [0.0_f64; 6];
         for (si, s) in self.segs.iter().enumerate() {
             let w = &self.wires[s.wire];
             let drop = (w.potential - self.wall_potential_v).abs();
@@ -787,28 +855,20 @@ impl WireField {
                 }
                 let mean = (sum / count as f64).abs();
                 let spread = 0.5 * (hi - lo);
-                if debug {
-                    for (b, lim) in bins.iter().enumerate() {
-                        if clearance >= *lim {
-                            mean_bin[b] = mean_bin[b].max(mean);
-                            spread_bin[b] = spread_bin[b].max(spread);
-                        }
-                    }
+                if spread > rep.spread {
+                    rep.spread = spread;
+                    rep.spread_wire = s.wire;
                 }
                 if clearance < junction_factor {
-                    rep.junction_mean = rep.junction_mean.max(mean);
-                    rep.junction_spread = rep.junction_spread.max(spread);
-                } else {
-                    if mean > rep.mean {
-                        rep.mean = mean;
-                        rep.mean_wire = s.wire;
+                    if mean > rep.junction_mean {
+                        rep.junction_mean = mean;
+                        rep.junction_wire = s.wire;
                     }
-                    rep.spread = rep.spread.max(spread);
+                } else if mean > rep.mean {
+                    rep.mean = mean;
+                    rep.mean_wire = s.wire;
                 }
             }
-        }
-        if debug {
-            eprintln!("BEM clearance bins ≥ {bins:?}\n  |mean| {mean_bin:?}\n  spread {spread_bin:?}");
         }
         rep
     }
