@@ -97,53 +97,76 @@ segment would remove it. The far field is unaffected at O((a/d)²).
   (1 − 6a/R + 30 rhombic overlaps at 63.4° crossings = 0.714) to 1%.
   Ballistic tracing (100 keV ions, 1 V grid) gives the same transparency to
   3%, which exercises the tracer's capsule hit test end to end.
-- **tracing** at −30 kV conserves energy (mean drift < 1% at the default step)
-  and ions recirculate.
+- **tracing** at −30 kV conserves energy (mean drift < 1% at the default
+  step over a 6-pass cap; drift grows with trace length, so see the
+  convergence table for 40 passes) and ions recirculate.
 - `Tracer::new` behavior is unchanged: the 66 pre-existing lib tests and the
   `analytic` / `codesign` / `shielding` integration tests pass as before.
 
 ## hobby fusor: 6-great-circle globe vs the ring stack
 
-`cargo run --release -p vcad-kernel-particle --example globe_vs_rings`
+`cargo run --release -p vcad-kernel-particle --example globe_vs_rings 400`
 
 6" chamber (76 mm sphere), 1.5" grid (19 mm), 2 mm wire, −30 kV, 10 mA,
-5 mTorr D₂, σ_cx = 1×10⁻¹⁹ m². 192 D⁺ start at rest on a Fibonacci sphere at
+5 mTorr D₂, σ_cx = 1×10⁻¹⁹ m². 400 D⁺ start at rest on a Fibonacci sphere at
 0.85 R, with a 40-pass cap. Every row uses the same solver, chamber, launch
 and tracer, so the differences come from the grid alone (mew, step 0.25 mm):
 
 | grid | unknowns | φ(center) kV | T geometric | T first pass | interception | survivors | mean passes | floor n/s | ceiling n/s |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| ring stack (4 latitude rings) | 108 | −27.40 | 0.838 | 0.807 | 0.594 | 0.406 | 20.8 | 2.66×10⁴ | 1.01×10⁶ |
-| **6 great circles** (icosidodecahedral) | 186 | −28.91 | 0.714 | 0.703 | 0.865 | 0.135 | 6.4 | 2.86×10⁴ | 3.84×10⁵ |
-| lat/long (3 lat + 4 meridians) | 147 | −28.22 | 0.780 | 0.745 | 0.979 | 0.021 | 3.0 | 2.76×10⁴ | 2.01×10⁵ |
+| ring stack (4 latitude rings) | 108 | −27.40 | 0.838 | 0.815 | 0.600 | 0.400 | 20.7 | 2.69×10⁴ | ≥1.01×10⁶ |
+| ring stack (8 rings, transparency-matched) | 206 | −29.91 | 0.702 | 0.680 | 0.642 | 0.357 | 19.6 | 3.19×10⁴ | ≥1.24×10⁶ |
+| **6 great circles** (icosidodecahedral) | 186 | −28.91 | 0.714 | 0.682 | 0.848 | 0.152 | 7.1 | 2.79×10⁴ | ≥4.17×10⁵ |
+| lat/long (3 lat + 4 meridians) | 147 | −28.22 | 0.780 | 0.765 | 0.978 | 0.022 | 3.2 | 2.82×10⁴ | ≥2.09×10⁵ |
+
+Survivors / mean passes by launch latitude, with |cos θ| bands at the
+4-ring stack's ring latitudes:
+
+| grid | equator band (< 0.31) | mid band (0.31–0.81) | polar caps (> 0.81) |
+|---|---|---|---|
+| ring stack (4) | 0.56 / 25.2 | 0.37 / 21.8 | 0.21 / 10.3 |
+| ring stack (8) | 0.37 / 19.8 | 0.39 / 20.3 | 0.25 / 17.3 |
+| 6 great circles | 0.16 / 7.4 | 0.14 / 6.6 | 0.17 / 7.7 |
+| lat/long (3+4) | 0.00 / 2.7 | 0.01 / 2.7 | 0.09 / 5.3 |
 
 **What it says**
 
-- **The ring stack overstates recirculation ~3×** (20.8 vs 6.4 mean passes),
-  and the ceiling by **2.6×**. Most of that is the two **polar holes**: a ring
-  stack has no wire near the axis. Ions whose orbits thread the poles
-  recirculate until the pass cap (41% are still alive at 40 passes and
-  censored), so the ring-stack ceiling is a "≥". A great-circle globe has no
-  such channel. This is the geometry error blocker #3a was about.
-- **The floor barely moves** (2.7 → 2.9×10⁴ n/s, +7%). At 5 mTorr the CX
-  mean free path is shorter than a pass, so the CX-on floor depends on the
-  first few passes. The globe's well is 1.5 kV deeper (−28.9 vs −27.4 kV at
-  the center), which slightly *raises* it.
-- **Field lensing is small at this size.** Traced first-pass transparency is
-  0.01–0.035 below geometric for both globes (0.703 vs 0.714; 0.745 vs
-  0.780).
-  The low recirculation of the globes comes from their lower geometric
-  transparency and the lack of polar channels, not from ions being steered
-  onto wires.
+- **A ring stack overstates recirculation ~3×** (20.7 vs 7.1 mean passes for
+  the globe), and the D-D ceiling by **2.4×**. This is the geometry error
+  blocker #3a was about. A ring-stack stand-in is not a conservative proxy
+  for a globe: it is optimistic.
+- **It isn't the polar holes, and it isn't transparency.** Launches into the
+  4-ring stack's polar caps recirculate *least* (10 passes vs 25 near the
+  equator). A ring stack with 8 rings, matched to the globe's 0.70 geometric
+  transparency, still makes 19.6 passes. The data point to the symmetry
+  itself. In an axisymmetric field, an ion launched from rest never leaves
+  its meridian plane. Each annular gap between rings is then a slit lens
+  extended over the whole azimuth, and it re-focuses the same orbit pass
+  after pass. Per-pass survival after the first crossing is ~0.95 for both
+  ring stacks, far above their geometric 0.70–0.84. The globe's discrete
+  openings confine less stably (per-pass ~0.88).
+- **The floor barely moves** (2.7–3.2×10⁴ n/s). At 5 mTorr the CX mean free
+  path is shorter than a pass, so the CX-on floor depends on the first few
+  passes and on well depth: the 8-ring stack has the deepest well
+  (−29.9 kV) and the highest floor.
+- **First crossing ≈ geometric.** Traced first-pass transparency sits 0.01–0.03
+  below geometric for every grid. That is within the ±0.02–0.03 sampling
+  noise of these ensembles, so call it consistent with geometric. Lensing
+  matters on later passes, not on the first crossing.
 - **2D cross-check** (ring stack): the 2D sphere solve at h = 0.25 mm sits
   1.9% of |V| shallower at the center than 3D, its known first-order error,
   and agrees to < 0.1% away from the grid. The old 2D pipeline (cylinder,
-  meridian-plane launch, h = 0.25 mm) gives 10.9 mean passes and a
+  meridian-plane launch, h = 0.25 mm) gives 10.8 mean passes and a
   4.6×10⁵ n/s ceiling. The POC already showed that ceiling still climbing
   under grid refinement (1.8 → 3.3 → 4.4×10⁵). The 3D ring stack
   (1.0×10⁶) is consistent with its h → 0 limit.
+- **Ensemble size**: N = 192 → 400 moves the globe's passes 6.4 → 7.1 and its
+  ceiling 3.8 → 4.2×10⁵ (~9%). The ring stack moves < 1%. The ring/globe
+  ceiling ratio is 2.4–2.6× across both N and step size.
 
 **Convergence (tracer step, mew):**
+
+N = 192:
 
 | step | ring stack: passes / ceiling / mean drift | 6 great circles: passes / ceiling / mean drift |
 |---|---|---|
@@ -153,8 +176,8 @@ and tracer, so the differences come from the grid alone (mew, step 0.25 mm):
 
 Passes, interception and the floor are converged at the default step. The
 ceiling still rises ~10–15% per halving for both grids, because it weights
-the highest-energy, longest-lived ions. The **ratio (2.6–2.7×) is stable**.
-Quote the ceiling as "≥" until a finer-step run.
+the highest-energy, longest-lived ions (and survivors at the pass cap make it
+a censored "≥" anyway). The **ratio (2.6–2.7× at N = 192) is stable**.
 
 ## limits and next steps
 
