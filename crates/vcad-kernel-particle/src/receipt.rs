@@ -235,11 +235,15 @@ pub fn yield_band_claims(p: &crate::chain::YieldPrediction) -> ClaimSet {
         p.central_n_per_s,
         "n/s",
         &format!(
-            "two-sided D(d,n)3He prediction at supply {:.4} A / {:.0} V / {:.2} mTorr: CX chain \
+            "two-sided D(d,n)3He prediction {:.3e} n/s, band [{:.3e}, {:.3e}] n/s, at supply \
+             {:.4} A / {:.0} V / {:.2} mTorr: CX chain \
              (all waves) + ion/neutral/electron-impact ionization source iterated to its fixed \
              point + supply-current partition (gamma_SE) + self-consistent ion space charge. \
              Band = numerical and input terms in log-quadrature, model-form terms as a linear \
              envelope: {}. Channels ion-gas/fast-neutral-gas/wall = {:.2}/{:.2}/{:.2}.",
+            p.central_n_per_s,
+            p.lower_n_per_s,
+            p.upper_n_per_s,
             p.reading.supply_current_a,
             p.reading.cathode_voltage_v,
             p.reading.pressure_mtorr,
@@ -484,7 +488,13 @@ pub fn design_claims(set: &ClaimSet) -> Vec<vcad_receipt::ReceiptClaim> {
             )
             .with_basis(vcad_receipt::ClaimBasis::Predicted)
             .with_measured(quantity(c.value, &c.unit))
-            .with_details(provenance.clone())
+            .with_details(match c.band {
+                Some([lo, hi]) => format!(
+                    "{provenance}; predicted band [{lo:.4e}, {hi:.4e}] {}",
+                    c.unit
+                ),
+                None => provenance.clone(),
+            })
         })
         .collect()
 }
