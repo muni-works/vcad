@@ -538,11 +538,7 @@ impl System {
             .iter()
             .map(|l| l.g * (t[l.voxel] - l.t_ref))
             .sum();
-        let rad: f64 = self
-            .rad_links
-            .iter()
-            .map(|l| l.face(t[l.voxel]).q_w)
-            .sum();
+        let rad: f64 = self.rad_links.iter().map(|l| l.face(t[l.voxel]).q_w).sum();
         linear + rad
     }
 
@@ -1169,7 +1165,11 @@ pub(crate) fn solve_field(
             .sum::<f64>()
             .sqrt();
         let scale = rhs_norm.max(q_norm).max(1e-300);
-        (r_norm, r_norm / scale, 64.0 * f64::EPSILON * ax_norm / scale)
+        (
+            r_norm,
+            r_norm / scale,
+            64.0 * f64::EPSILON * ax_norm / scale,
+        )
     };
 
     let mut x = x0.to_vec();
@@ -1266,8 +1266,8 @@ pub(crate) fn solve_field(
 /// ambient).
 pub(crate) fn radiation_start(sys: &System) -> Vec<f64> {
     let n = sys.b.len();
-    let mean = sys.rad_links.iter().map(|l| l.t_amb_c).sum::<f64>()
-        / sys.rad_links.len().max(1) as f64;
+    let mean =
+        sys.rad_links.iter().map(|l| l.t_amb_c).sum::<f64>() / sys.rad_links.len().max(1) as f64;
     (0..n)
         .map(|p| if sys.free[p] { mean } else { 0.0 })
         .collect()
@@ -1303,6 +1303,21 @@ pub(crate) fn resolve_reference(
         _ if sys.sources.is_empty() => Ok(None),
         _ => Err(SolveError::AmbiguousReference),
     }
+}
+
+/// Voxel-staircase radiating area per radiation slot, `(label, m²)` —
+/// geometry only (the system is built and validated, nothing is solved).
+/// The area is *before* `area_scale`, so `area_scale = true_area / this`
+/// is the staircase correction for a part whose true surface area is
+/// known analytically or from the BRep.
+pub fn radiation_areas(model: &ThermalModel) -> Result<Vec<(String, f64)>, SolveError> {
+    let sys = build(model)?;
+    Ok(sys
+        .rad_slots
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, rs)| rs.map(|rs| (slot_label(slot).to_string(), rs.voxel_area_m2)))
+        .collect())
 }
 
 /// Solve the steady conduction problem.

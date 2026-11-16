@@ -113,13 +113,18 @@ fn slab_into_a_radiating_face_is_exact() {
             );
         }
         let r = &sol.radiation[0];
-        assert!((r.max_surface_c - ts).abs() < 1e-8, "surface {} vs {ts}", r.max_surface_c);
+        assert!(
+            (r.max_surface_c - ts).abs() < 1e-8,
+            "surface {} vs {ts}",
+            r.max_surface_c
+        );
         assert!(sol.newton_iterations > 0);
         assert!(sol.energy.residual_rel < 1e-10, "{:?}", sol.energy);
         // Radiation alone accounts for the radiated part of the outflow.
         let ta_k = 20.0 + KELVIN_OFFSET_C;
         let area = 25e-6;
-        let rad_exact = eps * STEFAN_BOLTZMANN * ((ts + KELVIN_OFFSET_C).powi(4) - ta_k.powi(4)) * area;
+        let rad_exact =
+            eps * STEFAN_BOLTZMANN * ((ts + KELVIN_OFFSET_C).powi(4) - ta_k.powi(4)) * area;
         assert!((r.radiated_w - rad_exact).abs() < 1e-9 * rad_exact.max(1.0));
     }
 }
@@ -144,7 +149,11 @@ fn sphere(div: usize, area_scale: f64) -> ThermalModel {
     for k in 0..div {
         for j in 0..div {
             for i in 0..div {
-                let p = [(i as f64 + 0.5) * d, (j as f64 + 0.5) * d, (k as f64 + 0.5) * d];
+                let p = [
+                    (i as f64 + 0.5) * d,
+                    (j as f64 + 0.5) * d,
+                    (k as f64 + 0.5) * d,
+                ];
                 let r2 = (p[0] - c).powi(2) + (p[1] - c).powi(2) + (p[2] - c).powi(2);
                 idx.push(if r2 <= r * r { 0 } else { -1 });
             }
@@ -196,6 +205,11 @@ fn radiating_sphere_matches_the_closed_form_with_area_correction() {
     let rr = &sol.radiation[0];
     assert!((rr.area_m2 - area).abs() < 1e-12);
     let err = rr.mean_surface_c - ts_exact_c;
+    println!(
+        "sphere: staircase x{staircase:.3}; uncorrected surface {:.2} C; corrected {:.2} C vs \
+         closed form {ts_exact_c:.2} C (err {err:+.3} K); Newton {}",
+        raw.radiation[0].mean_surface_c, rr.mean_surface_c, sol.newton_iterations
+    );
     assert!(
         err.abs() < 0.01 * (ts_exact_c - 25.0),
         "mean surface {:.2} C vs closed form {ts_exact_c:.2} C",
@@ -259,6 +273,17 @@ fn lumped_radiative_cooling_matches_the_implicit_closed_form() {
             "t = {time:.1} s: computed {got:.3} K, closed form {exact_k:.3} K"
         );
     }
+    let mut worst = 0.0_f64;
+    for (step, &time) in tsol.times_s.iter().enumerate() {
+        let target = f(t0) - k * time;
+        let exact_k = bisect(|t| f(t) - target, a + 1e-9, t0);
+        worst = worst.max((tsol.t_max_c[step] + KELVIN_OFFSET_C - exact_k).abs());
+    }
+    println!(
+        "lumped: worst |T - closed form| over 50 s = {worst:.4} K (dt {dt} s); audit {:.2e}; \
+         Newton {} over {steps} steps",
+        tsol.energy_audit_residual_rel, tsol.newton_iterations_total
+    );
     let end = tsol.t_max_c.last().unwrap() + KELVIN_OFFSET_C;
     assert!(end < t0 - 400.0, "should have cooled hard: {end} K");
     assert!(tsol.newton_iterations_total >= steps);
@@ -474,7 +499,10 @@ fn spec_round_trips_radiation_and_classifies_roles() {
             area_scale,
             enclosure,
         } => {
-            assert_eq!((emissivity, ambient_c, h_w_m2k, area_scale), (0.8, 20.0, 0.0, 1.0));
+            assert_eq!(
+                (emissivity, ambient_c, h_w_m2k, area_scale),
+                (0.8, 20.0, 0.0, 1.0)
+            );
             assert_eq!(enclosure.unwrap().emissivity, 0.3);
         }
         other => panic!("expected radiation, got {other:?}"),
@@ -491,8 +519,14 @@ fn spec_round_trips_radiation_and_classifies_roles() {
     assert_eq!(back.resolve(&BTreeMap::new()).unwrap(), model);
     // And the receipt names the model.
     let sol = solve_steady(&model, &SolveOptions::default()).unwrap();
-    let set = vcad_kernel_thermal::receipt::predicted_claims(&model, &sol, &SolveOptions::default());
-    assert!(set.provenance.radiation_model.as_deref().unwrap().contains("gray-diffuse"));
+    let set =
+        vcad_kernel_thermal::receipt::predicted_claims(&model, &sol, &SolveOptions::default());
+    assert!(set
+        .provenance
+        .radiation_model
+        .as_deref()
+        .unwrap()
+        .contains("gray-diffuse"));
     assert!(set.claims.iter().any(|c| c.name == "radiated_w"));
     assert!(set.claims[0].note.contains("radiation"));
     assert!(!set.claims[0].note.contains("radiation not modeled"));

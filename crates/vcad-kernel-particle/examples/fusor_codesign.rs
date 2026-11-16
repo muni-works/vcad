@@ -23,6 +23,12 @@
 //! physics-justified wider gap requirement. The receipt drove the
 //! revision; the revision is on the receipt.
 //!
+//! Rev-c re-prices the thermal leg with **radiation**: the grid radiates
+//! to the chamber wall (gray two-surface enclosure, staircase-corrected
+//! area) instead of shedding heat only down its stalk, which is how a
+//! star-mode grid actually sheds most of its power. The conduction-only
+//! number is kept on the console as the floor rev-a vetoed on.
+//!
 //! Run: `cargo run --release -p vcad-kernel-particle --example fusor_codesign`
 
 use std::collections::BTreeMap;
@@ -53,6 +59,13 @@ const OPERATOR_MM: f64 = 2_000.0;
 const DUTY_CYCLE: f64 = 0.02;
 const GAP_REQ_MM: (f64, f64) = (48.5, 51.5);
 const COPPER_MELT_C: f64 = 1_085.0;
+// Rev-c radiation: grid surface emissivity (lightly oxidized copper; the
+// band is ~0.05 sputter-clean to ~0.6 oxidized), chamber wall
+// (stainless, ~0.3) at room temperature.
+const GRID_EMISSIVITY: f64 = 0.1;
+const CLEAN_COPPER_EMISSIVITY: f64 = 0.05;
+const WALL_EMISSIVITY: f64 = 0.3;
+const CHAMBER_WALL_C: f64 = 25.0;
 
 /// Fold a domain crate's `{name, value, unit, note}` claim into the
 /// unified receipt (basis `predicted`; the crates' own adapters will
@@ -181,7 +194,8 @@ fn main() {
 
     // ── 3. thermal: interception heating of the cathode rings ─────────
     use vcad_kernel_thermal::model::{
-        Axis, FixedTemperature, MaterialRegion, PowerSource, Shape, ThermalModel,
+        Axis, Boundary, Enclosure, FixedTemperature, MaterialRegion, PowerSource, Shape,
+        ThermalModel,
     };
     // The cross-domain wire: the ions particle says still hit the wires
     // arrive as heat. P = interception × beam power.
@@ -194,39 +208,84 @@ fn main() {
         span_mm: [60.0 + z0 - WIRE_A_MM, 60.0 + z0 + WIRE_A_MM],
     };
     // One support post at the ring radius, spanning both rings up to the
-    // cooled feedthrough flange — the only conduction path out (vacuum:
-    // radiation is deliberately unmodeled, so T_max is a floor).
+    // cooled feedthrough flange — the only conduction path out.
+    let stalk_z0 = 60.0 - RING_Z_MM - WIRE_A_MM;
     let stalk = Shape::Box {
-        min_mm: [57.0, 100.0, 60.0 - RING_Z_MM - WIRE_A_MM],
-        size_mm: [6.0, 6.0, 120.0 - (60.0 - RING_Z_MM - WIRE_A_MM)],
+        min_mm: [57.0, 100.0, stalk_z0],
+        size_mm: [6.0, 6.0, 120.0 - stalk_z0],
     };
-    let mut tm = ThermalModel::new([0.0, 0.0, 0.0], [120.0, 120.0, 120.0], [48, 48, 48]);
-    tm.materials
-        .push(MaterialRegion::isotropic(ring_tube(RING_Z_MM), 390.0)); // copper
-    tm.materials
-        .push(MaterialRegion::isotropic(ring_tube(-RING_Z_MM), 390.0));
-    tm.materials
-        .push(MaterialRegion::isotropic(stalk.clone(), 16.0)); // stainless stalk
-    tm.sources.push(PowerSource {
-        name: "ion-interception-upper".into(),
-        shape: ring_tube(RING_Z_MM),
-        power_w: 0.5 * intercept_power_w,
-    });
-    tm.sources.push(PowerSource {
-        name: "ion-interception-lower".into(),
-        shape: ring_tube(-RING_Z_MM),
-        power_w: 0.5 * intercept_power_w,
-    });
-    tm.fixed.push(FixedTemperature {
-        shape: Shape::Box {
-            min_mm: [54.0, 97.0, 114.0],
-            size_mm: [12.0, 12.0, 6.0],
-        },
-        temperature_c: 25.0,
-    });
-    tm.reference_c = Some(25.0);
+    // Rev-c: the grid sits in vacuum inside the chamber and *radiates*
+    // to the wall (two-surface gray enclosure, F = 1) as well as
+    // conducting down the stalk. Rev-a/b were conduction-only (a floor
+    // that vetoed a cathode radiation saves).
+    let chamber_area_m2 = 4.0 * std::f64::consts::PI * (CHAMBER_R_MM * 1e-3).powi(2);
+    let thermal_model = |power_w: f64, emissivity: f64, area_scale: f64| {
+        let mut tm = ThermalModel::new([0.0, 0.0, 0.0], [120.0, 120.0, 120.0], [96, 96, 96]);
+        tm.materials
+            .push(MaterialRegion::isotropic(ring_tube(RING_Z_MM), 390.0)); // copper
+        tm.materials
+            .push(MaterialRegion::isotropic(ring_tube(-RING_Z_MM), 390.0));
+        tm.materials
+            .push(MaterialRegion::isotropic(stalk.clone(), 16.0)); // stainless stalk
+        tm.sources.push(PowerSource {
+            name: "ion-interception-upper".into(),
+            shape: ring_tube(RING_Z_MM),
+            power_w: 0.5 * power_w,
+        });
+        tm.sources.push(PowerSource {
+            name: "ion-interception-lower".into(),
+            shape: ring_tube(-RING_Z_MM),
+            power_w: 0.5 * power_w,
+        });
+        tm.fixed.push(FixedTemperature {
+            shape: Shape::Box {
+                min_mm: [54.0, 97.0, 114.0],
+                size_mm: [12.0, 12.0, 6.0],
+            },
+            temperature_c: 25.0,
+        });
+        tm.exposed = Boundary::Radiation {
+            emissivity,
+            ambient_c: CHAMBER_WALL_C,
+            h_w_m2k: 0.0, // vacuum
+            area_scale,
+            enclosure: Some(Enclosure {
+                emissivity: WALL_EMISSIVITY,
+                area_m2: chamber_area_m2,
+            }),
+        };
+        tm.reference_c = Some(25.0);
+        tm
+    };
+    // Staircase correction: the voxelized rings' curved walls over-count
+    // area (×4/π), which would over-cool. True radiating area, analytic:
+    // two rectangular-section rings plus the stalk's free length (minus
+    // the two ring crossings and the pinned flange), ±5%.
+    let (ri, ro, h) = (
+        RING_R_MM - WIRE_A_MM,
+        RING_R_MM + WIRE_A_MM,
+        2.0 * WIRE_A_MM,
+    );
+    let ring_area_mm2 = 2.0 * std::f64::consts::PI * (ro * ro - ri * ri)
+        + 2.0 * std::f64::consts::PI * h * (ro + ri);
+    let stalk_free_mm = 114.0 - stalk_z0 - 2.0 * h;
+    let true_area_m2 = (2.0 * ring_area_mm2 + 4.0 * 6.0 * stalk_free_mm + 36.0) * 1e-6;
+    let voxel_area_m2 =
+        vcad_kernel_thermal::solve::radiation_areas(&thermal_model(1.0, GRID_EMISSIVITY, 1.0))
+            .expect("thermal geometry")[0]
+            .1;
+    let area_scale = true_area_m2 / voxel_area_m2;
+
     let th_opts = vcad_kernel_thermal::solve::SolveOptions::default();
-    let th_sol = vcad_kernel_thermal::solve::solve_steady(&tm, &th_opts).expect("thermal");
+    let solve_at = |power_w: f64, emissivity: f64| {
+        vcad_kernel_thermal::solve::solve_steady(
+            &thermal_model(power_w, emissivity, area_scale),
+            &th_opts,
+        )
+        .expect("thermal")
+    };
+    let tm = thermal_model(intercept_power_w, GRID_EMISSIVITY, area_scale);
+    let th_sol = solve_at(intercept_power_w, GRID_EMISSIVITY);
     let th_set = vcad_kernel_thermal::receipt::predicted_claims(&tm, &th_sol, &th_opts);
     let th_oracle = OracleRef::new("vcad-kernel-thermal/steady", env!("CARGO_PKG_VERSION"));
     for c in &th_set.claims {
@@ -234,10 +293,35 @@ fn main() {
             "thermal", &th_oracle, &c.name, c.value, &c.unit, &c.note,
         ));
     }
-    // Rev-b resolution: pulsed operation. Conduction is linear, so the
-    // temperature rise scales exactly with average power — the duty-cycled
-    // operating point is priced from the same solve.
-    let t_duty_c = 25.0 + (th_sol.t_max_c - 25.0) * DUTY_CYCLE;
+    // Rev-a/b's conduction-only number, kept for the record: the same
+    // geometry with the radiating surface switched off.
+    let conduction_only_c = {
+        let mut m = thermal_model(intercept_power_w, GRID_EMISSIVITY, area_scale);
+        m.exposed = Boundary::Adiabatic;
+        vcad_kernel_thermal::solve::solve_steady(&m, &th_opts)
+            .expect("thermal (conduction only)")
+            .t_max_c
+    };
+    // Emissivity is the dominant uncertainty: sputter-cleaned copper sits
+    // near 0.05, oxidized near 0.6. Price the clean (hot) bound as its
+    // own claim.
+    let t_clean_c = solve_at(intercept_power_w, CLEAN_COPPER_EMISSIVITY).t_max_c;
+    all.push(unified(
+        "thermal",
+        &th_oracle,
+        "t_max_c_clean_copper",
+        t_clean_c,
+        "C",
+        &format!(
+            "T_max at eps = {CLEAN_COPPER_EMISSIVITY} (sputter-cleaned copper, the hot bound \
+             of the emissivity band); same radiating model and area as t_max_c"
+        ),
+    ));
+    // Pulsed operation, priced at average power. Radiation is nonlinear,
+    // so this is a fresh solve, not a linear rescale (rev-b's shortcut no
+    // longer holds); valid when the pulse period is short against the
+    // ring's thermal time constant.
+    let t_duty_c = solve_at(intercept_power_w * DUTY_CYCLE, GRID_EMISSIVITY).t_max_c;
     all.push(unified(
         "thermal",
         &th_oracle,
@@ -245,18 +329,35 @@ fn main() {
         t_duty_c,
         "C",
         &format!(
-            "T_max at {:.0}% duty (average-power scaling, exact under linear              conduction with fixed-T sinks); melt margin {:.1}x on the rise;              radiation still unmodeled (floor)",
+            "T_max at {:.0}% duty, solved at average power (radiating, nonlinear: no linear \
+             rescale); melt margin {:.1}x on the rise",
             DUTY_CYCLE * 100.0,
             (COPPER_MELT_C - 25.0) / (t_duty_c - 25.0)
         ),
     ));
+    let rad_frac = th_sol.energy.radiation_out_w / th_sol.energy.source_w;
     println!(
-        "thermal    ✓ {:.0} W steady → T_max {:.0} °C (veto); at {:.0}% duty → {:.0} °C",
+        "thermal    ✓ {:.0} W steady, radiating (eps {GRID_EMISSIVITY}, area x{area_scale:.3}) \
+         → T_max {:.0} °C ({:.0}% radiated; conduction-only floor said {:.0} °C); \
+         clean-copper bound {:.0} °C; at {:.0}% duty → {:.0} °C",
         intercept_power_w,
         th_sol.t_max_c,
+        rad_frac * 100.0,
+        conduction_only_c,
+        t_clean_c,
         DUTY_CYCLE * 100.0,
         t_duty_c
     );
+    println!("thermal    emissivity sweep (steady, full power):");
+    for eps in [0.05, 0.1, 0.2, 0.3, 0.6] {
+        let s = solve_at(intercept_power_w, eps);
+        println!(
+            "             eps {eps:>4}: T_max {:>6.0} °C, radiated {:>4.0}%, Newton {}",
+            s.t_max_c,
+            100.0 * s.energy.radiation_out_w / s.energy.source_w,
+            s.newton_iterations
+        );
+    }
 
     // ── 4. neutronics: the operator's dose behind the shield ──────────
     use vcad_kernel_neutronics::spec::{
@@ -394,7 +495,7 @@ fn main() {
 
     // ── The receipt ───────────────────────────────────────────────────
     let mut receipt = DesignReceipt::with_claims(all);
-    receipt.document_id = Some("shielded-grid-experiment/rev-b".into());
+    receipt.document_id = Some("shielded-grid-experiment/rev-c".into());
     let domains: std::collections::BTreeSet<&str> =
         receipt.claims.iter().map(|c| c.domain.as_str()).collect();
     println!(
@@ -412,9 +513,13 @@ fn main() {
     // can surface (each is invisible from inside its own domain):
     println!("\n──── co-design loop: rev-a vetoes → rev-b resolutions ────");
     println!(
-        "· thermal:    steady T_max {:.0} °C ≫ melt  →  {:.0}% duty  →  {:.0} °C \
-         ({:.1}× melt margin), on the receipt as t_max_c_at_duty",
+        "· thermal:    conduction-only floor {:.0} °C (rev-a veto)  →  rev-c radiating \
+         steady {:.0} °C (clean-copper bound {:.0} °C, melt {:.0} °C)  →  {:.0}% duty \
+         {:.0} °C ({:.1}× melt margin)",
+        conduction_only_c,
         th_sol.t_max_c,
+        t_clean_c,
+        COPPER_MELT_C,
         DUTY_CYCLE * 100.0,
         t_duty_c,
         (COPPER_MELT_C - 25.0) / (t_duty_c - 25.0)
@@ -433,7 +538,7 @@ fn main() {
         wc.worst_margin()
     );
     println!(
-        "\nrev-b verdict stays {:?}: resolutions are still predictions — the bench \
+        "\nrev-c verdict stays {:?}: resolutions are still predictions — the bench \
          signs the receipt.",
         receipt.verdict()
     );

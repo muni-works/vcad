@@ -67,8 +67,8 @@
 //! the CG tolerance is tightened to 1e-12 in the tests so solver stopping
 //! noise sits far below the FD resolution.
 
-use crate::model::{Boundary, ThermalModel};
 use crate::model::STEFAN_BOLTZMANN;
+use crate::model::{Boundary, ThermalModel};
 use crate::solve::{
     assemble_solution, build, pcg, radiation_start, resolve_reference, solve_field, LinkKind,
     Solution, SolveError, SolveOptions, EXPOSED_SLOT,
@@ -345,8 +345,7 @@ pub fn smooth_max_gradient(
     let d_ambient = film_slots(model, |slot| d_ambient_acc[slot]);
     let d_emissivity = radiation_slots(model, |slot| d_eps_acc[slot]);
 
-    let mut solution =
-        assemble_solution(&sys, model, &t, forward_iterations, res_fwd, model_ref);
+    let mut solution = assemble_solution(&sys, model, &t, forward_iterations, res_fwd, model_ref);
     solution.newton_iterations = newton_iterations;
     Ok((
         solution,
@@ -769,8 +768,7 @@ mod tests {
     #[test]
     fn radiating_adjoint_matches_finite_differences() {
         let m = radiating_model();
-        let (sol, grad) =
-            smooth_max_gradient(&m, &tight(), &ObjectiveOptions::default()).unwrap();
+        let (sol, grad) = smooth_max_gradient(&m, &tight(), &ObjectiveOptions::default()).unwrap();
         assert!(sol.newton_iterations > 0);
         let frac = sol.energy.radiation_out_w / sol.energy.source_w;
         assert!(frac > 0.2, "radiation should be first-order here: {frac}");

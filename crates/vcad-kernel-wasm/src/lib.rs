@@ -9234,6 +9234,8 @@ struct WasmThermalEnergy {
     fixed_face_out_w: f64,
     convection_out_w: f64,
     fixed_region_out_w: f64,
+    /// Heat out through radiation faces, W (0 for conduction-only).
+    radiation_out_w: f64,
     net_out_w: f64,
     residual_rel: f64,
 }
@@ -9249,6 +9251,10 @@ struct WasmThermalSolve {
     energy: WasmThermalEnergy,
     iterations: usize,
     residual_rel: f64,
+    /// Newton iterations (radiating models; 0 when linear).
+    newton_iterations: usize,
+    /// Per-slot radiation reports (empty for conduction-only).
+    radiation: Vec<vcad_kernel::vcad_kernel_thermal::solve::RadiationReport>,
     claim_set: vcad_kernel::vcad_kernel_thermal::receipt::ClaimSet,
     receipt_claims: Vec<vcad_receipt::ReceiptClaim>,
 }
@@ -9319,11 +9325,14 @@ pub fn thermal_solve(
             fixed_face_out_w: sol.energy.fixed_face_out_w,
             convection_out_w: sol.energy.convection_out_w,
             fixed_region_out_w: sol.energy.fixed_region_out_w,
+            radiation_out_w: sol.energy.radiation_out_w,
             net_out_w: sol.energy.net_out_w,
             residual_rel: sol.energy.residual_rel,
         },
         iterations: sol.iterations,
         residual_rel: sol.residual_rel,
+        newton_iterations: sol.newton_iterations,
+        radiation: sol.radiation.clone(),
         claim_set,
         receipt_claims,
     };
@@ -9550,6 +9559,7 @@ pub fn thermal_solve_transient(
             fixed_face_out_w: fs.energy.fixed_face_out_w,
             convection_out_w: fs.energy.convection_out_w,
             fixed_region_out_w: fs.energy.fixed_region_out_w,
+            radiation_out_w: fs.energy.radiation_out_w,
             net_out_w: fs.energy.net_out_w,
             residual_rel: fs.energy.residual_rel,
         },
