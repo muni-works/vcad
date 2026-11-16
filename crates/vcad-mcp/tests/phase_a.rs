@@ -701,7 +701,10 @@ fn solver_results_reach_the_app_in_full_and_the_agent_compacted() {
     // The agent sees FoMs and claims, not the drawing data.
     let sc = &r["structuredContent"];
     assert!(sc["claim_set"]["claims"].is_array(), "{r}");
-    assert!(sc["section"].get("tracks").is_none(), "agent result must be compacted");
+    assert!(
+        sc["section"].get("tracks").is_none(),
+        "agent result must be compacted"
+    );
     // The app got the full result once, section included (computed by default).
     let calls = fake.host_calls.lock().unwrap();
     let shown: Vec<_> = calls
@@ -711,6 +714,9 @@ fn solver_results_reach_the_app_in_full_and_the_agent_compacted() {
     assert_eq!(shown.len(), 1, "one panel hand-over per call");
     let (_, args, _) = shown[0];
     assert_eq!(args["tool"], "simulate_charged_particles");
-    assert!(!args["result"]["section"]["tracks"].as_array().unwrap().is_empty());
+    assert!(!args["result"]["section"]["tracks"]
+        .as_array()
+        .unwrap()
+        .is_empty());
     assert!(args["result"]["section"]["potential"]["values"].is_array());
 }
