@@ -6315,6 +6315,7 @@ dependencies = [
 name = "vcad-kernel-fea"
 version = "0.11.0"
 dependencies = [
+ "faer",
  "serde",
  "serde_json",
  "tang",
