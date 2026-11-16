@@ -1709,7 +1709,7 @@ export class Engine {
   /**
    * Multi-start gradient ascent over named device-spec parameters against
    * predicted D-D yield per ion. Inputs are JSON strings; see
-   * `vcad-kernel-particle::optimize`.
+   * `vcad-kernel-particle::electrode_opt` (`gradient: "fd" | "hybrid"`).
    */
   particleOptimize(
     specJson: string,

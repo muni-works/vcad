@@ -1,0 +1,32 @@
+[package]
+name = "every-physics-poc"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "PoC for docs/videos/every-physics.md: one loon document, many solvers"
+
+# Not a member of the vcad workspace: a throwaway driver for a video plan.
+# Build with the workspace's lockfile copied in (see README.md).
+[workspace]
+
+[dependencies]
+serde_json = "1"
+vcad-ir = { path = "../../../../crates/vcad-ir" }
+vcad-loon = { path = "../../../../crates/vcad-loon" }
+vcad-eval = { path = "../../../../crates/vcad-eval" }
+vcad-sound = { path = "../../../../crates/vcad-sound" }
+vcad-kernel-tessellate = { path = "../../../../crates/vcad-kernel-tessellate" }
+vcad-kernel-acoustics = { path = "../../../../crates/vcad-kernel-acoustics" }
+vcad-kernel-thermal = { path = "../../../../crates/vcad-kernel-thermal" }
+vcad-kernel-antenna = { path = "../../../../crates/vcad-kernel-antenna" }
+vcad-kernel-dfm = { path = "../../../../crates/vcad-kernel-dfm" }
+
+# Mirror the vcad workspace's patches (root Cargo.toml) so this out-of-tree
+# package resolves the same sources.
+[patch.crates-io]
+clipper-sys = { path = "../../../../third_party/clipper-sys" }
+kosm-render = { git = "https://github.com/ecto/kosm", rev = "59b1d03ec45cf9e9a04ccbbbef0bcc06d8f559d4" }
+loon-lang = { git = "https://github.com/ecto/loon", rev = "7b78f05e65900dfe21d93e9cc315dd261d099013" }
+
+[profile.release]
+opt-level = 3

@@ -1,0 +1,59 @@
+; puck — draft model for the "every physics in one object" video
+; ================================================================
+;
+; A cylindrical, bass-reflex BLE speaker. Cylindrical on purpose: the
+; acoustics cavity solver and the EM solver are axisymmetric, so a round
+; enclosure + a round driver motor is the device whose real geometry the
+; solvers model natively, not an approximation of it.
+;
+;   driver  : 3" full-range, firing DOWN through the bottom wall
+;             (piston radius `driver_r`, cutout `driver_cut_r`)
+;   port    : internal tube hanging from the top wall (`port_r` x `port_len`)
+;   board   : `board_w` x `board_l` FR4 on the floor shelf, class-D amp
+;             dissipating `amp_loss_w`, 2.4 GHz monopole of `ant_len`
+;
+; Non-geometric numbers (amp loss, antenna length) are parameters too, so
+; the ONE document carries every value every solver needs. Today only the
+; geometric ones are read off the evaluated solid; the rest are read off
+; `doc.parameters` by the PoC driver (docs/videos/every-physics/poc).
+;
+; Z-up. The enclosure sits on z = 0.
+
+[defparam body_r 55.0 :unit "mm" :min 40 :max 80]
+[defparam body_h 120.0 :unit "mm" :min 80 :max 200]
+[defparam wall 3.0 :unit "mm" :min 2 :max 6]
+[defparam driver_r 32.0 :unit "mm" :min 20 :max 45]
+[defparam driver_cut_r 35.0 :unit "mm" :min 22 :max 48]
+[defparam port_r 12.0 :unit "mm" :min 6 :max 20]
+[defparam port_len 60.0 :unit "mm" :min 20 :max 100]
+[defparam port_wall 2.0 :unit "mm" :min 1.2 :max 4]
+[defparam board_w 50.0 :unit "mm" :min 30 :max 70]
+[defparam board_l 50.0 :unit "mm" :min 30 :max 70]
+[defparam amp_loss_w 0.8 :unit "W" :min 0.1 :max 5]
+[defparam ant_len 30.0 :unit "mm" :min 20 :max 40]
+
+[let ri [- body_r wall]]
+[let hi [- body_h [* 2.0 wall]]]
+
+; shell = outer - cavity - driver cutout + port tube - port bore
+[let outer [cylinder body_r body_h]]
+[let cavity [translate 0.0 0.0 wall [cylinder ri hi]]]
+[let driver-hole [translate 0.0 0.0 -1.0 [cylinder driver_cut_r [+ wall 2.0]]]]
+[let port-tube [translate 0.0 0.0 [- body_h port_len] [cylinder [+ port_r port_wall] port_len]]]
+[let port-bore [translate 0.0 0.0 [- body_h port_len 1.0] [cylinder port_r [+ port_len 2.0]]]]
+
+; loon: [difference A B] = B - A
+[let s1 [difference cavity outer]]
+[let s2 [difference driver-hole s1]]
+[let s3 [union port-tube s2]]
+[let enclosure [difference port-bore s3]]
+
+[root enclosure "pla"]
+
+; The enclosed air (box compliance): cavity minus the port tube's solid wall.
+; The port's own air column is NOT in here — the lumped model wants V_box.
+[root [difference port-tube cavity] "air"]
+
+; The board, on a shelf 20 mm above the floor, offset off-axis so it clears
+; the driver magnet.
+[root [translate [- 0.0 [/ board_w 2.0]] [- 0.0 [/ board_l 2.0]] [+ wall 40.0] [cube board_w board_l 1.6]] "fr4"]

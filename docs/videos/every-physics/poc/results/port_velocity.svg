@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" font-family="Helvetica, Arial, sans-serif" font-size="12">
+<rect width="640" height="360" fill="#f6f5f2"/>
+<text x="56" y="28" font-size="15" fill="#1d3557" font-weight="600">puck: port volume velocity per unit piston velocity (axisym field solve)</text>
+<line x1="56.0" y1="56" x2="56.0" y2="304" stroke="#d9dee5"/>
+<line x1="56" y1="304.0" x2="584" y2="304.0" stroke="#d9dee5"/>
+<text x="56.0" y="320" text-anchor="middle" fill="#1d3557">20</text>
+<text x="50" y="308.0" text-anchor="end" fill="#1d3557">1e-3.2</text>
+<line x1="161.6" y1="56" x2="161.6" y2="304" stroke="#d9dee5"/>
+<line x1="56" y1="254.4" x2="584" y2="254.4" stroke="#d9dee5"/>
+<text x="161.6" y="320" text-anchor="middle" fill="#1d3557">96</text>
+<text x="50" y="258.4" text-anchor="end" fill="#1d3557">1e-2.4</text>
+<line x1="267.2" y1="56" x2="267.2" y2="304" stroke="#d9dee5"/>
+<line x1="56" y1="204.8" x2="584" y2="204.8" stroke="#d9dee5"/>
+<text x="267.2" y="320" text-anchor="middle" fill="#1d3557">172</text>
+<text x="50" y="208.8" text-anchor="end" fill="#1d3557">1e-1.6</text>
+<line x1="372.8" y1="56" x2="372.8" y2="304" stroke="#d9dee5"/>
+<line x1="56" y1="155.2" x2="584" y2="155.2" stroke="#d9dee5"/>
+<text x="372.8" y="320" text-anchor="middle" fill="#1d3557">248</text>
+<text x="50" y="159.2" text-anchor="end" fill="#1d3557">1e-0.8</text>
+<line x1="478.4" y1="56" x2="478.4" y2="304" stroke="#d9dee5"/>
+<line x1="56" y1="105.6" x2="584" y2="105.6" stroke="#d9dee5"/>
+<text x="478.4" y="320" text-anchor="middle" fill="#1d3557">324</text>
+<text x="50" y="109.6" text-anchor="end" fill="#1d3557">1e-0.0</text>
+<line x1="584.0" y1="56" x2="584.0" y2="304" stroke="#d9dee5"/>
+<line x1="56" y1="56.0" x2="584" y2="56.0" stroke="#d9dee5"/>
+<text x="584.0" y="320" text-anchor="middle" fill="#1d3557">400</text>
+<text x="50" y="60.0" text-anchor="end" fill="#1d3557">1e0.8</text>
+<polyline fill="none" stroke="#2a9d8f" stroke-width="2.2" points="56.0,260.0 62.9,259.7 69.9,259.4 76.8,259.0 83.8,258.5 90.7,258.0 97.7,257.4 104.6,256.7 111.6,255.9 118.5,255.0 125.5,254.1 132.4,253.0 139.4,251.8 146.3,250.4 153.3,248.9 160.2,247.3 167.2,245.4 174.1,243.3 181.1,240.9 188.0,238.1 194.9,234.9 201.9,231.1 208.8,226.6 215.8,220.9 222.7,213.4 229.7,202.6 236.6,183.9 243.6,56.0 250.5,185.2 257.5,204.5 264.4,216.0 271.4,224.3 278.3,230.7 285.3,236.1 292.2,240.7 299.2,244.7 306.1,248.3 313.1,251.5 320.0,254.4 326.9,257.1 333.9,259.7 340.8,262.0 347.8,264.2 354.7,266.3 361.7,268.2 368.6,270.1 375.6,271.8 382.5,273.5 389.5,275.1 396.4,276.7 403.4,278.1 410.3,279.6 417.3,280.9 424.2,282.2 431.2,283.5 438.1,284.8 445.1,285.9 452.0,287.1 458.9,288.2 465.9,289.3 472.8,290.4 479.8,291.4 486.7,292.4 493.7,293.3 500.6,294.3 507.6,295.2 514.5,296.1 521.5,297.0 528.4,297.8 535.4,298.7 542.3,299.5 549.3,300.3 556.2,301.1 563.2,301.8 570.1,302.6 577.1,303.3 584.0,304.0"/>
+<line x1="218.0" y1="56" x2="218.0" y2="304" stroke="#e76f51" stroke-dasharray="4 3"/>
+<text x="214.0" y="70" text-anchor="end" fill="#e76f51">lumped f_b 137 Hz</text>
+<line x1="242.5" y1="56" x2="242.5" y2="304" stroke="#e76f51" stroke-dasharray="4 3"/>
+<text x="246.5" y="86" text-anchor="start" fill="#e76f51">field 154 Hz</text>
+<text x="320.0" y="348" text-anchor="middle" fill="#1d3557">frequency (Hz)</text>
+<text x="16" y="180.0" text-anchor="middle" fill="#1d3557" transform="rotate(-90 16 180.0)">|U_port| (m³/s, log)</text>
+</svg>

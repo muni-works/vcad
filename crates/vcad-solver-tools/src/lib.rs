@@ -200,7 +200,10 @@ pub fn descriptors() -> Vec<Value> {
         "particles": {"type": "number", "description": "Default 48."},
         "max_passes": {"type": "number", "description": "Default 20."},
         "max_iters": {"type": "number", "description": "Ascent iterations per start. Default 8."},
-        "multi_start": {"type": "boolean", "description": "Three seeds across the box instead of one (the landscape is multimodal). Default true."}
+        "multi_start": {"type": "boolean", "description": "Three seeds across the box instead of one (the landscape is multimodal). Default true."},
+        "gradient": {"type": "string", "enum": ["fd", "hybrid"], "description": "fd (default): central differences, every evaluation streamed. hybrid: adjoint for potentials / ampere-turns, FD for geometry, FD fallback — measured to end 2–11% below FD on the shielded two-ring, so FD stays the default. Needs a ring-list spec."},
+        "adjoint_particles": {"type": "number", "description": "Adjoint ensemble size (hybrid)."},
+        "adjoint_crossings": {"type": "number", "description": "Adjoint flight-time budget in ideal chamber crossings (hybrid)."}
     });
     if let (Some(o), Some(p)) = (opt_opts.as_object_mut(), op_point_props().as_object()) {
         o.extend(p.clone());

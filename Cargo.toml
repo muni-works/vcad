@@ -32,6 +32,7 @@ members = [
     "crates/vcad-kernel-adjoint",
     "crates/vcad-kernel-antenna",
     "crates/vcad-kernel-neutronics",
+    "crates/vcad-kernel-photon-dose",
     "crates/vcad-kernel-particle",
     "crates/vcad-solver-tools",
     "crates/vcad-kernel-optics",
@@ -136,6 +137,7 @@ default-members = [
     "crates/vcad-kernel-adjoint",
     "crates/vcad-kernel-antenna",
     "crates/vcad-kernel-neutronics",
+    "crates/vcad-kernel-photon-dose",
     "crates/vcad-kernel-particle",
     "crates/vcad-solver-tools",
     "crates/vcad-kernel-optics",
@@ -287,6 +289,7 @@ vcad-kernel-diff = { path = "crates/vcad-kernel-diff", version = "0.11.0" }
 vcad-kernel-adjoint = { path = "crates/vcad-kernel-adjoint", version = "0.11.0" }
 vcad-kernel-antenna = { path = "crates/vcad-kernel-antenna", version = "0.11.0" }
 vcad-kernel-neutronics = { path = "crates/vcad-kernel-neutronics", version = "0.11.0" }
+vcad-kernel-photon-dose = { path = "crates/vcad-kernel-photon-dose", version = "0.11.0" }
 vcad-kernel-particle = { path = "crates/vcad-kernel-particle", version = "0.11.0" }
 vcad-solver-tools = { path = "crates/vcad-solver-tools" }
 vcad-kernel-optics = { path = "crates/vcad-kernel-optics", version = "0.11.0" }

@@ -547,6 +547,12 @@ struct OptOptions {
     ion_current_a: f64,
     d2_pressure_mtorr: f64,
     temperature_k: f64,
+    /// "fd" (default: every evaluation streamed) or "hybrid" (the kernel's
+    /// `electrode_opt`: adjoint for potentials / ampere-turns, FD for
+    /// geometry, FD fallback).
+    gradient: pk::electrode_opt::GradientMode,
+    adjoint_particles: Option<usize>,
+    adjoint_crossings: Option<f64>,
 }
 
 impl Default for OptOptions {
@@ -561,6 +567,9 @@ impl Default for OptOptions {
             ion_current_a: 0.010,
             d2_pressure_mtorr: 2.0,
             temperature_k: 300.0,
+            gradient: pk::electrode_opt::GradientMode::Fd,
+            adjoint_particles: None,
+            adjoint_crossings: None,
         }
     }
 }
@@ -592,6 +601,72 @@ pub struct Evaluation {
     pub best_so_far_n_per_s: f64,
 }
 
+/// `gradient: "hybrid"`: the kernel's `electrode_opt::optimize_electrodes`
+/// (adjoint-priced potentials / ampere-turns), wrapped with the FD path's
+/// n/s pricing. It has no per-evaluation hook, so `evaluations` is empty
+/// and progress is coarse; cancellation is honoured only before it starts.
+fn optimize_hybrid(a: &OptArgs, spec: &DeviceInput, hooks: &Hooks) -> Result<Value, ToolError> {
+    let DeviceInput::Spec(spec) = spec else {
+        return Err(ToolError::Invalid(
+            "gradient \"hybrid\" needs a ring-list spec (the adjoint prices named ring potentials / ampere-turns); the classic_fusor shorthand runs with gradient \"fd\"".into(),
+        ));
+    };
+    if hooks.cancelled() {
+        return Err(ToolError::Cancelled);
+    }
+    let o = &a.options;
+    let mut problem = pk::electrode_opt::ElectrodeOptProblem::new(
+        a.variables
+            .iter()
+            .map(|v| pk::electrode_opt::OptVariable {
+                name: v.name.clone(),
+                lo: v.lo,
+                hi: v.hi,
+                start: v.start,
+            })
+            .collect(),
+    );
+    problem.nr = o.nr;
+    problem.nz = o.nz;
+    problem.particles = o.particles;
+    problem.max_passes = o.max_passes;
+    problem.max_iters = o.max_iters;
+    problem.multi_start = o.multi_start;
+    problem.gradient = pk::electrode_opt::GradientMode::Hybrid;
+    if let Some(n) = o.adjoint_particles {
+        problem.adjoint_particles = n;
+    }
+    if let Some(c) = o.adjoint_crossings {
+        problem.adjoint_crossings = c;
+    }
+    hooks.report(0.02, "hybrid ascent (adjoint + FD) running");
+    let r = pk::electrode_opt::optimize_electrodes(spec, &a.parameters, &problem)
+        .map_err(ToolError::Invalid)?;
+    let n_d = pk::xsection::d2_deuteron_density_m3(o.d2_pressure_mtorr, o.temperature_k);
+    let price = |sv: f64| pk::fom::neutron_rate_per_s(sv, o.ion_current_a, n_d);
+    let mut out = to_value(&r);
+    out["best_neutron_rate_n_per_s"] = json!(price(r.best_sigma_v_m3));
+    if let Some(starts) = out["starts"].as_array_mut() {
+        for (s, rep) in starts.iter_mut().zip(&r.starts) {
+            s["neutron_rate_n_per_s"] = json!(price(rep.value));
+            s["history_n_per_s"] = json!(rep.history.iter().map(|&v| price(v)).collect::<Vec<_>>());
+        }
+        for (i, s) in starts.iter_mut().enumerate() {
+            s["start"] = json!(i);
+        }
+    }
+    out["evaluations"] = json!([]);
+    out["evaluations_note"] = json!("hybrid mode runs inside the kernel and does not stream per-evaluation records; see starts[].iterations");
+    out["objective"] = json!("tracer mean ∫σ_DDn·v dt per ion (CX off), priced as n/s at the operating point; hybrid gradients (adjoint for potentials / ampere-turns, FD for geometry, FD fallback)");
+    out["operating_point"] = json!({"ion_current_a": o.ion_current_a, "d2_pressure_mtorr": o.d2_pressure_mtorr, "temperature_k": o.temperature_k});
+    out["grid"] = json!([o.nr, o.nz]);
+    out["particles"] = json!(o.particles);
+    out["max_passes"] = json!(o.max_passes);
+    out["cancelled"] = json!(false);
+    hooks.report(1.0, "done");
+    Ok(out)
+}
+
 /// `optimize_electrodes`.
 pub fn optimize(args: &Value, hooks: &Hooks) -> Result<Value, ToolError> {
     let a: OptArgs =
@@ -618,6 +693,9 @@ pub fn optimize(args: &Value, hooks: &Hooks) -> Result<Value, ToolError> {
                 v.name
             )));
         }
+    }
+    if o.gradient == pk::electrode_opt::GradientMode::Hybrid {
+        return optimize_hybrid(&a, &spec, hooks);
     }
     let lo: Vec<f64> = a.variables.iter().map(|v| v.lo).collect();
     let hi: Vec<f64> = a.variables.iter().map(|v| v.hi).collect();
@@ -853,6 +931,43 @@ mod tests {
         // Unbound / impossible shorthands are invalid, not panics.
         let e = with_quiet_hooks(|h| simulate(&json!({"spec": short}), h)).unwrap_err();
         assert!(matches!(e, ToolError::Invalid(_)));
+    }
+
+    #[test]
+    fn hybrid_gradient_routes_to_the_kernel_optimizer() {
+        let mut spec = poc_spec(30.0);
+        for r in spec["rings"].as_array_mut().unwrap() {
+            r["potential_v"] = json!("v");
+        }
+        let opts = json!({"nr": 39, "nz": 77, "particles": 6, "max_passes": 4, "max_iters": 1,
+                          "multi_start": false, "gradient": "hybrid", "adjoint_particles": 4});
+        let out = with_quiet_hooks(|h| {
+            optimize(
+                &json!({
+                    "spec": spec, "parameters": {"v": -30000.0},
+                    "variables": [{"name": "v", "lo": -40000.0, "hi": -20000.0}], "options": opts
+                }),
+                h,
+            )
+        })
+        .unwrap();
+        assert_eq!(out["gradient"], "hybrid");
+        assert!(out["best_neutron_rate_n_per_s"].as_f64().unwrap() >= 0.0);
+        assert!(out["starts"][0]["history_n_per_s"].is_array());
+        // The shorthand can't take hybrid gradients: a clear refusal.
+        let short = json!({"classic_fusor": {"chamber_radius_mm": 76, "cathode_radius_mm": 19,
+                                             "rings": 4, "wire_radius_mm": 1, "cathode_v": "v"}});
+        let e = with_quiet_hooks(|h| {
+            optimize(
+                &json!({
+                    "spec": short, "parameters": {"v": -30000.0},
+                    "variables": [{"name": "v", "lo": -40000.0, "hi": -20000.0}], "options": opts
+                }),
+                h,
+            )
+        })
+        .unwrap_err();
+        assert!(e.to_string().contains("hybrid"), "{e}");
     }
 
     #[test]

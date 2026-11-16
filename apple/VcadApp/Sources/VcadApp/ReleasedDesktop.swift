@@ -294,6 +294,12 @@ final class ReleaseWindowController {
     /// Ask about unsaved changes. Returns true when closing may proceed.
     func confirmClose() -> Bool {
         guard let model, model.documentDirty, model.usesDocumentTree else { return true }
+        // Untitled work isn't asked about: it's kept as an autosave and shows
+        // up in Recents marked unsaved, reopenable or discardable from there.
+        if model.documentURL == nil {
+            model.flushAutosaveNow()
+            return true
+        }
         let alert = NSAlert()
         alert.messageText = "Do you want to save the changes made to “\(model.documentName)”?"
         alert.informativeText = "Your changes will be lost if you don’t save them."
