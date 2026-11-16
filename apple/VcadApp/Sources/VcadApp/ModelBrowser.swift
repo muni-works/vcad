@@ -231,6 +231,8 @@ struct BrowserRow: View {
             || (isInstance && model.hoveredInstanceIndex.map(instanceIndices.contains) == true)
     }
     private var visible: Bool { quiet || model.isBrowserRowVisible(nodes) }
+    /// Not landed yet in the open's first solve.
+    private var pending: Bool { node.partIndex.map(model.isPartPending) ?? false }
     private var hideable: Bool { !quiet && model.canHideBrowserRow(nodes) }
     private var expanded: Bool { groupID.map(model.expandedFeatureIDs.contains) ?? false }
     private var renaming: Bool { model.renamingFeatureID == node.id && groupID == nil }
@@ -253,7 +255,7 @@ struct BrowserRow: View {
         .padding(.trailing, 4).padding(.vertical, 4)
         .selectableRow(selected: selected, hovered: hovered)
         .foregroundStyle(selected ? AnyShapeStyle(.primary) : quiet ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.secondary))
-        .opacity(visible ? 1 : 0.4)
+        .opacity(visible ? (pending ? 0.6 : 1) : 0.4)
         .contentShape(Rectangle())
         .id(groupID ?? node.id)
         .onHover { inside in
@@ -290,6 +292,12 @@ struct BrowserRow: View {
     @ViewBuilder private var icon: some View {
         if quiet {
             Image(systemName: "pencil.and.outline").font(.caption).frame(width: 14)
+        } else if let pi = node.partIndex, groupID == nil, model.isPartPending(pi) {
+            // First solve still running: parts solve in parallel and land in
+            // any order, so every part not in yet spins (its row dimmed).
+            ProgressView().controlSize(.mini).scaleEffect(0.7)
+                .frame(width: 14, height: 10)
+                .accessibilityLabel("Evaluating")
         } else {
             // The material swatch is the icon: it tells parts apart at a glance
             // and matches what the viewport draws.

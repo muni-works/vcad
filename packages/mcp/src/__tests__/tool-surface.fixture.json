@@ -2553,7 +2553,7 @@
             "chamber_half_height_mm",
             "rings"
           ],
-          "description": "Axisymmetric device: grounded cylindrical chamber + biased (optionally current-carrying) wire rings, coaxial with Z. Units mm / volts / ampere-turns. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error).",
+          "description": "Axisymmetric device: grounded cylindrical chamber + biased (optionally current-carrying) wire rings, coaxial with Z. Units mm / volts / ampere-turns. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error). Pass this OR `document_id` + `extract`.",
           "properties": {
             "chamber_radius_mm": {
               "description": "A number, or the name of a named parameter bound via `parameters`.",
@@ -2660,12 +2660,59 @@
             }
           }
         },
+        "document_id": {
+          "type": "string",
+          "description": "Session document to extract the device from (instead of `spec`): the chamber and grid are measured from the document's own evaluated solids, so the simulation runs on the geometry the drawings show. Requires `extract`."
+        },
+        "extract": {
+          "type": "object",
+          "required": [
+            "chamber",
+            "electrodes"
+          ],
+          "description": "Which parts of `document_id` are the device. Geometry is measured from the BRep (literals); potentials and ampere-turns are NAMED DOCUMENT PARAMETERS (loon `defparam`), so scrubbing them in the document re-prices the run. Fail-closed: anything the axisymmetric device can't hold — a ring off the chamber axis (globe/meridian grids), crossing or trimmed wires, a stalk fused into the grid part, a non-cylindrical or ported chamber, an undeclared parameter — errors naming the part.",
+          "properties": {
+            "chamber": {
+              "type": "string",
+              "description": "Chamber part (name or part id), modelled as a closed can: outer cylinder minus a coaxial inner cylinder. Its cavity sets the device radius, half-height, axis and origin."
+            },
+            "wall_potential": {
+              "type": "string",
+              "description": "Document parameter holding the wall potential, V. Omitted = grounded."
+            },
+            "electrodes": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "part",
+                  "potential"
+                ],
+                "properties": {
+                  "part": {
+                    "type": "string",
+                    "description": "Electrode part (name or part id) holding only complete, separate toroidal wire rings coaxial with the chamber."
+                  },
+                  "potential": {
+                    "type": "string",
+                    "description": "Document parameter holding the potential, V."
+                  },
+                  "ampere_turns": {
+                    "type": "string",
+                    "description": "Document parameter holding the ring current, ampere-turns (+ = CCW viewed from +axis). Every ring in the part shares it; put opposed-current rings in separate parts."
+                  }
+                }
+              }
+            }
+          }
+        },
         "parameters": {
           "type": "object",
           "additionalProperties": {
             "type": "number"
           },
-          "description": "Bindings for named spec parameters, `{name: value}`."
+          "description": "Bindings for named spec parameters, `{name: value}`. With `document_id` these override the document's parameter values."
         },
         "options": {
           "type": "object",
@@ -2704,10 +2751,7 @@
             }
           }
         }
-      },
-      "required": [
-        "spec"
-      ]
+      }
     },
     "annotations": {
       "readOnlyHint": true
@@ -2727,7 +2771,7 @@
             "chamber_half_height_mm",
             "rings"
           ],
-          "description": "Axisymmetric device: grounded cylindrical chamber + biased (optionally current-carrying) wire rings, coaxial with Z. Units mm / volts / ampere-turns. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error).",
+          "description": "Axisymmetric device: grounded cylindrical chamber + biased (optionally current-carrying) wire rings, coaxial with Z. Units mm / volts / ampere-turns. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error). Pass this OR `document_id` + `extract`.",
           "properties": {
             "chamber_radius_mm": {
               "description": "A number, or the name of a named parameter bound via `parameters`.",
@@ -2834,12 +2878,59 @@
             }
           }
         },
+        "document_id": {
+          "type": "string",
+          "description": "Session document to extract the device from (instead of `spec`): the chamber and grid are measured from the document's own evaluated solids, so the simulation runs on the geometry the drawings show. Requires `extract`."
+        },
+        "extract": {
+          "type": "object",
+          "required": [
+            "chamber",
+            "electrodes"
+          ],
+          "description": "Which parts of `document_id` are the device. Geometry is measured from the BRep (literals); potentials and ampere-turns are NAMED DOCUMENT PARAMETERS (loon `defparam`), so scrubbing them in the document re-prices the run. Fail-closed: anything the axisymmetric device can't hold — a ring off the chamber axis (globe/meridian grids), crossing or trimmed wires, a stalk fused into the grid part, a non-cylindrical or ported chamber, an undeclared parameter — errors naming the part.",
+          "properties": {
+            "chamber": {
+              "type": "string",
+              "description": "Chamber part (name or part id), modelled as a closed can: outer cylinder minus a coaxial inner cylinder. Its cavity sets the device radius, half-height, axis and origin."
+            },
+            "wall_potential": {
+              "type": "string",
+              "description": "Document parameter holding the wall potential, V. Omitted = grounded."
+            },
+            "electrodes": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "part",
+                  "potential"
+                ],
+                "properties": {
+                  "part": {
+                    "type": "string",
+                    "description": "Electrode part (name or part id) holding only complete, separate toroidal wire rings coaxial with the chamber."
+                  },
+                  "potential": {
+                    "type": "string",
+                    "description": "Document parameter holding the potential, V."
+                  },
+                  "ampere_turns": {
+                    "type": "string",
+                    "description": "Document parameter holding the ring current, ampere-turns (+ = CCW viewed from +axis). Every ring in the part shares it; put opposed-current rings in separate parts."
+                  }
+                }
+              }
+            }
+          }
+        },
         "parameters": {
           "type": "object",
           "additionalProperties": {
             "type": "number"
           },
-          "description": "Bindings for named spec parameters, `{name: value}`."
+          "description": "Bindings for named spec parameters, `{name: value}`. With `document_id` these override the document's parameter values; only parameters the extracted spec names (potentials, ampere-turns) can be optimized — geometry is measured literals."
         },
         "variables": {
           "type": "array",
@@ -2908,7 +2999,6 @@
         }
       },
       "required": [
-        "spec",
         "variables"
       ]
     },
@@ -3808,7 +3898,7 @@
   {
     "name": "analyze_antenna",
     "title": "Analyze Antenna",
-    "description": "Thin-wire method-of-moments antenna analysis over a frequency band: per-frequency Z_in and S11 sweep rows, minimum-S11 point, in-band resonance (Im Z = 0), -10 dB bandwidth, far-field peak gain (37x72 pattern scan), and a radiation-efficiency energy cross-check — as data plus `vcad.antenna-claims/1` and unified-receipt claims. Predictions carry basis \"predicted\" and roll up Provisional until a VNA sweep is bound. Free-space PEC wires (optional infinite ground plane): no dielectric substrate (PCB antennas read a few percent high in frequency), no conductor loss (gain = directivity), thin-wire validity gates enforced fail-closed (segment >= 4a, segment <= lambda/8, ka <= 0.1). Deterministic. Cost ~O(segments^3) per frequency x band points (segment cap 600); a 30-segment dipole over 46 points runs in seconds.",
+    "description": "Thin-wire method-of-moments antenna analysis over a frequency band: per-frequency Z_in and S11 sweep rows, minimum-S11 point, in-band resonance (Im Z = 0), -10 dB bandwidth, far-field peak gain (37x72 pattern scan), and a radiation-efficiency energy cross-check — as data plus `vcad.antenna-claims/1` and unified-receipt claims. Predictions carry basis \"predicted\" and roll up Provisional until a VNA sweep is bound. Pass `spec` (hand-built wires), or `document_id` + `extract` to read the antenna from the document's PCB board (traces -> wires, pad feed, infinite ground at the pour edge; approximation + board eps_r/thickness returned under `extracted`). Free-space PEC wires (optional infinite ground plane): no dielectric substrate (FR-4 PCB antennas resonate ~20-30% BELOW the prediction), no conductor loss (gain = directivity), thin-wire validity gates enforced fail-closed (segment >= 4a, segment <= lambda/8, ka <= 0.1). Deterministic. Cost ~O(segments^3) per frequency x band points (segment cap 600); a 30-segment dipole over 46 points runs in seconds.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -3818,7 +3908,7 @@
             "elements",
             "feed_mm"
           ],
-          "description": "Thin-wire antenna: straight wires, polyline paths, and closed loops, with a delta-gap feed at the basis nearest `feed_mm`. Units mm. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error).",
+          "description": "Thin-wire antenna: straight wires, polyline paths, and closed loops, with a delta-gap feed at the basis nearest `feed_mm`. Units mm. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error). Pass this OR `document_id` + `extract`.",
           "properties": {
             "ground_plane": {
               "type": "boolean",
@@ -3938,12 +4028,63 @@
             }
           }
         },
+        "document_id": {
+          "type": "string",
+          "description": "Session document whose PcbBoard holds the antenna (instead of `spec`). Requires `extract`."
+        },
+        "extract": {
+          "type": "object",
+          "required": [
+            "feed"
+          ],
+          "description": "Which copper of `document_id`'s PcbBoard is the antenna. Every trace on the antenna net becomes a round wire of radius width/4; the feed is a delta gap between the feed pad and the ground pour; the pour becomes an INFINITE PEC plane at its edge nearest the feed (image theory — recorded with the pour's real size in wavelengths). Fail-closed: arcs, vias, zones or extra pads on the antenna net, copper on two layers, floating islands, copper over/behind the pour edge (feedlines), a pour wrapping the antenna, or a feed that isn't a free trace end on the pad all error.",
+          "properties": {
+            "feed": {
+              "type": "object",
+              "required": [
+                "footprint",
+                "pad"
+              ],
+              "description": "Feed pad, e.g. the U.FL signal pad.",
+              "properties": {
+                "footprint": {
+                  "type": "string",
+                  "description": "Reference, e.g. J1."
+                },
+                "pad": {
+                  "type": "string",
+                  "description": "Pad number, e.g. 1."
+                }
+              }
+            },
+            "net": {
+              "type": "string",
+              "description": "Antenna net. Default: the feed pad's net."
+            },
+            "ground_net": {
+              "type": "string",
+              "description": "Net of the ground pour. Default GND."
+            },
+            "board_node": {
+              "type": "number",
+              "description": "PcbBoard node id. Default: the document's only board."
+            },
+            "segments_per_wavelength": {
+              "type": "number",
+              "description": "Segmentation at band top (>= 8). Default 20."
+            },
+            "max_feed_gap_mm": {
+              "type": "number",
+              "description": "Largest feed-pad-to-pour-edge gap accepted, mm. Default 2."
+            }
+          }
+        },
         "parameters": {
           "type": "object",
           "additionalProperties": {
             "type": "number"
           },
-          "description": "Bindings for named spec parameters, `{name: value}`."
+          "description": "Bindings for named spec parameters, `{name: value}` (an extracted board spec is all literals)."
         },
         "band": {
           "type": "object",
@@ -3952,7 +4093,7 @@
             "f_hi_hz",
             "points"
           ],
-          "description": "Frequency band to sweep and make claims over.",
+          "description": "Frequency band to sweep and make claims over (with `document_id`, `f_hi_hz` also sets the extracted segmentation).",
           "properties": {
             "f_lo_hz": {
               "type": "number"
@@ -3989,7 +4130,6 @@
         }
       },
       "required": [
-        "spec",
         "band"
       ]
     },
@@ -4000,7 +4140,7 @@
   {
     "name": "solve_thermal",
     "title": "Solve Thermal",
-    "description": "Heat-conduction FEA on a voxel grid: harmonic-mean finite volumes + PCG, returning T_max and its location, per-source theta_ja (K/W, junction-to-ambient), reservoir loads, and an energy-balance audit — as data plus `vcad.thermal-claims/1` and unified-receipt claims. Predictions carry basis \"predicted\" and roll up Provisional until hardware is measured. Steady state by default; pass `transient` for backward-Euler time stepping over a piecewise-constant drive schedule (RTP ramp/soak/cool, ambient steps, duty cycles — needs per-material `heat_capacity_j_m3k`), which returns T_max/per-source time series and the run-integrated energy audit. Conduction only: convection enters as film coefficients you supply (h values are the dominant uncertainty), no radiation, no fluid flow. Full temperature fields are not returned (summaries + claims are). Cost scales with voxel count (capped at 2M; transient runs also capped at 20k steps and 1e9 voxel-steps); a 20x20x2 board solves instantly, 100x100x13 in seconds.",
+    "description": "Heat-conduction FEA on a voxel grid: harmonic-mean finite volumes + PCG, returning T_max and its location, per-source theta_ja (K/W, junction-to-ambient), reservoir loads, and an energy-balance audit — as data plus `vcad.thermal-claims/1` and unified-receipt claims. Predictions carry basis \"predicted\" and roll up Provisional until hardware is measured. Steady state by default; pass `transient` for backward-Euler time stepping over a piecewise-constant drive schedule (RTP ramp/soak/cool, ambient steps, duty cycles — needs per-material `heat_capacity_j_m3k`), which returns T_max/per-source time series and the run-integrated energy audit. Conduction plus optional gray-diffuse surface radiation (`Radiation` boundary: emissivity you supply, radiating to an ambient or an enclosing wall; solved by Newton; reports per-slot radiated W and a `radiation_fraction` claim). Convection enters as film coefficients you supply (h and emissivity are the dominant uncertainties); no surface-to-surface exchange between parts of the model, no fluid flow. Full temperature fields are not returned (summaries + claims are). Cost scales with voxel count (capped at 2M; transient runs also capped at 20k steps and 1e9 voxel-steps); a 20x20x2 board solves instantly, 100x100x13 in seconds.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -4474,14 +4614,15 @@
                 "required": [
                   "type"
                 ],
-                "description": "Boundary condition: `{\"type\":\"Adiabatic\"}`, `{\"type\":\"FixedTemperature\",\"temperature_c\":..}`, or `{\"type\":\"Convection\",\"h_w_m2k\":..,\"ambient_c\":..}`.",
+                "description": "Boundary condition: `{\"type\":\"Adiabatic\"}`, `{\"type\":\"FixedTemperature\",\"temperature_c\":..}`, `{\"type\":\"Convection\",\"h_w_m2k\":..,\"ambient_c\":..}`, or `{\"type\":\"Radiation\",\"emissivity\":..,\"ambient_c\":..}` (gray-diffuse eps*sigma*(Ts^4-Tamb^4), optional parallel `h_w_m2k` (0 in vacuum), optional `area_scale` = true/voxel surface area (a voxel staircase over-counts curved area ~4/pi for cylinders, ~1.5 for spheres, which over-cools: the result reports `voxel_area_m2` per slot so you can compute it), optional `enclosure` {emissivity, area_m2} for a two-surface gray enclosure such as a grid inside a vacuum chamber whose wall temperature is `ambient_c`). Any radiation face makes the solve nonlinear (Newton); temperatures must be degC.",
                 "properties": {
                   "type": {
                     "type": "string",
                     "enum": [
                       "Adiabatic",
                       "FixedTemperature",
-                      "Convection"
+                      "Convection",
+                      "Radiation"
                     ]
                   },
                   "temperature_c": {
@@ -4516,6 +4657,60 @@
                         "type": "string"
                       }
                     ]
+                  },
+                  "emissivity": {
+                    "description": "Radiation: surface emissivity in (0, 1]. Required.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "area_scale": {
+                    "description": "Radiation: radiating-area multiplier (> 0), default 1.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "enclosure": {
+                    "type": "object",
+                    "required": [
+                      "emissivity",
+                      "area_m2"
+                    ],
+                    "description": "Radiation: enclosing wall (view factor 1). eps_eff = 1/(1/eps + (A_s/A_w)(1/eps_w - 1)); A_w must exceed the slot's radiating area.",
+                    "properties": {
+                      "emissivity": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "area_m2": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      }
+                    }
                   }
                 }
               },
@@ -4533,7 +4728,8 @@
                   "enum": [
                     "Adiabatic",
                     "FixedTemperature",
-                    "Convection"
+                    "Convection",
+                    "Radiation"
                   ]
                 },
                 "temperature_c": {
@@ -4568,6 +4764,60 @@
                       "type": "string"
                     }
                   ]
+                },
+                "emissivity": {
+                  "description": "Radiation: surface emissivity in (0, 1]. Required.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "area_scale": {
+                  "description": "Radiation: radiating-area multiplier (> 0), default 1.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "enclosure": {
+                  "type": "object",
+                  "required": [
+                    "emissivity",
+                    "area_m2"
+                  ],
+                  "description": "Radiation: enclosing wall (view factor 1). eps_eff = 1/(1/eps + (A_s/A_w)(1/eps_w - 1)); A_w must exceed the slot's radiating area.",
+                  "properties": {
+                    "emissivity": {
+                      "description": "A number, or the name of a named parameter bound via `parameters`.",
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "area_m2": {
+                      "description": "A number, or the name of a named parameter bound via `parameters`.",
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    }
+                  }
                 }
               }
             },
@@ -4663,7 +4913,7 @@
                         }
                       ]
                     },
-                    "description": "Boundary-temperature overrides by face label (\"-x\",\"+x\",\"-y\",\"+y\",\"-z\",\"+z\",\"exposed\"): retunes a FixedTemperature face's temperature or a Convection face's ambient. Overriding an adiabatic face errors (fail-closed)."
+                    "description": "Boundary-temperature overrides by face label (\"-x\",\"+x\",\"-y\",\"+y\",\"-z\",\"+z\",\"exposed\"): retunes a FixedTemperature face's temperature or a Convection/Radiation face's ambient. Overriding an adiabatic face errors (fail-closed)."
                   },
                   "fixed_temperature_c": {
                     "type": "object",
@@ -4697,7 +4947,7 @@
           "properties": {
             "tol": {
               "type": "number",
-              "description": "PCG relative tolerance. Default 1e-8."
+              "description": "Relative tolerance (PCG, and the Newton residual when a face radiates). Default 1e-8."
             },
             "max_iters": {
               "type": "number",
@@ -5311,6 +5561,102 @@
     }
   },
   {
+    "name": "shell_buckling_check",
+    "title": "Check Shell Buckling",
+    "description": "External-pressure BUCKLING screen for a thin shell — the governing failure mode of a vacuum chamber, viewport cover, or welded tube/sphere/dished head, and one that analyze_structure cannot see (a static solve has no buckling in it). Give a cylinder (OD, wall, unsupported length between flanges/rings, hydrostatic or lateral loading), a sphere, or a head (hemispherical, 2:1 ellipsoidal, torispherical), a material, and the net external pressure (default 1 atm = 0.101325 MPa); get the classical (perfect-shell) bifurcation pressure, the IMPERFECTION KNOCKDOWN applied and its citation, the knocked-down collapse pressure, the membrane-yield cap, the allowable pressure after a design factor, and the margin. Cylinders: von Mises classical pressure (full n^2-1 ring term, integer wave count, a cross-check of vcad's eigenvalue FE) knocked down by NASA/SP-8007-2020/REV 2's own ratio (Eq. 19-22 with sqrt(gamma)=0.75 inside the bracket, Eq. 28), or gamma=0.90 when the mode ovalizes (Eq. 29); design factor 3 by default. Spheres/heads: Zoelly classical plus ASME VIII-1 UG-28(d) elastic branch as commonly published (Pa = 0.0625·E/(Ro/t)^2, i.e. ~0.21x classical with a factor of 4); heads as an equivalent sphere per UG-33 (2:1 ellipsoidal Ro = 0.9·Do). A margin below 1 lands as a FAIL claim. Linear (eigenvalue) buckling is UNCONSERVATIVE for shells — real ones collapse below it — which is why the knockdown is stated, not hidden. Fail-closed: D/t < 10 (thick wall) is Unverifiable and claims nothing. Claims ride `vcad.fea-claims/1` and unified-receipt `structure.shell.*` with basis \"predicted\" (Provisional until tested). A SCREEN, not ASME code compliance: UG-28 cylinder charts and elastic-plastic collapse are not reproduced; knuckles, nozzles, ports and out-of-roundness are not checked. Needs no document.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "geometry": {
+          "type": "object",
+          "required": [
+            "type",
+            "outer_diameter_mm",
+            "wall_mm"
+          ],
+          "description": "One of: {\"type\":\"cylinder\",outer_diameter_mm,wall_mm,length_mm,loading?} (length = unsupported span between flanges or stiffening rings; loading \"hydrostatic\" (default, a capped vessel) or \"lateral\"), {\"type\":\"sphere\",outer_diameter_mm,wall_mm}, or {\"type\":\"head\",head:{\"kind\":\"hemispherical\"|\"ellipsoidal_2to1\"|\"torispherical\",crown_radius_mm?},outer_diameter_mm,wall_mm}.",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "cylinder",
+                "sphere",
+                "head"
+              ]
+            },
+            "outer_diameter_mm": {
+              "type": "number",
+              "description": "Outside diameter, mm."
+            },
+            "wall_mm": {
+              "type": "number",
+              "description": "Wall thickness, mm."
+            },
+            "length_mm": {
+              "type": "number",
+              "description": "Cylinder only: unsupported length between rings/flanges, mm."
+            },
+            "loading": {
+              "type": "string",
+              "enum": [
+                "hydrostatic",
+                "lateral"
+              ]
+            },
+            "head": {
+              "type": "object",
+              "required": [
+                "kind"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "hemispherical",
+                    "ellipsoidal_2to1",
+                    "torispherical"
+                  ]
+                },
+                "crown_radius_mm": {
+                  "type": "number",
+                  "description": "Torispherical only: outside crown radius, mm."
+                }
+              }
+            }
+          }
+        },
+        "youngs_modulus_mpa": {
+          "type": "number",
+          "description": "Young's modulus, MPa (304/316 stainless ~193000, 6061 ~69000)."
+        },
+        "poisson": {
+          "type": "number",
+          "description": "Poisson's ratio (steel ~0.29)."
+        },
+        "yield_strength_mpa": {
+          "type": "number",
+          "description": "Yield strength, MPa (304 annealed ~205). Caps collapse at membrane yield; without it the cap is skipped and a caution says so."
+        },
+        "external_pressure_mpa": {
+          "type": "number",
+          "description": "Net external pressure, MPa. Default 0.101325 (1 atm, vacuum inside)."
+        },
+        "design_factor": {
+          "type": "number",
+          "description": "Design factor on the knocked-down cylinder collapse pressure (default 3). Spheres/heads use UG-28(d)'s built-in factor of 4."
+        }
+      },
+      "required": [
+        "geometry",
+        "youngs_modulus_mpa",
+        "poisson"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
     "name": "simulate_neutron_shield",
     "title": "Simulate Neutron Shield",
     "description": "Monte Carlo neutron shielding run (analog transport, 5-group multigroup library with exact elastic kinematics): spherical layer stack around a point source (D-D band), H*(10) dose rate at each detector shell WITH 1-sigma batch error bars (rse), attenuation factor vs bare source, thermal flux, and absorbed/leakage balance — as data plus `vcad.neutronics-claims/1` and unified-receipt claims. Fail-closed: truncated histories or a tally that scored nothing refuses claims (raise histories). Predictions carry basis \"predicted\" and roll up Provisional until surveyed. Design-estimate physics: 5-group library (not ENDF continuous-energy), spherical geometry only, no gamma dose, no activation, source energy capped at 3 MeV (no D-T). Deterministic per seed. Cost ~histories (cap 5M); error bars shrink as 1/sqrt(N). The 400k default runs in seconds.",
@@ -5324,7 +5670,7 @@
             "source",
             "detectors"
           ],
-          "description": "Spherical shield: concentric layers from r=0 outward around a point source, with detector shells that must each sit strictly inside one layer (put them in air gaps). Units mm. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error).",
+          "description": "Spherical shield: concentric layers from r=0 outward around a point source, with detector shells that must each sit strictly inside one layer (put them in air gaps). Units mm. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error). Pass this OR `document_id` + `extract`.",
           "properties": {
             "layers": {
               "type": "array",
@@ -5444,17 +5790,154 @@
             }
           }
         },
+        "document_id": {
+          "type": "string",
+          "description": "Session document to extract the shield from (instead of `spec`): the layer stack is measured from the document's own evaluated solids. Requires `extract`."
+        },
+        "extract": {
+          "type": "object",
+          "required": [
+            "shells",
+            "source",
+            "detectors"
+          ],
+          "description": "Which parts of `document_id` are the shield. Each shell part must be a concentric spherical shell (sphere minus a smaller concentric sphere, or a solid ball); thicknesses are measured from the BRep. Fail-closed: a cylindrical/box shield, an off-centre or overlapping shell, or a material outside the library errors naming the part — the transport is 1-D spherical, so nothing is folded into a sphere silently.",
+          "properties": {
+            "shells": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "part"
+                ],
+                "properties": {
+                  "part": {
+                    "type": "string",
+                    "description": "Shell part (name or part id)."
+                  },
+                  "material": {
+                    "type": "string",
+                    "description": "Library material (hdpe, paraffin, borated-hdpe-5, water, lead, concrete, air, void). Omitted = the part's document material."
+                  }
+                }
+              }
+            },
+            "fill_material": {
+              "type": "string",
+              "description": "Material for the core, the gaps between shells and the world beyond the last shell. Default \"air\"."
+            },
+            "source": {
+              "type": "object",
+              "required": [
+                "rate_n_per_s",
+                "energy_ev"
+              ],
+              "description": "Isotropic point source at r=0. Energy must lie in the 5-group structure [1e-4, 3e6] eV — D-D 2.45e6 eV is in range; D-T 14.1 MeV is rejected.",
+              "properties": {
+                "rate_n_per_s": {
+                  "description": "A number, or the name of a named parameter bound via `parameters`.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "energy_ev": {
+                  "description": "A number, or the name of a named parameter bound via `parameters`.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                }
+              }
+            },
+            "detectors": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "label",
+                  "radius_mm"
+                ],
+                "properties": {
+                  "label": {
+                    "type": "string"
+                  },
+                  "radius_mm": {
+                    "description": "A number, or the name of a named parameter bound via `parameters`.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "half_width_mm": {
+                    "description": "Shell half-thickness. Default 20 mm.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "world_radius_mm": {
+              "type": "number",
+              "description": "Outer radius of the modelled world, mm. Default: 10% past the outermost detector shell."
+            },
+            "center": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 3,
+              "maxItems": 3,
+              "description": "Source point [x, y, z] mm (e.g. the chamber centre); every shell must be centred on it. Default: the shells' common centre."
+            },
+            "run": {
+              "type": "object",
+              "description": "Monte Carlo controls (deterministic for a given seed).",
+              "properties": {
+                "histories_per_batch": {
+                  "type": "number",
+                  "description": "Default 20000."
+                },
+                "batches": {
+                  "type": "number",
+                  "description": "Error-bar batches (>= 2). Default 20."
+                },
+                "seed": {
+                  "type": "number",
+                  "description": "Default 20260717."
+                }
+              }
+            }
+          }
+        },
         "parameters": {
           "type": "object",
           "additionalProperties": {
             "type": "number"
           },
-          "description": "Bindings for named spec parameters, `{name: value}`."
+          "description": "Bindings for named spec parameters, `{name: value}`. With `document_id` these override the document's parameter values."
         }
-      },
-      "required": [
-        "spec"
-      ]
+      }
     },
     "annotations": {
       "readOnlyHint": true

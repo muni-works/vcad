@@ -187,7 +187,9 @@ VcadMeshView vcad_scene_part_mesh(const VcadScene *scene, size_t index);
  * against base_dir, may be NULL) and starts the kernel walk on its own
  * thread; NULL if the document fails to parse (read vcad_last_error).
  * vcad_eval_progress writes visible roots landed / total and returns true
- * once the walk has finished. vcad_eval_part_mesh borrows a landed root's mesh
+ * once the walk has finished. Roots land in ANY order (a fast part does not
+ * wait behind a slow one); vcad_eval_part_landed says whether root `index`
+ * has (its mesh may be empty: a refused root). vcad_eval_part_mesh borrows a landed root's mesh
  * (empty view until it lands; valid until finish/abandon). vcad_eval_finish
  * joins and returns the scene (NULL + vcad_last_error on failure), freeing the
  * job. vcad_eval_abandon frees the job without waiting. One caller per job. */
@@ -202,6 +204,7 @@ VcadEvalJob *vcad_eval_begin_lod(const uint8_t *json, size_t json_len,
                                  bool preview);
 bool vcad_eval_progress(const VcadEvalJob *job, size_t *done, size_t *total);
 VcadMeshView vcad_eval_part_mesh(const VcadEvalJob *job, size_t index);
+bool vcad_eval_part_landed(const VcadEvalJob *job, size_t index);
 VcadScene *vcad_eval_finish(VcadEvalJob *job);
 void vcad_eval_abandon(VcadEvalJob *job);
 

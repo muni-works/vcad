@@ -18,13 +18,15 @@ import { documents } from "../tools/session.js";
 const probeEngine = await Engine.init();
 const probeKernel = (
   probeEngine as unknown as {
-    kernel?: { feaAnalyzeMesh?: unknown; feaCheckBeam?: unknown };
+    kernel?: { feaAnalyzeMesh?: unknown; feaCheckBeam?: unknown; feaCheckShell?: unknown };
   }
 ).kernel;
 const wasmHasFea = typeof probeKernel?.feaAnalyzeMesh === "function";
 /** The closed-form prismatic route and the thin-wall diagnosis ship
  *  together; both need a kernel newer than the FEA bindings alone. */
 const wasmHasSection = typeof probeKernel?.feaCheckBeam === "function";
+/** The external-pressure shell screen (vcad-kernel-fea::shell). */
+const wasmHasShell = typeof probeKernel?.feaCheckShell === "function";
 
 function beamDoc(): Document {
   return {
@@ -215,6 +217,47 @@ describe.skipIf(!wasmHasFea)("analyze_structure tool", () => {
     expect(out.receipt_claims[0].verdict).toBe("unverifiable");
     // The refusal names the other route, both directions being covered.
     expect(out.check.verdict.reasons.join(" ")).toContain("analyze_structure");
+  });
+
+  it.skipIf(!wasmHasShell)("shell_buckling_check: a 6\" vacuum tube fails at 0.5 mm, passes at 3 mm", async () => {
+    const run = async (wall: number) => {
+      const res = (await client.callTool({
+        name: "shell_buckling_check",
+        arguments: {
+          geometry: { type: "cylinder", outer_diameter_mm: 152.4, wall_mm: wall, length_mm: 300 },
+          youngs_modulus_mpa: 193_000,
+          poisson: 0.29,
+          yield_strength_mpa: 205,
+        },
+      })) as ToolText;
+      return JSON.parse(res.content[0].text);
+    };
+    const thin = await run(0.5);
+    const thick = await run(3);
+    expect(thin.check.verdict.verdict).toBe("Applicable");
+    expect(thin.check.margin).toBeLessThan(1);
+    expect(thick.check.margin).toBeGreaterThan(1);
+    expect(thin.check.knockdown).toBeLessThan(1);
+    expect(thin.check.knockdown_basis).toContain("SP-8007");
+    for (const c of thick.receipt_claims) {
+      expect(c.id.startsWith("structure.shell.")).toBe(true);
+      expect(c.basis).toBe("predicted");
+    }
+  });
+
+  it.skipIf(!wasmHasShell)("shell_buckling_check fails closed on a thick wall", async () => {
+    const res = (await client.callTool({
+      name: "shell_buckling_check",
+      arguments: {
+        geometry: { type: "sphere", outer_diameter_mm: 50, wall_mm: 10 },
+        youngs_modulus_mpa: 193_000,
+        poisson: 0.29,
+      },
+    })) as ToolText;
+    const out = JSON.parse(res.content[0].text);
+    expect(out.check.verdict.verdict).toBe("Unverifiable");
+    expect(out.claim_set).toBeNull();
+    expect(out.receipt_claims).toHaveLength(1);
   });
 
   it("a load region off the part fails closed", async () => {

@@ -39,7 +39,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::model::{
-    Axis, Boundary, FixedTemperature, MaterialRegion, PowerSource, Shape, ThermalModel,
+    Axis, Boundary, Enclosure, FixedTemperature, MaterialRegion, PowerSource, Shape, ThermalModel,
     VoxelMaterials,
 };
 use crate::transient::ScheduleSegment;
@@ -83,7 +83,8 @@ impl ParamValue {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ParamRole {
     /// Reverse-mode via [`crate::adjoint::smooth_max_gradient`]
-    /// (conductivity components, film coefficients, source powers).
+    /// (conductivity components, film coefficients, source powers,
+    /// surface emissivities).
     Adjoint,
     /// Finite differences (geometry moves the discrete material mask;
     /// temperatures are adjoint-capable but not yet wired).
@@ -202,6 +203,35 @@ pub enum BoundarySpec {
         /// Ambient temperature, °C.
         ambient_c: ParamValue,
     },
+    /// Gray-diffuse radiation to an ambient (or an enclosing wall), with
+    /// an optional parallel convection film — see
+    /// [`crate::model::Boundary::Radiation`]. Emissivity is required (no
+    /// default: a guessed ε is a guessed answer); range checks run at
+    /// solve time, fail-closed.
+    Radiation {
+        /// Surface emissivity, (0, 1].
+        emissivity: ParamValue,
+        /// Ambient / wall temperature, °C.
+        ambient_c: ParamValue,
+        /// Parallel film, W/(m²·K) (omit or 0 in vacuum).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        h_w_m2k: Option<ParamValue>,
+        /// Staircase area correction (true / voxel area), default 1.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        area_scale: Option<ParamValue>,
+        /// Two-surface gray enclosure.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enclosure: Option<EnclosureSpec>,
+    },
+}
+
+/// Serializable [`Enclosure`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EnclosureSpec {
+    /// Wall emissivity, (0, 1].
+    pub emissivity: ParamValue,
+    /// Wall area, m².
+    pub area_m2: ParamValue,
 }
 
 fn adiabatic() -> [BoundarySpec; 6] {
@@ -342,6 +372,35 @@ impl BoundarySpec {
                 h_w_m2k: h_w_m2k.resolve(params)?,
                 ambient_c: ambient_c.resolve(params)?,
             },
+            BoundarySpec::Radiation {
+                emissivity,
+                ambient_c,
+                h_w_m2k,
+                area_scale,
+                enclosure,
+            } => Boundary::Radiation {
+                emissivity: emissivity.resolve(params)?,
+                ambient_c: ambient_c.resolve(params)?,
+                h_w_m2k: h_w_m2k
+                    .as_ref()
+                    .map(|v| v.resolve(params))
+                    .transpose()?
+                    .unwrap_or(0.0),
+                area_scale: area_scale
+                    .as_ref()
+                    .map(|v| v.resolve(params))
+                    .transpose()?
+                    .unwrap_or(1.0),
+                enclosure: enclosure
+                    .as_ref()
+                    .map(|e| {
+                        Ok::<_, SpecError>(Enclosure {
+                            emissivity: e.emissivity.resolve(params)?,
+                            area_m2: e.area_m2.resolve(params)?,
+                        })
+                    })
+                    .transpose()?,
+            },
         })
     }
 
@@ -354,6 +413,22 @@ impl BoundarySpec {
             Boundary::Convection { h_w_m2k, ambient_c } => BoundarySpec::Convection {
                 h_w_m2k: (*h_w_m2k).into(),
                 ambient_c: (*ambient_c).into(),
+            },
+            Boundary::Radiation {
+                emissivity,
+                ambient_c,
+                h_w_m2k,
+                area_scale,
+                enclosure,
+            } => BoundarySpec::Radiation {
+                emissivity: (*emissivity).into(),
+                ambient_c: (*ambient_c).into(),
+                h_w_m2k: Some((*h_w_m2k).into()),
+                area_scale: Some((*area_scale).into()),
+                enclosure: enclosure.map(|e| EnclosureSpec {
+                    emissivity: e.emissivity.into(),
+                    area_m2: e.area_m2.into(),
+                }),
             },
         }
     }
@@ -517,6 +592,28 @@ impl ThermalSpec {
                 BoundarySpec::Convection { h_w_m2k, ambient_c } => {
                     put(h_w_m2k.name(), ParamRole::Adjoint);
                     put(ambient_c.name(), ParamRole::FiniteDifference);
+                }
+                BoundarySpec::Radiation {
+                    emissivity,
+                    ambient_c,
+                    h_w_m2k,
+                    area_scale,
+                    enclosure,
+                } => {
+                    // ε and the parallel film flow through the
+                    // linearized adjoint; area scale and the enclosure
+                    // are not wired (FD), ambient follows convention.
+                    put(emissivity.name(), ParamRole::Adjoint);
+                    put(h_w_m2k.as_ref().and_then(|v| v.name()), ParamRole::Adjoint);
+                    put(ambient_c.name(), ParamRole::FiniteDifference);
+                    put(
+                        area_scale.as_ref().and_then(|v| v.name()),
+                        ParamRole::FiniteDifference,
+                    );
+                    if let Some(e) = enclosure {
+                        put(e.emissivity.name(), ParamRole::FiniteDifference);
+                        put(e.area_m2.name(), ParamRole::FiniteDifference);
+                    }
                 }
             }
         }
