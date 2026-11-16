@@ -115,8 +115,9 @@ film alongside (all < 1e-5).
 | radiation-only part in vacuum | radiation alone grounds the system | surface on the closed form within 0.05 K |
 | fail-closed | ε ∉ (0,1], NaN, T_amb ≤ 0 K, h < 0, scale ≤ 0, A_w ≤ A_s, ε_w = 0 | `InvalidRadiation`; graph assembly → `RadiationUnsupported` |
 
-Every steady rung also checks the energy balance (source = conduction +
-convection + reservoir + radiation outflow) to ≤ 1e-7 relative.
+The slab and sphere rungs also check the steady energy balance (source =
+fixed-face + convection + reservoir + radiation outflow): ≤ 1e-10 on the
+slab, ≤ 1e-7 on the sphere.
 
 ## Receipt
 

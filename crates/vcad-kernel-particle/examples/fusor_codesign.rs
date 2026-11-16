@@ -511,7 +511,7 @@ fn main() {
 
     // Co-design findings — the contradictions only a multi-domain receipt
     // can surface (each is invisible from inside its own domain):
-    println!("\n──── co-design loop: rev-a vetoes → rev-b resolutions ────");
+    println!("\n──── co-design loop: rev-a vetoes → rev-b/c resolutions ────");
     println!(
         "· thermal:    conduction-only floor {:.0} °C (rev-a veto)  →  rev-c radiating \
          steady {:.0} °C (clean-copper bound {:.0} °C, melt {:.0} °C)  →  {:.0}% duty \
