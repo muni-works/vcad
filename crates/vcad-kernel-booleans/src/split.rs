@@ -160,8 +160,10 @@ pub(crate) fn trust_hole_chords(spans: HoleChordSpans) {
     HOLE_CHORDS.with(|h| *h.borrow_mut() = spans);
 }
 
-fn hole_chord_trusted(l: &vcad_kernel_geom::Line3d, entry: &Point3, exit: &Point3) -> bool {
-    let tol = 1e-6 * (*exit - *entry).norm().max(1.0);
+/// Does one of the cutter's own spans along `l` cover the stretch `from →
+/// to`?
+fn hole_chord_covered(l: &vcad_kernel_geom::Line3d, from: &Point3, to: &Point3) -> bool {
+    let tol = 1e-6 * (*to - *from).norm().max(1.0);
     HOLE_CHORDS.with(|h| {
         h.borrow().get(&line_key(l)).is_some_and(|spans| {
             spans.iter().any(|(a, b)| {
@@ -175,7 +177,7 @@ fn hole_chord_trusted(l: &vcad_kernel_geom::Line3d, entry: &Point3, exit: &Point
                     let off = (*p - (*a + ab * t)).norm();
                     off <= tol && t * len2.sqrt() >= -tol && (t - 1.0) * len2.sqrt() <= tol
                 };
-                inside(entry) && inside(exit)
+                inside(from) && inside(to)
             })
         })
     })
@@ -692,12 +694,23 @@ pub fn split_face_by_curve(
     let mut loop1_points = loop1_points;
     let mut loop2_points = loop2_points;
     let mut consumed_hole = None;
-    // Only along a line whose cutter face is known to cover the whole chord
+    // Only along a line whose cutter face is known to really cut here
     // (`trust_hole_chords`): the carrier line of a distant operand plane
     // also crosses holed faces, and splitting along such a phantom chord
-    // breaks the torr A2 trim.
-    let allow_hole_chord = matches!(curve, IntersectionCurve::Line(l) if hole_chord_trusted(l, entry_point, exit_point));
-    if allow_hole_chord && via.is_empty() && !same_edge_bite {
+    // breaks the torr A2 trim. "Really cuts" is either of:
+    //
+    // * the cutter covers the whole chord, hole included; or
+    // * the cutter covers one full material stretch — from a chord end on
+    //   the outer boundary to the hole. That is a cutter whose own edge
+    //   lies inside the hole: a quadrant section tool with its corner edge
+    //   on a ring's axis cuts each annular cap along two half-lines that
+    //   both dead-end in the bore. Neither half-line splits an annulus by
+    //   itself (it is a bridge, not a cut), so refusing them left the caps
+    //   whole inside the removed quadrant — 371 open edges and 11% excess
+    //   volume on the open-fusor lid flange. Running the first one on
+    //   across the hole parts the annulus; the stretch past the hole is the
+    //   same phantom continuation every line cut on a hole-free face takes.
+    if let (IntersectionCurve::Line(l), true, false) = (curve, via.is_empty(), same_edge_bite) {
         let parent_inner = brep.topology.faces[face_id].inner_loops.clone();
         let crossed: Vec<_> = parent_inner
             .iter()
@@ -712,9 +725,17 @@ pub fn split_face_by_curve(
             })
             .collect();
         if let [(lp, (l1, l2))] = crossed.as_slice() {
-            loop1_points = l1.clone();
-            loop2_points = l2.clone();
-            consumed_hole = Some(*lp);
+            // `merge_crossed_hole` appends `p2, detour…, p1` to loop 1:
+            // the hole crossings nearest the exit and the entry.
+            let (p_exit_side, p_entry_side) = (l1[loop1_points.len()], l1[l1.len() - 1]);
+            if hole_chord_covered(l, entry_point, exit_point)
+                || hole_chord_covered(l, entry_point, &p_entry_side)
+                || hole_chord_covered(l, &p_exit_side, exit_point)
+            {
+                loop1_points = l1.clone();
+                loop2_points = l2.clone();
+                consumed_hole = Some(*lp);
+            }
         }
     }
     {

@@ -12,7 +12,7 @@ use vcad_kernel_booleans::{
     boolean_op_reported, BooleanOp, BooleanReport, BooleanResult, Fidelity,
 };
 use vcad_kernel_math::Transform;
-use vcad_kernel_primitives::{make_cylinder, BRepSolid};
+use vcad_kernel_primitives::{make_cube, make_cylinder, BRepSolid};
 use vcad_kernel_tessellate::TriangleMesh;
 
 const SEGMENTS: u32 = 32;
@@ -285,6 +285,42 @@ fn can_with_radial_nozzle_then_cavity() {
         &bored,
         &f,
         Bounds { volume: v_bored, tol_frac: 1e-3, max_tris: 8000 },
+    ));
+    assert!(fails.is_empty(), "{fails:#?}");
+}
+
+/// The section tool: the x > 0, y < 0 quadrant. Its corner edge is the Z
+/// axis — the axis of every coaxial cylinder it cuts.
+fn quadrant() -> BRepSolid {
+    transformed(
+        make_cube(400.0, 400.0, 800.0),
+        &Transform::translation(0.0, -400.0, -400.0),
+    )
+}
+
+/// `lid-flange`: a ring with a quadrant cut away.
+#[test]
+fn sectioned_ring() {
+    let mut fails = Vec::new();
+    let (ring, f) = op(
+        "ring",
+        &zcyl(57.0, 79.5, 97.0),
+        &zcyl(10.0, 70.0, 110.0),
+        BooleanOp::Difference,
+    );
+    let v_ring = PI * (57.0 * 57.0 - 10.0 * 10.0) * 17.5;
+    fails.extend(check(
+        "ring",
+        &ring,
+        &f,
+        Bounds { volume: v_ring, tol_frac: 1e-3, max_tris: 1500 },
+    ));
+    let (cut, f) = op("section", &brep(&ring), &quadrant(), BooleanOp::Difference);
+    fails.extend(check(
+        "ring − quadrant",
+        &cut,
+        &f,
+        Bounds { volume: 0.75 * v_ring, tol_frac: 1e-3, max_tris: 1500 },
     ));
     assert!(fails.is_empty(), "{fails:#?}");
 }
