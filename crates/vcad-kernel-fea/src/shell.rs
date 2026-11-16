@@ -89,6 +89,7 @@ pub enum HeadKind {
     /// Hemispherical: a sphere of the head's outside radius.
     Hemispherical,
     /// 2:1 semi-ellipsoidal: equivalent sphere `R_o = 0.9·D_o` (UG-33.1).
+    #[serde(rename = "ellipsoidal_2to1")]
     Ellipsoidal2To1,
     /// Torispherical (flanged and dished): sphere of the crown radius.
     Torispherical {
@@ -238,6 +239,10 @@ pub struct ShellCheck {
     pub batdorf_z: Option<f64>,
     /// Circumferential waves of the governing mode (cylinders only).
     pub circumferential_waves: Option<u32>,
+    /// Independent classical cross-check (cylinders only): von Mises'
+    /// formula with the full `n² − 1` ring term, MPa. The SP-8007 screen's
+    /// classical value should sit at or below it.
+    pub von_mises_pressure_mpa: Option<f64>,
     /// Classical (perfect-shell, linear bifurcation) pressure, MPa. This is
     /// what an eigenvalue analysis converges to — and it is UNCONSERVATIVE.
     pub classical_pressure_mpa: f64,
@@ -327,6 +332,44 @@ pub fn long_cylinder_pressure(e: f64, nu: f64, r_mean: f64, t: f64) -> f64 {
     e / (4.0 * (1.0 - nu * nu)) * (t / r_mean).powi(3)
 }
 
+/// Classical von Mises pressure for a simply supported cylinder (ends held
+/// circular, free axially), minimized over integer `n ≥ 2` — the
+/// thin-shell formula with the full `n² − 1` ring term, as given by
+/// Windenburg & Trilling (Trans. ASME 56, 1934) and Timoshenko & Gere,
+/// *Theory of Elastic Stability* §11.5, with `α = πr/L`:
+///
+/// `p = (E·t/r) / (n² − 1 + c·α²/2) · [1/(n²/α² + 1)² + t²/(12r²(1−ν²))·(n² − 1 + α²)²]`
+///
+/// with `c = 1` for hydrostatic (end load) and `c = 0` for lateral
+/// pressure. Independent of the SP-8007 screen; the eigenvalue FE
+/// reproduces it within a few percent (see `buckling` tests).
+pub fn von_mises_cylinder_pressure(
+    e: f64,
+    nu: f64,
+    r_mean: f64,
+    t: f64,
+    l: f64,
+    loading: CylinderLoading,
+) -> (f64, u32) {
+    let a = std::f64::consts::PI * r_mean / l;
+    let a2 = a * a;
+    let c = match loading {
+        CylinderLoading::Hydrostatic => 1.0,
+        CylinderLoading::Lateral => 0.0,
+    };
+    let bend = t * t / (12.0 * r_mean * r_mean * (1.0 - nu * nu));
+    let mut best = (f64::INFINITY, 2u32);
+    for n in 2..=400u32 {
+        let n2 = (n * n) as f64;
+        let mem = 1.0 / (n2 / a2 + 1.0).powi(2);
+        let p = e * t / r_mean / (n2 - 1.0 + 0.5 * c * a2) * (mem + bend * (n2 - 1.0 + a2).powi(2));
+        if p < best.0 {
+            best = (p, n);
+        }
+    }
+    best
+}
+
 /// Classical (Zoelly) sphere bifurcation pressure at mean radius `r`.
 pub fn zoelly_pressure(e: f64, nu: f64, r: f64, t: f64) -> f64 {
     2.0 * e / (3.0 * (1.0 - nu * nu)).sqrt() * (t / r).powi(2)
@@ -396,9 +439,10 @@ pub fn check_shell(case: &ShellCase) -> Result<ShellCheck, SpecError> {
                 // as a plain multiplier — evaluate Eq. 20/22 again at γ.
                 let (p_kd_raw, n_kd) = batdorf_pressure(e, nu, r, t, l, 0.5625, loading);
                 let p_kd = p_kd_raw * low_n_factor(n_kd);
-                let mut basis = "sqrt(gamma) = 0.75 inside the Batdorf form (NASA/SP-8007-2020/REV 2 \
+                let mut basis =
+                    "sqrt(gamma) = 0.75 inside the Batdorf form (NASA/SP-8007-2020/REV 2 \
                      Eq. 19-22 with Eq. 28)"
-                    .to_string();
+                        .to_string();
                 if 0.5625 * z < 100.0 {
                     basis.push_str(
                         "; gamma·Z < 100 is outside the range Eq. 28 is stated for (short \
@@ -421,13 +465,7 @@ pub fn check_shell(case: &ShellCase) -> Result<ShellCheck, SpecError> {
                 // The long-cylinder bound is a floor on a ring-supported
                 // span's real buckling pressure, never a ceiling — but the
                 // knocked-down number must not exceed the classical one.
-                (
-                    p_cl,
-                    n,
-                    ShellRegime::CylinderBatdorf,
-                    p_kd.min(p_cl),
-                    basis,
-                )
+                (p_cl, n, ShellRegime::CylinderBatdorf, p_kd.min(p_cl), basis)
             };
             if matches!(loading, CylinderLoading::Lateral) {
                 cautions.push(
@@ -443,7 +481,19 @@ pub fn check_shell(case: &ShellCase) -> Result<ShellCheck, SpecError> {
             ));
             let p_y = case.yield_strength_mpa.map(|y| y * t / r);
             let hoop = p_kd * r / t;
-            (r, r / t, Some(z), Some(n), regime, p_cl, p_kd, kd_basis, p_y, hoop, case.design_factor)
+            (
+                r,
+                r / t,
+                Some(z),
+                Some(n),
+                regime,
+                p_cl,
+                p_kd,
+                kd_basis,
+                p_y,
+                hoop,
+                case.design_factor,
+            )
         }
         ShellGeometry::Sphere {
             outer_diameter_mm: d_o,
@@ -477,6 +527,15 @@ pub fn check_shell(case: &ShellCase) -> Result<ShellCheck, SpecError> {
         }
     };
     let (r, r_over_t, z, n, regime, p_cl, p_kd, kd_basis, p_y, sigma_kd, df) = out;
+    let von_mises_pressure_mpa = match case.geometry {
+        ShellGeometry::Cylinder {
+            wall_mm,
+            length_mm,
+            loading,
+            ..
+        } => Some(von_mises_cylinder_pressure(e, nu, r, wall_mm, length_mm, loading).0),
+        _ => None,
+    };
 
     if regime == ShellRegime::Sphere {
         cautions.push(
@@ -518,6 +577,7 @@ pub fn check_shell(case: &ShellCase) -> Result<ShellCheck, SpecError> {
         radius_over_thickness: r_over_t,
         batdorf_z: z,
         circumferential_waves: n,
+        von_mises_pressure_mpa,
         classical_pressure_mpa: p_cl,
         knockdown: p_kd / p_cl,
         knockdown_basis: kd_basis,
@@ -614,9 +674,13 @@ fn provenance_lines(check: &ShellCheck, case: &ShellCase) -> Vec<String> {
                 .unwrap_or_default()
         ),
         format!(
-            "regime {:?}: classical {:.4} MPa, knocked down {:.4} MPa (x{:.3}: {})",
+            "regime {:?}: classical {:.4} MPa{}, knocked down {:.4} MPa (x{:.3}: {})",
             check.regime,
             check.classical_pressure_mpa,
+            check
+                .von_mises_pressure_mpa
+                .map(|p| format!(" (von Mises cross-check {p:.4} MPa)"))
+                .unwrap_or_default(),
             check.knocked_down_pressure_mpa,
             check.knockdown,
             check.knockdown_basis
@@ -688,10 +752,7 @@ pub fn predicted_claims(
             "allowable_external_pressure_mpa",
             check.allowable_pressure_mpa,
             "MPa",
-            format!(
-                "collapse / design factor {}; {cav}",
-                check.design_factor
-            ),
+            format!("collapse / design factor {}; {cav}", check.design_factor),
         ),
         mk(
             "external_pressure_margin",
@@ -723,9 +784,9 @@ pub fn predicted_claims(
                 case.external_pressure_mpa / ATM_MPA
             )],
             supports: vec![match case.geometry {
-                ShellGeometry::Cylinder { length_mm, .. } => format!(
-                    "simply supported, held circular, every {length_mm:.0} mm"
-                ),
+                ShellGeometry::Cylinder { length_mm, .. } => {
+                    format!("simply supported, held circular, every {length_mm:.0} mm")
+                }
                 _ => "complete shell (no support idealization)".into(),
             }],
             displacement_change_rel: 0.0,
@@ -834,7 +895,11 @@ mod tests {
             "UG-28(d)",
         );
         assert_eq!(c.design_factor, 4.0);
-        assert!(c.knockdown > 0.19 && c.knockdown < 0.23, "kd {}", c.knockdown);
+        assert!(
+            c.knockdown > 0.19 && c.knockdown < 0.23,
+            "kd {}",
+            c.knockdown
+        );
         assert!(c.passes(), "6\" x 1 mm SS sphere holds a vacuum: {c:?}");
     }
 
@@ -843,7 +908,7 @@ mod tests {
         // 152.4 x 1 mm, 10 m long: Z ≫ 4000.
         let c = check_shell(&cyl(152.4, 1.0, 10_000.0)).unwrap();
         assert_eq!(c.regime, ShellRegime::CylinderLong);
-        let r = 0.5 * (152.4 - 1.0);
+        let r: f64 = 0.5 * (152.4 - 1.0);
         approx(
             c.classical_pressure_mpa,
             E_SS / (4.0 * (1.0 - NU_SS * NU_SS)) * (1.0 / r).powi(3),
@@ -867,10 +932,38 @@ mod tests {
     }
 
     #[test]
+    fn von_mises_long_limit_is_bresse_and_screen_is_not_above_it() {
+        let r = 50.0;
+        let (p, n) =
+            von_mises_cylinder_pressure(E_SS, NU_SS, r, 1.0, 1e6, CylinderLoading::Lateral);
+        assert_eq!(n, 2);
+        approx(
+            p,
+            long_cylinder_pressure(E_SS, NU_SS, r, 1.0),
+            1e-4,
+            "von Mises -> Bresse",
+        );
+        for l in [60.0, 100.0, 300.0, 1000.0, 5000.0] {
+            for lo in [CylinderLoading::Hydrostatic, CylinderLoading::Lateral] {
+                let (sc, _) = classical_cylinder_pressure(E_SS, NU_SS, r, 1.0, l, lo);
+                let (vm, _) = von_mises_cylinder_pressure(E_SS, NU_SS, r, 1.0, l, lo);
+                assert!(
+                    sc <= 1.03 * vm,
+                    "L {l} {lo:?}: screen {sc} vs von Mises {vm}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn knockdown_only_lowers() {
         for (t, l) in [(0.5, 100.0), (1.0, 300.0), (3.0, 600.0), (2.0, 50.0)] {
             let c = check_shell(&cyl(152.4, t, l)).unwrap();
-            assert!(c.knockdown > 0.0 && c.knockdown <= 1.0, "{t} {l}: {}", c.knockdown);
+            assert!(
+                c.knockdown > 0.0 && c.knockdown <= 1.0,
+                "{t} {l}: {}",
+                c.knockdown
+            );
             assert!(c.allowable_pressure_mpa <= c.collapse_pressure_mpa);
         }
     }
@@ -887,7 +980,10 @@ mod tests {
         }
         let thin = check_shell(&cyl(152.4, 0.5, 300.0)).unwrap();
         let thick = check_shell(&cyl(152.4, 3.0, 300.0)).unwrap();
-        assert!(!thin.passes(), "0.5 mm wall must not pass under vacuum: {thin:?}");
+        assert!(
+            !thin.passes(),
+            "0.5 mm wall must not pass under vacuum: {thin:?}"
+        );
         assert!(thick.passes(), "3 mm wall passes: {thick:?}");
     }
 
@@ -897,11 +993,12 @@ mod tests {
         let c = check_shell(&case).unwrap();
         assert!(!c.applicable());
         assert!(predicted_claims(&c, &case).is_err());
-        let receipt =
-            vcad_receipt::DesignReceipt::with_claims(design_claims_unverifiable(match &c.verdict {
+        let receipt = vcad_receipt::DesignReceipt::with_claims(design_claims_unverifiable(
+            match &c.verdict {
                 BeamVerdict::Unverifiable { reasons } => reasons,
                 _ => unreachable!(),
-            }));
+            },
+        ));
         assert_ne!(receipt.verdict(), vcad_receipt::ReceiptVerdict::Pass);
     }
 
@@ -952,6 +1049,8 @@ mod tests {
         assert_eq!(case.external_pressure_mpa, ATM_MPA);
         assert_eq!(case.design_factor, 3.0);
         let c = check_shell(&case).unwrap();
-        assert!(serde_json::to_string(&c).unwrap().contains("classical_pressure_mpa"));
+        assert!(serde_json::to_string(&c)
+            .unwrap()
+            .contains("classical_pressure_mpa"));
     }
 }

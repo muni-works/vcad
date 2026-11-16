@@ -414,4 +414,102 @@ export const toolDefs: ToolDef[] = [
     },
     behavior: behavior({}),
   },
+  {
+    name: "shell_buckling_check",
+    pack: null,
+    description:
+      "External-pressure BUCKLING screen for a thin shell — the governing failure mode of a " +
+      "vacuum chamber, viewport cover, or welded tube/sphere/dished head, and one that " +
+      "analyze_structure cannot see (a static solve has no buckling in it). Give a cylinder " +
+      "(OD, wall, unsupported length between flanges/rings, hydrostatic or lateral loading), " +
+      "a sphere, or a head (hemispherical, 2:1 ellipsoidal, torispherical), a material, and " +
+      "the net external pressure (default 1 atm = 0.101325 MPa); get the classical " +
+      "(perfect-shell) bifurcation pressure, the IMPERFECTION KNOCKDOWN applied and its " +
+      "citation, the knocked-down collapse pressure, the membrane-yield cap, the allowable " +
+      "pressure after a design factor, and the margin. Cylinders: NASA/SP-8007-2020/REV 2 " +
+      "Eq. 19-22 (Batdorf form minimized over integer wave count, sqrt(gamma)=0.75 per " +
+      "Eq. 28) or Eq. 27 for long ovalizing tubes (gamma=0.90, Eq. 29), design factor 3 by " +
+      "default. Spheres/heads: Zoelly classical plus ASME VIII-1 UG-28(d) elastic branch " +
+      "(Pa = 0.0625·E/(Ro/t)^2, i.e. ~0.21x classical with a factor of 4); heads as an " +
+      "equivalent sphere per UG-33 (2:1 ellipsoidal Ro = 0.9·Do). Linear (eigenvalue) " +
+      "buckling is UNCONSERVATIVE for shells — real ones collapse below it — which is why the " +
+      "knockdown is stated, not hidden. Fail-closed: D/t < 10 (thick wall) is Unverifiable " +
+      "and claims nothing. Claims ride `vcad.fea-claims/1` and unified-receipt " +
+      "`structure.shell.*` with basis \"predicted\" (Provisional until tested). A SCREEN, " +
+      "not ASME code compliance: UG-28 cylinder charts and elastic-plastic collapse are not " +
+      "reproduced; knuckles, nozzles, ports and out-of-roundness are not checked. Needs no " +
+      "document.",
+    inputSchema: {
+      type: "object" as const,
+      required: ["geometry", "youngs_modulus_mpa", "poisson"],
+      properties: {
+        geometry: {
+          type: "object" as const,
+          required: ["type", "outer_diameter_mm", "wall_mm"],
+          description:
+            'One of: {"type":"cylinder",outer_diameter_mm,wall_mm,length_mm,loading?} ' +
+            "(length = unsupported span between flanges or stiffening rings; loading " +
+            '"hydrostatic" (default, a capped vessel) or "lateral"), ' +
+            '{"type":"sphere",outer_diameter_mm,wall_mm}, or ' +
+            '{"type":"head",head:{"kind":"hemispherical"|"ellipsoidal_2to1"|' +
+            '"torispherical",crown_radius_mm?},outer_diameter_mm,wall_mm}.',
+          properties: {
+            type: { type: "string" as const, enum: ["cylinder", "sphere", "head"] },
+            outer_diameter_mm: { type: "number" as const, description: "Outside diameter, mm." },
+            wall_mm: { type: "number" as const, description: "Wall thickness, mm." },
+            length_mm: {
+              type: "number" as const,
+              description: "Cylinder only: unsupported length between rings/flanges, mm.",
+            },
+            loading: { type: "string" as const, enum: ["hydrostatic", "lateral"] },
+            head: {
+              type: "object" as const,
+              required: ["kind"],
+              properties: {
+                kind: {
+                  type: "string" as const,
+                  enum: ["hemispherical", "ellipsoidal_2to1", "torispherical"],
+                },
+                crown_radius_mm: {
+                  type: "number" as const,
+                  description: "Torispherical only: outside crown radius, mm.",
+                },
+              },
+            },
+          },
+        },
+        youngs_modulus_mpa: {
+          type: "number" as const,
+          description: "Young's modulus, MPa (304/316 stainless ~193000, 6061 ~69000).",
+        },
+        poisson: { type: "number" as const, description: "Poisson's ratio (steel ~0.29)." },
+        yield_strength_mpa: {
+          type: "number" as const,
+          description:
+            "Yield strength, MPa (304 annealed ~205). Caps collapse at membrane yield; " +
+            "without it the cap is skipped and a caution says so.",
+        },
+        external_pressure_mpa: {
+          type: "number" as const,
+          description: "Net external pressure, MPa. Default 0.101325 (1 atm, vacuum inside).",
+        },
+        design_factor: {
+          type: "number" as const,
+          description:
+            "Design factor on the knocked-down cylinder collapse pressure (default 3). " +
+            "Spheres/heads use UG-28(d)'s built-in factor of 4.",
+        },
+      },
+    },
+    handler: (args, ctx) => {
+      const a = args as unknown as Record<string, unknown>;
+      const started = performance.now();
+      const out = ctx.engine.feaCheckShell(JSON.stringify(a));
+      return textResult({
+        solve_ms: Math.round(performance.now() - started),
+        ...(out as Record<string, unknown>),
+      });
+    },
+    behavior: behavior({}),
+  },
 ];

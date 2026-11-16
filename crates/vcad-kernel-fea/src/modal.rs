@@ -822,7 +822,11 @@ pub(crate) fn lobpcg(
 }
 
 /// Rayleigh–Ritz in an M-orthonormal basis: lowest `k` Ritz pairs.
-fn rr(basis: &[Vec<f64>], sys_k: &CsrMatrix<f64>, k: usize) -> (Vec<f64>, Vec<Vec<f64>>, Vec<Vec<f64>>) {
+fn rr(
+    basis: &[Vec<f64>],
+    sys_k: &CsrMatrix<f64>,
+    k: usize,
+) -> (Vec<f64>, Vec<Vec<f64>>, Vec<Vec<f64>>) {
     let nb = basis.len();
     let n = sys_k.nrows;
     let kb: Vec<Vec<f64>> = basis

@@ -9812,6 +9812,47 @@ pub fn fea_check_beam(case_json: &str) -> Result<JsValue, JsError> {
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
 }
 
+#[derive(serde::Serialize)]
+struct WasmShellCheck {
+    check: vcad_kernel::vcad_kernel_fea::shell::ShellCheck,
+    claim_set: Option<vcad_kernel::vcad_kernel_fea::receipt::ClaimSet>,
+    receipt_claims: Vec<vcad_receipt::ReceiptClaim>,
+}
+
+/// Closed-form external-pressure buckling screen for a thin cylinder,
+/// sphere or dished head (vacuum chambers, viewport covers): classical
+/// bifurcation pressure, the cited imperfection knockdown (NASA/SP-8007
+/// REV 2 for cylinders, ASME VIII-1 UG-28(d)/UG-33 for spheres and heads),
+/// membrane-yield cap, allowable and margin — with the same fail-closed
+/// applicability gating and predicted-basis claims as the beam route.
+///
+/// `case_json` is a `vcad_kernel_fea::shell::ShellCase`.
+#[wasm_bindgen(js_name = feaCheckShell)]
+pub fn fea_check_shell(case_json: &str) -> Result<JsValue, JsError> {
+    use vcad_kernel::vcad_kernel_fea as fea;
+    let case: fea::shell::ShellCase =
+        serde_json::from_str(case_json).map_err(|e| JsError::new(&format!("bad case: {e}")))?;
+    let check = fea::shell::check_shell(&case).map_err(|e| JsError::new(&e.to_string()))?;
+    let (claim_set, receipt_claims) = match &check.verdict {
+        fea::section::BeamVerdict::Applicable => {
+            let set = fea::shell::predicted_claims(&check, &case)
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            let claims = fea::shell::design_claims(&set);
+            (Some(set), claims)
+        }
+        fea::section::BeamVerdict::Unverifiable { reasons } => {
+            (None, fea::shell::design_claims_unverifiable(reasons))
+        }
+    };
+    let out = WasmShellCheck {
+        check,
+        claim_set,
+        receipt_claims,
+    };
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
 // ---------------------------------------------------------------------------
 // Electromagnetic field solver (vcad-kernel-em)
 // ---------------------------------------------------------------------------
