@@ -769,7 +769,8 @@ mod tests {
 
     #[test]
     fn segment_distance_basics() {
-        let d = segment_segment_distance([0.0; 3], [1.0, 0.0, 0.0], [0.5, 1.0, -1.0], [0.5, 1.0, 1.0]);
+        let d =
+            segment_segment_distance([0.0; 3], [1.0, 0.0, 0.0], [0.5, 1.0, -1.0], [0.5, 1.0, 1.0]);
         assert!((d - 1.0).abs() < 1e-12);
         let d = point_segment_distance([2.0, 1.0, 0.0], [0.0; 3], [1.0, 0.0, 0.0]);
         assert!((d - 2f64.sqrt()).abs() < 1e-12);

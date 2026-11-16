@@ -671,10 +671,7 @@ impl WireField {
     /// Total free charge on wire `k`, coulombs.
     pub fn wire_charge_c(&self, k: usize) -> f64 {
         let w = &self.wires[k];
-        self.segs[w.s0..w.s1]
-            .iter()
-            .map(|s| s.lambda * s.len)
-            .sum()
+        self.segs[w.s0..w.s1].iter().map(|s| s.lambda * s.len).sum()
     }
 
     /// Total free charge on all wires, coulombs.
@@ -847,7 +844,10 @@ impl WireField {
                 let mut clearance = f64::INFINITY;
                 for k in 0..azimuths {
                     let ang = 2.0 * std::f64::consts::PI * k as f64 / azimuths as f64;
-                    let p = add(c, scale(add(scale(u, ang.cos()), scale(v, ang.sin())), w.radius));
+                    let p = add(
+                        c,
+                        scale(add(scale(u, ang.cos()), scale(v, ang.sin())), w.radius),
+                    );
                     // Skip points buried inside any other segment's
                     // conductor (crossings, inner side of bends); measure
                     // the clearance to other wires for junction zoning.
@@ -947,7 +947,10 @@ impl WireField {
     /// Smallest distance of any wire centerline vertex from the origin, m
     /// (sizes the tracer's core region, like the 2D path).
     pub fn min_wire_spherical_radius_m(&self) -> f64 {
-        self.verts.iter().map(|v| norm(*v)).fold(f64::INFINITY, f64::min)
+        self.verts
+            .iter()
+            .map(|v| norm(*v))
+            .fold(f64::INFINITY, f64::min)
     }
 
     /// The wall radius the tracer uses, m: the chamber sphere less half a
@@ -1074,7 +1077,11 @@ mod tests {
         let d = Device3d::lat_long_globe(76.0, 19.0, 3, 4, 1.0, -30e3);
         let f = solve(&d, &BemOptions::default()).unwrap();
         let h = 1e-6;
-        for p in [[0.004, 0.003, 0.002], [0.025, -0.01, 0.006], [0.0, 0.0, 0.05]] {
+        for p in [
+            [0.004, 0.003, 0.002],
+            [0.025, -0.01, 0.006],
+            [0.0, 0.0, 0.05],
+        ] {
             let e = f.e_field(p);
             for k in 0..3 {
                 let mut pp = p;

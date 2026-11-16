@@ -406,7 +406,13 @@ impl DeviceSpec3d {
                     potential_v,
                     ampere_turns,
                 } => {
-                    for v in [ring_radius_mm, z_mm, wire_radius_mm, potential_v, ampere_turns] {
+                    for v in [
+                        ring_radius_mm,
+                        z_mm,
+                        wire_radius_mm,
+                        potential_v,
+                        ampere_turns,
+                    ] {
                         put(v);
                     }
                 }

@@ -23,10 +23,22 @@ fn ring_stack_matches_the_2d_solver() {
     let rings = Device::classic_fusor(60.0, 20.0, 4, 0.75, v);
     let d3 = Device3d::from_rings(&rings, Chamber3d::Sphere { radius_mm: 60.0 });
     let f3 = solve(&d3, &BemOptions::default()).unwrap();
-    let coarse = solve_with_chamber(&rings, ChamberShape::Sphere, 121, 241, &SolveOptions::default())
-        .unwrap();
-    let fine = solve_with_chamber(&rings, ChamberShape::Sphere, 241, 481, &SolveOptions::default())
-        .unwrap();
+    let coarse = solve_with_chamber(
+        &rings,
+        ChamberShape::Sphere,
+        121,
+        241,
+        &SolveOptions::default(),
+    )
+    .unwrap();
+    let fine = solve_with_chamber(
+        &rings,
+        ChamberShape::Sphere,
+        241,
+        481,
+        &SolveOptions::default(),
+    )
+    .unwrap();
     for &(r_mm, z_mm) in &[
         (0.0, 0.0),
         (5.0, 3.0),
@@ -53,7 +65,10 @@ fn ring_stack_matches_the_2d_solver() {
             e_fine.abs() <= e_coarse.abs() + 1e-3,
             "2D not converging toward 3D at ({r_mm},{z_mm}): {e_coarse} -> {e_fine}"
         );
-        assert!(e_fine.abs() < 0.025, "({r_mm},{z_mm}): 2D(h=0.25) gap {e_fine}");
+        assert!(
+            e_fine.abs() < 0.025,
+            "({r_mm},{z_mm}): 2D(h=0.25) gap {e_fine}"
+        );
         let extrapolated = 2.0 * e_fine - e_coarse;
         assert!(
             extrapolated.abs() < 0.01,
@@ -73,9 +88,7 @@ fn small_ring_in_sphere_matches_the_point_charge_image() {
         Chamber3d::Sphere { radius_mm: 60.0 },
     );
     // Move the ring to z = 20 mm.
-    if let vcad_kernel_particle::wire3d::WirePath::Circle { center_mm, .. } =
-        &mut d.wires[0].path
-    {
+    if let vcad_kernel_particle::wire3d::WirePath::Circle { center_mm, .. } = &mut d.wires[0].path {
         *center_mm = [0.0, 0.0, 20.0];
     }
     let f = solve(&d, &BemOptions::default()).unwrap();
@@ -121,8 +134,14 @@ fn dense_globe_converges_to_concentric_spheres() {
             }
         }
         let q_err = (f.total_charge_c() - q_sphere).abs() / q_sphere.abs();
-        assert!(err < prev_err, "({n_lat},{n_long}): exterior error {err} did not fall");
-        assert!(q_err < prev_q_err, "({n_lat},{n_long}): charge error {q_err} did not fall");
+        assert!(
+            err < prev_err,
+            "({n_lat},{n_long}): exterior error {err} did not fall"
+        );
+        assert!(
+            q_err < prev_q_err,
+            "({n_lat},{n_long}): charge error {q_err} did not fall"
+        );
         prev_err = err;
         prev_q_err = q_err;
     }
@@ -150,7 +169,8 @@ fn six_great_circle_geometric_vs_traced_transparency() {
     let (a, r) = (1.0_f64, 19.0_f64);
     let alpha = (a / r).asin();
     let theta = (1.0 / 5f64.sqrt()).acos();
-    let blocked = 6.0 * a / r - 30.0 * (2.0 * alpha).powi(2) / (theta.sin() * 4.0 * std::f64::consts::PI);
+    let blocked =
+        6.0 * a / r - 30.0 * (2.0 * alpha).powi(2) / (theta.sin() * 4.0 * std::f64::consts::PI);
     let t_closed = 1.0 - blocked;
 
     let dev = six_great_circles(-1.0);
@@ -206,5 +226,7 @@ fn globe_tracing_conserves_energy_and_recirculates() {
         "mean energy drift {}",
         st.mean_energy_drift_rel
     );
-    assert!(out.iter().all(|o| !matches!(o.fate, Fate::Wire(k) if k >= 6)));
+    assert!(out
+        .iter()
+        .all(|o| !matches!(o.fate, Fate::Wire(k) if k >= 6)));
 }

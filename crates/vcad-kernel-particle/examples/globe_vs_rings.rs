@@ -175,7 +175,13 @@ fn main() {
     let s2 = poisson::solve_with_chamber(&rings, ChamberShape::Sphere, 305, 609, &sopts)
         .expect("2D sphere solve");
     println!("\n# 2D (sphere chamber, h = 0.25 mm) vs 3D potential, ring stack, kV");
-    for (r, z) in [(0.0, 0.0), (10.0, 0.0), (0.0, 10.0), (30.0, 20.0), (50.0, -10.0)] {
+    for (r, z) in [
+        (0.0, 0.0),
+        (10.0, 0.0),
+        (0.0, 10.0),
+        (30.0, 20.0),
+        (50.0, -10.0),
+    ] {
         let p3 = f3.potential([r * 1e-3, 0.0, z * 1e-3]);
         let p2 = s2.potential_at(r * 1e-3, z * 1e-3);
         println!(

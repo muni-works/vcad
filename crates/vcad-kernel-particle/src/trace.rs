@@ -448,8 +448,7 @@ impl<'a> Tracer<'a> {
                 time += dth;
                 steps += 1;
 
-                if let (Some(d), Some((nr, nz, dr, dz, z_half))) =
-                    (dwell.as_deref_mut(), self.grid)
+                if let (Some(d), Some((nr, nz, dr, dz, z_half))) = (dwell.as_deref_mut(), self.grid)
                 {
                     let i = ((p[0] * p[0] + p[1] * p[1]).sqrt() / dr).round() as usize;
                     let j = (((p[2] + z_half) / dz).round().max(0.0)) as usize;
