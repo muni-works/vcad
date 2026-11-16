@@ -629,7 +629,7 @@ impl Skyline {
 /// for these sizes on a loaded machine (fine-grained supernodes, threads
 /// fighting other work), and the block of residuals is already one call.
 #[cfg(not(target_arch = "wasm32"))]
-struct SparseLlt {
+pub(crate) struct SparseLlt {
     symbolic: faer::sparse::linalg::cholesky::SymbolicCholesky<usize>,
     values: Vec<f64>,
     n: usize,
