@@ -647,8 +647,7 @@ impl SparseLlt {
         }
         // `A` is symmetric, so its CSR arrays (rows sorted, duplicates
         // merged by `CooMatrix::to_csr`) are a valid CSC view of `A`.
-        let sym =
-            SymbolicSparseColMatRef::new_checked(n, n, &a.row_ptrs, None, &a.col_indices);
+        let sym = SymbolicSparseColMatRef::new_checked(n, n, &a.row_ptrs, None, &a.col_indices);
         let mat = SparseColMatRef::new(sym, &a.values);
         let symbolic = factorize_symbolic_cholesky(
             sym,
@@ -705,7 +704,7 @@ impl SparseLlt {
 enum Precond {
     Exact(Skyline),
     #[cfg(not(target_arch = "wasm32"))]
-    Sparse(SparseLlt),
+    Sparse(Box<SparseLlt>),
     Ic0(tang_sparse::Ic0),
     Jacobi(tang_sparse::Jacobi),
 }
@@ -719,7 +718,7 @@ impl Precond {
     fn new(a: &CsrMatrix<f64>) -> Precond {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(f) = SparseLlt::factor(a) {
-            return Precond::Sparse(f);
+            return Precond::Sparse(Box::new(f));
         }
         if let Some(f) = Skyline::factor(a, 50_000_000) {
             return Precond::Exact(f);

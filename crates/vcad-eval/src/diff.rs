@@ -34,8 +34,8 @@ use vcad_kernel_diff::{
 use vcad_kernel_tessellate::frozen::capture_plan;
 use vcad_kernel_tessellate::TessellationParams;
 
-use crate::incremental::IncrementalCache;
 use crate::evaluate::evaluate_document_incremental;
+use crate::incremental::IncrementalCache;
 use crate::{EvalError, EvalOptions, EvaluatedMesh};
 
 /// Gradient of one solid part's mass properties with respect to a document
@@ -184,7 +184,13 @@ pub fn document_parameter_gradient(
     let theta0 = *env
         .get(parameter)
         .ok_or_else(|| DocDiffError::UnknownParameter(parameter.to_string()))?;
-    gradient_with(&ProbeEvaluator::new(doc, parameter), theta0, density, tess, probe_step)
+    gradient_with(
+        &ProbeEvaluator::new(doc, parameter),
+        theta0,
+        density,
+        tess,
+        probe_step,
+    )
 }
 
 /// [`document_parameter_gradient`] over a shared [`ProbeEvaluator`].
