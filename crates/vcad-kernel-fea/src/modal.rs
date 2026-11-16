@@ -830,6 +830,49 @@ struct Eigs {
     iterations: usize,
 }
 
+/// `out = Σ_s c[s] · cols[s]` (columns with a zero coefficient skipped).
+fn combine(cols: &[&Vec<f64>], c: &[f64], n: usize) -> Vec<f64> {
+    let mut out = vec![0.0; n];
+    for (col, &w) in cols.iter().zip(c) {
+        if w != 0.0 {
+            for (o, v) in out.iter_mut().zip(col.iter()) {
+                *o += w * v;
+            }
+        }
+    }
+    out
+}
+
+/// `A·v` for every vector of a block.
+fn spmv_block(a: &CsrMatrix<f64>, vs: &[Vec<f64>]) -> Vec<Vec<f64>> {
+    vs.iter()
+        .map(|v| {
+            let mut y = vec![0.0; v.len()];
+            spmv(a, v, &mut y);
+            y
+        })
+        .collect()
+}
+
+/// Symmetric Gram matrix `G[i][j] = sᵢ · tⱼ` (lower triangle computed,
+/// mirrored), with `t = A·s` for a symmetric `A`.
+fn gram(s: &[&Vec<f64>], t: &[&Vec<f64>]) -> Vec<f64> {
+    let k = s.len();
+    let mut g = vec![0.0; k * k];
+    for i in 0..k {
+        for j in 0..=i {
+            let v = dot(s[i], t[j]);
+            g[i * k + j] = v;
+            g[j * k + i] = v;
+        }
+    }
+    g
+}
+
+/// How often the carried `K·X`, `M·X`, `K·P`, `M·P` are recomputed from
+/// scratch to bound the drift of updating them by linear combination.
+const LOBPCG_REFRESH: usize = 25;
+
 #[allow(clippy::too_many_arguments)]
 fn lobpcg(
     sys: &System,
@@ -860,71 +903,165 @@ fn lobpcg(
     // Classic LOBPCG: Rayleigh–Ritz on span[X, W, P], where W = T·R are
     // the preconditioned residuals and P carries the W/P components of the
     // previous Ritz vectors (the "conjugate direction").
-    let mz: Vec<Vec<f64>> = deflate
-        .iter()
-        .map(|v| {
-            let mut y = vec![0.0; n];
-            spmv(&sys.m, v, &mut y);
-            y
-        })
-        .collect();
+    //
+    // Everything is done in coefficient space over S = [X, W, P]: the
+    // M-orthonormal basis and the Ritz vectors are linear combinations of
+    // S, so their images under K and M are the same combinations of
+    // K·S and M·S. Only the new W needs sparse products each iteration
+    // (2·|W| spmv, against ~8·|W| when the basis, its K-image and the
+    // residuals were each rebuilt with fresh products).
+    let mz: Vec<Vec<f64>> = spmv_block(&sys.m, deflate);
     for v in x.iter_mut() {
         project_out(v, deflate, &mz);
     }
+    let mut kx = spmv_block(&sys.k, &x);
+    let mut mx = spmv_block(&sys.m, &x);
     let mut w: Vec<Vec<f64>> = Vec::new();
     let mut p: Vec<Vec<f64>> = Vec::new();
+    let mut kp: Vec<Vec<f64>> = Vec::new();
+    let mut mp: Vec<Vec<f64>> = Vec::new();
     let mut worst = f64::INFINITY;
+    let mut since_refresh = 0usize;
     for it in 0..max_iter {
+        let kw = spmv_block(&sys.k, &w);
+        let mw = spmv_block(&sys.m, &w);
         let nx = x.len();
-        let nw = w.len();
-        let span: Vec<Vec<f64>> = x.iter().chain(w.iter()).chain(p.iter()).cloned().collect();
-        let (basis, coef) = m_orthonormalize(&span, &sys.m);
-        let (vals, xnew, ritz) = rr(&basis, sys, block);
-        // Ritz vector j = Σ_b ritz[j][b] · basis[b] = Σ_s (Σ_b ritz[j][b] coef[b][s]) · span[s].
-        // P_new keeps only the W and P parts (s ≥ nx).
-        let mut pnew = Vec::with_capacity(block);
-        if it > 0 {
-            for rj in &ritz {
-                let mut a = vec![0.0; span.len()];
+        let s: Vec<&Vec<f64>> = x.iter().chain(&w).chain(&p).collect();
+        let ks: Vec<&Vec<f64>> = kx.iter().chain(&kw).chain(&kp).collect();
+        let ms: Vec<&Vec<f64>> = mx.iter().chain(&mw).chain(&mp).collect();
+        let ns = s.len();
+
+        // M-orthonormalize S (dropping near-dependent directions) via the
+        // eigen-decomposition of its Gram matrix. Scale every column to
+        // unit M-norm first: W columns (preconditioned residuals) can be
+        // orders of magnitude larger than X, and a raw Gram matrix would
+        // make the X directions look dependent and drop them.
+        let gm = gram(&s, &ms);
+        let d: Vec<f64> = (0..ns)
+            .map(|i| {
+                let nrm = gm[i * ns + i].max(0.0).sqrt();
+                if nrm > 0.0 {
+                    1.0 / nrm
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let gms: Vec<f64> = (0..ns * ns)
+            .map(|ij| gm[ij] * d[ij / ns] * d[ij % ns])
+            .collect();
+        let (vals_m, vecs_m) = sym_eig(gms, ns);
+        let top = vals_m.iter().cloned().fold(0.0f64, f64::max);
+        // coef[b][s]: basis vector b = Σ_s coef[b][s] · S_s.
+        let coef: Vec<Vec<f64>> = vals_m
+            .iter()
+            .zip(&vecs_m)
+            .filter(|(val, _)| **val > 1e-8 * top)
+            .map(|(val, vec)| {
+                let scale = 1.0 / val.sqrt();
+                vec.iter()
+                    .enumerate()
+                    .map(|(j, c)| c * scale * d[j])
+                    .collect()
+            })
+            .collect();
+        let nb = coef.len();
+
+        // Rayleigh–Ritz: basisᵢᵀ K basisⱼ = coefᵢᵀ (Sᵀ K S) coefⱼ.
+        let gk_s = gram(&s, &ks);
+        let ck: Vec<Vec<f64>> = coef
+            .iter()
+            .map(|c| {
+                (0..ns)
+                    .map(|t| (0..ns).map(|u| c[u] * gk_s[u * ns + t]).sum())
+                    .collect()
+            })
+            .collect();
+        let mut gk = vec![0.0; nb * nb];
+        for i in 0..nb {
+            for j in 0..=i {
+                let v: f64 = (0..ns).map(|t| ck[i][t] * coef[j][t]).sum();
+                gk[i * nb + j] = v;
+                gk[j * nb + i] = v;
+            }
+        }
+        let (vals_all, ritz) = sym_eig(gk, nb);
+        let k = block.min(nb);
+        let vals = vals_all[..k].to_vec();
+        // Ritz vector j = Σ_s a_j[s] · S_s with a_j = Σ_b ritz[j][b] coef[b].
+        let a: Vec<Vec<f64>> = ritz[..k]
+            .iter()
+            .map(|rj| {
+                let mut aj = vec![0.0; ns];
                 for (b, rb) in rj.iter().enumerate() {
                     for (sidx, c) in coef[b].iter().enumerate() {
-                        a[sidx] += rb * c;
+                        aj[sidx] += rb * c;
                     }
                 }
-                let mut col = vec![0.0; n];
-                for sidx in nx..span.len() {
-                    let c = a[sidx];
-                    if c != 0.0 {
-                        for r in 0..n {
-                            col[r] += c * span[sidx][r];
-                        }
+                aj
+            })
+            .collect();
+        // P_new keeps only the W and P parts (s ≥ nx).
+        let pn = (it > 0).then(|| {
+            let part = |cols: &[&Vec<f64>]| -> Vec<Vec<f64>> {
+                a.iter()
+                    .map(|aj| combine(&cols[nx..], &aj[nx..], n))
+                    .collect()
+            };
+            (part(&s), part(&ks), part(&ms))
+        });
+        let xn: Vec<Vec<f64>> = a.iter().map(|aj| combine(&s, aj, n)).collect();
+        let mut kxn: Vec<Vec<f64>> = a.iter().map(|aj| combine(&ks, aj, n)).collect();
+        let mut mxn: Vec<Vec<f64>> = a.iter().map(|aj| combine(&ms, aj, n)).collect();
+        if let Some((pp, kpp, mpp)) = pn {
+            (p, kp, mp) = (pp, kpp, mpp);
+        }
+        x = xn;
+        since_refresh += 1;
+        if since_refresh >= LOBPCG_REFRESH {
+            kxn = spmv_block(&sys.k, &x);
+            mxn = spmv_block(&sys.m, &x);
+            kp = spmv_block(&sys.k, &p);
+            mp = spmv_block(&sys.m, &p);
+            since_refresh = 0;
+        }
+        kx = kxn;
+        mx = mxn;
+
+        // Residuals R = K x − λ M x, relative to (|λ| + λ_ref)·‖Mx‖: a
+        // rigid mode (λ ≈ 0) is judged against a small stiffness scale,
+        // not against its own ‖Kx‖.
+        let residuals = |kx: &[Vec<f64>], mx: &[Vec<f64>]| -> (Vec<Vec<f64>>, f64) {
+            let mut worst = 0.0f64;
+            let rs = (0..x.len())
+                .map(|jj| {
+                    let lam = vals[jj];
+                    let r: Vec<f64> = kx[jj]
+                        .iter()
+                        .zip(&mx[jj])
+                        .map(|(a, b)| a - lam * b)
+                        .collect();
+                    let denom = (lam.abs() + lam_ref) * dot(&mx[jj], &mx[jj]).sqrt();
+                    if jj < want {
+                        worst = worst.max(dot(&r, &r).sqrt() / denom.max(1e-300));
                     }
-                }
-                pnew.push(col);
-            }
+                    r
+                })
+                .collect();
+            (rs, worst)
+        };
+        let (mut rs, mut w_now) = residuals(&kx, &mx);
+        if w_now < tol && since_refresh != 0 {
+            // Converged on the carried products: confirm on exact ones, so
+            // the answer never rests on accumulated update drift.
+            kx = spmv_block(&sys.k, &x);
+            mx = spmv_block(&sys.m, &x);
+            kp = spmv_block(&sys.k, &p);
+            mp = spmv_block(&sys.m, &p);
+            since_refresh = 0;
+            (rs, w_now) = residuals(&kx, &mx);
         }
-        let _ = nw;
-        x = xnew;
-        // Residuals R = K x − λ M x, preconditioned (all at once: a sparse
-        // factor solves the whole block in one pass).
-        let mut rs = Vec::with_capacity(block);
-        worst = 0.0f64;
-        for (jj, xv) in x.iter().enumerate() {
-            let mut kx = vec![0.0; n];
-            let mut mx = vec![0.0; n];
-            spmv(&sys.k, xv, &mut kx);
-            spmv(&sys.m, xv, &mut mx);
-            let lam = vals[jj];
-            let r: Vec<f64> = kx.iter().zip(&mx).map(|(a, b)| a - lam * b).collect();
-            // Relative to (|λ| + λ_ref)·‖Mx‖: a rigid mode (λ ≈ 0) is judged
-            // against a small stiffness scale, not against its own ‖Kx‖.
-            let denom = (lam.abs() + lam_ref) * dot(&mx, &mx).sqrt();
-            let rel = dot(&r, &r).sqrt() / denom.max(1e-300);
-            if jj < want {
-                worst = worst.max(rel);
-            }
-            rs.push(r);
-        }
+        worst = w_now;
         if worst < tol {
             return Ok(Eigs {
                 vals,
@@ -932,55 +1069,18 @@ fn lobpcg(
                 iterations: it + 1,
             });
         }
+        // Preconditioned all at once: a sparse factor solves the whole
+        // block in one pass.
         let mut wn = precond.apply_block(&rs);
         for z in wn.iter_mut() {
             project_out(z, deflate, &mz);
         }
         w = wn;
-        p = pnew;
     }
     Err(ModalError::NotConverged {
         iterations: max_iter,
         residual: worst,
     })
-}
-
-/// Rayleigh–Ritz in an M-orthonormal basis: lowest `k` Ritz pairs.
-fn rr(basis: &[Vec<f64>], sys: &System, k: usize) -> (Vec<f64>, Vec<Vec<f64>>, Vec<Vec<f64>>) {
-    let nb = basis.len();
-    let n = sys.k.nrows;
-    let kb: Vec<Vec<f64>> = basis
-        .iter()
-        .map(|v| {
-            let mut y = vec![0.0; n];
-            spmv(&sys.k, v, &mut y);
-            y
-        })
-        .collect();
-    let mut g = vec![0.0; nb * nb];
-    for i in 0..nb {
-        for j in 0..=i {
-            let v = dot(&basis[i], &kb[j]);
-            g[i * nb + j] = v;
-            g[j * nb + i] = v;
-        }
-    }
-    let (vals, vecs) = sym_eig(g, nb);
-    let k = k.min(nb);
-    let xs = (0..k)
-        .map(|c| {
-            let mut col = vec![0.0; n];
-            for (j, w) in vecs[c].iter().enumerate() {
-                if *w != 0.0 {
-                    for r in 0..n {
-                        col[r] += w * basis[j][r];
-                    }
-                }
-            }
-            col
-        })
-        .collect();
-    (vals[..k].to_vec(), xs, vecs[..k].to_vec())
 }
 
 // ─── Driver ───────────────────────────────────────────────────────────────
