@@ -98,12 +98,23 @@ mod tests {
     fn kerma_table_agrees_with_e_times_mu_en_air() {
         // K/Φ = E·(μ_en/ρ)_air — an independent check that the ICRP
         // column and the NIST data in this crate are mutually
-        // consistent. Above 30 keV the argon fold-in is invisible.
+        // consistent. From 100 keV up they agree to a few %.
         let air = materials::air();
-        for e in [30.0, 60.0, 100.0, 300.0, 662.0, 1000.0, 2000.0, 3000.0] {
+        let kerma_of = |e: f64| {
             let (_, men) = air.mass_coefficients(e).unwrap();
             // MeV/g → pGy: × 1.602e-13 J/MeV × 1e3 g/kg × 1e12 pGy/Gy.
-            let k = e * 1.0e-3 * men * 1.602_176_634e-13 * 1.0e3 * 1.0e12;
+            e * 1.0e-3 * men * 1.602_176_634e-13 * 1.0e3 * 1.0e12
+        };
+        // Below 100 keV the bundled air (argon folded into nitrogen)
+        // under-absorbs — Ar photoabsorption is Z⁴-strong — so it reads
+        // LOW: the documented, conservative direction (less air
+        // attenuation in transport). Pin both the direction and size.
+        for e in [30.0, 60.0] {
+            let r = kerma_of(e) / kerma_pgy_cm2(e);
+            assert!(r > 0.8 && r < 1.0, "{e} keV: ratio {r}");
+        }
+        for e in [100.0, 300.0, 662.0, 1000.0, 2000.0, 3000.0] {
+            let k = kerma_of(e);
             let tab = kerma_pgy_cm2(e);
             assert!((k / tab - 1.0).abs() < 0.06, "{e} keV: E·μen {k} vs ICRP {tab}");
         }

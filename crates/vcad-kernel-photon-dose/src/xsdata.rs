@@ -332,9 +332,10 @@ mod tests {
 
     #[test]
     fn klein_nishina_limits() {
-        // Thomson limit: 8π r_e²/3 = 0.6652 b.
+        // Thomson limit: σ → 8π r_e²/3 (1 − 2k + …) as k = E/mc² → 0.
         let thomson = 8.0 * std::f64::consts::PI * R_E2_CM2 / 3.0;
-        assert!((klein_nishina_sigma_cm2(0.01) / thomson - 1.0).abs() < 1e-3);
+        let k = 1.0 / ELECTRON_MASS_KEV;
+        assert!((klein_nishina_sigma_cm2(1.0) / thomson - (1.0 - 2.0 * k)).abs() < 1e-4);
         // Hydrogen: KN × electrons/g ≈ the NIST total above ~100 keV
         // (hydrogen has no photoabsorption to speak of).
         for e in [200.0, 662.0, 1000.0, 2000.0] {
