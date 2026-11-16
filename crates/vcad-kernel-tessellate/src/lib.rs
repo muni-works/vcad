@@ -5375,7 +5375,15 @@ fn delaunay_flip(
         }
         let n0 = [c, a, d];
         let n1 = [d, b, c];
-        if orient(&n0) <= 0.0 || orient(&n1) <= 0.0 {
+        // Strictly convex quads only, with a floor relative to the quad:
+        // when `a` (or `b`) sits ON the segment c–d — a bisection midpoint
+        // on the edge it halved — the new triangle is collinear, and its
+        // signed area is rounding noise that passes a bare `> 0` test half
+        // the time. Lifted onto a cylinder those zero-area triangles get
+        // arbitrary normals (black facets, "folded" edges on the open-fusor
+        // chamber wall around its port holes).
+        let min_area = 1e-9 * scale.sqrt();
+        if orient(&n0) <= min_area || orient(&n1) <= min_area {
             continue;
         }
         tris[i0] = n0;
@@ -5706,7 +5714,10 @@ fn tessellate_spherical_region(
                 let o = |p: (f64, f64), q: (f64, f64)| {
                     (q.0 - p.0) * (w.1 - p.1) - (q.1 - p.1) * (w.0 - p.0)
                 };
-                o(a, b) > 0.0 && o(b, c) > 0.0 && o(c, a) > 0.0
+                // Strictly inside, clear of the edges: a seed a rounding
+                // error inside an edge splits off a zero-area triangle.
+                let clear = 1e-6 * ((b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0));
+                o(a, b) > clear && o(b, c) > clear && o(c, a) > clear
             }) else {
                 continue;
             };
@@ -7773,7 +7784,10 @@ fn tessellate_trimmed_region(
                 let o = |p: (f64, f64), q: (f64, f64)| {
                     (q.0 - p.0) * (w.1 - p.1) - (q.1 - p.1) * (w.0 - p.0)
                 };
-                o(a, b) > 0.0 && o(b, c) > 0.0 && o(c, a) > 0.0
+                // Strictly inside, clear of the edges: a seed a rounding
+                // error inside an edge splits off a zero-area triangle.
+                let clear = 1e-6 * ((b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0));
+                o(a, b) > clear && o(b, c) > clear && o(c, a) > clear
             }) else {
                 continue;
             };
