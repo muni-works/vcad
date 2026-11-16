@@ -39,10 +39,15 @@ fn alias(name: &str) -> String {
     format!("{ALIAS_PREFIX}{name}")
 }
 
-/// Heads the interpreter dispatches on before looking anything up. Never
-/// rewritten, even if a builtin of the same name exists: `[%lib%if …]`
-/// would turn a special form into a call.
+/// Heads the interpreter or the macro expander dispatches on before looking
+/// anything up. Never rewritten, even if a builtin of the same name exists:
+/// `[%lib%if …]` would turn a special form into a call, and `[%lib%and …]`
+/// would trade the expander's short-circuit desugar for the strict builtin.
 const SPECIAL_FORMS: &[&str] = &[
+    "and",
+    "or",
+    "if-let",
+    "when-let",
     "catch-errors",
     "derive",
     "do",
@@ -384,6 +389,9 @@ mod tests {
         assert!(out.contains("[%lib%len args]"), "len not captured");
         assert!(out.contains("[let %lib%len len]"));
         assert!(out.contains("[let %lib%fold-subject-last fold-subject-last]"));
+        // Short-circuit forms stay forms.
+        assert!(!out.contains("%lib%and"), "and must not be aliased");
+        assert!(!out.contains("%lib%if "), "if must not be aliased");
     }
 
     #[test]
