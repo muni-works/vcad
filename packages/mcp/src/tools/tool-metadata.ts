@@ -102,6 +102,7 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
   // ── Stdlib parts library (local) ───────────────────────────────────────
   search_parts: { title: "Search Stdlib Parts", annotations: RO },
   place_part: { title: "Place Part", annotations: RW },
+  describe_part: { title: "Describe Part", annotations: RO },
 
   // ── Registry-tier kernel tools ─────────────────────────────────────────
   create: { title: "Create Feature Node", annotations: RW },
@@ -171,6 +172,7 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
   },
   parameter_gradient: { title: "Parameter Gradient", annotations: RO },
   sensitivity: { title: "Sensitivity", annotations: RO },
+  optimize_parameters: { title: "Optimize Parameters", annotations: RO },
 
   // ── Design constraints (document-level geometric solver) ───────────────
   add_constraint: { title: "Add Constraint", annotations: RW },

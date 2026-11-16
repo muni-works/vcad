@@ -56,6 +56,7 @@ pub const ENTRY: PartEntry = PartEntry {
         thumb: include_bytes!("../../thumbs/bolt-socket-head.svg"),
     },
     build,
+    info: None,
 };
 
 fn build(p: &Params) -> Result<Document, String> {

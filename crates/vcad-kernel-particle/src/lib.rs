@@ -32,11 +32,16 @@
 //!    drives it over a [`spec::DeviceSpec`]'s named parameters (the
 //!    `optimize_electrodes` MCP tool; see `docs/particle-optics-m0.md`).
 //!
-//! **Scope and honesty (M0):** no space charge, no collisions, no neutral
-//! gas — the regime where electrode geometry dominates and where every
-//! classic electrode-design tool (SIMION lineage) operates. Self-consistent
-//! plasma effects are explicitly out of scope until a later milestone; see
-//! the milestone ladder in `docs/particle-optics-m0.md`.
+//! **Scope and honesty.** The core is vacuum-field single-particle optics
+//! — the regime where electrode geometry dominates and where every classic
+//! electrode-design tool (SIMION lineage) operates. Later milestones add,
+//! each as a separate opt-in layer: a space-charge gauge and PIC-lite
+//! self-consistency ([`space_charge`]), a discrete adjoint ([`adjoint`]),
+//! and, for gas-fed fusors, the charge-exchange chain with neutral-gas
+//! collisions, an ionization source, the supply-current partition and a
+//! two-sided yield band ([`chain`], M7). There is no kinetic plasma model
+//! and no electron space charge; see the milestone ladder in
+//! `docs/particle-optics-m0.md`.
 //!
 //! Units: public geometry is **millimeters** (vcad convention); everything
 //! internal is SI (meters, volts, tesla, seconds); particle energies are
@@ -45,6 +50,7 @@
 pub mod adjoint;
 pub mod beam_target;
 pub mod bem;
+pub mod chain;
 pub mod confinement;
 pub mod device;
 pub mod electrode_opt;

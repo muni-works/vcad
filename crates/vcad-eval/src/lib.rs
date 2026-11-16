@@ -25,6 +25,7 @@ pub mod evaluate;
 pub mod incremental;
 pub mod kinematics;
 pub mod mesh_inline;
+pub mod optimize;
 pub mod pcb_preview;
 pub mod placement;
 pub mod provenance;
@@ -33,6 +34,7 @@ pub mod sheet_build;
 pub mod sim_extract;
 pub mod step_doc;
 pub mod step_sources;
+pub mod thermal_extract;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod timings;
 

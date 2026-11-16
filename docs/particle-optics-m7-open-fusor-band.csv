@@ -1,0 +1,29 @@
+# config,chamber_r_mm=76,cathode_r_mm=19,rings=4,wire_a_mm=1,supply_a=0.01,pressure_mtorr=5,grid=305x609,particles=128
+# sweep
+kv,lower_n_s,central_n_s,upper_n_s,vacuum_n_s,cathode_ion_ma,sustainment_M,space_charge_ratio,frac_ion,frac_fast_neutral,frac_wall,generations,converged,max_drift,sampling_noise_log
+20,5.030e0,2.290e2,3.075e3,2.849e2,6.133,0.055,0.042,0.430,0.561,0.009,4,true,0.002,0.095
+25,2.314e1,7.449e2,9.223e3,8.868e2,5.945,0.073,0.031,0.447,0.542,0.011,6,false,0.003,0.158
+30,8.735e1,1.876e3,1.770e4,1.986e3,5.747,0.089,0.023,0.464,0.523,0.013,5,true,0.003,0.145
+35,1.748e2,3.603e3,4.160e4,3.573e3,5.588,0.101,0.018,0.486,0.498,0.015,6,false,0.004,0.021
+40,2.124e2,6.259e3,4.828e4,6.760e3,5.420,0.118,0.014,0.489,0.494,0.016,6,true,0.004,0.074
+# components_at_30kv
+name,kind,factor_low_setting,factor_high_setting,rerun,note
+sampling,numerical,0.865,1.156,false,"max(shifted-sampler scatter 0.145, half the generation spread 0.032) over 128 particles per wave; converged = true"
+grid,numerical,0.962,1.040,true,"vacuum chain at 153x305 vs 305x609: ratio 0.962 (symmetrized)"
+integrator_step,numerical,0.943,1.060,true,"half step_fraction: ratio 1.060 (symmetrized; includes sampling noise)"
+supply_current,input,0.980,1.020,false,"meter ±2% (rate is linear in the reading)"
+pressure,input,0.867,1.031,true,"gauge ±15% (full chain rerun)"
+voltage,input,0.911,1.098,true,"meter ±2%: d ln R / d ln V = 4.71 from a +10% probe (warm, vacuum), symmetrized"
+sigma_cx,input,1.134,0.890,true,"cited fits ×(1±0.25) (full chain rerun)"
+sigma_ionization,input,0.975,0.935,true,"cited fits ×(1±0.25) (full chain rerun)"
+sigma_breakup,input,0.925,0.958,true,"cited fits ×(1±0.25) (full chain rerun)"
+gamma_se,model_form,1.270,0.702,false,"γ_SE at 15 keV/amu 0.60…2.40 (central 1.20); changes the supply→ion partition"
+wall_loading,model_form,0.987,1.075,false,"wall D loading 0.000…0.020 of a Ti drive-in target (central 0.003); cathode assumed hot (no retained D)"
+born_species,model_form,0.789,1.892,true,"born D⁺ fraction 0.00…0.30 (central 0.05; rest D₂⁺)"
+d3_formation,model_form,0.953,1.000,true,"D₂⁺→D₃⁺ conversion toggled (ratio 0.953); D₃⁺ collision data borrowed from D₂⁺"
+d3_breakup_frame,model_form,0.897,1.000,true,"D₃⁺ dissociation fit (Jül-4105 Eq. 243) read in the lab instead of the CM frame (ratio 0.897)"
+source_shape,model_form,0.096,3.149,false,"modeled sustainment M = 0.089 (ionization births per ion lost); the unmodeled |1−M| = 0.911 of ion production bounded by near-cathode (cold), uniform-volume and edge-born (hot) sources: x0.096 / x2.883 / x3.149"
+space_charge,model_form,1.000,1.018,true,"central carries the self-consistent ion space charge (peak/well 0.023); electron neutralization could restore the vacuum field (ratio 1.018)"
+# claim_json
+{"name":"ddn_neutron_rate","value":1876.0972799508415,"unit":"n/s","basis":"predicted","note":"two-sided D(d,n)3He prediction at supply 0.0100 A / -30000 V / 5.00 mTorr: CX chain (all waves) + ion/neutral/electron-impact ionization source iterated to its fixed point + supply-current partition (gamma_SE) + self-consistent ion space charge. Band = numerical and input terms in log-quadrature, model-form terms as a linear envelope: sampling[Numerical] x0.865..x1.156; grid[Numerical] x0.962..x1.040; integrator_step[Numerical] x0.943..x1.060; supply_current[Input] x0.980..x1.020; pressure[Input] x0.867..x1.031; voltage[Input] x0.911..x1.098; sigma_cx[Input] x1.134..x0.890; sigma_ionization[Input] x0.975..x0.935; sigma_breakup[Input] x0.925..x0.958; gamma_se[ModelForm] x1.270..x0.702; wall_loading[ModelForm] x0.987..x1.075; born_species[ModelForm] x0.789..x1.892; d3_formation[ModelForm] x0.953..x1.000; d3_breakup_frame[ModelForm] x0.897..x1.000; source_shape[ModelForm] x0.096..x3.149; space_charge[ModelForm] x1.000..x1.018. Channels ion-gas/fast-neutral-gas/wall = 0.46/0.52/0.01.","band":[87.34791977352607,17696.68164504391]}
+

@@ -1,0 +1,59 @@
+; Hobby IEC fusor chamber, assembled from the vcad vacuum library.
+;
+; Every part is stock hardware from `std:vacuum.*` (dimensions from ISO 3669
+; / ISO 2861 vendor tables) and every joint is a port mate: faces meet, axes
+; oppose, CF bolt holes line up. Each mate also adds its consumables (copper
+; gasket + bolts/nuts/washers, or KF centering ring + clamp) to the BOM.
+;
+;   chamber   6" (DN100) spherical cube, Z up
+;   +z        DN100→DN40 zero-length reducer → 40 kV HV feedthrough, its
+;             conductor (the grid stalk) reaching down to the grid
+;   +y        DN100 viewport (add a steel/brass shutter for x-rays)
+;   -z        DN100→DN40 reducer → CF/KF40 adapter → roughing/turbo line
+;   +x        DN100→DN40 reducer → DN40 tee: KF25 Pirani gauge on the run,
+;             DN40→DN16 reducer + UHV leak valve (D₂ inlet) on the branch
+;   -x, -y    DN100 blanks
+;
+; Render:  cargo run -p vcad-loon --example loon2vcad -- examples/vacuum/fusor-chamber.loon > /tmp/fusor.vcad
+;          cargo run -p vcad-render -- /tmp/fusor.vcad --jpeg fusor.jpg --size 1080
+
+[let cube [vac "vacuum.chamber.spherical-cube" #["size" "DN100"]]]
+
+; High voltage on top. The conductor runs `vacuum_length` into the chamber
+; from the feedthrough's seal face (c2f 115.0 + reducer 19.8 = 134.8 mm
+; above center), so 115 mm puts the stalk tip on the grid.
+[let hv-red [vac-mate "vacuum.cf.reducer" #["large" "DN100" "small" "DN40"] "large" cube "+z"]]
+[let hv [vac-mate "vacuum.feedthrough.hv"
+          #["size" "DN40" "rated_kv" "40" "rated_a" "0.02" "vacuum_length" "115" "conductor_dia" "3.2"]
+          "seal" hv-red "small"]]
+
+; Viewport and blanks.
+[let window [vac-mate "vacuum.viewport" #["size" "DN100"] "seal" cube "+y"]]
+[let blank-x [vac-mate "vacuum.cf.flange" #["size" "DN100"] "seal" cube "-x"]]
+[let blank-y [vac-mate "vacuum.cf.flange" #["size" "DN100"] "seal" cube "-y"]]
+
+; Pump port: down through a reducer to a KF40 line.
+[let pump-red [vac-mate "vacuum.cf.reducer" #["large" "DN100" "small" "DN40"] "large" cube "-z"]]
+[let pump [vac-mate "vacuum.adapter.cf-kf" #["cf" "DN40" "kf" "KF40" "length" "60"] "cf" pump-red "small"]]
+
+; Gauge + gas inlet on a DN40 tee.
+[let side-red [vac-mate "vacuum.cf.reducer" #["large" "DN100" "small" "DN40"] "large" cube "+x"]]
+[let tee [vac-mate "vacuum.tee" #["size" "DN40"] "-z" side-red "small"]]
+[let gauge-ad [vac-mate "vacuum.adapter.cf-kf" #["cf" "DN40" "kf" "KF25" "length" "40"] "cf" tee "+z"]]
+[let gauge [vac-mate "vacuum.gauge" #["size" "KF25" "kind" "pirani"] "inlet" gauge-ad "kf"]]
+[let gas-red [vac-mate "vacuum.cf.reducer" #["large" "DN40" "small" "DN16"] "large" tee "+x"]]
+[let leak [vac-mate "vacuum.valve.needle" #["size" "DN16" "kind" "leak"] "outlet" gas-red "small"]]
+
+; Inner grid: three orthogonal wire loops, 40 mm across, at the center.
+[let loop [torus 20 0.8]]
+[let grid [union loop [union [rotate 90 0 0 loop] [rotate 0 90 0 loop]]]]
+
+[root cube "stainless"]
+[root [union hv-red [union side-red pump-red]] "stainless"]
+[root [union blank-x blank-y] "stainless"]
+[root window "glass"]
+[root hv "ceramic"]
+[root [union tee [union gauge-ad [union gas-red pump]]] "stainless"]
+[root gauge "aluminum"]
+[root leak "steel"]
+[root grid "steel"]
