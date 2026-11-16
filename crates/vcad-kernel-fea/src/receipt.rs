@@ -95,7 +95,8 @@ impl std::error::Error for ClaimError {}
 
 fn caveat() -> &'static str {
     "small-displacement linear elasticity of one isotropic material; no plasticity, \
-     buckling, contact, or dynamic loads; boundary staircase-approximated at the lattice \
+     contact, or dynamic loads, and no buckling check (a static solve cannot see it — run the \
+     buckling route); boundary staircase-approximated at the lattice \
      pitch; constant-strain tets smear stress concentrations (peak stress is a lower bound \
      that tightens with refinement and diverges at sharp re-entrant corners)"
 }
