@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-16-cam-turning",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "feat",
+  "title": "Lathe turning and 4th-axis rotary turning in CAM",
+  "summary": "Turn round parts from a solid of revolution: facing, OD/ID, grooving, parting and drilling with nose-radius compensation, LinuxCNC/Grbl lathe posts, and a verifier that replays the G-code first.",
+  "features": ["cam", "turning", "lathe", "4th-axis", "verification"]
+}
