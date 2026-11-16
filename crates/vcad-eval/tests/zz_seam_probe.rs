@@ -12,6 +12,7 @@ fn probe(src: &str, segments: u32) {
             root_cache: None,
             mesh_segments: 0,
             on_root: None,
+            on_root_ready: None,
         },
     )
     .expect("evaluate_document");
