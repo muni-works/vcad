@@ -267,7 +267,7 @@ pub(crate) fn brick_matrices(
     (kc, m)
 }
 
-fn dense_cholesky(a: &[f64], n: usize) -> Option<Vec<f64>> {
+pub(crate) fn dense_cholesky(a: &[f64], n: usize) -> Option<Vec<f64>> {
     let mut l = vec![0.0; n * n];
     for i in 0..n {
         for j in 0..=i {
@@ -288,7 +288,7 @@ fn dense_cholesky(a: &[f64], n: usize) -> Option<Vec<f64>> {
     Some(l)
 }
 
-fn chol_solve(l: &[f64], n: usize, b: &mut [f64]) {
+pub(crate) fn chol_solve(l: &[f64], n: usize, b: &mut [f64]) {
     for i in 0..n {
         let mut s = b[i];
         for k in 0..i {
@@ -307,7 +307,7 @@ fn chol_solve(l: &[f64], n: usize, b: &mut [f64]) {
 
 /// Symmetric eigen-decomposition (cyclic Jacobi): ascending values and
 /// column eigenvectors `vecs[c][r]`.
-fn sym_eig(mut a: Vec<f64>, n: usize) -> (Vec<f64>, Vec<Vec<f64>>) {
+pub(crate) fn sym_eig(mut a: Vec<f64>, n: usize) -> (Vec<f64>, Vec<Vec<f64>>) {
     let mut v = vec![0.0; n * n];
     for i in 0..n {
         v[i * n + i] = 1.0;
@@ -534,7 +534,7 @@ impl Skyline {
         (inv, first)
     }
 
-    fn factor(a: &CsrMatrix<f64>, budget: usize) -> Option<Skyline> {
+    pub(crate) fn factor(a: &CsrMatrix<f64>, budget: usize) -> Option<Skyline> {
         let n = a.nrows;
         let perm = rcm(a);
         let (inv, first) = Self::profile(a, &perm);
@@ -584,7 +584,7 @@ impl Skyline {
         })
     }
 
-    fn solve(&self, r: &[f64], z: &mut [f64]) {
+    pub(crate) fn solve(&self, r: &[f64], z: &mut [f64]) {
         let n = self.perm.len();
         let mut y: Vec<f64> = self.perm.iter().map(|&o| r[o]).collect();
         for i in 0..n {
@@ -701,7 +701,7 @@ impl SparseLlt {
     }
 }
 
-enum Precond {
+pub(crate) enum Precond {
     Exact(Skyline),
     #[cfg(not(target_arch = "wasm32"))]
     Sparse(Box<SparseLlt>),
@@ -715,7 +715,7 @@ impl Precond {
     /// (~400 MB), else incomplete Cholesky, else Jacobi. The exact factors
     /// make LOBPCG converge in tens of iterations; IC0 can stall on thin
     /// shells.
-    fn new(a: &CsrMatrix<f64>) -> Precond {
+    pub(crate) fn new(a: &CsrMatrix<f64>) -> Precond {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(f) = SparseLlt::factor(a) {
             return Precond::Sparse(Box::new(f));
@@ -729,8 +729,19 @@ impl Precond {
         }
     }
 
+    /// `z = T r` for one vector.
+    pub(crate) fn apply(&self, r: &[f64], z: &mut [f64]) {
+        match self {
+            Precond::Exact(p) => p.solve(r, z),
+            #[cfg(not(target_arch = "wasm32"))]
+            Precond::Sparse(p) => z.copy_from_slice(&p.solve_block(&[r.to_vec()])[0]),
+            Precond::Ic0(p) => p.apply(r, z),
+            Precond::Jacobi(p) => p.apply(r, z),
+        }
+    }
+
     /// `z_j = T r_j` for every residual.
-    fn apply_block(&self, rs: &[Vec<f64>]) -> Vec<Vec<f64>> {
+    pub(crate) fn apply_block(&self, rs: &[Vec<f64>]) -> Vec<Vec<f64>> {
         let each = |apply: &dyn Fn(&[f64], &mut [f64])| -> Vec<Vec<f64>> {
             rs.iter()
                 .map(|r| {
@@ -824,10 +835,10 @@ fn project_out(v: &mut [f64], z: &[Vec<f64>], mz: &[Vec<f64>]) {
     }
 }
 
-struct Eigs {
-    vals: Vec<f64>,
-    vecs: Vec<Vec<f64>>,
-    iterations: usize,
+pub(crate) struct Eigs {
+    pub(crate) vals: Vec<f64>,
+    pub(crate) vecs: Vec<Vec<f64>>,
+    pub(crate) iterations: usize,
 }
 
 /// `out = Σ_s c[s] · cols[s]` (columns with a zero coefficient skipped).
@@ -874,8 +885,9 @@ fn gram(s: &[&Vec<f64>], t: &[&Vec<f64>]) -> Vec<f64> {
 const LOBPCG_REFRESH: usize = 25;
 
 #[allow(clippy::too_many_arguments)]
-fn lobpcg(
-    sys: &System,
+pub(crate) fn lobpcg(
+    sys_k: &CsrMatrix<f64>,
+    sys_m: &CsrMatrix<f64>,
     deflate: &[Vec<f64>],
     lam_ref: f64,
     want: usize,
@@ -884,7 +896,7 @@ fn lobpcg(
     tol: f64,
     max_iter: usize,
 ) -> Result<Eigs, ModalError> {
-    let n = sys.k.nrows;
+    let n = sys_k.nrows;
     let block = block.min(n);
     // Deterministic, well-mixed start vectors.
     let mut seed = 0x9E37_79B9_7F4A_7C15u64;
@@ -910,12 +922,12 @@ fn lobpcg(
     // K·S and M·S. Only the new W needs sparse products each iteration
     // (2·|W| spmv, against ~8·|W| when the basis, its K-image and the
     // residuals were each rebuilt with fresh products).
-    let mz: Vec<Vec<f64>> = spmv_block(&sys.m, deflate);
+    let mz: Vec<Vec<f64>> = spmv_block(sys_m, deflate);
     for v in x.iter_mut() {
         project_out(v, deflate, &mz);
     }
-    let mut kx = spmv_block(&sys.k, &x);
-    let mut mx = spmv_block(&sys.m, &x);
+    let mut kx = spmv_block(sys_k, &x);
+    let mut mx = spmv_block(sys_m, &x);
     let mut w: Vec<Vec<f64>> = Vec::new();
     let mut p: Vec<Vec<f64>> = Vec::new();
     let mut kp: Vec<Vec<f64>> = Vec::new();
@@ -923,8 +935,8 @@ fn lobpcg(
     let mut worst = f64::INFINITY;
     let mut since_refresh = 0usize;
     for it in 0..max_iter {
-        let kw = spmv_block(&sys.k, &w);
-        let mw = spmv_block(&sys.m, &w);
+        let kw = spmv_block(sys_k, &w);
+        let mw = spmv_block(sys_m, &w);
         let nx = x.len();
         let s: Vec<&Vec<f64>> = x.iter().chain(&w).chain(&p).collect();
         let ks: Vec<&Vec<f64>> = kx.iter().chain(&kw).chain(&kp).collect();
@@ -1019,10 +1031,10 @@ fn lobpcg(
         x = xn;
         since_refresh += 1;
         if since_refresh >= LOBPCG_REFRESH {
-            kxn = spmv_block(&sys.k, &x);
-            mxn = spmv_block(&sys.m, &x);
-            kp = spmv_block(&sys.k, &p);
-            mp = spmv_block(&sys.m, &p);
+            kxn = spmv_block(sys_k, &x);
+            mxn = spmv_block(sys_m, &x);
+            kp = spmv_block(sys_k, &p);
+            mp = spmv_block(sys_m, &p);
             since_refresh = 0;
         }
         kx = kxn;
@@ -1054,10 +1066,10 @@ fn lobpcg(
         if w_now < tol && since_refresh != 0 {
             // Converged on the carried products: confirm on exact ones, so
             // the answer never rests on accumulated update drift.
-            kx = spmv_block(&sys.k, &x);
-            mx = spmv_block(&sys.m, &x);
-            kp = spmv_block(&sys.k, &p);
-            mp = spmv_block(&sys.m, &p);
+            kx = spmv_block(sys_k, &x);
+            mx = spmv_block(sys_m, &x);
+            kp = spmv_block(sys_k, &p);
+            mp = spmv_block(sys_m, &p);
             since_refresh = 0;
             (rs, w_now) = residuals(&kx, &mx);
         }
@@ -1201,7 +1213,8 @@ pub fn modal_on_mesh(hex: &HexMesh, spec: &ModalSpec) -> Result<ModalResult, Mod
     // λ_ref ≈ 1e-8 × the element-level ω² (diag K / diag M): ~10 Hz on a
     // millimetre-scale metal mesh.
     let eig = lobpcg(
-        &sys,
+        &sys.k,
+        &sys.m,
         &deflate,
         1e-8 * kd / md.max(1e-300),
         want,

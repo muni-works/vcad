@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-fea-buckling-shell-screen",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "feat",
+  "title": "Buckling FEA and a vacuum-vessel shell screen",
+  "summary": "Linear eigenvalue buckling with follower pressure in vcad-kernel-fea, plus shell_buckling_check: external-pressure collapse of cylinders, spheres and heads with cited knockdowns.",
+  "features": ["fea", "buckling", "pressure-vessel", "vacuum", "receipts"],
+  "mcpTools": ["shell_buckling_check"]
+}

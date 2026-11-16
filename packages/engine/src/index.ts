@@ -907,6 +907,8 @@ export interface KernelModule {
   ) => unknown;
   /** Closed-form prismatic member check (BeamCase JSON). */
   feaCheckBeam?: (caseJson: string) => unknown;
+  /** Closed-form shell external-pressure buckling screen (ShellCase JSON). */
+  feaCheckShell?: (caseJson: string) => unknown;
   /** EM field simulation (problem-tagged spec/params/options JSON). */
   emSimulate?: (
     specJson: string,
@@ -1413,6 +1415,7 @@ export class Engine {
       circuitTune: (wasmModule as Record<string, unknown>).circuitTune as KernelModule["circuitTune"],
       feaAnalyzeMesh: (wasmModule as Record<string, unknown>).feaAnalyzeMesh as KernelModule["feaAnalyzeMesh"],
       feaCheckBeam: (wasmModule as Record<string, unknown>).feaCheckBeam as KernelModule["feaCheckBeam"],
+      feaCheckShell: (wasmModule as Record<string, unknown>).feaCheckShell as KernelModule["feaCheckShell"],
       emSimulate: (wasmModule as Record<string, unknown>).emSimulate as KernelModule["emSimulate"],
       antennaAnalyze: (wasmModule as Record<string, unknown>).antennaAnalyze as KernelModule["antennaAnalyze"],
       extractAntennaSpec: (wasmModule as Record<string, unknown>).extractAntennaSpec as KernelModule["extractAntennaSpec"],
@@ -1902,6 +1905,22 @@ export class Engine {
     if (typeof fn !== "function") {
       throw new Error(
         "feaCheckBeam is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(caseJson);
+  }
+
+  /**
+   * Closed-form external-pressure buckling screen for a thin cylinder,
+   * sphere or dished head: classical bifurcation pressure, the cited
+   * imperfection knockdown, yield cap, allowable and margin, plus
+   * `vcad.fea-claims/1` predicted claims; see `vcad-kernel-fea::shell`.
+   */
+  feaCheckShell(caseJson: string): unknown {
+    const fn = this.kernel.feaCheckShell;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "feaCheckShell is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
       );
     }
     return fn(caseJson);
