@@ -234,10 +234,13 @@ pub fn cid_d2plus_m2(e_amu_ev: f64) -> f64 {
 }
 
 /// Fast-D⁺ production by collision-induced dissociation of a fast D₃⁺ on
-/// D₂ (→ D⁺ + D₂ + D₂), m², at D₃⁺ energy per amu (Jül-4105 Eq. 243,
-/// evaluated at the H₃⁺ + H₂ centre-of-mass energy `E_cm = (2/5)·E_lab`).
-pub fn cid_d3plus_m2(e_amu_ev: f64) -> f64 {
-    let e = 0.4 * 3.0 * e_amu_ev;
+/// D₂ (→ D⁺ + D₂ + D₂), m², at D₃⁺ energy per amu (Jül-4105 Eq. 243).
+/// The source quotes these data in centre-of-mass energy; `lab_frame =
+/// false` evaluates the fit at `E_cm = (2/5)·E_lab(H₃⁺)` (central),
+/// `true` at the H₃⁺ lab energy (the alternative reading, carried as a
+/// model-form band term).
+pub fn cid_d3plus_m2(e_amu_ev: f64, lab_frame: bool) -> f64 {
+    let e = if lab_frame { 3.0 } else { 0.4 * 3.0 } * e_amu_ev;
     if e <= 4.32 {
         return 0.0;
     }
@@ -410,7 +413,7 @@ mod tests {
         let d2 = cid_d2plus_m2(7.5e3);
         assert!((1.5e-20..3.0e-20).contains(&d2), "cid D2+ = {d2:e}");
         // D₃⁺ at 30 keV (5 keV/amu → E_cm 6 keV): ≈1.9e-20 m².
-        let d3 = cid_d3plus_m2(5.0e3);
+        let d3 = cid_d3plus_m2(5.0e3, false);
         assert!((1.2e-20..2.6e-20).contains(&d3), "cid D3+ = {d3:e}");
         assert_eq!(cid_d2plus_m2(0.5), 0.0);
     }
