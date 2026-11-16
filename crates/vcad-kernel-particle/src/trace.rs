@@ -171,7 +171,7 @@ impl Default for TraceOptions {
 /// needs besides the field. [`Tracer::new`] builds the axisymmetric
 /// ring + cylinder geometry; 3D devices supply their own (see
 /// [`crate::bem::WireField`]). Positions are SI meters.
-pub trait TraceGeometry: std::fmt::Debug + Sync {
+pub trait TraceGeometry: std::fmt::Debug + Send + Sync {
     /// Index of the electrode whose conductor contains `p`, if any.
     fn wire_hit(&self, p: [f64; 3]) -> Option<usize>;
     /// Whether `p` has reached the chamber wall.

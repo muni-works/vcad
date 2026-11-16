@@ -8945,8 +8945,13 @@ pub fn particle_simulate_3d(
     let device = spec
         .resolve(&params)
         .map_err(|e| JsError::new(&e.to_string()))?;
-    let field = pk::bem::solve(&device, &pk::bem::BemOptions::default())
-        .map_err(|e| JsError::new(&e.to_string()))?;
+    // Dense least-squares solve is O(N³); keep wasm calls interactive.
+    let bem_opts = pk::bem::BemOptions {
+        max_unknowns: 1500,
+        ..Default::default()
+    };
+    let field =
+        pk::bem::solve(&device, &bem_opts).map_err(|e| JsError::new(&e.to_string()))?;
     let n_d = pk::xsection::d2_deuteron_density_m3(opts.d2_pressure_mtorr, opts.temperature_k);
     let topts = pk::trace::TraceOptions {
         max_passes: opts.max_passes,

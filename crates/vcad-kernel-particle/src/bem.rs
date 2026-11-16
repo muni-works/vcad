@@ -980,8 +980,10 @@ impl WireField {
     /// Default tracer step length, m: a quarter of the smallest wire
     /// radius, capped at 0.25 mm (the 2D hobby-fusor grid spacing). Wires
     /// are the only fine structure of the field; the tracer also refines
-    /// its step within 7 radii of a wire. Mean energy drift on the −30 kV
-    /// 6-great-circle grid: 1.5% at 0.5 mm, 0.7% at 0.25 mm.
+    /// its step within 7 radii of a wire. Mean energy drift grows with
+    /// trace length: on the −30 kV 6-great-circle grid it is 0.7% over
+    /// 6 passes but 2.0% with a 40-pass cap (1.0% at 0.125 mm); see
+    /// `docs/particle-optics-3d.md`.
     pub fn default_step_length_m(&self) -> f64 {
         (0.25 * self.min_wire_radius_m).min(0.25e-3)
     }

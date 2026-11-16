@@ -11,7 +11,7 @@ use crate::poisson::Solution;
 /// potential with its (conservative) field, plus an optional magnetic
 /// field. Implemented by the axisymmetric [`FieldMap`] and by the 3D
 /// thin-wire `bem::WireField`. All positions are SI meters.
-pub trait FieldSampler: std::fmt::Debug + Sync {
+pub trait FieldSampler: std::fmt::Debug + Send + Sync {
     /// Electrostatic potential, volts.
     fn potential(&self, p: [f64; 3]) -> f64;
     /// Electric field, V/m — must be −∇ of [`Self::potential`] for the

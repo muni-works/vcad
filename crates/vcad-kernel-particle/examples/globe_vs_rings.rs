@@ -56,6 +56,34 @@ struct Row {
     t_first: f64,
     stats: EnsembleStats,
     trace_s: f64,
+    bins: String,
+}
+
+/// Survivor fraction and mean passes by launch latitude band
+/// (|cos θ| edges at the 4-ring stack's ring latitudes, ±0.31 and ±0.81:
+/// equator band, mid band, polar caps poleward of the outer rings).
+fn latitude_bins(out: &[TraceOutcome]) -> String {
+    let edges = [0.0, 0.309, 0.809, 1.0001];
+    (0..3)
+        .map(|b| {
+            let sel: Vec<&TraceOutcome> = out
+                .iter()
+                .filter(|o| {
+                    let c = o.launch_cos_theta.abs();
+                    c >= edges[b] && c < edges[b + 1]
+                })
+                .collect();
+            let n = sel.len().max(1) as f64;
+            let surv = sel
+                .iter()
+                .filter(|o| o.fate == vcad_kernel_particle::trace::Fate::Survived)
+                .count() as f64
+                / n;
+            let passes = sel.iter().map(|o| o.core_passes as f64).sum::<f64>() / n;
+            format!("{}:{:.2}/{:.1}", sel.len(), surv, passes)
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn yields(st: &EnsembleStats) -> (f64, f64) {
@@ -102,6 +130,7 @@ fn run3d(name: &str, device: &Device3d, particles: usize) -> (Row, WireField) {
         t_first: first_pass(&out),
         stats: fom::stats(&out),
         trace_s,
+        bins: latitude_bins(&out),
     };
     (row, field)
 }
@@ -119,6 +148,13 @@ fn main() {
         (
             "ring stack (4 latitude rings)",
             Device3d::from_rings(&rings, sphere),
+        ),
+        (
+            "ring stack (8 rings, transparency-matched)",
+            Device3d::from_rings(
+                &Device::classic_fusor(CHAMBER_R_MM, GRID_R_MM, 8, WIRE_A_MM, VOLTS),
+                sphere,
+            ),
         ),
         (
             "6 great circles (icosidodecahedral)",
@@ -146,14 +182,15 @@ fn main() {
     println!(
         "config,wires,unknowns,solve_s,residual_pct(mean/junction/spread),phi_center_kv,\
          t_geometric,t_first_pass,interception,survivors,mean_passes,mean_drift,\
-         floor_n_per_s,ceiling_n_per_s,trace_s"
+         floor_n_per_s,ceiling_n_per_s,trace_s,\
+         by_latitude(n:survivors/passes for |cosθ|<0.31 | 0.31-0.81 | >0.81)"
     );
     let mut ring_field = None;
     for (k, (name, dev)) in configs.iter().enumerate() {
         let (row, field) = run3d(name, dev, particles);
         let (floor, ceiling) = yields(&row.stats);
         println!(
-            "{},{},{},{:.2},{},{:.2},{:.3},{:.3},{:.3},{:.3},{:.2},{:.4},{:.3e},{:.3e},{:.1}",
+            "{},{},{},{:.2},{},{:.2},{:.3},{:.3},{:.3},{:.3},{:.2},{:.4},{:.3e},{:.3e},{:.1},{}",
             row.name,
             row.wires,
             row.unknowns,
@@ -168,7 +205,8 @@ fn main() {
             row.stats.mean_energy_drift_rel,
             floor,
             ceiling,
-            row.trace_s
+            row.trace_s,
+            row.bins
         );
         if k == 0 {
             ring_field = Some(field);
