@@ -67,6 +67,11 @@ pub struct BemOptions {
     pub max_surface_residual: f64,
     /// Azimuthal sample count around the wire for the residual gate.
     pub residual_azimuths: usize,
+    /// Surface samples closer than this many wire radii to a *different*
+    /// wire lie in a junction zone (crossing, weld): the thin-wire model
+    /// cannot resolve charge there, so they are excluded from the gate and
+    /// reported separately ([`WireField::worst_junction_residual`]).
+    pub junction_zone_factor: f64,
     /// Refuse problems with more unknowns than this (dense O(N³) solve).
     pub max_unknowns: usize,
 }
@@ -78,6 +83,7 @@ impl Default for BemOptions {
             max_sag_fraction: 0.1,
             max_surface_residual: 0.05,
             residual_azimuths: 8,
+            junction_zone_factor: 3.0,
             max_unknowns: 4000,
         }
     }
@@ -274,6 +280,7 @@ pub struct WireField {
     index: SegIndex,
     has_current: bool,
     worst_residual: f64,
+    worst_junction_residual: f64,
     min_wire_radius_m: f64,
     extent_m: f64,
 }
@@ -429,12 +436,15 @@ pub fn solve(device: &Device3d, opts: &BemOptions) -> Result<WireField, BemError
         max_drop_v: device.max_potential_drop_v(),
         index,
         worst_residual: 0.0,
+        worst_junction_residual: 0.0,
         extent_m,
     };
 
     // --- Surface residual gate -----------------------------------------
-    let (worst, wire) = field.surface_residual(opts.residual_azimuths);
+    let (worst, wire, junction) =
+        field.surface_residual(opts.residual_azimuths, opts.junction_zone_factor);
     field.worst_residual = worst;
+    field.worst_junction_residual = junction;
     if worst > opts.max_surface_residual {
         return Err(BemError::SurfaceResidual {
             worst,
@@ -470,6 +480,12 @@ impl WireField {
     /// Worst relative surface-potential residual found by the gate.
     pub fn worst_surface_residual(&self) -> f64 {
         self.worst_residual
+    }
+
+    /// Worst relative surface residual inside junction zones (excluded
+    /// from the gate; see [`BemOptions::junction_zone_factor`]).
+    pub fn worst_junction_residual(&self) -> f64 {
+        self.worst_junction_residual
     }
 
     /// Total free charge on wire `k`, coulombs.
@@ -640,11 +656,17 @@ impl WireField {
         ratio
     }
 
-    /// Sample the exact-kernel potential on every wire surface and return
-    /// the worst relative residual and its wire.
-    fn surface_residual(&self, azimuths: usize) -> (f64, usize) {
+    /// Sample the exact-kernel potential on every wire surface. Returns
+    /// `(worst_clear, wire, worst_junction)`: the worst relative residual
+    /// over samples farther than `junction_factor` radii from every
+    /// *other* wire, its wire, and the worst inside those junction zones.
+    fn surface_residual(&self, azimuths: usize, junction_factor: f64) -> (f64, usize, f64) {
         let mut worst = 0.0_f64;
         let mut worst_wire = 0;
+        let mut worst_junction = 0.0_f64;
+        let debug = std::env::var("BEM_DEBUG").is_ok();
+        let bins = [1.0, 1.5, 2.0, 3.0, 4.0, 6.0];
+        let mut by_bin = [0.0_f64; 6];
         for (si, s) in self.segs.iter().enumerate() {
             let w = &self.wires[s.wire];
             let drop = (w.potential - self.wall_potential_v).abs();
@@ -666,32 +688,51 @@ impl WireField {
                     let ang = 2.0 * std::f64::consts::PI * k as f64 / azimuths as f64;
                     let p = add(c, scale(add(scale(u, ang.cos()), scale(v, ang.sin())), w.radius));
                     // Skip points buried inside any other segment's
-                    // conductor (crossings, inner side of bends).
-                    let buried = self.index.candidates(p).iter().any(|&oj| {
+                    // conductor (crossings, inner side of bends); measure
+                    // the clearance to other wires for junction zoning.
+                    let mut buried = false;
+                    let mut other = f64::INFINITY;
+                    for &oj in self.index.candidates(p) {
                         let oj = oj as usize;
                         if oj == si {
-                            return false;
+                            continue;
                         }
                         let o = &self.segs[oj];
-                        point_segment_distance(p, self.verts[o.a], self.verts[o.b])
-                            < 0.98 * self.wires[o.wire].radius
-                    });
+                        let ao = self.wires[o.wire].radius;
+                        let d = point_segment_distance(p, self.verts[o.a], self.verts[o.b]);
+                        if d < 0.98 * ao {
+                            buried = true;
+                            break;
+                        }
+                        if o.wire != s.wire {
+                            other = other.min(d / ao);
+                        }
+                    }
                     if buried {
                         continue;
                     }
                     let phi = self.potential(p);
                     let r = (phi - w.potential).abs() / drop;
-                    if r > worst {
+                    if debug {
+                        for (b, lim) in by_bin.iter_mut().zip(bins) {
+                            if other >= lim {
+                                *b = b.max(r);
+                            }
+                        }
+                    }
+                    if other < junction_factor {
+                        worst_junction = worst_junction.max(r);
+                    } else if r > worst {
                         worst = r;
                         worst_wire = s.wire;
-                        if std::env::var("BEM_DEBUG").is_ok() {
-                            eprintln!("worst {r:.4} wire {} seg {si} frac {frac} k {k} p {:?} phi {phi} len {} a {}", s.wire, p, s.len, w.radius);
-                        }
                     }
                 }
             }
         }
-        (worst, worst_wire)
+        if debug {
+            eprintln!("BEM residual by clearance-to-other-wire ≥ {bins:?}: {by_bin:?}");
+        }
+        (worst, worst_wire, worst_junction)
     }
 
     #[cfg(test)]
