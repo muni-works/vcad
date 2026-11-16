@@ -100,18 +100,85 @@ struct PlasmoidReadout: Equatable {
     var substeps = 0
 }
 
+/// Everything one sim frame needs, captured on the main actor and handed to
+/// the kernel queue (value types only).
+struct PlasmoidFrameInput {
+    var dt: Double
+    var dish: PlasmoidBox
+    var spike: PlasmoidBox?
+    var magnetCenter: SIMD3<Double>?
+    var pressureTorr: Double
+    var reset = false
+    var dishMesh: EditorModel.PickMesh?
+}
+
+/// Owns the `VcadPlasmoid` handle. Not `Sendable` in any real sense: in the
+/// live loop it is touched only on `PlasmoidStore.queue` (one step in flight
+/// at a time); in tests and the scripted capture only synchronously on the
+/// main actor, never both.
+final class PlasmoidKernel: @unchecked Sendable {
+    private var handle: OpaquePointer?
+    private var radius = 0.0
+    private var pressure = 1.0
+
+    deinit { if let h = handle { vcad_plasmoid_free(h) } }
+
+    func free() {
+        if let h = handle { vcad_plasmoid_free(h) }
+        handle = nil
+    }
+
+    /// One frame: (re)create for the dish, apply pressure / reset, advance.
+    func run(_ inp: PlasmoidFrameInput) -> (PlasmoidReadout?, String?) {
+        let r = PlasmoidBinding.dishRadius(inp.dish)
+        if handle == nil || abs(r - radius) > 0.5 {
+            free()
+            handle = vcad_plasmoid_create(r, inp.pressureTorr)
+            radius = r; pressure = inp.pressureTorr
+            guard handle != nil else { return (nil, "plasmoid: \(Self.lastError() ?? "create failed")") }
+        }
+        guard let h = handle else { return (nil, nil) }
+        if inp.pressureTorr != pressure { vcad_plasmoid_set_pressure(h, inp.pressureTorr); pressure = inp.pressureTorr }
+        if inp.reset { vcad_plasmoid_reset(h) }
+        let origin = PlasmoidBinding.dishOrigin(inp.dish)
+        let n = max(1, Int((inp.dt / PlasmoidStore.targetDt).rounded(.up)))
+        let s: VcadPlasmoidState
+        if let mc = inp.magnetCenter {
+            let pose = PlasmoidBinding.kernelPose(magnetCenter: mc, dishOrigin: origin)
+            s = pose.withUnsafeBufferPointer { vcad_plasmoid_advance(h, $0.baseAddress, inp.dt, UInt32(n)) }
+        } else {
+            s = vcad_plasmoid_advance(h, nil, inp.dt, UInt32(n))
+        }
+        let fx = origin.x + s.x_mm, fy = origin.y + s.y_mm
+        let fz = inp.dishMesh.flatMap { PlasmoidStore.surfaceZ(x: Float(fx), y: Float(fy), mesh: $0) }
+            .map(Double.init) ?? origin.z
+        return (PlasmoidReadout(t: s.t_s, foot: SIMD3(fx, fy, fz),
+                                root: PlasmoidBinding.spikeTip(inp.spike, dish: inp.dish),
+                                beta: s.beta, locked: s.locked != 0,
+                                hasMagnet: inp.magnetCenter != nil, substeps: n), nil)
+    }
+
+    private static func lastError() -> String? {
+        var len = 0
+        guard let p = vcad_last_error(&len) else { return nil }
+        return String(decoding: UnsafeBufferPointer(start: p, count: len), as: UTF8.self)
+    }
+}
+
 @MainActor @Observable
 final class PlasmoidStore {
     static let shared = PlasmoidStore()
 
     /// Integrator step target, s (the doc's demo run: RK4 at 2.4 kHz).
-    static let targetDt = 1.0 / 2400.0
+    nonisolated static let targetDt = 1.0 / 2400.0
     /// Longest frame the sim will integrate; a stall slows sim time instead
-    /// of teleporting the magnet.
+    /// of teleporting the magnet (or spiralling: more substeps → slower frame).
     static let maxFrame = 1.0 / 20.0
 
     var active = false
-    var pressureTorr = 1.0
+    /// Gas pressure as log10(Torr) — what the HUD slider binds to directly.
+    var pressureLog10 = 0.0
+    var pressureTorr: Double { pow(10, pressureLog10) }
     var readout = PlasmoidReadout()
     var error: String?
     /// Bumped every sim frame; a `ReleasedARView` input so the overlay redraws.
@@ -119,15 +186,20 @@ final class PlasmoidStore {
     /// Recent foot positions (kernel mm), newest last — the comet tail.
     @ObservationIgnored var trail: [SIMD3<Double>] = []
 
-    @ObservationIgnored private var handle: OpaquePointer?
-    @ObservationIgnored private var handleRadius = 0.0
+    /// The kernel runs here in the live loop, never on the main thread: a
+    /// busy UI frame must not slow the plasmoid down, and the sim must not
+    /// starve the UI (or the document's own part streaming).
+    @ObservationIgnored private let queue = DispatchQueue(label: "io.vcad.plasmoid", qos: .userInitiated)
+    @ObservationIgnored private var kernel = PlasmoidKernel()
+    @ObservationIgnored private var inFlight = false
+    @ObservationIgnored private var pendingReset = false
     @ObservationIgnored private(set) var binding: PlasmoidBinding?
     @ObservationIgnored private var boundPartCount = -1
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var lastFrame: CFTimeInterval = 0
     @ObservationIgnored weak var model: EditorModel?
-    /// When set, every frame advances by exactly this much sim time (the
-    /// scripted capture), instead of wall-clock time.
+    /// When set, every frame advances by exactly this much sim time,
+    /// synchronously (the scripted capture), instead of wall-clock time.
     @ObservationIgnored var fixedFrameDt: Double?
 
     func attach(_ m: EditorModel) { model = m }
@@ -137,16 +209,23 @@ final class PlasmoidStore {
     func start() {
         guard let m = model else { error = "no document window"; return }
         bind(m)
+        active = true
         guard binding != nil else {
             error = "needs parts named “dish” and “magnet” — open docs/plasmoid-sim/plasmoid-dish.vcad"
-            active = true
             return
         }
         error = nil
-        active = true
         readout = PlasmoidReadout()
         trail = []
         lastFrame = CACurrentMediaTime()
+        // Select the magnet so its move gizmo is up, ready to drag, and
+        // rebuild the scene once: a part that finished evaluating after the
+        // first scene build can be missing until the next refresh (seen with
+        // this document's `magnet` on open — a pre-existing load race).
+        if let b = binding {
+            m.selectParts([b.magnetPart])
+            ReleaseWindowController.shared.refreshGeometry(model: m, collisions: true)
+        }
         if fixedFrameDt == nil {
             let t = Timer(timeInterval: 1.0 / 60.0, repeats: true) { _ in
                 MainActor.assumeIsolated { PlasmoidStore.shared.frame() }
@@ -162,20 +241,17 @@ final class PlasmoidStore {
         timer?.invalidate(); timer = nil
         active = false
         error = nil
-        if let h = handle { vcad_plasmoid_free(h) }
-        handle = nil
+        // A fresh kernel; the old one is freed on the queue after any step in flight.
+        let old = kernel
+        kernel = PlasmoidKernel()
+        queue.async { old.free() }
+        inFlight = false
         tick += 1
     }
 
-    func reset() {
-        if let h = handle { vcad_plasmoid_reset(h) }
-        trail = []
-    }
+    func reset() { pendingReset = true; trail = [] }
 
-    func setPressure(_ torr: Double) {
-        pressureTorr = torr
-        if let h = handle { vcad_plasmoid_set_pressure(h, torr) }
-    }
+    func setPressure(_ torr: Double) { pressureLog10 = log10(max(torr, 1e-3)) }
 
     private func bind(_ m: EditorModel) {
         let n = m.docPartMeshes.count
@@ -186,53 +262,60 @@ final class PlasmoidStore {
     /// One display frame from the live model: read the magnet, step, publish.
     func frame() {
         guard active, let m = model else { return }
-        if m.docPartMeshes.count != boundPartCount { bind(m) }
+        if m.docPartMeshes.count != boundPartCount {
+            bind(m)
+            if binding != nil, error != nil { error = nil }
+        }
         guard let b = binding, b.dishPart < m.docPartMeshes.count, b.magnetPart < m.docPartMeshes.count else { return }
+        // One step in flight at most: a slow step drops display frames
+        // instead of queueing a backlog.
+        if fixedFrameDt == nil, inFlight { return }
         let now = CACurrentMediaTime()
         let dt = fixedFrameDt ?? min(Self.maxFrame, max(0, now - lastFrame))
         lastFrame = now
         let meshes = m.docPartMeshes
-        let dish = PlasmoidBox(meshes[b.dishPart])
-        let spike = b.spikePart.flatMap { $0 < meshes.count ? PlasmoidBox(meshes[$0]) : nil }
         var live: SIMD3<Double>?
         if let d = m.gizmoTranslateDrag, d.part == b.magnetPart { live = SIMD3<Double>(d.center) }
-        let mc = PlasmoidBinding.magnetCenter(PlasmoidBox(meshes[b.magnetPart]), liveCenter: live)
-        let dishMesh = meshes[b.dishPart]
-        step(dt: dt, dish: dish, spike: spike, magnetCenter: mc) { x, y in
-            Self.surfaceZ(x: Float(x), y: Float(y), mesh: dishMesh).map(Double.init)
+        let inp = PlasmoidFrameInput(
+            dt: dt, dish: PlasmoidBox(meshes[b.dishPart]),
+            spike: b.spikePart.flatMap { $0 < meshes.count ? PlasmoidBox(meshes[$0]) : nil },
+            magnetCenter: PlasmoidBinding.magnetCenter(PlasmoidBox(meshes[b.magnetPart]), liveCenter: live),
+            pressureTorr: pressureTorr, reset: pendingReset, dishMesh: meshes[b.dishPart])
+        pendingReset = false
+        if fixedFrameDt != nil {
+            publish(kernel.run(inp))
+        } else {
+            inFlight = true
+            let k = kernel
+            queue.async {
+                let out = k.run(inp)
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated {
+                        let s = PlasmoidStore.shared
+                        s.inFlight = false
+                        if s.active, s.kernel === k { s.publish(out) }
+                    }
+                }
+            }
         }
         RenderGate.wake()
     }
 
     /// Advance the kernel by `dt` with the magnet disc at `magnetCenter`
-    /// (kernel mm; nil = no magnet) and publish the readout. The testable
-    /// core of `frame()`.
-    func step(dt: Double, dish: PlasmoidBox, spike: PlasmoidBox?, magnetCenter: SIMD3<Double>?,
-              surfaceZ: ((Double, Double) -> Double?)? = nil) {
-        let radius = PlasmoidBinding.dishRadius(dish)
-        if handle == nil || abs(radius - handleRadius) > 0.5 {
-            if let h = handle { vcad_plasmoid_free(h) }
-            handle = vcad_plasmoid_create(radius, pressureTorr)
-            handleRadius = radius
-            guard handle != nil else { error = "plasmoid: \(lastFFIError() ?? "create failed")"; return }
-        }
-        guard let h = handle else { return }
-        let origin = PlasmoidBinding.dishOrigin(dish)
-        let n = max(1, Int((dt / Self.targetDt).rounded(.up)))
-        let s: VcadPlasmoidState
-        if let mc = magnetCenter {
-            let pose = PlasmoidBinding.kernelPose(magnetCenter: mc, dishOrigin: origin)
-            s = pose.withUnsafeBufferPointer { vcad_plasmoid_advance(h, $0.baseAddress, dt, UInt32(n)) }
-        } else {
-            s = vcad_plasmoid_advance(h, nil, dt, UInt32(n))
-        }
-        let fx = origin.x + s.x_mm, fy = origin.y + s.y_mm
-        let fz = surfaceZ?(fx, fy) ?? origin.z
-        readout = PlasmoidReadout(t: s.t_s, foot: SIMD3(fx, fy, fz),
-                                  root: PlasmoidBinding.spikeTip(spike, dish: dish),
-                                  beta: s.beta, locked: s.locked != 0,
-                                  hasMagnet: magnetCenter != nil, substeps: n)
-        trail.append(readout.foot)
+    /// (kernel mm; nil = no magnet) synchronously and publish the readout —
+    /// the same `PlasmoidKernel.run` the live loop runs on its queue.
+    func step(dt: Double, dish: PlasmoidBox, spike: PlasmoidBox?, magnetCenter: SIMD3<Double>?) {
+        let inp = PlasmoidFrameInput(dt: dt, dish: dish, spike: spike, magnetCenter: magnetCenter,
+                                     pressureTorr: pressureTorr, reset: pendingReset)
+        pendingReset = false
+        publish(kernel.run(inp))
+    }
+
+    private func publish(_ out: (PlasmoidReadout?, String?)) {
+        if let e = out.1 { error = e }
+        guard let r = out.0 else { return }
+        readout = r
+        trail.append(r.foot)
         if trail.count > 18 { trail.removeFirst(trail.count - 18) }
         tick += 1
     }
@@ -240,7 +323,7 @@ final class PlasmoidStore {
     /// Highest point of `mesh` straight below/above (x, y) — the bowl
     /// surface under the foot. Brute force over the triangles: the dish is a
     /// few thousand, once a frame.
-    static func surfaceZ(x: Float, y: Float, mesh: EditorModel.PickMesh) -> Float? {
+    nonisolated static func surfaceZ(x: Float, y: Float, mesh: EditorModel.PickMesh) -> Float? {
         guard x >= mesh.lo.x, x <= mesh.hi.x, y >= mesh.lo.y, y <= mesh.hi.y else { return nil }
         var best: Float?
         let p = mesh.positions, idx = mesh.indices
@@ -258,12 +341,6 @@ final class PlasmoidStore {
             if best == nil || z > best! { best = z }
         }
         return best
-    }
-
-    private func lastFFIError() -> String? {
-        var len = 0
-        guard let p = vcad_last_error(&len) else { return nil }
-        return String(decoding: UnsafeBufferPointer(start: p, count: len), as: UTF8.self)
     }
 }
 
@@ -397,9 +474,7 @@ struct PlasmoidHud: View {
                     }
                     HStack {
                         Text("p")
-                        Slider(value: Binding(get: { log10(store.pressureTorr) },
-                                              set: { store.setPressure(pow(10, $0)) }),
-                               in: 0...Self.logMax)
+                        Slider(value: $store.pressureLog10, in: 0...Self.logMax)
                         Text(store.pressureTorr >= 700 ? "1 atm" : String(format: "%.1f Torr", store.pressureTorr))
                             .frame(width: 70, alignment: .trailing)
                     }
@@ -497,20 +572,32 @@ enum PlasmoidDemo {
             return (SIMD3(x, y, c0.z + 300), SIMD3(0, 0, -1))
         }
         m.beginGizmoDrag(handle: "planeXY", ray: ray(ang))
+        // Cost of one drag event (the document's in-place re-eval + scene
+        // refresh) and of one sim frame, logged for the PR's numbers.
+        var dragMs: [Double] = [], simMs: [Double] = []
+        func dragStep(_ a: Double) {
+            let t0 = CFAbsoluteTimeGetCurrent()
+            m.gizmoDragTo(ray: ray(a))
+            ctl.refreshGeometry(model: m, collisions: false)
+            let t1 = CFAbsoluteTimeGetCurrent()
+            store.frame()
+            dragMs.append((t1 - t0) * 1000); simMs.append((CFAbsoluteTimeGetCurrent() - t1) * 1000)
+        }
         // Slow drag against the race: 1.5 rad/s for 2 s — it follows.
         for i in 0..<60 {
             ang -= 1.5 * fdt
-            m.gizmoDragTo(ray: ray(ang))
-            store.frame(); ctl.refreshGeometry(model: m, collisions: false)
+            dragStep(ang)
             if i % 2 == 0 { await snap() }
         }
         // Flick: 25 rad/s for 0.2 s — it breaks away.
         for _ in 0..<6 {
             ang -= 25 * fdt
-            m.gizmoDragTo(ray: ray(ang))
-            store.frame(); ctl.refreshGeometry(model: m, collisions: false)
+            dragStep(ang)
             await snap()
         }
+        let med = { (v: [Double]) -> Double in v.sorted()[v.count / 2] }
+        log(String(format: "drag event (re-eval + refresh) median %.1f ms max %.1f ms; sim frame median %.2f ms",
+                   med(dragMs), dragMs.max() ?? 0, med(simMs)))
         m.endGizmoDrag()
         ctl.refreshGeometry(model: m, collisions: true)
         // Hold still: recaptured on the next pass.

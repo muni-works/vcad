@@ -1255,6 +1255,7 @@ struct ReleasedOverlayView: View {
             // Live magnet-steered plasmoid (PlasmoidSim.swift).
             PlasmoidHud(store: PlasmoidStore.shared)
                 .padding(Theme.Space.l)
+                .padding(.top, 52)  // clear the floating title bar
                 .modifier(ChromeRegion(key: "plasmoidHud"))
         }
         .overlay(alignment: .bottomTrailing) {
