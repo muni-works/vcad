@@ -54,7 +54,71 @@ const PARAMS = {
   shield_at_neg: -20000,
 };
 
+const wasmHasParticle3d =
+  typeof (
+    probeEngine as unknown as {
+      kernel?: { particleSimulate3d?: unknown };
+    }
+  ).kernel?.particleSimulate3d === "function";
+
+const GLOBE_SPEC = {
+  chamber: { kind: "sphere", radius_mm: 76 },
+  electrodes: [
+    {
+      kind: "great_circle_globe",
+      layout: "icosidodecahedral6",
+      grid_radius_mm: "grid_r",
+      wire_radius_mm: 1,
+      potential_v: "cathode_v",
+    },
+  ],
+};
+
 type ToolText = { content: Array<{ type: string; text: string }> };
+
+describe.skipIf(!wasmHasParticle3d)("3D charged-particle optics", () => {
+  let client: Client;
+
+  beforeAll(async () => {
+    documents.clear();
+    const engine = await Engine.init();
+    const server = await createServer(engine, { user: null });
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    client = new Client(
+      { name: "particle-tools-3d", version: "0.0.0" },
+      { capabilities: {} },
+    );
+    await Promise.all([client.connect(clientT), server.connect(serverT)]);
+  });
+
+  it("simulate_charged_particles accepts a 6-great-circle globe", async () => {
+    const res = (await client.callTool({
+      name: "simulate_charged_particles",
+      arguments: {
+        spec: GLOBE_SPEC,
+        parameters: { grid_r: 19, cathode_v: -30000 },
+        options: { particles: 8, max_passes: 3, step_mm: 0.5 },
+      },
+    })) as ToolText;
+    const out = JSON.parse(res.content[0].text);
+    expect(out.unknowns).toBeGreaterThan(100);
+    expect(out.geometric_transparency).toBeGreaterThan(0.65);
+    expect(out.geometric_transparency).toBeLessThan(0.76);
+    expect(out.center_potential_v).toBeLessThan(-25000);
+    expect(out.stats.n).toBe(8);
+    expect(out.residual.mean).toBeLessThan(0.02);
+    expect(out.claims).toBeNull();
+  });
+
+  it("fails closed on an unbound parameter", async () => {
+    const res = (await client.callTool({
+      name: "simulate_charged_particles",
+      arguments: { spec: GLOBE_SPEC, parameters: { grid_r: 19 } },
+    })) as ToolText & { isError?: boolean };
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("cathode_v");
+  });
+});
 
 describe.skipIf(!wasmHasParticle)("charged-particle optics tools", () => {
   let client: Client;
