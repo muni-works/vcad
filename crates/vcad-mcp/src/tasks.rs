@@ -311,22 +311,34 @@ impl TaskStore {
                 .and_then(Value::as_object)
                 .cloned()
                 .unwrap_or_default();
-            let resume = {
+            // Flip back to `working` BEFORE waking the worker. Sending first
+            // let a fast tool call `complete()` in the gap, and the late
+            // `working` then overwrote `completed` — the task hung forever.
+            let (answers, resumed) = {
                 let mut map = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
                 let r = map.get_mut(&task_id).expect("checked above");
+                let mut answers = Vec::new();
                 for (key, resp) in responses {
                     if let Some(tx) = r.pending.remove(&key) {
                         r.input_requests.remove(&key);
-                        let _ = tx.send(resp);
+                        answers.push((tx, resp));
                     }
                 }
-                r.status == "input_required" && r.input_requests.is_empty()
+                let resumed =
+                    (r.status == "input_required" && r.input_requests.is_empty()).then(|| {
+                        r.status = "working";
+                        r.status_message = Some(format!("running {}", r.tool_name));
+                        r.last_updated_at = now_iso();
+                        r.detailed(&task_id)
+                    });
+                (answers, resumed)
             };
-            if resume {
-                self.touch(&task_id, |r| {
-                    r.status = "working";
-                    r.status_message = Some(format!("running {}", r.tool_name));
-                });
+            // Emit `working` before the worker can emit `completed`.
+            if let Some(detailed) = resumed {
+                self.bus.emit(BusEvent::Task(detailed));
+            }
+            for (tx, resp) in answers {
+                let _ = tx.send(resp);
             }
             return Ok(json!({"resultType": "complete"}));
         }
@@ -368,5 +380,36 @@ mod tests {
         assert!(store
             .handle("tasks/get", &json!({"taskId": "nope"}))
             .is_err());
+    }
+
+    /// A tool that finishes the instant its elicitation is answered must end
+    /// `completed`. `tasks/update` used to wake the worker first and mark the
+    /// task `working` after, so a fast `complete()` in between was overwritten
+    /// and the task hung in `working` (CI on main, 2026-11-16).
+    #[test]
+    fn instant_completion_after_update_stays_completed() {
+        for _ in 0..20000 {
+            let store = Arc::new(TaskStore::new(Arc::new(Bus::default())));
+            let (id, _, _) = store.create("ask", Map::new());
+            let worker = {
+                let (store, id) = (store.clone(), id.clone());
+                std::thread::spawn(move || {
+                    let a = store.elicit(&id, json!({"message": "?"}));
+                    store.complete(&id, json!({"answer": a["content"]}));
+                })
+            };
+            let get = || store.handle("tasks/get", &json!({"taskId": id})).unwrap();
+            while get()["status"] != "input_required" {
+                std::thread::yield_now();
+            }
+            store
+                .handle(
+                    "tasks/update",
+                    &json!({"taskId": id, "inputResponses": {"input_1": {"action": "accept", "content": "e2"}}}),
+                )
+                .unwrap();
+            worker.join().unwrap();
+            assert_eq!(get()["status"], "completed");
+        }
     }
 }
