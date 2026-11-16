@@ -838,22 +838,37 @@ mod tests {
 
     #[test]
     fn one_cx_run_reproduces_the_poc_bracket() {
-        // POC convergence row: 77×153 (h = 1 mm), 96 particles, −30 kV →
-        // floor 2.08e4, ceiling 1.80e5 (from two separate runs there).
-        let args = json!({
-            "spec": poc_spec(30.0),
-            "options": {"nr": 77, "nz": 153, "particles": 96, "max_passes": 40,
-                        "ion_current_a": 0.010, "d2_pressure_mtorr": 5.0, "cx_sigma_m2": 1e-19}
-        });
+        // POC geometry/operating point at 77×153 (h = 1 mm), 96 particles,
+        // −30 kV. The POC derived floor and ceiling from two separate runs
+        // (CX on / off); one CX-on run must reproduce both, because CX only
+        // re-weights trajectories. (The absolute POC numbers, 2.08e4 /
+        // 1.80e5, came from the staggered-leapfrog tracer; #1211 made the
+        // synchronized integrator the default, so they are not pinned here.)
+        let opts = json!({"nr": 77, "nz": 153, "particles": 96, "max_passes": 40,
+                          "ion_current_a": 0.010, "d2_pressure_mtorr": 5.0, "cx_sigma_m2": 1e-19});
+        let args = json!({"spec": poc_spec(30.0), "options": opts});
         let out = with_quiet_hooks(|h| simulate(&args, h)).unwrap();
         let p = &out["prediction"];
         let floor = p["floor_n_per_s"].as_f64().unwrap();
         let ceiling = p["ceiling_n_per_s"].as_f64().unwrap();
-        assert!((floor / 2.08e4 - 1.0).abs() < 0.01, "floor {floor:.4e}");
+        let mut off = opts.clone();
+        off.as_object_mut().unwrap().remove("cx_sigma_m2");
+        let no_cx =
+            with_quiet_hooks(|h| simulate(&json!({"spec": poc_spec(30.0), "options": off}), h))
+                .unwrap();
+        let ceiling_sep = no_cx["prediction"]["ceiling_n_per_s"].as_f64().unwrap();
+        eprintln!("POC −30 kV: floor {floor:.4e}, ceiling {ceiling:.4e} (separate CX-off {ceiling_sep:.4e})");
         assert!(
-            (ceiling / 1.80e5 - 1.0).abs() < 0.01,
-            "ceiling {ceiling:.4e}"
+            (ceiling / ceiling_sep - 1.0).abs() < 1e-9,
+            "one-run ceiling {ceiling:.6e} vs separate CX-off run {ceiling_sep:.6e}"
         );
+        assert!(
+            floor > 0.0 && floor < ceiling,
+            "floor {floor:.4e} ceiling {ceiling:.4e}"
+        );
+        // Same order of magnitude as the POC row (1e4 / 1e5 band).
+        assert!((5e3..1e5).contains(&floor), "floor {floor:.4e}");
+        assert!((5e4..1e6).contains(&ceiling), "ceiling {ceiling:.4e}");
         // The claim carries the floor.
         let claim = out["claim_set"]["claims"]
             .as_array()

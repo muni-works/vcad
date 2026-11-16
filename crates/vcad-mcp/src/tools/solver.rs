@@ -176,11 +176,11 @@ fn add_document_props(name: &str, schema: &mut Value) {
     let Some(props) = schema.get_mut("properties").and_then(Value::as_object_mut) else {
         return;
     };
-    if let Some(d) = props
-        .get_mut("spec")
-        .and_then(|s| s.get_mut("description"))
-    {
-        let t = format!("{} Pass this OR `document_id` + `extract`.", d.as_str().unwrap_or(""));
+    if let Some(d) = props.get_mut("spec").and_then(|s| s.get_mut("description")) {
+        let t = format!(
+            "{} Pass this OR `document_id` + `extract`.",
+            d.as_str().unwrap_or("")
+        );
         *d = Value::String(t.trim().to_string());
     }
     let shield = name == "simulate_neutron_shield";

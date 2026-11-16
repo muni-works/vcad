@@ -50,7 +50,9 @@ impl Default for Options3d {
 pub fn simulate(args: &Value, hooks: &Hooks) -> Result<Value, ToolError> {
     let invalid = |m: String| ToolError::Invalid(m);
     if args.get("sweep").is_some() {
-        return Err(invalid("`sweep` is 2D-only (ring specs); 3D sweeps are not wired yet".into()));
+        return Err(invalid(
+            "`sweep` is 2D-only (ring specs); 3D sweeps are not wired yet".into(),
+        ));
     }
     let spec: pk::spec3d::DeviceSpec3d = serde_json::from_value(args["spec"].clone())
         .map_err(|e| invalid(format!("bad 3D spec: {e}")))?;
@@ -76,8 +78,7 @@ pub fn simulate(args: &Value, hooks: &Hooks) -> Result<Value, ToolError> {
         max_unknowns: 1500,
         ..Default::default()
     };
-    let field =
-        pk::bem::solve(&device, &bem_opts).map_err(|e| ToolError::Solver(e.to_string()))?;
+    let field = pk::bem::solve(&device, &bem_opts).map_err(|e| ToolError::Solver(e.to_string()))?;
     if cancelled() {
         return Err(ToolError::Cancelled);
     }
@@ -117,8 +118,8 @@ pub fn simulate(args: &Value, hooks: &Hooks) -> Result<Value, ToolError> {
         );
     }
     let stats = pk::fom::stats(&outcomes);
-    let first =
-        outcomes.iter().filter(|o| o.core_passes >= 1).count() as f64 / outcomes.len().max(1) as f64;
+    let first = outcomes.iter().filter(|o| o.core_passes >= 1).count() as f64
+        / outcomes.len().max(1) as f64;
     let ceiling = pk::fom::neutron_rate_per_s(stats.mean_ddn_sigma_v_m3, o.ion_current_a, n_d);
     let floor = o.cx_sigma_m2.map(|_| {
         pk::fom::neutron_rate_from_counts(
@@ -182,11 +183,17 @@ mod tests {
         assert!(out["residual"].is_object());
 
         let swept = with_quiet_hooks(|h| {
-            simulate(&json!({"spec": spec, "parameters": {"v": -2e4}, "sweep": {"kv": [10]}}), h)
+            simulate(
+                &json!({"spec": spec, "parameters": {"v": -2e4}, "sweep": {"kv": [10]}}),
+                h,
+            )
         });
         assert!(matches!(swept, Err(ToolError::Invalid(_))));
         let nr = with_quiet_hooks(|h| {
-            simulate(&json!({"spec": spec, "parameters": {"v": -2e4}, "options": {"nr": 51}}), h)
+            simulate(
+                &json!({"spec": spec, "parameters": {"v": -2e4}, "options": {"nr": 51}}),
+                h,
+            )
         });
         assert!(matches!(nr, Err(ToolError::Invalid(_))));
     }
