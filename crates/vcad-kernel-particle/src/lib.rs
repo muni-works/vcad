@@ -49,6 +49,7 @@ pub mod receipt;
 pub mod space_charge;
 pub mod spec;
 pub mod trace;
+pub mod wire3d;
 pub mod xsection;
 
 /// Physical constants (SI).
