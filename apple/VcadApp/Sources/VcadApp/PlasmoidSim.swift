@@ -41,17 +41,23 @@ struct PlasmoidBox: Equatable {
 /// their bounds into the kernel's dish-frame inputs. Pure: unit-tested.
 struct PlasmoidBinding: Equatable {
     var dishPart: Int
-    var magnetPart: Int
+    /// Every part named `magnet…` (`magnet`, `magnet-2`, `magnet_b`, …), in
+    /// part order — all superposed in one kernel field scene.
+    var magnetParts: [Int]
     var spikePart: Int?
+    /// The first magnet (the one the demo selects and drags).
+    var magnetPart: Int { magnetParts[0] }
 
     /// Thickness of the disc at the bottom of the `magnet` part, mm.
     static let magnetThicknessMM = 5.0
 
-    /// Bind by part name (case-insensitive): `dish` and `magnet` required.
+    /// Bind by part name (case-insensitive): `dish` and at least one
+    /// `magnet…` required.
     static func find(names: [String]) -> PlasmoidBinding? {
         let lower = names.map { $0.lowercased() }
-        guard let d = lower.firstIndex(of: "dish"), let m = lower.firstIndex(of: "magnet") else { return nil }
-        return PlasmoidBinding(dishPart: d, magnetPart: m, spikePart: lower.firstIndex(of: "spike"))
+        let magnets = lower.indices.filter { lower[$0].hasPrefix("magnet") }
+        guard let d = lower.firstIndex(of: "dish"), !magnets.isEmpty else { return nil }
+        return PlasmoidBinding(dishPart: d, magnetParts: magnets, spikePart: lower.firstIndex(of: "spike"))
     }
 
     /// Dish centre with z on the rim plane (the sim's z = 0), kernel mm.
@@ -95,7 +101,10 @@ struct PlasmoidReadout: Equatable {
     var root: SIMD3<Double> = .zero
     var beta: Double = 0
     var locked = false
-    var hasMagnet = false
+    /// Which of the bound magnets holds the foot (index into `magnetParts`).
+    var lockedMagnet: Int?
+    var magnetCount = 0
+    var hasMagnet: Bool { magnetCount > 0 }
     /// Kernel substeps run last frame.
     var substeps = 0
 }
@@ -106,7 +115,8 @@ struct PlasmoidFrameInput {
     var dt: Double
     var dish: PlasmoidBox
     var spike: PlasmoidBox?
-    var magnetCenter: SIMD3<Double>?
+    /// Disc centres of every magnet (kernel mm); empty = no magnet.
+    var magnetCenters: [SIMD3<Double>]
     var pressureTorr: Double
     var reset = false
     var dishMesh: EditorModel.PickMesh?
@@ -142,12 +152,9 @@ final class PlasmoidKernel: @unchecked Sendable {
         if inp.reset { vcad_plasmoid_reset(h) }
         let origin = PlasmoidBinding.dishOrigin(inp.dish)
         let n = max(1, Int((inp.dt / PlasmoidStore.targetDt).rounded(.up)))
-        let s: VcadPlasmoidState
-        if let mc = inp.magnetCenter {
-            let pose = PlasmoidBinding.kernelPose(magnetCenter: mc, dishOrigin: origin)
-            s = pose.withUnsafeBufferPointer { vcad_plasmoid_advance(h, $0.baseAddress, inp.dt, UInt32(n)) }
-        } else {
-            s = vcad_plasmoid_advance(h, nil, inp.dt, UInt32(n))
+        let poses = inp.magnetCenters.flatMap { PlasmoidBinding.kernelPose(magnetCenter: $0, dishOrigin: origin) }
+        let s = poses.withUnsafeBufferPointer {
+            vcad_plasmoid_advance_multi(h, poses.isEmpty ? nil : $0.baseAddress, inp.magnetCenters.count, inp.dt, UInt32(n))
         }
         let fx = origin.x + s.x_mm, fy = origin.y + s.y_mm
         let fz = inp.dishMesh.flatMap { PlasmoidStore.surfaceZ(x: Float(fx), y: Float(fy), mesh: $0) }
@@ -155,7 +162,8 @@ final class PlasmoidKernel: @unchecked Sendable {
         return (PlasmoidReadout(t: s.t_s, foot: SIMD3(fx, fy, fz),
                                 root: PlasmoidBinding.spikeTip(inp.spike, dish: inp.dish),
                                 beta: s.beta, locked: s.locked != 0,
-                                hasMagnet: inp.magnetCenter != nil, substeps: n), nil)
+                                lockedMagnet: s.locked_magnet >= 0 ? Int(s.locked_magnet) : nil,
+                                magnetCount: inp.magnetCenters.count, substeps: n), nil)
     }
 
     private static func lastError() -> String? {
@@ -195,6 +203,7 @@ final class PlasmoidStore {
     @ObservationIgnored private var pendingReset = false
     @ObservationIgnored private(set) var binding: PlasmoidBinding?
     @ObservationIgnored private var boundPartCount = -1
+    @ObservationIgnored private var introduced = false
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var lastFrame: CFTimeInterval = 0
     @ObservationIgnored weak var model: EditorModel?
@@ -208,24 +217,16 @@ final class PlasmoidStore {
 
     func start() {
         guard let m = model else { error = "no document window"; return }
-        bind(m)
         active = true
-        guard binding != nil else {
-            error = "needs parts named “dish” and “magnet” — open docs/plasmoid-sim/plasmoid-dish.vcad"
-            return
-        }
         error = nil
         readout = PlasmoidReadout()
         trail = []
         lastFrame = CACurrentMediaTime()
-        // Select the magnet so its move gizmo is up, ready to drag, and
-        // rebuild the scene once: a part that finished evaluating after the
-        // first scene build can be missing until the next refresh (seen with
-        // this document's `magnet` on open — a pre-existing load race).
-        if let b = binding {
-            m.selectParts([b.magnetPart])
-            ReleaseWindowController.shared.refreshGeometry(model: m, collisions: true)
-        }
+        boundPartCount = -1
+        introduced = false
+        bindIfNeeded(m)
+        // The loop runs even before the parts are bound: a document still
+        // streaming its parts in binds on a later frame.
         if fixedFrameDt == nil {
             let t = Timer(timeInterval: 1.0 / 60.0, repeats: true) { _ in
                 MainActor.assumeIsolated { PlasmoidStore.shared.frame() }
@@ -235,6 +236,26 @@ final class PlasmoidStore {
             timer = t
         }
         tick += 1
+    }
+
+    /// (Re)bind when the part count changes; on the first successful bind,
+    /// select the magnet (its move gizmo up, ready to drag) and rebuild the
+    /// scene once — a part that finished evaluating after the first scene
+    /// build can be missing until the next refresh (seen with this
+    /// document's `magnet` on open, a pre-existing load race).
+    private func bindIfNeeded(_ m: EditorModel) {
+        guard m.docPartMeshes.count != boundPartCount else { return }
+        bind(m)
+        guard let b = binding else {
+            error = "needs parts named “dish” and “magnet” — open docs/plasmoid-sim/plasmoid-dish.vcad"
+            return
+        }
+        error = nil
+        if !introduced {
+            introduced = true
+            m.selectParts([b.magnetPart])
+            ReleaseWindowController.shared.refreshGeometry(model: m, collisions: true)
+        }
     }
 
     func stop() {
@@ -262,11 +283,9 @@ final class PlasmoidStore {
     /// One display frame from the live model: read the magnet, step, publish.
     func frame() {
         guard active, let m = model else { return }
-        if m.docPartMeshes.count != boundPartCount {
-            bind(m)
-            if binding != nil, error != nil { error = nil }
-        }
-        guard let b = binding, b.dishPart < m.docPartMeshes.count, b.magnetPart < m.docPartMeshes.count else { return }
+        bindIfNeeded(m)
+        guard let b = binding, b.dishPart < m.docPartMeshes.count,
+              b.magnetParts.allSatisfy({ $0 < m.docPartMeshes.count }) else { return }
         // One step in flight at most: a slow step drops display frames
         // instead of queueing a backlog.
         if fixedFrameDt == nil, inFlight { return }
@@ -274,12 +293,17 @@ final class PlasmoidStore {
         let dt = fixedFrameDt ?? min(Self.maxFrame, max(0, now - lastFrame))
         lastFrame = now
         let meshes = m.docPartMeshes
-        var live: SIMD3<Double>?
-        if let d = m.gizmoTranslateDrag, d.part == b.magnetPart { live = SIMD3<Double>(d.center) }
+        // The dragged magnet (whichever it is) reads the gizmo's live
+        // centre; the rest read their bounds.
+        let drag = m.gizmoTranslateDrag
+        let centers = b.magnetParts.map { part in
+            PlasmoidBinding.magnetCenter(PlasmoidBox(meshes[part]),
+                                         liveCenter: drag?.part == part ? drag.map { SIMD3<Double>($0.center) } : nil)
+        }
         let inp = PlasmoidFrameInput(
             dt: dt, dish: PlasmoidBox(meshes[b.dishPart]),
             spike: b.spikePart.flatMap { $0 < meshes.count ? PlasmoidBox(meshes[$0]) : nil },
-            magnetCenter: PlasmoidBinding.magnetCenter(PlasmoidBox(meshes[b.magnetPart]), liveCenter: live),
+            magnetCenters: centers,
             pressureTorr: pressureTorr, reset: pendingReset, dishMesh: meshes[b.dishPart])
         pendingReset = false
         if fixedFrameDt != nil {
@@ -305,7 +329,12 @@ final class PlasmoidStore {
     /// (kernel mm; nil = no magnet) synchronously and publish the readout —
     /// the same `PlasmoidKernel.run` the live loop runs on its queue.
     func step(dt: Double, dish: PlasmoidBox, spike: PlasmoidBox?, magnetCenter: SIMD3<Double>?) {
-        let inp = PlasmoidFrameInput(dt: dt, dish: dish, spike: spike, magnetCenter: magnetCenter,
+        step(dt: dt, dish: dish, spike: spike, magnetCenters: magnetCenter.map { [$0] } ?? [])
+    }
+
+    /// `step` with any number of magnets superposed.
+    func step(dt: Double, dish: PlasmoidBox, spike: PlasmoidBox?, magnetCenters: [SIMD3<Double>]) {
+        let inp = PlasmoidFrameInput(dt: dt, dish: dish, spike: spike, magnetCenters: magnetCenters,
                                      pressureTorr: pressureTorr, reset: pendingReset)
         pendingReset = false
         publish(kernel.run(inp))
@@ -463,7 +492,7 @@ struct PlasmoidHud: View {
                 } else {
                     let r = store.readout
                     HStack(spacing: 8) {
-                        Text(r.locked ? "LOCKED" : "RACING")
+                        Text(!r.locked ? "RACING" : r.magnetCount > 1 ? "LOCKED · \((r.lockedMagnet ?? 0) + 1)" : "LOCKED")
                             .font(.system(size: 11, weight: .bold, design: .monospaced))
                             .padding(.horizontal, 6).padding(.vertical, 2)
                             .background((r.locked ? Color.green : Color.orange).opacity(0.25), in: Capsule())

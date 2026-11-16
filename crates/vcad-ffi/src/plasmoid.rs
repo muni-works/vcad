@@ -11,7 +11,8 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 
-use vcad_kernel_particle::plasmoid::{DiscMagnet, MagnetPose, PlasmoidStepper};
+use vcad_kernel_particle::field3d::{FieldScene, Pose};
+use vcad_kernel_particle::plasmoid::{DiscMagnet, PlasmoidStepper};
 
 use crate::err::{clear_error, set_error};
 
@@ -22,7 +23,7 @@ pub struct VcadPlasmoid {
 
 /// Snapshot after a frame.
 #[repr(C)]
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct VcadPlasmoidState {
     /// Simulated seconds since create / reset.
     pub t_s: f64,
@@ -32,8 +33,23 @@ pub struct VcadPlasmoidState {
     pub y_mm: f64,
     /// Electron Hall parameter at the foot (0 with no magnet).
     pub beta: f64,
-    /// 1 when the foot is locked under the magnet.
+    /// 1 when the foot is locked under a magnet.
     pub locked: u8,
+    /// Index of the magnet it is locked under, -1 when not locked.
+    pub locked_magnet: i32,
+}
+
+impl Default for VcadPlasmoidState {
+    fn default() -> Self {
+        Self {
+            t_s: 0.0,
+            x_mm: 0.0,
+            y_mm: 0.0,
+            beta: 0.0,
+            locked: 0,
+            locked_magnet: -1,
+        }
+    }
 }
 
 /// Racing orbit as a fraction of the dish radius (55 mm on the 80 mm
@@ -107,17 +123,35 @@ pub extern "C" fn vcad_plasmoid_orbit_radius_mm(sim: *const VcadPlasmoid) -> f64
     unsafe { sim.as_ref() }.map_or(0.0, |s| s.stepper.params.orbit_radius_m * 1e3)
 }
 
-/// Advance one frame of `frame_dt_s` seconds in `substeps` RK4 steps.
-///
-/// `magnet` is 6 doubles — centre x, y, z (mm, dish frame) then the
-/// magnetization axis x, y, z (north-pole direction, any length) — or NULL
-/// for "no magnet". The magnet moves linearly from where the previous call
-/// left it to `magnet` across the frame. `substeps` is clamped to
-/// 1..=10_000 and a non-positive / non-finite `frame_dt_s` steps nothing.
+/// Advance one frame of `frame_dt_s` seconds in `substeps` RK4 steps with
+/// one magnet: [`vcad_plasmoid_advance_multi`] with `count` 1 (or 0 when
+/// `magnet` is NULL).
 #[no_mangle]
 pub extern "C" fn vcad_plasmoid_advance(
     sim: *mut VcadPlasmoid,
     magnet: *const f64,
+    frame_dt_s: f64,
+    substeps: u32,
+) -> VcadPlasmoidState {
+    let count = usize::from(!magnet.is_null());
+    vcad_plasmoid_advance_multi(sim, magnet, count, frame_dt_s, substeps)
+}
+
+/// Advance one frame of `frame_dt_s` seconds in `substeps` RK4 steps with
+/// `count` disc magnets (the handle's N52 10 × 5 mm) superposed.
+///
+/// `magnets` is `6 × count` doubles — per magnet its centre x, y, z (mm,
+/// dish frame) then its magnetization axis x, y, z (north-pole direction,
+/// any length); `count` 0 (or NULL) is "no magnet". Each magnet moves
+/// linearly from where the previous call left it across the frame, as
+/// long as the count is unchanged (a changed count jumps). `substeps` is
+/// clamped to 1..=10_000 and a non-positive / non-finite `frame_dt_s`
+/// steps nothing. `locked_magnet` in the result indexes `magnets`.
+#[no_mangle]
+pub extern "C" fn vcad_plasmoid_advance_multi(
+    sim: *mut VcadPlasmoid,
+    magnets: *const f64,
+    count: usize,
     frame_dt_s: f64,
     substeps: u32,
 ) -> VcadPlasmoidState {
@@ -126,18 +160,31 @@ pub extern "C" fn vcad_plasmoid_advance(
         set_error("vcad_plasmoid_advance: null handle");
         return VcadPlasmoidState::default();
     };
-    let pose = if magnet.is_null() {
+    let scene = if magnets.is_null() || count == 0 {
         None
     } else {
-        let v = unsafe { std::slice::from_raw_parts(magnet, 6) };
+        if count > 1024 {
+            set_error("vcad_plasmoid_advance: more than 1024 magnets");
+            return VcadPlasmoidState::default();
+        }
+        let v = unsafe { std::slice::from_raw_parts(magnets, 6 * count) };
         if !v.iter().all(|x| x.is_finite()) {
             set_error("vcad_plasmoid_advance: non-finite magnet pose");
             return VcadPlasmoidState::default();
         }
-        Some(MagnetPose {
-            center_m: [v[0] * 1e-3, v[1] * 1e-3, v[2] * 1e-3],
-            axis: [v[3], v[4], v[5]],
-        })
+        let src = s.stepper.magnet.as_source();
+        let mut scene = FieldScene::new();
+        for m in v.as_chunks::<6>().0 {
+            if m[3] == 0.0 && m[4] == 0.0 && m[5] == 0.0 {
+                set_error("vcad_plasmoid_advance: zero magnet axis");
+                return VcadPlasmoidState::default();
+            }
+            scene.push(
+                src,
+                Pose::from_axis([m[0] * 1e-3, m[1] * 1e-3, m[2] * 1e-3], [m[3], m[4], m[5]]),
+            );
+        }
+        Some(scene)
     };
     let n = substeps.clamp(1, 10_000) as usize;
     let dt = if frame_dt_s.is_finite() && frame_dt_s > 0.0 {
@@ -147,9 +194,9 @@ pub extern "C" fn vcad_plasmoid_advance(
     };
     catch_unwind(AssertUnwindSafe(|| {
         let st = if dt > 0.0 {
-            s.stepper.advance(None, pose, dt, n)
+            s.stepper.advance_scene(None, scene, dt, n)
         } else {
-            s.stepper.state(pose.as_ref())
+            s.stepper.state_in(scene.as_ref())
         };
         VcadPlasmoidState {
             t_s: st.t_s,
@@ -157,6 +204,7 @@ pub extern "C" fn vcad_plasmoid_advance(
             y_mm: st.pos_m[1] * 1e3,
             beta: st.beta,
             locked: st.locked as u8,
+            locked_magnet: st.locked_source.map_or(-1, |i| i as i32),
         }
     }))
     .unwrap_or_else(|_| {
@@ -206,5 +254,23 @@ mod tests {
         assert!(vcad_plasmoid_create(0.0, 1.0).is_null());
         let s = vcad_plasmoid_advance(ptr::null_mut(), ptr::null(), 0.1, 10);
         assert_eq!(s.t_s, 0.0);
+    }
+
+    #[test]
+    fn two_magnets_report_which_one_holds_the_foot() {
+        let sim = vcad_plasmoid_create(80.0, 1.0);
+        let r0 = vcad_plasmoid_orbit_radius_mm(sim);
+        // Magnet 0 at 180°, magnet 1 at 90°: the CCW racer from 0° meets 1 first.
+        let poses = [
+            -r0, 0.0, 12.5, 0.0, 0.0, -1.0, 0.0, r0, 12.5, 0.0, 0.0, -1.0,
+        ];
+        let mut s = VcadPlasmoidState::default();
+        for _ in 0..90 {
+            s = vcad_plasmoid_advance_multi(sim, poses.as_ptr(), 2, 1.0 / 60.0, 40);
+        }
+        assert_eq!((s.locked, s.locked_magnet), (1, 1));
+        let none = vcad_plasmoid_advance_multi(sim, ptr::null(), 0, 1.0 / 60.0, 40);
+        assert_eq!(none.locked_magnet, -1);
+        vcad_plasmoid_free(sim);
     }
 }
