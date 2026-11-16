@@ -1213,6 +1213,11 @@ struct ReleasedOverlayView: View {
                     .modifier(ChromeRegion(key: "proof"))
             }
         }
+        .overlay {
+            // An opened document's first solve: which part, n of N, elapsed
+            // (OpeningOverlay.swift). Never takes clicks.
+            OpeningOverlay(model: model, chipClearance: studio ? Theme.Space.l : Glass.dockClearance)
+        }
         .overlay(alignment: .bottom) {
             // A loon program that failed to compile: where, and a jump there.
             if let d = model.loonDiagnostic {
@@ -2192,6 +2197,11 @@ struct ReleasedARView: NSViewRepresentable {
             return
         }
         coordinator.builtSourceID = model.source.id
+        // Time to first pixel, whichever path drew it (a streamed part or a
+        // whole runtime frame).
+        if LaunchPerf.enabled, !model.source.isSandbox, !scene.meshes.isEmpty || !scene.instances.isEmpty {
+            LaunchPerf.once("first pixels", " (\(scene.meshes.count) parts)")
+        }
         if !scene.solving {
             let bounds = ReleaseWindowController.shared.arView?.bounds.size ?? .zero
             let aspect = bounds.height > 0 ? Float(bounds.width / bounds.height) : 1.6
@@ -2636,6 +2646,15 @@ struct ObjectInspectorWindow: View {
     }
 
     @ViewBuilder private var measurementRows: some View {
+        if let p = model.openingParts {
+            // First solve still running: nothing measured yet.
+            KeyValueRow("Solve", p.total > 1 ? "\(p.done) of \(p.total) parts" : "Evaluating…")
+        } else {
+            settledMeasurementRows
+        }
+    }
+
+    @ViewBuilder private var settledMeasurementRows: some View {
         KeyValueRow("Triangles", model.triangleCount.formatted())
         KeyValueRow("Bounds", String(format: "%.1f × %.1f × %.1f mm",
                                      abs(model.sizeMM.x), abs(model.sizeMM.y), abs(model.sizeMM.z)))

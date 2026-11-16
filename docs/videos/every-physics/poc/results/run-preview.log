@@ -1,0 +1,45 @@
+# puck — one document, many solvers
+
+## mass properties [doc-geom]
+  enclosure volume  168389 mm³  → 208.8 g PLA (100% infill)
+  enclosed air      0.933 L
+
+## diff seam: document_parameter_gradient [doc-geom]
+  part 0: V = 168389 mm³, dV/dwall = +49771.1 mm³/mm, dm/dwall = +61.716 g/mm
+  part 1: V = 933295 mm³, dV/dwall = -53619.4 mm³/mm, dm/dwall = -66.488 g/mm
+  part 2: V = 4000 mm³, dV/dwall = +0.0 mm³/mm, dm/dwall = +0.000 g/mm
+  part 0: V = 168389 mm³, dV/dbody_h = +1008.4 mm³/mm, dm/dbody_h = +1.250 g/mm
+  part 1: V = 933295 mm³, dV/dbody_h = +8494.6 mm³/mm, dm/dbody_h = +10.533 g/mm
+  part 2: V = 4000 mm³, dV/dbody_h = +0.0 mm³/mm, dm/dbody_h = +0.000 g/mm
+  part 0: V = 168389 mm³, dV/dport_len = +163.4 mm³/mm, dm/dport_len = +0.203 g/mm
+  part 1: V = 933295 mm³, dV/dport_len = -615.7 mm³/mm, dm/dport_len = -0.763 g/mm
+  part 2: V = 4000 mm³, dV/dport_len = +0.0 mm³/mm, dm/dport_len = +0.000 g/mm
+
+## DFM, FDM pack [doc-geom]
+  2 issues (Standard FDM 0.4 mm nozzle)
+   - Warning: Face leans 180° from +Z — supports required (support column ≈ 117.0 mm)
+   - Warning: Face leans 180° from +Z — supports required (support column ≈ 60.0 mm)
+
+## structural modes, free-free PLA, quality=preview [doc-geom]
+  (31 s wall, shared box — not a benchmark)
+     226.5 Hz  (A#3 -50¢)
+     280.8 Hz  (C#4 +23¢)
+     292.5 Hz  (D4 -7¢)
+     294.9 Hz  (D4 +7¢)
+     300.6 Hz  (D4 +40¢)
+     302.5 Hz  (D#4 -49¢)
+
+## acoustics: bass-reflex tuning [doc-geom V_box + doc-param port]
+  lumped f_b band [134.1, 136.6, 143.6] Hz (min/nominal/max), V_box 0.933 L
+  field  f_b 154.2 Hz  (field/nominal 1.129; docs say pressure-release mouth reads ~15% high)
+
+## thermal: amp on board [doc-param geometry + power, assumed h]
+  h =    5 W/m²K: T_max 80.6 °C, θ_ja 69.4 K/W, energy residual 5.5e-13
+  h =   10 W/m²K: T_max 64.3 °C, θ_ja 49.2 K/W, energy residual 4.6e-14
+
+## antenna: printed monopole over ground [doc-param length]
+  resonance (Im Z = 0) 2358 MHz
+  S11 min -16.4 dB at 2400 MHz (vs 50 Ω)
+  S11 at 2.44 GHz -15.2 dB
+
+wrote out-preview/{puck.vcad,port_velocity.csv,antenna_s11.csv,summary.json}

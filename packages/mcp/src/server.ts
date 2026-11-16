@@ -446,6 +446,7 @@ const LIST_TOOL_ORDER: readonly string[] = [
   "simulate_flow",
   "analyze_structure",
   "beam_check",
+  "shell_buckling_check",
   "simulate_neutron_shield",
   "simulate_cavity",
   "simulate_lattice_gauge",
