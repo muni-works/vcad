@@ -123,6 +123,7 @@ impl<'a> ProbeEvaluator<'a> {
                 root_cache: None,
                 mesh_segments: 0,
                 on_root: None,
+                on_root_ready: None,
             },
             incremental: RefCell::new(IncrementalCache::new()),
             memo: RefCell::new(HashMap::new()),

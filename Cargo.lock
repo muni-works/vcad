@@ -5762,6 +5762,7 @@ dependencies = [
  "vcad-ir 0.11.0",
  "vcad-kernel 0.11.0",
  "vcad-kernel-adjoint 0.11.0",
+ "vcad-kernel-antenna 0.11.0",
  "vcad-kernel-booleans 0.11.0",
  "vcad-kernel-diff",
  "vcad-kernel-fillet 0.11.0",
@@ -6550,6 +6551,16 @@ dependencies = [
  "vcad-kernel-neutronics 0.11.0",
  "vcad-kernel-thermal 0.11.0",
  "vcad-kernel-tolerance 0.11.0",
+ "vcad-receipt 0.11.0",
+]
+
+[[package]]
+name = "vcad-kernel-photon-dose"
+version = "0.11.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "vcad-kernel-neutronics 0.11.0",
  "vcad-receipt 0.11.0",
 ]
 

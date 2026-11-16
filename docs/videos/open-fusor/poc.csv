@@ -1,0 +1,32 @@
+# config,chamber_r_mm=76,cathode_r_mm=19,rings=4,wire_a_mm=1,ion_current_a=0.01,pressure_mtorr=5,sigma_cx_m2=0.0000000000000000001,max_passes=40,geometric_transparency=0.838
+# sweep
+kv,mean_passes,intercept_frac,eff_transparency,max_drift,rate_low_cx_on,rate_high_cx_off
+20,10.26,0.781,0.911,0.193,4.577e3,7.774e4
+25,10.29,0.771,0.911,0.194,1.212e4,2.112e5
+30,10.28,0.781,0.911,0.194,2.463e4,4.360e5
+35,10.28,0.781,0.911,0.193,4.247e4,7.603e5
+40,10.26,0.781,0.911,0.193,6.560e4,1.182e6
+# convergence
+grid,particles,rate_low_cx_on,rate_high_cx_off,intercept_frac,mean_passes,mean_drift,max_drift
+305x609,96,2.463e4,4.360e5,0.781,10.28,0.0344,0.194
+305x609,48,2.566e4,4.179e5,0.792,9.67,0.0312,0.141
+153x305,96,2.336e4,3.252e5,1.000,9.11,0.0663,0.273
+77x153,96,2.079e4,1.798e5,1.000,5.60,0.0834,0.298
+# space_charge
+ratio=0.118,phi_beam_peak_v=3550.8,well_depth_v=30000,current_at_10pct_a=8.45e-3
+# dose
+shield_hdpe_mm,source_n_per_s,detector_m,dose_usv_h,rse
+0,5.0e6,0.5,241.4457,0.0002
+0,5.0e6,1,60.6340,0.0003
+0,5.0e6,2,15.2182,0.0005
+0,5.0e6,3,6.7454,0.0003
+150,5.0e6,0.5,28.1621,0.0037
+150,5.0e6,1,6.2004,0.0035
+150,5.0e6,2,1.5241,0.0039
+150,5.0e6,3,0.6723,0.0036
+# uncollided_flux_per_1e5_n_s
+detector_m,flux_n_cm2_s
+0.5,3.1831
+1,0.7958
+2,0.1989
+3,0.0884

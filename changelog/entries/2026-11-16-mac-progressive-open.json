@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-16-mac-progressive-open",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "perf",
+  "title": "Mac app: documents draw part by part while opening",
+  "summary": "Opening a document streams each part to the viewport as it solves, with an in-viewport loading card (part n of N, elapsed) and spinners in the model tree, instead of a blank stage.",
+  "features": ["mac-app", "viewport", "loading"]
+}
