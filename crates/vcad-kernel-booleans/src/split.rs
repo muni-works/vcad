@@ -6515,14 +6515,10 @@ pub fn split_cylindrical_face(
             )
         }
         IntersectionCurve::TwoSampled(_, _) => {
-            // TwoSampled is the analytic Steinmetz pair from
-            // `ssi::cylinder_cylinder`. Cylinder × cylinder unions are
-            // routed by `boolean_op` to a specialized mesh emitter
-            // (`cylinder_cylinder_mesh_boolean`) that handles the
-            // figure-8 boundary directly, so by the time we reach the
-            // BRep splitter pipeline this curve type should already be
-            // diverted. Defensive no-op for any caller that didn't
-            // pre-filter.
+            // The SSI stage expands a TwoSampled pair into two `Sampled`
+            // loops before splitting (see `brep_boolean`), so this arm is
+            // unreachable from the pipeline. Defensive no-op for any other
+            // caller.
             SplitResult {
                 sub_faces: vec![face_id],
             }

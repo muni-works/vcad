@@ -1450,6 +1450,74 @@ pub(crate) fn split_wavy_band_by_line(
     Some(SplitResult { sub_faces })
 }
 
+/// Containment test for a FULL-WRAP band face: `Some(lo(u) ≤ v ≤ hi(u))`
+/// (with a small slack) for a point on the face's cylinder, `None` when the
+/// face is not a full-wrap band or the point is off the surface.
+pub(crate) fn full_wrap_band_contains(
+    brep: &BRepSolid,
+    face_id: FaceId,
+    p: &Point3,
+) -> Option<bool> {
+    const TOL: f64 = 1e-6;
+    let (cyl, band) = parse_band(brep, face_id)?;
+    if !band.full_wrap {
+        return None;
+    }
+    let (u, v) = uv_of(p, &cyl);
+    let u0 = band.u_start();
+    let x = u0 + (u - u0).rem_euclid(2.0 * PI);
+    Some(v >= band.lo_at(x) - TOL && v <= band.hi_at(x) + TOL)
+}
+
+/// How an axis-parallel cut segment `entry → exit` relates to a band face
+/// along its generator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LineCover {
+    /// The segment spans the face from its lower rim to its upper rim at
+    /// that angle: a cut that partitions the face.
+    Full,
+    /// The segment does not reach this face at that angle at all.
+    Miss,
+    /// The segment ends inside the face: not (yet) a partitioning cut.
+    Partial,
+}
+
+/// Classify a generator cut `entry → exit` against a band-shaped
+/// cylindrical face. `None` when the face does not parse as a band, the
+/// segment is not a generator of it, or its angle sits on the band's own
+/// u-boundary — callers keep their old behaviour there.
+pub(crate) fn line_cover(
+    brep: &BRepSolid,
+    face_id: FaceId,
+    entry: &Point3,
+    exit: &Point3,
+) -> Option<LineCover> {
+    /// Rim slack (mm): trim endpoints are bisected onto the face boundary
+    /// to ~1e-6, so a real partial cut is always far outside this.
+    const TOL: f64 = 1e-4;
+    let (cyl, band) = parse_band(brep, face_id)?;
+    let d = *exit - *entry;
+    if d.norm() < 1e-9 || d.normalize().cross(cyl.axis.as_ref()).norm() > 1e-6 {
+        return None;
+    }
+    let (u, va) = uv_of(entry, &cyl);
+    let (_, vb) = uv_of(exit, &cyl);
+    let (u0, u1) = (band.u_start(), band.u_end());
+    let x = u0 + (u - u0).rem_euclid(2.0 * PI);
+    if !band.full_wrap && (x <= u0 + 1e-6 || x >= u1 - 1e-6) {
+        return None;
+    }
+    let (lo, hi) = (band.lo_at(x), band.hi_at(x));
+    let (v0, v1) = (va.min(vb), va.max(vb));
+    if v1 <= lo + TOL || v0 >= hi - TOL {
+        return Some(LineCover::Miss);
+    }
+    if v0 <= lo + TOL && v1 >= hi - TOL {
+        return Some(LineCover::Full);
+    }
+    Some(LineCover::Partial)
+}
+
 /// Is the band a plain rectangle (both chains constant v)? Those faces are
 /// handled by the pre-existing splitters and keep their degenerate loop
 /// representations.

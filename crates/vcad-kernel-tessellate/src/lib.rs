@@ -3141,6 +3141,19 @@ fn earcut_polygon_with_holes(
     if tris.is_empty() {
         return None;
     }
+    // Earcut filters collinear points out of its rings, so a T-vertex on a
+    // straight side — where a neighbouring face was split and this one was
+    // not (a notch corner landing mid-edge of a holed block face) — came
+    // back as one long edge the neighbour's two edges cannot weld to.
+    let mut tris: Vec<[u32; 3]> = tris
+        .chunks(3)
+        .map(|t| [t[0] as u32, t[1] as u32, t[2] as u32])
+        .collect();
+    let uv: Vec<(f64, f64)> = data.chunks(2).map(|c| (c[0], c[1])).collect();
+    let loop_lens: Vec<usize> = std::iter::once(outer_2d.len())
+        .chain(inner_2d.iter().map(Vec::len))
+        .collect();
+    reinsert_dropped_boundary(&mut tris, &uv, &loop_lens);
 
     // earcut's output triangles are uniformly wound; measure that winding
     // from the TOTAL signed area of the output (immune to any individual
@@ -3148,7 +3161,8 @@ fn earcut_polygon_with_holes(
     // triangle came from) and normalize to the same convention as
     // `ear_clip_triangulate` (CCW in the projected frame unless `reversed`).
     let mut area2 = 0.0;
-    for t in tris.chunks(3) {
+    for t in &tris {
+        let t = t.map(|i| i as usize);
         let (ax, ay) = (data[2 * t[0]], data[2 * t[0] + 1]);
         let (bx, by) = (data[2 * t[1]], data[2 * t[1] + 1]);
         let (cx, cy) = (data[2 * t[2]], data[2 * t[2] + 1]);
@@ -3156,15 +3170,11 @@ fn earcut_polygon_with_holes(
     }
     let flip = (area2 > 0.0) == reversed;
 
-    for t in tris.chunks(3) {
+    for t in &tris {
         if flip {
-            mesh.indices.push(t[0] as u32);
-            mesh.indices.push(t[2] as u32);
-            mesh.indices.push(t[1] as u32);
+            mesh.indices.extend([t[0], t[2], t[1]]);
         } else {
-            mesh.indices.push(t[0] as u32);
-            mesh.indices.push(t[1] as u32);
-            mesh.indices.push(t[2] as u32);
+            mesh.indices.extend([t[0], t[1], t[2]]);
         }
     }
 
@@ -9270,6 +9280,58 @@ mod tests {
             area2 += (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0);
         }
         assert!((area2 / 2.0 - 96.0).abs() < 1e-6, "area {}", area2 / 2.0);
+    }
+
+    /// A holed planar face whose straight side carries a T-vertex (a
+    /// neighbour split there; this face was not) must keep that vertex.
+    /// Earcut filters collinear points, so without reinsertion the side came
+    /// back as one long edge the neighbour's two edges cannot weld to. The
+    /// face is the field case: a block's front face beside a notch, the
+    /// T-vertex (25, 32) where the notch's top meets the notch side, with a
+    /// crossing bore's r4 hole at (20, 35).
+    #[test]
+    fn earcut_with_holes_keeps_collinear_boundary_vertex() {
+        let outer = [
+            (25.0, 60.0),
+            (0.0, 60.0),
+            (0.0, 20.0),
+            (25.0, 20.0),
+            (25.0, 32.0),
+        ];
+        let n = 140;
+        let hole: Vec<(f64, f64)> = (0..n)
+            .map(|k| {
+                let a = -2.0 * std::f64::consts::PI * k as f64 / n as f64;
+                (20.0 + 4.0 * a.cos(), 35.0 + 4.0 * a.sin())
+            })
+            .collect();
+        let to3 = |p: &(f64, f64)| Point3::new(p.0, 0.0, p.1);
+        let outer_3d: Vec<Point3> = outer.iter().map(to3).collect();
+        let hole_3d: Vec<Point3> = hole.iter().map(to3).collect();
+        let mesh = earcut_polygon_with_holes(&outer, &[hole.clone()], &outer_3d, &[hole_3d], false)
+            .expect("triangulates");
+        assert!(mesh.indices.contains(&4), "T-vertex (25, 32) dropped");
+        // The side (25,20)-(25,60) is split at the T-vertex, never spanned
+        // whole.
+        let spans_side = mesh.indices.chunks(3).any(|t| {
+            (0..3).any(|k| {
+                let (x, y) = (t[k], t[(k + 1) % 3]);
+                (x == 3 && y == 0) || (x == 0 && y == 3)
+            })
+        });
+        assert!(!spans_side, "edge (25,20)-(25,60) skips the T-vertex");
+        // Still exactly outer − hole: no overlap or gap.
+        let all: Vec<(f64, f64)> = outer.iter().copied().chain(hole.iter().copied()).collect();
+        let area: f64 = mesh
+            .indices
+            .chunks(3)
+            .map(|t| {
+                let (a, b, c) = (all[t[0] as usize], all[t[1] as usize], all[t[2] as usize]);
+                ((b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)).abs() / 2.0
+            })
+            .sum();
+        let hole_area = 0.5 * n as f64 * 16.0 * (2.0 * std::f64::consts::PI / n as f64).sin();
+        assert!((area - (1000.0 - hole_area)).abs() < 1e-6, "area {area}");
     }
 
     #[test]

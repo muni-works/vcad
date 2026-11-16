@@ -1,0 +1,12 @@
+{
+  "id": "2026-11-15-crossing-bores-notch",
+  "version": "0.11.0",
+  "date": "2026-11-15",
+  "category": "fix",
+  "title": "Crossing equal-size bores no longer turn parts to soup",
+  "summary": "Two equal-radius bores crossing in a block (then a notch clipping one) came out as invalid triangle soup with dark edge lines; the cuts are now exact analytic B-rep.",
+  "features": [
+    "kernel",
+    "booleans"
+  ]
+}

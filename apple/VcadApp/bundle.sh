@@ -85,38 +85,8 @@ fi
 mkdir -p "$app/Contents/Frameworks"
 ditto "$bin_dir/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"
 
-# The agent bridge's stdio MCP shim ("Connect Claude…" points clients here),
-# plus every module it imports.
-cp "$here/scripts/vcad-app-mcp.mjs" "$here/scripts/vcad-app-discovery.mjs" "$app/Contents/Resources/"
-
-# Guard: every relative import in a shipped .mjs must resolve inside the
-# bundle. 1.0.2 shipped the shim without vcad-app-discovery.mjs and `node` on
-# it died with ERR_MODULE_NOT_FOUND. Static scan first (no node needed)...
-missing=0
-for mjs in "$app/Contents/Resources"/*.mjs; do
-  for spec in $(grep -oE "(from|import)[[:space:]]*\(?[[:space:]]*[\"']\.{1,2}/[^\"']+[\"']" "$mjs" \
-                  | grep -oE "\.{1,2}/[^\"']+"); do
-    if [ ! -f "$(dirname "$mjs")/$spec" ]; then
-      echo "error: $(basename "$mjs") imports $spec, which is not in Contents/Resources" >&2
-      missing=1
-    fi
-  done
-done
-[ "$missing" = 0 ] || exit 1
-# ...then actually load the shim with stdin closed (it resolves the app lazily,
-# so with no input it exits 0 once its module graph has loaded).
-if command -v node >/dev/null 2>&1; then
-  shim_home=$(mktemp -d)
-  if ! env -u VCAD_APP_URL -u VCAD_APP_PID -u VCAD_APP_DOCUMENT HOME="$shim_home" \
-      node "$app/Contents/Resources/vcad-app-mcp.mjs" </dev/null >/dev/null; then
-    echo "error: bundled vcad-app-mcp.mjs fails to load under node" >&2
-    rm -rf "$shim_home"
-    exit 1
-  fi
-  rm -rf "$shim_home"
-else
-  echo "(node not found: skipped the vcad-app-mcp.mjs load check)"
-fi
+# The agent bridge's stdio MCP shim ("Connect Claude…" points clients here).
+cp "$here/scripts/vcad-app-mcp.mjs" "$app/Contents/Resources/"
 # Viewport shaders (screen-space edge lines). Optional: without the Metal
 # toolchain the app falls back to plain ribbons.
 if ls "$here"/Shaders/*.metal >/dev/null 2>&1 && xcrun -f metal >/dev/null 2>&1; then

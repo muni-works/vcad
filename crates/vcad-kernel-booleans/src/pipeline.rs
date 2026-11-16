@@ -787,7 +787,47 @@ fn apply_splits_to_solid(
     ordered.sort_by_key(|(fid, _)| *fid);
     for (face_id, split_list) in ordered {
         let mut current_faces = vec![face_id];
-        for (curve, entry, exit) in split_list {
+        let split_list = if solid.topology.faces.contains_key(face_id)
+            && split::is_cylindrical_face(solid, face_id)
+        {
+            merge_collinear_line_splits(split_list)
+        } else {
+            split_list
+        };
+        // A planar face's line cut can be refused only because the face
+        // still carries a hole the chord would cross — while a sibling cut
+        // later in the list is what separates the hole from the cut's real
+        // span. Two equal-radius bores crossing a block, then a notch: the
+        // notch-top line z = 32 on the block's front face is trimmed around
+        // the Y bore's hole into two pieces that each end ON the hole, so
+        // both are refused as slits; once the notch side x = 25 has split
+        // the face, the x ≥ 25 piece is hole-free and the same cut is a
+        // plain chord. Applied in list order, it was never retried — the
+        // notch's front wall stayed whole and the result came back cracked
+        // (6 boundary edges, a wide-crack swap to triangle soup). So a line
+        // cut that splits nothing on a holed planar face is deferred and
+        // retried once, after every other cut on this face has landed. A
+        // retry that still splits nothing is the old outcome; a chord
+        // through the hole itself stays refused by `split_face_by_curve`.
+        // A cylindrical generator cut that ends inside a sub-face is
+        // deferred the same way (see the cylindrical arm below).
+        let mut queue: std::collections::VecDeque<(ssi::IntersectionCurve, Point3, Point3, bool)> =
+            split_list
+                .into_iter()
+                .map(|(c, en, ex)| (c, en, ex, false))
+                .collect();
+        while let Some((curve, entry, exit, retried)) = queue.pop_front() {
+            // Set when a cylindrical sub-face saw this generator cut end
+            // inside it (see `cyl_band::line_cover`).
+            let mut partial_generator = false;
+            let holed_planar_line = !retried
+                && matches!(curve, ssi::IntersectionCurve::Line(_))
+                && current_faces.iter().any(|&f| {
+                    solid.topology.faces.contains_key(f)
+                        && split::is_planar_face(solid, f)
+                        && !solid.topology.faces[f].inner_loops.is_empty()
+                });
+            let before = current_faces.clone();
             let mut new_faces = Vec::new();
             for &fid in &current_faces {
                 if solid.topology.faces.contains_key(fid) {
@@ -842,6 +882,26 @@ fn apply_splits_to_solid(
                                 _ => format!("{:?}", curve),
                             }
                         );
+                        // A clipped generator cut only partitions a
+                        // sub-face it spans rim to rim. One that misses the
+                        // sub-face leaves it alone; one that ends inside it
+                        // waits for the face's other cuts (the ring that
+                        // bounds it), and only on its retry falls back to
+                        // the old whole-generator split.
+                        if let ssi::IntersectionCurve::Line(_) = &curve {
+                            match crate::cyl_band::line_cover(solid, fid, &entry, &exit) {
+                                Some(crate::cyl_band::LineCover::Miss) => {
+                                    new_faces.push(fid);
+                                    continue;
+                                }
+                                Some(crate::cyl_band::LineCover::Partial) if !retried => {
+                                    partial_generator = true;
+                                    new_faces.push(fid);
+                                    continue;
+                                }
+                                _ => {}
+                            }
+                        }
                         let result = split::split_cylindrical_face(solid, fid, &curve, segments);
                         debug_bool!(
                             "    -> Cylindrical split result: {} sub-faces {:?}",
@@ -1141,8 +1201,75 @@ fn apply_splits_to_solid(
             if !new_faces.is_empty() {
                 current_faces = new_faces;
             }
+            if (holed_planar_line && current_faces == before) || partial_generator {
+                queue.push_back((curve, entry, exit, true));
+            }
         }
     }
+}
+
+/// Union collinear generator cuts recorded on one cylindrical face.
+///
+/// Generator cuts are clipped to the partner face (see the SSI stage), so a
+/// partner plane that an earlier boolean already split into coplanar pieces
+/// contributes one partial segment per piece. Each alone may fail the
+/// rim-to-rim coverage test the split stage applies; their union is the
+/// cut. Non-line entries keep their order; each merged run takes the slot
+/// of its first piece.
+fn merge_collinear_line_splits(
+    list: Vec<(ssi::IntersectionCurve, Point3, Point3)>,
+) -> Vec<(ssi::IntersectionCurve, Point3, Point3)> {
+    use vcad_kernel_math::Vec3;
+    let same_line = |a: &vcad_kernel_geom::Line3d, b: &vcad_kernel_geom::Line3d| {
+        let (da, db): (Vec3, Vec3) = (a.direction.normalize(), b.direction.normalize());
+        if da.cross(db).norm() > 1e-9 {
+            return false;
+        }
+        let off = b.origin - a.origin;
+        (off - off.dot(da) * da).norm() < 1e-7
+    };
+    let mut out: Vec<(ssi::IntersectionCurve, Point3, Point3)> = Vec::with_capacity(list.len());
+    let mut taken = vec![false; list.len()];
+    for i in 0..list.len() {
+        if taken[i] {
+            continue;
+        }
+        taken[i] = true;
+        let ssi::IntersectionCurve::Line(li) = &list[i].0 else {
+            out.push(list[i].clone());
+            continue;
+        };
+        let dir: Vec3 = li.direction.normalize();
+        let t = |p: &Point3| (*p - li.origin).dot(dir);
+        let span = |e: &Point3, x: &Point3| {
+            let (a, b) = (t(e), t(x));
+            (a.min(b), a.max(b))
+        };
+        let mut spans = vec![span(&list[i].1, &list[i].2)];
+        for j in i + 1..list.len() {
+            if taken[j] {
+                continue;
+            }
+            if let ssi::IntersectionCurve::Line(lj) = &list[j].0 {
+                if same_line(li, lj) {
+                    taken[j] = true;
+                    spans.push(span(&list[j].1, &list[j].2));
+                }
+            }
+        }
+        spans.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+        let mut merged: Vec<(f64, f64)> = Vec::new();
+        for (a, b) in spans {
+            match merged.last_mut() {
+                Some(last) if a <= last.1 + 1e-6 => last.1 = last.1.max(b),
+                _ => merged.push((a, b)),
+            }
+        }
+        for (a, b) in merged {
+            out.push((list[i].0.clone(), li.origin + a * dir, li.origin + b * dir));
+        }
+    }
+    out
 }
 
 /// B-rep boolean pipeline for overlapping solids.
@@ -1514,60 +1641,41 @@ pub(crate) fn brep_boolean(
                 return Ok(Some((face_a, results_a, face_b, results_b, real)));
             }
 
-            // TwoSampled is the analytic cylinder × cylinder result (the
-            // Steinmetz pair of ellipses). The curves are already on both
-            // cylindrical surfaces; route them directly to the cylindrical
-            // splitter without going through `trim_curve_to_face`, so the
-            // figure-8 stays atomic and the 4-way split happens in one call.
-            // A smaller perpendicular cylinder through a larger one is two
-            // separate closed loops (`ssi::perpendicular_unequal_cylinders`),
-            // not a figure-8: route each to the cylindrical splitter as its
-            // own sampled curve. The splitter tells the cases apart — a loop
-            // winding a face's axis is a profile, one that does not is a
-            // patch — and leaves a face a loop misses whole.
+            // TwoSampled is the analytic cylinder × cylinder result: two
+            // closed loops that each lie on both cylinders. Route each to
+            // the cylindrical splitter as its own sampled curve; the
+            // splitter tells the cases apart — a loop winding a face's axis
+            // is a profile, one that does not is a patch — and leaves a face
+            // a loop misses whole.
+            //
+            // * Unequal radii (`ssi::perpendicular_unequal_cylinders`): a
+            //   smaller cylinder through a larger one, one loop where it
+            //   enters and one where it leaves.
+            // * Equal radii (the Steinmetz pair of ellipses): the two loops
+            //   CROSS at the two saddle points. Each is still a closed,
+            //   single-valued profile on both cylinders, so applying them
+            //   one after the other is exact: the second meets the first's
+            //   sub-bands at zero width and the band splitter separates the
+            //   pinched lenses there. This pair used to be routed whole to a
+            //   splitter arm that returned both faces unsplit — two
+            //   equal-radius bores crossing in a block removed ~670 mm³
+            //   instead of ~1669 and came back as triangle soup.
             if let ssi::IntersectionCurve::TwoSampled(c1, c2) = &curve {
-                let radius = |s: &dyn vcad_kernel_geom::Surface| {
-                    s.as_any()
-                        .downcast_ref::<vcad_kernel_geom::CylinderSurface>()
-                        .map(|c| c.radius)
+                // Both loops lie on both infinite surfaces; only one lying on
+                // both FACES is a real crossing (the far loop of a blind
+                // radial hole is not).
+                let on_both = |c: &Vec<Point3>| {
+                    let step = (c.len() / 16).max(1);
+                    c.iter().step_by(step).any(|p| {
+                        trim::point_in_face(&a, face_a, p) && trim::point_in_face(&b, face_b, p)
+                    })
                 };
-                if let (Some(ra), Some(rb)) = (radius(surf_a.as_ref()), radius(surf_b.as_ref())) {
-                    if (ra - rb).abs() > 1e-6 {
-                        // Both loops lie on both infinite surfaces; only one
-                        // lying on both FACES is a real crossing (the far
-                        // loop of a blind radial hole is not).
-                        let on_both = |c: &Vec<Point3>| {
-                            let step = (c.len() / 16).max(1);
-                            c.iter().step_by(step).any(|p| {
-                                trim::point_in_face(&a, face_a, p)
-                                    && trim::point_in_face(&b, face_b, p)
-                            })
-                        };
-                        for c in [c1, c2].into_iter().filter(|c| on_both(c)) {
-                            let s = ssi::IntersectionCurve::Sampled(c.clone());
-                            results_a.push((s.clone(), Point3::origin(), Point3::origin()));
-                            results_b.push((s, Point3::origin(), Point3::origin()));
-                        }
-                        return Ok(Some((face_a, results_a, face_b, results_b, true)));
-                    }
+                for c in [c1, c2].into_iter().filter(|c| on_both(c)) {
+                    let s = ssi::IntersectionCurve::Sampled(c.clone());
+                    results_a.push((s.clone(), Point3::origin(), Point3::origin()));
+                    results_b.push((s, Point3::origin(), Point3::origin()));
                 }
-            }
-            if let ssi::IntersectionCurve::TwoSampled(_, _) = &curve {
-                debug_bool!(
-                    "  TwoSampled: {:?}({:?}) x {:?}({:?})",
-                    face_a,
-                    surf_a.surface_type(),
-                    face_b,
-                    surf_b.surface_type()
-                );
-                if split::is_cylindrical_face(&a, face_a) {
-                    results_a.push((curve.clone(), Point3::origin(), Point3::origin()));
-                }
-                if split::is_cylindrical_face(&b, face_b) {
-                    results_b.push((curve.clone(), Point3::origin(), Point3::origin()));
-                }
-                let real = !results_a.is_empty() || !results_b.is_empty();
-                return Ok(Some((face_a, results_a, face_b, results_b, real)));
+                return Ok(Some((face_a, results_a, face_b, results_b, true)));
             }
 
             // Expand TwoLines into individual Line curves for processing
@@ -1682,12 +1790,32 @@ pub(crate) fn brep_boolean(
                 let gate = line_curve && op == BooleanOp::Union;
                 let phantom_a = gate && flush_wall_phantom_cut(&a, face_a, &b, face_b);
                 let phantom_b = gate && flush_wall_phantom_cut(&b, face_b, &a, face_a);
-                let clipped_a: Option<Vec<(f64, f64)>> = (line_curve
-                    && split::is_conical_face(&a, face_a))
-                .then(|| clip_to(&segs_a, &segs_b));
-                let clipped_b: Option<Vec<(f64, f64)>> = (line_curve
-                    && split::is_conical_face(&b, face_b))
-                .then(|| clip_to(&segs_b, &segs_a));
+                // Cylindrical generators get the same clip, for the same
+                // reason: a plane meeting a bore wall only along part of a
+                // generator (a notch top clipping a bore over x 25..40)
+                // used to split the wall along the WHOLE generator, ending
+                // the phantom stretch on whatever chain bounded the face —
+                // a Steinmetz arc where a crossing bore met it, whose
+                // neighbour never got the vertex (14 open edges). The
+                // split stage only cuts a cylindrical sub-face the clipped
+                // segment spans rim to rim (`cyl_band::line_cover`).
+                //
+                // Only WAVY bands (a rim that is not a constant-v ring) are
+                // clipped. On a plain rectangular wall the phantom stretch
+                // ends on a ring both neighbours share, and clipping there
+                // was measured to cost more than it buys: twelve filleted
+                // posts unioned into a ring fell to the mesh referee, and a
+                // boss-split motor wall stopped fragmenting the way the face
+                // queries expect.
+                let clip_kind = |s: &BRepSolid, f: FaceId| {
+                    split::is_conical_face(s, f)
+                        || (split::is_cylindrical_face(s, f)
+                            && crate::cyl_band::face_is_wavy_band(s, f))
+                };
+                let clipped_a: Option<Vec<(f64, f64)>> =
+                    (line_curve && clip_kind(&a, face_a)).then(|| clip_to(&segs_a, &segs_b));
+                let clipped_b: Option<Vec<(f64, f64)>> =
+                    (line_curve && clip_kind(&b, face_b)).then(|| clip_to(&segs_b, &segs_a));
                 debug_bool!(
                     "    Trim to face A ({:?}): {} segments",
                     face_a,
