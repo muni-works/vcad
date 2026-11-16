@@ -182,8 +182,7 @@ fn fusor_chamber_and_flanges_are_clean_analytic() {
     // quarter of everything coaxial — can, cavity, pump nozzle and bore,
     // feedthrough bore — and misses the viewport (+y) and gauge (−x) ports.
     let cyl = |r: f64, h: f64| PI * r * r * h;
-    let chamber = 0.75 * (cyl(79.5, 159.0) - cyl(76.0, 152.0))
-        + radial_stub(22.5, 79.5, 112.0)
+    let chamber = 0.75 * (cyl(79.5, 159.0) - cyl(76.0, 152.0)) + radial_stub(22.5, 79.5, 112.0)
         - radial_stub(19.0, 76.0, 112.0)
         + radial_stub(14.0, 79.5, 112.0)
         - radial_stub(11.0, 76.0, 112.0)
