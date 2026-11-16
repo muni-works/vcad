@@ -12,6 +12,7 @@
 //! a cylinder, meridian-plane launch) is printed as a cross-check.
 //!
 //! `cargo run --release -p vcad-kernel-particle --example globe_vs_rings [particles]`
+//! (`STEP_MM=0.125` overrides the 3D tracer step for convergence checks).
 
 use std::time::Instant;
 
@@ -77,7 +78,12 @@ fn run3d(name: &str, device: &Device3d, particles: usize) -> (Row, WireField) {
     let solve_s = t0.elapsed().as_secs_f64();
     let rep = field.residual_report();
     let t1 = Instant::now();
-    let tracer = field.tracer(field.default_step_length_m(), trace_opts());
+    let step = std::env::var("STEP_MM")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .map(|mm| mm * 1e-3)
+        .unwrap_or_else(|| field.default_step_length_m());
+    let tracer = field.tracer(step, trace_opts());
     let out = launch_fibonacci(&tracer, DEUTERON, particles);
     let trace_s = t1.elapsed().as_secs_f64();
     let row = Row {
