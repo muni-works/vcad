@@ -338,3 +338,66 @@ fn rod_into_ball_mesh_union_is_manifold() {
     }
     assert!(fails.is_empty(), "{}", fails.join("\n"));
 }
+
+/// The same arrangements off the z axis: the seam ring is the cylinder's
+/// canonical grid, whose frame follows the axis.
+#[test]
+fn rod_and_ball_on_other_axes() {
+    use std::f64::consts::FRAC_PI_2;
+    let segments = 32;
+    let frames = [
+        ("x axis", Transform::rotation_y(FRAC_PI_2)),
+        ("y axis", Transform::rotation_x(-FRAC_PI_2)),
+        (
+            "oblique",
+            Transform::translation(3.0, -2.0, 5.0)
+                .then(&Transform::rotation_x(0.7))
+                .then(&Transform::rotation_z(1.1)),
+        ),
+    ];
+    let h = (64.0f64 - 2.56).sqrt();
+    let core = PI * 2.56 * 2.0 * h + 2.0 * cap(8.0, h);
+    let (rod_v, ball_v) = (PI * 2.56 * 40.0, 4.0 / 3.0 * PI * 512.0);
+    let mut fails = Vec::new();
+    for (name, frame) in &frames {
+        let through = transformed(zcyl(1.6, -20.0, 20.0, segments), frame);
+        let ending = transformed(zcyl(1.6, -20.0, 0.0, segments), frame);
+        let ball = transformed(ball(8.0, 0.0, segments), frame);
+        let ending_truth = PI * 2.56 * (20.0 - h) - cap(8.0, h) + ball_v;
+        for (label, op, a, b, truth) in [
+            (
+                "rod ∪ ball",
+                BooleanOp::Union,
+                &through,
+                &ball,
+                rod_v + ball_v - core,
+            ),
+            (
+                "ball − rod",
+                BooleanOp::Difference,
+                &ball,
+                &through,
+                ball_v - core,
+            ),
+            ("rod ∩ ball", BooleanOp::Intersection, &through, &ball, core),
+            (
+                "ending rod ∪ ball",
+                BooleanOp::Union,
+                &ending,
+                &ball,
+                ending_truth,
+            ),
+        ] {
+            let (result, report) = boolean_op_reported(a, b, op, segments).expect("boolean");
+            fails.extend(check(
+                &format!("{label}, {name}"),
+                &result,
+                &report,
+                segments,
+                truth,
+                tol(segments),
+            ));
+        }
+    }
+    assert!(fails.is_empty(), "{}", fails.join("\n"));
+}

@@ -4119,7 +4119,7 @@ fn split_spherical_face_by_circle_inner(
         || !brep.topology.faces[face_id].inner_loops.is_empty()
     {
         if let Some(result) =
-            clip_spherical_face_by_circle(brep, face_id, circle, segments, tolerance, ring)
+            clip_spherical_face_by_circle(brep, face_id, circle, segments, tolerance, ring, sound)
         {
             return result;
         }
@@ -4206,6 +4206,7 @@ fn clip_spherical_face_by_circle(
     segments: u32,
     tolerance: f64,
     ring: Option<&[Point3]>,
+    sound: &mut bool,
 ) -> Option<SplitResult> {
     use vcad_kernel_math::Vec3;
 
@@ -4309,6 +4310,12 @@ fn clip_spherical_face_by_circle(
         // Clipping across the outer boundary rebuilds the patch's loops
         // without its holes; not supported yet.
         return None;
+    }
+    if ring.is_some() {
+        // The connector below rides the raw circle-frame grid, not the
+        // caller's ring, so it cannot sew to the face the ring came from.
+        // Say so: the arrangement is then held to the validity oracle.
+        *sound = false;
     }
 
     // Crossing point on the great arc between two straddling vertices:

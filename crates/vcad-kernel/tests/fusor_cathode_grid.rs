@@ -278,3 +278,60 @@ fn cathode_grid() {
     );
     assert!(fails.is_empty(), "{}", fails.join("\n"));
 }
+
+/// A tool flush with a flat face of a soup operand — the commonest cut
+/// there is. The pocket must open through the face, not keep a skin over
+/// it, whichever way the face looks.
+#[test]
+fn flush_pocket_in_a_soup_operand() {
+    // The hull of a 128-gon cylinder: 508 planar triangles, flat caps at
+    // z = 0 and z = 8.
+    let puck = || {
+        let c = Solid::cylinder(10.0, 8.0, 128);
+        Solid::hull(&[&c], &[]).expect("hull")
+    };
+    let mut fails = Vec::new();
+    for (label, z0) in [
+        ("pocket in the top face", 6.0),
+        ("pocket in the bottom face", 0.0),
+    ] {
+        let build = || puck().difference(&Solid::cube(4.0, 4.0, 2.0).translate(-2.0, -1.0, z0));
+        let whole = signed_volume(&puck().to_mesh(128));
+        let solid = build();
+        let mesh = solid.to_mesh(128);
+        let census = edge_census(&mesh);
+        let vol = signed_volume(&mesh);
+        eprintln!(
+            "{label}: tris {} volume {vol:.2} (expect {:.2}) census {census:?} {:?}",
+            mesh.indices.len() / 3,
+            whole - 32.0,
+            solid.fidelity()
+        );
+        if census != (0, 0, 0) {
+            fails.push(format!("{label}: census {census:?}"));
+        }
+        if (vol - (whole - 32.0)).abs() > 0.05 {
+            fails.push(format!(
+                "{label}: volume {vol:.2}, expected {:.2}",
+                whole - 32.0
+            ));
+        }
+        // No skin left over the opening: the pocket floor is the only
+        // surface at its depth inside the footprint, so nothing of the
+        // result may sit on the flush plane within it.
+        let flush = if z0 > 0.0 { 8.0 } else { 0.0 };
+        let skin = mesh.indices.chunks(3).any(|t| {
+            t.iter().all(|&i| {
+                let i = i as usize * 3;
+                let (x, y, z) = (mesh.vertices[i], mesh.vertices[i + 1], mesh.vertices[i + 2]);
+                (z as f64 - flush).abs() < 1e-6
+                    && (-2.0..=2.0).contains(&(x as f64))
+                    && (-1.0..=3.0).contains(&(y as f64))
+            })
+        });
+        if skin {
+            fails.push(format!("{label}: a skin is left over the opening"));
+        }
+    }
+    assert!(fails.is_empty(), "{}", fails.join("\n"));
+}

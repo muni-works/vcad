@@ -493,6 +493,82 @@ impl Cdt {
     }
 }
 
+/// Would the nudge resolve some flush contact between the operands the wrong
+/// way?
+///
+/// Where a facet of B lies exactly in the plane of a facet of A and overlaps
+/// it, the nudge decides which sheet is outside, and for three combinations
+/// only one answer is the solid the user meant:
+///
+/// * `A − B`, facets facing the same way (a tool flush with the wall it
+///   cuts): B must poke through, or a zero-thickness skin is left over the
+///   opening.
+/// * `A ∪ B`, facets facing each other (two bodies in face contact): B must
+///   press in, or the bodies stay separated by a hairline void.
+/// * `A ∩ B`, facets facing each other: B must back off, or a zero-volume
+///   wafer is left.
+///
+/// No one direction suits a pocket flush with both the top and the bottom
+/// of a part, so such arrangements are left to the BSP boolean, whose
+/// coplanar handling is exactly this.
+fn flush_contact_misresolved(
+    pos: &[Point3],
+    tris_a: &[Tri],
+    tris_b: &[Tri],
+    op: BooleanOp,
+    nudge: Vec3,
+) -> bool {
+    for (i, j) in candidate_pairs(pos, tris_a, tris_b) {
+        let a = tris_a[i as usize].map(|v| pos[v as usize]);
+        let b = tris_b[j as usize].map(|v| pos[v as usize]);
+        if b.iter().any(|q| s3(&a[0], &a[1], &a[2], q) != 0) {
+            continue;
+        }
+        let (na, nb) = (
+            (a[1] - a[0]).cross(a[2] - a[0]),
+            (b[1] - b[0]).cross(b[2] - b[0]),
+        );
+        // Drop the axis the common plane is most normal to; exact in-plane
+        // tests then run on untouched coordinates.
+        let drop = if na.x.abs() >= na.y.abs() && na.x.abs() >= na.z.abs() {
+            0
+        } else if na.y.abs() >= na.z.abs() {
+            1
+        } else {
+            2
+        };
+        let flat = |q: &Point3| match drop {
+            0 => Point2::new(q.y, q.z),
+            1 => Point2::new(q.z, q.x),
+            _ => Point2::new(q.x, q.y),
+        };
+        let (fa, fb) = (a.map(|q| flat(&q)), b.map(|q| flat(&q)));
+        // Interiors overlap unless some edge of either separates them.
+        let separated = |t: &[Point2; 3], u: &[Point2; 3]| {
+            let o = sign(orient2d(&t[0], &t[1], &t[2]));
+            o == 0
+                || (0..3).any(|k| {
+                    u.iter()
+                        .all(|q| sign(orient2d(&t[k], &t[(k + 1) % 3], q)) * o <= 0)
+                })
+        };
+        if separated(&fa, &fb) || separated(&fb, &fa) {
+            continue;
+        }
+        let aligned = na.dot(nb) > 0.0;
+        let pokes_out = nudge.dot(nb) > 0.0;
+        let wrong = match op {
+            BooleanOp::Difference => aligned && !pokes_out,
+            BooleanOp::Union => !aligned && !pokes_out,
+            BooleanOp::Intersection => !aligned && pokes_out,
+        };
+        if wrong {
+            return true;
+        }
+    }
+    false
+}
+
 /// Candidate triangle pairs by bounding-box overlap (sweep along x).
 fn candidate_pairs(pos: &[Point3], a: &[Tri], b: &[Tri]) -> Vec<(u32, u32)> {
     let boxes = |tris: &[Tri]| -> Vec<([f64; 3], [f64; 3])> {
@@ -855,6 +931,16 @@ pub fn conforming_csg(
     let diag = (0..3).map(|k| (hi[k] - lo[k]).powi(2)).sum::<f64>().sqrt();
     let nudge = Vec3::new(NUDGE_DIR[0], NUDGE_DIR[1], NUDGE_DIR[2])
         * (NUDGE * diag).clamp(1e-10, 0.1 * MIN_EDGE);
+    let unmoved: Vec<Point3> = original
+        .iter()
+        .map(|c| Point3::new(c[0] as f64, c[1] as f64, c[2] as f64))
+        .collect();
+    if flush_contact_misresolved(&unmoved, &tris_a, &tris_b, op, nudge) {
+        return note(
+            "a flush contact the nudge would resolve the wrong way",
+            None,
+        );
+    }
     let pos: Vec<Point3> = original
         .iter()
         .enumerate()
@@ -1099,11 +1185,9 @@ mod tests {
         let uni = conforming_csg(&a, &a.clone(), BooleanOp::Union).expect("union");
         assert!(closed(&uni));
         assert!((volume(&uni) - volume(&a)).abs() < 1e-6);
-        // `A − A` is empty up to what the nudge leaves along its terminator:
-        // closed, and of no volume.
-        let dif = conforming_csg(&a, &a.clone(), BooleanOp::Difference).expect("difference");
-        assert!(closed(&dif));
-        assert!(volume(&dif).abs() < 1e-3, "{}", volume(&dif));
+        // `A − A` is a tool flush with every wall it cuts, half of them
+        // facing against the nudge: left to the BSP boolean.
+        assert!(conforming_csg(&a, &a.clone(), BooleanOp::Difference).is_none());
     }
 
     #[test]
