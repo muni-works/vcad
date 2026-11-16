@@ -28,6 +28,7 @@ pub mod placement;
 pub mod provenance;
 pub mod sensitivity;
 pub mod sheet_build;
+pub mod sim_extract;
 pub mod step_doc;
 pub mod step_sources;
 #[cfg(not(target_arch = "wasm32"))]

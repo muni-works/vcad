@@ -12,8 +12,9 @@
 //! the Dirichlet mask, which is discrete, so geometric parameters take
 //! finite differences until the shape-adjoint milestone.
 //!
-//! BRep extraction (revolved sketch sections → rings) is deliberately not
-//! here: it lands on the vcad side of the seam, emitting this schema.
+//! BRep extraction is deliberately not here: it lives on the vcad side of
+//! the seam (`vcad_eval::sim_extract::extract_device_spec`), emitting this
+//! schema.
 
 use std::collections::BTreeMap;
 
