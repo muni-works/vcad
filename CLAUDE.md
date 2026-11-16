@@ -250,8 +250,10 @@ vcad/
 │   #                            # Lawson; predicted → Provisional, never
 │   #                            # Pass) and the MCP tools
 │   #                            # simulate_charged_particles /
-│   #                            # optimize_electrodes (multi-start FD search;
-│   #                            # adjoint optimizer in-crate) are live.
+│   #                            # optimize_electrodes (multi-start search via
+│   #                            # electrode_opt: FD default, `gradient:
+│   #                            # "hybrid"` = adjoint for potentials/A·t + FD
+│   #                            # geometry + FD fallback) are live.
 │   #                            # (docs/particle-optics-m0.md, -paper-draft,
 │   #                            # shielded-grid-experiment.md)
 │   # - vcad-kernel-tolerance    # Tolerance stackups: WC/RSS/seeded-MC +
@@ -282,6 +284,15 @@ vcad/
 │   #                            # diffusion thickness gradients; fission
 │   #                            # refused permanently; vcad.neutronics-claims/1
 │   #                            # (docs/neutronics-m0.md)
+│   # - vcad-kernel-photon-dose  # Photon (x-ray + gamma) shielding dose, M0:
+│   #                            # Kramers thick-target brems (10-150 kV,
+│   #                            # enforced) + capture gammas from a
+│   #                            # neutronics run; NIST SRD 126 data; slab
+│   #                            # next-event MC (buildup computed) + exact
+│   #                            # oblique-ray shell integral for chambers;
+│   #                            # ICRP-74 H*(10) + air kerma; every dose
+│   #                            # MC rse + named systematic band;
+│   #                            # vcad.photon-claims/1 (docs/photon-dose-m0.md)
 │   # - vcad-kernel-acoustics    # Air-side acoustics, M0 COMPLETE: axisym
 │   #                            # (r,z) Helmholtz field solve (vertex-centred
 │   #                            # finite volume — conservative, symmetric →

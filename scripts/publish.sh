@@ -60,6 +60,7 @@ CRATES=(
   vcad-kernel-flow
   vcad-kernel-naming
   vcad-kernel-neutronics
+  vcad-kernel-photon-dose
   vcad-kernel-particle
   vcad-gdsii
   vcad-kernel-photonics

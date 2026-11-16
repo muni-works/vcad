@@ -8863,73 +8863,21 @@ pub fn particle_simulate(
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
 }
 
-#[derive(serde::Deserialize)]
-struct ParticleOptVariable {
-    name: String,
-    lo: f64,
-    hi: f64,
-    #[serde(default)]
-    start: Option<f64>,
-}
-
-#[derive(serde::Deserialize)]
-struct ParticleOptOptions {
-    variables: Vec<ParticleOptVariable>,
-    #[serde(default = "particle_opt_nr")]
-    nr: usize,
-    #[serde(default = "particle_opt_nz")]
-    nz: usize,
-    #[serde(default = "particle_opt_particles")]
-    particles: usize,
-    #[serde(default = "particle_opt_passes")]
-    max_passes: u32,
-    #[serde(default = "particle_opt_iters")]
-    max_iters: usize,
-    #[serde(default = "particle_opt_multi")]
-    multi_start: bool,
-}
-
-fn particle_opt_nr() -> usize {
-    81
-}
-fn particle_opt_nz() -> usize {
-    161
-}
-fn particle_opt_particles() -> usize {
-    48
-}
-fn particle_opt_passes() -> u32 {
-    20
-}
-fn particle_opt_iters() -> usize {
-    8
-}
-fn particle_opt_multi() -> bool {
-    true
-}
-
-#[derive(serde::Serialize)]
-struct WasmParticleOptStart {
-    params: std::collections::BTreeMap<String, f64>,
-    value: f64,
-}
-
-#[derive(serde::Serialize)]
-struct WasmParticleOpt {
-    best_params: std::collections::BTreeMap<String, f64>,
-    best_sigma_v_m3: f64,
-    evals: usize,
-    history: Vec<f64>,
-    starts: Vec<WasmParticleOptStart>,
-}
-
 /// Optimize named device parameters against predicted D-D yield per ion.
 ///
 /// `optimize_json`: `{ variables: [{name, lo, hi, start?}], nr?, nz?,
-/// particles?, max_passes?, max_iters?, multi_start? }`. Multi-start FD
-/// ascent (the yield landscape is multimodal — see
-/// `docs/particle-optics-m0.md`); candidate configurations that fail to
-/// resolve or converge score 0 instead of aborting the search.
+/// particles?, max_passes?, max_iters?, multi_start?, gradient?,
+/// adjoint_particles?, adjoint_crossings? }` — an
+/// `electrode_opt::ElectrodeOptProblem`. Multi-start ascent (the yield
+/// landscape is multimodal — see `docs/particle-optics-m0.md`).
+/// `gradient: "fd"` (default) uses central differences throughout;
+/// `"hybrid"` routes potentials + ampere-turns through the discrete
+/// adjoint and geometry through FD, falling back to FD on an iteration
+/// whose adjoint direction fails to climb. Candidate configurations that
+/// fail to resolve or converge score 0 instead of aborting the search.
+/// Output keeps `best_params / best_sigma_v_m3 / evals / history /
+/// starts[{params, value}]` and adds per-iteration records with the
+/// gradient source of every variable.
 #[wasm_bindgen(js_name = particleOptimize)]
 pub fn particle_optimize(
     spec_json: &str,
@@ -8944,85 +8892,10 @@ pub fn particle_optimize(
     } else {
         serde_json::from_str(params_json).map_err(|e| JsError::new(&format!("bad params: {e}")))?
     };
-    let oopts: ParticleOptOptions = serde_json::from_str(optimize_json)
+    let problem: pk::electrode_opt::ElectrodeOptProblem = serde_json::from_str(optimize_json)
         .map_err(|e| JsError::new(&format!("bad optimize options: {e}")))?;
-    if oopts.variables.is_empty() {
-        return Err(JsError::new("optimize requires at least one variable"));
-    }
-
-    let lo: Vec<f64> = oopts.variables.iter().map(|v| v.lo).collect();
-    let hi: Vec<f64> = oopts.variables.iter().map(|v| v.hi).collect();
-    let names: Vec<String> = oopts.variables.iter().map(|v| v.name.clone()).collect();
-
-    let mut evals_total = 0usize;
-    let mut objective = |x: &[f64]| -> f64 {
-        let mut p = base.clone();
-        for (name, value) in names.iter().zip(x) {
-            p.insert(name.clone(), *value);
-        }
-        evals_total += 1;
-        let Ok(device) = spec.resolve(&p) else {
-            return 0.0;
-        };
-        let Ok(sol) = pk::poisson::solve(
-            &device,
-            oopts.nr,
-            oopts.nz,
-            &pk::poisson::SolveOptions::default(),
-        ) else {
-            return 0.0;
-        };
-        let fields = pk::field::FieldMap::new(&device, &sol);
-        let topts = pk::trace::TraceOptions {
-            max_passes: oopts.max_passes,
-            ..Default::default()
-        };
-        let tracer = pk::trace::Tracer::new(&device, &fields, &sol, topts);
-        pk::fom::stats(&tracer.launch_ensemble(pk::trace::DEUTERON, oopts.particles))
-            .mean_ddn_sigma_v_m3
-    };
-
-    let seed_fractions: Vec<f64> = if oopts.multi_start {
-        vec![0.2, 0.5, 0.8]
-    } else {
-        vec![0.5]
-    };
-    let explicit: Option<Vec<f64>> = oopts
-        .variables
-        .iter()
-        .map(|v| v.start)
-        .collect::<Option<Vec<f64>>>();
-
-    let fd = pk::optimize::FdOptions {
-        max_iters: oopts.max_iters,
-        ..pk::optimize::FdOptions::default()
-    };
-    let mut best: Option<pk::optimize::FdResult> = None;
-    let mut starts = Vec::new();
-    for (k, f) in seed_fractions.iter().enumerate() {
-        let x0: Vec<f64> = if k == 0 && explicit.is_some() {
-            explicit.clone().unwrap()
-        } else {
-            lo.iter().zip(&hi).map(|(a, b)| a + f * (b - a)).collect()
-        };
-        let r = pk::optimize::maximize(&mut objective, &x0, &lo, &hi, &fd);
-        starts.push(WasmParticleOptStart {
-            params: names.iter().cloned().zip(r.x.iter().copied()).collect(),
-            value: r.value,
-        });
-        let better = best.as_ref().map(|b| r.value > b.value).unwrap_or(true);
-        if better {
-            best = Some(r);
-        }
-    }
-    let best = best.expect("at least one start");
-    let out = WasmParticleOpt {
-        best_params: names.iter().cloned().zip(best.x.iter().copied()).collect(),
-        best_sigma_v_m3: best.value,
-        evals: evals_total,
-        history: best.history,
-        starts,
-    };
+    let out = pk::electrode_opt::optimize_electrodes(&spec, &base, &problem)
+        .map_err(|e| JsError::new(&e))?;
     let ser = serde_wasm_bindgen::Serializer::json_compatible();
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
 }
