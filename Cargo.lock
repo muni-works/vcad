@@ -6545,6 +6545,7 @@ version = "0.11.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tang-la",
  "vcad-kernel-em 0.11.0",
  "vcad-kernel-neutronics 0.11.0",
  "vcad-kernel-thermal 0.11.0",
