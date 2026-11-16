@@ -46,7 +46,7 @@
 
 use crate::constants::{ELECTRON_MASS, ELEMENTARY_CHARGE};
 pub use crate::field3d::{b_dipole, DiscMagnet};
-use crate::field3d::{norm, Pose};
+use crate::field3d::{norm, FieldScene, Pose};
 
 /// Boltzmann constant, J/K.
 const K_B: f64 = 1.380_649e-23;
@@ -70,6 +70,13 @@ impl MagnetPose {
     pub fn b_world(&self, magnet: &DiscMagnet, p: [f64; 3]) -> [f64; 3] {
         let pose = self.pose();
         pose.vec_to_world(magnet.b_local(pose.to_local(p)))
+    }
+
+    /// `magnet` in this pose as a one-source [`FieldScene`] — the form the
+    /// model's physics runs on. Add more sources to it (a second magnet, a
+    /// coil, a block) to steer the foot with any posed field.
+    pub fn scene(&self, magnet: &DiscMagnet) -> FieldScene {
+        FieldScene::new().with(magnet.as_source(), self.pose())
     }
 }
 
@@ -125,11 +132,82 @@ impl PlasmaParams {
         }
     }
 
+    /// Hall parameter β at dish point `(x, y)` (sampled at the glow height)
+    /// in an arbitrary field scene.
+    pub fn beta_in(&self, field: &FieldScene, x: f64, y: f64) -> f64 {
+        hall_parameter(field.b_magnitude([x, y, self.glow_height_m]), self.nu_per_s)
+    }
+
+    /// Transport potential Φ = ln(1 + β²) at dish point `(x, y)` in an
+    /// arbitrary field scene (any number of posed coils and magnets).
+    pub fn potential_in(&self, field: &FieldScene, x: f64, y: f64) -> f64 {
+        let beta = self.beta_in(field, x, y);
+        (1.0 + beta * beta).ln()
+    }
+
+    /// ∇Φ in the dish plane by central differences (1/m).
+    pub fn grad_potential_in(&self, field: &FieldScene, x: f64, y: f64) -> [f64; 2] {
+        let h = 2e-4;
+        let px = self.potential_in(field, x + h, y) - self.potential_in(field, x - h, y);
+        let py = self.potential_in(field, x, y + h) - self.potential_in(field, x, y - h);
+        [px / (2.0 * h), py / (2.0 * h)]
+    }
+
+    /// Largest |∇Φ| on the dish within `search_m` of `center_xy` (grid
+    /// search, 1 mm cells).
+    pub fn max_grad_in(&self, field: &FieldScene, center_xy: [f64; 2], search_m: f64) -> f64 {
+        let (cx, cy) = (center_xy[0], center_xy[1]);
+        let n = (search_m / 1e-3).ceil() as i64;
+        let mut best = 0.0f64;
+        for i in -n..=n {
+            for j in -n..=n {
+                let (x, y) = (cx + i as f64 * 1e-3, cy + j as f64 * 1e-3);
+                let g = self.grad_potential_in(field, x, y);
+                best = best.max((g[0] * g[0] + g[1] * g[1]).sqrt());
+            }
+        }
+        best
+    }
+
+    /// Depinning mobility `μ* = v_race / max|∇Φ|` for a field scene, with
+    /// the search centered on `center_xy` (the pinning site of interest).
+    pub fn depinning_mobility_in(&self, field: &FieldScene, center_xy: [f64; 2]) -> f64 {
+        self.race_speed_m_s / self.max_grad_in(field, center_xy, 0.03)
+    }
+
+    /// Foot velocity at `pos` (m/s) in a field scene; `None` = no field.
+    pub fn velocity_in(&self, field: Option<&FieldScene>, pos: [f64; 2]) -> [f64; 2] {
+        let (x, y) = (pos[0], pos[1]);
+        let r = (x * x + y * y).sqrt().max(1e-9);
+        let (er, ephi) = ([x / r, y / r], [-y / r, x / r]);
+        let vr = self.radial_rate_per_s * (self.orbit_radius_m - r);
+        let mut v = [
+            self.race_speed_m_s * ephi[0] + vr * er[0],
+            self.race_speed_m_s * ephi[1] + vr * er[1],
+        ];
+        if let Some(field) = field {
+            let g = self.grad_potential_in(field, x, y);
+            v[0] += self.mobility_m2_s * g[0];
+            v[1] += self.mobility_m2_s * g[1];
+            if self.spin_speed_m_s != 0.0 {
+                let b = field.b([x, y, self.glow_height_m]);
+                let beta = hall_parameter(norm(b), self.nu_per_s);
+                // E_dc points from the glow into the dish (−z); E×B ∝ −ẑ×B.
+                let d = [b[1], -b[0]];
+                let dn = (d[0] * d[0] + d[1] * d[1]).sqrt();
+                if dn > 1e-12 {
+                    let s = self.spin_speed_m_s * beta * beta / (1.0 + beta * beta) / dn;
+                    v[0] += s * d[0];
+                    v[1] += s * d[1];
+                }
+            }
+        }
+        v
+    }
+
     /// Transport potential Φ = ln(1 + β²) at dish point `(x, y)`.
     pub fn potential(&self, magnet: &DiscMagnet, pose: &MagnetPose, x: f64, y: f64) -> f64 {
-        let b = pose.b_world(magnet, [x, y, self.glow_height_m]);
-        let beta = hall_parameter(norm(b), self.nu_per_s);
-        (1.0 + beta * beta).ln()
+        self.potential_in(&pose.scene(magnet), x, y)
     }
 
     /// ∇Φ in the dish plane by central differences (1/m).
@@ -140,26 +218,14 @@ impl PlasmaParams {
         x: f64,
         y: f64,
     ) -> [f64; 2] {
-        let h = 2e-4;
-        let px = self.potential(magnet, pose, x + h, y) - self.potential(magnet, pose, x - h, y);
-        let py = self.potential(magnet, pose, x, y + h) - self.potential(magnet, pose, x, y - h);
-        [px / (2.0 * h), py / (2.0 * h)]
+        self.grad_potential_in(&pose.scene(magnet), x, y)
     }
 
     /// Largest |∇Φ| on the dish for this pose (grid search, 1 mm cells
     /// within `search_m` of the magnet's footprint).
     pub fn max_grad(&self, magnet: &DiscMagnet, pose: &MagnetPose, search_m: f64) -> f64 {
-        let (cx, cy) = (pose.center_m[0], pose.center_m[1]);
-        let n = (search_m / 1e-3).ceil() as i64;
-        let mut best = 0.0f64;
-        for i in -n..=n {
-            for j in -n..=n {
-                let (x, y) = (cx + i as f64 * 1e-3, cy + j as f64 * 1e-3);
-                let g = self.grad_potential(magnet, pose, x, y);
-                best = best.max((g[0] * g[0] + g[1] * g[1]).sqrt());
-            }
-        }
-        best
+        let c = [pose.center_m[0], pose.center_m[1]];
+        self.max_grad_in(&pose.scene(magnet), c, search_m)
     }
 
     /// Mobility at which the pin exactly balances the racing drive,
@@ -177,32 +243,7 @@ impl PlasmaParams {
         pose: Option<&MagnetPose>,
         pos: [f64; 2],
     ) -> [f64; 2] {
-        let (x, y) = (pos[0], pos[1]);
-        let r = (x * x + y * y).sqrt().max(1e-9);
-        let (er, ephi) = ([x / r, y / r], [-y / r, x / r]);
-        let vr = self.radial_rate_per_s * (self.orbit_radius_m - r);
-        let mut v = [
-            self.race_speed_m_s * ephi[0] + vr * er[0],
-            self.race_speed_m_s * ephi[1] + vr * er[1],
-        ];
-        if let Some(pose) = pose {
-            let g = self.grad_potential(magnet, pose, x, y);
-            v[0] += self.mobility_m2_s * g[0];
-            v[1] += self.mobility_m2_s * g[1];
-            if self.spin_speed_m_s != 0.0 {
-                let b = pose.b_world(magnet, [x, y, self.glow_height_m]);
-                let beta = hall_parameter(norm(b), self.nu_per_s);
-                // E_dc points from the glow into the dish (−z); E×B ∝ −ẑ×B.
-                let d = [b[1], -b[0]];
-                let dn = (d[0] * d[0] + d[1] * d[1]).sqrt();
-                if dn > 1e-12 {
-                    let s = self.spin_speed_m_s * beta * beta / (1.0 + beta * beta) / dn;
-                    v[0] += s * d[0];
-                    v[1] += s * d[1];
-                }
-            }
-        }
-        v
+        self.velocity_in(pose.map(|q| q.scene(magnet)).as_ref(), pos)
     }
 }
 
@@ -282,10 +323,74 @@ where
     out
 }
 
+/// One sample of a [`simulate_scene`] trajectory.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneSample {
+    /// Time, s.
+    pub t_s: f64,
+    /// Foot position on the dish, m.
+    pub pos_m: [f64; 2],
+    /// Hall parameter at the foot (0 with no field).
+    pub beta: f64,
+}
+
+/// [`simulate`] for an arbitrary, time-varying field: `field_at(t)` returns
+/// the scene at time `t` (any posed coils and magnets — see
+/// [`crate::field3d`]), or `None` for no field. Same RK4 + dish clamp.
+pub fn simulate_scene<F>(
+    params: &PlasmaParams,
+    field_at: F,
+    start: [f64; 2],
+    t_end: f64,
+    dt: f64,
+    stride: usize,
+) -> Vec<SceneSample>
+where
+    F: Fn(f64) -> Option<FieldScene>,
+{
+    let steps = (t_end / dt).round() as usize;
+    let stride = stride.max(1);
+    let mut p = start;
+    let mut out = Vec::with_capacity(steps / stride + 1);
+    let sample = |t: f64, p: [f64; 2]| SceneSample {
+        t_s: t,
+        pos_m: p,
+        beta: field_at(t)
+            .map(|f| params.beta_in(&f, p[0], p[1]))
+            .unwrap_or(0.0),
+    };
+    out.push(sample(0.0, p));
+    for s in 0..steps {
+        let t = s as f64 * dt;
+        let f = |tt: f64, q: [f64; 2]| params.velocity_in(field_at(tt).as_ref(), q);
+        let k1 = f(t, p);
+        let k2 = f(
+            t + 0.5 * dt,
+            [p[0] + 0.5 * dt * k1[0], p[1] + 0.5 * dt * k1[1]],
+        );
+        let k3 = f(
+            t + 0.5 * dt,
+            [p[0] + 0.5 * dt * k2[0], p[1] + 0.5 * dt * k2[1]],
+        );
+        let k4 = f(t + dt, [p[0] + dt * k3[0], p[1] + dt * k3[1]]);
+        p[0] += dt / 6.0 * (k1[0] + 2.0 * k2[0] + 2.0 * k3[0] + k4[0]);
+        p[1] += dt / 6.0 * (k1[1] + 2.0 * k2[1] + 2.0 * k3[1] + k4[1]);
+        let r = (p[0] * p[0] + p[1] * p[1]).sqrt();
+        if r > params.dish_radius_m {
+            let s = params.dish_radius_m / r;
+            p = [p[0] * s, p[1] * s];
+        }
+        if (s + 1) % stride == 0 {
+            out.push(sample(t + dt, p));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::field3d::sub;
+    use crate::field3d::{sub, FieldSource};
 
     fn rel(a: f64, b: f64) -> f64 {
         (a - b).abs() / b.abs().max(1e-30)
@@ -437,5 +542,68 @@ mod tests {
         let fast = follows_sweep(20.0);
         assert!(slow > 0.99, "slow sweep: under the magnet {slow}");
         assert!(fast < 0.2, "fast flick: under the magnet {fast}");
+    }
+
+    #[test]
+    fn magnet_api_and_scene_api_are_bit_identical() {
+        let m = DiscMagnet::n52_10x5();
+        let mut p = PlasmaParams::argon_dish(1.0);
+        let r0 = p.orbit_radius_m;
+        let pose0 = pose_above(0.0, r0, 10e-3, &m);
+        p.mobility_m2_s = 2.0 * p.depinning_mobility(&m, &pose0);
+        assert_eq!(
+            p.depinning_mobility(&m, &pose0),
+            p.depinning_mobility_in(&pose0.scene(&m), [0.0, r0])
+        );
+        let pose_at = |t: f64| {
+            let a = std::f64::consts::FRAC_PI_2 - 3.0 * t;
+            Some(pose_above(r0 * a.cos(), r0 * a.sin(), 10e-3, &m))
+        };
+        let old = simulate(&p, &m, pose_at, [r0, 0.0], 1.0, 1e-3, 50);
+        let new = simulate_scene(
+            &p,
+            |t| pose_at(t).map(|q| q.scene(&m)),
+            [r0, 0.0],
+            1.0,
+            1e-3,
+            50,
+        );
+        assert_eq!(old.len(), new.len());
+        for (a, b) in old.iter().zip(&new) {
+            assert_eq!((a.t_s, a.pos_m, a.beta), (b.t_s, b.pos_m, b.beta));
+        }
+    }
+
+    #[test]
+    fn block_magnet_pins_the_foot() {
+        // A source the disc-only API could not express: a 10×10×5 mm N52
+        // block, north pole down, 10 mm above the orbit.
+        let mut p = PlasmaParams::argon_dish(1.0);
+        p.radial_rate_per_s = 0.0;
+        p.spin_speed_m_s = 0.0;
+        let site = [0.0, p.orbit_radius_m];
+        let scene = FieldScene::new().with(
+            FieldSource::BlockMagnet {
+                size_m: [10e-3, 10e-3, 5e-3],
+                remanence_t: 1.43,
+            },
+            Pose::from_euler_deg([site[0], site[1], 12.5e-3], [180.0, 0.0, 0.0]),
+        );
+        let dist = |scale: f64| {
+            let mut q = p;
+            q.mobility_m2_s = scale * q.depinning_mobility_in(&scene, site);
+            let tr = simulate_scene(
+                &q,
+                |_| Some(scene.clone()),
+                [q.orbit_radius_m, 0.0],
+                4.0,
+                5e-4,
+                100,
+            );
+            let e = tr.last().unwrap().pos_m;
+            ((e[0] - site[0]).powi(2) + (e[1] - site[1]).powi(2)).sqrt()
+        };
+        assert!(dist(1.3) < 8e-3, "{}", dist(1.3));
+        assert!(dist(0.7) > 20e-3, "{}", dist(0.7));
     }
 }
