@@ -834,6 +834,12 @@ export interface KernelModule {
     paramsJson: string,
     optionsJson: string,
   ) => unknown;
+  /** 3D (non-axisymmetric) charged-particle optics (DeviceSpec3d JSON). */
+  particleSimulate3d?: (
+    specJson: string,
+    paramsJson: string,
+    optionsJson: string,
+  ) => unknown;
   /** Charged-particle yield optimization over named spec parameters. */
   particleOptimize?: (
     specJson: string,
@@ -1511,6 +1517,7 @@ export class Engine {
       topologyOptimizeBox: (wasmModule as Record<string, unknown>).topologyOptimizeBox as KernelModule["topologyOptimizeBox"],
       topologyOptimizeMesh: (wasmModule as Record<string, unknown>).topologyOptimizeMesh as KernelModule["topologyOptimizeMesh"],
       particleSimulate: (wasmModule as Record<string, unknown>).particleSimulate as KernelModule["particleSimulate"],
+      particleSimulate3d: (wasmModule as Record<string, unknown>).particleSimulate3d as KernelModule["particleSimulate3d"],
       extractDeviceSpec: (wasmModule as Record<string, unknown>).extractDeviceSpec as KernelModule["extractDeviceSpec"],
       extractShieldSpec: (wasmModule as Record<string, unknown>).extractShieldSpec as KernelModule["extractShieldSpec"],
       particleOptimize: (wasmModule as Record<string, unknown>).particleOptimize as KernelModule["particleOptimize"],
@@ -1839,6 +1846,28 @@ export class Engine {
     if (typeof fn !== "function") {
       throw new Error(
         "particleSimulate is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(specJson, paramsJson, optionsJson);
+  }
+
+  /**
+   * 3D charged-particle optics: solve a non-axisymmetric wire-electrode
+   * device (great-circle / lat-long globes, arbitrary circles, arcs,
+   * polylines) in a grounded sphere with the thin-wire BEM, trace a
+   * full-sphere deuteron ensemble, and return figures of merit plus the
+   * solver's surface-residual report. Inputs are JSON strings
+   * (DeviceSpec3d, named parameter bindings, options).
+   */
+  particleSimulate3d(
+    specJson: string,
+    paramsJson: string,
+    optionsJson: string,
+  ): unknown {
+    const fn = this.kernel.particleSimulate3d;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "particleSimulate3d is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
       );
     }
     return fn(specJson, paramsJson, optionsJson);
