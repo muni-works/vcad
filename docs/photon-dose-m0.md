@@ -21,8 +21,8 @@ a 4-point Gauss–Legendre, which isn't general enough to earn a home there.
 | interaction data | NIST SRD 126 (Hubbell & Seltzer) elemental μ/ρ, μ_en/ρ for H B C N O Na Al Si K Cr Mn Fe Ni Pb, 5 keV–3 MeV, edges included, transcribed verbatim, log-log interpolation | outside the window fails closed. Per-material μ uncertainty 5% (glass 8%, nominal lead glass 15%) |
 | materials | ss304, aluminum, lead, borosilicate, lead-glass (nominal 65 wt% PbO, 4.8 g/cc), hdpe, borated-hdpe-5, paraffin, water, air | unknown names fail closed |
 | transport | infinite slab stack, point source on the inner face, detectors on axis past an attenuate-only air gap (≥10 mm). Exact uncollided term (per bin, GL4 in energy) plus a next-event Monte Carlo scatter term (Klein–Nishina, implicit capture, roulette, importance-sampled source energies). Buildup is computed, not tabulated | coherent/photo/pair are removal (no fluorescence, no 511 keV), free-electron KN, no room return. Scatter below 10 keV is killed |
-| dose | ICRP-74 photon H*(10)/Φ and K_air/Φ, 10 keV–10 MeV | H*(10) is deep dose; air kerma rides along as the shallow-dose proxy (H′(0.07)/K_a ≈ 0.95–1.6) |
-| chamber model | uniform electron loading of a spherical wall. The wall path is a uniform-shell source (exact geometry factor) through one wall at normal incidence. The viewport path is two equivalent point sources at the window: glass-struck electrons (× `beaming_factor`) and the far wall seen through the aperture (radiance invariance → f·S_steel, f = r²/4a²) | geometry band ×/÷2 (star-mode jets can concentrate loading) |
+| dose | ICRP-74 photon H*(10)/Φ and K_air/Φ, 10 keV–10 MeV, **transcribed at design-estimate precision** (not machine-read). The kerma column is cross-checked against NIST μ_en; the H*(10) column at 10–40 keV has no independent check yet and should be verified against ICRP 74 / ICRU 57 | H*(10) is deep dose; air kerma rides along as the shallow-dose proxy (H′(0.07)/K_a ≈ 0.95–1.6) |
+| chamber model | uniform electron loading of a spherical wall. The wall path integrates the uniform-shell source exactly over emission angle, using each ray's true oblique path through the wall (L = √((a+t)² − a²sin²α) − a\|cos α\|), times the slab MC's buildup. The viewport path is two equivalent point sources at the window: glass-struck electrons (× `beaming_factor`) and the far wall seen through the aperture (radiance invariance → f·S_steel, f = r²/4a²) | geometry band ×/÷2 (star-mode jets can concentrate loading) |
 | capture gammas | per-region capture rates from the neutronics flux tally × the library's own σ_a × restated number densities (checked against the neutronics Σ_a at runtime; drift fails closed). H 2223 keV, ¹⁰B 478 keV transported. C/O/Pb lines above 3 MeV get an unattenuated one-photon-at-Q bound. Captures are placed at each region's outer radius | library band ×/÷1.3. Concrete or fiction materials fail closed. Air (n,γ) is a caveat |
 
 Every dose is a `tally::Estimate` (mean ± MC relative standard error) **and**
@@ -59,6 +59,7 @@ Analytic:
 | check | result |
 |---|---|
 | uncollided = S·e^{−μt−μ_air·gap}/4πR² · h(E) | exact to 1e-12, rse = 0 |
+| shell integral: μ→0 gives S/(8πaR)·ln((R+a)/(R−a)); far field gives S·E₂(μt)/4πR² | 1e-4 / 2% |
 | T(2t) = T(t)² | 1e-9 |
 | inverse square ×4·e^{μ_air Δr} at 0.5/1/2 m | 1e-9 |
 | Klein–Nishina: ∫dσ/dΩ = σ; Thomson limit; ×(Z/A)N_A = NIST hydrogen above 200 keV | 1e-5 / 1e-4 / 1% |
@@ -68,7 +69,8 @@ Analytic:
 | 120 vs 480 spectrum bins | < 1% |
 | same seed bit-identical; different seeds agree within 4σ | ✓ |
 
-Published values:
+Published values (reference numbers are quoted from the standard tables
+at design-estimate precision, not machine-read):
 
 | check | vcad | reference |
 |---|---|---|
@@ -111,31 +113,33 @@ in brackets. The upper edge is the number a safety case uses.
 |---|---:|---:|---:|---:|
 | bare glass (4.8 mm borosilicate) | 20 | 128 [301] | 30.5 [71.7] | 6.8 [16.0] |
 | | 30 | 4 580 [10 400] | 1 120 [2 530] | 262 [593] |
-| | 40 | **19 700 [44 300]** | **4 850 [10 900]** | **1 160 [2 600]** |
-| glass + 8 mm lead glass | 30 | 0.16 [0.47] | 0.045 [0.14] | 0.012 [0.035] |
-| | 40 | 257 [611] | 73.8 [175] | 19.4 [46.0] |
-| glass + 3 mm SS304 shutter | 30 | 0.16 [0.48] | 0.046 [0.14] | 0.012 [0.035] |
-| | 40 | 262 [621] | 74.5 [177] | 19.5 [46.2] |
+| | 40 | **19 500 [43 800]** | **4 790 [10 800]** | **1 140 [2 560]** |
+| glass + 8 mm lead glass | 30 | 0.011 [0.035] | 0.0033 [0.010] | 0.00085 [0.0026] |
+| | 40 | 32.8 [78.9] | 9.44 [22.7] | 2.49 [5.97] |
+| glass + 3 mm SS304 shutter | 30 | 0.012 [0.035] | 0.0033 [0.010] | 0.00085 [0.0026] |
+| | 40 | 33.4 [80.3] | 9.54 [22.9] | 2.50 [6.00] |
 
-At 20 kV, both shielded windows sit around 10⁻¹² µSv/h.
+At 20 kV, both shielded windows sit around 10⁻¹⁴ µSv/h. The shielded-window
+totals are the flange/wall term; the window itself passes 10⁻¹⁴ (lead
+glass) or 10⁻² (shutter) µSv/h at 40 kV.
 
 **Through the 1.65 mm wall**, distance from its outer face:
 
 | kV | 0.5 m | 1 m | 2 m |
 |---:|---:|---:|---:|
-| 20 | 2×10⁻¹² | 6×10⁻¹³ | 2×10⁻¹³ |
-| 30 | 0.165 [0.49] | 0.046 [0.14] | 0.012 [0.035] |
-| 40 | 268 [635] | 75.4 [179] | 19.6 [46.5] |
+| 20 | 6×10⁻¹⁴ | 2×10⁻¹⁴ | 4×10⁻¹⁵ |
+| 30 | 0.012 [0.036] | 0.0033 [0.010] | 0.00086 [0.0026] |
+| 40 | 34.1 [82.0] | 9.64 [23.2] | 2.51 [6.03] |
 
 **Wall thickness sweep**, −40 kV, 1 m from the wall:
 
 | SS304 wall | H*(10) µSv/h [band] |
 |---:|---|
-| 1.65 mm | 75.4 [31.8 – 179] |
-| 2 mm | 20.2 [8.3 – 48.8] |
-| 3 mm | 0.58 [0.21 – 1.63] |
-| 4 mm | 0.020 [0.006 – 0.061] |
-| 6 mm | 3×10⁻⁵ |
+| 1.65 mm | 9.64 [4.01 – 23.2] |
+| 2 mm | 2.29 [0.85 – 6.13] |
+| 3 mm | 0.050 [0.017 – 0.144] |
+| 4 mm | 0.0014 [0.0004 – 0.0044] |
+| 6 mm | 2×10⁻⁶ |
 
 ### What the numbers say
 
@@ -150,15 +154,24 @@ At 20 kV, both shielded windows sit around 10⁻¹² µSv/h.
 2. **8 mm lead glass or a 3 mm steel shutter kills the window path.** At
    40 kV the window term drops to 10⁻¹⁴ (lead glass) or 10⁻² (shutter)
    µSv/h. What's left on axis is the flange/wall term.
-3. **At 40 kV the thin wall itself leaks.** 1.65 mm of SS304 passes the top
-   few keV of a 40 kV spectrum: ~75 µSv/h at 1 m at the bound. It falls
-   ~30× per extra millimetre. That's the finding the audit didn't have:
-   - a 6″ chamber run at −40 kV needs ≥ 3 mm walls, or a 1–2 mm lead/steel
-     skirt, or a measured electron fraction well below 1;
-   - at −30 kV the same wall gives ~0.05 µSv/h at 1 m and is fine.
+3. **At 40 kV the thin wall itself is marginal.** 1.65 mm of SS304 passes
+   the top few keV of a 40 kV spectrum: ~10 µSv/h at 1 m at the bound
+   (upper edge 23). It falls ~4× by 2 mm and ~200× by 3 mm. The audit
+   didn't have this:
+   - at −40 kV with 1.65 mm walls and electron fraction 1, the wall alone
+     is above the 2.5 µSv/h budget out to ~2 m. Thicker walls (3 mm gives
+     0.05), a thin lead skirt, or a measured electron fraction well below 1
+     bring it down;
+   - at −30 kV the same wall gives ~0.003 µSv/h at 1 m and is fine.
 
    This term is tip-dominated (the ×/÷1.5 tip band is on), so it's the most
    model-sensitive number in the table. Survey it first.
+
+   An earlier draft priced this path with normal-incidence attenuation for
+   the whole shell. That overstated it ~8× at τ ≈ 5–6, because the shell
+   integral goes as E₂(τ), not e^{−τ}. The exact oblique-ray integral
+   replaced it, and a test pins the far-field E₂ limit and the
+   unattenuated shell formula.
 4. **Capture gammas are a fifth of the neutron dose behind HDPE.** At the
    5×10⁶ n/s upper bound with 15 cm HDPE (neutronics seed 20260717, 20 × 50k):
 
@@ -169,7 +182,8 @@ At 20 kV, both shielded windows sit around 10⁻¹² µSv/h.
    | 2 m | 1.51 ± 0.4% | 0.27 ± 0.1% | 1.79 [1.37 – 2.32] |
 
    The HDPE captures 4.05×10⁶ n/s on hydrogen, 81% of the source. Behind
-   15 cm at 2 m the total is 1.79 µSv/h, upper edge 2.32. That's still
+   15 cm at 2 m the total is 1.79 µSv/h, upper edge 2.32 (edges summed
+   edge-wise: high = N·b_n + P·b_p). That's still
    under the 2.5 µSv/h budget, but the margin the neutron-only case showed
    (1.52) mostly goes away. Borated poly swaps some 2.22 MeV for 478 keV.
 
