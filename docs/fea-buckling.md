@@ -77,16 +77,21 @@ region loads and supports (e.g. the Euler column).
 | case | reference | FE |
 |---|---|---|
 | fixed-free column 200×10×10 mm, axial tip load | Euler `π²EI/(4L²)` | within 3% |
-| plane-strain ring r=50 t=2, follower pressure | Bresse `E/(4(1−ν²))·(t/r)³` | within 3% |
-| same ring, dead pressure | — | reads higher (unconservative), as expected |
-| complete sphere r=50 t=2 (cube-sphere 6×16², 1 layer) | Zoelly `2E/√(3(1−ν²))·(t/r)²` | −2.1% |
-| capped cylinder r=50 t=1 L=100, hydrostatic, SS axially free | SP-8007 Batdorf screen (n = 5) | +8.8% (64×24×2 bricks; decreasing with θ refinement) |
+| plane-strain ring r=50 t=2, follower pressure | Bresse `E/(4(1−ν²))·(t/r)³` = 3.516 MPa | 3.536 (+0.6%) |
+| same ring, dead pressure | — | +7.9% (unconservative, as expected) |
+| complete sphere r=50 t=2 (cube-sphere 6×16², 1 layer) | Zoelly `2E/√(3(1−ν²))·(t/r)²` = 387.3 MPa | 379.1 (−2.1%) |
+| capped cylinder r=50 t=1 L=300, hydrostatic, SS axially free (64×40×2) | von Mises (n = 3) 1.662 MPa | 1.701 (+2.3%) |
+| capped cylinder r=50 t=1 L=100 (n = 5), 64×24×2 → 96×32×2 | von Mises 5.35 MPa | +6.3% → +3.4% (converging from above) |
+| L=1000 (n = 2), 48×40×2 | von Mises 0.494 MPa | 0.507 (+2.6%) |
 | closed-surface `K_L` symmetry, 3-2-1 reaction | exact | ~1e-12 |
 
-The cylinder's remaining gap is partly the screen itself. Batdorf/Donnell
-shallow-shell theory and von Mises' formula differ by a few percent at n = 5,
-and the FE converges from above as the circumferential mesh refines. The test
-gates at 10%.
+`von_mises_cylinder_pressure` (Windenburg & Trilling 1934; Timoshenko & Gere
+§11.5, full `n²−1` ring term) is exposed as an independent classical
+reference and reported next to every cylinder screen. The SP-8007 screen's
+classical value sits at or below it (the low-n correction and the
+long-cylinder switch at `Z > 4000` are both conservative: at L=1000 the
+screen uses Bresse 0.440 MPa against von Mises 0.494). The tests gate the FE
+against von Mises at 5% and assert that the screen is not above the FE.
 
 ## Shell screen (`shell.rs`)
 
@@ -140,19 +145,30 @@ Pass):
 
 ## The fusor example: 6" OD 304 SS, one atmosphere outside
 
-`shell_buckling_check`, E = 193 GPa, ν = 0.29, σy = 205 MPa, cylinder span
-300 mm between CF flanges, hydrostatic:
+`cargo run --release -p vcad-kernel-fea --example vacuum_shell`: E = 193 GPa,
+ν = 0.29, σy = 205 MPa, 1 atm = 0.101325 MPa, cylinder span 300 mm between CF
+flanges, hydrostatic. Pressures are in MPa. "FE" is the perfect-shell
+eigenvalue on a body-fitted mesh, an unconservative number to compare against
+"classical", not to design to.
 
-- **0.5 mm wall:** fails the screen. The knocked-down collapse is near
-  1 atm, and with the design factor of 3 the margin is < 1.
-- **3 mm wall:** passes with a wide margin; yield, not buckling, caps the
-  collapse estimate.
-- **Sphere, 1 mm wall:** passes. The UG-28(d) elastic collapse (~8 MPa) is
-  above membrane yield, so the screen caps at yield and cautions about
-  elastic-plastic interaction.
+| shell | t mm | classical | knockdown | collapse | allowable | margin | FE bifurcation |
+|---|---|---|---|---|---|---|---|
+| cylinder | 0.5 | 0.154 | 0.73 | 0.113 | 0.038 | **0.37 ✗** | 0.162 |
+| cylinder | 1.0 | 0.852 | 0.83 | 0.709 | 0.237 | 2.33 | 0.902 |
+| cylinder | 1.5 | 2.503 | 0.68 | 1.708 | 0.569 | 5.62 | 2.601 |
+| cylinder | 2.0 | 4.955 | 0.72 | 3.563 | 1.188 | 11.7 | 5.641 |
+| cylinder | 3.0 | 13.04 | 0.84 | 8.233 (yield) | 2.744 | 27.1 | 14.17 |
+| sphere | 0.5 | 10.09 | 0.21 | 2.077 | 0.519 | 5.13 | — |
+| sphere | 1.0 | 40.64 | 0.20 | 5.416 (yield) | 1.354 | 13.4 | — |
+| sphere | 1.5 | 92.04 | 0.20 | 8.151 (yield) | 2.038 | 20.1 | 92.53 |
+| sphere | 3.0 | 375.6 | 0.20 | 16.47 (yield) | 4.117 | 40.6 | 362.5 |
 
-(The unit tests `six_inch_tube_wall_sweep_is_monotone_and_thin_fails` and
-`sphere_matches_ug28d_elastic_branch` pin these.)
+A 0.5 mm, 6" tube between flanges 300 mm apart is the one that fails: its
+perfect-shell number is 1.5 atm, and real tubes collapse below that. Every
+sphere passes; spheres are strong in compression and limited by yield, though
+they are also the most imperfection-sensitive shape, and the screen says so.
+The knockdown column varies because SP-8007 applies `√γ` *inside* the Batdorf
+bracket, so its effect depends on how membrane-dominated the mode is.
 
 ## Not done (honest list)
 
