@@ -438,56 +438,111 @@ pub(crate) fn volume_disagrees_grossly(
         return false;
     }
 
-    let expect = |in_a: bool, in_b: bool| match op {
-        BooleanOp::Union => in_a || in_b,
-        BooleanOp::Difference => in_a && !in_b,
-        BooleanOp::Intersection => in_a && in_b,
-    };
-
     let idx_a = MeshRayIndex::new(mesh_a);
     let idx_b = MeshRayIndex::new(mesh_b);
-
-    let n = PROBES_PER_AXIS;
-    let mut inside = 0usize;
-    for i in 0..n {
-        for j in 0..n {
-            for k in 0..n {
-                let frac = |t: usize| (t as f64 + 0.5) / n as f64;
-                let p = Point3::new(
-                    min[0] + span[0] * frac(i),
-                    min[1] + span[1] * frac(j),
-                    min[2] + span[2] * frac(k),
-                );
-                if expect(idx_a.contains(&p), idx_b.contains(&p)) {
-                    inside += 1;
-                }
-            }
-        }
-    }
-    let predicted = box_vol * inside as f64 / (n * n * n) as f64;
     let got = mesh_signed_volume(result).abs();
-    let cell = box_vol / (n * n * n) as f64;
+
+    // Coarse pass: a 12³ cell-centred grid. Cheap, and decisive for the
+    // wholesale failures this check exists for (a missing pocket, an
+    // emptied result).
+    let (predicted, cell) = sampled_volume(&idx_a, &idx_b, op, min, span, PROBES_PER_AXIS, false);
     // Absolute slack of a few cells: the estimator cannot resolve a
     // prediction finer than its own cell, so tiny results must not trip on
     // quantisation alone.
     // Measure against the prediction, not against whichever value is
     // larger: a result that is wrong by *gaining* the tool's volume would
     // otherwise widen its own tolerance and slip through.
-    let slack = VOLUME_RTOL * predicted + 3.0 * cell;
-    (got - predicted).abs() > slack
+    let disagrees = |predicted: f64, cell: f64| {
+        let slack = VOLUME_RTOL * predicted + 3.0 * cell;
+        (got - predicted).abs() > slack
+    };
+    if !disagrees(predicted, cell) {
+        return false;
+    }
+    // Confirm before condemning. A regular grid aliases against thin
+    // axis-aligned walls: a DN40 tee (1.5 mm tube walls) minus its bores
+    // read 105.5 cm³ predicted against a correct 128.1 cm³ B-rep — 18% off,
+    // so a right analytic result went to the mesh fallback and came back as
+    // 108k triangles of soup, 10× slower. A finer, jittered grid has no
+    // such bias. It runs only when the coarse pass has already condemned,
+    // so it can only acquit, never convict.
+    let (fine, fine_cell) =
+        sampled_volume(&idx_a, &idx_b, op, min, span, CONFIRM_PROBES_PER_AXIS, true);
+    disagrees(fine, fine_cell)
+}
+
+/// Probes per axis for the confirming pass of [`volume_disagrees_grossly`].
+const CONFIRM_PROBES_PER_AXIS: usize = 32;
+
+/// Volume the operation's set semantics predict from `n³` point probes of
+/// the operands over the box `min + [0, span]`: cell-centred, or jittered
+/// within each cell (deterministically) when `jitter` is set. Returns the
+/// prediction and the cell volume.
+fn sampled_volume(
+    idx_a: &MeshRayIndex,
+    idx_b: &MeshRayIndex,
+    op: BooleanOp,
+    min: [f64; 3],
+    span: [f64; 3],
+    n: usize,
+    jitter: bool,
+) -> (f64, f64) {
+    let expect = |in_a: bool, in_b: bool| match op {
+        BooleanOp::Union => in_a || in_b,
+        BooleanOp::Difference => in_a && !in_b,
+        BooleanOp::Intersection => in_a && in_b,
+    };
+    // Low-discrepancy offsets in [0, 1): the fractional parts of multiples
+    // of the plastic-number reciprocals (R3 sequence), indexed by cell.
+    let r3 = |k: usize| -> [f64; 3] {
+        const A: [f64; 3] = [
+            0.819_172_513_396_164_4,
+            0.671_043_606_703_789_2,
+            0.549_700_477_901_970_9,
+        ];
+        let k = k as f64 + 1.0;
+        [
+            (0.5 + A[0] * k).fract(),
+            (0.5 + A[1] * k).fract(),
+            (0.5 + A[2] * k).fract(),
+        ]
+    };
+    let mut inside = 0usize;
+    let mut k = 0usize;
+    for i in 0..n {
+        for j in 0..n {
+            for l in 0..n {
+                let o = if jitter { r3(k) } else { [0.5; 3] };
+                k += 1;
+                let at = |axis: usize, t: usize| {
+                    min[axis] + span[axis] * (t as f64 + o[axis]) / n as f64
+                };
+                let p = Point3::new(at(0, i), at(1, j), at(2, l));
+                if expect(idx_a.contains(&p), idx_b.contains(&p)) {
+                    inside += 1;
+                }
+            }
+        }
+    }
+    let box_vol = span[0] * span[1] * span[2];
+    let cells = (n * n * n) as f64;
+    (box_vol * inside as f64 / cells, box_vol / cells)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use vcad_kernel_math::Transform;
-    use vcad_kernel_primitives::{make_cube, BRepSolid};
+    use vcad_kernel_primitives::{make_cube, make_cylinder, BRepSolid};
     use vcad_kernel_tessellate::tessellate_brep;
 
     const SEGMENTS: u32 = 32;
 
     fn translated_cube(s: f64, dx: f64, dy: f64, dz: f64) -> BRepSolid {
-        let mut c = make_cube(s, s, s);
+        translated(make_cube(s, s, s), dx, dy, dz)
+    }
+
+    fn translated(mut c: BRepSolid, dx: f64, dy: f64, dz: f64) -> BRepSolid {
         let t = Transform::translation(dx, dy, dz);
         for (_, v) in &mut c.topology.vertices {
             v.point = t.apply_point(&v.point);
@@ -538,5 +593,66 @@ mod tests {
         let mesh_a = tessellate_brep(&a, SEGMENTS);
         let mesh_b = tessellate_brep(&b, SEGMENTS);
         assert!(!difference_removed_nothing(&mesh_a, &mesh_a, &mesh_b));
+    }
+
+    /// A thin-walled tube cut correctly must not be condemned. A 12³
+    /// cell-centred grid over a 0.8 mm wall on r = 20 has no probe inside
+    /// the wall at all and predicts an empty result (the same aliasing read
+    /// a correct DN40 tee 18% light and sent it to the mesh fallback); the
+    /// confirming jittered pass acquits it.
+    #[test]
+    fn thin_walled_tube_is_not_condemned_by_grid_aliasing() {
+        let a = make_cylinder(20.0, 100.0, SEGMENTS);
+        let b = translated(make_cylinder(19.2, 110.0, SEGMENTS), 0.0, 0.0, -5.0);
+        let mesh_a = tessellate_brep(&a, SEGMENTS);
+        let mesh_b = tessellate_brep(&b, SEGMENTS);
+        let result = crate::boolean_op(&a, &b, BooleanOp::Difference, SEGMENTS)
+            .expect("difference should succeed")
+            .to_mesh(SEGMENTS);
+        let truth = std::f64::consts::PI * (20.0f64.powi(2) - 19.2f64.powi(2)) * 100.0;
+        let got = mesh_signed_volume(&result);
+        assert!(
+            (got - truth).abs() < 0.02 * truth,
+            "tube volume {got} vs {truth}"
+        );
+        // Pin the premise: the coarse grid alone would condemn this.
+        let ((a0, a1), (b0, b1)) = (mesh_aabb(&mesh_a).unwrap(), mesh_aabb(&mesh_b).unwrap());
+        let min = [a0[0].min(b0[0]), a0[1].min(b0[1]), a0[2].min(b0[2])];
+        let span = [0, 1, 2].map(|k| a1[k].max(b1[k]) - min[k]);
+        let (coarse, _) = sampled_volume(
+            &MeshRayIndex::new(&mesh_a),
+            &MeshRayIndex::new(&mesh_b),
+            BooleanOp::Difference,
+            min,
+            span,
+            PROBES_PER_AXIS,
+            false,
+        );
+        assert!(
+            coarse < 0.5 * truth,
+            "coarse grid should alias here: {coarse}"
+        );
+        assert!(!volume_disagrees_grossly(
+            &result,
+            &mesh_a,
+            &mesh_b,
+            BooleanOp::Difference
+        ));
+    }
+
+    /// The confirming pass only acquits: a result that is wholesale wrong
+    /// (the cut never happened) is still condemned.
+    #[test]
+    fn skipped_cut_is_still_condemned() {
+        let a = make_cylinder(20.0, 100.0, SEGMENTS);
+        let b = translated(make_cylinder(18.5, 110.0, SEGMENTS), 0.0, 0.0, -5.0);
+        let mesh_a = tessellate_brep(&a, SEGMENTS);
+        let mesh_b = tessellate_brep(&b, SEGMENTS);
+        assert!(volume_disagrees_grossly(
+            &mesh_a,
+            &mesh_a,
+            &mesh_b,
+            BooleanOp::Difference
+        ));
     }
 }
