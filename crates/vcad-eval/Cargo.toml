@@ -43,6 +43,9 @@ stl_io = "0.8"
 rayon = "1.10"
 # `std::time::Instant::now` panics on wasm32; the evaluator reads the clock for its batch budget.
 web-time = "1.1"
+# Solver schema the thermal_extract module emits (ThermalSpec). Leaf crate
+# (serde + tang + vcad-receipt); publishes before vcad-eval.
+vcad-kernel-thermal.workspace = true
 
 [dev-dependencies]
 # Path-only, no version: vcad-loon is publish = false (unpublished loon-lang),
