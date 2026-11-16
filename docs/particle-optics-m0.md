@@ -233,6 +233,180 @@ ensembles on a 101×201 mesh. Findings:
   verdicts — fail-closed: an unmeasured receipt never passes, a
   measurement matching no claim is an error, and Violated is treated as a
   publishable result about the model.
+- **M7 — a yield prediction that can lose. DONE (kernel + example).**
+  See [the section below](#m7-the-two-sided-fusor-yield). Integrator
+  fixed, cited collision data, CX chain, ionization source, supply-current
+  partition, self-consistent space charge, and one banded
+  `ddn_neutron_rate` claim that `receipt::compare` can judge Violated on
+  either side.
+
+## M7: the two-sided fusor yield
+
+**The problem (open-fusor blocker #2).** Before M7 the crate priced a gas
+fusor as a bracket: CX off (unphysical at mTorr), and CX on with a single
+generation (an ion dies at its first charge exchange). Both edges were
+floors on their own physics. The *ion* current was also a free input
+that no meter reads. For the open-fusor hobby machine (6" chamber, 1.5"
+grid, −30 kV, 10 mA, 5 mTorr) that gave 2.5×10⁴ to ≥4.4×10⁵ n/s, and
+no measurement could violate it.
+
+**What changed** (`src/chain.rs`, `src/xsection.rs`, `src/trace.rs`,
+`src/receipt.rs`, `examples/open_fusor_band.rs`):
+
+1. **Integrator.** The staggered Boris leapfrog is first order once the
+   adaptive `dt` changes from step to step, and its drift diagnostic mixed
+   half-step velocities with integer-step positions. At h = 0.5 mm the max
+   drift halved with each halving of `step_fraction` (26% → 19% → 9%).
+   Most of the old ceiling's "grid non-convergence" (1.8 → 3.3 →
+   4.4×10⁵) was this step error. At h = 0.25 mm, ⟨σv⟩ is converged at
+   `step_fraction` ≤ 0.125. The new default, `Integrator::Synchronized`,
+   is kick(½)–rotate(½)–drift–rotate(½)–kick(½) with a speed-change cap.
+   Max drift in the chain at production resolution is ≤ 0.3% (was 19%).
+   The change applies to every caller. Benchmark numbers earlier in this
+   document predate it.
+2. **Cited collision data, applied at equal velocity.**
+   - σ_cx(D⁺+D₂): Janev–Reiter–Samm, Jül-4105 Eq. 145. It peaks at
+     1.2×10⁻¹⁹ m² near 5 keV/amu and is 7.4×10⁻²⁰ at the 30 keV D⁺ point.
+   - Ion-impact ionization, D₂⁺ CX and ionization, and D₃⁺ formation:
+     HYDHEL H.1 3.2.5, 4.3.1–4.3.3.
+   - Breakup of fast D₂⁺/D₃⁺: Jül-4105 Eqs. 209 and 243.
+   - e⁻ + D₂ ionization: Kim–Rudd BEB.
+   - The CX target is the D₂ *molecule*. The legacy `CxModel` uses the
+     deuteron density, which double-counts attrition. It is kept as is
+     for the wasm/MCP surface and documented.
+3. **CX chain.** Each charge exchange relaunches a cold D₂⁺ from where it
+   happened. Waves are summed *unnormalized* until the relaunch weight per
+   source ion falls below 2×10⁻³ (the remainder is reported as
+   `truncated`). The fast neutral marches straight. It fuses in the gas,
+   ionizes, and either strikes a cathode wire (secondary electrons) or
+   buries itself in the wall (wall-embedded fusion, priced against
+   `beam_target`'s Ti-drive-in calibration at a stated relative loading).
+4. **Ionization source.** Ion-, fast-neutral- and electron-impact
+   ionization (cathode secondaries and ionization electrons are traced in
+   the field) births the next *generation*. The source is iterated to its
+   fixed point. Renormalizing CX births together with ionization births
+   converges to a spurious cold, core-weighted mode, so the two are kept
+   apart. The model reports **sustainment M** = ionization births per ion
+   lost. A self-sustained discharge has M = 1.
+5. **Species.** In a pure E field a singly charged ion launched at rest
+   follows a mass-independent trajectory, so one trace carries D⁺/D₂⁺/D₃⁺
+   weights and applies every rate per unit path. Born ions are D₂⁺ (plus
+   a stated D⁺ fraction). D₂⁺ → D₃⁺ conversion is modeled. Fast molecular
+   breakup spawns a D⁺ fragment on its own trajectory. Devices with coil
+   current are refused (`ChainError::Magnetics`).
+6. **Supply-current partition.** `I_supply = e·S·(c_ion + γ₁₅·u_se)`. The
+   cathode collects ion arrivals plus the secondary electrons they (and
+   fast neutrals on the wires) knock out, with γ_SE ∝ √(E/amu) and
+   molecular additivity. The meter reading fixes the birth rate S, and
+   the cathode ion current is a *derived* claim.
+7. **Space charge.** The ion dwell from all waves, scaled by S, feeds
+   `space_charge::grounded_potential`. The chain is re-run in applied +
+   beam fields, with under-relaxed iterations. The central value carries
+   the correction.
+8. **The band** (`chain::predict` → `receipt::yield_band_claims`). The
+   result is one rate, a lower edge and an upper edge. The rule is stated,
+   not tuned:
+   - Numerical terms (sampler scatter from a shifted stratified sampler,
+     grid, step) and input terms (meter current ±2%, voltage ±2%, pressure
+     ±15%, every cited σ ±25%) add in log-quadrature within their bucket.
+   - Model-form terms are a linear envelope: γ_SE 0.6…2.4 at 15 keV/amu,
+     born D⁺ fraction 0…0.3, D₃⁺ formation, D₃⁺ breakup-fit frame, wall
+     loading 0…0.02, space charge vs. electron-neutralized, and **source
+     shape**. The source-shape term weights the unmodeled |1 − M| of ion
+     production between uniform-volume and edge-born sources.
+   - Knob reruns are warm-started from the central fixed point and share
+     its sample points. A rerun excursion below the measured sampling
+     scatter is noise and is removed in quadrature.
+   - `Claim.band` makes `compare` judge the claim against the prediction's
+     own band, widened only by the measurement's uncertainty. The
+     measurer's `band_factor` is ignored for banded claims.
+
+**The prediction** (`cargo run --release -p vcad-kernel-particle
+--example open_fusor_band`, mew; 10 mA *supply* current, 5 mTorr,
+4-ring 2 mm-wire grid, 305×609 grid at h = 0.25 mm, 128 ions per CX wave):
+
+Raw output: [`particle-optics-m7-open-fusor-band.csv`](particle-optics-m7-open-fusor-band.csv)
+(commit `9f71fb60f`, 52 min on mew under load ~50).
+
+| −kV | lower n/s | **central n/s** | upper n/s | upper/central | cathode ion mA | M | space charge | ion-gas / fast-neutral / wall |
+|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 20 | 5.5 | **2.4×10²** | 4.0×10³ | ×17 | 6.2 | 0.055 | 0.044 | 0.43 / 0.56 / 0.01 |
+| 25 | 30 | **8.1×10²** | 1.2×10⁴ | ×15 | 6.0 | 0.071 | 0.030 | 0.44 / 0.55 / 0.01 |
+| 30 | 78 | **1.9×10³** | 2.2×10⁴ | ×11 | 5.8 | 0.090 | 0.022 | 0.46 / 0.53 / 0.01 |
+| 35 | 1.9×10² | **3.7×10³** | 5.0×10⁴ | ×14 | 5.6 | 0.101 | 0.018 | 0.48 / 0.50 / 0.02 |
+| 40 | 3.4×10² | **6.0×10³** | 6.5×10⁴ | ×11 | 5.4 | 0.108 | 0.016 | 0.50 / 0.49 / 0.02 |
+
+Every point converged (one at −25 kV hit the 6-generation cap at 5%
+spread). Max per-trace energy drift is ≤ 0.3%, and censored plus
+truncated weight is < 0.3%.
+
+Band components at −30 kV, as factors on the central at the low and high
+setting of each knob (from the CSV):
+
+| term | kind | low setting | high setting |
+|---|---|---:|---:|
+| sampling (shifted-sampler RMS 0.081) | numerical | ×0.92 | ×1.09 |
+| grid (153×305 vs 305×609) | numerical | ×0.99 | ×1.01 |
+| integrator step (½) | numerical | ×0.93 | ×1.08 |
+| supply current ±2% | input | ×0.98 | ×1.02 |
+| pressure ±15% | input | ×0.87 | ×1.15 |
+| voltage ±2% (d ln R/d ln V = 4.4) | input | ×0.92 | ×1.09 |
+| σ_cx ±25% | input | ×1.13 | ×0.90 |
+| σ_ionization ±25% | input | ×1.01 | ×0.98 |
+| σ_breakup ±25% | input | ×0.90 | ×1.07 |
+| γ_SE 0.6…2.4 | model form | ×1.26 | ×0.71 |
+| wall loading 0…0.02 | model form | ×0.99 | ×1.08 |
+| born D⁺ fraction 0…0.3 | model form | ×0.77 | ×2.08 |
+| D₃⁺ formation toggled | model form | — | ×1.08 |
+| D₃⁺ breakup-fit frame | model form | — | ×1.07 |
+| **source shape** (|1−M| = 0.91: cold / uniform / edge) | model form | **×0.095** | **×3.2** |
+| space charge vs neutralized | model form | — | ×1.08 |
+
+**Reading it.**
+
+- **The model does not explain how the discharge sustains itself, and
+  that sets the width.** Modeled ionization (ion, fast-neutral and
+  electron impact) creates only **M ≈ 0.06–0.11** of the ions the supply
+  current says are lost. The other ~90% come from something the model
+  does not carry, and where they are born decides how much energy they
+  fall through. Ions born in the cathode fall (cold) barely fuse
+  (×0.095). Ions born uniformly in the volume, or at the wall (hot), fuse
+  about 3× more. That single term dominates both edges. Born-species
+  composition is second (×2 up), then γ_SE (±25–30%). Every
+  measured-input and numerical term is ≤ 15%. The band is wider than 10×,
+  and that is the honest state of the physics, not a tuning choice.
+- **It can lose, mostly from above.** At −30 kV the upper edge is
+  2.2×10⁴ n/s. A hobby machine reading 10⁵ n/s at 30 kV / 10 mA, which
+  is a commonly reported amateur level, returns **Violated**, and that
+  would be a publishable statement that a channel is missing. The lower
+  edge (78 n/s) sits below practical detection, so in practice the
+  falsifiable side is the top.
+- **The central is not comparable to the old 2.5×10⁴ "floor".** That
+  number took 10 mA as the *ion* current, born atomic D⁺ at the wall with
+  the full drop, and applied σ_cx to the deuteron density. Now 10 mA on
+  the meter is ~5.8 mA of ions at the cathode (γ_SE partition). Born ions
+  are molecular. Most cathode arrivals are cold CX relaunches that cost
+  supply current and barely fuse (mean cathode-impact energy ≈ 5 keV at
+  −30 kV).
+- **What would shrink it.** A measurement of where the discharge is
+  ionized (an emission profile, or the current–voltage–pressure
+  characteristic that sustainment must reproduce) pins the source shape.
+  A mass-resolved ion species measurement pins the born D⁺ fraction. A
+  γ_SE value for the actual grid metal tightens the partition. Each
+  measurement would remove one row of the table above.
+
+**Known limits, all carried in the band or stated here:**
+- γ_SE magnitude: no primary table was read; the range is wide on purpose.
+- Fast-neutral impact ionization uses the ion fit at equal velocity.
+- D₃⁺ collision data borrow from D₂⁺.
+- Neutral stripping and electron-of-electron multiplication are not
+  followed (each is ≲ 10⁻² per particle).
+- Cold ions trapped inside the cathode are tallied, not traced, and their
+  dwell is not deposited.
+- The cathode is assumed hot, so it retains no deuterium. Beam–beam
+  fusion is neglected.
+- The geometry is still the ring stack. The other open-fusor session owns
+  3D grids.
 
 ## Non-goals
 
