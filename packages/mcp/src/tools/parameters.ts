@@ -648,6 +648,7 @@ export function optimizeParameters(input: unknown, engine: Engine): ToolResult {
     kkt: result.kkt,
     seamFdCheck: result.seam_fd_check,
     samples: result.samples,
+    valueSamples: result.value_samples,
     documentEvals: result.document_evals,
     wallMs: result.wall_ms,
     trajectory: result.trajectory,
@@ -689,7 +690,7 @@ export const toolDefs: ToolDef[] = [
     name: "optimize_parameters",
     pack: null,
     description:
-      "Solve for the geometry: minimize a weighted sum of quantities (volume, mass, centroid) over named parameters, subject to parameter-expression constraints (\"port_len <= body_h - 2*wall - 15\") and QoI bounds. Augmented Lagrangian over box-projected L-BFGS, driven by exact seam gradients. Returns the optimum, a KKT report (feasibility, stationarity, multipliers, active bounds), and the full trajectory — every iterate's parameters, per-term values, and each gradient component labeled with the route that produced it (seam / fd / adjoint / linear). Read-only: apply the optimum with set_parameters. Solver QoIs (modal frequency, …) plug in through the Rust API (vcad_eval::optimize::ScalarQoi, e.g. vcad_sound's modal_f1) and are not exposed over this WASM path.",
+      "Solve for the geometry: minimize a weighted sum of quantities (volume, mass, centroid) over named parameters, subject to parameter-expression constraints (\"port_len <= body_h - 2*wall - 15\") and QoI bounds. Augmented Lagrangian over box-projected L-BFGS, driven by exact seam gradients. Returns the optimum, a KKT report (feasibility, stationarity, multipliers, active bounds), and the full trajectory — every iterate's parameters, per-term values, and each gradient component labeled with the route that produced it (seam / seam_fd / fd / adjoint / linear). Read-only: apply the optimum with set_parameters. Solver QoIs (modal frequency, …) plug in through the Rust API (vcad_eval::optimize::ScalarQoi, e.g. vcad_sound's modal_f1) and are not exposed over this WASM path.",
     inputSchema: optimizeParametersSchema,
     handler: (a, c) => optimizeParameters(a, c.engine),
     behavior: behavior({}),

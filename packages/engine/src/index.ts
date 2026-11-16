@@ -1179,6 +1179,7 @@ export interface OptimizeDocRequest {
 export type OptimizeProvenance =
   | { route: "seam" }
   | { route: "fd"; step: number; scheme: "central" | "forward" | "backward" }
+  | { route: "seam_fd"; step: number; scheme: "central" | "forward" | "backward" }
   | { route: "adjoint" }
   | { route: "linear" };
 
@@ -1211,7 +1212,13 @@ export interface OptimizeTrajectoryStep {
     gradient: OptimizeGradComponent[];
   }>;
   qois: Array<OptimizeQoiRef & { value: number; gradient: OptimizeGradComponent[] }>;
-  cost: { wall_ms: number; base_eval_ms: number; document_evals: number; reused_solids: number };
+  cost: {
+    wall_ms: number;
+    base_eval_ms: number;
+    document_evals: number;
+    plugin_evals: number;
+    reused_solids: number;
+  };
 }
 
 /** Result of {@link Engine.optimizeDocument}. */
@@ -1239,8 +1246,12 @@ export interface OptimizeDocResult {
     step: number;
     rel_error: number;
   }>;
+  /** Parameter vectors sampled with gradients. */
   samples: number;
+  /** Line-search trials sampled for their value only. */
+  value_samples: number;
   document_evals: number;
+  plugin_evals: number;
   wall_ms: number;
 }
 

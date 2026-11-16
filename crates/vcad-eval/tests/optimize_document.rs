@@ -6,11 +6,15 @@
 //!    active. Checks feasibility, KKT, `linear` provenance on the
 //!    constraints, `seam` provenance on mass, and the seam-vs-FD agreement.
 //! 2. The same with `r >= 6` priced by a plug-in QoI read off the evaluated
-//!    mesh, so its gradient is `fd(step)` — the route every non-seam solver
-//!    coupling takes.
+//!    mesh, so its gradient is `fd(step)` over re-evaluated documents — the
+//!    fallback route for a solver that reads more than one part's mesh.
+//! 3. The same plug-in declared mesh-only, so it is differenced along the
+//!    seam's mesh velocity (`seam_fd(step)`, no document re-evaluation per
+//!    probe) — and agrees with route 2.
 
 use std::cell::Cell;
 
+use vcad_eval::optimize::OptimizeDocResult;
 use vcad_eval::optimize::{
     optimize_document, Constraint, ConstraintOp, ObjectiveTerm, OptimizeDocOptions,
     OptimizeDocRequest, OptimizeHooks, OptimizeStop, ParamSpec, Provenance, QoiInput, QoiRef,
@@ -155,7 +159,16 @@ fn min_mass_under_linear_constraints() {
     }
 }
 
+fn max_abs_x(positions: &[f32]) -> f64 {
+    positions
+        .chunks(3)
+        .map(|v| v[0].abs() as f64)
+        .fold(0.0, f64::max)
+}
+
 /// Radius read off the evaluated mesh: max |x| over the part's vertices.
+/// Reads the scene, so the optimizer differences it over re-evaluated
+/// documents.
 struct MeshRadius;
 
 impl ScalarQoi for MeshRadius {
@@ -164,18 +177,36 @@ impl ScalarQoi for MeshRadius {
     }
     fn evaluate(&self, input: &QoiInput, part: Option<usize>) -> Result<f64, String> {
         let p = input.scene.parts.get(part.unwrap_or(0)).ok_or("no part")?;
-        Ok(p.mesh
-            .positions
-            .chunks(3)
-            .map(|v| v[0].abs() as f64)
-            .fold(0.0, f64::max))
+        Ok(max_abs_x(&p.mesh.positions))
     }
 }
 
-#[test]
-fn plugin_qoi_constraint_is_finite_differenced() {
-    let doc = cylinder_doc(10.0, 20.0);
-    let req = OptimizeDocRequest {
+/// The same quantity declared mesh-only.
+struct MeshRadiusMeshOnly;
+
+impl ScalarQoi for MeshRadiusMeshOnly {
+    fn name(&self) -> &str {
+        "mesh_radius"
+    }
+    fn evaluate(&self, input: &QoiInput, part: Option<usize>) -> Result<f64, String> {
+        MeshRadius.evaluate(input, part)
+    }
+    fn mesh_only(&self) -> bool {
+        true
+    }
+    fn evaluate_mesh(
+        &self,
+        _doc: &Document,
+        _part: Option<usize>,
+        positions: &[f32],
+        _indices: &[u32],
+    ) -> Result<f64, String> {
+        Ok(max_abs_x(positions))
+    }
+}
+
+fn radius_request() -> OptimizeDocRequest {
+    OptimizeDocRequest {
         parameters: params(),
         objective: mass_objective(),
         constraints: vec![
@@ -193,33 +224,25 @@ fn plugin_qoi_constraint_is_finite_differenced() {
             circle_segments: 64,
             ..Default::default()
         },
-    };
-    let reg = QoiRegistry::new().with(Box::new(MeshRadius));
-    let res = optimize_document(&doc, &req, &reg, &OptimizeHooks::default()).expect("optimize");
+    }
+}
+
+fn report(res: &OptimizeDocResult) {
     eprintln!(
-        "θ = {:?}, stop = {:?}, kkt = {:?}, evals = {}, samples = {}, steps = {}",
+        "θ = {:?}, stop = {:?}, kkt = {:?}\n  {} samples + {} value-only, {} document evals, {} plug-in evals, {} steps, {:.0} ms",
         res.theta,
         res.stop,
         res.kkt,
-        res.document_evals,
         res.samples,
-        res.trajectory.len()
+        res.value_samples,
+        res.document_evals,
+        res.plugin_evals,
+        res.trajectory.len(),
+        res.wall_ms
     );
-    for s in &res.trajectory {
-        eprintln!(
-            "  it {} r{} θ={:?} f={:.3} merit={:.5} viol={:.2e} λ={:?}",
-            s.iter,
-            s.round,
-            s.theta,
-            s.objective,
-            s.merit,
-            s.max_violation,
-            s.constraints
-                .iter()
-                .map(|c| c.multiplier)
-                .collect::<Vec<_>>()
-        );
-    }
+}
+
+fn check_radius_optimum(res: &OptimizeDocResult) {
     assert!((res.theta[0] - 6.0).abs() < 0.03, "r → 6: {:?}", res.theta);
     assert!(
         (res.theta[1] - 12.0).abs() < 0.06,
@@ -227,15 +250,50 @@ fn plugin_qoi_constraint_is_finite_differenced() {
         res.theta
     );
     assert!(res.kkt.feasible && res.kkt.satisfied, "{:?}", res.kkt);
-    let last = res.trajectory.last().unwrap();
-    let c = &last.constraints[0];
+    let c = &res.trajectory.last().unwrap().constraints[0];
+    // d(mesh_radius)/dr = 1 (scaled by 1/6), d/dh = 0.
+    assert!((c.gradient[0].value + 1.0 / 6.0).abs() < 1e-3, "{c:?}");
+    assert!(c.gradient[1].value.abs() < 1e-6, "{c:?}");
+}
+
+#[test]
+fn plugin_qoi_constraint_is_finite_differenced() {
+    let doc = cylinder_doc(10.0, 20.0);
+    let reg = QoiRegistry::new().with(Box::new(MeshRadius));
+    let res = optimize_document(&doc, &radius_request(), &reg, &OptimizeHooks::default())
+        .expect("optimize");
+    report(&res);
+    check_radius_optimum(&res);
+    let c = &res.trajectory.last().unwrap().constraints[0];
     assert!(
         matches!(c.gradient[0].provenance, Provenance::Fd { .. }),
         "{c:?}"
     );
-    // d(mesh_radius)/dr = 1 (scaled by 1/6), d/dh = 0.
-    assert!((c.gradient[0].value + 1.0 / 6.0).abs() < 1e-3, "{c:?}");
-    assert!(c.gradient[1].value.abs() < 1e-6, "{c:?}");
+}
+
+#[test]
+fn mesh_only_plugin_is_differenced_along_the_seam() {
+    let doc = cylinder_doc(10.0, 20.0);
+    let reg = QoiRegistry::new().with(Box::new(MeshRadiusMeshOnly));
+    let res = optimize_document(&doc, &radius_request(), &reg, &OptimizeHooks::default())
+        .expect("optimize");
+    report(&res);
+    check_radius_optimum(&res);
+    let c = &res.trajectory.last().unwrap().constraints[0];
+    assert!(
+        matches!(c.gradient[0].provenance, Provenance::SeamFd { .. }),
+        "{c:?}"
+    );
+    // No document re-evaluation per plug-in probe: every document
+    // evaluation is a base or a seam probe (≤ 1 + 2n per full sample, 1 per
+    // value-only sample, + the start's), never a plug-in FD probe.
+    assert!(
+        res.document_evals <= res.samples * 5 + res.value_samples + 1,
+        "{} evals for {} samples + {} value-only",
+        res.document_evals,
+        res.samples,
+        res.value_samples
+    );
 }
 
 #[test]

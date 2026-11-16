@@ -4,7 +4,15 @@
   "date": "2026-11-16",
   "category": "feat",
   "title": "Document optimizer with gradient provenance",
-  "summary": "optimize_parameters minimizes weighted QoIs over named parameters under expression and QoI constraints, returning a KKT report and a trajectory with every gradient tagged seam, fd or linear.",
-  "features": ["optimization", "differentiable", "parameters", "modal", "mcp"],
-  "mcpTools": ["optimize_parameters"]
+  "summary": "optimize_parameters minimizes weighted QoIs over named parameters under expression and QoI constraints, returning a KKT report and a trajectory with every gradient tagged seam, seam_fd, fd or linear.",
+  "features": [
+    "optimization",
+    "differentiable",
+    "parameters",
+    "modal",
+    "mcp"
+  ],
+  "mcpTools": [
+    "optimize_parameters"
+  ]
 }

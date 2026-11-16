@@ -1,18 +1,22 @@
 //! Modal frequencies as optimizer QoIs: the `vcad_eval::optimize` plug-in
 //! for "this part must ring above 400 Hz".
 //!
-//! [`ModalFrequencyQoi`] reads natural frequency `n` of a part from the
-//! scene the optimizer already evaluated (no second evaluation), and the
-//! optimizer central-differences it over the named parameters — provenance
-//! `fd(step)`. There is no shape adjoint for the voxel modal solver wired to
-//! document parameters yet, so this route is honest about being FD.
+//! [`ModalFrequencyQoi`] reads natural frequency `n` of a part from its
+//! triangle mesh alone, so it is a *mesh-only* QoI: the optimizer reads it on
+//! the seam's frozen tessellation and central-differences it along the
+//! seam's exact mesh velocity — each probe is the same mesh moved by
+//! `±h·dx/dθ`, with no document re-evaluation (provenance `seam_fd(step)`).
+//! There is no shape adjoint for the voxel modal solver wired to document
+//! parameters yet, so this route is honest about being a difference.
 //!
 //! **Pinned discretization.** The first evaluation fixes the solver's cell
 //! size for the rest of the run ([`crate::part_modes_mesh_pinned`]). Without
 //! that, every probe re-derives the pitch from its own geometry and the
 //! cell-size jump dominates the difference quotient.
 
-use std::cell::RefCell;
+use std::sync::Mutex;
+
+use vcad_ir::Document;
 
 use vcad_eval::optimize::{QoiInput, ScalarQoi};
 
@@ -25,7 +29,7 @@ pub struct ModalFrequencyQoi {
     mode: usize,
     quality: Quality,
     material: Option<String>,
-    pinned: RefCell<Option<(usize, [f64; 3])>>,
+    pinned: Mutex<Option<(usize, [f64; 3])>>,
 }
 
 impl ModalFrequencyQoi {
@@ -41,7 +45,7 @@ impl ModalFrequencyQoi {
             mode,
             quality: Quality::Preview,
             material: None,
-            pinned: RefCell::new(None),
+            pinned: Mutex::new(None),
         }
     }
 
@@ -59,8 +63,42 @@ impl ModalFrequencyQoi {
 
     /// Pin the discretization explicitly instead of from the first call.
     pub fn pinned(self, resolution: usize, pitch_mm: [f64; 3]) -> Self {
-        *self.pinned.borrow_mut() = Some((resolution, pitch_mm));
+        *self.pinned.lock().unwrap_or_else(|e| e.into_inner()) = Some((resolution, pitch_mm));
         self
+    }
+
+    /// Frequency on an explicit mesh of scene part `part`, pinning the
+    /// discretization on the first call.
+    fn solve(
+        &self,
+        doc: &Document,
+        part: usize,
+        positions: &[f32],
+        indices: &[u32],
+    ) -> Result<f64, String> {
+        if indices.is_empty() {
+            return Err(format!("part {part} has an empty mesh"));
+        }
+        let pin = {
+            let mut g = self.pinned.lock().unwrap_or_else(|e| e.into_inner());
+            *g.get_or_insert_with(|| modal_discretization(positions, indices, self.quality))
+        };
+        let req = ModesRequest {
+            part,
+            modes: self.mode + 1,
+            quality: self.quality,
+            material: self.material.clone(),
+            shapes: false,
+        };
+        let r = part_modes_mesh_pinned(doc, &req, positions, indices, Some(pin))
+            .map_err(|e| e.to_string())?;
+        r.modes.get(self.mode).map(|m| m.hz).ok_or_else(|| {
+            format!(
+                "solver returned {} modes, wanted {}",
+                r.modes.len(),
+                self.mode + 1
+            )
+        })
     }
 }
 
@@ -77,39 +115,20 @@ impl ScalarQoi for ModalFrequencyQoi {
             .parts
             .get(idx)
             .ok_or_else(|| format!("no part {idx}"))?;
-        if p.mesh.indices.is_empty() {
-            return Err(format!("part {idx} has an empty mesh"));
-        }
-        let pin = *self.pinned.borrow();
-        let pin = match pin {
-            Some(x) => x,
-            None => {
-                let x = modal_discretization(&p.mesh.positions, &p.mesh.indices, self.quality);
-                *self.pinned.borrow_mut() = Some(x);
-                x
-            }
-        };
-        let req = ModesRequest {
-            part: idx,
-            modes: self.mode + 1,
-            quality: self.quality,
-            material: self.material.clone(),
-            shapes: false,
-        };
-        let r = part_modes_mesh_pinned(
-            input.doc,
-            &req,
-            &p.mesh.positions,
-            &p.mesh.indices,
-            Some(pin),
-        )
-        .map_err(|e| e.to_string())?;
-        r.modes.get(self.mode).map(|m| m.hz).ok_or_else(|| {
-            format!(
-                "solver returned {} modes, wanted {}",
-                r.modes.len(),
-                self.mode + 1
-            )
-        })
+        self.solve(input.doc, idx, &p.mesh.positions, &p.mesh.indices)
+    }
+
+    fn mesh_only(&self) -> bool {
+        true
+    }
+
+    fn evaluate_mesh(
+        &self,
+        doc: &Document,
+        part: Option<usize>,
+        positions: &[f32],
+        indices: &[u32],
+    ) -> Result<f64, String> {
+        self.solve(doc, part.unwrap_or(0), positions, indices)
     }
 }

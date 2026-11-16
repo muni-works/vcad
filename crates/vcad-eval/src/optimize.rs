@@ -15,9 +15,11 @@
 //!   frozen-plan derivatives, provenance [`Provenance::Seam`]. Anything else
 //!   is a [`ScalarQoi`] plug-in: a closure over the evaluated scene (a modal
 //!   frequency, a cavity resonance, a peak temperature). A plug-in that can
-//!   price its own gradient returns it ([`Provenance::Adjoint`]); otherwise
-//!   the optimizer differences it centrally over the named parameters,
-//!   re-evaluating the document at each probe ([`Provenance::Fd`]).
+//!   price its own gradient returns it ([`Provenance::Adjoint`]). A plug-in
+//!   that reads only one part's mesh is differenced along the seam's exact
+//!   mesh velocity, without re-evaluating the document
+//!   ([`Provenance::SeamFd`]). Anything else is differenced centrally over
+//!   re-evaluated documents ([`Provenance::Fd`]).
 //! - **Constraints** are either parameter expressions in the document's own
 //!   formula language (`"port_len <= body_h - 2*wall - 15"`) or bounds on a
 //!   QoI (`modal_f1 >= 400`). Parameter-expression gradients are computed
@@ -42,15 +44,26 @@
 //!
 //! # Cost
 //!
-//! One iterate costs one base document evaluation, plus `2·n` probe
-//! evaluations for seam surface matching (only when a seam QoI is used),
-//! plus `2·n` FD probe evaluations (only when an FD QoI is used). Seam
-//! evaluations share an [`IncrementalCache`] (nodes that don't depend on
-//! the probed parameter are reused); FD probes, which need only meshes, go
-//! through a content-addressed root-mesh cache so a revisited parameter
-//! vector is free. Every sample is memoized by its exact parameter vector,
-//! so line-search re-visits and outer-loop restarts cost nothing. Each
-//! trajectory step carries its wall time and evaluation counts.
+//! The unit of work is a document evaluation (booleans), and the run is
+//! organized to do as few as possible:
+//!
+//! - **Value-only line-search trials.** `tang_optim` asks for (value,
+//!   gradient) at every Armijo trial but reads only the accepted trial's
+//!   gradient. The merit closure replays the solver's Armijo test on a
+//!   value-only evaluation — one document evaluation plus one solver call
+//!   per plug-in — and prices the gradient only for the trial that will be
+//!   accepted. A trial displaced less than an x-tolerance costs nothing.
+//! - **A gradient sample** costs the base evaluation, plus `2·n` seam probe
+//!   evaluations (to synthesize the seeding) run in parallel, plus, per
+//!   plug-in: `2·n` solver calls on the frozen tessellation moved along the
+//!   seam velocity, in parallel, for a mesh-only plug-in
+//!   ([`ScalarQoi::mesh_only`]); or `2·n` document re-evaluations (root-mesh
+//!   cached, memoized) for any other plug-in.
+//! - **Memoized** by the exact parameter vector: values, gradients and base
+//!   evaluations, so round restarts and revisits are free.
+//!
+//! Each trajectory step carries its wall time, document evaluations and
+//! plug-in solver calls; the result totals them.
 //!
 //! **Honesty.** A seam derivative is the derivative of the frozen
 //! tessellation (see [`crate::diff`]); an FD derivative is only as smooth as
@@ -66,16 +79,18 @@ use std::rc::Rc;
 use serde::{Deserialize, Serialize};
 use vcad_ir::{Document, Expr, Parameter};
 use vcad_kernel::vcad_kernel_primitives::BRepSolid;
+use vcad_kernel_diff::SeamMesh;
 use vcad_kernel_diff::{
     evaluate_with_sensitivity, mass_properties, mass_properties_with_derivative,
     synthesize_seeding, DiffError, MassProperties, ParamSeeding,
 };
-use vcad_kernel_tessellate::frozen::capture_plan;
+use vcad_kernel_math::Vec3;
+use vcad_kernel_tessellate::frozen::{capture_plan, FrozenPlan};
 use vcad_kernel_tessellate::TessellationParams;
 use web_time::Instant;
 
 use crate::cache::MemoryMeshCache;
-use crate::evaluate::evaluate_document_incremental;
+use crate::evaluate::{evaluate_document, evaluate_document_incremental};
 use crate::incremental::IncrementalCache;
 use crate::{EvalOptions, EvaluatedScene};
 
@@ -328,7 +343,7 @@ pub struct QoiInput<'a> {
 /// A scalar solver output the optimizer can read. Register one per solver
 /// coupling (modal, acoustics, thermal, …); the optimizer differences it
 /// over the named parameters unless it prices its own gradient.
-pub trait ScalarQoi {
+pub trait ScalarQoi: Send + Sync {
     /// Name used in requests (`"modal_f1"`).
     fn name(&self) -> &str;
 
@@ -355,6 +370,32 @@ pub trait ScalarQoi {
     /// root-mesh cache for this QoI's probes). Default `false`.
     fn needs_brep(&self) -> bool {
         false
+    }
+
+    /// Whether the value depends only on one part's triangle mesh (plus
+    /// document data such as its material) — a modal frequency, a mesh
+    /// volume. Such a plug-in is read through
+    /// [`evaluate_mesh`](Self::evaluate_mesh) on the seam's frozen
+    /// tessellation and differenced *along the seam's exact mesh velocity*:
+    /// each probe moves the mesh by `±h·dx/dθ` instead of re-evaluating the
+    /// document (provenance [`Provenance::SeamFd`]). No boolean is re-run
+    /// per probe, and every probe shares one connectivity, so the difference
+    /// quotient carries no remeshing noise. Default `false`.
+    fn mesh_only(&self) -> bool {
+        false
+    }
+
+    /// For a [`mesh_only`](Self::mesh_only) plug-in: the value on an
+    /// explicit mesh of scene part `part` (flat `xyz` positions in mm,
+    /// triangle indices). `doc` is the document at the current parameters.
+    fn evaluate_mesh(
+        &self,
+        _doc: &Document,
+        _part: Option<usize>,
+        _positions: &[f32],
+        _indices: &[u32],
+    ) -> Result<f64, String> {
+        Err(format!("`{}` is not a mesh-only QoI", self.name()))
     }
 }
 
@@ -425,6 +466,15 @@ pub enum Provenance {
         /// Scheme.
         scheme: FdScheme,
     },
+    /// Finite difference of a mesh-only solver along the seam's exact mesh
+    /// velocity: probes are the frozen tessellation moved by `±step·dx/dθ`,
+    /// no document re-evaluation (see [`ScalarQoi::mesh_only`]).
+    SeamFd {
+        /// Step, parameter units.
+        step: f64,
+        /// Scheme.
+        scheme: FdScheme,
+    },
     /// The solver's own adjoint.
     Adjoint,
     /// A parameter expression linear in the parameters (exact, no geometry).
@@ -437,6 +487,7 @@ impl Provenance {
         match self {
             Provenance::Seam => "seam".into(),
             Provenance::Fd { step, .. } => format!("fd({step:.3e})"),
+            Provenance::SeamFd { step, .. } => format!("seam_fd({step:.3e})"),
             Provenance::Adjoint => "adjoint".into(),
             Provenance::Linear => "linear".into(),
         }
@@ -502,6 +553,8 @@ pub struct EvalCost {
     pub base_eval_ms: f64,
     /// Document evaluations performed (base + probes).
     pub document_evals: usize,
+    /// Plug-in solver calls (values + probes).
+    pub plugin_evals: usize,
     /// Node solids reused by the incremental cache across this sample.
     pub reused_solids: usize,
 }
@@ -604,10 +657,16 @@ pub struct OptimizeDocResult {
     pub kkt: KktReport,
     /// Seam-vs-FD checks at the optimum (when requested).
     pub seam_fd_check: Vec<SeamFdCheck>,
-    /// Total distinct parameter vectors sampled (incl. line-search trials).
+    /// Parameter vectors sampled with gradients (accepted iterates, round
+    /// starts, the final point).
     pub samples: usize,
+    /// Parameter vectors sampled for their value only (line-search trials
+    /// the Armijo test rejected — no gradient was computed for them).
+    pub value_samples: usize,
     /// Total document evaluations.
     pub document_evals: usize,
+    /// Total plug-in solver calls.
+    pub plugin_evals: usize,
     /// Total wall time, ms.
     pub wall_ms: f64,
 }
@@ -671,12 +730,37 @@ struct ExprConstraint {
 /// A value, its gradient, and each component's provenance.
 type Valued = (f64, Vec<f64>, Vec<Provenance>);
 
-/// Everything known at one parameter vector.
+/// Everything known at one parameter vector, gradients included.
 #[derive(Clone)]
 struct Sample {
     qois: HashMap<QoiRef, Valued>,
     cost: EvalCost,
 }
+
+/// QoI values (no gradients) at one parameter vector.
+struct Values {
+    vals: HashMap<QoiRef, f64>,
+    cost: EvalCost,
+}
+
+/// The base evaluation at one parameter vector.
+struct Base {
+    doc: Document,
+    scene: EvaluatedScene,
+    /// Wall time of the document evaluation, ms.
+    ms: f64,
+    /// BRep of every solid part, in scene order.
+    solids: Vec<BRepSolid>,
+    /// Scene part index → index into `solids`.
+    solid_of: Vec<Option<usize>>,
+    /// Frozen plan per solid.
+    plans: Vec<FrozenPlan>,
+    /// The frozen tessellation at θ per solid (seam pass, no seeding).
+    meshes: Vec<SeamMesh>,
+}
+
+/// The line search's last accepted point: `(x, merit, ∇merit)`.
+type Accepted = (Vec<f64>, f64, Vec<f64>);
 
 type ThetaKey = Vec<u64>;
 
@@ -695,10 +779,13 @@ struct Problem<'a> {
     seam_inc: RefCell<IncrementalCache>,
     probe_inc: RefCell<IncrementalCache>,
     mesh_cache: Rc<MemoryMeshCache>,
+    base_memo: RefCell<HashMap<ThetaKey, Rc<Base>>>,
+    value_memo: RefCell<HashMap<ThetaKey, Rc<Values>>>,
     memo: RefCell<HashMap<ThetaKey, Sample>>,
     /// Plug-in values at probe θs (key = θ, QoI).
     fd_memo: RefCell<HashMap<(ThetaKey, QoiRef), f64>>,
     document_evals: Cell<usize>,
+    plugin_evals: Cell<usize>,
     cancel: Option<&'a dyn Fn() -> bool>,
 }
 
@@ -715,6 +802,47 @@ fn solid_parts(scene: &EvaluatedScene) -> Vec<BRepSolid> {
         .iter()
         .filter_map(|p| p.solid.as_ref().and_then(|s| s.as_brep()).cloned())
         .collect()
+}
+
+/// Flat `f32` positions + `u32` indices of a seam mesh, optionally moved by
+/// `step · velocity`.
+fn flat_mesh(m: &SeamMesh, moved: Option<(&[Vec3], f64)>) -> (Vec<f32>, Vec<u32>) {
+    let mut pos = Vec::with_capacity(m.positions.len() * 3);
+    for (i, p) in m.positions.iter().enumerate() {
+        let (dx, dy, dz) = match moved {
+            Some((v, h)) => (h * v[i].x, h * v[i].y, h * v[i].z),
+            None => (0.0, 0.0, 0.0),
+        };
+        pos.extend_from_slice(&[(p.x + dx) as f32, (p.y + dy) as f32, (p.z + dz) as f32]);
+    }
+    let idx = m.triangles.iter().flat_map(|t| t.iter().copied()).collect();
+    (pos, idx)
+}
+
+/// `items.map(f)`, fanned out over threads (native; sequential on wasm32,
+/// which has no threads). Results keep input order.
+fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        if items.len() > 1 {
+            let width = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4)
+                .max(1);
+            let f = &f;
+            let mut out = Vec::with_capacity(items.len());
+            for chunk in items.chunks(width) {
+                std::thread::scope(|sc| {
+                    let handles: Vec<_> = chunk.iter().map(|it| sc.spawn(move || f(it))).collect();
+                    for h in handles {
+                        out.push(h.join().expect("optimizer probe thread panicked"));
+                    }
+                });
+            }
+            return out;
+        }
+    }
+    items.iter().map(f).collect()
 }
 
 impl<'a> Problem<'a> {
@@ -794,9 +922,12 @@ impl<'a> Problem<'a> {
             seam_inc: RefCell::new(IncrementalCache::new()),
             probe_inc: RefCell::new(IncrementalCache::new()),
             mesh_cache: Rc::new(MemoryMeshCache::new()),
+            base_memo: RefCell::new(HashMap::new()),
+            value_memo: RefCell::new(HashMap::new()),
             memo: RefCell::new(HashMap::new()),
             fd_memo: RefCell::new(HashMap::new()),
             document_evals: Cell::new(0),
+            plugin_evals: Cell::new(0),
             cancel,
         };
         // Validate expression constraints parse against the document.
@@ -908,178 +1039,382 @@ impl<'a> Problem<'a> {
         Ok((g, grad, prov))
     }
 
-    /// Sample every QoI at θ (memoized).
+    /// The base evaluation at θ (memoized): the document, its scene, and
+    /// for every solid part the frozen plan and the frozen tessellation.
+    fn base(&self, theta: &[f64]) -> Result<Rc<Base>, String> {
+        if let Some(b) = self.base_memo.borrow().get(&key(theta)) {
+            return Ok(b.clone());
+        }
+        let (doc, scene, ms) = self.eval(theta, true)?;
+        let mut solids = Vec::new();
+        let mut solid_of = Vec::with_capacity(scene.parts.len());
+        for p in &scene.parts {
+            match p.solid.as_ref().and_then(|s| s.as_brep()) {
+                Some(b) => {
+                    solid_of.push(Some(solids.len()));
+                    solids.push(b.clone());
+                }
+                None => solid_of.push(None),
+            }
+        }
+        let mut plans = Vec::with_capacity(solids.len());
+        let mut meshes = Vec::with_capacity(solids.len());
+        for b in &solids {
+            let plan = capture_plan(b, &self.tess).map_err(|e| format!("capture: {e}"))?;
+            let mesh = evaluate_with_sensitivity(b, &plan, &ParamSeeding::new())
+                .map_err(|e| format!("seam: {e}"))?;
+            plans.push(plan);
+            meshes.push(mesh);
+        }
+        let base = Rc::new(Base {
+            doc,
+            scene,
+            ms,
+            solids,
+            solid_of,
+            plans,
+            meshes,
+        });
+        self.base_memo.borrow_mut().insert(key(theta), base.clone());
+        Ok(base)
+    }
+
+    /// The solid a mesh-only plug-in reads, when it takes the seam route.
+    fn mesh_solid(&self, q: &QoiRef, plugin: &dyn ScalarQoi, base: &Base) -> Option<usize> {
+        if !plugin.mesh_only() {
+            return None;
+        }
+        base.solid_of.get(q.part.unwrap_or(0)).copied().flatten()
+    }
+
+    /// Solid parts a built-in QoI sums over.
+    fn picked(&self, q: &QoiRef, b: Builtin, nparts: usize) -> Result<Vec<usize>, String> {
+        if nparts == 0 {
+            return Err("document has no solid parts".into());
+        }
+        Ok(match (q.part, b) {
+            (Some(i), _) if i < nparts => vec![i],
+            (Some(i), _) => return Err(format!("part {i} out of range ({nparts} solid parts)")),
+            (None, Builtin::Centroid(_)) if nparts != 1 => {
+                return Err(format!("`{}` on a multi-part document needs `part`", q.qoi))
+            }
+            (None, _) => (0..nparts).collect(),
+        })
+    }
+
+    /// Every QoI's value at θ (memoized). One document evaluation (shared
+    /// with [`sample`](Self::sample)) plus one solver call per plug-in — what
+    /// a line-search trial costs.
+    fn value(&self, theta: &[f64]) -> Result<Rc<Values>, String> {
+        if let Some(v) = self.value_memo.borrow().get(&key(theta)) {
+            return Ok(v.clone());
+        }
+        let t0 = Instant::now();
+        let evals0 = self.document_evals.get();
+        let plugins0 = self.plugin_evals.get();
+        let fresh = !self.base_memo.borrow().contains_key(&key(theta));
+        let base = self.base(theta)?;
+        let density = self.req.options.density;
+        let props: Vec<MassProperties<f64>> = base
+            .meshes
+            .iter()
+            .map(|m| mass_properties(&m.positions, &m.triangles, density))
+            .collect();
+        let mut vals = HashMap::new();
+        for q in &self.qois {
+            let v = if let Some(b) = Builtin::parse(&q.qoi) {
+                self.picked(q, b, props.len())?
+                    .iter()
+                    .map(|&i| b.read(&props[i]))
+                    .sum()
+            } else {
+                let plugin = self.registry.get(&q.qoi).expect("validated");
+                self.plugin_evals.set(self.plugin_evals.get() + 1);
+                match self.mesh_solid(q, plugin, &base) {
+                    Some(si) => {
+                        let (pos, idx) = flat_mesh(&base.meshes[si], None);
+                        plugin.evaluate_mesh(&base.doc, q.part, &pos, &idx)?
+                    }
+                    None => plugin.evaluate(
+                        &QoiInput {
+                            doc: &base.doc,
+                            scene: &base.scene,
+                            params: self.params(),
+                            theta,
+                        },
+                        q.part,
+                    )?,
+                }
+            };
+            if !v.is_finite() {
+                return Err(format!("`{}` is not finite at this point", q.label()));
+            }
+            vals.insert(q.clone(), v);
+        }
+        let cost = EvalCost {
+            wall_ms: t0.elapsed().as_secs_f64() * 1e3,
+            base_eval_ms: if fresh { base.ms } else { 0.0 },
+            document_evals: self.document_evals.get() - evals0,
+            plugin_evals: self.plugin_evals.get() - plugins0,
+            reused_solids: self.seam_inc.borrow().stats().reused_solids,
+        };
+        let v = Rc::new(Values { vals, cost });
+        self.value_memo.borrow_mut().insert(key(theta), v.clone());
+        Ok(v)
+    }
+
+    /// Every QoI's value and gradient at θ (memoized).
+    ///
+    /// Seam probes (2n document evaluations, needed to synthesize the
+    /// seeding) run in parallel; mesh-only plug-ins are differenced along
+    /// the seam velocity with their 2n solver calls in parallel; other
+    /// plug-ins fall back to document-re-evaluation FD.
     fn sample(&self, theta: &[f64]) -> Result<Sample, String> {
         if let Some(s) = self.memo.borrow().get(&key(theta)) {
             return Ok(s.clone());
         }
         let t0 = Instant::now();
         let evals0 = self.document_evals.get();
+        let plugins0 = self.plugin_evals.get();
+        let values = self.value(theta)?;
+        let base = self.base(theta)?;
         let n = self.params().len();
-        let mut cost = EvalCost::default();
-        let mut qois = HashMap::new();
+        let mut qois: HashMap<QoiRef, Valued> = HashMap::new();
 
-        let needs_seam = self.qois.iter().any(|q| Builtin::parse(&q.qoi).is_some());
-        let (doc_at, base_scene, base_ms) = self.eval(theta, true)?;
-        cost.base_eval_ms = base_ms;
-        cost.reused_solids += self.seam_inc.borrow().stats().reused_solids;
+        let has_builtin = self.qois.iter().any(|q| Builtin::parse(&q.qoi).is_some());
+        let plugins: Vec<(&QoiRef, &dyn ScalarQoi)> = self
+            .qois
+            .iter()
+            .filter(|q| Builtin::parse(&q.qoi).is_none())
+            .map(|q| (q, self.registry.get(&q.qoi).expect("validated")))
+            .collect();
+        let mesh_plugins: Vec<(&QoiRef, &dyn ScalarQoi, usize)> = plugins
+            .iter()
+            .filter_map(|&(q, p)| self.mesh_solid(q, p, &base).map(|si| (q, p, si)))
+            .collect();
 
-        // ---- Seam QoIs: one base, 2n probes, one plan per part ----
-        if needs_seam {
-            let base = solid_parts(&base_scene);
-            if base.is_empty() {
+        // ---- Seam: 2n parallel probes, one plan per solid ----
+        // derivs[solid][k], velocities[solid][k]
+        let mut derivs: Vec<Vec<MassProperties<f64>>> = Vec::new();
+        let mut velocities: Vec<Vec<Vec<Vec3>>> = Vec::new();
+        if has_builtin || !mesh_plugins.is_empty() {
+            if base.solids.is_empty() {
                 return Err("document has no solid parts".into());
             }
             let h = self.req.options.seam_step;
+            let probes: Vec<Vec<f64>> = (0..n)
+                .flat_map(|k| {
+                    [-1.0, 1.0].map(|s| {
+                        let mut t = theta.to_vec();
+                        t[k] += s * h;
+                        t
+                    })
+                })
+                .collect();
+            self.check_cancel()?;
+            let docs: Vec<Document> = probes.iter().map(|t| self.with_params(t)).collect();
+            let scenes = par_map(&docs, |d| {
+                evaluate_document(d, &options_plain())
+                    .map_err(|e| format!("evaluation failed: {e}"))
+            });
+            self.document_evals
+                .set(self.document_evals.get() + docs.len());
             let memo: RefCell<HashMap<ThetaKey, Vec<BRepSolid>>> = RefCell::new(HashMap::new());
-            memo.borrow_mut().insert(key(theta), base.clone());
-            for k in 0..n {
-                for s in [-1.0, 1.0] {
-                    let mut t = theta.to_vec();
-                    t[k] += s * h;
-                    let (_, sc, _) = self.eval(&t, true)?;
-                    cost.reused_solids += self.seam_inc.borrow().stats().reused_solids;
-                    let parts = solid_parts(&sc);
-                    if parts.len() != base.len() {
-                        return Err(format!(
-                            "solid part count changed under the `{}` seam probe ({} → {})",
-                            self.params()[k].name,
-                            base.len(),
-                            parts.len()
-                        ));
-                    }
-                    memo.borrow_mut().insert(key(&t), parts);
+            memo.borrow_mut().insert(key(theta), base.solids.clone());
+            for (j, (t, sc)) in probes.iter().zip(scenes).enumerate() {
+                let sc = sc?;
+                if let Some(f) = sc.failures.first() {
+                    return Err(format!("root failed to evaluate: {f:?}"));
                 }
+                let parts = solid_parts(&sc);
+                if parts.len() != base.solids.len() {
+                    return Err(format!(
+                        "solid part count changed under the `{}` seam probe ({} → {})",
+                        self.params()[j / 2].name,
+                        base.solids.len(),
+                        parts.len()
+                    ));
+                }
+                memo.borrow_mut().insert(key(t), parts);
             }
-            // Per-part, per-parameter mass-property derivatives.
-            let failed: Cell<bool> = Cell::new(false);
-            let mut per_part: Vec<(MassProperties<f64>, Vec<MassProperties<f64>>)> = Vec::new();
-            for (i, brep) in base.iter().enumerate() {
+            for (i, brep) in base.solids.iter().enumerate() {
+                let missing = Cell::new(false);
                 let build = |t: &[f64]| -> BRepSolid {
-                    if let Some(v) = memo.borrow().get(&key(t)) {
-                        return v[i].clone();
-                    }
-                    // Not a probe we pre-evaluated (should not happen):
-                    // evaluate, and flag a failure rather than guess.
-                    match self.eval(t, true).map(|(_, sc, _)| solid_parts(&sc)) {
-                        Ok(v) if v.len() == base.len() => v[i].clone(),
-                        _ => {
-                            failed.set(true);
+                    match memo.borrow().get(&key(t)) {
+                        Some(v) => v[i].clone(),
+                        None => {
+                            missing.set(true);
                             brep.clone()
                         }
                     }
                 };
-                let plan = capture_plan(brep, &self.tess).map_err(|e| format!("capture: {e}"))?;
-                let mut props = None;
-                let mut derivs = Vec::with_capacity(n);
+                let mut d_i = Vec::with_capacity(n);
+                let mut v_i = Vec::with_capacity(n);
                 for k in 0..n {
                     let seeding: ParamSeeding =
                         synthesize_seeding(&build, theta, k, h).map_err(|e: DiffError| {
                             format!("seam w.r.t. `{}`: {e}", self.params()[k].name)
                         })?;
-                    let seam = evaluate_with_sensitivity(brep, &plan, &seeding)
+                    let seam = evaluate_with_sensitivity(brep, &base.plans[i], &seeding)
                         .map_err(|e| format!("seam: {e}"))?;
-                    let (p, d) = mass_properties_with_derivative(&seam, self.req.options.density);
-                    props.get_or_insert(p);
-                    derivs.push(d);
+                    let (_, d) = mass_properties_with_derivative(&seam, self.req.options.density);
+                    d_i.push(d);
+                    v_i.push(seam.velocities);
                 }
-                if failed.get() {
-                    return Err("seam probe re-evaluation failed".into());
+                if missing.get() {
+                    return Err("seam asked for a probe that was not evaluated".into());
                 }
-                per_part.push((props.expect("n ≥ 1"), derivs));
-            }
-            for q in &self.qois {
-                let Some(b) = Builtin::parse(&q.qoi) else {
-                    continue;
-                };
-                let picked: Vec<usize> = match (q.part, b) {
-                    (Some(i), _) if i < per_part.len() => vec![i],
-                    (Some(i), _) => {
-                        return Err(format!(
-                            "part {i} out of range ({} solid parts)",
-                            per_part.len()
-                        ))
-                    }
-                    (None, Builtin::Centroid(_)) if per_part.len() != 1 => {
-                        return Err(format!("`{}` on a multi-part document needs `part`", q.qoi))
-                    }
-                    (None, _) => (0..per_part.len()).collect(),
-                };
-                let val: f64 = picked.iter().map(|&i| b.read(&per_part[i].0)).sum();
-                let grad: Vec<f64> = (0..n)
-                    .map(|k| picked.iter().map(|&i| b.read(&per_part[i].1[k])).sum())
-                    .collect();
-                qois.insert(q.clone(), (val, grad, vec![Provenance::Seam; n]));
+                derivs.push(d_i);
+                velocities.push(v_i);
             }
         }
 
-        // ---- Plug-in QoIs ----
-        let plugins: Vec<&QoiRef> = self
-            .qois
+        for q in &self.qois {
+            let Some(b) = Builtin::parse(&q.qoi) else {
+                continue;
+            };
+            let picked = self.picked(q, b, derivs.len())?;
+            let grad: Vec<f64> = (0..n)
+                .map(|k| picked.iter().map(|&i| b.read(&derivs[i][k])).sum())
+                .collect();
+            qois.insert(q.clone(), (values.vals[q], grad, vec![Provenance::Seam; n]));
+        }
+
+        // ---- Mesh-only plug-ins: FD along the seam velocity, in parallel ----
+        struct Job {
+            plugin: usize,
+            k: usize,
+            pos: Vec<f32>,
+            idx: Vec<u32>,
+        }
+        let steps: Vec<Vec<f64>> = mesh_plugins
             .iter()
-            .filter(|q| Builtin::parse(&q.qoi).is_none())
+            .map(|(_, p, _)| {
+                self.params()
+                    .iter()
+                    .map(|ps| {
+                        p.fd_step(ps)
+                            .unwrap_or(self.req.options.fd_rel_step * (ps.hi - ps.lo))
+                    })
+                    .collect()
+            })
             .collect();
-        if !plugins.is_empty() {
+        let mut jobs = Vec::new();
+        for (pi, (_, _, si)) in mesh_plugins.iter().enumerate() {
+            for k in 0..n {
+                for s in [1.0, -1.0] {
+                    let (pos, idx) = flat_mesh(
+                        &base.meshes[*si],
+                        Some((&velocities[*si][k], s * steps[pi][k])),
+                    );
+                    jobs.push(Job {
+                        plugin: pi,
+                        k,
+                        pos,
+                        idx,
+                    });
+                }
+            }
+        }
+        self.check_cancel()?;
+        let doc_at = &base.doc;
+        let mp = &mesh_plugins;
+        let results = par_map(&jobs, |j| {
+            let (q, p, _) = mp[j.plugin];
+            p.evaluate_mesh(doc_at, q.part, &j.pos, &j.idx)
+        });
+        self.plugin_evals.set(self.plugin_evals.get() + jobs.len());
+        for (pi, (q, _, _)) in mesh_plugins.iter().enumerate() {
+            let mut grad = vec![0.0; n];
+            let mut prov = Vec::with_capacity(n);
+            for k in 0..n {
+                let at = |s: usize| -> Result<f64, String> {
+                    let j = jobs
+                        .iter()
+                        .position(|j| j.plugin == pi && j.k == k)
+                        .expect("job")
+                        + s;
+                    let v = results[j].clone()?;
+                    if v.is_finite() {
+                        Ok(v)
+                    } else {
+                        Err(format!("`{}` is not finite at a probe", q.label()))
+                    }
+                };
+                let h = steps[pi][k];
+                grad[k] = (at(0)? - at(1)?) / (2.0 * h);
+                prov.push(Provenance::SeamFd {
+                    step: h,
+                    scheme: FdScheme::Central,
+                });
+            }
+            qois.insert((*q).clone(), (values.vals[*q], grad, prov));
+        }
+
+        // ---- Other plug-ins: adjoint, or FD over re-evaluated documents ----
+        for &(q, plugin) in &plugins {
+            if qois.contains_key(q) {
+                continue;
+            }
+            let v = values.vals[q];
             let input = QoiInput {
-                doc: &doc_at,
-                scene: &base_scene,
+                doc: &base.doc,
+                scene: &base.scene,
                 params: self.params(),
                 theta,
             };
-            for q in plugins {
-                let plugin = self.registry.get(&q.qoi).expect("validated");
-                let v = plugin.evaluate(&input, q.part)?;
-                if !v.is_finite() {
-                    return Err(format!("`{}` is not finite at this point", q.label()));
+            if let Some(g) = plugin.gradient(&input, q.part) {
+                let g = g?;
+                if g.len() != n {
+                    return Err(format!(
+                        "`{}` adjoint returned {} components",
+                        q.label(),
+                        g.len()
+                    ));
                 }
-                if let Some(g) = plugin.gradient(&input, q.part) {
-                    let g = g?;
-                    if g.len() != n {
-                        return Err(format!(
-                            "`{}` adjoint returned {} components",
-                            q.label(),
-                            g.len()
-                        ));
-                    }
-                    qois.insert(q.clone(), (v, g, vec![Provenance::Adjoint; n]));
-                    continue;
-                }
-                self.fd_memo.borrow_mut().insert((key(theta), q.clone()), v);
-                let mut grad = Vec::with_capacity(n);
-                let mut prov = Vec::with_capacity(n);
-                for (k, p) in self.params().iter().enumerate() {
-                    let h = plugin
-                        .fd_step(p)
-                        .unwrap_or(self.req.options.fd_rel_step * (p.hi - p.lo));
-                    let can_up = theta[k] + h <= p.hi + 1e-12;
-                    let can_dn = theta[k] - h >= p.lo - 1e-12;
-                    let scheme = match (can_dn, can_up) {
-                        (true, true) => FdScheme::Central,
-                        (false, true) => FdScheme::Forward,
-                        (true, false) => FdScheme::Backward,
-                        (false, false) => {
-                            return Err(format!("FD step {h} wider than `{}`'s box", p.name))
-                        }
-                    };
-                    let probe = |s: f64| -> Result<f64, String> {
-                        let mut t = theta.to_vec();
-                        t[k] += s * h;
-                        self.plugin_at(&t, q, plugin)
-                    };
-                    let d = match scheme {
-                        FdScheme::Central => (probe(1.0)? - probe(-1.0)?) / (2.0 * h),
-                        FdScheme::Forward => (probe(1.0)? - v) / h,
-                        FdScheme::Backward => (v - probe(-1.0)?) / h,
-                    };
-                    grad.push(d);
-                    prov.push(Provenance::Fd { step: h, scheme });
-                }
-                qois.insert(q.clone(), (v, grad, prov));
+                qois.insert(q.clone(), (v, g, vec![Provenance::Adjoint; n]));
+                continue;
             }
+            self.fd_memo.borrow_mut().insert((key(theta), q.clone()), v);
+            let mut grad = Vec::with_capacity(n);
+            let mut prov = Vec::with_capacity(n);
+            for (k, p) in self.params().iter().enumerate() {
+                let h = plugin
+                    .fd_step(p)
+                    .unwrap_or(self.req.options.fd_rel_step * (p.hi - p.lo));
+                let can_up = theta[k] + h <= p.hi + 1e-12;
+                let can_dn = theta[k] - h >= p.lo - 1e-12;
+                let scheme = match (can_dn, can_up) {
+                    (true, true) => FdScheme::Central,
+                    (false, true) => FdScheme::Forward,
+                    (true, false) => FdScheme::Backward,
+                    (false, false) => {
+                        return Err(format!("FD step {h} wider than `{}`'s box", p.name))
+                    }
+                };
+                let probe = |s: f64| -> Result<f64, String> {
+                    let mut t = theta.to_vec();
+                    t[k] += s * h;
+                    self.plugin_at(&t, q, plugin)
+                };
+                let d = match scheme {
+                    FdScheme::Central => (probe(1.0)? - probe(-1.0)?) / (2.0 * h),
+                    FdScheme::Forward => (probe(1.0)? - v) / h,
+                    FdScheme::Backward => (v - probe(-1.0)?) / h,
+                };
+                grad.push(d);
+                prov.push(Provenance::Fd { step: h, scheme });
+            }
+            qois.insert(q.clone(), (v, grad, prov));
         }
 
-        cost.document_evals = self.document_evals.get() - evals0;
-        cost.wall_ms = t0.elapsed().as_secs_f64() * 1e3;
+        let cost = EvalCost {
+            wall_ms: t0.elapsed().as_secs_f64() * 1e3,
+            base_eval_ms: values.cost.base_eval_ms,
+            document_evals: self.document_evals.get() - evals0,
+            plugin_evals: self.plugin_evals.get() - plugins0,
+            reused_solids: self.seam_inc.borrow().stats().reused_solids,
+        };
         let s = Sample { qois, cost };
         self.memo.borrow_mut().insert(key(theta), s.clone());
         Ok(s)
@@ -1099,12 +1434,41 @@ impl<'a> Problem<'a> {
             params: self.params(),
             theta,
         };
+        self.plugin_evals.set(self.plugin_evals.get() + 1);
         let v = plugin.evaluate(&input, q.part)?;
         if !v.is_finite() {
             return Err(format!("`{}` is not finite at a probe", q.label()));
         }
         self.fd_memo.borrow_mut().insert(k, v);
         Ok(v)
+    }
+
+    /// Objective value (unscaled) from values alone.
+    fn objective_value(&self, v: &Values) -> f64 {
+        self.req
+            .objective
+            .iter()
+            .map(|t| t.weight * t.shape.apply(v.vals[&t.qoi]).0)
+            .sum()
+    }
+
+    /// Constraint values (normalized `g ≤ 0` form) from values alone.
+    fn constraint_values(&self, theta: &[f64], v: &Values) -> Result<Vec<f64>, String> {
+        self.req
+            .constraints
+            .iter()
+            .enumerate()
+            .map(|(i, c)| match c {
+                Constraint::Expr { .. } => self.expr_value(i, theta),
+                Constraint::Qoi { qoi, op, value } => {
+                    let sign = match op {
+                        ConstraintOp::Le => 1.0,
+                        ConstraintOp::Ge => -1.0,
+                    };
+                    Ok(sign * (v.vals[qoi] - value) / value.abs().max(1.0))
+                }
+            })
+            .collect()
     }
 
     /// Objective value + gradient (unscaled) + term breakdown.
@@ -1164,10 +1528,15 @@ impl<'a> Problem<'a> {
     }
 }
 
+/// `Σ aᵢbᵢ`, summed in the order `tang_optim` sums it.
+fn dot(a: &[f64], b: &[f64]) -> f64 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
 /// Weakest route among contributions: fd < adjoint < seam / linear.
 fn weakest(a: Provenance, b: Provenance) -> Provenance {
     let rank = |p: &Provenance| match p {
-        Provenance::Fd { .. } => 0,
+        Provenance::Fd { .. } | Provenance::SeamFd { .. } => 0,
         Provenance::Adjoint => 1,
         Provenance::Seam | Provenance::Linear => 2,
     };
@@ -1218,44 +1587,70 @@ pub fn optimize_document(
     let mut lambda = vec![0.0; m];
     let mut mu = req.options.mu0;
     // Conditioning: inside the merit each constraint is weighted so its
-    // normalized-coordinate gradient has unit ∞-norm at the start point.
-    // Without it a constraint read in large units (`h >= 2*r`, ∂g/∂x = 36)
-    // sits next to a relative one (`f >= 6` scaled by 1/6, ∂g/∂x = 2) and
-    // the penalty is mis-tuned for at least one of them. Reported `g`,
-    // feasibility and multipliers stay in the constraint's own units
-    // (multiplier = internal λ · weight).
-    let cweight: Vec<f64> = prob
-        .constraints(&theta0, &s0)
-        .map_err(OptimizeDocError::Start)?
-        .iter()
-        .map(|(_, gg, _)| {
-            let nrm = (0..n).map(|k| (gg[k] * range[k]).abs()).fold(0.0, f64::max);
-            if nrm > 1e-12 {
-                1.0 / nrm
-            } else {
-                1.0
-            }
-        })
-        .collect();
-    let effective =
-        |lambda: &[f64]| -> Vec<f64> { lambda.iter().zip(&cweight).map(|(l, w)| l * w).collect() };
+    // normalized-coordinate gradient has unit ∞-norm at the start of each
+    // round. Without it a constraint read in large units (`h >= 2*r`,
+    // ∂g/∂x = 36) sits next to a relative one (`f >= 6` scaled by 1/6,
+    // ∂g/∂x = 2) and the penalty is mis-tuned for at least one of them.
+    // Re-weighted every round because a solver QoI's sensitivity can change
+    // by an order of magnitude across the design space (the puck's
+    // ∂f1/∂body_h is −149 Hz/mm at the start and −3 at the optimum); the
+    // internal λ is rescaled so the effective multiplier is preserved.
+    // Reported `g`, feasibility and multipliers stay in the constraint's own
+    // units (multiplier = internal λ · weight).
+    let weights_at = |theta: &[f64], s: &Sample| -> Result<Vec<f64>, String> {
+        Ok(prob
+            .constraints(theta, s)?
+            .iter()
+            .map(|(_, gg, _)| {
+                let nrm = (0..n).map(|k| (gg[k] * range[k]).abs()).fold(0.0, f64::max);
+                if nrm > 1e-12 {
+                    1.0 / nrm
+                } else {
+                    1.0
+                }
+            })
+            .collect())
+    };
+    let cweight: RefCell<Vec<f64>> =
+        RefCell::new(weights_at(&theta0, &s0).map_err(OptimizeDocError::Start)?);
+    let effective = |lambda: &[f64]| -> Vec<f64> {
+        lambda
+            .iter()
+            .zip(cweight.borrow().iter())
+            .map(|(l, w)| l * w)
+            .collect()
+    };
 
-    // AL merit in normalized coordinates.
-    let merit = |theta: &[f64], lambda: &[f64], mu: f64| -> Result<(f64, Vec<f64>), String> {
-        let s = prob.sample(theta)?;
-        let (f, gf, _) = prob.objective(&s);
-        let mut val = f / f_scale;
-        let mut grad: Vec<f64> = (0..n).map(|k| gf[k] / f_scale * range[k]).collect();
-        for (j, (g, gg, _)) in prob.constraints(theta, &s)?.into_iter().enumerate() {
-            let w = cweight[j];
-            let t = w * g + lambda[j] / mu;
+    // AL merit in normalized coordinates. `merit_value` is the same number
+    // from values alone (no seam probes, no FD) — what a line-search trial
+    // the Armijo test will reject needs.
+    let merit_value = |theta: &[f64], lambda: &[f64], mu: f64| -> Result<f64, String> {
+        let v = prob.value(theta)?;
+        let mut val = prob.objective_value(&v) / f_scale;
+        for (j, g) in prob.constraint_values(theta, &v)?.into_iter().enumerate() {
+            let t = cweight.borrow()[j] * g + lambda[j] / mu;
             if t > 0.0 {
                 val += 0.5 * mu * t * t - lambda[j] * lambda[j] / (2.0 * mu);
+            } else {
+                val -= lambda[j] * lambda[j] / (2.0 * mu);
+            }
+        }
+        Ok(val)
+    };
+    let merit = |theta: &[f64], lambda: &[f64], mu: f64| -> Result<(f64, Vec<f64>), String> {
+        let s = prob.sample(theta)?;
+        let (_, gf, _) = prob.objective(&s);
+        // The value comes from the same path a trial uses, so an accepted
+        // trial's value is bit-identical to the one the Armijo test saw.
+        let val = merit_value(theta, lambda, mu)?;
+        let mut grad: Vec<f64> = (0..n).map(|k| gf[k] / f_scale * range[k]).collect();
+        for (j, (g, gg, _)) in prob.constraints(theta, &s)?.into_iter().enumerate() {
+            let w = cweight.borrow()[j];
+            let t = w * g + lambda[j] / mu;
+            if t > 0.0 {
                 for k in 0..n {
                     grad[k] += mu * t * w * gg[k] * range[k];
                 }
-            } else {
-                val -= lambda[j] * lambda[j] / (2.0 * mu);
             }
         }
         Ok((val, grad))
@@ -1356,10 +1751,38 @@ pub fn optimize_document(
 
     let mut stop = OptimizeStop::MaxRounds;
     let mut prev_viol = f64::INFINITY;
+    // Length (∞-norm, normalized) of the previous round's last accepted
+    // step: each round restarts L-BFGS without curvature memory, and its
+    // first steepest-descent trial is scaled to this instead of a fixed
+    // `initial_step` (which overshoots after a multiplier update and pays
+    // for it in rejected trials).
+    let mut last_step: Option<f64> = None;
     for round in 0..req.options.max_outer.max(1) {
+        if round > 0 {
+            let th = to_theta(&x);
+            let s = prob.sample(&th).map_err(err_map)?;
+            let w_new = weights_at(&th, &s).map_err(err_map)?;
+            let mut w = cweight.borrow_mut();
+            for j in 0..m {
+                lambda[j] *= w[j] / w_new[j];
+            }
+            *w = w_new;
+        }
+        let initial_step = match last_step {
+            Some(len) if round > 0 => {
+                let (_, g0) = merit(&to_theta(&x), &lambda, mu).map_err(err_map)?;
+                let ginf = g0.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+                if ginf > 0.0 {
+                    (2.0 * len / ginf).clamp(1e-3, 1.0)
+                } else {
+                    req.options.initial_step
+                }
+            }
+            _ => req.options.initial_step,
+        };
         let opts = tang_optim::LbfgsOptions {
             max_iters: req.options.max_inner.max(1),
-            initial_step: req.options.initial_step,
+            initial_step,
             min_step: 1e-7,
             grad_tol: req.options.grad_tol,
             bounds: vec![(0.0, 1.0); n],
@@ -1367,10 +1790,76 @@ pub fn optimize_document(
         };
         let lam_r = lambda.clone();
         let cancelled = Cell::new(false);
+        // Lazy gradients. `minimize_lbfgs` asks for (value, gradient) at
+        // every Armijo trial but only uses the gradient of the trial it
+        // accepts. The closure knows the last accepted point (the first
+        // call of a round is the start point; afterwards it is whichever
+        // trial passed the test below), so it replays the solver's exact
+        // Armijo test — same operands, same arithmetic order — on a
+        // value-only evaluation and prices the gradient only for a trial
+        // that will be accepted. A rejected trial gets a placeholder
+        // gradient the solver never reads.
+        //
+        // Stops the solver lacks. Its `grad_tol` tests the unprojected
+        // gradient, which never vanishes at an active bound, so a round
+        // pinned against a bound would otherwise creep along it in
+        // ever-smaller accepted steps, each a full gradient sample. Once an
+        // accepted point's *box-projected* gradient is below `grad_tol`,
+        // and for a *backtracked* trial displaced less than `X_TOL`
+        // (normalized), trials are refused without evaluating anything; the
+        // solver backtracks to `min_step` for free and reports
+        // `StepConverged`. The first trial after an acceptance is always
+        // evaluated: a small gradient makes a short full step, and that step
+        // is real progress.
+        const X_TOL: f64 = 1e-4;
+        let grad_tol = req.options.grad_tol;
+        let projected_small = |x: &[f64], g: &[f64]| {
+            (0..n).all(|k| {
+                let r = if x[k] <= 1e-12 {
+                    (-g[k]).max(0.0)
+                } else if x[k] >= 1.0 - 1e-12 {
+                    g[k].max(0.0)
+                } else {
+                    g[k].abs()
+                };
+                r < grad_tol
+            })
+        };
+        let accepted: RefCell<Option<Accepted>> = RefCell::new(None);
+        let settled = Cell::new(false);
+        let trials = Cell::new(0usize);
+        let c1 = opts.armijo_c1;
         let r = tang_optim::minimize_lbfgs(
             |xx: &[f64]| {
                 let th = to_theta(xx);
-                merit(&th, &lam_r, mu).inspect_err(|e| {
+                let res = (|| -> Result<(f64, Vec<f64>), String> {
+                    let last = accepted.borrow().clone();
+                    let Some((x_acc, f_acc, g_acc)) = last else {
+                        let (v, g) = merit(&th, &lam_r, mu)?;
+                        settled.set(projected_small(xx, &g));
+                        *accepted.borrow_mut() = Some((xx.to_vec(), v, g.clone()));
+                        return Ok((v, g));
+                    };
+                    let displacement: Vec<f64> =
+                        xx.iter().zip(&x_acc).map(|(a, b)| a - b).collect();
+                    let moved = displacement.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+                    trials.set(trials.get() + 1);
+                    if settled.get() || (trials.get() > 1 && moved < X_TOL) {
+                        return Ok((f64::INFINITY, vec![0.0; n]));
+                    }
+                    let v = merit_value(&th, &lam_r, mu)?;
+                    let expected = c1 * dot(&g_acc, &displacement);
+                    if v <= f_acc + expected {
+                        let (v, g) = merit(&th, &lam_r, mu)?;
+                        settled.set(projected_small(xx, &g));
+                        trials.set(0);
+                        *accepted.borrow_mut() = Some((xx.to_vec(), v, g.clone()));
+                        Ok((v, g))
+                    } else {
+                        Ok((v, vec![0.0; n]))
+                    }
+                })();
+                res.inspect_err(|e| {
                     if e == "cancelled" {
                         cancelled.set(true);
                     }
@@ -1393,13 +1882,21 @@ pub fn optimize_document(
                 make_step(iter, round, &th, it.value, &effective(&lam_r)).map_err(err_map)?,
             );
         }
+        if let [.., a, b] = r.history.as_slice() {
+            last_step = Some(
+                a.x.iter()
+                    .zip(&b.x)
+                    .fold(0.0_f64, |m, (p, q)| m.max((p - q).abs())),
+            );
+        }
         x = r.x.clone();
         let theta = to_theta(&x);
         let s = prob.sample(&theta).map_err(err_map)?;
         let cons = prob.constraints(&theta, &s).map_err(err_map)?;
         let viol = cons.iter().map(|c| c.0.max(0.0)).fold(0.0, f64::max);
         for (j, c) in cons.iter().enumerate() {
-            lambda[j] = (lambda[j] + mu * cweight[j] * c.0).max(0.0);
+            let w = cweight.borrow()[j];
+            lambda[j] = (lambda[j] + mu * w * c.0).max(0.0);
         }
         let inner_ok = matches!(
             r.stop,
@@ -1440,7 +1937,9 @@ pub fn optimize_document(
     }
 
     let samples = prob.memo.borrow().len();
+    let value_samples = prob.value_memo.borrow().len().saturating_sub(samples);
     let document_evals = prob.document_evals.get();
+    let plugin_evals = prob.plugin_evals.get();
     Ok(OptimizeDocResult {
         params: req.parameters.iter().map(|p| p.name.clone()).collect(),
         theta,
@@ -1450,7 +1949,9 @@ pub fn optimize_document(
         kkt: report,
         seam_fd_check,
         samples,
+        value_samples,
         document_evals,
+        plugin_evals,
         wall_ms: run_t0.elapsed().as_secs_f64() * 1e3,
     })
 }
