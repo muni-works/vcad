@@ -593,17 +593,19 @@ pub fn check_compatible(child: &PortInfo, parent: &PortInfo) -> Result<(), Strin
     Ok(())
 }
 
-/// Decompose R = Rz(c)·Ry(b)·Rx(a) into degrees (the order `CsgOp::Rotate`
-/// applies).
+/// Decompose R = Rx(a)·Ry(b)·Rz(c) into degrees — the matrix `CsgOp::Rotate`
+/// builds (`rx.then(&ry).then(&rz)`, where `then` is a right-multiply, so Z
+/// acts on the part first and X last).
 pub fn mat_to_euler_xyz_deg(m: &[[f64; 3]; 3]) -> [f64; 3] {
-    let sy = -m[2][0];
-    let (ax, ay, az) = if sy.abs() > 1.0 - 1e-9 {
-        (0.0_f64, sy.clamp(-1.0, 1.0).asin(), -m[0][1].atan2(m[1][1]))
+    let sb = m[0][2];
+    let (ax, ay, az) = if sb.abs() > 1.0 - 1e-9 {
+        // Gimbal lock: pitch is ±90°, fold roll into yaw.
+        (0.0_f64, sb.clamp(-1.0, 1.0).asin(), m[1][0].atan2(m[1][1]))
     } else {
         (
-            m[2][1].atan2(m[2][2]),
-            sy.clamp(-1.0, 1.0).asin(),
-            m[1][0].atan2(m[0][0]),
+            (-m[1][2]).atan2(m[2][2]),
+            sb.clamp(-1.0, 1.0).asin(),
+            (-m[0][1]).atan2(m[0][0]),
         )
     };
     [ax.to_degrees(), ay.to_degrees(), az.to_degrees()]
@@ -1138,7 +1140,7 @@ mod tests {
             [c.sin(), c.cos(), 0.0],
             [0.0, 0.0, 1.0],
         ];
-        let r = mat_mul(&rz, &mat_mul(&ry, &rx));
+        let r = mat_mul(&rx, &mat_mul(&ry, &rz));
         for i in 0..3 {
             for j in 0..3 {
                 assert!((r[i][j] - m[i][j]).abs() < 1e-9);
