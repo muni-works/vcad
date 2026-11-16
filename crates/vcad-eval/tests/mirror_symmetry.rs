@@ -24,6 +24,7 @@ fn inspect(src: &str) -> (f64, [f64; 3]) {
             root_cache: None,
             mesh_segments: 0,
             on_root: None,
+            on_root_ready: None,
         },
     )
     .expect("evaluate_document");

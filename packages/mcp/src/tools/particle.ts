@@ -16,6 +16,7 @@
  */
 
 import { behavior, type ToolDef } from "./tool-def.js";
+import { getSession } from "./session-core.js";
 
 const paramValue = {
   description:
@@ -199,27 +200,158 @@ const simOptionsSchema = {
   },
 };
 
+const documentIdSchema = {
+  type: "string" as const,
+  description:
+    "Session document to extract the device from (instead of `spec`): the " +
+    "chamber and grid are measured from the document's own evaluated solids, " +
+    "so the simulation runs on the geometry the drawings show. Requires " +
+    "`extract`.",
+};
+
+const deviceExtractSchema = {
+  type: "object" as const,
+  required: ["chamber", "electrodes"],
+  description:
+    "Which parts of `document_id` are the device. Geometry is measured from " +
+    "the BRep (literals); potentials and ampere-turns are NAMED DOCUMENT " +
+    "PARAMETERS (loon `defparam`), so scrubbing them in the document " +
+    "re-prices the run. Fail-closed: anything the axisymmetric device can't " +
+    "hold — a ring off the chamber axis (globe/meridian grids), crossing or " +
+    "trimmed wires, a stalk fused into the grid part, a non-cylindrical or " +
+    "ported chamber, an undeclared parameter — errors naming the part.",
+  properties: {
+    chamber: {
+      type: "string" as const,
+      description:
+        "Chamber part (name or part id), modelled as a closed can: outer " +
+        "cylinder minus a coaxial inner cylinder. Its cavity sets the device " +
+        "radius, half-height, axis and origin.",
+    },
+    wall_potential: {
+      type: "string" as const,
+      description:
+        "Document parameter holding the wall potential, V. Omitted = grounded.",
+    },
+    electrodes: {
+      type: "array" as const,
+      minItems: 1,
+      items: {
+        type: "object" as const,
+        required: ["part", "potential"],
+        properties: {
+          part: {
+            type: "string" as const,
+            description:
+              "Electrode part (name or part id) holding only complete, " +
+              "separate toroidal wire rings coaxial with the chamber.",
+          },
+          potential: {
+            type: "string" as const,
+            description: "Document parameter holding the potential, V.",
+          },
+          ampere_turns: {
+            type: "string" as const,
+            description:
+              "Document parameter holding the ring current, ampere-turns " +
+              "(+ = CCW viewed from +axis). Every ring in the part shares it; " +
+              "put opposed-current rings in separate parts.",
+          },
+        },
+      },
+    },
+  },
+};
+
 export const simulateChargedParticlesSchema = {
   type: "object" as const,
-  required: ["spec"],
   properties: {
     spec: {
       description:
         "An axisymmetric ring device (`rings`) or a 3D wire device " +
-        "(`chamber` + `electrodes`).",
+        "(`chamber` + `electrodes`). Pass this OR `document_id` + `extract` " +
+        "(extraction is axisymmetric only).",
       anyOf: [deviceSpecSchema, deviceSpec3dSchema],
     },
-    parameters: parametersSchema,
+    document_id: documentIdSchema,
+    extract: deviceExtractSchema,
+    parameters: {
+      ...parametersSchema,
+      description:
+        "Bindings for named spec parameters, `{name: value}`. With " +
+        "`document_id` these override the document's parameter values.",
+    },
     options: simOptionsSchema,
   },
 };
 
+interface ExtractedDevice {
+  spec: unknown;
+  parameters: Record<string, number>;
+  cavity: unknown;
+  ring_parts: string[];
+}
+
+/** Resolve the spec + parameters for a particle tool call: the raw `spec`,
+ *  or one extracted from the session document's solids. */
+function deviceInput(
+  a: Json,
+  ctx: Parameters<ToolDef["handler"]>[1],
+  tool: string,
+): { spec: unknown; parameters: Record<string, number>; extracted?: Json } {
+  const params = (a.parameters ?? {}) as Record<string, number>;
+  if (a.document_id === undefined) {
+    if (a.spec === undefined) {
+      throw new Error(`${tool}: pass \`spec\`, or \`document_id\` + \`extract\``);
+    }
+    return { spec: a.spec, parameters: params };
+  }
+  if (a.spec !== undefined) {
+    throw new Error(`${tool}: pass \`spec\` OR \`document_id\`, not both`);
+  }
+  if (a.extract === undefined) {
+    throw new Error(`${tool}: \`document_id\` requires \`extract\` (chamber + electrode parts)`);
+  }
+  const documentId = String(a.document_id);
+  const doc = getSession(documentId);
+  const ex = ctx.engine.extractDeviceSpec(
+    JSON.stringify(doc),
+    JSON.stringify(a.extract),
+  ) as ExtractedDevice;
+  const parameters = { ...ex.parameters, ...params };
+  return {
+    spec: ex.spec,
+    parameters,
+    extracted: {
+      document_id: documentId,
+      spec: ex.spec,
+      parameters,
+      cavity: ex.cavity,
+      ring_parts: ex.ring_parts,
+    },
+  };
+}
+
 export const optimizeElectrodesSchema = {
   type: "object" as const,
-  required: ["spec", "variables"],
+  required: ["variables"],
   properties: {
-    spec: deviceSpecSchema,
-    parameters: parametersSchema,
+    spec: {
+      ...deviceSpecSchema,
+      description:
+        deviceSpecSchema.description +
+        " Pass this OR `document_id` + `extract`.",
+    },
+    document_id: documentIdSchema,
+    extract: deviceExtractSchema,
+    parameters: {
+      ...parametersSchema,
+      description:
+        "Bindings for named spec parameters, `{name: value}`. With " +
+        "`document_id` these override the document's parameter values; " +
+        "only parameters the extracted spec names (potentials, " +
+        "ampere-turns) can be optimized — geometry is measured literals.",
+    },
     variables: {
       type: "array" as const,
       minItems: 1,
@@ -310,7 +442,7 @@ export const toolDefs: ToolDef[] = [
     handler: (args, ctx) => {
       const a = args as Json;
       const spec = a.spec as Json | undefined;
-      if (spec && typeof spec === "object" && "electrodes" in spec) {
+      if (a.document_id === undefined && spec && typeof spec === "object" && "electrodes" in spec) {
         return textResult(
           ctx.engine.particleSimulate3d(
             JSON.stringify(spec),
@@ -319,12 +451,13 @@ export const toolDefs: ToolDef[] = [
           ),
         );
       }
+      const input = deviceInput(a, ctx, "simulate_charged_particles");
       const out = ctx.engine.particleSimulate(
-        JSON.stringify(a.spec),
-        JSON.stringify(a.parameters ?? {}),
+        JSON.stringify(input.spec),
+        JSON.stringify(input.parameters),
         JSON.stringify(a.options ?? {}),
-      );
-      return textResult(out);
+      ) as Json;
+      return textResult(input.extracted ? { ...out, extracted: input.extracted } : out);
     },
     behavior: behavior({}),
   },
@@ -346,9 +479,10 @@ export const toolDefs: ToolDef[] = [
     inputSchema: optimizeElectrodesSchema,
     handler: (args, ctx) => {
       const a = args as Json;
+      const input = deviceInput(a, ctx, "optimize_electrodes");
       const out = ctx.engine.particleOptimize(
-        JSON.stringify(a.spec),
-        JSON.stringify(a.parameters ?? {}),
+        JSON.stringify(input.spec),
+        JSON.stringify(input.parameters),
         JSON.stringify({
           variables: a.variables,
           ...(a.options as Json | undefined),
