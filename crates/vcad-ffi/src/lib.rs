@@ -83,6 +83,7 @@ pub mod sensitivity;
 pub mod session;
 pub mod sheet_metal;
 pub mod sketch;
+pub mod solver;
 pub mod sound;
 pub mod topology;
 pub mod train;

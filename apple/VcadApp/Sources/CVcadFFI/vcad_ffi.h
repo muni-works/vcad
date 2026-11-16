@@ -793,6 +793,18 @@ char *vcad_fea_materials(void);
  * {pairs:[{a,b,distance_mm,intersecting,overlap_volume_mm3,status,clash?}], ...} */
 char *vcad_clearance(const char *doc_json, const char *request_json);
 
+/* Physics solver tools (crates/vcad-ffi/src/solver.rs, vcad-solver-tools):
+ * name = "simulate_charged_particles" | "optimize_electrodes" |
+ * "simulate_neutron_shield" | "compare_measurements"; args_json = the MCP
+ * tool's arguments. Returns the FULL result JSON (section data, every
+ * optimizer evaluation). The hook gets (ctx, fraction 0..1, stage message)
+ * and returns false to cancel -> NULL, vcad_last_error "cancelled". */
+typedef bool (*vcad_solver_progress_fn)(void *ctx, double fraction, const char *message);
+char *vcad_solver_run(const char *name, const char *args_json,
+                      vcad_solver_progress_fn progress, void *ctx);
+/* {tools:[{name, description, inputSchema}]} */
+char *vcad_solver_tools(void);
+
 /* --- Live receipts (receipts.rs) ---
  * Re-verify every persisted clearance assertion (doc.clearance_specs) ->
  * {status:"Holds"|"Stale"|"Violated"|null, checks:[{label,claim_id,status,

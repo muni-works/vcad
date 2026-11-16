@@ -5819,6 +5819,7 @@ dependencies = [
  "vcad-slicer",
  "vcad-slicer-bambu",
  "vcad-slicer-gcode",
+ "vcad-solver-tools",
  "vcad-sound",
 ]
 
@@ -7075,6 +7076,7 @@ dependencies = [
  "vcad-loon",
  "vcad-receipt-verify",
  "vcad-render",
+ "vcad-solver-tools",
  "vcad-sound",
  "vcad-tool-derive 0.11.0",
  "zip",
@@ -7261,6 +7263,17 @@ dependencies = [
  "vcad-kernel-math 0.11.0",
  "vcad-kernel-tessellate 0.11.0",
  "vcad-slicer",
+]
+
+[[package]]
+name = "vcad-solver-tools"
+version = "0.11.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "vcad-kernel-neutronics 0.11.0",
+ "vcad-kernel-particle 0.11.0",
+ "vcad-receipt 0.11.0",
 ]
 
 [[package]]
