@@ -100,6 +100,9 @@ pub enum InitialSource {
     /// A thin shell just inside the chamber wall (every ion gets the full
     /// drop — the most energetic possible source shape).
     EdgeShell,
+    /// Uniform per unit volume inside 1.5× the cathode radius (ions born
+    /// at or inside the grid — the coldest plausible source shape).
+    NearCathode,
 }
 
 /// Physics inputs and numerics for one chain run.
@@ -541,6 +544,16 @@ fn neutral_march(ctx: &Ctx, acc: &mut Acc, p: [f64; 3], dir: [f64; 3], e_ev: f64
     }
 }
 
+/// Breakup products of a fast `D_m⁺` (m = 2, 3) of lab energy `e_ev`:
+/// `(D⁺ fragment energy, neutral fragment deuteron count, neutral
+/// fragment energy)`. Fragments keep the parent's velocity, so each
+/// carries its mass share of the energy: D₂⁺ → D⁺(E/2) + D(E/2),
+/// D₃⁺ → D⁺(E/3) + D₂(2E/3) (the Eq. 243 fast-D⁺ channel).
+fn breakup_products(m: usize, e_ev: f64) -> (f64, usize, f64) {
+    let mf = m as f64;
+    (e_ev / mf, m - 1, e_ev * (mf - 1.0) / mf)
+}
+
 /// A fast D⁺ breakup fragment to trace on its own trajectory.
 struct Fragment {
     pos: [f64; 3],
@@ -559,7 +572,6 @@ fn trace_ion(ctx: &Ctx, acc: &mut Acc, pos: [f64; 3], vel: [f64; 3], w0: [f64; 4
     }
     let mut w = w0;
     let mut pending = [0.0_f64; 4];
-    let mut frag_ion = 0.0_f64;
     let mut frag_n = [0.0_f64; 4];
     let mut frags: Vec<Fragment> = Vec::new();
     let mut last_dir = [0.0, 0.0, 0.0];
@@ -575,7 +587,6 @@ fn trace_ion(ctx: &Ctx, acc: &mut Acc, pos: [f64; 3], vel: [f64; 3], w0: [f64; 4
     // products (D⁺ fragment queued for tracing; neutral fragment marched).
     let flush = |acc: &mut Acc,
                  pending: &mut [f64; 4],
-                 frag_ion: &mut f64,
                  frag_n: &mut [f64; 4],
                  frags: &mut Vec<Fragment>,
                  p: [f64; 3],
@@ -586,22 +597,25 @@ fn trace_ion(ctx: &Ctx, acc: &mut Acc, pos: [f64; 3], vel: [f64; 3], w0: [f64; 4
             neutral_march(ctx, acc, p, dir, e, *pending);
             *pending = [0.0; 4];
         }
-        // Neutral fragments: from D₂⁺ a D at E/2, from D₃⁺ a D₂ at 2E/3.
-        if frag_n[2] > 0.0 {
-            neutral_march(ctx, acc, p, dir, 0.5 * e, [0.0, frag_n[2], 0.0, 0.0]);
-        }
-        if frag_n[3] > 0.0 {
-            neutral_march(ctx, acc, p, dir, 2.0 * e / 3.0, [0.0, 0.0, frag_n[3], 0.0]);
-        }
-        *frag_n = [0.0; 4];
-        if *frag_ion > 0.0 {
+        // Breakup products per parent species. `v` is the trajectory's
+        // D⁺-mass velocity (energy E); the parent D_m⁺ really moves at
+        // v/√m, and so do both fragments.
+        for (m, &wf) in frag_n.iter().enumerate().skip(2) {
+            if wf <= 0.0 {
+                continue;
+            }
+            let (_, n_m, n_e) = breakup_products(m, e);
+            let mut wn = [0.0; 4];
+            wn[n_m] = wf;
+            neutral_march(ctx, acc, p, dir, n_e, wn);
+            let k = 1.0 / (m as f64).sqrt();
             frags.push(Fragment {
                 pos: p,
-                vel: v,
-                weight: *frag_ion,
+                vel: [v[0] * k, v[1] * k, v[2] * k],
+                weight: wf,
             });
-            *frag_ion = 0.0;
         }
+        *frag_n = [0.0; 4];
     };
 
     let mut observer = |ev: &StepEvent| -> bool {
@@ -644,7 +658,6 @@ fn trace_ion(ctx: &Ctx, acc: &mut Acc, pos: [f64; 3], vel: [f64; 3], w0: [f64; 4
                 if s_cid > 0.0 {
                     let dw = w[m] * (1.0 - (-n_mol * s_cid * ds).exp());
                     w[m] -= dw;
-                    frag_ion += dw;
                     frag_n[m] += dw;
                     acc.t.breakups += dw;
                 }
@@ -673,7 +686,6 @@ fn trace_ion(ctx: &Ctx, acc: &mut Acc, pos: [f64; 3], vel: [f64; 3], w0: [f64; 4
             flush(
                 acc,
                 &mut pending,
-                &mut frag_ion,
                 &mut frag_n,
                 &mut frags,
                 ev.pos,
@@ -688,7 +700,6 @@ fn trace_ion(ctx: &Ctx, acc: &mut Acc, pos: [f64; 3], vel: [f64; 3], w0: [f64; 4
     flush(
         acc,
         &mut pending,
-        &mut frag_ion,
         &mut frag_n,
         &mut frags,
         last_p,
@@ -828,6 +839,17 @@ fn initial_source(sol: &Solution, device: &Device, shape: InitialSource) -> Vec<
                     let s = (r * r + z * z).sqrt();
                     let shell = 0.85 * r_wall.min(z_wall);
                     if (s - shell).abs() <= 1.0 * sol.dr.max(sol.dz) {
+                        node_volume(sol, id)
+                    } else {
+                        0.0
+                    }
+                }
+                InitialSource::NearCathode => {
+                    let (i, j) = (id / sol.nz, id % sol.nz);
+                    let r = i as f64 * sol.dr;
+                    let z = j as f64 * sol.dz - sol.z_half;
+                    let s = (r * r + z * z).sqrt();
+                    if s <= 1.5e-3 * device.min_ring_spherical_radius_mm() {
                         node_volume(sol, id)
                     } else {
                         0.0
@@ -1453,6 +1475,7 @@ pub fn predict(
                 | "born_species"
                 | "d3_formation"
                 | "d3_breakup_frame"
+                | "space_charge"
                 | "grid"
                 | "integrator_step"
         );
@@ -1556,6 +1579,14 @@ pub fn predict(
             ),
         );
     }
+    // Vacuum field, warm-started from the central source: the common
+    // baseline for the voltage and space-charge terms.
+    let r_vac_warm = rate(
+        &run_from(&dev_c, &sol_c, &warm, Some(&q_c))?,
+        reading.supply_current_a,
+        g[0],
+        wl[0],
+    );
     {
         let v_hi = reading.cathode_voltage_v * (1.0 + reading.voltage_rel);
         let (dv, sv) = solve_device(device, v_hi, numerics.grid, &numerics.solve)?;
@@ -1569,7 +1600,7 @@ pub fn predict(
                 wl[0],
             ))
         };
-        let f = at(&dv, &sv)? / at(&dev_c, &sol_c)?.max(1e-300);
+        let f = at(&dv, &sv)? / r_vac_warm.max(1e-300);
         let e = f.ln().abs();
         push(
             "voltage",
@@ -1715,6 +1746,7 @@ pub fn predict(
         };
         let uni = single(InitialSource::UniformVolume)?;
         let edge = single(InitialSource::EdgeShell)?;
+        let cold = single(InitialSource::NearCathode)?;
         let mix = |alt: &Tally| -> f64 {
             let m = &central.mode;
             let y = (1.0 - f_unmodeled) * m.neutrons(wl[0]) + f_unmodeled * alt.neutrons(wl[0]);
@@ -1722,21 +1754,24 @@ pub fn predict(
                 + f_unmodeled * alt.supply_charges(g[0]);
             (y / c) / m.neutrons_per_supply_charge(g[0], wl[0]).max(1e-300)
         };
-        let (a, b) = (mix(&uni), mix(&edge));
+        let mixes = [mix(&uni), mix(&edge), mix(&cold)];
+        let lo = mixes.iter().cloned().fold(1.0_f64, f64::min);
+        let hi = mixes.iter().cloned().fold(1.0_f64, f64::max);
         push(
             "source_shape",
             BandKind::ModelForm,
-            a.min(b).min(1.0),
-            a.max(b).max(1.0),
+            lo,
+            hi,
             format!(
                 "modeled sustainment M = {kk:.3} (ionization births per ion lost); the unmodeled \
-                 |1−M| = {f_unmodeled:.3} of ion production bounded between uniform-volume and \
-                 edge-born sources"
+                 |1−M| = {f_unmodeled:.3} of ion production bounded by near-cathode (cold), \
+                 uniform-volume and edge-born (hot) sources: x{:.3} / x{:.3} / x{:.3}",
+                mixes[2], mixes[0], mixes[1]
             ),
         );
     }
     {
-        let v = rate(&vacuum, reading.supply_current_a, g[0], wl[0]) / c0;
+        let v = r_vac_warm / r_ref;
         push(
             "space_charge",
             BandKind::ModelForm,
@@ -1887,6 +1922,30 @@ mod tests {
             chain.mode.neutrons(0.0),
             single.mode.neutrons(0.0)
         );
+    }
+
+    #[test]
+    fn breakup_conserves_energy_and_shares_it_by_mass() {
+        for m in [2usize, 3] {
+            let e = 30.0e3;
+            let (ion_e, n_m, n_e) = breakup_products(m, e);
+            assert!(
+                (ion_e + n_e - e).abs() < 1e-9,
+                "energy not conserved for m={m}"
+            );
+            // Equal velocity: energy per deuteron is the same for both.
+            assert!((ion_e - n_e / n_m as f64).abs() < 1e-9);
+            assert_eq!(n_m, m - 1);
+        }
+        // The fragment velocity rule: a D⁺ launched at v/√m (v = D⁺-mass
+        // velocity for energy E) carries E/m.
+        let e = 30.0e3;
+        let v = (2.0 * e * ELEMENTARY_CHARGE / DEUTERON.mass_kg).sqrt();
+        for m in [2.0_f64, 3.0] {
+            let vf = v / m.sqrt();
+            let ef = 0.5 * DEUTERON.mass_kg * vf * vf / ELEMENTARY_CHARGE;
+            assert!((ef - e / m).abs() < 1e-6 * e);
+        }
     }
 
     #[test]
