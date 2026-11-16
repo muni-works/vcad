@@ -6480,7 +6480,42 @@ ambientC: StudyValue, } | { "type": "fixedTemperature",
 /**
  * Surface temperature, °C.
  */
-temperatureC: StudyValue, };
+temperatureC: StudyValue, } | { "type": "radiation", 
+/**
+ * Hemispherical total emissivity, (0, 1].
+ */
+emissivity: StudyValue, 
+/**
+ * Ambient / surrounding-wall temperature, °C.
+ */
+ambientC: StudyValue, 
+/**
+ * Parallel convection film, W/(m²·K) (omit or 0 in vacuum).
+ */
+hWM2k?: StudyValue, 
+/**
+ * Staircase area correction (true area / voxel area), default 1.
+ * A voxelized cylinder wall carries ×4/π extra area at every
+ * resolution; without this, cooling is over-counted.
+ */
+areaScale?: StudyValue, 
+/**
+ * Two-surface gray enclosure (a vacuum chamber wall).
+ */
+enclosure?: ThermalStudyEnclosure, };
+
+/**
+ * A gray enclosure fully surrounding a radiating surface.
+ */
+export type ThermalStudyEnclosure = { 
+/**
+ * Wall emissivity, (0, 1].
+ */
+emissivity: StudyValue, 
+/**
+ * Wall area, m² (must exceed the radiating area).
+ */
+areaM2: StudyValue, };
 
 /**
  * Thermal properties for one part, overriding the material table.

@@ -488,15 +488,19 @@ fn radiating_exposed_faces_cool_the_puck_board() {
     let mut c = poc_study(5.0);
     c.domain_faces = None;
     let (t_conv, _, _) = solve_doc(&doc, &sc, &c);
+    let radiated: f64 = sol.radiation.iter().map(|r| r.radiated_w).sum();
     println!(
         "h = 5 + ε = 0.9 radiation: T_max {:.2} °C (convection only {t_conv:.2}), \
-         radiated {:.3} W of 0.8, Newton {}",
-        sol.t_max_c, sol.energy.radiation_out_w, sol.newton_iterations
+         radiated {:.3} W of 0.8 (film the rest), Newton {}",
+        sol.t_max_c, radiated, sol.newton_iterations
     );
     assert!(
         sol.t_max_c < t_conv - 5.0,
         "radiation should matter at ~80 °C"
     );
-    assert!(sol.energy.radiation_out_w > 0.1 && sol.energy.radiation_out_w < 0.8);
+    // Every face is a radiation slot, so all 0.8 W leaves through them;
+    // radiation proper is a real share of it, the film carries the rest.
+    assert!((sol.energy.radiation_out_w - 0.8).abs() < 1e-6);
+    assert!(radiated > 0.1 && radiated < 0.7, "{radiated}");
     assert!(sol.energy.residual_rel < 1e-6);
 }
