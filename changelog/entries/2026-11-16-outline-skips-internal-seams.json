@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-outline-skips-internal-seams",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "fix",
+  "title": "Model outlines no longer draw seams inside one surface",
+  "summary": "After a cut, the viewport drew lines across walls and caps wherever the kernel had left one surface in several faces; outlines now follow real model edges only.",
+  "features": ["viewport", "mac-app", "kernel"],
+  "mcpTools": []
+}
