@@ -234,7 +234,9 @@ fn nonzero_dir(name: &str, v: [f64; 3]) -> Result<[f64; 3], String> {
     if finite3(v) && v.iter().any(|x| *x != 0.0) {
         Ok(v)
     } else {
-        Err(format!("{name} must be a finite nonzero vector (got {v:?})"))
+        Err(format!(
+            "{name} must be a finite nonzero vector (got {v:?})"
+        ))
     }
 }
 
@@ -391,7 +393,7 @@ impl QuerySpec {
             if g.nu == 0 || g.nv == 0 {
                 return Err("grid.nu and grid.nv must be ≥ 1".into());
             }
-            let n = g.nu.checked_mul(g.nv).unwrap_or(usize::MAX);
+            let n = g.nu.saturating_mul(g.nv);
             if n.saturating_add(pts.len()) > MAX_POINTS {
                 return Err(format!(
                     "{} query points exceeds the limit of {MAX_POINTS}; coarsen the grid",
@@ -405,7 +407,11 @@ impl QuerySpec {
                 return Err("grid.u_dir and grid.v_dir are parallel".into());
             }
             if !finite3(g.origin_mm)
-                || !g.u_range_mm.iter().chain(&g.v_range_mm).all(|x| x.is_finite())
+                || !g
+                    .u_range_mm
+                    .iter()
+                    .chain(&g.v_range_mm)
+                    .all(|x| x.is_finite())
             {
                 return Err("grid origin and ranges must be finite".into());
             }

@@ -203,7 +203,11 @@ impl Pose {
 
     /// The source's axis (local `+z`) in world coordinates.
     pub fn axis(&self) -> [f64; 3] {
-        [self.rotation[0][2], self.rotation[1][2], self.rotation[2][2]]
+        [
+            self.rotation[0][2],
+            self.rotation[1][2],
+            self.rotation[2][2],
+        ]
     }
 
     /// World point → local point.
@@ -428,7 +432,13 @@ fn radial_to_cart(br: f64, bz: f64, p: [f64; 3], rho: f64) -> [f64; 3] {
 
 /// Solenoidal current sheet of radius `radius`, length `length`, surface
 /// current density `k_a_per_m` (A/m, CCW about +z), centered at the origin.
-fn sheet(radius: f64, length: f64, k_a_per_m: f64, n_loops: Option<usize>, p: [f64; 3]) -> [f64; 3] {
+fn sheet(
+    radius: f64,
+    length: f64,
+    k_a_per_m: f64,
+    n_loops: Option<usize>,
+    p: [f64; 3],
+) -> [f64; 3] {
     match n_loops {
         Some(n) => sheet_loops(radius, length, k_a_per_m, n, p),
         None => sheet_exact(radius, length, k_a_per_m, p),
@@ -928,8 +938,7 @@ mod tests {
         let k = ni / l;
         for z in [0.0, 0.03, 0.05 + 1e-3, 0.12, -0.2] {
             let (u, d) = (z + 0.5 * l, z - 0.5 * l);
-            let exact =
-                0.5 * MU_0 * k * (u / (r * r + u * u).sqrt() - d / (r * r + d * d).sqrt());
+            let exact = 0.5 * MU_0 * k * (u / (r * r + u * u).sqrt() - d / (r * r + d * d).sqrt());
             let b = s.b_local([0.0, 0.0, z]);
             assert!(rel(b[2], exact) < 1e-12, "z={z}: {} vs {exact}", b[2]);
         }
@@ -986,7 +995,10 @@ mod tests {
             assert!(rel(exact.b_local([0.0, 0.0, z])[2], d.b_axis_exact(z)) < 1e-12);
         }
         for p in [[0.1, 0.0, 0.0], [0.06, 0.03, 0.08]] {
-            let err = vrel(exact.b_local(p), b_dipole(exact.moment(), [0.0, 0.0, 1.0], p));
+            let err = vrel(
+                exact.b_local(p),
+                b_dipole(exact.moment(), [0.0, 0.0, 1.0], p),
+            );
             assert!(err < 1e-2, "{err}");
         }
     }

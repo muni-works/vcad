@@ -45,8 +45,8 @@
 //! not average out.
 
 use crate::constants::{ELECTRON_MASS, ELEMENTARY_CHARGE};
-use crate::field3d::{norm, Pose};
 pub use crate::field3d::{b_dipole, DiscMagnet};
+use crate::field3d::{norm, Pose};
 
 /// Boltzmann constant, J/K.
 const K_B: f64 = 1.380_649e-23;
