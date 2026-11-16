@@ -155,8 +155,16 @@ pub struct StepEvent {
 /// weighted by the probability the ion has not yet charge-exchanged) and
 /// the fast-neutral channel (the CX product flies straight at full energy
 /// and keeps fusing until it exits). The CX chain (each event also births
-/// a cold ion that re-accelerates) is not yet modeled, so both channels
+/// a cold ion that re-accelerates) is not modeled here, so both channels
 /// are floors.
+///
+/// **Superseded for yield predictions by [`crate::chain`]** (CX chain,
+/// energy-dependent cited σ, molecular species, ionization source, supply
+/// partition). Note the convention: this legacy model multiplies σ_cx by
+/// the *deuteron* density, while the CX target is the D₂ *molecule*
+/// (half that) — at a physical σ_cx it double-counts attrition. Kept
+/// unchanged because the wasm/MCP `simulate_charged_particles` surface
+/// passes these fields.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct CxModel {
     /// Charge-exchange cross section, m².

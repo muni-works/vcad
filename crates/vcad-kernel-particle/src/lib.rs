@@ -36,6 +36,7 @@
 
 pub mod adjoint;
 pub mod beam_target;
+pub mod chain;
 pub mod confinement;
 pub mod device;
 pub mod elliptic;

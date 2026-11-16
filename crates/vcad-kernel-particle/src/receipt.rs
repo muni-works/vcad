@@ -76,6 +76,14 @@ pub struct Claim {
     pub basis: String,
     /// Assumptions and caveats, spelled out.
     pub note: String,
+    /// Two-sided predicted band `[lower, upper]` in the claim's unit, when
+    /// the claim carries its own uncertainty (see [`crate::chain`]). When
+    /// present, [`compare`] judges against **this** band (widened only by
+    /// the measurement's own uncertainty) and ignores the measurement's
+    /// `band_factor`: the prediction, not the measurer, owns the band — so
+    /// the claim can lose. Absent on every legacy claim (JSON unchanged).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub band: Option<[f64; 2]>,
 }
 
 /// The full claim set.
@@ -98,6 +106,7 @@ fn claim(name: &str, value: f64, unit: &str, note: &str) -> Claim {
         unit: unit.to_string(),
         basis: "predicted".to_string(),
         note: note.to_string(),
+        band: None,
     }
 }
 
@@ -204,6 +213,97 @@ pub fn predicted_claims(
     }
 }
 
+/// The banded claim set for a [`crate::chain::YieldPrediction`]: **one**
+/// `ddn_neutron_rate` claim carrying the two-sided band (so [`compare`]
+/// can return Violated on either side), plus the derived quantities an
+/// operator can check independently. The operating point records the
+/// *cathode ion current implied by the supply reading*, not a free input.
+pub fn yield_band_claims(p: &crate::chain::YieldPrediction) -> ClaimSet {
+    let m = &p.mode;
+    let model_terms: Vec<String> = p
+        .components
+        .iter()
+        .map(|c| {
+            format!(
+                "{}[{:?}] x{:.3}..x{:.3}",
+                c.name, c.kind, c.factor_low_setting, c.factor_high_setting
+            )
+        })
+        .collect();
+    let mut rate = claim(
+        "ddn_neutron_rate",
+        p.central_n_per_s,
+        "n/s",
+        &format!(
+            "two-sided D(d,n)3He prediction at supply {:.4} A / {:.0} V / {:.2} mTorr: CX chain \
+             (all waves) + ion/neutral/electron-impact ionization source iterated to its fixed \
+             point + supply-current partition (gamma_SE) + self-consistent ion space charge. \
+             Band = numerical and input terms in log-quadrature, model-form terms as a linear \
+             envelope: {}. Channels ion-gas/fast-neutral-gas/wall = {:.2}/{:.2}/{:.2}.",
+            p.reading.supply_current_a,
+            p.reading.cathode_voltage_v,
+            p.reading.pressure_mtorr,
+            model_terms.join("; "),
+            p.channel_fractions[0],
+            p.channel_fractions[1],
+            p.channel_fractions[2],
+        ),
+    );
+    rate.band = Some([p.lower_n_per_s, p.upper_n_per_s]);
+    let claims = vec![
+        rate,
+        claim(
+            "cathode_ion_current",
+            p.cathode_ion_current_a,
+            "A",
+            "ion current reaching the cathode implied by the supply reading after the \
+             secondary-electron partition (central gamma_SE); not separately band-carried",
+        ),
+        claim(
+            "discharge_sustainment",
+            m.sustainment,
+            "1",
+            "modeled ionization births per ion lost; 1 = the model alone sustains the \
+             discharge, below 1 the shortfall's birthplace is carried as source_shape",
+        ),
+        claim(
+            "space_charge_ratio",
+            p.space_charge_ratio,
+            "1",
+            "self-consistent ion space-charge potential peak / well depth at the operating point",
+        ),
+    ];
+    ClaimSet {
+        schema: CLAIM_SCHEMA.to_string(),
+        provenance: SolverProvenance {
+            grid: p.grid,
+            sor_tol: p.sor.0,
+            sor_sweeps: p.sor.1,
+            ensemble: p.ensemble.0,
+            max_passes: p.ensemble.1,
+            survivor_fraction: m.censored + m.truncated,
+            max_energy_drift_rel: m.max_energy_drift_rel,
+            channels: vec![
+                "beam_on_background".into(),
+                "cx_chain".into(),
+                "fast_neutral".into(),
+                "wall_embedded".into(),
+                "impact_ionization".into(),
+                "electron_ionization".into(),
+                "molecular_species".into(),
+                "supply_partition".into(),
+                "space_charge".into(),
+            ],
+        },
+        operating_point: OperatingPoint {
+            ion_current_a: p.cathode_ion_current_a,
+            d2_pressure_mtorr: p.reading.pressure_mtorr,
+            temperature_k: p.reading.temperature_k,
+        },
+        claims,
+    }
+}
+
 /// A bench measurement to bind against a predicted claim.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Measurement {
@@ -245,6 +345,10 @@ pub struct ComparisonEntry {
     pub measured: Option<f64>,
     /// measured / predicted (`None` when unmeasured or predicted = 0).
     pub ratio: Option<f64>,
+    /// The acceptance interval actually applied (after widening by the
+    /// measurement uncertainty); `None` when unmeasured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted: Option<[f64; 2]>,
     /// Verdict.
     pub verdict: Verdict,
 }
@@ -283,6 +387,7 @@ pub fn compare(
                 predicted: c.value,
                 measured: None,
                 ratio: None,
+                accepted: None,
                 verdict: Verdict::Unmeasured,
             },
             Some(m) => {
@@ -292,9 +397,17 @@ pub fn compare(
                 } else {
                     None
                 };
-                // Widen the band by the measurement uncertainty.
-                let lo = c.value / m.band_factor - m.uncertainty;
-                let hi = c.value * m.band_factor + m.uncertainty;
+                // A claim that carries its own two-sided band is judged
+                // against it; legacy claims fall back to the measurer's
+                // multiplicative band. Either way, widen by the
+                // measurement uncertainty only.
+                let (lo, hi) = match c.band {
+                    Some([b_lo, b_hi]) => (b_lo - m.uncertainty, b_hi + m.uncertainty),
+                    None => (
+                        c.value / m.band_factor - m.uncertainty,
+                        c.value * m.band_factor + m.uncertainty,
+                    ),
+                };
                 let holds = (lo..=hi).contains(&m.value);
                 if !holds {
                     all_hold = false;
@@ -304,6 +417,7 @@ pub fn compare(
                     predicted: c.value,
                     measured: Some(m.value),
                     ratio,
+                    accepted: Some([lo, hi]),
                     verdict: if holds {
                         Verdict::Holds
                     } else {
@@ -375,6 +489,13 @@ pub fn design_claims(set: &ClaimSet) -> Vec<vcad_receipt::ReceiptClaim> {
         .collect()
 }
 
+fn band_text(e: &ComparisonEntry, m: &Measurement) -> String {
+    match e.accepted {
+        Some([lo, hi]) => format!("accepted interval [{lo:.4e}, {hi:.4e}]"),
+        None => format!("band {}", m.band_factor),
+    }
+}
+
 /// Translate a bench [`ComparisonReport`] into unified-receipt claims.
 ///
 /// Only measured rows translate (unmeasured claims stay in the predicted
@@ -403,18 +524,16 @@ pub fn comparison_claims(
                 Verdict::Holds => vcad_receipt::ReceiptClaim::pass(
                     format!("particle.{}", e.name),
                     RECEIPT_DOMAIN,
-                    format!(
-                        "bench measurement of {} within band {}",
-                        e.name, m.band_factor
-                    ),
+                    format!("bench measurement of {} within {}", e.name, band_text(e, m)),
                     oracle.clone(),
                 ),
                 Verdict::Violated => vcad_receipt::ReceiptClaim::fail(
                     format!("particle.{}", e.name),
                     RECEIPT_DOMAIN,
                     format!(
-                        "bench measurement of {} outside band {}",
-                        e.name, m.band_factor
+                        "bench measurement of {} outside {}",
+                        e.name,
+                        band_text(e, m)
                     ),
                     oracle.clone(),
                 ),
