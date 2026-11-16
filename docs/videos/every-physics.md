@@ -14,28 +14,38 @@ misses too.
   because two of the solvers we need, acoustics cavity and EM, are
   axisymmetric. a round box with a round driver motor is geometry those
   solvers model natively, so neither one is approximating it.
-- **coverage:** 13 solver families (the scorecard rows in §3). **12 apply**
-  to the puck; photonics doesn't, and we say so on camera. of those 12:
-  - **6 take their input from the one `.vcad` document today**: static FEA,
-    modal FEA, mass/diff, DFM, print/slicer, PCB/DRC.
-  - **CAM is partial**: stocksim only *grades* its result against the doc.
-  - **5 need a hand-transcribed spec**: acoustics, thermal, EM, antenna,
-    tolerance.
+- **coverage, counted three ways (don't round these up):**
+  - **solvers on the brief's list (12):** FEA (+M4 adjoint), thermal, EM,
+    antenna, acoustics, tolerance, photonics, diff, PCB/DRC/fab_prep, CAM +
+    stocksim, DFM, receipt. **11 apply** to the puck; photonics doesn't, and
+    we say so on camera.
+  - **can read a `.vcad` document today: 4/12**: FEA, diff, DFM, PCB/DRC.
+    CAM and receipt are partial. the other 5 that apply (thermal, EM, antenna,
+    acoustics, tolerance) need a hand-transcribed spec.
+  - **actually ran document-fed on the puck in the PoC: 3**: diff, DFM, modal
+    FEA. static FEA didn't run: the 3 mm shell would fail closed and the lug
+    isn't modelled yet. PCB didn't either, because the draft has no
+    `PcbBoard` node. acoustics, thermal and antenna also ran, but on specs
+    the driver transcribed from the doc's parameters.
 
-  closing that last group is the main engineering work before this video is
-  honest.
+  closing the hand-transcribed group is the main engineering work before this
+  video is honest. the scorecard in §3 splits FEA into static + modal and adds
+  print/slicer as rows, which gives 13 rows. receipt isn't a row because it's
+  the frame the rows live in.
 - **top 3 blockers:**
   1. thermal, acoustics, EM and antenna can't read geometry from a document.
   2. receipts can't combine claims from several solvers or bind measurements
-     to them.
+     to them. `buildReceiptSchema` (`ecad.ts:14346`) takes only `document_id`,
+     enclosure ids and a clearance, with no claim-attach input.
   3. there is no document-level multi-physics optimizer. only mass properties
      go through the gradient seam; everything else is finite difference.
 - **proof of concept** (`every-physics/poc`, run on mew): one loon file feeding
   6 solvers: diff seam, DFM, modal FEA, acoustics, thermal, antenna. the
   document's gradients match closed form to 4 digits. the draft is already
   wrong in four useful ways: f_b 137 Hz is too high, the first shell mode
-  (~226 Hz) is in the passband, the amp hits 80 °C in still air, and the board
-  blocks the port. that's the story the optimization scene fixes.
+  (~226 Hz, coarse mesh) is in the passband, the amp model reads 64–81 °C
+  depending on an h we haven't measured, and the board sits under the port
+  mouth. the first two are exactly what the optimization scene has to fix.
 
 ---
 
@@ -96,8 +106,9 @@ the puck, as drafted in [`every-physics/puck.loon`](every-physics/puck.loon):
 - internal port r = 12 × 60 mm hanging from the lid
 - 50 × 50 FR4 board on a shelf: class-D amp (~0.8 W loss at volume),
   BLE SoC, printed 2.4 GHz monopole
-- planned: a Carvera-machined aluminum top cap, which doubles as the amp
-  heatsink and gives CAM a real job
+- planned, not in the draft yet: a Carvera-machined aluminum top cap (gives
+  CAM a real job; a heatsink only if the thermal numbers end up asking for
+  one), a lanyard lug for static FEA, and the lid-fit rim for tolerance
 
 the DFM pass in the PoC already caught a real problem. printed upright as one
 piece, the roof needs a 117 mm support column (2 FDM warnings). so the
@@ -131,6 +142,17 @@ receipt's document fingerprint proves it.
 | 12 | CAM + stocksim | Al cap: final feature dims + cycle time | calipers ±0.02, stopwatch | Carvera Air | dims ±0.05 mm, time ±15% |
 | 13 | photonics | — | — | — | **n/a, shown as n/a** |
 
+**where the bands come from.** these are repo-stated, from the solver's own
+docs/measurement pack: 1 (acoustics-m0), 4 (thermal-m5-m6), 5
+(em-measurement-pack), 6 (antenna-measurement-pack), 7 (tolerance
+Agresti–Coull). these are **our estimates** and need justifying before
+predictions freeze: 2, 3, 8, 10, 12.
+
+**rows that depend on geometry not yet in `puck.loon`:** 3 (lanyard lug), 5
+(driver motor: reverse-engineered from a sacrificial driver), 7 (lid rim), 11
+(`PcbBoard` node), 12 (Al cap). each one needs to land in the document before
+its prediction can be frozen.
+
 the final graphic is this table rendered from the receipt JSON, with green
 for hits, red for misses and gray for n/a. the misses get a 10-second
 "why" each. the reason has to be one the repo already states (e.g. the
@@ -144,18 +166,25 @@ fact.
 > tuning, shell resonance and weight, and every gradient on screen is labeled
 > with where it came from."
 
-objective (minimize): `w₁·(f_b − 90 Hz)² + w₂·mass + w₃·max(0, 400 Hz − f_mode1)² + w₄·max(0, T_amp − 70 °C)²`
+objective (minimize): `w₁·(f_b − 90 Hz)² + w₂·mass + w₃·max(0, 400 Hz − f_mode1)²`
 over `port_r, port_len, wall, body_h`, subject to `port_len ≤ body_h − 2·wall − 15`
-(the port has to fit) and a port air-velocity cap (chuffing). the PoC shows the
-draft at f_b ≈ 137 Hz, first shell mode ≈ 226 Hz and T_amp ≈ 80 °C, so all
-four terms are active. nothing here is decorative.
+(the port has to fit) and a port air-velocity cap (chuffing). the PoC puts the
+draft at f_b ≈ 137 Hz and first shell mode ≈ 226 Hz, so all three terms are
+active.
+
+**thermal is not in the objective**, on purpose. none of these four variables
+reach the thermal model, which reads board size, amp loss and an assumed h, so
+a T_amp term would be inert. adding it honestly needs a variable that moves
+it: a `heatsink_area` / top-cap parameter plus a modelled conduction path
+from board to cap, which the draft doesn't have. until then thermal is a
+standalone prediction, not an optimization term.
 
 | term | gradient source today | real or faked |
 |---|---|---|
 | mass | `document_parameter_gradient` through the seam. exact; the PoC matches closed form to 4 digits | **real, seam** |
 | f_b | FD on the field solve (~2 × 40 driven solves / param) | real, **FD**, labeled |
 | f_mode1 | FD: re-evaluate doc + modal per perturbation (minutes each on mew) | real, **FD**, labeled. slow, so precompute the optimization off camera and replay it |
-| T_amp | thermal adjoint exists for k/h/P but **not geometry**; board size → FD | real, **FD** |
+| (T_amp, later) | thermal adjoint exists for k/h/P but **not geometry**. needs a heatsink variable first | not in v1 |
 | the loop | `tang_optim::minimize_lbfgs` generic callback (box-constrained) wrapped by hand. no document optimizer exists (`optimize_parameters` deferred) | **hand-glued**, say it on camera |
 
 **not real, don't imply it:** a single adjoint through all physics, or "vcad
@@ -259,17 +288,26 @@ from [`poc/results/run-preview.log`](every-physics/poc/results/run-preview.log)
 **what the draft already says about the design (all before any hardware):**
 
 - **f_b ≈ 137 Hz is too high** for a speaker that's meant to have bass. getting
-  to ~90 Hz at r = 12 mm needs about a 2.3× longer effective port, ~185 mm,
-  and the cavity is only 114 mm tall. so the real optimization has to trade
+  to ~90 Hz at r = 12 mm needs L_eff ≈ 179 mm, ~161 mm of physical tube.
+  that's hand arithmetic from the same lumped formula, using the draft's
+  implied 17.5 mm end correction; not a solver run. the cavity is only 114 mm
+  tall. so the real optimization has to trade
   port radius (chuffing/air velocity) against height (mass) against length
   (has to fit). that's a better joint-optimization scene than a toy
   objective; §4 is updated to target 90 Hz with `port_len ≤ hᵢ − 15`.
 - **the first shell mode (~226 Hz, coarse) sits in the passband.** the shell
   will color the sound. the modal term in the objective is real, not filler.
   ribs or a thicker wall are what the optimizer should discover.
-- **80 °C at still-air h** is too hot for a cheap class-D package. that
-  justifies the machined aluminum top cap as a heatsink, so CAM earns its
-  place in the story instead of being bolted on.
+- **thermal reads 64–81 °C, and the spread is the unknown h (10 vs 5 W/m²K)**,
+  so the number can't yet say whether the amp is fine. it isn't good enough
+  to justify anything on its own:
+  - the model convects to a 25 °C ambient, but the board sits in a sealed
+    box whose air will run warmer, so the prediction reads low.
+  - the 5 × 5 mm die's edges land on voxel centres of the 1 mm grid, a
+    mis-paint `docs/thermal-m5-m6.md` prices at 5–13%.
+  - design todo: check the chosen amp's rated case temperature. if it's
+    tight, add a conduction path from the board to a machined Al top cap.
+    that's when CAM and a T_amp optimization term earn their place.
 - **the board sits ~15 mm under the port's inner mouth** (see section), which
   will throttle the port. a `check_clearance` assertion (port mouth ↔ board
   ≥ 1 port diameter) belongs in v2 of the loon file, and the receipt will
