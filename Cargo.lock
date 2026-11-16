@@ -7077,6 +7077,7 @@ dependencies = [
  "vcad-render",
  "vcad-sound",
  "vcad-tool-derive 0.11.0",
+ "zip",
 ]
 
 [[package]]

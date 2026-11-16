@@ -555,14 +555,23 @@ fn app_window_exports_3mf_natively_and_failures_explain_themselves() {
     );
     assert_eq!(bad["result"]["isError"], true, "{bad}");
     let msg = bad["result"]["content"][0]["text"].as_str().unwrap();
-    assert!(msg.contains(".obj") && msg.contains(".3mf") && msg.contains(".step"), "{msg}");
+    assert!(
+        msg.contains(".obj") && msg.contains(".3mf") && msg.contains(".step"),
+        "{msg}"
+    );
 
     let glb = h.call(
         "export_cad",
         json!({"document_id": front.0, "filename": path("plate.glb")}),
     );
     let msg = glb["error"]["message"].as_str().unwrap_or_default();
-    assert!(msg.contains(".glb export is served by the node exporter"), "{glb}");
-    assert!(msg.contains("env: node: No such file or directory"), "{glb}");
+    assert!(
+        msg.contains(".glb export is served by the node exporter"),
+        "{glb}"
+    );
+    assert!(
+        msg.contains("env: node: No such file or directory"),
+        "{glb}"
+    );
     assert!(msg.contains("127"), "{glb}");
 }
