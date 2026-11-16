@@ -417,6 +417,7 @@ impl AxisymMagnetostatics {
         cells
     }
 
+    #[allow(clippy::type_complexity)]
     pub(crate) fn build_system(
         &self,
         nr: usize,
