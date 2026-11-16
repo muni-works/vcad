@@ -201,15 +201,13 @@ describe("claims ledger end to end", () => {
   it("one receipt carries five domains; measurements score Holds / Violated / Unmeasured; edits read Stale", async () => {
     const docId = out(openDocument({ initial: emptyDoc() })).document_id as string;
 
-    // 1. Freeze predictions from five solvers (one via build_receipt's input).
+    // 1. Freeze predictions from five solvers.
     const a1 = out(await attach({ document_id: docId, claims: thermalResult, source_tool: "solve_thermal" }));
     expect(a1.attached).toEqual(["thermal.t_max_c", "thermal.theta_ja_c_per_w"]);
     out(await attach({ document_id: docId, claims: [antennaResult, emResult], source_tool: "analyze_antenna" }));
     out(await attach({ document_id: docId, claims: toleranceResult, source_tool: "analyze_tolerance_stackup" }));
-    const first = out(
-      await buildReceipt({ document_id: docId, attach_claims: acousticsResult, attach_source_tool: "acoustics" }),
-    );
-    expect(first.attached.attached).toEqual(["acoustics.tuning_hz"]);
+    out(await attach({ document_id: docId, claims: acousticsResult, source_tool: "acoustics" }));
+    const first = out(await buildReceipt({ document_id: docId }));
 
     // Predicted only: every row Provisional, the receipt never Pass.
     expect(first.unified.schema).toBe("vcad.receipt/1");
@@ -359,6 +357,14 @@ describe("claims ledger end to end", () => {
       "design_changed",
     );
     expect(afterEdit.scorecard.counts.violated).toBe(0);
+
+    // Re-freezing the SAME number against the moved design must not launder
+    // the old hardware's reading back to Holds.
+    out(await attach({ document_id: docId, claims: antennaResult, supersede: true }));
+    const relaundered = out(await buildReceipt({ document_id: docId }));
+    const rf = relaundered.scorecard.rows.find((r: Any) => r.claim === "antenna.resonant_frequency");
+    expect(rf.row).toBe("stale");
+    expect(rf.stale_reason).toBe("prediction_changed");
   });
 
   it("ledger-only receipts verify Holds when nothing moved, and Stale when a row changed since", async () => {

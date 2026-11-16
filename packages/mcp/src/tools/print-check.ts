@@ -411,6 +411,8 @@ export const toolDefs: ToolDef[] = [
       }
       return recordMeasurement(a);
     },
-    behavior: behavior({}),
+    // Claim mode writes Document.claims_ledger (print mode leaves the doc
+    // unchanged; an unchanged snapshot is discarded).
+    behavior: behavior({ writesDoc: true }),
   },
 ];

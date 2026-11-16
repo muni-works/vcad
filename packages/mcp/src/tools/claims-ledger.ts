@@ -4,9 +4,9 @@
  * Rust twin: `vcad_receipt::ledger`).
  *
  * The solver tools (`solve_thermal`, `analyze_antenna`, `simulate_em`,
- * `analyze_structure`, `analyze_tolerance_stackup`, …) are stateless: each
+ * `analyze_structure`, `analyze_tolerance_stackup`, `simulate_flow`, …) are stateless: each
  * returns its native claim set plus unified receipt claims. `attach_claims`
- * (or `build_receipt { attach_claims }`) appends them to
+ * appends them to
  * `Document.claims_ledger`, freezing each prediction: the numeric value and
  * unit, a hash over the prediction, and the fingerprint of the design it was
  * priced on. `record_measurement { claim_id }` and `import_measurement`
@@ -82,10 +82,17 @@ export function sameUnit(a: string | null | undefined, b: string | null | undefi
   return normUnit(a) === normUnit(b);
 }
 
-/** Hash of an entry's frozen prediction as it is NOW. */
+/**
+ * Hash of an entry's frozen prediction as it is NOW. Covers the design
+ * fingerprint the prediction was priced on, so re-freezing an unchanged
+ * number against a moved design (supersede after an edit) still breaks the
+ * measurement's binding — a reading of the old hardware never launders back
+ * to Holds.
+ */
 export async function predictionHash(e: LedgerEntry): Promise<string> {
   return sha256Hex(
     canonicalJson({
+      design: e.document_fingerprint ?? null,
       id: e.claim.id,
       domain: e.claim.domain,
       subject: e.claim.subject ?? null,
@@ -1285,7 +1292,8 @@ export const toolDefs: ToolDef[] = [
     description:
       "Freeze solver predictions onto the document's claims ledger (vcad.claims-ledger/1) so ONE receipt carries every domain: " +
       "pass the result of solve_thermal, analyze_antenna, simulate_em, analyze_structure, beam_check, analyze_tolerance_stackup, " +
-      "simulate_flow, the acoustics solvers, DFM, mass/gradient — anything returning `receipt_claims` (or a claim array). Each claim " +
+      "simulate_flow, parameter_gradient — anything returning `receipt_claims` or a unified claim array (e.g. acoustics claims " +
+      "from vcad-kernel-acoustics, which has no MCP solver yet). Each claim " +
       "keeps its oracle id/version and solver provenance; the numeric prediction, a prediction hash, and the design fingerprint are " +
       "frozen. Predictions roll up Provisional, never Pass, until record_measurement / import_measurement binds hardware readings. " +
       "Re-attaching a different value for a frozen claim is refused unless supersede:true (a measured row then reads Stale). " +
@@ -1317,7 +1325,8 @@ export const toolDefs: ToolDef[] = [
         return errorResult(e);
       }
     },
-    behavior: behavior({}),
+    // Writes Document.claims_ledger: persist, undo snapshot, live-app push.
+    behavior: behavior({ writesDoc: true }),
   },
   {
     name: "import_measurement",
@@ -1367,6 +1376,7 @@ export const toolDefs: ToolDef[] = [
         return errorResult(e);
       }
     },
-    behavior: behavior({}),
+    // Writes Document.claims_ledger: persist, undo snapshot, live-app push.
+    behavior: behavior({ writesDoc: true }),
   },
 ];

@@ -11395,7 +11395,7 @@
   {
     "name": "build_receipt",
     "title": "Build Receipt",
-    "description": "Build a re-runnable verification Receipt for the session PCB: a content hash, the DRC backend, a canonicalized DRC summary, and per-part provenance — a durable proof that round-trips and re-verifies later as Holds / Stale / Violated. Persisted clearance specs (check_clearance with a label) join the unified ledger as mech.clearance claims — a CAD-only session with specs gets a mechanical receipt, no PCB needed. Renders as an audit ledger in the inline viewer.",
+    "description": "Build a re-runnable verification Receipt for the session PCB: a content hash, the DRC backend, a canonicalized DRC summary, and per-part provenance — a durable proof that round-trips and re-verifies later as Holds / Stale / Violated. Persisted clearance specs (check_clearance with a label) join the unified ledger as mech.clearance claims — a CAD-only session with specs gets a mechanical receipt, no PCB needed. Every claims-ledger row (solver predictions frozen with attach_claims, measurements bound with record_measurement / import_measurement) lands in the same receipt — unmeasured predictions Provisional, measured Holds pass / Violated fail, Stale unverifiable — with a `scorecard` (markdown + JSON). Renders as an audit ledger in the inline viewer.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -11414,17 +11414,6 @@
         "clearance": {
           "type": "number",
           "description": "Enclosure-fit clearance in mm (default 0.5); only used with enclosure_document_id."
-        },
-        "attach_claims": {
-          "description": "Solver claim sets to freeze onto the document's claims ledger before building (same as attach_claims): a solve_thermal / analyze_antenna / simulate_em / analyze_structure / analyze_tolerance_stackup / acoustics / DFM result (anything with receipt_claims), an array of them, or a claim array. Every ledger row lands in the receipt: unmeasured predictions roll up Provisional, measured ones Holds→pass / Violated→fail, Stale→unverifiable."
-        },
-        "attach_source_tool": {
-          "type": "string",
-          "description": "Provenance for attach_claims: the tool that produced them (e.g. solve_thermal)."
-        },
-        "attach_label": {
-          "type": "string",
-          "description": "Subject for attach_claims claims that carry none (namespaces repeat runs of one solver)."
         }
       }
     },
@@ -11440,16 +11429,13 @@
         "scorecard": {
           "type": "object"
         },
-        "attached": {
-          "type": "object"
-        },
         "document_id": {
           "type": "string"
         }
       }
     },
     "annotations": {
-      "readOnlyHint": false
+      "readOnlyHint": true
     },
     "_meta": {
       "ui": {
@@ -11464,7 +11450,7 @@
   {
     "name": "verify_receipt",
     "title": "Verify Receipt",
-    "description": "Re-run a prior receipt (from build_receipt) against the session's current document and return the verdict — Holds (document unchanged, claims clean), Stale (document changed but the claims still hold), or Violated. The receipt is bound to the document state it was built on, so any edit — even one its claims don't measure — reads Stale, and `document_state` says why. Covers the PCB Receipt (board hash + DRC diff) and mech.clearance claims (re-measured against current geometry); worst verdict wins. Powers the ledger's Re-run button.",
+    "description": "Re-run a prior receipt (from build_receipt) against the session's current document and return the verdict — Holds (document unchanged, claims clean), Stale (document changed but the claims still hold), or Violated. The receipt is bound to the document state it was built on, so any edit — even one its claims don't measure — reads Stale, and `document_state` says why. Covers the PCB Receipt (board hash + DRC diff), mech.clearance claims (re-measured against current geometry), and claims-ledger rows (re-classified Holds / Violated / Unmeasured / Stale, returned as a `scorecard` table in receipt order); worst verdict wins. Powers the ledger's Re-run button.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -11502,7 +11488,7 @@
   {
     "name": "attach_claims",
     "title": "Attach Solver Claims",
-    "description": "Freeze solver predictions onto the document's claims ledger (vcad.claims-ledger/1) so ONE receipt carries every domain: pass the result of solve_thermal, analyze_antenna, simulate_em, analyze_structure, beam_check, analyze_tolerance_stackup, simulate_flow, the acoustics solvers, DFM, mass/gradient — anything returning `receipt_claims` (or a claim array). Each claim keeps its oracle id/version and solver provenance; the numeric prediction, a prediction hash, and the design fingerprint are frozen. Predictions roll up Provisional, never Pass, until record_measurement / import_measurement binds hardware readings. Re-attaching a different value for a frozen claim is refused unless supersede:true (a measured row then reads Stale). Use `label` to attach two runs of one solver. build_receipt then includes every ledger row.",
+    "description": "Freeze solver predictions onto the document's claims ledger (vcad.claims-ledger/1) so ONE receipt carries every domain: pass the result of solve_thermal, analyze_antenna, simulate_em, analyze_structure, beam_check, analyze_tolerance_stackup, simulate_flow, parameter_gradient — anything returning `receipt_claims` or a unified claim array (e.g. acoustics claims from vcad-kernel-acoustics, which has no MCP solver yet). Each claim keeps its oracle id/version and solver provenance; the numeric prediction, a prediction hash, and the design fingerprint are frozen. Predictions roll up Provisional, never Pass, until record_measurement / import_measurement binds hardware readings. Re-attaching a different value for a frozen claim is refused unless supersede:true (a measured row then reads Stale). Use `label` to attach two runs of one solver. build_receipt then includes every ledger row.",
     "inputSchema": {
       "type": "object",
       "properties": {

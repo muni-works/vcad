@@ -344,14 +344,11 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
   verify_substitution: { title: "Verify Substitution", annotations: RO_NET },
   build_receipt: {
     title: "Build Receipt",
-    // Read-write: `attach_claims` freezes solver claims onto the document's
-    // claims ledger before building.
-    annotations: RW,
+    annotations: RO,
     outputSchema: objectOut({
       unified: { type: "object" },
       receipt: { type: "object" },
       scorecard: { type: "object" },
-      attached: { type: "object" },
       document_id: { type: "string" },
     }),
   },

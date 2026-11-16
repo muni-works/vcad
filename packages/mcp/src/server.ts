@@ -375,6 +375,9 @@ const STATIC_TOOL_DEFS: readonly ToolDef[] = [
  * is presentation only — dispatch and behavior key off the def, not this list.
  * A boot-time check asserts this covers `STATIC_TOOL_DEFS` + `server_info`.
  */
+/** Tools whose only document write is the claims ledger — never a source divergence. */
+const LEDGER_WRITERS: ReadonlySet<string> = new Set(["attach_claims", "import_measurement", "record_measurement"]);
+
 const LIST_TOOL_ORDER: readonly string[] = [
   // ── Session lifecycle ──────────────────────────────────────
   "open_document",
@@ -1594,6 +1597,8 @@ export async function createServer(
           writtenId === incomingId &&
           (name !== "create_cad_loon" || args.mode === "add") &&
           name !== "undo" &&
+          // Claims-ledger writes record predictions/measurements, not design.
+          !LEDGER_WRITERS.has(name) &&
           markSourceDiverged(incomingId, name)
         ) {
           noteSourceDivergence(result, incomingId);
