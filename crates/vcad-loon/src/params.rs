@@ -308,12 +308,14 @@ fn param_with_opts(value: IrExpr, opts: &[LExpr]) -> Result<Parameter, String> {
         min: None,
         max: None,
         description: None,
+        tolerance: None,
     };
     let mut i = 0;
     while i < opts.len() {
         let ExprKind::Keyword(k) = &opts[i].kind else {
             return Err(format!(
-                "expected a keyword option (:unit, :min, :max, :description), got {}",
+                "expected a keyword option (:unit, :min, :max, :description, :tol, \
+                 :tol-plus, :tol-minus, :sigma-k), got {}",
                 opts[i]
             ));
         };
@@ -325,6 +327,25 @@ fn param_with_opts(value: IrExpr, opts: &[LExpr]) -> Result<Parameter, String> {
             "description" => p.description = as_str(arg).map(str::to_string),
             "min" => p.min = as_number(arg),
             "max" => p.max = as_number(arg),
+            // Drawing tolerance: `:tol 0.1` (symmetric ±), or the
+            // one-sided `:tol-plus` / `:tol-minus`, and `:sigma-k`.
+            "tol" | "tol-plus" | "tol-minus" | "sigma-k" => {
+                let v = as_number(arg)
+                    .filter(|v| v.is_finite() && *v >= 0.0)
+                    .ok_or_else(|| format!(":{k} takes a non-negative number"))?;
+                let t = p
+                    .tolerance
+                    .get_or_insert(vcad_ir::ParameterTolerance::symmetric(0.0));
+                match k.as_str() {
+                    "tol" => {
+                        t.plus = v;
+                        t.minus = v;
+                    }
+                    "tol-plus" => t.plus = v,
+                    "tol-minus" => t.minus = v,
+                    _ => t.sigma_k = Some(v),
+                }
+            }
             other => return Err(format!("unknown option :{other}")),
         }
         i += 2;

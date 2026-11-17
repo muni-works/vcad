@@ -117,6 +117,12 @@
   ; [ClearanceHole size depth ox oy oz dx dy dz]
   [ClearanceHole Str f64 f64 f64 f64 f64 f64 f64]
   [TappedHole Str f64 f64 f64 f64 f64 f64 f64]
+  ; Library parts (vcad-parts `std:` catalog: vacuum hardware, …).
+  ; [StdPart path params]  [StdPartAt path params x y z rx ry rz]
+  ; [StdPartMate path params port parent parent-port]
+  [StdPart Str (Vec Str)]
+  [StdPartAt Str (Vec Str) f64 f64 f64 f64 f64 f64]
+  [StdPartMate Str (Vec Str) Str Solid Str]
   ; Faceting overrides for the curved primitives. The plain forms above
   ; leave segment count to the kernel default (32); these pin it, which is
   ; what a conforming fit needs — a bore that has to accept a real shaft
@@ -214,6 +220,18 @@
 ; photoreal path tracer emits; drafting views shade the base colour.
 [type MaterialE
   [MaterialE Str f64 f64 f64 f64 f64 f64 f64 f64 f64 Str f64 f64 f64 f64 f64 f64 f64 f64 f64]]
+
+; Physical properties for a material key, read by every solver (FEA, modal,
+; thermal, EM, antenna, acoustics): [material-physics "key" :opt value ...].
+; Unset properties come from the shared library (`:library "pla"`, else
+; matched from the key); see vcad_ir::materials. Options and units:
+;   :library "id"   :density kg/m3   :youngs-modulus MPa   :poisson
+;   :yield-strength MPa   :thermal-conductivity W/(m K)
+;   :k-in-plane + :k-through-plane W/(m K) (laminates)   :specific-heat J/(kg K)
+;   :emissivity   :permittivity (relative)   :loss-tangent
+;   :permeability (relative)   :remanence T   :resistivity ohm m
+[type MaterialPhysics
+  [MaterialPhysics Str (Vec a)]]
 
 ; ---------------------------------------------------------------------------
 ; Scene output
@@ -546,6 +564,32 @@
   [TappedHole size depth ox oy oz dx dy dz]]]
 
 ; ---------------------------------------------------------------------------
+; Library parts — the `std:` catalog (search_parts / place_part), including
+; the vacuum library: CF + KF flanges, gaskets, bolt sets, nipples, tees,
+; crosses, spherical cube/octagon chambers, viewports, HV / electrical
+; feedthroughs, valves, gauges.
+;
+; params is a flat key/value list; every key is optional (defaults apply):
+;   [vac "vacuum.chamber.spherical-cube" #["size" "DN100"]]
+;   [vac-at "vacuum.cf.flange" #["size" "DN40"] 0 0 50  0 0 0]
+;
+; Snap-together assembly: [vac-mate] puts a part's named port on a parent
+; part's port (faces meet, axes opposed, CF bolt holes aligned). The parent
+; is the [vac]/[vac-at]/[vac-mate] value itself — it is read for its pose,
+; not drawn again, so union the parent separately:
+;   [let cube [vac "vacuum.chamber.spherical-cube" #["size" "DN100"]]]
+;   [let vp   [vac-mate "vacuum.viewport" #["size" "DN100"] "seal" cube "+y"]]
+;   [union cube vp]
+; Mating two different sizes or families is an error — insert a reducer or
+; adapter. Each mate adds the joint's consumables to the BOM (CF: gasket,
+; bolts, nuts, washers; KF: centering ring + clamp), next to the parts'
+; own lines. Ports per part: describe_part (MCP), or vcad_parts::part_info.
+[let vac [fn [path params] [StdPart path params]]]
+[let vac-at [fn [path params x y z rx ry rz] [StdPartAt path params x y z rx ry rz]]]
+[let vac-mate [fn [path params port parent parent-port]
+  [StdPartMate path params port parent parent-port]]]
+
+; ---------------------------------------------------------------------------
 ; Sheet metal — cut-and-bent parts that carry their bends
 ;
 ; A sheet chain is subject-last like everything else, so it threads:
@@ -681,6 +725,8 @@
   [Material name r g b metallic roughness]]]
 [let material-emissive [fn [name r g b metallic roughness er eg eb strength map ox oy oz ux uy uz vx vy vz]
   [MaterialE name r g b metallic roughness er eg eb strength map ox oy oz ux uy uz vx vy vz]]]
+
+[let material-physics [fn [key & opts] [MaterialPhysics key opts]]]
 
 ; Scene (no subject)
 [let root [fn [solid material-name]

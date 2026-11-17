@@ -182,7 +182,19 @@ struct DocumentCommands: Commands {
             Divider()
             Button("Open…") { openPanel(model) }.keyboardShortcut("o")
             Button("Open Sample…") { WelcomeWindowController.shared.show(model: model) { intent.focusRequested = true } }
+            let unsaved = UnsavedRecents.list(for: model)
             Menu("Open Recent") {
+                // Closed/quit/crashed work that was never saved. "Clear Menu"
+                // leaves these alone — discarding them is its own decision.
+                ForEach(unsaved) { e in
+                    Button("\(e.name) — Unsaved") { UnsavedRecents.open(e, from: model) }
+                }
+                if !unsaved.isEmpty {
+                    Menu("Discard Unsaved") {
+                        ForEach(unsaved) { e in Button("\(e.name)…") { UnsavedRecents.discard(e) } }
+                    }
+                    if !model.recents.isEmpty { Divider() }
+                }
                 ForEach(model.recents, id: \.self) { url in
                     Button(url.deletingPathExtension().lastPathComponent) {
                         AppInstance.opening(url, from: model)
@@ -193,7 +205,7 @@ struct DocumentCommands: Commands {
                     Button("Clear Menu") { model.clearRecents() }
                 }
             }
-            .disabled(model.recents.isEmpty)
+            .disabled(model.recents.isEmpty && unsaved.isEmpty)
             Button("Import from Photos (Experimental)…") { PhotoImportController.shared.show(for: model) }
             if !model.examples.isEmpty {
                 Menu("Open Example") {

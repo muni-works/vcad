@@ -1,0 +1,21 @@
+{
+  "id": "2026-11-16-claims-ledger-scorecard",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "feat",
+  "title": "One receipt carries every solver's predictions",
+  "summary": "attach_claims freezes thermal, antenna, EM, tolerance, acoustics… predictions on the document; record_measurement and import_measurement (.s1p, REW, thermocouple CSV) score each row.",
+  "features": [
+    "receipts",
+    "measurement",
+    "simulation",
+    "mcp"
+  ],
+  "mcpTools": [
+    "attach_claims",
+    "import_measurement",
+    "record_measurement",
+    "build_receipt",
+    "verify_receipt"
+  ]
+}

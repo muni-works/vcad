@@ -16,8 +16,9 @@
 //! The M4 receipt claims carry this caveat on every number.
 //!
 //! Board-side extraction (trace centerlines from a `.vcad` PCB document)
-//! lands on the vcad side of the seam, emitting [`crate::spec`] elements
-//! with radii from [`strip_equivalent_radius_mm`].
+//! lives on the vcad side of the seam — `vcad_eval::antenna_extract` —
+//! emitting [`crate::spec`] elements with radii from
+//! [`strip_equivalent_radius_mm`].
 
 use crate::error::AntennaError;
 use crate::geometry::WireGrid;

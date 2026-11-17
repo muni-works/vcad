@@ -7,6 +7,7 @@ import { createServer } from "../server.js";
 import { documents } from "../tools/session.js";
 import {
   listParameters,
+  optimizeParameters,
   parameterGradient,
   sensitivity,
   setParameters,
@@ -126,6 +127,42 @@ describe("parameter tools (handlers)", () => {
     expect(g0[0].dCentroid[2]).toBeCloseTo(0, 4);
     // A 64-gon disc spans [-r, r] on x/y → extent 2r, growing at ~2·dr.
     expect(g0[0].dBboxExtents[0]).toBeCloseTo(2, 1);
+  });
+
+  it("optimize_parameters drives r to its active constraint with seam + linear provenance", () => {
+    const out = json(
+      optimizeParameters(
+        {
+          document: cylinderDoc(10),
+          parameters: [{ name: "r", lo: 3, hi: 15 }],
+          objective: [{ qoi: "mass" }],
+          constraints: [{ expr: "r >= 6" }],
+          options: { circle_segments: 64, check_seam_fd: true },
+        },
+        engine,
+      ),
+    ) as Record<string, any>;
+    expect(out.optimum.r).toBeCloseTo(6, 1);
+    expect(out.kkt.feasible).toBe(true);
+    expect(out.kkt.satisfied).toBe(true);
+    expect(out.kkt.multipliers[0]).toBeGreaterThan(0);
+    const last = out.trajectory[out.trajectory.length - 1];
+    expect(last.qois[0].gradient[0].provenance.route).toBe("seam");
+    expect(last.constraints[0].gradient[0].provenance.route).toBe("linear");
+    expect(out.seamFdCheck[0].rel_error).toBeLessThan(1e-3);
+  });
+
+  it("optimize_parameters refuses an unknown qoi", () => {
+    expect(() =>
+      optimizeParameters(
+        {
+          document: cylinderDoc(10),
+          parameters: [{ name: "r", lo: 3, hi: 15 }],
+          objective: [{ qoi: "stiffness" }],
+        },
+        engine,
+      ),
+    ).toThrow(/unknown qoi/);
   });
 
   it("parameter_gradient errors on an unknown parameter", () => {

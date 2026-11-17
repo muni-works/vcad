@@ -46,7 +46,7 @@
     "name": "agent_turn"
   },
   {
-    "description": "Static linear-elastic FEA of one part, meshed and solved in-app with a mesh-convergence gate. loads: [{faces|region, force:[Fx,Fy,Fz] N}], supports: [{faces|region, fix?:[bool,bool,bool]}]. material: a preset id (aluminum_6061, steel, stainless_304, titanium, brass, pla, petg, abs, nylon) or omit to infer from the part. Returns max von Mises (MPa), max displacement (mm), safety factor (only when converged), and colours the part by stress in the user's viewport.",
+    "description": "Static linear-elastic FEA of one part, meshed and solved in-app with a mesh-convergence gate. loads: [{faces|region, force:[Fx,Fy,Fz] N}], supports: [{faces|region, fix?:[bool,bool,bool]}]. material: a preset id (aluminum_6061, steel, stainless_304, titanium, brass, copper, pla, petg, abs, nylon, fr4) or omit to use the part's own material (its physical properties, else the shared library by key; an unknown material is an error, not aluminium). Returns max von Mises (MPa), max displacement (mm), safety factor (only when converged), and colours the part by stress in the user's viewport.",
     "inputSchema": {
       "properties": {
         "loads": {

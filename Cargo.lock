@@ -5757,22 +5757,32 @@ dependencies = [
  "serde_json",
  "sha2",
  "stl_io",
+ "tang-optim",
  "thiserror 2.0.18",
  "vcad-ecad-pcb",
  "vcad-ir 0.11.0",
  "vcad-kernel 0.11.0",
+ "vcad-kernel-acoustics 0.11.0",
  "vcad-kernel-adjoint 0.11.0",
+ "vcad-kernel-antenna 0.11.0",
  "vcad-kernel-booleans 0.11.0",
  "vcad-kernel-diff",
+ "vcad-kernel-em 0.11.0",
  "vcad-kernel-fillet 0.11.0",
  "vcad-kernel-geom 0.11.0",
  "vcad-kernel-math 0.11.0",
+ "vcad-kernel-neutronics 0.11.0",
+ "vcad-kernel-particle 0.11.0",
  "vcad-kernel-sketch 0.11.0",
  "vcad-kernel-step 0.11.0",
  "vcad-kernel-sweep 0.11.0",
  "vcad-kernel-tessellate 0.11.0",
  "vcad-kernel-text 0.11.0",
+ "vcad-kernel-thermal 0.11.0",
+ "vcad-kernel-tolerance 0.11.0",
+ "vcad-kernel-topo 0.11.0",
  "vcad-loon",
+ "vcad-parts",
  "web-time",
 ]
 
@@ -5819,6 +5829,7 @@ dependencies = [
  "vcad-slicer",
  "vcad-slicer-bambu",
  "vcad-slicer-gcode",
+ "vcad-solver-tools",
  "vcad-sound",
 ]
 
@@ -5884,6 +5895,7 @@ dependencies = [
  "serde",
  "serde_json",
  "ts-rs",
+ "vcad-receipt 0.11.0",
  "vcad-tool-derive 0.11.0",
 ]
 
@@ -6315,6 +6327,7 @@ dependencies = [
 name = "vcad-kernel-fea"
 version = "0.11.0"
 dependencies = [
+ "faer",
  "serde",
  "serde_json",
  "tang",
@@ -6545,10 +6558,21 @@ version = "0.11.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tang-la",
  "vcad-kernel-em 0.11.0",
  "vcad-kernel-neutronics 0.11.0",
  "vcad-kernel-thermal 0.11.0",
  "vcad-kernel-tolerance 0.11.0",
+ "vcad-receipt 0.11.0",
+]
+
+[[package]]
+name = "vcad-kernel-photon-dose"
+version = "0.11.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "vcad-kernel-neutronics 0.11.0",
  "vcad-receipt 0.11.0",
 ]
 
@@ -7075,6 +7099,7 @@ dependencies = [
  "vcad-loon",
  "vcad-receipt-verify",
  "vcad-render",
+ "vcad-solver-tools",
  "vcad-sound",
  "vcad-tool-derive 0.11.0",
  "zip",
@@ -7261,6 +7286,17 @@ dependencies = [
  "vcad-kernel-math 0.11.0",
  "vcad-kernel-tessellate 0.11.0",
  "vcad-slicer",
+]
+
+[[package]]
+name = "vcad-solver-tools"
+version = "0.11.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "vcad-kernel-neutronics 0.11.0",
+ "vcad-kernel-particle 0.11.0",
+ "vcad-receipt 0.11.0",
 ]
 
 [[package]]

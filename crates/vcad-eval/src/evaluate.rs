@@ -148,10 +148,27 @@ fn evaluate_inner(
         &resolved_owned
     };
 
+    // Expand `std:` library parts (the TS engine does this before calling
+    // into WASM; Rust-side callers — vcad.app, the CLI, vcad-render — rely on
+    // this pass). A no-op when the document has no PartInstance nodes.
+    let mut failures: Vec<RootFailure> = Vec::new();
+    let expanded_owned;
+    let doc: &Document = match vcad_parts::expand_part_instances(doc) {
+        Some((d, errors)) => {
+            failures.extend(errors.into_iter().map(|(node_id, error)| RootFailure {
+                scope: format!("partInstance[{node_id}]"),
+                node_id,
+                error,
+            }));
+            expanded_owned = d;
+            &expanded_owned
+        }
+        None => doc,
+    };
+
     let mut node_timings: HashMap<String, NodeTiming> = HashMap::new();
     let mut tessellate_ms: f64 = 0.0;
     let mut root_ms: Vec<(String, f64)> = Vec::new();
-    let mut failures: Vec<RootFailure> = Vec::new();
 
     // Content-addressed root cache (see `crate::cache`). The fingerprint
     // settings mirror exactly what this function does with a solid below:
@@ -266,6 +283,62 @@ fn evaluate_inner(
     // roots in order, taking each result as it lands — so `on_root` (the
     // progressive viewport) sees part 0 as soon as part 0 is done, not
     // after the whole document is.
+    // Visible roots the walk may land out of order (`on_root_ready`): each
+    // pre-passed shape → the visible indices that place it.
+    let total_visible_roots = doc
+        .roots
+        .iter()
+        .filter(|e| e.visible != Some(false))
+        .count();
+    let ready = options.on_root_ready.as_ref();
+    let mut early_targets: HashMap<NodeId, Vec<(usize, Option<Transform>)>> = HashMap::new();
+    if let Some(f) = ready {
+        for (vi, entry) in doc
+            .roots
+            .iter()
+            .filter(|e| e.visible != Some(false))
+            .enumerate()
+        {
+            if find_imported_mesh(entry.root, &doc.nodes).is_some() {
+                continue;
+            }
+            let (eval_root, placement) = match root_cache {
+                Some(_) => peel_rigid_placement(entry.root, &doc.nodes),
+                None => (entry.root, None),
+            };
+            // A cache hit is final already: hand it over before the walk.
+            if let Some((_, Some(hit))) = lookups.get(&eval_root) {
+                f(
+                    vi,
+                    total_visible_roots,
+                    &place_mesh(hit.clone(), placement.as_ref()),
+                );
+            } else if todo.contains(&eval_root) {
+                early_targets
+                    .entry(eval_root)
+                    .or_default()
+                    .push((vi, placement));
+            }
+        }
+    }
+    let arrived = |id: &NodeId, out: &MeshedRoot| {
+        let (Some(f), Some(targets)) = (ready, early_targets.get(id)) else {
+            return;
+        };
+        // Only a mesh the walk will use as-is; failures, empties (which may
+        // fall back to a preview mesh) and NaN geometry land in order.
+        let Ok(m) = out else { return };
+        if m.mesh.indices.is_empty() || !mesh_is_finite(&m.mesh) {
+            return;
+        }
+        for (vi, placement) in targets {
+            f(
+                *vi,
+                total_visible_roots,
+                &place_mesh(m.mesh.clone(), placement.as_ref()),
+            );
+        }
+    };
     rayon::in_place_scope(|scope| {
         let mut pre = Prepass::start(scope, &todo, &doc.nodes, segments, clock);
         // Each pre-pass lookup is consumed once. A second root with the same
@@ -378,7 +451,7 @@ fn evaluate_inner(
             // instead of aborting the whole scene. AssertUnwindSafe is safe
             // here: cache/timings populated for earlier nodes stay valid
             // even if this root's evaluation panics mid-way.
-            let eval_outcome = match pre.take(&eval_root, &mut node_timings) {
+            let eval_outcome = match pre.take(&eval_root, &mut node_timings, &arrived) {
                 Some(done) => done,
                 None => evaluate_and_mesh(
                     eval_root,
@@ -561,7 +634,7 @@ fn evaluate_inner(
                         }
                     }
 
-                    let outcome = match pre.take(&part_def.root, &mut node_timings) {
+                    let outcome = match pre.take(&part_def.root, &mut node_timings, &|_, _| {}) {
                         Some(done) => done,
                         None => evaluate_and_mesh(
                             part_def.root,
@@ -991,11 +1064,13 @@ impl Prepass {
 
     /// The pre-pass outcome for `root`, waiting for it if it is still being
     /// evaluated; `None` when the pre-pass never had it. Each root is handed
-    /// out once.
+    /// out once. Other roots that finish while it waits go to `arrived`
+    /// (the out-of-order progressive hook) as they come in.
     fn take(
         &mut self,
         root: &NodeId,
         timings: &mut HashMap<String, NodeTiming>,
+        arrived: &dyn Fn(&NodeId, &MeshedRoot),
     ) -> Option<MeshedRoot> {
         if let Some(r) = self.done.remove(root) {
             return Some(r);
@@ -1010,6 +1085,7 @@ impl Prepass {
             if id == *root {
                 return Some(out);
             }
+            arrived(&id, &out);
             self.done.insert(id, out);
         }
         // Every worker stopped without sending this root (a worker thread
@@ -1870,9 +1946,10 @@ fn evaluate_op_timed(
         }
 
         CsgOp::PartInstance { .. } => {
-            // PartInstance is expanded by the engine (TS) before kernel evaluation.
-            // If we see one here it's a usage error, not an internal invariant —
-            // surface nothing rather than crashing so the kernel can still partially evaluate.
+            // `std:` parts are expanded up front by `evaluate_inner` (and by the
+            // TS engine). One that reaches here is a `@user/` part or a caller
+            // that bypassed `evaluate_document` — surface nothing rather than
+            // crashing so the kernel can still partially evaluate.
             Ok(None)
         }
 
@@ -4396,6 +4473,91 @@ mod tests {
             scene.root_keys[0], scene.root_keys[1],
             "same subgraph, same key"
         );
+    }
+
+    /// `on_root_ready` hands over a root's FINAL mesh, at most once per root,
+    /// in any order; on a warm cache every root lands through it before the
+    /// in-order `on_root` reports the first one.
+    #[test]
+    fn on_root_ready_lands_final_meshes_out_of_order() {
+        let mut nodes: HashMap<NodeId, vcad_ir::Node> = HashMap::new();
+        // Distinct shapes (sizes), each placed: three pre-pass misses.
+        let mut roots = Vec::new();
+        for (i, size) in [10.0, 14.0, 18.0].into_iter().enumerate() {
+            let id = i as NodeId;
+            nodes.insert(
+                id,
+                vcad_ir::Node {
+                    id,
+                    name: None,
+                    op: CsgOp::Cube {
+                        size: vcad_ir::Vec3::new(size, size, size),
+                    },
+                },
+            );
+            nodes.insert(
+                id + 100,
+                vcad_ir::Node {
+                    id: id + 100,
+                    name: None,
+                    op: CsgOp::Translate {
+                        child: id,
+                        offset: vcad_ir::Vec3::new(40.0 * i as f64, 0.0, 0.0),
+                    },
+                },
+            );
+            roots.push(vcad_ir::SceneEntry {
+                root: id + 100,
+                material: "m".into(),
+                visible: None,
+            });
+        }
+        let doc = Document {
+            roots,
+            nodes,
+            ..Default::default()
+        };
+        let cache: std::rc::Rc<dyn crate::cache::RootMeshCache> =
+            std::rc::Rc::new(crate::cache::MemoryMeshCache::new());
+        type Log = std::rc::Rc<std::cell::RefCell<Vec<(&'static str, usize, Vec<f32>)>>>;
+        let run = |log: &Log| {
+            let (a, b) = (log.clone(), log.clone());
+            let opts = EvalOptions {
+                skip_clash_detection: true,
+                root_cache: Some(cache.clone()),
+                on_root: Some(Box::new(move |i, n, m| {
+                    assert_eq!(n, 3);
+                    a.borrow_mut().push(("order", i, m.positions.clone()))
+                })),
+                on_root_ready: Some(Box::new(move |i, n, m| {
+                    assert_eq!(n, 3);
+                    b.borrow_mut().push(("ready", i, m.positions.clone()))
+                })),
+                ..Default::default()
+            };
+            evaluate_document(&doc, &opts).unwrap()
+        };
+        for warm in [false, true] {
+            let log: Log = Default::default();
+            let scene = run(&log);
+            let log = log.borrow();
+            let ready: Vec<_> = log.iter().filter(|e| e.0 == "ready").collect();
+            let mut seen = std::collections::HashSet::new();
+            for (_, i, positions) in &ready {
+                assert!(seen.insert(*i), "root {i} reported ready twice");
+                assert_eq!(
+                    positions, &scene.parts[*i].mesh.positions,
+                    "early mesh != final mesh"
+                );
+            }
+            let order: Vec<usize> = log.iter().filter(|e| e.0 == "order").map(|e| e.1).collect();
+            assert_eq!(order, vec![0, 1, 2], "on_root stays in order");
+            if warm {
+                assert_eq!(ready.len(), 3, "every warm root lands early");
+                let first_order = log.iter().position(|e| e.0 == "order").unwrap();
+                assert!(log[..first_order].iter().all(|e| e.0 == "ready"));
+            }
+        }
     }
 
     /// With a cache, a root under a rigid Translate/Rotate chain is keyed on

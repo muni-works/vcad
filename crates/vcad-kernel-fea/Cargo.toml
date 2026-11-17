@@ -19,5 +19,11 @@ tang-compile = { workspace = true }
 tang-expr = { workspace = true }
 tang-sparse = { workspace = true }
 
+# Fill-reducing sparse Cholesky (AMD + supernodal) for the modal solver's
+# exact preconditioner once the RCM skyline profile outgrows its budget.
+# Native only: the wasm build keeps the skyline → IC0 → Jacobi chain.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+faer = { version = "0.24", default-features = false, features = ["std", "rayon", "sparse-linalg"] }
+
 [dev-dependencies]
 serde_json = { workspace = true }

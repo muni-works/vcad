@@ -213,6 +213,21 @@ enum Recovery {
         .sorted { $0.savedAt > $1.savedAt }
     }
 
+    /// Unsaved work to list in Recents: every orphan except `ownID`, the
+    /// autosave of the document this instance has open right now (orphans()
+    /// keeps the current pid's entries, so without this the open document
+    /// would list itself). Closing or quitting an unsaved document leaves its
+    /// autosave behind, so this is also how a closed Untitled doc comes back.
+    static func unsaved(excluding ownID: String?, root: URL = LocalData.root,
+                        isAlive: (Int32) -> Bool = Recovery.processAlive) -> [AutosaveEntry] {
+        orphans(root: root, isAlive: isAlive).filter { $0.id != ownID }
+    }
+
+    /// The autosave's data file — a real `.vcad`, so thumbnails can read it.
+    static func dataURL(for e: AutosaveEntry, root: URL = LocalData.root) -> URL {
+        root.appendingPathComponent("Autosave/\(e.id).vcad")
+    }
+
     static func data(for e: AutosaveEntry, root: URL = LocalData.root) -> Data? {
         try? Data(contentsOf: root.appendingPathComponent("Autosave/\(e.id).vcad"))
     }

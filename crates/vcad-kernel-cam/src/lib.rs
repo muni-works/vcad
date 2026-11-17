@@ -10,6 +10,8 @@
 //! - [`Face`] - Surface facing with raster pattern
 //! - [`Pocket2D`] - 2D pocket clearing with offset rings
 //! - [`Contour2D`] - Profile machining with optional tabs
+//! - [`turning`] - Lathe facing/OD/ID/grooving/parting/drilling with a lathe
+//!   post and a fail-closed G-code verifier, plus rotary turning on a 4th axis
 //!
 //! # Example
 //!
@@ -56,6 +58,7 @@ mod operation;
 pub mod post;
 mod tool;
 mod toolpath;
+pub mod turning;
 
 // Re-exports
 pub use error::CamError;

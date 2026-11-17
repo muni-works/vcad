@@ -121,6 +121,43 @@ pub struct Parameter {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts-rs", ts(optional))]
     pub description: Option<String>,
+    /// Optional drawing tolerance: how far the manufactured value may
+    /// deviate from this nominal. Consumed by tolerance-stackup extraction
+    /// (`vcad_eval::sim_extract::tolerance`); ignored by evaluation, which
+    /// always builds the nominal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub tolerance: Option<ParameterTolerance>,
+}
+
+/// A drawing tolerance band on a parameter, in the parameter's own unit
+/// (mm for lengths): the produced value lies in
+/// `[nominal − minus, nominal + plus]`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct ParameterTolerance {
+    /// Allowed deviation above nominal (≥ 0).
+    pub plus: f64,
+    /// Allowed deviation below nominal (≥ 0).
+    pub minus: f64,
+    /// Statistical convention: the band spans ±`sigma_k`·σ of a normal
+    /// process (3 = the industry default when absent; 4 for Cp 1.33).
+    /// Only meaningful for a symmetric band.
+    #[serde(default, rename = "sigmaK", skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(rename = "sigmaK", optional))]
+    pub sigma_k: Option<f64>,
+}
+
+impl ParameterTolerance {
+    /// A symmetric ± band under the 3σ convention.
+    pub fn symmetric(tol: f64) -> Self {
+        Self {
+            plus: tol,
+            minus: tol,
+            sigma_k: None,
+        }
+    }
 }
 
 impl Parameter {
@@ -132,6 +169,7 @@ impl Parameter {
             min: None,
             max: None,
             description: None,
+            tolerance: None,
         }
     }
 
@@ -143,6 +181,7 @@ impl Parameter {
             min: None,
             max: None,
             description: None,
+            tolerance: None,
         }
     }
 }

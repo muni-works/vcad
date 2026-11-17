@@ -13,6 +13,7 @@ pub mod host;
 pub mod instrument;
 pub mod loon_carry;
 pub mod proof;
+pub mod solver;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -211,6 +212,7 @@ pub const LONG_RUNNING_TOOLS: &[&str] = &[
     "simulate_photonics",
     "simulate_charged_particles",
     "simulate_neutron_shield",
+    "simulate_cavity",
     "simulate_lattice_gauge",
     "md_run",
     "minimize_energy",
@@ -230,6 +232,7 @@ pub fn native_tools(info: core::InfoSource) -> Vec<ToolDef> {
         .chain(engine::tools())
         .chain(proof::tools())
         .chain(atoms::tools())
+        .chain(solver::tools())
         .chain(host::tools())
         .chain(instrument::instrument_tools())
     {

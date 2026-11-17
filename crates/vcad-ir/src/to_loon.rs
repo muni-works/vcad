@@ -42,6 +42,13 @@ pub fn document_to_loon_checked(doc: &Document) -> (String, Vec<String>) {
                 fmt_f64(mat.roughness),
             ));
         }
+        // Physical properties ride a bare (value) form so they land in the
+        // document; `default` included — it is a real material key too.
+        for (key, mat) in &mat_entries {
+            if let Some(form) = material_physics_form(key, mat) {
+                lines.push(form);
+            }
+        }
         lines.push(String::new());
     }
 
@@ -975,6 +982,53 @@ fn topo_sort(doc: &Document) -> Vec<NodeId> {
     }
 
     order
+}
+
+/// `[material-physics "key" :opt v ...]` for a material carrying physical
+/// properties or a density; `None` when it carries neither.
+fn material_physics_form(key: &str, mat: &crate::MaterialDef) -> Option<String> {
+    use crate::ThermalConductivity;
+    let mut opts: Vec<String> = Vec::new();
+    let mut num = |name: &str, v: Option<f64>| {
+        if let Some(v) = v {
+            // Display is the shortest exact round-trip form and never uses
+            // an exponent, so 1.72e-8 Ω·m survives the trip to loon.
+            let t = format!("{v}");
+            let t = if t.contains('.') { t } else { format!("{t}.0") };
+            opts.push(format!(":{name} {t}"));
+        }
+    };
+    num("density", mat.density);
+    if let Some(p) = &mat.physical {
+        num("youngs-modulus", p.youngs_modulus_mpa);
+        num("poisson", p.poisson);
+        num("yield-strength", p.yield_strength_mpa);
+        match p.thermal_conductivity_w_mk {
+            Some(ThermalConductivity::Isotropic(k)) => num("thermal-conductivity", Some(k)),
+            Some(ThermalConductivity::Anisotropic {
+                in_plane,
+                through_plane,
+            }) => {
+                num("k-in-plane", Some(in_plane));
+                num("k-through-plane", Some(through_plane));
+            }
+            None => {}
+        }
+        num("specific-heat", p.specific_heat_j_kgk);
+        num("emissivity", p.emissivity);
+        num("permittivity", p.relative_permittivity);
+        num("loss-tangent", p.loss_tangent);
+        num("permeability", p.relative_permeability);
+        num("remanence", p.remanence_t);
+        num("resistivity", p.resistivity_ohm_m);
+        if let Some(lib) = &p.library {
+            opts.insert(0, format!(":library {lib:?}"));
+        }
+    }
+    if opts.is_empty() {
+        return None;
+    }
+    Some(format!("[material-physics {key:?} {}]", opts.join(" ")))
 }
 
 #[cfg(test)]

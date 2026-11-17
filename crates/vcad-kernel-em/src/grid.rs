@@ -233,12 +233,16 @@ pub enum SolveError {
         /// the loop gave up before the window filled.
         decay_rate: Option<f64>,
     },
+    /// The device holds something this solve path does not model
+    /// (fail-closed refusal, with the reason).
+    Unsupported(String),
 }
 
 impl std::fmt::Display for SolveError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SolveError::GridTooSmall => write!(f, "grid must be at least 3x3 nodes"),
+            SolveError::Unsupported(why) => write!(f, "unsupported: {why}"),
             SolveError::NotConverged { residual, sweeps } => write!(
                 f,
                 "SOR not converged after {sweeps} sweeps (relative residual {residual:.3e})"

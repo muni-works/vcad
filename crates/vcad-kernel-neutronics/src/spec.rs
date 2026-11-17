@@ -11,8 +11,9 @@
 //! regions by splitting the containing layer around each detector radius
 //! (thin-shell track-length detectors, the M0 estimator), and returns
 //! the label → region mapping. The BRep side of the seam (extracting a
-//! layer stack from a revolved shield solid) lands on the vcad side,
-//! emitting this schema — same division of labor as the particle crate.
+//! layer stack from concentric shield shells) lives on the vcad side
+//! (`vcad_eval::sim_extract::extract_shield_spec`), emitting this schema —
+//! same division of labor as the particle crate.
 //!
 //! Parameter roles ([`ShieldSpec::parameter_roles`]): thickness
 //! parameters ride the M2 diffusion-adjoint gradient
@@ -48,7 +49,7 @@ impl From<f64> for ParamValue {
 }
 
 impl ParamValue {
-    fn resolve(&self, params: &BTreeMap<String, f64>) -> Result<f64, SpecError> {
+    pub(crate) fn resolve(&self, params: &BTreeMap<String, f64>) -> Result<f64, SpecError> {
         match self {
             ParamValue::Literal(v) => Ok(*v),
             ParamValue::Named(name) => params
