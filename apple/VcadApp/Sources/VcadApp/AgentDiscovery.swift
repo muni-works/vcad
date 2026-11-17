@@ -12,6 +12,11 @@ import Foundation
 // explicitly — VCAD_APP_PID / VCAD_APP_URL, else the instance whose document
 // matches, else the newest with a warning — see
 // apple/VcadApp/scripts/vcad-app-discovery.mjs and packages/mcp/src/app-discovery.ts.
+//
+// Throwaway runs (screenshot/perf/bake harnesses, dev bundles a script kills a
+// minute later) must not win that "newest" pick and strand a real agent
+// session: they don't advertise at all (`advertises(env:)`), and every record
+// carries `bundle_id` so clients skip `io.vcad.dev.*` builds unless named.
 
 /// One running instance, as written to `instances/<pid>.json`.
 struct AgentInstanceRecord: Codable, Equatable {
@@ -24,12 +29,16 @@ struct AgentInstanceRecord: Codable, Equatable {
     var started: String
     var documentName: String?
     var documentPath: String?
+    /// CFBundleIdentifier: `io.vcad.m0` for releases, `io.vcad.dev.<checkout>`
+    /// for bundle.sh dev builds — which clients skip unless named explicitly.
+    var bundleId: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case pid, port, url, started
         case instanceId = "instance_id"
         case documentName = "document_name"
         case documentPath = "document_path"
+        case bundleId = "bundle_id"
     }
 }
 
@@ -39,6 +48,26 @@ enum AgentDiscovery {
     }
     static func instancesDir(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> URL {
         root(home: home).appendingPathComponent("instances")
+    }
+
+    /// Scripted runs that open, snap or measure, then get killed. They never
+    /// host a real agent session, so they stay out of discovery.
+    static let throwawayRunKeys = [
+        "VCAD_PERF_EXIT", "VCAD_BAKE_MESH_BUNDLE", "VCAD_SNAPSHOT_DIR",
+        "VCAD_ASSEMBLY_SNAPSHOT_DIR", "VCAD_FIELDS_SNAPSHOT_DIR", "VCAD_FIELDS_SNAPSHOT_EXIT",
+    ]
+
+    /// An XCTest host (tests that show the desktop start the bridge too).
+    static let isUnderTest = NSClassFromString("XCTestCase") != nil
+
+    /// Whether this process writes `instances/<pid>.json` + `app.json`.
+    /// `VCAD_AGENT_DISCOVERY=0` serves the bridge without advertising it (a
+    /// harness that drives the app over MCP pins `VCAD_AGENT_PORT` and talks
+    /// to that port directly); throwaway runs and test hosts never advertise.
+    static func advertises(env: [String: String] = ProcessInfo.processInfo.environment,
+                           underTest: Bool = isUnderTest) -> Bool {
+        if underTest || env["VCAD_AGENT_DISCOVERY"] == "0" { return false }
+        return !throwawayRunKeys.contains { !(env[$0] ?? "").isEmpty }
     }
 
     static func isAlive(_ pid: Int) -> Bool {

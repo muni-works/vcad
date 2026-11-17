@@ -32,6 +32,7 @@ import type { Document, JointSweep, Transform3D } from "@vcad/ir";
 import { computeMeshProperties, type BoundingBox } from "./inspect.js";
 import { getSession } from "./session-core.js";
 import { findPartCandidate } from "./part-ids.js";
+import { refineClearances, staticPartIds, type MeasuredClearance } from "./clearance-refine.js";
 import { behavior, type ToolDef } from "./tool-def.js";
 import { applyJointState, jointStateSchemaProp, type PoseInfo } from "./pose.js";
 import {
@@ -65,13 +66,17 @@ interface ResolvedPart {
   name?: string;
   material?: string;
   mesh: TriangleMesh;
+  /** A static document root: its mesh is in the BRep's frame. */
+  isStatic?: boolean;
 }
 
 /** Evaluate a session document into measurable parts (id, name, material,
  *  placed mesh), skipping hidden roots and empty meshes — mirrors the
  *  clearance tool's part resolution. */
 function evaluateParts(doc: Document, engine: Engine): ResolvedPart[] {
-  return placeParts(poseableParts(doc, engine));
+  const base = poseableParts(doc, engine);
+  const statics = staticPartIds(base);
+  return placeParts(base).map((p) => ({ ...p, isStatic: statics.has(p.id) }));
 }
 
 const findPart = findPartCandidate;
@@ -252,18 +257,32 @@ export function measureResult(
       `measure needs two distinct parts — "${a.id}" was given twice.`,
     );
   }
-  let clearance: ClearanceResult;
+  let clearance: MeasuredClearance;
   try {
-    clearance = engine.meshClearance(a.mesh, b.mesh);
+    clearance = { ...engine.meshClearance(a.mesh, b.mesh) };
   } catch (e) {
     throw new MeasureError(e instanceof Error ? e.message : String(e));
   }
+  refineClearances(
+    doc,
+    engine,
+    [{ a: a.id, b: b.id, r: clearance }],
+    new Set([a, b].filter((p) => p.isStatic).map((p) => p.id)),
+  );
   const distance = r6(clearance.distance);
   return {
     mode: "pair",
     distance_mm: distance,
     contact: distance <= 0,
     intersecting: clearance.intersecting,
+    ...(clearance.basis === "analytic_cylinders"
+      ? {
+          basis: "analytic_cylinders",
+          ...(clearance.meshDistance !== undefined
+            ? { mesh_distance_mm: r6(clearance.meshDistance) }
+            : {}),
+        }
+      : {}),
     closest_points: {
       a: clearance.pointA.map(r6) as [number, number, number],
       b: clearance.pointB.map(r6) as [number, number, number],

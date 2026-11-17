@@ -76,4 +76,8 @@ struct ResolvedMaterial {
     var metallic: Float
     var roughness: Float
     var transmission: Float
+    /// Linear emitted radiance; zero when the material emits nothing.
+    var emission: SIMD3<Float> = .zero
+    /// A glowing medium (`volumeEmission`), drawn see-through and self-lit.
+    var isMedium = false
 }

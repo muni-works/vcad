@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-motor-winding-open-coils",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "fix",
+  "title": "Motor windings: every coil verified to carry current",
+  "summary": "add_motor_winding routes feeds on either layer and fails when one won't route; new check_winding solves the copper and flags open or reversed coils. Fixes 2 open coils in the pcb-motor stator.",
+  "features": ["pcb", "motor", "winding", "verification", "kicad-export"],
+  "mcpTools": ["add_motor_winding", "check_winding"]
+}

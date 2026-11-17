@@ -53,7 +53,12 @@ final class AgentBridge {
         guard let p = AgentCore.shared.start(model: model, port: pinned ?? Self.basePort,
                                              attempts: pinned == nil ? 8 : 0) else { return }
         port = p
-        writeDiscovery(port: p)
+        advertise = AgentDiscovery.advertises()
+        if advertise {
+            writeDiscovery(port: p)
+        } else {
+            FileHandle.standardError.write(Data("[vcad] MCP core on http://127.0.0.1:\(p)/mcp (not advertised in ~/.vcad/instances)\n".utf8))
+        }
         AgentResources.shared.startPolling()
     }
 
@@ -70,6 +75,9 @@ final class AgentBridge {
         return f.string(from: Date())
     }()
     private var lastRecord: AgentInstanceRecord?
+    /// False for throwaway runs and `VCAD_AGENT_DISCOVERY=0`: serve, but
+    /// never write ~/.vcad/instances (see AgentDiscovery.advertises).
+    private var advertise = true
     private var discoveryTimer: Timer?
 
     /// This instance as clients see it (discovery file + every response's `_meta`).
@@ -77,7 +85,8 @@ final class AgentBridge {
         guard let port else { return nil }
         return AgentInstanceRecord(pid: Int(ProcessInfo.processInfo.processIdentifier), port: Int(port),
                                    url: "http://127.0.0.1:\(port)/mcp", instanceId: instanceId, started: launched,
-                                   documentName: model?.documentName, documentPath: model?.documentURL?.path)
+                                   documentName: model?.documentName, documentPath: model?.documentURL?.path,
+                                   bundleId: Bundle.main.bundleIdentifier)
     }
 
     /// ~/.vcad/instances/<pid>.json (+ the app.json "most recent" pointer) —
@@ -100,7 +109,7 @@ final class AgentBridge {
     }
 
     func refreshDiscovery() {
-        guard let r = record, r != lastRecord else { return }
+        guard advertise, let r = record, r != lastRecord else { return }
         lastRecord = r
         AgentDiscovery.write(r)
     }

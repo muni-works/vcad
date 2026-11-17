@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-soup-unions-stay-manifold",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "fix",
+  "title": "Unions of hulls and meshes stay clean; rod-into-ball is exact",
+  "summary": "Booleans on hull, imported-mesh and other triangle-soup parts now give a closed manifold without the triangle blow-up, and a rod meeting a ball on its axis keeps its analytic faces.",
+  "features": ["booleans", "hull", "kernel"],
+  "mcpTools": []
+}

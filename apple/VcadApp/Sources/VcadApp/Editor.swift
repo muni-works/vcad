@@ -1208,7 +1208,8 @@ final class EditorModel {
         if let d = documentGraph?.materials[key] {
             return ResolvedMaterial(
                 color: NSColor(srgbRed: d.color.0, green: d.color.1, blue: d.color.2, alpha: 1),
-                metallic: d.metallic, roughness: d.roughness, transmission: d.transmission)
+                metallic: d.metallic, roughness: d.roughness, transmission: d.transmission,
+                emission: d.emission, isMedium: d.isMedium)
         }
         if let p = MaterialPreset.byKey(key) {
             return ResolvedMaterial(color: p.nsColor, metallic: p.metallic,
@@ -2279,6 +2280,13 @@ final class EditorModel {
     /// Live displacement of the part during a drag, so the viewport can slide the
     /// gizmo with it instead of leaving it at the grab point.
     @ObservationIgnored var gizmoLiveOffset: SIMD3<Float> = .zero
+    /// The part a translate-gizmo drag is moving and its live centre (grab
+    /// centre + live offset, kernel mm) — what a live sim reads mid-drag
+    /// without waiting for the in-place re-eval to land (PlasmoidSim.swift).
+    var gizmoTranslateDrag: (part: Int, center: SIMD3<Float>)? {
+        guard let p = gizmoPart, let h = gizmoActive, !h.isRotate else { return nil }
+        return (p, gizmoStartCenter + gizmoLiveOffset)
+    }
 
     enum GizmoHandle {
         case axis(SIMD3<Float>)
@@ -4682,7 +4690,8 @@ final class EditorModel {
         if let d = documentGraph?.materials[key] {
             return ResolvedMaterial(
                 color: NSColor(srgbRed: d.color.0, green: d.color.1, blue: d.color.2, alpha: 1),
-                metallic: d.metallic, roughness: d.roughness, transmission: d.transmission)
+                metallic: d.metallic, roughness: d.roughness, transmission: d.transmission,
+                emission: d.emission, isMedium: d.isMedium)
         }
         if let p = MaterialPreset.byKey(key) {
             return ResolvedMaterial(color: p.nsColor, metallic: p.metallic,

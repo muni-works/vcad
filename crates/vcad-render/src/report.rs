@@ -36,6 +36,10 @@ pub struct PartLog {
     /// Wall time of this part's evaluation, when timed. A part definition
     /// shared by several instances is charged to the first one only.
     pub(crate) eval_ms: Option<f64>,
+    /// The part built, but the kernel knows its geometry is wrong (a cut
+    /// that was skipped or provably missed, meshes concatenated instead of
+    /// combined). Empty for a clean part and for a failed one.
+    pub(crate) warnings: Vec<String>,
 }
 
 impl PartLog {
@@ -46,6 +50,7 @@ impl PartLog {
             name,
             failure: None,
             eval_ms,
+            warnings: Vec::new(),
         }
     }
 
@@ -56,8 +61,25 @@ impl PartLog {
             name,
             failure: Some(why),
             eval_ms: None,
+            warnings: Vec::new(),
         }
     }
+
+    pub(crate) fn with_warnings(mut self, warnings: Vec<String>) -> Self {
+        self.warnings = warnings;
+        self
+    }
+}
+
+/// The wrong-geometry losses recorded in a solid's construction history,
+/// one line each. A solid served from the mesh cache carries no history, so
+/// such solids must never be cached (see `vcad_eval`'s root store and
+/// `place_parts_cached`).
+pub(crate) fn wrong_geometry(solid: &vcad_kernel::Solid) -> Vec<String> {
+    solid
+        .wrong_geometry_events()
+        .map(|e| format!("geometry is known to be wrong: {e}"))
+        .collect()
 }
 
 /// Monotonic stamp, or `None` when untimed (and always on wasm32, where
@@ -146,17 +168,21 @@ pub(crate) fn root_log(
             .get(&entry.root)
             .and_then(|n| n.name.clone())
             .unwrap_or_else(|| format!("root {id}"));
+        let scope = all_index.get(&entry.root).map(|j| format!("root[{j}]"));
         // Same test the render path applies: a B-rep, or a non-empty mesh.
         if part.solid.is_some() || !part.mesh.indices.is_empty() {
-            log.push(PartLog::ok(
-                PartKind::Root,
-                id,
-                name,
-                root_ms.get(i).copied(),
-            ));
+            let warnings = scene
+                .warnings
+                .iter()
+                .filter(|w| Some(&w.scope) == scope.as_ref() || w.node_id == entry.root)
+                .map(|w| w.error.clone())
+                .collect();
+            log.push(
+                PartLog::ok(PartKind::Root, id, name, root_ms.get(i).copied())
+                    .with_warnings(warnings),
+            );
             continue;
         }
-        let scope = all_index.get(&entry.root).map(|j| format!("root[{j}]"));
         let why = scene
             .failures
             .iter()
@@ -173,6 +199,7 @@ pub(crate) fn root_log(
 /// The one-line stderr summary of dropped parts, plus one line per part.
 /// Silent when nothing was dropped.
 pub(crate) fn warn_dropped(log: &[PartLog]) {
+    warn_wrong(log);
     let dropped: Vec<&PartLog> = log.iter().filter(|p| p.failure.is_some()).collect();
     if dropped.is_empty() {
         return;
@@ -192,6 +219,33 @@ pub(crate) fn warn_dropped(log: &[PartLog]) {
     }
 }
 
+/// The stderr summary of parts that built but whose geometry the kernel
+/// knows is wrong. Silent when there are none.
+pub fn warn_wrong_geometry(parts: &[PartReport]) {
+    print_wrong(parts.iter().map(|p| (&p.name, &p.id, &p.warnings)));
+}
+
+fn warn_wrong(log: &[PartLog]) {
+    print_wrong(log.iter().map(|p| (&p.name, &p.id, &p.warnings)));
+}
+
+fn print_wrong<'a>(parts: impl Iterator<Item = (&'a String, &'a String, &'a Vec<String>)>) {
+    let warned: Vec<_> = parts.filter(|(_, _, w)| !w.is_empty()).collect();
+    if warned.is_empty() {
+        return;
+    }
+    eprintln!(
+        "vcad-render: {} part(s) built with geometry known to be WRONG \
+         (drawn as-is; do not trust their shape or volume):",
+        warned.len()
+    );
+    for (name, id, warnings) in warned {
+        for w in warnings {
+            eprintln!("  - {name} ({id}): {w}");
+        }
+    }
+}
+
 /// One part's line in [`EvalReport`].
 #[derive(Debug, Clone, Serialize)]
 pub struct PartReport {
@@ -206,6 +260,12 @@ pub struct PartReport {
     /// Why the part produced nothing (only when `ok` is false).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// The part built (`ok` stays true: there is geometry to draw), but the
+    /// kernel knows that geometry is wrong — a cut that was skipped or
+    /// provably missed, meshes concatenated instead of combined. `bbox` and
+    /// `volume` describe the wrong solid; do not treat them as verified.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
     /// World-space axis-aligned bounds `[[min], [max]]` in mm, as posed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bbox: Option<[[f64; 3]; 2]>,
@@ -229,6 +289,9 @@ pub struct EvalReport {
     pub parts_ok: usize,
     /// Parts that produced nothing (see each part's `reason`).
     pub parts_failed: usize,
+    /// Parts that built, but with geometry the kernel knows is wrong (see
+    /// each part's `warnings`). Counted in `parts_ok` too.
+    pub parts_warned: usize,
     /// Whole-document evaluation wall time.
     pub eval_ms: f64,
     /// One entry per authored part, in document order (roots, then instances).
@@ -280,6 +343,7 @@ pub fn eval_report(raw_vcad: &str) -> Result<EvalReport, String> {
             kind: entry.kind,
             ok: entry.failure.is_none(),
             reason: entry.failure,
+            warnings: entry.warnings,
             bbox: stats.as_ref().and_then(|s| s.bbox),
             volume: stats.as_ref().map(|s| s.volume),
             triangles: stats.as_ref().map_or(0, |s| s.triangles),
@@ -291,6 +355,7 @@ pub fn eval_report(raw_vcad: &str) -> Result<EvalReport, String> {
         parts_total: out.len(),
         parts_ok,
         parts_failed: out.len() - parts_ok,
+        parts_warned: out.iter().filter(|p| !p.warnings.is_empty()).count(),
         eval_ms,
         parts: out,
     })

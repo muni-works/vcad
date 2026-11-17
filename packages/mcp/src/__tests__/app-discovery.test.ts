@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -36,6 +36,23 @@ describe("listInstances", () => {
     const h = home([rec(1, "2026-11-11T10:00:00.000Z")], rec(9, "2026-11-11T12:00:00.000Z"));
     expect(listInstances({ home: h, alive: () => true }).map((r) => r.pid)).toEqual([1]);
   });
+  it("deletes files naming a dead pid, keeps live and unreadable ones", () => {
+    const h = home([rec(1, "2026-11-11T10:00:00.000Z"), rec(3, "2026-11-11T12:00:00.000Z")], rec(3, "2026-11-11T12:00:00.000Z"));
+    const dir = join(h, ".vcad", "instances");
+    writeFileSync(join(dir, "junk.json"), "not a record");
+    writeFileSync(join(dir, "nopid.json"), JSON.stringify({ port: 1 }));
+    expect(listInstances({ home: h, alive: (pid) => pid === 1 }).map((r) => r.pid)).toEqual([1]);
+    expect(existsSync(join(dir, "3.json"))).toBe(false);
+    expect(existsSync(join(h, ".vcad", "app.json"))).toBe(false);
+    expect(existsSync(join(dir, "1.json"))).toBe(true);
+    expect(existsSync(join(dir, "junk.json"))).toBe(true);
+    expect(existsSync(join(dir, "nopid.json"))).toBe(true);
+  });
+  it("keeps a live app.json pointer", () => {
+    const h = home([rec(1, "2026-11-11T10:00:00.000Z")], rec(1, "2026-11-11T10:00:00.000Z"));
+    listInstances({ home: h, alive: () => true });
+    expect(existsSync(join(h, ".vcad", "app.json"))).toBe(true);
+  });
 });
 
 describe("selectInstance", () => {
@@ -68,5 +85,32 @@ describe("selectInstance", () => {
   it("no warning with a single instance; error with none", () => {
     expect(selectInstance({ env: {}, instances: [a] }).warning).toBeUndefined();
     expect(selectInstance({ env: {}, instances: [] }).error).toMatch(/no running vcad.app/);
+  });
+});
+
+describe("dev builds (io.vcad.dev.*)", () => {
+  const real = { ...rec(1, "2026-11-16T09:00:00.000Z", "/tmp/a.vcad"), bundle_id: "io.vcad.m0" };
+  const old = rec(2, "2026-11-16T08:00:00.000Z"); // pre-bundle_id build: not dev
+  const shots = { ...rec(3, "2026-11-16T10:00:00.000Z", "/tmp/a.vcad"), bundle_id: "io.vcad.dev.app-sim-screens-fbe447" };
+
+  it("a newer dev build loses to the real app, with a warning naming it", () => {
+    const s = selectInstance({ env: {}, instances: [shots, real] });
+    expect(s.instance?.pid).toBe(1);
+    expect(s.warning).toMatch(/Skipped dev build\(s\) pid 3 \(a.vcad, dev build io.vcad.dev.app-sim-screens-fbe447\)/);
+  });
+  it("even on a document match", () => {
+    expect(selectInstance({ env: {}, instances: [shots, real], documentPath: "/tmp/a.vcad" }).instance?.pid).toBe(1);
+  });
+  it("a record with no bundle id still beats a dev build", () => {
+    expect(selectInstance({ env: {}, instances: [shots, old] }).instance?.pid).toBe(2);
+  });
+  it("is used when named by VCAD_APP_PID or VCAD_APP_URL", () => {
+    expect(selectInstance({ env: { VCAD_APP_PID: "3" }, instances: [shots, real] }).instance?.pid).toBe(3);
+    expect(selectInstance({ env: { VCAD_APP_URL: shots.url }, instances: [shots, real] }).instance?.pid).toBe(3);
+  });
+  it("is used, with a warning, when nothing else is running", () => {
+    const s = selectInstance({ env: {}, instances: [shots] });
+    expect(s.instance?.pid).toBe(3);
+    expect(s.warning).toMatch(/Only dev builds/);
   });
 });

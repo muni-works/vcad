@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-rotate-euler-order-helpers",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "fix",
+  "title": "Rotated STEP occurrences and vacuum fittings land right",
+  "summary": "Frame-to-Rotate conversions assumed the wrong Euler order, mis-placing rotated STEP assembly occurrences, multi-port vacuum fittings, and multi-axis rotate-about-pivot in the Mac app.",
+  "features": ["step", "vacuum", "transform"],
+  "mcpTools": []
+}

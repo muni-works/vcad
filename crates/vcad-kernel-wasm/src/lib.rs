@@ -586,6 +586,14 @@ struct WasmPlacement {
     translate: WasmVec3,
     rotate: WasmVec3,
     scale: WasmVec3,
+    /// `"xyz"`: `rotate` is raw `CsgOp::Rotate` angles (Rx·Ry·Rz). Absent:
+    /// the `Transform3D` order (Rz·Ry·Rx).
+    #[serde(
+        default,
+        rename = "rotateOrder",
+        skip_serializing_if = "Option::is_none"
+    )]
+    rotate_order: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -603,10 +611,12 @@ struct WasmTransformedMesh {
     normals: Option<Vec<f32>>,
 }
 
-/// Apply a placement (`scale → rotate → translate`, rotation Rz·Ry·Rx in
-/// degrees — the engine `transformMesh` convention) to flat mesh buffers.
+/// Apply a placement (`scale → rotate → translate`, rotation in degrees) to
+/// flat mesh buffers — the engine `transformMesh` contract.
 ///
-/// `transform_json` is `{ translate: {x,y,z}, rotate: {x,y,z}, scale: {x,y,z} }`.
+/// `transform_json` is `{ translate: {x,y,z}, rotate: {x,y,z}, scale: {x,y,z},
+/// rotateOrder? }`. Rotation is Rz·Ry·Rx (`Transform3D`) by default;
+/// `rotateOrder: "xyz"` means raw `CsgOp::Rotate` angles, Rx·Ry·Rz.
 /// Positions get the full placement; normals (optional) get the rotation
 /// only. Returns `{ positions, normals? }`.
 #[wasm_bindgen(js_name = transformMeshBuffers)]
@@ -619,12 +629,19 @@ pub fn transform_mesh_buffers(
         serde_json::from_str(transform_json).map_err(|e| JsError::new(&e.to_string()))?;
     let mut positions = positions;
     let mut normals = normals;
-    vcad_kernel_tessellate::placement::apply_placement(
+    use vcad_kernel_tessellate::placement::{apply_placement_ordered, RotationOrder};
+    let order = match t.rotate_order.as_deref() {
+        None => RotationOrder::Zyx,
+        Some("xyz") => RotationOrder::Xyz,
+        Some(o) => return Err(JsError::new(&format!("unknown rotateOrder {o:?}"))),
+    };
+    apply_placement_ordered(
         &mut positions,
         normals.as_deref_mut(),
         [t.translate.x, t.translate.y, t.translate.z],
         [t.rotate.x, t.rotate.y, t.rotate.z],
         [t.scale.x, t.scale.y, t.scale.z],
+        order,
     );
     serde_wasm_bindgen::to_value(&WasmTransformedMesh { positions, normals })
         .map_err(|e| JsError::new(&e.to_string()))
@@ -1873,6 +1890,22 @@ impl Solid {
     #[wasm_bindgen(js_name = isEmpty)]
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
+    }
+
+    /// This solid with the coplanar fragments its booleans left merged
+    /// back into single faces (`vcad_kernel::Solid::merge_coplanar_faces`):
+    /// one face per flat region, for display, picking and export.
+    ///
+    /// For a finished part only. Keep the unmerged solid for anything that
+    /// runs a further boolean on it — the splitters are tuned on the faces
+    /// a boolean produces, and `evaluateDocument` merges at the same point
+    /// (a root's exit) for the same reason. Returns an unchanged copy when
+    /// nothing merges or the merged solid would tessellate any worse.
+    #[wasm_bindgen(js_name = mergeCoplanarFaces)]
+    pub fn merge_coplanar_faces(&self) -> Solid {
+        Solid {
+            inner: self.inner.merge_coplanar_faces(),
+        }
     }
 
     /// Get the triangle mesh representation.
@@ -4527,8 +4560,9 @@ pub fn evaluate_vcode(vcode: &str) -> Result<Solid, JsError> {
         .ok_or_else(|| JsError::new("Document has no root nodes"))?
         .root;
 
-    // Evaluate the DAG to produce a solid
-    evaluate_node(&doc, root_id)
+    // Evaluate the DAG to produce a solid. This is the root's exit: merge
+    // the coplanar fragments, as `evaluateDocument` does.
+    evaluate_node(&doc, root_id).map(|s| s.merge_coplanar_faces())
 }
 
 // =========================================================================
@@ -9077,6 +9111,26 @@ pub fn particle_optimize(
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// Magnetic field of posed 3D sources (current loops, solenoids, disc/ring
+/// and block magnets) at query points or on a plane grid.
+///
+/// `scene_json` is a `vcad_kernel_particle::field3d_spec::SceneSpec`
+/// (mm / degrees / A / T), `query_json` a `QuerySpec` (points and/or grid,
+/// optional ∇|B|). Fail-closed: invalid geometry, an oversized grid, or a
+/// query point on a source singularity is an error. Returns a `FieldReport`
+/// (B vectors in tesla, |B|, per-source method + dipole moment).
+#[wasm_bindgen(js_name = magneticField)]
+pub fn magnetic_field(scene_json: &str, query_json: &str) -> Result<JsValue, JsError> {
+    use vcad_kernel::vcad_kernel_particle::field3d_spec as fs;
+    let scene: fs::SceneSpec =
+        serde_json::from_str(scene_json).map_err(|e| JsError::new(&format!("bad scene: {e}")))?;
+    let query: fs::QuerySpec =
+        serde_json::from_str(query_json).map_err(|e| JsError::new(&format!("bad query: {e}")))?;
+    let report = fs::evaluate(&scene, &query).map_err(|e| JsError::new(&e))?;
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&report, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
 // ---------------------------------------------------------------------------
 // Tolerance stackup analysis (vcad-kernel-tolerance)
 // ---------------------------------------------------------------------------
@@ -11364,6 +11418,31 @@ pub fn signed_radial_gap(doc_json: &str, query_json: &str) -> Result<JsValue, Js
         q.fit_window_mm,
     )
     .map_err(|e| JsError::new(&e.to_string()))?;
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
+#[derive(serde::Deserialize)]
+struct WasmRefineClearanceQuery {
+    pairs: Vec<vcad_eval::sim_extract::tolerance::ClearancePairQuery>,
+}
+
+/// Refine tessellated part-pair clearances with the closed form for
+/// parallel cylinders (shaft in bore, pins side by side), so chord error
+/// can't turn a 0.02 mm running fit into an "interference". `query_json`
+/// is `{pairs: [{a, b, distance, intersecting, point_a, point_b}]}` (the
+/// `meshClearance` result per pair, part ids as clearance specs name them);
+/// returns one entry per pair — `null` when a part isn't a BRep root (keep
+/// the mesh number), else `{distance, intersecting, point_a, point_b,
+/// basis, mesh_distance, chord_band_mm?}`.
+#[wasm_bindgen(js_name = refineClearance)]
+pub fn refine_clearance(doc_json: &str, query_json: &str) -> Result<JsValue, JsError> {
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {e}")))?;
+    let q: WasmRefineClearanceQuery = serde_json::from_str(query_json)
+        .map_err(|e| JsError::new(&format!("bad refine-clearance query: {e}")))?;
+    let out = vcad_eval::sim_extract::tolerance::refine_pair_clearances(&doc, &q.pairs)
+        .map_err(|e| JsError::new(&e.to_string()))?;
     let ser = serde_wasm_bindgen::Serializer::json_compatible();
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
 }

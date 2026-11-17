@@ -1200,10 +1200,14 @@ fn write_via(e: &mut Emitter, v: &Via, nets: &NetTable, copper: &[PcbLayer]) {
     let adjacent = matches!((idx(top), idx(bottom)), (Some(a), Some(b)) if b == a + 1);
     let outer = top == PcbLayer::FCu || bottom == PcbLayer::BCu;
     // A declared type wins; legacy (untyped) vias keep the span inference.
+    // An untyped F.Cu-B.Cu via is a through via: on a 2-layer board that pair
+    // is also "adjacent" and "outer", and inferring micro there wrote every
+    // via of a plain 2-layer board as `(via micro ...)`.
+    let through_span = top == PcbLayer::FCu && bottom == PcbLayer::BCu;
     let micro = match v.via_type {
         Some(vcad_ir::ecad::ViaType::Micro) => true,
         Some(_) => false,
-        None => adjacent && outer,
+        None => adjacent && outer && !through_span,
     };
     if top == PcbLayer::FCu && bottom == PcbLayer::BCu && !micro {
         e.line(1, "(via");
@@ -5144,11 +5148,25 @@ mod tests {
         assert!(text.contains("(layers \"F.Cu\" \"In1.Cu\")"));
     }
 
-    /// A genuine through via stays untyped and full-stack.
+    /// A genuine through via stays untyped and full-stack — including on a
+    /// 2-layer board, where F.Cu-B.Cu is also an "adjacent outer" pair and was
+    /// once written `(via micro ...)` (pcb-motor stator v3, every via).
     #[test]
     fn through_via_stays_untyped() {
-        let text = write_kicad_pcb(&sample_pcb());
-        assert!(!text.contains("(via blind"));
+        let pcb = sample_pcb();
+        assert_eq!(
+            copper_layers(&pcb.stackup).len(),
+            2,
+            "premise: 2-layer board"
+        );
+        assert_eq!(pcb.vias[0].via_type, None, "premise: untyped via");
+        let text = write_kicad_pcb(&pcb);
+        assert!(!text.contains("(via blind"), "{text}");
+        assert!(
+            !text.contains("(via micro"),
+            "through via typed micro:\n{text}"
+        );
+        assert!(text.lines().any(|l| l.trim() == "(via"), "{text}");
         assert!(text.contains("(layers \"F.Cu\" \"B.Cu\")"));
     }
 }

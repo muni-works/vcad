@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-cylinder-crossing-face-union-closed",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "fix",
+  "title": "Box ∪ cylinder crossing two face edges is closed again",
+  "summary": "A cylinder crossing opposite edges of a planar face left the union open along both rims, so a later cut with that tool could be missed. The arcs now share the wall's vertices.",
+  "features": ["booleans", "kernel"],
+  "mcpTools": []
+}

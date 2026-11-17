@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-booleans-merge-coplanar-faces",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "fix",
+  "title": "Cuts leave one face per flat region",
+  "summary": "A cap, lid or section face that a boolean left in several pieces is one face again, so hover, selection, face picking and STEP export see the faces a drawing shows.",
+  "features": ["kernel", "booleans", "selection", "step-export"],
+  "mcpTools": []
+}

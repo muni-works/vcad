@@ -19,7 +19,15 @@
 #   VCAD_BUNDLE_ID         CFBundleIdentifier override. Release builds are
 #                          io.vcad.m0; dev builds default to io.vcad.dev.<checkout>
 #                          so each worktree's app gets its own Local Network
-#                          permission and Launch Services entry.
+#                          permission and Launch Services entry. Agent clients
+#                          (`vcad mcp`, @vcad/mcp) skip io.vcad.dev.* instances
+#                          unless VCAD_APP_PID/VCAD_APP_URL names one or nothing
+#                          else is running.
+#
+# Scripts that launch a throwaway bundle (screenshots, perf, bakes) should run it
+# with VCAD_AGENT_BRIDGE=0, or VCAD_AGENT_DISCOVERY=0 plus a pinned
+# VCAD_AGENT_PORT when they drive it over MCP, so it never shows up in
+# ~/.vcad/instances and steals a real agent session.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 

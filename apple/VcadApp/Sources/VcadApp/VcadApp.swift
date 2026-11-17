@@ -84,6 +84,7 @@ struct VcadApp: App {
             EditorView(model: model, intent: intent)
                 .task { FieldOverlayStore.shared.loadFromEnvironment() }
                 .task { await DirectManipDemo.runIfRequested(model) }
+                .task { PlasmoidStore.shared.attach(model); await PlasmoidDemo.runIfRequested(model) }
                 .task { await FieldsSnapshots.runIfRequested(model) }
                 .task { await AssemblyOpenDemo.runIfRequested(model) }
                 .task { await RuntimeScrubBench.runIfRequested(model) }
