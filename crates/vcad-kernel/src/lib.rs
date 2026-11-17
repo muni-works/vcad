@@ -874,13 +874,12 @@ impl Solid {
                         LossKind::BooleanMissedCut,
                     ));
                 }
-                let out = Solid {
+                Ok(Solid {
                     names,
                     provenance,
                     repr: SolidRepr::BRep(brep),
                     segments,
-                };
-                Ok(out)
+                })
             }
             // For mesh-only solids, tessellate BRep first then combine meshes
             _ => {
