@@ -13,6 +13,7 @@ pub mod host;
 pub mod instrument;
 pub mod loon_carry;
 pub mod proof;
+pub mod solver;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -231,6 +232,7 @@ pub fn native_tools(info: core::InfoSource) -> Vec<ToolDef> {
         .chain(engine::tools())
         .chain(proof::tools())
         .chain(atoms::tools())
+        .chain(solver::tools())
         .chain(host::tools())
         .chain(instrument::instrument_tools())
     {

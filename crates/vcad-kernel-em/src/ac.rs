@@ -241,7 +241,15 @@ pub fn solve_axisym_ac(
     nz: usize,
     opts: &SolveOptions,
 ) -> Result<AcSolution, SolveError> {
-    let (sys, unit_sources) = device.build_system(nr, nz, &device.initial_nu_cells(nr, nz))?;
+    if !device.magnets.is_empty() {
+        // The magnets' DC bound currents would be driven at ω here. A
+        // magnet-biased small-signal AC model is not implemented —
+        // refuse rather than mix a DC source into the phasor solve.
+        return Err(SolveError::Unsupported(
+            "axisym AC solve with permanent magnets is not modeled".into(),
+        ));
+    }
+    let (sys, unit_sources, _) = device.build_system(nr, nz, &device.initial_nu_cells(nr, nz))?;
     let g = sys.grid.clone();
     let two_pi = 2.0 * std::f64::consts::PI;
     // D_n = σ·2π·(∫ dr/r over CV∩region)·(z overlap): the eddy term of

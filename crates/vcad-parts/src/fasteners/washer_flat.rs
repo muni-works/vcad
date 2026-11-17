@@ -47,6 +47,7 @@ pub const ENTRY: PartEntry = PartEntry {
         thumb: include_bytes!("../../thumbs/washer-flat.svg"),
     },
     build,
+    info: None,
 };
 
 fn build(p: &Params) -> Result<Document, String> {

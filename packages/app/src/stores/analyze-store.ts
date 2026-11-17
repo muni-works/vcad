@@ -314,6 +314,12 @@ export const useAnalyzeStore = create<AnalyzeState>((set, get) => ({
             },
           });
         }
+      } else if (study.study.type === "thermal") {
+        // Thermal studies run through `solve_thermal` (MCP / vcad.app) via
+        // `vcad_eval::thermal_extract`; the web panel has no runner yet.
+        throw new Error(
+          "thermal studies run via solve_thermal (MCP) — not in this panel yet",
+        );
       } else {
         const k = study.study;
         // Map IR (camelCase) → kernel StackupSpec (snake_case).

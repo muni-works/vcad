@@ -49,7 +49,7 @@ impl From<f64> for ParamValue {
 }
 
 impl ParamValue {
-    fn resolve(&self, params: &BTreeMap<String, f64>) -> Result<f64, SpecError> {
+    pub(crate) fn resolve(&self, params: &BTreeMap<String, f64>) -> Result<f64, SpecError> {
         match self {
             ParamValue::Literal(v) => Ok(*v),
             ParamValue::Named(name) => params

@@ -91,6 +91,8 @@ pub enum ClaimError {
         /// The claim that could not be priced.
         name: String,
     },
+    /// The 3D scene spec failed to resolve or run (M7).
+    Scene(String),
 }
 
 impl std::fmt::Display for ClaimError {
@@ -108,6 +110,7 @@ impl std::fmt::Display for ClaimError {
                 "claim {name:?} scored nothing (RSE = ∞): a zero tally is a statistics \
                  floor, not a measured zero — run more histories"
             ),
+            ClaimError::Scene(e) => write!(f, "scene failed: {e}"),
         }
     }
 }
@@ -236,6 +239,187 @@ pub fn claims_from_run(
         },
         claims,
         caveats: standard_caveats(),
+    })
+}
+
+/// Voxels with RSE at or below this are "resolved" and eligible for the
+/// dose-map maximum claim (the max over noisy voxels is biased high).
+pub const DOSE_MAP_RESOLVED_RSE: f64 = 0.2;
+
+fn scene_caveats() -> Vec<String> {
+    vec![
+        "design-estimate multigroup library (±20-30% group constants), not evaluated \
+         nuclear data"
+            .to_string(),
+        "neutron dose only: capture gammas (H(n,g) 2.22 MeV) are not transported — the \
+         per-cell capture rates are their source term; budget gamma dose separately"
+            .to_string(),
+        "room return is modeled for the declared scene only: outside the world cell is \
+         vacuum (no earth, neighbouring rooms, or skyshine)"
+            .to_string(),
+        "detectors are virtual tally spheres: instrument self-perturbation of the field is \
+         not modeled; responses are folded at the neutron's energy"
+            .to_string(),
+        "isotropic-in-CM elastic scattering; MeV p-wave forward hardening and inelastic \
+         scattering not modeled"
+            .to_string(),
+    ]
+}
+
+/// Claims for a 3D scene run (M7): per-detector dose rate, thermal
+/// fluence, and **expected instrument readings** (counts/min, bubbles/h,
+/// tracks/cm²/h — RSE combines the room MC with the response-table MC),
+/// the resolved dose-map maximum, per-cell capture rates, and leakage.
+/// Fail-closed as everywhere: truncation or an unscored dose/instrument
+/// tally refuses the whole set.
+pub fn scene_claims(
+    spec: &crate::scene_spec::SceneSpec,
+    params: &BTreeMap<String, f64>,
+) -> Result<ClaimSet, ClaimError> {
+    let (resolved, result) = spec
+        .evaluate(params)
+        .map_err(|e| ClaimError::Scene(e.to_string()))?;
+    scene_claims_from_run(&resolved, &result)
+}
+
+/// Lower layer of [`scene_claims`]: price an existing run.
+pub fn scene_claims_from_run(
+    resolved: &crate::scene_spec::ResolvedScene,
+    result: &crate::transport3d::SceneResult,
+) -> Result<ClaimSet, ClaimError> {
+    if result.truncated_histories > 0 {
+        return Err(ClaimError::TruncatedHistories(result.truncated_histories));
+    }
+    let rate = resolved.source_rate_n_per_s;
+    let mut claims = Vec::new();
+    for (d, t) in result.detectors.iter().zip(&resolved.config.detectors) {
+        let dose = d.dose_rate_usv_per_h(rate);
+        if !dose.rse.is_finite() {
+            return Err(ClaimError::NothingScored {
+                name: format!("dose_rate:{}", d.label),
+            });
+        }
+        let at = format!(
+            "at ({:.0}, {:.0}, {:.0}) mm, {:.0} mm tally sphere",
+            t.position_mm[0], t.position_mm[1], t.position_mm[2], t.radius_mm
+        );
+        claims.push(Claim {
+            name: format!("dose_rate:{}", d.label),
+            value: dose.mean,
+            rse: dose.rse,
+            unit: "uSv/h".to_string(),
+            basis: "predicted".to_string(),
+            note: format!(
+                "ambient dose equivalent H*(10), neutron only, room return included; {at}"
+            ),
+        });
+        let th = d.fluence_per_source[THERMAL_GROUP].scaled(rate);
+        if th.rse.is_finite() {
+            claims.push(Claim {
+                name: format!("thermal_flux:{}", d.label),
+                value: th.mean,
+                rse: th.rse,
+                unit: "n/cm2/s".to_string(),
+                basis: "predicted".to_string(),
+                note: format!("below 0.5 eV; free-gas thermal motion neglected; {at}"),
+            });
+        }
+        for (r, f) in d.responses.iter().zip(&t.responses) {
+            let name = format!("count_rate:{}:{}", d.label, r.name);
+            let rse = crate::scene_spec::combined_rse(r.per_source, f.table_rse);
+            if !rse.is_finite() {
+                return Err(ClaimError::NothingScored { name });
+            }
+            // Slow instruments (bubbles, tracks) are read per hour; live
+            // counters per minute.
+            let (value, unit) = match r.event_unit.as_str() {
+                "count" => (r.per_minute(rate).mean, "counts/min".to_string()),
+                u => (r.per_hour(rate).mean, format!("{u}/h")),
+            };
+            claims.push(Claim {
+                name,
+                value,
+                rse,
+                unit,
+                basis: "predicted".to_string(),
+                note: format!("{}; {}; {at}", f.citation, f.caveat),
+            });
+        }
+    }
+    if let Some(m) = &result.mesh {
+        let d = m.dose_rate_usv_per_h(rate);
+        let resolved_vox: Vec<(usize, &crate::tally::Estimate)> = d
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.rse <= DOSE_MAP_RESOLVED_RSE)
+            .collect();
+        let frac = resolved_vox.len() as f64 / d.len() as f64;
+        claims.push(Claim {
+            name: "dose_map_resolved_fraction".to_string(),
+            value: frac,
+            rse: 0.0,
+            unit: "1".to_string(),
+            basis: "predicted".to_string(),
+            note: format!(
+                "fraction of {} voxels with RSE <= {DOSE_MAP_RESOLVED_RSE}",
+                d.len()
+            ),
+        });
+        if let Some((i, e)) = resolved_vox
+            .iter()
+            .max_by(|a, b| a.1.mean.total_cmp(&b.1.mean))
+        {
+            let (nx, ny) = (m.mesh.shape[0], m.mesh.shape[1]);
+            let c = m.mesh.center_mm(i % nx, (i / nx) % ny, i / (nx * ny));
+            claims.push(Claim {
+                name: "dose_map_max".to_string(),
+                value: e.mean,
+                rse: e.rse,
+                unit: "uSv/h".to_string(),
+                basis: "predicted".to_string(),
+                note: format!(
+                    "largest resolved-voxel H*(10) rate, voxel centered ({:.0}, {:.0}, {:.0}) mm",
+                    c[0], c[1], c[2]
+                ),
+            });
+        }
+    }
+    for (a, c) in result
+        .absorbed_per_cell
+        .iter()
+        .zip(&resolved.config.scene.cells)
+    {
+        if a.rse.is_finite() {
+            claims.push(Claim {
+                name: format!("capture_rate:{}", c.name),
+                value: a.mean * rate,
+                rse: a.rse,
+                unit: "1/s".to_string(),
+                basis: "predicted".to_string(),
+                note: format!(
+                    "neutron absorptions per second in {} — the capture-gamma source term",
+                    c.material.name
+                ),
+            });
+        }
+    }
+    claims.push(Claim {
+        name: "leaked_fraction".to_string(),
+        value: result.leaked.mean,
+        rse: result.leaked.rse,
+        unit: "1".to_string(),
+        basis: "predicted".to_string(),
+        note: "fraction of source neutrons escaping the world cell".to_string(),
+    });
+    Ok(ClaimSet {
+        schema: CLAIM_SCHEMA.to_string(),
+        provenance: result.provenance.clone(),
+        source: SourceProvenance {
+            rate_n_per_s: rate,
+            energy_ev: resolved.source_energy_ev,
+        },
+        claims,
+        caveats: scene_caveats(),
     })
 }
 
@@ -410,6 +594,62 @@ pub fn design_claims(set: &ClaimSet) -> Vec<vcad_receipt::ReceiptClaim> {
         .collect()
 }
 
+/// Translate a bench [`ComparisonReport`] into unified-receipt claims —
+/// the twin of `vcad_kernel_particle::receipt::comparison_claims`.
+///
+/// Only measured rows translate (unmeasured claims stay in the predicted
+/// set): Holds → Pass, Violated → Fail, both with
+/// [`vcad_receipt::ClaimBasis::Measured`], the prediction in `predicted`
+/// and the survey reading in `measured`.
+pub fn comparison_claims(
+    report: &ComparisonReport,
+    set: &ClaimSet,
+    measurements: &[Measurement],
+) -> Vec<vcad_receipt::ReceiptClaim> {
+    let oracle = oracle();
+    report
+        .entries
+        .iter()
+        .filter_map(|e| {
+            let measured = e.measured?;
+            let m = measurements.iter().find(|m| m.name == e.name)?;
+            let unit = set
+                .claims
+                .iter()
+                .find(|c| c.name == e.name)
+                .map(|c| c.unit.clone())
+                .unwrap_or_else(|| "1".to_string());
+            let base = match e.verdict {
+                Verdict::Holds => vcad_receipt::ReceiptClaim::pass(
+                    format!("neutronics.{}", e.name),
+                    RECEIPT_DOMAIN,
+                    format!(
+                        "survey measurement of {} within band {}",
+                        e.name, m.band_factor
+                    ),
+                    oracle.clone(),
+                ),
+                Verdict::Violated => vcad_receipt::ReceiptClaim::fail(
+                    format!("neutronics.{}", e.name),
+                    RECEIPT_DOMAIN,
+                    format!(
+                        "survey measurement of {} outside band {}",
+                        e.name, m.band_factor
+                    ),
+                    oracle.clone(),
+                ),
+                Verdict::Unmeasured => return None,
+            };
+            Some(
+                base.with_basis(vcad_receipt::ClaimBasis::Measured)
+                    .with_predicted(quantity(e.predicted, &unit))
+                    .with_measured(quantity(measured, &unit))
+                    .with_details(format!("instrument: {}", m.instrument)),
+            )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,5 +689,95 @@ mod tests {
             vcad_receipt::ReceiptVerdict::Provisional,
             "predicted neutronics claims must never read as verified"
         );
+    }
+
+    #[test]
+    fn scene_claims_price_instruments_and_fail_closed() {
+        let spec: crate::scene_spec::SceneSpec = serde_json::from_str(
+            r#"{
+              "cells": [
+                {"name": "castle", "material": "hdpe",
+                 "shape": {"type": "box_centered", "center_mm": [0,0,0], "half_mm": [150,150,150]}},
+                {"name": "room", "material": "air",
+                 "shape": {"type": "box_centered", "center_mm": [0,0,0], "half_mm": [1000,1000,1000]}},
+                {"name": "walls", "material": "concrete",
+                 "shape": {"type": "box_centered", "center_mm": [0,0,0], "half_mm": [1200,1200,1200]}}
+              ],
+              "source": {"position_mm": [0,0,0], "rate_n_per_s": 1e6, "energy_ev": 2.45e6},
+              "detectors": [{"label": "op", "position_mm": [500,0,0],
+                "instruments": [{"type": "bubble", "sensitivity_bubbles_per_usv": 3}]}],
+              "mesh": {"min_mm": [-1000,-1000,-100], "max_mm": [1000,1000,100], "shape": [8,8,1]},
+              "run": {"histories_per_batch": 2000, "batches": 4, "seed": 5}
+            }"#,
+        )
+        .unwrap();
+        let set = scene_claims(&spec, &BTreeMap::new()).unwrap();
+        let get = |n: &str| set.claims.iter().find(|c| c.name == n).cloned();
+        let dose = get("dose_rate:op").expect("dose claim");
+        let bub = get("count_rate:op:bubble").expect("bubble claim");
+        assert_eq!(bub.unit, "bubble/h");
+        assert!(bub.value > 0.0 && bub.rse.is_finite());
+        // Bubbles/h ≤ 3 bubbles/µSv × dose (threshold removes slow neutrons).
+        assert!(bub.value <= 3.0 * dose.value * (1.0 + 1e-9));
+        assert!(get("dose_map_max").is_some());
+        assert!(get("capture_rate:castle").is_some());
+        assert!(set.caveats.iter().any(|c| c.contains("room return")));
+        let receipt = vcad_receipt::DesignReceipt::with_claims(design_claims(&set));
+        assert_eq!(receipt.verdict(), vcad_receipt::ReceiptVerdict::Provisional);
+
+        // Fail closed: a 1-history-per-batch run leaves the bubble
+        // detector unscored → refuse the whole set.
+        let mut thin = spec.clone();
+        thin.run.histories_per_batch = 1;
+        thin.run.batches = 2;
+        assert!(scene_claims(&thin, &BTreeMap::new()).is_err());
+    }
+
+    #[test]
+    fn comparison_claims_translate_holds_and_violated() {
+        let spec: ShieldSpec = serde_json::from_str(
+            r#"{
+              "layers": [
+                {"material": "air",  "thickness_mm": 100},
+                {"material": "hdpe", "thickness_mm": 100},
+                {"material": "air",  "thickness_mm": 400}
+              ],
+              "source": {"rate_n_per_s": 1.0e6, "energy_ev": 2.45e6},
+              "detectors": [{"label": "operator", "radius_mm": 400}],
+              "run": {"histories_per_batch": 500, "batches": 4, "seed": 7}
+            }"#,
+        )
+        .unwrap();
+        let set = predicted_claims(&spec, &BTreeMap::new()).unwrap();
+        let dose = set
+            .claims
+            .iter()
+            .find(|c| c.name == "dose_rate:operator")
+            .unwrap()
+            .value;
+        let ms = vec![Measurement {
+            name: "dose_rate:operator".into(),
+            value: dose * 1.1,
+            uncertainty: 0.0,
+            instrument: "test meter".into(),
+            band_factor: 1.5,
+        }];
+        let report = compare(&set, &ms).unwrap();
+        assert!(report.all_hold);
+        let claims = comparison_claims(&report, &set, &ms);
+        assert_eq!(claims.len(), 1, "only measured rows translate");
+        assert_eq!(claims[0].basis, Some(vcad_receipt::ClaimBasis::Measured));
+        let receipt = vcad_receipt::DesignReceipt::with_claims(claims);
+        assert_eq!(receipt.verdict(), vcad_receipt::ReceiptVerdict::Pass);
+
+        let bad = vec![Measurement {
+            value: dose * 10.0,
+            ..ms[0].clone()
+        }];
+        let report = compare(&set, &bad).unwrap();
+        assert!(!report.all_hold);
+        let receipt =
+            vcad_receipt::DesignReceipt::with_claims(comparison_claims(&report, &set, &bad));
+        assert_eq!(receipt.verdict(), vcad_receipt::ReceiptVerdict::Fail);
     }
 }
