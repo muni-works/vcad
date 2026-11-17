@@ -20,6 +20,15 @@
 //!   path does not re-sweep yet (gray, never green: re-verify with the MCP
 //!   `verify_receipt`).
 //! - **Holds** — it holds and matches its baseline (or has none yet).
+//!
+//! **Fit mode** (`ClearanceSpec::is_fit`: `max_mm` set, or
+//! `fit: "interference"`): press / transition fits. The gap is the signed
+//! analytic radial gap between a coaxial shaft/bore pair, measured from the
+//! BRep (`vcad_eval::sim_extract::tolerance::signed_radial_gap`), and must
+//! lie in `[min_mm, max_mm]` — interference down to a negative `min_mm` is
+//! allowed. Geometry the analytic measurement can't handle reads Violated
+//! with an **unverifiable** receipt claim, never Holds. Assertions without
+//! either field keep the classic semantics above, unchanged.
 
 #![warn(missing_docs)]
 
@@ -177,6 +186,17 @@ pub fn verify(doc: &vcad_ir::Document) -> Result<ReceiptReport, String> {
 
     let mut checks = Vec::with_capacity(specs.len());
     let mut claims: Vec<ReceiptClaim> = Vec::with_capacity(specs.len());
+    // Fit-mode assertions need BRep solids (the classic path's scene may
+    // come from the mesh cache), so they get their own evaluation — only
+    // when a document actually has one.
+    let fit_scene = if specs.iter().any(|s| s.is_fit()) {
+        Some(
+            vcad_eval::evaluate_document(doc, &fit_eval_options())
+                .map_err(|e| format!("evaluation for fit assertions failed: {e}")),
+        )
+    } else {
+        None
+    };
     for spec in specs {
         let claim_id = format!("{CLEARANCE_CLAIM_PREFIX}{}", spec.label);
         let subject = format!("{} vs {}", spec.group_a.join("+"), spec.group_b.join("+"));
@@ -194,6 +214,15 @@ pub fn verify(doc: &vcad_ir::Document) -> Result<ReceiptReport, String> {
             points: None,
             reason: None,
         };
+        if spec.is_fit() {
+            let scene = fit_scene
+                .as_ref()
+                .expect("evaluated when a fit spec exists");
+            let (check, claim) = verify_fit(doc, scene, spec, check);
+            claims.push(claim);
+            checks.push(check);
+            continue;
+        }
         let m = match measure(&spec.group_a, &spec.group_b) {
             Ok(m) => m,
             Err(e) => {
@@ -262,6 +291,111 @@ pub fn verify(doc: &vcad_ir::Document) -> Result<ReceiptReport, String> {
         checks,
         receipt: DesignReceipt::with_claims(claims),
     })
+}
+
+fn fit_eval_options() -> vcad_eval::EvalOptions {
+    vcad_eval::EvalOptions {
+        skip_clash_detection: true,
+        clock: None,
+        root_cache: None,
+        mesh_segments: 0,
+        on_root: None,
+        on_root_ready: None,
+    }
+}
+
+/// Fit-mode verification: signed analytic radial gap in `[min, max]`.
+fn verify_fit(
+    doc: &vcad_ir::Document,
+    scene: &Result<vcad_eval::EvaluatedScene, String>,
+    spec: &vcad_ir::ClearanceSpec,
+    mut check: ReceiptCheck,
+) -> (ReceiptCheck, ReceiptClaim) {
+    let description = match spec.max_mm {
+        Some(mx) => format!(
+            "fit \"{}\" gap within [{}, {}] mm",
+            spec.label, spec.min_mm, mx
+        ),
+        None => format!(
+            "fit \"{}\" gap at least {} mm (interference allowed)",
+            spec.label, spec.min_mm
+        ),
+    };
+    // Fits are close by definition: candidates within 1 mm of the band.
+    let window = 1.0 + spec.min_mm.abs().max(spec.max_mm.map_or(0.0, f64::abs));
+    let measured = scene.as_ref().map_err(|e| e.clone()).and_then(|sc| {
+        vcad_eval::sim_extract::tolerance::signed_radial_gap(
+            doc,
+            sc,
+            &spec.label,
+            &spec.group_a,
+            &spec.group_b,
+            window,
+        )
+        .map_err(|e| e.to_string())
+    });
+    let g = match measured {
+        Ok(g) => g,
+        Err(e) => {
+            let why = format!("fit gap is not analytically measurable: {e}");
+            check.reason = Some(why.clone());
+            let claim =
+                ReceiptClaim::unverifiable(&check.claim_id, DOMAIN, description, oracle(), why)
+                    .with_subject(check.subject.clone());
+            return (check, claim);
+        }
+    };
+    let ok = g.gap_mm >= spec.min_mm && spec.max_mm.is_none_or(|mx| g.gap_mm <= mx);
+    check.measured_mm = Some(g.gap_mm);
+    check.worst_pair = Some(g.parts.clone());
+    let swept = spec.sweep.as_ref().is_some_and(|s| !s.is_empty());
+    (check.status, check.reason) = if !ok {
+        (
+            ReceiptStatus::Violated,
+            Some(match spec.max_mm {
+                Some(mx) => format!(
+                    "fit gap {:.4} mm is outside [{}, {}] mm",
+                    g.gap_mm, spec.min_mm, mx
+                ),
+                None => format!(
+                    "fit gap {:.4} mm is below the allowed {} mm",
+                    g.gap_mm, spec.min_mm
+                ),
+            }),
+        )
+    } else if swept {
+        (
+            ReceiptStatus::Stale,
+            Some("fit holds at the current pose; the swept range is not re-checked live".into()),
+        )
+    } else if spec
+        .baseline_mm
+        .is_some_and(|b| (b - g.gap_mm).abs() > STALE_EPS_MM)
+    {
+        (
+            ReceiptStatus::Stale,
+            Some("geometry changed since the receipt was accepted, but it still holds".into()),
+        )
+    } else {
+        (ReceiptStatus::Holds, None)
+    };
+    let mut cc = ClearanceClaim::new(
+        &spec.label,
+        spec.group_a.clone(),
+        spec.group_b.clone(),
+        spec.min_mm,
+        g.gap_mm,
+    );
+    cc = cc.with_analytic_fit();
+    if let Some(mx) = spec.max_mm {
+        cc = cc.with_max(mx);
+    }
+    cc.holds = ok;
+    cc.poses_checked = Some(1);
+    let claim = clearance_claims(&[cc], &oracle())
+        .pop()
+        .expect("one assertion in, one claim out");
+    (check, claim)
 }
 
 /// Accept the current measurement as the baseline for `label` (every
@@ -387,5 +521,124 @@ mod tests {
         let mut d = doc(13.0);
         d.clearance_specs.clear();
         assert_eq!(verify(&d).unwrap().status, None);
+    }
+
+    // ---- fit mode ---------------------------------------------------------
+
+    /// A Ø70 rim with a Ø60 × 6 socket at z 14–20 (root 4) and a lid whose
+    /// Ø`2·lid_r` plug sits in the socket under a Ø70 flange (root 9).
+    fn fit_doc(lid_r: f64, spec: serde_json::Value) -> vcad_ir::Document {
+        let cyl = |id: u32, r: f64, h: f64| json!({"id": id, "name": null, "op": {"type": "Cylinder", "radius": r, "height": h, "segments": 0}});
+        let tr = |id: u32, child: u32, z: f64| json!({"id": id, "name": null, "op": {"type": "Translate", "child": child, "offset": {"x": 0, "y": 0, "z": z}}});
+        serde_json::from_value(json!({
+            "version": "0.1",
+            "nodes": {
+                "1": cyl(1, 35.0, 20.0),
+                "2": cyl(2, 30.0, 7.0),
+                "3": tr(3, 2, 14.0),
+                "4": {"id": 4, "name": "rim", "op": {"type": "Difference", "left": 1, "right": 3}},
+                "5": cyl(5, lid_r, 6.5),
+                "6": tr(6, 5, 14.0),
+                "7": cyl(7, 35.0, 2.0),
+                "8": tr(8, 7, 20.0),
+                "9": {"id": 9, "name": "lid", "op": {"type": "Union", "left": 6, "right": 8}}
+            },
+            "materials": {},
+            "part_materials": {},
+            "roots": [{"root": 4, "material": "default"}, {"root": 9, "material": "default"}],
+            "clearance_specs": [spec]
+        }))
+        .unwrap()
+    }
+
+    fn press(max: Option<f64>, fit: Option<&str>) -> serde_json::Value {
+        let mut s =
+            json!({"label": "lid-fit", "group_a": ["lid"], "group_b": ["rim"], "min_mm": -0.15});
+        if let Some(m) = max {
+            s["max_mm"] = json!(m);
+        }
+        if let Some(f) = fit {
+            s["fit"] = json!(f);
+        }
+        s
+    }
+
+    /// The legacy contract, pinned: with neither `max_mm` nor `fit`, a
+    /// negative `min_mm` does NOT allow interference — the interpenetrating
+    /// press fit reads Violated exactly as before, and the spec serializes
+    /// without the new keys.
+    #[test]
+    fn bare_negative_min_keeps_legacy_semantics() {
+        let d = fit_doc(30.075, press(None, None));
+        assert!(!d.clearance_specs[0].is_fit());
+        let r = verify(&d).unwrap();
+        assert_eq!(r.status, Some(ReceiptStatus::Violated), "{r:#?}");
+        assert!(r.checks[0]
+            .reason
+            .as_ref()
+            .unwrap()
+            .contains("interpenetrate"));
+        let v = serde_json::to_value(&d.clearance_specs[0]).unwrap();
+        assert!(v.get("max_mm").is_none() && v.get("fit").is_none());
+        // And the classic box/wedge receipts are untouched by fit support.
+        assert_eq!(
+            verify(&doc(13.0)).unwrap().status,
+            Some(ReceiptStatus::Holds)
+        );
+    }
+
+    #[test]
+    fn press_fit_in_band_holds_with_the_analytic_gap() {
+        for (max, fit) in [(Some(-0.01), None), (None, Some("interference"))] {
+            let d = fit_doc(30.075, press(max, fit));
+            let r = verify(&d).unwrap();
+            assert_eq!(r.status, Some(ReceiptStatus::Holds), "{r:#?}");
+            let c = &r.checks[0];
+            assert!((c.measured_mm.unwrap() + 0.075).abs() < 1e-9, "{c:?}");
+            assert_eq!(
+                c.worst_pair.as_ref().unwrap(),
+                &["lid".to_string(), "rim".into()]
+            );
+            let claim = &r.receipt.claims[0];
+            assert_eq!(claim.verdict, vcad_receipt::ClaimVerdict::Pass);
+            let det: ClearanceClaim =
+                serde_json::from_str(claim.details.as_ref().unwrap()).unwrap();
+            assert_eq!(det.max_mm, max);
+            assert_eq!(det.analytic_fit, Some(true));
+        }
+    }
+
+    #[test]
+    fn press_fit_out_of_band_is_violated_both_ways() {
+        // Too tight: 0.2 mm interference < −0.15.
+        let r = verify(&fit_doc(30.2, press(Some(-0.01), None))).unwrap();
+        assert_eq!(r.status, Some(ReceiptStatus::Violated));
+        assert!(r.checks[0].reason.as_ref().unwrap().contains("outside"));
+        assert_eq!(
+            r.receipt.claims[0].verdict,
+            vcad_receipt::ClaimVerdict::Fail
+        );
+        // Too loose: 0.005 mm interference rattles (> −0.01).
+        let r = verify(&fit_doc(30.005, press(Some(-0.01), None))).unwrap();
+        assert_eq!(r.status, Some(ReceiptStatus::Violated));
+    }
+
+    /// Geometry the analytic gap can't measure (box vs wedge: no coaxial
+    /// cylinders) fails closed — unverifiable, never Pass.
+    #[test]
+    fn unmeasurable_fit_fails_closed_unverifiable() {
+        let mut d = doc(13.0);
+        d.clearance_specs[0].max_mm = Some(5.0);
+        let r = verify(&d).unwrap();
+        assert_eq!(r.status, Some(ReceiptStatus::Violated));
+        assert!(r.checks[0]
+            .reason
+            .as_ref()
+            .unwrap()
+            .contains("not analytically measurable"));
+        assert_eq!(
+            r.receipt.claims[0].verdict,
+            vcad_receipt::ClaimVerdict::Unverifiable
+        );
     }
 }

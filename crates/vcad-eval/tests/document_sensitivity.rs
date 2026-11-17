@@ -102,6 +102,7 @@ fn plate_doc(hole_r: f64, plate_t: f64) -> Document {
             min: None,
             max: None,
             description: Some("through-hole radius".into()),
+            tolerance: None,
         },
     );
     doc.parameters.insert(
@@ -112,6 +113,7 @@ fn plate_doc(hole_r: f64, plate_t: f64) -> Document {
             min: None,
             max: None,
             description: Some("plate thickness".into()),
+            tolerance: None,
         },
     );
     doc.bindings.bind(

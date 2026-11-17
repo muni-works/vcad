@@ -415,6 +415,7 @@ pub fn program_document(
                     ),
                     None => "From photos (experimental)".into(),
                 }),
+                tolerance: None,
             },
         );
     }

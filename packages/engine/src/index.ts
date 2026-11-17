@@ -339,8 +339,9 @@ export {
   defaultParamsFor,
   searchParts,
   buildPartDocument,
+  partInfo,
 } from "./parts.js";
-export type { PartManifestEntry, PartParam, PartXref } from "./parts.js";
+export type { PartManifestEntry, PartParam, PartXref, PartPort, PartInfo } from "./parts.js";
 
 // Analyze mode (#592): off-main-thread solver studies
 export { AnalyzeClient, getAnalyzeClient } from "./analyze.js";
@@ -782,6 +783,8 @@ export interface KernelModule {
   getPartsManifest?: () => string;
   /** Build a stdlib part's sub-document given path and params JSON. */
   buildPart?: (path: string, paramsJson: string) => string;
+  /** Describe a stdlib part: mate ports + metadata JSON. */
+  partInfo?: (path: string, paramsJson: string) => string;
   /** Evaluate a sheet-metal op chain → mesh + flat pattern + summary JSON. */
   evaluateSheetMetalChain?: (chainJson: string) => string;
   /** Run sheet-metal manufacturability vs. a shop profile → JSON. */
@@ -862,6 +865,14 @@ export interface KernelModule {
   /** Steady heat-conduction solve (ThermalSpec/params/options JSON). */
   thermalSolve?: (
     specJson: string,
+    paramsJson: string,
+    optionsJson: string,
+  ) => unknown;
+  /** Steady thermal solve of a document's own parts (Document/ThermalStudy JSON). */
+  thermalSolveDocument?: (
+    docJson: string,
+    studyJson: string,
+    studyId: string,
     paramsJson: string,
     optionsJson: string,
   ) => unknown;
@@ -948,6 +959,12 @@ export interface KernelModule {
   extractDeviceSpec?: (docJson: string, selectionJson: string) => unknown;
   /** Document → ShieldSpec extraction (Document/ShieldExtraction JSON). */
   extractShieldSpec?: (docJson: string, selectionJson: string) => unknown;
+  /** Document → AxisymSpec extraction (Document/AxisymMagExtraction JSON). */
+  extractAxisymMagSpec?: (docJson: string, selectionJson: string) => unknown;
+  /** Document → StackupSpec extraction (Document/StackupExtraction JSON). */
+  extractStackupSpec?: (docJson: string, selectionJson: string) => unknown;
+  /** Signed analytic radial fit gap between two part groups. */
+  signedRadialGap?: (docJson: string, queryJson: string) => unknown;
   /** Lattice gauge theory Monte Carlo run (SimSpec JSON). */
   latticeGaugeSimulate?: (specJson: string) => unknown;
   /** Static structural analysis of a box solid. */
@@ -1510,6 +1527,7 @@ export class Engine {
       optimizeDocument: (wasmModule as Record<string, unknown>).optimizeDocument as KernelModule["optimizeDocument"],
       getPartsManifest: (wasmModule as Record<string, unknown>).getPartsManifest as KernelModule["getPartsManifest"],
       buildPart: (wasmModule as Record<string, unknown>).buildPart as KernelModule["buildPart"],
+      partInfo: (wasmModule as Record<string, unknown>).partInfo as KernelModule["partInfo"],
       evaluateSheetMetalChain: (wasmModule as Record<string, unknown>).evaluateSheetMetalChain as KernelModule["evaluateSheetMetalChain"],
       checkSheetMetal: (wasmModule as Record<string, unknown>).checkSheetMetal as KernelModule["checkSheetMetal"],
       costSheetMetal: (wasmModule as Record<string, unknown>).costSheetMetal as KernelModule["costSheetMetal"],
@@ -1530,10 +1548,14 @@ export class Engine {
       particleSimulate3d: (wasmModule as Record<string, unknown>).particleSimulate3d as KernelModule["particleSimulate3d"],
       extractDeviceSpec: (wasmModule as Record<string, unknown>).extractDeviceSpec as KernelModule["extractDeviceSpec"],
       extractShieldSpec: (wasmModule as Record<string, unknown>).extractShieldSpec as KernelModule["extractShieldSpec"],
+      extractAxisymMagSpec: (wasmModule as Record<string, unknown>).extractAxisymMagSpec as KernelModule["extractAxisymMagSpec"],
+      extractStackupSpec: (wasmModule as Record<string, unknown>).extractStackupSpec as KernelModule["extractStackupSpec"],
+      signedRadialGap: (wasmModule as Record<string, unknown>).signedRadialGap as KernelModule["signedRadialGap"],
       particleOptimize: (wasmModule as Record<string, unknown>).particleOptimize as KernelModule["particleOptimize"],
       toleranceAnalyze: (wasmModule as Record<string, unknown>).toleranceAnalyze as KernelModule["toleranceAnalyze"],
       thermalSolve: (wasmModule as Record<string, unknown>).thermalSolve as KernelModule["thermalSolve"],
       thermalSolveTransient: (wasmModule as Record<string, unknown>).thermalSolveTransient as KernelModule["thermalSolveTransient"],
+      thermalSolveDocument: (wasmModule as Record<string, unknown>).thermalSolveDocument as KernelModule["thermalSolveDocument"],
       simulateFlow: (wasmModule as Record<string, unknown>).simulateFlow as KernelModule["simulateFlow"],
       documentDiff: (wasmModule as Record<string, unknown>).documentDiff as KernelModule["documentDiff"],
       documentDiffApply: (wasmModule as Record<string, unknown>).documentDiffApply as KernelModule["documentDiffApply"],
@@ -1944,6 +1966,30 @@ export class Engine {
   }
 
   /**
+   * Steady thermal solve of a document's own parts: the study's parts are
+   * voxelized from their tessellations (`vcad_eval::thermal_extract`),
+   * sources/sinks tied to parts, and solved. `studyJson` is an inline
+   * `ThermalStudy` ("" = use the document's study `studyId`, or its only
+   * thermal study). Returns the `thermalSolve` summary plus `extracted`
+   * (grid, per-part voxel audit, sources/sinks as solved).
+   */
+  thermalSolveDocument(
+    docJson: string,
+    studyJson: string,
+    studyId: string,
+    paramsJson: string,
+    optionsJson: string,
+  ): unknown {
+    const fn = this.kernel.thermalSolveDocument;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "thermalSolveDocument is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(docJson, studyJson, studyId, paramsJson, optionsJson);
+  }
+
+  /**
    * Transient heat-conduction solve: backward-Euler stepping over a
    * piecewise-constant drive schedule (TransientSpec JSON), returning
    * T_max/per-source time series, the final-state summary, and the
@@ -2230,6 +2276,50 @@ export class Engine {
     if (typeof fn !== "function") {
       throw new Error(
         "extractShieldSpec is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(docJson, selectionJson);
+  }
+
+  /**
+   * Extract an axisymmetric magnetostatic `AxisymSpec` from a document's
+   * revolved steel / magnet / coil parts. Returns `{spec, parameters,
+   * axis, parts, grid}`. Fail-closed; see `vcad_eval::sim_extract::em`.
+   */
+  extractAxisymMagSpec(docJson: string, selectionJson: string): unknown {
+    const fn = this.kernel.extractAxisymMagSpec;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "extractAxisymMagSpec is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(docJson, selectionJson);
+  }
+
+  /**
+   * Extract a linear tolerance `StackupSpec` from a document's clearance
+   * assertion + toleranced parameters. Returns `{spec, parameters, gap_mm,
+   * fit_parts, contributors, independent, fixed_geometry_mm}`. Fail-closed;
+   * see `vcad_eval::sim_extract::tolerance`.
+   */
+  signedRadialGap(
+    docJson: string,
+    query: { label: string; group_a: string[]; group_b: string[]; fit_window_mm: number },
+  ): { gap_mm: number; parts: [string, string] } {
+    const fn = this.kernel.signedRadialGap;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "signedRadialGap is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(docJson, JSON.stringify(query)) as { gap_mm: number; parts: [string, string] };
+  }
+
+  extractStackupSpec(docJson: string, selectionJson: string): unknown {
+    const fn = this.kernel.extractStackupSpec;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "extractStackupSpec is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
       );
     }
     return fn(docJson, selectionJson);

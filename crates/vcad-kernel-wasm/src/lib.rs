@@ -7804,6 +7804,19 @@ pub fn build_part(path: &str, params_json: &str) -> Result<String, JsError> {
     serde_json::to_string(&doc).map_err(|e| JsError::new(&format!("serialize failed: {e}")))
 }
 
+/// Describe a built-in part: its mate ports (part-local frame) and metadata
+/// (ratings, envelopes, provenance, BOM lines), as JSON
+/// `{ "ports": [...], "metadata": {...} }`. Parts without a describer return
+/// no ports and empty metadata.
+#[wasm_bindgen(js_name = partInfo)]
+pub fn part_info(path: &str, params_json: &str) -> Result<String, JsError> {
+    let params: std::collections::HashMap<String, serde_json::Value> =
+        serde_json::from_str(params_json)
+            .map_err(|e| JsError::new(&format!("invalid params JSON: {e}")))?;
+    let info = vcad_parts::part_info(path, &params).map_err(|e| JsError::new(&e))?;
+    serde_json::to_string(&info).map_err(|e| JsError::new(&format!("serialize failed: {e}")))
+}
+
 /// Evaluate a loon source string and return a JSON-serialized vcad Document.
 ///
 /// The vcad library (types, constructors) is automatically prepended.
@@ -9338,9 +9351,20 @@ pub fn thermal_solve(
         max_iters: opts.max_iters,
     };
     let sol = th::solve::solve_steady(&model, &sopts).map_err(|e| JsError::new(&e.to_string()))?;
-    let claim_set = th::receipt::predicted_claims(&model, &sol, &sopts);
+    let out = thermal_summary(&model, &sol, &sopts);
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
+fn thermal_summary(
+    model: &vcad_kernel::vcad_kernel_thermal::model::ThermalModel,
+    sol: &vcad_kernel::vcad_kernel_thermal::solve::Solution,
+    sopts: &vcad_kernel::vcad_kernel_thermal::solve::SolveOptions,
+) -> WasmThermalSolve {
+    use vcad_kernel::vcad_kernel_thermal as th;
+    let claim_set = th::receipt::predicted_claims(model, sol, sopts);
     let receipt_claims = th::receipt::design_claims(&claim_set);
-    let out = WasmThermalSolve {
+    WasmThermalSolve {
         divisions: sol.divisions,
         voxel_mm: sol.voxel_mm,
         t_max_c: sol.t_max_c,
@@ -9372,6 +9396,100 @@ pub fn thermal_solve(
         radiation: sol.radiation.clone(),
         claim_set,
         receipt_claims,
+    }
+}
+
+#[derive(serde::Serialize)]
+struct WasmThermalExtracted {
+    grid: vcad_eval::thermal_extract::ThermalGrid,
+    parts: Vec<vcad_eval::thermal_extract::VoxelizedPart>,
+    parameters: std::collections::BTreeMap<String, f64>,
+    sources: Vec<vcad_kernel::vcad_kernel_thermal::spec::SourceSpec>,
+    fixed: Vec<vcad_kernel::vcad_kernel_thermal::spec::FixedSpec>,
+}
+
+#[derive(serde::Serialize)]
+struct WasmThermalDocSolve {
+    #[serde(flatten)]
+    solve: WasmThermalSolve,
+    extracted: WasmThermalExtracted,
+}
+
+/// Steady thermal solve of a document's own parts.
+///
+/// `doc_json` is a `vcad_ir::Document`. The study is `study_json` (a
+/// `vcad_ir::ThermalStudy`) when non-empty, else the document's thermal
+/// analysis study `study_id` (or its only one). The selected parts are
+/// voxelized (`vcad_eval::thermal_extract`), the spec resolved against the
+/// document's parameters overlaid with `params_json`, and solved. Returns
+/// the `thermalSolve` summary plus `extracted` (grid, per-part voxel
+/// audit, sources/sinks as solved) — not the per-voxel index field.
+#[wasm_bindgen(js_name = thermalSolveDocument)]
+pub fn thermal_solve_document(
+    doc_json: &str,
+    study_json: &str,
+    study_id: &str,
+    params_json: &str,
+    options_json: &str,
+) -> Result<JsValue, JsError> {
+    use vcad_eval::thermal_extract as tx;
+    use vcad_kernel::vcad_kernel_thermal as th;
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {e}")))?;
+    let inline: Option<vcad_ir::ThermalStudy> = if study_json.trim().is_empty() {
+        None
+    } else {
+        Some(
+            serde_json::from_str(study_json)
+                .map_err(|e| JsError::new(&format!("bad thermal study: {e}")))?,
+        )
+    };
+    let study = match &inline {
+        Some(s) => s,
+        None => tx::find_thermal_study(
+            &doc,
+            (!study_id.trim().is_empty()).then_some(study_id.trim()),
+        )
+        .map_err(|e| JsError::new(&e.to_string()))?,
+    };
+    let overrides: std::collections::BTreeMap<String, f64> = if params_json.trim().is_empty() {
+        Default::default()
+    } else {
+        serde_json::from_str(params_json).map_err(|e| JsError::new(&format!("bad params: {e}")))?
+    };
+    let opts: ThermalOptions = if options_json.trim().is_empty() {
+        Default::default()
+    } else {
+        serde_json::from_str(options_json)
+            .map_err(|e| JsError::new(&format!("bad options: {e}")))?
+    };
+    let ex = tx::extract_thermal_spec(&doc, study).map_err(|e| JsError::new(&e.to_string()))?;
+    let mut params = ex.parameters.clone();
+    params.extend(overrides);
+    let n_voxels: usize = ex.grid.divisions.iter().product();
+    if n_voxels > 2_000_000 {
+        return Err(JsError::new(&format!(
+            "grid too large for the MCP tier: {n_voxels} voxels (cap 2,000,000) — coarsen the study grid"
+        )));
+    }
+    let model = ex
+        .spec
+        .resolve(&params)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let sopts = th::solve::SolveOptions {
+        tol: opts.tol,
+        max_iters: opts.max_iters,
+    };
+    let sol = th::solve::solve_steady(&model, &sopts).map_err(|e| JsError::new(&e.to_string()))?;
+    let out = WasmThermalDocSolve {
+        solve: thermal_summary(&model, &sol, &sopts),
+        extracted: WasmThermalExtracted {
+            grid: ex.grid,
+            parts: ex.parts,
+            parameters: params,
+            sources: ex.spec.sources,
+            fixed: ex.spec.fixed,
+        },
     };
     let ser = serde_wasm_bindgen::Serializer::json_compatible();
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
@@ -10012,6 +10130,15 @@ fn em_stress_panels() -> usize {
     64
 }
 
+/// Air-gap probe region for the axisym magnet claims.
+#[derive(serde::Deserialize)]
+struct WasmEmGapProbe {
+    r_inner_mm: f64,
+    r_outer_mm: f64,
+    z_min_mm: f64,
+    z_max_mm: f64,
+}
+
 /// Torque extraction request for the planar problem class.
 #[derive(serde::Deserialize)]
 struct WasmEmTorqueSpec {
@@ -10050,6 +10177,9 @@ struct EmSimOptions {
     force_coil: Option<usize>,
     /// Axisym: Maxwell-stress cylinder for the force cross-route residual.
     stress_probe: Option<WasmEmStressProbe>,
+    /// Axisym with magnets: the air-gap region the `gap_flux_t` claim
+    /// averages |B_r| over (r/z bounds, mm).
+    gap_probe: Option<WasmEmGapProbe>,
     /// Planar: torque center/radius/depth (required for planar claims).
     torque: Option<WasmEmTorqueSpec>,
     /// Electrostatics: index of the driven (nonzero-potential) electrode.
@@ -10071,6 +10201,7 @@ impl Default for EmSimOptions {
             drive_coil: 0,
             force_coil: None,
             stress_probe: None,
+            gap_probe: None,
             torque: None,
             hot: 0,
         }
@@ -10188,10 +10319,12 @@ pub fn em_simulate(
             let dev = spec
                 .resolve(&params)
                 .map_err(|e| JsError::new(&e.to_string()))?;
-            if dev.coils.is_empty() {
-                return Err(JsError::new("axisym_magnetostatics needs at least one coil"));
+            if dev.coils.is_empty() && dev.magnets.is_empty() {
+                return Err(JsError::new(
+                    "axisym_magnetostatics needs at least one coil or magnet",
+                ));
             }
-            if opts.drive_coil >= dev.coils.len() {
+            if !dev.coils.is_empty() && opts.drive_coil >= dev.coils.len() {
                 return Err(JsError::new(&format!(
                     "drive_coil {} out of range ({} coils)",
                     opts.drive_coil,
@@ -10222,12 +10355,32 @@ pub fn em_simulate(
             let flux_linkages: Vec<f64> = (0..n_coils).map(|k| sol.flux_linkage(k)).collect();
             let forces: Vec<f64> = (0..n_coils).map(|k| sol.axial_force_on_coil(k)).collect();
             let energy = sol.energy();
-            let mut claim_sets = vec![em::receipt::axisym_inductance_claims(
-                &sol,
-                opts.drive_coil,
-                sopts.tol,
-                None,
-            )];
+            let has_magnets = !dev.magnets.is_empty();
+            let gap = opts.gap_probe.as_ref().map(|g| em::axisym::Annulus {
+                r_inner_mm: g.r_inner_mm,
+                r_outer_mm: g.r_outer_mm,
+                z_min_mm: g.z_min_mm,
+                z_max_mm: g.z_max_mm,
+            });
+            let drive = (n_coils > 0).then_some(opts.drive_coil);
+            // With magnets the coil's flux linkage carries the magnet's DC
+            // flux, so λ/I is not an inductance: price the gap instead.
+            let mut claim_sets = if has_magnets {
+                vec![em::receipt::axisym_gap_flux_claims(
+                    &sol,
+                    drive,
+                    gap.as_ref(),
+                    sopts.tol,
+                    None,
+                )]
+            } else {
+                vec![em::receipt::axisym_inductance_claims(
+                    &sol,
+                    opts.drive_coil,
+                    sopts.tol,
+                    None,
+                )]
+            };
             if let Some(k) = opts.force_coil {
                 if k >= n_coils {
                     return Err(JsError::new(&format!(
@@ -10250,7 +10403,13 @@ pub fn em_simulate(
                 residual: sol.residual,
                 picard,
                 qois: serde_json::json!({
-                    "self_inductance_h": sol.self_inductance(opts.drive_coil),
+                    "self_inductance_h": if has_magnets || n_coils == 0 {
+                        None
+                    } else {
+                        Some(sol.self_inductance(opts.drive_coil))
+                    },
+                    "bl_n_per_a": drive.map(|k| sol.force_factor(k)),
+                    "gap_flux_t": gap.as_ref().map(|g| sol.mean_field_in(g, 16).0),
                     "flux_linkages_wb_t": flux_linkages,
                     "axial_forces_n": forces,
                     "field_energy_j": energy.field,
@@ -11065,6 +11224,78 @@ pub fn extract_shield_spec(doc_json: &str, selection_json: &str) -> Result<JsVal
         .map_err(|e| JsError::new(&format!("bad extraction selection: {e}")))?;
     let out = vcad_eval::sim_extract::extract_shield_spec(&doc, &sel)
         .map_err(|e| JsError::new(&e.to_string()))?;
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Extract an axisymmetric magnetostatic `AxisymSpec` from a document's
+/// revolved magnetic parts (steel, axial magnets, coils).
+///
+/// `selection_json` is a `vcad_eval::sim_extract::em::AxisymMagExtraction`.
+/// Returns `{spec, parameters, axis, parts, grid}` — feed `spec` (with
+/// `problem: "axisym_magnetostatics"`) and `parameters` to `emSimulate`,
+/// on the advised `grid.nx × grid.ny`. Fail-closed: a non-axisymmetric
+/// part errors with its name.
+#[wasm_bindgen(js_name = extractAxisymMagSpec)]
+pub fn extract_axisym_mag_spec(doc_json: &str, selection_json: &str) -> Result<JsValue, JsError> {
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {e}")))?;
+    let sel: vcad_eval::sim_extract::em::AxisymMagExtraction = serde_json::from_str(selection_json)
+        .map_err(|e| JsError::new(&format!("bad extraction selection: {e}")))?;
+    let out = vcad_eval::sim_extract::em::extract_axisym_mag_spec(&doc, &sel)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Extract a linear tolerance `StackupSpec` from a document's clearance
+/// assertion and toleranced parameters.
+///
+/// `selection_json` is a `vcad_eval::sim_extract::tolerance::StackupExtraction`.
+/// Returns `{spec, parameters, gap_mm, fit_parts, contributors,
+/// independent, fixed_geometry_mm}` — feed `spec` and `parameters` to
+/// `toleranceAnalyze`.
+#[wasm_bindgen(js_name = extractStackupSpec)]
+pub fn extract_stackup_spec(doc_json: &str, selection_json: &str) -> Result<JsValue, JsError> {
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {e}")))?;
+    let sel: vcad_eval::sim_extract::tolerance::StackupExtraction =
+        serde_json::from_str(selection_json)
+            .map_err(|e| JsError::new(&format!("bad extraction selection: {e}")))?;
+    let out = vcad_eval::sim_extract::tolerance::extract_stackup_spec(&doc, &sel)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
+#[derive(serde::Deserialize)]
+struct WasmFitGapQuery {
+    label: String,
+    group_a: Vec<String>,
+    group_b: Vec<String>,
+    fit_window_mm: f64,
+}
+
+/// Signed analytic radial gap between two part groups' coaxial shaft/bore
+/// pair — the fit-mode measurement of a `ClearanceSpec` (press /
+/// transition fits). `query_json` is `{label, group_a, group_b,
+/// fit_window_mm}`; returns `{gap_mm, parts}` (negative = interference).
+/// Errors (no candidate pair, ambiguous pairs, no analytic BRep) are
+/// fail-closed: the caller must treat them as unverifiable.
+#[wasm_bindgen(js_name = signedRadialGap)]
+pub fn signed_radial_gap(doc_json: &str, query_json: &str) -> Result<JsValue, JsError> {
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {e}")))?;
+    let q: WasmFitGapQuery = serde_json::from_str(query_json)
+        .map_err(|e| JsError::new(&format!("bad fit-gap query: {e}")))?;
+    let out = vcad_eval::sim_extract::tolerance::signed_radial_gap_of(
+        &doc,
+        &q.label,
+        &q.group_a,
+        &q.group_b,
+        q.fit_window_mm,
+    )
+    .map_err(|e| JsError::new(&e.to_string()))?;
     let ser = serde_wasm_bindgen::Serializer::json_compatible();
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
 }

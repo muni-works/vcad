@@ -32,6 +32,7 @@ pub const ENTRY: PartEntry = PartEntry {
         thumb: include_bytes!("../../thumbs/bearing-608.svg"),
     },
     build,
+    info: None,
 };
 
 fn build(_p: &Params) -> Result<Document, String> {

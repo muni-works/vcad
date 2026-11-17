@@ -407,6 +407,7 @@ const LIST_TOOL_ORDER: readonly string[] = [
   // ── Stdlib parts library ───────────────────────────────────
   "search_parts",
   "place_part",
+  "describe_part",
   // (registry-driven kernel tools are spliced in here)
   // ── MCP Apps: app-only preview fetch + version poll ────────
   "get_preview_glb",
