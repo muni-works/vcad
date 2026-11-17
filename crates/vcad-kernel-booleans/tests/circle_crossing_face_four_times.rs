@@ -33,14 +33,24 @@ fn translated(mut b: BRepSolid, x: f64, y: f64, z: f64) -> BRepSolid {
     for (_, v) in &mut b.topology.vertices {
         v.point = t.apply_point(&v.point);
     }
-    b.geometry.surfaces = b.geometry.surfaces.drain(..).map(|s| s.transform(&t)).collect();
+    b.geometry.surfaces = b
+        .geometry
+        .surfaces
+        .drain(..)
+        .map(|s| s.transform(&t))
+        .collect();
     b
 }
 
 /// Box centred on the cylinder axis in x and y, z ∈ [-1, 10]; the cylinder
 /// starts at `cyl_z0` and runs past the box top.
 fn operands(cyl_z0: f64) -> (BRepSolid, BRepSolid) {
-    let bx = translated(make_cube(BOX.0, BOX.1, BOX.2), -BOX.0 / 2.0, -BOX.1 / 2.0, -1.0);
+    let bx = translated(
+        make_cube(BOX.0, BOX.1, BOX.2),
+        -BOX.0 / 2.0,
+        -BOX.1 / 2.0,
+        -1.0,
+    );
     let cy = translated(make_cylinder(R, CYL_H, SEGMENTS), 0.0, 0.0, cyl_z0);
     (bx, cy)
 }
@@ -89,8 +99,20 @@ fn union_with_cylinder_crossing_both_long_edges_is_closed() {
         let (bx, cy) = operands(z0);
         let overlap = disk_in_strip() * BOX.2;
         let union = box_vol + cyl_vol - overlap;
-        check(&format!("box∪cyl z0={z0}"), &bx, &cy, BooleanOp::Union, union);
-        check(&format!("cyl∪box z0={z0}"), &cy, &bx, BooleanOp::Union, union);
+        check(
+            &format!("box∪cyl z0={z0}"),
+            &bx,
+            &cy,
+            BooleanOp::Union,
+            union,
+        );
+        check(
+            &format!("cyl∪box z0={z0}"),
+            &cy,
+            &bx,
+            BooleanOp::Union,
+            union,
+        );
         check(
             &format!("box−cyl z0={z0}"),
             &bx,
