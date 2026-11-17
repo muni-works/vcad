@@ -34,7 +34,7 @@ cd docs/plasmoid-sim
 # 600 frames; --resume picks up an interrupted run, the sim always runs whole
 ../../target/release/vcad-render plasmoid-clip.vcad --photoreal --animate --sim plasmoid \
   --lighting dark --backdrop none --bloom 0.25 --bloom-radius 0.06 --tonemap exp \
-  --spp SPP_PLACEHOLDER --size 720x1280 --fill 0.85 --view orbit:-90,28 -o /tmp/clip --mp4 plasmoid.mp4
+  --spp 32 --max-depth 4 --size 720x1280 --fill 0.85 --view orbit:-90,28 -o /tmp/clip --mp4 plasmoid.mp4
 cargo run --release -p vcad-kernel-particle --example plasmoid_magnet -- /tmp/clip   # beta_map.csv
 python3 figures.py /tmp/clip .        # reads the trajectory.csv the render wrote
 ../../target/release/vcad-render plasmoid-dish.vcad --jpeg device.jpg --size 720
@@ -146,7 +146,7 @@ These are the times the choreography produced when it was a `KEYS` table in the 
 **From the document + sim, every frame:**
 
 - the magnet pose (timeline) — the `magnet` root is re-placed;
-- the foot position (the model, stepped from that pose) — the `foot` medium is re-placed, integrated over 4 positions across the 1/30 s exposure (motion blur from the sim, not a smear);
+- the foot position (the model, stepped from that pose) — the `foot` medium is re-placed, integrated over 16 positions across the 1/30 s exposure (motion blur from the sim, not a smear);
 - the lock state and β (the HUD);
 - the device (the loon geometry, path-traced).
 

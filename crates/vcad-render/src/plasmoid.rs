@@ -235,12 +235,13 @@ pub struct PlasmoidClipOptions {
 }
 
 impl Default for PlasmoidClipOptions {
-    /// 80 substeps at 30 fps is the demo's `dt = 1/2400 s`; 4 exposure
-    /// samples is the 120 Hz trajectory.
+    /// 80 substeps at 30 fps is the demo's `dt = 1/2400 s`. 16 exposure
+    /// samples (480 Hz) keep the blur of a racing foot (~20 mm a frame)
+    /// continuous; 4 strobe into separate copies.
     fn default() -> Self {
         Self {
             substeps: 80,
-            exposure: 4,
+            exposure: 16,
             medium_spacing_mm: 0.25,
             resume: false,
         }
@@ -604,7 +605,9 @@ pub fn hud_ass(
 ) -> String {
     use std::fmt::Write as _;
     let ts = |t: f64| {
-        let cs = (t.max(0.0) * 100.0).round() as u64;
+        // Floor, not round: an event rounded up to the next centisecond
+        // starts after its frame's timestamp and shows a frame late.
+        let cs = (t.max(0.0) * 100.0 + 1e-6).floor() as u64;
         format!(
             "{}:{:02}:{:02}.{:02}",
             cs / 360_000,
