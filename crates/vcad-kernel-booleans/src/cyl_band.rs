@@ -148,6 +148,25 @@ fn chain_interp(chain: &Chain, u: f64) -> f64 {
     }
 }
 
+/// One-sided value of a chain at `u`. A chain may carry a vertical step — two
+/// or more vertices on one column, e.g. the pair of saddle samples at a patch
+/// loop's u-extreme, or a pinch connector — where `chain_interp` returns the
+/// FIRST (left-hand) vertex. Code that reasons about the linear segment on one
+/// side of a grid node must use the limit from that side instead: the value
+/// approaching from the right is the column's LAST vertex.
+fn chain_limit(chain: &Chain, u: f64, from_right: bool) -> f64 {
+    let first = chain.partition_point(|p| p.0 < u - U_EPS);
+    let past = chain.partition_point(|p| p.0 <= u + U_EPS);
+    if first < past {
+        return if from_right {
+            chain[past - 1].1
+        } else {
+            chain[first].1
+        };
+    }
+    chain_interp(chain, u)
+}
+
 /// Slice `chain` to `[a, b]`: exact interpolated endpoints plus every chain
 /// vertex strictly inside, verbatim. A chain vertex within `U_EPS` of an
 /// endpoint is absorbed into the endpoint (no duplicates).
@@ -942,14 +961,21 @@ pub(crate) fn split_band_by_profile(
         }
         let (ua, ub) = (grid[i], grid[i + 1]);
         for lower in [true, false] {
-            let g = |u: f64| -> f64 {
+            // The chains are linear on (ua, ub), but a vertical step at
+            // either node makes the node value ambiguous: localize against
+            // THIS interval's segment (right limit at ua, left limit at ub).
+            // With the plain left-hand value, a strip whose chain steps at
+            // the saddle's u-extreme put the crossing on the wrong segment,
+            // the "crossing" node kept positive width, and the region ran
+            // on to a slanted end where lo > hi.
+            let g = |u: f64, from_right: bool| -> f64 {
                 if lower {
-                    f.eval(u) - band.lo_at(u)
+                    f.eval(u) - chain_limit(&band.lo, u, from_right)
                 } else {
-                    band.hi_at(u) - f.eval(u)
+                    chain_limit(&band.hi, u, from_right) - f.eval(u)
                 }
             };
-            let (ga, gb) = (g(ua), g(ub));
+            let (ga, gb) = (g(ua, true), g(ub, false));
             if (ga > 0.0) != (gb > 0.0) && (ga - gb).abs() > 1e-15 {
                 let t = ga / (ga - gb);
                 let uc = ua + t * (ub - ua);

@@ -5016,8 +5016,14 @@ fn tessellate_ruled_two_chain(
     let _ = grid;
 
     // Orient the strip so triangle normals agree with the (possibly
-    // reversed) outward radial direction: check one non-degenerate
-    // triangle and flip the whole strip if needed.
+    // reversed) outward radial direction, by an area-weighted vote over
+    // EVERY triangle. Judging by the first non-degenerate triangle alone
+    // flipped whole faces: a strip whose rail ends in a slanted connector
+    // and a vertical step (the pinch at a crossing cylinder's saddle
+    // u-extreme) opens with a folded sliver whose normal points inward, and
+    // the strip below a tee's saddle rendered inside-out — every edge open,
+    // the union a third of its volume light.
+    let mut vote = 0.0f64;
     for t in mesh.indices.chunks(3) {
         let p = |i: u32| {
             let b = i as usize * 3;
@@ -5028,25 +5034,20 @@ fn tessellate_ruled_two_chain(
             )
         };
         let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
-        let n = (b - a).cross(c - a);
-        if n.norm() < 1e-12 {
-            continue;
-        }
         let centroid = Point3::new(
             (a.x + b.x + c.x) / 3.0,
             (a.y + b.y + c.y) / 3.0,
             (a.z + b.z + c.z) / 3.0,
         );
-        let mut outward = radial_normal(&centroid);
-        if reversed {
-            outward = -outward;
+        vote += (b - a).cross(c - a).dot(radial_normal(&centroid));
+    }
+    if reversed {
+        vote = -vote;
+    }
+    if vote < 0.0 {
+        for tri in mesh.indices.chunks_mut(3) {
+            tri.swap(1, 2);
         }
-        if n.dot(outward) < 0.0 {
-            for tri in mesh.indices.chunks_mut(3) {
-                tri.swap(1, 2);
-            }
-        }
-        break;
     }
 
     Some(mesh)
