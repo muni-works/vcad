@@ -979,6 +979,10 @@ fn evaluate_and_mesh(
     timings: &mut HashMap<String, NodeTiming>,
 ) -> MeshedRoot {
     let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<MeshedOk, EvalError> {
+        #[cfg(feature = "panic-injection")]
+        if nodes.get(&root).and_then(|n| n.name.as_deref()) == Some(crate::PANIC_INJECTION_NODE) {
+            panic!("injected by the panic-injection test hook");
+        }
         match evaluate_node_timed(root, nodes, cache, clock, timings)? {
             Some(s) => {
                 // The merge is timed with the tessellation it gates.

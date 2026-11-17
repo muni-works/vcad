@@ -112,6 +112,13 @@ if [[ -f $APP_DIR/Libs/libvcad_ffi.a ]]; then
   [[ -z $missing ]] || problems+=("Libs/libvcad_ffi.a is stale (missing: ${${(f)missing}[1,3]}…): run apple/VcadApp/build-ffi.sh")
 fi
 [[ -f $APP_DIR/Libs/libtang_compress_ffi.a ]] || problems+=("Libs/libtang_compress_ffi.a missing: run apple/VcadApp/build-tc-ffi.sh")
+# A Rust staticlib built with panic=abort makes every kernel panic kill the
+# app (1.0.3-beta.5). Fail here, not after a 10-minute build.
+for lib in $APP_DIR/Libs/libvcad_ffi.a $APP_DIR/Libs/libtang_compress_ffi.a; do
+  [[ -f $lib ]] || continue
+  "$APP_DIR/scripts/check-unwind.sh" --lib "$lib" >/dev/null 2>&1 \
+    || problems+=("${lib:t} lacks the unwind panic runtime (panic=abort build?): rebuild it; see apple/VcadApp/scripts/check-unwind.sh")
+done
 
 # CFBundleVersion must beat every build already in the feed, or Sparkle
 # clients never see this release.
@@ -138,6 +145,9 @@ CONFIG=release VCAD_RELEASE=1 VCAD_BUNDLE_ID=$BUNDLE_ID \
   "$APP_DIR/bundle.sh"
 APP="$DIST/vcad.app"
 ditto "$APP_DIR/dist/vcad.app" "$APP"
+# The binary that ships must unwind: a kernel panic has to reach catch_unwind.
+"$APP_DIR/scripts/check-unwind.sh" --bin "$APP/Contents/MacOS/vcad" \
+  || fail "release binary is linked with Rust's panic=abort runtime"
 
 plist="$APP/Contents/Info.plist"
 pb() { /usr/libexec/PlistBuddy -c "Print :$1" "$plist" 2>/dev/null }

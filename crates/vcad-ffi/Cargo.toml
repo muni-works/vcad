@@ -65,5 +65,9 @@ serde_json = { workspace = true }
 irys-recon = { workspace = true, optional = true }
 
 [dev-dependencies]
+# tests/panic_containment.rs: a deliberately panicking root must come back
+# through the C ABI as a per-root failure. Dev-only, so resolver 2 keeps the
+# hook out of `cargo build -p vcad-ffi` (the lib vcad.app links).
+vcad-eval = { workspace = true, features = ["panic-injection"] }
 # Draws the tag36h11 test photos (recon tests).
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
