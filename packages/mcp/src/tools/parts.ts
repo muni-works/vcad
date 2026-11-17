@@ -12,7 +12,9 @@ import {
   loadPartsManifest,
   searchParts as searchPartsEngine,
   defaultParamsFor,
+  partInfo as partInfoEngine,
 } from "@vcad/engine";
+import type { PartInfo } from "@vcad/engine";
 import { getSession } from "./session.js";
 import { runMutation } from "./registry-dispatch.js";
 import { behavior, type ToolDef } from "./tool-def.js";
@@ -72,6 +74,24 @@ export const placePartSchema = {
   required: ["document_id", "path"],
 } as const;
 
+export const describePartSchema = {
+  type: "object",
+  properties: {
+    path: {
+      type: "string",
+      description:
+        "Part source path from `search_parts.id`, e.g. 'std:vacuum.chamber.spherical-cube'.",
+    },
+    params: {
+      type: "object",
+      description:
+        "Parameter name → value map. Missing params take the part's declared defaults.",
+      additionalProperties: true,
+    },
+  },
+  required: ["path"],
+} as const;
+
 function kernelOf(engine: Engine): Parameters<typeof loadPartsManifest>[0] | null {
   // Engine hides `kernel` behind a private field. We only need the two
   // function pointers; fall back to the Solid class as a probe.
@@ -113,6 +133,54 @@ export function searchPartsTool(
       {
         type: "text",
         text: JSON.stringify({ results, count: results.length }, null, 2),
+      },
+    ],
+  };
+}
+
+/** Describe a part through the kernel; `null` when the kernel is too old. */
+function describe(
+  engine: Engine,
+  path: string,
+  params: Record<string, unknown>,
+): PartInfo | null {
+  const kernel = kernelOf(engine) as Parameters<typeof partInfoEngine>[0] | null;
+  if (!kernel) return null;
+  return partInfoEngine(kernel, path, params);
+}
+
+/** `describe_part` MCP handler — ports + metadata for a part. Read-only. */
+export function describePartTool(
+  args: Record<string, unknown>,
+  engine: Engine,
+): { content: Array<{ type: string; text: string }> } {
+  const path = typeof args.path === "string" ? args.path : null;
+  if (!path) throw new Error("describe_part: missing `path`");
+  const manifest = manifestFor(engine);
+  const idLookup = path.startsWith("std:") ? path.slice(4) : path;
+  const entry = manifest.find((p) => p.id === idLookup);
+  if (!entry) throw new Error(`describe_part: unknown part "${path}"`);
+  const params: Record<string, unknown> = {
+    ...defaultParamsFor(entry),
+    ...(args.params && typeof args.params === "object"
+      ? (args.params as Record<string, unknown>)
+      : {}),
+  };
+  const info = describe(engine, path, params);
+  if (!info) {
+    throw new Error(
+      "describe_part: this kernel build has no `partInfo` export — rebuild the WASM kernel",
+    );
+  }
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(
+          { path: `std:${entry.id}`, version: entry.version, params, ...info },
+          null,
+          2,
+        ),
       },
     ],
   };
@@ -167,6 +235,17 @@ export function placePartTool(
     runMutation("translate", { child: partId, offset }, doc, documentId);
   }
 
+  // Ports in document coordinates (the part is only translated here), so
+  // an agent can line up the next part without a second call.
+  const info = describe(engine, path, params);
+  const off = position
+    ? [position.x ?? 0, position.y ?? 0, position.z ?? 0]
+    : [0, 0, 0];
+  const ports = info?.ports.map((p) => ({
+    ...p,
+    origin: p.origin.map((v, i) => v + (off[i] ?? 0)) as [number, number, number],
+  }));
+
   return {
     content: [
       {
@@ -181,6 +260,7 @@ export function placePartTool(
               params,
               node_id: placed.node_id,
             },
+            ...(ports && ports.length > 0 ? { ports } : {}),
           },
           null,
           2,
@@ -195,7 +275,7 @@ export const toolDefs: ToolDef[] = [
     name: "search_parts",
     pack: null,
     description:
-      "Search the stdlib parts library (fasteners, bearings, …). Matches across name, category, synonyms, and catalog part numbers (McMaster / ISO / DIN). Returns an array of {id, name, category, params, xrefs, synonyms} — use `id` with `place_part`. Part numbers like '91290A320' or 'ISO 4762' match directly.",
+      "Search the stdlib parts library (fasteners, bearings, vacuum hardware — CF/KF flanges, gaskets, nipples, tees, crosses, spherical cube/octagon chambers, viewports, HV/electrical feedthroughs, valves, gauges). Matches across name, category, synonyms, and catalog part numbers (McMaster / ISO / DIN). Returns an array of {id, name, category, params, xrefs, synonyms} — use `id` with `place_part`. Part numbers like '91290A320' or 'ISO 4762' match directly.",
     inputSchema: searchPartsSchema,
     handler: (a, c) => searchPartsTool(a, c.engine),
     behavior: behavior({}),
@@ -208,5 +288,14 @@ export const toolDefs: ToolDef[] = [
     inputSchema: placePartSchema,
     handler: (a, c) => placePartTool(a, c.engine),
     behavior: behavior({ writesDoc: true, geometry: true }),
+  },
+  {
+    name: "describe_part",
+    pack: null,
+    description:
+      "Describe a stdlib part for a given params map: its named mate ports (origin on the seal mid-plane, outward axis, clocking `up`, flange family + size, part-local mm) and machine-readable metadata — dimensions with their catalog source, ratings the user entered (never derived), model-derived figures labelled `*_model` (e.g. HV creepage), `suggested_clearance` entries to pass to check_clearance, and BOM lines. Two ports mate when origins coincide, axes oppose and `up`s are parallel; in loon, `[vac-mate path params port parent parent-port]` does this and adds the joint's gasket/bolts or ring/clamp to the BOM.",
+    inputSchema: describePartSchema,
+    handler: (a, c) => describePartTool(a, c.engine),
+    behavior: behavior({}),
   },
 ];

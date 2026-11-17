@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-em-tolerance-from-document",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "feat",
+  "title": "Speaker motors and press fits straight from the CAD",
+  "summary": "simulate_em reads a magnet motor (axial ring magnets now supported) from a document_id; analyze_tolerance_stackup derives the stack from a clearance assertion and toleranced parameters.",
+  "features": ["em", "tolerance", "simulation", "mcp", "loon"],
+  "mcpTools": ["simulate_em", "analyze_tolerance_stackup"]
+}

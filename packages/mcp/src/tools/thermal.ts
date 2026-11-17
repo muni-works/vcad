@@ -10,6 +10,7 @@
  */
 
 import { behavior, type ToolDef } from "./tool-def.js";
+import { getSession } from "./session-core.js";
 
 const paramValue = {
   description:
@@ -246,6 +247,146 @@ const transientSchema = {
   },
 };
 
+const studyBoundarySchema = {
+  type: "object" as const,
+  required: ["type"],
+  description:
+    'Boundary: `{"type":"adiabatic"}`, `{"type":"convection","hWM2k":..,' +
+    '"ambientC":..}`, `{"type":"fixedTemperature","temperatureC":..}`, or ' +
+    '`{"type":"radiation","emissivity":..,"ambientC":..}` (gray-diffuse, ' +
+    "optional parallel `hWM2k`, `areaScale` = true/voxel area — a voxelized " +
+    "cylinder over-counts area ~4/pi — and `enclosure` {emissivity, areaM2}). " +
+    "Numbers may be document parameter names.",
+  properties: {
+    type: {
+      type: "string" as const,
+      enum: ["adiabatic", "convection", "fixedTemperature", "radiation"],
+    },
+    hWM2k: paramValue,
+    ambientC: paramValue,
+    temperatureC: paramValue,
+    emissivity: paramValue,
+    areaScale: paramValue,
+    enclosure: {
+      type: "object" as const,
+      required: ["emissivity", "areaM2"],
+      properties: { emissivity: paramValue, areaM2: paramValue },
+    },
+  },
+};
+
+const studyRegionSchema = {
+  type: "object" as const,
+  required: ["min", "max"],
+  description: "World-frame AABB sub-region of the part, mm.",
+  properties: {
+    min: { type: "array" as const, minItems: 3, maxItems: 3, items: { type: "number" as const } },
+    max: { type: "array" as const, minItems: 3, maxItems: 3, items: { type: "number" as const } },
+  },
+};
+
+const thermalStudySchema = {
+  type: "object" as const,
+  required: ["parts"],
+  description:
+    "A thermal study over the document's own parts (the same shape as a " +
+    "`thermal` entry in `document.analysis_studies`). The listed parts are " +
+    "voxelized from their tessellations onto a grid spanning their union " +
+    "bounding box; each voxel takes the material of the part filling most " +
+    "of it (solid when >= half full). Sources and sinks name parts; numbers " +
+    "may be document parameter names (e.g. a `defparam amp_loss_w`). " +
+    "Fail-closed, naming the part: a part thinner than `minVoxelsAcross` " +
+    "voxels (default 2) along any axis, overlapping parts, an open mesh, a " +
+    "material with no thermal properties and no override, a source box that " +
+    "would also cover another part.",
+  properties: {
+    parts: {
+      type: "array" as const,
+      minItems: 1,
+      items: { type: "string" as const },
+      description: "Parts to voxelize (name or part id). Unlisted parts are void.",
+    },
+    divisions: {
+      type: "array" as const,
+      minItems: 3,
+      maxItems: 3,
+      items: { type: "number" as const },
+      description: "Voxels per axis. Give this OR `pitchMm`.",
+    },
+    pitchMm: {
+      type: "array" as const,
+      minItems: 3,
+      maxItems: 3,
+      items: { type: "number" as const },
+      description: "Target voxel pitch per axis, mm (rounded down to span the domain exactly).",
+    },
+    paddingMm: { type: "number" as const, description: "Void margin around the parts, mm. Default 0." },
+    minVoxelsAcross: { type: "number" as const, description: "Thin-wall guard, voxels. Default 2." },
+    materials: {
+      type: "array" as const,
+      description:
+        "Per-part overrides of the built-in table (keyed by the part's material " +
+        "string: pla, petg, abs, nylon, fr4, aluminium, copper, steel, " +
+        "stainless, brass, silicon, glass, air, ...). Give `kWMk` (1 or 3 world-" +
+        "axis values) OR `laminate` (through-plane = the part's thinnest axis). " +
+        "A real PCB with copper planes needs `laminate` (~15 in-plane / ~0.4 " +
+        "through) — the table's fr4 is bare laminate.",
+      items: {
+        type: "object" as const,
+        required: ["part"],
+        properties: {
+          part: { type: "string" as const },
+          kWMk: { type: "array" as const, minItems: 1, maxItems: 3, items: paramValue },
+          laminate: {
+            type: "object" as const,
+            required: ["inPlaneWMk", "throughPlaneWMk"],
+            properties: { inPlaneWMk: paramValue, throughPlaneWMk: paramValue },
+          },
+          heatCapacityJM3k: paramValue,
+        },
+      },
+    },
+    sources: {
+      type: "array" as const,
+      items: {
+        type: "object" as const,
+        required: ["name", "part", "powerW"],
+        properties: {
+          name: { type: "string" as const },
+          part: { type: "string" as const },
+          powerW: paramValue,
+          region: studyRegionSchema,
+        },
+      },
+    },
+    sinks: {
+      type: "array" as const,
+      description: "Heat sinks: parts (or sub-regions) held at a fixed temperature.",
+      items: {
+        type: "object" as const,
+        required: ["part", "temperatureC"],
+        properties: {
+          part: { type: "string" as const },
+          temperatureC: paramValue,
+          region: studyRegionSchema,
+        },
+      },
+    },
+    exposed: {
+      ...studyBoundarySchema,
+      description: "Boundary on every solid face touching void. Default adiabatic.",
+    },
+    domainFaces: {
+      type: "array" as const,
+      minItems: 6,
+      maxItems: 6,
+      items: studyBoundarySchema,
+      description: "Per domain face `[-x,+x,-y,+y,-z,+z]`; omitted = all take `exposed`.",
+    },
+    referenceC: paramValue,
+  },
+};
+
 type Json = Record<string, unknown>;
 
 function textResult(payload: unknown) {
@@ -281,17 +422,39 @@ export const toolDefs: ToolDef[] = [
       "returned (summaries + claims are). " +
       "Cost scales with voxel count (capped at 2M; transient runs also capped at 20k " +
       "steps and 1e9 voxel-steps); a 20x20x2 board solves instantly, 100x100x13 in " +
-      "seconds.",
+      "seconds. Instead of a hand-written `spec`, pass `document_id` to solve the " +
+      "document's own parts: its thermal analysis study (`study_id`, or the only " +
+      "one) or an inline `study` voxelizes the selected parts from their " +
+      "tessellations, ties sources/sinks to parts, and reads named document " +
+      "parameters (steady only).",
     inputSchema: {
       type: "object" as const,
-      required: ["spec"],
       properties: {
-        spec: thermalSpecSchema,
+        spec: {
+          ...thermalSpecSchema,
+          description:
+            thermalSpecSchema.description + " Pass this OR `document_id`.",
+        },
+        document_id: {
+          type: "string" as const,
+          description:
+            "Session document to solve (instead of `spec`): the study's parts are " +
+            "voxelized from the document's own evaluated geometry.",
+        },
+        study_id: {
+          type: "string" as const,
+          description:
+            "With `document_id`: id of the thermal study in " +
+            "`document.analysis_studies` (default: the only one).",
+        },
+        study: thermalStudySchema,
         transient: transientSchema,
         parameters: {
           type: "object" as const,
           additionalProperties: { type: "number" as const },
-          description: "Bindings for named spec parameters, `{name: value}`.",
+          description:
+            "Bindings for named spec parameters, `{name: value}`. With " +
+            "`document_id` these override the document's parameter values.",
         },
         options: {
           type: "object" as const,
@@ -312,6 +475,35 @@ export const toolDefs: ToolDef[] = [
     },
     handler: (args, ctx) => {
       const a = args as Json;
+      if (a.document_id !== undefined) {
+        if (a.spec !== undefined) {
+          throw new Error("solve_thermal: pass `spec` OR `document_id`, not both");
+        }
+        if (a.transient !== undefined) {
+          throw new Error(
+            "solve_thermal: `transient` is not supported with `document_id` yet — steady only",
+          );
+        }
+        const documentId = String(a.document_id);
+        const doc = getSession(documentId);
+        const out = ctx.engine.thermalSolveDocument(
+          JSON.stringify(doc),
+          a.study === undefined ? "" : JSON.stringify(a.study),
+          a.study_id === undefined ? "" : String(a.study_id),
+          JSON.stringify(a.parameters ?? {}),
+          JSON.stringify(a.options ?? {}),
+        ) as Json;
+        return textResult({
+          ...out,
+          extracted: { document_id: documentId, ...(out.extracted as Json) },
+        });
+      }
+      if (a.spec === undefined) {
+        throw new Error("solve_thermal: pass `spec`, or `document_id` (+ `study` / `study_id`)");
+      }
+      if (a.study !== undefined || a.study_id !== undefined) {
+        throw new Error("solve_thermal: `study` / `study_id` need `document_id`");
+      }
       const out = a.transient
         ? ctx.engine.thermalSolveTransient(
             JSON.stringify(a.spec),

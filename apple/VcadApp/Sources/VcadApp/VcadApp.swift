@@ -31,6 +31,10 @@ struct VcadApp: App {
             // Runs once the main run loop starts; exits the process itself.
             Task { @MainActor in await analysisSmoke() }
         }
+        if ProcessInfo.processInfo.environment["VCAD_NAV_SMOKE"] != nil {
+            // Needs the GUI up; runs alongside launch and exits the process itself.
+            Task { @MainActor in await navSmoke() }
+        }
         if let path = ProcessInfo.processInfo.environment["VCAD_EDIT_SMOKE"] {
             MainActor.assumeIsolated { editSmoke(path: path) }
             exit(0)
@@ -80,6 +84,7 @@ struct VcadApp: App {
             EditorView(model: model, intent: intent)
                 .task { FieldOverlayStore.shared.loadFromEnvironment() }
                 .task { await DirectManipDemo.runIfRequested(model) }
+                .task { await FieldsSnapshots.runIfRequested(model) }
                 .task { await AssemblyOpenDemo.runIfRequested(model) }
                 .task { await RuntimeScrubBench.runIfRequested(model) }
         }

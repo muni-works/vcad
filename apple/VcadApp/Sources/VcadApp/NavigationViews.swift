@@ -516,6 +516,8 @@ final class HaloInput {
     private var monitor: Any?
     private var pendingDown: NSEvent?
     private var replaying = false
+    /// A right-drag the navigation scheme spends on the camera (Onshape).
+    private var cameraDrag = false
     weak var model: EditorModel?
 
     func install(model: EditorModel) {
@@ -548,6 +550,24 @@ final class HaloInput {
         case .rightMouseDragged:
             guard let down = pendingDown, let model, let a = overlayPoint(down), let b = overlayPoint(e) else { return false }
             let off = CGSize(width: b.x - a.x, height: b.y - a.y)
+            // Onshape orbits (⌃ pans) with the right button. A right-click that
+            // never moves still falls through to the context menu on mouse-up.
+            let flags = e.modifierFlags
+            let camera = NavigationScheme.current.action(
+                for: .drag(.right, shift: flags.contains(.shift), command: flags.contains(.command),
+                           control: flags.contains(.control)))
+            if nav.haloOrigin == nil, camera == .orbit || camera == .pan {
+                if !cameraDrag, hypot(off.width, off.height) > 3 {
+                    cameraDrag = true
+                    model.beginOrbit()
+                }
+                if cameraDrag {
+                    let dx = Float(e.deltaX), dy = Float(e.deltaY)
+                    if camera == .orbit { model.orbitDrag(dx: dx, dy: dy) } else { model.panBy(dx: dx, dy: dy) }
+                    RenderGate.wake()
+                }
+                return true
+            }
             if nav.haloOrigin == nil, hypot(off.width, off.height) > 8 {
                 withAnimation(Motion.pop) { nav.openHalo(at: a, model: model, marking: true) }
             }
@@ -558,6 +578,11 @@ final class HaloInput {
         case .rightMouseUp:
             guard let down = pendingDown else { return false }
             pendingDown = nil
+            if cameraDrag {
+                cameraDrag = false
+                model?.endOrbit()
+                return true
+            }
             if nav.haloMarking {
                 withAnimation(Motion.snappy) { nav.runHaloSlot(nav.haloSlot) }
             } else {
