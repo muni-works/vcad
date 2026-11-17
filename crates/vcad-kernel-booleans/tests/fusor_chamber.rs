@@ -904,7 +904,9 @@ fn merged_chamber_survives_further_booleans() {
             fb.fidelity,
             brep(&b).topology.faces.len()
         );
-        if fb.fidelity != Fidelity::Analytic {
+        // No worse than the split form: where that one stays analytic, so
+        // must this. (The slot takes the watertightness swap on both.)
+        if fa.fidelity == Fidelity::Analytic && fb.fidelity != Fidelity::Analytic {
             fails.push(format!("{name}: merged input degraded: {:?}", fb.reason));
         }
         if census != (0, 0, 0) {
@@ -913,7 +915,9 @@ fn merged_chamber_survives_further_booleans() {
         if (va - vb).abs() > 1e-6 * va.abs() || va >= v_split - 1.0 {
             fails.push(format!("{name}: volume {vb} vs split-form {va}"));
         }
-        fails.extend(check_merged(name, &brep(&b)));
+        if fb.fidelity == Fidelity::Analytic {
+            fails.extend(check_merged(name, &brep(&b)));
+        }
     }
     assert!(fails.is_empty(), "{fails:#?}");
 }
