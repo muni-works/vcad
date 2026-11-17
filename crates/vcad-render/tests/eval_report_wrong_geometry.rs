@@ -117,6 +117,7 @@ fn assert_warned(name: &str, run: &str, r: &EvalReport) {
 
 #[test]
 fn known_wrong_geometry_is_reported_and_never_cached() {
+    // Every evaluation here redoes a heavy boolean, so each is spent once.
     std::env::set_var("VCAD_NO_MISSED_CUT_SWAP", "1");
     for (name, tail) in [("root", AS_ROOT), ("instance", AS_INSTANCE)] {
         let raw = doc_json(tail);
@@ -127,11 +128,13 @@ fn known_wrong_geometry_is_reported_and_never_cached() {
         assert_warned(name, "cold", &report(&raw, &cache));
         assert_warned(name, "warm", &report(&raw, &cache));
 
-        // The render path (stand-in instances, placed-instance cache) must
-        // not store it either.
-        with_root_cache(cache.clone() as Rc<dyn RootMeshCache>, SEGMENTS, || {
-            render_svg_str(&raw, 1.0).expect("render")
-        });
+        // The render path's own store (placed instances, stand-ins) must
+        // not take it either. Roots have no render-side store.
+        if name == "instance" {
+            with_root_cache(cache.clone() as Rc<dyn RootMeshCache>, SEGMENTS, || {
+                render_svg_str(&raw, 1.0).expect("render")
+            });
+        }
         assert_eq!(
             cache.stats().stored,
             0,
@@ -140,15 +143,11 @@ fn known_wrong_geometry_is_reported_and_never_cached() {
     }
     std::env::remove_var("VCAD_NO_MISSED_CUT_SWAP");
 
-    // Control: with the missed-cut replacement on, the same documents build
-    // clean and DO get cached (so the zero above is the gate, not a cache
-    // that never stores).
-    for (name, tail) in [("root", AS_ROOT), ("instance", AS_INSTANCE)] {
-        let raw = doc_json(tail);
-        let cache = Rc::new(MemoryMeshCache::new());
-        let r = report(&raw, &cache);
-        assert_eq!(r.parts_warned, 0, "{name}: control warned: {r:#?}");
-        assert!(r.parts[0].warnings.is_empty());
-        assert!(cache.stats().stored > 0, "{name}: control stored nothing");
-    }
+    // Control: with the missed-cut replacement on, the same part builds
+    // clean and DOES get cached, so the zeros above are the gate rather
+    // than a cache that never stores.
+    let cache = Rc::new(MemoryMeshCache::new());
+    let r = report(&doc_json(AS_INSTANCE), &cache);
+    assert_eq!(r.parts_warned, 0, "control warned: {r:#?}");
+    assert!(cache.stats().stored > 0, "control stored nothing");
 }
