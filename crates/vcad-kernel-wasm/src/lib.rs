@@ -9077,6 +9077,26 @@ pub fn particle_optimize(
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// Magnetic field of posed 3D sources (current loops, solenoids, disc/ring
+/// and block magnets) at query points or on a plane grid.
+///
+/// `scene_json` is a `vcad_kernel_particle::field3d_spec::SceneSpec`
+/// (mm / degrees / A / T), `query_json` a `QuerySpec` (points and/or grid,
+/// optional ∇|B|). Fail-closed: invalid geometry, an oversized grid, or a
+/// query point on a source singularity is an error. Returns a `FieldReport`
+/// (B vectors in tesla, |B|, per-source method + dipole moment).
+#[wasm_bindgen(js_name = magneticField)]
+pub fn magnetic_field(scene_json: &str, query_json: &str) -> Result<JsValue, JsError> {
+    use vcad_kernel::vcad_kernel_particle::field3d_spec as fs;
+    let scene: fs::SceneSpec =
+        serde_json::from_str(scene_json).map_err(|e| JsError::new(&format!("bad scene: {e}")))?;
+    let query: fs::QuerySpec =
+        serde_json::from_str(query_json).map_err(|e| JsError::new(&format!("bad query: {e}")))?;
+    let report = fs::evaluate(&scene, &query).map_err(|e| JsError::new(&e))?;
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&report, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
 // ---------------------------------------------------------------------------
 // Tolerance stackup analysis (vcad-kernel-tolerance)
 // ---------------------------------------------------------------------------
@@ -11179,6 +11199,74 @@ pub fn neutronics_simulate(spec_json: &str, params_json: &str) -> Result<JsValue
         },
         balance_max_dev: result.balance_max_dev,
         total_histories: result.total_histories,
+        claim_set,
+        receipt_claims,
+    };
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Output of [`neutronics_simulate_scene`].
+#[derive(serde::Serialize)]
+struct WasmNeutronicsScene {
+    report: vcad_kernel::vcad_kernel_neutronics::scene_spec::SceneReport,
+    claim_set: vcad_kernel::vcad_kernel_neutronics::receipt::ClaimSet,
+    receipt_claims: Vec<vcad_receipt::ReceiptClaim>,
+}
+
+/// Room-scale (3D CSG) Monte Carlo neutron run: priority-ordered
+/// box/sphere/cylinder cells (chamber, HDPE castle, concrete room), a
+/// point source, virtual detectors with instrument responses (moderated
+/// ³He/BF₃ counter computed by MC, bubble dosimeter, CR-39, ideal rem
+/// meter) and an optional voxel H*(10) dose map — every number with its
+/// batch-statistics RSE, plus predicted claims (fail-closed).
+///
+/// `spec_json` is a `vcad_kernel_neutronics::scene_spec::SceneSpec`,
+/// `params_json` a `{name: value}` map binding named parameters.
+#[wasm_bindgen(js_name = neutronicsSimulateScene)]
+pub fn neutronics_simulate_scene(spec_json: &str, params_json: &str) -> Result<JsValue, JsError> {
+    use vcad_kernel::vcad_kernel_neutronics as nk;
+    let spec: nk::scene_spec::SceneSpec =
+        serde_json::from_str(spec_json).map_err(|e| JsError::new(&format!("bad scene: {e}")))?;
+    let params: std::collections::BTreeMap<String, f64> = if params_json.trim().is_empty() {
+        Default::default()
+    } else {
+        serde_json::from_str(params_json).map_err(|e| JsError::new(&format!("bad params: {e}")))?
+    };
+    // Budget: room histories + response-table histories per counter.
+    let mut total = spec
+        .run
+        .histories_per_batch
+        .saturating_mul(spec.run.batches);
+    for d in &spec.detectors {
+        for i in &d.instruments {
+            if let nk::scene_spec::InstrumentSpec::ModeratedCounter {
+                response_histories_per_batch,
+                response_batches,
+                ..
+            } = i
+            {
+                total = total.saturating_add(
+                    response_histories_per_batch
+                        .saturating_mul(*response_batches)
+                        .saturating_mul(nk::response::RESPONSE_GRID_EV.len()),
+                );
+            }
+        }
+    }
+    if total > 5_000_000 {
+        return Err(JsError::new(&format!(
+            "too many histories for the MCP tier: {total} incl. counter response tables (cap 5,000,000) — error bars scale as 1/sqrt(N)"
+        )));
+    }
+    let (resolved, result) = spec
+        .evaluate(&params)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let claim_set = nk::receipt::scene_claims_from_run(&resolved, &result)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let receipt_claims = nk::receipt::design_claims(&claim_set);
+    let out = WasmNeutronicsScene {
+        report: nk::scene_spec::report(&resolved, &result),
         claim_set,
         receipt_claims,
     };

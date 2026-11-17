@@ -3387,6 +3387,196 @@
     }
   },
   {
+    "name": "magnetic_field",
+    "title": "Magnetic Field",
+    "description": "Magnetic field (B, tesla) of coils and permanent magnets placed anywhere in 3D: current loops, finite solenoids, axially magnetized disc/rod/ring magnets, and rectangular block magnets, each with a full pose (mm + axis or Euler degrees), superposed and sampled at points and/or on a plane grid. Returns B vectors, |B|, optional ∇|B| (T/m), the peak, and per-source dipole moment + method. Exact closed forms throughout (elliptic integrals for loops/solenoids/cylinders, charge-sheet formula for blocks); magnets are ideal rigid magnetization (μr = 1, no iron, no mutual demagnetization). Fails closed on a query point exactly on a filament or magnet edge. Use it to size a magnet for a target field, check a Helmholtz/coil pair's uniformity, or map a motor/steering field. Fast: milliseconds per thousand points.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "description": "One source. `type` selects the fields: `loop` {radius_mm, current_a, turns=1, wire_radius_mm=0}; `solenoid` {radius_mm, length_mm, current_a, turns, n_loops?}; `cylinder_magnet` {radius_mm, inner_radius_mm=0 (ring magnet if >0), length_mm, remanence_t, n_loops?}; `block_magnet` {size_mm: [x, y, z] (z = magnetization), remanence_t}. All centered on `pose.position_mm`. Remanence: N52 ≈ 1.43 T, N42 ≈ 1.3, ferrite ≈ 0.4. `n_loops` swaps the exact closed form for a loop stack.",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "loop",
+                  "solenoid",
+                  "cylinder_magnet",
+                  "block_magnet"
+                ]
+              },
+              "radius_mm": {
+                "type": "number"
+              },
+              "inner_radius_mm": {
+                "type": "number"
+              },
+              "length_mm": {
+                "type": "number"
+              },
+              "size_mm": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 3,
+                "maxItems": 3
+              },
+              "current_a": {
+                "type": "number"
+              },
+              "turns": {
+                "type": "number"
+              },
+              "wire_radius_mm": {
+                "type": "number"
+              },
+              "remanence_t": {
+                "type": "number"
+              },
+              "n_loops": {
+                "type": "number"
+              },
+              "pose": {
+                "type": "object",
+                "description": "Placement. The source's local +z is its coil axis / north pole. Give `axis` (+ optional `x_axis` to fix a block's roll) OR `rotation_deg` (Euler X,Y,Z degrees, R = Rx·Ry·Rz — the IR Rotate convention), not both. Omitted = at the origin, axis +Z.",
+                "properties": {
+                  "position_mm": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "Source center, mm."
+                  },
+                  "axis": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "Local +z direction (need not be unit)."
+                  },
+                  "x_axis": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "With `axis`: local +x direction (orthogonal part used)."
+                  },
+                  "rotation_deg": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "Euler angles about X, Y, Z, deg."
+                  }
+                }
+              }
+            }
+          },
+          "description": "Sources to superpose (free space, linear)."
+        },
+        "points_mm": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "description": "Query points, mm."
+        },
+        "grid": {
+          "type": "object",
+          "required": [
+            "u_range_mm",
+            "v_range_mm",
+            "nu",
+            "nv"
+          ],
+          "description": "Plane grid origin + u·u_dir + v·v_dir, appended after points_mm, row-major (index = offset + iv·nu + iu). Total points ≤ 20000.",
+          "properties": {
+            "origin_mm": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 3,
+              "maxItems": 3,
+              "description": "Default [0, 0, 0]."
+            },
+            "u_dir": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 3,
+              "maxItems": 3,
+              "description": "Default +X."
+            },
+            "v_dir": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 3,
+              "maxItems": 3,
+              "description": "Default +Y."
+            },
+            "u_range_mm": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "v_range_mm": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "nu": {
+              "type": "number"
+            },
+            "nv": {
+              "type": "number"
+            }
+          }
+        },
+        "gradient": {
+          "type": "boolean",
+          "description": "Also return ∇|B| (T/m) per point. Default false."
+        }
+      },
+      "required": [
+        "sources"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
     "name": "simulate_em",
     "title": "Simulate EM Fields",
     "description": "Electromagnetic field solve (finite-volume SOR, the differentiable FEMM replacement): axisymmetric magnetostatics (coil inductance, stored energy, axial force — solenoids, coaxial coil pairs), planar magnetostatics (motor cross-section torque and forces per meter of depth, permanent magnets, optional saturable B-H iron), or electrostatics (two-terminal capacitance) — as data plus `vcad.em-claims/1` sets and unified-receipt claims, each with a two-independent-routes cross-check residual (energy vs linkage, JxB vs Maxwell stress, charge vs energy). Predictions carry basis \"predicted\" and roll up Provisional until measured. Static/2D only: no eddy currents or AC here, no 3D end effects, planar results are per meter of depth. Deterministic. Cost ~O((nx*ny)^1.5) SOR sweeps; the 81x81 default runs in well under a second — raise the grid for tight tolerances.",
@@ -6651,7 +6841,7 @@
   {
     "name": "simulate_neutron_shield",
     "title": "Simulate Neutron Shield",
-    "description": "Monte Carlo neutron shielding run (analog transport, 5-group multigroup library with exact elastic kinematics): spherical layer stack around a point source (D-D band), H*(10) dose rate at each detector shell WITH 1-sigma batch error bars (rse), attenuation factor vs bare source, thermal flux, and absorbed/leakage balance — as data plus `vcad.neutronics-claims/1` and unified-receipt claims. Fail-closed: truncated histories or a tally that scored nothing refuses claims (raise histories). Predictions carry basis \"predicted\" and roll up Provisional until surveyed. Design-estimate physics: 5-group library (not ENDF continuous-energy), spherical geometry only, no gamma dose, no activation, source energy capped at 3 MeV (no D-T). Deterministic per seed. Cost ~histories (cap 5M); error bars shrink as 1/sqrt(N). The 400k default runs in seconds.",
+    "description": "Monte Carlo neutron shielding run (analog transport, 5-group multigroup library with exact elastic kinematics). Pass EITHER `spec` (1D spherical layer stack around a point source: H*(10) at detector shells, attenuation factor, thermal flux) OR `scene` (room-scale 3D: priority-ordered box/sphere/cylinder cells — chamber wall, HDPE castle, concrete floor/walls/door — with room return, an optional voxel dose map, and detectors that report expected instrument readings: moderated He-3/BF3 counts/min, bubble-dosimeter bubbles/h, CR-39 tracks/cm2/h) OR `document_id` + `extract` (spherical shells measured from a session document). Every number carries 1-sigma batch error bars (rse) — as data plus `vcad.neutronics-claims/1` and unified-receipt claims. Fail-closed: truncated histories or a tally that scored nothing refuses claims (raise histories). Predictions carry basis \"predicted\" and roll up Provisional until surveyed. Design-estimate physics: 5-group library (not ENDF continuous-energy), convex-primitive geometry only, no gamma dose (per-cell capture rates are the capture-gamma source term), no activation, source energy capped at 3 MeV (no D-T). Deterministic per seed. Cost ~histories (cap 5M); error bars shrink as 1/sqrt(N). The 400k default runs in seconds.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -6662,7 +6852,7 @@
             "source",
             "detectors"
           ],
-          "description": "Spherical shield: concentric layers from r=0 outward around a point source, with detector shells that must each sit strictly inside one layer (put them in air gaps). Units mm. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error). Pass this OR `document_id` + `extract`.",
+          "description": "Spherical shield: concentric layers from r=0 outward around a point source, with detector shells that must each sit strictly inside one layer (put them in air gaps). Units mm. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error). Pass this, `scene`, OR `document_id` + `extract`.",
           "properties": {
             "layers": {
               "type": "array",
@@ -6810,7 +7000,7 @@
                   },
                   "material": {
                     "type": "string",
-                    "description": "Library material (hdpe, paraffin, borated-hdpe-5, water, lead, concrete, air, void). Omitted = the part's document material."
+                    "description": "Library material (hdpe, paraffin, borated-hdpe-5, water, lead, concrete, air, steel, void). Omitted = the part's document material."
                   }
                 }
               }
@@ -6901,6 +7091,335 @@
               "minItems": 3,
               "maxItems": 3,
               "description": "Source point [x, y, z] mm (e.g. the chamber centre); every shell must be centred on it. Default: the shells' common centre."
+            },
+            "run": {
+              "type": "object",
+              "description": "Monte Carlo controls (deterministic for a given seed).",
+              "properties": {
+                "histories_per_batch": {
+                  "type": "number",
+                  "description": "Default 20000."
+                },
+                "batches": {
+                  "type": "number",
+                  "description": "Error-bar batches (>= 2). Default 20."
+                },
+                "seed": {
+                  "type": "number",
+                  "description": "Default 20260717."
+                }
+              }
+            }
+          }
+        },
+        "scene": {
+          "type": "object",
+          "required": [
+            "cells",
+            "source"
+          ],
+          "description": "Room-scale 3D scene. Cells are in PRIORITY order: a point belongs to the first cell containing it, so list holes before what they are cut from (chamber vacuum sphere, then steel sphere; castle cavity, then castle; room air, then concrete). The LAST cell is the world and must enclose every other cell (fail-closed); leaving it is leakage. Units mm.",
+          "properties": {
+            "cells": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "name",
+                  "material",
+                  "shape"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "material": {
+                    "type": "string",
+                    "description": "hdpe, paraffin, borated-hdpe-5, water, lead, concrete, air, steel, void."
+                  },
+                  "shape": {
+                    "type": "object",
+                    "required": [
+                      "type"
+                    ],
+                    "description": "Convex primitive (mm). type=box {min_mm,max_mm} | box_centered {center_mm,half_mm} | sphere {center_mm,radius_mm} | cylinder {base_mm, axis:'x'|'y'|'z', radius_mm, height_mm}.",
+                    "properties": {
+                      "type": {
+                        "type": "string",
+                        "enum": [
+                          "box",
+                          "box_centered",
+                          "sphere",
+                          "cylinder"
+                        ]
+                      },
+                      "min_mm": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                          "description": "A number, or the name of a named parameter bound via `parameters`.",
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "description": "[x, y, z] in mm (Z-up); entries may be named parameters."
+                      },
+                      "max_mm": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                          "description": "A number, or the name of a named parameter bound via `parameters`.",
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "description": "[x, y, z] in mm (Z-up); entries may be named parameters."
+                      },
+                      "center_mm": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                          "description": "A number, or the name of a named parameter bound via `parameters`.",
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "description": "[x, y, z] in mm (Z-up); entries may be named parameters."
+                      },
+                      "half_mm": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                          "description": "A number, or the name of a named parameter bound via `parameters`.",
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "description": "[x, y, z] in mm (Z-up); entries may be named parameters."
+                      },
+                      "base_mm": {
+                        "type": "array",
+                        "minItems": 3,
+                        "maxItems": 3,
+                        "items": {
+                          "description": "A number, or the name of a named parameter bound via `parameters`.",
+                          "anyOf": [
+                            {
+                              "type": "number"
+                            },
+                            {
+                              "type": "string"
+                            }
+                          ]
+                        },
+                        "description": "[x, y, z] in mm (Z-up); entries may be named parameters."
+                      },
+                      "axis": {
+                        "type": "string",
+                        "enum": [
+                          "x",
+                          "y",
+                          "z"
+                        ]
+                      },
+                      "radius_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      },
+                      "height_mm": {
+                        "description": "A number, or the name of a named parameter bound via `parameters`.",
+                        "anyOf": [
+                          {
+                            "type": "number"
+                          },
+                          {
+                            "type": "string"
+                          }
+                        ]
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "source": {
+              "type": "object",
+              "required": [
+                "position_mm",
+                "rate_n_per_s",
+                "energy_ev"
+              ],
+              "description": "Isotropic point source (D-D 2.45e6 eV; max 3e6 eV).",
+              "properties": {
+                "position_mm": {
+                  "type": "array",
+                  "minItems": 3,
+                  "maxItems": 3,
+                  "items": {
+                    "description": "A number, or the name of a named parameter bound via `parameters`.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "description": "[x, y, z] in mm (Z-up); entries may be named parameters."
+                },
+                "rate_n_per_s": {
+                  "description": "A number, or the name of a named parameter bound via `parameters`.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                },
+                "energy_ev": {
+                  "description": "A number, or the name of a named parameter bound via `parameters`.",
+                  "anyOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    }
+                  ]
+                }
+              }
+            },
+            "detectors": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "label",
+                  "position_mm"
+                ],
+                "properties": {
+                  "label": {
+                    "type": "string"
+                  },
+                  "position_mm": {
+                    "type": "array",
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "items": {
+                      "description": "A number, or the name of a named parameter bound via `parameters`.",
+                      "anyOf": [
+                        {
+                          "type": "number"
+                        },
+                        {
+                          "type": "string"
+                        }
+                      ]
+                    },
+                    "description": "[x, y, z] in mm (Z-up); entries may be named parameters."
+                  },
+                  "radius_mm": {
+                    "description": "Virtual tally-sphere radius. Default 50 mm.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "instruments": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "required": [
+                        "type"
+                      ],
+                      "description": "Instrument folded at the detector. moderated_counter {gas:{gas:'he3', pressure_atm} | {gas:'bf3', pressure_atm, b10_fraction}, tube_diameter_mm, active_length_mm, moderator_thickness_mm (HDPE), counting_efficiency?=1, response_histories_per_batch?=10000, response_batches?=10} — response R(E) computed by MC through the counter geometry, reported as counts/min. bubble {sensitivity_bubbles_per_usv (REQUIRED: each unit's own calibration), threshold_ev?=1e5} → bubbles/h. cr39 {tracks_per_cm2_per_msv (REQUIRED), threshold_ev?=2e5} → tracks/cm2/h. rem_meter {counts_per_usv} (ideal H*(10) follower). Optional `name` labels the claim.",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "moderated_counter",
+                            "bubble",
+                            "cr39",
+                            "rem_meter"
+                          ]
+                        },
+                        "name": {
+                          "type": "string"
+                        }
+                      },
+                      "additionalProperties": true
+                    }
+                  }
+                }
+              }
+            },
+            "mesh": {
+              "type": "object",
+              "required": [
+                "min_mm",
+                "max_mm",
+                "shape"
+              ],
+              "description": "Voxel H*(10) dose map: bounds in mm (literal numbers), shape [nx, ny, nz]; a 1-voxel-thick slab at source height is the cheap floor-plan map. Each voxel carries its own RSE (null = nothing scored).",
+              "properties": {
+                "min_mm": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "max_mm": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "shape": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                }
+              }
             },
             "run": {
               "type": "object",

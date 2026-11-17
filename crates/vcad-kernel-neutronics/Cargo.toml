@@ -1,6 +1,6 @@
 [package]
 name = "vcad-kernel-neutronics"
-description = "Monte Carlo neutron transport for shielding and dosimetry design: multigroup analog transport in 1D layered geometries with batch-statistics tallies"
+description = "Monte Carlo neutron transport for shielding and dosimetry design: multigroup analog transport in 1D layered geometries and 3D CSG rooms with batch-statistics tallies and detector responses"
 readme = "README.md"
 keywords = ["cad", "kernel", "neutronics", "brep", "geometry"]
 categories = ["science", "simulation", "mathematics"]

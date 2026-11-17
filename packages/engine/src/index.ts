@@ -856,6 +856,8 @@ export interface KernelModule {
     paramsJson: string,
     optimizeJson: string,
   ) => unknown;
+  /** Magnetic field of posed 3D sources (SceneSpec/QuerySpec JSON). */
+  magneticField?: (sceneJson: string, queryJson: string) => unknown;
   /** Tolerance stackup analysis (StackupSpec/params/options JSON). */
   toleranceAnalyze?: (
     specJson: string,
@@ -955,6 +957,7 @@ export interface KernelModule {
   photonicsSimulate?: (specJson: string, optionsJson: string) => unknown;
   /** Monte Carlo neutron shielding run (ShieldSpec/params JSON). */
   neutronicsSimulate?: (specJson: string, paramsJson: string) => unknown;
+  neutronicsSimulateScene?: (specJson: string, paramsJson: string) => unknown;
   /** Document → DeviceSpec extraction (Document/DeviceExtraction JSON). */
   extractDeviceSpec?: (docJson: string, selectionJson: string) => unknown;
   /** Document → ShieldSpec extraction (Document/ShieldExtraction JSON). */
@@ -1552,6 +1555,7 @@ export class Engine {
       extractStackupSpec: (wasmModule as Record<string, unknown>).extractStackupSpec as KernelModule["extractStackupSpec"],
       signedRadialGap: (wasmModule as Record<string, unknown>).signedRadialGap as KernelModule["signedRadialGap"],
       particleOptimize: (wasmModule as Record<string, unknown>).particleOptimize as KernelModule["particleOptimize"],
+      magneticField: (wasmModule as Record<string, unknown>).magneticField as KernelModule["magneticField"],
       toleranceAnalyze: (wasmModule as Record<string, unknown>).toleranceAnalyze as KernelModule["toleranceAnalyze"],
       thermalSolve: (wasmModule as Record<string, unknown>).thermalSolve as KernelModule["thermalSolve"],
       thermalSolveTransient: (wasmModule as Record<string, unknown>).thermalSolveTransient as KernelModule["thermalSolveTransient"],
@@ -1575,6 +1579,7 @@ export class Engine {
       extractAntennaSpec: (wasmModule as Record<string, unknown>).extractAntennaSpec as KernelModule["extractAntennaSpec"],
       photonicsSimulate: (wasmModule as Record<string, unknown>).photonicsSimulate as KernelModule["photonicsSimulate"],
       neutronicsSimulate: (wasmModule as Record<string, unknown>).neutronicsSimulate as KernelModule["neutronicsSimulate"],
+      neutronicsSimulateScene: (wasmModule as Record<string, unknown>).neutronicsSimulateScene as KernelModule["neutronicsSimulateScene"],
       latticeGaugeSimulate: (wasmModule as Record<string, unknown>).latticeGaugeSimulate as KernelModule["latticeGaugeSimulate"],
       analyzeStaticsBox: (wasmModule as Record<string, unknown>).analyzeStaticsBox as KernelModule["analyzeStaticsBox"],
       analyzeStaticsMesh: (wasmModule as Record<string, unknown>).analyzeStaticsMesh as KernelModule["analyzeStaticsMesh"],
@@ -1926,6 +1931,22 @@ export class Engine {
   }
 
   /**
+   * Magnetic field of posed 3D sources — current loops, solenoids, disc /
+   * ring and block magnets — at query points or on a plane grid. Inputs are
+   * JSON strings (SceneSpec, QuerySpec); see
+   * `vcad-kernel-particle::field3d_spec`.
+   */
+  magneticField(sceneJson: string, queryJson: string): unknown {
+    const fn = this.kernel.magneticField;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "magneticField is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(sceneJson, queryJson);
+  }
+
+  /**
    * Tolerance stackup analysis: worst-case, RSS, seeded Monte Carlo, and
    * exact sensitivities over a linear assembly chain, plus predicted
    * receipt claims. Inputs are JSON strings (StackupSpec, named parameter
@@ -2244,6 +2265,22 @@ export class Engine {
     if (typeof fn !== "function") {
       throw new Error(
         "neutronicsSimulate is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(specJson, paramsJson);
+  }
+
+  /**
+   * Room-scale (3D CSG) Monte Carlo neutron run: dose map, detector
+   * instrument readings (counts/min, bubbles/h) with error bars, and
+   * predicted claims. Inputs are JSON strings (SceneSpec, named parameter
+   * bindings); see `vcad-kernel-neutronics::scene_spec`.
+   */
+  neutronicsSimulateScene(specJson: string, paramsJson: string): unknown {
+    const fn = this.kernel.neutronicsSimulateScene;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "neutronicsSimulateScene is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
       );
     }
     return fn(specJson, paramsJson);
