@@ -764,7 +764,7 @@
   {
     "name": "search_parts",
     "title": "Search Stdlib Parts",
-    "description": "Search the stdlib parts library (fasteners, bearings, …). Matches across name, category, synonyms, and catalog part numbers (McMaster / ISO / DIN). Returns an array of {id, name, category, params, xrefs, synonyms} — use `id` with `place_part`. Part numbers like '91290A320' or 'ISO 4762' match directly.",
+    "description": "Search the stdlib parts library (fasteners, bearings, vacuum hardware — CF/KF flanges, gaskets, nipples, tees, crosses, spherical cube/octagon chambers, viewports, HV/electrical feedthroughs, valves, gauges). Matches across name, category, synonyms, and catalog part numbers (McMaster / ISO / DIN). Returns an array of {id, name, category, params, xrefs, synonyms} — use `id` with `place_part`. Part numbers like '91290A320' or 'ISO 4762' match directly.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -1239,6 +1239,31 @@
       },
       "required": [
         "document_id"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "describe_part",
+    "title": "Describe Part",
+    "description": "Describe a stdlib part for a given params map: its named mate ports (origin on the seal mid-plane, outward axis, clocking `up`, flange family + size, part-local mm) and machine-readable metadata — dimensions with their catalog source, ratings the user entered (never derived), model-derived figures labelled `*_model` (e.g. HV creepage), `suggested_clearance` entries to pass to check_clearance, and BOM lines. Two ports mate when origins coincide, axes oppose and `up`s are parallel; in loon, `[vac-mate path params port parent parent-port]` does this and adds the joint's gasket/bolts or ring/clamp to the BOM.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Part source path from `search_parts.id`, e.g. 'std:vacuum.chamber.spherical-cube'."
+        },
+        "params": {
+          "type": "object",
+          "description": "Parameter name → value map. Missing params take the part's declared defaults.",
+          "additionalProperties": true
+        }
+      },
+      "required": [
+        "path"
       ]
     },
     "annotations": {
@@ -3563,7 +3588,7 @@
           "required": [
             "problem"
           ],
-          "description": "Problem-tagged EM spec. `axisym_magnetostatics`: chamber `r_max_mm`/`z_min_mm`/`z_max_mm` + `coils` [{region, turns, current_a}] + `materials` [{region, mu_r, js_t?}] (js_t enables the saturable B-H law; named parameters allowed). `planar_magnetostatics`: `x_min_mm`/`x_max_mm`/`y_min_mm`/`y_max_mm` + `conductors` [{region, total_current_a}] + `magnets` [{region, br_x_t, br_y_t, mu_r}] + `materials` + `periodic_x` (named parameters allowed). `electrostatics`: `geometry` (\"axisymmetric\"|\"planar\") + domain bounds + `electrodes` [{shape, potential_v}] (>= 2) + `dielectrics` [{shape, eps_r}] — literal numbers only for this class.",
+          "description": "Problem-tagged EM spec. `axisym_magnetostatics`: chamber `r_max_mm`/`z_min_mm`/`z_max_mm` + `coils` [{region, turns, current_a}] + `materials` [{region, mu_r, js_t?}] (js_t enables the saturable B-H law) + `magnets` [{region, br_z_t, mu_r}] (axially magnetized rings: speaker/actuator motors; named parameters allowed). `planar_magnetostatics`: `x_min_mm`/`x_max_mm`/`y_min_mm`/`y_max_mm` + `conductors` [{region, total_current_a}] + `magnets` [{region, br_x_t, br_y_t, mu_r}] + `materials` + `periodic_x` (named parameters allowed). `electrostatics`: `geometry` (\"axisymmetric\"|\"planar\") + domain bounds + `electrodes` [{shape, potential_v}] (>= 2) + `dielectrics` [{shape, eps_r}] — literal numbers only for this class. Pass this OR `document_id` + `extract`.",
           "properties": {
             "problem": {
               "type": "string",
@@ -3903,6 +3928,17 @@
                       }
                     ]
                   },
+                  "br_z_t": {
+                    "description": "Axisym only: axial remanence, tesla (+ = north up).",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
                   "mu_r": {
                     "description": "Recoil mu_r. Default 1.",
                     "anyOf": [
@@ -4193,12 +4229,143 @@
             }
           }
         },
+        "document_id": {
+          "type": "string",
+          "description": "Session document to extract an axisym magnetostatic device from (instead of `spec`): annuli measured from the document's revolved parts. Requires `extract`. nx/ny default to the advised grid (coarser is refused) and `gap_probe` to the detected pole/plate air gap. A saturable-steel motor at 4 cells per 0.5 mm gap is a ~10^5-node Picard solve: minutes, not the sub-second spec-path default."
+        },
+        "extract": {
+          "type": "object",
+          "required": [
+            "parts"
+          ],
+          "description": "Which parts of `document_id` form the axisymmetric magnetic device (unselected parts are air). Every selected part must be a solid of revolution about one common axis whose faces are all coaxial cylinders or axis-perpendicular planes; its meridian section is measured from the BRep into annuli (a T-yoke = two). Fail-closed by part name: cones/fillets, off-axis holes, flats, unknown materials without a role, overlapping parts, or a domain whose grid can't resolve the thinnest gap.",
+          "properties": {
+            "parts": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "required": [
+                  "part"
+                ],
+                "properties": {
+                  "part": {
+                    "type": "string",
+                    "description": "Part name or part id."
+                  },
+                  "material": {
+                    "type": "string",
+                    "description": "Material key for the magnetic table (default: the part's material): steel-1008/1010/1018, low-carbon-steel, mild-steel, iron, ferrite-y30/c8/y35, ndfeb-n35/n42/n52."
+                  },
+                  "role": {
+                    "type": "string",
+                    "enum": [
+                      "steel",
+                      "magnet",
+                      "coil"
+                    ],
+                    "description": "Required when the material isn't in the table."
+                  },
+                  "mu_r": {
+                    "description": "Steel initial / magnet recoil mu_r.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "js_t": {
+                    "description": "Steel saturation polarization, T.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "linear": {
+                    "type": "boolean",
+                    "description": "Drop the steel B-H law."
+                  },
+                  "br_t": {
+                    "description": "Magnet remanence magnitude, T.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "north": {
+                    "type": "string",
+                    "enum": [
+                      "+axis",
+                      "-axis"
+                    ],
+                    "description": "Magnet polarity along the motor axis. Default +axis."
+                  },
+                  "turns": {
+                    "description": "Coil turns (required for coils).",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  },
+                  "current_a": {
+                    "description": "Coil current, A. Default 0.",
+                    "anyOf": [
+                      {
+                        "type": "number"
+                      },
+                      {
+                        "type": "string"
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "domain": {
+              "type": "object",
+              "properties": {
+                "pad_factor": {
+                  "type": "number",
+                  "description": "Padding around the device as a multiple of its size. Default 1."
+                },
+                "r_max_mm": {
+                  "type": "number"
+                },
+                "z_min_mm": {
+                  "type": "number"
+                },
+                "z_max_mm": {
+                  "type": "number"
+                },
+                "cells_per_feature": {
+                  "type": "number",
+                  "description": "Grid cells across the thinnest steel/magnet feature or gap. Default 4."
+                }
+              }
+            }
+          }
+        },
         "parameters": {
           "type": "object",
           "additionalProperties": {
             "type": "number"
           },
-          "description": "Bindings for named spec parameters (magnetostatic classes)."
+          "description": "Bindings for named spec parameters (magnetostatic classes). With `document_id` these override the document's parameter values."
         },
         "options": {
           "type": "object",
@@ -4285,13 +4452,28 @@
             "hot": {
               "type": "number",
               "description": "Electrostatics: index of the driven electrode. Default 0."
+            },
+            "gap_probe": {
+              "type": "object",
+              "description": "Axisym with magnets: air-gap region {r_inner_mm, r_outer_mm, z_min_mm, z_max_mm} the `gap_flux_t` claim averages |B_r| over (a Hall probe's reading). With magnets the inductance claim is replaced by gap-flux + Bl (force factor of `drive_coil`) claims.",
+              "properties": {
+                "r_inner_mm": {
+                  "type": "number"
+                },
+                "r_outer_mm": {
+                  "type": "number"
+                },
+                "z_min_mm": {
+                  "type": "number"
+                },
+                "z_max_mm": {
+                  "type": "number"
+                }
+              }
             }
           }
         }
-      },
-      "required": [
-        "spec"
-      ]
+      }
     },
     "annotations": {
       "readOnlyHint": true
@@ -7173,7 +7355,7 @@
             "contributors",
             "requirement"
           ],
-          "description": "Linear tolerance stackup: gap = sum(coeff_i * x_i) over contributor dimensions, graded against a fit requirement. Units mm. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error).",
+          "description": "Linear tolerance stackup: gap = sum(coeff_i * x_i) over contributor dimensions, graded against a fit requirement. Units mm. Any numeric field may instead be a string naming a parameter supplied in `parameters` (fail-closed: unbound names error). Pass this OR `document_id` + `extract`.",
           "properties": {
             "name": {
               "type": "string"
@@ -7389,12 +7571,60 @@
             }
           }
         },
+        "document_id": {
+          "type": "string",
+          "description": "Session document to derive the stack from (instead of `spec`). Requires `extract`."
+        },
+        "extract": {
+          "type": "object",
+          "required": [
+            "clearance",
+            "feature"
+          ],
+          "description": "Derive the stack from `document_id`: the fit is the document's labeled clearance assertion (`clearance_specs`), measured analytically from the BRep (radial: coaxial bore/shaft, gap = r_bore − r_shaft, negative = interference). Lower bound = the assertion's min_mm; a press fit needs `upper_mm` here (ClearanceSpec has no upper bound, and its receipt check reads an interference fit as Violated). Chain coefficients are d(gap)/d(parameter) by re-evaluating the document at p ± tolerance; parameters that don't move the gap drop out. Tolerances come from the document parameters (`tolerance: {plus, minus, sigmaK?}`, loon `:tol`). Fail-closed: a parameter that moves the gap with no tolerance (and no `process_tolerance_mm`), a gap nonlinear in a parameter, or an ambiguous/absent fit errors.",
+          "properties": {
+            "clearance": {
+              "type": "string",
+              "description": "Label of the clearance assertion naming the two part groups."
+            },
+            "feature": {
+              "type": "string",
+              "enum": [
+                "radial"
+              ],
+              "description": "Fit feature to measure between the groups (radial bore/shaft only, for now)."
+            },
+            "fit_window_mm": {
+              "type": "number",
+              "description": "Only fits with |gap| <= this are candidates. Default 1.0."
+            },
+            "lower_mm": {
+              "type": "number",
+              "description": "Lower gap bound (overrides the assertion's min_mm)."
+            },
+            "upper_mm": {
+              "type": "number",
+              "description": "Upper gap bound, mm — a press/transition fit needs one (e.g. -0.01: less interference than this rattles)."
+            },
+            "process_tolerance_mm": {
+              "type": "number",
+              "description": "Symmetric 3-sigma process tolerance (e.g. 0.1 for FDM) applied to gap-driving parameters that declare none."
+            },
+            "parameters": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Restrict candidate parameters (default: all literal ones)."
+            }
+          }
+        },
         "parameters": {
           "type": "object",
           "additionalProperties": {
             "type": "number"
           },
-          "description": "Bindings for named spec parameters, `{name: value}`."
+          "description": "Bindings for named spec parameters, `{name: value}`. With `document_id` these override the document's parameter values."
         },
         "options": {
           "type": "object",
@@ -7413,10 +7643,7 @@
             }
           }
         }
-      },
-      "required": [
-        "spec"
-      ]
+      }
     },
     "annotations": {
       "readOnlyHint": true
@@ -11266,6 +11493,18 @@
         "allow_contact": {
           "type": "boolean",
           "description": "Treat exact surface contact (measured distance within 0.001 mm of zero) as passing even though it is below `min_mm` — for parts designed to touch, e.g. a stage bolted flush to the chamber floor. Penetration beyond the tolerance still fails. Persisted with the spec when `label` is given."
+        },
+        "max_mm": {
+          "type": "number",
+          "description": "Fit mode (press / transition fits): upper bound on the gap. The gap is then the signed ANALYTIC radial gap between a coaxial shaft/bore pair (negative = interference), and the check passes when it lies in [min_mm, max_mm] — e.g. min_mm -0.15, max_mm -0.01 for a printed press fit. Geometry without a coaxial cylinder pair fails closed. Persisted with the spec."
+        },
+        "fit": {
+          "type": "string",
+          "enum": [
+            "clearance",
+            "interference"
+          ],
+          "description": "`interference` enables fit mode without an upper bound (a negative min_mm then caps the allowed interference). A bare negative min_mm without this or max_mm still treats any interpenetration as a failure."
         },
         "joint_state": {
           "type": "object",

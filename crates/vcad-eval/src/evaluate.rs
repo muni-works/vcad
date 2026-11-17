@@ -148,10 +148,27 @@ fn evaluate_inner(
         &resolved_owned
     };
 
+    // Expand `std:` library parts (the TS engine does this before calling
+    // into WASM; Rust-side callers — vcad.app, the CLI, vcad-render — rely on
+    // this pass). A no-op when the document has no PartInstance nodes.
+    let mut failures: Vec<RootFailure> = Vec::new();
+    let expanded_owned;
+    let doc: &Document = match vcad_parts::expand_part_instances(doc) {
+        Some((d, errors)) => {
+            failures.extend(errors.into_iter().map(|(node_id, error)| RootFailure {
+                scope: format!("partInstance[{node_id}]"),
+                node_id,
+                error,
+            }));
+            expanded_owned = d;
+            &expanded_owned
+        }
+        None => doc,
+    };
+
     let mut node_timings: HashMap<String, NodeTiming> = HashMap::new();
     let mut tessellate_ms: f64 = 0.0;
     let mut root_ms: Vec<(String, f64)> = Vec::new();
-    let mut failures: Vec<RootFailure> = Vec::new();
 
     // Content-addressed root cache (see `crate::cache`). The fingerprint
     // settings mirror exactly what this function does with a solid below:
@@ -1877,9 +1894,10 @@ fn evaluate_op_timed(
         }
 
         CsgOp::PartInstance { .. } => {
-            // PartInstance is expanded by the engine (TS) before kernel evaluation.
-            // If we see one here it's a usage error, not an internal invariant —
-            // surface nothing rather than crashing so the kernel can still partially evaluate.
+            // `std:` parts are expanded up front by `evaluate_inner` (and by the
+            // TS engine). One that reaches here is a `@user/` part or a caller
+            // that bypassed `evaluate_document` — surface nothing rather than
+            // crashing so the kernel can still partially evaluate.
             Ok(None)
         }
 

@@ -66,11 +66,36 @@ export interface PartManifestEntry {
   xrefs: PartXref[];
   thumb_svg?: string;
   search_tokens: string[];
+  /** True when `partInfo` returns mate ports / metadata for this part. */
+  has_ports?: boolean;
+}
+
+/**
+ * A named mating interface, in the part's local frame. `origin` is on the
+ * seal mid-plane, `axis` points out of the part, `up` is the clocking
+ * reference (CF bolt holes straddle it). Two ports mate when origins
+ * coincide, axes are opposed and `up`s are parallel.
+ */
+export interface PartPort {
+  name: string;
+  origin: [number, number, number];
+  axis: [number, number, number];
+  up: [number, number, number];
+  family: string;
+  size: string;
+  tapped?: boolean;
+}
+
+/** Result of `partInfo`: ports + free-form metadata (ratings, BOM, …). */
+export interface PartInfo {
+  ports: PartPort[];
+  metadata: Record<string, unknown>;
 }
 
 interface PartsKernelApi {
   getPartsManifest?: () => string;
   buildPart?: (path: string, paramsJson: string) => string;
+  partInfo?: (path: string, paramsJson: string) => string;
 }
 
 let cachedManifest: PartManifestEntry[] | null = null;
@@ -162,4 +187,20 @@ export function buildPartDocument(
   }
   const json = kernel.buildPart(path, JSON.stringify(params));
   return JSON.parse(json) as Document;
+}
+
+/**
+ * Describe a part (mate ports + metadata) through the WASM kernel. Returns
+ * `null` when the loaded kernel predates the `partInfo` export (the
+ * checked-in WASM is refreshed on main after kernel merges), so callers can
+ * degrade instead of failing.
+ */
+export function partInfo(
+  kernel: PartsKernelApi,
+  path: string,
+  params: Record<string, unknown>,
+): PartInfo | null {
+  if (typeof kernel.partInfo !== "function") return null;
+  const json = kernel.partInfo(path, JSON.stringify(params));
+  return JSON.parse(json) as PartInfo;
 }

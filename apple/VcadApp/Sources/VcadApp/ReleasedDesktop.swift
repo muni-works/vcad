@@ -2096,6 +2096,7 @@ struct ReleasedARView: NSViewRepresentable {
             syncCNCOverlay(model.cnc, in: parent, model: model)
             syncFieldOverlay(FieldOverlayStore.shared, in: parent)
             syncPlasmoidOverlay(PlasmoidStore.shared, in: parent)
+            syncFieldsSection(FieldsStore.shared, in: parent)
             if model.workspace == .manufacture && model.cnc.autoFit && !model.cnc.followSpindle && context.coordinator.framedCNCRevision != cncRevision {
                 context.coordinator.framedCNCRevision = cncRevision
                 Task { @MainActor in

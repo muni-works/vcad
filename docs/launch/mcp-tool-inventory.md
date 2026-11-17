@@ -21,7 +21,7 @@ After Phase A there is one dispatcher, the Rust core, in both vcad.app (linked t
   the tool list is identical in both modes.
 - **node proxy** — not yet ported; the core spawns `@vcad/mcp` and forwards the call unchanged.
 
-Totals after Phase A: 33 host hook (Swift UI, dispatched by Rust core), 41 native (Rust core), 159 node proxy (233 tools).
+Totals after Phase A: 33 host hook (Swift UI, dispatched by Rust core), 45 native (Rust core), 156 node proxy (234 tools).
 
 | tool | implementations before | Swift file | duplicated | after Phase A | porting cost (TS-only) |
 |---|---|---|---|---|---|
@@ -76,6 +76,7 @@ Totals after Phase A: 33 host hook (Swift UI, dispatched by Rust core), 41 nativ
 | `circular_pattern` | Swift | AgentEdits.swift → vcad-ffi `vcad_engine_apply_tool` (vcad-app lowering) |  | native (Rust core) |  |
 | `clear_annotations` | Swift | AgentBridge.swift (AgentTools) |  | host hook (Swift UI, dispatched by Rust core) |  |
 | `close_document` | Rust (M0), node |  | **yes** | native (Rust core) |  |
+| `compare_measurements` | (new) |  |  | native (Rust core) | `vcad-solver-tools`: binds bench readings to particle / neutronics claim sets |
 | `continue_document` | node |  |  | node proxy | S — continue-doc.ts ~19 lines, pure TS |
 | `create` | Swift, node | AgentEdits.swift → vcad-ffi `vcad_engine_apply_tool` (vcad-app lowering) | **yes** | native (Rust core) |  |
 | `create_cad_loon` | Swift, Rust (M0), node | AgentEdits.swift | **yes** | native (Rust core) |  |
@@ -163,7 +164,7 @@ Totals after Phase A: 33 host hook (Swift UI, dispatched by Rust core), 41 nativ
 | `mirror` | Swift | AgentEdits.swift → vcad-ffi `vcad_engine_apply_tool` (vcad-app lowering) |  | native (Rust core) |  |
 | `open_document` | Swift, Rust (M0), node | AgentBridge.swift (AgentTools) | **yes** | native (Rust core) |  |
 | `open_in_app` | Swift, node | AgentResources.swift (AgentViewer) | **yes** | host hook (Swift UI, dispatched by Rust core); headless: node proxy |  |
-| `optimize_electrodes` | node |  |  | node proxy | S — particle.ts ~27 lines, pure TS |
+| `optimize_electrodes` | node |  |  | native (Rust core) | ported: `vcad-solver-tools` (also vcad.app Analysis → Fields) |
 | `optimize_parameters` | Rust crate (vcad-atoms, unregistered) |  |  | native (Rust core) |  |
 | `parameter_gradient` | node |  |  | node proxy | S — parameters.ts ~8 lines, pure TS |
 | `part_sound` | — (new) |  |  | native (Rust core) |  |
@@ -225,13 +226,13 @@ Totals after Phase A: 33 host hook (Swift UI, dispatched by Rust core), 41 nativ
 | `sheet_metal_unfold` | node |  |  | node proxy | S — sheet-metal.ts ~8 lines, pure TS |
 | `shell_buckling_check` | node |  |  | node proxy | M — structure.ts ~110 lines, pure TS |
 | `show_in_app` | node |  |  | node proxy | M — app-link.ts ~131 lines, pure TS |
-| `simulate_charged_particles` | node |  |  | node proxy | S — particle.ts ~25 lines, pure TS |
+| `simulate_charged_particles` | node |  |  | native (Rust core) | ported: `vcad-solver-tools` (also vcad.app Analysis → Fields) |
 | `simulate_circuit` | node |  |  | node proxy | M — circuit.ts ~130 lines, pure TS |
 | `simulate_em` | node |  |  | node proxy | M — em.ts ~141 lines, pure TS |
 | `simulate_cavity` | node |  |  | node proxy | S — cavity.ts, wraps Rust/WASM (vcad-eval cavity_extract + acoustics ported) |
 | `simulate_flow` | node |  |  | node proxy | S — flow.ts ~69 lines, pure TS |
 | `simulate_lattice_gauge` | node |  |  | node proxy | S — qcd.ts ~31 lines, pure TS |
-| `simulate_neutron_shield` | node |  |  | node proxy | S — neutronics.ts ~37 lines, pure TS |
+| `simulate_neutron_shield` | node |  |  | native (Rust core) | ported: `vcad-solver-tools` (also vcad.app Analysis → Fields) |
 | `simulate_photonics` | node |  |  | node proxy | S — photonics.ts ~62 lines, pure TS |
 | `simulate_strike` | node |  |  | node proxy | S — acoustics.ts ~9 lines, wraps Rust/WASM |
 | `size_coil` | node |  |  | node proxy | S — ecad.ts ~11 lines, pure TS |

@@ -27,7 +27,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::axisym::{Annulus, AxisymMagnetostatics, Coil, Material};
+use crate::axisym::{Annulus, AxisymMagnet, AxisymMagnetostatics, Coil, Material};
 use crate::grid::Bc;
 use crate::material::Saturation;
 use crate::planar::{Conductor, MagnetBlock, PlanarMagnetostatics, PlanarMaterial, Rect};
@@ -183,6 +183,18 @@ pub struct MagnetSpec {
     pub mu_r: ParamValue,
 }
 
+/// One axially magnetized magnet annulus in an [`AxisymSpec`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AxisymMagnetSpec {
+    /// Cross-section (x = radius, y = z).
+    pub region: RectSpec,
+    /// Axial remanence, tesla (positive = north face toward +z).
+    pub br_z_t: ParamValue,
+    /// Recoil permeability (defaults to 1).
+    #[serde(default = "one")]
+    pub mu_r: ParamValue,
+}
+
 /// One conductor in a [`PlanarSpec`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConductorSpec {
@@ -208,6 +220,9 @@ pub struct AxisymSpec {
     /// Material regions.
     #[serde(default)]
     pub materials: Vec<MaterialSpec>,
+    /// Axially magnetized permanent magnets.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub magnets: Vec<AxisymMagnetSpec>,
     /// Boundary condition at r = r_max (default flux-excluded).
     #[serde(default = "bc_zero")]
     pub bc_r_outer: Bc,
@@ -265,6 +280,19 @@ impl AxisymSpec {
                 },
             });
         }
+        for m in &self.magnets {
+            let (r0, r1, z0, z1) = m.region.resolve(params)?;
+            dev.magnets.push(AxisymMagnet {
+                region: Annulus {
+                    r_inner_mm: r0,
+                    r_outer_mm: r1,
+                    z_min_mm: z0,
+                    z_max_mm: z1,
+                },
+                br_z_t: m.br_z_t.resolve(params)?,
+                mu_r: m.mu_r.resolve(params)?,
+            });
+        }
         Ok(dev)
     }
 
@@ -298,6 +326,15 @@ impl AxisymSpec {
                     js_t: m.sat.map(|s| s.js_t.into()),
                 })
                 .collect(),
+            magnets: device
+                .magnets
+                .iter()
+                .map(|m| AxisymMagnetSpec {
+                    region: rect(&m.region),
+                    br_z_t: m.br_z_t.into(),
+                    mu_r: m.mu_r.into(),
+                })
+                .collect(),
             bc_r_outer: device.bc_r_outer,
             bc_z_low: device.bc_z_low,
             bc_z_high: device.bc_z_high,
@@ -329,6 +366,13 @@ impl AxisymSpec {
             if let Some(js) = &m.js_t {
                 roles.put(js, ParamRole::FiniteDifference);
             }
+        }
+        for m in &self.magnets {
+            // The axisym adjoint has no remanence/recoil derivative yet —
+            // classified by what is implemented.
+            m.region.collect_roles(&mut roles);
+            roles.put(&m.br_z_t, ParamRole::FiniteDifference);
+            roles.put(&m.mu_r, ParamRole::FiniteDifference);
         }
         roles.0
     }
@@ -601,6 +645,7 @@ mod tests {
                 current_a: 1.0.into(),
             }],
             materials: vec![],
+            magnets: vec![],
             bc_r_outer: Bc::Zero,
             bc_z_low: Bc::Zero,
             bc_z_high: Bc::Zero,

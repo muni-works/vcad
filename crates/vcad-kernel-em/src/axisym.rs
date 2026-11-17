@@ -31,9 +31,10 @@
 //! Boundary truncation: `ψ = 0` (flux excluded) or zero-flux Neumann per
 //! side. A finite `ψ = 0` boundary underestimates far-reaching return
 //! flux — place it far from the device or use the symmetry the problem
-//! actually has. Not modeled at M0: nonlinear saturation, eddy currents,
-//! hysteresis, poloidal currents (toroid windings), permanent magnets in
-//! this module (planar has them).
+//! actually has. Not modeled here: eddy currents (see [`crate::ac`]),
+//! hysteresis, poloidal currents (toroid windings). Permanent magnets are
+//! **axially** magnetized annuli ([`AxisymMagnet`]) — the speaker-motor /
+//! holding-magnet case; radially magnetized rings are not modeled.
 
 use crate::constants::MU_0;
 use crate::grid::{Bc, FvSystem, Grid2D, SolveError, SolveOptions};
@@ -111,6 +112,25 @@ impl Material {
             sat: Some(Saturation { js_t }),
         }
     }
+}
+
+/// An axially magnetized permanent-magnet annulus with linear recoil.
+///
+/// Modeled by its bound currents: for `B = μ₀μ_r·H + B_r·ẑ`,
+/// `∇×(ν B) = J + ∇×(ν B_r ẑ)`, so the magnet acts as two azimuthal
+/// current sheets `K = B_r/(μ₀·μ_r)` — `+K` on the outer cylinder, `−K`
+/// on the inner one (absent for a solid disc, `r_inner = 0`) — over its
+/// axial extent, inside a region of permeability `μ_r`. The flat faces
+/// carry no bound current (`M × n̂ = 0`). Magnets stay linear (no
+/// demagnetization knee); later entries win over [`Material`] regions.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AxisymMagnet {
+    /// Cross-section in the (r, z) plane.
+    pub region: Annulus,
+    /// Axial remanence, tesla (positive = north face toward +z).
+    pub br_z_t: f64,
+    /// Recoil relative permeability (ferrite / NdFeB ≈ 1.05).
+    pub mu_r: f64,
 }
 
 /// Options for the Picard (successive-substitution) nonlinear loop.
@@ -284,6 +304,8 @@ pub struct AxisymMagnetostatics {
     /// Material regions (later entries win where regions overlap;
     /// background is vacuum).
     pub materials: Vec<Material>,
+    /// Axially magnetized permanent magnets (win over `materials`).
+    pub magnets: Vec<AxisymMagnet>,
     /// Boundary condition at `r = r_max`.
     pub bc_r_outer: Bc,
     /// Boundary condition at `z = z_min`.
@@ -301,6 +323,7 @@ impl AxisymMagnetostatics {
             z_max_mm,
             coils: Vec::new(),
             materials: Vec::new(),
+            magnets: Vec::new(),
             bc_r_outer: Bc::Zero,
             bc_z_low: Bc::Zero,
             bc_z_high: Bc::Zero,
@@ -314,7 +337,16 @@ impl AxisymMagnetostatics {
                 mu = m.mu_r;
             }
         }
+        for m in &self.magnets {
+            if m.region.contains_m(r_m, z_m) {
+                mu = m.mu_r;
+            }
+        }
         mu
+    }
+
+    fn in_magnet(&self, r_m: f64, z_m: f64) -> bool {
+        self.magnets.iter().any(|m| m.region.contains_m(r_m, z_m))
     }
 
     /// Initial (linear / small-signal) reluctivity of every cell, row
@@ -351,6 +383,9 @@ impl AxisymMagnetostatics {
                         hit = Some(mi);
                     }
                 }
+                if self.in_magnet(rc, zc) {
+                    hit = None;
+                }
                 cells[ci * (nz - 1) + cj] = hit;
             }
         }
@@ -373,18 +408,22 @@ impl AxisymMagnetostatics {
                         hit = m.sat.map(|s| (m.mu_r, s));
                     }
                 }
+                if self.in_magnet(rc, zc) {
+                    hit = None; // magnets stay linear recoil
+                }
                 cells[ci * (nz - 1) + cj] = hit;
             }
         }
         cells
     }
 
+    #[allow(clippy::type_complexity)]
     pub(crate) fn build_system(
         &self,
         nr: usize,
         nz: usize,
         nu_cells: &[f64],
-    ) -> Result<(FvSystem, Vec<Vec<f64>>), SolveError> {
+    ) -> Result<(FvSystem, Vec<Vec<f64>>, Vec<Vec<f64>>), SolveError> {
         if nr < 3 || nz < 3 {
             return Err(SolveError::GridTooSmall);
         }
@@ -519,19 +558,59 @@ impl AxisymMagnetostatics {
             unit_sources.push(unit);
         }
 
-        Ok((sys, unit_sources))
+        // Magnet deposits: bound sheets K = B_r/(μ₀·μ_r), +K at r_outer,
+        // −K at r_inner, S_n = 2π·K·(CV ∩ magnet z-extent) on the node
+        // whose control volume holds the sheet (half-open, so a sheet on
+        // a CV boundary lands on exactly one node).
+        let mut magnet_sources: Vec<Vec<f64>> = Vec::with_capacity(self.magnets.len());
+        for mag in &self.magnets {
+            let mut dep = vec![0.0; nr * nz];
+            let k = mag.br_z_t / (MU_0 * mag.mu_r);
+            let (m_zl, m_zh) = (mag.region.z_min_mm * 1e-3, mag.region.z_max_mm * 1e-3);
+            let mut sheets = vec![(mag.region.r_outer_mm * 1e-3, 1.0)];
+            if mag.region.r_inner_mm > 0.0 {
+                sheets.push((mag.region.r_inner_mm * 1e-3, -1.0));
+            }
+            if k != 0.0 {
+                for (r_e, sign) in sheets {
+                    for i in 1..nr {
+                        let cv_rl = g.x(i) - 0.5 * dx;
+                        let cv_rh = g.x(i) + 0.5 * dx;
+                        if !(cv_rl <= r_e && r_e < cv_rh) {
+                            continue;
+                        }
+                        for j in 0..nz {
+                            let cv_zl = (g.y(j) - 0.5 * dy).max(z_min);
+                            let cv_zh = (g.y(j) + 0.5 * dy).min(z_max);
+                            let wz = overlap(cv_zl, cv_zh, m_zl, m_zh);
+                            if wz > 0.0 {
+                                dep[g.idx(i, j)] += two_pi * sign * k * wz;
+                            }
+                        }
+                    }
+                }
+            }
+            for (s, d) in sys.source.iter_mut().zip(dep.iter()) {
+                *s += d;
+            }
+            magnet_sources.push(dep);
+        }
+
+        Ok((sys, unit_sources, magnet_sources))
     }
 
     fn wrap_solution(
         &self,
         sys: FvSystem,
         unit_sources: Vec<Vec<f64>>,
+        magnet_sources: Vec<Vec<f64>>,
         sol: crate::grid::FvSolve,
     ) -> AxisymMagSolution {
         AxisymMagSolution {
             currents: self.coils.iter().map(|c| c.current_a).collect(),
             coil_regions: self.coils.iter().map(|c| c.region).collect(),
             unit_sources,
+            magnet_sources,
             psi: sol.u,
             sweeps: sol.sweeps,
             residual: sol.residual,
@@ -548,9 +627,9 @@ impl AxisymMagnetostatics {
         nz: usize,
         opts: &SolveOptions,
     ) -> Result<AxisymMagSolution, SolveError> {
-        let (sys, unit_sources) = self.build_system(nr, nz, &self.initial_nu_cells(nr, nz))?;
+        let (sys, unit_sources, mag) = self.build_system(nr, nz, &self.initial_nu_cells(nr, nz))?;
         let sol = sys.solve(opts)?;
-        Ok(self.wrap_solution(sys, unit_sources, sol))
+        Ok(self.wrap_solution(sys, unit_sources, mag, sol))
     }
 
     /// Solve with the B–H law: Picard iteration damped **on the solved
@@ -605,7 +684,7 @@ impl AxisymMagnetostatics {
             ..*opts
         };
         for it in 1..=popts.max_iters {
-            let (mut sys, unit_sources) = self.build_system(nr, nz, &nu)?;
+            let (mut sys, unit_sources, mag) = self.build_system(nr, nz, &nu)?;
             if let Some(prev) = &warm {
                 for (id, v) in prev.iter().enumerate() {
                     if !sys.fixed[id] {
@@ -614,7 +693,7 @@ impl AxisymMagnetostatics {
                 }
             }
             let sol = sys.solve(&loose)?;
-            let solution = self.wrap_solution(sys, unit_sources, sol);
+            let solution = self.wrap_solution(sys, unit_sources, mag, sol);
             let g = &solution.system.grid;
             let mut max_db: f64 = 0.0;
             let mut b_scale: f64 = 1e-12;
@@ -651,14 +730,14 @@ impl AxisymMagnetostatics {
                 max_rel_delta: rel,
             };
             if rel < popts.tol {
-                let (mut fsys, funit) = self.build_system(nr, nz, &nu)?;
+                let (mut fsys, funit, fmag) = self.build_system(nr, nz, &nu)?;
                 for (id, v) in solution.psi.iter().enumerate() {
                     if !fsys.fixed[id] {
                         fsys.u0[id] = *v;
                     }
                 }
                 let fsol = fsys.solve(opts)?;
-                return Ok((self.wrap_solution(fsys, funit, fsol), report));
+                return Ok((self.wrap_solution(fsys, funit, fmag, fsol), report));
             }
             warm = Some(solution.psi);
         }
@@ -717,6 +796,8 @@ pub struct AxisymMagSolution {
     pub coil_regions: Vec<Annulus>,
     /// Per-coil source vectors at 1 A drive (the linkage functionals).
     pub unit_sources: Vec<Vec<f64>>,
+    /// Per-magnet bound-current source vectors (already in the solve).
+    pub magnet_sources: Vec<Vec<f64>>,
 }
 
 impl AxisymMagSolution {
@@ -795,6 +876,84 @@ impl AxisymMagSolution {
             }
         }
         f
+    }
+
+    /// Force factor `Bl` of coil `k`, N/A: the axial `J×B` force per
+    /// ampere of coil current in the solved field,
+    /// `Σ_n S⁽¹⁾_n·(∂ψ/∂z)_n` — the same functional as
+    /// [`Self::axial_force_on_coil`] without the current. For a voice
+    /// coil in a magnet's gap at zero drive this is the loudspeaker `Bl`
+    /// (`F = Bl·I`). Sign follows the coil's turn sense (`+` = force
+    /// toward +z for positive current).
+    pub fn force_factor(&self, k: usize) -> f64 {
+        let g = &self.system.grid;
+        let mut f = 0.0;
+        for i in 0..g.nx {
+            for j in 0..g.ny {
+                let s = self.unit_sources[k][g.idx(i, j)];
+                if s == 0.0 {
+                    continue;
+                }
+                let dz = if j == 0 {
+                    (self.psi[g.idx(i, 1)] - self.psi[g.idx(i, 0)]) / g.dy
+                } else if j == g.ny - 1 {
+                    (self.psi[g.idx(i, j)] - self.psi[g.idx(i, j - 1)]) / g.dy
+                } else {
+                    (self.psi[g.idx(i, j + 1)] - self.psi[g.idx(i, j - 1)]) / (2.0 * g.dy)
+                };
+                f += s * dz;
+            }
+        }
+        f
+    }
+
+    /// Force factor of coil `k` by an independent route: the sampled
+    /// field over the coil cross-section,
+    /// `Bl = −(N/A)·∫ B_r·2πr dr dz` (`n × n` midpoint samples of
+    /// [`Self::b_at`]). Agrees with [`Self::force_factor`] to
+    /// discretization error; the gap is a cross-route residual.
+    pub fn force_factor_sampled(&self, k: usize, n: usize) -> f64 {
+        let reg = self.coil_regions[k];
+        let area = reg.area_m2();
+        if area <= 0.0 || n == 0 {
+            return 0.0;
+        }
+        // Σ S⁽¹⁾ = 2π·(N/A)·A = 2π·N.
+        let turns = self.unit_sources[k].iter().sum::<f64>() / (2.0 * std::f64::consts::PI);
+        let (r0, r1) = (reg.r_inner_mm * 1e-3, reg.r_outer_mm * 1e-3);
+        let (z0, z1) = (reg.z_min_mm * 1e-3, reg.z_max_mm * 1e-3);
+        let (dr, dz) = ((r1 - r0) / n as f64, (z1 - z0) / n as f64);
+        let mut acc = 0.0;
+        for a in 0..n {
+            let r = r0 + (a as f64 + 0.5) * dr;
+            for b in 0..n {
+                let z = z0 + (b as f64 + 0.5) * dz;
+                let (br, _) = self.b_at(r, z);
+                acc += br * 2.0 * std::f64::consts::PI * r * dr * dz;
+            }
+        }
+        -turns / area * acc
+    }
+
+    /// Mean `(|B_r|, |B|)` over an annular region of the (r, z) plane from
+    /// `n × n` midpoint samples, tesla — the gap-flux reading a Hall probe
+    /// averages over its active area.
+    pub fn mean_field_in(&self, region: &Annulus, n: usize) -> (f64, f64) {
+        let n = n.max(1);
+        let (r0, r1) = (region.r_inner_mm * 1e-3, region.r_outer_mm * 1e-3);
+        let (z0, z1) = (region.z_min_mm * 1e-3, region.z_max_mm * 1e-3);
+        let (mut sr, mut sb) = (0.0, 0.0);
+        for a in 0..n {
+            let r = r0 + (a as f64 + 0.5) * (r1 - r0) / n as f64;
+            for b in 0..n {
+                let z = z0 + (b as f64 + 0.5) * (z1 - z0) / n as f64;
+                let (br, bz) = self.b_at(r, z);
+                sr += br.abs();
+                sb += (br * br + bz * bz).sqrt();
+            }
+        }
+        let m = (n * n) as f64;
+        (sr / m, sb / m)
     }
 
     /// Axial force through a closed Maxwell-stress cylinder `r ≤ r_mm`,
@@ -1199,5 +1358,98 @@ mod tests {
         // Coupling coefficient must be physical.
         let kc = l[0][1] / (l[0][0] * l[1][1]).sqrt();
         assert!(kc > 0.0 && kc < 1.0, "coupling {kc}");
+    }
+
+    /// On-axis B_z of a uniformly axially magnetized solid cylinder
+    /// (radius `r`, length `l`, centred at the origin), tesla.
+    fn cylinder_magnet_bz(br: f64, r: f64, l: f64, z: f64) -> f64 {
+        let a = z + 0.5 * l;
+        let b = z - 0.5 * l;
+        0.5 * br * (a / (a * a + r * r).sqrt() - b / (b * b + r * r).sqrt())
+    }
+
+    fn magnet_device(r_in: f64, mu_r: f64) -> AxisymMagnetostatics {
+        let mut dev = AxisymMagnetostatics::new(80.0, -80.0, 80.0);
+        dev.magnets.push(AxisymMagnet {
+            region: Annulus {
+                r_inner_mm: r_in,
+                r_outer_mm: 10.0,
+                z_min_mm: -5.0,
+                z_max_mm: 5.0,
+            },
+            br_z_t: 0.4,
+            mu_r,
+        });
+        dev
+    }
+
+    #[test]
+    fn disc_and_ring_magnets_match_the_exact_on_axis_field() {
+        // μ_r = 1: the bound-current model is the whole physics, so the
+        // closed form is exact up to discretization + ψ=0 truncation.
+        // A ring is the disc minus the inner cylinder (superposition).
+        for r_in in [0.0, 4.0] {
+            let dev = magnet_device(r_in, 1.0);
+            let sol = dev.solve(321, 641, &SolveOptions::default()).unwrap();
+            for z_mm in [0.0, 3.0, 8.0, 15.0] {
+                let exact = cylinder_magnet_bz(0.4, 10e-3, 10e-3, z_mm * 1e-3)
+                    - if r_in > 0.0 {
+                        cylinder_magnet_bz(0.4, r_in * 1e-3, 10e-3, z_mm * 1e-3)
+                    } else {
+                        0.0
+                    };
+                // Sample just off the axis node at a cell centre radius.
+                let (_, bz) = sol.b_at(0.125e-3, z_mm * 1e-3 + 0.125e-3);
+                let exact_off = {
+                    let z = z_mm * 1e-3 + 0.125e-3;
+                    cylinder_magnet_bz(0.4, 10e-3, 10e-3, z)
+                        - if r_in > 0.0 {
+                            cylinder_magnet_bz(0.4, r_in * 1e-3, 10e-3, z)
+                        } else {
+                            0.0
+                        }
+                };
+                // 1% + 0.5 mT (≈0.1% of B_r): the ring's small far field
+                // carries the ψ=0 truncation at the 0.4 mT level.
+                let err = (bz - exact_off).abs();
+                assert!(
+                    err < 0.01 * exact.abs() + 5e-4,
+                    "r_in {r_in} z {z_mm} mm: solved {bz:.5} T vs exact {exact_off:.5} T"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn magnet_flips_with_remanence_and_drops_with_recoil() {
+        let sol = magnet_device(0.0, 1.0)
+            .solve(161, 321, &SolveOptions::default())
+            .unwrap();
+        let mut flipped = magnet_device(0.0, 1.0);
+        flipped.magnets[0].br_z_t = -0.4;
+        let solf = flipped.solve(161, 321, &SolveOptions::default()).unwrap();
+        let (_, a) = sol.b_at(0.25e-3, 8e-3);
+        let (_, b) = solf.b_at(0.25e-3, 8e-3);
+        assert!(a > 0.0 && (a + b).abs() < 1e-9 * a.abs().max(1.0));
+        // Magnet cells are excluded from material/saturation maps.
+        let mut dev = magnet_device(0.0, 1.05);
+        dev.materials.push(Material::saturable(
+            Annulus {
+                r_inner_mm: 0.0,
+                r_outer_mm: 20.0,
+                z_min_mm: -20.0,
+                z_max_mm: 20.0,
+            },
+            1000.0,
+            2.0,
+        ));
+        let cells = dev.material_cell_map(81, 81);
+        let sat = dev.sat_cells(81, 81);
+        let nz = 81;
+        let dx = 80e-3 / 80.0;
+        let dy = 160e-3 / 80.0;
+        let (ci, cj) = ((2.0e-3 / dx) as usize, ((80e-3) / dy) as usize);
+        assert_eq!(cells[ci * (nz - 1) + cj], None);
+        assert!(sat[ci * (nz - 1) + cj].is_none());
     }
 }

@@ -33,6 +33,8 @@ enum Theme {
         /// analysis; the CNC machine panel). Their rows (pop-ups, tool tables,
         /// export buttons) overflowed and clipped at 170 pt.
         static let toolInspector: CGFloat = 280
+        /// Analysis → Fields: section image + charts, legible at 1080p.
+        static let analysisWide: CGFloat = 470
         /// Manufacture's compact job outline.
         static let cncOutline: CGFloat = 192
     }
