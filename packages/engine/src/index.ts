@@ -955,6 +955,7 @@ export interface KernelModule {
   photonicsSimulate?: (specJson: string, optionsJson: string) => unknown;
   /** Monte Carlo neutron shielding run (ShieldSpec/params JSON). */
   neutronicsSimulate?: (specJson: string, paramsJson: string) => unknown;
+  neutronicsSimulateScene?: (specJson: string, paramsJson: string) => unknown;
   /** Document → DeviceSpec extraction (Document/DeviceExtraction JSON). */
   extractDeviceSpec?: (docJson: string, selectionJson: string) => unknown;
   /** Document → ShieldSpec extraction (Document/ShieldExtraction JSON). */
@@ -1575,6 +1576,7 @@ export class Engine {
       extractAntennaSpec: (wasmModule as Record<string, unknown>).extractAntennaSpec as KernelModule["extractAntennaSpec"],
       photonicsSimulate: (wasmModule as Record<string, unknown>).photonicsSimulate as KernelModule["photonicsSimulate"],
       neutronicsSimulate: (wasmModule as Record<string, unknown>).neutronicsSimulate as KernelModule["neutronicsSimulate"],
+      neutronicsSimulateScene: (wasmModule as Record<string, unknown>).neutronicsSimulateScene as KernelModule["neutronicsSimulateScene"],
       latticeGaugeSimulate: (wasmModule as Record<string, unknown>).latticeGaugeSimulate as KernelModule["latticeGaugeSimulate"],
       analyzeStaticsBox: (wasmModule as Record<string, unknown>).analyzeStaticsBox as KernelModule["analyzeStaticsBox"],
       analyzeStaticsMesh: (wasmModule as Record<string, unknown>).analyzeStaticsMesh as KernelModule["analyzeStaticsMesh"],
@@ -2244,6 +2246,22 @@ export class Engine {
     if (typeof fn !== "function") {
       throw new Error(
         "neutronicsSimulate is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(specJson, paramsJson);
+  }
+
+  /**
+   * Room-scale (3D CSG) Monte Carlo neutron run: dose map, detector
+   * instrument readings (counts/min, bubbles/h) with error bars, and
+   * predicted claims. Inputs are JSON strings (SceneSpec, named parameter
+   * bindings); see `vcad-kernel-neutronics::scene_spec`.
+   */
+  neutronicsSimulateScene(specJson: string, paramsJson: string): unknown {
+    const fn = this.kernel.neutronicsSimulateScene;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "neutronicsSimulateScene is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
       );
     }
     return fn(specJson, paramsJson);
