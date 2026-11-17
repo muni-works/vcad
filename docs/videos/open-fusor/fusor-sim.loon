@@ -1,0 +1,79 @@
+; open fusor — the simulated ring-stack device (docs/videos/open-fusor.md)
+;
+; Geometry is the SAME device the proof of concept simulates
+; (crates/vcad-kernel-particle/examples/open_fusor_poc.rs):
+;   chamber  : grounded cylinder, inner radius 76 mm, half-height 76 mm
+;   cathode  : 4 latitude rings of 2 mm wire on a 19 mm sphere
+;              (polar angles 36/72/108/144 deg -> the numbers below)
+; Z up, origin at the chamber center. The front quadrant (x > 0, y < 0) of
+; the steel is cut away so the grid shows in the render.
+;
+; This was the first-pass machine CAD. The machine is now fusor.loon (stock
+; vacuum hardware, globe grid); this file stays as the drawing of the
+; axisymmetric device the yield chain simulates. Everything outside the
+; chamber wall + grid (ports, feedthrough, flanges) is a plausible envelope.
+
+; --- parameters -------------------------------------------------------------
+[let chamber-r 76.0]
+[let chamber-h 76.0]            ; half-height
+[let wall 3.5]
+[let wire-r 1.0]
+; ring radius / z for a 19 mm cathode sphere, 4 rings
+[let r-out 11.168] [let z-out 15.371]
+[let r-in 18.070]  [let z-in 5.871]
+
+[material "steel" 0.72 0.73 0.75 0.9 0.35]
+[material "grid" 0.95 0.55 0.20 0.8 0.4]
+[material "alumina" 0.93 0.91 0.86 0.0 0.6]
+[material "copper" 0.85 0.50 0.30 0.9 0.3]
+[material "glass" 0.60 0.80 0.90 0.0 0.1]
+
+[let zcyl [fn [r z0 z1] [translate 0.0 0.0 z0 [cylinder r [- z1 z0]]]]]
+[let ycyl [fn [r y0 y1] [translate 0.0 y0 0.0 [rotate -90.0 0.0 0.0 [cylinder r [- y1 y0]]]]]]
+[let xcyl [fn [r x0 x1] [translate x0 0.0 0.0 [rotate 0.0 90.0 0.0 [cylinder r [- x1 x0]]]]]]
+[let rod [fn [r x0 z0 x1 z1]
+  [hull [translate x0 0.0 z0 [sphere r]] [translate x1 0.0 z1 [sphere r]]]]]
+; cut the front quadrant away (subject last)
+[let section [fn [s] [difference [translate 0.0 -400.0 -400.0 [cube 400.0 400.0 800.0]] s]]]
+
+; --- chamber ----------------------------------------------------------------
+[let outer-r [+ chamber-r wall]]
+[let shell-solid
+  [union
+    [zcyl outer-r [- 0.0 [+ chamber-h wall]] [+ chamber-h wall]]
+    [union [ycyl 22.5 70.0 112.0]                      ; viewport nozzle (+y)
+      [union [xcyl 14.0 -112.0 -70.0]                  ; gauge nozzle (-x)
+             [zcyl 23.0 -140.0 -70.0]]]]]              ; pump nozzle (down)
+[let bores
+  [union
+    [zcyl chamber-r [- 0.0 chamber-h] chamber-h]
+    [union [ycyl 19.0 60.0 120.0]
+      [union [xcyl 11.0 -120.0 -60.0]
+        [union [zcyl 20.0 -150.0 -60.0]
+               [zcyl 10.0 60.0 90.0]]]]]]              ; feedthrough bore (up)
+[root-named [section [difference bores shell-solid]] "steel" "chamber"]
+
+; flanges
+[root-named [section [difference [zcyl 10.0 70.0 110.0] [zcyl 57.0 [+ chamber-h wall] [+ chamber-h 21.0]]]] "steel" "lid-flange"]
+[root-named [difference [ycyl 19.0 100.0 130.0] [ycyl 35.0 112.0 125.0]] "steel" "viewport-flange"]
+[root-named [ycyl 19.0 114.0 119.0] "glass" "viewport-glass"]
+[root-named [difference [xcyl 11.0 -130.0 -100.0] [xcyl 20.0 -118.0 -112.0]] "steel" "gauge-flange"]
+[root-named [section [difference [zcyl 20.0 -150.0 -130.0] [zcyl 27.5 -146.0 -140.0]]] "steel" "pump-flange"]
+
+; --- HV feedthrough ---------------------------------------------------------
+[root-named [difference [zcyl 2.0 20.0 170.0] [zcyl 9.5 34.0 150.0]] "alumina" "insulator"]
+[root-named [union [zcyl 1.6 24.0 168.0] [translate 0.0 0.0 168.0 [sphere 8.0]]] "copper" "hv-conductor"]
+
+; --- cathode grid (the simulated ring stack) --------------------------------
+[let ring [fn [r z] [translate 0.0 0.0 z [torus r wire-r]]]]
+[let rings
+  [union [ring r-out z-out]
+    [union [ring r-in z-in]
+      [union [ring r-in [- 0.0 z-in]] [ring r-out [- 0.0 z-out]]]]]]
+; two support wires down the sphere + a hanger to the stalk
+[let spine [fn [sx]
+  [union [rod 0.8 0.0 24.0 [* sx r-out] z-out]
+    [union [rod 0.8 [* sx r-out] z-out [* sx r-in] z-in]
+      [union [rod 0.8 [* sx r-in] z-in [* sx r-in] [- 0.0 z-in]]
+             [rod 0.8 [* sx r-in] [- 0.0 z-in] [* sx r-out] [- 0.0 z-out]]]]]]]
+[root-named [union rings [union [spine 1.0] [spine -1.0]]] "grid" "cathode-grid"]

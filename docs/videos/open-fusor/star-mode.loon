@@ -1,5 +1,10 @@
 ; star-mode dressing for renders only. NOT part of the simulated or built
-; geometry: an illustrative glowing core where the ion paths converge.
+; geometry: an illustrative discharge where the ion paths converge.
 ; build the shot file with: cat fusor.loon star-mode.loon > shot.loon
-[material "plasma" 0.75 0.45 1.0 0.0 1.0]
-[root-named [sphere 5.0] "plasma" "plasma-core"]
+;
+; glowing media (photoreal path tracer integrates emission along each ray):
+; a dense core inside the grid and a faint halo out to the grid radius.
+[material-glow "plasma-core" 0.62 0.38 1.0 0.9 0.0 2.5]
+[material-glow "plasma-halo" 0.50 0.30 0.95 0.035 0.0 8.0]
+[root-named [sphere 5.0] "plasma-core" "plasma-core"]
+[root-named [sphere 17.0] "plasma-halo" "plasma-halo"]

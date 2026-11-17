@@ -865,24 +865,25 @@ fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     ]
 }
 
-/// Euler-XYZ rotation (degrees; X, then Y, then Z) — the kernel's convention.
+/// `R·p` for `R = Rx·Ry·Rz` (degrees) — what `CsgOp::Rotate` / `Solid::rotate`
+/// build: Z acts on the point first, then Y, then X.
 fn rotate(p: [f64; 3], deg: [f64; 3]) -> [f64; 3] {
     let (sx, cx) = deg[0].to_radians().sin_cos();
     let (sy, cy) = deg[1].to_radians().sin_cos();
     let (sz, cz) = deg[2].to_radians().sin_cos();
-    let [x, y, z] = [p[0], p[1] * cx - p[2] * sx, p[1] * sx + p[2] * cx];
+    let [x, y, z] = [p[0] * cz - p[1] * sz, p[0] * sz + p[1] * cz, p[2]];
     let [x, y, z] = [x * cy + z * sy, y, -x * sy + z * cy];
-    [x * cz - y * sz, x * sz + y * cz, z]
+    [x, y * cx - z * sx, y * sx + z * cx]
 }
 
-/// Inverse of [`rotate`]: Z⁻¹, then Y⁻¹, then X⁻¹.
+/// Inverse of [`rotate`]: X⁻¹, then Y⁻¹, then Z⁻¹.
 fn inverse_rotate(p: [f64; 3], deg: [f64; 3]) -> [f64; 3] {
     let (sx, cx) = deg[0].to_radians().sin_cos();
     let (sy, cy) = deg[1].to_radians().sin_cos();
     let (sz, cz) = deg[2].to_radians().sin_cos();
-    let [x, y, z] = [p[0] * cz + p[1] * sz, -p[0] * sz + p[1] * cz, p[2]];
+    let [x, y, z] = [p[0], p[1] * cx + p[2] * sx, -p[1] * sx + p[2] * cx];
     let [x, y, z] = [x * cy - z * sy, y, x * sy + z * cy];
-    [x, y * cx + z * sx, -y * sx + z * cx]
+    [x * cz + y * sz, -x * sz + y * cz, z]
 }
 
 fn unsupported(tool: &str) -> CommandError {
@@ -992,6 +993,46 @@ mod tests {
 
     fn lower_empty(tool: &str, args: &Value) -> Result<DocCommand, CommandError> {
         lower(tool, args, &DocumentApi::new(ReplicaId(1)))
+    }
+
+    /// The pivot math must use the rotation the kernel applies to the part
+    /// (`Solid::rotate`, R = Rx·Ry·Rz), not a self-consistent guess: rotate a
+    /// unit box's far corner both ways and compare. A Rz·Ry·Rx `rotate` here
+    /// let a multi-axis rotate-about-pivot drift the part off its pivot.
+    #[test]
+    fn rotate_matches_the_kernels_solid_rotate() {
+        for deg in [[30.0, 45.0, 60.0], [-70.0, 20.0, 135.0], [90.0, 0.0, 90.0]] {
+            // A box with one corner at the origin and its far corner at p:
+            // after rotation the bbox max/min components bound R·p.
+            let p = [3.0, 5.0, 7.0];
+            let (lo, hi) = vcad_kernel::Solid::cube(p[0], p[1], p[2])
+                .rotate(deg[0], deg[1], deg[2])
+                .bounding_box();
+            let mut elo = [f64::MAX; 3];
+            let mut ehi = [f64::MIN; 3];
+            for cx in [0.0, p[0]] {
+                for cy in [0.0, p[1]] {
+                    for cz in [0.0, p[2]] {
+                        let q = rotate([cx, cy, cz], deg);
+                        for i in 0..3 {
+                            elo[i] = elo[i].min(q[i]);
+                            ehi[i] = ehi[i].max(q[i]);
+                        }
+                    }
+                }
+            }
+            for i in 0..3 {
+                assert!(
+                    (lo[i] - elo[i]).abs() < 1e-9 && (hi[i] - ehi[i]).abs() < 1e-9,
+                    "{deg:?}: kernel bbox {lo:?}..{hi:?}, rotate() gives {elo:?}..{ehi:?}"
+                );
+            }
+            let back = inverse_rotate(rotate(p, deg), deg);
+            assert!(
+                (0..3).all(|i| (back[i] - p[i]).abs() < 1e-9),
+                "{deg:?}: {back:?}"
+            );
+        }
     }
 
     #[test]

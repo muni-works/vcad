@@ -63,6 +63,15 @@ if ! printf '%s' "$bundle_id" | grep -Eq '^[A-Za-z0-9.-]+$'; then
   echo "error: bad bundle id '$bundle_id'" >&2; exit 1
 fi
 
+# Both Rust staticlibs must carry the unwind panic runtime, and so must the
+# linked app (checked below): otherwise a kernel panic is abort(), not a
+# per-part failure. See scripts/check-unwind.sh.
+unwind_libs=()
+for lib in "$here"/Libs/lib*_ffi.a; do
+  if [ -f "$lib" ]; then unwind_libs+=(--lib "$lib"); fi
+done
+[ "${#unwind_libs[@]}" -eq 0 ] || "$here/scripts/check-unwind.sh" "${unwind_libs[@]}"
+
 echo "swift build…"
 swift build --package-path "$here" -c "${CONFIG:-debug}"
 bin="$(swift build --package-path "$here" -c "${CONFIG:-debug}" --show-bin-path)/VcadApp"
@@ -71,6 +80,7 @@ app="$here/dist/vcad.app"
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp "$bin" "$app/Contents/MacOS/vcad"
+"$here/scripts/check-unwind.sh" --bin "$app/Contents/MacOS/vcad"
 
 # irys (the in-process path tracer) is dlopen()ed, not linked: bundle the
 # dylib when one is built, and the app finds it in Contents/Frameworks.

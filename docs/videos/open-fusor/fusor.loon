@@ -1,78 +1,105 @@
-; open fusor — first-pass machine CAD for docs/videos/open-fusor.md
+; open fusor — machine CAD for docs/videos/open-fusor.md, second pass.
 ;
-; Geometry is the SAME device the proof of concept simulates
-; (crates/vcad-kernel-particle/examples/open_fusor_poc.rs):
-;   chamber  : grounded cylinder, inner radius 76 mm, half-height 76 mm
-;   cathode  : 4 latitude rings of 2 mm wire on a 19 mm sphere
-;              (polar angles 36/72/108/144 deg -> the numbers below)
-; Z up, origin at the chamber center. The front quadrant (x > 0, y < 0) of
-; the steel is cut away so the grid shows in the render.
+; Built from stock vacuum hardware (`std:vacuum.*`, ISO 3669 / ISO 2861
+; vendor tables) joined by port mates, so every joint also lands its
+; consumables (copper gasket + bolt set, or KF ring + clamp) on the BOM.
+; Z up, origin at the chamber center, millimetres.
 ;
-; Everything outside the chamber wall + grid (ports, feedthrough, flanges)
-; is a plausible envelope, not vendor geometry: the vacuum part library
-; (CF/KF) is still being built.
+;   chamber   DN63 (4.5" CF) spherical cube. cavity radius 79.9 mm
+;   +z        DN63→DN40 zero-length reducer → 40 kV HV feedthrough; its
+;             conductor is the grid stalk, sleeved in alumina
+;   +y        DN63 viewport, leaded glass (the x-ray leak path, see plan §4)
+;   -y        DN63 viewport, leaded glass (camera side)
+;   -z        DN63→DN40 reducer → CF/KF40 adapter → turbo + roughing line
+;   +x        DN63→DN40 reducer → DN40 tee: KF25 gauge on the run,
+;             DN40→DN16 reducer + leak valve (D2 inlet) on the branch
+;   -x        DN63 blank (spare port)
+;   cathode   6 great circles of 2 mm wire on a 19 mm sphere, the
+;             icosidodecahedral layout of
+;             vcad_kernel_particle::wire3d::GreatCircleLayout::Icosidodecahedral6
+;
+; What the simulations assume vs this file:
+;   - the 3D thin-wire BEM (`globe_vs_rings`) uses THIS grid in a 76 mm
+;     spherical chamber. the catalog cavity is 79.9 mm (+5%).
+;   - the two-sided yield band (`open_fusor_band`) uses a 4-ring latitude
+;     stack in a 76 mm cylinder. fusor-sim.loon draws that device. neither
+;     file goes through `vcad_eval::sim_extract` as written: this one has a
+;     spherical cavity and crossing wires, that one has a section cut and a
+;     stalk on the rings. the extraction is tested on a clean can + rings of
+;     the same dimensions (crates/vcad-eval/tests/sim_extract_fusor.rs).
+;   - the photon-dose case (docs/photon-dose-m0.md) is a 1.65 mm wall sphere
+;     with a 2.75" window of 19 mm clear radius under 8 mm of lead glass.
+;     this cube's wall is 11 mm or more, its DN63 windows have 32.5 mm clear
+;     radius, and the catalog models 5.2 mm of glass. not re-priced.
+;
+; Dressing files, appended for renders only:
+;   castle.loon     15 cm HDPE shield (plan §4), hides the machine
+;   star-mode.loon  glowing core + halo, illustrative
 
 ; --- parameters -------------------------------------------------------------
-[let chamber-r 76.0]
-[let chamber-h 76.0]            ; half-height
-[let wall 3.5]
+[let grid-r 19.0]
 [let wire-r 1.0]
-; ring radius / z for a 19 mm cathode sphere, 4 rings
-[let r-out 11.168] [let z-out 15.371]
-[let r-in 18.070]  [let z-in 5.871]
+[let tilt 31.717474]        ; atan(1/phi): 5-fold axis off the coordinate axis
+[let stalk-len "89"]        ; HV seal face is 108.73 mm up; tip lands on the grid pole
 
-[material "steel" 0.72 0.73 0.75 0.9 0.35]
 [material "grid" 0.95 0.55 0.20 0.8 0.4]
 [material "alumina" 0.93 0.91 0.86 0.0 0.6]
-[material "copper" 0.85 0.50 0.30 0.9 0.3]
-[material "glass" 0.60 0.80 0.90 0.0 0.1]
 
-[let zcyl [fn [r z0 z1] [translate 0.0 0.0 z0 [cylinder r [- z1 z0]]]]]
-[let ycyl [fn [r y0 y1] [translate 0.0 y0 0.0 [rotate -90.0 0.0 0.0 [cylinder r [- y1 y0]]]]]]
-[let xcyl [fn [r x0 x1] [translate x0 0.0 0.0 [rotate 0.0 90.0 0.0 [cylinder r [- x1 x0]]]]]]
-[let rod [fn [r x0 z0 x1 z1]
-  [hull [translate x0 0.0 z0 [sphere r]] [translate x1 0.0 z1 [sphere r]]]]]
-; cut the front quadrant away (subject last)
-[let section [fn [s] [difference [translate 0.0 -400.0 -400.0 [cube 400.0 400.0 800.0]] s]]]
+; --- vacuum hardware --------------------------------------------------------
+[let chamber [vac "vacuum.chamber.spherical-cube" #["size" "DN63"]]]
 
-; --- chamber ----------------------------------------------------------------
-[let outer-r [+ chamber-r wall]]
-[let shell-solid
-  [union
-    [zcyl outer-r [- 0.0 [+ chamber-h wall]] [+ chamber-h wall]]
-    [union [ycyl 22.5 70.0 112.0]                      ; viewport nozzle (+y)
-      [union [xcyl 14.0 -112.0 -70.0]                  ; gauge nozzle (-x)
-             [zcyl 23.0 -140.0 -70.0]]]]]              ; pump nozzle (down)
-[let bores
-  [union
-    [zcyl chamber-r [- 0.0 chamber-h] chamber-h]
-    [union [ycyl 19.0 60.0 120.0]
-      [union [xcyl 11.0 -120.0 -60.0]
-        [union [zcyl 20.0 -150.0 -60.0]
-               [zcyl 10.0 60.0 90.0]]]]]]              ; feedthrough bore (up)
-[root-named [section [difference bores shell-solid]] "steel" "chamber"]
+[let hv-red [vac-mate "vacuum.cf.reducer" #["large" "DN63" "small" "DN40"] "large" chamber "+z"]]
+[let hv [vac-mate "vacuum.feedthrough.hv"
+          #["size" "DN40" "rated_kv" "40" "rated_a" "0.02" "vacuum_length" stalk-len "conductor_dia" "3.2"]
+          "seal" hv-red "small"]]
 
-; flanges
-[root-named [section [difference [zcyl 10.0 70.0 110.0] [zcyl 57.0 [+ chamber-h wall] [+ chamber-h 21.0]]]] "steel" "lid-flange"]
-[root-named [difference [ycyl 19.0 100.0 130.0] [ycyl 35.0 112.0 125.0]] "steel" "viewport-flange"]
-[root-named [ycyl 19.0 114.0 119.0] "glass" "viewport-glass"]
-[root-named [difference [xcyl 11.0 -130.0 -100.0] [xcyl 20.0 -118.0 -112.0]] "steel" "gauge-flange"]
-[root-named [section [difference [zcyl 20.0 -150.0 -130.0] [zcyl 27.5 -146.0 -140.0]]] "steel" "pump-flange"]
+[let window-front [vac-mate "vacuum.viewport" #["size" "DN63" "glass" "leaded-glass"] "seal" chamber "-y"]]
+[let window-back  [vac-mate "vacuum.viewport" #["size" "DN63" "glass" "leaded-glass"] "seal" chamber "+y"]]
+[let blank [vac-mate "vacuum.cf.flange" #["size" "DN63"] "seal" chamber "-x"]]
 
-; --- HV feedthrough ---------------------------------------------------------
-[root-named [difference [zcyl 2.0 20.0 170.0] [zcyl 9.5 34.0 150.0]] "alumina" "insulator"]
-[root-named [union [zcyl 1.6 24.0 168.0] [translate 0.0 0.0 168.0 [sphere 8.0]]] "copper" "hv-conductor"]
+[let pump-red [vac-mate "vacuum.cf.reducer" #["large" "DN63" "small" "DN40"] "large" chamber "-z"]]
+[let pump [vac-mate "vacuum.adapter.cf-kf" #["cf" "DN40" "kf" "KF40" "length" "60"] "cf" pump-red "small"]]
 
-; --- cathode grid (the simulated ring stack) --------------------------------
-[let ring [fn [r z] [translate 0.0 0.0 z [torus r wire-r]]]]
-[let rings
-  [union [ring r-out z-out]
-    [union [ring r-in z-in]
-      [union [ring r-in [- 0.0 z-in]] [ring r-out [- 0.0 z-out]]]]]]
-; two support wires down the sphere + a hanger to the stalk
-[let spine [fn [sx]
-  [union [rod 0.8 0.0 24.0 [* sx r-out] z-out]
-    [union [rod 0.8 [* sx r-out] z-out [* sx r-in] z-in]
-      [union [rod 0.8 [* sx r-in] z-in [* sx r-in] [- 0.0 z-in]]
-             [rod 0.8 [* sx r-in] [- 0.0 z-in] [* sx r-out] [- 0.0 z-out]]]]]]]
-[root-named [union rings [union [spine 1.0] [spine -1.0]]] "grid" "cathode-grid"]
+[let side-red [vac-mate "vacuum.cf.reducer" #["large" "DN63" "small" "DN40"] "large" chamber "+x"]]
+[let tee [vac-mate "vacuum.tee" #["size" "DN40"] "-z" side-red "small"]]
+[let gauge-ad [vac-mate "vacuum.adapter.cf-kf" #["cf" "DN40" "kf" "KF25" "length" "40"] "cf" tee "+z"]]
+[let gauge [vac-mate "vacuum.gauge" #["size" "KF25" "kind" "pirani"] "inlet" gauge-ad "kf"]]
+[let gas-red [vac-mate "vacuum.cf.reducer" #["large" "DN40" "small" "DN16"] "large" tee "+x"]]
+[let leak [vac-mate "vacuum.valve.needle" #["size" "DN16" "kind" "leak"] "outlet" gas-red "small"]]
+
+; one root per purchased part: no unions between parts, so nothing is
+; booleaned that a wrench would not also join.
+[root-named chamber "stainless" "chamber"]
+[root-named hv-red "stainless" "hv-reducer"]
+[root-named hv "ceramic" "hv-feedthrough"]
+[root-named window-front "glass" "viewport-front"]
+[root-named window-back "glass" "viewport-back"]
+[root-named blank "stainless" "blank"]
+[root-named pump-red "stainless" "pump-reducer"]
+[root-named pump "stainless" "pump-adapter"]
+[root-named side-red "stainless" "side-reducer"]
+[root-named tee "stainless" "tee"]
+[root-named gauge-ad "stainless" "gauge-adapter"]
+[root-named gauge "aluminum" "gauge"]
+[root-named gas-red "stainless" "gas-reducer"]
+[root-named leak "steel" "leak-valve"]
+
+; --- stalk sleeve -----------------------------------------------------------
+; alumina tube over the conductor from the grid pole up into the top bore,
+; so ions land on ceramic, not on the stalk.
+[root-named
+  [translate 0.0 0.0 24.0 [difference [cylinder 1.7 46.0] [cylinder 4.0 46.0]]]
+  "alumina" "stalk-sleeve"]
+
+; --- cathode grid -----------------------------------------------------------
+; six great circles, plane normals along the icosahedron's 5-fold axes:
+; (0, 1, +-phi), (1, +-phi, 0), (+-phi, 0, 1). every rotation is about one
+; axis, so the Euler order never matters. each circle is its own root: the
+; wires are spot-welded at the crossings, not fused into one body.
+[let loop [torus grid-r wire-r]]
+[root-named [rotate tilt 0.0 0.0 loop] "grid" "grid-1"]
+[root-named [rotate [- 0.0 tilt] 0.0 0.0 loop] "grid" "grid-2"]
+[root-named [rotate 0.0 0.0 tilt [rotate 90.0 0.0 0.0 loop]] "grid" "grid-3"]
+[root-named [rotate 0.0 0.0 [- 0.0 tilt] [rotate 90.0 0.0 0.0 loop]] "grid" "grid-4"]
+[root-named [rotate 0.0 [- 90.0 tilt] 0.0 loop] "grid" "grid-5"]
+[root-named [rotate 0.0 [- tilt 90.0] 0.0 loop] "grid" "grid-6"]

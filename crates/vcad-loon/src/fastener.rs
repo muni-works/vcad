@@ -582,8 +582,18 @@ pub fn tap_drill_dia(size: &str) -> f64 {
     dims::metric_major_dia(size) - coarse_pitch(size)
 }
 
-/// Rotation (Euler XYZ degrees, applied X then Y then Z) that takes local
-/// `+Z` onto `axis`.
+/// Rotation (Euler XYZ degrees) that takes local `+Z` onto `axis`.
+///
+/// The decomposition below reads as `R = Rz·Ry·Rx`, the opposite of the
+/// `Rx·Ry·Rz` that `CsgOp::Rotate` builds — and it is still right for the
+/// axis. For the minimal (Rodrigues) rotation the third row of `m` is
+/// `(−x, −y, z)`, so `a = atan2(−y, z)` and `b = asin(x)`: exactly the
+/// `Rx(a)·Ry(b)·ẑ = (x, y, z)` solution of the kernel's order (`Rz` fixes ẑ).
+/// Only the twist `c` about the axis differs from `m`, which clocks the
+/// head but never moves it. `crates/vcad-eval/tests/rotate_convention.rs`
+/// checks this through the evaluator. A helper that needs a full frame,
+/// not just an axis, must decompose as `Rx·Ry·Rz` (see
+/// `vcad_parts::vacuum::mat_to_euler_xyz_deg`).
 ///
 /// This is the piece that used to be two hand-written rotates per bolt.
 pub fn axis_to_euler_xyz(axis: Vec3) -> Vec3 {
@@ -636,19 +646,20 @@ pub fn axis_to_euler_xyz(axis: Vec3) -> Vec3 {
 mod tests {
     use super::*;
 
+    /// `R·p` for `R = Rx·Ry·Rz` — what `CsgOp::Rotate` builds (Z first).
     fn rotate_xyz(angles: Vec3, p: Vec3) -> Vec3 {
         let (a, b, c) = (
             angles.x.to_radians(),
             angles.y.to_radians(),
             angles.z.to_radians(),
         );
-        // Rx
-        let (y, z) = (p.y * a.cos() - p.z * a.sin(), p.y * a.sin() + p.z * a.cos());
-        let (x, y, z) = (p.x, y, z);
+        // Rz
+        let (x, y) = (p.x * c.cos() - p.y * c.sin(), p.x * c.sin() + p.y * c.cos());
+        let z = p.z;
         // Ry
         let (x, z) = (x * b.cos() + z * b.sin(), -x * b.sin() + z * b.cos());
-        // Rz
-        let (x, y) = (x * c.cos() - y * c.sin(), x * c.sin() + y * c.cos());
+        // Rx
+        let (y, z) = (y * a.cos() - z * a.sin(), y * a.sin() + z * a.cos());
         Vec3::new(x, y, z)
     }
 

@@ -380,6 +380,15 @@ pub struct EvaluatedInstance {
     pub transform: Option<Transform3D>,
 }
 
+/// Test hook (feature `panic-injection`, never enabled in a shipping build):
+/// a scene root whose node is named this panics inside the same
+/// `catch_unwind` that guards real kernel work. Keyed on document content
+/// rather than a global switch, so parallel tests cannot trip each other.
+/// `vcad-ffi`'s `panic_containment` test uses it to prove a kernel panic
+/// comes back through the C ABI as a per-root failure.
+#[cfg(feature = "panic-injection")]
+pub const PANIC_INJECTION_NODE: &str = "__vcad_panic_injection__";
+
 /// A single feature that failed to evaluate.
 ///
 /// Evaluation is per-root: one bad feature yields an empty mesh + a

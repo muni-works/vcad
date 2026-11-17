@@ -109,6 +109,10 @@ fn cavity_sel() -> CavityExtraction {
     CavityExtraction {
         enclosure: "enclosure".into(),
         air: "air".into(),
+        // The motor sits inside the box: rigid coaxial obstacles (#1222).
+        obstacles: ["yoke", "magnet", "top_plate", "voice_coil"]
+            .map(String::from)
+            .to_vec(),
         driver_radius: Some(AcParam::Named("driver_r".into())),
         temp_c: None,
         tolerance: Default::default(),
@@ -426,26 +430,11 @@ fn main() {
     }
 
     // ── 4. acoustics: document → axisym cavity ─────────────────────────────
-    // The cavity extractor knows two solids — enclosure and air — so the
-    // motor carved out of the air reads as open space and it refuses (gap
-    // G11). Run the document as modeled, then a variant whose air is NOT
-    // carved by the motor: V_box over-reads by the motor envelope
-    // (π·30²·18 mm³ ≈ 0.051 L, ~6 %). The optimizer runs on the variant.
-    println!("\n## acoustics: ported box from the document [doc-extract; 20 °C assumed]");
+    // The motor is carved out of the air and listed as cavity obstacles
+    // (#1222 closed G11): V_box excludes it, the field solve sees it.
+    println!("\n## acoustics: ported box from the document, motor as obstacles [doc-extract; 20 °C assumed]");
     let t = Instant::now();
-    let carved = "[difference motor-env [difference port-tube cavity]]";
-    assert!(source.contains(carved), "air root changed; update the variant");
-    let variant_src = source.replace(carved, "[difference port-tube cavity]");
-    let doc_ac: Document = vcad_loon::eval_vcad(&variant_src, None).expect("variant eval");
     match extract_cavity(&doc, &cavity_sel()) {
-        Ok(_) => println!("  as modeled: extracted"),
-        Err(e) => {
-            println!("  as modeled (motor carved from the air): REFUSED — {e}");
-            summary.insert("acoustics_as_modeled".into(), json!({ "refused": e.to_string() }));
-        }
-    }
-    println!("  variant: air not carved by the motor (V_box +~0.051 L) [variant]");
-    match extract_cavity(&doc_ac, &cavity_sel()) {
         Ok(ex) => {
             let m = &ex.model;
             println!(
@@ -716,9 +705,7 @@ fn main() {
 
     // ── 9. joint optimization ──────────────────────────────────────────────
     let opt = std::env::var("OPT").unwrap_or_else(|_| "run".into());
-    // Runs on the acoustics variant (motor not carved from the air, G11).
-    let doc = doc_ac;
-    println!("\n## joint optimization: optimize_document over body_h, port_len [doc-extract QoIs on the variant; weights assumed]");
+    println!("\n## joint optimization: optimize_document over body_h, port_len [doc-extract QoIs; weights assumed]");
     if opt == "skip" {
         println!("  skipped");
     } else {

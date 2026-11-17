@@ -1,10 +1,12 @@
 {
   "materials": {
-    "steel": { "color": "#c9ccd1", "metallic": 1.0, "roughness": 0.22 },
+    "stainless": { "color": "#c9ccd1", "metallic": 1.0, "roughness": 0.22 },
+    "steel": { "color": "#b9bcc2", "metallic": 1.0, "roughness": 0.30 },
+    "aluminum": { "color": "#d6d8dc", "metallic": 1.0, "roughness": 0.40 },
+    "ceramic": { "color": "#efeae0", "metallic": 0.0, "roughness": 0.45, "clearcoat": 0.3 },
     "alumina": { "color": "#efeae0", "metallic": 0.0, "roughness": 0.45, "clearcoat": 0.3 },
-    "copper": { "color": "#d98a5a", "metallic": 1.0, "roughness": 0.18 },
     "glass": { "color": "#9fc4d6", "metallic": 0.0, "roughness": 0.03, "clearcoat": 1.0 },
     "grid": { "color": "#ff8a3c", "metallic": 0.6, "roughness": 0.35, "emission": 3.5 },
-    "plasma": { "color": "#c58bff", "emission": 90.0 }
+    "hdpe": { "color": "#f1f0ea", "metallic": 0.0, "roughness": 0.6 }
   }
 }

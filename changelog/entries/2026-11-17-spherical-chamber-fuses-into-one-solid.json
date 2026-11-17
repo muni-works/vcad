@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-17-spherical-chamber-fuses-into-one-solid",
+  "version": "0.11.0",
+  "date": "2026-11-17",
+  "category": "fix",
+  "title": "Spherical cube chamber is one clean solid",
+  "summary": "A flange fused onto a box-trimmed sphere came back as overlapping shells reported as analytic: the spherical cube chamber read 4.6% heavy, with membranes in every port. It now matches closed form.",
+  "features": ["booleans", "vacuum", "kernel"],
+  "mcpTools": []
+}

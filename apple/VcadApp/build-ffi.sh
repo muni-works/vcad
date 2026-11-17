@@ -32,4 +32,7 @@ fi
 mkdir -p "$here/Libs"
 cp "${CARGO_TARGET_DIR:-$repo_root/target}/$config/libvcad_ffi.a" "$here/Libs/"
 echo "Staged: $here/Libs/libvcad_ffi.a"
+# The app's catch_unwind boundaries only work if this lib (and every other Rust
+# staticlib in Libs/) carries the unwind panic runtime.
+"$here/scripts/check-unwind.sh" --lib "$here/Libs/libvcad_ffi.a"
 echo "Now: swift build --package-path $here"
