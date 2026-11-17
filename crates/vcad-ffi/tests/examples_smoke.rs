@@ -27,13 +27,11 @@ use vcad_ir::Document;
 /// Examples (repo-relative) whose evaluation takes tens of minutes in the
 /// current boolean kernel. Keep this list short and say why.
 ///
-/// - `fusor-chamber.loon`: nine `std:vacuum.*` roots. It took 1067–2428 s on
-///   CI while the DN100 spherical cube's port bores were mis-rotated into
-///   each other; that is fixed and the cube is now ~7 s, but the whole
-///   example is still ~90 s in the test profile on a 24-core box (one
-///   other root falls back to the mesh boolean), too close to [`BUDGET`]
-///   for a CI runner. Un-list it once that root stays analytic.
-const HEAVY: &[&str] = &["examples/vacuum/fusor-chamber.loon"];
+/// Empty today. `examples/vacuum/fusor-chamber.loon` was here while it took
+/// 1067–2428 s on CI: its DN100 spherical cube's port bores were mis-rotated
+/// into each other, and a tee fell back to the mesh boolean. Both are fixed
+/// and all nine roots stay analytic (~7 s in release).
+const HEAVY: &[&str] = &[];
 
 /// Wall-clock budget for one non-heavy example (load + engine open +
 /// evaluate). Every non-heavy example takes ~0.1–12 s; the budget is
