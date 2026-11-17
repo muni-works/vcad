@@ -2,7 +2,11 @@
 // Regenerate the stator v3 board outputs — pipeline.py steps B1–B4 only, no
 // HTTP bridge, no quotes — by driving a vcad MCP server over stdio.
 //
-//   node examples/pcb-motor/scripts/stator-board.mjs [path/to/mcp/dist/index.js]
+//   node examples/pcb-motor/scripts/stator-board.mjs [path/to/server.mjs]
+//
+// The server defaults to this checkout's packages/mcp/scripts/serve.mjs, which
+// rebuilds the workspace when dist/ is stale before exec'ing it — never point
+// at dist/index.js directly (it can silently serve old code).
 //
 // Writes, relative to examples/pcb-motor/: stator-v3.vcad,
 // fab/stator-v3-gerbers/, fab/stator-v3-board.png. Exits 1 (writing nothing
@@ -14,7 +18,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const EX = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const SERVER = process.argv[2] ?? resolve(EX, "../../packages/mcp/dist/index.js");
+const SERVER = process.argv[2] ?? resolve(EX, "../../packages/mcp/scripts/serve.mjs");
 const child = spawn("node", [SERVER], {
   cwd: EX,
   stdio: ["pipe", "pipe", "inherit"],
