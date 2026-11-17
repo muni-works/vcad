@@ -44,6 +44,18 @@ use crate::split::SplitResult;
 const U_EPS: f64 = 1e-9;
 /// Minimum band height (in v) for a region to count as real material.
 const V_EPS: f64 = 1e-9;
+/// Largest u step (radians) a loop parse reads as carrying no direction.
+///
+/// A vertex another face T-inserts into this loop sits on ITS polyline, up
+/// to chord sag (~1e-3 mm) off this cylinder, so its u lands a few µrad off
+/// the column it should share with its neighbours. The x-wall of a tee puts
+/// its seam vertex on the z-wall's saddle strip exactly so: a 3.6e-6 rad
+/// spike past the strip's end column, which a strict parse read as two
+/// extra direction flips and refused — skipping the flange face's cut
+/// through the bore wall (a 1 mm lip, 294 open edges). Real chain steps are
+/// orders of magnitude larger (rims at 1e-3 mm sag step ~1e-2 rad; even the
+/// saddle samples crowding a u-extreme step ~1e-4).
+const SPIKE_U: f64 = 1e-5;
 
 /// A piecewise-linear chain v(u): `(u, v)` vertices with ascending u.
 pub(crate) type Chain = Vec<(f64, f64)>;
@@ -545,9 +557,9 @@ fn cyclic_turning_points(uvs: &[(f64, f64)]) -> Vec<usize> {
             if du > PI {
                 du -= 2.0 * PI;
             }
-            if du > U_EPS {
+            if du > SPIKE_U {
                 1
-            } else if du < -U_EPS {
+            } else if du < -SPIKE_U {
                 -1
             } else {
                 0
@@ -627,9 +639,9 @@ fn try_parse_two_chain(uvs: &[(f64, f64)], policy: TiePolicy) -> Option<CylBand>
     let mut flips: Vec<usize> = Vec::new();
     for i in 0..n - 1 {
         let du = unwrapped[i + 1] - unwrapped[i];
-        let d = if du > U_EPS {
+        let d = if du > SPIKE_U {
             1i8
-        } else if du < -U_EPS {
+        } else if du < -SPIKE_U {
             -1
         } else {
             0
@@ -671,7 +683,7 @@ fn try_parse_two_chain(uvs: &[(f64, f64)], policy: TiePolicy) -> Option<CylBand>
     // them on the first truncates the second chain's range and the clamped
     // interpolation would fabricate a wedge of area.
     let mut split_at = flips[0] + 1;
-    while split_at > 1 && (unwrapped[split_at - 1] - unwrapped[split_at - 2]).abs() <= U_EPS {
+    while split_at > 1 && (unwrapped[split_at - 1] - unwrapped[split_at - 2]).abs() <= SPIKE_U {
         split_at -= 1;
     }
     let mut chain_a: Chain = (0..split_at).map(|i| (unwrapped[i], uvs[i].1)).collect();
@@ -690,6 +702,17 @@ fn try_parse_two_chain(uvs: &[(f64, f64)], policy: TiePolicy) -> Option<CylBand>
     }
     if chain_b[0].0 > chain_b[chain_b.len() - 1].0 {
         chain_b.reverse();
+    }
+    // Sub-SPIKE_U back-steps (see the constant) would leave the chains
+    // non-monotone, and every interpolation below binary-searches them:
+    // clamp each onto the running maximum. The vertex moves along the
+    // surface by at most SPIKE_U · r, inside repair's seam weld.
+    for c in [&mut chain_a, &mut chain_b] {
+        for i in 1..c.len() {
+            if c[i].0 < c[i - 1].0 {
+                c[i].0 = c[i - 1].0;
+            }
+        }
     }
     let shift = ((chain_a[0].0 - chain_b[0].0) / (2.0 * PI)).round() * 2.0 * PI;
     for p in &mut chain_b {
@@ -2732,8 +2755,15 @@ pub(crate) fn split_cylindrical_face_by_open_loop(
     };
     let (Some(sa), Some(sb)) = (side_at(ua, pts[ia].1), side_at(ub, pts[ib].1)) else {
         band_dbg!(
-            "open-loop {face_id:?}: extreme inside band: a ({ua:.5},{:.4}) b ({ub:.5},{:.4}) band u [{u_start:.5},{u_end:.5}] wrap {}",
-            pts[ia].1, pts[ib].1, band.full_wrap
+            "open-loop {face_id:?}: extreme inside band: a ({ua:.5},{:.4}) b ({ub:.5},{:.4}) band u [{u_start:.5},{u_end:.5}] wrap {} r {} lo v [{:.3},{:.3}] hi v [{:.3},{:.3}] loop v [{:.3},{:.3}] center {:?} axis {:?}",
+            pts[ia].1, pts[ib].1, band.full_wrap, cyl.radius,
+            band.lo.iter().map(|p| p.1).fold(f64::MAX, f64::min),
+            band.lo.iter().map(|p| p.1).fold(f64::MIN, f64::max),
+            band.hi.iter().map(|p| p.1).fold(f64::MAX, f64::min),
+            band.hi.iter().map(|p| p.1).fold(f64::MIN, f64::max),
+            pts.iter().map(|p| p.1).fold(f64::MAX, f64::min),
+            pts.iter().map(|p| p.1).fold(f64::MIN, f64::max),
+            cyl.center, cyl.axis
         );
         return None;
     };
