@@ -488,6 +488,105 @@ fn mesh_polygons(mesh: &TriangleMesh) -> Vec<Polygon> {
 /// the split tolerance that created the junction.
 const TJUNCTION_EPS: f64 = 2e-3;
 
+/// Uniform-grid broadphase over the t-junction stitch points.
+///
+/// `triangulate` asks, for every edge of every kept fragment, which stitch
+/// points lie within [`TJUNCTION_EPS`] of it. Scanning the whole stitch set
+/// per edge made that O(edges × open vertices) — measured 2.2 s of a 2.8 s
+/// `mesh_csg` on a DN40 tee (65k fragments). A point within the tolerance
+/// of a segment lies inside the segment's box padded by the tolerance, so
+/// gathering the grid cells under that box drops only points the exact
+/// test would reject. Candidates come back in ascending stitch order, the
+/// order the full scan visited them in, so the output is unchanged.
+struct StitchGrid {
+    inv: f64,
+    cells: std::collections::HashMap<[i64; 3], Vec<u32>>,
+    n: usize,
+}
+
+impl StitchGrid {
+    /// Above this many cells under one query box, scan everything instead.
+    const MAX_QUERY_CELLS: i64 = 512;
+
+    fn new(points: &[Point3]) -> Self {
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        for p in points {
+            for (k, c) in [p.x, p.y, p.z].into_iter().enumerate() {
+                lo[k] = lo[k].min(c);
+                hi[k] = hi[k].max(c);
+            }
+        }
+        let extent = (0..3)
+            .map(|k| hi[k] - lo[k])
+            .filter(|e| e.is_finite())
+            .fold(0.0_f64, f64::max);
+        // About one point per cell along the densest axis, never finer
+        // than a few tolerances.
+        let cell = (extent / (points.len().max(1) as f64).cbrt()).max(4.0 * TJUNCTION_EPS);
+        let inv = 1.0 / cell;
+        let mut cells: std::collections::HashMap<[i64; 3], Vec<u32>> =
+            std::collections::HashMap::new();
+        for (i, p) in points.iter().enumerate() {
+            cells
+                .entry(Self::key(inv, p.x, p.y, p.z))
+                .or_default()
+                .push(i as u32);
+        }
+        StitchGrid {
+            inv,
+            cells,
+            n: points.len(),
+        }
+    }
+
+    fn key(inv: f64, x: f64, y: f64, z: f64) -> [i64; 3] {
+        [
+            (x * inv).floor() as i64,
+            (y * inv).floor() as i64,
+            (z * inv).floor() as i64,
+        ]
+    }
+
+    /// Indices of every point that could lie within [`TJUNCTION_EPS`] of
+    /// segment `a`–`b`, ascending.
+    fn near_segment(&self, a: &Point3, b: &Point3, out: &mut Vec<u32>) {
+        out.clear();
+        if self.n == 0 {
+            return;
+        }
+        let pad = TJUNCTION_EPS;
+        let k0 = Self::key(
+            self.inv,
+            a.x.min(b.x) - pad,
+            a.y.min(b.y) - pad,
+            a.z.min(b.z) - pad,
+        );
+        let k1 = Self::key(
+            self.inv,
+            a.x.max(b.x) + pad,
+            a.y.max(b.y) + pad,
+            a.z.max(b.z) + pad,
+        );
+        let span = |k: usize| k1[k].saturating_sub(k0[k]).saturating_add(1);
+        let count = span(0).saturating_mul(span(1)).saturating_mul(span(2));
+        if !(0..=Self::MAX_QUERY_CELLS).contains(&count) {
+            out.extend(0..self.n as u32);
+            return;
+        }
+        for x in k0[0]..=k1[0] {
+            for y in k0[1]..=k1[1] {
+                for z in k0[2]..=k1[2] {
+                    if let Some(v) = self.cells.get(&[x, y, z]) {
+                        out.extend_from_slice(v);
+                    }
+                }
+            }
+        }
+        out.sort_unstable();
+    }
+}
+
 /// Triangulate the kept fragments, inserting any of `stitch` that lies on a
 /// polygon edge (t-junction healing). Fragments are convex — they start as
 /// triangles and are only ever cut by planes — so a fan triangulation stays
@@ -517,6 +616,8 @@ fn triangulate(polys: &[Polygon], stitch: &[Point3]) -> (TriangleMesh, Vec<Point
     };
     let mut refined: Vec<Point3> = Vec::new();
     let mut on_edge: Vec<(f64, Point3)> = Vec::new();
+    let grid = StitchGrid::new(stitch);
+    let mut cand: Vec<u32> = Vec::new();
     for poly in polys {
         let verts: &[Point3] = if stitch.is_empty() {
             &poly.verts
@@ -533,7 +634,8 @@ fn triangulate(polys: &[Polygon], stitch: &[Point3]) -> (TriangleMesh, Vec<Point
                     continue;
                 }
                 on_edge.clear();
-                for p in stitch {
+                grid.near_segment(&a, &b, &mut cand);
+                for p in cand.iter().map(|&i| &stitch[i as usize]) {
                     let ap = *p - a;
                     let t = ap.dot(ab) / len2;
                     if !(1e-9..=1.0 - 1e-9).contains(&t) {
