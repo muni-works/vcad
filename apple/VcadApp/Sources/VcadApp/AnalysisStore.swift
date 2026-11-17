@@ -13,6 +13,16 @@ import SwiftUI
 enum AnalysisTab: String, CaseIterable, Identifiable {
     case dfm = "DFM", fea = "Stress", clearance = "Clearance", fields = "Fields"
     var id: String { rawValue }
+    /// The tab's item in the Analyze menu. An exhaustive switch, so a new tab
+    /// cannot silently borrow another tab's title.
+    var menuTitle: String {
+        switch self {
+        case .dfm: "Manufacturability (DFM)"
+        case .fea: "Stress (FEA)"
+        case .clearance: "Clearance & Interference"
+        case .fields: "Fields (Ions, Optimizer, Dose)"
+        }
+    }
 }
 
 /// A load or support being set up: faces on the analysed part.

@@ -343,7 +343,7 @@ struct AnalysisCommands: Commands {
             .keyboardShortcut("a", modifiers: [.command, .option])
             Divider()
             ForEach(AnalysisTab.allCases) { tab in
-                Button(tab == .dfm ? "Manufacturability (DFM)" : tab == .fea ? "Stress (FEA)" : "Clearance & Interference") {
+                Button(tab.menuTitle) {
                     let s = AnalysisStore.shared
                     s.shown = true; s.tab = tab; s.overlayRevision += 1
                 }
