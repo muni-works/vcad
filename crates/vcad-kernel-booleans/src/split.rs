@@ -4296,16 +4296,31 @@ fn clip_spherical_face_by_circle(
             });
         }
         // The disk is the side of the circle away from the outer
-        // boundary. Every existing hole must stay on the patch's side —
-        // one inside the new disk (or crossing the circle) would have to
-        // move into it, which this doesn't do.
+        // boundary: the cap beyond the circle's plane. A hole wholly on
+        // the patch's side stays put; one wholly beyond the plane lies in
+        // that cap and moves into the disk with it. A flange face plane
+        // 1 mm behind the plane that already trimmed a sphere cuts exactly
+        // such a circle — it rings the existing hole (or, from the other
+        // side, hugs the outer loop and rings every hole at once).
+        // Declining there sent the face to the whole-sphere split, which
+        // threw all its holes away. Only a hole the circle's plane crosses
+        // (or touches) cannot be assigned to either side.
         let outer_sign = if outer_above { 1.0 } else { -1.0 };
-        let holes_clear = holes
-            .iter()
-            .all(|h| h.iter().all(|p| side(p) * outer_sign > eps));
-        if !holes_clear {
+        let mut enclosed: Vec<usize> = Vec::new();
+        for (i, h) in holes.iter().enumerate() {
+            if h.iter().all(|p| side(p) * outer_sign > eps) {
+                continue;
+            }
+            if h.iter().all(|p| side(p) * outer_sign < -eps) {
+                enclosed.push(i);
+                continue;
+            }
             return None;
         }
+        let enclosed: Vec<vcad_kernel_topo::LoopId> = enclosed
+            .into_iter()
+            .map(|i| brep.topology.faces[face_id].inner_loops[i])
+            .collect();
         return Some(punch_spherical_hole(
             brep,
             face_id,
@@ -4314,6 +4329,7 @@ fn clip_spherical_face_by_circle(
             tolerance,
             outer_sign > 0.0,
             ring,
+            &enclosed,
         ));
     }
     if has_holes {
@@ -4634,6 +4650,10 @@ pub(crate) fn sphere_patch_contains(
 /// the `disk_on_negative` side of the circle's plane. Both loops are
 /// sampled on the circle-frame grid the whole-sphere split uses, so the
 /// planar faces cut by the same circle weld to them.
+///
+/// `enclosed` are the patch's existing holes that lie inside the new disk;
+/// they become holes of the disk instead.
+#[allow(clippy::too_many_arguments)]
 fn punch_spherical_hole(
     brep: &mut BRepSolid,
     face_id: FaceId,
@@ -4642,6 +4662,7 @@ fn punch_spherical_hole(
     tolerance: f64,
     disk_on_negative: bool,
     ring: Option<&[Point3]>,
+    enclosed: &[vcad_kernel_topo::LoopId],
 ) -> SplitResult {
     let ids: Vec<_> = sphere_circle_ring(circle, segments, ring)
         .iter()
@@ -4679,6 +4700,15 @@ fn punch_spherical_hole(
     if let Some(shell_id) = shell {
         brep.topology.shells[shell_id].faces.push(disk);
         brep.topology.faces[disk].shell = Some(shell_id);
+    }
+    if !enclosed.is_empty() {
+        brep.topology.faces[face_id]
+            .inner_loops
+            .retain(|l| !enclosed.contains(l));
+        for &l in enclosed {
+            brep.topology.faces[disk].inner_loops.push(l);
+            brep.topology.loops[l].face = Some(disk);
+        }
     }
     brep.geometry.add_curve_3d(Box::new(circle.clone()));
     SplitResult {
@@ -7143,6 +7173,104 @@ pub fn split_circular_disk_face(
 mod tests {
     use super::*;
     use vcad_kernel_primitives::make_cube;
+
+    /// A sphere patch bounded by the z = −e circle with a hole at z = +e —
+    /// what a slab leaves of a sphere. Returns (brep, patch face).
+    fn slab_trimmed_sphere(r: f64, e: f64) -> (BRepSolid, FaceId) {
+        use vcad_kernel_geom::Circle3d;
+        let mut brep = vcad_kernel_primitives::make_sphere(r, 32);
+        let face = brep.topology.faces.iter().next().map(|(id, _)| id).unwrap();
+        let rc = (r * r - e * e).sqrt();
+        let lower = Circle3d::new(Point3::new(0.0, 0.0, -e), rc);
+        let upper = Circle3d::new(Point3::new(0.0, 0.0, e), rc);
+        let caps = split_spherical_face_by_circle(&mut brep, face, &lower, 32).sub_faces;
+        assert_eq!(caps.len(), 2);
+        for cap in caps {
+            let (res, sound) = split_spherical_face_by_circle_checked(&mut brep, cap, &upper, 32);
+            assert!(sound);
+            if res.sub_faces.len() == 2 {
+                assert_eq!(brep.topology.faces[cap].inner_loops.len(), 1);
+                return (brep, cap);
+            }
+        }
+        panic!("no cap took the upper circle");
+    }
+
+    /// Every hole of `face` names it as its face (a moved hole must not
+    /// keep pointing at the patch it left).
+    fn assert_holes_point_at(brep: &BRepSolid, face: FaceId) {
+        for &l in &brep.topology.faces[face].inner_loops {
+            assert_eq!(brep.topology.loops[l].face, Some(face));
+        }
+    }
+
+    /// A circle just inside an existing hole's rim rings that hole: the hole
+    /// belongs to the new disk, not the patch. Declining here fell back to
+    /// the whole-sphere split and lost every hole of the patch — a flange
+    /// face 1 mm behind the plane that trimmed a spherical chamber body.
+    #[test]
+    fn sphere_circle_ringing_a_hole_takes_the_hole_with_it() {
+        use vcad_kernel_geom::Circle3d;
+        let (r, e, h) = (91.2, 74.7, 73.7);
+        let (mut brep, patch) = slab_trimmed_sphere(r, e);
+        let ring = Circle3d::new(Point3::new(0.0, 0.0, h), (r * r - h * h).sqrt());
+        let (res, sound) = split_spherical_face_by_circle_checked(&mut brep, patch, &ring, 32);
+        assert!(
+            sound,
+            "the clip must not fall back to the whole-sphere split"
+        );
+        assert_eq!(res.sub_faces.len(), 2);
+        let (patch, disk) = (res.sub_faces[0], res.sub_faces[1]);
+        // Patch: the old outer loop, holed by the new circle only.
+        assert_eq!(brep.topology.faces[patch].inner_loops.len(), 1);
+        // Disk: the 1 mm band, bounded by the new circle, holed by the old hole.
+        assert_eq!(brep.topology.faces[disk].inner_loops.len(), 1);
+        assert_holes_point_at(&brep, patch);
+        assert_holes_point_at(&brep, disk);
+        let hole = brep.topology.faces[disk].inner_loops[0];
+        for v in brep.topology.loop_vertices(hole) {
+            assert!((brep.topology.vertices[v].point.z - e).abs() < 1e-9);
+        }
+    }
+
+    /// The mirror image: a circle just inside the patch's OUTER loop puts
+    /// every hole of the patch on its far side.
+    #[test]
+    fn sphere_circle_hugging_the_outer_loop_takes_every_hole() {
+        use vcad_kernel_geom::Circle3d;
+        let (r, e, h) = (91.2, 74.7, 73.7);
+        let (mut brep, patch) = slab_trimmed_sphere(r, e);
+        let ring = Circle3d::new(Point3::new(0.0, 0.0, -h), (r * r - h * h).sqrt());
+        let (res, sound) = split_spherical_face_by_circle_checked(&mut brep, patch, &ring, 32);
+        assert!(sound);
+        assert_eq!(res.sub_faces.len(), 2);
+        let (patch, disk) = (res.sub_faces[0], res.sub_faces[1]);
+        assert_eq!(brep.topology.faces[patch].inner_loops.len(), 1);
+        assert_eq!(brep.topology.faces[disk].inner_loops.len(), 1);
+        assert_holes_point_at(&brep, patch);
+        assert_holes_point_at(&brep, disk);
+        let moved = brep.topology.faces[disk].inner_loops[0];
+        for v in brep.topology.loop_vertices(moved) {
+            assert!((brep.topology.vertices[v].point.z - e).abs() < 1e-9);
+        }
+    }
+
+    /// A hole the circle's plane crosses can go to neither side: still declined.
+    #[test]
+    fn sphere_circle_crossing_a_hole_is_still_unsound() {
+        use vcad_kernel_geom::Circle3d;
+        let (r, e) = (91.2, 74.7);
+        let (mut brep, patch) = slab_trimmed_sphere(r, e);
+        // A circle about +x crosses both the outer loop and the hole.
+        let d = 20.0;
+        let cross =
+            Circle3d::with_normal(Point3::new(d, 0.0, 0.0), (r * r - d * d).sqrt(), Vec3::x());
+        let (_, sound) = split_spherical_face_by_circle_checked(&mut brep, patch, &cross, 32);
+        assert!(
+            !sound,
+            "a clip across a holed patch is not representable yet"
+        );
+    }
 
     #[test]
     fn test_find_closest_edge() {

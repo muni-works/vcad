@@ -755,6 +755,50 @@ pub fn face_sample_point(brep: &BRepSolid, face_id: FaceId) -> Point3 {
                             best = Some((clearance, p));
                         }
                     }
+                    // A thin band (the 1 mm ring between a trim circle and
+                    // the flange circle just behind it is ~0.5% of the
+                    // sphere) can slip between all 256 directions; the
+                    // pole fallback below then lands in its hole and the
+                    // band is classified by a point that is not on it.
+                    // Walk in from the outer loop toward the patch's pole
+                    // instead: some step of every such walk is in the band.
+                    if best.is_none() {
+                        let mut sa = Vec3::zeros();
+                        for i in 0..vertices.len() {
+                            let a = vertices[i] - sph.center;
+                            let b = vertices[(i + 1) % vertices.len()] - sph.center;
+                            sa += a.cross(b);
+                        }
+                        if sa.norm() > 1e-12 {
+                            let pole = sa.normalize();
+                            let r = sph.radius.abs();
+                            let stride = (vertices.len() / 8).max(1);
+                            for v in vertices.iter().step_by(stride) {
+                                let from = (*v - sph.center).normalize();
+                                for k in 1..=12 {
+                                    let t = 0.5f64.powi(k);
+                                    let dir = from + t * (pole - from);
+                                    if dir.norm() < 1e-9 {
+                                        continue;
+                                    }
+                                    let p = sph.center + r * dir.normalize();
+                                    if crate::split::sphere_patch_contains(
+                                        sph.center, &vertices, &holes, &p,
+                                    ) != Some(true)
+                                    {
+                                        continue;
+                                    }
+                                    let clearance = boundary
+                                        .iter()
+                                        .map(|b| (*b - p).norm())
+                                        .fold(f64::INFINITY, f64::min);
+                                    if best.is_none_or(|(c, _)| clearance > c) {
+                                        best = Some((clearance, p));
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if let Some((_, p)) = best {
                         return p;
                     }
