@@ -321,7 +321,9 @@ impl<'a> UrdfWriter<'a> {
                 Ok((geometry, None))
             }
             CsgOp::Translate { child, offset } => {
-                let (geometry, _) = self.node_to_geometry(*child)?;
+                // The reader emits Translate(xyz) → Rotate(rpy) → geometry:
+                // keep the child's rpy rather than dropping it.
+                let (geometry, child_origin) = self.node_to_geometry(*child)?;
                 let origin = Some(Origin {
                     xyz: Some(format!(
                         "{} {} {}",
@@ -329,7 +331,7 @@ impl<'a> UrdfWriter<'a> {
                         offset.y / 1000.0,
                         offset.z / 1000.0
                     )),
-                    rpy: None,
+                    rpy: child_origin.and_then(|o| o.rpy),
                 });
                 Ok((geometry, origin))
             }
