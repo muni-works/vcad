@@ -107,6 +107,31 @@ pub fn mesh_clearance(a: &TriangleMesh, b: &TriangleMesh) -> Option<ClearanceRes
     })
 }
 
+/// Unsigned surface-to-surface distance between two triangle soups.
+///
+/// The first pass of [`mesh_clearance`] alone: no inside/outside parity, so
+/// it is valid for open meshes (e.g. a solid's mesh with some faces left
+/// out). `intersecting` here means only "some triangle pair crosses", with
+/// `distance` 0 at the crossing point. Returns `None` when either mesh has
+/// no triangles.
+pub fn mesh_surface_distance(a: &TriangleMesh, b: &TriangleMesh) -> Option<ClearanceResult> {
+    let bvh_a = TriBvh::build(a)?;
+    let bvh_b = TriBvh::build(b)?;
+    let mut best = Best {
+        dist_sq: f64::INFINITY,
+        point_a: [0.0; 3],
+        point_b: [0.0; 3],
+        crossing: false,
+    };
+    closest_pair(&bvh_a, 0, &bvh_b, 0, &mut best);
+    Some(ClearanceResult {
+        distance: best.dist_sq.sqrt(),
+        intersecting: best.crossing,
+        point_a: best.point_a,
+        point_b: best.point_b,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Triangle BVH
 // ---------------------------------------------------------------------------

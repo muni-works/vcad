@@ -314,6 +314,80 @@ pub fn signed_radial_gap_of(
     signed_radial_gap(doc, &scene, label, group_a, group_b, fit_window_mm)
 }
 
+/// One mesh clearance to refine: the two parts (root names / stable part
+/// ids, as clearance specs name them) and the mesh result measured between
+/// their evaluated meshes, in the document's world frame.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClearancePairQuery {
+    /// Part on the `point_a` side.
+    pub a: String,
+    /// Part on the `point_b` side.
+    pub b: String,
+    /// Mesh signed distance, mm.
+    pub distance: f64,
+    /// Mesh intersecting flag.
+    pub intersecting: bool,
+    /// Mesh witness on `a`.
+    pub point_a: [f64; 3],
+    /// Mesh witness on `b`.
+    pub point_b: [f64; 3],
+}
+
+/// A refined pair clearance (see [`vcad_kernel::analytic_clearance`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RefinedPairClearance {
+    /// Signed distance, mm (negative = interference depth).
+    pub distance: f64,
+    /// Interference.
+    pub intersecting: bool,
+    /// Witness on `a`.
+    pub point_a: [f64; 3],
+    /// Witness on `b`.
+    pub point_b: [f64; 3],
+    /// `"mesh"` or `"analytic_cylinders"`.
+    pub basis: String,
+    /// The mesh distance the query carried, mm.
+    pub mesh_distance: f64,
+    /// Combined chord-sag band of the cylinder pair, mm (analytic only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chord_band_mm: Option<f64>,
+}
+
+/// Refine mesh clearances with the parallel-cylinder closed form, on a
+/// fresh BRep evaluation of `doc`. Per pair: `None` when a part can't be
+/// resolved to a BRep root (instances, mesh-only parts) — the caller keeps
+/// its mesh number; otherwise the refined result (basis `"mesh"` when the
+/// closed form does not provably explain the mesh witness).
+pub fn refine_pair_clearances(
+    doc: &Document,
+    pairs: &[ClearancePairQuery],
+) -> Result<Vec<Option<RefinedPairClearance>>, SimExtractError> {
+    let scene = evaluate_document(doc, &eval_opts())?;
+    Ok(pairs
+        .iter()
+        .map(|q| {
+            let pa = find_part(doc, &scene, &q.a).ok()?;
+            let pb = find_part(doc, &scene, &q.b).ok()?;
+            let mesh = vcad_kernel::ClearanceResult {
+                distance: q.distance,
+                intersecting: q.intersecting,
+                point_a: q.point_a,
+                point_b: q.point_b,
+            };
+            let r = pa.solid.refine_clearance(pb.solid, &mesh);
+            Some(RefinedPairClearance {
+                distance: r.result.distance,
+                intersecting: r.result.intersecting,
+                point_a: r.result.point_a,
+                point_b: r.result.point_b,
+                basis: r.basis.as_str().to_string(),
+                mesh_distance: r.mesh_distance,
+                chord_band_mm: r.chord_band_mm,
+            })
+        })
+        .collect())
+}
+
 fn eval_opts() -> crate::EvalOptions {
     super::extraction_eval_options()
 }

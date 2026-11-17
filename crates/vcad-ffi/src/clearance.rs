@@ -4,7 +4,8 @@
 //! twin of the web `AnalyzePanel` + `ClashMesh`.
 //!
 //! Distance is the kernel's tessellation-based [`vcad_kernel::Solid::clearance`]
-//! (chord error at the part's own segment count). Overlap volume is the volume
+//! (chord error at the part's own segment count), corrected to the exact gap
+//! when the closest pair is two parallel cylinders (shaft in bore). Overlap volume is the volume
 //! of the B-rep intersection, so a pair that only touches reports zero volume
 //! while still being flagged as intersecting.
 
@@ -190,6 +191,9 @@ pub fn check(doc: &vcad_ir::Document, req: &Value) -> Result<ClearanceReport, St
         let Some(c) = mesh_clearance(ma, mb) else {
             continue;
         };
+        // Chord error can read a running fit tighter than the chord sag as
+        // an interference; the parallel-cylinder closed form corrects it.
+        let c = sa.refine_clearance(sb, &c).result;
         let (overlap, clash) = if c.intersecting {
             let x = sa.intersection(sb);
             let v = x.volume().max(0.0);

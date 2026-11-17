@@ -712,3 +712,92 @@ describe("check_clearance joint_state × sweep", () => {
     expect(res.pose.applied.shoulder).toBe(0);
   });
 });
+
+/**
+ * Snowthrower field report: a reference shaft modelled 0.02 mm under the bore
+ * radius came back as intersecting. A coaxial shaft through a bored block —
+ * the closest pair is two parallel cylinders, so the answer is the exact
+ * closed-form radial gap, never chord noise read as interference.
+ */
+function shaftInBoreDocument(rShaft: number, rBore: number, offsetX = 0): Document {
+  return {
+    version: "0.1",
+    nodes: {
+      "1": { id: 1, name: "shaft-solid", op: { type: "Cylinder", radius: rShaft, height: 30, segments: 0 } },
+      "2": { id: 2, name: "shaft", op: { type: "Translate", child: 1, offset: { x: offsetX, y: 0, z: -5 } } },
+      "3": { id: 3, name: "block", op: { type: "Cube", size: { x: 30, y: 30, z: 20 } } },
+      "4": { id: 4, name: "block-placed", op: { type: "Translate", child: 3, offset: { x: -15, y: -15, z: 0 } } },
+      "5": { id: 5, name: "bore-tool", op: { type: "Cylinder", radius: rBore, height: 40, segments: 0 } },
+      "6": { id: 6, name: "bore-placed", op: { type: "Translate", child: 5, offset: { x: 0, y: 0, z: -10 } } },
+      "7": { id: 7, name: "hub", op: { type: "Difference", left: 4, right: 6 } },
+    },
+    materials: {},
+    part_materials: {},
+    roots: [
+      { root: 2, material: "steel" },
+      { root: 7, material: "steel" },
+    ],
+  } as unknown as Document;
+}
+
+describe("check_clearance — cylinder pairs use the closed form, not chord noise", () => {
+  const open = (rShaft: number, rBore: number, offsetX = 0) =>
+    out(openDocument({ initial: shaftInBoreDocument(rShaft, rBore, offsetX) })).document_id as string;
+  const check = async (docId: string, extra: Record<string, unknown> = {}) =>
+    out(
+      await checkClearance(
+        { document_id: docId, group_a: ["shaft"], group_b: ["hub"], min_mm: 0, ...extra },
+        engine,
+      ),
+    );
+
+  it("a coaxial 7.98 mm shaft in an 8.00 mm bore reads +0.02 mm, clear", async () => {
+    const rShaft = 7.98;
+    const rBore = 8.0;
+    const res = await check(open(rShaft, rBore), { min_mm: 0.02 });
+    expect(res.intersecting).toBe(false);
+    expect(res.verdict).toBe("clear");
+    expect(res.basis).toBe("analytic_cylinders");
+    expect(Math.abs(res.measured_mm - (rBore - rShaft))).toBeLessThan(1e-9);
+    // Exactly at the requirement: passes on the true gap (the chord-shortened
+    // mesh distance alone falls just under it).
+    expect(res.pass).toBe(true);
+    expect(res.mesh_distance_mm).toBeLessThan(rBore - rShaft);
+  });
+
+  it("an oversized shaft still interferes, with the exact radial depth", async () => {
+    const res = await check(open(8.02, 8.0));
+    expect(res.pass).toBe(false);
+    expect(res.intersecting).toBe(true);
+    expect(res.verdict).toBe("intersecting");
+    expect(Math.abs(res.measured_mm + 0.02)).toBeLessThan(1e-9);
+  });
+
+  it("an off-axis shaft gets r_bore − r_shaft − offset", async () => {
+    const res = await check(open(7.9, 8.0, 0.05));
+    expect(res.basis).toBe("analytic_cylinders");
+    expect(Math.abs(res.measured_mm - 0.05)).toBeLessThan(1e-9);
+  });
+
+  it("a labelled running-fit spec builds and re-verifies as Holds", async () => {
+    const docId = open(7.98, 8.0);
+    const res = await check(docId, { min_mm: 0.02, label: "running-fit" });
+    expect(res.pass).toBe(true);
+    const built = out(await buildReceipt({ document_id: docId }, engine));
+    const claim = built.unified.claims.find(
+      (c: { id: string }) => c.id === "mech.clearance.running-fit",
+    );
+    expect(claim.verdict).toBe("pass");
+    expect(Math.abs(claim.measured.value - 0.02)).toBeLessThan(1e-9);
+    const verified = out(await verifyReceipt({ document_id: docId, receipt: built }, engine));
+    expect(verified.status).toBe("Holds");
+    expect(verified.clearance.checks[0]).toMatchObject({ label: "running-fit", status: "Holds" });
+  });
+
+  it("the audit does not flag a running fit as interference", async () => {
+    const res = out(await checkClearance({ document_id: open(7.98, 8.0) }, engine));
+    expect(res.mode).toBe("audit");
+    expect(res.findings).toEqual([]);
+    expect(res.pass).toBe(true);
+  });
+});
