@@ -16,4 +16,7 @@ mkdir -p "$here/Libs"
 # overwrote the main checkout's lib).
 if [ -L "$here/Libs" ]; then echo "Libs is a symlink — refusing to copy through it" >&2; exit 1; fi
 cp "$tc/target/tc-ffi/release/libtang_compress_ffi.a" "$here/Libs/"
+# This lib's panic runtime can win the app link over libvcad_ffi.a's; built
+# with panic=abort it turned every kernel panic into SIGABRT (1.0.3-beta.5).
+"$here/scripts/check-unwind.sh" --lib "$here/Libs/libtang_compress_ffi.a"
 echo "Staged: $here/Libs/libtang_compress_ffi.a ($(git -C "$tc" rev-parse --short HEAD))"

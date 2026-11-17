@@ -67,8 +67,8 @@ impl Xf {
             t: o,
         }
     }
-    /// Euler XYZ in degrees, applied X then Y then Z (the `CsgOp::Rotate`
-    /// convention).
+    /// Euler XYZ in degrees as `CsgOp::Rotate` builds it: R = Rx·Ry·Rz
+    /// (Z acts first, X last).
     fn rotation(a: Vec3) -> Xf {
         let (x, y, z) = (a.x.to_radians(), a.y.to_radians(), a.z.to_radians());
         let rx = [
@@ -96,7 +96,7 @@ impl Xf {
             m
         };
         Xf {
-            m: mul(rz, mul(ry, rx)),
+            m: mul(rx, mul(ry, rz)),
             t: Vec3::new(0.0, 0.0, 0.0),
         }
     }

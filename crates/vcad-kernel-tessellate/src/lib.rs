@@ -2595,6 +2595,86 @@ fn align_winding_to_normals(mesh: &mut TriangleMesh) {
 
 /// Core tessellation logic for a planar polygon without holes.
 fn tessellate_planar_face_core(outer_verts: &[Point3], reversed: bool) -> TriangleMesh {
+    let mesh = tessellate_planar_face_fan_or_clip(outer_verts, reversed);
+    // A boundary with collinear vertices (a straight side that a neighbour
+    // splits and this face does not — every merged coplanar face has them)
+    // defeats both paths above: a fan from a vertex on that side, or the
+    // last triangle of an ear clip, spans three collinear points. The
+    // zero-area triangle is not harmless: its long edge doubles the two
+    // short ones, which shows up as an over-used or folded edge once the
+    // solid is welded. Earcut with the dropped boundary points re-inserted
+    // triangulates the same ring with no such triangle; it is consulted
+    // only when the first answer is defective.
+    if planar_triangulation_is_sound(outer_verts, &mesh) {
+        return mesh;
+    }
+    let normal = newell_normal(outer_verts);
+    let Some(e1) = outer_verts
+        .windows(2)
+        .map(|w| w[1] - w[0])
+        .find(|e| e.norm() > 1e-12)
+    else {
+        return mesh;
+    };
+    if normal.norm() < 1e-12 {
+        return mesh;
+    }
+    let u_axis = e1.normalize();
+    let v_axis = normal.cross(e1).normalize();
+    let origin = outer_verts[0];
+    let uv: Vec<(f64, f64)> = outer_verts
+        .iter()
+        .map(|p| {
+            let d = *p - origin;
+            (d.dot(u_axis), d.dot(v_axis))
+        })
+        .collect();
+    match earcut_polygon_with_holes(&uv, &[], outer_verts, &[], reversed) {
+        Some(alt) if planar_triangulation_is_sound(outer_verts, &alt) => alt,
+        _ => mesh,
+    }
+}
+
+/// Whether `mesh` triangulates the ring `verts` with no zero-area triangle
+/// and no lost or doubled area.
+fn planar_triangulation_is_sound(verts: &[Point3], mesh: &TriangleMesh) -> bool {
+    let polygon_area = 0.5 * newell_normal(verts).norm();
+    // A triangulation of a simple ring that adds no vertices has exactly
+    // n − 2 triangles; fewer means boundary vertices were dropped (an ear
+    // clip that stalled on a collinear run), and the neighbours across
+    // that side then have nothing to weld to.
+    if polygon_area <= 0.0 || mesh.indices.len() / 3 != verts.len().saturating_sub(2) {
+        return false;
+    }
+    // Measured in f64 from the ring itself where the indices allow it; the
+    // mesh's own f32 positions otherwise.
+    let p = |i: u32| {
+        let b = i as usize * 3;
+        Point3::new(
+            mesh.vertices[b] as f64,
+            mesh.vertices[b + 1] as f64,
+            mesh.vertices[b + 2] as f64,
+        )
+    };
+    let scale = polygon_area.sqrt();
+    let mut total = 0.0;
+    for t in mesh.indices.chunks(3) {
+        let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+        let area = 0.5 * (b - a).cross(c - a).norm();
+        // Height over the longest side: a sliver thinner than 1e-7 of the
+        // face's size is three collinear points.
+        let longest = (b - a).norm().max((c - b).norm()).max((a - c).norm());
+        if longest <= 0.0 || 2.0 * area / longest < 1e-7 * scale {
+            return false;
+        }
+        total += area;
+    }
+    (total - polygon_area).abs() <= polygon_area * 1e-5
+}
+
+/// Fan triangulation where one vertex sees the whole ring, ear clipping
+/// otherwise.
+fn tessellate_planar_face_fan_or_clip(outer_verts: &[Point3], reversed: bool) -> TriangleMesh {
     // Find the best fan center vertex index.
     // For faces with curved boundaries (like quarter disks), we need to pick a vertex
     // that's at the junction of straight edges, not on the curved portion.
@@ -4793,13 +4873,18 @@ fn tessellate_ruled_two_chain(
         unwrapped.push(prev + du);
     }
     const RUN_EPS: f64 = 1e-9;
+    // Steps this small carry no direction: a vertex a neighbouring face
+    // T-inserted sits up to chord sag off this cylinder, a few µrad off the
+    // column it shares (mirrors `SPIKE_U` in vcad-kernel-booleans' band
+    // parser, which must accept the same loops).
+    const SPIKE_U: f64 = 1e-5;
     // Run boundaries: indices where the direction of travel flips.
     let mut dirs: Vec<i8> = Vec::with_capacity(l - 1);
     for i in 0..l - 1 {
         let du = unwrapped[i + 1] - unwrapped[i];
-        dirs.push(if du > RUN_EPS {
+        dirs.push(if du > SPIKE_U {
             1
-        } else if du < -RUN_EPS {
+        } else if du < -SPIKE_U {
             -1
         } else {
             0
@@ -4830,7 +4915,7 @@ fn tessellate_ruled_two_chain(
     // second chain; walk the boundary back over them so both chains keep
     // their full angular range.
     let mut split_at = flips[0] + 1; // first vertex of the second run
-    while split_at > 1 && (unwrapped[split_at - 1] - unwrapped[split_at - 2]).abs() <= RUN_EPS {
+    while split_at > 1 && (unwrapped[split_at - 1] - unwrapped[split_at - 2]).abs() <= SPIKE_U {
         split_at -= 1;
     }
     let chain1: Vec<(f64, f64)> = (0..split_at).map(|i| (unwrapped[i], uvs[i].1)).collect();
@@ -5045,8 +5130,14 @@ fn tessellate_ruled_two_chain(
     }
 
     // Orient the strip so triangle normals agree with the (possibly
-    // reversed) outward radial direction: check one non-degenerate
-    // triangle and flip the whole strip if needed.
+    // reversed) outward radial direction, by an area-weighted vote over
+    // EVERY triangle. Judging by the first non-degenerate triangle alone
+    // flipped whole faces: a strip whose rail ends in a slanted connector
+    // and a vertical step (the pinch at a crossing cylinder's saddle
+    // u-extreme) opens with a folded sliver whose normal points inward, and
+    // the strip below a tee's saddle rendered inside-out — every edge open,
+    // the union a third of its volume light.
+    let mut vote = 0.0f64;
     for t in mesh.indices.chunks(3) {
         let p = |i: u32| {
             let b = i as usize * 3;
@@ -5057,25 +5148,20 @@ fn tessellate_ruled_two_chain(
             )
         };
         let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
-        let n = (b - a).cross(c - a);
-        if n.norm() < 1e-12 {
-            continue;
-        }
         let centroid = Point3::new(
             (a.x + b.x + c.x) / 3.0,
             (a.y + b.y + c.y) / 3.0,
             (a.z + b.z + c.z) / 3.0,
         );
-        let mut outward = radial_normal(&centroid);
-        if reversed {
-            outward = -outward;
+        vote += (b - a).cross(c - a).dot(radial_normal(&centroid));
+    }
+    if reversed {
+        vote = -vote;
+    }
+    if vote < 0.0 {
+        for tri in mesh.indices.chunks_mut(3) {
+            tri.swap(1, 2);
         }
-        if n.dot(outward) < 0.0 {
-            for tri in mesh.indices.chunks_mut(3) {
-                tri.swap(1, 2);
-            }
-        }
-        break;
     }
 
     Some(mesh)

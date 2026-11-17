@@ -6,16 +6,48 @@
 //!
 //! New examples are picked up automatically; a file that can't meet the bar
 //! fails here instead of in front of a user on the Open Example menu.
+//!
+//! Each evaluation runs against [`BUDGET`]: an example that blows it fails
+//! *by name* instead of silently eating the CI shard's 45-minute limit.
+//! Examples whose evaluation is known to take many minutes in the current
+//! boolean kernel are listed in [`HEAVY`]: the default test still loads them
+//! and opens them in the engine, and the ignored
+//! `heavy_examples_evaluate` (run nightly) evaluates them in full.
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use vcad_app::DocumentApi;
 use vcad_crdt::ReplicaId;
 use vcad_eval::{evaluate_document_with_sheet_metal, EvalOptions};
+use vcad_ir::Document;
+
+/// Examples (repo-relative) whose evaluation takes tens of minutes in the
+/// current boolean kernel. Keep this list short and say why.
+///
+/// Empty today. `examples/vacuum/fusor-chamber.loon` was here while it took
+/// 1067–2428 s on CI: its DN100 spherical cube's port bores were mis-rotated
+/// into each other, and a tee fell back to the mesh boolean. Both are fixed
+/// and all nine roots stay analytic (~7 s in release).
+const HEAVY: &[&str] = &[];
+
+/// Wall-clock budget for one non-heavy example (load + engine open +
+/// evaluate). Every non-heavy example takes ~0.1–12 s; the budget is
+/// generous so a loaded runner never trips it, yet a hang or a new
+/// minutes-long example fails here with its name.
+const BUDGET: Duration = Duration::from_secs(300);
 
 fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+fn rel(path: &Path) -> String {
+    path.strip_prefix(repo())
+        .unwrap_or(path)
+        .display()
+        .to_string()
 }
 
 fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -35,9 +67,17 @@ fn collect(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Open + evaluate one example; `Ok(triangles)` or a reason.
-fn open(path: &Path) -> Result<usize, String> {
-    // The app's Open: any .vcad format (JSON, loon, VCode) to IR.
+fn examples() -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    collect(&repo().join("examples"), &mut files);
+    files.sort();
+    assert!(!files.is_empty(), "no examples found");
+    files
+}
+
+/// The app's Open: any .vcad format (JSON, loon, VCode) to IR, then into
+/// the engine.
+fn load(path: &Path) -> Result<Document, String> {
     let doc = vcad_ffi::load_document_file(path)?;
     // The editor opens documents in the engine; a refusal there means a
     // view-only document, which an example must not be. Electronics
@@ -47,7 +87,12 @@ fn open(path: &Path) -> Result<usize, String> {
         let json = serde_json::to_string(&doc).map_err(|e| format!("serialize: {e}"))?;
         DocumentApi::from_ir(&json, ReplicaId(1)).map_err(|e| format!("engine open: {e}"))?;
     }
-    let scene = evaluate_document_with_sheet_metal(&doc, &EvalOptions::default())
+    Ok(doc)
+}
+
+/// Evaluate a loaded example; `Ok(triangles)` or a reason.
+fn evaluate(doc: &Document) -> Result<usize, String> {
+    let scene = evaluate_document_with_sheet_metal(doc, &EvalOptions::default())
         .map_err(|e| format!("evaluate: {e}"))?;
     let parts: usize = scene.parts.iter().map(|p| p.mesh.indices.len() / 3).sum();
     let instances: usize = scene
@@ -67,24 +112,61 @@ fn open(path: &Path) -> Result<usize, String> {
     Ok(triangles)
 }
 
+fn caught<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+    catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|_| Err("panicked".into()))
+}
+
+/// Load + evaluate on a worker thread, bounded by [`BUDGET`]. `None` means
+/// the budget ran out; the worker is abandoned (the test process exits when
+/// the test fails).
+fn open_within_budget(path: &Path) -> Option<Result<usize, String>> {
+    let (tx, rx) = mpsc::channel();
+    let path = path.to_path_buf();
+    std::thread::spawn(move || {
+        let _ = tx.send(caught(|| evaluate(&load(&path)?)));
+    });
+    rx.recv_timeout(BUDGET).ok()
+}
+
+#[test]
+fn heavy_list_names_real_examples() {
+    let files: Vec<String> = examples().iter().map(|p| rel(p)).collect();
+    for heavy in HEAVY {
+        assert!(
+            files.iter().any(|f| f == heavy),
+            "HEAVY lists {heavy}, which is not an example any more"
+        );
+    }
+}
+
 #[test]
 fn every_example_opens_with_geometry() {
-    let mut files = Vec::new();
-    collect(&repo().join("examples"), &mut files);
-    files.sort();
-    assert!(!files.is_empty(), "no examples found");
+    let files = examples();
     let mut failures = Vec::new();
     for path in &files {
-        let rel = path
-            .strip_prefix(repo())
-            .unwrap_or(path)
-            .display()
-            .to_string();
-        let started = std::time::Instant::now();
-        match catch_unwind(AssertUnwindSafe(|| open(path))) {
-            Ok(Ok(tris)) => eprintln!("ok   {rel}: {tris} triangles in {:?}", started.elapsed()),
-            Ok(Err(e)) => failures.push(format!("{rel}: {e}")),
-            Err(_) => failures.push(format!("{rel}: panicked")),
+        let rel = rel(path);
+        let started = Instant::now();
+        if HEAVY.contains(&rel.as_str()) {
+            // Still opened exactly like the app does; full evaluation is in
+            // `heavy_examples_evaluate`.
+            match caught(|| load(path)) {
+                Ok(_) => eprintln!("open {rel}: heavy, loaded in {:?}", started.elapsed()),
+                Err(e) => failures.push(format!("{rel}: {e}")),
+            }
+            continue;
+        }
+        match open_within_budget(path) {
+            Some(Ok(tris)) => eprintln!("ok   {rel}: {tris} triangles in {:?}", started.elapsed()),
+            Some(Err(e)) => failures.push(format!("{rel}: {e}")),
+            None => {
+                failures.push(format!(
+                    "{rel}: still evaluating after {BUDGET:?} — fix the slow path, or \
+                     list it in HEAVY with a reason"
+                ));
+                // The abandoned worker would compete with every later
+                // example; stop here.
+                break;
+            }
         }
     }
     assert!(
@@ -94,4 +176,19 @@ fn every_example_opens_with_geometry() {
         files.len(),
         failures.join("\n")
     );
+}
+
+#[test]
+#[ignore = "tens of minutes of boolean time; runs nightly (ci.yml heavy-examples)"]
+fn heavy_examples_evaluate() {
+    let mut failures = Vec::new();
+    for heavy in HEAVY {
+        let path = repo().join(heavy);
+        let started = Instant::now();
+        match caught(|| evaluate(&load(&path)?)) {
+            Ok(tris) => eprintln!("ok   {heavy}: {tris} triangles in {:?}", started.elapsed()),
+            Err(e) => failures.push(format!("{heavy}: {e}")),
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

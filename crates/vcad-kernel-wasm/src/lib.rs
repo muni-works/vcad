@@ -1892,6 +1892,22 @@ impl Solid {
         self.inner.is_empty()
     }
 
+    /// This solid with the coplanar fragments its booleans left merged
+    /// back into single faces (`vcad_kernel::Solid::merge_coplanar_faces`):
+    /// one face per flat region, for display, picking and export.
+    ///
+    /// For a finished part only. Keep the unmerged solid for anything that
+    /// runs a further boolean on it — the splitters are tuned on the faces
+    /// a boolean produces, and `evaluateDocument` merges at the same point
+    /// (a root's exit) for the same reason. Returns an unchanged copy when
+    /// nothing merges or the merged solid would tessellate any worse.
+    #[wasm_bindgen(js_name = mergeCoplanarFaces)]
+    pub fn merge_coplanar_faces(&self) -> Solid {
+        Solid {
+            inner: self.inner.merge_coplanar_faces(),
+        }
+    }
+
     /// Get the triangle mesh representation.
     ///
     /// Returns a JS object with `positions` (Float32Array) and `indices` (Uint32Array).
@@ -4544,8 +4560,9 @@ pub fn evaluate_vcode(vcode: &str) -> Result<Solid, JsError> {
         .ok_or_else(|| JsError::new("Document has no root nodes"))?
         .root;
 
-    // Evaluate the DAG to produce a solid
-    evaluate_node(&doc, root_id)
+    // Evaluate the DAG to produce a solid. This is the root's exit: merge
+    // the coplanar fragments, as `evaluateDocument` does.
+    evaluate_node(&doc, root_id).map(|s| s.merge_coplanar_faces())
 }
 
 // =========================================================================

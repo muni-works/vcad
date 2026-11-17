@@ -5,59 +5,105 @@ neutrons, and put the measurement on the same plot as vcad's prediction.
 the climax is that plot.
 
 this is a plan plus a proof of concept. nothing has been ordered, built,
-filmed or published. every number below came from code on `origin/main`
-(`4ac21aab`), run on `mew`. the doc says where code and docs disagree.
+filmed or published. the numbers in §1–§6 came from code on `origin/main`
+at `4ac21aab`, run on `mew`; the block below is from main at `93b5124d`. the doc says where code and docs disagree.
 
-**tl;dr**
+**where it stands (2026-11-17).** the first version of this doc ranked twelve
+gaps. ten of them have since landed on main (§6 has the list), and the
+machine was redesigned on top of them. the sections below §1 are the original audit and
+proof of concept, kept as written; where a number there has been replaced,
+this block has the current one and names its source.
 
-- **predicted yield, hobby fusor** (6" chamber, 1.5" grid, −30 kV, 10 mA,
-  5 mTorr D₂): **2.5×10⁴ n/s (floor, CX on, grid-converged) to ≥4.4×10⁵ n/s
-  (ceiling, CX off, not converged)**. at −40 kV: 6.6×10⁴ to 1.2×10⁶. that's
-  a physics bracket, not an error bar.
-- the kernel crates are real and tested (124/124 green). the
-  *pipeline* is the problem: the sim's grid can't be a real globe grid, CAD
-  and sim share no geometry, the app has no screen for any of it, and the
-  dominant hazard (x-rays) isn't modeled at all.
-- **top 3 blockers**
-  1. **no x-ray model.** at 30–40 kV, bremsstrahlung (mostly through the
-     viewport, where the camera goes) is the main dose hazard. vcad's
-     safety case is neutron-only. it blocks filming until a measured
-     survey replaces it.
-  2. **the prediction can't lose.** an 18× bracket made of two floors, with
-     the top edge still moving under grid refinement, plus free inputs (ion
-     current vs supply current, pressure). almost any plausible measurement
-     "agrees". an honest climax needs a two-sided prediction with the
-     current-partition and CX-chain physics in it.
-  3. **CAD ↔ sim ↔ screen are disconnected.** `Device` is latitude rings
-     only (no meridional wires), there's no BRep → `DeviceSpec` extraction,
-     and `simulate_charged_particles` / `simulate_neutron_shield` exist only
-     in the node MCP server. vcad.app has no panel for them, so
-     there's nothing to film except JSON.
+- **predicted yield** (−30 kV, 10 mA *supply* current, 5 mTorr D₂):
+  **1.9×10³ n/s, band 87 to 1.8×10⁴**. at −40 kV: 6.3×10³ (2.1×10² to
+  4.8×10⁴). this is one number with a two-sided band a neutron count can
+  violate, from the CX chain with volume ionization and the supply→ion
+  current partition (`docs/particle-optics-m0.md` M7,
+  `examples/open_fusor_band.rs`). it replaces the §2 floor/ceiling bracket
+  (2.5×10⁴ to ≥4.4×10⁵), which assumed 10 mA of *ion* current and could not
+  lose. the new central value is 13× below the old floor.
+- **that band is for a ring stack, not the grid in the CAD.** the yield chain
+  is axisymmetric: 4 latitude rings in a 76 mm cylinder
+  ([`open-fusor/fusor-sim.loon`](open-fusor/fusor-sim.loon)). the machine
+  now carries a real 6-great-circle globe. the 3D thin-wire solver
+  (`docs/particle-optics-3d.md`, `examples/globe_vs_rings.rs`) says a ring
+  stack overstates recirculation about 3× (20.7 vs 7.1 mean passes) and the
+  CX-off ceiling 2.4×, while the CX-on floor barely moves (2.7 vs 2.8×10⁴
+  at 10 mA ion current). the two-sided chain has not been run on the globe.
+  until it is, the band is the ring-stack device's.
+- **x-rays now have numbers** (`docs/photon-dose-m0.md`, at the bound: every
+  milliamp reaching the wall as full-energy electrons). a bare 2.75″
+  borosilicate viewport at −30 kV is 1.1 mSv/h at 1 m on axis (upper edge
+  2.5); at −40 kV, 4.8 mSv/h (upper edge 10.8). 8 mm of lead glass or a
+  3 mm steel shutter takes the window path to nothing, leaving the wall
+  term: 0.003 µSv/h at −30 kV, but 9.4 µSv/h at −40 kV through a 1.65 mm
+  wall. so the redesign uses leaded-glass viewports. that case is not this
+  machine, though: the cube's wall is 11 mm or more (the wall term falls
+  ~200× by 3 mm), its DN63 windows have 2.9× the aperture area, and the
+  catalog models 5.2 mm of glass, not 8. it has not been re-priced. the ICRP-74 conversion coefficients for
+  10–40 keV in that model were transcribed, not independently checked.
+- **neutron dose, with the room** (`docs/neutronics-m0.md`,
+  `examples/fusor_room.rs`; 5×10⁶ n/s safety bound, 15 cm HDPE castle):
+  31 µSv/h at 0.5 m, 4.3 at the 1.5 m operator position, 1.8 at the
+  doorway. room return doubles the free-field figure at 1.5 m. capture
+  gammas add about a fifth behind the HDPE (1.79 µSv/h total at 2 m free
+  field, upper edge 2.32, against a 2.5 budget). at the predicted 1.9×10³
+  n/s all of these scale down by 2 600×.
+- **CAD → sim extraction exists, for a clean ring-stack document.**
+  `vcad_eval::sim_extract` turns a can-plus-rings document into the solver's
+  `DeviceSpec` (tested in `crates/vcad-eval/tests/sim_extract_fusor.rs`),
+  and vcad.app has the particle and neutron screens. neither file here goes
+  through it as written: the globe machine has a spherical cavity and
+  crossing wires, and `fusor-sim.loon` has a section cut and a stalk.
+
+still open: the two-sided chain on the 3D globe; the secondary-emission
+coefficient in the current partition is uncited; the MCP
+`simulate_charged_particles` tool still returns the old floor; and nothing
+has been measured.
 
 ![prediction](open-fusor/prediction.svg)
 
-*left: predicted D-D rate vs voltage (band = CX-on floor … CX-off
-ceiling). right: neutron dose vs distance at a 5×10⁶ n/s upper-bound source.
+*the original proof-of-concept plot, superseded by the block above. left:
+D-D rate vs voltage (band = CX-on floor … CX-off ceiling, 10 mA ion
+current). right: neutron dose vs distance at a 5×10⁶ n/s upper-bound source.
 generated by `examples/open_fusor_poc.rs` → `open-fusor/poc.csv` →
 `open-fusor/plot.py`.*
 
 ![hero](open-fusor/hero.jpg)
 
-*path-traced hero shot (`vcad-render --photoreal`, 192 spp, CPU). materials
-come from [`open-fusor/look.json`](open-fusor/look.json). the glowing core is
-render dressing from [`open-fusor/star-mode.loon`](open-fusor/star-mode.loon),
-not simulated or built geometry. renderer limits seen here: no glass
-transmission (the viewport reads opaque), and `--gpu` fails on mew ("driver
-rejected the tracer shader").*
+*path-traced hero shot of the redesigned machine (`vcad-render --photoreal`,
+160 spp, CPU). materials come from [`open-fusor/look.json`](open-fusor/look.json).
+the glow is render dressing from
+[`open-fusor/star-mode.loon`](open-fusor/star-mode.loon) (glowing media, not
+simulated). the camera-side viewport is removed for the shot because the path
+tracer does not transmit through glass.*
 
 ![machine](open-fusor/fusor.png)
 
-*first-pass machine CAD, front quadrant cut away:
-[`open-fusor/fusor.loon`](open-fusor/fusor.loon). the chamber bore and the
-4-ring grid are the exact geometry the proof of concept simulates. ports,
-flanges and the feedthrough are envelopes until the vacuum part library
-lands. the ragged edge where the viewport bore meets the wall is a kernel
-boolean artifact (unequal-radius crossing cylinders), not a modeling choice.*
+![section](open-fusor/section.png)
+
+*second-pass machine CAD and its section at y = 0:
+[`open-fusor/fusor.loon`](open-fusor/fusor.loon). every part is stock
+`std:vacuum.*` hardware joined by port mates: a DN63 (4.5″ CF) spherical
+cube, DN63→DN40 reducers, a 40 kV feedthrough whose conductor is the grid
+stalk (tip at z = 19.7 mm, on the grid pole), leaded-glass viewports, a KF40
+pump line, and a tee carrying the gauge and the D₂ leak valve. the cathode is
+six great circles of 2 mm wire on a 19 mm sphere, the layout the 3D solver
+uses. the catalog cavity radius is 79.9 mm against the 76 mm every simulation
+assumes (+5%). on mew at main `2b4bbef9`, with the geometry cache off, the
+21-root document evaluates in 9.8 s (`root_census`): every root analytic,
+with 0 non-manifold, folded or boundary edges, and the chamber at
+1,311,690 mm³ against a closed form of 1,311,233. the renders here are from
+that build. the first-pass cylinder-and-ring-stack geometry is kept as
+[`open-fusor/fusor-sim.loon`](open-fusor/fusor-sim.loon).*
+
+![shielded](open-fusor/shielded.png)
+
+*the same machine inside the 15 cm HDPE castle
+([`open-fusor/castle.loon`](open-fusor/castle.loon)), front panel off. the
+wall thickness is the one the room dose map prices. the cavity is larger than
+that model's 150 mm half-cube, because the real plumbing does not fit in it;
+the transport has not been rerun on this cavity.*
 
 ---
 
@@ -270,7 +316,8 @@ with radiation-safety credentials.
    discipline, interlocked enclosure, key switch, e-stop, **never alone**.
    the camera operator is a second person in the room, so they need the
    same briefing and fixed positions.
-2. **x-rays: the dominant radiation hazard, and vcad doesn't model it.**
+2. **x-rays: the dominant radiation hazard.** (written before
+   `docs/photon-dose-m0.md` existed; the top of this doc has its numbers.)
    above ~20 kV, electrons striking the chamber wall produce
    bremsstrahlung. steel walls attenuate well; **glass viewports are the
    leak path.** that's exactly where a "look inside" camera wants to be. no
@@ -361,8 +408,12 @@ with radiation-safety credentials.
 | 11 | **vacuum part library** (CF/KF flanges, gaskets, feedthroughs, viewports) | scene 6 hand-models stock hardware | S–M |
 | 12 | adjoint in `optimize_electrodes` (currently FD), external-pressure buckling in FEA, lathe ops in CAM | polish. bought hardware and FD are adequate for the video | S each |
 
-**suggested order:** 1 → 2 → 5 → 4 → 6 → 8, then build. 3 can be dodged
-by building a ring-stack grid and saying so on camera.
+**status, 2026-11-17:** 1 (photon dose), 2 (two-sided yield, ring stack
+only), 3 (3D globe field solve), 4 (extraction, ring-stack twin), 5 (app
+screens), 6 (integrator drift 19.4% → 0.17%), 7 (room dose map + detector
+response), 10 (thermal radiation), 11 (vacuum library) and 12 (adjoint,
+buckling, turning) are on main. 8 and 9 were not checked for this update.
+the remaining honest gap is 2 × 3: the two-sided chain on the globe.
 
 ---
 
@@ -370,13 +421,19 @@ by building a ring-stack grid and saying so on camera.
 
 ```bash
 # on mew (never the mac)
-# hero shot
-cat docs/videos/open-fusor/fusor.loon docs/videos/open-fusor/star-mode.loon > shot.loon
+# hero shot (glass does not transmit: drop the camera-side viewport)
+D=docs/videos/open-fusor
+grep -v "viewport-front" $D/fusor.loon > open.loon
+cat open.loon $D/star-mode.loon > shot.loon
 cargo run --release -p vcad-loon --example loon2vcad -- shot.loon > shot.vcad
-cargo run --release -p vcad-render -- shot.vcad --photoreal --azimuth 312 --elevation 16 --size 1400x1400 --fill 0.82 --fov 28 --exposure 0.75 --spp 192 --look docs/videos/open-fusor/look.json --lighting warm-studio --backdrop cyclorama -o hero.jpg
-# machine render (loon -> IR -> PNG)
-cargo run --release -p vcad-loon --example loon2vcad -- docs/videos/open-fusor/fusor.loon > fusor.vcad
+cargo run --release -p vcad-render -- shot.vcad --photoreal --azimuth 274 --elevation 4 --size 2000x2000 --fill 0.9 --fov 22 --exposure 0.75 --spp 160 --look $D/look.json --lighting warm-studio --backdrop cyclorama -o hero.jpg
+# machine, section and shielded renders (loon -> IR -> PNG)
+cargo run --release -p vcad-loon --example loon2vcad -- $D/fusor.loon > fusor.vcad
 cargo run --release -p vcad-render -- fusor.vcad --azimuth 310 --elevation 22 --format png --out-dir out --size 1400x1400 --trim --trim-margin 40
+cargo run --release -p vcad-render -- fusor.vcad --section y=0 --azimuth 300 --elevation 15 --format png --out-dir section --size 1400x1400 --trim --trim-margin 40
+cat $D/fusor.loon $D/castle.loon > shielded.loon
+cargo run --release -p vcad-loon --example loon2vcad -- shielded.loon > shielded.vcad
+cargo run --release -p vcad-render -- shielded.vcad --azimuth 300 --elevation 20 --format png --out-dir shielded --size 1400x1400 --trim --trim-margin 40
 cargo test --release -p vcad-kernel-particle -p vcad-kernel-neutronics
 cargo run --release -q -p vcad-kernel-particle --example open_fusor_poc > docs/videos/open-fusor/poc.csv
 python3 docs/videos/open-fusor/plot.py   # stdlib only → prediction.svg

@@ -51,6 +51,12 @@ web-time = "1.1"
 # (serde + tang + vcad-receipt); publishes before vcad-eval.
 vcad-kernel-thermal.workspace = true
 
+[features]
+# Test hook only: a scene root named `PANIC_INJECTION_NODE` panics inside the
+# evaluator's catch_unwind. vcad-ffi enables it as a dev-dependency (so it is
+# compiled in for `cargo test` alone, never for the staticlib the app links).
+panic-injection = []
+
 [dev-dependencies]
 # Path-only, no version: vcad-loon is publish = false (unpublished loon-lang),
 # and a versioned dev-dep would make `cargo publish -p vcad-eval` look for it
