@@ -720,3 +720,119 @@ fn solver_results_reach_the_app_in_full_and_the_agent_compacted() {
         .is_empty());
     assert!(args["result"]["section"]["potential"]["values"].is_array());
 }
+
+// ── Bad arguments never take the server down ─────────────────────────
+
+fn text_of(r: &Value) -> String {
+    r["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// The snowthrower-adapter report: `check_interference` and `export_cad` with
+/// an inline `document`, valid or garbage, in both modes. Each call answers
+/// (a result or a JSON-RPC error), and the server keeps serving afterwards.
+#[test]
+fn inline_document_args_answer_and_the_server_lives() {
+    let doc = vcad_loon::eval_vcad("[difference [cube 20 20 10] [cylinder 4 30]]", None).unwrap();
+    let inline = serde_json::to_value(&doc).unwrap();
+    let out = tempfile::tempdir().unwrap();
+    let path = |n: &str| out.path().join(n).to_str().unwrap().to_string();
+    let garbage = [
+        json!({"nodes": 5}),
+        json!({"version": "0.1", "nodes": {}, "roots": [{"root": 99}]}),
+        json!({"version": "0.1", "nodes": {"1": {"id": 1, "op": {"type": "Cube"}}}, "roots": [{"root": 1}]}),
+        json!("not a document"),
+        json!([1, 2, 3]),
+        json!(42),
+        Value::Null,
+    ];
+    let (hl, _d) = headless();
+    let (ap, fake) = app();
+    for (mode, h) in [("headless", &hl), ("app", &ap)] {
+        // A host tool runs on the open window: an inline document is refused
+        // out loud instead of silently checking a different document.
+        let r = h.call("check_interference", json!({ "document": inline }));
+        assert_eq!(r["result"]["isError"], true, "{mode}: {r}");
+        assert!(
+            text_of(&r).contains("does not take an inline `document`"),
+            "{mode}: {r}"
+        );
+
+        // Native exports of an inline document write the file.
+        for ext in ["stl", "3mf", "vcad"] {
+            let f = path(&format!("{mode}-inline.{ext}"));
+            h.ok("export_cad", json!({ "document": inline, "filename": f }));
+            assert!(std::fs::metadata(&f).unwrap().len() > 0, "{mode} {ext}");
+        }
+
+        for d in &garbage {
+            for tool in ["check_interference", "export_cad"] {
+                let r = h.call(
+                    tool,
+                    json!({ "document": d, "filename": path("garbage.stl") }),
+                );
+                assert!(
+                    r.get("result").is_some() || r.get("error").is_some(),
+                    "{mode} {tool} {d}: {r}"
+                );
+            }
+        }
+
+        // Still serving.
+        assert!(h.send("ping", json!({})).get("result").is_some(), "{mode}");
+        assert!(h.tool_names().contains("export_cad"), "{mode}");
+        h.ok(
+            "export_cad",
+            json!({ "document": inline, "filename": path("after.stl") }),
+        );
+    }
+    // The app never ran check_interference on its front window in place of an
+    // inline document (`document: null` counts as absent and does reach it).
+    assert!(!fake
+        .host_calls
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(n, a, _)| n == "check_interference" && !a["document"].is_null()));
+    // Without an inline document it still reaches the app.
+    ap.ok("check_interference", json!({}));
+}
+
+/// A tool that panics answers with a tool error naming the panic; the
+/// connection and the server keep working (inside vcad.app an escaped panic
+/// would cross the C ABI and abort the app).
+#[test]
+fn a_panicking_tool_is_a_tool_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = Server::new(Arc::new(HeadlessStore::new(dir.path())), no_proxy());
+    for (name, long_running) in [("boom", false), ("boom_long", true)] {
+        server.register(vcad_mcp::ToolDef {
+            name: name.into(),
+            description: "panics".into(),
+            input_schema: json!({"type": "object", "properties": {}}),
+            output_schema: None,
+            long_running,
+            handler: Arc::new(|_, _| panic!("kaboom")),
+        });
+    }
+    let h = H::new(server);
+    for name in ["boom", "boom_long"] {
+        let r = h.call(name, json!({}));
+        assert_eq!(r["result"]["isError"], true, "{name}: {r}");
+        let msg = text_of(&r);
+        assert!(
+            msg.contains("kaboom") && msg.contains("still running"),
+            "{msg}"
+        );
+    }
+    // The long-running one's job is closed out, not left running.
+    let jobs = h.send("vcad/jobs/list", json!({}));
+    assert!(!jobs.to_string().contains("\"running\""), "{jobs}");
+    assert!(h.send("ping", json!({})).get("result").is_some());
+    h.ok(
+        "create_cad_loon",
+        json!({"source": "[pub let a [cube 10.0 10.0 10.0]]"}),
+    );
+}
