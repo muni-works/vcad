@@ -55,6 +55,31 @@ struct DocMaterial {
     let metallic: Float
     let roughness: Float
     let transmission: Float
+    /// Linear emitted radiance (`emissive · emissiveStrength`, or a medium's
+    /// `volumeEmission.color · intensity`); zero when the material emits
+    /// nothing. Drives the viewport's emissive tint and its bloom pass.
+    var emission: SIMD3<Float> = .zero
+    /// The material is a glowing medium (`volumeEmission`) — a volume, not a
+    /// surface. The viewport draws it see-through and self-lit.
+    var isMedium = false
+
+    /// Emission as the document states it: a medium's `volumeEmission`
+    /// wins, else the surface `emissive · emissiveStrength` pair.
+    static func emission(from m: [String: Any]) -> (SIMD3<Float>, Bool) {
+        func rgb(_ v: Any?) -> SIMD3<Float>? {
+            guard let a = v as? [Any], a.count >= 3 else { return nil }
+            let c = a.prefix(3).compactMap { ($0 as? NSNumber)?.floatValue }
+            return c.count == 3 ? SIMD3(c[0], c[1], c[2]) : nil
+        }
+        if let ve = m["volumeEmission"] as? [String: Any] ?? m["volume_emission"] as? [String: Any] {
+            let i = (ve["intensity"] as? NSNumber)?.floatValue ?? 0
+            return ((rgb(ve["color"]) ?? SIMD3(repeating: 1)) * i, true)
+        }
+        let strength = (m["emissiveStrength"] as? NSNumber ?? m["emissive_strength"] as? NSNumber)?.floatValue
+        let colour = rgb(m["emissive"])
+        guard colour != nil || strength != nil else { return (.zero, false) }
+        return ((colour ?? SIMD3(repeating: 1)) * (strength ?? 1), false)
+    }
 }
 
 /// An assembly joint — just what playback and the transport UI need. The
@@ -199,11 +224,13 @@ struct DocumentGraph {
                       let r = (c[0] as? NSNumber)?.doubleValue,
                       let g = (c[1] as? NSNumber)?.doubleValue,
                       let b = (c[2] as? NSNumber)?.doubleValue else { continue }
+                let (emission, isMedium) = DocMaterial.emission(from: m)
                 materials[k] = DocMaterial(
                     color: (r, g, b),
                     metallic: Float((m["metallic"] as? NSNumber)?.doubleValue ?? 0.4),
                     roughness: Float((m["roughness"] as? NSNumber)?.doubleValue ?? 0.5),
-                    transmission: Float((m["transmission"] as? NSNumber)?.doubleValue ?? 0))
+                    transmission: Float((m["transmission"] as? NSNumber)?.doubleValue ?? 0),
+                    emission: emission, isMedium: isMedium)
             }
         }
 

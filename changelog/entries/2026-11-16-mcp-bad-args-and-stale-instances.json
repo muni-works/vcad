@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-mcp-bad-args-and-stale-instances",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "fix",
+  "title": "MCP: tool panics are errors, dead app instances pruned",
+  "summary": "A tool that panics now returns a tool error instead of dropping the connection. Viewport tools refuse an inline document instead of checking the open window. Dead ~/.vcad/instances files are deleted.",
+  "features": ["mcp", "mac-app", "discovery"],
+  "mcpTools": ["check_interference", "export_cad"]
+}

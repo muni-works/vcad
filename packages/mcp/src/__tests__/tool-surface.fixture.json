@@ -13151,6 +13151,89 @@
     }
   },
   {
+    "name": "check_winding",
+    "title": "Check Winding",
+    "description": "Verify a PCB motor winding carries current: solves the board copper as a resistor network (1 A into each phase pad, the neutral net at 0 V) and reports every coil's signed ampere-turns, each phase's pad-to-neutral resistance, and copper that carries no current. FAILS (isError) on an open coil, a partly shorted coil, a coil circulating against its plan polarity, or a dead-end stub — none of which DRC can see. Pass the same slots/poles/center/pitch_radius/outer_radius/turns_per_coil you gave add_motor_winding. Read-only.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "description": "Session id from create_schematic or open_document. Preferred — the tool mutates the server-side session, so the full document never crosses the wire."
+        },
+        "document": {
+          "type": "object",
+          "description": "Inline vcad IR Document (legacy stateless flow). Prefer document_id."
+        },
+        "slots": {
+          "type": "number",
+          "description": "Slot/tooth count (as passed to add_motor_winding)"
+        },
+        "poles": {
+          "type": "number",
+          "description": "Pole count 2p"
+        },
+        "phases": {
+          "type": "number",
+          "description": "Phase count (default 3)"
+        },
+        "center": {
+          "type": "object",
+          "description": "Winding center {x, y} in mm",
+          "properties": {
+            "x": {
+              "type": "number"
+            },
+            "y": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "x",
+            "y"
+          ]
+        },
+        "pitch_radius": {
+          "type": "number",
+          "description": "Radius of the coil centres (mm)"
+        },
+        "outer_radius": {
+          "type": "number",
+          "description": "Coil spiral outer radius (mm)"
+        },
+        "turns_per_coil": {
+          "type": "number",
+          "description": "Turns per coil (default 1)"
+        },
+        "copper_layer": {
+          "type": "string",
+          "description": "Spiral layer (default FCu)"
+        },
+        "phase_nets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Phase net names (default PHA/PHB/PHC)"
+        },
+        "neutral_net": {
+          "type": "string",
+          "description": "Wye neutral net (default WIND_N)"
+        }
+      },
+      "required": [
+        "slots",
+        "poles",
+        "center",
+        "pitch_radius",
+        "outer_radius"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
     "name": "calc_motor",
     "title": "Calc Motor",
     "description": "Evaluate motor performance AS DATA. mode:'pm' (default): torque constant Kt, back-EMF constant Ke, no-load speed, stall torque, and a speed–torque curve; supply air-gap flux directly or compute it from magnet geometry via the first-order MEC field model, with an optional Carter-like fringing derate (magnet.pole_width_mm). mode:'induction': thin-sheet axial induction rotor (drag-cup / PCB cage) — gap field B1, torque-per-unit-slip, locked-rotor torque, sync speed, rotor sheet loss. Pure: no board, no mutation. First-order steady state.",

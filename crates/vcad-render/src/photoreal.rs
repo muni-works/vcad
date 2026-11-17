@@ -64,7 +64,15 @@ pub enum Lighting {
     /// rim behind the subject that edges its silhouette. Every light sits
     /// outside the frame.
     WarmStudio,
+    /// A dark room: no rig, and the analytic sky dimmed to a faint ambient
+    /// ([`DARK_AMBIENT`]), so emissive parts and glowing media are what
+    /// light the shot. An image environment is used as given.
+    Dark,
 }
+
+/// Radiance of the analytic sky under [`Lighting::Dark`] — enough to
+/// separate a black part from a black background, no more.
+pub const DARK_AMBIENT: f32 = 0.003;
 
 impl std::str::FromStr for Lighting {
     type Err = String;
@@ -72,8 +80,9 @@ impl std::str::FromStr for Lighting {
         match s.trim().to_ascii_lowercase().as_str() {
             "studio" => Ok(Lighting::Studio),
             "warm-studio" | "warm" => Ok(Lighting::WarmStudio),
+            "dark" => Ok(Lighting::Dark),
             other => Err(format!(
-                "unknown lighting '{other}' (expected studio|warm-studio)"
+                "unknown lighting '{other}' (expected studio|warm-studio|dark)"
             )),
         }
     }
@@ -167,6 +176,10 @@ pub struct PhotorealOptions {
     /// of an accelerator. Mesh mode therefore tessellates on a cache miss
     /// too, so a cold render and a warm one are identical.
     pub exact: bool,
+    /// HDR glow post-process: an optional energy-conserving bloom and the
+    /// tone curve (`--bloom`, `--tonemap`). The default is no bloom and the
+    /// film's own ACES encoder, byte-identical to a render without it.
+    pub glow: crate::glow::Glow,
 }
 
 /// Segment count the default (non-[`exact`](PhotorealOptions::exact))
@@ -212,6 +225,7 @@ impl Default for PhotorealOptions {
             denoise: true,
             adaptive: true,
             exact: false,
+            glow: crate::glow::Glow::default(),
         }
     }
 }
@@ -545,7 +559,10 @@ pub(crate) fn dress_scene(
     framing: &Framing,
     pr: &PhotorealOptions,
 ) -> Result<Scene, String> {
-    let env = envmap::resolve(&pr.environment, pr.env_rotation_deg)?;
+    let mut env = envmap::resolve(&pr.environment, pr.env_rotation_deg)?;
+    if pr.lighting == Lighting::Dark && matches!(env, Environment::Gradient(_)) {
+        env = Environment::constant([DARK_AMBIENT; 3]);
+    }
 
     // The softbox rig exists to give the low-frequency analytic gradient
     // something to make highlights with. An HDRI already carries its own
@@ -554,6 +571,7 @@ pub(crate) fn dress_scene(
         Environment::Gradient(_) => match pr.lighting {
             Lighting::Studio => pathtrace::studio_rig(framing.center, framing.radius),
             Lighting::WarmStudio => warm_studio_rig(framing),
+            Lighting::Dark => Vec::new(),
         },
         Environment::Image(_) => Vec::new(),
     };
@@ -597,8 +615,8 @@ pub(crate) fn dress_scene(
         // product render's key light is the softbox rig above.
         sun: None,
         ground,
-        // Gaussian splats are a kosm-render scene kind with no `.vcad`
-        // spelling: a document has geometry, not a captured radiance field.
+        // The splat field is where glowing media go ([`take_media`]); the
+        // caller installs it, since only it knows which objects were media.
         splats: None,
     })
 }
@@ -767,6 +785,87 @@ pub(crate) fn warm_studio_rig(framing: &Framing) -> Vec<AreaLight> {
     ]
 }
 
+/// Whether any solid is a glowing medium ([`vcad_ir::VolumeEmission`]).
+pub(crate) fn has_media(solids: &[crate::SceneSolid]) -> bool {
+    solids.iter().any(|s| {
+        s.material
+            .as_ref()
+            .is_some_and(|m| m.volume_emission.is_some())
+    })
+}
+
+/// Whether a raw `.vcad` document declares a glowing medium on any material
+/// a scene root uses — the cheap check a caller makes before choosing a
+/// renderer tier, since only the CPU integrator traces media.
+pub fn document_has_media(raw_vcad: &str) -> bool {
+    let Ok(doc) = serde_json::from_str::<vcad_ir::Document>(raw_vcad) else {
+        return false;
+    };
+    doc.materials.values().any(|m| m.volume_emission.is_some())
+}
+
+/// Glow options that cannot be honoured for this output fail closed.
+///
+/// A transparent background (shadow catcher, no backdrop, PNG) stores
+/// coverage, not radiance, for every pixel the subject does not cover; a
+/// bloom halo and a medium both live mostly in those pixels, so either would
+/// be silently cut away. Refuse rather than draw half a glow.
+pub(crate) fn check_glow(pr: &PhotorealOptions, png: bool, media: bool) -> Result<(), String> {
+    let transparent = png && !pr.backdrop.is_opaque();
+    if transparent && pr.glow.bloom.is_some() {
+        return Err(
+            "photoreal: --bloom needs an opaque background (the halo lands on \
+             pixels a transparent PNG stores as empty); use --backdrop studio \
+             or cyclorama, or a JPEG"
+                .to_string(),
+        );
+    }
+    if transparent && media {
+        return Err(
+            "photoreal: a glowing medium (volumeEmission) needs an opaque \
+             background — a transparent PNG drops every pixel the medium \
+             does not hide; use --backdrop studio or cyclorama, or a JPEG"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Pull the glowing media out of `objects` and return them as the scene's
+/// splat field ([`vcad_kernel_raytrace::medium`]). `objects` is
+/// index-aligned with `solids` on entry (see [`build_objects`]); afterwards
+/// it holds only the surfaces. A medium has no surface, so nothing of it is
+/// left to shade.
+pub(crate) fn take_media(
+    objects: &mut Vec<Object>,
+    solids: &[crate::SceneSolid],
+) -> Option<Arc<vcad_kernel_raytrace::medium::SplatBvh>> {
+    use vcad_kernel_raytrace::medium::{EmissiveMedium, MediumCloud, DEFAULT_BUDGET};
+    debug_assert_eq!(objects.len(), solids.len());
+    let mut cloud = MediumCloud::new();
+    let mut keep = Vec::with_capacity(objects.len());
+    for (o, s) in objects.drain(..).zip(solids) {
+        match s
+            .material
+            .as_ref()
+            .and_then(EmissiveMedium::from_material_def)
+        {
+            Some(m) => {
+                cloud.add_auto(o.bvh.as_ref(), &m, DEFAULT_BUDGET);
+            }
+            None => keep.push(o),
+        }
+    }
+    *objects = keep;
+    if cloud.clamped() {
+        eprintln!(
+            "vcad-render: a medium asked for more absorption than its splat \
+             lattice carries; it renders less opaque than specified"
+        );
+    }
+    cloud.build()
+}
+
 pub(crate) fn trace_options(pr: &PhotorealOptions, png: bool) -> PathTraceOptions {
     PathTraceOptions {
         spp: pr.spp.max(1),
@@ -798,7 +897,12 @@ pub(crate) fn trace_frame(
         canvas.h as u32,
         &trace_options(pr, png),
     );
-    let rgba = film.to_srgb8(pr.exposure, png && !pr.backdrop.is_opaque());
+    let rgba = crate::glow::encode_film(
+        &film,
+        pr.exposure,
+        png && !pr.backdrop.is_opaque(),
+        &pr.glow,
+    );
 
     // Split into the (rgb, mask) pair the shared encoders expect.
     let n = canvas.len();
@@ -828,9 +932,13 @@ fn rasterize(
         build_objects(&solids, pr.mesh_segments())
     })?;
     apply_look(&mut objects, &solids, pr);
+    check_glow(pr, png, has_media(&solids))?;
     let (framing, scene) = crate::timed_stage("frame + dress scene", || {
+        // Framed with the media still in, so a glow is never cropped.
         let framing = frame_scene(&solids, &objects, opts, pr)?;
-        let scene = dress_scene(objects, &framing, pr)?;
+        let media = take_media(&mut objects, &solids);
+        let mut scene = dress_scene(objects, &framing, pr)?;
+        scene.splats = media;
         Ok::<_, String>((framing, scene))
     })?;
     Ok(crate::timed_stage("path trace", || {
@@ -1150,6 +1258,92 @@ mod tests {
             .err()
             .expect("a map must be refused");
         assert!(err.contains("emissive_map"), "{err}");
+    }
+
+    /// A cube of glowing medium beside an ordinary cube: the medium leaves
+    /// the surface list (it has no surface), becomes a splat field, and
+    /// renders as an orange glow in a dark room; a transparent PNG and the
+    /// GPU tier refuse it rather than drop it.
+    #[test]
+    fn a_glowing_medium_renders_as_a_volume() {
+        let doc = r#"{ "version": "0.1", "nodes": {
+            "1": { "id": 1, "name": "plasma", "op": { "type": "Cube", "size": { "x": 20, "y": 20, "z": 20 } } },
+            "2": { "id": 2, "name": "block", "op": { "type": "Translate",
+                   "child": 3, "offset": { "x": 40, "y": 0, "z": 0 } } },
+            "3": { "id": 3, "name": null, "op": { "type": "Cube", "size": { "x": 20, "y": 20, "z": 20 } } } },
+          "materials": {
+            "plasma": { "name": "plasma", "color": [1, 0.4, 0.1], "metallic": 0, "roughness": 1,
+                        "volumeEmission": { "color": [1.0, 0.4, 0.1], "intensity": 0.5 } },
+            "grey": { "name": "grey", "color": [0.5, 0.5, 0.5], "metallic": 0, "roughness": 0.6 } },
+          "part_materials": {},
+          "roots": [{ "root": 1, "material": "plasma" }, { "root": 2, "material": "grey" }] }"#;
+        let solids = crate::evaluate_vcad(doc).unwrap();
+        assert!(has_media(&solids));
+        assert!(document_has_media(doc));
+        assert!(!document_has_media(&cube_doc()));
+        let mut objects = build_objects(&solids, Some(32)).unwrap();
+        assert_eq!(objects.len(), 2);
+        let media = take_media(&mut objects, &solids).expect("a splat field");
+        assert_eq!(objects.len(), 1, "only the grey block keeps a surface");
+        assert!(media.geometry().count() > 1000);
+
+        let opts = RasterOptions {
+            size_px: 64,
+            ..RasterOptions::default()
+        };
+        let pr = PhotorealOptions {
+            spp: 8,
+            lighting: Lighting::Dark,
+            backdrop: Backdrop::None,
+            denoise: false,
+            glow: crate::glow::Glow {
+                bloom: Some(Default::default()),
+                tonemap: crate::glow::Tonemap::Exp,
+            },
+            ..PhotorealOptions::default()
+        };
+        let frame = rasterize(doc, &opts, &pr, false).expect("render");
+        // The brightest pixel is the medium, and it is orange: red over blue.
+        let (mut best, mut at) = (0u32, 0usize);
+        for i in 0..frame.rgb.len() / 3 {
+            let s: u32 = frame.rgb[i * 3..i * 3 + 3].iter().map(|&v| v as u32).sum();
+            if s > best {
+                best = s;
+                at = i;
+            }
+        }
+        let px = &frame.rgb[at * 3..at * 3 + 3];
+        assert!(best > 300, "the medium glows: {px:?}");
+        // The hot core saturates toward white (the exp curve), so judge the
+        // hue on every lit pixel: the glow as a whole is orange.
+        let (mut r, mut b, mut n) = (0u64, 0u64, 0u64);
+        for p in frame.rgb.chunks(3) {
+            if p.iter().map(|&v| v as u32).sum::<u32>() > 120 {
+                r += p[0] as u64;
+                b += p[2] as u64;
+                n += 1;
+            }
+        }
+        assert!(n > 20, "a glow, not a speck: {n} lit pixels");
+        assert!(
+            r > b + 30 * n,
+            "and glows orange: mean r {} b {}",
+            r / n,
+            b / n
+        );
+
+        let err = rasterize(doc, &opts, &pr, true)
+            .err()
+            .expect("transparent PNG refused");
+        assert!(err.contains("opaque background"), "{err}");
+        let plain = PhotorealOptions {
+            glow: Default::default(),
+            ..pr.clone()
+        };
+        let err = rasterize(doc, &opts, &plain, true)
+            .err()
+            .expect("medium on transparent refused");
+        assert!(err.contains("volumeEmission"), "{err}");
     }
 
     #[test]

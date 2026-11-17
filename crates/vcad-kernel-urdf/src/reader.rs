@@ -1033,11 +1033,15 @@ impl<'a> UrdfReader<'a> {
         // URDF uses meters, vcad uses mm
         let xyz_mm = [xyz[0] * 1000.0, xyz[1] * 1000.0, xyz[2] * 1000.0];
 
-        // URDF uses radians, vcad uses degrees
+        // URDF rpy is Rz·Ry·Rx (roll first); `CsgOp::Rotate` is Rx·Ry·Rz
+        // (Z first). Convert through the matrix so the same angles mean the
+        // same thing for primitive and mesh visuals alike. URDF uses radians,
+        // vcad uses degrees.
+        let rot = crate::euler::rpy_to_rotate([rpy[0], rpy[1], rpy[2]]);
         let rpy_deg = [
-            rpy[0].to_degrees(),
-            rpy[1].to_degrees(),
-            rpy[2].to_degrees(),
+            rot[0].to_degrees(),
+            rot[1].to_degrees(),
+            rot[2].to_degrees(),
         ];
 
         let has_translation = xyz_mm.iter().any(|v| v.abs() > 1e-6);

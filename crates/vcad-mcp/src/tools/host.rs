@@ -56,7 +56,37 @@ pub fn output_from_result(v: &Value) -> ToolOutput {
     }
 }
 
-fn run(ctx: &ToolCtx, name: &str, mut args: Value) -> Result<ToolOutput, ToolError> {
+/// The inline-document key a host tool was handed but does not declare.
+///
+/// Host tools run on the document open in vcad.app; an inline `document` /
+/// `ir` would be silently ignored and the agent would believe it checked the
+/// document it sent, not the one on screen.
+fn undeclared_inline_doc(schema: &Value, args: &Value) -> Option<&'static str> {
+    ["document", "ir"].into_iter().find(|k| {
+        args.get(*k).is_some_and(|v| !v.is_null())
+            && schema.pointer(&format!("/properties/{k}")).is_none()
+    })
+}
+
+fn run(
+    ctx: &ToolCtx,
+    name: &str,
+    schema: &Value,
+    mut args: Value,
+) -> Result<ToolOutput, ToolError> {
+    if let Some(key) = undeclared_inline_doc(schema, &args) {
+        // Node's versions of these take inline documents: hand it over.
+        if NODE_ALSO.contains(&name) {
+            return Err(ToolError::Delegate(format!(
+                "{name}: an inline `{key}` is served by the node tools"
+            )));
+        }
+        return Ok(ToolOutput::error(format!(
+            "`{name}` runs on the document open in vcad.app and does not take an inline `{key}`. \
+             Open your document there first (`open_in_app`, or `open_document` / `create_cad_loon` \
+             inside the app), then call `{name}` without `{key}`."
+        )));
+    }
     // A long-running host tool learns its job id: the app reports progress
     // (`vcad/jobs/progress`) and watches for cancel under it.
     if let (Some(j), Some(o)) = (&ctx.job_id, args.as_object_mut()) {
@@ -81,16 +111,18 @@ pub fn tools() -> Vec<ToolDef> {
         .filter_map(|d| {
             let name = d["name"].as_str()?.to_string();
             let n2 = name.clone();
+            let input_schema = d
+                .get("inputSchema")
+                .cloned()
+                .unwrap_or_else(|| json!({"type": "object", "properties": {}}));
+            let s2 = input_schema.clone();
             Some(ToolDef {
                 name,
                 description: d["description"].as_str().unwrap_or("").to_string(),
-                input_schema: d
-                    .get("inputSchema")
-                    .cloned()
-                    .unwrap_or_else(|| json!({"type": "object", "properties": {}})),
+                input_schema,
                 output_schema: d.get("outputSchema").cloned(),
                 long_running: d["longRunning"].as_bool().unwrap_or(false),
-                handler: Arc::new(move |ctx, args| run(ctx, &n2, args)),
+                handler: Arc::new(move |ctx, args| run(ctx, &n2, &s2, args)),
             })
         })
         .collect()

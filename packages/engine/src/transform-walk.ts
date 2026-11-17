@@ -15,11 +15,19 @@
 import type { CsgOp, Node, NodeId } from "@vcad/ir";
 
 /** A rigid placement read off a wrapper chain: the standard
- *  translate/rotate/scale triple {@link transformMesh} consumes. */
+ *  translate/rotate/scale triple {@link transformMesh} consumes.
+ *
+ *  `rotate` holds Euler angles in degrees. By default they compose as
+ *  R = Rz·Ry·Rx (X acts first — the instance `Transform3D` / three.js "ZYX"
+ *  order). `rotateOrder: "xyz"` marks raw `CsgOp::Rotate` angles instead,
+ *  R = Rx·Ry·Rz (Z acts first — `Solid.rotate`'s order); {@link findWrappedRoot}
+ *  sets it so a wrapped mesh turns the way a BRep under the same Rotate does.
+ *  The two orders agree when at most one angle is nonzero. */
 export interface TransformInfo {
   translate: { x: number; y: number; z: number };
   rotate: { x: number; y: number; z: number };
   scale: { x: number; y: number; z: number };
+  rotateOrder?: "xyz";
 }
 
 /** The neutral placement: no translation, no rotation, unit scale. */
@@ -76,6 +84,7 @@ export function findWrappedRoot<T>(
       current = op.child;
     } else if (op.type === "Rotate") {
       transform.rotate = op.angles;
+      transform.rotateOrder = "xyz";
       current = op.child;
     } else if (op.type === "Scale") {
       transform.scale = op.factor;
