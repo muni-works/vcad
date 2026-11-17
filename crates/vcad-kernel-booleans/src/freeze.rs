@@ -137,19 +137,28 @@ fn pair_cylinder_rims_with_planes(brep: &mut BRepSolid) {
 /// vertex chain, so the rebuilt edges pair exactly.
 pub(crate) fn freeze_circle_loops(brep: &mut BRepSolid, segments: u32) {
     pair_cylinder_rims_with_planes(brep);
-    // Decide which half-edges are genuine analytic circles BEFORE any is
-    // rechained: rechaining one rim grows its loop past the `> 4` guard
-    // below, and a wall's second rim (unpaired, so no twin would carry it
-    // along) was then skipped — left analytic beside a frozen neighbour,
-    // a guaranteed crack (a revolved cone's top rim against the cylinder
-    // above it: 401 open edges).
-    let he_ids: Vec<HalfEdgeId> = brep
+    // A cone wall (a full-turn revolve of a slanted profile edge) carries
+    // two unpaired rims in one loop. Rechaining the first grows that loop
+    // past the `> 4` guard below, so the second was skipped — left analytic
+    // beside a frozen neighbour, a guaranteed crack (a revolved cone's top
+    // rim against the cylinder above it: 401 open edges). Cone loops are
+    // therefore judged by their size BEFORE any rechaining; every other
+    // loop keeps the as-you-go guard, which calibrated boolean results
+    // depend on.
+    let on_cone = |b: &BRepSolid, l: vcad_kernel_topo::LoopId| {
+        b.topology.loops[l].face.is_some_and(|f| {
+            b.geometry.surfaces[b.topology.faces[f].surface_index]
+                .as_any()
+                .is::<vcad_kernel_geom::ConeSurface>()
+        })
+    };
+    let small_cone_loop: std::collections::HashSet<vcad_kernel_topo::LoopId> = brep
         .topology
-        .half_edges
-        .iter()
-        .filter(|(_, he)| he.loop_id.is_some_and(|l| brep.topology.loop_len(l) <= 4))
-        .map(|(id, _)| id)
+        .loops
+        .keys()
+        .filter(|&l| brep.topology.loop_len(l) <= 4 && on_cone(brep, l))
         .collect();
+    let he_ids: Vec<HalfEdgeId> = brep.topology.half_edges.keys().collect();
     let mut done: std::collections::HashSet<HalfEdgeId> = std::collections::HashSet::new();
 
     for he_id in he_ids {
@@ -157,9 +166,10 @@ pub(crate) fn freeze_circle_loops(brep: &mut BRepSolid, segments: u32) {
             continue;
         }
         let he = &brep.topology.half_edges[he_id];
-        if he.loop_id.is_none() {
-            continue;
-        }
+        let loop_id = match he.loop_id {
+            Some(l) => l,
+            None => continue,
+        };
         let next = match he.next {
             Some(n) => n,
             None => continue,
@@ -176,6 +186,9 @@ pub(crate) fn freeze_circle_loops(brep: &mut BRepSolid, segments: u32) {
         // legacy loops (1-he cap seam loops, ≤4-he wall rectangles);
         // splicing a ring into a dense loop would thread a phantom
         // full-circle polyline through the middle of the face.
+        if brep.topology.loop_len(loop_id) > 4 && !small_cone_loop.contains(&loop_id) {
+            continue;
+        }
         let twin = he.twin;
 
         // Find the cylinder or cone that carries this circle (own face or
