@@ -58,6 +58,7 @@ pub mod cpu;
 pub use kosm_render::env;
 
 pub mod intersect;
+pub mod medium;
 pub mod pathtrace;
 mod ray;
 pub mod tlas;

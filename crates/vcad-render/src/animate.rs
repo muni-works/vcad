@@ -40,8 +40,8 @@ use std::time::{Duration, Instant};
 use vcad_ir::animation::{AnimTarget, Timeline};
 
 use crate::photoreal::{
-    build_objects, check_raster_opts, dress_scene, frame_view, object_corners, object_corners_with,
-    trace_frame, PhotorealOptions,
+    build_objects, check_glow, check_raster_opts, dress_scene, frame_view, has_media,
+    object_corners, object_corners_with, trace_frame, PhotorealOptions,
 };
 use crate::raster::encode_png;
 use crate::RasterOptions;
@@ -338,6 +338,16 @@ pub fn render_photoreal_animation(
         fps,
         eval,
     } = plan;
+
+    // Glowing media are not animated yet: a medium is baked into a splat
+    // cloud in world space, and nothing re-places it per frame. Refuse rather
+    // than draw it as an opaque solid.
+    if has_media(&statics) || has_media(&part_solids) {
+        return Err("--animate does not support glowing media (volumeEmission) \
+                    yet; render frames one at a time with --photoreal"
+            .to_string());
+    }
+    check_glow(pr, true, false)?;
 
     let t_setup = Instant::now();
 

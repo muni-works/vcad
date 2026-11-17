@@ -369,6 +369,31 @@ vcad-render part.loon --photoreal --spp 1024 --no-denoise -o reference.png
 
 Honesty: the luminance edge-stopping weight is scaled by the estimator's own variance rather than a fixed sigma, because a fixed sigma makes a firefly self-protecting — its own noise spike makes every neighbour look like a different surface, so the filter rejects them all and the one pixel that most needs help survives untouched. Pixels whose primary ray escaped to the backdrop are passed through untouched, and no surface pixel accepts a tap from one: that is what keeps silhouettes exactly as sharp as the tracer drew them, and keeps an HDRI backdrop's own detail intact, but it also leaves backdrop noise from a wide aperture alone. The filter is spatial and single-frame — no temporal reprojection — so it cannot recover detail no sample ever found, and at very low sample counts a smooth indirect gradient is reconstructed rather than resolved. Pass `--no-denoise` whenever the noise itself is the measurement.
 
+### Glowing Media and Bloom
+
+A plasma, a discharge or a flame is not a surface that emits: it is a volume that emits at every point a ray crosses. A material with `volumeEmission` (`[material-glow name r g b intensity absorption falloff]` in loon) turns its part into exactly that — an **emissive participating medium** with no surface. `intensity` is radiance per millimetre of path, `absorption` a per-millimetre coefficient (0 for emission only), `falloff` a soft-edge depth. A ray crossing `L` mm of uniform medium picks up `(ε/κ)(1 − e^{−κL})`, which is `ε·L` when it does not absorb.
+
+The integrator composites a volumetric field along every ray segment — camera and bounce rays alike, each stopped at the first surface — so the medium is drawn with correct depth and occlusion, and it lights the parts around it. `vcad-kernel-raytrace::medium` fills the medium's solid with a lattice of isotropic Gaussians whose opacity and colour are *derived* from `ε` and `κ` (the lattice's thin-limit gain `2πσ²(1 − e^{−4.5})/h³` in closed form), and tests pin it to the radiative-transfer answer: a uniform slab, an absorbing slab, an oblique chord, a wall halfway through, and a soft edge each match within 0.1–0.7 %.
+
+```loon
+[let filament [loft [map [fn [k] [ring-at [* k 0.1]]] [range 0 11]]]]
+[material-glow "plasma-core" 1.0 0.42 0.14 4.0 0 0.6]
+[root filament "plasma-core"]
+```
+
+```bash
+cargo run -p vcad-loon --example loon2vcad -- docs/glow/plasmoid-glow.loon > plasmoid-glow.vcad
+vcad-render plasmoid-glow.vcad --photoreal --lighting dark --backdrop none \
+  --bloom 0.25 --bloom-radius 0.06 --tonemap exp --spp 1024 --size 720x1280 \
+  --fill 0.85 --view orbit:-90,28 --jpeg glow.jpg
+```
+
+The full source (dish, lofted filament, foot, glow sheet) is `docs/glow/plasmoid-glow.loon`. Left to right below: the offline numpy reference (a 2-D screen-blend over a flat drawing), the same document before this feature (plasma as surface emitters under the studio rig: an opaque orange plate), and the path-traced media with bloom — note the filament occluded by the spike, the copper bowl reflecting it, and the dish lit only by the glow (720×1280, 1024 spp, about five minutes on 24 cores).
+
+![The racing-plasmoid dish rendered by the path tracer with its filament, foot and glow sheet as glowing media, next to the offline numpy reference](/assets/kernel/glow.jpg)
+
+The halo is the one part that is a **post-process**: `--bloom [strength]` convolves the linear film with an energy-conserving glare PSF, `(1 − s)·δ + s·Σ wₖGₖ` — four Gaussians from a tight glow to a wide halo, built from running-sum box passes with symmetric-reflection borders so total radiance is preserved to rounding, at the frame edge too. `--tonemap exp` (`1 − e^{−x}`) lets a hot core saturate to white while its halo keeps its hue; `--lighting dark` drops the studio rig so the glow lights the shot. Honesty: the medium does not scatter (fine for an optically thin plasma, wrong for fog), its light reaches other surfaces only through BSDF-sampled bounces (it is not importance-sampled, so that light is noisier than an area light's), it renders on the CPU integrator only (`--gpu` refuses it; `vcad render --photoreal` and the app route to the CPU), it is not animated yet (`--animate` refuses), and a transparent PNG refuses both media and bloom rather than cropping the glow. The native viewport draws media see-through and self-lit and adds a cheap bloom pass only while something on screen emits.
+
 ### GPU Compute
 
 `vcad-kernel-gpu` offloads mesh work — normal computation, decimation — to wgpu compute shaders.

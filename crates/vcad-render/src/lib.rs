@@ -48,6 +48,8 @@ mod callouts;
 pub mod envmap;
 mod exact;
 #[cfg(feature = "raytrace")]
+pub mod glow;
+#[cfg(feature = "raytrace")]
 pub mod look;
 pub mod materials;
 pub mod pcb;

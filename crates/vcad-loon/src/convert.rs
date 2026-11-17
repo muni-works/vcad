@@ -56,6 +56,10 @@ pub fn value_to_document_in(
             let mat = ctx.emissive_material(fields)?;
             ctx.doc.materials.insert(mat.name.clone(), mat);
         }
+        Value::Adt(tag, fields) if tag == "MaterialG" && fields.len() == 7 => {
+            let mat = ctx.glow_material(fields)?;
+            ctx.doc.materials.insert(mat.name.clone(), mat);
+        }
         // Material definition (standalone)
         Value::Adt(tag, fields) if tag == "Material" && fields.len() == 6 => {
             let name = ctx.str_val(&fields[0])?;
@@ -228,6 +232,10 @@ fn merge_value_into_doc(ctx: &mut ConvertCtx, value: &Value) -> Result<(), Strin
         }
         Value::Adt(tag, fields) if tag == "MaterialE" && fields.len() == 20 => {
             let mat = ctx.emissive_material(fields)?;
+            ctx.doc.materials.insert(mat.name.clone(), mat);
+        }
+        Value::Adt(tag, fields) if tag == "MaterialG" && fields.len() == 7 => {
+            let mat = ctx.glow_material(fields)?;
             ctx.doc.materials.insert(mat.name.clone(), mat);
         }
         Value::Adt(tag, fields) if tag == "Material" && fields.len() == 6 => {
@@ -1480,6 +1488,35 @@ impl ConvertCtx {
             emissive_map_u: mapped(14)?,
             emissive_map_v: mapped(17)?,
             emissive_map: map,
+            ..Default::default()
+        })
+    }
+
+    /// `[material-glow name r g b intensity absorption falloff]` (the
+    /// `MaterialG` ADT) → a [`MaterialDef`] carrying a
+    /// [`VolumeEmission`](vcad_ir::VolumeEmission). The base colour is the
+    /// emission colour, so views that draw the medium as a solid draw it in
+    /// its own hue.
+    fn glow_material(&self, f: &[Value]) -> Result<MaterialDef, String> {
+        let n = |i: usize| self.f64_val(&f[i]);
+        let color = [n(1)?, n(2)?, n(3)?];
+        let (intensity, absorption, falloff) = (n(4)?, n(5)?, n(6)?);
+        if intensity < 0.0 || absorption < 0.0 || falloff < 0.0 {
+            return Err(
+                "material-glow: intensity, absorption and falloff must be >= 0".to_string(),
+            );
+        }
+        Ok(MaterialDef {
+            name: self.str_val(&f[0])?,
+            color,
+            metallic: 0.0,
+            roughness: 1.0,
+            volume_emission: Some(vcad_ir::VolumeEmission {
+                color: Some(color),
+                intensity,
+                absorption: (absorption > 0.0).then_some(absorption),
+                falloff: (falloff > 0.0).then_some(falloff),
+            }),
             ..Default::default()
         })
     }
@@ -3530,6 +3567,27 @@ mod tests {
         assert_eq!(doc.materials.len(), 2); // steel + default
         assert!(doc.materials.contains_key("steel"));
         assert_eq!(doc.roots.len(), 1);
+    }
+
+    #[test]
+    fn glow_material_is_a_medium() {
+        let fields = vec![
+            s("plasma"),
+            f(1.0),
+            f(0.42),
+            f(0.14),
+            f(3.0),
+            f(0.0),
+            f(1.5),
+        ];
+        let doc = value_to_document(&Value::Vec(vec![adt("MaterialG", fields)].into())).unwrap();
+        let m = &doc.materials["plasma"];
+        let v = m.volume_emission.as_ref().expect("a medium");
+        assert_eq!(v.radiance(), [3.0, 3.0 * 0.42, 3.0 * 0.14]);
+        assert_eq!((v.absorption, v.falloff), (None, Some(1.5)));
+        assert_eq!(m.color, [1.0, 0.42, 0.14]);
+        let bad = vec![s("x"), f(1.0), f(1.0), f(1.0), f(-1.0), f(0.0), f(0.0)];
+        assert!(value_to_document(&Value::Vec(vec![adt("MaterialG", bad)].into())).is_err());
     }
 
     #[test]
