@@ -138,14 +138,7 @@ mod tests {
     fn xyz_order_is_rx_ry_rz() {
         // Z acts first: x̂ → (Rz 90°) ŷ → (Rx 90°) ẑ.
         let mut p = vec![1.0, 0.0, 0.0];
-        apply_placement_ordered(
-            &mut p,
-            None,
-            Z3,
-            [90.0, 0.0, 90.0],
-            I3,
-            RotationOrder::Xyz,
-        );
+        apply_placement_ordered(&mut p, None, Z3, [90.0, 0.0, 90.0], I3, RotationOrder::Xyz);
         close(&p, &[0.0, 0.0, 1.0]);
     }
 
