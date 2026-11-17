@@ -206,7 +206,7 @@ fn tessellation_deviation(mesh: &TriangleMesh, ordinals: &[u32], c: &Cyl, span: 
         (r - c.radius).abs() <= rim_tol && t >= span.0 - rim_tol && t <= span.1 + rim_tol
     };
     let mut dev: f64 = 0.0;
-    for (t, tri) in mesh.indices.chunks_exact(3).enumerate() {
+    for (t, tri) in mesh.indices.as_chunks::<3>().0.iter().enumerate() {
         let (p, q, r) = (v(tri[0]), v(tri[1]), v(tri[2]));
         if !ordinals.contains(&mesh.face_ids[t]) {
             for (a, b) in [(p, q), (q, r), (r, p)] {
@@ -290,7 +290,7 @@ fn span_in(s: &CylSurface, frame: &Cyl) -> (f64, f64) {
 fn mesh_without(full: &TriangleMesh, drop: &[u32]) -> TriangleMesh {
     let mut out = TriangleMesh::new();
     out.vertices = full.vertices.clone();
-    for (t, tri) in full.indices.chunks_exact(3).enumerate() {
+    for (t, tri) in full.indices.as_chunks::<3>().0.iter().enumerate() {
         if !drop.contains(&full.face_ids[t]) {
             out.indices.extend_from_slice(tri);
         }
