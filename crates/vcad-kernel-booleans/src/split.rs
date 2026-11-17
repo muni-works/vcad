@@ -150,34 +150,84 @@ pub(crate) fn line_key(l: &vcad_kernel_geom::Line3d) -> [u64; 6] {
 pub(crate) type HoleChordSpans = std::collections::HashMap<[u64; 6], Vec<(Point3, Point3)>>;
 
 thread_local! {
-    static HOLE_CHORDS: std::cell::RefCell<HoleChordSpans> =
-        std::cell::RefCell::new(HoleChordSpans::new());
+    /// Covered spans for cuts on operand A's faces (`[0]`, the extents of
+    /// B's faces) and on operand B's (`[1]`).
+    static HOLE_CHORDS: std::cell::RefCell<[HoleChordSpans; 2]> =
+        std::cell::RefCell::new([HoleChordSpans::new(), HoleChordSpans::new()]);
+    /// Surface indices of the operand being split whose plane also carries
+    /// a face of the other operand (see `split_face_by_curve`).
+    static HOLE_CHORD_COPLANAR: std::cell::RefCell<std::collections::HashSet<usize>> =
+        std::cell::RefCell::new(std::collections::HashSet::new());
+    /// Which operand's faces are being split: indexes `HOLE_CHORDS`.
+    static HOLE_CHORD_OPERAND: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Install the current boolean's covered spans: a cut may pass through a
-/// planar face's hole only when its whole chord lies inside one of them.
-pub(crate) fn trust_hole_chords(spans: HoleChordSpans) {
-    HOLE_CHORDS.with(|h| *h.borrow_mut() = spans);
+/// planar face's hole only where the OTHER operand's face really cuts (see
+/// `split_face_by_curve`). `cutting_a` holds the extents of B's faces
+/// along each SSI line, `cutting_b` those of A's. They are kept apart
+/// because a face's own extent along the line is exactly its material
+/// stretches — consulted for its own cut it would vouch for every chord.
+pub(crate) fn trust_hole_chords(cutting_a: HoleChordSpans, cutting_b: HoleChordSpans) {
+    HOLE_CHORDS.with(|h| *h.borrow_mut() = [cutting_a, cutting_b]);
 }
 
-fn hole_chord_trusted(l: &vcad_kernel_geom::Line3d, entry: &Point3, exit: &Point3) -> bool {
-    let tol = 1e-6 * (*exit - *entry).norm().max(1.0);
+/// Select whose faces the splits that follow belong to: operand A
+/// (`true`) or operand B — and which of that operand's planar surfaces
+/// (by surface index) share their plane with a face of the other operand.
+pub(crate) fn hole_chords_cutting_a(a: bool, coplanar_surfaces: std::collections::HashSet<usize>) {
+    HOLE_CHORD_OPERAND.with(|o| o.set(usize::from(!a)));
+    HOLE_CHORD_COPLANAR.with(|c| *c.borrow_mut() = coplanar_surfaces);
+}
+
+/// Do the cutter's own spans along `l` cover the stretch `from → to`?
+///
+/// The spans are unioned first: a cutter face that an earlier boolean left
+/// in several coplanar pieces (a section block fused with coaxial bores
+/// carries the phantom splits of every bore radius) covers the stretch
+/// piecewise, each piece a separate span.
+fn hole_chord_covered(l: &vcad_kernel_geom::Line3d, from: &Point3, to: &Point3) -> bool {
+    // The spans are trimmed curve segments, whose ends the trimmer leaves a
+    // few 1e-6 short of the cutter face's true edge (a 400 mm section-block
+    // face came back as 76.0000039 … 399.999996). A stretch that starts
+    // exactly on that edge — the hole's rim, where the cutter's own wall
+    // ends — must still count as covered, and two pieces that meet at such
+    // an edge must join.
+    let tol = (1e-6 * (*to - *from).norm()).max(1e-4);
+    let dir = *to - *from;
+    let len = dir.norm();
+    if len < 1e-12 {
+        return false;
+    }
+    let dir = dir / len;
+    // Parameter along from → to, or None for a point off that line.
+    let param = |p: &Point3| {
+        let t = (*p - *from).dot(dir);
+        ((*p - (*from + dir * t)).norm() <= tol).then_some(t)
+    };
+    let operand = HOLE_CHORD_OPERAND.with(|o| o.get());
     HOLE_CHORDS.with(|h| {
-        h.borrow().get(&line_key(l)).is_some_and(|spans| {
-            spans.iter().any(|(a, b)| {
-                let ab = *b - *a;
-                let len2 = ab.norm_squared();
-                if len2 < 1e-18 {
-                    return false;
-                }
-                let inside = |p: &Point3| {
-                    let t = (*p - *a).dot(ab) / len2;
-                    let off = (*p - (*a + ab * t)).norm();
-                    off <= tol && t * len2.sqrt() >= -tol && (t - 1.0) * len2.sqrt() <= tol
-                };
-                inside(entry) && inside(exit)
+        let h = h.borrow();
+        let Some(spans) = h[operand].get(&line_key(l)) else {
+            return false;
+        };
+        let mut intervals: Vec<(f64, f64)> = spans
+            .iter()
+            .filter_map(|(a, b)| {
+                let (ta, tb) = (param(a)?, param(b)?);
+                Some((ta.min(tb), ta.max(tb)))
             })
-        })
+            .collect();
+        intervals.sort_by(|x, y| x.0.total_cmp(&y.0));
+        // Walk the union outward from `from`.
+        let mut reach = 0.0f64;
+        for (lo, hi) in intervals {
+            if lo > reach + tol {
+                break;
+            }
+            reach = reach.max(hi);
+        }
+        reach >= len - tol
     })
 }
 
@@ -220,30 +270,50 @@ fn merge_crossed_hole(
     let side = |p: &Point3| (*p - *entry).dot(side_dir);
     let scale = len2.sqrt();
     let eps = 1e-9 * scale.max(1.0);
-    // Crossings of the chord with hole edges: (t along chord, edge index, point).
-    let mut hits: Vec<(f64, usize, Point3)> = Vec::new();
+    // Crossings of the chord with the hole: (t along chord, last hole
+    // vertex before it, first hole vertex after it, point). A crossing is
+    // either inside an edge whose ends lie strictly on opposite sides, or AT
+    // a hole vertex lying on the cut with its neighbours on opposite sides.
+    // The second kind is the rule, not the exception, for a section plane
+    // through a bore's axis: the bore's frozen rim has vertices at the
+    // canonical angles, and an axis-aligned plane hits two of them exactly
+    // (the open-fusor flanges; refusing these left their caps uncut).
+    let sides: Vec<f64> = hole.iter().map(side).collect();
+    let on_cut = |i: usize| sides[i].abs() <= eps;
+    let mut hits: Vec<(f64, usize, usize, Point3)> = Vec::new();
     for i in 0..m {
-        let (a, b) = (hole[i], hole[(i + 1) % m]);
-        let (sa, sb) = (side(&a), side(&b));
-        if sa.abs() <= eps || sb.abs() <= eps {
-            return None; // a hole vertex on the cut: not a clean crossing
-        }
-        if (sa > 0.0) == (sb > 0.0) {
+        let j = (i + 1) % m;
+        let (p, before, after) = if on_cut(i) {
+            let (prev, next) = ((i + m - 1) % m, j);
+            if on_cut(prev) || on_cut(next) {
+                split_dbg!("merge_crossed_hole: hole edge along the cut");
+                return None; // a hole edge runs along the cut
+            }
+            if (sides[prev] > 0.0) == (sides[next] > 0.0) {
+                split_dbg!("merge_crossed_hole: hole vertex grazes the cut");
+                return None; // the hole touches the cut without crossing
+            }
+            (hole[i], prev, next)
+        } else if !on_cut(j) && (sides[i] > 0.0) != (sides[j] > 0.0) {
+            let (a, b) = (hole[i], hole[j]);
+            (a + (b - a) * (sides[i] / (sides[i] - sides[j])), i, j)
+        } else {
             continue;
-        }
-        let p = a + (b - a) * (sa / (sa - sb));
+        };
         let t = (p - *entry).dot(d) / len2;
         if !(1e-9..=1.0 - 1e-9).contains(&t) {
+            split_dbg!("merge_crossed_hole: hole reaches past the cut's ends");
             return None; // the hole reaches past the cut's ends
         }
-        hits.push((t, i, p));
+        hits.push((t, before, after, p));
     }
     if hits.len() != 2 {
+        split_dbg!("merge_crossed_hole: {} crossings", hits.len());
         return None;
     }
     hits.sort_by(|x, y| x.0.total_cmp(&y.0));
-    let (_, i1, mut p1) = hits[0];
-    let (_, i2, mut p2) = hits[1];
+    let (_, before1, after1, mut p1) = hits[0];
+    let (_, before2, after2, mut p2) = hits[1];
     // A frozen circular hole (every vertex equidistant from its centroid)
     // is bounded by a wall whose own split along this plane lands ON the
     // circle, not on the polygon's chord a sag below it. Put the crossings
@@ -274,20 +344,20 @@ fn merge_crossed_hole(
         }
     }
     // Hole arcs between the crossings, walking the hole's own order.
-    let arc = |from_edge: usize, to_edge: usize| -> Vec<Point3> {
+    let arc = |from: usize, to: usize| -> Vec<Point3> {
         let mut out = Vec::new();
-        let mut k = (from_edge + 1) % m;
+        let mut k = from;
         loop {
             out.push(hole[k]);
-            if k == to_edge {
+            if k == to {
                 break;
             }
             k = (k + 1) % m;
         }
         out
     };
-    let arc_12 = arc(i1, i2); // p1 → … → p2
-    let arc_21 = arc(i2, i1); // p2 → … → p1
+    let arc_12 = arc(after1, before2); // p1 → … → p2
+    let arc_21 = arc(after2, before1); // p2 → … → p1
     let interior_side =
         |lp: &[Point3]| lp.iter().map(side).find(|s| s.abs() > eps).map(f64::signum);
     let (s1, s2) = (interior_side(loop1)?, interior_side(loop2)?);
@@ -692,12 +762,23 @@ pub fn split_face_by_curve(
     let mut loop1_points = loop1_points;
     let mut loop2_points = loop2_points;
     let mut consumed_hole = None;
-    // Only along a line whose cutter face is known to cover the whole chord
+    // Only along a line whose cutter face is known to really cut here
     // (`trust_hole_chords`): the carrier line of a distant operand plane
     // also crosses holed faces, and splitting along such a phantom chord
-    // breaks the torr A2 trim.
-    let allow_hole_chord = matches!(curve, IntersectionCurve::Line(l) if hole_chord_trusted(l, entry_point, exit_point));
-    if allow_hole_chord && via.is_empty() && !same_edge_bite {
+    // breaks the torr A2 trim. "Really cuts" is either of:
+    //
+    // * the cutter covers the whole chord, hole included; or
+    // * the cutter covers one full material stretch — from a chord end on
+    //   the outer boundary to the hole. That is a cutter whose own edge
+    //   lies inside the hole: a quadrant section tool with its corner edge
+    //   on a ring's axis cuts each annular cap along two half-lines that
+    //   both dead-end in the bore. Neither half-line splits an annulus by
+    //   itself (it is a bridge, not a cut), so refusing them left the caps
+    //   whole inside the removed quadrant — 371 open edges and 11% excess
+    //   volume on the open-fusor lid flange. Running the first one on
+    //   across the hole parts the annulus; the stretch past the hole is the
+    //   same phantom continuation every line cut on a hole-free face takes.
+    if let (IntersectionCurve::Line(l), true, false) = (curve, via.is_empty(), same_edge_bite) {
         let parent_inner = brep.topology.faces[face_id].inner_loops.clone();
         let crossed: Vec<_> = parent_inner
             .iter()
@@ -712,9 +793,37 @@ pub fn split_face_by_curve(
             })
             .collect();
         if let [(lp, (l1, l2))] = crossed.as_slice() {
-            loop1_points = l1.clone();
-            loop2_points = l2.clone();
-            consumed_hole = Some(*lp);
+            // `merge_crossed_hole` appends `p2, detour…, p1` to loop 1:
+            // the hole crossings nearest the exit and the entry.
+            let (p_exit_side, p_entry_side) = (l1[loop1_points.len()], l1[l1.len() - 1]);
+            // The one-stretch rule stops at a face that shares its plane
+            // with a face of the other operand. Such a face is a coplanar
+            // overlap, settled whole by the OnSame tie-break; cut through
+            // its hole, the pieces under the other operand's footprint are
+            // judged one by one and a zero-thickness flap survives (torr
+            // A2: blades flush with an annulus' cap kept a strip out to
+            // r 45 past the r 30 trim).
+            let coplanar = HOLE_CHORD_COPLANAR.with(|c| c.borrow().contains(&surface_index));
+            if hole_chord_covered(l, entry_point, exit_point)
+                || (!coplanar
+                    && (hole_chord_covered(l, entry_point, &p_entry_side)
+                        || hole_chord_covered(l, &p_exit_side, exit_point)))
+            {
+                split_dbg!("sfbc: cut passes through a hole ({entry_point:?} → {exit_point:?})");
+                loop1_points = l1.clone();
+                loop2_points = l2.clone();
+                consumed_hole = Some(*lp);
+            } else {
+                split_dbg!(
+                    "sfbc: hole chord not covered by the cutter: {entry_point:?} → {p_entry_side:?} … {p_exit_side:?} → {exit_point:?}"
+                );
+            }
+        } else {
+            split_dbg!(
+                "sfbc: {} of {} holes crossed cleanly",
+                crossed.len(),
+                parent_inner.len()
+            );
         }
     }
     {
@@ -751,6 +860,7 @@ pub fn split_face_by_curve(
                 d = d.min((c - (w[0] + t * ab)).norm());
             }
             if d < r + 1e-6 {
+                split_dbg!("sfbc: cut meets a hole it may not cross (d {d:.4} r {r:.4})");
                 return SplitResult {
                     sub_faces: vec![face_id],
                 };
@@ -1650,7 +1760,7 @@ pub fn split_planar_face_by_circle(
     if !circle_fully_inside_polygon(&loop_verts, circle) {
         // Check if circle partially intersects (crosses exactly 2 edges)
         if circle_partially_inside_polygon(&loop_verts, circle) {
-            return split_planar_face_by_arc(brep, face_id, circle, segments);
+            return split_planar_face_by_arc(brep, face_id, circle, segments, canonical);
         }
         // The circle doesn't cross this face, but it may be TANGENT to one
         // of its edges from outside (the neighbor of a cell the circle is
@@ -2710,6 +2820,7 @@ pub fn split_planar_face_by_arc(
     face_id: FaceId,
     circle: &vcad_kernel_geom::Circle3d,
     segments: u32,
+    canonical: bool,
 ) -> SplitResult {
     let face = &brep.topology.faces[face_id];
     let surface_index = face.surface_index;
@@ -2809,6 +2920,7 @@ pub fn split_planar_face_by_arc(
             face_id,
             circle,
             segments,
+            canonical,
             &loop_verts,
             &poly_2d,
             center_2d,
@@ -2870,7 +2982,9 @@ pub fn split_planar_face_by_arc(
     let arc2_mid_y = center_2d.1 + circle.radius * arc2_mid_angle.sin();
     let arc2_inside = point_in_polygon_2d(arc2_mid_x, arc2_mid_y, &poly_2d);
     if arc1_inside && arc2_inside {
-        return split_planar_face_tangent_inside(brep, face_id, circle, segments, int1, int2);
+        return split_planar_face_tangent_inside(
+            brep, face_id, circle, segments, canonical, int1, int2,
+        );
     }
     if !arc1_inside && !arc2_inside {
         // Neither arc's midpoint lies inside the polygon: the circle runs
@@ -3190,6 +3304,7 @@ fn split_planar_face_by_multi_arc(
     face_id: FaceId,
     circle: &vcad_kernel_geom::Circle3d,
     segments: u32,
+    canonical: bool,
     loop_verts: &[Point3],
     poly_2d: &[(f64, f64)],
     center_2d: (f64, f64),
@@ -3273,6 +3388,7 @@ fn split_planar_face_by_multi_arc(
             face_id,
             circle,
             segments,
+            canonical,
             loop_verts,
             poly_2d,
             center_2d,
@@ -3331,17 +3447,18 @@ fn split_planar_face_by_multi_arc(
     let plane_normal = u_axis.cross(v_axis);
 
     // Arc points from one crossing to another, travelling CCW (in the 2D
-    // face frame) when `ccw`; sampled on the circle's own raw-`segments`
-    // grid so the curved partner face emits identical vertices.
+    // face frame) when `ccw`; sampled on the curved partner's grid for this
+    // circle (see `planar_split_arc_points`) so the seam conforms.
     let circ_normal = circle.x_dir.into_inner().cross(circle.y_dir.into_inner());
     let aligned = plane_normal.dot(circ_normal) > 0.0;
     let arc_between = |from: usize, to: usize, ccw: bool| -> Vec<Point3> {
-        circle_frame_arc_points(
+        planar_split_arc_points(
             circle,
             intersections[from].point,
             intersections[to].point,
             ccw == aligned,
             segments,
+            canonical,
         )
     };
     // Neighbor crossing around the circle in the given travel direction
@@ -3546,6 +3663,7 @@ fn split_planar_face_inscribed_circle(
     face_id: FaceId,
     circle: &vcad_kernel_geom::Circle3d,
     segments: u32,
+    canonical: bool,
     loop_verts: &[Point3],
     poly_2d: &[(f64, f64)],
     center_2d: (f64, f64),
@@ -3603,12 +3721,13 @@ fn split_planar_face_inscribed_circle(
     let circ_normal = circle.x_dir.into_inner().cross(circle.y_dir.into_inner());
     let aligned = plane_normal.dot(circ_normal) > 0.0;
     let arc_between = |from: usize, to: usize, ccw: bool| -> Vec<Point3> {
-        circle_frame_arc_points(
+        planar_split_arc_points(
             circle,
             intersections[from].point,
             intersections[to].point,
             ccw == aligned,
             segments,
+            canonical,
         )
     };
 
@@ -3704,6 +3823,7 @@ fn split_planar_face_tangent_inside(
     face_id: FaceId,
     circle: &vcad_kernel_geom::Circle3d,
     segments: u32,
+    canonical: bool,
     int1: &CirclePolygonIntersection,
     int2: &CirclePolygonIntersection,
 ) -> SplitResult {
@@ -3736,7 +3856,7 @@ fn split_planar_face_tangent_inside(
         if !brep.topology.faces.contains_key(sub_id) {
             continue;
         }
-        let sub_result = split_planar_face_by_arc(brep, sub_id, circle, segments);
+        let sub_result = split_planar_face_by_arc(brep, sub_id, circle, segments, canonical);
         // If the recursive split made progress (>= 2 sub-faces), use those;
         // otherwise the sub-face was left intact (e.g. its arc midpoint missed
         // the polygon by a tolerance margin) — keep the unsplit sub-face.
@@ -3904,8 +4024,54 @@ pub fn split_spherical_face_by_circle_checked(
     segments: u32,
 ) -> (SplitResult, bool) {
     let mut sound = true;
-    let result = split_spherical_face_by_circle_inner(brep, face_id, circle, segments, &mut sound);
+    let result =
+        split_spherical_face_by_circle_inner(brep, face_id, circle, segments, &mut sound, None);
     (result, sound)
+}
+
+/// [`split_spherical_face_by_circle_checked`] with the circle realized on
+/// the given closed polyline instead of the circle-frame `segments` grid —
+/// for a circle the sphere shares with a face that samples it differently
+/// (a coaxial cylinder wall's frozen columns).
+///
+/// Only a whole circle can carry the ring: on an untrimmed sphere, or
+/// wholly inside a trimmed patch. A circle that crosses a patch's boundary
+/// is clipped on the usual grid.
+pub fn split_spherical_face_by_ring_checked(
+    brep: &mut BRepSolid,
+    face_id: FaceId,
+    circle: &vcad_kernel_geom::Circle3d,
+    ring: &[Point3],
+    segments: u32,
+) -> (SplitResult, bool) {
+    let mut sound = true;
+    let ring = (ring.len() >= 3).then_some(ring);
+    let result =
+        split_spherical_face_by_circle_inner(brep, face_id, circle, segments, &mut sound, ring);
+    (result, sound)
+}
+
+/// The vertices a full circle is realized on: the caller's `ring`, or the
+/// circle-frame `segments` grid.
+fn sphere_circle_ring(
+    circle: &vcad_kernel_geom::Circle3d,
+    segments: u32,
+    ring: Option<&[Point3]>,
+) -> Vec<Point3> {
+    if let Some(ring) = ring {
+        return ring.to_vec();
+    }
+    // NOTE: sphere ring pairing relies on the circle's own frame — do NOT
+    // switch this to the canonical grid (see fillet-defects notes).
+    (0..segments)
+        .map(|i| {
+            let theta = 2.0 * std::f64::consts::PI * (i as f64) / (segments as f64);
+            let (sin_t, cos_t) = theta.sin_cos();
+            circle.center
+                + circle.radius
+                    * (cos_t * circle.x_dir.into_inner() + sin_t * circle.y_dir.into_inner())
+        })
+        .collect()
 }
 
 fn split_spherical_face_by_circle_inner(
@@ -3914,6 +4080,7 @@ fn split_spherical_face_by_circle_inner(
     circle: &vcad_kernel_geom::Circle3d,
     segments: u32,
     sound: &mut bool,
+    ring: Option<&[Point3]>,
 ) -> SplitResult {
     let face = &brep.topology.faces[face_id];
     let surface_index = face.surface_index;
@@ -3962,7 +4129,7 @@ fn split_spherical_face_by_circle_inner(
         || !brep.topology.faces[face_id].inner_loops.is_empty()
     {
         if let Some(result) =
-            clip_spherical_face_by_circle(brep, face_id, circle, segments, tolerance)
+            clip_spherical_face_by_circle(brep, face_id, circle, segments, tolerance, ring, sound)
         {
             return result;
         }
@@ -3975,18 +4142,8 @@ fn split_spherical_face_by_circle_inner(
     }
 
     // Generate the N shared circle vertices.
-    let n = segments as usize;
-    // NOTE: sphere ring pairing relies on the circle's own frame — do NOT
-    // switch this to the canonical grid (see fillet-defects notes).
-    let circle_verts: Vec<Point3> = (0..segments)
-        .map(|i| {
-            let theta = 2.0 * std::f64::consts::PI * (i as f64) / (segments as f64);
-            let (sin_t, cos_t) = theta.sin_cos();
-            circle.center
-                + circle.radius
-                    * (cos_t * circle.x_dir.into_inner() + sin_t * circle.y_dir.into_inner())
-        })
-        .collect();
+    let circle_verts = sphere_circle_ring(circle, segments, ring);
+    let n = circle_verts.len();
     let circle_vert_ids: Vec<_> = circle_verts
         .iter()
         .map(|p| find_or_create_vertex(brep, p, tolerance))
@@ -4058,6 +4215,8 @@ fn clip_spherical_face_by_circle(
     circle: &vcad_kernel_geom::Circle3d,
     segments: u32,
     tolerance: f64,
+    ring: Option<&[Point3]>,
+    sound: &mut bool,
 ) -> Option<SplitResult> {
     use vcad_kernel_math::Vec3;
 
@@ -4154,12 +4313,19 @@ fn clip_spherical_face_by_circle(
             segments,
             tolerance,
             outer_sign > 0.0,
+            ring,
         ));
     }
     if has_holes {
         // Clipping across the outer boundary rebuilds the patch's loops
         // without its holes; not supported yet.
         return None;
+    }
+    if ring.is_some() {
+        // The connector below rides the raw circle-frame grid, not the
+        // caller's ring, so it cannot sew to the face the ring came from.
+        // Say so: the arrangement is then held to the validity oracle.
+        *sound = false;
     }
 
     // Crossing point on the great arc between two straddling vertices:
@@ -4475,18 +4641,13 @@ fn punch_spherical_hole(
     segments: u32,
     tolerance: f64,
     disk_on_negative: bool,
+    ring: Option<&[Point3]>,
 ) -> SplitResult {
-    let n = segments as usize;
-    let ids: Vec<_> = (0..segments)
-        .map(|i| {
-            let theta = 2.0 * std::f64::consts::PI * (i as f64) / (segments as f64);
-            let (sin_t, cos_t) = theta.sin_cos();
-            let p = circle.center
-                + circle.radius
-                    * (cos_t * circle.x_dir.into_inner() + sin_t * circle.y_dir.into_inner());
-            find_or_create_vertex(brep, &p, tolerance)
-        })
+    let ids: Vec<_> = sphere_circle_ring(circle, segments, ring)
+        .iter()
+        .map(|p| find_or_create_vertex(brep, p, tolerance))
         .collect();
+    let n = ids.len();
     // A forward walk bounds the cap on the +normal side; the reverse walk
     // (v0, vN-1, …, v1) bounds the other one.
     let he_fwd: Vec<_> = (0..n)
@@ -4772,7 +4933,9 @@ pub fn split_conical_face(
             }
             SplitResult { sub_faces: out }
         }
-        IntersectionCurve::TwoSampled(_, _) => SplitResult {
+        IntersectionCurve::TwoSampled(_, _)
+        | IntersectionCurve::TwoCircles(_, _)
+        | IntersectionCurve::Ring(_, _) => SplitResult {
             sub_faces: vec![face_id],
         },
     }
@@ -5768,6 +5931,41 @@ pub fn arc_segments(radius: f64, segments: u32) -> u32 {
     n.max(segments).clamp(3, 512)
 }
 
+/// Arc samples for a planar face split along (part of) `circle`, on the
+/// grid the face's curved partner uses for the same circle.
+///
+/// The partner decides: a circle that lies on a cylinder or cone wall of the
+/// other operand (`canonical`, see `circle_on_cylinder_wall`) borders a
+/// frozen band whose rims ride the sag-adaptive canonical grid
+/// (`canonical_arc_points`); a sphere-sourced circle rides the raw
+/// circle-frame grid (`circle_frame_arc_points`). Sampling the planar side on
+/// the other grid leaves every arc edge unpaired — a box face crossed by a
+/// cylinder through two opposite edges (four crossings) took the sphere grid
+/// and zippered a plain box ∪ cylinder open along both rims.
+///
+/// `ccw` is travel counterclockwise about `x_dir × y_dir`, as for
+/// `circle_frame_arc_points`.
+fn planar_split_arc_points(
+    circle: &vcad_kernel_geom::Circle3d,
+    start: Point3,
+    end: Point3,
+    ccw: bool,
+    segments: u32,
+    canonical: bool,
+) -> Vec<Point3> {
+    if !canonical {
+        return circle_frame_arc_points(circle, start, end, ccw, segments);
+    }
+    // Same degenerate-span contract as `circle_frame_arc_points`:
+    // `canonical_arc_points` reads a zero span as a full revolution.
+    if (end - start).norm() < 1e-12 {
+        return vec![start, end];
+    }
+    let n = circle.x_dir.into_inner().cross(circle.y_dir.into_inner());
+    let normal = if ccw { n } else { -n };
+    canonical_arc_points(circle.center, circle.radius, normal, start, end, segments)
+}
+
 /// Discretization of a circular arc on the circle's own raw-`segments`
 /// grid: θ_k = 2πk/segments in the circle's (x_dir, y_dir) frame.
 ///
@@ -6514,7 +6712,9 @@ pub fn split_cylindrical_face(
                 segments,
             )
         }
-        IntersectionCurve::TwoSampled(_, _) => {
+        IntersectionCurve::TwoSampled(_, _)
+        | IntersectionCurve::TwoCircles(_, _)
+        | IntersectionCurve::Ring(_, _) => {
             // The SSI stage expands a TwoSampled pair into two `Sampled`
             // loops before splitting (see `brep_boolean`), so this arm is
             // unreachable from the pipeline. Defensive no-op for any other

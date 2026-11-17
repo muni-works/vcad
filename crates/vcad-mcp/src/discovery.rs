@@ -7,6 +7,12 @@
 //! `VCAD_APP_PID` (an error if that pid is gone — never a silent fallback) →
 //! the instance whose document matches `VCAD_APP_DOCUMENT` → the newest, with a
 //! warning naming the others.
+//!
+//! Dev builds (`bundle_id` `io.vcad.dev.*`, what `bundle.sh` stamps on every
+//! non-release bundle) are only picked when `VCAD_APP_URL`/`VCAD_APP_PID` names
+//! them or nothing else is running: a screenshot harness's throwaway bundle,
+//! launched later and killed a minute after, must not win "newest" and strand
+//! a real session.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -38,7 +44,14 @@ pub struct InstanceRecord {
     /// Open document's path.
     #[serde(default)]
     pub document_path: Option<String>,
+    /// CFBundleIdentifier (`io.vcad.m0` release, `io.vcad.dev.<checkout>`
+    /// dev). Absent in records from builds before it was stamped.
+    #[serde(default)]
+    pub bundle_id: Option<String>,
 }
+
+/// Bundle-id prefix of `bundle.sh` dev builds.
+pub const DEV_BUNDLE_PREFIX: &str = "io.vcad.dev.";
 
 impl InstanceRecord {
     /// The MCP endpoint.
@@ -55,7 +68,17 @@ impl InstanceRecord {
             .clone()
             .or_else(|| self.document_path.clone())
             .unwrap_or_else(|| "no document".into());
-        format!("pid {} ({doc})", self.pid)
+        match self.bundle_id.as_deref().filter(|_| self.is_dev()) {
+            Some(b) => format!("pid {} ({doc}, dev build {b})", self.pid),
+            None => format!("pid {} ({doc})", self.pid),
+        }
+    }
+
+    /// A `bundle.sh` dev build (`io.vcad.dev.*`).
+    pub fn is_dev(&self) -> bool {
+        self.bundle_id
+            .as_deref()
+            .is_some_and(|b| b.starts_with(DEV_BUNDLE_PREFIX))
     }
 }
 
@@ -94,17 +117,60 @@ fn pid_alive(_pid: i64) -> bool {
 }
 
 /// Live instances in `dir`, newest first.
+///
+/// Records whose pid is dead are deleted on the way: a crashed, force-quit or
+/// SIGKILLed app never runs its `willTerminate` cleanup, and a stale file
+/// misleads every client that reads the directory itself (scripts, older
+/// shims). `vcad mcp` resolves its target through here at startup
+/// ([`select_from_env`]), so startup and listing both prune. Only files that
+/// parsed as a record and name a dead pid are removed; unreadable files are
+/// left alone. The `app.json` "most recent" pointer next to `dir` goes too
+/// when it names a dead pid.
 pub fn list_instances(dir: &Path) -> Vec<InstanceRecord> {
-    let mut out: Vec<InstanceRecord> = std::fs::read_dir(dir)
+    let mut out = Vec::new();
+    for path in std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-        .filter_map(|e| serde_json::from_slice(&std::fs::read(e.path()).ok()?).ok())
-        .filter(|r: &InstanceRecord| pid_alive(r.pid))
-        .collect();
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+    {
+        let Some(r) = std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<InstanceRecord>(&b).ok())
+        else {
+            continue;
+        };
+        if pid_alive(r.pid) {
+            out.push(r);
+        } else if cfg!(unix) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    prune_dead_pointer(dir);
     out.sort_by(|a, b| b.started.cmp(&a.started));
     out
+}
+
+/// Remove `<dir>/../app.json` when the pid it names is dead.
+fn prune_dead_pointer(dir: &Path) {
+    #[derive(Deserialize)]
+    struct PidOnly {
+        pid: i64,
+    }
+    if !cfg!(unix) {
+        return;
+    }
+    let Some(pointer) = dir.parent().map(|p| p.join("app.json")) else {
+        return;
+    };
+    let dead = std::fs::read(&pointer)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<PidOnly>(&b).ok())
+        .is_some_and(|r| !pid_alive(r.pid));
+    if dead {
+        let _ = std::fs::remove_file(&pointer);
+    }
 }
 
 fn same_path(a: &str, b: &str) -> bool {
@@ -153,39 +219,56 @@ pub fn select(
             )),
         };
     }
-    let Some(newest) = instances.first() else {
+    if instances.is_empty() {
         return Err("no running vcad.app found (~/.vcad/instances is empty)".into());
+    }
+    // Dev builds only by name (above) or when nothing else is running.
+    let (real, dev): (Vec<&InstanceRecord>, Vec<&InstanceRecord>) =
+        instances.iter().partition(|r| !r.is_dev());
+    let only_dev = real.is_empty();
+    let pool = if only_dev { &dev } else { &real };
+    let list = |rs: &[&InstanceRecord]| {
+        rs.iter()
+            .map(|r| r.describe())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let pick = |r: &InstanceRecord, warning: Option<String>| Selection {
+        url: r.url(),
+        instance: Some(r.clone()),
+        warning,
     };
     if let Some(wanted) = env("VCAD_APP_DOCUMENT").filter(|d| !d.is_empty()) {
-        if let Some(r) = instances.iter().find(|r| {
+        if let Some(r) = pool.iter().find(|r| {
             r.document_path
                 .as_deref()
                 .is_some_and(|p| same_path(p, &wanted))
         }) {
-            return Ok(Selection {
-                url: r.url(),
-                instance: Some(r.clone()),
-                warning: None,
-            });
+            return Ok(pick(r, None));
         }
     }
-    let warning = (instances.len() > 1).then(|| {
-        format!(
+    let newest = pool[0];
+    let mut notes = Vec::new();
+    if pool.len() > 1 {
+        notes.push(format!(
             "{} vcad.app instances are running; using the newest, {}. Others: {}. Set VCAD_APP_PID to choose.",
-            instances.len(),
+            pool.len(),
             newest.describe(),
-            instances[1..]
-                .iter()
-                .map(InstanceRecord::describe)
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    });
-    Ok(Selection {
-        url: newest.url(),
-        instance: Some(newest.clone()),
-        warning,
-    })
+            list(&pool[1..])
+        ));
+    }
+    if only_dev {
+        notes.push(format!(
+            "Only dev builds ({DEV_BUNDLE_PREFIX}*) are running; using {}. Set VCAD_APP_PID to pin one.",
+            newest.describe()
+        ));
+    } else if !dev.is_empty() {
+        notes.push(format!(
+            "Skipped dev build(s) {}; set VCAD_APP_PID to use one.",
+            list(&dev)
+        ));
+    }
+    Ok(pick(newest, (!notes.is_empty()).then(|| notes.join(" "))))
 }
 
 /// Select from the real environment and `~/.vcad/instances`.
@@ -270,23 +353,39 @@ pub fn attach_http_stdio(url: &str) -> std::io::Result<()> {
         let is_request = serde_json::from_str::<Value>(line)
             .ok()
             .is_some_and(|v| v.get("id").is_some() && v.get("method").is_some());
+        let id = || {
+            serde_json::from_str::<Value>(line)
+                .ok()
+                .and_then(|v| v.get("id").cloned())
+                .unwrap_or(Value::Null)
+        };
         match post(url, line, None) {
             Ok(body) if is_request && !body.is_empty() => emit(&body),
+            // A request answered with nothing: the app dropped the
+            // connection mid-call. Answer it, or the client waits forever.
+            Ok(_) if is_request => emit(&went_away(id(), url, "no response")),
             Ok(_) => {}
-            Err(e) if is_request => {
-                let id = serde_json::from_str::<Value>(line)
-                    .ok()
-                    .and_then(|v| v.get("id").cloned())
-                    .unwrap_or(Value::Null);
-                emit(
-                    &serde_json::json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": format!("vcad.app at {url} went away: {e}")}})
-                        .to_string(),
-                );
-            }
+            Err(e) if is_request => emit(&went_away(id(), url, &e.to_string())),
             Err(_) => {}
         }
     }
     Ok(())
+}
+
+/// The JSON-RPC error answering a request the app never answered.
+fn went_away(id: Value, url: &str, why: &str) -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": -32000,
+            "message": format!(
+                "vcad.app at {url} went away ({why}). It may have quit or been relaunched; \
+                 restart this MCP connection to pick up the running instance."
+            ),
+        },
+    })
+    .to_string()
 }
 
 #[cfg(test)]
@@ -302,7 +401,13 @@ mod tests {
             started: Some(started.into()),
             document_name: doc.map(|d| d.rsplit('/').next().unwrap().to_string()),
             document_path: doc.map(str::to_string),
+            bundle_id: None,
         }
+    }
+
+    fn dev(mut r: InstanceRecord, bundle: &str) -> InstanceRecord {
+        r.bundle_id = Some(bundle.into());
+        r
     }
 
     #[test]
@@ -334,6 +439,52 @@ mod tests {
     }
 
     #[test]
+    fn dev_builds_need_naming() {
+        let real = dev(
+            rec(1, "2026-11-16T09:00:00Z", Some("/tmp/a.vcad")),
+            "io.vcad.m0",
+        );
+        let old = rec(2, "2026-11-16T08:00:00Z", None); // pre-bundle_id build: not dev
+        let shots = dev(
+            rec(3, "2026-11-16T10:00:00Z", Some("/tmp/a.vcad")),
+            "io.vcad.dev.app-sim-screens-fbe447",
+        );
+        let none = |_: &str| None;
+        // The newer dev build loses to the real app, even on a document match.
+        let s = select(&[shots.clone(), real.clone()], none).unwrap();
+        assert_eq!(s.instance, Some(real.clone()));
+        let w = s.warning.unwrap();
+        assert!(w.contains("Skipped dev build(s) pid 3"), "{w}");
+        assert!(w.contains("io.vcad.dev.app-sim-screens-fbe447"), "{w}");
+        let doc = |k: &str| (k == "VCAD_APP_DOCUMENT").then(|| "/tmp/a.vcad".to_string());
+        assert_eq!(
+            select(&[shots.clone(), real.clone()], doc)
+                .unwrap()
+                .instance,
+            Some(real.clone())
+        );
+        // A record without a bundle id still beats a dev build.
+        let s = select(&[shots.clone(), old.clone()], none).unwrap();
+        assert_eq!(s.instance, Some(old));
+        // Named explicitly, a dev build is used.
+        let s = select(&[shots.clone(), real.clone()], |k| {
+            (k == "VCAD_APP_PID").then(|| "3".into())
+        })
+        .unwrap();
+        assert_eq!(s.instance, Some(shots.clone()));
+        assert!(s.warning.is_none());
+        let s = select(&[shots.clone(), real], |k| {
+            (k == "VCAD_APP_URL").then(|| "http://127.0.0.1:47003/mcp".into())
+        })
+        .unwrap();
+        assert_eq!(s.instance, Some(shots.clone()));
+        // Nothing else running: the dev build, with a warning.
+        let s = select(std::slice::from_ref(&shots), none).unwrap();
+        assert_eq!(s.instance, Some(shots));
+        assert!(s.warning.unwrap().contains("Only dev builds"));
+    }
+
+    #[test]
     fn lists_only_live_newest_first() {
         let dir = tempfile::tempdir().unwrap();
         let me = std::process::id() as i64;
@@ -351,7 +502,52 @@ mod tests {
             "dead.json",
             serde_json::json!({"pid": 999_999_999, "port": 3, "started": "2027-01-01"}),
         );
+        std::fs::write(dir.path().join("junk.json"), "not a record").unwrap();
         let l = list_instances(dir.path());
         assert_eq!(l.iter().map(|r| r.port).collect::<Vec<_>>(), vec![2, 1]);
+        // The dead pid's file is pruned; live and unparseable files stay.
+        if cfg!(unix) {
+            assert!(!dir.path().join("dead.json").exists());
+        }
+        assert!(dir.path().join("a.json").exists());
+        assert!(dir.path().join("junk.json").exists());
+    }
+
+    #[test]
+    fn prunes_a_pointer_at_a_dead_pid() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join("instances");
+        std::fs::create_dir_all(&dir).unwrap();
+        let pointer = home.path().join("app.json");
+        let me = std::process::id() as i64;
+        std::fs::write(
+            &pointer,
+            serde_json::json!({"pid": me, "port": 1}).to_string(),
+        )
+        .unwrap();
+        list_instances(&dir);
+        assert!(pointer.exists(), "a live pointer stays");
+        std::fs::write(
+            &pointer,
+            serde_json::json!({"pid": 999_999_999, "port": 1}).to_string(),
+        )
+        .unwrap();
+        list_instances(&dir);
+        if cfg!(unix) {
+            assert!(!pointer.exists(), "a dead pointer goes");
+        }
+    }
+
+    #[test]
+    fn went_away_names_the_request() {
+        let v: Value =
+            serde_json::from_str(&went_away(Value::from(7), "http://x/mcp", "no response"))
+                .unwrap();
+        assert_eq!(v["id"], 7);
+        assert_eq!(v["error"]["code"], -32000);
+        assert!(v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("went away"));
     }
 }

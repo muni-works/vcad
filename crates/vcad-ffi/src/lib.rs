@@ -719,12 +719,28 @@ pub extern "C" fn vcad_scene_part_face_ids(
 /// B-rep topological edge (face boundaries, tangent fillet edges included)
 /// when the mesh carries per-triangle face ids, else boundary + creases
 /// sharper than `angle_deg` (imported / mesh-only parts).
-fn eval_mesh_edges(mesh: &vcad_eval::EvaluatedMesh, angle_deg: f32) -> *mut VcadEdges {
+///
+/// With the part's `solid`, faces that lie on one surface count as one
+/// face here (see [`Solid::smooth_face_groups`]): a boolean leaves a wall
+/// or a cap in several pieces, and the seams between them are not edges of
+/// the model — the open-fusor chamber drew five rulings down its inner wall
+/// and two lines across its floor. Hover and selection keep the real ids.
+fn eval_mesh_edges(
+    mesh: &vcad_eval::EvaluatedMesh,
+    solid: Option<&Solid>,
+    angle_deg: f32,
+) -> *mut VcadEdges {
     let mut m = TriangleMesh::new();
     m.vertices = mesh.positions.clone();
     m.indices = mesh.indices.clone();
     if let Some(ids) = mesh.face_ids.as_ref() {
-        m.face_ids = ids.clone();
+        m.face_ids = match solid.and_then(Solid::smooth_face_groups) {
+            Some(groups) => ids
+                .iter()
+                .map(|&f| groups.get(f as usize).copied().unwrap_or(f))
+                .collect(),
+            None => ids.clone(),
+        };
     }
     let segs = m.topology_edge_segments(angle_deg);
     let mut flat = Vec::with_capacity(segs.len() * 6);
@@ -751,7 +767,7 @@ pub extern "C" fn vcad_scene_part_edges(
     catch_unwind(AssertUnwindSafe(|| {
         let s: &VcadScene = unsafe { &*scene };
         match s.inner.parts.get(index) {
-            Some(part) => eval_mesh_edges(&part.mesh, angle_deg),
+            Some(part) => eval_mesh_edges(&part.mesh, part.solid.as_ref(), angle_deg),
             None => ptr::null_mut(),
         }
     }))
@@ -774,7 +790,15 @@ pub extern "C" fn vcad_scene_instance_edges(
     catch_unwind(AssertUnwindSafe(|| {
         let s: &VcadScene = unsafe { &*scene };
         match s.inner.instances.as_ref().and_then(|i| i.get(index)) {
-            Some(inst) => eval_mesh_edges(&inst.mesh, angle_deg),
+            Some(inst) => {
+                let solid = s
+                    .inner
+                    .part_defs
+                    .as_ref()
+                    .and_then(|defs| defs.iter().find(|d| d.id == inst.part_def_id))
+                    .and_then(|d| d.solid.as_ref());
+                eval_mesh_edges(&inst.mesh, solid, angle_deg)
+            }
             None => ptr::null_mut(),
         }
     }))

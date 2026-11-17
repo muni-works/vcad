@@ -252,7 +252,7 @@ pub enum SimExtractError {
     /// A shield material is not in the neutronics library.
     #[error(
         "{part}: material {material:?} is not in the neutronics library \
-         (hdpe, paraffin, borated-hdpe-5, water, lead, concrete, air, void); \
+         (hdpe, paraffin, borated-hdpe-5, water, lead, concrete, air, steel, void); \
          set an explicit `material` on the selection"
     )]
     UnknownMaterial {
@@ -282,6 +282,7 @@ struct ScenePart<'a> {
     name: String,
     material: String,
     brep: &'a BRepSolid,
+    solid: &'a vcad_kernel::Solid,
 }
 
 fn extraction_eval_options() -> EvalOptions {
@@ -370,15 +371,17 @@ fn find_part<'a>(
         .filter(|e| e.visible != Some(false))
         .count();
     let part = &scene.parts[scene_idx];
-    let brep = part
+    let solid = part
         .solid
         .as_ref()
-        .and_then(|s| s.as_brep())
+        .filter(|s| s.as_brep().is_some())
         .ok_or_else(|| SimExtractError::NoBrep(name.to_string()))?;
+    let brep = solid.as_brep().expect("filtered to BRep solids");
     Ok(ScenePart {
         name: name.to_string(),
         material: part.material.clone(),
         brep,
+        solid,
     })
 }
 

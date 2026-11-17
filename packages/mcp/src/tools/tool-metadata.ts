@@ -339,6 +339,7 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
   size_trace_for_current: { title: "Size Trace for Current", annotations: RO },
   add_via_array: { title: "Add Via Array", annotations: RW },
   add_motor_winding: { title: "Add Motor Winding", annotations: RW },
+  check_winding: { title: "Check Winding", annotations: RO },
   calc_motor: { title: "Calc Motor", annotations: RO },
   check_self_start: { title: "Check Self-Start", annotations: RO },
   render_pcb: { title: "Render PCB", annotations: RO },

@@ -106,7 +106,10 @@ fn evaluate_curve(curve: &ssi::IntersectionCurve, t: f64) -> Point3 {
             // Caller should expand TwoLines before calling this
             line1.origin + t * line1.direction
         }
-        ssi::IntersectionCurve::Circle(c) => {
+        // TwoCircles is expanded before evaluation; first circle by default.
+        ssi::IntersectionCurve::Circle(c)
+        | ssi::IntersectionCurve::Ring(c, _)
+        | ssi::IntersectionCurve::TwoCircles(c, _) => {
             let (sin_t, cos_t) = t.sin_cos();
             c.center + c.radius * (cos_t * c.x_dir.into_inner() + sin_t * c.y_dir.into_inner())
         }
@@ -770,12 +773,46 @@ fn imprint_section_outline(
     true
 }
 
+/// Indices of `solid`'s planar surfaces whose plane also carries a planar
+/// face of `other`.
+fn coplanar_surfaces(solid: &BRepSolid, other: &BRepSolid) -> std::collections::HashSet<usize> {
+    let planes = |s: &BRepSolid| -> Vec<(usize, Point3, vcad_kernel_math::Vec3)> {
+        let mut seen = std::collections::HashSet::new();
+        s.topology
+            .faces
+            .values()
+            .filter(|f| seen.insert(f.surface_index))
+            .filter_map(|f| {
+                let surface = s.geometry.surfaces.get(f.surface_index)?;
+                (surface.surface_type() == vcad_kernel_geom::SurfaceKind::Plane).then(|| {
+                    let at = vcad_kernel_math::Point2::new(0.0, 0.0);
+                    (
+                        f.surface_index,
+                        surface.evaluate(at),
+                        *surface.normal(at).as_ref(),
+                    )
+                })
+            })
+            .collect()
+    };
+    let theirs = planes(other);
+    planes(solid)
+        .into_iter()
+        .filter(|(_, origin, normal)| {
+            theirs.iter().any(|(_, o, n)| {
+                normal.cross(n).norm() < 1e-9 && (*o - *origin).dot(*normal).abs() < 1e-6
+            })
+        })
+        .map(|(index, _, _)| index)
+        .collect()
+}
+
 /// Apply splits from intersection curves to solid A.
 fn apply_splits_to_solid(
     solid: &mut BRepSolid,
     splits: HashMap<FaceId, FaceSplits>,
     segments: u32,
-    #[allow(unused_variables)] solid_name: &str,
+    solid_name: &str,
     other: &BRepSolid,
     sphere_unsound: &mut bool,
 ) {
@@ -785,6 +822,7 @@ fn apply_splits_to_solid(
     // different volume) run to run.
     let mut ordered: Vec<(FaceId, FaceSplits)> = splits.into_iter().collect();
     ordered.sort_by_key(|(fid, _)| *fid);
+    split::hole_chords_cutting_a(solid_name == "A", coplanar_surfaces(solid, other));
     for (face_id, split_list) in ordered {
         let mut current_faces = vec![face_id];
         let split_list = if solid.topology.faces.contains_key(face_id)
@@ -937,6 +975,18 @@ fn apply_splits_to_solid(
                                 result.sub_faces.len(),
                                 result.sub_faces
                             );
+                            if result.sub_faces.len() >= 2 {
+                                new_faces.extend(result.sub_faces);
+                            } else {
+                                new_faces.push(fid);
+                            }
+                            continue;
+                        }
+                        if let ssi::IntersectionCurve::Ring(circle, ring) = &curve {
+                            let (result, sound) = split::split_spherical_face_by_ring_checked(
+                                solid, fid, circle, ring, segments,
+                            );
+                            *sphere_unsound |= !sound;
                             if result.sub_faces.len() >= 2 {
                                 new_faces.extend(result.sub_faces);
                             } else {
@@ -1320,7 +1370,11 @@ pub(crate) fn brep_boolean(
     // 2. For each face pair, compute SSI and collect splits for both A and B.
     // `Ok(None)` means "no splits for this pair"; `Err` aborts the whole
     // boolean with a typed error instead of panicking mid-pipeline.
-    let hole_chords = std::sync::Mutex::new(split::HoleChordSpans::new());
+    // (spans for cuts on A's faces, spans for cuts on B's faces)
+    let hole_chords = (
+        std::sync::Mutex::new(split::HoleChordSpans::new()),
+        std::sync::Mutex::new(split::HoleChordSpans::new()),
+    );
     let compute_ssi =
         |&(face_a, face_b): &(FaceId, FaceId)| -> Result<Option<SsiPairResult>, BooleanError> {
             // Get face data with bounds checking to avoid panics
@@ -1345,6 +1399,59 @@ pub(crate) fn brep_boolean(
 
             let mut results_a = Vec::new();
             let mut results_b = Vec::new();
+
+            // TwoCircles is the coaxial cylinder × sphere result. Both
+            // circles lie on both infinite surfaces; only one lying on both
+            // FACES is a real crossing (a rod ending inside a ball reaches
+            // the near circle and never the far one — splitting the ball
+            // along the far one would cut a cap nothing bounds). Each
+            // survivor is an ordinary circle split of both curved faces.
+            if let ssi::IntersectionCurve::TwoCircles(c1, c2) = &curve {
+                let on_both = |c: &vcad_kernel_geom::Circle3d| {
+                    (0..16).any(|k| {
+                        let theta = 2.0 * std::f64::consts::PI * (k as f64 + 0.5) / 16.0;
+                        let p = c.center
+                            + c.radius
+                                * (theta.cos() * c.x_dir.into_inner()
+                                    + theta.sin() * c.y_dir.into_inner());
+                        trim::point_in_face(&a, face_a, &p) && trim::point_in_face(&b, face_b, &p)
+                    })
+                };
+                // The cylinder wall realizes the circle on its own frozen
+                // columns — the canonical sag-dense grid — so the sphere is
+                // handed that exact ring; on its usual raw circle-frame grid
+                // the two would share no vertices and the seam would gape.
+                for c in [c1, c2].into_iter().filter(|c| on_both(c)) {
+                    let plain = ssi::IntersectionCurve::Circle(c.clone());
+                    let ring = ssi::IntersectionCurve::Ring(
+                        c.clone(),
+                        split::canonical_circle_points(
+                            c.center,
+                            c.radius,
+                            c.normal.into_inner(),
+                            segments,
+                        ),
+                    );
+                    let for_face = |solid: &BRepSolid, fid: FaceId| {
+                        if split::is_spherical_face(solid, fid) {
+                            ring.clone()
+                        } else {
+                            plain.clone()
+                        }
+                    };
+                    results_a.push((for_face(&a, face_a), c.center, c.center));
+                    results_b.push((for_face(&b, face_b), c.center, c.center));
+                }
+                let real = !results_a.is_empty();
+                if std::env::var_os("VCAD_SSI_DEBUG").is_some() {
+                    eprintln!(
+                        "TwoCircles {face_a:?}×{face_b:?}: on both faces: {} {}",
+                        on_both(c1),
+                        on_both(c2)
+                    );
+                }
+                return Ok(Some((face_a, results_a, face_b, results_b, real)));
+            }
 
             // For circle curves (from plane-cylinder intersection), skip trimming —
             // the circle is already the intersection. Add split instructions to
@@ -1515,12 +1622,37 @@ pub(crate) fn brep_boolean(
                     }
                     false
                 };
+                // The centre test has a blind spot of its own: a face that
+                // lies wholly INSIDE the circle contains its centre and never
+                // comes near its rim. A rod's cap at the centre of a ball is
+                // exactly that — the cap's plane meets the ball in its
+                // equator, five times the cap's radius away — and anchoring
+                // on the centre split the ball along an equator nothing
+                // bounds. The disc is convex, so a face whose every boundary
+                // vertex is strictly inside the circle is inside it whole.
+                let inside_circle = |solid: &BRepSolid, fid: FaceId| -> bool {
+                    let reach = circle.radius - (circle.radius * 1e-6).max(1e-9);
+                    let mut any = false;
+                    for he in solid
+                        .topology
+                        .loop_half_edges(solid.topology.faces[fid].outer_loop)
+                    {
+                        any = true;
+                        let v = solid.topology.vertices[solid.topology.half_edges[he].origin].point;
+                        if (v - circle.center).norm() >= reach {
+                            return false;
+                        }
+                    }
+                    any
+                };
                 let b_anchors_circle = !split::is_planar_face(&b, face_b)
-                    || trim::point_in_face(&b, face_b, &circle.center)
+                    || (trim::point_in_face(&b, face_b, &circle.center)
+                        && !inside_circle(&b, face_b))
                     || seated(&b, face_b)
                     || crosses(&b, face_b);
                 let a_anchors_circle = !split::is_planar_face(&a, face_a)
-                    || trim::point_in_face(&a, face_a, &circle.center)
+                    || (trim::point_in_face(&a, face_a, &circle.center)
+                        && !inside_circle(&a, face_a))
                     || seated(&a, face_a)
                     || crosses(&a, face_a);
 
@@ -1745,32 +1877,36 @@ pub(crate) fn brep_boolean(
                     }
                     out
                 };
-                // A cut through a planar face's hole is only trusted when
-                // the partner face covers the whole chord (see
-                // `split::trust_hole_chords`).
+                // A cut through a planar face's hole is only trusted where
+                // the partner face really cuts (see
+                // `split::trust_hole_chords`): record each face's own extent
+                // along the line as the span its PARTNER's cut may rely on.
+                // Recorded whether or not the partner is holed yet — the
+                // hole may be punched by this same boolean (a tool that is
+                // a bore fused with a section block cuts the bore's circle
+                // and the block's chords into one cap).
                 if let ssi::IntersectionCurve::Line(l) = single_curve {
-                    let holed =
-                        |s: &BRepSolid, f: FaceId| !s.topology.faces[f].inner_loops.is_empty();
-                    let mut spans: Vec<(Point3, Point3)> = Vec::new();
-                    // The cutter's own extent along the line: a chord lying
-                    // inside it is really cut, hole included.
-                    let mut extent = |cutter: &[trim::TrimmedSegment]| {
-                        for sg in cutter {
-                            spans.push((
-                                evaluate_curve(single_curve, sg.t_start),
-                                evaluate_curve(single_curve, sg.t_end),
-                            ));
-                        }
-                    };
-                    if holed(&a, face_a) {
-                        extent(&segs_b);
+                    let extent =
+                        |cutter: &[trim::TrimmedSegment],
+                         set: &std::sync::Mutex<split::HoleChordSpans>| {
+                            if cutter.is_empty() {
+                                return;
+                            }
+                            let mut set = set.lock().unwrap_or_else(|e| e.into_inner());
+                            set.entry(split::line_key(l))
+                                .or_default()
+                                .extend(cutter.iter().map(|sg| {
+                                    (
+                                        evaluate_curve(single_curve, sg.t_start),
+                                        evaluate_curve(single_curve, sg.t_end),
+                                    )
+                                }));
+                        };
+                    if split::is_planar_face(&a, face_a) {
+                        extent(&segs_b, &hole_chords.0);
                     }
-                    if holed(&b, face_b) {
-                        extent(&segs_a);
-                    }
-                    if !spans.is_empty() {
-                        let mut set = hole_chords.lock().unwrap_or_else(|e| e.into_inner());
-                        set.entry(split::line_key(l)).or_default().extend(spans);
+                    if split::is_planar_face(&b, face_b) {
+                        extent(&segs_a, &hole_chords.1);
                     }
                 }
                 let line_curve = matches!(single_curve, ssi::IntersectionCurve::Line(_));
@@ -1973,8 +2109,16 @@ pub(crate) fn brep_boolean(
         pairs.iter().map(compute_ssi).collect()
     };
     let split_results: Vec<SsiPairResult> = pair_results?.into_iter().flatten().collect();
-    let hole_chords = hole_chords.into_inner().unwrap_or_else(|e| e.into_inner());
-    split::trust_hole_chords(hole_chords);
+    split::trust_hole_chords(
+        hole_chords
+            .0
+            .into_inner()
+            .unwrap_or_else(|e| e.into_inner()),
+        hole_chords
+            .1
+            .into_inner()
+            .unwrap_or_else(|e| e.into_inner()),
+    );
 
     // Merge results into HashMaps
     let mut splits_a: HashMap<FaceId, FaceSplits> = HashMap::new();
@@ -2046,7 +2190,9 @@ pub(crate) fn brep_boolean(
                 let caps: Vec<(vcad_kernel_math::Vec3, f64)> = list
                     .iter()
                     .filter_map(|(curve, _, _)| {
-                        let ssi::IntersectionCurve::Circle(c) = curve else {
+                        let (ssi::IntersectionCurve::Circle(c)
+                        | ssi::IntersectionCurve::Ring(c, _)) = curve
+                        else {
                             return None;
                         };
                         let off = c.center - sphere.center;

@@ -20,7 +20,7 @@ cache="$(mktemp -d)"
 trap 'rm -rf "$cache"' EXIT
 find "$samples" -name '*.vcad' | while read -r doc; do
   t0=$(date +%s)
-  VCAD_BAKE_MESH_BUNDLE=1 VCAD_NO_WELCOME=1 VCAD_CACHE_DIR="$cache" \
+  VCAD_AGENT_BRIDGE=0 VCAD_BAKE_MESH_BUNDLE=1 VCAD_NO_WELCOME=1 VCAD_CACHE_DIR="$cache" \
     timeout "${BAKE_TIMEOUT:-180}" "$app/Contents/MacOS/vcad" --vcad-open "$doc" 2>&1 | grep '\[vcad\] baked' || echo "  (no bundle for $doc)"
   echo "  $(basename "$doc"): $(( $(date +%s) - t0 )) s"
   # A bundle that costs more to ship than it saves (boards: tens of MB for a

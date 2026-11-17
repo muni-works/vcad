@@ -1088,7 +1088,11 @@ fn place_parts_cached(
                 Some(t) => local.apply_transform(&transform3d_to_kernel(t)),
                 None => local,
             };
-            let outcome = match key.filter(|_| placed.as_brep().is_some()) {
+            // A known-wrong solid is never cached: a hit carries no
+            // construction history, so its warning would vanish.
+            let outcome = match key.filter(|_| {
+                placed.as_brep().is_some() && placed.wrong_geometry_events().next().is_none()
+            }) {
                 Some(key) => Err((placed, key)),
                 None => Ok(placed),
             };
@@ -1469,12 +1473,28 @@ fn evaluate_assembly_instances(
                 continue;
             }
         };
-        log.push(report::PartLog::ok(
-            report::PartKind::Instance,
-            inst.id.clone(),
-            inst_name,
-            eval_ms,
-        ));
+        // From the definition's own history when it has one; a stand-in mesh
+        // has none, so fall back to what the scene evaluation reported for
+        // the definition (it never caches a known-wrong one, so a stand-in
+        // should not be wrong — this is belt and braces).
+        let mut warnings = report::wrong_geometry(&solid);
+        if warnings.is_empty() {
+            warnings = scene
+                .warnings
+                .iter()
+                .filter(|w| w.node_id == def.root)
+                .map(|w| w.error.clone())
+                .collect();
+        }
+        log.push(
+            report::PartLog::ok(
+                report::PartKind::Instance,
+                inst.id.clone(),
+                inst_name,
+                eval_ms,
+            )
+            .with_warnings(warnings),
+        );
 
         let material = inst
             .material

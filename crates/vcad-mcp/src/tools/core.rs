@@ -197,6 +197,10 @@ pub struct InspectOut {
     pub parts: u64,
     /// Roots that failed to evaluate.
     pub failures: Vec<String>,
+    /// Roots that built, but whose geometry the kernel knows is wrong (a
+    /// cut that was skipped or provably missed). The volume and bbox above
+    /// describe that wrong solid — do not treat them as verified.
+    pub warnings: Vec<String>,
 }
 
 /// `export_cad` result.
@@ -808,6 +812,11 @@ pub fn core_tools(info: InfoSource) -> Vec<ToolDef> {
                     parts: m.len() as u64,
                     failures: scene
                         .failures
+                        .iter()
+                        .map(|f| format!("{} (node {}): {}", f.scope, f.node_id, f.error))
+                        .collect(),
+                    warnings: scene
+                        .warnings
                         .iter()
                         .map(|f| format!("{} (node {}): {}", f.scope, f.node_id, f.error))
                         .collect(),

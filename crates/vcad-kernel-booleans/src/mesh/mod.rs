@@ -1,5 +1,6 @@
 //! Mesh-based utilities for boolean operations.
 
+pub mod conform;
 pub mod csg;
 
 pub use vcad_kernel_tessellate::mesh_ray::{

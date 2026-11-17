@@ -538,8 +538,109 @@ pub fn by_name(name: &str) -> Option<Material> {
         "concrete" => Some(concrete()),
         "air" => Some(air()),
         "void" => Some(Material::void()),
+        "steel" | "stainless-steel" => Some(steel()),
         _ => None,
     }
+}
+
+// ---------------------------------------------------------------------------
+// M7: chamber steel and detector fill gases.
+// ---------------------------------------------------------------------------
+
+/// Helium-3 (detector fill gas).
+pub const HELIUM3: ElementData = ElementData {
+    symbol: "He3",
+    mass_amu: 3.016,
+    // Elastic: ~3 b across the range (ENDF plot, design grade). At gas
+    // densities scattering is negligible next to (n,p) capture.
+    sigma_s_b: [2.0, 3.0, 3.1, 3.1, 3.1],
+    // ³He(n,p)³H = 5333 b at 2200 m/s (Mughabghab 2006 atlas; ENDF/B-VIII.0
+    // thermal value), 1/v: 179 b @ 22.4 eV, 8.5 b @ 10 keV, 1.5 b @
+    // 316 keV, 0.54 b @ 2.45 MeV. Above ~100 keV the real (n,p) runs up
+    // to ~1.5× the 1/v tail; a moderated counter's response is dominated
+    // by thermalized captures, so this stays a stated design-grade bound.
+    sigma_a_b: [0.54, 1.51, 8.48, 179.2, 5333.0],
+};
+
+/// Boron-10 (enriched BF₃ fill gas).
+pub const BORON10: ElementData = ElementData {
+    symbol: "B10",
+    mass_amu: 10.013,
+    sigma_s_b: [2.0, 2.4, 2.2, 2.2, 2.2],
+    // ¹⁰B(n,α) = 3837 b at 2200 m/s (Lamarsh App. II, as for natural B
+    // above), clean 1/v.
+    sigma_a_b: [0.39, 1.09, 6.10, 129.0, 3837.0],
+};
+
+/// Boron-11 (the non-absorbing balance of boron).
+pub const BORON11: ElementData = ElementData {
+    symbol: "B11",
+    mass_amu: 11.009,
+    sigma_s_b: [2.0, 2.6, 4.5, 5.0, 5.0],
+    // 5.5 mb at 2200 m/s (Mughabghab), 1/v — negligible next to ¹⁰B.
+    sigma_a_b: [5.6e-7, 1.6e-6, 8.8e-6, 1.85e-4, 5.5e-3],
+};
+
+/// Fluorine (BF₃).
+pub const FLUORINE: ElementData = ElementData {
+    symbol: "F",
+    mass_amu: 18.998,
+    // Sears free-atom 4.0 b thermal; ENDF plot fast values.
+    sigma_s_b: [2.0, 3.5, 3.7, 4.0, 4.0],
+    // 9.6 mb at 2200 m/s (Mughabghab), 1/v.
+    sigma_a_b: [1.0e-6, 2.7e-6, 1.5e-5, 3.2e-4, 9.6e-3],
+};
+
+/// Stainless-steel proxy for vacuum chambers: ρ = 7.9 g/cm³ with Cr and
+/// Ni folded into Fe (their thermal capture, 3.1 b and 4.5 b, brackets
+/// iron's 2.56 b; fast elastic within ~30%). A 3 mm chamber wall is a
+/// few-percent perturbation on a fusor's dose either way — what matters
+/// is that it is in the model, not that it is SS304 to the third digit.
+pub fn steel() -> Material {
+    Material::from_mass_fractions("steel", 7.9, &[(IRON, 1.0, None)])
+}
+
+/// Number density of an ideal gas, molecules/cm³, at `p_atm` and 20 °C:
+/// n = p/kT = p_atm · 2.504e19 cm⁻³.
+pub fn ideal_gas_molecules_per_cc(p_atm: f64) -> f64 {
+    p_atm * 101_325.0 / (1.380_649e-23 * 293.15) * 1.0e-6
+}
+
+fn gas(name: &str, p_atm: f64, parts: &[(ElementData, f64)]) -> Material {
+    let n_mol = ideal_gas_molecules_per_cc(p_atm);
+    let cs: Vec<Constituent> = parts
+        .iter()
+        .map(|(el, per_molecule)| Constituent {
+            element: *el,
+            atoms_per_cc: n_mol * per_molecule,
+            bound_thermal: None,
+        })
+        .collect();
+    let density: f64 = parts
+        .iter()
+        .map(|(el, k)| n_mol * k * el.mass_amu / crate::constants::AVOGADRO)
+        .sum();
+    Material::from_constituents(name, density, &cs)
+}
+
+/// ³He proportional-counter fill at `p_atm` (20 °C, pure ³He; quench
+/// additives neglected).
+pub fn helium3_gas(p_atm: f64) -> Material {
+    gas(&format!("he3-gas({p_atm}atm)"), p_atm, &[(HELIUM3, 1.0)])
+}
+
+/// BF₃ proportional-counter fill at `p_atm` with ¹⁰B atom fraction
+/// `b10_fraction` (commercial tubes: ~0.96 enriched).
+pub fn bf3_gas(p_atm: f64, b10_fraction: f64) -> Material {
+    gas(
+        &format!("bf3-gas({p_atm}atm,{b10_fraction}B10)"),
+        p_atm,
+        &[
+            (BORON10, b10_fraction),
+            (BORON11, 1.0 - b10_fraction),
+            (FLUORINE, 3.0),
+        ],
+    )
 }
 
 #[cfg(test)]
@@ -583,9 +684,29 @@ mod tests {
             Material::void(),
             Material::pure_absorber(0.2),
             Material::one_group(1.0, 0.02),
+            steel(),
+            helium3_gas(4.0),
+            bf3_gas(1.0, 0.96),
         ] {
             check_material(&m);
         }
+    }
+
+    #[test]
+    fn counter_gases_hand_check() {
+        // 4 atm ³He at 20 °C: n = 1.0e20 /cc; Σa(thermal) = n·5333 b
+        // ≈ 0.534 /cm — the textbook "a 1-inch 4-atm tube stops most
+        // thermal neutrons" number.
+        let n = ideal_gas_molecules_per_cc(4.0);
+        assert!((n - 1.0016e20).abs() / 1.0e20 < 2.0e-3, "n = {n}");
+        let he = helium3_gas(4.0);
+        let sa = he.sigma_a[crate::groups::THERMAL_GROUP];
+        assert!((sa - 0.534).abs() < 0.005, "Σa = {sa}");
+        // BF₃ 1 atm, 96% ¹⁰B: Σa = 2.5e19·0.96·3837 b ≈ 0.0922 /cm.
+        let bf = bf3_gas(1.0, 0.96);
+        let sa = bf.sigma_a[crate::groups::THERMAL_GROUP];
+        assert!((sa - 0.0922).abs() < 0.001, "Σa = {sa}");
+        assert_eq!(by_name("steel").unwrap().name, "steel");
     }
 
     #[test]

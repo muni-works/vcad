@@ -67,6 +67,10 @@ pub use vcad_kernel_topopt;
 
 pub mod faces;
 
+/// Analytic (closed-form) correction of mesh clearance for cylinder pairs.
+pub mod analytic_clearance;
+pub use analytic_clearance::{refine_cylinder_clearance, ClearanceBasis, RefinedClearance};
+
 /// Quickhull convex hull of a point cloud (mesh-backed `Hull` op).
 pub mod hull;
 pub use faces::{inspect_faces, FaceInfo, FaceQueryError, FaceReport};
@@ -864,6 +868,14 @@ impl Solid {
                     provenance.push(DegradeEvent::new(
                         Self::op_name(op),
                         LossKind::BooleanFallback(reason),
+                    ));
+                }
+                // The other invisible case: an analytic-looking result the
+                // missed-cut probe proved wrong, with nothing to replace it.
+                if report.missed_cut {
+                    provenance.push(DegradeEvent::new(
+                        Self::op_name(op),
+                        LossKind::BooleanMissedCut,
                     ));
                 }
                 Ok(Solid {
@@ -2077,6 +2089,7 @@ impl Solid {
                 params.chord_tolerance = Some(chord_tol);
                 let mut mesh = vcad_kernel_tessellate::tessellate_brep_with(brep.as_ref(), params);
                 vcad_kernel_booleans::repair_export_mesh(brep.as_ref(), &mut mesh);
+                thin_to_display_tolerance(&mut mesh, segments, chord_tol);
                 mesh
             }
             _ => self.to_mesh(segments),
@@ -2096,7 +2109,9 @@ impl Solid {
                 if chord_tol > 0.0 {
                     params.chord_tolerance = Some(chord_tol);
                 }
-                vcad_kernel_tessellate::tessellate_brep_with(brep.as_ref(), params)
+                let mut mesh = vcad_kernel_tessellate::tessellate_brep_with(brep.as_ref(), params);
+                thin_to_display_tolerance(&mut mesh, segments, chord_tol);
+                mesh
             }
             _ => self.to_mesh(segments),
         }
@@ -2173,12 +2188,39 @@ impl Solid {
     /// when the solids intersect (see
     /// [`vcad_kernel_tessellate::clearance`]). Tessellation-based: both
     /// solids are meshed at their own `segments` setting, so curved-surface
-    /// results carry the usual chord error (raise `segments` for tight
-    /// fits). Returns `None` when either solid is empty.
+    /// results carry chord error — except that when the closest pair is two
+    /// parallel cylinders (shaft in bore, pins side by side) of BRep solids,
+    /// the closed-form gap replaces the polygon number (see
+    /// [`analytic_clearance`]); a 0.02 mm running fit no longer reads as an
+    /// interference. Returns `None` when either solid is empty.
     pub fn clearance(&self, other: &Solid) -> Option<ClearanceResult> {
+        self.clearance_refined(other).map(|r| r.result)
+    }
+
+    /// [`Solid::clearance`] plus how the number was obtained (mesh or
+    /// analytic) and the raw mesh distance.
+    pub fn clearance_refined(&self, other: &Solid) -> Option<RefinedClearance> {
         let mesh_a = self.to_mesh(self.segments);
         let mesh_b = other.to_mesh(other.segments);
-        mesh_clearance(&mesh_a, &mesh_b)
+        let mesh = mesh_clearance(&mesh_a, &mesh_b)?;
+        Some(self.refine_clearance(other, &mesh))
+    }
+
+    /// Apply the analytic cylinder correction to a mesh clearance already
+    /// measured between `self` and `other` (e.g. on meshes tessellated
+    /// once and reused across many pairs). A no-op for non-BRep solids.
+    pub fn refine_clearance(&self, other: &Solid, mesh: &ClearanceResult) -> RefinedClearance {
+        match (self.as_brep(), other.as_brep()) {
+            (Some(a), Some(b)) => {
+                refine_cylinder_clearance(a, self.segments, b, other.segments, mesh)
+            }
+            _ => RefinedClearance {
+                result: *mesh,
+                basis: ClearanceBasis::Mesh,
+                mesh_distance: mesh.distance,
+                chord_band_mm: None,
+            },
+        }
     }
 
     /// The tessellation density this solid meshes at by default (what
@@ -2624,6 +2666,81 @@ impl Solid {
             SolidRepr::BRep(brep) => Some(brep.as_ref()),
             _ => None,
         }
+    }
+
+    /// For each face of the solid's outer shell, by ordinal (the id a
+    /// tessellated triangle carries in `TriangleMesh::face_ids`): the
+    /// ordinal of the first face lying on the same surface, facing the same
+    /// way.
+    ///
+    /// Booleans leave a surface in pieces. A wall is partitioned around a
+    /// cross bore; a cap is split along the line where another tool's plane
+    /// would run on through it; a cavity's extended cylinder scores a ring
+    /// into the lid. Those pieces are separate topological faces, which is
+    /// what selection and the feature operations need, but the boundaries
+    /// between them are not edges of the model: nothing changes across
+    /// them. A consumer drawing model outlines compares these group ids
+    /// instead of raw face ids and the internal seams disappear, while a
+    /// real tangent edge — a fillet meeting its wall, two different
+    /// cylinders meeting along a ruling — still separates two groups.
+    ///
+    /// Planes, cylinders and spheres are matched by geometry (the same
+    /// plane split by different tools arrives as different surface
+    /// records); every other kind by surface record. `None` when the solid
+    /// has no B-rep.
+    pub fn smooth_face_groups(&self) -> Option<Vec<u32>> {
+        use std::collections::HashMap;
+        use vcad_kernel_geom::{CylinderSurface, Plane, SphereSurface};
+        use vcad_kernel_topo::Orientation;
+
+        let brep = self.brep()?;
+        let topo = &brep.topology;
+        let shell = &topo.shells[topo.solids[brep.solid_id].outer_shell];
+        // Quantised so that the same surface reached through different
+        // booleans (and their rounding) lands on one key.
+        let q = |x: f64, step: f64| (x / step).round() as i64;
+        let dir = |v: vcad_kernel_math::Vec3| [q(v.x, 1e-7), q(v.y, 1e-7), q(v.z, 1e-7)];
+        let pt = |v: vcad_kernel_math::Vec3| [q(v.x, 1e-5), q(v.y, 1e-5), q(v.z, 1e-5)];
+        #[derive(PartialEq, Eq, Hash)]
+        enum Key {
+            Plane([i64; 3], i64),
+            Cylinder([i64; 3], [i64; 3], i64, bool),
+            Sphere([i64; 3], i64, bool),
+            Record(usize, bool),
+        }
+        let mut first: HashMap<Key, u32> = HashMap::new();
+        let mut groups = Vec::with_capacity(shell.faces.len());
+        for (ordinal, &face_id) in shell.faces.iter().enumerate() {
+            let face = &topo.faces[face_id];
+            let reversed = face.orientation == Orientation::Reversed;
+            let surface = brep.geometry.surfaces[face.surface_index].as_any();
+            let key = if let Some(p) = surface.downcast_ref::<Plane>() {
+                // Outward normal and signed offset: the same plane facing
+                // the other way is a different (back-to-back) face.
+                let n = *p.normal_dir.as_ref() * if reversed { -1.0 } else { 1.0 };
+                Key::Plane(dir(n), q(n.dot(p.origin.to_vec()), 1e-5))
+            } else if let Some(c) = surface.downcast_ref::<CylinderSurface>() {
+                // Axis as an unsigned line: direction with a fixed sign,
+                // and the point of the axis nearest the origin.
+                let mut a = *c.axis.as_ref();
+                if (a.x, a.y, a.z) < (0.0, 0.0, 0.0) {
+                    a = -a;
+                }
+                let o = c.center.to_vec();
+                Key::Cylinder(
+                    dir(a),
+                    pt(o - a * o.dot(a)),
+                    q(c.radius.abs(), 1e-5),
+                    reversed,
+                )
+            } else if let Some(sp) = surface.downcast_ref::<SphereSurface>() {
+                Key::Sphere(pt(sp.center.to_vec()), q(sp.radius.abs(), 1e-5), reversed)
+            } else {
+                Key::Record(face.surface_index, reversed)
+            };
+            groups.push(*first.entry(key).or_insert(ordinal as u32));
+        }
+        Some(groups)
     }
 
     /// Check if this solid can be ray traced.
@@ -4929,5 +5046,17 @@ mod tests {
                 "{name} after difference regrew material: vol={vol:.1} > bored={bored_vol:.1}"
             );
         }
+    }
+}
+
+/// A chord tolerance cuts both ways: it refines faces the tessellator
+/// samples itself, and it thins the rims a boolean froze onto the kernel's
+/// 1 µm grid, which the tessellator otherwise renders verbatim (a 76 mm
+/// wall as 512 strips). Display meshes only — see
+/// [`vcad_kernel_tessellate::display`].
+fn thin_to_display_tolerance(mesh: &mut TriangleMesh, segments: u32, chord_tol: f64) {
+    if chord_tol > 0.0 {
+        let max_turn = 2.0 * std::f64::consts::PI / f64::from(segments.max(3));
+        vcad_kernel_tessellate::display::thin_feature_chains(mesh, chord_tol, max_turn);
     }
 }

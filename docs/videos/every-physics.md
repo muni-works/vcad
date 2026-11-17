@@ -3,6 +3,20 @@
 production plan + proof of concept. status: **planning**. nothing ordered,
 built, emailed or published.
 
+> **update 2026-11-16: v2 rerun on main after the gap PRs. see §8.** every
+> solver that applies now reads the document through a vcad extractor:
+> thermal, acoustics, antenna, EM, tolerance, and a document-level optimizer.
+> that's **9 document-fed solvers run on the puck, up from 3**. two findings
+> correct v1 below:
+> - the first shell mode is **448 Hz on the Fine mesh**, not ~226 Hz. that was
+>   a Preview-lattice artifact, so it doesn't sit in the passband.
+> - the acoustics extractor refused the puck as modeled, because the motor
+>   is carved out of the air (G11). **fixed in v3 (#1222)**: the motor now
+>   goes in as rigid obstacles, so acoustics and the optimizer run on the puck
+>   as modeled.
+>
+> v1's text below is kept as written.
+
 the pitch: one small device. run every vcad solver on it, on camera. optimize
 it, build it, measure every prediction, and end on a scorecard that shows the
 misses too.
@@ -333,3 +347,78 @@ artifacts in [`every-physics/poc/results/`](every-physics/poc/results/):
   convert the internal port to the solver's external-port topology through
   an equivalent-volume cylinder, which is an approximation the real adapter
   should refuse or price.
+
+## 8. v2 rerun on main (2026-11-16)
+
+after the gap PRs landed (#1189 radiation, #1200 antenna, #1202 receipt
+ledger, #1204 acoustics, #1205 materials, #1206 thermal, #1207 perf, #1209
+EM + tolerance, #1210 optimizer), the PoC was ported to the extractors and
+rerun on main at `1b4e563` (mew, `MODAL_QUALITY=fine`, 4 optimizer rounds).
+log: [`results/run-v2.log`](every-physics/poc/results/run-v2.log).
+
+**v3 (2026-11-17), after #1222 (G11):** rerun on main at `7b781f7`. the four
+motor parts go to the cavity extractor as `obstacles`, and the uncarved-air
+variant is gone. only the acoustics and optimizer rows changed; everything
+else reproduced to the digit. log:
+[`results/run-v3.log`](every-physics/poc/results/run-v3.log).
+
+**the puck changed to give EM and tolerance something real to read**
+([`puck.loon`](every-physics/puck.loon) v2):
+
+- every root is named.
+- the speaker motor is in the document: yoke, Y30 ferrite ring, top plate
+  and voice coil, the `vcad-kernel-em` reference motor lifted to
+  `motor_z = 18`.
+- the driver's basket ring is press-fit into the bottom-wall cutout.
+  `driver_frame_r` 35.075 goes into `driver_cut_r` 35.0, both ±0.1.
+- the amp die is its own part.
+- the air is carved by the motor envelope.
+
+the driver injects three things loon can't author yet: the `PcbBoard` (feed
+pad, GND pour, the `ant_len` monopole), the thermal study, and the
+`driver-fit` clearance assertion. all three are tagged `[doc-injected]` in
+the log.
+
+| solver | v2 input | result | vs v1 |
+|---|---|---|---|
+| mass, per part | doc-geom × IR material library | enclosure 208.8 g, frame 26.8, yoke 117.2, magnet 93.1, top plate 78.6, coil 1.4, board 7.4 g; die: **no density for `silicon`** (G12) | v1 hardcoded PLA density |
+| diff seam | doc-geom | dV/dwall +49,771, dV/dbody_h +1,008.4, dV/dport_len +163.4 mm³/mm | identical ✓; 18 s for 3 params (was ~1 min each) |
+| DFM | doc-geom | same 2 overhang warnings | identical |
+| modal, **Fine** | doc-geom, PLA from the library | **448.1**, 459.0, 545.4, 630.4, 672.3, 886.8 Hz in **14 s** | v1 Fine never finished; v1 Preview read 226.5. **the "mode in the passband" finding was a coarse-lattice artifact** |
+| acoustics, as modeled (v3) | doc-extract: internal port, BRep V_box **0.882 L**, motor = 4 rigid obstacles (44,034 mm³; the 6,860 mm³ of carved void they don't fill is treated as rigid too) | lumped f_b **[138.0, 140.5, 150.7] Hz**; field f_b **155.0 Hz** (internal port modeled exactly, no equivalent-volume mapping) | v1 field 154.2 via the equivalent-volume hack. v2 refused this and ran an uncarved-air variant (V_box 0.933 L, field 151.0 Hz) |
+| thermal | doc-extract: board + die voxelized, power = `amp_loss_w`, 0.5 mm grid | T_max **86.1 °C** (h=5) / **69.8 °C** (h=10); θ_ja 76.4 / 56.0 K/W | v1 80.6 / 64.3: v1's 1 mm grid painted a 36 mm² die for a 25 mm² part (the voxelizer's exact footprint concentrates the same 0.8 W) |
+| antenna | doc-injected `PcbBoard` → doc-extract | 19 segments, feed on the pour edge; resonance **2357 MHz**, S11 −16.5 dB @ 2400, **−15.2 dB @ 2.44 GHz** | matches v1's hand grid; the extractor itself prints the "FR-4 reads 20–30 % below" warning |
+| EM | doc-extract: 4 motor parts → axisym annuli, nonlinear steel, 241×305 grid | gap \|B_r\| **1.53 T**; Bl **3.65 T·m** by both routes (ψ, sampled) | new. inside the magnetic-circuit bound (no-leakage ceiling ≈ 2.3 T by hand) |
+| tolerance | doc-extract: radii coeffs ±1 from the BRep fit, tolerances from `:tol` | nominal −0.075 mm; worst case [−0.275, +0.125] **FAIL**; yield **86.0 %** (RSS 86.02, MC 86.02 ± 0.08) | new. design finding: ±0.1 on each radius is too loose for this fit. tighten to ±0.05, or ream the cutout |
+| joint optimization | `optimize_document`: mass (seam), f_b (cavity extractor as a plug-in QoI, FD), modal f1 (seam-FD on a pinned Preview lattice) | v3, on the puck as modeled: (body_h, port_len) **(120, 60) → (142.4, 58.5)**: f_b 140.5 → **128.6 Hz**, mass 208.8 → 236.5 g, f1 226.5 → 236.2 Hz (floor 226.5). stopped at MaxRounds, **feasible, KKT not satisfied**; 169 doc evals, 214 plug-in evals, 620 s | v1 had no optimizer. v2 (on the variant): (144.8, 58.0), f_b 124.9 Hz |
+
+**what the optimizer found:** height alone can't take f_b to 90 Hz. a taller
+box lowers f_b, but it also drops the shell's first mode, and the modal
+floor binds at about 125–129 Hz (v3, as modeled: 128.6 Hz). getting further needs a variable that stiffens
+the shell or detunes the port without height: `wall`, `port_r`, or ribs.
+that's the scene's next iteration.
+
+caveat: the optimizer's modal floor is on the pinned **Preview** lattice
+(226 Hz at the start, vs 448 Hz Fine). it's a correct relative constraint
+("don't get floppier than the start"), not the scorecard number.
+
+**gap status after the PRs**
+
+| gap | status |
+|---|---|
+| G1a thermal / G1b acoustics / G1c antenna / G1d EM / G1e tolerance | **closed** for the puck. G1b now takes internal solids as obstacles (G11) |
+| G2 receipt aggregation | landed (#1202, claims ledger, MCP side). not exercised by this Rust driver |
+| G3 materials in the IR | **closed**: masses and modal read the library. missing silicon density (G12) |
+| G4 `optimize_parameters` | **closed**: ran end to end on the puck with a custom acoustics QoI |
+| G9 performance | **closed**: Fine modal 14 s, diff 18 s, puck eval 2 s |
+| G11 | **closed** (#1222): `CavityExtraction.obstacles` takes solids inside the box (the motor) as rigid coaxial obstacles. the as-modeled acoustics row and the optimizer's f_b term now run on the real puck |
+| **G12 (new)** | `silicon` has no density in the material library |
+| **G13 (new)** | loon can't author a `PcbBoard`, a thermal study, or a clearance/fit assertion, so the driver injects all three |
+| G13b (minor) | tolerance extraction took 73 s on the 9-part puck (the BRep fit search), vs < 1 s for the solve. worth a profile |
+| G5–G8, G10 | unchanged |
+
+the hero/section renders at the top are v1 geometry. v2, with the motor,
+driver frame and die (air root hidden in the section):
+
+![puck v2, hero](every-physics/poc/results/puck-v2-hero.jpg)
+![puck v2, section y=0](every-physics/poc/results/puck-v2-section.jpg)

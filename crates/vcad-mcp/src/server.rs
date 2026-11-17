@@ -431,7 +431,22 @@ impl Server {
         } else {
             None
         };
-        let res = self.call_tool_inner(params, ctx);
+        // A panicking tool (a kernel assertion, a malformed argument that got
+        // past validation) becomes a tool error. Unwinding further would kill
+        // this connection's thread, and inside vcad.app it would cross the
+        // C ABI (`vcad_mcp_app_call`) and abort the whole app.
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.call_tool_inner(params, ctx)
+        }))
+        .unwrap_or_else(|payload| {
+            let mut v = crate::tools::ToolOutput::error(format!(
+                "{name} failed internally ({}). The server is still running; check the arguments and retry.",
+                panic_message(payload.as_ref())
+            ))
+            .to_json();
+            v["_meta"] = json!({ META_VCAD_BUILD: self.build_meta() });
+            Ok(v)
+        });
         if let Some((jobs, id)) = job {
             let failed = match &res {
                 Ok(v) => v["isError"].as_bool().unwrap_or(false),
@@ -648,6 +663,14 @@ impl Server {
     /// [`node_alias`] and node is handed the alias.
     fn mirror_in(&self, name: &str, args: &mut Value) -> Option<Mirrored> {
         let m = self.inner.mirror.as_ref()?;
+        // An inline document is what the caller asked about: never swap in
+        // the front window's id (node prefers `document_id` over `document`).
+        if ["document", "ir"]
+            .iter()
+            .any(|k| args.get(*k).is_some_and(Value::is_object))
+        {
+            return None;
+        }
         // Only tools that take a session document.
         let takes_doc = self.inner.proxy.as_ref()?.list_tools()?.iter().any(|t| {
             t.get("name").and_then(Value::as_str) == Some(name)
@@ -1524,6 +1547,15 @@ impl Drop for Connection {
             l.close();
         }
     }
+}
+
+/// The text of a caught panic's payload.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|s| s.to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "panic".into())
 }
 
 /// Convenience: the store kind a server runs on.

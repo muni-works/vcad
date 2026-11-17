@@ -586,6 +586,14 @@ struct WasmPlacement {
     translate: WasmVec3,
     rotate: WasmVec3,
     scale: WasmVec3,
+    /// `"xyz"`: `rotate` is raw `CsgOp::Rotate` angles (Rx·Ry·Rz). Absent:
+    /// the `Transform3D` order (Rz·Ry·Rx).
+    #[serde(
+        default,
+        rename = "rotateOrder",
+        skip_serializing_if = "Option::is_none"
+    )]
+    rotate_order: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -603,10 +611,12 @@ struct WasmTransformedMesh {
     normals: Option<Vec<f32>>,
 }
 
-/// Apply a placement (`scale → rotate → translate`, rotation Rz·Ry·Rx in
-/// degrees — the engine `transformMesh` convention) to flat mesh buffers.
+/// Apply a placement (`scale → rotate → translate`, rotation in degrees) to
+/// flat mesh buffers — the engine `transformMesh` contract.
 ///
-/// `transform_json` is `{ translate: {x,y,z}, rotate: {x,y,z}, scale: {x,y,z} }`.
+/// `transform_json` is `{ translate: {x,y,z}, rotate: {x,y,z}, scale: {x,y,z},
+/// rotateOrder? }`. Rotation is Rz·Ry·Rx (`Transform3D`) by default;
+/// `rotateOrder: "xyz"` means raw `CsgOp::Rotate` angles, Rx·Ry·Rz.
 /// Positions get the full placement; normals (optional) get the rotation
 /// only. Returns `{ positions, normals? }`.
 #[wasm_bindgen(js_name = transformMeshBuffers)]
@@ -619,12 +629,19 @@ pub fn transform_mesh_buffers(
         serde_json::from_str(transform_json).map_err(|e| JsError::new(&e.to_string()))?;
     let mut positions = positions;
     let mut normals = normals;
-    vcad_kernel_tessellate::placement::apply_placement(
+    use vcad_kernel_tessellate::placement::{apply_placement_ordered, RotationOrder};
+    let order = match t.rotate_order.as_deref() {
+        None => RotationOrder::Zyx,
+        Some("xyz") => RotationOrder::Xyz,
+        Some(o) => return Err(JsError::new(&format!("unknown rotateOrder {o:?}"))),
+    };
+    apply_placement_ordered(
         &mut positions,
         normals.as_deref_mut(),
         [t.translate.x, t.translate.y, t.translate.z],
         [t.rotate.x, t.rotate.y, t.rotate.z],
         [t.scale.x, t.scale.y, t.scale.z],
+        order,
     );
     serde_wasm_bindgen::to_value(&WasmTransformedMesh { positions, normals })
         .map_err(|e| JsError::new(&e.to_string()))
@@ -11206,6 +11223,74 @@ pub fn neutronics_simulate(spec_json: &str, params_json: &str) -> Result<JsValue
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// Output of [`neutronics_simulate_scene`].
+#[derive(serde::Serialize)]
+struct WasmNeutronicsScene {
+    report: vcad_kernel::vcad_kernel_neutronics::scene_spec::SceneReport,
+    claim_set: vcad_kernel::vcad_kernel_neutronics::receipt::ClaimSet,
+    receipt_claims: Vec<vcad_receipt::ReceiptClaim>,
+}
+
+/// Room-scale (3D CSG) Monte Carlo neutron run: priority-ordered
+/// box/sphere/cylinder cells (chamber, HDPE castle, concrete room), a
+/// point source, virtual detectors with instrument responses (moderated
+/// ³He/BF₃ counter computed by MC, bubble dosimeter, CR-39, ideal rem
+/// meter) and an optional voxel H*(10) dose map — every number with its
+/// batch-statistics RSE, plus predicted claims (fail-closed).
+///
+/// `spec_json` is a `vcad_kernel_neutronics::scene_spec::SceneSpec`,
+/// `params_json` a `{name: value}` map binding named parameters.
+#[wasm_bindgen(js_name = neutronicsSimulateScene)]
+pub fn neutronics_simulate_scene(spec_json: &str, params_json: &str) -> Result<JsValue, JsError> {
+    use vcad_kernel::vcad_kernel_neutronics as nk;
+    let spec: nk::scene_spec::SceneSpec =
+        serde_json::from_str(spec_json).map_err(|e| JsError::new(&format!("bad scene: {e}")))?;
+    let params: std::collections::BTreeMap<String, f64> = if params_json.trim().is_empty() {
+        Default::default()
+    } else {
+        serde_json::from_str(params_json).map_err(|e| JsError::new(&format!("bad params: {e}")))?
+    };
+    // Budget: room histories + response-table histories per counter.
+    let mut total = spec
+        .run
+        .histories_per_batch
+        .saturating_mul(spec.run.batches);
+    for d in &spec.detectors {
+        for i in &d.instruments {
+            if let nk::scene_spec::InstrumentSpec::ModeratedCounter {
+                response_histories_per_batch,
+                response_batches,
+                ..
+            } = i
+            {
+                total = total.saturating_add(
+                    response_histories_per_batch
+                        .saturating_mul(*response_batches)
+                        .saturating_mul(nk::response::RESPONSE_GRID_EV.len()),
+                );
+            }
+        }
+    }
+    if total > 5_000_000 {
+        return Err(JsError::new(&format!(
+            "too many histories for the MCP tier: {total} incl. counter response tables (cap 5,000,000) — error bars scale as 1/sqrt(N)"
+        )));
+    }
+    let (resolved, result) = spec
+        .evaluate(&params)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let claim_set = nk::receipt::scene_claims_from_run(&resolved, &result)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let receipt_claims = nk::receipt::design_claims(&claim_set);
+    let out = WasmNeutronicsScene {
+        report: nk::scene_spec::report(&resolved, &result),
+        claim_set,
+        receipt_claims,
+    };
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
 // ---------------------------------------------------------------------------
 // Document → simulation spec (vcad_eval::sim_extract)
 // ---------------------------------------------------------------------------
@@ -11316,6 +11401,31 @@ pub fn signed_radial_gap(doc_json: &str, query_json: &str) -> Result<JsValue, Js
         q.fit_window_mm,
     )
     .map_err(|e| JsError::new(&e.to_string()))?;
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
+#[derive(serde::Deserialize)]
+struct WasmRefineClearanceQuery {
+    pairs: Vec<vcad_eval::sim_extract::tolerance::ClearancePairQuery>,
+}
+
+/// Refine tessellated part-pair clearances with the closed form for
+/// parallel cylinders (shaft in bore, pins side by side), so chord error
+/// can't turn a 0.02 mm running fit into an "interference". `query_json`
+/// is `{pairs: [{a, b, distance, intersecting, point_a, point_b}]}` (the
+/// `meshClearance` result per pair, part ids as clearance specs name them);
+/// returns one entry per pair — `null` when a part isn't a BRep root (keep
+/// the mesh number), else `{distance, intersecting, point_a, point_b,
+/// basis, mesh_distance, chord_band_mm?}`.
+#[wasm_bindgen(js_name = refineClearance)]
+pub fn refine_clearance(doc_json: &str, query_json: &str) -> Result<JsValue, JsError> {
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {e}")))?;
+    let q: WasmRefineClearanceQuery = serde_json::from_str(query_json)
+        .map_err(|e| JsError::new(&format!("bad refine-clearance query: {e}")))?;
+    let out = vcad_eval::sim_extract::tolerance::refine_pair_clearances(&doc, &q.pairs)
+        .map_err(|e| JsError::new(&e.to_string()))?;
     let ser = serde_wasm_bindgen::Serializer::json_compatible();
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
 }

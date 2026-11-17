@@ -1,0 +1,80 @@
+# puck v2 — one document, every solver
+
+## parts + mass [doc-geom × material library]
+  enclosure     pla              168389 mm³  208.8 g
+  driver_frame  pla               21647 mm³  26.8 g
+  yoke          steel-1010        14893 mm³  117.2 g
+  magnet        ferrite-y30       19000 mm³  93.1 g
+  top_plate     steel-1010         9989 mm³  78.6 g
+  voice_coil    copper              151 mm³  1.4 g
+  air           air              882404 mm³  1.1 g
+  board         fr4                4000 mm³  7.4 g
+  die           silicon              25 mm³  density n/a
+  enclosed air      0.882 L
+
+## diff seam: document_parameter_gradient (enclosure) [doc-geom]
+  dV/dwall = +49771.1 mm³/mm, dm/dwall = +61.716 g/mm
+  dV/dbody_h = +1008.4 mm³/mm, dm/dbody_h = +1.250 g/mm
+  dV/dport_len = +163.4 mm³/mm, dm/dport_len = +0.203 g/mm
+
+## DFM, FDM pack (enclosure) [doc-geom]
+  2 issues (Standard FDM 0.4 mm nozzle)
+   - Warning: Face leans 180° from +Z — supports required (support column ≈ 117.0 mm)
+   - Warning: Face leans 180° from +Z — supports required (support column ≈ 60.0 mm)
+
+## structural modes, free-free, material from the IR library, quality=fine [doc-geom]
+     448.1 Hz  (A4 +31¢)
+     459.0 Hz  (A#4 -27¢)
+     545.4 Hz  (C#5 -28¢)
+     630.4 Hz  (D#5 +23¢)
+     672.3 Hz  (E5 +34¢)
+     886.8 Hz  (A5 +13¢)
+
+## acoustics: ported box from the document, motor as obstacles [doc-extract; 20 °C assumed]
+  V_box 0.882 L (BRep), port r 12.0 × 60.0 mm, mount Internal, 2 obstacle(s)
+   · Rigid obstacles ["yoke", "magnet", "top_plate", "voice_coil"] (44034.1 mm³) sit in a void carved out of the air; the 6859.7 mm³ of that void they don't fill is treated as rigid too. V_box is the air part's own volume (it already excludes the void).
+   · The driver plugs its cutout (r = 35.000 mm): the cutout is not fluid, and the piston sits flush with the inside face of the wall.
+   · Air at 20 °C (temp_c not given).
+  lumped f_b [138.0, 140.5, 150.7] Hz; field f_b 155.0 Hz
+
+## thermal: amp on board, voxelized from the document [doc-extract; h assumed]
+  h =    5 W/m²K: T_max 86.1 °C, θ_ja 76.4 K/W, energy residual 6.2e-13
+  h =   10 W/m²K: T_max 69.8 °C, θ_ja 56.0 K/W, energy residual 3.0e-12
+
+## antenna: printed monopole extracted from the PcbBoard [doc-injected board → doc-extract]
+  net ANT, 19 segments, feed OnEdge, ground infinite_image (0.50 λ along edge)
+   · infinite PEC ground plane at the 'GND' pour edge (image theory): the coplanar pour (50.0 × 18.0 mm = 0.50 × 0.18 λ at 3000 MHz) is replaced by an infinite plane perpendicular to the antenna. Exact only for a pour large in wavelengths; a sub-wavelength pour shifts resonance and radiates from the ground currents too
+   · free-space model: no substrate. FR-4 trace antennas resonate roughly 20–30 % BELOW a free-space prediction (docs/antenna-measurement-pack.md: f_meas/f_pred ≈ 1/√ε_eff, ε_eff ≈ 1.5–2 for a trace at a pour edge). Treat predicted frequencies as an upper bound; the substrate is recorded in `substrate` for the dielectric model (G7)
+   · pour geometry is the zone's requested outline, not its filled copper (clearance cutouts are not seen)
+   · traces → round wires of radius width/4 (zero-thickness strip equivalence); 1 wire elements, 19 segments, ≤ λ/60 at 3000 MHz
+  resonance (Im Z = 0) 2357 MHz (free space; FR4 pulls it lower)
+  S11 min -16.5 dB at 2400 MHz; at 2.44 GHz -15.2 dB
+
+## EM: speaker motor extracted from the document [doc-extract]
+  4 parts, grid 241×305 (dx 0.250 mm), air gap Some([9.75, 10.25, 30.0, 34.0])
+  gap |B_r| 1.528 T; Bl 3.65 T·m (ψ route) / 3.65 (sampled)
+
+## tolerance: driver-frame press fit, stack from the document [doc-extract; fit assertion doc-injected]
+  nominal gap -0.075 mm between ["driver_frame", "enclosure"]; contributors [("driver_cut_r", 1.0000000000000142), ("driver_frame_r", -1.0000000000000142)]
+  worst case [-0.275, +0.125] mm → FAIL; RSS yield 86.02%; MC yield 86.02% ± 0.08
+
+## joint optimization: optimize_document over body_h, port_len [doc-extract QoIs; weights assumed]
+  start: modal f1 (preview lattice) 226.5 Hz
+  it  0 r0 body_h 120.0 port_len 60.0  f_b 140.5 Hz  mass 208.8 g  f1 226.5 Hz  viol 0.0e0  (27 s)
+  it  1 r0 body_h 151.9 port_len 78.6  f_b 110.9 Hz  mass 252.5 g  f1 150.0 Hz  viol 3.4e-1  (18 s)
+  it  2 r0 body_h 160.3 port_len 75.7  f_b 109.2 Hz  mass 262.4 g  f1 158.2 Hz  viol 3.0e-1  (21 s)
+  it  3 r0 body_h 174.4 port_len 69.4  f_b 107.7 Hz  mass 278.8 g  f1 175.1 Hz  viol 2.3e-1  (31 s)
+  it  4 r0 body_h 171.1 port_len 72.0  f_b 107.3 Hz  mass 275.2 g  f1 174.8 Hz  viol 2.3e-1  (19 s)
+  it  5 r0 body_h 173.5 port_len 71.4  f_b 106.8 Hz  mass 278.0 g  f1 173.8 Hz  viol 2.3e-1  (19 s)
+  it  6 r0 body_h 173.9 port_len 71.7  f_b 106.5 Hz  mass 278.6 g  f1 172.8 Hz  viol 2.4e-1  (20 s)
+  it  7 r1 body_h 173.0 port_len 71.1  f_b 107.2 Hz  mass 277.4 g  f1 174.9 Hz  viol 2.3e-1  (21 s)
+  it  8 r1 body_h 141.7 port_len 58.5  f_b 129.0 Hz  mass 235.6 g  f1 237.3 Hz  viol 0.0e0  (19 s)
+  it  9 r1 body_h 146.3 port_len 60.4  f_b 125.1 Hz  mass 241.8 g  f1 214.8 Hz  viol 5.1e-2  (19 s)
+  it 10 r1 body_h 145.5 port_len 60.0  f_b 125.8 Hz  mass 240.7 g  f1 216.8 Hz  viol 4.2e-2  (17 s)
+  it 11 r1 body_h 145.2 port_len 59.8  f_b 126.2 Hz  mass 240.2 g  f1 218.0 Hz  viol 3.7e-2  (19 s)
+  it 12 r1 body_h 145.2 port_len 59.8  f_b 126.2 Hz  mass 240.3 g  f1 218.0 Hz  viol 3.7e-2  (22 s)
+  it 13 r2 body_h 145.1 port_len 59.7  f_b 126.3 Hz  mass 240.2 g  f1 218.3 Hz  viol 3.6e-2  (20 s)
+  it 14 r2 body_h 142.4 port_len 58.5  f_b 128.6 Hz  mass 236.5 g  f1 236.2 Hz  viol 0.0e0  (17 s)
+  → body_h 142.4, port_len 58.5; stop MaxRounds; KKT feasible true satisfied false; 169 doc evals, 214 plug-in evals, 620 s
+
+wrote results//{puck.vcad,port_velocity.csv,antenna_s11.csv,summary.json}

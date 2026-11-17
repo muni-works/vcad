@@ -27,6 +27,11 @@ const PUCK = readFileSync(
   resolve(__dirname, "../../../../crates/vcad-eval/tests/fixtures/puck.loon"),
   "utf8",
 );
+// v2: the speaker motor sits inside the box and is carved out of the air.
+const PUCK_V2 = readFileSync(
+  resolve(__dirname, "../../../../crates/vcad-eval/tests/fixtures/puck_v2.loon"),
+  "utf8",
+);
 
 type ToolResult = { isError?: boolean; content: Array<{ type: string; text: string }> };
 
@@ -80,6 +85,36 @@ describe.skipIf(!wasmHasCavity)("cavity acoustics tool", () => {
     const names = report.claims.claims.map((c: { name: string }) => c.name);
     expect(names).toContain("tuning_hz");
     expect(names).toContain("tuning_hz_lumped");
+  }, 600_000);
+
+  it("treats listed motor parts as rigid obstacles (v2 puck)", async () => {
+    const opened = (await client.callTool({ name: "open_document", arguments: {} })) as ToolResult;
+    const v2 = JSON.parse(opened.content[0].text).document_id;
+    const made = (await client.callTool({
+      name: "create_cad_loon",
+      arguments: { document_id: v2, mode: "add", source: PUCK_V2 },
+    })) as ToolResult;
+    expect(made.isError, made.content[0]?.text).toBeFalsy();
+    const base = { document_id: v2, enclosure: "enclosure", air: "air", driver_radius: "driver_r" };
+    // Without the motor listed, the carved-out void is refused.
+    const bare = (await client.callTool({ name: "simulate_cavity", arguments: base })) as ToolResult;
+    expect(bare.isError).toBe(true);
+    expect(bare.content[0].text).toContain("obstacles");
+    const res = (await client.callTool({
+      name: "simulate_cavity",
+      arguments: {
+        ...base,
+        obstacles: ["yoke", "magnet", "top_plate", "voice_coil"],
+        options: { sweep_points: 20, curve_points: 4 },
+      },
+    })) as ToolResult;
+    expect(res.isError, res.content[0]?.text).toBeFalsy();
+    const { extracted, report } = JSON.parse(res.content[0].text);
+    // V_box = π(52²·114 − 14²·57 − 30²·18) mm³: the motor envelope is out.
+    const vBox = Math.PI * (52 ** 2 * 114 - 14 ** 2 * 57 - 30 ** 2 * 18);
+    expect(Math.abs(extracted.air_volume_mm3 - vBox) / vBox).toBeLessThan(1e-6);
+    expect(extracted.model.spec.obstacles.length).toBe(2);
+    expect(report.field_tuning_hz).toBeGreaterThan(report.lumped.f_nominal_hz);
   }, 600_000);
 
   it("fails closed naming the problem", async () => {
