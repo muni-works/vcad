@@ -1,9 +1,14 @@
-"""Pilot Light design system for the plasmoid explainer, at 720x1280.
+"""Pilot Light design system for the plasmoid explainer.
 
 Tokens from frame-bootc palette.toml [warm]; helpers ported from the board
 videos (hardware/pcb-motor-video/comp.py): one accent (the flame), one
 easing curve, text that lands whole (no typing), panels with a numbered
 orange block, the vcad wordmark drawn in code (docs/brand-spec.md).
+
+Everything is laid out in a 720x1280 *logical* frame. `EXPLAINER_SCALE`
+(default 1; 1.5 = 1080x1920) scales pixels: `draw(img)` returns a drawing
+proxy that takes logical coordinates, and the font loaders return fonts at
+the scaled size, so scene code never mentions pixels.
 """
 import os
 
@@ -11,7 +16,9 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 W, H, FPS = 720, 1280, 30
-M = 40  # side margin (the 1080p videos used 72; scaled for a 720 wide frame)
+S = float(os.environ.get("EXPLAINER_SCALE", "1"))
+PW, PH = int(round(W * S)), int(round(H * S))
+M = 40  # side margin (the 1080p landscape videos used 72)
 
 _FD = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 
@@ -33,7 +40,9 @@ _cache = {}
 def _font(name, sz):
     key = (name, sz)
     if key not in _cache:
-        _cache[key] = ImageFont.truetype(os.path.join(_FD, name), sz)
+        f = ImageFont.truetype(os.path.join(_FD, name), max(1, int(round(sz * S))))
+        f.logical = sz
+        _cache[key] = f
     return _cache[key]
 
 
@@ -50,6 +59,71 @@ def FS(sz, b=False):
 def FI(sz, b=True):
     """Inter: the wordmark only."""
     return _font("Inter_18pt-Bold.ttf" if b else "Inter_18pt-Regular.ttf", sz)
+
+
+def _sc(v):
+    if isinstance(v, (int, float)):
+        return v * S
+    return type(v)(_sc(x) for x in v) if isinstance(v, (list, tuple)) else v
+
+
+class Draw:
+    """ImageDraw in logical coordinates."""
+
+    def __init__(self, img):
+        self.d = ImageDraw.Draw(img)
+
+    @staticmethod
+    def _w(width):
+        return max(1, int(round(width * S)))
+
+    def line(self, xy, fill=None, width=1):
+        self.d.line(_sc(xy), fill=fill, width=self._w(width), joint="curve")
+
+    def ellipse(self, xy, fill=None, outline=None, width=1):
+        self.d.ellipse(_sc(xy), fill=fill, outline=outline, width=self._w(width))
+
+    def rectangle(self, xy, fill=None, outline=None, width=1):
+        self.d.rectangle(_sc(xy), fill=fill, outline=outline, width=self._w(width))
+
+    def rounded_rectangle(self, xy, radius=0, fill=None, outline=None, width=1):
+        self.d.rounded_rectangle(_sc(xy), radius=radius * S, fill=fill, outline=outline, width=self._w(width))
+
+    def polygon(self, xy, fill=None, outline=None):
+        self.d.polygon(_sc(xy), fill=fill, outline=outline)
+
+    def arc(self, xy, start, end, fill=None, width=1):
+        self.d.arc(_sc(xy), start, end, fill=fill, width=self._w(width))
+
+    def text(self, xy, text, font=None, fill=None, anchor=None):
+        self.d.text(_sc(xy), text, font=font, fill=fill, anchor=anchor)
+
+    def multiline_text(self, xy, text, font=None, fill=None, anchor=None, align="left", spacing=4):
+        self.d.multiline_text(_sc(xy), text, font=font, fill=fill, anchor=anchor, align=align,
+                              spacing=spacing * S)
+
+    def textlength(self, text, font=None):
+        return self.d.textlength(text, font=font) / S
+
+
+def draw(img):
+    return Draw(img)
+
+
+def new(mode="RGB", color=(0, 0, 0)):
+    return Image.new(mode, (PW, PH), color)
+
+
+def fit(img):
+    """a frame from disk, at the output pixel size."""
+    return img if img.size == (PW, PH) else img.resize((PW, PH), Image.LANCZOS)
+
+
+def paste(img, im, xy, width):
+    """paste `im` scaled to logical `width` with its top-left at logical xy."""
+    w = int(round(width * S))
+    im = im.resize((w, int(round(im.height * w / im.width))), Image.LANCZOS)
+    img.paste(im, (int(round(xy[0] * S)), int(round(xy[1] * S))))
 
 
 def ease(x):
@@ -85,7 +159,7 @@ def on_bg(c, a):
 
 def tracked(d, xy, text, font, fill, anchor="la", em=0.12):
     text = text.upper()
-    gap = font.size * em
+    gap = font.logical * em
     w = sum(d.textlength(c, font=font) for c in text) + gap * max(0, len(text) - 1)
     x, y = xy
     if anchor[0] == "m":
@@ -106,8 +180,8 @@ def fade(img, alpha):
 
 
 def make_bg():
-    img = Image.new("RGB", (W, H), BGC)
-    d = ImageDraw.Draw(img)
+    img = new("RGB", BGC)
+    d = draw(img)
     for gx in range(0, W, 72):
         d.line([(gx, 0), (gx, H)], fill=_hex("#110e0b"))
     for gy in range(0, H, 36):
@@ -144,8 +218,8 @@ def panel(img, t, t0, t1, num, title, text):
     al = seg(t, t0, t0 + 0.1) * (1 - seg(t, t1 - 0.15, t1))
     if al <= 0:
         return img
-    lay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    d = ImageDraw.Draw(lay)
+    lay = new("RGBA", (0, 0, 0, 0))
+    d = draw(lay)
     x, y = M, 958
     tw = W - 2 * M
     lines = wrap(d, text, FS(31, True), tw - 32)
@@ -163,29 +237,29 @@ def panel(img, t, t0, t1, num, title, text):
 
 def hud_frame(img, t, dur):
     """persistent top-left line + bottom progress hairline."""
-    d = ImageDraw.Draw(img)
+    d = draw(img)
     tracked(d, (M, 40), "plasmoid · simulated in vcad", F(16, True), LABEL)
-    bar = int((W - 2 * M) * min(t / dur, 1.0))
+    bar = (W - 2 * M) * min(t / dur, 1.0)
     y = H - 34
     d.line([(M, y), (W - M, y)], fill=LINE_HI, width=2)
     d.line([(M, y), (M + bar, y)], fill=TEXT, width=2)
     return img
 
 
-def _wm(cx, cy, size):
+def _wm(d, cx, cy, size):
     f = FI(size)
     xh = 0.546 * size
-    tw = 1.20 * 0.98 * f.getlength("v")
+    tw = 1.20 * 0.98 * d.textlength("v", font=f)
     gap = 0.055 * size
     trk = -0.03 * size
-    cw = sum(f.getlength(c) for c in "cad") + 2 * trk
+    cw = sum(d.textlength(c, font=f) for c in "cad") + 2 * trk
     x = cx - (tw + gap + cw) / 2
     return f, x, tw, gap, trk, [(x, cy - xh), (x + tw, cy - xh), (x + tw / 2, cy + 0.045 * xh)]
 
 
 def wordmark(d, cx, cy, size, col):
     """▽cad: the filled inverted triangle is the v."""
-    f, x, tw, gap, trk, tri = _wm(cx, cy, size)
+    f, x, tw, gap, trk, tri = _wm(d, cx, cy, size)
     d.polygon(tri, fill=col)
     x += tw + gap
     for c in "cad":
@@ -196,8 +270,8 @@ def wordmark(d, cx, cy, size, col):
 def end_card(t, t_end, beat, credit):
     """carbon card: wordmark, then the tagline 2 beats later, then vcad.io
     and the credit line 2 beats after that."""
-    img = Image.new("RGB", (W, H), CARBON)
-    d = ImageDraw.Draw(img)
+    img = new("RGB", CARBON)
+    d = draw(img)
     m, L = M, 24
     for (x, y, sx, sy) in ((m, m, 1, 1), (W - m, m, -1, 1), (m, H - m, 1, -1), (W - m, H - m, -1, -1)):
         d.line([(x, y), (x + sx * L, y)], fill=V_SEC, width=2)

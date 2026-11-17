@@ -1,22 +1,30 @@
 # plasmoid explainer — script
 
-90 s, vertical 720×1280, 30 fps, captions only (no voice). The audience knows
+100.6 s, vertical (720×1280, or 1080×1920 with `EXPLAINER_SCALE=1.5`), 30 fps, captions only (no voice). The audience knows
 nothing about plasma. Every number comes from `docs/plasmoid-sim.md`
 (reduced model, #1198/#1229) or `docs/plasmoid-fluid-m0.md` (fluid model,
 #1237 at `f67dc3429`, an open draft whose numbers can still move). The video
 does not claim more than those docs: the lock in the clip is **not explained
 yet**, and the video ends on the experiment that would settle it.
 
-| # | t (s) | picture | caption |
+The cut is `SCENES` in `make_video.py`; [`storyboard.png`](storyboard.png)
+(`storyboard.py`) shows it. Structure: show the phenomenon and what it can do
+before asking what it is, build the pieces, let the natural guess fail, land
+the key idea, replay the opening explained, then the twist and the open test.
+Captions state the physics; no "we".
+
+| # | t (s) | picture | beat |
 |---|---|---|---|
-| 1 | 0–8 | path-traced clip, t = 1→9 s at 1×: racing, then the magnet comes down and the foot locks (5.93 s) | "a glowing thread races around a dish" → "bring a magnet close…" → "…and it locks on" |
-| 2 | 8–20 | diagram: gas atoms, an RF field flipping, electrons bouncing, ionization flashes | "what's glowing? (our best guess from the video)" → "thin gas, ~1/760 of an atmosphere" → "a radio-frequency field shakes its electrons" → "fast electrons knock more loose; atoms glow as they settle" |
-| 3 | 20–30 | raw clip frames (racing, t = 0→5) with labels: spike, filament, foot | "glowing, electrified gas is a plasma" → "a plasmoid: a blob of plasma that holds its shape and moves as one thing" → "this one's foot races around the dish (we didn't model why it races)" |
-| 4 | 30–41 | diagram: current arrow flipping, push arrow flipping, running average at zero | "so why would a magnet grab it?" → "the obvious answer: magnets push on currents" → "but this current flips millions of times a second" → "push left, push right: it averages out to zero" |
-| 5 | 41–56 | diagram: two electrons side by side, 1 atm (straight hops) vs 1 Torr (curls); then the β map | "what survives: magnets curl electrons" → "β = how much an electron curls before it hits an atom" → "at normal air pressure: β ≈ 0.004. nothing" → "in thin gas under this magnet: β ≈ 2.9" → "curled electrons stick around, so the glow might prefer the magnet" |
-| 6 | 56–68 | path-traced clip, t = 8→19 s at 1× (HUD burned over the whole sequence first, then trimmed) | "we built a small model on that idea and simulated it in vcad" → "we script the magnet. the model decides when the foot locks and lets go" → "lock, drag, flick it off, recapture, release" |
-| 7 | 68–80 | chart: three arrows on the foot — the model's assumed pull (inward), the derived magnetic pull (outward), the metal pull (inward, 2.7× the magnetic one) | "then we modelled the glow itself, from first principles" → "result: the magnet pushes the foot *away*" → "but a magnet is nickel-plated metal" → "metal near the electrode pulls the glow in: 2.7× harder, at 1 Torr" |
-| 8 | 80–90 | the experiment: magnet vs aluminum slug, side by side; end card | "so the lock is probably electric, not magnetic (or it's where the foot re-forms)" → "test it: swap the magnet for an aluminum slug" → "still locks? it was never magnetism" → "sim + render: vcad · open source" |
+| 01 | 0–16 | clip, slowed so one lap = two beats; the magnet comes down in the track's near-silence | the phenomenon; the lock lands on the 16 s drop |
+| 02 | 16–30 | clip at 1×: drag, flick (24 s), recapture, release | what it can do |
+| — | 30–34 | title card over the dimmed plasmoid | "but what is a plasmoid?" / "and why would a magnet grab it?" (32 s jump) |
+| 03 | 34–46 | labelled footage, then atoms / RF field / ionization | what a plasmoid and a plasma are |
+| 04 | 46–56 | current × field flipping, average = 0 | the obvious answer fails; "so what's left?" in the 54 s dip |
+| 05 | 56–68 | one electron's exact path with and without the magnet; pressure sweep 760 → 1 Torr; β map | the key idea, on the 56 s drop |
+| 06 | 68–78 | clip at 1× with the model's HUD; flick on the 72 s drop | the opening, explained |
+| 07 | 78–88 | the same magnet move under both lock models (`lock_compare.csv`) | the twist |
+| 08 | 88–96 | magnet vs aluminum slug | the open test |
+| — | 96–100.6 | ▽cad end card | |
 
 ## Sources for each claim
 
@@ -43,10 +51,15 @@ yet**, and the video ends on the experiment that would settle it.
 
 Captions are cut to a 120 BPM grid (`beat.py` finds it: onset envelope →
 tempo → phase maximising on-grid onset energy, and checks drift per 20 s
-window). The soundtrack starts at `TRACK_OFFSET` = 11.04 s so its first drop
-lands on the lock (scene 1, 5.0 s) and its third on the flick break-away
-(scene 6, 61.0 s). Every scene boundary and caption cue is a whole beat.
-Timings above are the first draft; `SCENES` in `make_video.py` is the cut.
+window). The track plays from its start; its drops at 16, 56 and 72 s carry
+the lock, the key idea and the flick. Every scene boundary and caption cue
+is a whole beat.
+
+Data, not cartoons: scene 05's electron paths are exact gyro-arcs with the
+kernel's collision frequency (β = 2.88 at 1 Torr, to scale); scene 07's two
+foot trajectories come from `plasmoid_lock_compare.rs`, an example run on
+the glow-fluid PR (#1237 at `f67dc3429`): the fitted lock holds the foot
+3.0 mm from the magnet, the derived one lets it race on (7.9 laps in 5 s).
 
 Style is the Pilot Light system used by the board videos
 (`hardware/pcb-motor-video/comp.py`): `style.py` has the warm palette, IBM
@@ -58,7 +71,7 @@ Inter: SIL OFL 1.1).
 # on a build box, with the clip frames + trajectory from docs/plasmoid-sim.md
 python3 beat.py track.mp3 beat.json
 python3 make_video.py --raw <clip frames> --traj <trajectory.csv> \
-  --assets ../../plasmoid-sim --beat beat.json --track track.mp3 -o explainer.mp4
+  --assets <dir with beta-map.png + lock_compare.csv> --beat beat.json --track track.mp3 -o explainer.mp4
 ```
 
 The soundtrack is a commercial release and is not in the repo; its licence
