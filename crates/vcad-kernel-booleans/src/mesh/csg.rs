@@ -226,6 +226,99 @@ impl Aabb {
     }
 }
 
+/// Can triangle `tri` cross fragment `f` — i.e. is a split of `f` by
+/// `tri`'s carrier plane needed for `f` to end up on one side of `tri`?
+///
+/// The AABB test alone is loose on curved operands: a faceted cylinder's
+/// long slanted facets have boxes that overlap whole swaths of the other
+/// operand's facets they never meet, and every such pair cut a fragment
+/// by an infinite carrier plane anyway. Measured on a DN40 tee's
+/// tube − bores difference, that turned 14.6k operand triangles into ~105k
+/// fragments, and every downstream stage (classification, membrane
+/// stripping, watertightness repair, re-tessellation) paid for them.
+///
+/// The test is the classic two-plane interval check (Möller), on convex
+/// polygons, kept conservative at the split tolerance: it answers `false`
+/// only when `f` and `tri` are separated by more than [`EPS`] — `tri`
+/// entirely to one side of `f`'s plane, `f` entirely to one side of
+/// `tri`'s plane (a no-op split anyway), coplanar (likewise a no-op), or
+/// their intervals on the two planes' line of intersection disjoint. A
+/// fragment that crosses no triangle of the other operand lies wholly
+/// inside, outside, or on it, which is all classification needs.
+fn touches(f: &Polygon, tri: &Polygon) -> bool {
+    // (any vertex beyond +EPS, any beyond −EPS, any within ±EPS)
+    let side = |n: &Vec3, w: f64, verts: &[Point3]| -> (bool, bool, bool) {
+        let (mut front, mut back, mut on) = (false, false, false);
+        for v in verts {
+            let t = n.dot(v.to_vec()) - w;
+            front |= t > EPS;
+            back |= t < -EPS;
+            on |= t.abs() <= EPS;
+        }
+        (front, back, on)
+    };
+    // `f` entirely on one side of (or on) `tri`'s plane: `split_polygon`
+    // would hand it back unchanged, so there is nothing to decide.
+    let (ff, fb, _) = side(&tri.normal, tri.w, &f.verts);
+    if !(ff && fb) {
+        return false;
+    }
+    // `tri` STRICTLY beyond `f`'s plane — no vertex even touching it — can
+    // not meet `f`. A triangle that merely touches the plane (an edge or a
+    // vertex within tolerance, the rest to one side) must NOT be skipped:
+    // that is every flush contact, where a wall's rim lies in the face it
+    // abuts and its plane is exactly the cut that separates the overlap
+    // from the rest of the face. It falls through to the interval test,
+    // which counts on-plane vertices.
+    let (tf, tb, ton) = side(&f.normal, f.w, &tri.verts);
+    if !ton && tf != tb {
+        return false;
+    }
+    if !tf && !tb {
+        // `tri` coplanar with `f`: cutting `f` by a plane it lies in is a
+        // no-op (the outline comes from `tri`'s neighbours).
+        return false;
+    }
+    // Both straddle: compare their extents along the intersection line.
+    let d = f.normal.cross(tri.normal);
+    let dn = d.norm();
+    if dn < 1e-12 {
+        // Parallel but not coplanar can't straddle each other; be safe.
+        return true;
+    }
+    let d = d / dn;
+    let interval = |n: &Vec3, w: f64, verts: &[Point3]| -> (f64, f64) {
+        let mut lo = f64::INFINITY;
+        let mut hi = f64::NEG_INFINITY;
+        let k = verts.len();
+        for i in 0..k {
+            let a = verts[i];
+            let b = verts[(i + 1) % k];
+            let (sa, sb) = (n.dot(a.to_vec()) - w, n.dot(b.to_vec()) - w);
+            let mut take = |p: Point3| {
+                let t = d.dot(p.to_vec());
+                lo = lo.min(t);
+                hi = hi.max(t);
+            };
+            if sa.abs() <= EPS {
+                take(a);
+            }
+            if (sa > EPS && sb < -EPS) || (sa < -EPS && sb > EPS) {
+                take(a + (sa / (sa - sb)) * (b - a));
+            }
+        }
+        (lo, hi)
+    };
+    // Where `f` meets `tri`'s plane, and where `tri` meets `f`'s plane.
+    let (f0, f1) = interval(&tri.normal, tri.w, &f.verts);
+    let (t0, t1) = interval(&f.normal, f.w, &tri.verts);
+    if !(f0.is_finite() && t0.is_finite()) {
+        return true;
+    }
+    let tol = 10.0 * EPS;
+    f1 >= t0 - tol && t1 >= f0 - tol
+}
+
 /// Cut every polygon of `polys` along the carrier planes of the other
 /// operand's triangles, localized by AABB overlap: a fragment is only split
 /// by a triangle's plane while it overlaps that triangle's bounding box, so
@@ -250,7 +343,7 @@ fn split_by_other(polys: Vec<Polygon>, other: &[Polygon]) -> Vec<Polygon> {
             }
             next.clear();
             for f in frags.drain(..) {
-                if !Aabb::of(&f.verts).overlaps(tri_box, pad) {
+                if !Aabb::of(&f.verts).overlaps(tri_box, pad) || !touches(&f, tri) {
                     next.push(f);
                     continue;
                 }
@@ -1021,6 +1114,50 @@ mod tests {
         assert!((uni - 1000.0).abs() < 1.0, "self-union: {uni}");
         let diff = volume(&mesh_csg(&a, &a.clone(), BooleanOp::Difference));
         assert!(diff.abs() < 1.0, "self-difference should be empty: {diff}");
+    }
+
+    /// Flush contacts: the tool's rim lies IN the subject's face, so only
+    /// the tool's wall planes — triangles that merely touch the face's
+    /// plane — can cut that face along the outline. A split filter that
+    /// skipped touching triangles kept or dropped whole face triangles by
+    /// centroid.
+    #[test]
+    fn flush_pocket_and_flush_overhang() {
+        let a = tessellate_brep(&make_cube(10.0, 10.0, 10.0), 16);
+        let pocket = shifted(
+            &tessellate_brep(&make_cube(4.0, 4.0, 5.0), 16),
+            [3.0, 3.0, 5.0],
+        );
+        let diff = mesh_csg(&a, &pocket, BooleanOp::Difference);
+        assert!(
+            (volume(&diff) - 920.0).abs() < 1.0,
+            "pocket: {}",
+            volume(&diff)
+        );
+        assert!(diff.boundary_edges().is_empty(), "pocket left open edges");
+
+        let cap = shifted(
+            &tessellate_brep(&make_cube(4.0, 4.0, 4.0), 16),
+            [8.0, 3.0, 10.0],
+        );
+        let uni = mesh_csg(&a, &cap, BooleanOp::Union);
+        assert!(
+            (volume(&uni) - 1064.0).abs() < 1.0,
+            "overhang: {}",
+            volume(&uni)
+        );
+        assert!(uni.boundary_edges().is_empty(), "overhang left open edges");
+
+        let block = shifted(
+            &tessellate_brep(&make_cube(4.0, 4.0, 4.0), 16),
+            [3.0, 3.0, 10.0],
+        );
+        let inter = mesh_csg(&a, &block, BooleanOp::Intersection);
+        assert!(
+            volume(&inter).abs() < 1.0,
+            "touching intersection: {}",
+            volume(&inter)
+        );
     }
 
     #[test]
