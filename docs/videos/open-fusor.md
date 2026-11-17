@@ -5,8 +5,8 @@ neutrons, and put the measurement on the same plot as vcad's prediction.
 the climax is that plot.
 
 this is a plan plus a proof of concept. nothing has been ordered, built,
-filmed or published. every number below came from code on `origin/main`
-(`4ac21aab`), run on `mew`. the doc says where code and docs disagree.
+filmed or published. the numbers in §1–§6 came from code on `origin/main`
+at `4ac21aab`, run on `mew`; the block below is from main at `93b5124d`. the doc says where code and docs disagree.
 
 **where it stands (2026-11-17).** the first version of this doc ranked twelve
 gaps. ten of them have since landed on main (§6 has the list), and the
@@ -37,8 +37,10 @@ this block has the current one and names its source.
   2.5); at −40 kV, 4.8 mSv/h (upper edge 10.8). 8 mm of lead glass or a
   3 mm steel shutter takes the window path to nothing, leaving the wall
   term: 0.003 µSv/h at −30 kV, but 9.4 µSv/h at −40 kV through a 1.65 mm
-  wall. so the redesign uses leaded-glass viewports, and −40 kV needs a
-  thicker wall or a lead skirt. the ICRP-74 conversion coefficients for
+  wall. so the redesign uses leaded-glass viewports. that case is not this
+  machine, though: the cube's wall is 11 mm or more (the wall term falls
+  ~200× by 3 mm), its DN63 windows have 2.9× the aperture area, and the
+  catalog models 5.2 mm of glass, not 8. it has not been re-priced. the ICRP-74 conversion coefficients for
   10–40 keV in that model were transcribed, not independently checked.
 - **neutron dose, with the room** (`docs/neutronics-m0.md`,
   `examples/fusor_room.rs`; 5×10⁶ n/s safety bound, 15 cm HDPE castle):
@@ -47,10 +49,12 @@ this block has the current one and names its source.
   gammas add about a fifth behind the HDPE (1.79 µSv/h total at 2 m free
   field, upper edge 2.32, against a 2.5 budget). at the predicted 1.9×10³
   n/s all of these scale down by 2 600×.
-- **CAD, sim and screen are connected for the ring-stack twin.**
-  `vcad_eval::sim_extract` reads `fusor-sim.loon` into the solver's
-  `DeviceSpec`, and vcad.app has the particle and neutron screens. the
-  globe machine is not extractable yet (spherical cavity, crossing wires).
+- **CAD → sim extraction exists, for a clean ring-stack document.**
+  `vcad_eval::sim_extract` turns a can-plus-rings document into the solver's
+  `DeviceSpec` (tested in `crates/vcad-eval/tests/sim_extract_fusor.rs`),
+  and vcad.app has the particle and neutron screens. neither file here goes
+  through it as written: the globe machine has a spherical cavity and
+  crossing wires, and `fusor-sim.loon` has a section cut and a stalk.
 
 still open: the two-sided chain on the 3D globe; the secondary-emission
 coefficient in the current partition is uncited; the MCP
@@ -86,8 +90,8 @@ stalk (tip at z = 19.7 mm, on the grid pole), leaded-glass viewports, a KF40
 pump line, and a tee carrying the gauge and the D₂ leak valve. the cathode is
 six great circles of 2 mm wire on a 19 mm sphere, the layout the 3D solver
 uses. the catalog cavity radius is 79.9 mm against the 76 mm every simulation
-assumes (+5%). the whole document evaluates in 24 s on mew at main
-`93b5124d`. the first-pass cylinder-and-ring-stack geometry is kept as
+assumes (+5%). on mew at main `93b5124d` the 21-root document evaluated in
+24 s with 8 roots served from the geometry cache; no cold timing was taken. the first-pass cylinder-and-ring-stack geometry is kept as
 [`open-fusor/fusor-sim.loon`](open-fusor/fusor-sim.loon).*
 
 ![shielded](open-fusor/shielded.png)
@@ -95,7 +99,8 @@ assumes (+5%). the whole document evaluates in 24 s on mew at main
 *the same machine inside the 15 cm HDPE castle
 ([`open-fusor/castle.loon`](open-fusor/castle.loon)), front panel off. the
 wall thickness is the one the room dose map prices. the cavity is larger than
-that model's 150 mm half-cube, because the real plumbing does not fit in it.*
+that model's 150 mm half-cube, because the real plumbing does not fit in it;
+the transport has not been rerun on this cavity.*
 
 ---
 
@@ -308,7 +313,8 @@ with radiation-safety credentials.
    discipline, interlocked enclosure, key switch, e-stop, **never alone**.
    the camera operator is a second person in the room, so they need the
    same briefing and fixed positions.
-2. **x-rays: the dominant radiation hazard, and vcad doesn't model it.**
+2. **x-rays: the dominant radiation hazard.** (written before
+   `docs/photon-dose-m0.md` existed; the top of this doc has its numbers.)
    above ~20 kV, electrons striking the chamber wall produce
    bremsstrahlung. steel walls attenuate well; **glass viewports are the
    leak path.** that's exactly where a "look inside" camera wants to be. no

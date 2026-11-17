@@ -22,13 +22,19 @@
 ;   - the 3D thin-wire BEM (`globe_vs_rings`) uses THIS grid in a 76 mm
 ;     spherical chamber. the catalog cavity is 79.9 mm (+5%).
 ;   - the two-sided yield band (`open_fusor_band`) uses a 4-ring latitude
-;     stack in a 76 mm cylinder. that axisymmetric twin is fusor-sim.loon,
-;     which `vcad_eval::sim_extract` reads; this file is not extractable
-;     (spherical cavity, crossing wires) and says so rather than pretend.
+;     stack in a 76 mm cylinder. fusor-sim.loon draws that device. neither
+;     file goes through `vcad_eval::sim_extract` as written: this one has a
+;     spherical cavity and crossing wires, that one has a section cut and a
+;     stalk on the rings. the extraction is tested on a clean can + rings of
+;     the same dimensions (crates/vcad-eval/tests/sim_extract_fusor.rs).
+;   - the photon-dose case (docs/photon-dose-m0.md) is a 1.65 mm wall sphere
+;     with a 2.75" window of 19 mm clear radius under 8 mm of lead glass.
+;     this cube's wall is 11 mm or more, its DN63 windows have 32.5 mm clear
+;     radius, and the catalog models 5.2 mm of glass. not re-priced.
 ;
 ; Dressing files, appended for renders only:
 ;   castle.loon     15 cm HDPE shield (plan §4), hides the machine
-;   star-mode.loon  glowing core + spokes, illustrative
+;   star-mode.loon  glowing core + halo, illustrative
 
 ; --- parameters -------------------------------------------------------------
 [let grid-r 19.0]

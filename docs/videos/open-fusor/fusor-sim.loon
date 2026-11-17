@@ -1,4 +1,4 @@
-; open fusor — first-pass machine CAD for docs/videos/open-fusor.md
+; open fusor — the simulated ring-stack device (docs/videos/open-fusor.md)
 ;
 ; Geometry is the SAME device the proof of concept simulates
 ; (crates/vcad-kernel-particle/examples/open_fusor_poc.rs):
@@ -8,9 +8,10 @@
 ; Z up, origin at the chamber center. The front quadrant (x > 0, y < 0) of
 ; the steel is cut away so the grid shows in the render.
 ;
-; Everything outside the chamber wall + grid (ports, feedthrough, flanges)
-; is a plausible envelope, not vendor geometry: the vacuum part library
-; (CF/KF) is still being built.
+; This was the first-pass machine CAD. The machine is now fusor.loon (stock
+; vacuum hardware, globe grid); this file stays as the drawing of the
+; axisymmetric device the yield chain simulates. Everything outside the
+; chamber wall + grid (ports, feedthrough, flanges) is a plausible envelope.
 
 ; --- parameters -------------------------------------------------------------
 [let chamber-r 76.0]

@@ -3,12 +3,14 @@
 ;
 ; wall thickness is the 15 cm the room dose map prices
 ; (crates/vcad-kernel-neutronics/examples/fusor_room.json, `castle`). the
-; cavity is NOT the 150 mm half-cube of that model: it is grown to clear
-; the real plumbing, so the transport model is the conservative one (same
-; wall, source closer to it). five panels; the -y side is left open for the
-; camera and is closed by a sixth identical panel on the real machine.
+; cavity is NOT the 150 mm half-cube of that model: the real plumbing does
+; not fit in it (the machine spans x -109..400, y +-131, z -169..250), so
+; the cavity here is sized to clear that with 40 mm or more to spare. the
+; transport model has not been rerun on this cavity. five panels; the -y
+; side is left open for the camera and is closed by a sixth panel on the
+; real machine.
 [let wall 150.0]
-[let cx0 -180.0] [let cx1 340.0]     ; cavity x: blank side .. leak valve side
+[let cx0 -180.0] [let cx1 440.0]     ; cavity x: blank side .. leak valve side
 [let cy0 -180.0] [let cy1 180.0]
 [let cz0 -220.0] [let cz1 330.0]     ; cavity z: pump line .. feedthrough tip
 
