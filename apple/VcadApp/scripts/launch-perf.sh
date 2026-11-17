@@ -14,7 +14,7 @@ for doc in "$@"; do
   cache="$(mktemp -d)"
   for i in $(seq 1 "$runs"); do
     rm -f /tmp/vcad_perf.log
-    VCAD_PERF=1 VCAD_PERF_ORBIT="$orbit" VCAD_PERF_EXIT=1 VCAD_NO_WELCOME=1 VCAD_CACHE_DIR="$cache" \
+    VCAD_AGENT_BRIDGE=0 VCAD_PERF=1 VCAD_PERF_ORBIT="$orbit" VCAD_PERF_EXIT=1 VCAD_NO_WELCOME=1 VCAD_CACHE_DIR="$cache" \
       timeout 180 "$app/Contents/MacOS/vcad" --vcad-open "$(cd "$(dirname "$doc")" && pwd)/$(basename "$doc")" >/dev/null 2>&1 || true
     echo "== $(basename "$doc") run $i"
     grep -E "since launch|orbit" /tmp/vcad_perf.log || echo "(no marks)"
