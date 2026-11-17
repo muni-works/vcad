@@ -1208,7 +1208,8 @@ final class EditorModel {
         if let d = documentGraph?.materials[key] {
             return ResolvedMaterial(
                 color: NSColor(srgbRed: d.color.0, green: d.color.1, blue: d.color.2, alpha: 1),
-                metallic: d.metallic, roughness: d.roughness, transmission: d.transmission)
+                metallic: d.metallic, roughness: d.roughness, transmission: d.transmission,
+                emission: d.emission, isMedium: d.isMedium)
         }
         if let p = MaterialPreset.byKey(key) {
             return ResolvedMaterial(color: p.nsColor, metallic: p.metallic,
@@ -4682,7 +4683,8 @@ final class EditorModel {
         if let d = documentGraph?.materials[key] {
             return ResolvedMaterial(
                 color: NSColor(srgbRed: d.color.0, green: d.color.1, blue: d.color.2, alpha: 1),
-                metallic: d.metallic, roughness: d.roughness, transmission: d.transmission)
+                metallic: d.metallic, roughness: d.roughness, transmission: d.transmission,
+                emission: d.emission, isMedium: d.isMedium)
         }
         if let p = MaterialPreset.byKey(key) {
             return ResolvedMaterial(color: p.nsColor, metallic: p.metallic,

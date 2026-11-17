@@ -459,10 +459,29 @@ struct Cli {
     focus_dist: Option<f64>,
 
     /// Light rig for `--photoreal` with the gradient environment:
-    /// `studio` (neutral three-softbox) or `warm-studio` (warm key,
-    /// cool fill and rim placed relative to the camera, all out of frame).
+    /// `studio` (neutral three-softbox), `warm-studio` (warm key,
+    /// cool fill and rim placed relative to the camera, all out of frame),
+    /// or `dark` (no rig, a faint ambient sky — emissive parts and glowing
+    /// media light the shot).
     #[arg(long, default_value = "studio", requires = "photoreal")]
     lighting: vcad_render::photoreal::Lighting,
+
+    /// HDR bloom for `--photoreal`: an energy-conserving glare PSF that
+    /// moves STRENGTH (0..1, default 0.04) of every pixel's energy into a
+    /// multi-scale Gaussian halo. A post-process — see `vcad_render::glow`.
+    #[arg(long, requires = "photoreal", value_name = "STRENGTH",
+          num_args = 0..=1, default_missing_value = "0.04")]
+    bloom: Option<f32>,
+
+    /// Widest bloom Gaussian's sigma as a fraction of image height
+    /// (`--photoreal`, default 0.035). Implies `--bloom`.
+    #[arg(long, requires = "photoreal")]
+    bloom_radius: Option<f32>,
+
+    /// Tone curve for `--photoreal`: `aces` (default) or `exp`
+    /// (`1 - e^-x`: never clips, keeps a hot core's halo in hue).
+    #[arg(long, requires = "photoreal")]
+    tonemap: Option<String>,
 
     /// Material overrides for `--photoreal`: a JSON "look" file keyed by
     /// material name and part label (colours, roughness, emission, oak /
@@ -707,6 +726,15 @@ fn photoreal_options(cli: &Cli) -> vcad_render::photoreal::PhotorealOptions {
         denoise: !cli.no_denoise,
         adaptive: !cli.no_adaptive,
         exact: cli.exact,
+        glow: vcad_render::glow::Glow::from_args(
+            cli.bloom,
+            cli.bloom_radius,
+            cli.tonemap.as_deref(),
+        )
+        .unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(2)
+        }),
     }
 }
 

@@ -215,6 +215,13 @@
 [type MaterialE
   [MaterialE Str f64 f64 f64 f64 f64 f64 f64 f64 f64 Str f64 f64 f64 f64 f64 f64 f64 f64 f64]]
 
+; A glowing medium (a plasma, a discharge, a flame): name, emission colour (linear), intensity (radiance per mm of
+; path), absorption (per mm; 0 = emission only) and soft-edge falloff depth (mm; 0 = hard edge). A part with this
+; material is a volume, not a surface: the photoreal path tracer integrates its emission along every ray through it.
+; Drafting views shade the emission colour as an ordinary solid.
+[type MaterialG
+  [MaterialG Str f64 f64 f64 f64 f64 f64]]
+
 ; Physical properties for a material key, read by every solver (FEA, modal,
 ; thermal, EM, antenna, acoustics): [material-physics "key" :opt value ...].
 ; Unset properties come from the shared library (`:library "pla"`, else
@@ -693,6 +700,9 @@
   [Material name r g b metallic roughness]]]
 [let material-emissive [fn [name r g b metallic roughness er eg eb strength map ox oy oz ux uy uz vx vy vz]
   [MaterialE name r g b metallic roughness er eg eb strength map ox oy oz ux uy uz vx vy vz]]]
+
+[let material-glow [fn [name r g b intensity absorption falloff]
+  [MaterialG name r g b intensity absorption falloff]]]
 
 [let material-physics [fn [key & opts] [MaterialPhysics key opts]]]
 
