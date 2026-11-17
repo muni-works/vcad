@@ -39,61 +39,61 @@ T_FLICK = 14.0 + 1 / 30       # clip frame 421: the flick (model: break-away 14.
 SCENES = [
     # real footage first (see FOOTAGE): wonder before any explanation
     (0.0, 4.0, "footage", dict(src="xe_thread"), "01", "the phenomenon", [
-        (0.0, "a thread of light, alive inside a glass flask"),
+        (0.0, "a thread of light,|alive inside|a glass flask"),
     ]),
     (4.0, 7.0, "footage", dict(src="xe_hand"), "01", "the phenomenon", [
-        (0.0, "it reaches for a hand"),
+        (0.0, "it reaches|for a hand"),
     ]),
     (7.0, 11.0, "footage", dict(src="sdo"), "01", "the phenomenon", [
-        (0.0, "the sun throws off arcs of the same stuff, bigger than Earth"),
+        (0.0, "the sun throws off|arcs of the same stuff,|bigger than Earth"),
     ]),
     (11.0, 16.0, "clip", dict(mode="metronome", tag="slowed: one lap = two beats"), "01", "the phenomenon", [
-        (0.0, "on a tabletop, a plasmoid races around a dish"),
+        (0.0, "on a tabletop,|a plasmoid races|around a dish"),
         (3.0, "bring a magnet close…"),
     ]),
     (16.0, 30.0, "clip", dict(mode="1x", t0=T_LOCK), "02", "what it can do", [
         (0.0, "…and it locks on"),                                      # drop 1
-        (2.0, "drag the magnet: it follows, like it's on rails"),
+        (2.0, "drag the magnet:|it follows,|like it's on rails"),
         (6.0, "flick it…"),
-        (8.0, "…it snaps off, and gets caught on the next lap"),         # the flick lands at 24.1 s
-        (11.5, "lift the magnet: it's free again"),
+        (8.0, "…it snaps off,|and gets caught|on the next lap"),         # the flick lands at 24.1 s
+        (11.5, "lift the magnet:|it's free again"),
     ]),
     (30.0, 34.0, "card", dict(), "", "", []),
     (34.0, 37.0, "labels", dict(), "03", "what is a plasmoid", [
-        (0.0, "a blob of plasma that holds its shape and moves as one"),
+        (0.0, "a blob of plasma|that holds its shape|and moves as one"),
     ]),
     (37.0, 46.0, "diagram", dict(name="gas"), "03", "what is a plasmoid", [
-        (0.0, "plasma: gas whose electrons are knocked loose from their atoms"),
-        (3.0, "here a radio-frequency field shakes electrons in thin gas"),
-        (6.0, "they knock more loose, and the atoms glow as they settle"),
+        (0.0, "plasma:|gas whose electrons|are knocked loose|from their atoms"),
+        (3.0, "here a radio-frequency field|shakes electrons|in thin gas"),
+        (6.0, "they knock more loose,|and the atoms glow|as they settle"),
     ]),
     (46.0, 56.0, "diagram", dict(name="rf"), "04", "the obvious answer", [
-        (0.0, "magnets push on electric currents…"),
-        (2.5, "but this current flips millions of times a second"),
-        (5.0, "push one way, then the other: it averages out to zero"),
+        (0.0, "magnets push|on electric currents…"),
+        (2.5, "but this current flips|millions of times|a second"),
+        (5.0, "push one way,|then the other:|it averages out|to zero"),
         (8.0, "so what's left?"),                                        # the dip before drop 3
     ]),
     (56.0, 68.0, "diagram", dict(name="beta"), "05", "curling electrons", [
         (0.0, "magnets curl electrons"),                                 # drop 3
-        (2.5, "β = how far an electron curls before it hits an atom"),
-        (5.0, "normal air: β ≈ 0.004. thin gas under a magnet: β ≈ 2.9"),
-        (8.0, "curled electrons linger, so the glow could favor the magnet"),
+        (2.5, "β = how far|an electron curls|before it hits an atom"),
+        (5.0, "normal air:|β ≈ 0.004|thin gas,|under a magnet:|β ≈ 2.9"),
+        (8.0, "curled electrons linger,|so the glow|could favor the magnet"),
     ]),
     (68.0, 78.0, "sim", dict(mode="1x", t0=T_FLICK - 4.0), "06", "the opening, explained", [
-        (0.0, "one idea, one small model: it reproduces everything you saw"),
-        (4.0, "the lock, the break-away, the recapture"),                 # drop 4, and the flick
-        (7.0, "the magnet's path is scripted; lock and release come out of the model"),
+        (0.0, "one idea,|one small model:|it reproduces|everything you saw"),
+        (4.0, "the lock,|the break-away,|the recapture"),                 # drop 4, and the flick
+        (7.0, "the magnet's path|is scripted;|lock and release|come out of the model"),
     ]),
     (78.0, 88.0, "diagram", dict(name="compare"), "07", "the twist", [
-        (0.0, "but a detailed model of the glow disagrees"),
-        (2.5, "magnetism alone pushes the foot away"),
-        (5.0, "and the magnet is nickel-plated metal"),
-        (7.5, "metal near the electrode pulls the glow in: 2.7× harder, at 1 Torr"),
+        (0.0, "but a detailed model|of the glow|disagrees"),
+        (2.5, "magnetism alone|pushes the foot away"),
+        (5.0, "and the magnet|is nickel-plated metal"),
+        (7.5, "metal near the electrode|pulls the glow in:|2.7× harder,|at 1 Torr"),
     ]),
     (88.0, 96.0, "diagram", dict(name="test"), "08", "the test", [
-        (0.0, "so the lock is probably electric, not magnetic (or it's where the foot re-forms)"),
-        (3.5, "the test: swap the magnet for an aluminum slug"),
-        (6.0, "still locks? it was never magnetism"),
+        (0.0, "so the lock|is probably electric,|not magnetic|(or it's where|the foot re-forms)"),
+        (3.5, "the test:|swap the magnet|for an aluminum slug"),
+        (6.0, "still locks?|it was never magnetism"),
     ]),
 ]
 T_END = 96.0
@@ -273,7 +273,7 @@ def frame(t, a):
     if not cues:
         return img
     text, c0, c1 = caption_at(scene, t)
-    return style.panel(img, t, c0, c1, num, title, text)
+    return style.pop_caption(img, t, c0, c1, text)
 
 
 TRAJ = None

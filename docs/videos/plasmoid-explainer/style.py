@@ -10,6 +10,7 @@ Everything is laid out in a 720x1280 *logical* frame. `EXPLAINER_SCALE`
 proxy that takes logical coordinates, and the font loaders return fonts at
 the scaled size, so scene code never mentions pixels.
 """
+import math
 import os
 
 import numpy as np
@@ -95,8 +96,9 @@ class Draw:
     def arc(self, xy, start, end, fill=None, width=1):
         self.d.arc(_sc(xy), start, end, fill=fill, width=self._w(width))
 
-    def text(self, xy, text, font=None, fill=None, anchor=None):
-        self.d.text(_sc(xy), text, font=font, fill=fill, anchor=anchor)
+    def text(self, xy, text, font=None, fill=None, anchor=None, stroke_width=0, stroke_fill=None):
+        self.d.text(_sc(xy), text, font=font, fill=fill, anchor=anchor,
+                    stroke_width=int(round(stroke_width * S)), stroke_fill=stroke_fill)
 
     def multiline_text(self, xy, text, font=None, fill=None, anchor=None, align="left", spacing=4):
         self.d.multiline_text(_sc(xy), text, font=font, fill=fill, anchor=anchor, align=align,
@@ -212,27 +214,74 @@ def wrap(d, text, font, width):
     return out
 
 
-def panel(img, t, t0, t1, num, title, text):
-    """The scene card, lower third: orange number block, tracked title, the
-    current caption in sans. In 0.1 s, out 0.15 s; the text lands whole."""
-    al = seg(t, t0, t0 + 0.1) * (1 - seg(t, t1 - 0.15, t1))
-    if al <= 0:
-        return img
-    lay = new("RGBA", (0, 0, 0, 0))
-    d = draw(lay)
-    x, y = M, 958
-    tw = W - 2 * M
-    lines = wrap(d, text, FS(31, True), tw - 32)
-    bh = 64 + 42 * len(lines) + 18
-    d.rectangle([x, y, x + tw, y + bh], fill=SURFACE + (238,), outline=LINE_HI + (255,))
-    d.rectangle([x, y, x + 64, y + 40], fill=SEL + (255,))
-    d.text((x + 32, y + 20), num, font=F(24, True), fill=SEL_INK + (255,), anchor="mm")
-    tracked(d, (x + 82, y + 20), title, F(20, True), LABEL + (255,), "lm")
-    for i, ln in enumerate(lines):
-        d.text((x + 16, y + 60 + 42 * i), ln, font=FS(31, True), fill=TEXT + (255,), anchor="la")
-    base = img.convert("RGBA")
-    base.alpha_composite(fade(lay, al))
-    return base.convert("RGB")
+_TAIL = {"a", "an", "the", "of", "to", "in", "on", "it", "is", "=", "and", "or", "so", "its", "it's",
+         "this", "that", "than", "with", "under", "before", "how", "one", "by"}
+
+
+def chunks(text, n=3):
+    """split a caption into pop-in chunks of up to n words: break after
+    punctuation and before "(", never end a chunk on a small word, and
+    leave no one-word tail."""
+    if "|" in text:                      # hand-placed breaks
+        return text.split("|")
+    out, cur = [], []
+    for w in text.split(" "):
+        if w.startswith("(") and cur:
+            out.append(cur)
+            cur = []
+        cur.append(w)
+        if w[-1] in ",:;.?…)":
+            out.append(cur)
+            cur = []
+        elif len(cur) >= n:
+            keep = []
+            while len(cur) > 1 and cur[-1].lower() in _TAIL:
+                keep.insert(0, cur.pop())
+            out.append(cur)
+            cur = keep
+    if cur:
+        out.append(cur)
+    if len(out) > 1 and len(out[-1]) == 1:
+        last = out.pop()
+        out[-1] += last
+    return [" ".join(c) for c in out]
+
+
+def chunk_times(n, dur, beat=0.5):
+    """when each of n chunks pops in, within a caption lasting `dur`: on
+    half-beats where they fit, the last chunk holding to the next cue."""
+    step = max(beat, math.floor((dur * 0.8 / n) / (beat / 2)) * (beat / 2))
+    if step * n > dur:
+        step = dur / n
+    return [i * step for i in range(n)]
+
+
+def pop_caption(img, t, t0, t1, text):
+    """short-form captions: a few words at a time, popping in (scale
+    0.86 → 1.05 → 1 over 0.14 s), numbers and β in the accent colour."""
+    parts = chunks(text)
+    times = chunk_times(len(parts), t1 - t0)
+    i = max(k for k, c in enumerate(times) if t0 + c <= t + 1e-9)
+    age = t - (t0 + times[i])
+    k = age / 0.14
+    scale = 0.86 + 0.19 * k / 0.6 if k < 0.6 else (1.05 - 0.05 * (k - 0.6) / 0.4 if k < 1 else 1.0)
+    part = parts[i]
+    d = draw(img)
+    size = 50
+    f = FS(size, True)
+    lines = wrap(d, part, f, W - 2 * M)
+    while len(lines) > 2 and size > 34:
+        size -= 4
+        f = FS(size, True)
+        lines = wrap(d, part, f, W - 2 * M)
+    f = FS(int(round(size * scale)), True)
+    hot = any(ch.isdigit() for ch in part) or "β" in part
+    lh = size * 1.2 * scale
+    y0 = 1050 - lh * (len(lines) - 1) / 2
+    for j, ln in enumerate(lines):
+        d.text((W / 2, y0 + j * lh), ln, font=f, fill=SEL if hot else TEXT, anchor="mm",
+               stroke_width=5, stroke_fill=(0, 0, 0))
+    return img
 
 
 def hud_frame(img, t, dur, label="plasmoid · simulated in vcad"):
