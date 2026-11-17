@@ -90,8 +90,11 @@ stalk (tip at z = 19.7 mm, on the grid pole), leaded-glass viewports, a KF40
 pump line, and a tee carrying the gauge and the D₂ leak valve. the cathode is
 six great circles of 2 mm wire on a 19 mm sphere, the layout the 3D solver
 uses. the catalog cavity radius is 79.9 mm against the 76 mm every simulation
-assumes (+5%). on mew at main `93b5124d` the 21-root document evaluated in
-24 s with 8 roots served from the geometry cache; no cold timing was taken. the first-pass cylinder-and-ring-stack geometry is kept as
+assumes (+5%). on mew at main `2b4bbef9`, with the geometry cache off, the
+21-root document evaluates in 9.8 s (`root_census`): every root analytic,
+with 0 non-manifold, folded or boundary edges, and the chamber at
+1,311,690 mm³ against a closed form of 1,311,233. the renders here are from
+that build. the first-pass cylinder-and-ring-stack geometry is kept as
 [`open-fusor/fusor-sim.loon`](open-fusor/fusor-sim.loon).*
 
 ![shielded](open-fusor/shielded.png)
