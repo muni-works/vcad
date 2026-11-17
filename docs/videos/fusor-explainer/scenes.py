@@ -26,8 +26,9 @@ EV = 1.602177e-19
 _PHI = (1 + 5 ** 0.5) / 2
 NORMALS = [np.array(v) / np.linalg.norm(v) for v in
            ([0, 1, _PHI], [0, 1, -_PHI], [1, _PHI, 0], [1, -_PHI, 0], [_PHI, 0, 1], [-_PHI, 0, 1])]
-HOT, COLD = (255, 226, 180), (150, 58, 0)
-ELECTRON = INFO
+HOT, COLD = (206, 246, 255), (18, 96, 120)   # cyan: things in flight
+FLASH = (255, 226, 180)
+ELECTRON = (233, 200, 74)
 NEUTRON, PROTON = (150, 142, 130), SEL
 
 
@@ -195,11 +196,11 @@ def scene_machine(t, cues, assets):
     draw_stalk(img, c)
     draw_cage(img, c, "front")
     d = style.draw(img)
-    x, y, _ = proj([[0, 0, WALL_R + WALL_T + 26], [0, 0, 0]], c)
+    x, y, _ = proj([[0, 0, WALL_R + WALL_T + 8], [0, 0, 0]], c)
     leader(d, (c["cx"] - 250, c["cy"] + 250), (c["cx"] - 250, c["cy"] + 400), "steel chamber", ease(seg(t, 0.2, 0.6)),
            below=True)
     leader(d, (x[1] + 60, y[1] + 50), (c["cx"] + 210, c["cy"] + 400), "wire cage", ease(seg(t, 0.6, 1.0)), below=True)
-    leader(d, (x[0], y[0]), (x[0] + 150, y[0] - 30), "high-voltage rod", ease(seg(t, 1.0, 1.4)))
+    leader(d, (x[0], y[0]), (x[0] + 190, y[0] + 6), "high-voltage rod", ease(seg(t, 1.0, 1.4)), anchor="m")
     if gas > 0:
         d.text((W / 2, 930), "deuterium · 5 mTorr", font=F(24, True), fill=mix(BGC, HOT, gas), anchor="mm")
     return img, "fusor · drawn from the cad's dimensions"
@@ -249,7 +250,7 @@ DEPTH = 78.0   # how deep the hill is drawn, mm, for the full 30 kV
 def draw_hill(img, c, pot, grow):
     """the potential as a surface: height = φ. Painter's order, far quads first."""
     d = style.draw(img)
-    step = 4
+    step = 2
     idx = np.arange(0, pot.shape[0], step)
     xs = -WALL_R + 2 * WALL_R * idx / (pot.shape[0] - 1)
     sub = pot[np.ix_(idx, idx)]
@@ -270,7 +271,7 @@ def draw_hill(img, c, pot, grow):
         col = tuple(int(v) for v in cols[i, j])
         pts = [(px[i, j], py[i, j]), (px[i + 1, j], py[i + 1, j]), (px[i + 1, j + 1], py[i + 1, j + 1]),
                (px[i, j + 1], py[i, j + 1])]
-        d.polygon(pts, fill=mix(BGC, col, 0.30 + 0.25 * grow), outline=mix(BGC, col, 0.9))
+        d.polygon(pts, fill=mix(BGC, col, 0.55 + 0.1 * grow), outline=mix(BGC, col, 0.6 + 0.3 * grow))
 
 
 def scene_well(t, cues, assets):
@@ -405,7 +406,7 @@ def scene_ions(t, cues, assets):
     # the hero's own numbers, from the trace
     kh = ease(seg(t, cues["falls"], cues["falls"] + 0.4)) * (1 - ease(seg(t, cues["back"], cues["back"] + 0.8)))
     if kh > 0:
-        y = 150
+        y = 905
         tracked(d, (M, y), "one ion", F(16, True), mix(BGC, LABEL, kh))
         for i, (v, unit) in enumerate(((f"{tau:,.0f}", "ns"), (f"{speed_kms(hke):,.0f}", "km/s"),
                                        (f"{hke / 1e3:.1f}", "keV"))):
@@ -415,12 +416,12 @@ def scene_ions(t, cues, assets):
                    fill=mix(BGC, LABEL, kh), anchor="ls")
     kp = ease(seg(t, cues["seven"], cues["seven"] + 0.3)) * (1 - ease(seg(t, cues["core"], cues["core"] + 0.6)))
     if kp > 0:
-        d.text((W / 2, 150), "7.1 passes on average", font=F(24, True), fill=mix(BGC, SEL, kp), anchor="mm")
-        d.text((W / 2, 184), "70% open · 6 great circles of 2 mm wire", font=F(18), fill=mix(BGC, LABEL, kp), anchor="mm")
+        d.text((W / 2, 930), "7.1 passes on average", font=F(24, True), fill=mix(BGC, SEL, kp), anchor="mm")
+        d.text((W / 2, 964), "70% open · 6 great circles of 2 mm wire", font=F(18), fill=mix(BGC, LABEL, kp), anchor="mm")
     kd = ease(seg(t, cues["crowd"], cues["crowd"] + 0.3))
     if kd > 0:
-        d.text((W / 2, 150), "70× denser", font=F(44, True), fill=mix(BGC, SEL, kd), anchor="mm")
-        d.text((W / 2, 196), "inner 5 mm, against the gas near the wall", font=F(18), fill=mix(BGC, LABEL, kd), anchor="mm")
+        d.text((W / 2, 150), "70× denser", font=F(44, True), fill=mix(BGC, SEL, kd), anchor="mm", stroke_width=5, stroke_fill=(0, 0, 0))
+        d.text((W / 2, 196), "inner 5 mm, against the space near the wall", font=F(18), fill=mix(BGC, TEXT, kd), anchor="mm", stroke_width=4, stroke_fill=(0, 0, 0))
     return img, "ion flights · simulated in vcad"
 
 
@@ -493,7 +494,7 @@ def scene_fuel(t, cues, assets):
         age = t - cues["touch"]
         lay = glow_layer()
         r = 40 + 240 * ease(min(age / 0.6, 1))
-        style.draw(lay).ellipse([W / 2 - r, cy - r, W / 2 + r, cy + r], fill=dim(HOT, max(0.0, 1 - age / 0.9)))
+        style.draw(lay).ellipse([W / 2 - r, cy - r, W / 2 + r, cy + r], fill=dim(FLASH, max(0.0, 1 - age / 0.9)))
         img = add_glow(img, lay, 30.0)
         d = style.draw(img)
         gap = 42
@@ -512,31 +513,28 @@ def scene_fuel(t, cues, assets):
 def scene_hit(t, cues, assets):
     """hit: charge exchange. The fast ion takes an electron and leaves as a fast neutral."""
     img = style.blank()
-    c = cam(-30, 13, 15.0, cy=470)
-    draw_cage(img, c, "back", k=0.22)
-    draw_cage(img, c, "front", k=0.22)
     lay = glow_layer()
     dl = style.draw(lay)
     d = style.draw(img)
     mx, my = 400, 470
     tg, tn = cues["grabs"], cues["neutral"]
     v = 330.0
-    x = mx - 40 - v * (tg - t) if t < tg else mx - 40 + v * (t - tg)
+    x = mx - 40 - v * (tg - t) if t < tg else mx - 40 + 0.45 * v * (t - tg)
     y = my - 0.35 * (x - mx)
     neutral = t >= tg + 0.25
     col = (176, 170, 160) if neutral else HOT
     for j in range(10):
         f = (1 - j / 10) ** 1.5
-        xx = x - j * 12
+        xx = x - j * 18
         yy = my - 0.35 * (xx - mx)
         if not neutral or j % 2 == 0:
-            dl.ellipse([xx - 5, yy - 5, xx + 5, yy + 5], fill=dim(col, f))
+            dl.ellipse([xx - 9, yy - 9, xx + 9, yy + 9], fill=dim(col, f))
     # the gas molecule, and the slow ion it becomes
     slow = min(max(0.0, t - tg - 0.4), 1.6)
-    gx, gy = mx + 18 - 20 * slow ** 2, my + 26 + 34 * slow ** 2
+    gx, gy = mx + 18 - 20 * slow ** 2, my + 40 + 34 * slow ** 2
     kcol = mix((120, 130, 140), SEL, seg(t, tg, tg + 0.3))
-    ball(d, gx - 14, gy, 15, kcol)
-    ball(d, gx + 14, gy, 15, kcol)
+    ball(d, gx - 24, gy, 26, kcol)
+    ball(d, gx + 24, gy, 26, kcol)
     e = seg(t, tg - 0.05, tg + 0.25)
     if t < tg + 0.25:
         ex, ey = gx + (x - gx) * e, gy - 26 + (y - gy + 26) * e
@@ -545,10 +543,10 @@ def scene_hit(t, cues, assets):
     d = style.draw(img2)
     k1 = ease(seg(t, 0.2, 0.5)) * (1 - seg(t, tg, tg + 0.3))
     leader(d, (x, y - 10), (x - 20, y - 120), "fast ion  +", k1)
-    leader(d, (gx, gy + 18), (gx + 40, gy + 150), "gas molecule", k1, below=True)
+    leader(d, (gx, gy + 30), (gx + 40, gy + 160), "gas molecule", k1, below=True)
     k2 = ease(seg(t, tn, tn + 0.3))
     leader(d, (min(x, W - 60), max(y, 150) - 10), (min(x, W - 190), max(y, 150) - 110), "neutral: no pull", k2 * (1 - seg(x, W - 60, W + 200)))
-    leader(d, (gx, gy + 18), (gx + 30, gy + 150), "new slow ion  +", k2, below=True)
+    leader(d, (gx, gy + 30), (gx + 30, gy + 160), "new slow ion  +", k2, below=True)
     return img2, "illustration"
 
 
@@ -560,7 +558,7 @@ def scene_fuse(t, cues, assets):
     tf = cues["fuse"]
     if t < tf:
         v = seg(t, cues["head"] - 1.0, tf)
-        gap = 300 * (1 - v) ** 1.0 + 42
+        gap = 230 * (1 - v) ** 1.0 + 42
         lay = glow_layer()
         dl = style.draw(lay)
         for s in (-1, 1):
@@ -575,7 +573,7 @@ def scene_fuse(t, cues, assets):
     age = t - tf
     lay = glow_layer()
     r = 30 + 330 * ease(min(age / 0.7, 1))
-    style.draw(lay).ellipse([cx - r, cy - r, cx + r, cy + r], fill=dim(HOT, max(0.0, 1 - age / 1.1)))
+    style.draw(lay).ellipse([cx - r, cy - r, cx + r, cy + r], fill=dim(FLASH, max(0.0, 1 - age / 1.1)))
     nx = cx + 60 + 900 * age
     for j in range(14):
         xx = nx - j * 22

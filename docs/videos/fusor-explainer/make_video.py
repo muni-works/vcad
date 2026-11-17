@@ -103,6 +103,7 @@ def captions(timing, ids, start):
     """[(t0, t1, chunk text, line id)]: each chunk pops in on its first word."""
     out = []
     for l, text in LINES:
+        nxt = ids[ids.index(l) + 1] if ids.index(l) + 1 < len(ids) else None
         words = timing[l]["words"]
         k = 0
         parts = CAPTIONS.get(l) or [(c, len(c.split())) for c in style.chunks(text)]
@@ -112,6 +113,8 @@ def captions(timing, ids, start):
             t0 = start[l] + words[k][1]
             k += n
             t1 = start[l] + (words[k][1] if k < len(words) else timing[l]["dur"] + 0.35)
+            if nxt is not None:
+                t1 = min(t1, start[nxt])          # never hang over the next line's shot
             out.append((t0 if i else start[l] + min(words[0][1], 0.05), t1, part, l))
     return out
 
@@ -257,7 +260,7 @@ def main():
                     f"[duck][v]amix=inputs=2:normalize=0,alimiter=limit=0.89:level=0[a]",
                     "-map", "0:v", "-map", "[a]"]
         else:
-            cmd += ["-filter:a", "volume=1.7"]
+            cmd += ["-filter:a", "volume=1.7,alimiter=limit=0.89:level=0"]
         cmd += ["-t", f"{dur}", "-c:a", "aac", "-b:a", "256k"]
     cmd += ["-frames:v", str(len(ns)), "-c:v", "libx264", "-crf", "17", "-preset", "slow",
             "-pix_fmt", "yuv420p", "-movflags", "+faststart", a.out]
