@@ -866,6 +866,14 @@ impl Solid {
                         LossKind::BooleanFallback(reason),
                     ));
                 }
+                // The other invisible case: an analytic-looking result the
+                // missed-cut probe proved wrong, with nothing to replace it.
+                if report.missed_cut {
+                    provenance.push(DegradeEvent::new(
+                        Self::op_name(op),
+                        LossKind::BooleanMissedCut,
+                    ));
+                }
                 let out = Solid {
                     names,
                     provenance,

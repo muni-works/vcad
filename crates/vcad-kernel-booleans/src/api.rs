@@ -176,6 +176,11 @@ pub enum DegradeReason {
     /// was watertight and agreed on volume. Analytic surfaces were traded
     /// for watertightness.
     WatertightnessSwap,
+    /// A Difference's B-rep result still held material inside the region
+    /// the cut was supposed to empty (the missed-cut probe), so it was
+    /// provably the wrong solid; the mesh result — which empties that
+    /// region and is cleaner — was taken instead.
+    MissedCut,
 }
 
 impl DegradeReason {
@@ -190,6 +195,7 @@ impl DegradeReason {
             DegradeReason::DifferenceRemovedNothing => "difference-removed-nothing",
             DegradeReason::SphereArrangement => "sphere-arrangement",
             DegradeReason::WatertightnessSwap => "watertightness-swap",
+            DegradeReason::MissedCut => "missed-cut",
         }
     }
 }
@@ -218,6 +224,10 @@ impl std::fmt::Display for DegradeReason {
             }
             DegradeReason::WatertightnessSwap => {
                 "the B-rep result was cracked and the watertight mesh result was taken instead"
+            }
+            DegradeReason::MissedCut => {
+                "the B-rep difference left material the cut should have removed; \
+                 the mesh result was taken instead"
             }
         };
         write!(f, "{msg}")
@@ -260,6 +270,12 @@ pub struct BooleanReport {
     /// Face count of the result B-rep. A four-digit count with
     /// `fidelity == TriangleSoup` is the signature of soup.
     pub faces: usize,
+    /// The result is the **wrong solid**: a Difference whose B-rep result
+    /// provably kept material inside the region the cut should have
+    /// emptied (the missed-cut probe fired) and no mesh fallback was sound
+    /// enough to replace it. The representation is still analytic, so
+    /// `fidelity` cannot say this — callers must not ship it silently.
+    pub missed_cut: bool,
 }
 
 impl BooleanReport {
@@ -272,6 +288,7 @@ impl BooleanReport {
             open_edges: 0,
             overused_edges: 0,
             faces: 0,
+            missed_cut: false,
         }
     }
 
@@ -284,6 +301,7 @@ impl BooleanReport {
             open_edges: 0,
             overused_edges: 0,
             faces: 0,
+            missed_cut: false,
         }
     }
 
@@ -734,6 +752,13 @@ fn boolean_op_reported_untimed(
     if result_open_edges == 0 && result_structure.overused_edges == 0 {
         return Ok(keep(result));
     }
+    // A result the missed-cut probe condemned is the wrong solid. Whatever
+    // happens below, if it is kept it must say so.
+    let keep = |result: BooleanResult| {
+        let (result, mut report) = keep(result);
+        report.missed_cut = missed_cut;
+        (result, report)
+    };
     let Ok(alt) = mesh_fallback(mesh_a, mesh_b, op, &quadrics, true) else {
         return Ok(keep(result));
     };
@@ -767,6 +792,31 @@ fn boolean_op_reported_untimed(
         let mut report =
             BooleanReport::degraded(op, DegradeReason::WatertightnessSwap).with_result(&alt);
         report.flagged_unrepresentable = true;
+        report.overused_edges = alt_report.overused_edges;
+        return Ok((alt, report));
+    }
+    // A missed cut is not a crack to be traded against watertightness: the
+    // probe has PROVEN the analytic result is the wrong solid. Demanding a
+    // perfectly closed fallback before replacing it is what shipped the
+    // wheel-adapter channel uncut (analytic 127 733 mm³ with 198 open
+    // edges, kept over a mesh result of 124 383 mm³ — the true volume —
+    // because the mesh had 53 open edges). The bar for the replacement is
+    // that it be the RIGHT solid and no worse a skin: it agrees on volume,
+    // it empties the region the analytic result left full, and it is
+    // strictly cleaner on both open-edge metrics. `VCAD_NO_MISSED_CUT_SWAP`
+    // disables the replacement (the condemned result is then kept, and
+    // reported via `BooleanReport::missed_cut`).
+    if missed_cut
+        && std::env::var_os("VCAD_NO_MISSED_CUT_SWAP").is_none()
+        && alt_report.triangles > 0
+        && agree
+        && alt_report.open_edges < result_open_edges
+        && alt_mesh.boundary_edges().len() < result_open_edges
+        && !difference_left_tool_material(&alt_mesh, mesh_a, mesh_b)
+    {
+        let mut report = BooleanReport::degraded(op, DegradeReason::MissedCut).with_result(&alt);
+        report.flagged_unrepresentable = flagged || sphere_unrepresentable;
+        report.open_edges = alt_report.open_edges;
         report.overused_edges = alt_report.overused_edges;
         return Ok((alt, report));
     }

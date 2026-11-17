@@ -152,6 +152,7 @@ fn evaluate_inner(
     // into WASM; Rust-side callers — vcad.app, the CLI, vcad-render — rely on
     // this pass). A no-op when the document has no PartInstance nodes.
     let mut failures: Vec<RootFailure> = Vec::new();
+    let mut warnings: Vec<RootFailure> = Vec::new();
     let expanded_owned;
     let doc: &Document = match vcad_parts::expand_part_instances(doc) {
         Some((d, errors)) => {
@@ -524,9 +525,23 @@ fn evaluate_inner(
                 Ok(MeshedOk {
                     mesh, solid, split, ..
                 }) => {
+                    // A root the kernel knows is the wrong solid is reported,
+                    // and never cached: a cache hit carries no solid, so the
+                    // warning would vanish on the next evaluation.
+                    let wrong: Vec<String> = solid
+                        .as_ref()
+                        .map(|s| s.wrong_geometry_events().map(|e| e.to_string()).collect())
+                        .unwrap_or_default();
                     // A stand-in preview mesh never goes in under the full key.
-                    if !from_preview {
+                    if !from_preview && wrong.is_empty() {
                         store(&cache_key, &mesh);
+                    }
+                    if !wrong.is_empty() {
+                        warnings.push(RootFailure {
+                            scope: format!("root[{idx}]"),
+                            node_id: entry.root,
+                            error: format!("geometry is known to be wrong: {}", wrong.join("; ")),
+                        });
                     }
                     if let (Some(s), Some(i), Some(h)) = (&solid, inc.as_deref_mut(), root_hash) {
                         i.put_mesh(eval_root, h, &mesh);
@@ -534,9 +549,12 @@ fn evaluate_inner(
                     }
                     // A peeled root's key names the unplaced shape, which a mesh
                     // bundle cannot stand in for: report none.
-                    let key = (!mesh.indices.is_empty() && placement.is_none() && !from_preview)
-                        .then(|| cache_key.as_ref().map(|k| k.0.clone()))
-                        .flatten();
+                    let key = (!mesh.indices.is_empty()
+                        && placement.is_none()
+                        && !from_preview
+                        && wrong.is_empty())
+                    .then(|| cache_key.as_ref().map(|k| k.0.clone()))
+                    .flatten();
                     let mesh = place_mesh(mesh, placement.as_ref());
                     let place = |s: Option<Solid>| match (&placement, s) {
                         (Some(t), Some(s)) => Some(s.apply_transform(t)),
@@ -812,6 +830,7 @@ fn evaluate_inner(
             instances,
             clashes,
             failures,
+            warnings,
             timing,
             root_keys,
         })
