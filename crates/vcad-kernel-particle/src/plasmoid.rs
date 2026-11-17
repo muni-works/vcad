@@ -247,6 +247,96 @@ impl PlasmaParams {
     }
 }
 
+/// Which pull the foot feels near a magnet.
+#[derive(Debug, Clone, Copy)]
+pub enum LockModel<'a> {
+    /// The fitted reduced model: `μ ∇Φ`, `Φ = ln(1+β²)`, plus the
+    /// `v_spin` sheath-drift term ([`PlasmaParams::velocity_in`]). Default.
+    Fitted,
+    /// The pull derived from the magnetized glow fluid
+    /// ([`crate::plasmoid_fluid::LockMap`]): replaces both `μ ∇Φ` and the
+    /// spin term (`mobility_m2_s` and `spin_speed_m_s` are ignored); the
+    /// race and radial terms stay as fitted.
+    Derived(&'a crate::plasmoid_fluid::LockMap),
+}
+
+impl PlasmaParams {
+    /// Foot velocity at `pos` (m/s) under `lock`. `LockModel::Fitted` is
+    /// exactly [`velocity_in`](Self::velocity_in).
+    pub fn velocity_with(
+        &self,
+        lock: LockModel<'_>,
+        field: Option<&FieldScene>,
+        pos: [f64; 2],
+    ) -> [f64; 2] {
+        match lock {
+            LockModel::Fitted => self.velocity_in(field, pos),
+            LockModel::Derived(map) => {
+                let mut v = self.velocity_in(None, pos);
+                if let Some(f) = field {
+                    let p = map.pull_in(f, pos);
+                    v[0] += p[0];
+                    v[1] += p[1];
+                }
+                v
+            }
+        }
+    }
+}
+
+/// [`simulate_scene`] with a choice of [`LockModel`] (same RK4 + dish
+/// clamp). With `LockModel::Fitted` it reproduces `simulate_scene`.
+pub fn simulate_scene_with<F>(
+    params: &PlasmaParams,
+    lock: LockModel<'_>,
+    field_at: F,
+    start: [f64; 2],
+    t_end: f64,
+    dt: f64,
+    stride: usize,
+) -> Vec<SceneSample>
+where
+    F: Fn(f64) -> Option<FieldScene>,
+{
+    let steps = (t_end / dt).round() as usize;
+    let stride = stride.max(1);
+    let mut p = start;
+    let mut out = Vec::with_capacity(steps / stride + 1);
+    let sample = |t: f64, p: [f64; 2]| SceneSample {
+        t_s: t,
+        pos_m: p,
+        beta: field_at(t)
+            .map(|f| params.beta_in(&f, p[0], p[1]))
+            .unwrap_or(0.0),
+    };
+    out.push(sample(0.0, p));
+    for s in 0..steps {
+        let t = s as f64 * dt;
+        let f = |tt: f64, q: [f64; 2]| params.velocity_with(lock, field_at(tt).as_ref(), q);
+        let k1 = f(t, p);
+        let k2 = f(
+            t + 0.5 * dt,
+            [p[0] + 0.5 * dt * k1[0], p[1] + 0.5 * dt * k1[1]],
+        );
+        let k3 = f(
+            t + 0.5 * dt,
+            [p[0] + 0.5 * dt * k2[0], p[1] + 0.5 * dt * k2[1]],
+        );
+        let k4 = f(t + dt, [p[0] + dt * k3[0], p[1] + dt * k3[1]]);
+        p[0] += dt / 6.0 * (k1[0] + 2.0 * k2[0] + 2.0 * k3[0] + k4[0]);
+        p[1] += dt / 6.0 * (k1[1] + 2.0 * k2[1] + 2.0 * k3[1] + k4[1]);
+        let r = (p[0] * p[0] + p[1] * p[1]).sqrt();
+        if r > params.dish_radius_m {
+            let s = params.dish_radius_m / r;
+            p = [p[0] * s, p[1] * s];
+        }
+        if (s + 1) % stride == 0 {
+            out.push(sample(t + dt, p));
+        }
+    }
+    out
+}
+
 /// One sample of a plasmoid trajectory.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlasmoidSample {
@@ -855,6 +945,21 @@ mod tests {
         for (a, b) in old.iter().zip(&new) {
             assert_eq!((a.t_s, a.pos_m, a.beta), (b.t_s, b.pos_m, b.beta));
         }
+    }
+
+    #[test]
+    fn fitted_lock_option_is_simulate_scene_bit_for_bit() {
+        let m = DiscMagnet::n52_10x5();
+        let mut p = PlasmaParams::argon_dish(1.0);
+        let r0 = p.orbit_radius_m;
+        p.mobility_m2_s = 1.8 * p.depinning_mobility(&m, &pose_above(0.0, r0, 10e-3, &m));
+        let field_at = |t: f64| {
+            let a = std::f64::consts::FRAC_PI_2 - 2.0 * t;
+            Some(pose_above(r0 * a.cos(), r0 * a.sin(), 10e-3, &m).scene(&m))
+        };
+        let a = simulate_scene(&p, field_at, [r0, 0.0], 1.0, 1e-3, 50);
+        let b = simulate_scene_with(&p, LockModel::Fitted, field_at, [r0, 0.0], 1.0, 1e-3, 50);
+        assert_eq!(a, b);
     }
 
     #[test]

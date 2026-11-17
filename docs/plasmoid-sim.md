@@ -62,7 +62,7 @@ If the effect is magnetic, it needs low pressure and shows up with a ceramic or 
 | model | verdict |
 |---|---|
 | reduced foot/quasi-particle in the magnet field, drive + magnetized-transport pull + E×B sense | **chosen.** Smallest model that circulates, locks, follows and releases, with an analytic lock threshold |
-| 2D drift-diffusion fluid on the dish (anisotropic magnetized mobility, RF-heated ionization source) | next step. Would *derive* the pull instead of fitting it (gap #4) |
+| 2D drift-diffusion fluid on the dish (anisotropic magnetized mobility, RF-heated ionization source) | **built** (`plasmoid_fluid`, [M0](plasmoid-fluid-m0.md)). Derives the pull's sign and shape: magnetized heat conduction *repels* the foot; a conducting magnet's electrostatic pull attracts and dominates at ≥ 1 Torr (gap #4) |
 | particle-in-cell (PIC) / Monte Carlo collisions (MCC) | overkill for the visual. Needed only for quantitative sheath and ionization numbers |
 
 ## 2. Model (`vcad_kernel_particle::plasmoid`)
@@ -93,7 +93,7 @@ dx/dt = v_race φ̂ + k (r0 − r) r̂             racing ionization wave + pref
 | `r0`, `k` | 55 mm, 3 s⁻¹ | fit |
 | `μ` | 1.8 × μ* = 5.3×10⁻³ m²/s | fit; only the ratio μ/μ* matters |
 | `v_spin` | 0.05 m/s | fit; *direction* is physics, magnitude is not (the true electron E×B speed is ~10⁶ m/s, but the luminous structure moves at ionization-front speed) |
-| `Φ = ln(1+β²)` | n/a | the functional form follows `D⊥ ∝ 1/(1+β²)`; the coupling into foot motion is assumed |
+| `Φ = ln(1+β²)` | n/a | the functional form follows `D⊥ ∝ 1/(1+β²)`; the coupling into foot motion is assumed. The glow fluid (gap #4) derives the opposite sign for the magnetic channel and an attracting electrostatic channel; see [plasmoid-fluid-m0.md](plasmoid-fluid-m0.md) |
 
 ### Emergent results (not hard-coded, checked by tests)
 
@@ -237,9 +237,12 @@ It drives the magnet through the real move gizmo (`beginGizmoDrag` / `gizmoDragT
    - additive point/line splats with bloom.
 
    The Python renderer here is the spec: screen-blend, multi-scale gaussian bloom, orange-to-white `1−exp(−I·k)` tone map. Until then every plasma video is hand-composited.
-4. **Derive the pull: a 2D drift-diffusion fluid on the dish.** Electron continuity with an anisotropic magnetized mobility tensor `μ_e/(1+β²)` across B, an RF-heated ionization source, and Bohm loss to the walls.
-   - The foot becomes the density peak, and μ stops being a fit parameter.
-   - The `vcad-kernel-thermal` / `em` finite-volume core can host it.
+4. **Derive the pull: a 2D drift-diffusion fluid on the dish.** *Addressed, and the answer disagrees with the fit.* `vcad_kernel_particle::plasmoid_fluid` ([M0 doc](plasmoid-fluid-m0.md)) solves a magnetized argon glow sheet on the dish plane: full 3D electron mobility tensor in the posed `FieldScene`, local-ambipolar particle transport, a steady electron energy equation with magnetized heat conduction, L&L argon rates, and a Schottky-calibrated RF heating. It returns the foot's centroid velocity as an exact discrete moment of continuity. Findings (1 Torr, 10 mm gap, 3 mm foot):
+   - **The magnetic pull repels.** The derived radial velocity is outward at every radius: peak −8.3 m/s at ρ = 5 mm, against the fitted +1.07 m/s inward at 7 mm. The shape is a near mirror image of `μ∇Φ` (correlation −0.89). The sign holds for uniform and current-driven RF heating from 0.1 to 10 Torr, for field-driven heating from 1 to 10 Torr, for 1.5–6 mm feet, and for every heated-core width (0.5–1.5σ) and background (0–60 %) tested. The one flip is field-driven heating (`E_RF` fixed, so heating ∝ the magnetized mobility) at ≤ 0.3 Torr, where β ≳ 9 and the heating itself concentrates under the magnet. The mechanism is electron *heat* conduction: `κ⊥ ∝ 1/(1+β²)` traps heat under the magnet, but the foot's outer wing (away from the magnet) ends up relatively warmer and ionizes faster. Particle transport barely notices the magnet (ions limit it until β ≳ √(μ_e/μ_i) ≈ 19, for any pressure).
+   - **Two preference criteria disagree.** The sustaining margin (net growth) is *higher* under the magnet (+1200 /s). A foot that re-forms where it grows fastest would prefer the magnet. A foot that drifts with its own ionization skew is pushed away. The quasi-static model cannot decide which wins; that is M1 (self-consistent foot).
+   - **An electrostatic pull attracts, and it is larger.** A floating Ni-plated magnet modelled as a conducting sphere concentrates the RF field under it: +22.7 m/s inward at 1 Torr, 2.7× the magnetic |pull|. Hand-grounded through the user, it multiplies the local RF heating 109×. Electrostatic wins at ≥ 1 Torr. The magnetic channel exceeds it only below ~0.3 Torr. So the §1 controls (aluminum slug, sleeved magnet) are the decisive experiment.
+   - **Still fitted:** the pull amplitude (the m/s values are frozen-profile skew rates, not foot speeds), the foot width, the race speed and `v_spin`. The derived swirl is the in-plane Hall advection of the pattern (+2.6 m/s CCW for north-down), which is different physics from the sheath `E_z×B_r` that `v_spin` stands for; the 2D sheet has no sheath.
+   - **Feed-back:** `LockModel::Derived(&LockMap)` with `simulate_scene_with` runs the reduced model on the derived pull/swirl table (amplitude pinned to the fitted peak via `LockMap::with_peak_inward`). `LockModel::Fitted` is the default and is bit-identical to `simulate_scene`. With the magnet held 10 mm over the orbit for 4 s, the fitted lock captures the foot (3 mm from the footprint) and the derived lock does not (41 mm, still racing). On the derived physics, a magnetic lock at 1 Torr would need the growth criterion or the electrostatic channel. Claims ride `vcad.plasmoid-claims/1` (Predicted → Provisional).
 5. **Bench calibration + receipts.** Phone-camera tracking of a real dish:
    - race speed;
    - capture gap;

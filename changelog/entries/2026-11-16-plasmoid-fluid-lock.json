@@ -1,0 +1,15 @@
+{
+  "id": "2026-11-16-plasmoid-fluid-lock",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "feat",
+  "title": "Plasmoid: derive the magnet lock from a glow fluid model",
+  "summary": "A 2D magnetized glow fluid derives the plasmoid's magnet pull and swirl, compares it with a conducting-magnet electrostatic pull, and can drive the sim in place of the fitted lock.",
+  "features": [
+    "plasma",
+    "simulation",
+    "particle",
+    "magnetics",
+    "receipts"
+  ]
+}
