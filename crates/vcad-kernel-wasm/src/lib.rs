@@ -9,6 +9,7 @@
 
 #[cfg(feature = "ecad")]
 pub mod calibration;
+pub mod cavity;
 pub mod circuit_sim;
 #[cfg(feature = "ecad")]
 pub mod design_constraints;
@@ -7430,6 +7431,7 @@ pub(crate) fn evaluate_parsed(
         root_cache: None,
         mesh_segments: 0,
         on_root: None,
+        on_root_ready: None,
     };
 
     let mut scene = match incremental {
@@ -7802,6 +7804,19 @@ pub fn build_part(path: &str, params_json: &str) -> Result<String, JsError> {
     serde_json::to_string(&doc).map_err(|e| JsError::new(&format!("serialize failed: {e}")))
 }
 
+/// Describe a built-in part: its mate ports (part-local frame) and metadata
+/// (ratings, envelopes, provenance, BOM lines), as JSON
+/// `{ "ports": [...], "metadata": {...} }`. Parts without a describer return
+/// no ports and empty metadata.
+#[wasm_bindgen(js_name = partInfo)]
+pub fn part_info(path: &str, params_json: &str) -> Result<String, JsError> {
+    let params: std::collections::HashMap<String, serde_json::Value> =
+        serde_json::from_str(params_json)
+            .map_err(|e| JsError::new(&format!("invalid params JSON: {e}")))?;
+    let info = vcad_parts::part_info(path, &params).map_err(|e| JsError::new(&e))?;
+    serde_json::to_string(&info).map_err(|e| JsError::new(&format!("serialize failed: {e}")))
+}
+
 /// Evaluate a loon source string and return a JSON-serialized vcad Document.
 ///
 /// The vcad library (types, constructors) is automatically prepended.
@@ -8054,6 +8069,34 @@ pub fn document_sensitivities_js(doc_json: &str, request_json: &str) -> Result<J
     let report = vcad_eval::sensitivity::document_sensitivity_report(&doc, &req, &tess)
         .map_err(|e| JsError::new(&e.to_string()))?;
     report
+        .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+        .map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Optimize named document parameters: minimize a weighted sum of QoIs
+/// subject to parameter-expression and QoI constraints
+/// ([`vcad_eval::optimize::optimize_document`]). Returns the
+/// [`vcad_eval::optimize::OptimizeDocResult`] — the optimum, the KKT report,
+/// and the full trajectory with every gradient component's provenance.
+///
+/// Only the built-in seam QoIs (volume, mass, centroid) are available here:
+/// solver plug-ins (modal frequency, …) register through the native Rust API
+/// (`vcad_eval::optimize::QoiRegistry`), not in the browser kernel.
+#[wasm_bindgen(js_name = optimizeDocument)]
+pub fn optimize_document_js(doc_json: &str, request_json: &str) -> Result<JsValue, JsError> {
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {}", e)))?;
+    let req: vcad_eval::optimize::OptimizeDocRequest = serde_json::from_str(request_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse request: {}", e)))?;
+    let registry = vcad_eval::optimize::QoiRegistry::new();
+    let result = vcad_eval::optimize::optimize_document(
+        &doc,
+        &req,
+        &registry,
+        &vcad_eval::optimize::OptimizeHooks::default(),
+    )
+    .map_err(|e| JsError::new(&e.to_string()))?;
+    result
         .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
         .map_err(|e| JsError::new(&e.to_string()))
 }
@@ -8863,73 +8906,155 @@ pub fn particle_simulate(
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
 }
 
+/// Options for [`particle_simulate_3d`] (all fields optional in JSON).
 #[derive(serde::Deserialize)]
-struct ParticleOptVariable {
-    name: String,
-    lo: f64,
-    hi: f64,
-    #[serde(default)]
-    start: Option<f64>,
-}
-
-#[derive(serde::Deserialize)]
-struct ParticleOptOptions {
-    variables: Vec<ParticleOptVariable>,
-    #[serde(default = "particle_opt_nr")]
-    nr: usize,
-    #[serde(default = "particle_opt_nz")]
-    nz: usize,
-    #[serde(default = "particle_opt_particles")]
+#[serde(default, deny_unknown_fields)]
+struct ParticleSim3dOptions {
     particles: usize,
-    #[serde(default = "particle_opt_passes")]
     max_passes: u32,
-    #[serde(default = "particle_opt_iters")]
-    max_iters: usize,
-    #[serde(default = "particle_opt_multi")]
-    multi_start: bool,
+    ion_current_a: f64,
+    d2_pressure_mtorr: f64,
+    temperature_k: f64,
+    cx_sigma_m2: Option<f64>,
+    /// Tracer step length, mm (default: a quarter of the thinnest wire
+    /// radius, capped at 0.25 mm).
+    step_mm: Option<f64>,
 }
 
-fn particle_opt_nr() -> usize {
-    81
-}
-fn particle_opt_nz() -> usize {
-    161
-}
-fn particle_opt_particles() -> usize {
-    48
-}
-fn particle_opt_passes() -> u32 {
-    20
-}
-fn particle_opt_iters() -> usize {
-    8
-}
-fn particle_opt_multi() -> bool {
-    true
+impl Default for ParticleSim3dOptions {
+    fn default() -> Self {
+        Self {
+            particles: 64,
+            max_passes: 25,
+            ion_current_a: 0.010,
+            d2_pressure_mtorr: 2.0,
+            temperature_k: 300.0,
+            cx_sigma_m2: None,
+            step_mm: None,
+        }
+    }
 }
 
 #[derive(serde::Serialize)]
-struct WasmParticleOptStart {
-    params: std::collections::BTreeMap<String, f64>,
-    value: f64,
+struct WasmParticleSim3d {
+    stats: vcad_kernel::vcad_kernel_particle::fom::EnsembleStats,
+    /// Fraction of ions that cross the grid at least once (first pass).
+    first_pass_transparency: f64,
+    /// Radial-shadow transparency from the center (no ion optics).
+    geometric_transparency: f64,
+    /// Potential at the device center, V.
+    center_potential_v: f64,
+    /// Beam-on-background D-D neutron rate with no CX attrition, n/s.
+    neutron_rate_ceiling_per_s: f64,
+    /// CX-aware neutron rate (ion + fast-neutral channels), n/s; null
+    /// unless `cx_sigma_m2` is given.
+    neutron_rate_floor_per_s: Option<f64>,
+    unknowns: usize,
+    residual: vcad_kernel::vcad_kernel_particle::bem::ResidualReport,
+    step_mm: f64,
+    /// Why no receipt claims: the claim set's convergence basis is the 2D
+    /// Poisson grid; the 3D solver has its own (residual) basis, not yet
+    /// wired into `vcad.particle-claims/1`.
+    claims: Option<()>,
+    note: &'static str,
 }
 
-#[derive(serde::Serialize)]
-struct WasmParticleOpt {
-    best_params: std::collections::BTreeMap<String, f64>,
-    best_sigma_v_m3: f64,
-    evals: usize,
-    history: Vec<f64>,
-    starts: Vec<WasmParticleOptStart>,
+/// 3D charged-particle optics: resolve a `vcad_kernel_particle::spec3d::
+/// DeviceSpec3d` (named parameters, fail-closed), solve it with the
+/// thin-wire BEM (refusing geometries that fail the surface-residual
+/// gates), trace a full-sphere Fibonacci deuteron ensemble, and return
+/// figures of merit. No receipt claims are issued for 3D yet (see
+/// `WasmParticleSim3d::note`).
+#[wasm_bindgen(js_name = particleSimulate3d)]
+pub fn particle_simulate_3d(
+    spec_json: &str,
+    params_json: &str,
+    options_json: &str,
+) -> Result<JsValue, JsError> {
+    use vcad_kernel::vcad_kernel_particle as pk;
+    let spec: pk::spec3d::DeviceSpec3d =
+        serde_json::from_str(spec_json).map_err(|e| JsError::new(&format!("bad spec: {e}")))?;
+    let params: std::collections::BTreeMap<String, f64> = if params_json.trim().is_empty() {
+        Default::default()
+    } else {
+        serde_json::from_str(params_json).map_err(|e| JsError::new(&format!("bad params: {e}")))?
+    };
+    let opts: ParticleSim3dOptions = if options_json.trim().is_empty() {
+        Default::default()
+    } else {
+        serde_json::from_str(options_json)
+            .map_err(|e| JsError::new(&format!("bad options: {e}")))?
+    };
+    let device = spec
+        .resolve(&params)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    // Dense least-squares solve is O(N³); keep wasm calls interactive.
+    let bem_opts = pk::bem::BemOptions {
+        max_unknowns: 1500,
+        ..Default::default()
+    };
+    let field = pk::bem::solve(&device, &bem_opts).map_err(|e| JsError::new(&e.to_string()))?;
+    let n_d = pk::xsection::d2_deuteron_density_m3(opts.d2_pressure_mtorr, opts.temperature_k);
+    let topts = pk::trace::TraceOptions {
+        max_passes: opts.max_passes,
+        cx: opts.cx_sigma_m2.map(|sigma| pk::trace::CxModel {
+            sigma_cx_m2: sigma,
+            background_deuteron_density_m3: n_d,
+        }),
+        ..Default::default()
+    };
+    let step = match opts.step_mm {
+        Some(mm) if mm.is_finite() && mm > 0.0 => mm * 1e-3,
+        Some(_) => return Err(JsError::new("step_mm must be finite and positive")),
+        None => field.default_step_length_m(),
+    };
+    let tracer = field.tracer(step, topts);
+    let outcomes = pk::bem::launch_fibonacci(&tracer, pk::trace::DEUTERON, opts.particles);
+    let stats = pk::fom::stats(&outcomes);
+    let first = outcomes.iter().filter(|o| o.core_passes >= 1).count() as f64
+        / outcomes.len().max(1) as f64;
+    let out = WasmParticleSim3d {
+        stats,
+        first_pass_transparency: first,
+        geometric_transparency: device.geometric_transparency(4000),
+        center_potential_v: field.potential([0.0; 3]),
+        neutron_rate_ceiling_per_s: pk::fom::neutron_rate_per_s(
+            stats.mean_ddn_sigma_v_m3,
+            opts.ion_current_a,
+            n_d,
+        ),
+        neutron_rate_floor_per_s: opts.cx_sigma_m2.map(|_| {
+            pk::fom::neutron_rate_from_counts(
+                stats.mean_neutrons_ion_channel + stats.mean_neutrons_cx_channel,
+                opts.ion_current_a,
+            )
+        }),
+        unknowns: field.unknowns(),
+        residual: field.residual_report(),
+        step_mm: step * 1e3,
+        claims: None,
+        note: "3D thin-wire BEM (vcad-kernel-particle::bem). Receipt claims are not issued \
+               for 3D devices yet: vcad.particle-claims/1 is bound to the 2D grid basis.",
+    };
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
 }
 
 /// Optimize named device parameters against predicted D-D yield per ion.
 ///
 /// `optimize_json`: `{ variables: [{name, lo, hi, start?}], nr?, nz?,
-/// particles?, max_passes?, max_iters?, multi_start? }`. Multi-start FD
-/// ascent (the yield landscape is multimodal — see
-/// `docs/particle-optics-m0.md`); candidate configurations that fail to
-/// resolve or converge score 0 instead of aborting the search.
+/// particles?, max_passes?, max_iters?, multi_start?, gradient?,
+/// adjoint_particles?, adjoint_crossings? }` — an
+/// `electrode_opt::ElectrodeOptProblem`. Multi-start ascent (the yield
+/// landscape is multimodal — see `docs/particle-optics-m0.md`).
+/// `gradient: "fd"` (default) uses central differences throughout;
+/// `"hybrid"` routes potentials + ampere-turns through the discrete
+/// adjoint and geometry through FD, falling back to FD on an iteration
+/// whose adjoint direction fails to climb. Candidate configurations that
+/// fail to resolve or converge score 0 instead of aborting the search.
+/// Output keeps `best_params / best_sigma_v_m3 / evals / history /
+/// starts[{params, value}]` and adds per-iteration records with the
+/// gradient source of every variable.
 #[wasm_bindgen(js_name = particleOptimize)]
 pub fn particle_optimize(
     spec_json: &str,
@@ -8944,85 +9069,10 @@ pub fn particle_optimize(
     } else {
         serde_json::from_str(params_json).map_err(|e| JsError::new(&format!("bad params: {e}")))?
     };
-    let oopts: ParticleOptOptions = serde_json::from_str(optimize_json)
+    let problem: pk::electrode_opt::ElectrodeOptProblem = serde_json::from_str(optimize_json)
         .map_err(|e| JsError::new(&format!("bad optimize options: {e}")))?;
-    if oopts.variables.is_empty() {
-        return Err(JsError::new("optimize requires at least one variable"));
-    }
-
-    let lo: Vec<f64> = oopts.variables.iter().map(|v| v.lo).collect();
-    let hi: Vec<f64> = oopts.variables.iter().map(|v| v.hi).collect();
-    let names: Vec<String> = oopts.variables.iter().map(|v| v.name.clone()).collect();
-
-    let mut evals_total = 0usize;
-    let mut objective = |x: &[f64]| -> f64 {
-        let mut p = base.clone();
-        for (name, value) in names.iter().zip(x) {
-            p.insert(name.clone(), *value);
-        }
-        evals_total += 1;
-        let Ok(device) = spec.resolve(&p) else {
-            return 0.0;
-        };
-        let Ok(sol) = pk::poisson::solve(
-            &device,
-            oopts.nr,
-            oopts.nz,
-            &pk::poisson::SolveOptions::default(),
-        ) else {
-            return 0.0;
-        };
-        let fields = pk::field::FieldMap::new(&device, &sol);
-        let topts = pk::trace::TraceOptions {
-            max_passes: oopts.max_passes,
-            ..Default::default()
-        };
-        let tracer = pk::trace::Tracer::new(&device, &fields, &sol, topts);
-        pk::fom::stats(&tracer.launch_ensemble(pk::trace::DEUTERON, oopts.particles))
-            .mean_ddn_sigma_v_m3
-    };
-
-    let seed_fractions: Vec<f64> = if oopts.multi_start {
-        vec![0.2, 0.5, 0.8]
-    } else {
-        vec![0.5]
-    };
-    let explicit: Option<Vec<f64>> = oopts
-        .variables
-        .iter()
-        .map(|v| v.start)
-        .collect::<Option<Vec<f64>>>();
-
-    let fd = pk::optimize::FdOptions {
-        max_iters: oopts.max_iters,
-        ..pk::optimize::FdOptions::default()
-    };
-    let mut best: Option<pk::optimize::FdResult> = None;
-    let mut starts = Vec::new();
-    for (k, f) in seed_fractions.iter().enumerate() {
-        let x0: Vec<f64> = if k == 0 && explicit.is_some() {
-            explicit.clone().unwrap()
-        } else {
-            lo.iter().zip(&hi).map(|(a, b)| a + f * (b - a)).collect()
-        };
-        let r = pk::optimize::maximize(&mut objective, &x0, &lo, &hi, &fd);
-        starts.push(WasmParticleOptStart {
-            params: names.iter().cloned().zip(r.x.iter().copied()).collect(),
-            value: r.value,
-        });
-        let better = best.as_ref().map(|b| r.value > b.value).unwrap_or(true);
-        if better {
-            best = Some(r);
-        }
-    }
-    let best = best.expect("at least one start");
-    let out = WasmParticleOpt {
-        best_params: names.iter().cloned().zip(best.x.iter().copied()).collect(),
-        best_sigma_v_m3: best.value,
-        evals: evals_total,
-        history: best.history,
-        starts,
-    };
+    let out = pk::electrode_opt::optimize_electrodes(&spec, &base, &problem)
+        .map_err(|e| JsError::new(&e))?;
     let ser = serde_wasm_bindgen::Serializer::json_compatible();
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
 }
@@ -9234,6 +9284,8 @@ struct WasmThermalEnergy {
     fixed_face_out_w: f64,
     convection_out_w: f64,
     fixed_region_out_w: f64,
+    /// Heat out through radiation faces, W (0 for conduction-only).
+    radiation_out_w: f64,
     net_out_w: f64,
     residual_rel: f64,
 }
@@ -9249,6 +9301,10 @@ struct WasmThermalSolve {
     energy: WasmThermalEnergy,
     iterations: usize,
     residual_rel: f64,
+    /// Newton iterations (radiating models; 0 when linear).
+    newton_iterations: usize,
+    /// Per-slot radiation reports (empty for conduction-only).
+    radiation: Vec<vcad_kernel::vcad_kernel_thermal::solve::RadiationReport>,
     claim_set: vcad_kernel::vcad_kernel_thermal::receipt::ClaimSet,
     receipt_claims: Vec<vcad_receipt::ReceiptClaim>,
 }
@@ -9295,9 +9351,20 @@ pub fn thermal_solve(
         max_iters: opts.max_iters,
     };
     let sol = th::solve::solve_steady(&model, &sopts).map_err(|e| JsError::new(&e.to_string()))?;
-    let claim_set = th::receipt::predicted_claims(&model, &sol, &sopts);
+    let out = thermal_summary(&model, &sol, &sopts);
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
+fn thermal_summary(
+    model: &vcad_kernel::vcad_kernel_thermal::model::ThermalModel,
+    sol: &vcad_kernel::vcad_kernel_thermal::solve::Solution,
+    sopts: &vcad_kernel::vcad_kernel_thermal::solve::SolveOptions,
+) -> WasmThermalSolve {
+    use vcad_kernel::vcad_kernel_thermal as th;
+    let claim_set = th::receipt::predicted_claims(model, sol, sopts);
     let receipt_claims = th::receipt::design_claims(&claim_set);
-    let out = WasmThermalSolve {
+    WasmThermalSolve {
         divisions: sol.divisions,
         voxel_mm: sol.voxel_mm,
         t_max_c: sol.t_max_c,
@@ -9319,13 +9386,110 @@ pub fn thermal_solve(
             fixed_face_out_w: sol.energy.fixed_face_out_w,
             convection_out_w: sol.energy.convection_out_w,
             fixed_region_out_w: sol.energy.fixed_region_out_w,
+            radiation_out_w: sol.energy.radiation_out_w,
             net_out_w: sol.energy.net_out_w,
             residual_rel: sol.energy.residual_rel,
         },
         iterations: sol.iterations,
         residual_rel: sol.residual_rel,
+        newton_iterations: sol.newton_iterations,
+        radiation: sol.radiation.clone(),
         claim_set,
         receipt_claims,
+    }
+}
+
+#[derive(serde::Serialize)]
+struct WasmThermalExtracted {
+    grid: vcad_eval::thermal_extract::ThermalGrid,
+    parts: Vec<vcad_eval::thermal_extract::VoxelizedPart>,
+    parameters: std::collections::BTreeMap<String, f64>,
+    sources: Vec<vcad_kernel::vcad_kernel_thermal::spec::SourceSpec>,
+    fixed: Vec<vcad_kernel::vcad_kernel_thermal::spec::FixedSpec>,
+}
+
+#[derive(serde::Serialize)]
+struct WasmThermalDocSolve {
+    #[serde(flatten)]
+    solve: WasmThermalSolve,
+    extracted: WasmThermalExtracted,
+}
+
+/// Steady thermal solve of a document's own parts.
+///
+/// `doc_json` is a `vcad_ir::Document`. The study is `study_json` (a
+/// `vcad_ir::ThermalStudy`) when non-empty, else the document's thermal
+/// analysis study `study_id` (or its only one). The selected parts are
+/// voxelized (`vcad_eval::thermal_extract`), the spec resolved against the
+/// document's parameters overlaid with `params_json`, and solved. Returns
+/// the `thermalSolve` summary plus `extracted` (grid, per-part voxel
+/// audit, sources/sinks as solved) — not the per-voxel index field.
+#[wasm_bindgen(js_name = thermalSolveDocument)]
+pub fn thermal_solve_document(
+    doc_json: &str,
+    study_json: &str,
+    study_id: &str,
+    params_json: &str,
+    options_json: &str,
+) -> Result<JsValue, JsError> {
+    use vcad_eval::thermal_extract as tx;
+    use vcad_kernel::vcad_kernel_thermal as th;
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {e}")))?;
+    let inline: Option<vcad_ir::ThermalStudy> = if study_json.trim().is_empty() {
+        None
+    } else {
+        Some(
+            serde_json::from_str(study_json)
+                .map_err(|e| JsError::new(&format!("bad thermal study: {e}")))?,
+        )
+    };
+    let study = match &inline {
+        Some(s) => s,
+        None => tx::find_thermal_study(
+            &doc,
+            (!study_id.trim().is_empty()).then_some(study_id.trim()),
+        )
+        .map_err(|e| JsError::new(&e.to_string()))?,
+    };
+    let overrides: std::collections::BTreeMap<String, f64> = if params_json.trim().is_empty() {
+        Default::default()
+    } else {
+        serde_json::from_str(params_json).map_err(|e| JsError::new(&format!("bad params: {e}")))?
+    };
+    let opts: ThermalOptions = if options_json.trim().is_empty() {
+        Default::default()
+    } else {
+        serde_json::from_str(options_json)
+            .map_err(|e| JsError::new(&format!("bad options: {e}")))?
+    };
+    let ex = tx::extract_thermal_spec(&doc, study).map_err(|e| JsError::new(&e.to_string()))?;
+    let mut params = ex.parameters.clone();
+    params.extend(overrides);
+    let n_voxels: usize = ex.grid.divisions.iter().product();
+    if n_voxels > 2_000_000 {
+        return Err(JsError::new(&format!(
+            "grid too large for the MCP tier: {n_voxels} voxels (cap 2,000,000) — coarsen the study grid"
+        )));
+    }
+    let model = ex
+        .spec
+        .resolve(&params)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let sopts = th::solve::SolveOptions {
+        tol: opts.tol,
+        max_iters: opts.max_iters,
+    };
+    let sol = th::solve::solve_steady(&model, &sopts).map_err(|e| JsError::new(&e.to_string()))?;
+    let out = WasmThermalDocSolve {
+        solve: thermal_summary(&model, &sol, &sopts),
+        extracted: WasmThermalExtracted {
+            grid: ex.grid,
+            parts: ex.parts,
+            parameters: params,
+            sources: ex.spec.sources,
+            fixed: ex.spec.fixed,
+        },
     };
     let ser = serde_wasm_bindgen::Serializer::json_compatible();
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
@@ -9550,6 +9714,7 @@ pub fn thermal_solve_transient(
             fixed_face_out_w: fs.energy.fixed_face_out_w,
             convection_out_w: fs.energy.convection_out_w,
             fixed_region_out_w: fs.energy.fixed_region_out_w,
+            radiation_out_w: fs.energy.radiation_out_w,
             net_out_w: fs.energy.net_out_w,
             residual_rel: fs.energy.residual_rel,
         },
@@ -9812,6 +9977,47 @@ pub fn fea_check_beam(case_json: &str) -> Result<JsValue, JsError> {
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
 }
 
+#[derive(serde::Serialize)]
+struct WasmShellCheck {
+    check: vcad_kernel::vcad_kernel_fea::shell::ShellCheck,
+    claim_set: Option<vcad_kernel::vcad_kernel_fea::receipt::ClaimSet>,
+    receipt_claims: Vec<vcad_receipt::ReceiptClaim>,
+}
+
+/// Closed-form external-pressure buckling screen for a thin cylinder,
+/// sphere or dished head (vacuum chambers, viewport covers): classical
+/// bifurcation pressure, the cited imperfection knockdown (NASA/SP-8007
+/// REV 2 for cylinders, ASME VIII-1 UG-28(d)/UG-33 for spheres and heads),
+/// membrane-yield cap, allowable and margin — with the same fail-closed
+/// applicability gating and predicted-basis claims as the beam route.
+///
+/// `case_json` is a `vcad_kernel_fea::shell::ShellCase`.
+#[wasm_bindgen(js_name = feaCheckShell)]
+pub fn fea_check_shell(case_json: &str) -> Result<JsValue, JsError> {
+    use vcad_kernel::vcad_kernel_fea as fea;
+    let case: fea::shell::ShellCase =
+        serde_json::from_str(case_json).map_err(|e| JsError::new(&format!("bad case: {e}")))?;
+    let check = fea::shell::check_shell(&case).map_err(|e| JsError::new(&e.to_string()))?;
+    let (claim_set, receipt_claims) = match &check.verdict {
+        fea::section::BeamVerdict::Applicable => {
+            let set = fea::shell::predicted_claims(&check, &case)
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            let claims = fea::shell::design_claims(&set);
+            (Some(set), claims)
+        }
+        fea::section::BeamVerdict::Unverifiable { reasons } => {
+            (None, fea::shell::design_claims_unverifiable(reasons))
+        }
+    };
+    let out = WasmShellCheck {
+        check,
+        claim_set,
+        receipt_claims,
+    };
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
 // ---------------------------------------------------------------------------
 // Electromagnetic field solver (vcad-kernel-em)
 // ---------------------------------------------------------------------------
@@ -9924,6 +10130,15 @@ fn em_stress_panels() -> usize {
     64
 }
 
+/// Air-gap probe region for the axisym magnet claims.
+#[derive(serde::Deserialize)]
+struct WasmEmGapProbe {
+    r_inner_mm: f64,
+    r_outer_mm: f64,
+    z_min_mm: f64,
+    z_max_mm: f64,
+}
+
 /// Torque extraction request for the planar problem class.
 #[derive(serde::Deserialize)]
 struct WasmEmTorqueSpec {
@@ -9962,6 +10177,9 @@ struct EmSimOptions {
     force_coil: Option<usize>,
     /// Axisym: Maxwell-stress cylinder for the force cross-route residual.
     stress_probe: Option<WasmEmStressProbe>,
+    /// Axisym with magnets: the air-gap region the `gap_flux_t` claim
+    /// averages |B_r| over (r/z bounds, mm).
+    gap_probe: Option<WasmEmGapProbe>,
     /// Planar: torque center/radius/depth (required for planar claims).
     torque: Option<WasmEmTorqueSpec>,
     /// Electrostatics: index of the driven (nonzero-potential) electrode.
@@ -9983,6 +10201,7 @@ impl Default for EmSimOptions {
             drive_coil: 0,
             force_coil: None,
             stress_probe: None,
+            gap_probe: None,
             torque: None,
             hot: 0,
         }
@@ -10100,10 +10319,12 @@ pub fn em_simulate(
             let dev = spec
                 .resolve(&params)
                 .map_err(|e| JsError::new(&e.to_string()))?;
-            if dev.coils.is_empty() {
-                return Err(JsError::new("axisym_magnetostatics needs at least one coil"));
+            if dev.coils.is_empty() && dev.magnets.is_empty() {
+                return Err(JsError::new(
+                    "axisym_magnetostatics needs at least one coil or magnet",
+                ));
             }
-            if opts.drive_coil >= dev.coils.len() {
+            if !dev.coils.is_empty() && opts.drive_coil >= dev.coils.len() {
                 return Err(JsError::new(&format!(
                     "drive_coil {} out of range ({} coils)",
                     opts.drive_coil,
@@ -10134,12 +10355,32 @@ pub fn em_simulate(
             let flux_linkages: Vec<f64> = (0..n_coils).map(|k| sol.flux_linkage(k)).collect();
             let forces: Vec<f64> = (0..n_coils).map(|k| sol.axial_force_on_coil(k)).collect();
             let energy = sol.energy();
-            let mut claim_sets = vec![em::receipt::axisym_inductance_claims(
-                &sol,
-                opts.drive_coil,
-                sopts.tol,
-                None,
-            )];
+            let has_magnets = !dev.magnets.is_empty();
+            let gap = opts.gap_probe.as_ref().map(|g| em::axisym::Annulus {
+                r_inner_mm: g.r_inner_mm,
+                r_outer_mm: g.r_outer_mm,
+                z_min_mm: g.z_min_mm,
+                z_max_mm: g.z_max_mm,
+            });
+            let drive = (n_coils > 0).then_some(opts.drive_coil);
+            // With magnets the coil's flux linkage carries the magnet's DC
+            // flux, so λ/I is not an inductance: price the gap instead.
+            let mut claim_sets = if has_magnets {
+                vec![em::receipt::axisym_gap_flux_claims(
+                    &sol,
+                    drive,
+                    gap.as_ref(),
+                    sopts.tol,
+                    None,
+                )]
+            } else {
+                vec![em::receipt::axisym_inductance_claims(
+                    &sol,
+                    opts.drive_coil,
+                    sopts.tol,
+                    None,
+                )]
+            };
             if let Some(k) = opts.force_coil {
                 if k >= n_coils {
                     return Err(JsError::new(&format!(
@@ -10162,7 +10403,13 @@ pub fn em_simulate(
                 residual: sol.residual,
                 picard,
                 qois: serde_json::json!({
-                    "self_inductance_h": sol.self_inductance(opts.drive_coil),
+                    "self_inductance_h": if has_magnets || n_coils == 0 {
+                        None
+                    } else {
+                        Some(sol.self_inductance(opts.drive_coil))
+                    },
+                    "bl_n_per_a": drive.map(|k| sol.force_factor(k)),
+                    "gap_flux_t": gap.as_ref().map(|g| sol.mean_field_in(g, 16).0),
                     "flux_linkages_wb_t": flux_linkages,
                     "axial_forces_n": forces,
                     "field_energy_j": energy.field,
@@ -10463,6 +10710,127 @@ pub fn antenna_analyze(
         claim_set,
         receipt_claims,
     };
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
+#[derive(serde::Deserialize, Default)]
+struct WasmNanoVnaTolerances {
+    s11_db: Option<f64>,
+    freq_rel: Option<f64>,
+    z_ohm: Option<f64>,
+    bandwidth_rel: Option<f64>,
+}
+
+#[derive(serde::Deserialize)]
+struct WasmS1pContext {
+    claim_set: vcad_kernel::vcad_kernel_antenna::receipt::ClaimSet,
+    #[serde(default)]
+    tolerances: Option<WasmNanoVnaTolerances>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct WasmRewContext {
+    #[serde(default)]
+    extra_uncertainty_hz: f64,
+}
+
+#[derive(serde::Serialize)]
+struct WasmS1pImport {
+    points: usize,
+    reference_ohm: f64,
+    measurements: Vec<vcad_kernel::vcad_kernel_antenna::receipt::Measurement>,
+}
+
+/// Reduce a raw instrument file to measurements for the claims ledger
+/// (`import_measurement`), fail-closed:
+///
+/// - `"touchstone_s1p"`: NanoVNA one-port sweep → antenna measurements named
+///   after the claims (`vcad_kernel_antenna::nanovna`). `context_json` is
+///   `{claim_set: <vcad.antenna-claims/1>, tolerances?: {s11_db, freq_rel,
+///   z_ohm, bandwidth_rel}}` (unset tolerances keep the NanoVNA defaults).
+/// - `"rew_impedance"`: REW impedance export → port tuning f_b
+///   (`vcad_kernel_acoustics::rew`). `context_json`: `{extra_uncertainty_hz?}`.
+/// - `"thermocouple_csv"`: thermocouple log → one temperature
+///   (`vcad_kernel_thermal::thermocouple`). `context_json` is a
+///   `ThermocoupleOptions`.
+#[wasm_bindgen(js_name = importMeasurementFile)]
+pub fn import_measurement_file(
+    format: &str,
+    text: &str,
+    context_json: &str,
+) -> Result<JsValue, JsError> {
+    let ctx = if context_json.trim().is_empty() {
+        "{}"
+    } else {
+        context_json
+    };
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    match format {
+        "touchstone_s1p" => {
+            use vcad_kernel::vcad_kernel_antenna as ak;
+            let c: WasmS1pContext = serde_json::from_str(ctx).map_err(|e| {
+                JsError::new(&format!("bad context (needs the antenna claim_set): {e}"))
+            })?;
+            let sweep = ak::nanovna::parse_s1p(text).map_err(|e| JsError::new(&e.to_string()))?;
+            let d = ak::nanovna::NanoVnaTolerances::default();
+            let t = c.tolerances.unwrap_or_default();
+            let tol = ak::nanovna::NanoVnaTolerances {
+                s11_db: t.s11_db.unwrap_or(d.s11_db),
+                freq_rel: t.freq_rel.unwrap_or(d.freq_rel),
+                z_ohm: t.z_ohm.unwrap_or(d.z_ohm),
+                bandwidth_rel: t.bandwidth_rel.unwrap_or(d.bandwidth_rel),
+            };
+            let measurements = ak::nanovna::measurements_from_s1p(&sweep, &c.claim_set, &tol)
+                .map_err(|e| JsError::new(&e.to_string()))?;
+            let out = WasmS1pImport {
+                points: sweep.samples.len(),
+                reference_ohm: sweep.z0,
+                measurements,
+            };
+            serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+        }
+        "rew_impedance" => {
+            let c: WasmRewContext = serde_json::from_str(ctx)
+                .map_err(|e| JsError::new(&format!("bad context: {e}")))?;
+            let out = vcad_kernel::vcad_kernel_acoustics::rew::tuning_from_impedance_export(
+                text,
+                c.extra_uncertainty_hz,
+            )
+            .map_err(|e| JsError::new(&e))?;
+            serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+        }
+        "thermocouple_csv" => {
+            let o: vcad_kernel::vcad_kernel_thermal::thermocouple::ThermocoupleOptions =
+                serde_json::from_str(ctx)
+                    .map_err(|e| JsError::new(&format!("bad context: {e}")))?;
+            let out = vcad_kernel::vcad_kernel_thermal::thermocouple::reduce_log(text, &o)
+                .map_err(|e| JsError::new(&e))?;
+            serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+        }
+        other => Err(JsError::new(&format!(
+            "unknown measurement format {other:?} (touchstone_s1p, rew_impedance, thermocouple_csv)"
+        ))),
+    }
+}
+
+/// Extract a thin-wire `AntennaSpec` from a document's `PcbBoard` node
+/// (antenna-net trace centerlines → wires of radius width/4, feed at a pad,
+/// infinite ground at the pour edge — see `vcad_eval::antenna_extract`).
+///
+/// `doc_json` is a `vcad_ir::Document`; `selection_json` an
+/// `AntennaExtraction` (feed pad, optional net / board node, `f_max_hz`).
+/// Returns `{spec, parameters, feed, frame, ground, substrate, notes, …}` —
+/// feed `spec` and `parameters` straight to `antennaAnalyze`. Fail-closed.
+#[wasm_bindgen(js_name = extractAntennaSpec)]
+pub fn extract_antenna_spec(doc_json: &str, selection_json: &str) -> Result<JsValue, JsError> {
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {e}")))?;
+    let sel: vcad_eval::antenna_extract::AntennaExtraction =
+        serde_json::from_str(selection_json)
+            .map_err(|e| JsError::new(&format!("bad antenna extraction selection: {e}")))?;
+    let out = vcad_eval::antenna_extract::extract_antenna_spec(&doc, &sel)
+        .map_err(|e| JsError::new(&e.to_string()))?;
     let ser = serde_wasm_bindgen::Serializer::json_compatible();
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
 }
@@ -10814,6 +11182,120 @@ pub fn neutronics_simulate(spec_json: &str, params_json: &str) -> Result<JsValue
         claim_set,
         receipt_claims,
     };
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// Document → simulation spec (vcad_eval::sim_extract)
+// ---------------------------------------------------------------------------
+
+/// Extract an axisymmetric `DeviceSpec` from a document's evaluated solids.
+///
+/// `doc_json` is a `vcad_ir::Document`; `selection_json` a
+/// `vcad_eval::sim_extract::DeviceExtraction` (chamber part, electrode
+/// parts + the document parameters naming their potentials/ampere-turns).
+/// Returns `{spec, parameters, cavity, ring_parts}` — feed `spec` and
+/// `parameters` straight to `particleSimulate`. Fail-closed: any shape the
+/// spec can't represent errors with the offending part's name.
+#[wasm_bindgen(js_name = extractDeviceSpec)]
+pub fn extract_device_spec(doc_json: &str, selection_json: &str) -> Result<JsValue, JsError> {
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {e}")))?;
+    let sel: vcad_eval::sim_extract::DeviceExtraction = serde_json::from_str(selection_json)
+        .map_err(|e| JsError::new(&format!("bad extraction selection: {e}")))?;
+    let out = vcad_eval::sim_extract::extract_device_spec(&doc, &sel)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Extract a spherical `ShieldSpec` from a document's evaluated solids.
+///
+/// `selection_json` is a `vcad_eval::sim_extract::ShieldExtraction` (shell
+/// parts, fill material, source, detectors). Returns
+/// `{spec, parameters, center, layer_parts}` — feed `spec` and
+/// `parameters` straight to `neutronicsSimulate`.
+#[wasm_bindgen(js_name = extractShieldSpec)]
+pub fn extract_shield_spec(doc_json: &str, selection_json: &str) -> Result<JsValue, JsError> {
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {e}")))?;
+    let sel: vcad_eval::sim_extract::ShieldExtraction = serde_json::from_str(selection_json)
+        .map_err(|e| JsError::new(&format!("bad extraction selection: {e}")))?;
+    let out = vcad_eval::sim_extract::extract_shield_spec(&doc, &sel)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Extract an axisymmetric magnetostatic `AxisymSpec` from a document's
+/// revolved magnetic parts (steel, axial magnets, coils).
+///
+/// `selection_json` is a `vcad_eval::sim_extract::em::AxisymMagExtraction`.
+/// Returns `{spec, parameters, axis, parts, grid}` — feed `spec` (with
+/// `problem: "axisym_magnetostatics"`) and `parameters` to `emSimulate`,
+/// on the advised `grid.nx × grid.ny`. Fail-closed: a non-axisymmetric
+/// part errors with its name.
+#[wasm_bindgen(js_name = extractAxisymMagSpec)]
+pub fn extract_axisym_mag_spec(doc_json: &str, selection_json: &str) -> Result<JsValue, JsError> {
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {e}")))?;
+    let sel: vcad_eval::sim_extract::em::AxisymMagExtraction = serde_json::from_str(selection_json)
+        .map_err(|e| JsError::new(&format!("bad extraction selection: {e}")))?;
+    let out = vcad_eval::sim_extract::em::extract_axisym_mag_spec(&doc, &sel)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
+/// Extract a linear tolerance `StackupSpec` from a document's clearance
+/// assertion and toleranced parameters.
+///
+/// `selection_json` is a `vcad_eval::sim_extract::tolerance::StackupExtraction`.
+/// Returns `{spec, parameters, gap_mm, fit_parts, contributors,
+/// independent, fixed_geometry_mm}` — feed `spec` and `parameters` to
+/// `toleranceAnalyze`.
+#[wasm_bindgen(js_name = extractStackupSpec)]
+pub fn extract_stackup_spec(doc_json: &str, selection_json: &str) -> Result<JsValue, JsError> {
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {e}")))?;
+    let sel: vcad_eval::sim_extract::tolerance::StackupExtraction =
+        serde_json::from_str(selection_json)
+            .map_err(|e| JsError::new(&format!("bad extraction selection: {e}")))?;
+    let out = vcad_eval::sim_extract::tolerance::extract_stackup_spec(&doc, &sel)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
+#[derive(serde::Deserialize)]
+struct WasmFitGapQuery {
+    label: String,
+    group_a: Vec<String>,
+    group_b: Vec<String>,
+    fit_window_mm: f64,
+}
+
+/// Signed analytic radial gap between two part groups' coaxial shaft/bore
+/// pair — the fit-mode measurement of a `ClearanceSpec` (press /
+/// transition fits). `query_json` is `{label, group_a, group_b,
+/// fit_window_mm}`; returns `{gap_mm, parts}` (negative = interference).
+/// Errors (no candidate pair, ambiguous pairs, no analytic BRep) are
+/// fail-closed: the caller must treat them as unverifiable.
+#[wasm_bindgen(js_name = signedRadialGap)]
+pub fn signed_radial_gap(doc_json: &str, query_json: &str) -> Result<JsValue, JsError> {
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {e}")))?;
+    let q: WasmFitGapQuery = serde_json::from_str(query_json)
+        .map_err(|e| JsError::new(&format!("bad fit-gap query: {e}")))?;
+    let out = vcad_eval::sim_extract::tolerance::signed_radial_gap_of(
+        &doc,
+        &q.label,
+        &q.group_a,
+        &q.group_b,
+        q.fit_window_mm,
+    )
+    .map_err(|e| JsError::new(&e.to_string()))?;
     let ser = serde_wasm_bindgen::Serializer::json_compatible();
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
 }

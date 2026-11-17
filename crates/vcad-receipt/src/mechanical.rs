@@ -69,8 +69,21 @@ pub struct ClearanceClaim {
     pub group_b: Vec<String>,
     /// Required minimum separation in mm.
     pub required_mm: f64,
-    /// Measured minimum distance in mm (negative = penetration depth).
+    /// Measured minimum distance in mm (negative = penetration depth). For
+    /// a fit-mode assertion (`max_mm` set), the signed analytic radial gap.
     pub measured_mm: f64,
+    /// Upper bound on the measured gap, mm (fit-mode assertions: press /
+    /// transition fits). Absent = minimum-clearance semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub max_mm: Option<f64>,
+    /// True when `measured_mm` is the signed analytic radial gap of a
+    /// fit-mode assertion (interference allowed down to `required_mm`)
+    /// rather than a mesh clearance — re-verification must re-measure it
+    /// the same way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub analytic_fit: Option<bool>,
     /// Whether the measured distance satisfies the requirement.
     pub holds: bool,
     /// Named allowed contact: when true, a measured distance within
@@ -146,11 +159,26 @@ impl ClearanceClaim {
             required_mm,
             measured_mm: if measured_mm == 0.0 { 0.0 } else { measured_mm },
             holds: measured_mm.is_finite() && measured_mm >= required_mm,
+            max_mm: None,
+            analytic_fit: None,
             allow_contact: None,
             sweep: None,
             worst_pose: None,
             poses_checked: None,
         }
+    }
+
+    /// Mark the measurement as a fit-mode signed analytic radial gap.
+    pub fn with_analytic_fit(mut self) -> Self {
+        self.analytic_fit = Some(true);
+        self
+    }
+
+    /// Fit mode upper bound: also require `measured_mm <= max_mm`.
+    pub fn with_max(mut self, max_mm: f64) -> Self {
+        self.max_mm = Some(max_mm);
+        self.holds = self.holds && self.measured_mm <= max_mm;
+        self
     }
 
     /// Record the range-of-motion sweep the measurement was taken over.
@@ -193,7 +221,13 @@ pub fn clearance_claims(assertions: &[ClearanceClaim], oracle: &OracleRef) -> Ve
                     "clearance \"{}\" at least {} mm across {} swept poses",
                     a.label, a.required_mm, n
                 ),
-                _ => format!("clearance \"{}\" at least {} mm", a.label, a.required_mm),
+                _ => match a.max_mm {
+                    Some(mx) => format!(
+                        "fit \"{}\" gap within [{}, {}] mm",
+                        a.label, a.required_mm, mx
+                    ),
+                    None => format!("clearance \"{}\" at least {} mm", a.label, a.required_mm),
+                },
             };
             let subject = format!("{} vs {}", a.group_a.join("+"), a.group_b.join("+"));
             if !a.measured_mm.is_finite() || !a.required_mm.is_finite() {
@@ -211,7 +245,9 @@ pub fn clearance_claims(assertions: &[ClearanceClaim], oracle: &OracleRef) -> Ve
             }
             let contact_ok =
                 a.allow_contact.unwrap_or(false) && a.measured_mm.abs() <= CONTACT_EPS_MM;
-            let holds = a.holds && (a.measured_mm >= a.required_mm || contact_ok);
+            let holds = a.holds
+                && (a.measured_mm >= a.required_mm || contact_ok)
+                && a.max_mm.is_none_or(|mx| a.measured_mm <= mx);
             let mut c = ReceiptClaim::pass(id, DOMAIN, description, oracle.clone())
                 .with_subject(subject)
                 .with_predicted(ClaimQuantity::new(a.required_mm, "mm"))

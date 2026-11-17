@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-boolean-modal-gradient-perf",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "perf",
+  "title": "Booleans ~6x, parameter gradients ~20x, Fine modal converges",
+  "summary": "Booleans stop re-sampling every face for disabled debug output; document gradients evaluate each probe value once; modal analysis uses a fill-reducing sparse Cholesky, so Fine finishes on thin shells.",
+  "features": ["booleans", "modal", "gradient", "performance"],
+  "mcpTools": ["part_sound", "optimize_parameters"]
+}

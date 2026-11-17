@@ -74,3 +74,7 @@ M5 benchmarks → M6 measurements. Flagged follow-ups (cross-crate, next
 PRs): `vcad-receipt` registration + `predict_thermal` MCP tool; PDN
 joule-heating import from the ecad layer; radiation; the tessellated-part
 voxelizer on the vcad side of the `VoxelMaterials` seam.
+
+**M7 (2026-11): radiation landed**: gray-diffuse surface radiation with
+Newton solves, a two-surface enclosure, and a linearized adjoint. See
+`docs/thermal-m7.md`.

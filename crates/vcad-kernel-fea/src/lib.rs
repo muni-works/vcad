@@ -37,9 +37,9 @@
 //!    has tested yet.
 //!
 //! **Scope and honesty:** small-displacement linear elasticity of a single
-//! isotropic material. No plasticity, no buckling, no contact, no dynamic
-//! loads; constant-strain tets smear stress concentrations, so
-//! `max_von_mises` at a re-entrant corner is a lower bound that grows with
+//! isotropic material. No plasticity, no contact, no dynamic loads (and
+//! the static solve itself says nothing about buckling — see below);
+//! constant-strain tets smear stress concentrations, so `max_von_mises` at a re-entrant corner is a lower bound that grows with
 //! refinement (the true elastic solution is singular there). Every claim
 //! note says so.
 //!
@@ -70,15 +70,28 @@
 //! Shell and beam *elements*, which would cover non-prismatic thin-walled
 //! parts, remain the honest M3+ upgrade.
 //!
+//! **Buckling** is its own route. [`buckling`] is linear eigenvalue
+//! buckling, `(K + λ(K_G + K_L))φ = 0`, on incompatible-mode bricks: the
+//! prestress of a reference load builds the geometric stiffness, pressure
+//! loads follow the surface (`K_L`), and the lowest positive `λ` is the
+//! bifurcation load factor — validated against Euler, Bresse, Batdorf and
+//! Zoelly, gated on a refinement study. For shells that number is
+//! unconservative, so [`shell`] is the closed-form external-pressure screen
+//! (cylinders per NASA/SP-8007-2020/REV 2, spheres and heads per ASME
+//! VIII-1 UG-28(d)/UG-33) that states the imperfection knockdown it
+//! applies. See `docs/fea-buckling.md`.
+//!
 //! Units: geometry in **millimeters**, forces in Newtons, moduli and
 //! stresses in MPa (N/mm²) — the consistent mm-N-MPa system.
 
 pub mod adjoint;
+pub mod buckling;
 pub mod convergence;
 pub mod graph;
 pub mod mesh;
 pub mod modal;
 pub mod receipt;
 pub mod section;
+pub mod shell;
 pub mod solve;
 pub mod spec;

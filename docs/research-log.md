@@ -902,3 +902,17 @@ and `tune_circuit`.
   slot is deferred (diodes at M0) errors instead of silently not moving.
 - Claims land under `vcad.spice-claims/1`, basis predicted, Provisional
   rollup — the $30-scope measurement pack remains the closing move.
+
+## 2026-11-16 — the cathode radiates (thermal M7, fusor_codesign rev-c)
+
+The thermal crate now has a gray-diffuse radiation BC (Newton solve,
+two-surface enclosure, linearized adjoint FD-validated;
+`docs/thermal-m7.md`; `cargo run --release -p vcad-kernel-particle --example fusor_codesign`). The fusor thermal leg re-priced with the grid
+radiating to the chamber wall, at 96³ voxels: 178 W of interception →
+**949 °C** at ε = 0.1 (92 % radiated), 525–1175 °C across ε 0.6–0.05.
+The same grid conduction-only reads 19 152 °C, so the rev-a "cathode at
+~23× melt" veto was an artifact of the missing physics. The real verdict
+is marginal and depends on emissivity: clean copper (ε ≈ 0.05) still
+passes melt, while a blackened or stainless grid survives. 2 % duty is
+171 °C, solved at average power because the old linear rescale (rev-b's
+527 °C) no longer applies.

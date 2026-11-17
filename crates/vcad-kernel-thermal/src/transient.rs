@@ -33,7 +33,7 @@
 
 use crate::model::{Boundary, ModelError, ThermalModel};
 use crate::solve::{
-    assemble_solution, build, pcg, resolve_reference, Solution, SolveError, SolveOptions,
+    assemble_solution, build, resolve_reference, solve_field, Solution, SolveError, SolveOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -95,6 +95,11 @@ pub struct TransientSolution {
     pub energy_audit_residual_rel: f64,
     /// Total CG iterations across all steps.
     pub cg_iterations_total: usize,
+    /// Total Newton iterations across all steps (0 for conduction-only
+    /// models; radiating models solve each implicit step by Newton, warm-
+    /// started from the previous step — the energy audit still closes, to
+    /// the Newton tolerance, because the outflow is evaluated at Tⁿ⁺¹).
+    pub newton_iterations_total: usize,
     /// Recorded snapshots (empty when `snapshot_every` = 0).
     pub snapshots: Vec<Snapshot>,
 }
@@ -171,6 +176,7 @@ impl ScheduleSegment {
             match bc {
                 Boundary::FixedTemperature { temperature_c } => *temperature_c = temp,
                 Boundary::Convection { ambient_c, .. } => *ambient_c = temp,
+                Boundary::Radiation { ambient_c, .. } => *ambient_c = temp,
                 Boundary::Adiabatic => {
                     return Err(SolveError::BadScheduleOverride(format!(
                         "face slot {slot} is adiabatic; it has no temperature to schedule"
@@ -272,6 +278,7 @@ pub fn solve_transient_schedule(
     let mut stored_gross_j = 0.0;
     let mut injected_gross_j = 0.0;
     let mut cg_iterations_total = 0usize;
+    let mut newton_iterations_total = 0usize;
     let mut last_iters = 0usize;
     let mut last_resid = 0.0_f64;
     let mut time = 0.0_f64;
@@ -301,10 +308,14 @@ pub fn solve_transient_schedule(
                     0.0
                 };
             }
-            let (x, iters, resid) = pcg(&sys, &diag_t, &rhs, &t, opts)?;
-            cg_iterations_total += iters;
-            last_iters = iters;
-            last_resid = resid;
+            // One PCG solve for a conduction-only model; a Newton
+            // iteration warm-started from Tⁿ when any face radiates.
+            let fs = solve_field(&sys, &diag_t, &rhs, &t, opts, false)?;
+            let x = fs.x;
+            cg_iterations_total += fs.cg_iterations;
+            newton_iterations_total += fs.newton_iterations;
+            last_iters = fs.cg_iterations;
+            last_resid = fs.residual_rel;
 
             // Conservation audit of this step (an identity of the scheme).
             let mut de = 0.0;
@@ -364,6 +375,7 @@ pub fn solve_transient_schedule(
         injected_j,
         energy_audit_residual_rel: (stored_delta_j - injected_j).abs() / audit_scale,
         cg_iterations_total,
+        newton_iterations_total,
         snapshots,
     })
 }

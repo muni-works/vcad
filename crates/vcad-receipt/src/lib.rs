@@ -17,6 +17,11 @@
 //! lives in `vcad-kernel-sheet::receipt` (next to the types it consumes); the
 //! PCB adapter lives in the MCP server (TypeScript, over the generated types).
 //!
+//! Solver predictions from every domain, and later their bench measurements,
+//! collect in one document-persisted [`ledger::ClaimsLedger`] (frozen
+//! predictions, per-domain acceptance bands, Holds/Violated/Unmeasured/Stale
+//! rows).
+//!
 //! Cryptographic signing is a planned follow-up: [`DesignReceipt::signature`]
 //! reserves the field, nothing produces it yet.
 
@@ -24,6 +29,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod ledger;
 pub mod mechanical;
 
 /// Current receipt schema identifier. Bump the trailing number on breaking
@@ -761,5 +767,10 @@ mod ts_tests {
         // Mechanical clearance assertions (not reachable from DesignReceipt —
         // they ride in claim `details` as JSON).
         crate::mechanical::ClearanceClaim::export_all().expect("ClearanceClaim export failed");
+        // The document-persisted claims ledger (reachable from vcad-ir's
+        // `Document::claims_ledger`; exported here so the files always exist).
+        crate::ledger::ClaimsLedger::export_all().expect("ClaimsLedger export failed");
+        crate::ledger::LedgerRow::export_all().expect("LedgerRow export failed");
+        crate::ledger::StaleReason::export_all().expect("StaleReason export failed");
     }
 }

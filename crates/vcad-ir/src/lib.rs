@@ -17,6 +17,7 @@ pub mod expr_parser;
 pub mod file_io;
 pub mod gear;
 pub mod instrument;
+pub mod materials;
 pub mod mates;
 pub mod molecule;
 pub mod parameters;
@@ -29,7 +30,7 @@ pub use datum::{resolve_datums, Datum, PrincipalAxis, ResolvedDatum};
 pub use mates::{Mate, MateKind};
 pub use parameters::{
     resolve_binding, resolve_parameters, validate_bindings, BindingKey, Bindings, Expr, Parameter,
-    ResolveError,
+    ParameterTolerance, ResolveError,
 };
 pub use resolve::{resolve_document, resolve_document_cloned, ResolvePatchError};
 
@@ -1898,6 +1899,177 @@ pub struct MaterialDef {
     )]
     #[cfg_attr(feature = "ts-rs", ts(rename = "emissiveMapV", optional))]
     pub emissive_map_v: Option<[f64; 3]>,
+    /// Physical properties the solvers read (elastic, thermal, dielectric,
+    /// magnetic, electrical). Every field is optional: a property the
+    /// document leaves out falls back to the [`materials`] library entry for
+    /// this material, and a property neither supplies is a typed error from
+    /// [`materials::resolve_material`] — never a silent default. Density is
+    /// not repeated here; it is [`density`](Self::density) above.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub physical: Option<MaterialPhysical>,
+}
+
+/// Physical properties of a material, as read by the solvers (FEA, modal,
+/// thermal, EM, antenna, acoustics). All optional and all SI-or-MPa, named
+/// with their unit so a number can't be read in the wrong one.
+///
+/// JSON keys are camelCase (`youngsModulusMpa`); the snake_case spelling is
+/// accepted on input. A property left out here is filled from the library
+/// entry named by [`library`](Self::library), else matched from the material
+/// key / name — see [`materials::resolve_material`].
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(
+    feature = "ts-rs",
+    ts(export, export_to = "bindings/", rename_all = "camelCase")
+)]
+pub struct MaterialPhysical {
+    /// Library id to inherit unset properties from (`"pla"`, `"fr4"`,
+    /// `"n42"`, …; see [`materials::LIBRARY`]). When set it must name a
+    /// library entry — an unknown id is an error, not a fallback. When unset
+    /// the library entry is matched from the material key, then its name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub library: Option<String>,
+    /// Young's modulus E, MPa.
+    #[serde(
+        default,
+        alias = "youngs_modulus_mpa",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub youngs_modulus_mpa: Option<f64>,
+    /// Poisson's ratio ν (dimensionless).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub poisson: Option<f64>,
+    /// Yield (or, for brittle materials, ultimate tensile) strength, MPa.
+    #[serde(
+        default,
+        alias = "yield_strength_mpa",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub yield_strength_mpa: Option<f64>,
+    /// Thermal conductivity k, W/(m·K): a number (isotropic) or
+    /// `{inPlane, throughPlane}` for a laminate such as FR4.
+    #[serde(
+        default,
+        alias = "thermal_conductivity_w_mk",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub thermal_conductivity_w_mk: Option<ThermalConductivity>,
+    /// Specific heat capacity c_p, J/(kg·K).
+    #[serde(
+        default,
+        alias = "specific_heat_j_kgk",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub specific_heat_j_kgk: Option<f64>,
+    /// Total hemispherical emissivity ε, 0..1 (radiation boundary).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub emissivity: Option<f64>,
+    /// Relative permittivity ε_r (dimensionless; 1 = vacuum).
+    #[serde(
+        default,
+        alias = "relative_permittivity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub relative_permittivity: Option<f64>,
+    /// Dielectric loss tangent tan δ (dimensionless).
+    #[serde(
+        default,
+        alias = "loss_tangent",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub loss_tangent: Option<f64>,
+    /// Relative permeability μ_r (dimensionless; linear, unsaturated — for
+    /// a permanent magnet, the recoil permeability).
+    #[serde(
+        default,
+        alias = "relative_permeability",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub relative_permeability: Option<f64>,
+    /// Remanent flux density B_r of a permanent magnet, T.
+    #[serde(
+        default,
+        alias = "remanence_t",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub remanence_t: Option<f64>,
+    /// Electrical resistivity ρ_e, Ω·m.
+    #[serde(
+        default,
+        alias = "resistivity_ohm_m",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub resistivity_ohm_m: Option<f64>,
+}
+
+/// Thermal conductivity, W/(m·K): isotropic, or split into in-plane and
+/// through-plane values for a laminate (FR4, a printed part's layers).
+///
+/// The material does not know which way "through" points — the extractor
+/// that meshes the part supplies that axis (a board's normal, a print's
+/// build direction).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/", untagged))]
+pub enum ThermalConductivity {
+    /// Same in every direction.
+    Isotropic(f64),
+    /// Different along the plane and through it.
+    Anisotropic {
+        /// Conductivity along the plane, W/(m·K).
+        #[serde(rename = "inPlane", alias = "in_plane")]
+        #[cfg_attr(feature = "ts-rs", ts(rename = "inPlane"))]
+        in_plane: f64,
+        /// Conductivity through the plane, W/(m·K).
+        #[serde(rename = "throughPlane", alias = "through_plane")]
+        #[cfg_attr(feature = "ts-rs", ts(rename = "throughPlane"))]
+        through_plane: f64,
+    },
+}
+
+impl ThermalConductivity {
+    /// In-plane conductivity (the isotropic value when isotropic).
+    pub fn in_plane(&self) -> f64 {
+        match *self {
+            Self::Isotropic(k) => k,
+            Self::Anisotropic { in_plane, .. } => in_plane,
+        }
+    }
+    /// Through-plane conductivity (the isotropic value when isotropic).
+    pub fn through_plane(&self) -> f64 {
+        match *self {
+            Self::Isotropic(k) => k,
+            Self::Anisotropic { through_plane, .. } => through_plane,
+        }
+    }
+    /// A single scalar for an isotropic solver: the isotropic value, or the
+    /// geometric mean of in-plane and through-plane for a laminate. Callers
+    /// that care about the anisotropy should read the two components.
+    pub fn effective(&self) -> f64 {
+        match *self {
+            Self::Isotropic(k) => k,
+            Self::Anisotropic {
+                in_plane,
+                through_plane,
+            } => (in_plane * through_plane).sqrt(),
+        }
+    }
 }
 
 impl MaterialDef {
@@ -2534,6 +2706,18 @@ pub struct Document {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub analysis_studies: Vec<AnalysisStudy>,
 
+    /// Every solver's frozen predictions and their bench measurements
+    /// (`vcad.claims-ledger/1`): one ledger per document, so one receipt can
+    /// carry thermal, EM, antenna, acoustics, tolerance … claims and later
+    /// score each against hardware. Excluded from the document fingerprint
+    /// (recording a measurement is not a design change).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    // Named, not inlined: vcad-receipt exports the ledger types itself (one
+    // generated.ts module, so the name resolves); deriving them here too
+    // would export them twice.
+    #[cfg_attr(feature = "ts-rs", ts(optional, type = "ClaimsLedger"))]
+    pub claims_ledger: Option<vcad_receipt::ledger::ClaimsLedger>,
+
     // Drafting (optional, zero-cost when absent)
     /// Drawing sheet settings: title block, section lines, BOM visibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2709,7 +2893,26 @@ pub struct ClearanceSpec {
     pub group_b: Vec<String>,
     /// Required minimum separation in mm: the assertion holds when the
     /// measured minimum distance between the groups is at least this value.
+    /// Negative values (allowed interference) only mean something in fit
+    /// mode — see [`ClearanceSpec::is_fit`]; otherwise any interpenetration
+    /// is a violation regardless of sign.
     pub min_mm: f64,
+    /// Upper bound on the measured gap, mm. Setting it puts the assertion
+    /// in **fit mode** ([`ClearanceSpec::is_fit`]): the gap is the signed
+    /// analytic radial gap between coaxial cylinders (negative =
+    /// interference) and must lie in `[min_mm, max_mm]` — a press or
+    /// transition fit. Geometry that can't be measured that way fails
+    /// closed. Absent = classic minimum-clearance semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub max_mm: Option<f64>,
+    /// Explicit fit kind. `interference` puts the assertion in fit mode
+    /// without an upper bound (a negative `min_mm` then caps the allowed
+    /// interference); `clearance` (or absent, with no `max_mm`) keeps the
+    /// classic semantics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub fit: Option<ClearanceFit>,
     /// Named allowed contact: when true, surfaces touching (measured
     /// distance within the contact tolerance of zero) satisfy the assertion
     /// even though it is below `min_mm` — e.g. a stage bolted flush to the
@@ -2732,6 +2935,28 @@ pub struct ClearanceSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts-rs", ts(optional))]
     pub baseline_mm: Option<f64>,
+}
+
+impl ClearanceSpec {
+    /// Fit mode: measured as a signed analytic radial gap and checked
+    /// against `[min_mm, max_mm]`. On only when `max_mm` is set or `fit` is
+    /// `interference` — a bare negative `min_mm` never relaxes the
+    /// no-interpenetration rule.
+    pub fn is_fit(&self) -> bool {
+        self.max_mm.is_some() || self.fit == Some(ClearanceFit::Interference)
+    }
+}
+
+/// Fit kind of a [`ClearanceSpec`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub enum ClearanceFit {
+    /// Classic minimum clearance (the default).
+    Clearance,
+    /// Interference (press) fit: interpenetration down to `min_mm` allowed.
+    Interference,
 }
 
 /// One axis of a range-of-motion sweep: a joint driven from `from` to `to`
@@ -2811,6 +3036,224 @@ pub enum AnalysisStudyKind {
         /// The requirement the chain must satisfy.
         requirement: StudyRequirement,
     },
+    /// Steady heat conduction (`vcad-kernel-thermal`) over the document's
+    /// own parts: `vcad_eval::thermal_extract` voxelizes the selected parts
+    /// and emits a `ThermalSpec`. See [`ThermalStudy`]. Boxed: it dwarfs
+    /// the other variants (`clippy::large_enum_variant`); serde and ts-rs
+    /// see through the box, so the JSON shape is unchanged.
+    Thermal(Box<ThermalStudy>),
+}
+
+/// A number, or the name of a document parameter (`doc.parameters`) bound
+/// when the study is extracted. Unbound names fail closed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub enum StudyValue {
+    /// A literal number.
+    Literal(f64),
+    /// The name of a document parameter.
+    Named(String),
+}
+
+impl From<f64> for StudyValue {
+    fn from(v: f64) -> Self {
+        StudyValue::Literal(v)
+    }
+}
+
+/// A heat-conduction study over the document's own parts.
+///
+/// The selected parts are voxelized onto a grid spanning their union
+/// bounding box (plus `padding_mm` of void); each voxel takes the material
+/// of the part that fills it. Power sources and heat sinks name parts, so
+/// moving or resizing a part moves its heat with it. Numbers that are
+/// [`StudyValue::Named`] read the document's parameters (an amplifier's
+/// loss declared with `defparam` drives the source directly).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct ThermalStudy {
+    /// Parts to voxelize (root node name or stable part id). Explicit and
+    /// non-empty: parts not listed are void (perfectly insulating).
+    pub parts: Vec<String>,
+    /// Voxel counts per axis. Exactly one of `divisions` / `pitch_mm`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub divisions: Option<[u32; 3]>,
+    /// Target voxel pitch per axis, mm; each axis gets the smallest whole
+    /// number of voxels at or below this pitch that spans the domain
+    /// exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub pitch_mm: Option<[f64; 3]>,
+    /// Void margin added around the parts' union bounding box, mm
+    /// (default 0: the domain faces are the parts' outer faces).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub padding_mm: Option<f64>,
+    /// Thin-wall guard: a part thinner than this many voxels along an axis
+    /// is refused rather than voxelized (default 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub min_voxels_across: Option<f64>,
+    /// Per-part thermal-property overrides (beat the material table).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub materials: Vec<ThermalStudyMaterial>,
+    /// Power sources, each tied to a part.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<ThermalStudySource>,
+    /// Heat sinks: parts (or sub-regions) held at a fixed temperature.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sinks: Vec<ThermalStudySink>,
+    /// Boundary on every solid face that touches void (default adiabatic).
+    #[serde(default)]
+    pub exposed: ThermalStudyBoundary,
+    /// Boundary per domain face `[-x, +x, -y, +y, -z, +z]`; omitted = every
+    /// domain face takes `exposed` (with zero padding the domain faces are
+    /// the parts' own outer faces).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub domain_faces: Option<Vec<ThermalStudyBoundary>>,
+    /// θ reference temperature, °C (omitted = derived from the ambients).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub reference_c: Option<StudyValue>,
+}
+
+/// Thermal properties for one part, overriding the material table.
+/// Give exactly one of `k_w_mk` / `laminate`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct ThermalStudyMaterial {
+    /// Part name or part id.
+    pub part: String,
+    /// Conductivity, W/(m·K): one value (isotropic) or three (world
+    /// `[x, y, z]`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub k_w_mk: Option<Vec<StudyValue>>,
+    /// Laminate (circuit board): in-plane / through-plane conductivity;
+    /// the through-plane axis is the part's thinnest bounding-box axis.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub laminate: Option<ThermalLaminate>,
+    /// Volumetric heat capacity ρ·c_p, J/(m³·K).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub heat_capacity_j_m3k: Option<StudyValue>,
+}
+
+/// In-plane / through-plane conductivity of a laminate, W/(m·K).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct ThermalLaminate {
+    /// Conductivity along the two in-plane axes.
+    pub in_plane_w_mk: StudyValue,
+    /// Conductivity along the through-plane (thinnest) axis.
+    pub through_plane_w_mk: StudyValue,
+}
+
+/// A power source deposited uniformly in a part.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct ThermalStudySource {
+    /// Source name for reporting ("amp", "U7").
+    pub name: String,
+    /// The part the heat is deposited in.
+    pub part: String,
+    /// Total power, W.
+    pub power_w: StudyValue,
+    /// Optional world-frame sub-region of the part (e.g. one face's
+    /// footprint); omitted = the whole part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub region: Option<StudyRegion>,
+}
+
+/// A part (or sub-region of one) held at a fixed temperature.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct ThermalStudySink {
+    /// The part to pin.
+    pub part: String,
+    /// Pinned temperature, °C.
+    pub temperature_c: StudyValue,
+    /// Optional world-frame sub-region of the part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub region: Option<StudyRegion>,
+}
+
+/// A thermal boundary condition.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(tag = "type", rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub enum ThermalStudyBoundary {
+    /// No heat crosses the face.
+    #[default]
+    Adiabatic,
+    /// Newton cooling: film coefficient + ambient.
+    #[serde(rename_all = "camelCase")]
+    Convection {
+        /// Film coefficient, W/(m²·K) — supplied, not derived.
+        h_w_m2k: StudyValue,
+        /// Ambient temperature, °C.
+        ambient_c: StudyValue,
+    },
+    /// The face is held at a temperature.
+    #[serde(rename_all = "camelCase")]
+    FixedTemperature {
+        /// Surface temperature, °C.
+        temperature_c: StudyValue,
+    },
+    /// Gray-diffuse radiation to an ambient (or an enclosing wall), with
+    /// an optional parallel convection film. Nonlinear: the solver
+    /// switches to Newton. Emissivity has no default.
+    #[serde(rename_all = "camelCase")]
+    Radiation {
+        /// Hemispherical total emissivity, (0, 1].
+        emissivity: StudyValue,
+        /// Ambient / surrounding-wall temperature, °C.
+        ambient_c: StudyValue,
+        /// Parallel convection film, W/(m²·K) (omit or 0 in vacuum).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-rs", ts(optional))]
+        h_w_m2k: Option<StudyValue>,
+        /// Staircase area correction (true area / voxel area), default 1.
+        /// A voxelized cylinder wall carries ×4/π extra area at every
+        /// resolution; without this, cooling is over-counted.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-rs", ts(optional))]
+        area_scale: Option<StudyValue>,
+        /// Two-surface gray enclosure (a vacuum chamber wall).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "ts-rs", ts(optional))]
+        enclosure: Option<ThermalStudyEnclosure>,
+    },
+}
+
+/// A gray enclosure fully surrounding a radiating surface.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct ThermalStudyEnclosure {
+    /// Wall emissivity, (0, 1].
+    pub emissivity: StudyValue,
+    /// Wall area, m² (must exceed the radiating area).
+    pub area_m2: StudyValue,
 }
 
 /// A load applied over a world-frame AABB region (kernel node-selection
@@ -2937,6 +3380,7 @@ impl Default for Document {
             clearance_specs: Vec::new(),
             constraints: Vec::new(),
             analysis_studies: Vec::new(),
+            claims_ledger: None,
             drawing: None,
             timeline: None,
             part_ids: None,

@@ -16,24 +16,30 @@
 //!   length parameter and a pitch lock retunes itself when its width,
 //!   thickness or material change.
 //!
-//! Materials come from the part's material key (aluminium, steel, brass,
-//! bronze, copper, titanium, PLA, PETG, ABS, nylon, glass, wood) — elastic
-//! constants are not in the IR yet, so an unknown key falls back to
-//! aluminium and the result says so.
+//! Elastic constants come from [`vcad_ir::materials::resolve_material`]: the
+//! document material's `physical` block and `density`, then the shared
+//! library by key (aluminium, steel, stainless, brass, bronze, copper,
+//! titanium, PLA, PETG, ABS, nylon, FR4, glass, wood, magnets). A material
+//! that resolves to nothing rings as aluminium so the mallet always sounds,
+//! and the result says so (`material_known: false`, `material_note`).
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use vcad_eval::{evaluate_document, EvalOptions, EvaluatedScene};
+use vcad_ir::materials::{resolve_material, MaterialError, ResolvedMaterial};
 use vcad_ir::Document;
 use vcad_kernel_fea::modal::{modal_analysis, ModalResult, ModalSpec};
 use vcad_kernel_tessellate::TriangleMesh;
 
-/// Elastic constants for a part.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub mod optimize;
+
+/// Elastic constants for a part, read through
+/// [`vcad_ir::materials::resolve_material`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SoundMaterial {
     /// Display name.
-    pub name: &'static str,
+    pub name: String,
     /// Young's modulus, MPa.
     pub youngs_modulus_mpa: f64,
     /// Poisson's ratio.
@@ -42,148 +48,60 @@ pub struct SoundMaterial {
     pub density_kg_m3: f64,
 }
 
-const MATERIALS: &[(&[&str], SoundMaterial)] = &[
-    (
-        &["stainless"],
-        SoundMaterial {
-            name: "stainless steel",
-            youngs_modulus_mpa: 193_000.0,
-            poisson: 0.29,
-            density_kg_m3: 8000.0,
-        },
-    ),
-    (
-        &["steel", "iron"],
-        SoundMaterial {
-            name: "steel",
-            youngs_modulus_mpa: 200_000.0,
-            poisson: 0.29,
-            density_kg_m3: 7850.0,
-        },
-    ),
-    (
-        &["brass"],
-        SoundMaterial {
-            name: "brass",
-            youngs_modulus_mpa: 97_000.0,
-            poisson: 0.34,
-            density_kg_m3: 8500.0,
-        },
-    ),
-    (
-        &["bronze"],
-        SoundMaterial {
-            name: "bronze",
-            youngs_modulus_mpa: 110_000.0,
-            poisson: 0.34,
-            density_kg_m3: 8800.0,
-        },
-    ),
-    (
-        &["copper"],
-        SoundMaterial {
-            name: "copper",
-            youngs_modulus_mpa: 117_000.0,
-            poisson: 0.34,
-            density_kg_m3: 8960.0,
-        },
-    ),
-    (
-        &["titan"],
-        SoundMaterial {
-            name: "titanium",
-            youngs_modulus_mpa: 114_000.0,
-            poisson: 0.34,
-            density_kg_m3: 4430.0,
-        },
-    ),
-    (
-        &["petg"],
-        SoundMaterial {
-            name: "PETG",
-            youngs_modulus_mpa: 2_100.0,
-            poisson: 0.38,
-            density_kg_m3: 1270.0,
-        },
-    ),
-    (
-        &["pla"],
-        SoundMaterial {
-            name: "PLA",
-            youngs_modulus_mpa: 3_500.0,
-            poisson: 0.36,
-            density_kg_m3: 1240.0,
-        },
-    ),
-    (
-        &["abs"],
-        SoundMaterial {
-            name: "ABS",
-            youngs_modulus_mpa: 2_200.0,
-            poisson: 0.35,
-            density_kg_m3: 1050.0,
-        },
-    ),
-    (
-        &["nylon", "pa12"],
-        SoundMaterial {
-            name: "nylon",
-            youngs_modulus_mpa: 2_700.0,
-            poisson: 0.39,
-            density_kg_m3: 1140.0,
-        },
-    ),
-    (
-        &["glass"],
-        SoundMaterial {
-            name: "glass",
-            youngs_modulus_mpa: 70_000.0,
-            poisson: 0.22,
-            density_kg_m3: 2500.0,
-        },
-    ),
-    (
-        &["wood", "maple", "rosewood", "oak"],
-        SoundMaterial {
-            name: "wood",
-            youngs_modulus_mpa: 12_000.0,
-            poisson: 0.35,
-            density_kg_m3: 700.0,
-        },
-    ),
-    (&["alum", "6061", "7075"], ALUMINIUM),
-];
-
-const ALUMINIUM: SoundMaterial = SoundMaterial {
-    name: "aluminium",
-    youngs_modulus_mpa: 68_900.0,
-    poisson: 0.33,
-    density_kg_m3: 2700.0,
-};
-
-/// Look a material up by key or display name. `None` when nothing matches.
-pub fn material_for_key(key: &str) -> Option<SoundMaterial> {
-    let k = key.to_ascii_lowercase();
-    MATERIALS
-        .iter()
-        .find(|(keys, _)| keys.iter().any(|needle| k.contains(needle)))
-        .map(|(_, m)| *m)
+impl SoundMaterial {
+    /// The elastic constants of a resolved material, or the first one it
+    /// lacks.
+    pub fn from_resolved(m: &ResolvedMaterial) -> Result<Self, MaterialError> {
+        Ok(Self {
+            name: m.label.clone(),
+            youngs_modulus_mpa: m.youngs_modulus_mpa()?,
+            poisson: m.poisson()?,
+            density_kg_m3: m.density_kg_m3()?,
+        })
+    }
 }
 
-/// The material of visible part `part` (key, then its display name).
-fn part_material(doc: &Document, part: usize) -> (SoundMaterial, bool) {
+/// The mallet's explicit stand-in when a part's material can't be resolved:
+/// library aluminium 6061, reported as `material_known: false` with the
+/// reason in `material_note`, so a click on any part still rings.
+fn fallback_aluminium() -> SoundMaterial {
+    let m = vcad_ir::materials::resolve_def("aluminum_6061", None)
+        .expect("aluminum_6061 is a library material");
+    SoundMaterial::from_resolved(&m).expect("library aluminium is elastic")
+}
+
+/// Look a library material up by key or display name. `None` when nothing
+/// matches or the match has no elastic constants (air).
+pub fn material_for_key(key: &str) -> Option<SoundMaterial> {
+    let m = vcad_ir::materials::resolve_def(key, None).ok()?;
+    SoundMaterial::from_resolved(&m).ok()
+}
+
+/// Resolve material `key` against `doc` (document properties, then the
+/// library). `Err` carries why it couldn't be.
+fn resolve_sound_material(doc: &Document, key: &str) -> Result<SoundMaterial, MaterialError> {
+    SoundMaterial::from_resolved(&resolve_material(doc, key)?)
+}
+
+/// The material of visible part `part`: resolved, else the explicit
+/// aluminium stand-in plus the reason.
+fn part_material(doc: &Document, part: usize) -> (SoundMaterial, Option<String>) {
     let Some(entry) = visible_roots(doc).nth(part) else {
-        return (ALUMINIUM, false);
+        return (
+            fallback_aluminium(),
+            Some(format!("no visible part {part}")),
+        );
     };
-    let key = &entry.material;
-    let display = doc
-        .materials
-        .get(key)
-        .map(|m| m.name.as_str())
-        .unwrap_or("");
-    match material_for_key(key).or_else(|| material_for_key(display)) {
-        Some(m) => (m, true),
-        None => (ALUMINIUM, false),
+    with_fallback(resolve_sound_material(doc, &entry.material))
+}
+
+fn with_fallback(r: Result<SoundMaterial, MaterialError>) -> (SoundMaterial, Option<String>) {
+    match r {
+        Ok(m) => (m, None),
+        Err(e) => (
+            fallback_aluminium(),
+            Some(format!("{e}; rang it as aluminium 6061 instead")),
+        ),
     }
 }
 
@@ -266,9 +184,12 @@ pub struct PartModes {
     pub name: String,
     /// Material used.
     pub material: SoundMaterial,
-    /// False when the part's material key was not recognized and aluminium
-    /// was assumed.
+    /// False when the part's material couldn't be resolved and aluminium
+    /// was assumed — `material_note` says why.
     pub material_known: bool,
+    /// Why the material fell back to aluminium (absent when it resolved).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub material_note: Option<String>,
     /// Elastic modes, ascending.
     pub modes: Vec<PartMode>,
     /// Animation mesh the shapes live on: the part's render mesh with every
@@ -409,13 +330,39 @@ pub fn part_modes_mesh(
     positions: &[f32],
     indices: &[u32],
 ) -> Result<PartModes, SoundError> {
+    part_modes_mesh_pinned(doc, req, positions, indices, None)
+}
+
+/// The solver discretization [`part_modes_mesh`] would pick for this mesh:
+/// `(resolution, max pitch per axis in mm)`.
+pub fn modal_discretization(
+    positions: &[f32],
+    indices: &[u32],
+    quality: Quality,
+) -> (usize, [f64; 3]) {
+    pitch_for(&tri_mesh(positions, indices), quality)
+}
+
+/// [`part_modes_mesh`] with the discretization pinned (from
+/// [`modal_discretization`] at some reference geometry) instead of re-derived
+/// from this mesh. Finite differences of a frequency need this: re-deriving
+/// the pitch at every probe makes the cell size jump with the geometry, and
+/// the jump swamps the derivative.
+pub fn part_modes_mesh_pinned(
+    doc: &Document,
+    req: &ModesRequest,
+    positions: &[f32],
+    indices: &[u32],
+    pinned: Option<(usize, [f64; 3])>,
+) -> Result<PartModes, SoundError> {
     let t0 = std::time::Instant::now();
-    let (material, material_known) = match req.material.as_deref() {
-        Some(k) => material_for_key(k).map_or((ALUMINIUM, false), |m| (m, true)),
+    let (material, material_note) = match req.material.as_deref() {
+        Some(k) => with_fallback(resolve_sound_material(doc, k)),
         None => part_material(doc, req.part),
     };
+    let material_known = material_note.is_none();
     let mesh = tri_mesh(positions, indices);
-    let (resolution, pitch) = pitch_for(&mesh, req.quality);
+    let (resolution, pitch) = pinned.unwrap_or_else(|| pitch_for(&mesh, req.quality));
     let spec = ModalSpec {
         resolution,
         max_pitch_mm: Some(pitch),
@@ -468,6 +415,7 @@ pub fn part_modes_mesh(
         name: part_name(doc, req.part),
         material,
         material_known,
+        material_note,
         modes,
         vertices: anim_pos.len() / 3,
         positions: anim_pos,
@@ -842,10 +790,52 @@ mod tests {
 
     #[test]
     fn materials_resolve_by_key() {
-        assert_eq!(material_for_key("aluminum").unwrap().name, "aluminium");
-        assert_eq!(material_for_key("Brass C360").unwrap().name, "brass");
+        assert_eq!(
+            material_for_key("aluminum").unwrap().name,
+            "Aluminum 6061-T6"
+        );
+        assert_eq!(material_for_key("Brass C360").unwrap().name, "Brass C360");
         assert_eq!(material_for_key("pla").unwrap().name, "PLA");
         assert!(material_for_key("unobtainium").is_none());
+        // air resolves but has no stiffness: not a sound material
+        assert!(material_for_key("air").is_none());
+    }
+
+    #[test]
+    fn document_physical_properties_win_and_unknown_is_flagged() {
+        // A document stiffness overrides the library: a 4x stiffer "PLA"
+        // rings 2x higher (f ∝ √(E/ρ)).
+        let base = bar_doc(131.32, "pla");
+        let mut stiff = base.clone();
+        stiff.materials.insert(
+            "pla".into(),
+            vcad_ir::MaterialDef {
+                name: "pla".into(),
+                physical: Some(vcad_ir::MaterialPhysical {
+                    youngs_modulus_mpa: Some(4.0 * 3_500.0),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+        let req = ModesRequest {
+            part: 0,
+            modes: 1,
+            quality: Quality::Preview,
+            material: None,
+            shapes: false,
+        };
+        let f = |d: &Document| part_modes(d, &evaluate(d).unwrap(), &req).unwrap();
+        let (a, b) = (f(&base), f(&stiff));
+        assert!(a.material_known && b.material_known);
+        assert_eq!(b.material.youngs_modulus_mpa, 14_000.0);
+        let ratio = b.modes[0].hz / a.modes[0].hz;
+        assert!((ratio - 2.0).abs() < 1e-6, "ratio {ratio}");
+        // An unresolvable material falls back loudly, not silently.
+        let unknown = bar_doc(131.32, "unobtainium");
+        let u = f(&unknown);
+        assert!(!u.material_known);
+        assert!(u.material_note.as_deref().unwrap().contains("unobtainium"));
     }
 
     #[test]

@@ -12,13 +12,15 @@
 //! the Dirichlet mask, which is discrete, so geometric parameters take
 //! finite differences until the shape-adjoint milestone.
 //!
-//! BRep extraction (revolved sketch sections → rings) is deliberately not
-//! here: it lands on the vcad side of the seam, emitting this schema.
+//! BRep extraction is deliberately not here: it lives on the vcad side of
+//! the seam (`vcad_eval::sim_extract::extract_device_spec`), emitting this
+//! schema.
 
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::adjoint::YieldGradient;
 use crate::device::{Device, WireRing};
 
 /// A literal value or the name of a document parameter.
@@ -38,7 +40,7 @@ impl From<f64> for ParamValue {
 }
 
 impl ParamValue {
-    fn resolve(&self, params: &BTreeMap<String, f64>) -> Result<f64, SpecError> {
+    pub(crate) fn resolve(&self, params: &BTreeMap<String, f64>) -> Result<f64, SpecError> {
         match self {
             ParamValue::Literal(v) => Ok(*v),
             ParamValue::Named(name) => params
@@ -48,7 +50,7 @@ impl ParamValue {
         }
     }
 
-    fn name(&self) -> Option<&str> {
+    pub(crate) fn name(&self) -> Option<&str> {
         match self {
             ParamValue::Literal(_) => None,
             ParamValue::Named(n) => Some(n),
@@ -192,6 +194,39 @@ impl DeviceSpec {
             put(&r.ampere_turns, ParamRole::Adjoint);
         }
         roles
+    }
+
+    /// Chain an adjoint [`YieldGradient`] (per device field) back to the
+    /// spec's named parameters: d J / d name = Σ over every adjoint-capable
+    /// field bound to `name` (ring potentials, wall potential, ring
+    /// ampere-turns). Only names whose [`ParamRole`] is
+    /// [`ParamRole::Adjoint`] are returned — a name that also drives
+    /// geometry has an FD-only gradient and is omitted.
+    ///
+    /// `g` must come from the device this spec resolved to (same ring
+    /// order).
+    pub fn adjoint_gradient_by_name(&self, g: &YieldGradient) -> BTreeMap<String, f64> {
+        let roles = self.parameter_roles();
+        let mut out: BTreeMap<String, f64> = BTreeMap::new();
+        let mut add = |value: &ParamValue, d: f64| {
+            if let Some(name) = value.name() {
+                if roles.get(name) == Some(&ParamRole::Adjoint) {
+                    *out.entry(name.to_string()).or_insert(0.0) += d;
+                }
+            }
+        };
+        add(&self.wall_potential_v, g.d_wall_potential);
+        for (k, r) in self.rings.iter().enumerate() {
+            add(
+                &r.potential_v,
+                g.d_ring_potentials.get(k).copied().unwrap_or(0.0),
+            );
+            add(
+                &r.ampere_turns,
+                g.d_ampere_turns.get(k).copied().unwrap_or(0.0),
+            );
+        }
+        out
     }
 }
 

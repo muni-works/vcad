@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-antenna-from-pcb-board",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "feat",
+  "title": "analyze_antenna reads the antenna off a PCB board",
+  "summary": "Pass document_id + a feed pad: antenna-net traces become thin wires, the pour an infinite ground at its edge (recorded with its real size in wavelengths). Fails closed on vias, arcs, feedlines.",
+  "features": ["antenna", "ecad", "pcb", "simulation", "receipts"],
+  "mcpTools": ["analyze_antenna"]
+}

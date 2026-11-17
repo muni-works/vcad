@@ -83,6 +83,7 @@ pub mod sensitivity;
 pub mod session;
 pub mod sheet_metal;
 pub mod sketch;
+pub mod solver;
 pub mod sound;
 pub mod topology;
 pub mod train;
@@ -2840,6 +2841,7 @@ mod tests {
                 root_cache: None,
                 mesh_segments: 0,
                 on_root: None,
+                on_root_ready: None,
             };
             let scene = evaluate_document(doc, &opts).unwrap();
             // roots in order: enclosure (4), board (9), bracket (12).
@@ -3437,10 +3439,27 @@ pub struct VcadEvalJob {
 
 #[derive(Default)]
 struct EvalProgress {
+    /// Roots landed so far (in any order).
     done: usize,
     total: usize,
     finished: bool,
     parts: Vec<Option<vcad_eval::EvaluatedMesh>>,
+}
+
+impl EvalProgress {
+    /// Record root `index` landing. A slot is written ONCE: a caller may be
+    /// borrowing its buffers (`vcad_eval_part_mesh`), so the in-order report
+    /// of a root that already landed early leaves it alone.
+    fn land(&mut self, index: usize, total: usize, mesh: &vcad_eval::EvaluatedMesh) {
+        if self.parts.len() != total {
+            self.parts.resize_with(total, || None);
+        }
+        self.total = total;
+        if index < total && self.parts[index].is_none() {
+            self.parts[index] = Some(mesh.clone());
+            self.done += 1;
+        }
+    }
 }
 
 /// Parse `json` (mesh paths resolved against `base_dir`, may be null) and
@@ -3507,18 +3526,18 @@ fn eval_begin(
     let handle = std::thread::Builder::new()
         .name("vcad-eval".into())
         .spawn(move || {
-            let reporter = shared.clone();
+            let (reporter, early) = (shared.clone(), shared.clone());
             let mut opts = open_opts();
             opts.on_root = Some(Box::new(move |index, total, mesh| {
                 if let Ok(mut p) = reporter.lock() {
-                    if p.parts.len() != total {
-                        p.parts.resize_with(total, || None);
-                    }
-                    p.total = total;
-                    if index < total {
-                        p.parts[index] = Some(mesh.clone());
-                    }
-                    p.done = p.done.max(index + 1);
+                    p.land(index, total, mesh);
+                }
+            }));
+            // Parts that finish while an earlier, slower one is still solving
+            // land now rather than queueing behind it.
+            opts.on_root_ready = Some(Box::new(move |index, total, mesh| {
+                if let Ok(mut p) = early.lock() {
+                    p.land(index, total, mesh);
                 }
             }));
             let result = catch_unwind(AssertUnwindSafe(|| {
@@ -3555,8 +3574,9 @@ fn eval_begin(
     }
 }
 
-/// How far the job is: visible roots landed / total. Returns true once the
-/// kernel walk has finished (successfully or not).
+/// How far the job is: visible roots landed / total. Roots can land out of
+/// order (see [`vcad_eval_part_landed`]). Returns true once the kernel walk
+/// has finished (successfully or not).
 #[no_mangle]
 pub extern "C" fn vcad_eval_progress(
     job: *const VcadEvalJob,
@@ -3597,6 +3617,20 @@ pub extern "C" fn vcad_eval_part_mesh(job: *const VcadEvalJob, index: usize) -> 
         Some(Some(mesh)) => eval_mesh_view(mesh),
         _ => VcadMeshView::empty(),
     }
+}
+
+/// Whether root `index` has landed (its mesh may still be empty: a root the
+/// kernel refused lands empty).
+#[no_mangle]
+pub extern "C" fn vcad_eval_part_landed(job: *const VcadEvalJob, index: usize) -> bool {
+    if job.is_null() {
+        return false;
+    }
+    let j: &VcadEvalJob = unsafe { &*job };
+    let Ok(p) = j.progress.lock() else {
+        return false;
+    };
+    matches!(p.parts.get(index), Some(Some(_)))
 }
 
 /// Wait for the job and take its scene. Frees the job either way; null with

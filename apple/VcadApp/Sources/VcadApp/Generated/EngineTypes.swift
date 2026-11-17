@@ -2386,8 +2386,15 @@ public struct MaterialDef: Codable, Equatable, Sendable {
     /// pixel (0,0), so on a face in the XY plane shown upright to a camera
     /// looking along +Y, `u` runs along +X and `v` along −Y.
     public var emissiveMapV: [Double]?
+    /// Physical properties the solvers read (elastic, thermal, dielectric,
+    /// magnetic, electrical). Every field is optional: a property the
+    /// document leaves out falls back to the [`materials`] library entry for
+    /// this material, and a property neither supplies is a typed error from
+    /// [`materials::resolve_material`] — never a silent default. Density is
+    /// not repeated here; it is [`density`](Self::density) above.
+    public var physical: MaterialPhysical?
 
-    public init(name: String, color: [Double], metallic: Double, roughness: Double, density: Double? = nil, friction: Double? = nil, transmission: Double? = nil, ior: Double? = nil, thickness: Double? = nil, attenuationDistance: Double? = nil, attenuationColor: [Double]? = nil, clearcoat: Double? = nil, clearcoatRoughness: Double? = nil, anisotropy: Double? = nil, emissive: [Double]? = nil, emissiveStrength: Double? = nil, emissiveMap: String? = nil, emissiveMapOrigin: [Double]? = nil, emissiveMapU: [Double]? = nil, emissiveMapV: [Double]? = nil) {
+    public init(name: String, color: [Double], metallic: Double, roughness: Double, density: Double? = nil, friction: Double? = nil, transmission: Double? = nil, ior: Double? = nil, thickness: Double? = nil, attenuationDistance: Double? = nil, attenuationColor: [Double]? = nil, clearcoat: Double? = nil, clearcoatRoughness: Double? = nil, anisotropy: Double? = nil, emissive: [Double]? = nil, emissiveStrength: Double? = nil, emissiveMap: String? = nil, emissiveMapOrigin: [Double]? = nil, emissiveMapU: [Double]? = nil, emissiveMapV: [Double]? = nil, physical: MaterialPhysical? = nil) {
         self.name = name
         self.color = color
         self.metallic = metallic
@@ -2408,6 +2415,7 @@ public struct MaterialDef: Codable, Equatable, Sendable {
         self.emissiveMapOrigin = emissiveMapOrigin
         self.emissiveMapU = emissiveMapU
         self.emissiveMapV = emissiveMapV
+        self.physical = physical
     }
 
     public init(from decoder: Decoder) throws {
@@ -2432,6 +2440,7 @@ public struct MaterialDef: Codable, Equatable, Sendable {
         emissiveMapOrigin = try c.decodeIfPresent([Double].self, forKey: "emissiveMapOrigin")
         emissiveMapU = try c.decodeIfPresent([Double].self, forKey: "emissiveMapU")
         emissiveMapV = try c.decodeIfPresent([Double].self, forKey: "emissiveMapV")
+        physical = try c.decodeIfPresent(MaterialPhysical.self, forKey: "physical")
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -2456,6 +2465,96 @@ public struct MaterialDef: Codable, Equatable, Sendable {
         try c.encodeIfPresent(emissiveMapOrigin, forKey: "emissiveMapOrigin")
         try c.encodeIfPresent(emissiveMapU, forKey: "emissiveMapU")
         try c.encodeIfPresent(emissiveMapV, forKey: "emissiveMapV")
+        try c.encodeIfPresent(physical, forKey: "physical")
+    }
+}
+
+// MARK: - MaterialPhysical
+
+/// Physical properties of a material, as read by the solvers (FEA, modal,
+/// thermal, EM, antenna, acoustics). All optional and all SI-or-MPa, named
+/// with their unit so a number can't be read in the wrong one.
+///
+/// JSON keys are camelCase (`youngsModulusMpa`); the snake_case spelling is
+/// accepted on input. A property left out here is filled from the library
+/// entry named by [`library`](Self::library), else matched from the material
+/// key / name — see [`materials::resolve_material`].
+public struct MaterialPhysical: Codable, Equatable, Sendable {
+    /// Library id to inherit unset properties from (`"pla"`, `"fr4"`,
+    /// `"n42"`, …; see [`materials::LIBRARY`]). When set it must name a
+    /// library entry — an unknown id is an error, not a fallback. When unset
+    /// the library entry is matched from the material key, then its name.
+    public var library: String?
+    /// Young's modulus E, MPa.
+    public var youngsModulusMpa: Double?
+    /// Poisson's ratio ν (dimensionless).
+    public var poisson: Double?
+    /// Yield (or, for brittle materials, ultimate tensile) strength, MPa.
+    public var yieldStrengthMpa: Double?
+    /// Thermal conductivity k, W/(m·K): a number (isotropic) or
+    /// `{inPlane, throughPlane}` for a laminate such as FR4.
+    public var thermalConductivityWMk: EngineJSON?
+    /// Specific heat capacity c_p, J/(kg·K).
+    public var specificHeatJKgk: Double?
+    /// Total hemispherical emissivity ε, 0..1 (radiation boundary).
+    public var emissivity: Double?
+    /// Relative permittivity ε_r (dimensionless; 1 = vacuum).
+    public var relativePermittivity: Double?
+    /// Dielectric loss tangent tan δ (dimensionless).
+    public var lossTangent: Double?
+    /// Relative permeability μ_r (dimensionless; linear, unsaturated — for
+    /// a permanent magnet, the recoil permeability).
+    public var relativePermeability: Double?
+    /// Remanent flux density B_r of a permanent magnet, T.
+    public var remanenceT: Double?
+    /// Electrical resistivity ρ_e, Ω·m.
+    public var resistivityOhmM: Double?
+
+    public init(library: String? = nil, youngsModulusMpa: Double? = nil, poisson: Double? = nil, yieldStrengthMpa: Double? = nil, thermalConductivityWMk: EngineJSON? = nil, specificHeatJKgk: Double? = nil, emissivity: Double? = nil, relativePermittivity: Double? = nil, lossTangent: Double? = nil, relativePermeability: Double? = nil, remanenceT: Double? = nil, resistivityOhmM: Double? = nil) {
+        self.library = library
+        self.youngsModulusMpa = youngsModulusMpa
+        self.poisson = poisson
+        self.yieldStrengthMpa = yieldStrengthMpa
+        self.thermalConductivityWMk = thermalConductivityWMk
+        self.specificHeatJKgk = specificHeatJKgk
+        self.emissivity = emissivity
+        self.relativePermittivity = relativePermittivity
+        self.lossTangent = lossTangent
+        self.relativePermeability = relativePermeability
+        self.remanenceT = remanenceT
+        self.resistivityOhmM = resistivityOhmM
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: GenKey.self)
+        library = try c.decodeIfPresent(String.self, forKey: "library")
+        youngsModulusMpa = try c.decodeIfPresent(Double.self, forKey: "youngsModulusMpa")
+        poisson = try c.decodeIfPresent(Double.self, forKey: "poisson")
+        yieldStrengthMpa = try c.decodeIfPresent(Double.self, forKey: "yieldStrengthMpa")
+        thermalConductivityWMk = try c.decodeIfPresent(EngineJSON.self, forKey: "thermalConductivityWMk")
+        specificHeatJKgk = try c.decodeIfPresent(Double.self, forKey: "specificHeatJKgk")
+        emissivity = try c.decodeIfPresent(Double.self, forKey: "emissivity")
+        relativePermittivity = try c.decodeIfPresent(Double.self, forKey: "relativePermittivity")
+        lossTangent = try c.decodeIfPresent(Double.self, forKey: "lossTangent")
+        relativePermeability = try c.decodeIfPresent(Double.self, forKey: "relativePermeability")
+        remanenceT = try c.decodeIfPresent(Double.self, forKey: "remanenceT")
+        resistivityOhmM = try c.decodeIfPresent(Double.self, forKey: "resistivityOhmM")
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: GenKey.self)
+        try c.encodeIfPresent(library, forKey: "library")
+        try c.encodeIfPresent(youngsModulusMpa, forKey: "youngsModulusMpa")
+        try c.encodeIfPresent(poisson, forKey: "poisson")
+        try c.encodeIfPresent(yieldStrengthMpa, forKey: "yieldStrengthMpa")
+        try c.encodeIfPresent(thermalConductivityWMk, forKey: "thermalConductivityWMk")
+        try c.encodeIfPresent(specificHeatJKgk, forKey: "specificHeatJKgk")
+        try c.encodeIfPresent(emissivity, forKey: "emissivity")
+        try c.encodeIfPresent(relativePermittivity, forKey: "relativePermittivity")
+        try c.encodeIfPresent(lossTangent, forKey: "lossTangent")
+        try c.encodeIfPresent(relativePermeability, forKey: "relativePermeability")
+        try c.encodeIfPresent(remanenceT, forKey: "remanenceT")
+        try c.encodeIfPresent(resistivityOhmM, forKey: "resistivityOhmM")
     }
 }
 

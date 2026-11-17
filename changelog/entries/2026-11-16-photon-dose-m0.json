@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-16-photon-dose-m0",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "feat",
+  "title": "Photon dose: x-ray and capture-gamma shielding",
+  "summary": "New vcad-kernel-photon-dose crate: bremsstrahlung and capture-gamma dose through steel, glass, lead and poly, with error bands and receipt claims.",
+  "features": ["photon-dose", "radiation", "shielding", "fusor", "neutronics"]
+}

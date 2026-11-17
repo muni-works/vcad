@@ -16,6 +16,11 @@ cram-codec = { path = "@TC@/crates/cram-codec", default-features = false }
 
 [profile.release]
 debug = false
-panic = "abort"
+# MUST match libvcad_ffi.a's "unwind": both staticlibs carry a copy of Rust's
+# std and define the same panic-runtime symbols, and the linker keeps one. With
+# "abort" here, vcad.app could link the abort runtime, and then every kernel
+# panic (which vcad-eval's catch_unwind turns into a per-part failure) killed
+# the whole app instead (SIGABRT opening fusor.loon).
+panic = "unwind"
 
 [workspace]

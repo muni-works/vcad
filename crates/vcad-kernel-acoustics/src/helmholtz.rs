@@ -79,6 +79,13 @@ pub enum SolveError {
     /// The discrete operator is singular at this frequency — a resonance sits
     /// exactly on `f`. Fail-closed: perturb `f` (a sweep never lands here).
     Singular,
+    /// Obstacle `index` has non-positive thickness or length.
+    BadObstacle(usize),
+    /// Obstacle `index` is thinner than the grid: no node falls strictly
+    /// inside its radial span (or none inside its axial span), so the wall
+    /// would vanish and the fluid on its two sides would leak into each
+    /// other. Fail-closed: refine the grid (`dr` below the wall thickness).
+    ObstacleUnresolved(usize),
 }
 
 impl std::fmt::Display for SolveError {
@@ -94,6 +101,14 @@ impl std::fmt::Display for SolveError {
                     "operator singular at this frequency (a resonance sits on f)"
                 )
             }
+            SolveError::BadObstacle(i) => {
+                write!(f, "obstacle {i} has non-positive thickness or length")
+            }
+            SolveError::ObstacleUnresolved(i) => write!(
+                f,
+                "obstacle {i} is thinner than the grid spacing (no node inside it) — \
+                 the wall would leak; refine the grid"
+            ),
         }
     }
 }
@@ -189,6 +204,24 @@ pub fn solve_driven(
     let dz = dz_mm * MM;
     let r_max = r_max_mm * MM;
     let z_max = (z_max_mm - z_min_mm) * MM;
+
+    // Every obstacle must be resolved by the grid, or its wall leaks.
+    for (idx, o) in cavity.obstacles.iter().enumerate() {
+        if !(o.r_out_mm > o.r_in_mm && o.z1_mm > o.z0_mm && o.r_in_mm >= 0.0) {
+            return Err(SolveError::BadObstacle(idx));
+        }
+        let radial = (0..nr).any(|i| {
+            let r = i as f64 * dr_mm;
+            o.contains(r, o.z0_mm)
+        });
+        let axial = (0..nz).any(|j| {
+            let z = z_min_mm + j as f64 * dz_mm;
+            z >= o.z0_mm - 1e-9 && z <= o.z1_mm + 1e-9
+        });
+        if !radial || !axial {
+            return Err(SolveError::ObstacleUnresolved(idx));
+        }
+    }
 
     let omega = std::f64::consts::TAU * f_hz;
     let k = omega / cavity.medium.c;
@@ -421,6 +454,22 @@ mod tests {
         // Off-resonance the response is bounded and nonzero.
         let amp = f.magnitude_at(2.0, 100.0);
         assert!(amp.is_finite() && amp > 0.0);
+    }
+
+    #[test]
+    fn unresolved_obstacle_wall_is_refused() {
+        // A 2 mm port wall on a ~5.2 mm radial grid falls between nodes.
+        let cav =
+            Cavity::ported_box_internal(52.0, 114.0, 3.0, 12.0, 2.0, 60.0, 32.0, Medium::air(20.0));
+        let src = Source::Piston {
+            velocity: Cplx::ONE,
+        };
+        assert_eq!(
+            solve_driven(&cav, 11, 60, 100.0, src).unwrap_err(),
+            SolveError::ObstacleUnresolved(0)
+        );
+        // At 1 mm spacing the wall holds a node and the solve goes through.
+        assert!(solve_driven(&cav, 53, 118, 100.0, src).is_ok());
     }
 
     #[test]
