@@ -554,6 +554,7 @@ const LIST_TOOL_ORDER: readonly string[] = [
   "size_trace_for_current",
   "add_via_array",
   "add_motor_winding",
+  "check_winding",
   "calc_motor",
   "check_self_start",
   "render_pcb",

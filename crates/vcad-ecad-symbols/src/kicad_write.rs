@@ -1200,11 +1200,17 @@ fn write_via(e: &mut Emitter, v: &Via, nets: &NetTable, copper: &[PcbLayer]) {
     let adjacent = matches!((idx(top), idx(bottom)), (Some(a), Some(b)) if b == a + 1);
     let outer = top == PcbLayer::FCu || bottom == PcbLayer::BCu;
     // A declared type wins; legacy (untyped) vias keep the span inference.
-    let micro = match v.via_type {
-        Some(vcad_ir::ecad::ViaType::Micro) => true,
-        Some(_) => false,
-        None => adjacent && outer,
-    };
+    // F.Cu-B.Cu is a through span whatever else is true: on a 2-layer board
+    // that pair is also "adjacent" and "outer", and inferring micro there
+    // wrote every via of a plain 2-layer board as `(via micro ...)`. A hole
+    // through the whole board is mechanically drilled, never a laser microvia.
+    let through_span = top == PcbLayer::FCu && bottom == PcbLayer::BCu;
+    let micro = !through_span
+        && match v.via_type {
+            Some(vcad_ir::ecad::ViaType::Micro) => true,
+            Some(_) => false,
+            None => adjacent && outer,
+        };
     if top == PcbLayer::FCu && bottom == PcbLayer::BCu && !micro {
         e.line(1, "(via");
     } else if micro {
@@ -5144,11 +5150,31 @@ mod tests {
         assert!(text.contains("(layers \"F.Cu\" \"In1.Cu\")"));
     }
 
-    /// A genuine through via stays untyped and full-stack.
+    /// A genuine through via stays untyped and full-stack — including on a
+    /// 2-layer board, where F.Cu-B.Cu is also an "adjacent outer" pair and was
+    /// once written `(via micro ...)` (pcb-motor stator v3, every via).
     #[test]
     fn through_via_stays_untyped() {
-        let text = write_kicad_pcb(&sample_pcb());
-        assert!(!text.contains("(via blind"));
-        assert!(text.contains("(layers \"F.Cu\" \"B.Cu\")"));
+        let pcb = sample_pcb();
+        assert_eq!(
+            copper_layers(&pcb.stackup).len(),
+            2,
+            "premise: 2-layer board"
+        );
+        for declared in [None, Some(vcad_ir::ecad::ViaType::Micro)] {
+            let mut pcb = pcb.clone();
+            pcb.vias[0].via_type = declared;
+            let text = write_kicad_pcb(&pcb);
+            assert!(!text.contains("(via blind"), "{declared:?}:\n{text}");
+            assert!(
+                !text.contains("(via micro"),
+                "through via typed micro ({declared:?}):\n{text}"
+            );
+            assert!(
+                text.lines().any(|l| l.trim() == "(via"),
+                "{declared:?}:\n{text}"
+            );
+            assert!(text.contains("(layers \"F.Cu\" \"B.Cu\")"));
+        }
     }
 }
