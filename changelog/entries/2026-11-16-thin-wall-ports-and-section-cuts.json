@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-thin-wall-ports-and-section-cuts",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "fix",
+  "title": "Thin-walled vessels with ports and section cuts stay clean",
+  "summary": "A chamber shell with radial port bores and a quadrant section no longer falls back to triangle soup, cracks its flange caps, or shades black facets around the ports.",
+  "features": ["booleans", "tessellation", "kernel"],
+  "mcpTools": []
+}
