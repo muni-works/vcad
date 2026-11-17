@@ -16,6 +16,7 @@ use vcad_kernel_topo::{FaceId, Orientation, Topology};
 
 pub mod clearance;
 mod creased_normals;
+pub mod display;
 pub mod frozen;
 pub mod manifold;
 pub mod mesh_props;
@@ -2682,17 +2683,24 @@ fn tessellate_concave_polygon(verts: &[Point3], reversed: bool) -> TriangleMesh 
         return TriangleMesh::new();
     }
 
-    // Build 2D projection for ear clipping.
-    // Compute the face plane from first 3 non-collinear vertices.
+    // Build 2D projection for ear clipping. The frame's normal must follow
+    // the loop's winding, so take it from Newell's area-weighted sum, not
+    // from the first corner: a cross product of the first two edges flips
+    // sign whenever vertex 0 sits on a reflex stretch, and the triangles
+    // then wind into the solid. A quarter of an annulus (a ring cap cut by
+    // two section planes) starts on its inner arc half the time — three of
+    // the six quarter-ring caps of a sectioned can came out inside-out.
+    // `tessellate_planar_face_with_holes` already does this.
     let e1 = verts[1] - verts[0];
-    let e2 = verts[2] - verts[0];
-    let mut face_normal = e1.cross(e2);
-    for i in 3..n {
-        if face_normal.norm() > 1e-12 {
-            break;
+    let mut face_normal = newell_normal(verts);
+    if face_normal.norm() < 1e-12 {
+        face_normal = e1.cross(verts[2] - verts[0]);
+        for v in &verts[3..] {
+            if face_normal.norm() > 1e-12 {
+                break;
+            }
+            face_normal = e1.cross(*v - verts[0]);
         }
-        let ei = verts[i] - verts[0];
-        face_normal = e1.cross(ei);
     }
 
     if face_normal.norm() < 1e-12 {
@@ -4995,6 +5003,19 @@ fn tessellate_ruled_two_chain(
     };
     let ia: Vec<u32> = pts_a.iter().map(&mut push_vert).collect();
     let ib: Vec<u32> = pts_b.iter().map(&mut push_vert).collect();
+    // The zipper is only a triangulation while every triangle it emits
+    // winds the same way in the unrolled (arc length, height) plane. That
+    // holds for rails of moderate slope, not for one that turns vertical:
+    // the wall below a cross bore is bounded above by the bore's lower
+    // half-ellipse, whose limbs run along the rulings, and a rim vertex
+    // just inside the limb gets fanned to limb samples it cannot see —
+    // overlapping, inside-out slivers (black facets beside the open-fusor
+    // gauge port). Such a strip is left to the general trimmed path.
+    let radius = cyl.radius.abs();
+    let signed_area = |p: (f64, f64), q: (f64, f64), r: (f64, f64)| {
+        radius * ((q.0 - p.0) * (r.1 - p.1) - (r.0 - p.0) * (q.1 - p.1))
+    };
+    let (mut most_positive, mut most_negative) = (0.0f64, 0.0f64);
     let (mut i, mut j) = (0usize, 0usize);
     while i + 1 < ia.len() || j + 1 < ib.len() {
         let advance_a = if i + 1 >= ia.len() {
@@ -5005,15 +5026,23 @@ fn tessellate_ruled_two_chain(
             // Advance the rail whose next vertex has the smaller u.
             chain_a[i + 1].0 <= chain_b[j + 1].0
         };
-        if advance_a {
+        let area = if advance_a {
             mesh.indices.extend_from_slice(&[ia[i], ia[i + 1], ib[j]]);
             i += 1;
+            signed_area(chain_a[i - 1], chain_a[i], chain_b[j])
         } else {
             mesh.indices.extend_from_slice(&[ia[i], ib[j + 1], ib[j]]);
             j += 1;
-        }
+            signed_area(chain_a[i], chain_b[j], chain_b[j - 1])
+        };
+        most_positive = most_positive.max(area);
+        most_negative = most_negative.min(area);
     }
     let _ = grid;
+    // Rounding-level areas of either sign are collinear runs, not folds.
+    if most_positive.min(-most_negative) > 1e-9 * most_positive.max(-most_negative) {
+        return None;
+    }
 
     // Orient the strip so triangle normals agree with the (possibly
     // reversed) outward radial direction: check one non-degenerate
@@ -5375,7 +5404,15 @@ fn delaunay_flip(
         }
         let n0 = [c, a, d];
         let n1 = [d, b, c];
-        if orient(&n0) <= 0.0 || orient(&n1) <= 0.0 {
+        // Strictly convex quads only, with a floor relative to the quad:
+        // when `a` (or `b`) sits ON the segment c–d — a bisection midpoint
+        // on the edge it halved — the new triangle is collinear, and its
+        // signed area is rounding noise that passes a bare `> 0` test half
+        // the time. Lifted onto a cylinder those zero-area triangles get
+        // arbitrary normals (black facets, "folded" edges on the open-fusor
+        // chamber wall around its port holes).
+        let min_area = 1e-9 * scale.sqrt();
+        if orient(&n0) <= min_area || orient(&n1) <= min_area {
             continue;
         }
         tris[i0] = n0;
@@ -5706,7 +5743,10 @@ fn tessellate_spherical_region(
                 let o = |p: (f64, f64), q: (f64, f64)| {
                     (q.0 - p.0) * (w.1 - p.1) - (q.1 - p.1) * (w.0 - p.0)
                 };
-                o(a, b) > 0.0 && o(b, c) > 0.0 && o(c, a) > 0.0
+                // Strictly inside, clear of the edges: a seed a rounding
+                // error inside an edge splits off a zero-area triangle.
+                let clear = 1e-6 * ((b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0));
+                o(a, b) > clear && o(b, c) > clear && o(c, a) > clear
             }) else {
                 continue;
             };
@@ -7677,6 +7717,47 @@ fn tessellate_trimmed_region(
         uv.extend(l.iter().map(|x| x.1));
     }
 
+    // Fold-backs: three consecutive boundary vertices A, B, C with A (or C)
+    // lying on the segment from B to the other one — the loop runs out
+    // along an edge and straight back. Where a cross bore meets a cylinder
+    // wall, the wall is partitioned by an edge from a rim vertex to the
+    // bore sample at the limb, and the next bore sample sits 0.2 µm off
+    // that edge. The triangle on such a triple is 76 mm long with no area
+    // and no meaningful normal, and every consumer that reads facet normals
+    // strokes a full-height crease along it (the line off the open-fusor
+    // viewport bore). It is left out below; the neighbour across the long
+    // edge then holds a vertex on an unsplit edge, which is exactly the
+    // T-junction the whole-mesh stitch closes.
+    let mut fold_backs: HashSet<[u32; 3]> = HashSet::new();
+    {
+        const ON_EDGE: f64 = 1e-3;
+        let on_segment = |v: Point3, a: Point3, b: Point3| {
+            let ab = b - a;
+            let len = ab.norm();
+            if len <= 4.0 * ON_EDGE {
+                return false;
+            }
+            let along = (v - a).dot(ab) / len;
+            along > ON_EDGE
+                && along < len - ON_EDGE
+                && (v - (a + ab * (along / len))).norm() <= ON_EDGE
+        };
+        let mut base = 0u32;
+        for l in &final_loops {
+            let n = l.len();
+            for i in 0..n {
+                let (ia, ib, ic) = ((i + n - 1) % n, i, (i + 1) % n);
+                let (a, b, c) = (l[ia].0, l[ib].0, l[ic].0);
+                if n > 3 && (on_segment(a, b, c) || on_segment(c, b, a)) {
+                    let mut key = [base + ia as u32, base + ib as u32, base + ic as u32];
+                    key.sort_unstable();
+                    fold_backs.insert(key);
+                }
+            }
+            base += n as u32;
+        }
+    }
+
     let mut tris: Vec<[u32; 3]> = triangulate_polygon_2d(&loops_2d[0], &loops_2d[1..])?;
     let orient = |uv: &[(f64, f64)], t: &[u32; 3]| -> f64 {
         let (a, b, c) = (uv[t[0] as usize], uv[t[1] as usize], uv[t[2] as usize]);
@@ -7773,7 +7854,10 @@ fn tessellate_trimmed_region(
                 let o = |p: (f64, f64), q: (f64, f64)| {
                     (q.0 - p.0) * (w.1 - p.1) - (q.1 - p.1) * (w.0 - p.0)
                 };
-                o(a, b) > 0.0 && o(b, c) > 0.0 && o(c, a) > 0.0
+                // Strictly inside, clear of the edges: a seed a rounding
+                // error inside an edge splits off a zero-area triangle.
+                let clear = 1e-6 * ((b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0));
+                o(a, b) > clear && o(b, c) > clear && o(c, a) > clear
             }) else {
                 continue;
             };
@@ -7915,6 +7999,11 @@ fn tessellate_trimmed_region(
         }
     }
     for t in &tris {
+        let mut key = *t;
+        key.sort_unstable();
+        if fold_backs.contains(&key) {
+            continue;
+        }
         let [a, b, c] = t.map(|v| canon[v as usize]);
         if a == b || b == c || a == c {
             continue;
@@ -8043,15 +8132,20 @@ fn tessellate_revolved_trimmed(
     // torus corner neighbours sample the shared rims on the grid path's
     // schedule, not the loop's, and the trimmed mesh left them cracked
     // open (an arc-extrude fillet failed its validity check).
+    // Every lookup past the face's own loops is fallible: the boolean
+    // pipeline tessellates its operands between splitting and sewing, when
+    // a neighbour's twin can still name the loop of a face the split
+    // replaced (the open-fusor chamber panicked here on a dead face key).
     let blend_neighbour = std::iter::once(face.outer_loop)
         .chain(face.inner_loops.iter().copied())
         .flat_map(|l| topo.loop_half_edges(l))
         .filter_map(|he| topo.half_edges[he].twin)
-        .filter_map(|tw| topo.half_edges[tw].loop_id)
-        .filter_map(|l| topo.loops[l].face)
+        .filter_map(|tw| topo.half_edges.get(tw)?.loop_id)
+        .filter_map(|l| topo.loops.get(l)?.face)
+        .filter_map(|f| topo.faces.get(f))
         .any(|f| {
             matches!(
-                geom.surfaces[topo.faces[f].surface_index].surface_type(),
+                geom.surfaces[f.surface_index].surface_type(),
                 SurfaceKind::Sphere | SurfaceKind::Torus
             )
         });

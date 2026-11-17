@@ -46,8 +46,9 @@ request needs k_eff, this is the wrong tool and the docs say so.
 - **Free-atom scattering** except a documented bound-hydrogen thermal
   adjustment calibrated to water's published thermal diffusion
   coefficient (Lamarsh Table 5-2).
-- **Free field**: no room return. Concrete walls add back-scatter that
-  this geometry cannot see.
+- **Free field** (1D stacks): no room return. Concrete walls add
+  back-scatter that a layer stack cannot see — the M7 scene path below
+  models it.
 
 ## What M0 is
 
@@ -236,6 +237,76 @@ Checks and findings:
   branch; fold in when both land). NAA feasibility answered honestly:
   3.3×10³ n/cm²/s thermal at an in-shield sample — foil calibration
   yes, trace-element assay no (1.5–3.5 orders short).
+
+- **M7 — room scale + instruments. DONE** (`scene.rs`,
+  `transport3d.rs`, `response.rs`, `scene_spec.rs`, scene claims in
+  `receipt.rs`, `examples/fusor_room.rs`). The open-fusor audit's gap:
+  1D stacks cannot draw a dose *map*, see the floor and walls, or say
+  what an instrument reads.
+  - *Geometry*: priority CSG of convex primitives (axis-aligned box,
+    sphere, principal-axis cylinder). First containing cell wins, so
+    holes are listed before what they are cut from; the last cell is the
+    world and every other cell must lie inside it (checked on extreme
+    points — exact for convex shapes), so a gap can never silently kill
+    neutrons. Adds `steel` (Fe proxy for SS304) and ³He / BF₃ fill
+    gases.
+  - *Transport*: the M1 physics in 3D — continuous energy, exact
+    isotropic-CM kinematics with full 3D direction rotation, analog
+    absorption, books balance per batch (`absorbed + leaked = N`
+    exactly). Batches run in parallel threads off wasm, bit-identical to
+    serial (per-batch streams, reduction by batch index).
+  - *Tallies*: voxel mesh walked by an exact 3D-DDA, scoring
+    `track · h*(E)` at the neutron's actual energy (no group-averaged dose
+    factor); per-voxel RSE, unreached voxels report `rse = ∞` (rendered
+    grey, never zero). Virtual detector spheres fold any number of
+    response functions track-by-track. Per-cell capture rates — the
+    capture-gamma source term the photon side needs.
+  - *Responses*: moderated ³He/BF₃ counter R(E) **computed** by MC (the
+    tube-in-HDPE geometry under a uniform isotropic fluence, Φ = N/πR²);
+    bubble dosimeter and CR-39 as threshold-H*(10) proxies at the unit's
+    own calibration (a required input — every bubble detector ships with
+    its own sensitivity); ideal rem meter. A computed table's worst-grid
+    RSE is combined in quadrature with the room-run RSE in every
+    count-rate claim.
+  - *Validation*: isotropic-fluence normalization vs the exact sphere
+    capture probability P = 1 − [1 − (1+2x)e^{−2x}]/2x² (4σ); bare thin
+    ³He tube R → Σ_a·V; vacuum detector vs 1/4πr²; mesh total track vs
+    an independent mean-chord estimate (1%); dose/fluence ratio = h*(E)
+    exactly at 2.45 MeV; fail-closed spec/claims tests (unbound name,
+    unknown material, D-T energy, cell outside world, uncalibrated
+    instrument, unscored tally).
+  - *Headline* (`examples/fusor_room.rs`, 10⁶ histories, ~8 s on 24
+    cores): 6" steel chamber at 1 m height mid-room, 4 × 5 × 2.5 m room,
+    200 mm concrete walls/ceiling, 300 mm floor, 1 × 2.1 m door; 15 cm
+    closed HDPE castle; example counter = 4 atm ³He, 25.4 × 150 mm active,
+    50 mm HDPE moderator (R(2.45 MeV) = 8.6 cm², table RSE 4.3%); bubble
+    3 bubbles/µSv above 100 keV.
+
+    | | source n/s | H*(10) 0.5 m | ³He counts/min 0.5 m | bubbles/h 0.5 m | H*(10) 1.5 m | doorway |
+    |---|---|---|---|---|---|---|
+    | castle | 5×10⁶ | 31.4 µSv/h ±4.5% | 2.25×10⁴ ±6% | 90 ±5% | 4.3 µSv/h ±8% | 1.8 µSv/h ±12% |
+    | castle | 2.5×10⁴ | 0.157 µSv/h | 113 | 0.45 | 0.021 µSv/h | 0.009 µSv/h |
+    | bare | 5×10⁶ | 271 µSv/h ±1.8% | 1.05×10⁵ ±5% | 807 ±2% | 52 µSv/h ±3% | 25 µSv/h ±3% |
+    | bare | 2.5×10⁴ | 1.35 µSv/h | 523 | 4.0 | 0.26 µSv/h | 0.13 µSv/h |
+
+    Room return is real and now visible: bare at 0.5 m reads 271 µSv/h
+    vs 240 µSv/h uncollided (+13%); at 1.5 m it **doubles** the
+    free-field number (52 vs 27 µSv/h). The castle buys ×8.6 at 0.5 m
+    and ×12 at 1.5 m, and the dose map shows the box's signature — dose
+    leaks preferentially along face normals, where the HDPE is thinnest.
+    At the predicted-floor rate a live ³He counter sees ~110 counts/min
+    at 0.5 m (castle on) — a measurement; a 3 bubbles/µSv dosimeter
+    collects ~0.45 bubbles/h — an overnight exposure, not a live readout.
+  - *MCP*: `simulate_neutron_shield` takes `scene` (this schema) as an
+    alternative to the 1D `spec`; wasm `neutronicsSimulateScene`. The
+    history cap (5M) counts counter response tables too.
+  - *Open*: (M8) validate the computed counter response against a
+    published Bonner-sphere response matrix; model tube walls and
+    instrument self-shielding; free-gas thermal scattering (matters for
+    a thermal-peaked counter); next-event point estimator for small
+    detectors far from the source; capture-gamma coupling to the photon
+    side via the per-cell capture rates; skyshine/earth beyond the world
+    cell.
 
 ## Non-goals
 

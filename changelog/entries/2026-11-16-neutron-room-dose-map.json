@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-neutron-room-dose-map",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "feat",
+  "title": "Neutron dose maps in a 3D room, plus detector count rates",
+  "summary": "simulate_neutron_shield takes a 3D scene (chamber, HDPE castle, concrete room) and returns a voxel dose map with error bars and expected He-3 counts/min, bubbles/h and CR-39 tracks.",
+  "features": ["neutronics", "simulation", "dosimetry", "mcp"],
+  "mcpTools": ["simulate_neutron_shield"]
+}

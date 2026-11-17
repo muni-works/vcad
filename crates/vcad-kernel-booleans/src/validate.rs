@@ -179,6 +179,17 @@ const PROBES_PER_AXIS: usize = 12;
 /// that never appeared) and 100% (an emptied result).
 const VOLUME_RTOL: f64 = 0.10;
 
+/// Relative error allowed on the probe-grid overlap estimate in
+/// [`overlap_prediction_agrees`].
+const OVERLAP_RTOL: f64 = 0.25;
+
+/// Relative tessellation slack on the larger operand's exact volume in
+/// [`overlap_prediction_agrees`]: the operand meshes and the result's are
+/// tessellated on different schedules. Kept small because on a thin-walled
+/// part this check is the only judge (the full-box grid always trips
+/// there), and the slack must stay below the volume of a skipped port.
+const OPERAND_RTOL: f64 = 0.005;
+
 /// Probes used when testing whether two operands share interior volume.
 const OVERLAP_PROBES: usize = 1728;
 
@@ -474,7 +485,91 @@ pub(crate) fn volume_disagrees_grossly(
     // larger: a result that is wrong by *gaining* the tool's volume would
     // otherwise widen its own tolerance and slip through.
     let slack = VOLUME_RTOL * predicted + 3.0 * cell;
-    (got - predicted).abs() > slack
+    if std::env::var_os("VCAD_BOOLEAN_WARN").is_some() {
+        eprintln!(
+            "vcad boolean: {op:?} volume oracle: predicted {predicted:.1} got {got:.1} \
+             slack {slack:.1} ({inside} of {} probes inside)",
+            n * n * n
+        );
+    }
+    if (got - predicted).abs() <= slack {
+        return false;
+    }
+    // Second opinion before condemning. The grid above spans both
+    // operands, so on a thin-walled part almost no probe lands in material:
+    // a 3.5 mm vacuum-chamber wall in a 160 mm box put 112 of 1728 probes
+    // inside, predicted 327k mm³ for a (correct, analytic) 410k result, and
+    // the port bore was swapped for triangle soup. The operands' own mesh
+    // volumes are exact, so only the overlap needs estimating — and that
+    // lives in the intersection of the two boxes, where the same probe
+    // budget resolves it far more finely.
+    !overlap_prediction_agrees(got, mesh_a, mesh_b, &idx_a, &idx_b, op)
+}
+
+/// Does `got` agree with the volume predicted from the operands' exact mesh
+/// volumes and a probe-grid estimate of their overlap `|A ∩ B|`, taken over
+/// the intersection of their bounding boxes?
+fn overlap_prediction_agrees(
+    got: f64,
+    mesh_a: &TriangleMesh,
+    mesh_b: &TriangleMesh,
+    idx_a: &MeshRayIndex,
+    idx_b: &MeshRayIndex,
+    op: BooleanOp,
+) -> bool {
+    let (Some((min_a, max_a)), Some((min_b, max_b))) = (mesh_aabb(mesh_a), mesh_aabb(mesh_b))
+    else {
+        return false;
+    };
+    let va = mesh_signed_volume(mesh_a);
+    let vb = mesh_signed_volume(mesh_b);
+    // An inside-out or open operand has no trustworthy volume to build on.
+    if !(va.is_finite() && vb.is_finite() && va > 0.0 && vb > 0.0) {
+        return false;
+    }
+    let lo = [0, 1, 2].map(|c| min_a[c].max(min_b[c]));
+    let hi = [0, 1, 2].map(|c| max_a[c].min(max_b[c]));
+    let span = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
+    let n = PROBES_PER_AXIS;
+    let (overlap, cell) = if span.iter().all(|&s| s > 0.0) {
+        let box_vol = span[0] * span[1] * span[2];
+        let mut inside = 0usize;
+        for i in 0..n {
+            for j in 0..n {
+                for k in 0..n {
+                    let frac = |t: usize| (t as f64 + 0.5) / n as f64;
+                    let p = Point3::new(
+                        lo[0] + span[0] * frac(i),
+                        lo[1] + span[1] * frac(j),
+                        lo[2] + span[2] * frac(k),
+                    );
+                    if idx_a.contains(&p) && idx_b.contains(&p) {
+                        inside += 1;
+                    }
+                }
+            }
+        }
+        let cell = box_vol / (n * n * n) as f64;
+        (cell * inside as f64, cell)
+    } else {
+        (0.0, 0.0)
+    };
+    let predicted = match op {
+        BooleanOp::Union => va + vb - overlap,
+        BooleanOp::Difference => va - overlap,
+        BooleanOp::Intersection => overlap,
+    };
+    // The estimate's error scales with the overlap, not with the part; the
+    // operand term covers tessellation differences between the operand
+    // meshes and the result's.
+    let slack = OVERLAP_RTOL * overlap + 3.0 * cell + OPERAND_RTOL * va.max(vb);
+    if std::env::var_os("VCAD_BOOLEAN_WARN").is_some() {
+        eprintln!(
+            "vcad boolean: {op:?} overlap oracle: |A| {va:.1} |B| {vb:.1} overlap {overlap:.1} \
+             predicted {predicted:.1} got {got:.1} slack {slack:.1}"
+        );
+    }
+    (got - predicted).abs() <= slack
 }
 
 #[cfg(test)]
@@ -538,5 +633,72 @@ mod tests {
         let mesh_a = tessellate_brep(&a, SEGMENTS);
         let mesh_b = tessellate_brep(&b, SEGMENTS);
         assert!(!difference_removed_nothing(&mesh_a, &mesh_a, &mesh_b));
+    }
+
+    /// A thin-walled vessel with a port bore: the full-box probe grid
+    /// cannot resolve the 3.5 mm wall and misjudges every result, so the
+    /// overlap-based second opinion is the only judge. It must acquit the
+    /// correct cut and still condemn a skipped one.
+    #[test]
+    fn thin_wall_port_bore_is_judged_on_its_overlap() {
+        use crate::{boolean_op, BooleanOp};
+        use vcad_kernel_primitives::make_cylinder;
+
+        let moved = |mut c: BRepSolid, t: Transform| {
+            for (_, v) in &mut c.topology.vertices {
+                v.point = t.apply_point(&v.point);
+            }
+            c.geometry.surfaces = c
+                .geometry
+                .surfaces
+                .drain(..)
+                .map(|s| s.transform(&t))
+                .collect();
+            c
+        };
+        let z = |r: f64, z0: f64, z1: f64| {
+            moved(
+                make_cylinder(r, z1 - z0, SEGMENTS),
+                Transform::translation(0.0, 0.0, z0),
+            )
+        };
+        let y = |r: f64, y0: f64, y1: f64| {
+            moved(
+                make_cylinder(r, y1 - y0, SEGMENTS),
+                Transform::translation(0.0, y0, 0.0)
+                    .then(&Transform::rotation_x(-std::f64::consts::FRAC_PI_2)),
+            )
+        };
+        let cut = |a: &BRepSolid, b: &BRepSolid, op| {
+            boolean_op(a, b, op, SEGMENTS)
+                .expect("boolean")
+                .into_brep()
+                .expect("brep")
+        };
+        let shell = cut(
+            &z(79.5, -79.5, 79.5),
+            &y(22.5, 70.0, 112.0),
+            BooleanOp::Union,
+        );
+        let shell = cut(&shell, &z(76.0, -76.0, 76.0), BooleanOp::Difference);
+        let bore = y(19.0, 60.0, 120.0);
+        let bored = cut(&shell, &bore, BooleanOp::Difference);
+
+        let mesh_shell = tessellate_brep(&shell, SEGMENTS);
+        let mesh_bore = tessellate_brep(&bore, SEGMENTS);
+        let mesh_bored = tessellate_brep(&bored, SEGMENTS);
+        let op = BooleanOp::Difference;
+        assert!(
+            !volume_disagrees_grossly(&mesh_bored, &mesh_shell, &mesh_bore, op),
+            "the correct cut was condemned"
+        );
+        assert!(
+            volume_disagrees_grossly(&mesh_shell, &mesh_shell, &mesh_bore, op),
+            "a skipped bore (the minuend, verbatim) was acquitted"
+        );
+        assert!(
+            volume_disagrees_grossly(&mesh_bore, &mesh_shell, &mesh_bore, op),
+            "the tool returned in place of the result was acquitted"
+        );
     }
 }

@@ -1,0 +1,15 @@
+[package]
+name = "vcad-solver-tools"
+description = "JSON tool layer over vcad's physics solver crates (charged-particle optics, neutron shielding, bench-measurement receipts) — one implementation shared by the native MCP server and vcad.app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+vcad-receipt = { workspace = true }
+vcad-kernel-particle = { workspace = true }
+vcad-kernel-neutronics = { workspace = true }

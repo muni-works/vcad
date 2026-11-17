@@ -1,0 +1,42 @@
+{
+  "cells": [
+    {"name": "chamber_vacuum", "material": "void",
+     "shape": {"type": "sphere", "center_mm": [2000, 2500, 1000], "radius_mm": 73}},
+    {"name": "chamber_wall", "material": "steel",
+     "shape": {"type": "sphere", "center_mm": [2000, 2500, 1000], "radius_mm": 76}},
+    {"name": "castle_cavity", "material": "air",
+     "shape": {"type": "box_centered", "center_mm": [2000, 2500, 1000], "half_mm": [150, 150, 150]}},
+    {"name": "castle", "material": "hdpe",
+     "shape": {"type": "box_centered", "center_mm": [2000, 2500, 1000],
+               "half_mm": ["castle_half_mm", "castle_half_mm", "castle_half_mm"]}},
+    {"name": "room_air", "material": "air",
+     "shape": {"type": "box", "min_mm": [0, 0, 0], "max_mm": [4000, 5000, 2500]}},
+    {"name": "door_opening", "material": "air",
+     "shape": {"type": "box", "min_mm": [1500, 5000, 0], "max_mm": [2500, 5200, 2100]}},
+    {"name": "concrete", "material": "concrete",
+     "shape": {"type": "box", "min_mm": [-200, -200, -300], "max_mm": [4200, 5200, 2700]}}
+  ],
+  "source": {"position_mm": [2000, 2500, 1000], "rate_n_per_s": "rate", "energy_ev": 2.45e6},
+  "detectors": [
+    {"label": "probe_0.5m", "position_mm": [2500, 2500, 1000], "radius_mm": 50,
+     "instruments": [
+       {"type": "moderated_counter", "name": "he3_counter",
+        "gas": {"gas": "he3", "pressure_atm": 4},
+        "tube_diameter_mm": 25.4, "active_length_mm": 150, "moderator_thickness_mm": 50,
+        "response_histories_per_batch": 40000},
+       {"type": "bubble", "sensitivity_bubbles_per_usv": 3.0, "threshold_ev": 1.0e5},
+       {"type": "cr39", "tracks_per_cm2_per_msv": 20.0, "threshold_ev": 2.0e5}
+     ]},
+    {"label": "operator_1.5m", "position_mm": [3500, 2500, 1000], "radius_mm": 100,
+     "instruments": [
+       {"type": "moderated_counter", "name": "he3_counter",
+        "gas": {"gas": "he3", "pressure_atm": 4},
+        "tube_diameter_mm": 25.4, "active_length_mm": 150, "moderator_thickness_mm": 50,
+        "response_histories_per_batch": 40000},
+       {"type": "bubble", "sensitivity_bubbles_per_usv": 3.0, "threshold_ev": 1.0e5}
+     ]},
+    {"label": "doorway", "position_mm": [2000, 4850, 1000], "radius_mm": 100}
+  ],
+  "mesh": {"min_mm": [0, 0, 900], "max_mm": [4000, 5000, 1100], "shape": [40, 50, 1]},
+  "run": {"histories_per_batch": 50000, "batches": 20, "seed": 20261116}
+}

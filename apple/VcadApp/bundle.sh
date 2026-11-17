@@ -119,7 +119,9 @@ else
 fi
 # Viewport shaders (screen-space edge lines). Optional: without the Metal
 # toolchain the app falls back to plain ribbons.
-if ls "$here"/Shaders/*.metal >/dev/null 2>&1 && xcrun -f metal >/dev/null 2>&1; then
+# `xcrun -f metal` finds the shim even when the toolchain component is not
+# downloaded (Xcode 26+), so probe by running it.
+if ls "$here"/Shaders/*.metal >/dev/null 2>&1 && xcrun metal --version >/dev/null 2>&1; then
   air_dir=$(mktemp -d)
   for f in "$here"/Shaders/*.metal; do
     xcrun metal -c "$f" -o "$air_dir/$(basename "$f" .metal).air"

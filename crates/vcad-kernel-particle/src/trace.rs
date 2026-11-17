@@ -145,6 +145,66 @@ pub struct StepEvent {
     pub time_s: f64,
 }
 
+/// A traced particle with its recorded flight path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TracePath {
+    /// The trace's outcome (identical to an unrecorded trace).
+    pub outcome: TraceOutcome,
+    /// Flight path, millimetres, Cartesian xyz.
+    pub points_mm: Vec<[f64; 3]>,
+}
+
+/// Spacing-gated, self-decimating polyline recorder (see
+/// [`Tracer::trace_path`]).
+#[derive(Debug)]
+struct PathRecorder {
+    spacing2: f64,
+    max_points: usize,
+    points: Vec<[f64; 3]>,
+}
+
+impl PathRecorder {
+    fn new(spacing_mm: f64, max_points: usize) -> Self {
+        let s = spacing_mm.max(1e-6);
+        Self {
+            spacing2: s * s,
+            max_points: max_points.max(4),
+            points: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, p_m: [f64; 3]) {
+        let p = [p_m[0] * 1e3, p_m[1] * 1e3, p_m[2] * 1e3];
+        if let Some(last) = self.points.last() {
+            let d = [p[0] - last[0], p[1] - last[1], p[2] - last[2]];
+            if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] < self.spacing2 {
+                return;
+            }
+        }
+        if self.points.len() >= self.max_points {
+            // Keep the first point and every other one after it.
+            let kept: Vec<[f64; 3]> = self.points.iter().copied().step_by(2).collect();
+            self.points = kept;
+            self.spacing2 *= 4.0;
+        }
+        self.points.push(p);
+    }
+
+    fn end(&mut self, p_m: [f64; 3]) {
+        let p = [p_m[0] * 1e3, p_m[1] * 1e3, p_m[2] * 1e3];
+        if self.points.last() != Some(&p) {
+            if self.points.len() >= self.max_points {
+                self.points.pop();
+            }
+            self.points.push(p);
+        }
+    }
+
+    fn finish(self) -> Vec<[f64; 3]> {
+        self.points
+    }
+}
+
 /// Charge-exchange model: constant cross-section approximation for
 /// D⁺ + D₂ → fast D⁰ + slow D₂⁺ against a uniform background gas.
 ///
@@ -477,6 +537,68 @@ impl<'a> Tracer<'a> {
     /// m (fast-neutral continuation).
     pub fn exit_distance_m(&self, p: [f64; 3], v: [f64; 3]) -> f64 {
         self.geometry.exit_distance(p, v)
+    }
+
+    /// [`Self::trace_from`], additionally recording the flight path as a
+    /// polyline in millimetres (Cartesian xyz). Points are kept at least
+    /// `spacing_mm` apart; when the path would exceed `max_points`, every
+    /// other point is dropped and the spacing doubles, so a long
+    /// recirculating trace still covers its whole flight. The first and
+    /// terminal positions are always present. Recording does not change
+    /// the outcome (same integrator, same steps).
+    pub fn trace_path(
+        &self,
+        species: Species,
+        pos: [f64; 3],
+        vel: [f64; 3],
+        spacing_mm: f64,
+        max_points: usize,
+    ) -> TracePath {
+        let mut rec = PathRecorder::new(spacing_mm, max_points);
+        rec.push(pos);
+        let outcome = self.trace_observed(species, pos, vel, &mut |ev| {
+            rec.push(ev.pos);
+            true
+        });
+        rec.end(outcome.final_pos);
+        TracePath {
+            outcome,
+            points_mm: rec.finish(),
+        }
+    }
+
+    /// The deterministic launch point of particle `k` of `n` (at rest on
+    /// the launch shell, uniform in cos θ, in the x–z meridional plane) —
+    /// the same positions [`Self::launch_ensemble`] uses.
+    pub fn launch_position(&self, k: usize, n: usize) -> [f64; 3] {
+        let n = n.max(2);
+        let c =
+            -self.opts.launch_cos_max + 2.0 * self.opts.launch_cos_max * k as f64 / (n - 1) as f64;
+        let s = (1.0 - c * c).max(0.0).sqrt();
+        [self.shell_radius * s, 0.0, self.shell_radius * c]
+    }
+
+    /// [`Self::launch_ensemble`] with every particle's path recorded (see
+    /// [`Self::trace_path`]). Outcomes are identical to `launch_ensemble`.
+    pub fn launch_ensemble_paths(
+        &self,
+        species: Species,
+        n: usize,
+        spacing_mm: f64,
+        max_points: usize,
+    ) -> Vec<TracePath> {
+        let n = n.max(2);
+        (0..n)
+            .map(|k| {
+                self.trace_path(
+                    species,
+                    self.launch_position(k, n),
+                    [0.0, 0.0, 0.0],
+                    spacing_mm,
+                    max_points,
+                )
+            })
+            .collect()
     }
 
     fn trace_impl(
@@ -981,5 +1103,40 @@ mod tests {
             "expected interception to dominate: {wires}/{}",
             outcomes.len()
         );
+    }
+
+    #[test]
+    fn recorded_paths_match_unrecorded_outcomes() {
+        let device = Device::classic_fusor(120.0, 40.0, 5, 1.0, -5_000.0);
+        let sol = solve(&device, 81, 161, &SolveOptions::default()).unwrap();
+        let fields = FieldMap::new(&device, &sol);
+        let opts = TraceOptions {
+            max_passes: 6,
+            ..TraceOptions::default()
+        };
+        let tracer = Tracer::new(&device, &fields, &sol, opts);
+        let plain = tracer.launch_ensemble(DEUTERON, 6);
+        let paths = tracer.launch_ensemble_paths(DEUTERON, 6, 0.5, 64);
+        assert_eq!(plain.len(), paths.len());
+        for (k, (o, p)) in plain.iter().zip(&paths).enumerate() {
+            assert_eq!(*o, p.outcome, "recording changed trace {k}");
+            assert!(p.points_mm.len() >= 2 && p.points_mm.len() <= 64);
+            let start = tracer.launch_position(k, 6);
+            let first = p.points_mm[0];
+            assert!((first[0] - start[0] * 1e3).abs() < 1e-9);
+            assert!((first[2] - start[2] * 1e3).abs() < 1e-9);
+            for q in &p.points_mm {
+                // Launched at rest in the x–z plane with no B: stays there.
+                assert!(q[1].abs() < 1e-9);
+                assert!(q[0].hypot(q[1]) <= 120.0 + 1.0 && q[2].abs() <= 120.0 + 1.0);
+            }
+            // A recirculating ion crosses the axis: the path must too.
+            if o.core_passes >= 2 {
+                assert!(
+                    p.points_mm.iter().any(|q| q[0] < 0.0),
+                    "trace {k} never crossed x = 0"
+                );
+            }
+        }
     }
 }

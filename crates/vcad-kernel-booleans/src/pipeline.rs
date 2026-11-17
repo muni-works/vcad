@@ -770,12 +770,46 @@ fn imprint_section_outline(
     true
 }
 
+/// Indices of `solid`'s planar surfaces whose plane also carries a planar
+/// face of `other`.
+fn coplanar_surfaces(solid: &BRepSolid, other: &BRepSolid) -> std::collections::HashSet<usize> {
+    let planes = |s: &BRepSolid| -> Vec<(usize, Point3, vcad_kernel_math::Vec3)> {
+        let mut seen = std::collections::HashSet::new();
+        s.topology
+            .faces
+            .values()
+            .filter(|f| seen.insert(f.surface_index))
+            .filter_map(|f| {
+                let surface = s.geometry.surfaces.get(f.surface_index)?;
+                (surface.surface_type() == vcad_kernel_geom::SurfaceKind::Plane).then(|| {
+                    let at = vcad_kernel_math::Point2::new(0.0, 0.0);
+                    (
+                        f.surface_index,
+                        surface.evaluate(at),
+                        *surface.normal(at).as_ref(),
+                    )
+                })
+            })
+            .collect()
+    };
+    let theirs = planes(other);
+    planes(solid)
+        .into_iter()
+        .filter(|(_, origin, normal)| {
+            theirs.iter().any(|(_, o, n)| {
+                normal.cross(n).norm() < 1e-9 && (*o - *origin).dot(*normal).abs() < 1e-6
+            })
+        })
+        .map(|(index, _, _)| index)
+        .collect()
+}
+
 /// Apply splits from intersection curves to solid A.
 fn apply_splits_to_solid(
     solid: &mut BRepSolid,
     splits: HashMap<FaceId, FaceSplits>,
     segments: u32,
-    #[allow(unused_variables)] solid_name: &str,
+    solid_name: &str,
     other: &BRepSolid,
     sphere_unsound: &mut bool,
 ) {
@@ -785,6 +819,7 @@ fn apply_splits_to_solid(
     // different volume) run to run.
     let mut ordered: Vec<(FaceId, FaceSplits)> = splits.into_iter().collect();
     ordered.sort_by_key(|(fid, _)| *fid);
+    split::hole_chords_cutting_a(solid_name == "A", coplanar_surfaces(solid, other));
     for (face_id, split_list) in ordered {
         let mut current_faces = vec![face_id];
         let split_list = if solid.topology.faces.contains_key(face_id)
@@ -1320,7 +1355,11 @@ pub(crate) fn brep_boolean(
     // 2. For each face pair, compute SSI and collect splits for both A and B.
     // `Ok(None)` means "no splits for this pair"; `Err` aborts the whole
     // boolean with a typed error instead of panicking mid-pipeline.
-    let hole_chords = std::sync::Mutex::new(split::HoleChordSpans::new());
+    // (spans for cuts on A's faces, spans for cuts on B's faces)
+    let hole_chords = (
+        std::sync::Mutex::new(split::HoleChordSpans::new()),
+        std::sync::Mutex::new(split::HoleChordSpans::new()),
+    );
     let compute_ssi =
         |&(face_a, face_b): &(FaceId, FaceId)| -> Result<Option<SsiPairResult>, BooleanError> {
             // Get face data with bounds checking to avoid panics
@@ -1745,32 +1784,36 @@ pub(crate) fn brep_boolean(
                     }
                     out
                 };
-                // A cut through a planar face's hole is only trusted when
-                // the partner face covers the whole chord (see
-                // `split::trust_hole_chords`).
+                // A cut through a planar face's hole is only trusted where
+                // the partner face really cuts (see
+                // `split::trust_hole_chords`): record each face's own extent
+                // along the line as the span its PARTNER's cut may rely on.
+                // Recorded whether or not the partner is holed yet — the
+                // hole may be punched by this same boolean (a tool that is
+                // a bore fused with a section block cuts the bore's circle
+                // and the block's chords into one cap).
                 if let ssi::IntersectionCurve::Line(l) = single_curve {
-                    let holed =
-                        |s: &BRepSolid, f: FaceId| !s.topology.faces[f].inner_loops.is_empty();
-                    let mut spans: Vec<(Point3, Point3)> = Vec::new();
-                    // The cutter's own extent along the line: a chord lying
-                    // inside it is really cut, hole included.
-                    let mut extent = |cutter: &[trim::TrimmedSegment]| {
-                        for sg in cutter {
-                            spans.push((
-                                evaluate_curve(single_curve, sg.t_start),
-                                evaluate_curve(single_curve, sg.t_end),
-                            ));
-                        }
-                    };
-                    if holed(&a, face_a) {
-                        extent(&segs_b);
+                    let extent =
+                        |cutter: &[trim::TrimmedSegment],
+                         set: &std::sync::Mutex<split::HoleChordSpans>| {
+                            if cutter.is_empty() {
+                                return;
+                            }
+                            let mut set = set.lock().unwrap_or_else(|e| e.into_inner());
+                            set.entry(split::line_key(l))
+                                .or_default()
+                                .extend(cutter.iter().map(|sg| {
+                                    (
+                                        evaluate_curve(single_curve, sg.t_start),
+                                        evaluate_curve(single_curve, sg.t_end),
+                                    )
+                                }));
+                        };
+                    if split::is_planar_face(&a, face_a) {
+                        extent(&segs_b, &hole_chords.0);
                     }
-                    if holed(&b, face_b) {
-                        extent(&segs_a);
-                    }
-                    if !spans.is_empty() {
-                        let mut set = hole_chords.lock().unwrap_or_else(|e| e.into_inner());
-                        set.entry(split::line_key(l)).or_default().extend(spans);
+                    if split::is_planar_face(&b, face_b) {
+                        extent(&segs_a, &hole_chords.1);
                     }
                 }
                 let line_curve = matches!(single_curve, ssi::IntersectionCurve::Line(_));
@@ -1973,8 +2016,16 @@ pub(crate) fn brep_boolean(
         pairs.iter().map(compute_ssi).collect()
     };
     let split_results: Vec<SsiPairResult> = pair_results?.into_iter().flatten().collect();
-    let hole_chords = hole_chords.into_inner().unwrap_or_else(|e| e.into_inner());
-    split::trust_hole_chords(hole_chords);
+    split::trust_hole_chords(
+        hole_chords
+            .0
+            .into_inner()
+            .unwrap_or_else(|e| e.into_inner()),
+        hole_chords
+            .1
+            .into_inner()
+            .unwrap_or_else(|e| e.into_inner()),
+    );
 
     // Merge results into HashMaps
     let mut splits_a: HashMap<FaceId, FaceSplits> = HashMap::new();
