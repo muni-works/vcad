@@ -959,7 +959,7 @@ pub enum CsgOp {
         offset: Vec3,
     },
     #[tool(category = "transform")]
-    /// Rotation by Euler angles in degrees (applied as X, then Y, then Z).
+    /// Rotation by Euler angles in degrees about the fixed X, Y, Z axes: R = Rx·Ry·Rz, so Z is applied first, then Y, then X.
     Rotate {
         /// Child node to rotate.
         #[cfg_attr(feature = "ts-rs", ts(type = "number"))]

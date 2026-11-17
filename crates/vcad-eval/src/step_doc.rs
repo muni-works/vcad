@@ -241,18 +241,19 @@ const IDENTITY: [[f64; 4]; 4] = [
     [0.0, 0.0, 0.0, 1.0],
 ];
 
-/// Euler angles (degrees) for `CsgOp::Rotate`, which applies X, then Y,
-/// then Z: R = Rz·Ry·Rx. Row-major `m`, rotation in the upper 3×3.
+/// Euler angles (degrees) for `CsgOp::Rotate`, which builds R = Rx·Ry·Rz
+/// (`rx.then(&ry).then(&rz)`, a right-multiply: Z acts on the part first, X
+/// last). Row-major `m`, rotation in the upper 3×3.
 fn euler_xyz_deg(m: &[[f64; 4]; 4]) -> (f64, f64, f64) {
-    let sy = -m[2][0];
-    let (x, y, z) = if sy.abs() < 1.0 - 1e-12 {
-        (m[2][1].atan2(m[2][2]), sy.asin(), m[1][0].atan2(m[0][0]))
+    let sb = m[0][2];
+    let (x, y, z) = if sb.abs() < 1.0 - 1e-12 {
+        ((-m[1][2]).atan2(m[2][2]), sb.asin(), (-m[0][1]).atan2(m[0][0]))
     } else {
-        // Gimbal lock: fold X into Z.
+        // Gimbal lock: pitch is ±90°, fold X into Z.
         (
             0.0,
-            sy.signum() * std::f64::consts::FRAC_PI_2,
-            (-m[0][1]).atan2(m[1][1]),
+            sb.signum() * std::f64::consts::FRAC_PI_2,
+            m[1][0].atan2(m[1][1]),
         )
     };
     (x.to_degrees(), y.to_degrees(), z.to_degrees())
@@ -315,5 +316,92 @@ mod tests {
             &doc.nodes[&1].op,
             CsgOp::ImportedMesh { source: Some(s), .. } if s == "plate.step"
         ));
+    }
+
+    /// The occurrence matrix → `CsgOp::Rotate` angles, checked through the
+    /// evaluator: a 10×20×30 box rotated by the decomposed angles lands on the
+    /// bbox of its corners mapped by the matrix itself. Oblique rotations
+    /// need all three angles, which a `Rz·Ry·Rx` decomposition got wrong.
+    #[test]
+    fn occurrence_rotation_survives_evaluation() {
+        use vcad_ir::Vec3;
+        fn axis_angle(k: [f64; 3], deg: f64) -> [[f64; 4]; 4] {
+            let n = (k[0] * k[0] + k[1] * k[1] + k[2] * k[2]).sqrt();
+            let (x, y, z) = (k[0] / n, k[1] / n, k[2] / n);
+            let (s, c) = deg.to_radians().sin_cos();
+            let t = 1.0 - c;
+            [
+                [t * x * x + c, t * x * y - s * z, t * x * z + s * y, 0.0],
+                [t * x * y + s * z, t * y * y + c, t * y * z - s * x, 0.0],
+                [t * x * z - s * y, t * y * z + s * x, t * z * z + c, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+        }
+        let cases = [
+            axis_angle([1.0, 2.0, 3.0], 50.0),
+            axis_angle([-0.3, 0.7, -0.2], 120.0),
+            // Gimbal lock: R = Ry(90°)·Rz(30°).
+            [
+                [0.0, 0.0, 1.0, 0.0],
+                [0.5, 3f64.sqrt() / 2.0, 0.0, 0.0],
+                [-(3f64.sqrt()) / 2.0, 0.5, 0.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+        ];
+        for m in cases {
+            let (rx, ry, rz) = euler_xyz_deg(&m);
+            let mut doc = Document::new();
+            for (id, op) in [
+                (
+                    1,
+                    CsgOp::Cube {
+                        size: Vec3::new(10.0, 20.0, 30.0),
+                    },
+                ),
+                (
+                    2,
+                    CsgOp::Rotate {
+                        child: 1,
+                        angles: Vec3::new(rx, ry, rz),
+                    },
+                ),
+            ] {
+                doc.nodes.insert(id, Node { id, name: None, op });
+            }
+            doc.roots.push(SceneEntry {
+                root: 2,
+                material: "default".into(),
+                visible: None,
+            });
+            let scene = crate::evaluate_document(&doc, &Default::default()).expect("evaluate");
+            let mesh = &scene.parts[0].mesh;
+            let mut lo = [f64::MAX; 3];
+            let mut hi = [f64::MIN; 3];
+            for v in mesh.positions.chunks(3) {
+                for i in 0..3 {
+                    lo[i] = lo[i].min(v[i] as f64);
+                    hi[i] = hi[i].max(v[i] as f64);
+                }
+            }
+            let mut elo = [f64::MAX; 3];
+            let mut ehi = [f64::MIN; 3];
+            for cx in [0.0, 10.0] {
+                for cy in [0.0, 20.0] {
+                    for cz in [0.0, 30.0] {
+                        for i in 0..3 {
+                            let p = m[i][0] * cx + m[i][1] * cy + m[i][2] * cz;
+                            elo[i] = elo[i].min(p);
+                            ehi[i] = ehi[i].max(p);
+                        }
+                    }
+                }
+            }
+            for i in 0..3 {
+                assert!(
+                    (lo[i] - elo[i]).abs() < 1e-3 && (hi[i] - ehi[i]).abs() < 1e-3,
+                    "angles ({rx:.2}, {ry:.2}, {rz:.2}): bbox {lo:?}..{hi:?}, matrix puts it at {elo:?}..{ehi:?}"
+                );
+            }
+        }
     }
 }

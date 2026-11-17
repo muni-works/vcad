@@ -314,7 +314,7 @@ export const STATIC_TOOL_SCHEMAS: ToolSchemaEntry[] = [
     },
     {
       "name": "rotate",
-      "description": "Rotation by Euler angles in degrees (applied as X, then Y, then Z).",
+      "description": "Rotation by Euler angles in degrees about the fixed X, Y, Z axes: R = Rx·Ry·Rz, so Z is applied first, then Y, then X.",
       "category": "transform",
       "input_schema": {
         "properties": {

@@ -1009,16 +1009,17 @@ fn kicad_symbol_pins(lib_id: &str) -> Result<Vec<ecad::SchematicPin>, String> {
         .collect())
 }
 
-/// Apply an Euler XYZ rotation (degrees, X then Y then Z) to a point.
+/// `R·p` for `R = Rx·Ry·Rz` (degrees) — the matrix `CsgOp::Rotate` builds,
+/// so Z acts on the point first and X last.
 fn rotate_xyz(angles: Vec3, p: Vec3) -> Vec3 {
     let (a, b, c) = (
         angles.x.to_radians(),
         angles.y.to_radians(),
         angles.z.to_radians(),
     );
-    let (y, z) = (p.y * a.cos() - p.z * a.sin(), p.y * a.sin() + p.z * a.cos());
-    let (x, z) = (p.x * b.cos() + z * b.sin(), -p.x * b.sin() + z * b.cos());
-    let (x, y) = (x * c.cos() - y * c.sin(), x * c.sin() + y * c.cos());
+    let (x, y) = (p.x * c.cos() - p.y * c.sin(), p.x * c.sin() + p.y * c.cos());
+    let (x, z) = (x * b.cos() + p.z * b.sin(), -x * b.sin() + p.z * b.cos());
+    let (y, z) = (y * a.cos() - z * a.sin(), y * a.sin() + z * a.cos());
     Vec3::new(x, y, z)
 }
 

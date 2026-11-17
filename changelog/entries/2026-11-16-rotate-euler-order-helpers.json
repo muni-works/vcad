@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-rotate-euler-order-helpers",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "fix",
+  "title": "Oblique fasteners, STEP occurrences and vacuum fittings land right",
+  "summary": "Helpers that turn an axis or frame into Rotate angles assumed the wrong Euler order, mis-placing oblique bolts/holes, rotated STEP assembly occurrences, multi-port vacuum fittings and multi-axis rotate-about-pivot.",
+  "features": ["loon", "fasteners", "step", "vacuum", "transform"],
+  "mcpTools": []
+}
