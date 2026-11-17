@@ -31,8 +31,10 @@ from narration import CAPTIONS, LINES
 from scenes import SCENES
 from style import FPS, H, W
 
-GAP = 0.3                     # breath between lines, after the last spoken word
+GAP = 0.12                    # breath between lines, after the last spoken word
 TAIL = 2.0                    # the end card holds this long after the last word
+MUSIC_DROP = 72.04            # the track's drop after its quiet stretch (track seconds)…
+DROP_CUE = ("fuse", "fuse")    # …lands on this spoken word
 
 # line id → (scene, the line the scene started on, {cue: word prefix | (line, prefix | None)})
 SHOTS = {
@@ -90,7 +92,7 @@ def spoken(timing, lid):
 
 def layout(timing):
     ids = [l for l, _ in LINES]
-    start, t = {}, 0.5
+    start, t = {}, 0.3
     for l in ids:
         start[l] = round(t * FPS) / FPS
         t = start[l] + spoken(timing, l) + GAP
@@ -218,7 +220,6 @@ def main():
     ap.add_argument("--assets", required=True)
     ap.add_argument("--vo")
     ap.add_argument("--track")
-    ap.add_argument("--track-ss", type=float, default=0.0)
     ap.add_argument("--frames", default="frames")
     ap.add_argument("--sheet")
     ap.add_argument("-o", "--out")
@@ -253,7 +254,10 @@ def main():
         cmd += ["-i", voice]
         if a.track:
             # music dips gently under the voice, fades at the end
-            cmd += ["-ss", str(a.track_ss), "-i", a.track, "-filter_complex",
+            ss = MUSIC_DROP - (tl["start"][DROP_CUE[0]] + word_time(tl["timing"], *DROP_CUE))
+            assert ss >= 0, f"the cue comes {-ss:.1f} s before the track could reach its drop"
+            print(f"music from {ss:.2f} s", file=sys.stderr)
+            cmd += ["-ss", f"{ss:.3f}", "-i", a.track, "-filter_complex",
                     f"[1:a]volume=1.7,asplit=2[v][key];"
                     f"[2:a]volume=0.6,afade=t=out:st={dur - 2.5}:d=2.5[m];"
                     f"[m][key]sidechaincompress=threshold=0.05:ratio=2.5:attack=20:release=300[duck];"

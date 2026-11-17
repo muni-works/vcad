@@ -103,8 +103,15 @@ cargo run --release -p vcad-render -- shot.vcad $L --focus chamber --azimuth 282
 cd docs/videos/fusor-explainer
 python voice.py <ribt-tts> <weights dir> vo          # needs openai-whisper
 python3 make_video.py --assets ../../../assets --sheet storyboard.png
-EXPLAINER_SCALE=1.5 python3 make_video.py --assets ../../../assets --vo vo -o fusor-explainer.mp4
+EXPLAINER_SCALE=1.5 python3 make_video.py --assets ../../../assets --vo vo --track track.mp3 -o fusor-explainer.mp4
 ```
 
-The cut has no music. Fonts are vendored in `fonts/` (IBM Plex and Inter,
+Music: `--track track.mp3` plays the soundtrack under the voice, ducked.
+`make_video.py` picks the track offset so that its drop at 72.04 s lands on
+the spoken word "fuse" (`MUSIC_DROP`, `DROP_CUE`); with this narration the
+track starts 0.05 s in, which also puts its 56 s drop on the start of the
+"crowd" line. The sync is computed from the word timings and has not been
+checked by ear. The track used for the draft is the plasmoid explainer's, a
+commercial release that is not in the repo; its licence has to be cleared
+before the cut is published. Fonts are vendored in `fonts/` (IBM Plex and Inter,
 SIL OFL).
