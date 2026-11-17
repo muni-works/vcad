@@ -17,20 +17,27 @@ This doc covers:
 | what | where |
 |---|---|
 | model + tests | [`crates/vcad-kernel-particle/src/plasmoid.rs`](../crates/vcad-kernel-particle/src/plasmoid.rs) |
-| demo run | [`examples/plasmoid_magnet.rs`](../crates/vcad-kernel-particle/examples/plasmoid_magnet.rs) |
-| device geometry | [`plasmoid-sim/plasmoid-dish.loon`](plasmoid-sim/plasmoid-dish.loon) (+ [`.vcad`](plasmoid-sim/plasmoid-dish.vcad) for the app) |
+| the clip, as a document | [`plasmoid-sim/plasmoid-clip.loon`](plasmoid-sim/plasmoid-clip.loon) (+ [`.vcad`](plasmoid-sim/plasmoid-clip.vcad)): device, sim parameters, plasma media, magnet choreography as the `timeline` |
+| timeline → sim → frames | [`crates/vcad-render/src/plasmoid.rs`](../crates/vcad-render/src/plasmoid.rs) (`vcad-render --sim plasmoid`), test [`tests/plasmoid_timeline.rs`](../crates/vcad-render/tests/plasmoid_timeline.rs) |
+| model numbers + β map | [`examples/plasmoid_magnet.rs`](../crates/vcad-kernel-particle/examples/plasmoid_magnet.rs) |
+| device geometry | [`plasmoid-sim/plasmoid-device.loon`](plasmoid-sim/plasmoid-device.loon) (a loon module), used by [`plasmoid-dish.loon`](plasmoid-sim/plasmoid-dish.loon) (+ [`.vcad`](plasmoid-sim/plasmoid-dish.vcad) for the app) and the clip |
 | live drag demo (vcad.app) | [`PlasmoidSim.swift`](../apple/VcadApp/Sources/VcadApp/PlasmoidSim.swift), FFI [`crates/vcad-ffi/src/plasmoid.rs`](../crates/vcad-ffi/src/plasmoid.rs), §3b |
-| renderer / figures | [`render.py`](plasmoid-sim/render.py), [`figures.py`](plasmoid-sim/figures.py) (numpy + PIL + scipy) |
+| figures | [`figures.py`](plasmoid-sim/figures.py) (numpy + PIL) |
 
-Reproduce on a build box:
+Reproduce on a build box (the clip is entirely vcad: loon → IR → path tracer; ffmpeg only muxes the frames and burns in the HUD):
 
 ```bash
-cargo run --release -p vcad-kernel-particle --example plasmoid_magnet -- out
-python3 docs/plasmoid-sim/render.py out frames --jobs 8
-ffmpeg -framerate 30 -i frames/f%04d.png -c:v libx264 -pix_fmt yuv420p -crf 27 plasmoid.mp4
-python3 docs/plasmoid-sim/figures.py out docs/plasmoid-sim
-cargo run --release -p vcad-loon --example loon2vcad -- docs/plasmoid-sim/plasmoid-dish.loon > dish.vcad
-cargo run --release -p vcad-render -- dish.vcad --jpeg docs/plasmoid-sim/device.jpg --size 720
+cargo build --release -p vcad-render@0.11.0 -p vcad-loon --example loon2vcad
+cd docs/plasmoid-sim
+../../target/release/examples/loon2vcad plasmoid-clip.loon > plasmoid-clip.vcad
+../../target/release/examples/loon2vcad plasmoid-dish.loon > plasmoid-dish.vcad
+# 600 frames; --resume picks up an interrupted run, the sim always runs whole
+../../target/release/vcad-render plasmoid-clip.vcad --photoreal --animate --sim plasmoid \
+  --lighting dark --backdrop none --bloom 0.25 --bloom-radius 0.06 --tonemap exp \
+  --spp SPP_PLACEHOLDER --size 720x1280 --fill 0.85 --view orbit:-90,28 -o /tmp/clip --mp4 plasmoid.mp4
+cargo run --release -p vcad-kernel-particle --example plasmoid_magnet -- /tmp/clip   # beta_map.csv
+python3 figures.py /tmp/clip .        # reads the trajectory.csv the render wrote
+../../target/release/vcad-render plasmoid-dish.vcad --jpeg device.jpg --size 720
 ```
 
 ## 1. Physics triage
@@ -107,7 +114,7 @@ dx/dt = v_race φ̂ + k (r0 − r) r̂             racing ionization wave + pref
 
 ## 3. The demo run
 
-`plasmoid_magnet` runs a 20 s choreography. RK4 at 2.4 kHz, output at 120 Hz.
+The 20 s choreography is the `timeline` of [`plasmoid-clip.loon`](plasmoid-sim/plasmoid-clip.loon): three parameter tracks (`magnet_r`, `magnet_angle`, `magnet_gap`), smoothstep-eased, interpolated in (r, angle, gap) so the flick sweeps an arc. `vcad-render --sim plasmoid` binds the document's parameters to the model, runs `simulate()` once over the clip (RK4 at 2.4 kHz = 30 fps × 80 substeps, the pose sampled at every substep, never held per frame, output at 120 Hz) and prints the beats; `plasmoid_magnet` prints the model's numbers at the hold pose:
 
 ```text
 magnet: N52 10x5 mm, m = 0.447 A·m², gap 10 mm
@@ -116,11 +123,11 @@ magnet: N52 10x5 mm, m = 0.447 A·m², gap 10 mm
 ν_m (Ar, 760 Torr): 2.84e12 /s → β = 0.0038
 depinning mobility μ* = 2.929e-3 m²/s; using 1.8× = 5.272e-3
 max pin speed μ·max|∇Φ| = 1.08 m/s vs race 0.60 m/s
-t =   5.93 s: LOCK
-t =  14.04 s: release
-t =  14.47 s: LOCK
-t =  18.08 s: release
+locked   5.93 s →  14.04 s
+locked  14.47 s →  18.08 s
 ```
+
+These are the times the choreography produced when it was a `KEYS` table in the example. `tests/plasmoid_timeline.rs` keeps that table as a golden fixture: the timeline-driven run matches it to 1.4×10⁻¹⁶ m over the whole 20 s, with identical lock/release times.
 
 ### Behaviour vs. the source clip
 
@@ -136,21 +143,16 @@ t =  18.08 s: release
 
 ### What is simulated vs drawn
 
-**From the sim:**
+**From the document + sim, every frame:**
 
-- the foot position;
-- the magnet pose;
-- the lock state;
-- β.
+- the magnet pose (timeline) — the `magnet` root is re-placed;
+- the foot position (the model, stepped from that pose) — the `foot` medium is re-placed, integrated over 4 positions across the 1/30 s exposure (motion blur from the sim, not a smear);
+- the lock state and β (the HUD);
+- the device (the loon geometry, path-traced).
 
-**Render-side stylization in `render.py`:**
+**Physically based rendering (vcad-render's path tracer, #1224):** the plasma is three glowing media — `filament`, `foot`, and the faint `sheet` over the dish — whose emission is integrated along camera *and* bounce rays, so the plasma lights the copper bowl and the spike occludes it.
 
-- the filament's shape (a jittered arc from the spike tip to the foot);
-- the flicker;
-- the faint secondary streamers;
-- the diffuse disc glow.
-
-The reduced model has no filament geometry. The device is drawn with simple projected primitives that mirror `plasmoid-dish.loon`. vcad's renderers have emissive *surfaces* but no volumetric glow or bloom (gap #3).
+**Drawn, not simulated:** the filament's *shape* — an arch from the spike tip to the foot, thickening toward it — is the stylisation the clip document's `filament` root draws; `--sim plasmoid` redraws the same arch to wherever the foot is. The reduced model has no filament geometry. The halo is `--bloom`, an energy-conserving glare filter (a look, not physics). Dropped from the old numpy render (`render.py`, removed): the flicker, the jittered filament, the secondary streamers and the 2-D persistence trail — all hand-drawn.
 
 ### The loon model
 
@@ -163,7 +165,7 @@ The reduced model has no filament geometry. The device is drawn with simple proj
 - the antenna ring on posts;
 - the magnet at its hold pose, on a holder (disc + holder are one root named `magnet`, so the app drags them together).
 
-Loon source has no time axis and the sim doesn't read the document `timeline` yet, so the magnet's path lives in the example's `KEYS` table (gap #7), and the dish radius and orbit radius are duplicated as constants (gap #6).
+The geometry lives in the module [`plasmoid-device.loon`](plasmoid-sim/plasmoid-device.loon), so the live-demo document and the clip document draw the same device. The clip document adds the sim's inputs as `defparam`s (`dish_r`, `glow_height`, `orbit_r`, `magnet_radius`/`_thickness`, `magnet_r`/`_angle`/`_gap`, `pressure_torr`, `mobility_margin`), the plasma media, and the choreography as `[timeline 20 30 [param-track "magnet_r" "ease-in-out" #[t v …]] …]` — a loon form added for this, which lands in the document's `timeline` like any other.
 
 ![device](plasmoid-sim/device.jpg)
 
@@ -216,7 +218,7 @@ It drives the magnet through the real move gizmo (`beginGizmoDrag` / `gizmoDragT
 | axisym Poisson | not used. The dish E field enters only as the sign of the rectified sheath field |
 | `vcad-kernel-em` magnets | 2D planar `MagnetBlock` only (bound-current sheets in a cross-section); axisym has no magnets. No 3D posed magnet source |
 | MCP `simulate_charged_particles` / `optimize_electrodes` | fusor-specific `DeviceSpec` (rings, grids); no field-source or plasma-foot tool |
-| document `timeline` + MCP `animate` / `render_sequence` / `export_video` | **exists.** Keyframed parameters, joints and visibility, rendered to GLB/GIF/MP4 with a proof HUD. It could carry the magnet path, but there is no hook for a field sim to read a timeline-driven pose |
+| document `timeline` + MCP `animate` / `render_sequence` / `export_video` | **exists.** Keyframed parameters, joints and visibility, rendered to GLB/GIF/MP4 with a proof HUD. Now carries the magnet path; the sim hook is in `vcad-render --photoreal --animate --sim plasmoid`. The MCP `render_sequence` / `export_video` tools render through the kernel's SVG renderer (no path tracer, no media), so they do not run the hook |
 | native app animation / physics | rigid-body / joint playback (phyz). No field-sim tick |
 | `vcad-render` materials | **partly exists.** Constant emissive colour + strength on materials (`look` `emission`, honoured by the `--photoreal` path tracer); `emissive_map` is refused by the tracer. No volumetric/participating-media emission, no bloom, no point/line light primitives |
 
@@ -232,11 +234,11 @@ It drives the magnet through the real move gizmo (`beginGizmoDrag` / `gizmoDragT
    - an MCP tool (`simulate_plasmoid`, `pose_at` as keyframes) so agents can choreograph it;
    - magnet orientation and polarity from the part (north-down is assumed);
    - real glow (gap #3).
-3. **Volumetric glow + bloom.** Emissive *surfaces* already exist in the photoreal path tracer. Plasma, glow discharge, arcs and hot gas also need:
+3. **Volumetric glow + bloom.** *Addressed in the photoreal path tracer* by #1224 (`material-glow` media, `--bloom`), and used per frame by the clip (§3). Still open: the app viewport's live demo still draws its glow with unlit primitives. Original note: Emissive *surfaces* already exist in the photoreal path tracer. Plasma, glow discharge, arcs and hot gas also need:
    - emissive volumes or emissive line/point primitives (a filament is not a BRep face), in `vcad-render` and the app viewport;
    - additive point/line splats with bloom.
 
-   The Python renderer here is the spec: screen-blend, multi-scale gaussian bloom, orange-to-white `1−exp(−I·k)` tone map. Until then every plasma video is hand-composited.
+   The Python renderer that was here was the spec: screen-blend, multi-scale gaussian bloom, orange-to-white `1−exp(−I·k)` tone map. Until then every plasma video is hand-composited.
 4. **Derive the pull: a 2D drift-diffusion fluid on the dish.** Electron continuity with an anisotropic magnetized mobility tensor `μ_e/(1+β²)` across B, an RF-heated ionization source, and Bohm loss to the walls.
    - The foot becomes the density peak, and μ stops being a fit parameter.
    - The `vcad-kernel-thermal` / `em` finite-volume core can host it.
@@ -248,5 +250,5 @@ It drives the magnet through the real move gizmo (`beginGizmoDrag` / `gizmoDragT
    - aluminum-slug control (§1).
 
    These bind to a `vcad.plasmoid-claims/1` family (predicted → Provisional, never Pass), in the style of the other solver crates.
-6. **BRep → sim binding.** *Partly addressed* by the app demo (§3b), which reads the dish centre, rim and radius, the spike tip and the magnet pose from the named parts' bounds. The example and the doc figures still use constants (80 mm dish, 55 mm orbit), and the model's dish is still a flat plane, not the bowl. Read the dish radius, the spike position and the magnet pose from the loon document, not duplicated constants. This shares the open-fusor gap ("CAD/sim disconnected").
-7. **Drive the sim from the document timeline.** The IR already has a keyframed `timeline` (parameters, joints, visibility) and `export_video`. Put the magnet's pose on a timeline track and let the plasmoid sim sample it, so the path lives in the document instead of in the example's `KEYS` table.
+6. **BRep → sim binding.** *Addressed for the clip:* `--sim plasmoid` reads the dish radius, glow height, orbit, magnet size and pose, pressure and mobility margin from the clip document's parameters (which also drive its geometry), the spike tip from the `spike` root, the foot size from the `foot` root and the plasma's emission from the media's materials. The app demo (§3b) reads the named parts' bounds. Still open: the model's dish is a flat plane, not the bowl; `plasmoid_magnet`'s β map uses the model defaults; the live demo reads bounds, not parameters (its dish radius is the 87 mm bbox half-width, the clip's is the 85 mm rim). Original note: Read the dish radius, the spike position and the magnet pose from the loon document, not duplicated constants. This shares the open-fusor gap ("CAD/sim disconnected").
+7. **Drive the sim from the document timeline.** *Addressed:* the path is the clip document's timeline, and `vcad-render --sim plasmoid` samples it at every RK4 substep (§3); the `KEYS` table survives only as the test's golden fixture. Open: the MCP `render_sequence` / `export_video` tools don't path-trace, so they can't run the hook; a `simulate_plasmoid` MCP tool. Original note: The IR already has a keyframed `timeline` (parameters, joints, visibility) and `export_video`. Put the magnet's pose on a timeline track and let the plasmoid sim sample it, so the path lives in the document instead of in the example's `KEYS` table.

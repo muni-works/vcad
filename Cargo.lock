@@ -7185,6 +7185,7 @@ dependencies = [
  "vcad-kernel 0.11.0",
  "vcad-kernel-export 0.11.0",
  "vcad-kernel-gpu",
+ "vcad-kernel-particle 0.11.0",
  "vcad-kernel-raytrace 0.11.0",
  "vcad-loon",
 ]

@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-plasmoid-timeline-clip",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "feat",
+  "title": "Timeline-driven simulation renders (--sim plasmoid)",
+  "summary": "vcad-render --photoreal --animate --sim plasmoid steps the plasmoid model from the document timeline each frame and renders the plasma as glowing media. Loon gains [timeline] / [param-track].",
+  "features": ["render", "photoreal", "timeline", "animation", "loon", "plasmoid"],
+  "mcpTools": []
+}

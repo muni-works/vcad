@@ -147,7 +147,10 @@ impl EmissiveMedium {
 }
 
 /// Splats accumulated from one or more media, ready to hand to the scene.
-#[derive(Debug, Default)]
+///
+/// `Clone`, so a cloud of static media can be built once and extended with
+/// per-frame media in an animation (see [`MediumCloud::add_field`]).
+#[derive(Debug, Clone, Default)]
 pub struct MediumCloud {
     positions: Vec<[f32; 3]>,
     scales: Vec<[f32; 3]>,
@@ -299,23 +302,7 @@ impl MediumCloud {
             }
         }
 
-        let k_gain = lattice_gain(h);
-        let (alpha, colour) = if m.absorption > 0.0 {
-            let mut a = m.absorption as f64 / k_gain;
-            if a > MAX_ALPHA {
-                self.clamped = true;
-                a = MAX_ALPHA;
-            }
-            let kappa = k_gain * a;
-            (a, m.emission.map(|e| e as f64 / kappa))
-        } else {
-            (
-                THIN_ALPHA,
-                m.emission.map(|e| e as f64 / (k_gain * THIN_ALPHA)),
-            )
-        };
-        let sh0 = colour.map(|c| ((c - 0.5) / SH_C0) as f32);
-        let sigma = (SIGMA_OVER_H * h) as f32;
+        let (alpha, sh0, sigma) = self.calibrate(m, h);
 
         let before = self.len();
         for k in 0..n[2] {
@@ -345,6 +332,93 @@ impl MediumCloud {
                         (o[1] + (j as f64 + 0.5) * h) as f32,
                         (o[2] + (k as f64 + 0.5) * h) as f32,
                     ]);
+                    self.scales.push([sigma; 3]);
+                    self.opacities.push((alpha * density) as f32);
+                    self.sh.push(sh0);
+                }
+            }
+        }
+        self.len() - before
+    }
+
+    /// Per-splat opacity, degree-0 SH colour and σ for medium `m` on a
+    /// lattice of spacing `h` — the calibration in the module docs.
+    fn calibrate(&mut self, m: &EmissiveMedium, h: f64) -> (f64, [f32; 3], f32) {
+        let k_gain = lattice_gain(h);
+        let (alpha, colour) = if m.absorption > 0.0 {
+            let mut a = m.absorption as f64 / k_gain;
+            if a > MAX_ALPHA {
+                self.clamped = true;
+                a = MAX_ALPHA;
+            }
+            let kappa = k_gain * a;
+            (a, m.emission.map(|e| e as f64 / kappa))
+        } else {
+            (
+                THIN_ALPHA,
+                m.emission.map(|e| e as f64 / (k_gain * THIN_ALPHA)),
+            )
+        };
+        let sh0 = colour.map(|c| ((c - 0.5) / SH_C0) as f32);
+        (alpha, sh0, (SIGMA_OVER_H * h) as f32)
+    }
+
+    /// Fill an implicitly described volume with medium `m` at lattice spacing
+    /// `h` (mm): `depth(p)` is the distance below the volume's boundary at
+    /// `p` — positive inside, negative (or zero) outside — and every lattice
+    /// point of the box `[min, max]` where it is positive gets a splat, softened by
+    /// [`EmissiveMedium::falloff`] exactly as [`add`](Self::add) does.
+    ///
+    /// This is the path for a medium whose shape changes every frame (a
+    /// plasma filament following a simulation): a signed distance is cheap
+    /// to evaluate, where re-meshing and ray-sweeping a solid per frame is
+    /// not. The calibration is the same, so a field and a meshed solid of
+    /// the same shape glow the same. Returns the number of splats added.
+    pub fn add_field<F: Fn([f64; 3]) -> f64>(
+        &mut self,
+        min: [f64; 3],
+        max: [f64; 3],
+        depth: F,
+        m: &EmissiveMedium,
+        h: f64,
+    ) -> usize {
+        if h.is_nan() || h <= 0.0 || m.emission.iter().all(|&e| e <= 0.0) {
+            return 0;
+        }
+        let e = Vec3::new(max[0] - min[0], max[1] - min[1], max[2] - min[2]);
+        let n = [
+            ((e.x / h).ceil() as usize).max(1),
+            ((e.y / h).ceil() as usize).max(1),
+            ((e.z / h).ceil() as usize).max(1),
+        ];
+        let o = [
+            min[0] + 0.5 * (e.x - n[0] as f64 * h),
+            min[1] + 0.5 * (e.y - n[1] as f64 * h),
+            min[2] + 0.5 * (e.z - n[2] as f64 * h),
+        ];
+        let (alpha, sh0, sigma) = self.calibrate(m, h);
+        let before = self.len();
+        for k in 0..n[2] {
+            for j in 0..n[1] {
+                for i in 0..n[0] {
+                    let p = [
+                        o[0] + (i as f64 + 0.5) * h,
+                        o[1] + (j as f64 + 0.5) * h,
+                        o[2] + (k as f64 + 0.5) * h,
+                    ];
+                    let d = depth(p);
+                    if d.is_nan() || d <= 0.0 {
+                        continue;
+                    }
+                    let density = if m.falloff > 0.0 {
+                        smoothstep(d / m.falloff as f64)
+                    } else {
+                        1.0
+                    };
+                    if density <= 0.0 {
+                        continue;
+                    }
+                    self.positions.push(p.map(|c| c as f32));
                     self.scales.push([sigma; 3]);
                     self.opacities.push((alpha * density) as f32);
                     self.sh.push(sh0);

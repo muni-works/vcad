@@ -60,6 +60,9 @@ pub fn value_to_document_in(
             let mat = ctx.glow_material(fields)?;
             ctx.doc.materials.insert(mat.name.clone(), mat);
         }
+        Value::Adt(tag, fields) if tag == "TimelineDef" && fields.len() == 3 => {
+            ctx.doc.timeline = Some(ctx.timeline(fields)?);
+        }
         // Material definition (standalone)
         Value::Adt(tag, fields) if tag == "Material" && fields.len() == 6 => {
             let name = ctx.str_val(&fields[0])?;
@@ -237,6 +240,9 @@ fn merge_value_into_doc(ctx: &mut ConvertCtx, value: &Value) -> Result<(), Strin
         Value::Adt(tag, fields) if tag == "MaterialG" && fields.len() == 7 => {
             let mat = ctx.glow_material(fields)?;
             ctx.doc.materials.insert(mat.name.clone(), mat);
+        }
+        Value::Adt(tag, fields) if tag == "TimelineDef" && fields.len() == 3 => {
+            ctx.doc.timeline = Some(ctx.timeline(fields)?);
         }
         Value::Adt(tag, fields) if tag == "Material" && fields.len() == 6 => {
             let name = ctx.str_val(&fields[0])?;
@@ -1518,6 +1524,89 @@ impl ConvertCtx {
                 falloff: (falloff > 0.0).then_some(falloff),
             }),
             ..Default::default()
+        })
+    }
+
+    /// `[timeline duration fps & tracks]` (the `TimelineDef` ADT) → the
+    /// document's [`Timeline`](vcad_ir::animation::Timeline). Each track is a
+    /// `[param-track name ease #[t0 v0 t1 v1 ...]]`: one easing for every key
+    /// but the first, keys strictly ascending in time.
+    fn timeline(&self, f: &[Value]) -> Result<vcad_ir::animation::Timeline, String> {
+        use vcad_ir::animation::{AnimKey, AnimTarget, AnimTrack, Ease, Timeline};
+        const TAG: &str = "timeline";
+        let duration_s = self.f64_val(&f[0])?;
+        let fps = self.f64_val(&f[1])?;
+        if !(duration_s > 0.0 && fps > 0.0) {
+            return Err(format!("{TAG}: duration and fps must be > 0"));
+        }
+        let items: Vec<Value> = match &f[2] {
+            Value::Vec(items) => items.iter().cloned().collect(),
+            Value::Unit => Vec::new(),
+            other => return Err(format!("{TAG}: expected tracks, got {other}")),
+        };
+        let mut tracks = Vec::with_capacity(items.len());
+        for item in &items {
+            let Value::Adt(tag, tf) = item else {
+                return Err(format!("{TAG}: expected a [param-track ...], got {item}"));
+            };
+            if tag != "AnimTrackDef" || tf.len() != 3 {
+                return Err(format!("{TAG}: expected a [param-track ...], got {item}"));
+            }
+            let name = self.str_val(&tf[0])?;
+            let ease = match self.str_val(&tf[1])?.as_str() {
+                "linear" => Ease::Linear,
+                "step" => Ease::Step,
+                "ease-in-out" => Ease::EaseInOut,
+                other => {
+                    return Err(format!(
+                        "{TAG}: track {name:?}: ease must be \"linear\", \"step\" or \
+                         \"ease-in-out\", got {other:?}"
+                    ))
+                }
+            };
+            let flat: Vec<f64> = match &tf[2] {
+                Value::Vec(v) => v
+                    .iter()
+                    .map(|x| self.f64_val(x))
+                    .collect::<Result<_, _>>()?,
+                other => {
+                    return Err(format!(
+                        "{TAG}: track {name:?}: expected #[t v ...], got {other}"
+                    ))
+                }
+            };
+            if flat.is_empty() || !flat.len().is_multiple_of(2) {
+                return Err(format!(
+                    "{TAG}: track {name:?}: keys are #[t0 v0 t1 v1 ...] pairs, got {} numbers",
+                    flat.len()
+                ));
+            }
+            let keys: Vec<AnimKey> = flat
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .enumerate()
+                .map(|(i, kv)| AnimKey {
+                    t: kv[0],
+                    value: kv[1],
+                    ease: if i == 0 { Ease::Linear } else { ease },
+                })
+                .collect();
+            if keys.windows(2).any(|w| w[1].t <= w[0].t) {
+                return Err(format!(
+                    "{TAG}: track {name:?}: key times must be strictly ascending"
+                ));
+            }
+            tracks.push(AnimTrack {
+                target: AnimTarget::Parameter { name },
+                keys,
+            });
+        }
+        Ok(Timeline {
+            duration_s,
+            fps,
+            tracks,
+            camera: Vec::new(),
         })
     }
 
@@ -3567,6 +3656,43 @@ mod tests {
         assert_eq!(doc.materials.len(), 2); // steel + default
         assert!(doc.materials.contains_key("steel"));
         assert_eq!(doc.roots.len(), 1);
+    }
+
+    #[test]
+    fn timeline_form_becomes_parameter_tracks() {
+        use vcad_ir::animation::{AnimTarget, Ease, Timeline};
+        let track = adt(
+            "AnimTrackDef",
+            vec![
+                s("magnet_r"),
+                s("ease-in-out"),
+                Value::Vec(vec![f(0.0), f(55.0), f(2.0), f(30.0)].into()),
+            ],
+        );
+        let tl = adt(
+            "TimelineDef",
+            vec![f(20.0), f(30.0), Value::Vec(vec![track.clone()].into())],
+        );
+        let doc = value_to_document(&Value::Vec(vec![tl].into())).unwrap();
+        let t = doc.timeline.expect("a timeline");
+        assert_eq!((t.duration_s, t.fps), (20.0, 30.0));
+        assert_eq!(
+            t.tracks[0].target,
+            AnimTarget::Parameter {
+                name: "magnet_r".into()
+            }
+        );
+        assert_eq!(t.tracks[0].keys[1].ease, Ease::EaseInOut);
+        assert_eq!(Timeline::sample_track(&t.tracks[0], 1.0), Some(42.5));
+        let odd = adt(
+            "AnimTrackDef",
+            vec![s("x"), s("linear"), Value::Vec(vec![f(0.0)].into())],
+        );
+        let bad = adt(
+            "TimelineDef",
+            vec![f(1.0), f(30.0), Value::Vec(vec![odd].into())],
+        );
+        assert!(value_to_document(&Value::Vec(vec![bad].into())).is_err());
     }
 
     #[test]

@@ -1,0 +1,105 @@
+; Racing plasmoid vs. a hand-held magnet — the 20 s clip, as a document.
+;
+; Render it (docs/plasmoid-sim.md § Reproduce):
+;   loon2vcad plasmoid-clip.loon > plasmoid-clip.vcad
+;   vcad-render plasmoid-clip.vcad --photoreal --animate --sim plasmoid ...
+;
+; Everything the clip needs is here, and the renderer reads it rather than
+; carrying its own copy:
+;
+; * the device (plasmoid-device.loon, shared with plasmoid-dish.loon);
+; * the sim's inputs as parameters — dish radius, glow height, racing orbit,
+;   magnet size, gas pressure, mobility margin;
+; * the magnet's choreography as the document timeline: three parameter
+;   tracks (magnet_r, magnet_angle, magnet_gap) eased with the same Hermite
+;   smoothstep on every key, interpolated in (r, angle, gap) so a flick
+;   sweeps an arc, not a chord;
+; * the plasma as `material-glow` media: `filament` and `foot` (drawn at the
+;   hold pose here; `--sim plasmoid` re-places both every frame from the
+;   simulated foot) and `sheet`, the faint glow over the whole dish.
+;
+; The magnet is drawn at the parameters' default — its HOLD pose (r = 55 mm,
+; 120°, 10 mm air gap) — which is also where the sim calibrates its
+; mobility (mobility_margin × the depinning threshold there).
+
+[use plasmoid-device [dish-of spike-of coil puck-1 puck-2 ring posts magnet-of]]
+
+[defparam dish_r 85.0]            ; inner rim radius, mm — the foot is confined inside it
+[defparam dish_depth 14.0]
+[defparam glow_height 2.0]        ; glow sheet above the dish surface, mm
+[defparam orbit_r 55.0]           ; racing orbit radius, mm
+[defparam magnet_radius 5.0]      ; N52 disc, mm
+[defparam magnet_thickness 5.0]
+[defparam magnet_r 55.0]          ; magnet pose: radius, mm …
+[defparam magnet_angle 120.0]     ; … azimuth, degrees …
+[defparam magnet_gap 10.0]        ; … and air gap under its lower face, mm
+[defparam pressure_torr 1.0]      ; argon
+[defparam mobility_margin 1.8]    ; × the depinning mobility at the hold pose
+
+[let deg 0.0174533]
+[let mx [* magnet_r [cos [* magnet_angle deg]]]]
+[let my [* magnet_r [sin [* magnet_angle deg]]]]
+
+[let dish [dish-of dish_r dish_depth]]
+[let spike [spike-of dish_depth]]
+[let magnet [magnet-of mx my magnet_gap magnet_radius magnet_thickness]]
+
+; ── the plasma ───────────────────────────────────────────────────────────
+; Filament: a tube from the spike tip to the foot under the magnet, arched
+; and thickening toward the foot. Its shape is drawn, not simulated (the
+; reduced model has no filament geometry); vcad-render's plasmoid hook
+; redraws exactly this arch to wherever the simulated foot is.
+[let tip-z [+ [- 0 dish_depth] 24]]
+[let pi 3.14159265]
+[let fil-z [fn [s]
+  [+ [* tip-z [- 1 s]] [* glow_height s]
+     [* 9 [sin [* pi s]] [- 1 s]] [* 3 [sin [* pi s]]]]]]
+[let fil-r [fn [s] [+ 0.7 [* 1.1 s]]]]
+[let plan-len [sqrt [+ [* mx mx] [* my my]]]]
+[let sx [/ [- 0 my] plan-len]]
+[let sy [/ mx plan-len]]
+[let ring-at [fn [s]
+  [let r [fil-r s]
+    [sketch [* mx s] [* my s] [fil-z s]  sx sy 0  0 0 1
+      #[[polygon [flat-map [fn [k]
+                   [let a [* k [/ [* 2 pi] 14]]
+                     #[[* r [cos a]] [* r [sin a]]]]]
+                 [range 0 14]]]]]]]]
+[let filament [loft [map [fn [k] [ring-at [* k 0.1]]] [range 0 11]]]]
+
+[let foot [pipe [sphere 4] [translate mx my glow_height]]]
+[let sheet [pipe [cylinder [- dish_r 3] 2] [translate 0 0 [- glow_height 1]]]]
+
+; Linear orange of the argon glow; intensity is radiance per mm of path.
+[material-glow "plasma-core" 1.0 0.42 0.14 14.0 0 0.6]
+[material-glow "plasma-foot" 1.0 0.45 0.16 5.0 0 3.0]
+[material-glow "plasma-sheet" 1.0 0.40 0.14 0.02 0 0.9]
+
+[root dish "copper"]
+[root spike "glass"]
+[root coil "plastic"]
+[root puck-1 "aluminum"]
+[root puck-2 "aluminum"]
+[root ring "copper"]
+[root posts "plastic"]
+[root magnet "steel"]
+[root filament "plasma-core"]
+[root foot "plasma-foot"]
+[root sheet "plasma-sheet"]
+
+; ── the choreography ─────────────────────────────────────────────────────
+; race → magnet lowers (6 s) → lock as the racer comes round → drag
+; clockwise against the race (8–11 s) and inward (13 s) → flick (14.00 →
+; 14.12 s, ~0.6 m/s mean, 0.9 peak: beats the pin, the foot breaks away) →
+; re-captured on the next pass → lifted away at 19 s: releases, races on.
+; A gap of 250 mm is out of frame. Keys past 20 s only shape the last ease.
+[timeline 20.0 30.0
+  [param-track "magnet_r" "ease-in-out"
+    #[0.0 55.0  4.0 55.0  6.0 55.0  8.0 55.0  11.0 55.0  13.0 30.0  14.0 50.0
+      14.12 50.0  16.0 50.0  16.5 50.0  18.0 50.0  19.0 50.0  21.0 50.0]]
+  [param-track "magnet_angle" "ease-in-out"
+    #[0.0 120.0  4.0 120.0  6.0 120.0  8.0 120.0  11.0 20.0  13.0 -40.0  14.0 -70.0
+      14.12 -150.0  16.0 -150.0  16.5 -150.0  18.0 -150.0  19.0 -150.0  21.0 -150.0]]
+  [param-track "magnet_gap" "ease-in-out"
+    #[0.0 250.0  4.0 250.0  6.0 10.0  8.0 10.0  11.0 10.0  13.0 10.0  14.0 10.0
+      14.12 10.0  16.0 10.0  16.5 10.0  18.0 10.0  19.0 250.0  21.0 250.0]]]

@@ -221,3 +221,41 @@ fn falloff_softens_the_edge_and_dims_the_total() {
     assert_close(got, m.slab_radiance(l - 1.5), 0.03, "soft-edged slab");
     let _ = SIGMA_OVER_H;
 }
+
+/// A slab described by its signed depth (`add_field`) reads the same as the
+/// meshed slab (`add`): same lattice, same calibration, same answer.
+#[test]
+fn field_slab_matches_the_meshed_slab() {
+    let (h, l) = (0.5, 4.0);
+    let m = EmissiveMedium {
+        emission: EPS,
+        absorption: 0.0,
+        falloff: 0.0,
+    };
+    let mut cloud = MediumCloud::new();
+    let n = cloud.add_field(
+        [-20.0, -20.0, 0.0],
+        [20.0, 20.0, l],
+        |p| p[2].min(l - p[2]),
+        &m,
+        h,
+    );
+    assert!(n > 0);
+    let s = scene(cloud.build().unwrap(), Vec::new());
+    for o in OFFSETS {
+        let got = radiance(&s, [o[0], o[1], l + 10.0], [0.0, 0.0, -1.0]);
+        assert_close(
+            got,
+            m.slab_radiance(l),
+            0.01,
+            &format!("field slab at {o:?}"),
+        );
+    }
+    // A cloned static cloud extended per frame keeps the static medium.
+    let mut base = MediumCloud::new();
+    base.add_field([-1.0; 3], [1.0; 3], |p| 1.0 - p[0].abs(), &m, h);
+    let mut frame = base.clone();
+    let before = frame.len();
+    frame.add_field([5.0; 3], [6.0; 3], |_| 1.0, &m, h);
+    assert!(frame.len() > before && base.len() == before);
+}

@@ -237,6 +237,13 @@
 ;   :k-in-plane + :k-through-plane W/(m K) (laminates)   :specific-heat J/(kg K)
 ;   :emissivity   :permittivity (relative)   :loss-tangent
 ;   :permeability (relative)   :remanence T   :resistivity ohm m
+;
+; Animation timeline (the document's `timeline`): a duration (s), a frame rate and tracks. A parameter track
+; keyframes a `defparam` by name with one easing for every key ("linear", "step" or "ease-in-out") over a flat
+; key vector #[t0 v0 t1 v1 ...]. Renderers and vcad.app sample it the same way (Timeline::sample_track).
+[type AnimTrackDef [AnimTrackDef Str Str (Vec f64)]]
+[type TimelineDef [TimelineDef f64 f64 (Vec AnimTrackDef)]]
+
 [type MaterialPhysics
   [MaterialPhysics Str (Vec a)]]
 
@@ -737,6 +744,9 @@
   [MaterialG name r g b intensity absorption falloff]]]
 
 [let material-physics [fn [key & opts] [MaterialPhysics key opts]]]
+
+[let param-track [fn [name ease keys] [AnimTrackDef name ease keys]]]
+[let timeline [fn [duration fps & tracks] [TimelineDef duration fps tracks]]]
 
 ; Scene (no subject)
 [let root [fn [solid material-name]

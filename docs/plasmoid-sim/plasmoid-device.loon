@@ -1,0 +1,39 @@
+; Racing-plasmoid dish — the device geometry, as a loon module.
+;
+; Used by plasmoid-dish.loon (the live demo document) and plasmoid-clip.loon
+; (the rendered clip), so the device is drawn in one place. Frame matches
+; the sim (crates/vcad-kernel-particle/src/plasmoid.rs): Z-up, millimeters,
+; the dish's inner surface at z = 0. Dimensions are read off one frame of
+; the source clip and are a hypothesis (ruler: the hand), not measured.
+
+; Dish electrode: a shallow conical bowl with a 2 mm wall and its open top at
+; z = 0 (inner rim radius `r`), revolved from its (r, z) cross-section about Z.
+[let dish-of [fn [r depth]
+  [revolve 0 0 0  0 0 1  360
+    [sketch 0 0 0  1 0 0  0 0 1
+      #[[polygon #[30 [- 0 depth 2]  52 [- 0 depth 2]  [+ r 2] 0
+                   r 0  50 [- 0 depth]  30 [- 0 depth]]]]]]]]
+
+; Central glass spike the filaments root on: 24 mm tall from the bowl floor.
+[let spike-of [fn [depth] [pipe [cone 7 0.6 24] [translate 0 0 [- 0 depth]]]]]
+
+; Stacked HV driver: resonator coil former + two capacitor/driver pucks.
+[let coil   [pipe [cylinder 46 34] [translate 0 0 -52]]]
+[let puck-1 [pipe [cylinder 56 16] [translate 0 0 -70]]]
+[let puck-2 [pipe [cylinder 62 18] [translate 0 0 -90]]]
+
+; Pickup / antenna ring above the dish, carried on four dielectric posts.
+[let ring [pipe [torus 112 2.5] [translate 0 0 95]]]
+[let post [fn [ang]
+  [pipe [cylinder 2 110]
+        [translate [* 112 [cos [* ang 0.0174533]]] [* 112 [sin [* ang 0.0174533]]] -15]]]]
+[let posts [union [post 60] [post 120] [post 200] [post 340]]]
+
+; A disc magnet (radius x thickness, north pole down) on a 60 mm holder,
+; its lower face `gap` above the dish at (x, y). Built at the origin and
+; placed by ONE outer translate, so vcad.app's move gizmo edits that
+; translate in place.
+[let magnet-of [fn [x y gap radius thickness]
+  [pipe [union [cylinder radius thickness]
+               [pipe [cylinder 2 60] [translate 0 0 thickness]]]
+        [translate x y gap]]]]

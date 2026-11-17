@@ -57,6 +57,8 @@ pub mod pcb;
 pub mod photoreal;
 #[cfg(feature = "photoreal-gpu")]
 pub mod photoreal_gpu;
+#[cfg(feature = "raytrace")]
+pub mod plasmoid;
 pub mod pose;
 pub mod report;
 pub mod web;

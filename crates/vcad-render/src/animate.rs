@@ -750,6 +750,29 @@ pub fn render_raytrace_animation(
 /// so a caller can print it rather than losing the frames. Deliberately not
 /// load-bearing: the PNGs are the deliverable, the mp4 is a convenience.
 pub fn assemble_mp4(frame_dir: &Path, fps: f64, out: &Path) -> Result<(), String> {
+    assemble_mp4_with(frame_dir, fps, out, None)
+}
+
+/// [`assemble_mp4`], burning in an ASS subtitle track (a HUD) when
+/// `subtitles` is given. Needs an ffmpeg built with libass.
+pub fn assemble_mp4_with(
+    frame_dir: &Path,
+    fps: f64,
+    out: &Path,
+    subtitles: Option<&Path>,
+) -> Result<(), String> {
+    let mut vf = "pad=ceil(iw/2)*2:ceil(ih/2)*2".to_string();
+    if let Some(ass) = subtitles {
+        // The filter-graph parser treats `:` `\\` `'` and `,` as syntax.
+        let escaped = ass
+            .display()
+            .to_string()
+            .replace('\\', "\\\\")
+            .replace(':', "\\:")
+            .replace('\'', "\\'")
+            .replace(',', "\\,");
+        vf = format!("{vf},subtitles={escaped}");
+    }
     let args: Vec<String> = vec![
         "-y".into(),
         "-framerate".into(),
@@ -757,7 +780,7 @@ pub fn assemble_mp4(frame_dir: &Path, fps: f64, out: &Path) -> Result<(), String
         "-i".into(),
         frame_dir.join("frame_%04d.png").display().to_string(),
         "-vf".into(),
-        "pad=ceil(iw/2)*2:ceil(ih/2)*2".into(),
+        vf,
         "-c:v".into(),
         "libx264".into(),
         "-pix_fmt".into(),

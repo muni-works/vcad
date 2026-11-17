@@ -595,6 +595,29 @@ struct Cli {
     /// Skip the mp4 assembly and leave the PNG frames (`--animate`).
     #[arg(long, requires = "animate", conflicts_with = "mp4")]
     no_mp4: bool,
+
+    /// Step a simulation from the timeline every frame (`--photoreal
+    /// --animate`). `plasmoid`: the racing-plasmoid model — the timeline's
+    /// magnet_r / magnet_angle / magnet_gap parameter tracks pose the root
+    /// named `magnet`, the model runs once over the clip, and every frame
+    /// re-places the `foot` and `filament` media at the simulated foot.
+    /// Writes trajectory.csv and a HUD (hud.ass, burned into the mp4) next
+    /// to the frames. See docs/plasmoid-sim.md.
+    #[arg(long, value_enum, requires = "animate", requires = "photoreal")]
+    sim: Option<SimArg>,
+
+    /// Keep frames already in the output directory (`--sim`): resume an
+    /// interrupted render. The sim itself always runs whole, so resumed
+    /// frames agree with fresh ones.
+    #[arg(long, requires = "sim")]
+    resume: bool,
+}
+
+/// Simulations `--sim` can step from a timeline.
+#[derive(Copy, Clone, PartialEq, Eq, clap::ValueEnum)]
+enum SimArg {
+    /// The racing-plasmoid reduced model (vcad-kernel-particle::plasmoid).
+    Plasmoid,
 }
 
 /// CLI spelling of the photoreal backdrop options.
@@ -866,6 +889,9 @@ fn run_animation(input: &Path, cli: &Cli) -> Result<(), String> {
     let progress = &mut |i: usize, n: usize, dt: std::time::Duration| {
         eprintln!("frame {i}/{n}  {:.2}s", dt.as_secs_f64());
     };
+    if cli.sim == Some(SimArg::Plasmoid) {
+        return run_plasmoid_clip(input, cli, &raw, &opts, &an, progress);
+    }
     let report = if cli.photoreal {
         let pr = photoreal_options(cli);
         render_photoreal_animation(&raw, &opts, &pr, &an, progress)?
@@ -906,6 +932,63 @@ fn run_animation(input: &Path, cli: &Cli) -> Result<(), String> {
     });
     // Never load-bearing: the frames are the deliverable.
     match assemble_mp4(&out_dir, report.fps, &mp4) {
+        Ok(()) => eprintln!("wrote {}", mp4.display()),
+        Err(e) => eprintln!("{e}"),
+    }
+    Ok(())
+}
+
+/// `--photoreal --animate --sim plasmoid`: the clip, its sidecars, and the
+/// mp4 with the HUD burned in.
+#[cfg(feature = "raytrace")]
+fn run_plasmoid_clip(
+    input: &Path,
+    cli: &Cli,
+    raw: &str,
+    opts: &vcad_render::RasterOptions,
+    an: &vcad_render::animate::AnimateOptions,
+    progress: &mut dyn FnMut(usize, usize, std::time::Duration),
+) -> Result<(), String> {
+    use vcad_render::animate::assemble_mp4_with;
+    use vcad_render::plasmoid::{
+        intervals, is_locked, render_plasmoid_animation, write_sidecars, PlasmoidClipOptions,
+    };
+    let pr = photoreal_options(cli);
+    let sim = PlasmoidClipOptions {
+        resume: cli.resume,
+        ..PlasmoidClipOptions::default()
+    };
+    let report = render_plasmoid_animation(raw, opts, &pr, an, &sim, progress)?;
+    for (a, b) in intervals(&report.trajectory, &is_locked) {
+        eprintln!("locked {a:6.2} s → {b:6.2} s");
+    }
+    let (w, h) = report
+        .animation
+        .frames
+        .first()
+        .and_then(|p| image::image_dimensions(p).ok())
+        .unwrap_or((opts.size_px, opts.size_px));
+    let hud = write_sidecars(&an.out_dir, &report, w, h)?;
+    eprintln!(
+        "{} frame(s), setup {:.1}s, steady state {:.2}s/frame; wrote {} and trajectory.csv",
+        report.animation.frames.len(),
+        report.animation.setup.as_secs_f64(),
+        report.animation.median_frame().as_secs_f64(),
+        hud.display()
+    );
+    if cli.no_mp4 {
+        return Ok(());
+    }
+    let mp4 = cli.mp4.clone().unwrap_or_else(|| {
+        an.out_dir.join(format!(
+            "{}.mp4",
+            input
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "animation".to_string())
+        ))
+    });
+    match assemble_mp4_with(&an.out_dir, report.animation.fps, &mp4, Some(&hud)) {
         Ok(()) => eprintln!("wrote {}", mp4.display()),
         Err(e) => eprintln!("{e}"),
     }

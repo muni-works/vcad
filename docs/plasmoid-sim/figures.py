@@ -3,6 +3,10 @@
 
     python3 figures.py <sim-out-dir> <docs/plasmoid-sim>
 
+<sim-out-dir> holds beta_map.csv (examples/plasmoid_magnet.rs) and
+trajectory.csv (written next to the frames by
+`vcad-render plasmoid-clip.vcad --photoreal --animate --sim plasmoid`).
+
 - beta-map.png: electron Hall parameter on the glow sheet under the held
   magnet, 1 Torr vs 1 atm argon (same colour scale, β = 0…3).
 - timeline.png: foot–magnet distance vs time with the magnet height, the
