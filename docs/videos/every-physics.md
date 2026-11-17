@@ -410,5 +410,8 @@ caveat: the optimizer's modal floor is on the pinned **Preview** lattice
 | G13b (minor) | tolerance extraction took 73 s on the 9-part puck (the BRep fit search), vs < 1 s for the solve. worth a profile |
 | G5–G8, G10 | unchanged |
 
-the hero/section renders above are still v1 geometry; v2 adds the motor
-and the driver frame.
+the hero/section renders at the top are v1 geometry. v2, with the motor,
+driver frame and die (air root hidden in the section):
+
+![puck v2, hero](every-physics/poc/results/puck-v2-hero.jpg)
+![puck v2, section y=0](every-physics/poc/results/puck-v2-section.jpg)
