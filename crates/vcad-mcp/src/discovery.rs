@@ -225,10 +225,7 @@ pub fn select(
             list(&dev)
         ));
     }
-    Ok(pick(
-        newest,
-        (!notes.is_empty()).then(|| notes.join(" ")),
-    ))
+    Ok(pick(newest, (!notes.is_empty()).then(|| notes.join(" "))))
 }
 
 /// Select from the real environment and `~/.vcad/instances`.
@@ -384,7 +381,10 @@ mod tests {
 
     #[test]
     fn dev_builds_need_naming() {
-        let real = dev(rec(1, "2026-11-16T09:00:00Z", Some("/tmp/a.vcad")), "io.vcad.m0");
+        let real = dev(
+            rec(1, "2026-11-16T09:00:00Z", Some("/tmp/a.vcad")),
+            "io.vcad.m0",
+        );
         let old = rec(2, "2026-11-16T08:00:00Z", None); // pre-bundle_id build: not dev
         let shots = dev(
             rec(3, "2026-11-16T10:00:00Z", Some("/tmp/a.vcad")),
@@ -399,7 +399,9 @@ mod tests {
         assert!(w.contains("io.vcad.dev.app-sim-screens-fbe447"), "{w}");
         let doc = |k: &str| (k == "VCAD_APP_DOCUMENT").then(|| "/tmp/a.vcad".to_string());
         assert_eq!(
-            select(&[shots.clone(), real.clone()], doc).unwrap().instance,
+            select(&[shots.clone(), real.clone()], doc)
+                .unwrap()
+                .instance,
             Some(real.clone())
         );
         // A record without a bundle id still beats a dev build.
