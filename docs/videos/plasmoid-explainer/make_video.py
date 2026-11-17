@@ -56,15 +56,15 @@ SHOTS = {
     "ask": ("card", dict(), {}),
     "def": ("labels", dict(), {}),
     "gas": ("diagram", dict(name="gas"), {"field": "radio", "ion": "slam"}),
-    "rf": ("diagram", dict(name="rf"), {"flip": "but", "avg": "averages"}),
-    "curl": ("diagram", dict(name="curl"), {"half": "half"}),
-    "thin": ("diagram", dict(name="thin"), {"air": "normal"}),
-    "arcs": ("footage", dict(src="sdo", from_line="arcs", offset=8.0), {}),
-    "live": ("diagram", dict(name="live"), {"gain": "gain", "lose": "lose"}),
-    "lever1": ("diagram", dict(name="lever1"), {"leak": "leak", "hot": "hotter"}),
-    "lever2": ("diagram", dict(name="lever2"), {"crowd": "crowds"}),
-    "hand": ("footage", dict(src="xe_hand", from_line="hand"), {}),
-    "foot": ("diagram", dict(name="foot"), {"bars": "at"}),
+    "curl": ("diagram", dict(name="swarm"), {"half": "half", "release": ("swarm", "under")}),
+    "swarm": ("diagram", dict(name="swarm", from_line="curl"), {}),
+    "metal": ("diagram", dict(name="lever2"), {"crowd": "crowds", "bars": "nearly"}),
+    # the clip again, each line pinned to its event: (cue word, clip time)
+    "back1": ("replay", dict(pin=("so", 6.6)), {}),
+    "back2": ("replay", dict(pin=("drag", 8.0)), {}),
+    "back3": ("replay", dict(pin=("flick", T_FLICK)), {}),
+    "back4": ("replay", dict(pin=("lift", 17.6)), {}),
+    "sun": ("footage", dict(src="sdo", from_line="sun", offset=8.0), {}),
 }
 BIG = {"sun1"}                # captions shown large, mid-frame
 CREDIT = ["footage: Carl Willis (CC BY 3.0) · NASA/SDO · voice: ribt",
@@ -276,11 +276,25 @@ def frame(t, a):
         img = Image.blend(style.new("RGB", style.BGC), clip_frame(a.raw, loop_time(t)), 0.3)
     elif kind == "labels":
         img = draw_labels(clip_frame(a.raw, loop_time(t / 2)), local)
+    elif kind == "replay":
+        word, ev = args["pin"]
+        tc = max(ev + local - word_time(TL["timing"], lid, word), 6.0)
+        img = clip_frame(a.raw, round(min(tc, 19.9) * FPS) / FPS)
+        if tc > 19.9:                                    # the clip is over: free racing
+            img = Image.blend(img, clip_frame(a.raw, loop_time(t)), min((tc - 19.9) / 0.3, 1.0))
     else:
-        nxt = ids[ids.index(lid) + 1] if lid != ids[-1] else None
-        cues = {k: word_time(TL["timing"], lid, w) for k, w in cue_words.items()}
-        cues["dur"] = start[nxt] - start[lid]
-        img = DIAGRAMS[args["name"]](local, a.assets, cues)
+        # a scene can run across lines: time and cues are measured from its first line
+        base = args.get("from_line", lid)
+        _, _, cue_words = SHOTS[base]
+        cues = {}
+        for k, w in cue_words.items():
+            cl, w = w if isinstance(w, tuple) else (base, w)
+            cues[k] = start[cl] + word_time(TL["timing"], cl, w) - start[base]
+        i = ids.index(lid) + 1
+        while SHOTS[ids[i]][1].get("from_line") == base:
+            i += 1
+        cues["dur"] = start[ids[i]] - start[base]
+        img = DIAGRAMS[args["name"]](t - start[base], a.assets, cues)
     img = style.hud_frame(img, t, TL["total"], label)
     for t0, t1, part, l in TL["captions"]:
         if t0 <= t < t1:

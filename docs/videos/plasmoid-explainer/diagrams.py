@@ -171,7 +171,8 @@ def scene_gas(t, assets, c):
         d.line([(ax + 14, ay - 10), (ax + 60, ay - 44)], fill=col(GREY, a_atoms), width=2)
         d.text((ax + 64, ay - 48), "atom", font=F_SMALL, fill=col(GREY, a_atoms), anchor="lm")
     for p in electrons:
-        d.ellipse([p[0] - 4, p[1] - 4, p[0] + 4, p[1] + 4], fill=col(WHITE, a_atoms))
+        d.ellipse([p[0] - 5, p[1] - 5, p[0] + 5, p[1] + 5], fill=col((255, 214, 170), a_atoms))
+        glows.append((p[0], p[1], 9, 0.55 * a_atoms))
     if t < GAS_ION_ON and electrons:
         p = electrons[0]
         d.text((p[0] + 10, p[1] - 14), "loose electron", font=F_SMALL, fill=col(WHITE, a_atoms), anchor="lb")
@@ -356,6 +357,105 @@ def scene_curl(t, assets, c):
     return img
 
 
+# ── a swarm of electrons, with and without the magnet ────────────────────
+SW_N, SW_K = 260, 72
+SW_TOP = (60, 200, 660, 505)
+SW_BOT = (60, 525, 660, 830)
+SW_A_PX, SW_B_PX = 50.0, 20.0    # logical px per mean free path: close-up, then the swarm
+SW_A_RATE, SW_B_RATE = 0.8, 3.0  # collision times per second
+SW_ANCHOR = [(-190, 40), (-70, -50), (60, 55), (180, -35)]
+
+
+@lru_cache(maxsize=None)
+def _swarm(beta):
+    """SW_N electrons, the same seeded collisions for every β: flight start
+    times Tc[n, k] (in 1/ν) and positions P[n, k] (mean free paths), plus
+    each flight's pitch sine and heading. Exact gyro-arcs, seen along B."""
+    rng = np.random.default_rng(7)
+    tau = rng.exponential(1.0, (SW_N, SW_K))
+    s = np.sqrt(1 - rng.uniform(-1, 1, (SW_N, SW_K)) ** 2)
+    ph = rng.uniform(0, 2 * math.pi, (SW_N, SW_K))
+    dx, dy = _arc(beta, s, ph, tau)
+    P = np.zeros((SW_N, SW_K + 1, 2))
+    P[:, 1:, 0], P[:, 1:, 1] = np.cumsum(dx, 1), np.cumsum(dy, 1)
+    Tc = np.concatenate([np.zeros((SW_N, 1)), np.cumsum(tau, 1)], 1)
+    return Tc, P, s, ph
+
+
+def _arc(beta, s, ph, u):
+    if beta < 1e-3:
+        return s * u * np.cos(ph), s * u * np.sin(ph)
+    return (s / beta) * (np.sin(ph + beta * u) - np.sin(ph)), -(s / beta) * (np.cos(ph + beta * u) - np.cos(ph))
+
+
+def swarm_pos(beta, u):
+    """every electron's position (mean free paths) at time u ≥ 0."""
+    Tc, P, s, ph = _swarm(beta)
+    u = min(max(u, 0.0), float(Tc[:, -1].min()) - 1e-6)
+    k = np.clip((Tc <= u).sum(1) - 1, 0, SW_K - 1)
+    n = np.arange(SW_N)
+    dx, dy = _arc(beta, s[n, k], ph[n, k], u - Tc[n, k])
+    return P[n, k, 0] + dx, P[n, k, 1] + dy
+
+
+def scene_swarm(t, assets, c):
+    """Close-up first: a few electrons, straight flights above, curled ones
+    below (cue "half": the half-turn note). At cue "release" the view pulls
+    back and the whole swarm starts from one point in both panels: the free
+    one spreads, the magnetized one stays. The spread readouts are measured
+    from the walk itself."""
+    t_rel = c.get("release", 6.0)
+    img = blank()
+    d = style.draw(img)
+    head(d, "electrons, seen from above")
+    layer = style.new("RGB", (0, 0, 0))
+    ld = style.draw(layer)
+    pts_glow, readout = [], {}
+    for box, beta in ((SW_TOP, 0.0), (SW_BOT, BETA_1TORR)):
+        cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+        if t < t_rel:                             # close-up
+            px, rate, trail, m, a = SW_A_PX, SW_A_RATE, 2.6, 36, 1.0 - fade(t, t_rel - 0.3, 0.3)
+            who, anchors = range(len(SW_ANCHOR)), SW_ANCHOR
+            u = rate * max(t - 0.2, 0.0)
+        else:
+            px, rate, trail, m, a = SW_B_PX, SW_B_RATE, 0.5, 6, fade(t, t_rel, 0.25)
+            who, anchors = range(SW_N), None
+            u = rate * (t - t_rel)
+        hist = [swarm_pos(beta, u - trail * j / (m - 1)) for j in range(m) if u - trail * j / (m - 1) >= 0]
+        for i in who:
+            ox, oy = (cx + anchors[i][0], cy + anchors[i][1]) if anchors else (cx, cy)
+            line = [(ox + h[0][i] * px, oy + h[1][i] * px) for h in hist]
+            if len(line) > 1:
+                ld.line(line, fill=col(ORANGE, 0.55 * a), width=3 if anchors else 2)
+            x, y = line[0]
+            r = 6 if anchors else 3
+            ld.ellipse([x - r, y - r, x + r, y + r], fill=col((255, 224, 190), a))
+            pts_glow.append((x, y, 10 if anchors else 6, (0.6 if anchors else 0.34) * a))
+        if not anchors:
+            x, y = hist[0]
+            readout[box] = math.sqrt(float(np.mean(x * x + y * y))) * MFP_1TORR_UM
+    layer = glow(layer, pts_glow)
+    for box in (SW_TOP, SW_BOT):
+        bp = tuple(int(round(v * S)) for v in box)
+        img.paste(layer.crop(bp), bp)
+    d = style.draw(img)
+    for box, name in ((SW_TOP, "no magnet"), (SW_BOT, "under the magnet · 61 mT")):
+        d.rounded_rectangle(box, radius=24, outline=DIM, width=2)
+        d.text((box[0] + 22, box[1] + 28), name, font=F_SMALL, fill=WHITE if box is SW_BOT else GREY, anchor="lm")
+        if box in readout:
+            d.text((box[2] - 22, box[1] + 28), "spread " + _fmt_len(readout[box]), font=FS(24, True),
+                   fill=HOT if box is SW_BOT else GREY, anchor="rm")
+    if c.get("half", 99.0) <= t < t_rel:
+        d.text((SW_BOT[2] - 22, SW_BOT[1] + 28), "half a turn between hits", font=FS(24, True), fill=HOT, anchor="rm")
+    px = SW_A_PX if t < t_rel else SW_B_PX
+    n_mfp = 1 if t < t_rel else 5
+    sx, sy = SW_BOT[0] + 24, SW_BOT[3] - 28
+    d.line([(sx, sy), (sx + n_mfp * px, sy)], fill=GREY, width=3)
+    d.text((sx + n_mfp * px + 12, sy), _fmt_len(n_mfp * MFP_1TORR_UM), font=F_SMALL, fill=GREY, anchor="lm")
+    d.text((SW_BOT[2] - 20, sy), "1 Torr · field out of the screen", font=F_SMALL, fill=GREY, anchor="rm")
+    return img
+
+
 def scene_thin(t, assets, c):
     """one continuous sweep, thin gas → normal air (cue "air"): the curl disappears."""
     img, d, to_px, total = _e_frame("one electron, seen from above")
@@ -514,7 +614,7 @@ def scene_lever2(t, assets, c):
     k = fade(t, c.get("crowd", 2.5), 0.8)
     img = glow(img, [(mx, y_dish - 8, 40, 0.15 + 0.55 * k)])
     d = style.draw(img)
-    head(d, "two: the metal crowds the field")
+    head(d, "the magnet is also metal")
     d.line([(90, y_dish), (630, y_dish)], fill=(150, 100, 70), width=6)
     d.text((630, y_dish + 30), "dish (high voltage)", font=F_SMALL, fill=GREY, anchor="rm")
     a_m = fade(t, 0.3, 0.3)
@@ -525,7 +625,14 @@ def scene_lever2(t, assets, c):
         top = (x + (mx - x) * 0.85 * pull, 240 + (my + 34 - 240) * pull)
         pts = [(x + (top[0] - x) * s ** 1.6, y_dish - (y_dish - top[1]) * s) for s in np.linspace(0, 1, 18)]
         d.line(pts, fill=style.mix(DIM, WHITE, 0.25 + 0.75 * pull), width=2)
-    d.text((mx, 830), "electric field lines", font=F_SMALL, fill=GREY, anchor="mm")
+    d.text((mx, 215), "electric field lines", font=F_SMALL, fill=GREY, anchor="mm")
+    a_b = fade(t, c.get("bars", 99.0), 0.3)
+    if a_b > 0:                                   # |electric| / |magnetic| = 22.7 / 8.3 at 1 Torr (#1237)
+        for i, (name, v, cc) in enumerate((("magnetic", 1.0, GREY), ("electric (metal)", 2.7, HOT))):
+            y = 775 + 44 * i
+            d.text((300, y), name, font=F_SMALL, fill=col(cc, a_b), anchor="rm")
+            d.rectangle([316, y - 11, 316 + 100 * v * smooth(a_b), y + 11], fill=col(cc, a_b))
+            d.text((330 + 100 * v, y), f"{v:g}×" if v != 1 else "1", font=FS(24, True), fill=col(cc, a_b), anchor="lm")
     return img
 
 
@@ -584,6 +691,7 @@ def scene_test(t, assets, c=None):
 
 
 DIAGRAMS = {
+    "swarm": scene_swarm,
     "gas": scene_gas,
     "rf": scene_rf,
     "curl": scene_curl,

@@ -13,23 +13,21 @@ LINES = [
     ("pay2", "Flick it, and it snaps off, then gets caught again on the next lap."),
     ("pay3", "Lift the magnet away, and it's free."),
     ("ask", "So what is a plasmoid? And why would a magnet grab it?"),
-    ("def", "A plasmoid is a blob of plasma that holds its shape, and moves as one thing."),
-    ("gas", "Here, a radio-frequency field shakes the loose electrons in thin gas. "
-            "They slam into atoms, knock more electrons free, and the atoms glow as they settle."),
-    ("rf", "The obvious guess: magnets push on electric currents. But this current flips direction "
-           "millions of times a second. So the push flips too, and averages out to nothing."),
-    ("curl", "What a magnet really does is curl electrons. Every moving electron gets bent into a circle. "
-             "Between collisions it turns about half a circle, so it can't wander off."),
-    ("thin", "That only works in thin gas. In normal air, an electron hits an atom long before it can curl."),
-    ("arcs", "It's the same reason the sun's plasma traces arcs. It's following magnetic field lines."),
-    ("live", "Now: a plasma only stays lit where its electrons gain energy faster than they lose it."),
-    ("lever1", "A magnet tips that balance two ways. First, curled electrons leak heat slowly. "
-               "So the gas beneath the magnet runs hotter, and is easier to keep lit."),
-    ("lever2", "Second, the magnet is a lump of metal, and metal crowds the electric field beneath it."),
-    ("hand", "That's what pulled the thread toward the hand."),
-    ("foot", "So the plasmoid's foot settles where the plasma is easiest to keep lit. "
-             "At this pressure, the electric effect is nearly three times the magnetic one. "
-             "Thin the gas further, and the magnetic effect grows."),
+    ("def", "A plasmoid is a blob of plasma that holds its shape. "
+            "It lives wherever its electrons win: gaining energy faster than they lose it."),
+    ("gas", "A radio field shakes them. They slam into atoms, knock more electrons free, and the gas glows."),
+    ("curl", "A magnet curls electrons. In thin gas, each one turns about half a circle before it hits an atom."),
+    ("swarm", "So under the magnet, electrons can't wander off. They keep their heat, "
+              "and the plasma there is easier to keep lit."),
+    ("metal", "The magnet is also metal, and metal crowds the electric field, the way the hand drew the thread. "
+              "At this pressure that is the stronger effect, nearly three to one."),
+    # the answer, on the footage that raised the question
+    ("back1", "So that is where electrons win, and where the foot stays."),
+    ("back2", "Drag the magnet, and that spot moves. The foot follows."),
+    ("back3", "Flick it, and the spot outruns the foot, until the next lap."),
+    ("back4", "Lift the magnet, and no spot is special. It races free."),
+    ("sun", "And the sun? The same curl, on a scale bigger than the Earth: "
+            "plasma strung along magnetic field lines."),
     # the sign-off, spelled the way it should be said (captions: CAPTIONS)
     ("outro", "This video was made entirely with open source code. My voice is called ribbit. "
               "R, I, B, T, dot dev. Build your imagination. V cad dot I O."),
