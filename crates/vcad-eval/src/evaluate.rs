@@ -656,7 +656,24 @@ fn evaluate_inner(
                             if let Some(nt) = node_timings.get(&part_def.root.to_string()) {
                                 root_ms.push((format!("partDef {id}"), nt.eval_ms + mesh_ms));
                             }
-                            store(&cache_key, &m);
+                            // Same rule as roots: a known-wrong definition is
+                            // reported and never cached (a hit has no solid).
+                            let wrong: Vec<String> = solid
+                                .as_ref()
+                                .map(|s| s.wrong_geometry_events().map(|e| e.to_string()).collect())
+                                .unwrap_or_default();
+                            if wrong.is_empty() {
+                                store(&cache_key, &m);
+                            } else {
+                                warnings.push(RootFailure {
+                                    scope: format!("partDef[{id:?}]"),
+                                    node_id: part_def.root,
+                                    error: format!(
+                                        "geometry is known to be wrong: {}",
+                                        wrong.join("; ")
+                                    ),
+                                });
+                            }
                             if let (Some(i), Some(h)) = (inc.as_deref_mut(), def_hash) {
                                 if matches!(cache.get(&part_def.root), Some(Some(_))) {
                                     i.put_mesh(part_def.root, h, &m);

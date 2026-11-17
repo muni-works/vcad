@@ -1300,6 +1300,7 @@ fn run_eval_json(path: &std::path::Path) -> Result<()> {
     let raw = serde_json::to_string(&doc)?;
     let report = vcad_render::report::eval_report(&raw).map_err(|e| anyhow::anyhow!("{e}"))?;
     println!("{}", serde_json::to_string_pretty(&report)?);
+    vcad_render::report::warn_wrong_geometry(&report.parts);
     if report.parts_failed > 0 {
         anyhow::bail!(
             "{} of {} part(s) failed to evaluate",

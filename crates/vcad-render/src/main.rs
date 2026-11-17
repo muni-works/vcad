@@ -1451,6 +1451,7 @@ fn run_eval_json(input: &Path, cli: &Cli) -> Result<(), String> {
     let report = vcad_render::report::eval_report(&raw)?;
     let json = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
     println!("{json}");
+    vcad_render::report::warn_wrong_geometry(&report.parts);
     if report.parts_failed > 0 {
         return Err(format!(
             "{} of {} part(s) failed to evaluate",
