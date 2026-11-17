@@ -20,6 +20,8 @@ vcad-kernel-acoustics = { path = "../../../../crates/vcad-kernel-acoustics" }
 vcad-kernel-thermal = { path = "../../../../crates/vcad-kernel-thermal" }
 vcad-kernel-antenna = { path = "../../../../crates/vcad-kernel-antenna" }
 vcad-kernel-dfm = { path = "../../../../crates/vcad-kernel-dfm" }
+vcad-kernel-em = { path = "../../../../crates/vcad-kernel-em" }
+vcad-kernel-tolerance = { path = "../../../../crates/vcad-kernel-tolerance" }
 
 # Mirror the vcad workspace's patches (root Cargo.toml) so this out-of-tree
 # package resolves the same sources.
