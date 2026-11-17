@@ -5856,11 +5856,22 @@ fn tessellate_spherical_region(
         let golden = PI * (3.0 - 5f64.sqrt());
         let flip_every = (n_fib / 64).max(32);
         let mut inserted = 0usize;
-        for k in 0..n_fib {
-            let z = 1.0 - 2.0 * (k as f64 + 0.5) / n_fib as f64;
-            let rho = (1.0 - z * z).max(0.0).sqrt();
-            let (st, ct) = (golden * k as f64).sin_cos();
-            let p = center + radius * Vec3::new(rho * ct, rho * st, z);
+        // Insert from the chart's rim inward — nearest the projection pole
+        // first. Each seed then lands in a triangle of about its own scale.
+        // In lattice order (down the lattice's own axis) a hole off that
+        // axis gets every seed dropped into the same few giant rim
+        // triangles, and the needle fans that leaves take more flips to
+        // untangle than the passes below are allowed.
+        let mut seeds: Vec<Point3> = (0..n_fib)
+            .map(|k| {
+                let z = 1.0 - 2.0 * (k as f64 + 0.5) / n_fib as f64;
+                let rho = (1.0 - z * z).max(0.0).sqrt();
+                let (st, ct) = (golden * k as f64).sin_cos();
+                center + radius * Vec3::new(rho * ct, rho * st, z)
+            })
+            .collect();
+        seeds.sort_by(|a, b| (*b - center).dot(q).total_cmp(&(*a - center).dot(q)));
+        for p in seeds {
             if pts[..n_boundary]
                 .iter()
                 .any(|b| (*b - p).norm() < 0.6 * target)
@@ -6112,28 +6123,11 @@ fn tessellate_spherical_cap(
         // leaves gaps once the boundary is denser than its ring (a rod's
         // 89-point seam: 136 open edges and a ball 16% under volume).
         // It is the fallback, for a loop the region tessellator declines.
-        //
-        // One class of hole still goes to the ring path on purpose: a hole
-        // smaller than the export repair's own weld tolerance (a few
-        // microns across — two balls overlapping by a hair). The region
-        // tessellator handles such a loop (see `large_cap_region_terminates`)
-        // and the boolean then comes out closed, but a closed result is
-        // KEPT, and the watertightness repair run on every exported mesh
-        // spends over a minute welding and re-splitting a feature below
-        // its tolerance: four near-tangent torture cases went from 20 ms
-        // to 70 s. On the ring path they come out cracked, are condemned,
-        // and take the mesh boolean. The cost is in the repair pass, not
-        // here; until that is bounded, sub-tolerance holes keep their old
-        // route.
-        const SUB_TOLERANCE_HOLE: f64 = 5e-3;
-        let hole_radius = radius.abs() * (PI - avg_angle);
-        if hole_radius >= SUB_TOLERANCE_HOLE {
-            if let Some(sphere) = surface.as_any().downcast_ref::<SphereSurface>() {
-                if let Some(mesh) =
-                    tessellate_spherical_region(sphere, &[loop_verts.to_vec()], params, reversed)
-                {
-                    return mesh;
-                }
+        if let Some(sphere) = surface.as_any().downcast_ref::<SphereSurface>() {
+            if let Some(mesh) =
+                tessellate_spherical_region(sphere, &[loop_verts.to_vec()], params, reversed)
+            {
+                return mesh;
             }
         }
         // `tessellate_large_spherical_cap` was written under the legacy
@@ -9838,6 +9832,24 @@ mod tests {
                 [0.0, 0.09224054851776753, 0.3120046639784817],
             ],
         ];
+        // The near-tangent bite of `tan-sphere-sphere-e3-u`: a pinprick on
+        // the x axis, across the seed lattice's own axis.
+        let (rx, rhox) = (5.0f64, 0.00044721f64);
+        cases.push((
+            "pinprick on x".to_string(),
+            vcad_kernel_geom::SphereSurface::new(rx),
+            (0..32)
+                .map(|i| {
+                    let t = 2.0 * PI * i as f64 / 32.0;
+                    Point3::new(
+                        rx * rhox.cos(),
+                        rx * rhox.sin() * t.sin(),
+                        -rx * rhox.sin() * t.cos(),
+                    )
+                })
+                .rev()
+                .collect(),
+        ));
         for (i, bite) in bites.iter().enumerate() {
             let ring = bite.iter().map(|p| Point3::new(p[0], p[1], p[2])).collect();
             cases.push((format!("corner bite {i}"), corner.clone(), ring));
@@ -9863,7 +9875,7 @@ mod tests {
                     0.5 * (p(t[1]) - p(t[0])).cross(p(t[2]) - p(t[0])).norm()
                 })
                 .sum();
-            let ball = 4.0 * PI * r * r;
+            let ball = 4.0 * PI * sphere.radius * sphere.radius;
             eprintln!(
                 "{label}: {} tris, area {area:.2} of {ball:.2}, {secs:.2}s",
                 mesh.indices.len() / 3
@@ -9880,10 +9892,9 @@ mod tests {
             closed_against(&mesh, n);
         }
 
-        // And through the cap entry point the boolean pipeline uses, for a
-        // hole just above the sub-tolerance cut-off.
+        // And through the cap entry point the boolean pipeline uses.
         let sphere = vcad_kernel_geom::SphereSurface::new(r);
-        let rho = 0.003f64;
+        let rho = 0.00045f64;
         let ring: Vec<Point3> = (0..32)
             .map(|i| {
                 let t = 2.0 * PI * i as f64 / 32.0;
@@ -9898,8 +9909,9 @@ mod tests {
         let mesh = tessellate_spherical_cap(&sphere, &ring, &params, false);
         assert!(
             mesh.indices.len() / 3 < 20_000,
-            "small hole: runaway refinement"
+            "pinprick: runaway refinement"
         );
+        closed_against(&mesh, 32);
         closed_against(&mesh, 32);
     }
 
