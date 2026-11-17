@@ -12,7 +12,8 @@
 ;   filament  a lofted tube, spike tip → foot, thickening toward the foot
 ;   foot      the bright knot where the filament meets the glow sheet
 ;   sheet     the faint diffuse disc glow over the whole dish
-; Its shape is stylised exactly as in docs/plasmoid-sim/render.py (the
+; Its shape is stylised exactly as in the old docs/plasmoid-sim/render.py,
+; now `vcad-render --sim plasmoid` (crates/vcad-render/src/plasmoid.rs) (the
 ; reduced model has no filament geometry); its *rendering* is not.
 
 [let dish-r 85]
@@ -41,7 +42,7 @@
 
 ; ── the plasma ───────────────────────────────────────────────────────────
 ; Filament centreline: straight from the spike tip (0, 0, 10) to the foot
-; (mx, my, 2), lifted by the same arch render.py draws.
+; (mx, my, 2), lifted by the same arch `--sim plasmoid` draws.
 [let tip-z [+ [- 0 dish-depth] 24]]
 [let pi 3.14159265]
 [let fil-x [fn [s] [* mx s]]]

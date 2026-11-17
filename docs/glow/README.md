@@ -12,7 +12,7 @@ Demo and evidence for glowing media and HDR bloom (`vcad-kernel-raytrace::medium
 | `after.jpg` | media + `--bloom 0.25 --bloom-radius 0.06 --tonemap exp --lighting dark`, 1024 spp |
 | `after-no-bloom.jpg` | same media, ACES, no bloom, 512 spp — the physically based part alone |
 | `before.jpg` | the same document with the plasma as *surface* emitters (`emissive`), studio rig, no bloom — the best vcad could do before |
-| `comparison.jpg` | numpy reference (`docs/plasmoid-sim/render.py`, poster frame) · before · after |
+| `comparison.jpg` | numpy reference (the old `docs/plasmoid-sim/render.py` poster frame; that script is removed, superseded by `vcad-render --sim plasmoid`) · before · after |
 
 Reproduce:
 
@@ -39,7 +39,8 @@ scatter; `--tonemap exp` is a display curve. The reference image is *all*
 post-process: its filament, glow and halo are drawn in 2-D.
 
 **Stylised in both:** the filament's shape. The reduced plasmoid model has no
-filament geometry, so `plasmoid-glow.loon` draws the same arch `render.py` does.
+filament geometry, so `plasmoid-glow.loon` draws the same arch the old numpy `render.py` did (now
+`crates/vcad-render/src/plasmoid.rs`, behind `--sim plasmoid`).
 
 ## Known limits
 

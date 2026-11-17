@@ -40,6 +40,8 @@ python3 figures.py /tmp/clip .        # reads the trajectory.csv the render wrot
 ../../target/release/vcad-render plasmoid-dish.vcad --jpeg device.jpg --size 720
 ```
 
+The committed clip was rendered this way on a shared Linux box: about 30 s a frame at steady state (16 exposure positions, 32 spp each), so 600 frames take roughly 5 h of wall time per process. Two processes split it in half with `--frames` and `--resume`.
+
 ## 1. Physics triage
 
 **What the device probably is.** This is a hypothesis built from one still frame. It looks like a solid-state Tesla coil or RF resonator, with its top load replaced by a shallow dish and a central spike. The diffuse disc glow and the glassy spike suggest a low-pressure envelope (an RF glow), not an open-air streamer. Dimensions in the loon model are scaled by eye from the hand.
