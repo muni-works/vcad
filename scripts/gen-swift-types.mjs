@@ -32,7 +32,7 @@ const check = process.argv.includes("--check");
 // types the engine vocabulary references by name.
 const SOURCES = [
   { crate: "vcad-app", types: null },
-  { crate: "vcad-ir", types: ["MaterialDef", "MaterialPhysical"] },
+  { crate: "vcad-ir", types: ["MaterialDef", "MaterialPhysical", "VolumeEmission"] },
 ];
 // Referenced but deliberately untyped in Swift: the IR document is huge and
 // the editor reads it as a JSON tree. `ThermalConductivity` is an untagged

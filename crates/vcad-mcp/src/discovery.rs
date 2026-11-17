@@ -94,17 +94,60 @@ fn pid_alive(_pid: i64) -> bool {
 }
 
 /// Live instances in `dir`, newest first.
+///
+/// Records whose pid is dead are deleted on the way: a crashed, force-quit or
+/// SIGKILLed app never runs its `willTerminate` cleanup, and a stale file
+/// misleads every client that reads the directory itself (scripts, older
+/// shims). `vcad mcp` resolves its target through here at startup
+/// ([`select_from_env`]), so startup and listing both prune. Only files that
+/// parsed as a record and name a dead pid are removed; unreadable files are
+/// left alone. The `app.json` "most recent" pointer next to `dir` goes too
+/// when it names a dead pid.
 pub fn list_instances(dir: &Path) -> Vec<InstanceRecord> {
-    let mut out: Vec<InstanceRecord> = std::fs::read_dir(dir)
+    let mut out = Vec::new();
+    for path in std::fs::read_dir(dir)
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-        .filter_map(|e| serde_json::from_slice(&std::fs::read(e.path()).ok()?).ok())
-        .filter(|r: &InstanceRecord| pid_alive(r.pid))
-        .collect();
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "json"))
+    {
+        let Some(r) = std::fs::read(&path)
+            .ok()
+            .and_then(|b| serde_json::from_slice::<InstanceRecord>(&b).ok())
+        else {
+            continue;
+        };
+        if pid_alive(r.pid) {
+            out.push(r);
+        } else if cfg!(unix) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    prune_dead_pointer(dir);
     out.sort_by(|a, b| b.started.cmp(&a.started));
     out
+}
+
+/// Remove `<dir>/../app.json` when the pid it names is dead.
+fn prune_dead_pointer(dir: &Path) {
+    #[derive(Deserialize)]
+    struct PidOnly {
+        pid: i64,
+    }
+    if !cfg!(unix) {
+        return;
+    }
+    let Some(pointer) = dir.parent().map(|p| p.join("app.json")) else {
+        return;
+    };
+    let dead = std::fs::read(&pointer)
+        .ok()
+        .and_then(|b| serde_json::from_slice::<PidOnly>(&b).ok())
+        .is_some_and(|r| !pid_alive(r.pid));
+    if dead {
+        let _ = std::fs::remove_file(&pointer);
+    }
 }
 
 fn same_path(a: &str, b: &str) -> bool {
@@ -270,23 +313,39 @@ pub fn attach_http_stdio(url: &str) -> std::io::Result<()> {
         let is_request = serde_json::from_str::<Value>(line)
             .ok()
             .is_some_and(|v| v.get("id").is_some() && v.get("method").is_some());
+        let id = || {
+            serde_json::from_str::<Value>(line)
+                .ok()
+                .and_then(|v| v.get("id").cloned())
+                .unwrap_or(Value::Null)
+        };
         match post(url, line, None) {
             Ok(body) if is_request && !body.is_empty() => emit(&body),
+            // A request answered with nothing: the app dropped the
+            // connection mid-call. Answer it, or the client waits forever.
+            Ok(_) if is_request => emit(&went_away(id(), url, "no response")),
             Ok(_) => {}
-            Err(e) if is_request => {
-                let id = serde_json::from_str::<Value>(line)
-                    .ok()
-                    .and_then(|v| v.get("id").cloned())
-                    .unwrap_or(Value::Null);
-                emit(
-                    &serde_json::json!({"jsonrpc": "2.0", "id": id, "error": {"code": -32000, "message": format!("vcad.app at {url} went away: {e}")}})
-                        .to_string(),
-                );
-            }
+            Err(e) if is_request => emit(&went_away(id(), url, &e.to_string())),
             Err(_) => {}
         }
     }
     Ok(())
+}
+
+/// The JSON-RPC error answering a request the app never answered.
+fn went_away(id: Value, url: &str, why: &str) -> String {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": {
+            "code": -32000,
+            "message": format!(
+                "vcad.app at {url} went away ({why}). It may have quit or been relaunched; \
+                 restart this MCP connection to pick up the running instance."
+            ),
+        },
+    })
+    .to_string()
 }
 
 #[cfg(test)]
@@ -351,7 +410,52 @@ mod tests {
             "dead.json",
             serde_json::json!({"pid": 999_999_999, "port": 3, "started": "2027-01-01"}),
         );
+        std::fs::write(dir.path().join("junk.json"), "not a record").unwrap();
         let l = list_instances(dir.path());
         assert_eq!(l.iter().map(|r| r.port).collect::<Vec<_>>(), vec![2, 1]);
+        // The dead pid's file is pruned; live and unparseable files stay.
+        if cfg!(unix) {
+            assert!(!dir.path().join("dead.json").exists());
+        }
+        assert!(dir.path().join("a.json").exists());
+        assert!(dir.path().join("junk.json").exists());
+    }
+
+    #[test]
+    fn prunes_a_pointer_at_a_dead_pid() {
+        let home = tempfile::tempdir().unwrap();
+        let dir = home.path().join("instances");
+        std::fs::create_dir_all(&dir).unwrap();
+        let pointer = home.path().join("app.json");
+        let me = std::process::id() as i64;
+        std::fs::write(
+            &pointer,
+            serde_json::json!({"pid": me, "port": 1}).to_string(),
+        )
+        .unwrap();
+        list_instances(&dir);
+        assert!(pointer.exists(), "a live pointer stays");
+        std::fs::write(
+            &pointer,
+            serde_json::json!({"pid": 999_999_999, "port": 1}).to_string(),
+        )
+        .unwrap();
+        list_instances(&dir);
+        if cfg!(unix) {
+            assert!(!pointer.exists(), "a dead pointer goes");
+        }
+    }
+
+    #[test]
+    fn went_away_names_the_request() {
+        let v: Value =
+            serde_json::from_str(&went_away(Value::from(7), "http://x/mcp", "no response"))
+                .unwrap();
+        assert_eq!(v["id"], 7);
+        assert_eq!(v["error"]["code"], -32000);
+        assert!(v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("went away"));
     }
 }

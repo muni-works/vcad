@@ -3387,6 +3387,196 @@
     }
   },
   {
+    "name": "magnetic_field",
+    "title": "Magnetic Field",
+    "description": "Magnetic field (B, tesla) of coils and permanent magnets placed anywhere in 3D: current loops, finite solenoids, axially magnetized disc/rod/ring magnets, and rectangular block magnets, each with a full pose (mm + axis or Euler degrees), superposed and sampled at points and/or on a plane grid. Returns B vectors, |B|, optional ∇|B| (T/m), the peak, and per-source dipole moment + method. Exact closed forms throughout (elliptic integrals for loops/solenoids/cylinders, charge-sheet formula for blocks); magnets are ideal rigid magnetization (μr = 1, no iron, no mutual demagnetization). Fails closed on a query point exactly on a filament or magnet edge. Use it to size a magnet for a target field, check a Helmholtz/coil pair's uniformity, or map a motor/steering field. Fast: milliseconds per thousand points.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "description": "One source. `type` selects the fields: `loop` {radius_mm, current_a, turns=1, wire_radius_mm=0}; `solenoid` {radius_mm, length_mm, current_a, turns, n_loops?}; `cylinder_magnet` {radius_mm, inner_radius_mm=0 (ring magnet if >0), length_mm, remanence_t, n_loops?}; `block_magnet` {size_mm: [x, y, z] (z = magnetization), remanence_t}. All centered on `pose.position_mm`. Remanence: N52 ≈ 1.43 T, N42 ≈ 1.3, ferrite ≈ 0.4. `n_loops` swaps the exact closed form for a loop stack.",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "loop",
+                  "solenoid",
+                  "cylinder_magnet",
+                  "block_magnet"
+                ]
+              },
+              "radius_mm": {
+                "type": "number"
+              },
+              "inner_radius_mm": {
+                "type": "number"
+              },
+              "length_mm": {
+                "type": "number"
+              },
+              "size_mm": {
+                "type": "array",
+                "items": {
+                  "type": "number"
+                },
+                "minItems": 3,
+                "maxItems": 3
+              },
+              "current_a": {
+                "type": "number"
+              },
+              "turns": {
+                "type": "number"
+              },
+              "wire_radius_mm": {
+                "type": "number"
+              },
+              "remanence_t": {
+                "type": "number"
+              },
+              "n_loops": {
+                "type": "number"
+              },
+              "pose": {
+                "type": "object",
+                "description": "Placement. The source's local +z is its coil axis / north pole. Give `axis` (+ optional `x_axis` to fix a block's roll) OR `rotation_deg` (Euler X,Y,Z degrees, R = Rx·Ry·Rz — the IR Rotate convention), not both. Omitted = at the origin, axis +Z.",
+                "properties": {
+                  "position_mm": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "Source center, mm."
+                  },
+                  "axis": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "Local +z direction (need not be unit)."
+                  },
+                  "x_axis": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "With `axis`: local +x direction (orthogonal part used)."
+                  },
+                  "rotation_deg": {
+                    "type": "array",
+                    "items": {
+                      "type": "number"
+                    },
+                    "minItems": 3,
+                    "maxItems": 3,
+                    "description": "Euler angles about X, Y, Z, deg."
+                  }
+                }
+              }
+            }
+          },
+          "description": "Sources to superpose (free space, linear)."
+        },
+        "points_mm": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 3,
+            "maxItems": 3
+          },
+          "description": "Query points, mm."
+        },
+        "grid": {
+          "type": "object",
+          "required": [
+            "u_range_mm",
+            "v_range_mm",
+            "nu",
+            "nv"
+          ],
+          "description": "Plane grid origin + u·u_dir + v·v_dir, appended after points_mm, row-major (index = offset + iv·nu + iu). Total points ≤ 20000.",
+          "properties": {
+            "origin_mm": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 3,
+              "maxItems": 3,
+              "description": "Default [0, 0, 0]."
+            },
+            "u_dir": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 3,
+              "maxItems": 3,
+              "description": "Default +X."
+            },
+            "v_dir": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 3,
+              "maxItems": 3,
+              "description": "Default +Y."
+            },
+            "u_range_mm": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "v_range_mm": {
+              "type": "array",
+              "items": {
+                "type": "number"
+              },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "nu": {
+              "type": "number"
+            },
+            "nv": {
+              "type": "number"
+            }
+          }
+        },
+        "gradient": {
+          "type": "boolean",
+          "description": "Also return ∇|B| (T/m) per point. Default false."
+        }
+      },
+      "required": [
+        "sources"
+      ]
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
     "name": "simulate_em",
     "title": "Simulate EM Fields",
     "description": "Electromagnetic field solve (finite-volume SOR, the differentiable FEMM replacement): axisymmetric magnetostatics (coil inductance, stored energy, axial force — solenoids, coaxial coil pairs), planar magnetostatics (motor cross-section torque and forces per meter of depth, permanent magnets, optional saturable B-H iron), or electrostatics (two-terminal capacitance) — as data plus `vcad.em-claims/1` sets and unified-receipt claims, each with a two-independent-routes cross-check residual (energy vs linkage, JxB vs Maxwell stress, charge vs energy). Predictions carry basis \"predicted\" and roll up Provisional until measured. Static/2D only: no eddy currents or AC here, no 3D end effects, planar results are per meter of depth. Deterministic. Cost ~O((nx*ny)^1.5) SOR sweeps; the 81x81 default runs in well under a second — raise the grid for tight tolerances.",

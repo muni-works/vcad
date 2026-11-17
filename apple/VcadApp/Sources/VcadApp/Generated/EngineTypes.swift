@@ -2386,6 +2386,14 @@ public struct MaterialDef: Codable, Equatable, Sendable {
     /// pixel (0,0), so on a face in the XY plane shown upright to a camera
     /// looking along +Y, `u` runs along +X and `v` along −Y.
     public var emissiveMapV: [Double]?
+    /// Volumetric emission: the part is a glowing **medium** (a plasma, a
+    /// discharge, a flame), not a surface. The photoreal path tracer renders
+    /// its solid as an emissive participating medium — no surface, no
+    /// shading, radiance accumulated along every ray that crosses it — and
+    /// ignores `color`/`metallic`/`roughness` for it. Drafting and raster
+    /// views still draw the solid; the native viewport draws it as an
+    /// emissive, see-through body.
+    public var volumeEmission: VolumeEmission?
     /// Physical properties the solvers read (elastic, thermal, dielectric,
     /// magnetic, electrical). Every field is optional: a property the
     /// document leaves out falls back to the [`materials`] library entry for
@@ -2394,7 +2402,7 @@ public struct MaterialDef: Codable, Equatable, Sendable {
     /// not repeated here; it is [`density`](Self::density) above.
     public var physical: MaterialPhysical?
 
-    public init(name: String, color: [Double], metallic: Double, roughness: Double, density: Double? = nil, friction: Double? = nil, transmission: Double? = nil, ior: Double? = nil, thickness: Double? = nil, attenuationDistance: Double? = nil, attenuationColor: [Double]? = nil, clearcoat: Double? = nil, clearcoatRoughness: Double? = nil, anisotropy: Double? = nil, emissive: [Double]? = nil, emissiveStrength: Double? = nil, emissiveMap: String? = nil, emissiveMapOrigin: [Double]? = nil, emissiveMapU: [Double]? = nil, emissiveMapV: [Double]? = nil, physical: MaterialPhysical? = nil) {
+    public init(name: String, color: [Double], metallic: Double, roughness: Double, density: Double? = nil, friction: Double? = nil, transmission: Double? = nil, ior: Double? = nil, thickness: Double? = nil, attenuationDistance: Double? = nil, attenuationColor: [Double]? = nil, clearcoat: Double? = nil, clearcoatRoughness: Double? = nil, anisotropy: Double? = nil, emissive: [Double]? = nil, emissiveStrength: Double? = nil, emissiveMap: String? = nil, emissiveMapOrigin: [Double]? = nil, emissiveMapU: [Double]? = nil, emissiveMapV: [Double]? = nil, volumeEmission: VolumeEmission? = nil, physical: MaterialPhysical? = nil) {
         self.name = name
         self.color = color
         self.metallic = metallic
@@ -2415,6 +2423,7 @@ public struct MaterialDef: Codable, Equatable, Sendable {
         self.emissiveMapOrigin = emissiveMapOrigin
         self.emissiveMapU = emissiveMapU
         self.emissiveMapV = emissiveMapV
+        self.volumeEmission = volumeEmission
         self.physical = physical
     }
 
@@ -2440,6 +2449,7 @@ public struct MaterialDef: Codable, Equatable, Sendable {
         emissiveMapOrigin = try c.decodeIfPresent([Double].self, forKey: "emissiveMapOrigin")
         emissiveMapU = try c.decodeIfPresent([Double].self, forKey: "emissiveMapU")
         emissiveMapV = try c.decodeIfPresent([Double].self, forKey: "emissiveMapV")
+        volumeEmission = try c.decodeIfPresent(VolumeEmission.self, forKey: "volumeEmission")
         physical = try c.decodeIfPresent(MaterialPhysical.self, forKey: "physical")
     }
 
@@ -2465,6 +2475,7 @@ public struct MaterialDef: Codable, Equatable, Sendable {
         try c.encodeIfPresent(emissiveMapOrigin, forKey: "emissiveMapOrigin")
         try c.encodeIfPresent(emissiveMapU, forKey: "emissiveMapU")
         try c.encodeIfPresent(emissiveMapV, forKey: "emissiveMapV")
+        try c.encodeIfPresent(volumeEmission, forKey: "volumeEmission")
         try c.encodeIfPresent(physical, forKey: "physical")
     }
 }
@@ -2622,5 +2633,55 @@ public struct ToolCall: Codable, Equatable, Sendable {
         var c = encoder.container(keyedBy: GenKey.self)
         try c.encode(tool, forKey: "tool")
         try c.encode(args, forKey: "args")
+    }
+}
+
+// MARK: - VolumeEmission
+
+/// Emission from a volume rather than a surface — see
+/// [`MaterialDef::volume_emission`].
+///
+/// The medium follows the emission–absorption radiative-transfer model: a
+/// ray crossing `L` millimetres of uniform medium picks up
+/// `(ε/κ)·(1 − e^{−κL})`, which is `ε·L` when `absorption` is zero, where
+/// `ε = color · intensity` is radiance per millimetre.
+public struct VolumeEmission: Codable, Equatable, Sendable {
+    /// Emission colour, linear RGB `[r, g, b]` in 0.0..1.0 (default white).
+    public var color: [Double]?
+    /// Emitted radiance per millimetre of path, multiplying `color`, in the
+    /// renderer's radiance units (the studio key light is ~15). A 5 mm
+    /// filament at intensity 2 reads about as bright as a lit screen.
+    public var intensity: Double
+    /// Absorption coefficient κ, per millimetre (default 0: emission only).
+    /// A medium thicker than `1/κ` saturates toward `color·intensity/κ` and
+    /// starts to hide what is behind it.
+    public var absorption: Double?
+    /// Soft-edge depth in millimetres: density ramps (smoothstep) from zero
+    /// at the solid's boundary to full this far inside. Default 0, a
+    /// hard-edged uniform medium. Set it to about the part's half-thickness
+    /// for a core that glows hottest in the middle.
+    public var falloff: Double?
+
+    public init(color: [Double]? = nil, intensity: Double, absorption: Double? = nil, falloff: Double? = nil) {
+        self.color = color
+        self.intensity = intensity
+        self.absorption = absorption
+        self.falloff = falloff
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: GenKey.self)
+        color = try c.decodeIfPresent([Double].self, forKey: "color")
+        intensity = try c.decode(Double.self, forKey: "intensity")
+        absorption = try c.decodeIfPresent(Double.self, forKey: "absorption")
+        falloff = try c.decodeIfPresent(Double.self, forKey: "falloff")
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: GenKey.self)
+        try c.encodeIfPresent(color, forKey: "color")
+        try c.encode(intensity, forKey: "intensity")
+        try c.encodeIfPresent(absorption, forKey: "absorption")
+        try c.encodeIfPresent(falloff, forKey: "falloff")
     }
 }
