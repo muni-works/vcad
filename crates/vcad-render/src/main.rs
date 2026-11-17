@@ -48,9 +48,12 @@
 //! evaluated — and its per-part geometry prepared — exactly *once* for the
 //! whole sequence; each frame only re-solves forward kinematics, re-places
 //! the parts, and re-draws. Poses come from the document's own timeline, or
-//! from the keyframe file given as `--animate <keys.json>`. The camera is
-//! framed on the union of every pose, so the subject neither swims nor
-//! clips, and every frame comes out the same size.
+//! from the keyframe file given as `--animate <keys.json>`. Joint,
+//! visibility and explode tracks and the timeline's camera shots
+//! (turntable/orbit/focus/static) are honoured; parameter tracks are refused.
+//! The camera is framed on the union of every visible pose, so the subject
+//! neither swims nor clips, and every frame comes out the same size — a
+//! moving camera keeps one canvas and one scale for the whole shot.
 //!
 //! Any style animates: bare `--animate` draws the default drafting line art
 //! (tens of milliseconds a frame), `--raytrace --animate` traces analytic
