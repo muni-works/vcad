@@ -432,9 +432,9 @@ export function embroideryPatternToMeshWithKernel(
  * Kernel-preferred mesh placement: use the WASM `transformMeshBuffers`
  * binding when the loaded kernel has it, otherwise fall back to the TS
  * {@link transformMesh}. Same convention either way: scale → rotate
- * (Rz·Ry·Rx, degrees) → translate on positions, rotation only on normals.
- * A placement read off a `Rotate` wrapper must come through
- * `findWrappedRoot`, which converts the Rx·Ry·Rz `CsgOp::Rotate` angles.
+ * (degrees; Rz·Ry·Rx, or Rx·Ry·Rz when `rotateOrder` is "xyz") → translate
+ * on positions, rotation only on normals. `findWrappedRoot` tags a placement
+ * read off a `Rotate` wrapper "xyz" so it matches `Solid.rotate`.
  */
 export function transformMeshWithKernel(
   mesh: TriangleMesh,
@@ -482,14 +482,16 @@ export function transformMesh(
   const cy = Math.cos(ry), sy = Math.sin(ry);
   const cz = Math.cos(rz), sz = Math.sin(rz);
 
+  // Default Rz·Ry·Rx (Transform3D); "xyz" = Rx·Ry·Rz (raw CsgOp::Rotate).
+  const xyz = transform.rotateOrder === "xyz";
   const m00 = cy * cz;
-  const m01 = sx * sy * cz - cx * sz;
-  const m02 = cx * sy * cz + sx * sz;
-  const m10 = cy * sz;
-  const m11 = sx * sy * sz + cx * cz;
-  const m12 = cx * sy * sz - sx * cz;
-  const m20 = -sy;
-  const m21 = sx * cy;
+  const m01 = xyz ? -cy * sz : sx * sy * cz - cx * sz;
+  const m02 = xyz ? sy : cx * sy * cz + sx * sz;
+  const m10 = xyz ? cx * sz + sx * sy * cz : cy * sz;
+  const m11 = xyz ? cx * cz - sx * sy * sz : sx * sy * sz + cx * cz;
+  const m12 = xyz ? -sx * cy : cx * sy * sz - sx * cz;
+  const m20 = xyz ? sx * sz - cx * sy * cz : -sy;
+  const m21 = xyz ? sx * cz + cx * sy * sz : sx * cy;
   const m22 = cx * cy;
 
   for (let i = 0; i < mesh.positions.length; i += 3) {

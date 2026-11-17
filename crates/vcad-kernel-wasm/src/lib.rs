@@ -586,6 +586,10 @@ struct WasmPlacement {
     translate: WasmVec3,
     rotate: WasmVec3,
     scale: WasmVec3,
+    /// `"xyz"`: `rotate` is raw `CsgOp::Rotate` angles (Rx·Ry·Rz). Absent:
+    /// the `Transform3D` order (Rz·Ry·Rx).
+    #[serde(default, rename = "rotateOrder", skip_serializing_if = "Option::is_none")]
+    rotate_order: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -603,11 +607,12 @@ struct WasmTransformedMesh {
     normals: Option<Vec<f32>>,
 }
 
-/// Apply a placement (`scale → rotate → translate`, rotation Rz·Ry·Rx in
-/// degrees — the engine `transformMesh` / `Transform3D` convention, NOT a
-/// `CsgOp::Rotate`'s Rx·Ry·Rz) to flat mesh buffers.
+/// Apply a placement (`scale → rotate → translate`, rotation in degrees) to
+/// flat mesh buffers — the engine `transformMesh` contract.
 ///
-/// `transform_json` is `{ translate: {x,y,z}, rotate: {x,y,z}, scale: {x,y,z} }`.
+/// `transform_json` is `{ translate: {x,y,z}, rotate: {x,y,z}, scale: {x,y,z},
+/// rotateOrder? }`. Rotation is Rz·Ry·Rx (`Transform3D`) by default;
+/// `rotateOrder: "xyz"` means raw `CsgOp::Rotate` angles, Rx·Ry·Rz.
 /// Positions get the full placement; normals (optional) get the rotation
 /// only. Returns `{ positions, normals? }`.
 #[wasm_bindgen(js_name = transformMeshBuffers)]
@@ -620,12 +625,19 @@ pub fn transform_mesh_buffers(
         serde_json::from_str(transform_json).map_err(|e| JsError::new(&e.to_string()))?;
     let mut positions = positions;
     let mut normals = normals;
-    vcad_kernel_tessellate::placement::apply_placement(
+    use vcad_kernel_tessellate::placement::{apply_placement_ordered, RotationOrder};
+    let order = match t.rotate_order.as_deref() {
+        None => RotationOrder::Zyx,
+        Some("xyz") => RotationOrder::Xyz,
+        Some(o) => return Err(JsError::new(&format!("unknown rotateOrder {o:?}"))),
+    };
+    apply_placement_ordered(
         &mut positions,
         normals.as_deref_mut(),
         [t.translate.x, t.translate.y, t.translate.z],
         [t.rotate.x, t.rotate.y, t.rotate.z],
         [t.scale.x, t.scale.y, t.scale.z],
+        order,
     );
     serde_wasm_bindgen::to_value(&WasmTransformedMesh { positions, normals })
         .map_err(|e| JsError::new(&e.to_string()))

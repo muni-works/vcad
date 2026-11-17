@@ -5,7 +5,6 @@ import { Engine, type EvaluatedScene } from "../index.js";
 import {
   findWrappedRoot,
   isIdentityTransform,
-  rotateOpToPlacementEuler,
 } from "../transform-walk.js";
 import { findEmbroideryPattern, transformMesh } from "../evaluate.js";
 
@@ -1127,8 +1126,8 @@ describe("transform-walk (findWrappedRoot)", () => {
 
   it("places a multi-axis Rotate the way the kernel rotates a BRep (Rx·Ry·Rz)", () => {
     // CsgOp::Rotate is R = Rx·Ry·Rz (Z acts first) — Solid.rotate's order.
-    // The walker hands transformMesh (Rz·Ry·Rx, the Transform3D order) the
-    // equivalent angles, so a wrapped ImportedMesh lands where a BRep would.
+    // The walker tags the placement rotateOrder "xyz", so transformMesh
+    // turns a wrapped ImportedMesh the way the kernel turns a BRep.
     const d = Math.PI / 180;
     const rx = (a: number, [x, y, z]: number[]) => [x, Math.cos(a) * y - Math.sin(a) * z, Math.sin(a) * y + Math.cos(a) * z];
     const ry = (a: number, [x, y, z]: number[]) => [Math.cos(a) * x + Math.sin(a) * z, y, -Math.sin(a) * x + Math.cos(a) * z];
@@ -1156,10 +1155,16 @@ describe("transform-walk (findWrappedRoot)", () => {
     }
   });
 
-  it("passes single-axis Rotate angles through bit-exact", () => {
-    for (const a of [{ x: 37, y: 0, z: 0 }, { x: 0, y: -12.5, z: 0 }, { x: 0, y: 0, z: 90 }]) {
-      expect(rotateOpToPlacementEuler(a)).toEqual(a);
-    }
+  it("keeps Rotate angles raw and tags them rotateOrder xyz", () => {
+    const angles = { x: 30, y: 45, z: 60 };
+    const nodes = nodeMap([
+      cube(1),
+      { id: 2, name: null, op: { type: "Rotate", child: 1, angles } },
+    ] as unknown as Node[]);
+    const t = findWrappedRoot(2, nodes, matchCube)!.transform;
+    expect(t.rotate).toEqual(angles);
+    expect(t.rotateOrder).toBe("xyz");
+    expect(findWrappedRoot(1, nodes, matchCube)!.transform.rotateOrder).toBeUndefined();
   });
 
   it("returns null at a non-matching, non-transform op (and on a missing node)", () => {
