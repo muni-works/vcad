@@ -78,7 +78,10 @@ fn clearance_hole_lies_on_an_oblique_axis() {
         let p = [5.0, -7.0, 11.0];
         let r = max_radial(&vs, p, d);
         // M4 clearance is ⌀4.5; a mis-oriented 40 mm cylinder strays ~tens of mm.
-        assert!(r < 2.25 + 0.05, "axis {axis:?}: vertex {r:.2} mm off the hole axis");
+        assert!(
+            r < 2.25 + 0.05,
+            "axis {axis:?}: vertex {r:.2} mm off the hole axis"
+        );
         let (lo, hi) = span(&vs, d);
         let base = dot(p, d);
         assert!(

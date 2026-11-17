@@ -607,12 +607,7 @@ pub fn axis_to_euler_xyz(axis: Vec3) -> Vec3 {
         // `0.0 - y`, not `-y`: keeps −Z at a = +180° rather than −180°.
         (0.0 - y).atan2(z)
     };
-    // Normalise −0 so callers' `!= 0.0` "is there a rotation?" tests hold.
-    let deg = |r: f64| {
-        let d = r.to_degrees();
-        if d == 0.0 { 0.0 } else { d }
-    };
-    Vec3::new(deg(a), deg(b), 0.0)
+    Vec3::new(a.to_degrees(), b.to_degrees(), 0.0)
 }
 
 #[cfg(test)]

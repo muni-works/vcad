@@ -247,7 +247,11 @@ const IDENTITY: [[f64; 4]; 4] = [
 fn euler_xyz_deg(m: &[[f64; 4]; 4]) -> (f64, f64, f64) {
     let sb = m[0][2];
     let (x, y, z) = if sb.abs() < 1.0 - 1e-12 {
-        ((-m[1][2]).atan2(m[2][2]), sb.asin(), (-m[0][1]).atan2(m[0][0]))
+        (
+            (-m[1][2]).atan2(m[2][2]),
+            sb.asin(),
+            (-m[0][1]).atan2(m[0][0]),
+        )
     } else {
         // Gimbal lock: pitch is ±90°, fold X into Z.
         (

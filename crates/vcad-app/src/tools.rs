@@ -1028,7 +1028,10 @@ mod tests {
                 );
             }
             let back = inverse_rotate(rotate(p, deg), deg);
-            assert!((0..3).all(|i| (back[i] - p[i]).abs() < 1e-9), "{deg:?}: {back:?}");
+            assert!(
+                (0..3).all(|i| (back[i] - p[i]).abs() < 1e-9),
+                "{deg:?}: {back:?}"
+            );
         }
     }
 
