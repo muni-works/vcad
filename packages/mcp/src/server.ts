@@ -445,6 +445,7 @@ const LIST_TOOL_ORDER: readonly string[] = [
   // ── Charged-particle optics (fusor / IEC / trap family) ────
   "simulate_charged_particles",
   "optimize_electrodes",
+  "magnetic_field",
   // ── Physics solver wave 2 (predicted claims, Provisional) ──
   "simulate_em",
   "simulate_photonics",
