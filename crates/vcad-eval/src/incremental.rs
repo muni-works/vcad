@@ -26,6 +26,10 @@ use crate::EvaluatedMesh;
 pub struct IncrementalCache {
     solids: HashMap<NodeId, (u64, Option<Solid>)>,
     meshes: HashMap<NodeId, (u64, EvaluatedMesh)>,
+    /// The solid each root mesh was tessellated from: the node's solid with
+    /// its coplanar faces merged (see `evaluate::finish_root`). Kept beside
+    /// the mesh so a reused mesh's face ids keep naming this solid's faces.
+    root_solids: HashMap<NodeId, (u64, Solid)>,
     /// Clash results between two roots, keyed by both roots' subtree
     /// fingerprints (which cover their placement): `None` = no clash.
     clashes: HashMap<(u64, u64), Option<EvaluatedMesh>>,
@@ -58,6 +62,7 @@ impl IncrementalCache {
     pub fn clear(&mut self) {
         self.solids.clear();
         self.meshes.clear();
+        self.root_solids.clear();
         self.clashes.clear();
     }
 
@@ -77,6 +82,8 @@ impl IncrementalCache {
         hashes: &HashMap<NodeId, u64>,
     ) -> HashMap<NodeId, Option<Solid>> {
         self.meshes.retain(|id, (h, _)| hashes.get(id) == Some(h));
+        self.root_solids
+            .retain(|id, (h, _)| hashes.get(id) == Some(h));
         let valid: HashMap<NodeId, Option<Solid>> = self
             .solids
             .drain()
@@ -118,6 +125,18 @@ impl IncrementalCache {
 
     pub(crate) fn put_mesh(&mut self, root: NodeId, hash: u64, mesh: &EvaluatedMesh) {
         self.meshes.insert(root, (hash, mesh.clone()));
+    }
+
+    /// The finished solid a root's cached mesh was tessellated from.
+    pub(crate) fn root_solid(&self, root: NodeId, hash: u64) -> Option<Solid> {
+        self.root_solids
+            .get(&root)
+            .filter(|(h, _)| *h == hash)
+            .map(|(_, s)| s.clone())
+    }
+
+    pub(crate) fn put_root_solid(&mut self, root: NodeId, hash: u64, solid: &Solid) {
+        self.root_solids.insert(root, (hash, solid.clone()));
     }
 }
 

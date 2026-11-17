@@ -14,6 +14,9 @@
 //! - the **air** — the enclosed box air (cavity minus the port tube's wall
 //!   and bore). Its volume is the lumped compliance volume `V_box`.
 //!
+//! - optional **obstacles** — rigid solids inside the box that the air is
+//!   carved around (a driver motor). Listed explicitly, never inferred.
+//!
 //! Neither alone is enough: the air part doesn't contain the port, and the
 //! enclosure alone can't say which void is "inside" once the driver cutout
 //! and the port both connect it to the outside. Together they determine the
@@ -37,6 +40,12 @@
 //!    piston sits on the inner face; its cells are not fluid). Any other
 //!    exposure of the air — a gap between air and wall, a side vent, an
 //!    annular slot, a second port — is an error naming where it is.
+//!    Before that, each listed obstacle's cells (measured like the other
+//!    parts, so an off-axis or non-axisymmetric obstacle is refused by
+//!    name) must sit in a void sealed inside the air; that whole void — the
+//!    part plus any of it the part doesn't fill, like a magnetic gap — is
+//!    rigid. `V_box` stays the air part's volume. A void no listed obstacle
+//!    sits in is still an error.
 //! 4. Fluid = air ∪ port bore. Per axial slab, the fluid's radial intervals
 //!    give a segment (outer radius) and obstacles (the gaps — e.g. an
 //!    internal port's tube wall). If the port vents through the bottom,
@@ -137,6 +146,14 @@ pub struct CavityExtraction {
     pub enclosure: String,
     /// The enclosed box air, same selector rules.
     pub air: String,
+    /// Rigid solids inside the box that the air is carved around (a driver
+    /// motor, a brace), same selector rules. Each must be coaxial and
+    /// axisymmetric (refused by part name otherwise) and must bound the
+    /// air. A void carved out of the air is accepted as rigid only when a
+    /// listed part sits in it; with none listed, any such void is an error.
+    /// Default: none.
+    #[serde(default)]
+    pub obstacles: Vec<String>,
     /// Driver piston radius, mm: a literal, or the name of a document
     /// parameter (kept named in the spec, so scrubbing it re-prices the
     /// simulation). Default: the driver cutout's radius.
@@ -171,6 +188,18 @@ pub struct ExtractedCavity {
     pub driver_cutout_radius_mm: Option<f64>,
     /// Faces measured: `[enclosure, air]`.
     pub face_counts: [usize; 2],
+    /// The listed obstacle parts, in selection order.
+    #[serde(default)]
+    pub obstacle_parts: Vec<String>,
+    /// Volume of the listed obstacle parts inside the box, mm³ (exact
+    /// profile).
+    #[serde(default)]
+    pub obstacle_solid_mm3: f64,
+    /// Volume of the voids carved out of the air that the listed parts sit
+    /// in but don't fill (e.g. a motor's magnetic gap), mm³. Treated as
+    /// rigid, like the parts: the air part, not the obstacles, sets `V_box`.
+    #[serde(default)]
+    pub obstacle_void_mm3: f64,
     /// Defaults and modelling choices made during extraction.
     pub assumptions: Vec<String>,
 }
@@ -567,6 +596,8 @@ fn cluster(mut v: Vec<f64>, tol: f64) -> Vec<f64> {
 enum Cell {
     Enclosure,
     Air,
+    /// A listed rigid obstacle, or a void in the air that one sits in.
+    Obstacle,
     Neither,
 }
 
@@ -699,10 +730,27 @@ pub fn extract_cavity(
     let (o, axis) = find_axis(&encl)?;
     let pe = measure(&encl, o, axis, &tol)?;
     let pa = measure(&air, o, axis, &tol)?;
+    // Obstacles: measured against the enclosure axis, so an off-axis or
+    // non-axisymmetric part is refused here, by name.
+    let mut obst: Vec<(ScenePart, AxiPart)> = Vec::new();
+    for name in &sel.obstacles {
+        let part = find_part(doc, &scene, name)?;
+        let dup = std::ptr::eq(part.brep, encl.brep)
+            || std::ptr::eq(part.brep, air.brep)
+            || obst.iter().any(|(q, _)| std::ptr::eq(q.brep, part.brep));
+        if dup {
+            return Err(not_repr(format!(
+                "obstacle {name:?} selects a part that is already the enclosure, the air or \
+                 another obstacle; each obstacle must be its own part"
+            )));
+        }
+        let m = measure(&part, o, axis, &tol)?;
+        obst.push((part, m));
+    }
 
     // Cell edges.
     let mut rs: Vec<f64> = vec![0.0];
-    for p in [&pe, &pa] {
+    for p in [&pe, &pa].into_iter().chain(obst.iter().map(|(_, m)| m)) {
         rs.extend(p.radii.iter().copied());
         for a in &p.planes {
             rs.push(a.r_out);
@@ -713,7 +761,12 @@ pub fn extract_cavity(
     }
     let rs = cluster(rs, tol.length_mm.max(1e-9));
     let zs = cluster(
-        pe.planes.iter().chain(&pa.planes).map(|a| a.z).collect(),
+        pe.planes
+            .iter()
+            .chain(&pa.planes)
+            .chain(obst.iter().flat_map(|(_, m)| &m.planes))
+            .map(|a| a.z)
+            .collect(),
         tol.length_mm.max(1e-9),
     );
     if zs.len() < 2 || rs.len() < 2 {
@@ -734,10 +787,49 @@ pub fn extract_cavity(
         z,
         cells: vec![Cell::Neither; nk * nm],
     };
+    // Which listed obstacle (if any) owns each cell.
+    let mut owner: Vec<Option<usize>> = vec![None; nk * nm];
+    let span_msg = |g: &Grid, k: usize, m: usize| {
+        format!(
+            "r ∈ [{:.3}, {:.3}] mm, z ∈ [{:.3}, {:.3}] mm (axial position from the \
+             enclosure axis origin)",
+            g.r[k],
+            g.r[k + 1],
+            g.z[m],
+            g.z[m + 1]
+        )
+    };
     for m in 0..nm {
         for k in 0..nk {
             let (rc, zc) = (0.5 * (g.r[k] + g.r[k + 1]), 0.5 * (g.z[m] + g.z[m + 1]));
             let (e, a) = (inside(&pe.planes, rc, zc), inside(&pa.planes, rc, zc));
+            let mut ob = None;
+            for (i, (part, pm)) in obst.iter().enumerate() {
+                if !inside(&pm.planes, rc, zc) {
+                    continue;
+                }
+                let clash = if a {
+                    Some(air.name.as_str())
+                } else if e {
+                    Some(encl.name.as_str())
+                } else {
+                    ob.map(|j: usize| obst[j].0.name.as_str())
+                };
+                if let Some(other) = clash {
+                    return Err(not_repr(format!(
+                        "obstacle {:?} overlaps {other:?} at {}; an obstacle must sit in a \
+                         void of the air, clear of the enclosure and the other obstacles",
+                        part.name,
+                        span_msg(&g, k, m)
+                    )));
+                }
+                ob = Some(i);
+            }
+            if ob.is_some() {
+                owner[m * nk + k] = ob;
+                g.set(k, m, Cell::Obstacle);
+                continue;
+            }
             let c = match (e, a) {
                 (true, true) => {
                     return Err(not_repr(format!(
@@ -819,6 +911,104 @@ pub fn extract_cavity(
         }
     }
 
+    // Obstacles and the voids they sit in. Flood the non-air, non-enclosure
+    // cells: the component reaching the grid's outer sentinel is the
+    // outside (ports, driver cutout). Any other component is a void sealed
+    // inside the box; one that holds a listed obstacle is rigid as a whole
+    // (the part plus whatever of the void it doesn't fill). A void with no
+    // obstacle is left alone, so a gap between air and wall still fails
+    // below, naming where.
+    let neighbours = |k: usize, m: usize| {
+        let mut nb = Vec::with_capacity(4);
+        if k > 0 {
+            nb.push((k - 1, m));
+        }
+        if k + 1 < nk {
+            nb.push((k + 1, m));
+        }
+        if m > 0 {
+            nb.push((k, m - 1));
+        }
+        if m + 1 < nm {
+            nb.push((k, m + 1));
+        }
+        nb
+    };
+    let mut obstacle_solid = 0.0;
+    let mut obstacle_void = 0.0;
+    if !obst.is_empty() {
+        let open = |c: Cell| matches!(c, Cell::Neither | Cell::Obstacle);
+        let mut seen = vec![false; nk * nm];
+        for m0 in 0..nm {
+            for k0 in 0..nk {
+                if seen[m0 * nk + k0] || !open(g.at(k0, m0)) {
+                    continue;
+                }
+                seen[m0 * nk + k0] = true;
+                let mut comp = Vec::new();
+                let mut stack = vec![(k0, m0)];
+                while let Some((k, m)) = stack.pop() {
+                    comp.push((k, m));
+                    for (a, b) in neighbours(k, m) {
+                        if !seen[b * nk + a] && open(g.at(a, b)) {
+                            seen[b * nk + a] = true;
+                            stack.push((a, b));
+                        }
+                    }
+                }
+                let outside = comp
+                    .iter()
+                    .any(|&(k, m)| k + 1 == nk || m == 0 || m + 1 == nm);
+                let held = comp.iter().find_map(|&(k, m)| owner[m * nk + k]);
+                match (outside, held) {
+                    (_, None) => {}
+                    (true, Some(i)) => {
+                        let (k, m) = comp
+                            .iter()
+                            .copied()
+                            .find(|&(k, m)| owner[m * nk + k] == Some(i))
+                            .unwrap_or((k0, m0));
+                        return Err(not_repr(format!(
+                            "obstacle {:?} reaches open space (near {}): an obstacle must \
+                             sit in a void sealed inside the box air, not in a port, the \
+                             driver cutout or outside the box",
+                            obst[i].0.name,
+                            span_msg(&g, k, m)
+                        )));
+                    }
+                    (false, Some(_)) => {
+                        for &(k, m) in &comp {
+                            if g.at(k, m) == Cell::Obstacle {
+                                obstacle_solid += g.cell_volume(k, m);
+                            } else {
+                                obstacle_void += g.cell_volume(k, m);
+                                g.set(k, m, Cell::Obstacle);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Every listed obstacle must actually bound the air.
+        for (i, (part, _)) in obst.iter().enumerate() {
+            let touches = (0..nm).any(|m| {
+                (0..nk).any(|k| {
+                    owner[m * nk + k] == Some(i)
+                        && neighbours(k, m)
+                            .into_iter()
+                            .any(|(a, b)| g.at(a, b) == Cell::Air)
+                })
+            });
+            if !touches {
+                return Err(not_repr(format!(
+                    "obstacle {:?} doesn't bound the air part {:?} (no face of it meets the \
+                     air); list only solids the air is carved around",
+                    part.name, air.name
+                )));
+            }
+        }
+    }
+
     // Air ↔ N interfaces. Radial exposure is never representable.
     for m in 0..nm {
         for k in 0..nk - 1 {
@@ -830,7 +1020,8 @@ pub fn extract_cavity(
                 return Err(not_repr(format!(
                     "air part {:?} meets open space sideways at r = {:.3} mm, z ∈ [{:.3}, \
                      {:.3}] mm — a gap between the air and the enclosure wall, a side vent or \
-                     an annular slot; only coaxial axial ports are representable",
+                     an annular slot; only coaxial axial ports are representable (a solid \
+                     part the air is carved around belongs in `obstacles`)",
                     air.name,
                     g.r[k + 1],
                     g.z[m],
@@ -933,6 +1124,14 @@ pub fn extract_cavity(
         }
     };
     let mut assumptions = Vec::new();
+    if !obst.is_empty() {
+        let names: Vec<&str> = obst.iter().map(|(p, _)| p.name.as_str()).collect();
+        assumptions.push(format!(
+            "Rigid obstacles {names:?} ({obstacle_solid:.1} mm³) sit in a void carved out of \
+             the air; the {obstacle_void:.1} mm³ of that void they don't fill is treated as \
+             rigid too. V_box is the air part's own volume (it already excludes the void)."
+        ));
+    }
     if driver.is_none() {
         assumptions.push(format!(
             "Single opening (r = {:.3} mm) taken as the port; no driver cutout found, so the \
@@ -1178,13 +1377,17 @@ pub fn extract_cavity(
         .unwrap_or([0.0, 0.0]);
 
     // Grid: half the smallest feature, so every obstacle wall holds a node.
+    // Measured on the merged profile, not the raw slabs: an obstacle part's
+    // internal levels (a motor's yoke/magnet/plate stack) split slabs
+    // without adding any feature the field sees.
     let mut feats: Vec<f64> = Vec::new();
-    for sg in &geo {
-        feats.push(sg.s1 - sg.s0);
-        feats.push(sg.outer);
-        for &(ri, ro) in &sg.gaps {
-            feats.push(ro - ri);
-        }
+    for &(a, b, rr) in &segments {
+        feats.push(b - a);
+        feats.push(rr);
+    }
+    for &(ri, ro, a, b) in &obstacles {
+        feats.push(ro - ri);
+        feats.push(b - a);
     }
     feats.push(port_r);
     let min_feat = feats
@@ -1248,6 +1451,9 @@ pub fn extract_cavity(
         air_volume_mesh_mm3: air_volume_mesh,
         driver_cutout_radius_mm: cutout_r,
         face_counts: [pe.faces, pa.faces],
+        obstacle_parts: obst.iter().map(|(p, _)| p.name.clone()).collect(),
+        obstacle_solid_mm3: obstacle_solid,
+        obstacle_void_mm3: obstacle_void,
         assumptions,
     })
 }

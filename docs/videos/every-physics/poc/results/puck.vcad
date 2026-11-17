@@ -1,56 +1,12 @@
 {
   "version": "0.1",
   "nodes": {
-    "2": {
-      "id": 2,
+    "34": {
+      "id": 34,
       "name": null,
       "op": {
         "type": "Translate",
-        "child": 1,
-        "offset": {
-          "x": 0.0,
-          "y": 0.0,
-          "z": 3.0
-        }
-      }
-    },
-    "18": {
-      "id": 18,
-      "name": null,
-      "op": {
-        "type": "Cube",
-        "size": {
-          "x": 50.0,
-          "y": 50.0,
-          "z": 1.6
-        }
-      }
-    },
-    "3": {
-      "id": 3,
-      "name": null,
-      "op": {
-        "type": "Difference",
-        "left": 0,
-        "right": 2
-      }
-    },
-    "15": {
-      "id": 15,
-      "name": null,
-      "op": {
-        "type": "Cylinder",
-        "radius": 14.0,
-        "height": 60.0,
-        "segments": 0
-      }
-    },
-    "5": {
-      "id": 5,
-      "name": null,
-      "op": {
-        "type": "Translate",
-        "child": 4,
+        "child": 33,
         "offset": {
           "x": 0.0,
           "y": 0.0,
@@ -58,120 +14,17 @@
         }
       }
     },
-    "10": {
-      "id": 10,
-      "name": null,
-      "op": {
-        "type": "Cylinder",
-        "radius": 12.0,
-        "height": 62.0,
-        "segments": 0
-      }
-    },
-    "13": {
-      "id": 13,
-      "name": null,
-      "op": {
-        "type": "Cylinder",
-        "radius": 52.0,
-        "height": 114.0,
-        "segments": 0
-      }
-    },
-    "6": {
-      "id": 6,
-      "name": null,
-      "op": {
-        "type": "Difference",
-        "left": 3,
-        "right": 5
-      }
-    },
-    "8": {
-      "id": 8,
-      "name": null,
+    "48": {
+      "id": 48,
+      "name": "die",
       "op": {
         "type": "Translate",
-        "child": 7,
+        "child": 47,
         "offset": {
-          "x": 0.0,
-          "y": 0.0,
-          "z": 60.0
+          "x": -2.5,
+          "y": -2.5,
+          "z": 44.6
         }
-      }
-    },
-    "12": {
-      "id": 12,
-      "name": "enclosure",
-      "op": {
-        "type": "Difference",
-        "left": 9,
-        "right": 11
-      }
-    },
-    "0": {
-      "id": 0,
-      "name": null,
-      "op": {
-        "type": "Cylinder",
-        "radius": 55.0,
-        "height": 120.0,
-        "segments": 0
-      }
-    },
-    "14": {
-      "id": 14,
-      "name": null,
-      "op": {
-        "type": "Translate",
-        "child": 13,
-        "offset": {
-          "x": 0.0,
-          "y": 0.0,
-          "z": 3.0
-        }
-      }
-    },
-    "19": {
-      "id": 19,
-      "name": null,
-      "op": {
-        "type": "Translate",
-        "child": 18,
-        "offset": {
-          "x": -25.0,
-          "y": -25.0,
-          "z": 43.0
-        }
-      }
-    },
-    "7": {
-      "id": 7,
-      "name": null,
-      "op": {
-        "type": "Cylinder",
-        "radius": 14.0,
-        "height": 60.0,
-        "segments": 0
-      }
-    },
-    "1": {
-      "id": 1,
-      "name": null,
-      "op": {
-        "type": "Cylinder",
-        "radius": 52.0,
-        "height": 114.0,
-        "segments": 0
-      }
-    },
-    "9": {
-      "id": 9,
-      "name": null,
-      "op": {
-        "type": "Union",
-        "left": 6,
-        "right": 8
       }
     },
     "4": {
@@ -184,16 +37,47 @@
         "segments": 0
       }
     },
-    "16": {
-      "id": 16,
+    "42": {
+      "id": 42,
       "name": null,
       "op": {
+        "type": "Cylinder",
+        "radius": 30.0,
+        "height": 18.0,
+        "segments": 0
+      }
+    },
+    "35": {
+      "id": 35,
+      "name": null,
+      "op": {
+        "type": "Difference",
+        "left": 32,
+        "right": 34
+      }
+    },
+    "45": {
+      "id": 45,
+      "name": null,
+      "op": {
+        "type": "Cube",
+        "size": {
+          "x": 50.0,
+          "y": 50.0,
+          "z": 1.6
+        }
+      }
+    },
+    "26": {
+      "id": 26,
+      "name": "magnet",
+      "op": {
         "type": "Translate",
-        "child": 15,
+        "child": 25,
         "offset": {
           "x": 0.0,
           "y": 0.0,
-          "z": 60.0
+          "z": 22.0
         }
       }
     },
@@ -210,13 +94,641 @@
         }
       }
     },
+    "37": {
+      "id": 37,
+      "name": null,
+      "op": {
+        "type": "Cylinder",
+        "radius": 52.0,
+        "height": 114.0,
+        "segments": 0
+      }
+    },
+    "23": {
+      "id": 23,
+      "name": null,
+      "op": {
+        "type": "Cylinder",
+        "radius": 12.0,
+        "height": 10.0,
+        "segments": 0
+      }
+    },
+    "40": {
+      "id": 40,
+      "name": null,
+      "op": {
+        "type": "Translate",
+        "child": 39,
+        "offset": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 60.0
+        }
+      }
+    },
+    "36": {
+      "id": 36,
+      "name": "voice_coil",
+      "op": {
+        "type": "Translate",
+        "child": 35,
+        "offset": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 28.0
+        }
+      }
+    },
+    "2": {
+      "id": 2,
+      "name": null,
+      "op": {
+        "type": "Translate",
+        "child": 1,
+        "offset": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 3.0
+        }
+      }
+    },
+    "38": {
+      "id": 38,
+      "name": null,
+      "op": {
+        "type": "Translate",
+        "child": 37,
+        "offset": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 3.0
+        }
+      }
+    },
+    "44": {
+      "id": 44,
+      "name": "air",
+      "op": {
+        "type": "Difference",
+        "left": 41,
+        "right": 43
+      }
+    },
+    "15": {
+      "id": 15,
+      "name": null,
+      "op": {
+        "type": "Cylinder",
+        "radius": 35.075,
+        "height": 3.0,
+        "segments": 0
+      }
+    },
+    "20": {
+      "id": 20,
+      "name": null,
+      "op": {
+        "type": "Union",
+        "left": 18,
+        "right": 19
+      }
+    },
+    "19": {
+      "id": 19,
+      "name": null,
+      "op": {
+        "type": "Cylinder",
+        "radius": 30.0,
+        "height": 4.0,
+        "segments": 0
+      }
+    },
+    "6": {
+      "id": 6,
+      "name": null,
+      "op": {
+        "type": "Difference",
+        "left": 3,
+        "right": 5
+      }
+    },
+    "1": {
+      "id": 1,
+      "name": null,
+      "op": {
+        "type": "Cylinder",
+        "radius": 52.0,
+        "height": 114.0,
+        "segments": 0
+      }
+    },
+    "14": {
+      "id": 14,
+      "name": null,
+      "op": {
+        "type": "Translate",
+        "child": 13,
+        "offset": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": -2.0
+        }
+      }
+    },
+    "29": {
+      "id": 29,
+      "name": null,
+      "op": {
+        "type": "Translate",
+        "child": 28,
+        "offset": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": -1.0
+        }
+      }
+    },
+    "31": {
+      "id": 31,
+      "name": "top_plate",
+      "op": {
+        "type": "Translate",
+        "child": 30,
+        "offset": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 30.0
+        }
+      }
+    },
+    "32": {
+      "id": 32,
+      "name": null,
+      "op": {
+        "type": "Cylinder",
+        "radius": 10.15,
+        "height": 8.0,
+        "segments": 0
+      }
+    },
+    "22": {
+      "id": 22,
+      "name": null,
+      "op": {
+        "type": "Cylinder",
+        "radius": 30.0,
+        "height": 8.0,
+        "segments": 0
+      }
+    },
+    "43": {
+      "id": 43,
+      "name": null,
+      "op": {
+        "type": "Translate",
+        "child": 42,
+        "offset": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 18.0
+        }
+      }
+    },
+    "12": {
+      "id": 12,
+      "name": "enclosure",
+      "op": {
+        "type": "Difference",
+        "left": 9,
+        "right": 11
+      }
+    },
+    "8": {
+      "id": 8,
+      "name": null,
+      "op": {
+        "type": "Translate",
+        "child": 7,
+        "offset": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 60.0
+        }
+      }
+    },
+    "5": {
+      "id": 5,
+      "name": null,
+      "op": {
+        "type": "Translate",
+        "child": 4,
+        "offset": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": -1.0
+        }
+      }
+    },
+    "24": {
+      "id": 24,
+      "name": null,
+      "op": {
+        "type": "Translate",
+        "child": 23,
+        "offset": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": -1.0
+        }
+      }
+    },
+    "0": {
+      "id": 0,
+      "name": null,
+      "op": {
+        "type": "Cylinder",
+        "radius": 55.0,
+        "height": 120.0,
+        "segments": 0
+      }
+    },
     "17": {
       "id": 17,
       "name": null,
       "op": {
+        "type": "Cylinder",
+        "radius": 9.75,
+        "height": 15.0,
+        "segments": 0
+      }
+    },
+    "21": {
+      "id": 21,
+      "name": "yoke",
+      "op": {
+        "type": "Translate",
+        "child": 20,
+        "offset": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 18.0
+        }
+      }
+    },
+    "41": {
+      "id": 41,
+      "name": null,
+      "op": {
         "type": "Difference",
+        "left": 38,
+        "right": 40
+      }
+    },
+    "9000": {
+      "id": 9000,
+      "name": "PCB Board",
+      "op": {
+        "type": "PcbBoard",
+        "board": {
+          "outline": {
+            "vertices": [
+              {
+                "x": 0.0,
+                "y": 0.0
+              },
+              {
+                "x": 50.0,
+                "y": 0.0
+              },
+              {
+                "x": 50.0,
+                "y": 50.0
+              },
+              {
+                "x": 0.0,
+                "y": 50.0
+              }
+            ],
+            "thickness": 1.6
+          },
+          "stackup": {
+            "layers": [
+              {
+                "layer": "FCu",
+                "copperThickness": 0.035
+              },
+              {
+                "layer": "BCu",
+                "copperThickness": 0.035,
+                "dielectricThickness": 1.53,
+                "dielectricEr": 4.4,
+                "material": "FR4"
+              }
+            ]
+          },
+          "nets": [
+            {
+              "id": "ANT",
+              "name": "ANT"
+            },
+            {
+              "id": "GND",
+              "name": "GND"
+            }
+          ],
+          "rules": {
+            "defaultRules": {
+              "name": "Default",
+              "traceWidth": 0.25,
+              "clearance": 0.2,
+              "viaDiameter": 0.6,
+              "viaDrill": 0.3
+            },
+            "edgeClearance": 0.3,
+            "holeToHole": 0.25,
+            "minAnnularRing": 0.13,
+            "minDrill": 0.3,
+            "minMicroviaDrill": 0.1,
+            "minMicroviaDiameter": 0.2
+          },
+          "footprints": [
+            {
+              "ref": "J1",
+              "value": "U.FL",
+              "footprintName": "U.FL",
+              "position": {
+                "x": 25.0,
+                "y": 18.0
+              },
+              "rotation": 0.0,
+              "front": true,
+              "pads": [
+                {
+                  "number": "1",
+                  "padType": "SMD",
+                  "shape": {
+                    "type": "Rect",
+                    "width": 1.0,
+                    "height": 1.0
+                  },
+                  "position": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "rotation": 0.0,
+                  "net": "ANT",
+                  "layers": [
+                    "FCu"
+                  ]
+                },
+                {
+                  "number": "2",
+                  "padType": "SMD",
+                  "shape": {
+                    "type": "Rect",
+                    "width": 1.0,
+                    "height": 2.0
+                  },
+                  "position": {
+                    "x": -1.5,
+                    "y": -1.5
+                  },
+                  "rotation": 0.0,
+                  "net": "GND",
+                  "layers": [
+                    "FCu"
+                  ]
+                }
+              ]
+            }
+          ],
+          "traces": [
+            {
+              "start": {
+                "x": 25.0,
+                "y": 18.0
+              },
+              "end": {
+                "x": 25.0,
+                "y": 48.0
+              },
+              "width": 1.0,
+              "layer": "FCu",
+              "net": "ANT"
+            }
+          ],
+          "vias": [],
+          "zones": [
+            {
+              "outline": [
+                {
+                  "x": 0.0,
+                  "y": 0.0
+                },
+                {
+                  "x": 50.0,
+                  "y": 0.0
+                },
+                {
+                  "x": 50.0,
+                  "y": 18.0
+                },
+                {
+                  "x": 0.0,
+                  "y": 18.0
+                }
+              ],
+              "net": "GND",
+              "layer": "FCu",
+              "clearance": 0.3,
+              "minArea": 0.0,
+              "fillType": "Solid",
+              "thermalRelief": "Relief",
+              "priority": 0
+            },
+            {
+              "outline": [
+                {
+                  "x": 0.0,
+                  "y": 0.0
+                },
+                {
+                  "x": 50.0,
+                  "y": 0.0
+                },
+                {
+                  "x": 50.0,
+                  "y": 18.0
+                },
+                {
+                  "x": 0.0,
+                  "y": 18.0
+                }
+              ],
+              "net": "GND",
+              "layer": "BCu",
+              "clearance": 0.3,
+              "minArea": 0.0,
+              "fillType": "Solid",
+              "thermalRelief": "Relief",
+              "priority": 0
+            }
+          ]
+        }
+      }
+    },
+    "46": {
+      "id": 46,
+      "name": "board",
+      "op": {
+        "type": "Translate",
+        "child": 45,
+        "offset": {
+          "x": -25.0,
+          "y": -25.0,
+          "z": 43.0
+        }
+      }
+    },
+    "27": {
+      "id": 27,
+      "name": null,
+      "op": {
+        "type": "Cylinder",
+        "radius": 30.0,
+        "height": 4.0,
+        "segments": 0
+      }
+    },
+    "33": {
+      "id": 33,
+      "name": null,
+      "op": {
+        "type": "Cylinder",
+        "radius": 9.85,
+        "height": 10.0,
+        "segments": 0
+      }
+    },
+    "18": {
+      "id": 18,
+      "name": null,
+      "op": {
+        "type": "Translate",
+        "child": 17,
+        "offset": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 1.0
+        }
+      }
+    },
+    "25": {
+      "id": 25,
+      "name": null,
+      "op": {
+        "type": "Difference",
+        "left": 22,
+        "right": 24
+      }
+    },
+    "13": {
+      "id": 13,
+      "name": null,
+      "op": {
+        "type": "Cylinder",
+        "radius": 40.0,
+        "height": 2.0,
+        "segments": 0
+      }
+    },
+    "3": {
+      "id": 3,
+      "name": null,
+      "op": {
+        "type": "Difference",
+        "left": 0,
+        "right": 2
+      }
+    },
+    "28": {
+      "id": 28,
+      "name": null,
+      "op": {
+        "type": "Cylinder",
+        "radius": 10.25,
+        "height": 6.0,
+        "segments": 0
+      }
+    },
+    "39": {
+      "id": 39,
+      "name": null,
+      "op": {
+        "type": "Cylinder",
+        "radius": 14.0,
+        "height": 60.0,
+        "segments": 0
+      }
+    },
+    "16": {
+      "id": 16,
+      "name": "driver_frame",
+      "op": {
+        "type": "Union",
         "left": 14,
-        "right": 16
+        "right": 15
+      }
+    },
+    "9": {
+      "id": 9,
+      "name": null,
+      "op": {
+        "type": "Union",
+        "left": 6,
+        "right": 8
+      }
+    },
+    "10": {
+      "id": 10,
+      "name": null,
+      "op": {
+        "type": "Cylinder",
+        "radius": 12.0,
+        "height": 62.0,
+        "segments": 0
+      }
+    },
+    "47": {
+      "id": 47,
+      "name": null,
+      "op": {
+        "type": "Cube",
+        "size": {
+          "x": 5.0,
+          "y": 5.0,
+          "z": 1.0
+        }
+      }
+    },
+    "7": {
+      "id": 7,
+      "name": null,
+      "op": {
+        "type": "Cylinder",
+        "radius": 14.0,
+        "height": 60.0,
+        "segments": 0
+      }
+    },
+    "30": {
+      "id": 30,
+      "name": null,
+      "op": {
+        "type": "Difference",
+        "left": 27,
+        "right": 29
       }
     }
   },
@@ -239,20 +751,125 @@
       "material": "pla"
     },
     {
-      "root": 17,
+      "root": 16,
+      "material": "pla"
+    },
+    {
+      "root": 21,
+      "material": "steel-1010"
+    },
+    {
+      "root": 26,
+      "material": "ferrite-y30"
+    },
+    {
+      "root": 31,
+      "material": "steel-1010"
+    },
+    {
+      "root": 36,
+      "material": "copper"
+    },
+    {
+      "root": 44,
       "material": "air"
     },
     {
-      "root": 19,
+      "root": 46,
       "material": "fr4"
+    },
+    {
+      "root": 48,
+      "material": "silicon"
     }
   ],
   "parameters": {
+    "vc_current": {
+      "value": 0.0,
+      "unit": "A"
+    },
+    "port_len": {
+      "value": 60.0,
+      "unit": "mm",
+      "min": 20.0,
+      "max": 100.0
+    },
+    "port_wall": {
+      "value": 2.0,
+      "unit": "mm",
+      "min": 1.2,
+      "max": 4.0
+    },
+    "motor_z": {
+      "value": 18.0,
+      "unit": "mm",
+      "min": 8.0,
+      "max": 40.0
+    },
+    "ant_len": {
+      "value": 30.0,
+      "unit": "mm",
+      "min": 20.0,
+      "max": 40.0
+    },
+    "board_w": {
+      "value": 50.0,
+      "unit": "mm",
+      "min": 30.0,
+      "max": 70.0
+    },
+    "driver_cut_r": {
+      "value": 35.0,
+      "unit": "mm",
+      "min": 22.0,
+      "max": 48.0,
+      "tolerance": {
+        "plus": 0.1,
+        "minus": 0.1
+      }
+    },
+    "driver_r": {
+      "value": 32.0,
+      "unit": "mm",
+      "min": 20.0,
+      "max": 45.0
+    },
+    "body_r": {
+      "value": 55.0,
+      "unit": "mm",
+      "min": 40.0,
+      "max": 80.0
+    },
+    "driver_frame_r": {
+      "value": 35.075,
+      "unit": "mm",
+      "min": 22.0,
+      "max": 48.0,
+      "tolerance": {
+        "plus": 0.1,
+        "minus": 0.1
+      }
+    },
+    "amp_loss_w": {
+      "value": 0.8,
+      "unit": "W",
+      "min": 0.1,
+      "max": 5.0
+    },
+    "vc_turns": {
+      "value": 60.0
+    },
     "port_r": {
       "value": 12.0,
       "unit": "mm",
       "min": 6.0,
       "max": 20.0
+    },
+    "board_l": {
+      "value": 50.0,
+      "unit": "mm",
+      "min": 30.0,
+      "max": 70.0
     },
     "wall": {
       "value": 3.0,
@@ -265,86 +882,122 @@
       "unit": "mm",
       "min": 80.0,
       "max": 200.0
-    },
-    "driver_cut_r": {
-      "value": 35.0,
-      "unit": "mm",
-      "min": 22.0,
-      "max": 48.0
-    },
-    "board_w": {
-      "value": 50.0,
-      "unit": "mm",
-      "min": 30.0,
-      "max": 70.0
-    },
-    "board_l": {
-      "value": 50.0,
-      "unit": "mm",
-      "min": 30.0,
-      "max": 70.0
-    },
-    "amp_loss_w": {
-      "value": 0.8,
-      "unit": "W",
-      "min": 0.1,
-      "max": 5.0
-    },
-    "port_wall": {
-      "value": 2.0,
-      "unit": "mm",
-      "min": 1.2,
-      "max": 4.0
-    },
-    "ant_len": {
-      "value": 30.0,
-      "unit": "mm",
-      "min": 20.0,
-      "max": 40.0
-    },
-    "body_r": {
-      "value": 55.0,
-      "unit": "mm",
-      "min": 40.0,
-      "max": 80.0
-    },
-    "port_len": {
-      "value": 60.0,
-      "unit": "mm",
-      "min": 20.0,
-      "max": 100.0
-    },
-    "driver_r": {
-      "value": 32.0,
-      "unit": "mm",
-      "min": 20.0,
-      "max": 45.0
     }
   },
   "bindings": {
-    "2:offset.z": "(0) + (1) * wall",
-    "7:radius": "(0) + (1) * port_r + (1) * port_wall",
-    "13:radius": "(0) + (1) * body_r + (-1) * wall",
-    "0:radius": "(0) + (1) * body_r",
-    "4:radius": "(0) + (1) * driver_cut_r",
-    "7:height": "(0) + (1) * port_len",
-    "10:radius": "(0) + (1) * port_r",
+    "26:offset.z": "(4) + (1) * motor_z",
     "0:height": "(0) + (1) * body_h",
-    "14:offset.z": "(0) + (1) * wall",
-    "15:radius": "(0) + (1) * port_r + (1) * port_wall",
-    "16:offset.z": "(0) + (1) * body_h + (-1) * port_len",
-    "13:height": "(0) + (1) * body_h + (-2) * wall",
-    "1:height": "(0) + (1) * body_h + (-2) * wall",
-    "15:height": "(0) + (1) * port_len",
-    "8:offset.z": "(0) + (1) * body_h + (-1) * port_len",
-    "18:size.x": "(0) + (1) * board_w",
-    "11:offset.z": "(-1) + (1) * body_h + (-1) * port_len",
-    "1:radius": "(0) + (1) * body_r + (-1) * wall",
+    "46:offset.y": "(0) + (-0.5) * board_l",
+    "21:offset.z": "(0) + (1) * motor_z",
+    "43:offset.z": "(0) + (1) * motor_z",
+    "37:radius": "(0) + (1) * body_r + (-1) * wall",
     "10:height": "(2) + (1) * port_len",
-    "18:size.y": "(0) + (1) * board_l",
-    "19:offset.x": "(0) + (-0.5) * board_w",
-    "19:offset.y": "(0) + (-0.5) * board_l",
+    "31:offset.z": "(12) + (1) * motor_z",
+    "37:height": "(0) + (1) * body_h + (-2) * wall",
+    "36:offset.z": "(10) + (1) * motor_z",
+    "7:radius": "(0) + (1) * port_r + (1) * port_wall",
+    "39:radius": "(0) + (1) * port_r + (1) * port_wall",
+    "45:size.y": "(0) + (1) * board_l",
+    "1:radius": "(0) + (1) * body_r + (-1) * wall",
     "4:height": "(2) + (1) * wall",
-    "19:offset.z": "(40) + (1) * wall"
-  }
+    "8:offset.z": "(0) + (1) * body_h + (-1) * port_len",
+    "15:height": "(0) + (1) * wall",
+    "38:offset.z": "(0) + (1) * wall",
+    "1:height": "(0) + (1) * body_h + (-2) * wall",
+    "45:size.x": "(0) + (1) * board_w",
+    "46:offset.z": "(40) + (1) * wall",
+    "2:offset.z": "(0) + (1) * wall",
+    "46:offset.x": "(0) + (-0.5) * board_w",
+    "15:radius": "(0) + (1) * driver_frame_r",
+    "39:height": "(0) + (1) * port_len",
+    "11:offset.z": "(-1) + (1) * body_h + (-1) * port_len",
+    "0:radius": "(0) + (1) * body_r",
+    "10:radius": "(0) + (1) * port_r",
+    "48:offset.z": "(41.6) + (1) * wall",
+    "40:offset.z": "(0) + (1) * body_h + (-1) * port_len",
+    "7:height": "(0) + (1) * port_len",
+    "4:radius": "(0) + (1) * driver_cut_r"
+  },
+  "clearance_specs": [
+    {
+      "label": "driver-fit",
+      "group_a": [
+        "driver_frame"
+      ],
+      "group_b": [
+        "enclosure"
+      ],
+      "min_mm": -0.15,
+      "max_mm": -0.01
+    }
+  ],
+  "analysis_studies": [
+    {
+      "id": "amp-thermal",
+      "name": "amp on board",
+      "study": {
+        "type": "thermal",
+        "parts": [
+          "board",
+          "die"
+        ],
+        "divisions": [
+          100,
+          100,
+          13
+        ],
+        "materials": [
+          {
+            "part": "board",
+            "laminate": {
+              "inPlaneWMk": 15.0,
+              "throughPlaneWMk": 0.4
+            }
+          },
+          {
+            "part": "die",
+            "kWMk": [
+              120.0
+            ]
+          }
+        ],
+        "sources": [
+          {
+            "name": "amp",
+            "part": "die",
+            "powerW": "amp_loss_w"
+          }
+        ],
+        "exposed": {
+          "type": "convection",
+          "hWM2k": 5.0,
+          "ambientC": 25.0
+        },
+        "domainFaces": [
+          {
+            "type": "adiabatic"
+          },
+          {
+            "type": "adiabatic"
+          },
+          {
+            "type": "adiabatic"
+          },
+          {
+            "type": "adiabatic"
+          },
+          {
+            "type": "convection",
+            "hWM2k": 5.0,
+            "ambientC": 25.0
+          },
+          {
+            "type": "convection",
+            "hWM2k": 5.0,
+            "ambientC": 25.0
+          }
+        ]
+      }
+    }
+  ]
 }

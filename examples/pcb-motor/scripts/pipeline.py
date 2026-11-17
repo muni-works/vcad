@@ -98,26 +98,19 @@ call("set_design_rules", {"document_id": DOC, "clearance": 0.2, "track_width": 0
                           "via_diameter": 0.6, "edge_clearance": 0.3, "min_drill": 0.3, "min_annular_ring": 0.13})
 call("set_placement", {"document_id": DOC, "placements": [{"ref": "J1", "x": 29.44, "y": 66.51, "rotation": 190}]})
 
-# B2 winding + feed repair (expect same 2 NetIslands; stitch PHB/PHC)
-w = call("add_motor_winding", {"document_id": DOC, "slots": 9, "poles": 6, "phases": 3,
-    "center": {"x": 35, "y": 35}, "pitch_radius": 22.5, "inner_radius": 2.6, "outer_radius": 7.2,
-    "trace_width": 0.25, "clearance": 0.2, "turns_per_coil": 10, "connection": "wye",
-    "copper_layer": "FCu", "return_layer": "BCu", "neutral_net": "WIND_N",
-    "phase_nets": ["PHA", "PHB", "PHC"]})
+# B2 winding. All four feeds must route from the realizer itself. The v3 board
+# as first shipped "repaired" two unrouted feeds (PHB/PHC) by stitching each
+# J1 pad onto its phase's series ring — past the phase's FIRST coil, which was
+# left a dead-end stub (2 of 9 coils open, DRC 0). Never stitch; fail instead.
+WINDING = {"slots": 9, "poles": 6, "phases": 3, "center": {"x": 35, "y": 35}, "pitch_radius": 22.5,
+           "inner_radius": 2.6, "outer_radius": 7.2, "trace_width": 0.25, "clearance": 0.2,
+           "turns_per_coil": 10, "connection": "wye", "copper_layer": "FCu", "return_layer": "BCu",
+           "neutral_net": "WIND_N", "phase_nets": ["PHA", "PHB", "PHC"]}
+w = call("add_motor_winding", {"document_id": DOC, **WINDING})
 dd = w.get("drc_delta", {})
 print(f"  winding drc_delta: clean={dd.get('clean')} introduced={dd.get('introduced')}")
-if not dd.get("clean"):
-    for net, pad, ring_r in (("PHB", (30.671, 66.727), 13.8), ("PHC", (28.209, 66.293), 12.9)):
-        ang = 97.8 if net == "PHB" else 102.2
-        hop, ring = P(16, ang), P(ring_r, ang)
-        call("add_trace", {"document_id": DOC, "net": net, "layer": "BCu", "width": 0.5,
-                           "points": [{"x": pad[0], "y": pad[1]}, {"x": round(hop[0],3), "y": round(hop[1],3)}]})
-        call("add_via", {"document_id": DOC, "net": net, "position": {"x": round(hop[0],3), "y": round(hop[1],3)},
-                         "diameter": 0.6, "drill": 0.3})
-        call("add_trace", {"document_id": DOC, "net": net, "layer": "BCu", "width": 0.5,
-                           "points": [{"x": round(hop[0],3), "y": round(hop[1],3)}, {"x": round(ring[0],3), "y": round(ring[1],3)}]})
-        call("add_via", {"document_id": DOC, "net": net, "position": {"x": round(ring[0],3), "y": round(ring[1],3)},
-                         "diameter": 0.6, "drill": 0.3})
+check("B2 all feeds routed by the realizer (no stitches)", not w.get("feeds_unrouted") and w.get("success") is True,
+      f"routed={w.get('feeds_routed')} unrouted={w.get('feeds_unrouted')} errors={w.get('errors')}")
 
 # B3 bore-mount outline
 call("set_board_outline", {"document_id": DOC, "thickness": 1.6, "outline": {
@@ -128,6 +121,16 @@ call("set_board_outline", {"document_id": DOC, "thickness": 1.6, "outline": {
 # B4 gates
 drc = call("run_drc", {"document_id": DOC})
 check("B4 DRC clean", drc.get("violations") == 0, f"violations={drc.get('violations')} {drc.get('byRule')}")
+# Every coil must carry its phase current (DRC can't see an open coil).
+wc = call("check_winding", {"document_id": DOC, **{k: WINDING[k] for k in (
+    "slots", "poles", "phases", "center", "pitch_radius", "outer_radius", "turns_per_coil",
+    "copper_layer", "phase_nets", "neutral_net")}}, expect_ok=False)
+wc = wc if "__error__" not in wc else json.loads(wc["__error__"])
+for c in wc.get("coils", []):
+    print(f"    coil {c['net']} @ ({c['center']['x']:.2f},{c['center']['y']:.2f}): {c['ampere_turns_per_amp']:+.2f} AT/A")
+check("B4 winding check: every coil carries current", wc.get("pass") is True,
+      "; ".join(wc.get("failures", [])) or
+      ", ".join(f"{p['net']} {p['resistance_ohm']} ohm" for p in wc.get("phases", [])))
 dfm = call("dfm_check", {"document_id": DOC, "process": "pcb_jlcpcb"})
 hard = [r for r in dfm.get("rules", []) if r.get("applicable") and not r.get("passed") and r.get("severity") == "error"]
 check("B4 DFM jlcpcb no errors (#473 tie-aware)", not hard,

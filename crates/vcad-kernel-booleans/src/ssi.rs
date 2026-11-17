@@ -66,6 +66,18 @@ pub enum IntersectionCurve {
     TwoLines(Line3d, Line3d),
     /// Circle intersection (e.g. plane-sphere, sphere-sphere).
     Circle(Circle3d),
+    /// Two parallel circles — a sphere centred on a cylinder's axis meets the
+    /// cylinder at axial offsets `±√(R² − r²)` from its centre. Both lie on
+    /// both infinite surfaces; the pipeline keeps the ones that lie on both
+    /// FACES and applies each as an ordinary `Circle` split.
+    TwoCircles(Circle3d, Circle3d),
+    /// A circle together with the exact closed polyline (no repeated end
+    /// point) the face it splits must realize it on. Never returned by
+    /// [`intersect_surfaces`]: the pipeline builds it for the sphere side of
+    /// a coaxial cylinder × sphere crossing, where the cylinder wall puts
+    /// the circle on its own frozen columns and a sphere sampling the circle
+    /// on its usual raw grid could never sew to it.
+    Ring(Circle3d, Vec<Point3>),
     /// Sampled polyline for complex intersections.
     Sampled(Vec<Point3>),
     /// Two disjoint sampled curves — the typical output for two perpendicular
@@ -131,6 +143,22 @@ pub fn intersect_surfaces(a: &dyn Surface, b: &dyn Surface) -> Result<Intersecti
         (SurfaceKind::Cylinder, SurfaceKind::Cylinder) => {
             match (downcast_cylinder(a), downcast_cylinder(b)) {
                 (Some(ca), Some(cb)) => Ok(cylinder_cylinder(ca, cb)),
+                _ => Err(kind_mismatch(a, b)),
+            }
+        }
+        (SurfaceKind::Cylinder, SurfaceKind::Sphere) => {
+            match (downcast_cylinder(a), downcast_sphere(b)) {
+                (Some(c), Some(s)) => {
+                    Ok(coaxial_cylinder_sphere(c, s).unwrap_or_else(|| marching_ssi(a, b, 16)))
+                }
+                _ => Err(kind_mismatch(a, b)),
+            }
+        }
+        (SurfaceKind::Sphere, SurfaceKind::Cylinder) => {
+            match (downcast_sphere(a), downcast_cylinder(b)) {
+                (Some(s), Some(c)) => {
+                    Ok(coaxial_cylinder_sphere(c, s).unwrap_or_else(|| marching_ssi(a, b, 16)))
+                }
                 _ => Err(kind_mismatch(a, b)),
             }
         }
@@ -735,6 +763,56 @@ fn sphere_sphere(a: &SphereSurface, b: &SphereSurface) -> IntersectionCurve {
         circle_radius,
         *normal.as_ref(),
     ))
+}
+
+// =============================================================================
+// Cylinder-Sphere intersection (coaxial)
+// =============================================================================
+
+/// Is the sphere centred on the cylinder's axis?
+///
+/// This is the one cylinder × sphere arrangement with a closed form the
+/// splitters can consume (circles); every other one is a quartic space curve
+/// and goes to the marching sampler.
+pub(crate) fn cylinder_sphere_coaxial(c: &CylinderSurface, s: &SphereSurface) -> bool {
+    let axis = c.axis.into_inner();
+    let d = s.center - c.center;
+    let off = d - axis * d.dot(axis);
+    off.norm() <= 1e-9 * (1.0 + c.radius.abs().max(s.radius.abs()))
+}
+
+/// Intersection of a cylinder with a sphere centred on its axis, or `None`
+/// when the sphere is off-axis (no closed form here).
+///
+/// With cylinder radius `r` and sphere radius `R`:
+///
+/// - `r > R` — the sphere sits inside the infinite cylinder: `Empty`.
+/// - `r = R` — the surfaces are TANGENT along the sphere's great circle and
+///   do not cross: `Empty`. Whatever split that circle needs comes from the
+///   faces that really cross there (a capsule's cylinder cap cuts the ball
+///   along it; the wall's own rim already is it).
+/// - `r < R` — two circles of radius `r` at axial offsets `±√(R² − r²)` from
+///   the sphere's centre.
+fn coaxial_cylinder_sphere(c: &CylinderSurface, s: &SphereSurface) -> Option<IntersectionCurve> {
+    if !cylinder_sphere_coaxial(c, s) {
+        return None;
+    }
+    let (r, big_r) = (c.radius.abs(), s.radius.abs());
+    if r >= big_r - 1e-9 * (1.0 + big_r) {
+        return Some(IntersectionCurve::Empty);
+    }
+    let axis = c.axis.into_inner();
+    let h = (big_r * big_r - r * r).sqrt();
+    // Both circles share the cylinder's own frame, so every consumer samples
+    // them at the same phase as the cylinder's rims.
+    let circle = |offset: f64| Circle3d {
+        center: s.center + offset * axis,
+        radius: r,
+        x_dir: c.ref_dir,
+        y_dir: Dir3::new_normalize(axis.cross(c.ref_dir.as_ref())),
+        normal: c.axis,
+    };
+    Some(IntersectionCurve::TwoCircles(circle(-h), circle(h)))
 }
 
 // =============================================================================

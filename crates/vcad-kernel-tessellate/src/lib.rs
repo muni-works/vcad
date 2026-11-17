@@ -16,6 +16,7 @@ use vcad_kernel_topo::{FaceId, Orientation, Topology};
 
 pub mod clearance;
 mod creased_normals;
+pub mod display;
 pub mod frozen;
 pub mod manifold;
 pub mod mesh_props;
@@ -26,7 +27,7 @@ pub mod probe;
 pub mod query;
 mod render_bake;
 
-pub use clearance::{mesh_clearance, ClearanceResult};
+pub use clearance::{mesh_clearance, mesh_surface_distance, ClearanceResult, MeshInsideTester};
 pub use creased_normals::{
     apply_creased_normals, apply_default_creased_normals, DEFAULT_CREASE_ANGLE_RAD,
 };
@@ -2594,6 +2595,86 @@ fn align_winding_to_normals(mesh: &mut TriangleMesh) {
 
 /// Core tessellation logic for a planar polygon without holes.
 fn tessellate_planar_face_core(outer_verts: &[Point3], reversed: bool) -> TriangleMesh {
+    let mesh = tessellate_planar_face_fan_or_clip(outer_verts, reversed);
+    // A boundary with collinear vertices (a straight side that a neighbour
+    // splits and this face does not — every merged coplanar face has them)
+    // defeats both paths above: a fan from a vertex on that side, or the
+    // last triangle of an ear clip, spans three collinear points. The
+    // zero-area triangle is not harmless: its long edge doubles the two
+    // short ones, which shows up as an over-used or folded edge once the
+    // solid is welded. Earcut with the dropped boundary points re-inserted
+    // triangulates the same ring with no such triangle; it is consulted
+    // only when the first answer is defective.
+    if planar_triangulation_is_sound(outer_verts, &mesh) {
+        return mesh;
+    }
+    let normal = newell_normal(outer_verts);
+    let Some(e1) = outer_verts
+        .windows(2)
+        .map(|w| w[1] - w[0])
+        .find(|e| e.norm() > 1e-12)
+    else {
+        return mesh;
+    };
+    if normal.norm() < 1e-12 {
+        return mesh;
+    }
+    let u_axis = e1.normalize();
+    let v_axis = normal.cross(e1).normalize();
+    let origin = outer_verts[0];
+    let uv: Vec<(f64, f64)> = outer_verts
+        .iter()
+        .map(|p| {
+            let d = *p - origin;
+            (d.dot(u_axis), d.dot(v_axis))
+        })
+        .collect();
+    match earcut_polygon_with_holes(&uv, &[], outer_verts, &[], reversed) {
+        Some(alt) if planar_triangulation_is_sound(outer_verts, &alt) => alt,
+        _ => mesh,
+    }
+}
+
+/// Whether `mesh` triangulates the ring `verts` with no zero-area triangle
+/// and no lost or doubled area.
+fn planar_triangulation_is_sound(verts: &[Point3], mesh: &TriangleMesh) -> bool {
+    let polygon_area = 0.5 * newell_normal(verts).norm();
+    // A triangulation of a simple ring that adds no vertices has exactly
+    // n − 2 triangles; fewer means boundary vertices were dropped (an ear
+    // clip that stalled on a collinear run), and the neighbours across
+    // that side then have nothing to weld to.
+    if polygon_area <= 0.0 || mesh.indices.len() / 3 != verts.len().saturating_sub(2) {
+        return false;
+    }
+    // Measured in f64 from the ring itself where the indices allow it; the
+    // mesh's own f32 positions otherwise.
+    let p = |i: u32| {
+        let b = i as usize * 3;
+        Point3::new(
+            mesh.vertices[b] as f64,
+            mesh.vertices[b + 1] as f64,
+            mesh.vertices[b + 2] as f64,
+        )
+    };
+    let scale = polygon_area.sqrt();
+    let mut total = 0.0;
+    for t in mesh.indices.chunks(3) {
+        let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+        let area = 0.5 * (b - a).cross(c - a).norm();
+        // Height over the longest side: a sliver thinner than 1e-7 of the
+        // face's size is three collinear points.
+        let longest = (b - a).norm().max((c - b).norm()).max((a - c).norm());
+        if longest <= 0.0 || 2.0 * area / longest < 1e-7 * scale {
+            return false;
+        }
+        total += area;
+    }
+    (total - polygon_area).abs() <= polygon_area * 1e-5
+}
+
+/// Fan triangulation where one vertex sees the whole ring, ear clipping
+/// otherwise.
+fn tessellate_planar_face_fan_or_clip(outer_verts: &[Point3], reversed: bool) -> TriangleMesh {
     // Find the best fan center vertex index.
     // For faces with curved boundaries (like quarter disks), we need to pick a vertex
     // that's at the junction of straight edges, not on the curved portion.
@@ -5335,6 +5416,38 @@ fn delaunay_flip(
     uv: &[(f64, f64)],
     boundary: &std::collections::HashSet<(u32, u32)>,
 ) {
+    delaunay_flip_core(tris, uv, boundary, None);
+}
+
+/// [`delaunay_flip`] for a stereographic chart of a sphere, with the
+/// in-circle test asked of the sphere itself.
+///
+/// The chart's disc through `a b c` is the cap their plane cuts off on the
+/// side AWAY from the projection pole, so `d` is inside the circumcircle
+/// exactly when the plane separates it from the pole (`pole`, a point on
+/// the sphere) — a test on well-conditioned 3-D coordinates. The
+/// planar test is the same statement (the projection maps circles to
+/// circles) but its tolerance scales with the quad's planar extent, and a
+/// chart centred on a pinprick hole is thousands of units across at the rim
+/// with the whole rest of the sphere inside a few dozen: every quad that
+/// touches the rim fell under the tolerance and was never flipped, leaving
+/// rim vertices wired to points on the far side of the ball.
+fn delaunay_flip_on_sphere(
+    tris: &mut [[u32; 3]],
+    uv: &[(f64, f64)],
+    boundary: &std::collections::HashSet<(u32, u32)>,
+    pts: &[Point3],
+    pole: Point3,
+) {
+    delaunay_flip_core(tris, uv, boundary, Some((pts, pole)));
+}
+
+fn delaunay_flip_core(
+    tris: &mut [[u32; 3]],
+    uv: &[(f64, f64)],
+    boundary: &std::collections::HashSet<(u32, u32)>,
+    sphere: Option<(&[Point3], Point3)>,
+) {
     use std::collections::HashMap;
     let key = |a: u32, b: u32| if a < b { (a, b) } else { (b, a) };
     let orient = |t: &[u32; 3]| -> f64 {
@@ -5398,7 +5511,28 @@ fn delaunay_flip(
             }
             ((hi[0] - lo[0]) + (hi[1] - lo[1])).powi(4).max(1e-300)
         };
-        if in_circle(p(a), p(b), p(c), p(d)) <= 1e-10 * scale {
+        let wants_flip = match sphere {
+            Some((pts, pole)) => {
+                let (a3, b3, c3, d3) = (
+                    pts[a as usize],
+                    pts[b as usize],
+                    pts[c as usize],
+                    pts[d as usize],
+                );
+                let mut n = (b3 - a3).cross(c3 - a3);
+                if n.dot(pole - a3) > 0.0 {
+                    n = -n;
+                }
+                let reach = (pole - a3).norm();
+                // Across the plane from the pole by more than rounding,
+                // relative to the triangle and the ball — the same either
+                // way round, so four co-circular points do not flip back
+                // and forth.
+                n.dot(d3 - a3) > 1e-10 * n.norm() * reach
+            }
+            None => in_circle(p(a), p(b), p(c), p(d)) > 1e-10 * scale,
+        };
+        if !wants_flip {
             continue;
         }
         let n0 = [c, a, d];
@@ -5613,6 +5747,82 @@ fn reinsert_dropped_boundary(tris: &mut Vec<[u32; 3]>, uv: &[(f64, f64)], loop_l
     }
 }
 
+/// The stereographic projection pole for a spherical patch whose outer loop
+/// is `outer`: a direction strictly OUTSIDE the patch, as far from its
+/// boundary as can be found.
+///
+/// The loop's area vector (`guess`, pointing away from the patch) is the
+/// natural choice and is right for a round hole. For an L-shaped or sliver
+/// hole it is not: the area vector of such a loop points somewhere the hole
+/// is not, i.e. into the patch, and a pole inside the patch sends the
+/// patch's own interior to infinity — the planar refinement then halves the
+/// same runaway edge forever (five torture cases hung on it).
+///
+/// So candidates — the guess, the boundary's mean direction, and points
+/// stepped just across each boundary edge — are tested by winding number:
+/// seen along a pole in the hole, with its antipode in the patch, the loop
+/// winds exactly once clockwise. Among those that pass, the one with the
+/// most clearance from the boundary wins. When nothing passes — a patch
+/// under a hemisphere, whose antipodes are all outside it too — the guess
+/// stands, as it always did.
+fn region_projection_pole(center: Point3, outer: &[Point3], guess: Vec3) -> Vec3 {
+    let units: Vec<Vec3> = outer.iter().map(|p| (*p - center).normalize()).collect();
+    let winding = |q: Vec3| -> i32 {
+        let e1 = if q.x.abs() < 0.9 {
+            Vec3::new(1.0, 0.0, 0.0).cross(q).normalize()
+        } else {
+            Vec3::new(0.0, 1.0, 0.0).cross(q).normalize()
+        };
+        let e2 = q.cross(e1);
+        let angle = |u: &Vec3| u.dot(e2).atan2(u.dot(e1));
+        let mut total = 0.0;
+        for i in 0..units.len() {
+            let mut d = angle(&units[(i + 1) % units.len()]) - angle(&units[i]);
+            while d > PI {
+                d -= 2.0 * PI;
+            }
+            while d <= -PI {
+                d += 2.0 * PI;
+            }
+            total += d;
+        }
+        (total / (2.0 * PI)).round() as i32
+    };
+    let clearance = |q: Vec3| -> f64 {
+        units
+            .iter()
+            .map(|u| u.dot(q).clamp(-1.0, 1.0).acos())
+            .fold(f64::INFINITY, f64::min)
+    };
+    let mut candidates: Vec<Vec3> = vec![guess];
+    let mean: Vec3 = units.iter().fold(Vec3::zeros(), |acc, u| acc + *u);
+    if mean.norm() > 1e-9 {
+        candidates.push(mean.normalize());
+    }
+    for i in 0..units.len() {
+        let (a, b) = (units[i], units[(i + 1) % units.len()]);
+        let across = a.cross(b);
+        let (len, mid) = (across.norm(), a + b);
+        if len < 1e-12 || mid.norm() < 1e-12 {
+            continue;
+        }
+        // The patch lies to the left of a → b; step right, by fractions
+        // of the edge's own angular length.
+        let (out, mid) = (-across / len, mid.normalize());
+        let span = len.clamp(0.0, 1.0).asin();
+        for f in [1.0, 0.5, 0.2] {
+            candidates.push((mid * (f * span).cos() + out * (f * span).sin()).normalize());
+        }
+    }
+    candidates
+        .into_iter()
+        .filter(|q| q.norm() > 0.5 && winding(*q) == -1)
+        .map(|q| (clearance(q), q))
+        .filter(|(c, _)| *c > 1e-6)
+        .max_by(|x, y| x.0.total_cmp(&y.0))
+        .map_or(guess, |(_, q)| q)
+}
+
 /// Tessellate a spherical patch bounded by `loops` (outer first, then
 /// holes), keeping every boundary vertex exactly as given so the patch
 /// welds to its neighbours.
@@ -5649,7 +5859,7 @@ fn tessellate_spherical_region(
     if sa.norm() < 1e-9 * radius * radius {
         return None;
     }
-    let q = -sa.normalize();
+    let q = region_projection_pole(center, outer, -sa.normalize());
     let e1 = if q.x.abs() < 0.9 {
         Vec3::new(1.0, 0.0, 0.0).cross(q).normalize()
     } else {
@@ -5725,11 +5935,24 @@ fn tessellate_spherical_region(
     let n_fib = ((4.0 * PI * radius * radius) / spacing_area).ceil() as usize;
     if n_fib <= 200_000 {
         let golden = PI * (3.0 - 5f64.sqrt());
-        for k in 0..n_fib {
-            let z = 1.0 - 2.0 * (k as f64 + 0.5) / n_fib as f64;
-            let rho = (1.0 - z * z).max(0.0).sqrt();
-            let (st, ct) = (golden * k as f64).sin_cos();
-            let p = center + radius * Vec3::new(rho * ct, rho * st, z);
+        let flip_every = (n_fib / 64).max(32);
+        let mut inserted = 0usize;
+        // Insert from the chart's rim inward — nearest the projection pole
+        // first. Each seed then lands in a triangle of about its own scale.
+        // In lattice order (down the lattice's own axis) a hole off that
+        // axis gets every seed dropped into the same few giant rim
+        // triangles, and the needle fans that leaves take more flips to
+        // untangle than the passes below are allowed.
+        let mut seeds: Vec<Point3> = (0..n_fib)
+            .map(|k| {
+                let z = 1.0 - 2.0 * (k as f64 + 0.5) / n_fib as f64;
+                let rho = (1.0 - z * z).max(0.0).sqrt();
+                let (st, ct) = (golden * k as f64).sin_cos();
+                center + radius * Vec3::new(rho * ct, rho * st, z)
+            })
+            .collect();
+        seeds.sort_by(|a, b| (*b - center).dot(q).total_cmp(&(*a - center).dot(q)));
+        for p in seeds {
             if pts[..n_boundary]
                 .iter()
                 .any(|b| (*b - p).norm() < 0.6 * target)
@@ -5756,13 +5979,26 @@ fn tessellate_spherical_region(
             tris[t] = [a, b, m];
             tris.push([b, c, m]);
             tris.push([c, a, m]);
+            // Restore Delaunay as the seeds go in, a batch at a time. One
+            // pass at the end has a work budget linear in the mesh, which
+            // is plenty when each seed lands in a triangle of its own
+            // scale. On a chart centred on a pinprick hole every seed lands
+            // in one of a few giant rim triangles, the unflipped mesh is
+            // all needles, and untangling it at the end takes quadratically
+            // many flips: the pass ran out and left edges spanning the ball.
+            inserted += 1;
+            if inserted.is_multiple_of(flip_every) {
+                delaunay_flip_on_sphere(&mut tris, &uv, &boundary, &pts, center + radius * q);
+            }
         }
-        delaunay_flip(&mut tris, &uv, &boundary);
+        delaunay_flip_on_sphere(&mut tris, &uv, &boundary, &pts, center + radius * q);
     }
 
     // Conforming longest-edge bisection of interior edges, in the plane.
     let max_tris = 200_000;
-    loop {
+    // Each round bisects every long edge it can reach, so a sane chart
+    // settles in a handful; the bound is for a chart that is not.
+    for _ in 0..64 {
         let edges = edge_map(&tris);
         let mut long: Vec<((u32, u32), f64)> = edges
             .iter()
@@ -5781,10 +6017,45 @@ fn tessellate_spherical_region(
                 continue;
             }
             let (ua, ub) = (uv[a as usize], uv[b as usize]);
-            let mid = (0.5 * (ua.0 + ub.0), 0.5 * (ua.1 + ub.1));
+            // Bisect ON THE SPHERE. The chart is stretched by 1/ρ² toward
+            // a hole of angular radius ρ, so the planar midpoint of an edge
+            // that starts at a pinprick hole's rim lifts to a point still
+            // at the rim: the edge is no shorter and the next round bisects
+            // it again. The spherical midpoint halves it wherever it is.
+            // It sits slightly off the straight planar edge, so it is taken
+            // only while both neighbours stay counter-clockwise in the
+            // plane around it; otherwise the planar midpoint, which always
+            // does.
+            let on_sphere = {
+                let dir = (pts[a as usize] - center) + (pts[b as usize] - center);
+                (dir.norm() > 1e-9 * radius).then(|| center + radius * dir.normalize())
+            };
+            let planar = (0.5 * (ua.0 + ub.0), 0.5 * (ua.1 + ub.1));
+            let keeps_ccw = |w: (f64, f64)| {
+                let area = |p: (f64, f64), q: (f64, f64), r: (f64, f64)| {
+                    (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0)
+                };
+                ts.iter().all(|&t| {
+                    let tri = tris[t];
+                    let r = (0..3)
+                        .find(|&k| key(tri[k], tri[(k + 1) % 3]) == (a, b))
+                        .unwrap_or(0);
+                    let (x, y, z) = (
+                        uv[tri[r] as usize],
+                        uv[tri[(r + 1) % 3] as usize],
+                        uv[tri[(r + 2) % 3] as usize],
+                    );
+                    let whole = area(x, y, z);
+                    area(x, w, z) > 1e-9 * whole && area(w, y, z) > 1e-9 * whole
+                })
+            };
+            let (mid, mid3) = match on_sphere.map(|p| (project(&p), p)) {
+                Some((w, p)) if keeps_ccw(w) => (w, p),
+                _ => (planar, lift(planar)),
+            };
             let m = pts.len() as u32;
             uv.push(mid);
-            pts.push(lift(mid));
+            pts.push(mid3);
             for &t in ts {
                 touched[t] = true;
                 let tri = tris[t];
@@ -5799,7 +6070,7 @@ fn tessellate_spherical_region(
         }
     }
 
-    delaunay_flip(&mut tris, &uv, &boundary);
+    delaunay_flip_on_sphere(&mut tris, &uv, &boundary, &pts, center + radius * q);
 
     // All triangles are CCW in the plane; one lifted triangle decides
     // whether that is outward on the sphere.
@@ -5924,6 +6195,22 @@ fn tessellate_spherical_cap(
     let is_large_cap = avg_angle > 0.85 * PI;
 
     if is_large_cap {
+        // A cap that wraps toward the antipode — a ball with a bite out of
+        // it, or a rod's root — is a general spherical region with one
+        // boundary loop. The region tessellator keeps the boundary exactly
+        // as given and follows the tessellation parameters. The ring-based
+        // path below has a fixed 8 × 32 lattice whatever the radius or
+        // segment count, stitched to the boundary by nearest angle, which
+        // leaves gaps once the boundary is denser than its ring (a rod's
+        // 89-point seam: 136 open edges and a ball 16% under volume).
+        // It is the fallback, for a loop the region tessellator declines.
+        if let Some(sphere) = surface.as_any().downcast_ref::<SphereSurface>() {
+            if let Some(mesh) =
+                tessellate_spherical_region(sphere, &[loop_verts.to_vec()], params, reversed)
+            {
+                return mesh;
+            }
+        }
         // `tessellate_large_spherical_cap` was written under the legacy
         // convention where `cap_dir` points to the boundary side and
         // `anti_pole = -cap_dir` is the cap interior pole. Our winding
@@ -9546,6 +9833,170 @@ mod tests {
             "expected >= 120 triangles (lateral + 2 caps), got {}",
             mesh.num_triangles()
         );
+    }
+
+    fn closed_against(mesh: &TriangleMesh, ring: usize) -> usize {
+        // Open edges of a one-loop patch: exactly its boundary.
+        let mut count: std::collections::HashMap<(u32, u32), i32> = Default::default();
+        for t in mesh.indices.chunks(3) {
+            for k in 0..3 {
+                let (a, b) = (t[k], t[(k + 1) % 3]);
+                *count.entry((a.min(b), a.max(b))).or_insert(0) += 1;
+            }
+        }
+        let open = count.values().filter(|&&c| c == 1).count();
+        assert_eq!(open, ring, "open edges should be the boundary loop");
+        open
+    }
+
+    /// A ball with a hole in it — round and dense, round and coarse, a
+    /// pinprick (the near-tangent bites of the torture track's
+    /// `tan-sphere-*-e3` cases), and the L-shaped corner bite of rand-396,
+    /// whose area vector points INTO the patch — tessellates promptly, to
+    /// about a ball's area, open only along the hole.
+    #[test]
+    fn large_cap_region_terminates() {
+        let r = 2.9314820493167693;
+        let params = TessellationParams::from_segments(32);
+        let mut cases: Vec<(String, vcad_kernel_geom::SphereSurface, Vec<Point3>)> = Vec::new();
+        for (n, rho) in [
+            (9usize, 0.17f64),
+            (11, 0.13),
+            (32, 0.02),
+            (89, 0.2),
+            (32, 0.00045),
+            (89, 0.00045),
+        ] {
+            let ring: Vec<Point3> = (0..n)
+                .map(|i| {
+                    let t = 2.0 * PI * i as f64 / n as f64;
+                    Point3::new(
+                        r * rho.sin() * t.cos(),
+                        r * rho.sin() * t.sin(),
+                        r * rho.cos(),
+                    )
+                })
+                .rev()
+                .collect();
+            cases.push((
+                format!("round n {n} rho {rho}"),
+                vcad_kernel_geom::SphereSurface::new(r),
+                ring,
+            ));
+        }
+        let mut corner = vcad_kernel_geom::SphereSurface::new(r);
+        corner.center = Point3::new(
+            -0.22716185341878603,
+            -2.6079520058211916,
+            -0.8064517130475659,
+        );
+        let bites: [&[[f64; 3]]; 2] = [
+            &[
+                [0.0, 0.2002462928959634, 0.003490762008449333],
+                [0.32267531371476654, 0.15626609874791786, 0.0],
+                [0.8411807337496022, 0.0, 0.0002808679493985222],
+                [0.7194566919308357, 0.0, 0.14016683230205573],
+                [0.5165915651781441, 0.0, 0.30665393922675777],
+                [0.2851444116504953, 0.0, 0.43036502017139844],
+                [0.034009615660897496, 0.0, 0.5065459276732496],
+                [0.0, 0.0011875227937405697, 0.5105051647722196],
+                [0.0, 0.09224054851776753, 0.3120046639784817],
+            ],
+            &[
+                [0.0, 0.0011875227937405697, 0.5105051647722196],
+                [-0.22716185341878586, 0.0, 0.5322690721797598],
+                [-0.4883333224984692, 0.0, 0.5065459276732496],
+                [-0.739468118488067, 0.0, 0.43036502017139866],
+                [-0.9709152720157159, 0.0, 0.30665393922675777],
+                [-1.1737803987684077, 0.0, 0.14016683230205595],
+                [-1.295504440587175, 0.0, 0.0002808679493985222],
+                [-0.7769990205523399, 0.15626609874791741, 0.0],
+                [-0.22716185341878603, 0.21042033295682927, 0.0],
+                [0.0, 0.2002462928959634, 0.003490762008449333],
+                [0.0, 0.09224054851776753, 0.3120046639784817],
+            ],
+        ];
+        // The near-tangent bite of `tan-sphere-sphere-e3-u`: a pinprick on
+        // the x axis, across the seed lattice's own axis.
+        let (rx, rhox) = (5.0f64, 0.00044721f64);
+        cases.push((
+            "pinprick on x".to_string(),
+            vcad_kernel_geom::SphereSurface::new(rx),
+            (0..32)
+                .map(|i| {
+                    let t = 2.0 * PI * i as f64 / 32.0;
+                    Point3::new(
+                        rx * rhox.cos(),
+                        rx * rhox.sin() * t.sin(),
+                        -rx * rhox.sin() * t.cos(),
+                    )
+                })
+                .rev()
+                .collect(),
+        ));
+        for (i, bite) in bites.iter().enumerate() {
+            let ring = bite.iter().map(|p| Point3::new(p[0], p[1], p[2])).collect();
+            cases.push((format!("corner bite {i}"), corner.clone(), ring));
+        }
+        for (label, sphere, ring) in cases {
+            let n = ring.len();
+            let t0 = std::time::Instant::now();
+            let mesh = tessellate_spherical_region(&sphere, &[ring], &params, false)
+                .unwrap_or_else(|| panic!("{label}: no mesh"));
+            let secs = t0.elapsed().as_secs_f64();
+            let area: f64 = mesh
+                .indices
+                .chunks(3)
+                .map(|t| {
+                    let p = |i: u32| {
+                        let i = i as usize * 3;
+                        Point3::new(
+                            mesh.vertices[i] as f64,
+                            mesh.vertices[i + 1] as f64,
+                            mesh.vertices[i + 2] as f64,
+                        )
+                    };
+                    0.5 * (p(t[1]) - p(t[0])).cross(p(t[2]) - p(t[0])).norm()
+                })
+                .sum();
+            let ball = 4.0 * PI * sphere.radius * sphere.radius;
+            eprintln!(
+                "{label}: {} tris, area {area:.2} of {ball:.2}, {secs:.2}s",
+                mesh.indices.len() / 3
+            );
+            assert!(secs < 5.0, "{label}: {secs:.1}s");
+            assert!(
+                mesh.indices.len() / 3 < 20_000,
+                "{label}: runaway refinement"
+            );
+            assert!(
+                (0.93 * ball..ball).contains(&area),
+                "{label}: area {area:.2}"
+            );
+            closed_against(&mesh, n);
+        }
+
+        // And through the cap entry point the boolean pipeline uses.
+        let sphere = vcad_kernel_geom::SphereSurface::new(r);
+        let rho = 0.00045f64;
+        let ring: Vec<Point3> = (0..32)
+            .map(|i| {
+                let t = 2.0 * PI * i as f64 / 32.0;
+                Point3::new(
+                    r * rho.sin() * t.cos(),
+                    r * rho.sin() * t.sin(),
+                    r * rho.cos(),
+                )
+            })
+            .rev()
+            .collect();
+        let mesh = tessellate_spherical_cap(&sphere, &ring, &params, false);
+        assert!(
+            mesh.indices.len() / 3 < 20_000,
+            "pinprick: runaway refinement"
+        );
+        closed_against(&mesh, 32);
+        closed_against(&mesh, 32);
     }
 
     #[test]

@@ -28,12 +28,14 @@ export const toolDefs: ToolDef[] = [
       "Bass-reflex (ported box) tuning from a session document: measures the enclosure " +
       "and enclosed-air parts' BRep, reconstructs the exact axisymmetric field geometry " +
       "(box, port bore, an INTERNAL port's tube wall as a rigid annular obstacle — no " +
-      "equivalent-volume mapping), and returns the lumped tuning band (V_box = the air " +
+      "equivalent-volume mapping; listed `obstacles` such as a driver motor the air is " +
+      "carved around become rigid solid-core obstacles), and returns the lumped tuning band (V_box = the air " +
       "part's volume; mount-aware end corrections), the field-solved tuning f_b, the port " +
       "volume-velocity curve, and `vcad.acoustics-claims/1` predicted claims. Fail-closed: " +
       "any face that is not a plane perpendicular to the axis or a coaxial cylinder (box " +
-      "enclosure, off-axis port, fillet) errors naming the face; a gap between air and " +
-      "wall, a side vent, or a second port errors naming where. Model: linear, lossless " +
+      "enclosure, off-axis port, fillet) errors naming the face and part; a gap between air " +
+      "and wall, an unlisted void in the air, a side vent, or a second port errors naming " +
+      "where. Model: linear, lossless " +
       "(Q optimistic), rigid walls and piston, pressure-release port mouth (field f_b " +
       "reads above the lumped nominal). Predictions carry basis \"predicted\" and roll up " +
       "Provisional until a mic + swept-sine measurement binds them. Seconds at ~1 mm grid.",
@@ -56,6 +58,16 @@ export const toolDefs: ToolDef[] = [
           description:
             "The enclosed box air part (cavity minus the port tube): name, part id, or " +
             "unique material such as \"air\". Its volume is the lumped V_box.",
+        },
+        obstacles: {
+          type: "array" as const,
+          items: { type: "string" as const },
+          description:
+            "Rigid solids inside the box that the air part is carved around (e.g. the " +
+            "driver motor's parts): names or part ids. Each must be coaxial and " +
+            "axisymmetric and must bound the air; the void they sit in (including any " +
+            "gap they don't fill) is solved as rigid. V_box stays the air part's volume. " +
+            "Default: none — a void in the air is then an error.",
         },
         driver_radius: {
           ...paramOrNumber,
@@ -118,6 +130,7 @@ export const toolDefs: ToolDef[] = [
         enclosure: String(a.enclosure),
         air: String(a.air),
       };
+      if (Array.isArray(a.obstacles)) selection.obstacles = a.obstacles.map(String);
       if (a.driver_radius !== undefined) selection.driver_radius = a.driver_radius;
       if (a.temp_c !== undefined) selection.temp_c = a.temp_c;
       const out = ctx.engine.simulateCavity(

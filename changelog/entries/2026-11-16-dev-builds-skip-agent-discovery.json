@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-16-dev-builds-skip-agent-discovery",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "fix",
+  "title": "Dev and harness vcad.app builds no longer steal agent sessions",
+  "summary": "Agents skip io.vcad.dev.* app builds unless named by VCAD_APP_PID/URL; screenshot, perf and bake runs stop advertising in ~/.vcad/instances; @vcad/mcp prunes dead-pid instance files.",
+  "features": ["mcp", "mac-app", "agent-bridge"]
+}

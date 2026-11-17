@@ -81,6 +81,22 @@ fn pair_is_analytic(a: &dyn Surface, b: &dyn Surface) -> bool {
             let pb = cb.center + s * (*cb.axis.as_ref());
             (pa - pb).norm() <= 1e-6
         }
+        // A sphere centred on the cylinder's axis: circles (or nothing).
+        (Cylinder, Sphere) | (Sphere, Cylinder) => {
+            let (cyl, sph) = if a.surface_type() == Cylinder {
+                (a, b)
+            } else {
+                (b, a)
+            };
+            match (
+                cyl.as_any().downcast_ref::<CylinderSurface>(),
+                sph.as_any()
+                    .downcast_ref::<vcad_kernel_geom::SphereSurface>(),
+            ) {
+                (Some(c), Some(s)) => crate::ssi::cylinder_sphere_coaxial(c, s),
+                _ => false,
+            }
+        }
         _ => false,
     }
 }

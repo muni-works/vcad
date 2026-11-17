@@ -259,6 +259,30 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p vcad-ecad-symbols -- --ignored --nocapture
 
+  # Examples whose full evaluation takes tens of minutes in the current
+  # boolean kernel (HEAVY in crates/vcad-ffi/tests/examples_smoke.rs). PR
+  # shards still load + engine-open them; the full evaluation runs nightly
+  # here so it can't push a 45-minute test shard over its limit.
+  heavy-examples:
+    name: Heavy examples (nightly)
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+      - uses: actions/checkout@v6
+      - name: Clone sibling repos
+        run: |
+          git clone --depth 1 https://github.com/ecto/tang.git ../tang
+          git clone --depth 1 https://github.com/ecto/phyz.git ../phyz
+          git clone --depth 1 https://github.com/ecto/loon.git ../loon
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p vcad-ffi --test examples_smoke -- --ignored --nocapture
+
   # wasm-pack dominates the TS critical path (~3m23s of a 7m job), so it
   # runs as its own job. The TS job starts in parallel and downloads the
   # built pkg/ via artifact — no Rust toolchain needed there.

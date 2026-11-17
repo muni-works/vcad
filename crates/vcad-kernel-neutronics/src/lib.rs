@@ -29,6 +29,13 @@
 //! 5. [`dose`] — ambient dose equivalent H*(10) via bundled ICRP-74-style
 //!    flux-to-dose factors.
 //!
+//! 6. [`scene`] + [`transport3d`] (M7) — 3D priority-CSG scenes (boxes,
+//!    spheres, cylinders: chamber wall, HDPE castle, concrete room) with
+//!    room return, a voxel H*(10) dose map with per-voxel RSE, and
+//!    virtual point detectors folding [`response`] functions (moderated
+//!    ³He/BF₃ counters computed by MC, bubble dosimeters, CR-39, ideal
+//!    rem meter) into "counts per minute at this position".
+//!
 //! Determinism: the bundled [`rng`] (xoshiro256++) is seeded explicitly;
 //! the same [`transport::RunConfig`] reproduces bit-identical results.
 //!
@@ -56,11 +63,15 @@ pub mod geometry;
 pub mod groups;
 pub mod materials;
 pub mod receipt;
+pub mod response;
 pub mod rng;
 pub mod scatter;
+pub mod scene;
+pub mod scene_spec;
 pub mod spec;
 pub mod tally;
 pub mod transport;
+pub mod transport3d;
 
 /// Physical constants.
 pub mod constants {

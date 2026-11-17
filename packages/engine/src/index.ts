@@ -856,6 +856,8 @@ export interface KernelModule {
     paramsJson: string,
     optimizeJson: string,
   ) => unknown;
+  /** Magnetic field of posed 3D sources (SceneSpec/QuerySpec JSON). */
+  magneticField?: (sceneJson: string, queryJson: string) => unknown;
   /** Tolerance stackup analysis (StackupSpec/params/options JSON). */
   toleranceAnalyze?: (
     specJson: string,
@@ -955,6 +957,7 @@ export interface KernelModule {
   photonicsSimulate?: (specJson: string, optionsJson: string) => unknown;
   /** Monte Carlo neutron shielding run (ShieldSpec/params JSON). */
   neutronicsSimulate?: (specJson: string, paramsJson: string) => unknown;
+  neutronicsSimulateScene?: (specJson: string, paramsJson: string) => unknown;
   /** Document → DeviceSpec extraction (Document/DeviceExtraction JSON). */
   extractDeviceSpec?: (docJson: string, selectionJson: string) => unknown;
   /** Document → ShieldSpec extraction (Document/ShieldExtraction JSON). */
@@ -965,6 +968,8 @@ export interface KernelModule {
   extractStackupSpec?: (docJson: string, selectionJson: string) => unknown;
   /** Signed analytic radial fit gap between two part groups. */
   signedRadialGap?: (docJson: string, queryJson: string) => unknown;
+  /** Closed-form (parallel cylinder) refinement of mesh pair clearances. */
+  refineClearance?: (docJson: string, queryJson: string) => unknown;
   /** Lattice gauge theory Monte Carlo run (SimSpec JSON). */
   latticeGaugeSimulate?: (specJson: string) => unknown;
   /** Static structural analysis of a box solid. */
@@ -1105,6 +1110,26 @@ export interface ClearanceResult {
   pointA: [number, number, number];
   /** Point on the second mesh realizing the reported distance. */
   pointB: [number, number, number];
+}
+
+/** One part pair's mesh clearance, to refine analytically. */
+export interface ClearancePairQuery {
+  /** Part id (root node id or stable part id) on the `pointA` side. */
+  a: string;
+  /** Part id on the `pointB` side. */
+  b: string;
+  /** The `meshClearance` result for the pair. */
+  mesh: ClearanceResult;
+}
+
+/** A pair clearance after the closed-form cylinder refinement. */
+export interface RefinedClearance extends ClearanceResult {
+  /** `"analytic_cylinders"` when the closed form replaced the mesh number. */
+  basis: "mesh" | "analytic_cylinders";
+  /** The mesh distance before refinement, mm. */
+  meshDistance: number;
+  /** Combined chord-sag band of the cylinder pair, mm (analytic only). */
+  chordBandMm?: number;
 }
 
 /**
@@ -1551,7 +1576,9 @@ export class Engine {
       extractAxisymMagSpec: (wasmModule as Record<string, unknown>).extractAxisymMagSpec as KernelModule["extractAxisymMagSpec"],
       extractStackupSpec: (wasmModule as Record<string, unknown>).extractStackupSpec as KernelModule["extractStackupSpec"],
       signedRadialGap: (wasmModule as Record<string, unknown>).signedRadialGap as KernelModule["signedRadialGap"],
+      refineClearance: (wasmModule as Record<string, unknown>).refineClearance as KernelModule["refineClearance"],
       particleOptimize: (wasmModule as Record<string, unknown>).particleOptimize as KernelModule["particleOptimize"],
+      magneticField: (wasmModule as Record<string, unknown>).magneticField as KernelModule["magneticField"],
       toleranceAnalyze: (wasmModule as Record<string, unknown>).toleranceAnalyze as KernelModule["toleranceAnalyze"],
       thermalSolve: (wasmModule as Record<string, unknown>).thermalSolve as KernelModule["thermalSolve"],
       thermalSolveTransient: (wasmModule as Record<string, unknown>).thermalSolveTransient as KernelModule["thermalSolveTransient"],
@@ -1575,6 +1602,7 @@ export class Engine {
       extractAntennaSpec: (wasmModule as Record<string, unknown>).extractAntennaSpec as KernelModule["extractAntennaSpec"],
       photonicsSimulate: (wasmModule as Record<string, unknown>).photonicsSimulate as KernelModule["photonicsSimulate"],
       neutronicsSimulate: (wasmModule as Record<string, unknown>).neutronicsSimulate as KernelModule["neutronicsSimulate"],
+      neutronicsSimulateScene: (wasmModule as Record<string, unknown>).neutronicsSimulateScene as KernelModule["neutronicsSimulateScene"],
       latticeGaugeSimulate: (wasmModule as Record<string, unknown>).latticeGaugeSimulate as KernelModule["latticeGaugeSimulate"],
       analyzeStaticsBox: (wasmModule as Record<string, unknown>).analyzeStaticsBox as KernelModule["analyzeStaticsBox"],
       analyzeStaticsMesh: (wasmModule as Record<string, unknown>).analyzeStaticsMesh as KernelModule["analyzeStaticsMesh"],
@@ -1926,6 +1954,22 @@ export class Engine {
   }
 
   /**
+   * Magnetic field of posed 3D sources — current loops, solenoids, disc /
+   * ring and block magnets — at query points or on a plane grid. Inputs are
+   * JSON strings (SceneSpec, QuerySpec); see
+   * `vcad-kernel-particle::field3d_spec`.
+   */
+  magneticField(sceneJson: string, queryJson: string): unknown {
+    const fn = this.kernel.magneticField;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "magneticField is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(sceneJson, queryJson);
+  }
+
+  /**
    * Tolerance stackup analysis: worst-case, RSS, seeded Monte Carlo, and
    * exact sensitivities over a linear assembly chain, plus predicted
    * receipt claims. Inputs are JSON strings (StackupSpec, named parameter
@@ -2250,6 +2294,22 @@ export class Engine {
   }
 
   /**
+   * Room-scale (3D CSG) Monte Carlo neutron run: dose map, detector
+   * instrument readings (counts/min, bubbles/h) with error bars, and
+   * predicted claims. Inputs are JSON strings (SceneSpec, named parameter
+   * bindings); see `vcad-kernel-neutronics::scene_spec`.
+   */
+  neutronicsSimulateScene(specJson: string, paramsJson: string): unknown {
+    const fn = this.kernel.neutronicsSimulateScene;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "neutronicsSimulateScene is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    return fn(specJson, paramsJson);
+  }
+
+  /**
    * Extract an axisymmetric `DeviceSpec` from a document's evaluated solids
    * (chamber cavity + toroidal wire rings; potentials/ampere-turns bound to
    * named document parameters). Returns `{spec, parameters, cavity,
@@ -2313,6 +2373,63 @@ export class Engine {
       );
     }
     return fn(docJson, JSON.stringify(query)) as { gap_mm: number; parts: [string, string] };
+  }
+
+  /** True when this kernel build exports {@link Engine.refineClearance}. */
+  hasRefineClearance(): boolean {
+    return typeof this.kernel.refineClearance === "function";
+  }
+
+  /**
+   * Refine mesh pair clearances with the closed form for parallel cylinders
+   * (shaft in bore, pins side by side): chord error otherwise turns a
+   * running fit tighter than the chord sag into a false interference. One
+   * entry per pair; `null` when a part is not a BRep document root (keep
+   * the mesh number). Re-evaluates `docJson` once per call. See
+   * `vcad_kernel::analytic_clearance` for the fail-closed rules.
+   */
+  refineClearance(docJson: string, pairs: ClearancePairQuery[]): Array<RefinedClearance | null> {
+    const fn = this.kernel.refineClearance;
+    if (typeof fn !== "function") {
+      throw new Error(
+        "refineClearance is not exported by this kernel WASM build — rebuild packages/kernel-wasm",
+      );
+    }
+    const query = {
+      pairs: pairs.map((p) => ({
+        a: p.a,
+        b: p.b,
+        distance: p.mesh.distance,
+        intersecting: p.mesh.intersecting,
+        point_a: p.mesh.pointA,
+        point_b: p.mesh.pointB,
+      })),
+    };
+    type Raw = {
+      distance: number;
+      intersecting: boolean;
+      point_a: [number, number, number];
+      point_b: [number, number, number];
+      basis: "mesh" | "analytic_cylinders";
+      mesh_distance: number;
+      chord_band_mm?: number;
+    } | null;
+    const raw = fn(docJson, JSON.stringify(query)) as Raw[];
+    return raw.map((r) =>
+      r
+        ? {
+            distance: r.distance,
+            intersecting: r.intersecting,
+            pointA: r.point_a,
+            pointB: r.point_b,
+            basis: r.basis,
+            meshDistance: r.mesh_distance,
+            ...(r.chord_band_mm !== undefined && r.chord_band_mm !== null
+              ? { chordBandMm: r.chord_band_mm }
+              : {}),
+          }
+        : null,
+    );
   }
 
   extractStackupSpec(docJson: string, selectionJson: string): unknown {

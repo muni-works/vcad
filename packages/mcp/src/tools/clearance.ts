@@ -25,12 +25,13 @@ import type {
   ReceiptStatus,
   Transform3D,
 } from "@vcad/ir";
-import type { ClearanceResult, Engine, TriangleMesh } from "@vcad/engine";
+import type { Engine, TriangleMesh } from "@vcad/engine";
 import { unverifiableClaim } from "../receipt-unified.js";
 import { applyJointState, jointStateSchemaProp, type PoseInfo } from "./pose.js";
 import { getSession } from "./session-core.js";
 import { findPartCandidate, migrateLegacyPartId } from "./part-ids.js";
 import { asBool } from "./arg-coerce.js";
+import { refineClearances, staticPartIds, type MeasuredClearance } from "./clearance-refine.js";
 import {
   MAX_SWEEP_POSES,
   MAX_SWEEP_SAMPLES,
@@ -220,6 +221,13 @@ export interface GroupClearance {
   };
   /** Number of part pairs measured. */
   pairs_checked: number;
+  /** Set when the closed form for parallel cylinders replaced the mesh
+   *  number (chord error would otherwise misread a tight running fit). */
+  basis?: "analytic_cylinders";
+  /** Mesh distance before that correction, mm. */
+  mesh_distance_mm?: number;
+  /** Chord-sag band the mesh number could stray by, mm. */
+  chord_band_mm?: number;
   /** Resolved membership, for the payload/claim subject. */
   group_a: Array<{ id: string; name?: string }>;
   group_b: Array<{ id: string; name?: string }>;
@@ -246,7 +254,7 @@ export interface GroupClearance {
  */
 export interface ClearanceMemo {
   base?: PoseablePart[];
-  pairs: Map<string, ClearanceResult>;
+  pairs: Map<string, MeasuredClearance>;
 }
 
 export function computeGroupClearance(
@@ -268,7 +276,18 @@ export function computeGroupClearance(
     return { error: e instanceof Error ? e.message : String(e) };
   }
   if (!sweep || sweep.length === 0) {
-    return measureGroups(doc, engine, placeParts(base), groupA, groupB, memo?.pairs);
+    // Single pose: the parts sit where the document's BRep says, so the
+    // closed-form cylinder refinement applies. (Swept poses re-place meshes
+    // the BRep evaluation never saw — they stay mesh-measured.)
+    return measureGroups(
+      doc,
+      engine,
+      placeParts(base),
+      groupA,
+      groupB,
+      memo?.pairs,
+      staticPartIds(base),
+    );
   }
 
   const { axes, warnings, error: sweepError } = resolveSweepAxes(doc, sweep);
@@ -329,7 +348,8 @@ function measureGroups(
   candidates: ResolvedPart[],
   groupA: string[],
   groupB: string[],
-  pairCache?: Map<string, ClearanceResult>,
+  pairCache?: Map<string, MeasuredClearance>,
+  refinable?: Set<string>,
 ): { result?: GroupClearance; error?: string } {
   const a = resolveGroup(doc, candidates, groupA);
   const b = resolveGroup(doc, candidates, groupB);
@@ -350,25 +370,34 @@ function measureGroups(
   }
 
   let worst:
-    | { a: ResolvedPart; b: ResolvedPart; r: ClearanceResult }
+    | { a: ResolvedPart; b: ResolvedPart; r: MeasuredClearance }
     | undefined;
-  let pairs = 0;
+  const measured: Array<{ a: ResolvedPart; b: ResolvedPart; r: MeasuredClearance }> = [];
   for (const pa of a.parts) {
     for (const pb of b.parts) {
-      let r: ClearanceResult;
+      let r: MeasuredClearance;
       const key = `${pa.id}\0${pb.id}`;
       const known = pairCache?.get(key);
       try {
-        r = known ?? engine.meshClearance(pa.mesh, pb.mesh);
+        r = known ?? { ...engine.meshClearance(pa.mesh, pb.mesh) };
       } catch (e) {
         return { error: e instanceof Error ? e.message : String(e) };
       }
       pairCache?.set(key, r);
-      pairs += 1;
-      if (!worst || worseThan(r, worst.r)) {
-        worst = { a: pa, b: pb, r };
-      }
+      measured.push({ a: pa, b: pb, r });
     }
+  }
+  if (refinable) {
+    refineClearances(
+      doc,
+      engine,
+      measured.map((m) => ({ a: m.a.id, b: m.b.id, r: m.r })),
+      refinable,
+    );
+  }
+  const pairs = measured.length;
+  for (const m of measured) {
+    if (!worst || worseThan(m.r, worst.r)) worst = m;
   }
   if (!worst) {
     return { error: "No measurable part pairs (all resolved parts have empty meshes)." };
@@ -386,6 +415,17 @@ function measureGroups(
         point_b: worst.r.pointB.map(round6) as [number, number, number],
       },
       pairs_checked: pairs,
+      ...(worst.r.basis === "analytic_cylinders"
+        ? {
+            basis: "analytic_cylinders" as const,
+            ...(worst.r.meshDistance !== undefined
+              ? { mesh_distance_mm: round6(worst.r.meshDistance) }
+              : {}),
+            ...(worst.r.chordBandMm !== undefined
+              ? { chord_band_mm: round6(worst.r.chordBandMm) }
+              : {}),
+          }
+        : {}),
       group_a: a.parts.map(named),
       group_b: b.parts.map(named),
     },
@@ -407,6 +447,8 @@ export interface InterferenceFinding {
   point_b: [number, number, number];
   /** Joint states realizing the worst distance (swept audits only). */
   worst_pose?: Pose;
+  /** Set when the parallel-cylinder closed form replaced the mesh number. */
+  basis?: "analytic_cylinders";
 }
 
 /** Whole-document audit outcome. */
@@ -537,7 +579,7 @@ export function computeInterferenceAudit(
   const margin = Math.max(opts.minMm, 0);
   const worstByPair = new Map<
     string,
-    { a: ResolvedPart; b: ResolvedPart; r: ClearanceResult; pose?: Pose }
+    { a: ResolvedPart; b: ResolvedPart; r: MeasuredClearance; pose?: Pose }
   >();
   const broadphase = new Set<string>();
   let queries = 0;
@@ -555,9 +597,9 @@ export function computeInterferenceAudit(
         }
         if (!aabbNear(boxes[i], boxes[j], margin + CONTACT_EPS_MM)) continue;
         broadphase.add(key);
-        let r: ClearanceResult;
+        let r: MeasuredClearance;
         try {
-          r = engine.meshClearance(parts[i].mesh, parts[j].mesh);
+          r = { ...engine.meshClearance(parts[i].mesh, parts[j].mesh) };
         } catch (e) {
           return { error: e instanceof Error ? e.message : String(e) };
         }
@@ -575,6 +617,17 @@ export function computeInterferenceAudit(
     }
   }
 
+  // Unswept audits measure the document's own pose: correct cylinder-pair
+  // chord error before deciding what interferes.
+  if (poses.length === 0) {
+    refineClearances(
+      doc,
+      engine,
+      [...worstByPair.values()].map((w) => ({ a: w.a.id, b: w.b.id, r: w.r })),
+      staticPartIds(base),
+    );
+  }
+
   const named = (p: ResolvedPart) => ({ id: p.id, ...(p.name ? { name: p.name } : {}) });
   const findings: InterferenceFinding[] = [...worstByPair.values()]
     .filter((w) => !clearanceHolds(round6(w.r.distance), opts.minMm, false, w.r.intersecting))
@@ -587,6 +640,7 @@ export function computeInterferenceAudit(
         : clearanceVerdict(round6(w.r.distance)),
       point_a: w.r.pointA.map(round6) as [number, number, number],
       point_b: w.r.pointB.map(round6) as [number, number, number],
+      ...(w.r.basis === "analytic_cylinders" ? { basis: "analytic_cylinders" as const } : {}),
       ...(w.pose
         ? { worst_pose: w.pose.map((s) => ({ joint: s.joint, state: round6(s.state) })) }
         : {}),
@@ -735,6 +789,17 @@ export async function checkClearance(args: Record<string, unknown>, engine: Engi
     ...(allowContact ? { allow_contact: true } : {}),
     ...(pose ? { pose } : {}),
     intersecting: result.intersecting,
+    ...(fitGap === undefined && result.basis
+      ? {
+          basis: result.basis,
+          ...(result.mesh_distance_mm !== undefined
+            ? { mesh_distance_mm: result.mesh_distance_mm }
+            : {}),
+          ...(result.chord_band_mm !== undefined ? { chord_band_mm: result.chord_band_mm } : {}),
+          basis_note:
+            "Closest pair is two parallel cylinders: measured_mm is the exact closed-form gap, not the tessellated distance (chord error would misread a fit tighter than the chord sag).",
+        }
+      : {}),
     worst_pair: result.worst_pair,
     ...(result.worst_pose ? { worst_pose: result.worst_pose } : {}),
     ...(result.poses_checked !== undefined ? { poses_checked: result.poses_checked } : {}),

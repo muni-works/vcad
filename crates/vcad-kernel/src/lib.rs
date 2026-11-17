@@ -67,6 +67,10 @@ pub use vcad_kernel_topopt;
 
 pub mod faces;
 
+/// Analytic (closed-form) correction of mesh clearance for cylinder pairs.
+pub mod analytic_clearance;
+pub use analytic_clearance::{refine_cylinder_clearance, ClearanceBasis, RefinedClearance};
+
 /// Quickhull convex hull of a point cloud (mesh-backed `Hull` op).
 pub mod hull;
 pub use faces::{inspect_faces, FaceInfo, FaceQueryError, FaceReport};
@@ -866,6 +870,14 @@ impl Solid {
                         LossKind::BooleanFallback(reason),
                     ));
                 }
+                // The other invisible case: an analytic-looking result the
+                // missed-cut probe proved wrong, with nothing to replace it.
+                if report.missed_cut {
+                    provenance.push(DegradeEvent::new(
+                        Self::op_name(op),
+                        LossKind::BooleanMissedCut,
+                    ));
+                }
                 Ok(Solid {
                     names,
                     provenance,
@@ -1522,6 +1534,12 @@ impl Solid {
     /// [`Solid::shell_open`] with the open faces given as references
     /// ([`Solid::resolve_face`]), each resolved against this solid. Two
     /// references to the same face are one opening.
+    ///
+    /// A reference opens the whole flat face it lands on, not just the
+    /// fragment: where a boolean left a cap in pieces, the document's root
+    /// shows it merged ([`Solid::merge_coplanar_faces`]) while the solid a
+    /// later operation resolves against still has the pieces, so the
+    /// resolved fragment stands for every piece of its region.
     pub fn shell_open_refs(
         &self,
         thickness: f64,
@@ -1530,8 +1548,10 @@ impl Solid {
         let mut ids = Vec::with_capacity(open_faces.len());
         for r in open_faces {
             let f = self.resolve_face(r.name.as_deref(), r.point, r.normal)?;
-            if !ids.contains(&f) {
-                ids.push(f);
+            for f in self.coplanar_region(f) {
+                if !ids.contains(&f) {
+                    ids.push(f);
+                }
             }
         }
         self.shell_open(thickness, &ids)
@@ -2077,6 +2097,7 @@ impl Solid {
                 params.chord_tolerance = Some(chord_tol);
                 let mut mesh = vcad_kernel_tessellate::tessellate_brep_with(brep.as_ref(), params);
                 vcad_kernel_booleans::repair_export_mesh(brep.as_ref(), &mut mesh);
+                thin_to_display_tolerance(&mut mesh, segments, chord_tol);
                 mesh
             }
             _ => self.to_mesh(segments),
@@ -2096,7 +2117,9 @@ impl Solid {
                 if chord_tol > 0.0 {
                     params.chord_tolerance = Some(chord_tol);
                 }
-                vcad_kernel_tessellate::tessellate_brep_with(brep.as_ref(), params)
+                let mut mesh = vcad_kernel_tessellate::tessellate_brep_with(brep.as_ref(), params);
+                thin_to_display_tolerance(&mut mesh, segments, chord_tol);
+                mesh
             }
             _ => self.to_mesh(segments),
         }
@@ -2173,12 +2196,39 @@ impl Solid {
     /// when the solids intersect (see
     /// [`vcad_kernel_tessellate::clearance`]). Tessellation-based: both
     /// solids are meshed at their own `segments` setting, so curved-surface
-    /// results carry the usual chord error (raise `segments` for tight
-    /// fits). Returns `None` when either solid is empty.
+    /// results carry chord error — except that when the closest pair is two
+    /// parallel cylinders (shaft in bore, pins side by side) of BRep solids,
+    /// the closed-form gap replaces the polygon number (see
+    /// [`analytic_clearance`]); a 0.02 mm running fit no longer reads as an
+    /// interference. Returns `None` when either solid is empty.
     pub fn clearance(&self, other: &Solid) -> Option<ClearanceResult> {
+        self.clearance_refined(other).map(|r| r.result)
+    }
+
+    /// [`Solid::clearance`] plus how the number was obtained (mesh or
+    /// analytic) and the raw mesh distance.
+    pub fn clearance_refined(&self, other: &Solid) -> Option<RefinedClearance> {
         let mesh_a = self.to_mesh(self.segments);
         let mesh_b = other.to_mesh(other.segments);
-        mesh_clearance(&mesh_a, &mesh_b)
+        let mesh = mesh_clearance(&mesh_a, &mesh_b)?;
+        Some(self.refine_clearance(other, &mesh))
+    }
+
+    /// Apply the analytic cylinder correction to a mesh clearance already
+    /// measured between `self` and `other` (e.g. on meshes tessellated
+    /// once and reused across many pairs). A no-op for non-BRep solids.
+    pub fn refine_clearance(&self, other: &Solid, mesh: &ClearanceResult) -> RefinedClearance {
+        match (self.as_brep(), other.as_brep()) {
+            (Some(a), Some(b)) => {
+                refine_cylinder_clearance(a, self.segments, b, other.segments, mesh)
+            }
+            _ => RefinedClearance {
+                result: *mesh,
+                basis: ClearanceBasis::Mesh,
+                mesh_distance: mesh.distance,
+                chord_band_mm: None,
+            },
+        }
     }
 
     /// The tessellation density this solid meshes at by default (what
@@ -2624,6 +2674,208 @@ impl Solid {
             SolidRepr::BRep(brep) => Some(brep.as_ref()),
             _ => None,
         }
+    }
+
+    /// For each face of the solid's outer shell, by ordinal (the id a
+    /// tessellated triangle carries in `TriangleMesh::face_ids`): the
+    /// ordinal of the first face lying on the same surface, facing the same
+    /// way.
+    ///
+    /// Booleans leave a surface in pieces. A wall is partitioned around a
+    /// cross bore; a cap is split along the line where another tool's plane
+    /// would run on through it; a cavity's extended cylinder scores a ring
+    /// into the lid. Those pieces are separate topological faces, which is
+    /// what selection and the feature operations need, but the boundaries
+    /// between them are not edges of the model: nothing changes across
+    /// them. A consumer drawing model outlines compares these group ids
+    /// instead of raw face ids and the internal seams disappear, while a
+    /// real tangent edge — a fillet meeting its wall, two different
+    /// cylinders meeting along a ruling — still separates two groups.
+    ///
+    /// Planes, cylinders and spheres are matched by geometry (the same
+    /// plane split by different tools arrives as different surface
+    /// records); every other kind by surface record. `None` when the solid
+    /// has no B-rep.
+    pub fn smooth_face_groups(&self) -> Option<Vec<u32>> {
+        use std::collections::HashMap;
+        use vcad_kernel_geom::{CylinderSurface, Plane, SphereSurface};
+        use vcad_kernel_topo::Orientation;
+
+        let brep = self.brep()?;
+        let topo = &brep.topology;
+        let shell = &topo.shells[topo.solids[brep.solid_id].outer_shell];
+        // Quantised so that the same surface reached through different
+        // booleans (and their rounding) lands on one key.
+        let q = |x: f64, step: f64| (x / step).round() as i64;
+        let dir = |v: vcad_kernel_math::Vec3| [q(v.x, 1e-7), q(v.y, 1e-7), q(v.z, 1e-7)];
+        let pt = |v: vcad_kernel_math::Vec3| [q(v.x, 1e-5), q(v.y, 1e-5), q(v.z, 1e-5)];
+        #[derive(PartialEq, Eq, Hash)]
+        enum Key {
+            Plane([i64; 3], i64),
+            Cylinder([i64; 3], [i64; 3], i64, bool),
+            Sphere([i64; 3], i64, bool),
+            Record(usize, bool),
+        }
+        let mut first: HashMap<Key, u32> = HashMap::new();
+        let mut groups = Vec::with_capacity(shell.faces.len());
+        for (ordinal, &face_id) in shell.faces.iter().enumerate() {
+            let face = &topo.faces[face_id];
+            let reversed = face.orientation == Orientation::Reversed;
+            let surface = brep.geometry.surfaces[face.surface_index].as_any();
+            let key = if let Some(p) = surface.downcast_ref::<Plane>() {
+                // Outward normal and signed offset: the same plane facing
+                // the other way is a different (back-to-back) face.
+                let n = *p.normal_dir.as_ref() * if reversed { -1.0 } else { 1.0 };
+                Key::Plane(dir(n), q(n.dot(p.origin.to_vec()), 1e-5))
+            } else if let Some(c) = surface.downcast_ref::<CylinderSurface>() {
+                // Axis as an unsigned line: direction with a fixed sign,
+                // and the point of the axis nearest the origin.
+                let mut a = *c.axis.as_ref();
+                if (a.x, a.y, a.z) < (0.0, 0.0, 0.0) {
+                    a = -a;
+                }
+                let o = c.center.to_vec();
+                Key::Cylinder(
+                    dir(a),
+                    pt(o - a * o.dot(a)),
+                    q(c.radius.abs(), 1e-5),
+                    reversed,
+                )
+            } else if let Some(sp) = surface.downcast_ref::<SphereSurface>() {
+                Key::Sphere(pt(sp.center.to_vec()), q(sp.radius.abs(), 1e-5), reversed)
+            } else {
+                Key::Record(face.surface_index, reversed)
+            };
+            groups.push(*first.entry(key).or_insert(ordinal as u32));
+        }
+        Some(groups)
+    }
+
+    /// Merge edge-adjacent faces lying on one plane into single faces.
+    ///
+    /// Booleans leave a planar surface in pieces — a cap split along the
+    /// line where another tool's plane would run on through it, a section
+    /// face cut where a wall crossed it. This returns the same solid with
+    /// one face per connected region of each plane, so hover, selection,
+    /// face picking and STEP export see the faces a drawing would show.
+    /// Curved surfaces are left as the boolean produced them.
+    ///
+    /// Fail-closed: the solid is returned unchanged when it is not an
+    /// analytic B-rep, when nothing merges, or when the merged B-rep would
+    /// tessellate any worse (more open, over-used or folded edges, or a
+    /// different volume) than the split one. See
+    /// [`vcad_kernel_booleans::merge`].
+    ///
+    /// # Face names
+    ///
+    /// A merged face that reunites *every* fragment of a named face gets
+    /// the unsplit name back (`n1:top.0` + `n1:top.1` → `n1:top`). When
+    /// other fragments of the same face remain elsewhere it keeps the
+    /// lowest fragment name, so [`NameMap::lineage`] of the parent still
+    /// finds all of them. A merge across differently-named or unnamed
+    /// faces is anonymous.
+    ///
+    /// [`NameMap::lineage`]: vcad_kernel_naming::NameMap::lineage
+    pub fn merge_coplanar_faces(&self) -> Solid {
+        self.try_merge_coplanar_faces()
+            .unwrap_or_else(|| self.clone())
+    }
+
+    /// [`Solid::merge_coplanar_faces`], or `None` when it would return the
+    /// solid unchanged.
+    pub fn try_merge_coplanar_faces(&self) -> Option<Solid> {
+        let SolidRepr::BRep(brep) = &self.repr else {
+            return None;
+        };
+        if self.fidelity() != SolidFidelity::Analytic {
+            return None;
+        }
+        let segments = resolve_segments(self.segments);
+        let (merged, report) = vcad_kernel_booleans::merged_if_no_worse(brep, segments)?;
+        let names = self.names.as_ref().map(|names| {
+            use std::collections::BTreeMap;
+            use vcad_kernel_naming::FaceName;
+            let mut out = names.clone();
+            let mut groups: BTreeMap<_, Vec<_>> = BTreeMap::new();
+            for (absorbed, survivor) in &report.absorbed {
+                groups.entry(*survivor).or_default().push(*absorbed);
+            }
+            for (survivor, absorbed) in groups {
+                let mut member_names: Vec<Option<FaceName>> = vec![out.faces.remove(&survivor)];
+                for f in &absorbed {
+                    member_names.push(out.faces.remove(f));
+                }
+                let Some(named) = member_names.into_iter().collect::<Option<Vec<FaceName>>>()
+                else {
+                    continue;
+                };
+                let first = &named[0];
+                if named
+                    .iter()
+                    .any(|n| n.scope != first.scope || n.tag != first.tag)
+                {
+                    continue;
+                }
+                let mut common = first.path.len();
+                for n in &named[1..] {
+                    common = common.min(
+                        first
+                            .path
+                            .iter()
+                            .zip(&n.path)
+                            .take_while(|(a, b)| a == b)
+                            .count(),
+                    );
+                }
+                let parent = FaceName {
+                    scope: first.scope.clone(),
+                    tag: first.tag.clone(),
+                    path: first.path[..common].to_vec(),
+                };
+                let fragments_elsewhere = out.faces.values().any(|n| {
+                    n.scope == parent.scope
+                        && n.tag == parent.tag
+                        && n.path.starts_with(&parent.path)
+                });
+                let name = if fragments_elsewhere {
+                    named.into_iter().min().expect("non-empty")
+                } else {
+                    parent
+                };
+                out.faces.insert(survivor, name);
+            }
+            out
+        });
+        Some(Solid {
+            repr: SolidRepr::BRep(Box::new(merged)),
+            segments: self.segments,
+            names,
+            provenance: self.provenance.clone(),
+        })
+    }
+
+    /// `face` together with every face that [`Solid::merge_coplanar_faces`]
+    /// would merge it with: the whole flat region it is a fragment of.
+    fn coplanar_region(&self, face: vcad_kernel_topo::FaceId) -> Vec<vcad_kernel_topo::FaceId> {
+        let SolidRepr::BRep(brep) = &self.repr else {
+            return vec![face];
+        };
+        let mut probe = brep.as_ref().clone();
+        let report = vcad_kernel_booleans::merge_coplanar_faces(&mut probe);
+        let lead = report
+            .absorbed
+            .iter()
+            .find(|(f, _)| *f == face)
+            .map_or(face, |(_, s)| *s);
+        let mut region = vec![lead];
+        region.extend(
+            report
+                .absorbed
+                .iter()
+                .filter(|(_, s)| *s == lead)
+                .map(|(f, _)| *f),
+        );
+        region
     }
 
     /// Check if this solid can be ray traced.
@@ -4929,5 +5181,17 @@ mod tests {
                 "{name} after difference regrew material: vol={vol:.1} > bored={bored_vol:.1}"
             );
         }
+    }
+}
+
+/// A chord tolerance cuts both ways: it refines faces the tessellator
+/// samples itself, and it thins the rims a boolean froze onto the kernel's
+/// 1 µm grid, which the tessellator otherwise renders verbatim (a 76 mm
+/// wall as 512 strips). Display meshes only — see
+/// [`vcad_kernel_tessellate::display`].
+fn thin_to_display_tolerance(mesh: &mut TriangleMesh, segments: u32, chord_tol: f64) {
+    if chord_tol > 0.0 {
+        let max_turn = 2.0 * std::f64::consts::PI / f64::from(segments.max(3));
+        vcad_kernel_tessellate::display::thin_feature_chains(mesh, chord_tol, max_turn);
     }
 }

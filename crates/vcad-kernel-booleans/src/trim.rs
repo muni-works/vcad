@@ -236,11 +236,23 @@ fn point_in_face_inner(brep: &BRepSolid, face_id: FaceId, point_3d: &Point3) -> 
         return true;
     }
 
-    // Special case: sphere faces with degenerate pole loops (2 vertices: north + south poles).
-    // The outer loop has only 2 unique positions (poles), which don't form a polygon.
-    // Check if the point is on the sphere surface using 3D distance to center.
-    if surface.surface_type() == vcad_kernel_geom::SurfaceKind::Sphere && outer_verts_3d.len() <= 2
-    {
+    // Special case: an untrimmed sphere. Its outer loop is the seam cycle
+    // (south pole, seam up, north pole, seam down): four half-edges over
+    // only two distinct positions, which is not a polygon. Counted by
+    // POSITION — counting half-edges (4) sent every untrimmed sphere on to
+    // the UV-polygon test below, which reads the degenerate cycle as a
+    // sliver along the seam and answered "outside" everywhere else on the
+    // sphere. Check the point against the sphere itself (and its holes).
+    let distinct_positions = {
+        let mut seen: Vec<Point3> = Vec::new();
+        for v in &outer_verts_3d {
+            if !seen.iter().any(|u| (*u - *v).norm() < 1e-9) {
+                seen.push(*v);
+            }
+        }
+        seen.len()
+    };
+    if surface.surface_type() == vcad_kernel_geom::SurfaceKind::Sphere && distinct_positions <= 2 {
         if let Some(sph) = surface
             .as_any()
             .downcast_ref::<vcad_kernel_geom::SphereSurface>()
@@ -1174,6 +1186,15 @@ pub fn trim_curve_to_face(
                 n_samples,
             )
         }
+        IntersectionCurve::Ring(c1, _) | IntersectionCurve::TwoCircles(c1, _) => {
+            // TwoCircles should be expanded before calling this function.
+            trim_curve_to_face(
+                &IntersectionCurve::Circle(c1.clone()),
+                face_id,
+                brep,
+                n_samples,
+            )
+        }
         IntersectionCurve::TwoSampled(c1, _c2) => {
             // TwoSampled should be expanded before calling this function.
             // Defensive fallback: process the first sampled curve.
@@ -1389,6 +1410,27 @@ fn find_seam_cut_for_values(values: &[f64]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every point of an untrimmed sphere is on its one face — not only the
+    /// points near the seam.
+    #[test]
+    fn untrimmed_sphere_contains_all_of_itself() {
+        let brep = vcad_kernel_primitives::make_sphere(8.0, 32);
+        let face = brep.topology.faces.keys().next().expect("sphere face");
+        for i in 0..12 {
+            for j in 1..6 {
+                let (lon, lat) = (i as f64 * 0.5236, -1.5 + j as f64 * 0.5);
+                let p = Point3::new(
+                    8.0 * lat.cos() * lon.cos(),
+                    8.0 * lat.cos() * lon.sin(),
+                    8.0 * lat.sin(),
+                );
+                assert!(point_in_face(&brep, face, &p), "lon {lon:.2} lat {lat:.2}");
+            }
+        }
+        assert!(!point_in_face(&brep, face, &Point3::new(7.0, 0.0, 0.0)));
+        assert!(!point_in_face(&brep, face, &Point3::new(0.0, 9.0, 0.0)));
+    }
 
     #[test]
     fn test_point_in_polygon_square() {

@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-posed-magnetic-field-sources",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "feat",
+  "title": "3D magnetic field of posed coils and magnets",
+  "summary": "Place loops, solenoids, disc/ring and block magnets anywhere in 3D and sample exact B (and ∇|B|) at points or on a plane; new magnetic_field MCP tool.",
+  "features": ["particle", "magnets", "electromagnetics", "simulation"],
+  "mcpTools": ["magnetic_field"]
+}

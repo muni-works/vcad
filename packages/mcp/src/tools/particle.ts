@@ -13,6 +13,10 @@
  * hybrid (adjoint for potentials / ampere-turns, FD for geometry). Multi-start is the
  * default because the yield landscape is measurably multimodal
  * (recirculation hill vs energy-quality hill — `docs/particle-optics-m0.md`).
+ *
+ * `magnetic_field` superposes posed 3D sources (loops, solenoids, disc /
+ * ring and block magnets) and samples B at points or on a plane grid —
+ * `vcad-kernel-particle::field3d`.
  */
 
 import { behavior, type ToolDef } from "./tool-def.js";
@@ -406,6 +410,109 @@ export const optimizeElectrodesSchema = {
   },
 };
 
+const numVec3 = {
+  type: "array" as const,
+  items: { type: "number" as const },
+  minItems: 3,
+  maxItems: 3,
+};
+
+const poseSchema = {
+  type: "object" as const,
+  description:
+    "Placement. The source's local +z is its coil axis / north pole. Give " +
+    "`axis` (+ optional `x_axis` to fix a block's roll) OR `rotation_deg` " +
+    "(Euler X,Y,Z degrees, R = Rx·Ry·Rz — the IR Rotate convention), not " +
+    "both. Omitted = at the origin, axis +Z.",
+  properties: {
+    position_mm: { ...numVec3, description: "Source center, mm." },
+    axis: { ...numVec3, description: "Local +z direction (need not be unit)." },
+    x_axis: {
+      ...numVec3,
+      description: "With `axis`: local +x direction (orthogonal part used).",
+    },
+    rotation_deg: { ...numVec3, description: "Euler angles about X, Y, Z, deg." },
+  },
+};
+
+const fieldSourceSchema = {
+  type: "object" as const,
+  required: ["type"],
+  description:
+    "One source. `type` selects the fields: " +
+    "`loop` {radius_mm, current_a, turns=1, wire_radius_mm=0}; " +
+    "`solenoid` {radius_mm, length_mm, current_a, turns, n_loops?}; " +
+    "`cylinder_magnet` {radius_mm, inner_radius_mm=0 (ring magnet if >0), " +
+    "length_mm, remanence_t, n_loops?}; " +
+    "`block_magnet` {size_mm: [x, y, z] (z = magnetization), remanence_t}. " +
+    "All centered on `pose.position_mm`. Remanence: N52 ≈ 1.43 T, N42 ≈ 1.3, " +
+    "ferrite ≈ 0.4. `n_loops` swaps the exact closed form for a loop stack.",
+  properties: {
+    type: {
+      type: "string" as const,
+      enum: ["loop", "solenoid", "cylinder_magnet", "block_magnet"],
+    },
+    radius_mm: { type: "number" as const },
+    inner_radius_mm: { type: "number" as const },
+    length_mm: { type: "number" as const },
+    size_mm: numVec3,
+    current_a: { type: "number" as const },
+    turns: { type: "number" as const },
+    wire_radius_mm: { type: "number" as const },
+    remanence_t: { type: "number" as const },
+    n_loops: { type: "number" as const },
+    pose: poseSchema,
+  },
+};
+
+export const magneticFieldSchema = {
+  type: "object" as const,
+  required: ["sources"],
+  properties: {
+    sources: {
+      type: "array" as const,
+      minItems: 1,
+      items: fieldSourceSchema,
+      description: "Sources to superpose (free space, linear).",
+    },
+    points_mm: {
+      type: "array" as const,
+      items: numVec3,
+      description: "Query points, mm.",
+    },
+    grid: {
+      type: "object" as const,
+      required: ["u_range_mm", "v_range_mm", "nu", "nv"],
+      description:
+        "Plane grid origin + u·u_dir + v·v_dir, appended after points_mm, " +
+        "row-major (index = offset + iv·nu + iu). Total points ≤ 20000.",
+      properties: {
+        origin_mm: { ...numVec3, description: "Default [0, 0, 0]." },
+        u_dir: { ...numVec3, description: "Default +X." },
+        v_dir: { ...numVec3, description: "Default +Y." },
+        u_range_mm: {
+          type: "array" as const,
+          items: { type: "number" as const },
+          minItems: 2,
+          maxItems: 2,
+        },
+        v_range_mm: {
+          type: "array" as const,
+          items: { type: "number" as const },
+          minItems: 2,
+          maxItems: 2,
+        },
+        nu: { type: "number" as const },
+        nv: { type: "number" as const },
+      },
+    },
+    gradient: {
+      type: "boolean" as const,
+      description: "Also return ∇|B| (T/m) per point. Default false.",
+    },
+  },
+};
+
 type Json = Record<string, unknown>;
 
 function textResult(payload: unknown) {
@@ -486,6 +593,36 @@ export const toolDefs: ToolDef[] = [
         JSON.stringify({
           variables: a.variables,
           ...(a.options as Json | undefined),
+        }),
+      );
+      return textResult(out);
+    },
+    behavior: behavior({}),
+  },
+  {
+    name: "magnetic_field",
+    pack: null,
+    description:
+      "Magnetic field (B, tesla) of coils and permanent magnets placed anywhere in 3D: " +
+      "current loops, finite solenoids, axially magnetized disc/rod/ring magnets, and " +
+      "rectangular block magnets, each with a full pose (mm + axis or Euler degrees), " +
+      "superposed and sampled at points and/or on a plane grid. Returns B vectors, |B|, " +
+      "optional ∇|B| (T/m), the peak, and per-source dipole moment + method. Exact closed " +
+      "forms throughout (elliptic integrals for loops/solenoids/cylinders, charge-sheet " +
+      "formula for blocks); magnets are ideal rigid magnetization (μr = 1, no iron, no " +
+      "mutual demagnetization). Fails closed on a query point exactly on a filament or " +
+      "magnet edge. Use it to size a magnet for a target field, check a Helmholtz/coil " +
+      "pair's uniformity, or map a motor/steering field. Fast: milliseconds per thousand " +
+      "points.",
+    inputSchema: magneticFieldSchema,
+    handler: (args, ctx) => {
+      const a = args as Json;
+      const out = ctx.engine.magneticField(
+        JSON.stringify({ sources: a.sources }),
+        JSON.stringify({
+          ...(a.points_mm !== undefined ? { points_mm: a.points_mm } : {}),
+          ...(a.grid !== undefined ? { grid: a.grid } : {}),
+          ...(a.gradient !== undefined ? { gradient: a.gradient } : {}),
         }),
       );
       return textResult(out);
