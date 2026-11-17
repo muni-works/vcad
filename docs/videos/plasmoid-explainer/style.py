@@ -315,9 +315,9 @@ def wordmark(d, cx, cy, size, col):
         x += d.textlength(c, font=f) + trk
 
 
-def end_card(t, t_end, beat, credit):
-    """carbon card: wordmark, then the tagline 2 beats later, then vcad.io
-    and the credit line 2 beats after that."""
+def end_card(t, t_mark, t_tag, t_url, credit):
+    """carbon card: the wordmark and the tagline from t_mark / t_tag, then
+    vcad.io and the credit lines from t_url."""
     img = new("RGB", CARBON)
     d = draw(img)
     m, L = M, 24
@@ -325,10 +325,11 @@ def end_card(t, t_end, beat, credit):
         d.line([(x, y), (x + sx * L, y)], fill=V_SEC, width=2)
         d.line([(x, y), (x, y + sy * L)], fill=V_SEC, width=2)
     cy = H / 2 - 40
-    wordmark(d, W / 2, cy, 150, V_TEXT)
-    if t >= t_end + 2 * beat:
+    if t >= t_mark:
+        wordmark(d, W / 2, cy, 150, V_TEXT)
+    if t >= t_tag:
         d.text((W / 2, cy + 74), "build your imagination", font=FI(34, False), fill=V_TEXT, anchor="mm")
-    if t >= t_end + 4 * beat:
+    if t >= t_url:
         d.line([(W / 2 - 120, cy + 126), (W / 2 + 120, cy + 126)], fill=V_HAIR, width=2)
         d.text((W / 2, cy + 168), "vcad.io", font=F(28), fill=V_TEXT, anchor="mm")
         for i, ln in enumerate(credit):

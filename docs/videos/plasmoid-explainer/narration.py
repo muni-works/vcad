@@ -30,4 +30,14 @@ LINES = [
     ("foot", "So the plasmoid's foot settles where the plasma is easiest to keep lit. "
              "At this pressure, the electric effect is nearly three times the magnetic one. "
              "Thin the gas further, and the magnetic effect grows."),
+    # the sign-off, spelled the way it should be said (captions: CAPTIONS)
+    ("outro", "This video was made entirely with open source code. My voice is called ribbit. "
+              "R, I, B, T, dot dev. Build your imagination. V cad dot I O."),
 ]
+
+# Lines whose captions differ from the spoken words: [(caption, spoken words covered)].
+# The end card itself shows "build your imagination" and "vcad.io".
+CAPTIONS = {
+    "outro": [("this video was made", 4), ("entirely with", 2), ("open source code.", 3),
+              ("my voice is called", 4), ("ribt", 1), ("ribt.dev", 6)],
+}

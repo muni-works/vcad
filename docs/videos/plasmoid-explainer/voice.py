@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Voice the narration with ribt and time every word.
 
-    python voice.py <ribt-tts binary> <weights dir> <out dir>
+    python voice.py <ribt-tts binary> <weights dir> <out dir> [line id …]
+
+With line ids, only those lines are re-voiced; the rest of timing.json is kept.
 
 For each line in narration.py: `ribt-tts synth` (the released settings,
 release.toml) → <out>/<id>.wav, then Whisper word timestamps, matched back
@@ -49,8 +51,12 @@ def main():
     os.makedirs(out, exist_ok=True)
     import whisper
     model = whisper.load_model("small.en")
-    timing = {}
+    only = sys.argv[4:]
+    tpath = os.path.join(out, "timing.json")
+    timing = json.load(open(tpath)) if only else {}
     for lid, text in LINES:
+        if only and lid not in only:
+            continue
         wav = os.path.join(out, f"{lid}.wav")
         dur = synth(tts, weights, text, wav)
         res = model.transcribe(wav, word_timestamps=True, language="en")
@@ -80,7 +86,8 @@ def main():
                        "words": [[w, round(a, 3), round(b, 3)] for w, a, b in zip(script, t0, t1)]}
         print(f"{lid:7s} {dur:5.2f} s  {len(script):2d} words, {missed} interpolated  | "
               + " ".join(h[0] for h in heard)[:90])
-    json.dump(timing, open(os.path.join(out, "timing.json"), "w"), indent=1)
+    timing = {lid: timing[lid] for lid, _ in LINES}
+    json.dump(timing, open(tpath, "w"), indent=1)
     print("total speech %.1f s" % sum(v["dur"] for v in timing.values()))
 
 

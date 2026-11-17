@@ -31,15 +31,16 @@ from PIL import Image, ImageFilter
 
 import style
 from diagrams import DIAGRAMS
-from narration import LINES
+from narration import CAPTIONS, LINES
 from style import F, FS, H, LABEL, M, SEL, TEXT, W, FPS, tracked
 
 BEAT = 0.5                    # the track is 120 BPM
 T_LOCK = 5.0 + 28 / 30        # clip frame 178: the foot locks (model: 5.93 s)
 T_FLICK = 14.0 + 1 / 30       # clip frame 421: the flick (model: break-away 14.04 s)
-T_DROP = 32.0                 # the track's energy jump: "…and it locks on" lands here
-GAP = 0.5                     # pause between lines
-END_CARD = 4.2
+MUSIC_SS = 8.04               # the track starts on its 8 s downbeat, so that
+T_DROP = 24.0                 # its big energy jump (32 s in) lands here: "…and it locks on"
+GAP = 0.15                    # breath between lines, after the last spoken word
+TAIL = 2.0                    # the end card holds this long after the last word
 
 # line id → (kind, args, {cue name: word prefix})
 SHOTS = {
@@ -86,6 +87,11 @@ def word_time(timing, lid, prefix):
     raise KeyError(f"{lid}: no word starting {prefix!r}")
 
 
+def spoken(timing, lid):
+    """when the line's last word ends (the wavs carry ~0.5 s of trailing silence)."""
+    return timing[lid]["words"][-1][2] + 0.1
+
+
 def layout(timing):
     """start time of every line. The opening is spread so "locks" lands on
     T_DROP; the payoff lines are pinned to the clip's own events; the rest
@@ -93,26 +99,27 @@ def layout(timing):
     ids = [l for l, _ in LINES]
     start = {}
     opening = ids[:ids.index("dish2") + 1]
-    natural = sum(timing[l]["dur"] for l in opening[:-1]) + word_time(timing, "dish2", "locks")
-    gap = (T_DROP - 1.0 - natural) / (len(opening) - 1)
-    assert gap >= 0.3, f"the opening runs past the drop (gap {gap:.2f})"
-    t = 1.0
+    natural = sum(spoken(timing, l) for l in opening[:-1]) + word_time(timing, "dish2", "locks")
+    gap = (T_DROP - 0.5 - natural) / (len(opening) - 1)
+    assert gap >= 0.2, f"the opening runs past the drop (gap {gap:.2f})"
+    t = 0.5
     for l in opening:
         start[l] = t
-        t += timing[l]["dur"] + gap
+        t += spoken(timing, l) + gap
     lock = start["dish2"] + word_time(timing, "dish2", "locks")
     start["pay1"] = lock + 2.0                                            # the drag starts at clip 8.0
     start["pay2"] = lock + (T_FLICK - T_LOCK) - word_time(timing, "pay2", "flick")
-    start["pay3"] = max(lock + 11.6, start["pay2"] + timing["pay2"]["dur"] + 0.3)
+    start["pay3"] = max(lock + 11.6, start["pay2"] + spoken(timing, "pay2") + 0.2)
     prev = "pay3"
     for l in ids[ids.index("pay3") + 1:]:
-        t = start[prev] + timing[prev]["dur"] + GAP
+        t = start[prev] + spoken(timing, prev) + GAP
         start[l] = math.ceil(t / BEAT - 1e-6) * BEAT
         prev = l
     for a, b in zip(ids, ids[1:]):
-        assert start[b] >= start[a] + timing[a]["dur"], f"{a} overlaps {b}"
-    t_end = math.ceil((start[ids[-1]] + timing[ids[-1]]["dur"] + 0.8) / BEAT) * BEAT
-    return ids, start, lock, t_end
+        assert start[b] >= start[a] + spoken(timing, a), f"{a} overlaps {b}"
+    t_end = start["outro"]                    # the end card comes up as the sign-off starts
+    total = start["outro"] + spoken(timing, "outro") + TAIL
+    return ids, start, lock, t_end, total
 
 
 def captions(timing, ids, start):
@@ -121,9 +128,11 @@ def captions(timing, ids, start):
     for l, text in LINES:
         words = timing[l]["words"]
         k = 0
-        parts = [text] if l in BIG else style.chunks(text)
-        for i, part in enumerate(parts):
-            n = len(part.split())
+        parts = [(text, len(words))] if l in BIG else CAPTIONS.get(l) or [
+            (c, len(c.split())) for c in style.chunks(text)]
+        for i, (part, n) in enumerate(parts):
+            if k >= len(words):
+                break
             t0 = start[l] + words[k][1]
             k += n
             t1 = start[l] + (words[k][1] if k < len(words) else timing[l]["dur"] + 0.35)
@@ -240,7 +249,13 @@ def draw_labels(img, t):
 def frame(t, a):
     ids, start, t_end = TL["ids"], TL["start"], TL["t_end"]
     if t >= t_end:
-        return style.end_card(t, t_end, BEAT, CREDIT)
+        # the card's lines come up as the voice says them
+        at = lambda w: t_end + word_time(TL["timing"], "outro", w)
+        img = style.end_card(t, at("build"), at("build"), at("cad"), CREDIT)
+        for t0, t1, part, l in TL["captions"]:
+            if l == "outro" and t0 <= t < min(t1, at("build")):
+                img = style.draw_chunk(img, part, t - t0, big=True)
+        return img
     lid = ids[0]
     for l in ids:
         if start[l] <= t:
@@ -264,9 +279,9 @@ def frame(t, a):
     else:
         nxt = ids[ids.index(lid) + 1] if lid != ids[-1] else None
         cues = {k: word_time(TL["timing"], lid, w) for k, w in cue_words.items()}
-        cues["dur"] = (start[nxt] if nxt else t_end) - start[lid]
+        cues["dur"] = start[nxt] - start[lid]
         img = DIAGRAMS[args["name"]](local, a.assets, cues)
-    img = style.hud_frame(img, t, t_end + END_CARD, label)
+    img = style.hud_frame(img, t, TL["total"], label)
     for t0, t1, part, l in TL["captions"]:
         if t0 <= t < t1:
             img = style.draw_chunk(img, part, t - t0, big=l in BIG or kind == "card")
@@ -280,8 +295,8 @@ ARGS = None
 
 def build_timeline(a):
     timing = json.load(open(os.path.join(a.vo, "timing.json")))
-    ids, start, lock, t_end = layout(timing)
-    return dict(timing=timing, ids=ids, start=start, lock=lock, t_end=t_end,
+    ids, start, lock, t_end, total = layout(timing)
+    return dict(timing=timing, ids=ids, start=start, lock=lock, t_end=t_end, total=total,
                 captions=captions(timing, ids, start), period=load_traj(a.traj)[2])
 
 
@@ -299,7 +314,7 @@ def _render(n):
 
 def voice_track(a, tl, path):
     """every line at its start time, 24 kHz mono."""
-    dur = tl["t_end"] + END_CARD
+    dur = tl["total"]
     sr = 24000
     buf = np.zeros(int(dur * sr) + sr, dtype=np.float32)
     for l in tl["ids"]:
@@ -329,7 +344,7 @@ def main():
     a = ap.parse_args()
 
     tl = build_timeline(a)
-    dur = tl["t_end"] + END_CARD
+    dur = tl["total"]
     for l in tl["ids"]:
         print(f"{tl['start'][l]:7.2f}  {l:7s} {tl['timing'][l]['dur']:5.2f} s", file=sys.stderr)
     print(f"lock {tl['lock']:.2f} s, end card {tl['t_end']:.1f} s, total {dur:.1f} s", file=sys.stderr)
@@ -352,11 +367,11 @@ def main():
         voice_track(a, tl, voice)
         cmd += ["-i", voice]
         if a.track:
-            # music from its first beat, ducked under the voice, faded at the end
-            cmd += ["-ss", "0.04", "-i", a.track, "-filter_complex",
+            # music dips only gently under the voice, fades at the end
+            cmd += ["-ss", str(MUSIC_SS), "-i", a.track, "-filter_complex",
                     f"[1:a]volume=1.7,asplit=2[v][key];"
-                    f"[2:a]volume=0.55,afade=t=out:st={dur - 2.5}:d=2.5[m];"
-                    f"[m][key]sidechaincompress=threshold=0.02:ratio=10:attack=15:release=450[duck];"
+                    f"[2:a]volume=0.6,afade=t=out:st={dur - 2.5}:d=2.5[m];"
+                    f"[m][key]sidechaincompress=threshold=0.05:ratio=2.5:attack=20:release=300[duck];"
                     f"[duck][v]amix=inputs=2:normalize=0,alimiter=limit=0.89:level=0[a]",
                     "-map", "0:v", "-map", "[a]"]
         cmd += ["-t", f"{dur}", "-c:a", "aac", "-b:a", "256k"]
