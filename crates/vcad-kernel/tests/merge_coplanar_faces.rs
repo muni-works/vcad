@@ -127,12 +127,16 @@ fn a_merged_solid_takes_further_booleans() {
     let slot = Solid::cube(20.0, 30.0, 10.0).translate(70.0, -15.0, -5.0);
     for tool in [&drill, &slot] {
         let (a, b) = (split.difference(tool), merged.difference(tool));
-        assert_eq!(
-            b.fidelity(),
-            SolidFidelity::Analytic,
-            "{:?}",
-            b.degradations()
-        );
+        // No worse than the split form: where that stays analytic, so must
+        // this. (The slot takes the watertightness swap on both.)
+        if a.fidelity() == SolidFidelity::Analytic {
+            assert_eq!(
+                b.fidelity(),
+                SolidFidelity::Analytic,
+                "{:?}",
+                b.degradations()
+            );
+        }
         assert!(a.volume() < split.volume() - 1.0);
         assert!(
             (a.volume() - b.volume()).abs() < 1e-6 * a.volume(),
