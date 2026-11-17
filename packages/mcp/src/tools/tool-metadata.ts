@@ -102,6 +102,7 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
   // ── Stdlib parts library (local) ───────────────────────────────────────
   search_parts: { title: "Search Stdlib Parts", annotations: RO },
   place_part: { title: "Place Part", annotations: RW },
+  describe_part: { title: "Describe Part", annotations: RO },
 
   // ── Registry-tier kernel tools ─────────────────────────────────────────
   create: { title: "Create Feature Node", annotations: RW },

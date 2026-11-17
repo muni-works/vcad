@@ -210,10 +210,11 @@ final class ReleaseWindowController {
         mouseMonitors.append(NSEvent.addLocalMonitorForEvents(
             matching: [.otherMouseDown, .otherMouseDragged, .otherMouseUp]) { [weak self] e in
             guard let self, e.window === self.window, e.buttonNumber == 2 else { return e }
-            let type = e.type, clicks = e.clickCount, shift = e.modifierFlags.contains(.shift)
+            let type = e.type, clicks = e.clickCount
+            let shift = e.modifierFlags.contains(.shift), control = e.modifierFlags.contains(.control)
             let dx = Float(e.deltaX), dy = Float(e.deltaY)
             let consumed = MainActor.assumeIsolated {
-                self.middleMouse(type: type, clicks: clicks, shift: shift, dx: dx, dy: dy)
+                self.middleMouse(type: type, clicks: clicks, shift: shift, control: control, dx: dx, dy: dy)
             }
             return consumed ? nil : e
         } as Any)
@@ -496,7 +497,7 @@ final class ReleaseWindowController {
     private var middleDragging = false
 
     /// Middle-button camera input. Returns whether the event was consumed.
-    private func middleMouse(type: NSEvent.EventType, clicks: Int, shift: Bool,
+    private func middleMouse(type: NSEvent.EventType, clicks: Int, shift: Bool, control: Bool,
                              dx: Float, dy: Float) -> Bool {
         guard let m = model else { return false }
         let scheme = NavigationScheme.current
@@ -513,7 +514,7 @@ final class ReleaseWindowController {
             return true
         case .otherMouseDragged:
             guard middleDragging else { return false }
-            switch scheme.action(for: .drag(.middle, shift: shift, command: false)) {
+            switch scheme.action(for: .drag(.middle, shift: shift, command: false, control: control)) {
             case .orbit: m.orbitDrag(dx: dx, dy: dy)
             case .pan: m.panBy(dx: dx, dy: dy)
             default: break
@@ -2085,6 +2086,7 @@ struct ReleasedARView: NSViewRepresentable {
         if let parent = ReleaseWindowController.shared.centeringEntity {
             syncCNCOverlay(model.cnc, in: parent, model: model)
             syncFieldOverlay(FieldOverlayStore.shared, in: parent)
+            syncFieldsSection(FieldsStore.shared, in: parent)
             if model.workspace == .manufacture && model.cnc.autoFit && !model.cnc.followSpindle && context.coordinator.framedCNCRevision != cncRevision {
                 context.coordinator.framedCNCRevision = cncRevision
                 Task { @MainActor in

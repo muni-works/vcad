@@ -82,9 +82,10 @@ CRATES=(
   vcad-ecad-sim
   vcad-ecad-pcb
   vcad-kernel-diff
+  # vcad-parts before vcad-eval: eval expands `std:` PartInstance nodes.
+  vcad-parts
   vcad-eval
   vcad-kernel-optics
-  vcad-parts
   vcad-render
 )
 

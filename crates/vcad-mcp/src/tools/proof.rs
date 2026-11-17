@@ -125,6 +125,8 @@ pub fn tools() -> Vec<ToolDef> {
                     allow_contact: a["allow_contact"].as_bool().filter(|b| *b),
                     sweep: None,
                     baseline_mm: None,
+                    max_mm: None,
+                    fit: None,
                 });
                 ctx.store
                     .commit(&id, doc.clone(), CommitMeta::agent(format!("Assert clearance “{label}”")))
