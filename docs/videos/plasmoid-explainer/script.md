@@ -1,5 +1,26 @@
 # plasmoid explainer — script
 
+**Current cut (narrated):** the spoken script is `narration.py`. `voice.py`
+voices each line with [ribt](https://ribt.dev) (the released af_heart voice)
+and times every word with Whisper (`timing.json`); `make_video.py` gives each
+line a shot, pops the captions in on the words as they are said, fires
+diagram cues on named words, and ducks the soundtrack under the voice. It
+opens on "What the fuck is the sun?" over the SDO footage; the lock lands on
+the track's 32 s jump; the payoff lines are pinned to the clip's own events
+(drag, flick, release). The second half explains the physics: magnets curl
+electrons (exact paths), only in thin gas (pressure sweep), a plasma lives
+where gain beats loss, and a magnet tips that balance two ways (it cuts the
+loss; as metal it crowds the electric field). `scene_live`, `scene_lever1`,
+`scene_lever2` and `scene_foot` are illustrations, not simulation output;
+the 2.7× ratio is the glow-fluid model's (#1237). The sections below
+describe the earlier captions-only cuts.
+
+```bash
+~/venvs/voice-eval/bin/python voice.py <ribt-tts> <weights dir> vo
+python3 make_video.py --raw <clip frames> --traj <trajectory.csv> \
+  --assets <dir> --vo vo --track track.mp3 -o explainer.mp4
+```
+
 100.6 s, vertical (720×1280, or 1080×1920 with `EXPLAINER_SCALE=1.5`), 30 fps, captions only (no voice). The audience knows
 nothing about plasma. Every number comes from `docs/plasmoid-sim.md`
 (reduced model, #1198/#1229) or `docs/plasmoid-fluid-m0.md` (fluid model,

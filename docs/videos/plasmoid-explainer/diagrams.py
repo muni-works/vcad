@@ -103,12 +103,11 @@ def dish(d, c, r, a=1.0):
 
 # ── what is glowing ──────────────────────────────────────────────────────
 GAS_BOX = (60, 200, 660, 820)
-GAS_FIELD_ON, GAS_ION_ON = 3.0, 5.6
-GAS_T = 9.5
+GAS_T = 14.0
 
 
-@lru_cache(maxsize=1)
-def gas_sim():
+@lru_cache(maxsize=2)
+def gas_sim(GAS_FIELD_ON, GAS_ION_ON):
     rng = np.random.default_rng(7)
     x0, y0, x1, y1 = GAS_BOX
     atoms = np.column_stack([rng.uniform(x0 + 30, x1 - 30, 26),
@@ -150,9 +149,10 @@ def gas_sim():
     return atoms, frames
 
 
-def scene_gas(t, assets):
-    """atoms and loose electrons (0 s), the RF field (3 s), ionization + glow (5.6 s)."""
-    atoms, frames = gas_sim()
+def scene_gas(t, assets, c):
+    """atoms and loose electrons, the RF field (cue "field"), ionization + glow (cue "ion")."""
+    GAS_FIELD_ON, GAS_ION_ON = round(c.get("field", 0.3), 2), round(c.get("ion", 5.0), 2)
+    atoms, frames = gas_sim(GAS_FIELD_ON, GAS_ION_ON)
     E, electrons, cool = frames[min(int(t * FPS), len(frames) - 1)]
     img = blank()
     d = style.draw(img)
@@ -188,10 +188,10 @@ def scene_gas(t, assets):
 
 # ── the obvious answer: the push averages out ────────────────────────────
 RF_F = 1.0                       # one flip per beat at 120 BPM
-RF_FLIP, RF_TRACE, RF_AVG = 2.5, 2.5, 5.0
 
 
-def scene_rf(t, assets):
+def scene_rf(t, assets, c):
+    RF_FLIP, RF_TRACE, RF_AVG = c.get("flip", 2.5), c.get("flip", 2.5), c.get("avg", 5.0)
     img = blank()
     s = math.sin(2 * math.pi * RF_F * max(t - RF_FLIP, 0)) if t > RF_FLIP else 1.0
     wy = 330
@@ -305,78 +305,76 @@ def _fmt_len(um):
     return f"{um:.1f} µm" if um < 10 else f"{um:.0f} µm" if um < 1000 else f"{um / 1000:.1f} mm"
 
 
-def scene_beta(t, assets):
+def _e_frame(title):
     fl, c = flights()
-    total = float(fl[0].sum())
     bx0, by0, bx1, by1 = E_BOX
     ox, oy = (bx0 + bx1) / 2 - c[0] * E_PX, (by0 + by1) / 2 - c[1] * E_PX
-
-    def to_px(pts):
-        return [(ox + p[0] * E_PX, oy + p[1] * E_PX) for p in pts]
-
     img = blank()
     d = style.draw(img)
-    a_map = fade(t, E_MAP, 0.5)
-    a_p = 1 - a_map
-    if a_p > 0:
-        head(d, "one electron, seen from above", a=a_p)
-        d.rounded_rectangle(E_BOX, radius=24, outline=col(DIM, a_p), width=2)
-        sweeping = t >= E_SWEEP
-        if not sweeping:
-            # the same electron and the same collisions, with and without the magnet
-            upto = total * seg(t, E_DRAW, E_SWEEP)
-            free, _ = e_path(0.0, upto)
-            mag, hits = e_path(BETA_1TORR, upto)
-            d.line(to_px(free), fill=col(GREY, 0.7 * a_p), width=3)
-            d.line(to_px(mag), fill=col(WHITE, a_p), width=3)
-            for hx, hy in to_px(hits):
-                d.ellipse([hx - 4, hy - 4, hx + 4, hy + 4], fill=col(HOT, a_p))
-            for pts, cc in ((free, GREY), (mag, WHITE)):
-                x, y = to_px(pts[-1:])[0]
-                d.ellipse([x - 6, y - 6, x + 6, y + 6], fill=col(cc, a_p))
-            d.line([(bx0 + 20, by0 + 28), (bx0 + 56, by0 + 28)], fill=col(GREY, 0.7 * a_p), width=3)
-            d.text((bx0 + 66, by0 + 28), "no magnet", font=F_SMALL, fill=col(GREY, a_p), anchor="lm")
-            d.line([(bx0 + 20, by0 + 60), (bx0 + 56, by0 + 60)], fill=col(WHITE, a_p), width=3)
-            d.text((bx0 + 66, by0 + 60), "under the magnet", font=F_SMALL, fill=col(WHITE, a_p), anchor="lm")
-            d.ellipse([bx0 + 34, by0 + 88, bx0 + 42, by0 + 96], fill=col(HOT, a_p))
-            d.text((bx0 + 66, by0 + 92), "hits an atom", font=F_SMALL, fill=col(GREY, a_p), anchor="lm")
-            a_b = fade(t, E_BETA, 0.15) * a_p
-            if a_b > 0:
-                d.text((bx1 - 20, by0 + 28), "β ≈ 2.9", font=FS(34, True), fill=col(HOT, a_b), anchor="rm")
-                d.text((bx1 - 20, by0 + 62), "about half a turn between hits", font=F_SMALL,
-                       fill=col(GREY, a_b), anchor="rm")
-            beta, p_torr = BETA_1TORR, 1.0
-        else:
-            # one continuous sweep: normal air → the thin gas of the demo
-            u = ease(seg(t, E_SWEEP, E_MAP - 0.6))
-            p_torr = math.exp(math.log(760.0) * (1 - u))
-            beta = BETA_1TORR / p_torr
-            pts, hits = e_path(beta)
-            d.line(to_px(pts), fill=col(WHITE, a_p), width=3)
-            for hx, hy in to_px(hits):
-                d.ellipse([hx - 4, hy - 4, hx + 4, hy + 4], fill=col(HOT, a_p))
-            d.text((bx0 + 20, by0 + 30), "pressure", font=F_SMALL, fill=col(GREY, a_p), anchor="lm")
-            d.text((bx0 + 20, by0 + 66), f"{p_torr:.0f} Torr" if p_torr >= 10 else f"{p_torr:.1f} Torr",
-                   font=FS(34, True), fill=col(WHITE, a_p), anchor="lm")
-            d.text((bx1 - 20, by0 + 30), "β", font=F_SMALL, fill=col(GREY, a_p), anchor="rm")
-            d.text((bx1 - 20, by0 + 66), f"{beta:.3f}" if beta < 0.1 else f"{beta:.2f}" if beta < 1 else f"{beta:.1f}",
-                   font=FS(34, True), fill=col(HOT, a_p), anchor="rm")
-        # scale bar: 2 mean free paths
-        bar = 2 * E_PX
-        sx, sy = bx0 + 24, by1 - 30
-        d.line([(sx, sy), (sx + bar, sy)], fill=col(GREY, a_p), width=3)
-        for x in (sx, sx + bar):
-            d.line([(x, sy - 6), (x, sy + 6)], fill=col(GREY, a_p), width=3)
-        d.text((sx + bar + 12, sy), _fmt_len(2 * MFP_1TORR_UM / p_torr), font=F_SMALL,
-               fill=col(GREY, a_p), anchor="lm")
-        d.text((bx1 - 20, by1 - 30), "field: out of the screen", font=F_SMALL,
-               fill=col(GREY, a_p), anchor="rm")
-    if a_map > 0:
-        m = Image.open(os.path.join(assets, "beta-map.png")).convert("RGB")
-        m = Image.blend(Image.new("RGB", m.size, BG), m, a_map)
-        style.paste(img, m, ((W - 680) / 2, 320), 680)
-        d = style.draw(img)
-        head(d, "how hard the magnet curls electrons, across the dish", y=270, a=a_map)
+    head(d, title)
+    d.rounded_rectangle(E_BOX, radius=24, outline=DIM, width=2)
+    return img, d, (lambda pts: [(ox + p[0] * E_PX, oy + p[1] * E_PX) for p in pts]), float(fl[0].sum())
+
+
+def _scale_bar(d, p_torr):
+    bx0, by0, bx1, by1 = E_BOX
+    bar = 2 * E_PX
+    sx, sy = bx0 + 24, by1 - 30
+    d.line([(sx, sy), (sx + bar, sy)], fill=GREY, width=3)
+    for x in (sx, sx + bar):
+        d.line([(x, sy - 6), (x, sy + 6)], fill=GREY, width=3)
+    d.text((sx + bar + 12, sy), _fmt_len(2 * MFP_1TORR_UM / p_torr), font=F_SMALL, fill=GREY, anchor="lm")
+    d.text((bx1 - 20, by1 - 30), "field: out of the screen", font=F_SMALL, fill=GREY, anchor="rm")
+
+
+def scene_curl(t, assets, c):
+    """the same electron and the same collisions, with and without the
+    magnet; drawn over cue "dur", the half-turn note at cue "half"."""
+    img, d, to_px, total = _e_frame("one electron, seen from above")
+    bx0, by0, bx1, by1 = E_BOX
+    upto = total * seg(t, 0.3, c.get("dur", 8.0) - 0.5)
+    free, _ = e_path(0.0, upto)
+    mag, hits = e_path(BETA_1TORR, upto)
+    if len(free) > 1:
+        d.line(to_px(free), fill=col(GREY, 0.7), width=3)
+        d.line(to_px(mag), fill=WHITE, width=3)
+    for hx, hy in to_px(hits):
+        d.ellipse([hx - 4, hy - 4, hx + 4, hy + 4], fill=HOT)
+    for pts, cc in ((free, GREY), (mag, WHITE)):
+        x, y = to_px(pts[-1:])[0]
+        d.ellipse([x - 6, y - 6, x + 6, y + 6], fill=cc)
+    d.line([(bx0 + 20, by0 + 28), (bx0 + 56, by0 + 28)], fill=col(GREY, 0.7), width=3)
+    d.text((bx0 + 66, by0 + 28), "no magnet", font=F_SMALL, fill=GREY, anchor="lm")
+    d.line([(bx0 + 20, by0 + 60), (bx0 + 56, by0 + 60)], fill=WHITE, width=3)
+    d.text((bx0 + 66, by0 + 60), "under the magnet", font=F_SMALL, fill=WHITE, anchor="lm")
+    d.ellipse([bx0 + 34, by0 + 88, bx0 + 42, by0 + 96], fill=HOT)
+    d.text((bx0 + 66, by0 + 92), "hits an atom", font=F_SMALL, fill=GREY, anchor="lm")
+    if t >= c.get("half", 5.0):
+        d.text((bx1 - 20, by0 + 28), "half a turn", font=FS(30, True), fill=HOT, anchor="rm")
+        d.text((bx1 - 20, by0 + 60), "between hits", font=F_SMALL, fill=GREY, anchor="rm")
+    _scale_bar(d, 1.0)
+    return img
+
+
+def scene_thin(t, assets, c):
+    """one continuous sweep, thin gas → normal air (cue "air"): the curl disappears."""
+    img, d, to_px, total = _e_frame("one electron, seen from above")
+    bx0, by0, bx1, by1 = E_BOX
+    u = ease(seg(t, c.get("air", 2.0), c.get("air", 2.0) + 3.0))
+    p_torr = math.exp(math.log(760.0) * u)
+    beta = BETA_1TORR / p_torr
+    pts, hits = e_path(beta)
+    d.line(to_px(pts), fill=WHITE, width=3)
+    for hx, hy in to_px(hits):
+        d.ellipse([hx - 4, hy - 4, hx + 4, hy + 4], fill=HOT)
+    d.text((bx0 + 20, by0 + 30), "pressure", font=F_SMALL, fill=GREY, anchor="lm")
+    d.text((bx0 + 20, by0 + 66), f"{p_torr:.0f} Torr" if p_torr >= 10 else f"{p_torr:.1f} Torr",
+           font=FS(34, True), fill=WHITE, anchor="lm")
+    d.text((bx1 - 20, by0 + 30), "turn between hits", font=F_SMALL, fill=GREY, anchor="rm")
+    turns = beta / (2 * math.pi)
+    d.text((bx1 - 20, by0 + 66), f"{turns:.2f} of a circle" if turns >= 0.01 else f"{turns:.4f} of a circle",
+           font=FS(30, True), fill=HOT, anchor="rm")
+    _scale_bar(d, p_torr)
     return img
 
 
@@ -398,7 +396,7 @@ def lock_runs(assets):
 MAG_XY_MM = (-38.9, 38.9)     # where the magnet comes down (lock_compare: 135° on the orbit)
 
 
-def scene_compare(t, assets):
+def scene_compare(t, assets, c=None):
     runs = lock_runs(assets)
     img = blank()
     d = style.draw(img)
@@ -443,11 +441,127 @@ def scene_compare(t, assets):
     return glow(img, glows)
 
 
+# ── where a plasma lives, and the two ways a magnet tips the balance ─────
+C_D, R_DISH = (360, 520), 270
+MAG = (250, 410)
+
+
+def magnet_ring(d, c=MAG, r=34, metal=False):
+    if metal:
+        d.ellipse([c[0] - r, c[1] - r, c[0] + r, c[1] + r], fill=(190, 190, 198))
+    for i in range(0, 360, 20):
+        d.arc([c[0] - r - 6, c[1] - r - 6, c[0] + r + 6, c[1] + r + 6], i, i + 11, fill=(215, 215, 225), width=3)
+
+
+def scene_live(t, assets, c):
+    """a plasma stays lit only where electrons gain energy faster than they
+    lose it: gain arrows at cue "gain", loss arrows at cue "lose"."""
+    img = blank()
+    cx, cy = 360, 470
+    pulse = 0.72 + 0.08 * math.sin(2 * math.pi * t)
+    img = glow(img, [(cx, cy, 60, pulse)])
+    d = style.draw(img)
+    head(d, "where a plasma can live")
+    d.ellipse([cx - 150, cy - 150, cx + 150, cy + 150], outline=DIM, width=2)
+    a_g, a_l = fade(t, c.get("gain", 1.0), 0.2), fade(t, c.get("lose", 2.5), 0.2)
+    for a in (200, 250, 290, 340):
+        k = 235 - 12 * ((t * 2) % 1.0)
+        p0 = (cx + k * math.cos(math.radians(a)), cy + k * math.sin(math.radians(a)))
+        p1 = (cx + (k - 65) * math.cos(math.radians(a)), cy + (k - 65) * math.sin(math.radians(a)))
+        arrow(d, p0, p1, col(HOT, a_g), width=4, head=14)
+    for a in (20, 70, 110, 160):
+        k = 110 + 12 * ((t * 2) % 1.0)
+        p0 = (cx + k * math.cos(math.radians(a)), cy + k * math.sin(math.radians(a)))
+        p1 = (cx + (k + 95) * math.cos(math.radians(a)), cy + (k + 95) * math.sin(math.radians(a)))
+        arrow(d, p0, p1, col(GREY, a_l), width=3, head=12, dashed=True)
+    d.text((cx, cy - 265), "gain: the field heats electrons", font=FS(24, True), fill=col(HOT, a_g), anchor="mm")
+    d.text((cx, cy + 255), "loss: electrons and heat leak out", font=FS(24), fill=col(GREY, a_l), anchor="mm")
+    return img
+
+
+def scene_lever1(t, assets, c):
+    """the magnet cuts the loss: curled electrons leak heat slowly (cue
+    "leak"), so the gas beneath runs hotter (cue "hot"). Illustration."""
+    img = blank()
+    d = style.draw(img)
+    head(d, "one: the magnet cuts the loss")
+    dish(d, C_D, R_DISH)
+    hot = fade(t, c.get("hot", 5.0), 0.6)
+    img = glow(img, [(MAG[0], MAG[1], 70, 0.12 + 0.3 * hot), (MAG[0], MAG[1], 40, 0.2 + 0.45 * hot)])
+    d = style.draw(img)
+    magnet_ring(d)
+    a_l = fade(t, c.get("leak", 3.0), 0.2)
+    rng = np.random.default_rng(3)
+    for k in range(5):
+        cx, cy = MAG[0] + rng.uniform(-20, 20), MAG[1] + rng.uniform(-20, 20)
+        r = rng.uniform(7, 11)
+        a0 = (t * 360 + k * 70) % 360
+        d.arc([cx - r, cy - r, cx + r, cy + r], a0, a0 + 290, fill=col(WHITE, a_l), width=2)
+    for a in range(0, 360, 45):
+        p0 = (MAG[0] + 46 * math.cos(math.radians(a)), MAG[1] + 46 * math.sin(math.radians(a)))
+        p1 = (MAG[0] + 64 * math.cos(math.radians(a)), MAG[1] + 64 * math.sin(math.radians(a)))
+        arrow(d, p0, p1, col(GREY, a_l), width=2, head=8)
+    d.text((MAG[0] + 90, MAG[1]), "heat leaks slowly", font=FS(24, True), fill=col(WHITE, a_l), anchor="lm")
+    d.text((C_D[0], C_D[1] + 130), "hotter, so easier to keep lit", font=FS(26, True), fill=col(HOT, hot), anchor="mm")
+    return img
+
+
+def scene_lever2(t, assets, c):
+    """side view: metal over the high-voltage dish crowds the electric
+    field (cue "crowd"); the glow brightens beneath it. Illustration."""
+    img = blank()
+    y_dish, mx, my = 700, 360, 360
+    k = fade(t, c.get("crowd", 2.5), 0.8)
+    img = glow(img, [(mx, y_dish - 8, 40, 0.15 + 0.55 * k)])
+    d = style.draw(img)
+    head(d, "two: the metal crowds the field")
+    d.line([(90, y_dish), (630, y_dish)], fill=(150, 100, 70), width=6)
+    d.text((630, y_dish + 30), "dish (high voltage)", font=F_SMALL, fill=GREY, anchor="rm")
+    a_m = fade(t, 0.3, 0.3)
+    d.rounded_rectangle([mx - 70, my - 34, mx + 70, my + 34], radius=8, fill=col((190, 190, 198), a_m))
+    d.text((mx, my), "metal", font=FS(24, True), fill=col((30, 30, 30), a_m), anchor="mm")
+    for x in range(120, 620, 50):
+        pull = k * math.exp(-((x - mx) / 150.0) ** 2)
+        top = (x + (mx - x) * 0.85 * pull, 240 + (my + 34 - 240) * pull)
+        pts = [(x + (top[0] - x) * s ** 1.6, y_dish - (y_dish - top[1]) * s) for s in np.linspace(0, 1, 18)]
+        d.line(pts, fill=style.mix(DIM, WHITE, 0.25 + 0.75 * pull), width=2)
+    d.text((mx, 830), "electric field lines", font=F_SMALL, fill=GREY, anchor="mm")
+    return img
+
+
+def scene_foot(t, assets, c):
+    """the foot settles where the plasma is easiest to keep lit; the bars
+    (cue "bars") give the two effects' sizes at 1 Torr: 1 : 2.7."""
+    img = blank()
+    d = style.draw(img)
+    head(d, "the foot goes where it is easiest to stay lit")
+    dish(d, C_D, R_DISH)
+    # the foot spirals in from the orbit to the magnet
+    u = ease(seg(t, 0.3, 3.0))
+    r0 = math.hypot(MAG[0] - C_D[0], MAG[1] - C_D[1])
+    a_end = math.atan2(MAG[1] - C_D[1], MAG[0] - C_D[0])
+    pts = [(C_D[0] + r0 * math.cos(a_end - 4.5 * (1 - v)), C_D[1] + r0 * math.sin(a_end - 4.5 * (1 - v)))
+           for v in np.linspace(max(0, u - 0.25), u, 24)]
+    for q in range(1, len(pts)):
+        d.line([pts[q - 1], pts[q]], fill=style.mix((60, 36, 22), ORANGE, 0.7 * q / len(pts)), width=3)
+    img = glow(img, [(MAG[0], MAG[1], 50, 0.45), (pts[-1][0], pts[-1][1], 10, 1.0)])
+    d = style.draw(img)
+    magnet_ring(d, metal=True)
+    a_b = fade(t, c.get("bars", 4.0), 0.2)
+    bx, by = 150, 640
+    d.text((bx, by - 34), "at 1 Torr", font=F_SMALL, fill=col(GREY, a_b), anchor="lm")
+    d.rectangle([bx, by, bx + 110 * a_b, by + 26], fill=col(WHITE, a_b))
+    d.text((bx + 122, by + 13), "magnetic", font=F_SMALL, fill=col(WHITE, a_b), anchor="lm")
+    d.rectangle([bx, by + 40, bx + 297 * a_b, by + 66], fill=col(HOT, a_b))
+    d.text((bx + 309, by + 53), "electric: 2.7×", font=FS(23, True), fill=col(HOT, a_b), anchor="lm")
+    return img
+
+
 # ── the test ─────────────────────────────────────────────────────────────
 T_SLUG, T_ASK = 3.5, 6.0
 
 
-def scene_test(t, assets):
+def scene_test(t, assets, c=None):
     img = blank()
     d = style.draw(img)
     head(d, "the test", 170)
@@ -472,7 +586,12 @@ def scene_test(t, assets):
 DIAGRAMS = {
     "gas": scene_gas,
     "rf": scene_rf,
-    "beta": scene_beta,
+    "curl": scene_curl,
+    "thin": scene_thin,
+    "live": scene_live,
+    "lever1": scene_lever1,
+    "lever2": scene_lever2,
+    "foot": scene_foot,
     "compare": scene_compare,
     "test": scene_test,
 }

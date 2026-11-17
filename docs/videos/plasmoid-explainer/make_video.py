@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
-"""Compose the plasmoid explainer (see script.md): path-traced clip frames,
-diagrams (diagrams.py) and the Pilot Light design system (style.py), cut to
-the soundtrack's beat grid (beat.py → beat.json), track from 0.
+"""Compose the narrated plasmoid explainer (see script.md).
 
-    EXPLAINER_SCALE=1.5 python3 make_video.py --raw <frame_NNNN.png dir> \
-        --traj <trajectory.csv> --assets <dir> --beat beat.json \
-        [--track track.mp3] -o explainer.mp4 [--only N] [--jobs 8]
+The narration (narration.py, voiced and word-timed by voice.py) drives the
+cut: each spoken line owns one shot, captions pop in on the words as they
+are said, and diagram cues fire on named words. The soundtrack plays from
+its start underneath, ducked by the voice.
 
-The clip frames and trajectory come from `vcad-render --sim plasmoid`
-(docs/plasmoid-sim.md): 600 frames at 30 fps. `--assets` holds beta-map.png
-and lock_compare.csv. EXPLAINER_SCALE=1 gives 720x1280, 1.5 gives 1080x1920.
-Every frame is a pure function of t, so one scene re-renders alone (--only).
+    EXPLAINER_SCALE=1.5 python3 make_video.py --raw <clip frames> \
+        --traj <trajectory.csv> --assets <dir> --vo <voice.py out dir> \
+        [--track track.mp3] -o explainer.mp4 [--only LINE_ID] [--jobs 8]
+
+`--raw`/`--traj` come from `vcad-render --sim plasmoid` (docs/plasmoid-sim.md);
+`--assets` holds beta-map.png, lock_compare.csv and the footage frame dirs
+(script.md). EXPLAINER_SCALE=1 gives 720x1280, 1.5 gives 1080x1920. Every
+frame is a pure function of t.
 """
 import argparse
 import csv
@@ -19,6 +22,7 @@ import math
 import os
 import subprocess
 import sys
+import wave
 from bisect import bisect_left
 from multiprocessing import Pool
 
@@ -27,99 +31,104 @@ from PIL import Image, ImageFilter
 
 import style
 from diagrams import DIAGRAMS
-from style import F, FS, H, LABEL, M, OK, SEL, TEXT, W, FPS, tracked
+from narration import LINES
+from style import F, FS, H, LABEL, M, SEL, TEXT, W, FPS, tracked
 
-BEAT = 0.5                    # 120 BPM; the track's drops are at 16, 32, 56, 72 s
+BEAT = 0.5                    # the track is 120 BPM
 T_LOCK = 5.0 + 28 / 30        # clip frame 178: the foot locks (model: 5.93 s)
 T_FLICK = 14.0 + 1 / 30       # clip frame 421: the flick (model: break-away 14.04 s)
+T_DROP = 32.0                 # the track's energy jump: "…and it locks on" lands here
+GAP = 0.5                     # pause between lines
+END_CARD = 4.2
 
-# (start, end, kind, args, num, title, [(cue s from scene start, caption)])
-# Every boundary and cue is a whole beat. "clip" args give clip time as a
-# function of scene-local time (see clip_time).
-SCENES = [
-    # real footage first (see FOOTAGE): wonder before any explanation
-    (0.0, 4.0, "footage", dict(src="xe_thread"), "01", "the phenomenon", [
-        (0.0, "a thread of light,|alive inside|a glass flask"),
-    ]),
-    (4.0, 7.0, "footage", dict(src="xe_hand"), "01", "the phenomenon", [
-        (0.0, "it reaches|for a hand"),
-    ]),
-    (7.0, 11.0, "footage", dict(src="sdo"), "01", "the phenomenon", [
-        (0.0, "the sun throws off|arcs of the same stuff,|bigger than Earth"),
-    ]),
-    (11.0, 16.0, "clip", dict(mode="metronome", tag="slowed: one lap = two beats"), "01", "the phenomenon", [
-        (0.0, "on a tabletop,|a plasmoid races|around a dish"),
-        (3.0, "bring a magnet close…"),
-    ]),
-    (16.0, 30.0, "clip", dict(mode="1x", t0=T_LOCK), "02", "what it can do", [
-        (0.0, "…and it locks on"),                                      # drop 1
-        (2.0, "drag the magnet:|it follows,|like it's on rails"),
-        (6.0, "flick it…"),
-        (8.0, "…it snaps off,|and gets caught|on the next lap"),         # the flick lands at 24.1 s
-        (11.5, "lift the magnet:|it's free again"),
-    ]),
-    (30.0, 34.0, "card", dict(), "", "", []),
-    (34.0, 37.0, "labels", dict(), "03", "what is a plasmoid", [
-        (0.0, "a blob of plasma|that holds its shape|and moves as one"),
-    ]),
-    (37.0, 46.0, "diagram", dict(name="gas"), "03", "what is a plasmoid", [
-        (0.0, "plasma:|gas whose electrons|are knocked loose|from their atoms"),
-        (3.0, "here a radio-frequency field|shakes electrons|in thin gas"),
-        (6.0, "they knock more loose,|and the atoms glow|as they settle"),
-    ]),
-    (46.0, 56.0, "diagram", dict(name="rf"), "04", "the obvious answer", [
-        (0.0, "magnets push|on electric currents…"),
-        (2.5, "but this current flips|millions of times|a second"),
-        (5.0, "push one way,|then the other:|it averages out|to zero"),
-        (8.0, "so what's left?"),                                        # the dip before drop 3
-    ]),
-    (56.0, 68.0, "diagram", dict(name="beta"), "05", "curling electrons", [
-        (0.0, "magnets curl electrons"),                                 # drop 3
-        (2.5, "β = how far|an electron curls|before it hits an atom"),
-        (5.0, "normal air:|β ≈ 0.004|thin gas,|under a magnet:|β ≈ 2.9"),
-        (8.0, "curled electrons linger,|so the glow|could favor the magnet"),
-    ]),
-    (68.0, 78.0, "sim", dict(mode="1x", t0=T_FLICK - 4.0), "06", "the opening, explained", [
-        (0.0, "one idea,|one small model:|it reproduces|everything you saw"),
-        (4.0, "the lock,|the break-away,|the recapture"),                 # drop 4, and the flick
-        (7.0, "the magnet's path|is scripted;|lock and release|come out of the model"),
-    ]),
-    (78.0, 88.0, "diagram", dict(name="compare"), "07", "the twist", [
-        (0.0, "but a detailed model|of the glow|disagrees"),
-        (2.5, "magnetism alone|pushes the foot away"),
-        (5.0, "and the magnet|is nickel-plated metal"),
-        (7.5, "metal near the electrode|pulls the glow in:|2.7× harder,|at 1 Torr"),
-    ]),
-    (88.0, 96.0, "diagram", dict(name="test"), "08", "the test", [
-        (0.0, "so the lock|is probably electric,|not magnetic|(or it's where|the foot re-forms)"),
-        (3.5, "the test:|swap the magnet|for an aluminum slug"),
-        (6.0, "still locks?|it was never magnetism"),
-    ]),
-]
-T_END = 96.0
-DUR = T_END + 4.6
-CREDIT = ["footage: Carl Willis (CC BY 3.0) · NASA/SDO",
+# line id → (kind, args, {cue name: word prefix})
+SHOTS = {
+    "sun1": ("footage", dict(src="sdo", from_line="sun1"), {}),
+    "sun2": ("footage", dict(src="sdo", from_line="sun1"), {}),
+    "jar1": ("footage", dict(src="xe_thread", from_line="jar1"), {}),
+    "jar2": ("footage", dict(src="xe_hand", from_line="jar2"), {}),
+    "dish1": ("clip", dict(tag="slowed: one lap = two beats"), {}),
+    "dish2": ("clip", dict(tag="slowed: one lap = two beats"), {}),
+    "pay1": ("clip", dict(), {}),
+    "pay2": ("clip", dict(), {}),
+    "pay3": ("clip", dict(), {}),
+    "ask": ("card", dict(), {}),
+    "def": ("labels", dict(), {}),
+    "gas": ("diagram", dict(name="gas"), {"field": "radio", "ion": "slam"}),
+    "rf": ("diagram", dict(name="rf"), {"flip": "but", "avg": "averages"}),
+    "curl": ("diagram", dict(name="curl"), {"half": "half"}),
+    "thin": ("diagram", dict(name="thin"), {"air": "normal"}),
+    "arcs": ("footage", dict(src="sdo", from_line="arcs", offset=8.0), {}),
+    "live": ("diagram", dict(name="live"), {"gain": "gain", "lose": "lose"}),
+    "lever1": ("diagram", dict(name="lever1"), {"leak": "leak", "hot": "hotter"}),
+    "lever2": ("diagram", dict(name="lever2"), {"crowd": "crowds"}),
+    "hand": ("footage", dict(src="xe_hand", from_line="hand"), {}),
+    "foot": ("diagram", dict(name="foot"), {"bars": "at"}),
+}
+BIG = {"sun1"}                # captions shown large, mid-frame
+CREDIT = ["footage: Carl Willis (CC BY 3.0) · NASA/SDO · voice: ribt",
           "simulated and path-traced in vcad · open source"]
 
-# Real footage, extracted to <assets>/<src>/%04d.jpg at 30 fps (see script.md):
-# source scaled by k, its top-left placed at logical (x, y) on black; `rate`
-# source frames per output frame.
+# Real footage, extracted to <assets>/<src>/%04d.jpg at 30 fps (script.md):
+# source scaled by k, its top-left at logical (x, y) on black.
 FOOTAGE = {
-    "xe_thread": dict(k=1.4, x=-337, y=110, rate=1, credit="real footage · Carl Willis · CC BY 3.0"),
-    "xe_hand": dict(k=1.4, x=-332, y=110, rate=1, credit="real footage · Carl Willis · CC BY 3.0"),
-    "sdo": dict(k=1280 / 1080, x=-95, y=0, rate=2, credit="real footage · NASA / SDO"),
+    "xe_thread": dict(k=1.4, x=-337, y=110, credit="real footage · Carl Willis · CC BY 3.0"),
+    "xe_hand": dict(k=1.4, x=-332, y=110, credit="real footage · Carl Willis · CC BY 3.0"),
+    "sdo": dict(k=1280 / 1080, x=-95, y=0, credit="real footage · NASA / SDO"),
 }
 
 
-def footage_frame(assets, src, local):
-    f = FOOTAGE[src]
-    n = int(round(local * FPS)) * f["rate"] + 1
-    im = Image.open(os.path.join(assets, src, f"{n:04d}.jpg")).convert("RGB")
-    k = f["k"] * style.S
-    im = im.resize((int(round(im.width * k)), int(round(im.height * k))), Image.LANCZOS)
-    img = style.new("RGB", (0, 0, 0))
-    img.paste(im, (int(round(f["x"] * style.S)), int(round(f["y"] * style.S))))
-    return img
+# ── the timeline, from the voice ──────────────────────────────────────────
+def word_time(timing, lid, prefix):
+    for w, a, _ in timing[lid]["words"]:
+        if w.lower().strip(".,:;?!…").startswith(prefix):
+            return a
+    raise KeyError(f"{lid}: no word starting {prefix!r}")
+
+
+def layout(timing):
+    """start time of every line. The opening is spread so "locks" lands on
+    T_DROP; the payoff lines are pinned to the clip's own events; the rest
+    follow one another, starting on half-beats."""
+    ids = [l for l, _ in LINES]
+    start = {}
+    opening = ids[:ids.index("dish2") + 1]
+    natural = sum(timing[l]["dur"] for l in opening[:-1]) + word_time(timing, "dish2", "locks")
+    gap = (T_DROP - 1.0 - natural) / (len(opening) - 1)
+    assert gap >= 0.3, f"the opening runs past the drop (gap {gap:.2f})"
+    t = 1.0
+    for l in opening:
+        start[l] = t
+        t += timing[l]["dur"] + gap
+    lock = start["dish2"] + word_time(timing, "dish2", "locks")
+    start["pay1"] = lock + 2.0                                            # the drag starts at clip 8.0
+    start["pay2"] = lock + (T_FLICK - T_LOCK) - word_time(timing, "pay2", "flick")
+    start["pay3"] = max(lock + 11.6, start["pay2"] + timing["pay2"]["dur"] + 0.3)
+    prev = "pay3"
+    for l in ids[ids.index("pay3") + 1:]:
+        t = start[prev] + timing[prev]["dur"] + GAP
+        start[l] = math.ceil(t / BEAT - 1e-6) * BEAT
+        prev = l
+    for a, b in zip(ids, ids[1:]):
+        assert start[b] >= start[a] + timing[a]["dur"], f"{a} overlaps {b}"
+    t_end = math.ceil((start[ids[-1]] + timing[ids[-1]]["dur"] + 0.8) / BEAT) * BEAT
+    return ids, start, lock, t_end
+
+
+def captions(timing, ids, start):
+    """[(t0, t1, chunk text, line id)]: each chunk pops in on its first word."""
+    out = []
+    for l, text in LINES:
+        words = timing[l]["words"]
+        k = 0
+        parts = [text] if l in BIG else style.chunks(text)
+        for i, part in enumerate(parts):
+            n = len(part.split())
+            t0 = start[l] + words[k][1]
+            k += n
+            t1 = start[l] + (words[k][1] if k < len(words) else timing[l]["dur"] + 0.35)
+            out.append((t0 if i else start[l] + min(words[0][1], 0.05), t1, part, l))
+    return out
 
 
 # ── sources ───────────────────────────────────────────────────────────────
@@ -154,21 +163,43 @@ def load_traj(path):
     return ts, rows, period
 
 
-def clip_time(args, local, start):
-    """clip time shown at scene-local time `local`."""
-    period = TRAJ[2]
-    speed = period / (2 * BEAT)                 # one lap per two beats
-    loop = 6 * period                           # six free laps: a seamless loop while the magnet is far
-    if args["mode"] == "1x":
-        return args["t0"] + local
-    if args["mode"] == "metronome":             # ends exactly on the lock at the scene's end
-        tc = T_LOCK - (16.0 - start - local) * speed
+def loop_time(t):
+    """free racing, one lap per two beats, looping seamlessly over six laps."""
+    period = TL["period"]
+    return (t * period / (2 * BEAT)) % (6 * period)
+
+
+def dish_frame(raw_dir, t):
+    """the dish through the opening and the payoff: slowed to one lap per
+    two beats until the lock, real time after it, then free racing."""
+    lock, period = TL["lock"], TL["period"]
+    if t < lock:
+        tc = T_LOCK - (lock - t) * period / (2 * BEAT)
         while tc < 0:
-            tc += loop
-        return tc
-    if args["mode"] == "loop":
-        return (local * speed) % loop
-    raise ValueError(args["mode"])
+            tc += 6 * period
+        return clip_frame(raw_dir, tc)
+    tc = T_LOCK + (t - lock)
+    tc = T_LOCK + round((t - lock) * FPS) / FPS          # whole frames at 1×
+    end = 19.9
+    if tc <= end:
+        return clip_frame(raw_dir, tc)
+    a = min((tc - end) / 0.3, 1.0)                       # the clip is over: fade into free racing
+    return Image.blend(clip_frame(raw_dir, end), clip_frame(raw_dir, loop_time(t)), a)
+
+
+def footage_frame(assets, src, local):
+    f = FOOTAGE[src]
+    n = int(round(local * FPS)) + 1
+    path = os.path.join(assets, src, f"{n:04d}.jpg")
+    while not os.path.exists(path) and n > 1:            # hold the last frame
+        n -= 1
+        path = os.path.join(assets, src, f"{n:04d}.jpg")
+    im = Image.open(path).convert("RGB")
+    k = f["k"] * style.S
+    im = im.resize((int(round(im.width * k)), int(round(im.height * k))), Image.LANCZOS)
+    img = style.new("RGB", (0, 0, 0))
+    img.paste(im, (int(round(f["x"] * style.S)), int(round(f["y"] * style.S))))
+    return img
 
 
 SPIKE_TIP = (360, 655)
@@ -205,85 +236,59 @@ def draw_labels(img, t):
     return img
 
 
-def draw_sim_hud(img, tc):
-    """the model's state at clip time tc, from trajectory.csv."""
-    ts, rows, _ = TRAJ
-    r = rows[min(bisect_left(ts, tc), len(rows) - 1)]
-    locked = r["locked"] == "1"
-    d = style.draw(img)
-    tracked(d, (W - M, 70), "locked" if locked else "racing", F(24, True), OK if locked else LABEL, "ra")
-    d.text((W - M, 110), f"β at foot {float(r['beta']):.2f}", font=FS(21), fill=TEXT, anchor="ra")
-    d.text((W - M, 140), f"sim t {tc:5.2f} s", font=F(20), fill=LABEL, anchor="ra")
-    return img
-
-
-def draw_card(img, local):
-    """the question, full frame, over the dimmed racing plasmoid."""
-    img = Image.blend(style.new("RGB", style.BGC), img, 0.32)
-    d = style.draw(img)
-    d.multiline_text((W / 2, 520), "but what is\na plasmoid?", font=FS(74, True), fill=TEXT,
-                     anchor="mm", align="center", spacing=14)
-    if local >= 2.0:                             # lands on the 32 s jump
-        d.text((W / 2, 700), "and why would a magnet grab it?", font=FS(34, True), fill=SEL, anchor="mm")
-    return img
-
-
 # ── one frame ─────────────────────────────────────────────────────────────
-def scene_at(t):
-    for s in SCENES:
-        if s[0] <= t < s[1]:
-            return s
-    return None
-
-
-def caption_at(scene, t):
-    start, end, *_, cues = scene
-    local = t - start
-    i = max(k for k, (c, _) in enumerate(cues) if c <= local + 1e-9)
-    c0 = start + cues[i][0]
-    c1 = start + cues[i + 1][0] if i + 1 < len(cues) else end
-    return cues[i][1], c0, c1
-
-
 def frame(t, a):
-    if t >= T_END:
-        return style.end_card(t, T_END, BEAT, CREDIT)
-    scene = scene_at(t)
-    start, end, kind, args, num, title, cues = scene
-    local = t - start
-    if kind == "clip":
-        img = clip_frame(a.raw, clip_time(args, local, start))
-        if args.get("tag"):
-            tracked(style.draw(img), (W - M, 70), args["tag"], F(16, True), LABEL, "ra")
-    elif kind == "sim":
-        tc = clip_time(args, local, start)
-        img = draw_sim_hud(clip_frame(a.raw, tc), tc)
-    elif kind == "labels":
-        img = draw_labels(clip_frame(a.raw, clip_time(dict(mode="loop"), local, start)), local)
-    elif kind == "card":
-        img = draw_card(clip_frame(a.raw, clip_time(dict(mode="loop"), local, start)), local)
-    elif kind == "footage":
-        img = footage_frame(a.assets, args["src"], local)
-    else:
-        img = DIAGRAMS[args["name"]](local, a.assets)
+    ids, start, t_end = TL["ids"], TL["start"], TL["t_end"]
+    if t >= t_end:
+        return style.end_card(t, t_end, BEAT, CREDIT)
+    lid = ids[0]
+    for l in ids:
+        if start[l] <= t:
+            lid = l
+    kind, args, cue_words = SHOTS[lid]
+    local = t - start[lid]
+    label = "plasmoid · simulated in vcad"
     if kind == "footage":
-        img = style.hud_frame(img, t, DUR, FOOTAGE[args["src"]]["credit"])
+        src = args["src"]
+        img = footage_frame(a.assets, src, t - start[args["from_line"]] + args.get("offset", 0.0)
+                            if t >= start[args["from_line"]] else 0.0)
+        label = FOOTAGE[src]["credit"]
+    elif kind == "clip":
+        img = dish_frame(a.raw, t)
+        if args.get("tag") and t < TL["lock"]:
+            tracked(style.draw(img), (W - M, 70), args["tag"], F(16, True), LABEL, "ra")
+    elif kind == "card":
+        img = Image.blend(style.new("RGB", style.BGC), clip_frame(a.raw, loop_time(t)), 0.3)
+    elif kind == "labels":
+        img = draw_labels(clip_frame(a.raw, loop_time(t / 2)), local)
     else:
-        img = style.hud_frame(img, t, DUR)
-    if not cues:
-        return img
-    text, c0, c1 = caption_at(scene, t)
-    return style.pop_caption(img, t, c0, c1, text)
+        nxt = ids[ids.index(lid) + 1] if lid != ids[-1] else None
+        cues = {k: word_time(TL["timing"], lid, w) for k, w in cue_words.items()}
+        cues["dur"] = (start[nxt] if nxt else t_end) - start[lid]
+        img = DIAGRAMS[args["name"]](local, a.assets, cues)
+    img = style.hud_frame(img, t, t_end + END_CARD, label)
+    for t0, t1, part, l in TL["captions"]:
+        if t0 <= t < t1:
+            img = style.draw_chunk(img, part, t - t0, big=l in BIG or kind == "card")
+            break
+    return img
 
 
-TRAJ = None
+TL = None
 ARGS = None
 
 
+def build_timeline(a):
+    timing = json.load(open(os.path.join(a.vo, "timing.json")))
+    ids, start, lock, t_end = layout(timing)
+    return dict(timing=timing, ids=ids, start=start, lock=lock, t_end=t_end,
+                captions=captions(timing, ids, start), period=load_traj(a.traj)[2])
+
+
 def _init(a):
-    global TRAJ, ARGS
+    global TL, ARGS
     ARGS = a
-    TRAJ = load_traj(a.traj)
+    TL = build_timeline(a)
 
 
 def _render(n):
@@ -292,38 +297,69 @@ def _render(n):
     return n
 
 
+def voice_track(a, tl, path):
+    """every line at its start time, 24 kHz mono."""
+    dur = tl["t_end"] + END_CARD
+    sr = 24000
+    buf = np.zeros(int(dur * sr) + sr, dtype=np.float32)
+    for l in tl["ids"]:
+        with wave.open(os.path.join(a.vo, f"{l}.wav")) as w:
+            assert w.getframerate() == sr and w.getnchannels() == 1
+            x = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16).astype(np.float32) / 32768
+        i = int(round(tl["start"][l] * sr))
+        buf[i:i + len(x)] += x
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(sr)
+        w.writeframes((np.clip(buf, -1, 1) * 32767).astype(np.int16).tobytes())
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--raw", required=True)
     ap.add_argument("--traj", required=True)
     ap.add_argument("--assets", required=True)
-    ap.add_argument("--beat", required=True)
+    ap.add_argument("--vo", required=True)
     ap.add_argument("--track")
     ap.add_argument("--frames", default="frames")
     ap.add_argument("-o", "--out", required=True)
-    ap.add_argument("--only", type=int, help="render only SCENES[N-1] (len+1 = end card)")
+    ap.add_argument("--only", help="render only this line's shot")
     ap.add_argument("--jobs", type=int, default=8)
     a = ap.parse_args()
 
-    bj = json.load(open(a.beat))
-    assert abs(bj["bpm"] - 120.0) < 0.05, f"the cut is timed for 120 BPM, track says {bj['bpm']}"
-    offset = bj["phase"] % BEAT                 # start the track here so beats land on k·0.5 s
+    tl = build_timeline(a)
+    dur = tl["t_end"] + END_CARD
+    for l in tl["ids"]:
+        print(f"{tl['start'][l]:7.2f}  {l:7s} {tl['timing'][l]['dur']:5.2f} s", file=sys.stderr)
+    print(f"lock {tl['lock']:.2f} s, end card {tl['t_end']:.1f} s, total {dur:.1f} s", file=sys.stderr)
 
     os.makedirs(a.frames, exist_ok=True)
-    t0, t1 = 0.0, DUR
+    t0, t1 = 0.0, dur
     if a.only:
-        t0, t1 = (SCENES[a.only - 1][0], SCENES[a.only - 1][1]) if a.only <= len(SCENES) else (T_END, DUR)
+        i = tl["ids"].index(a.only)
+        t0 = tl["start"][a.only] if i else 0.0
+        t1 = tl["start"][tl["ids"][i + 1]] if i + 1 < len(tl["ids"]) else tl["t_end"]
     ns = list(range(int(round(t0 * FPS)), int(round(t1 * FPS))))
     with Pool(a.jobs, initializer=_init, initargs=(a,)) as pool:
         for k, _ in enumerate(pool.imap(_render, ns, chunksize=8)):
-            if k % 300 == 0:
-                print(f"{ns[0] / FPS + k / FPS:5.1f} s", file=sys.stderr, flush=True)
+            pass
 
     cmd = ["ffmpeg", "-loglevel", "error", "-y", "-framerate", str(FPS),
            "-start_number", str(ns[0]), "-i", os.path.join(a.frames, "%05d.png")]
-    if a.track and not a.only:
-        cmd += ["-ss", f"{offset}", "-i", a.track, "-t", f"{DUR}",
-                "-af", f"afade=t=out:st={DUR - 2.0}:d=2.0", "-c:a", "aac", "-b:a", "256k"]
+    if not a.only:
+        voice = os.path.join(a.frames, "voice.wav")
+        voice_track(a, tl, voice)
+        cmd += ["-i", voice]
+        if a.track:
+            # music from its first beat, ducked under the voice, faded at the end
+            cmd += ["-ss", "0.04", "-i", a.track, "-filter_complex",
+                    f"[1:a]volume=1.7,asplit=2[v][key];"
+                    f"[2:a]volume=0.55,afade=t=out:st={dur - 2.5}:d=2.5[m];"
+                    f"[m][key]sidechaincompress=threshold=0.02:ratio=10:attack=15:release=450[duck];"
+                    f"[duck][v]amix=inputs=2:normalize=0,alimiter=limit=0.89:level=0[a]",
+                    "-map", "0:v", "-map", "[a]"]
+        cmd += ["-t", f"{dur}", "-c:a", "aac", "-b:a", "256k"]
     cmd += ["-frames:v", str(len(ns)), "-c:v", "libx264", "-crf", "17", "-preset", "slow",
             "-pix_fmt", "yuv420p", "-movflags", "+faststart", a.out]
     subprocess.run(cmd, check=True)

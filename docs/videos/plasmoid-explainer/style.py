@@ -219,32 +219,36 @@ _TAIL = {"a", "an", "the", "of", "to", "in", "on", "it", "is", "=", "and", "or",
 
 
 def chunks(text, n=3):
-    """split a caption into pop-in chunks of up to n words: break after
-    punctuation and before "(", never end a chunk on a small word, and
-    leave no one-word tail."""
+    """split a caption into pop-in chunks of about n words: break after
+    punctuation, never strand a single word, never end on a small word."""
     if "|" in text:                      # hand-placed breaks
         return text.split("|")
+    words = text.split(" ")
     out, cur = [], []
-    for w in text.split(" "):
-        if w.startswith("(") and cur:
-            out.append(cur)
-            cur = []
+    for i, w in enumerate(words):
         cur.append(w)
+        nxt = words[i + 1] if i + 1 < len(words) else None
         if w[-1] in ",:;.?…)":
             out.append(cur)
             cur = []
-        elif len(cur) >= n:
-            keep = []
-            while len(cur) > 1 and cur[-1].lower() in _TAIL:
-                keep.insert(0, cur.pop())
-            out.append(cur)
-            cur = keep
+        elif len(cur) >= n and nxt is not None:
+            if nxt[-1] in ",:;.?…)":      # the next word closes the clause: keep it with us
+                continue
+            if w.lower() in _TAIL and len(cur) > 2:
+                out.append(cur[:-1])
+                cur = [w]
+            else:
+                out.append(cur)
+                cur = []
     if cur:
         out.append(cur)
-    if len(out) > 1 and len(out[-1]) == 1:
-        last = out.pop()
-        out[-1] += last
-    return [" ".join(c) for c in out]
+    merged = []
+    for c in out:                        # fold one-word chunks into a neighbour
+        if merged and (len(c) == 1 or len(merged[-1]) == 1) and len(merged[-1]) + len(c) <= n + 1:
+            merged[-1] = merged[-1] + c
+        else:
+            merged.append(c)
+    return [" ".join(c) for c in merged]
 
 
 def chunk_times(n, dur, beat=0.5):
@@ -256,18 +260,13 @@ def chunk_times(n, dur, beat=0.5):
     return [i * step for i in range(n)]
 
 
-def pop_caption(img, t, t0, t1, text):
-    """short-form captions: a few words at a time, popping in (scale
-    0.86 → 1.05 → 1 over 0.14 s), numbers and β in the accent colour."""
-    parts = chunks(text)
-    times = chunk_times(len(parts), t1 - t0)
-    i = max(k for k, c in enumerate(times) if t0 + c <= t + 1e-9)
-    age = t - (t0 + times[i])
+def draw_chunk(img, part, age, big=False):
+    """one caption chunk, `age` seconds after it popped in (scale 0.86 →
+    1.05 → 1 over 0.14 s); numbers in the accent colour."""
     k = age / 0.14
     scale = 0.86 + 0.19 * k / 0.6 if k < 0.6 else (1.05 - 0.05 * (k - 0.6) / 0.4 if k < 1 else 1.0)
-    part = parts[i]
     d = draw(img)
-    size = 50
+    size = 76 if big else 50
     f = FS(size, True)
     lines = wrap(d, part, f, W - 2 * M)
     while len(lines) > 2 and size > 34:
@@ -275,9 +274,9 @@ def pop_caption(img, t, t0, t1, text):
         f = FS(size, True)
         lines = wrap(d, part, f, W - 2 * M)
     f = FS(int(round(size * scale)), True)
-    hot = any(ch.isdigit() for ch in part) or "β" in part
+    hot = any(ch.isdigit() for ch in part)
     lh = size * 1.2 * scale
-    y0 = 1050 - lh * (len(lines) - 1) / 2
+    y0 = (640 if big else 1050) - lh * (len(lines) - 1) / 2
     for j, ln in enumerate(lines):
         d.text((W / 2, y0 + j * lh), ln, font=f, fill=SEL if hot else TEXT, anchor="mm",
                stroke_width=5, stroke_fill=(0, 0, 0))
