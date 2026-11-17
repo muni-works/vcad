@@ -15,7 +15,8 @@ Captions state the physics; no "we".
 
 | # | t (s) | picture | beat |
 |---|---|---|---|
-| 01 | 0–16 | clip, slowed so one lap = two beats; the magnet comes down in the track's near-silence | the phenomenon; the lock lands on the 16 s drop |
+| 01 | 0–11 | real footage: a xenon filament in a flask, the filament gathering to a hand, a solar eruption | wonder first, nothing explained |
+| 01 | 11–16 | clip, slowed so one lap = two beats; the magnet comes down in the track's near-silence | the dish; the lock lands on the 16 s drop |
 | 02 | 16–30 | clip at 1×: drag, flick (24 s), recapture, release | what it can do |
 | — | 30–34 | title card over the dimmed plasmoid | "but what is a plasmoid?" / "and why would a magnet grab it?" (32 s jump) |
 | 03 | 34–46 | labelled footage, then atoms / RF field / ionization | what a plasmoid and a plasma are |
@@ -76,3 +77,16 @@ python3 make_video.py --raw <clip frames> --traj <trajectory.csv> \
 
 The soundtrack is a commercial release and is not in the repo; its licence
 has to be cleared before the scored cut is published.
+
+## Real footage
+
+The opening uses two clips, not in the repo (extract with ffmpeg into
+`<assets>/<name>/%04d.jpg` at 30 fps):
+
+| name | source | licence | seconds |
+|---|---|---|---|
+| `xe_thread`, `xe_hand` | Carl Willis, "Decorative xenon plasmas, 20-80 torr" (Wikimedia Commons) | CC BY 3.0: credited on screen and on the end card | 458–462.3, 22.5–25.8 |
+| `sdo` | NASA SVS 14126, SDO Video Toolkit "Magnificent Eruption Mk II" (Wikimedia Commons) | public domain | 0–8.4, played 2× |
+
+The captions call these "a thread of light" and "arcs of the same stuff"
+(plasma); neither source calls its subject a plasmoid.

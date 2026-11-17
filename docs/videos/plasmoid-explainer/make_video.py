@@ -37,10 +37,19 @@ T_FLICK = 14.0 + 1 / 30       # clip frame 421: the flick (model: break-away 14.
 # Every boundary and cue is a whole beat. "clip" args give clip time as a
 # function of scene-local time (see clip_time).
 SCENES = [
-    (0.0, 16.0, "clip", dict(mode="metronome", tag="slowed: one lap = two beats"), "01", "the phenomenon", [
-        (0.0, "a thread of light races around a dish"),
-        (6.0, "it laps the dish almost twice a second"),
-        (12.0, "bring a magnet close…"),
+    # real footage first (see FOOTAGE): wonder before any explanation
+    (0.0, 4.0, "footage", dict(src="xe_thread"), "01", "the phenomenon", [
+        (0.0, "a thread of light, alive inside a glass flask"),
+    ]),
+    (4.0, 7.0, "footage", dict(src="xe_hand"), "01", "the phenomenon", [
+        (0.0, "it reaches for a hand"),
+    ]),
+    (7.0, 11.0, "footage", dict(src="sdo"), "01", "the phenomenon", [
+        (0.0, "the sun throws off arcs of the same stuff, bigger than Earth"),
+    ]),
+    (11.0, 16.0, "clip", dict(mode="metronome", tag="slowed: one lap = two beats"), "01", "the phenomenon", [
+        (0.0, "on a tabletop, a plasmoid races around a dish"),
+        (3.0, "bring a magnet close…"),
     ]),
     (16.0, 30.0, "clip", dict(mode="1x", t0=T_LOCK), "02", "what it can do", [
         (0.0, "…and it locks on"),                                      # drop 1
@@ -89,7 +98,28 @@ SCENES = [
 ]
 T_END = 96.0
 DUR = T_END + 4.6
-CREDIT = ["plasmoid · reduced model + glow fluid model", "simulated and path-traced in vcad · open source"]
+CREDIT = ["footage: Carl Willis (CC BY 3.0) · NASA/SDO",
+          "simulated and path-traced in vcad · open source"]
+
+# Real footage, extracted to <assets>/<src>/%04d.jpg at 30 fps (see script.md):
+# source scaled by k, its top-left placed at logical (x, y) on black; `rate`
+# source frames per output frame.
+FOOTAGE = {
+    "xe_thread": dict(k=1.4, x=-337, y=110, rate=1, credit="real footage · Carl Willis · CC BY 3.0"),
+    "xe_hand": dict(k=1.4, x=-332, y=110, rate=1, credit="real footage · Carl Willis · CC BY 3.0"),
+    "sdo": dict(k=1280 / 1080, x=-95, y=0, rate=2, credit="real footage · NASA / SDO"),
+}
+
+
+def footage_frame(assets, src, local):
+    f = FOOTAGE[src]
+    n = int(round(local * FPS)) * f["rate"] + 1
+    im = Image.open(os.path.join(assets, src, f"{n:04d}.jpg")).convert("RGB")
+    k = f["k"] * style.S
+    im = im.resize((int(round(im.width * k)), int(round(im.height * k))), Image.LANCZOS)
+    img = style.new("RGB", (0, 0, 0))
+    img.paste(im, (int(round(f["x"] * style.S)), int(round(f["y"] * style.S))))
+    return img
 
 
 # ── sources ───────────────────────────────────────────────────────────────
@@ -132,7 +162,7 @@ def clip_time(args, local, start):
     if args["mode"] == "1x":
         return args["t0"] + local
     if args["mode"] == "metronome":             # ends exactly on the lock at the scene's end
-        tc = T_LOCK - (16.0 - local) * speed
+        tc = T_LOCK - (16.0 - start - local) * speed
         while tc < 0:
             tc += loop
         return tc
@@ -232,9 +262,14 @@ def frame(t, a):
         img = draw_labels(clip_frame(a.raw, clip_time(dict(mode="loop"), local, start)), local)
     elif kind == "card":
         img = draw_card(clip_frame(a.raw, clip_time(dict(mode="loop"), local, start)), local)
+    elif kind == "footage":
+        img = footage_frame(a.assets, args["src"], local)
     else:
         img = DIAGRAMS[args["name"]](local, a.assets)
-    img = style.hud_frame(img, t, DUR)
+    if kind == "footage":
+        img = style.hud_frame(img, t, DUR, FOOTAGE[args["src"]]["credit"])
+    else:
+        img = style.hud_frame(img, t, DUR)
     if not cues:
         return img
     text, c0, c1 = caption_at(scene, t)

@@ -235,10 +235,10 @@ def panel(img, t, t0, t1, num, title, text):
     return base.convert("RGB")
 
 
-def hud_frame(img, t, dur):
+def hud_frame(img, t, dur, label="plasmoid · simulated in vcad"):
     """persistent top-left line + bottom progress hairline."""
     d = draw(img)
-    tracked(d, (M, 40), "plasmoid · simulated in vcad", F(16, True), LABEL)
+    tracked(d, (M, 40), label, F(16, True), LABEL)
     bar = (W - 2 * M) * min(t / dur, 1.0)
     y = H - 34
     d.line([(M, y), (W - M, y)], fill=LINE_HI, width=2)
