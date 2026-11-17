@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-16-rotate-order-meshes-urdf",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "fix",
+  "title": "Rotate means the same over meshes; URDF rpy imports right",
+  "summary": "A multi-axis Rotate now turns an imported mesh the same way it turns a solid, and URDF box/cylinder/sphere visuals with two or more rpy angles land where the URDF puts them.",
+  "features": ["urdf", "import", "mesh", "transforms"]
+}
