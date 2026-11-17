@@ -597,9 +597,11 @@ export function evaluateDocumentTS(
     }
 
     try {
-      const solid = evaluateNode(entry.root, doc.nodes, Solid, cache, 0);
+      const split = evaluateNode(entry.root, doc.nodes, Solid, cache, 0);
+      const solid = finishRoot(split);
       const mesh = solidToMesh(solid);
-      solids.push(solid);
+      // Clash detection intersects roots: it keeps the unmerged solid.
+      solids.push(split);
       return {
         mesh,
         material: entry.material,
@@ -627,7 +629,7 @@ export function evaluateDocumentTS(
     evaluatedPartDefs = [];
     for (const [id, partDef] of Object.entries(doc.partDefs)) {
       try {
-        const solid = evaluateNode(partDef.root, doc.nodes, Solid, cache, 0);
+        const solid = finishRoot(evaluateNode(partDef.root, doc.nodes, Solid, cache, 0));
         const mesh = solidToMesh(solid);
         partDefMeshes.set(id, mesh);
         evaluatedPartDefs.push({ id, mesh, solid });
@@ -692,6 +694,19 @@ export function evaluateDocumentTS(
     clashes,
     failures: failures.length > 0 ? failures : undefined,
   };
+}
+
+/**
+ * The solid that leaves evaluation for a root: the coplanar fragments its
+ * booleans left are merged back into single faces, mirroring `finish_root`
+ * in the Rust evaluator. Only at the exit — the node cache (and anything
+ * that runs a further boolean, like clash detection) keeps the split solid.
+ * A kernel bundle built before the binding existed returns the solid as is.
+ */
+function finishRoot(solid: Solid): Solid {
+  const merge = (solid as unknown as { mergeCoplanarFaces?: () => Solid })
+    .mergeCoplanarFaces;
+  return typeof merge === "function" ? merge.call(solid) : solid;
 }
 
 function evaluateNode(
