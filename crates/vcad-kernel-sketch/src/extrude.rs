@@ -575,7 +575,10 @@ fn quantize_1e9(p: Point3) -> [i64; 3] {
 /// densified ([`arc_sample_count`]) so the caps stay faithful to the
 /// profile, and every rim vertex is shared between the wall and the cap
 /// that will be built over the returned rings (required for half-edge twin
-/// pairing).
+/// pairing). With `by_sweep` an arc gets [`arc_sample_count`] chords;
+/// without it, a fixed `arc_segs` (the hole-free arc extrude's historical
+/// sampling, which calibrated downstream booleans depend on — denser rims
+/// cracked the K1 wrist adapter's slot cuts).
 ///
 /// The loop must already be wound the way its walls should face: CCW (seen
 /// from +normal) for an outer boundary, CW for a hole. A CW arc gets a
@@ -591,6 +594,7 @@ fn build_loop_walls(
     segments: &[SketchSegment],
     direction: Vec3,
     arc_segs: usize,
+    by_sweep: bool,
     vertex_cache: &mut VertexCache,
     he_map: &mut HashMap<([i64; 3], [i64; 3]), HalfEdgeId>,
     all_faces: &mut Vec<vcad_kernel_topo::FaceId>,
@@ -627,7 +631,11 @@ fn build_loop_walls(
                 center,
                 ccw,
             } => {
-                let n = arc_sample_count(*start, *end, *center, *ccw, arc_segs);
+                let n = if by_sweep {
+                    arc_sample_count(*start, *end, *center, *ccw, arc_segs)
+                } else {
+                    arc_segs.max(2)
+                };
                 let mut pts = sample_arc_2d(*start, *end, *center, *ccw, n);
                 if idx != 0 {
                     pts.remove(0);
@@ -744,9 +752,8 @@ fn build_loop_walls(
 ///
 /// Each arc segment becomes one analytic `CylinderSurface` lateral face;
 /// each line segment becomes one `Plane` lateral face. The outer loop of
-/// every cylindrical face carries the arc's rim samples (proportional to
-/// its sweep, at least `arc_segs`) along each of its top and bottom
-/// boundaries so the cap polygons stay faithful to the original profile and
+/// every cylindrical face carries `arc_segs + 1` rim samples along each of
+/// its top and bottom boundaries so the cap polygons stay faithful to the original profile and
 /// share their boundary vertices with the adjacent lateral faces (required
 /// for half-edge twin pairing).
 ///
@@ -769,6 +776,7 @@ fn extrude_with_arcs(profile: &SketchProfile, direction: Vec3, arc_segs: usize) 
         &profile.segments,
         direction,
         arc_segs,
+        false,
         &mut vertex_cache,
         &mut he_map,
         &mut all_faces,
@@ -821,8 +829,9 @@ fn extrude_with_arcs(profile: &SketchProfile, direction: Vec3, arc_segs: usize) 
 /// so callers may pass loops in either orientation.
 ///
 /// Arc segments (in the outer profile or holes) become analytic
-/// `CylinderSurface` walls, sampled along their rims in proportion to their
-/// sweep, as in a hole-free arc extrusion.
+/// `CylinderSurface` walls, as in a hole-free arc extrusion, sampled along
+/// their rims in proportion to their sweep (32 per turn), so a circle comes
+/// out as fine as a `Cylinder` however many arcs it was drawn with.
 ///
 /// # Preconditions
 ///
@@ -895,6 +904,7 @@ pub fn extrude_with_holes(
         &outer.segments,
         direction,
         arc_segs,
+        true,
         &mut vertex_cache,
         &mut he_map,
         &mut all_faces,
@@ -909,6 +919,7 @@ pub fn extrude_with_holes(
                 &hp.segments,
                 direction,
                 arc_segs,
+                true,
                 &mut vertex_cache,
                 &mut he_map,
                 &mut all_faces,

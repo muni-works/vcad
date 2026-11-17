@@ -4,9 +4,8 @@
 //! segments) used to come out a 16-gon in the B-rep whenever the extrusion
 //! did not take the analytic full-circle path: with any `Sketch2D.holes`, the
 //! *outer* disc of a bolt-hole flange lost 2.55% of its area — and each hole
-//! removed 2.55% too little — at every tessellation resolution. A hole-free
-//! stadium (two semicircles + two lines) lost the same on its round ends.
-//! Both now match the 32-segment polygonization a `Cylinder` gets (−0.64%).
+//! removed 2.55% too little — at every tessellation resolution. It now
+//! matches the 32-segment polygonization a `Cylinder` gets (−0.64%).
 
 use std::f64::consts::{PI, TAU};
 
@@ -167,44 +166,4 @@ fn holed_flange_matches_closed_form() {
         "each hole removes {per_hole:.1} mm³ vs {hole:.1} ({:+.2}%)",
         100.0 * err
     );
-}
-
-#[test]
-fn stadium_extrude_matches_closed_form() {
-    // Slot 40 long between centres, r = 10, 5 thick: two semicircles and two
-    // lines, no holes — the hole-free arc path.
-    let (l, r, h) = (40.0, 10.0, 5.0);
-    let v = |x, y| Vec2 { x, y };
-    let segs = vec![
-        SketchSegment2D::Line {
-            start: v(0.0, -r),
-            end: v(l, -r),
-        },
-        SketchSegment2D::Arc {
-            start: v(l, -r),
-            end: v(l, r),
-            center: v(l, 0.0),
-            ccw: true,
-        },
-        SketchSegment2D::Line {
-            start: v(l, r),
-            end: v(0.0, r),
-        },
-        SketchSegment2D::Arc {
-            start: v(0.0, r),
-            end: v(0.0, -r),
-            center: v(0.0, 0.0),
-            ccw: true,
-        },
-    ];
-    let (vol, open) = eval(&extrude_doc(segs, None, h));
-    let expect = (2.0 * r * l + PI * r * r) * h;
-    let err = (vol - expect) / expect;
-    // The rectangle is exact, so the round ends' 0.64% shrinks to ~0.3%.
-    assert!(
-        err.abs() < TOL / 2.0,
-        "stadium volume {vol:.1} vs closed form {expect:.1} ({:+.2}%)",
-        100.0 * err
-    );
-    assert_eq!(open, 0, "stadium mesh has {open} open edges");
 }
