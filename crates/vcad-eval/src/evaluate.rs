@@ -4941,4 +4941,100 @@ mod tests {
         );
         assert!(t.elapsed().as_secs() < 5);
     }
+
+    /// `CsgOp::Rotate` means one thing whatever sits under it. A BRep cube
+    /// and an `ImportedMesh` of the same box, under the same oblique
+    /// three-axis Rotate, must land on the same vertices: R = Rx·Ry·Rz
+    /// (`rotation_transform`). The mesh path used to apply Rz·Ry·Rx.
+    #[test]
+    fn rotate_means_the_same_over_brep_and_imported_mesh() {
+        let (sx, sy, sz) = (10.0, 20.0, 30.0);
+        let angles = vcad_ir::Vec3::new(30.0, 45.0, 60.0);
+        let corners: Vec<[f64; 3]> = (0..8)
+            .map(|i| {
+                [
+                    if i & 1 != 0 { sx } else { 0.0 },
+                    if i & 2 != 0 { sy } else { 0.0 },
+                    if i & 4 != 0 { sz } else { 0.0 },
+                ]
+            })
+            .collect();
+        // Twelve outward triangles over the eight corners (bit0=x, bit1=y, bit2=z).
+        let indices: Vec<u32> = vec![
+            0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 1, 4, 1, 5, 4, 2, 6, 3, 3, 6, 7, 0, 4, 2, 2, 4,
+            6, 1, 3, 5, 3, 7, 5,
+        ];
+        let mut nodes = HashMap::new();
+        let node = |id: NodeId, op: CsgOp| vcad_ir::Node { id, name: None, op };
+        nodes.insert(
+            1,
+            node(
+                1,
+                CsgOp::Cube {
+                    size: vcad_ir::Vec3::new(sx, sy, sz),
+                },
+            ),
+        );
+        nodes.insert(2, node(2, CsgOp::Rotate { child: 1, angles }));
+        nodes.insert(
+            3,
+            node(
+                3,
+                CsgOp::ImportedMesh {
+                    positions: corners.iter().flatten().copied().collect(),
+                    indices,
+                    normals: None,
+                    source: None,
+                },
+            ),
+        );
+        nodes.insert(4, node(4, CsgOp::Rotate { child: 3, angles }));
+        let entry = |root| vcad_ir::SceneEntry {
+            root,
+            material: "m".into(),
+            visible: None,
+        };
+        let doc = Document {
+            roots: vec![entry(2), entry(4)],
+            nodes,
+            ..Default::default()
+        };
+        let opts = EvalOptions {
+            skip_clash_detection: true,
+            ..Default::default()
+        };
+        let scene = evaluate_document(&doc, &opts).unwrap();
+        assert_eq!(scene.parts.len(), 2);
+
+        let bbox = |m: &EvaluatedMesh| {
+            let mut lo = [f64::INFINITY; 3];
+            let mut hi = [f64::NEG_INFINITY; 3];
+            for p in m.positions.chunks_exact(3) {
+                for k in 0..3 {
+                    lo[k] = lo[k].min(p[k] as f64);
+                    hi[k] = hi[k].max(p[k] as f64);
+                }
+            }
+            (lo, hi)
+        };
+        let t = rotation_transform(&angles);
+        let mut want_lo = [f64::INFINITY; 3];
+        let mut want_hi = [f64::NEG_INFINITY; 3];
+        for c in &corners {
+            let q = t.apply_point(&vcad_kernel_math::Point3::new(c[0], c[1], c[2]));
+            for (k, v) in [q.x, q.y, q.z].into_iter().enumerate() {
+                want_lo[k] = want_lo[k].min(v);
+                want_hi[k] = want_hi[k].max(v);
+            }
+        }
+        for (label, part) in [("brep", &scene.parts[0]), ("mesh", &scene.parts[1])] {
+            let (lo, hi) = bbox(&part.mesh);
+            for k in 0..3 {
+                assert!(
+                    (lo[k] - want_lo[k]).abs() < 1e-3 && (hi[k] - want_hi[k]).abs() < 1e-3,
+                    "{label} bbox {lo:?}..{hi:?} != Rx·Ry·Rz {want_lo:?}..{want_hi:?}"
+                );
+            }
+        }
+    }
 }

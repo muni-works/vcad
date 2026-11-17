@@ -61,6 +61,8 @@ vcad-loon = { path = "../vcad-loon" }
 # version of it that does not exist yet. Cargo strips path-only dev-deps
 # from the uploaded manifest.
 vcad-kernel-step = { path = "../vcad-kernel-step" }
+# Path-only, no version (stripped on publish): URDF → evaluator parity test.
+vcad-kernel-urdf = { path = "../vcad-kernel-urdf" }
 vcad-kernel-geom.workspace = true
 vcad-kernel-fillet.workspace = true
 vcad-kernel-booleans.workspace = true
