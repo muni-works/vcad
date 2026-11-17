@@ -410,7 +410,7 @@ export const optimizeElectrodesSchema = {
   },
 };
 
-const vec3 = {
+const numVec3 = {
   type: "array" as const,
   items: { type: "number" as const },
   minItems: 3,
@@ -425,13 +425,13 @@ const poseSchema = {
     "(Euler X,Y,Z degrees, R = Rx·Ry·Rz — the IR Rotate convention), not " +
     "both. Omitted = at the origin, axis +Z.",
   properties: {
-    position_mm: { ...vec3, description: "Source center, mm." },
-    axis: { ...vec3, description: "Local +z direction (need not be unit)." },
+    position_mm: { ...numVec3, description: "Source center, mm." },
+    axis: { ...numVec3, description: "Local +z direction (need not be unit)." },
     x_axis: {
-      ...vec3,
+      ...numVec3,
       description: "With `axis`: local +x direction (orthogonal part used).",
     },
-    rotation_deg: { ...vec3, description: "Euler angles about X, Y, Z, deg." },
+    rotation_deg: { ...numVec3, description: "Euler angles about X, Y, Z, deg." },
   },
 };
 
@@ -455,7 +455,7 @@ const fieldSourceSchema = {
     radius_mm: { type: "number" as const },
     inner_radius_mm: { type: "number" as const },
     length_mm: { type: "number" as const },
-    size_mm: vec3,
+    size_mm: numVec3,
     current_a: { type: "number" as const },
     turns: { type: "number" as const },
     wire_radius_mm: { type: "number" as const },
@@ -477,7 +477,7 @@ export const magneticFieldSchema = {
     },
     points_mm: {
       type: "array" as const,
-      items: vec3,
+      items: numVec3,
       description: "Query points, mm.",
     },
     grid: {
@@ -487,9 +487,9 @@ export const magneticFieldSchema = {
         "Plane grid origin + u·u_dir + v·v_dir, appended after points_mm, " +
         "row-major (index = offset + iv·nu + iu). Total points ≤ 20000.",
       properties: {
-        origin_mm: { ...vec3, description: "Default [0, 0, 0]." },
-        u_dir: { ...vec3, description: "Default +X." },
-        v_dir: { ...vec3, description: "Default +Y." },
+        origin_mm: { ...numVec3, description: "Default [0, 0, 0]." },
+        u_dir: { ...numVec3, description: "Default +X." },
+        v_dir: { ...numVec3, description: "Default +Y." },
         u_range_mm: {
           type: "array" as const,
           items: { type: "number" as const },
