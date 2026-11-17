@@ -788,7 +788,12 @@ fn boolean_op_reported_untimed(
     // actually count). A fallback that only closes one of them is not an
     // upgrade.
     let alt_usable = alt_report.triangles > 0 && agree && alt_mesh.boundary_edges().is_empty();
-    if alt_usable && alt_report.open_edges == 0 {
+    // `VCAD_NO_MISSED_CUT_SWAP` keeps a result the probe condemned (see the
+    // missed-cut replacement below): no other swap may launder it either,
+    // or the knob's "kept, and reported" promise only holds when the
+    // fallback happens not to be watertight.
+    let keep_condemned = missed_cut && std::env::var_os("VCAD_NO_MISSED_CUT_SWAP").is_some();
+    if alt_usable && alt_report.open_edges == 0 && !keep_condemned {
         let mut report =
             BooleanReport::degraded(op, DegradeReason::WatertightnessSwap).with_result(&alt);
         report.flagged_unrepresentable = true;

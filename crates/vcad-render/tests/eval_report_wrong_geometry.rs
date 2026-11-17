@@ -5,9 +5,13 @@
 //! known-wrong root or part definition that got cached would come back
 //! warning-free on the next run.
 //!
-//! The repro is the counterbored clamp block from
-//! `crates/vcad-eval/tests/channel_cut_across_counterbored_block.rs`, with
-//! `VCAD_NO_MISSED_CUT_SWAP=1` keeping the condemned (uncut) analytic result.
+//! The repro is torture case `rand-155` (a thin plate minus a torus that
+//! leaves it through the plate's edge), one of the few cuts the missed-cut
+//! probe still condemns, with `VCAD_NO_MISSED_CUT_SWAP=1` keeping the
+//! condemned (uncut) analytic result. It used to be the counterbored clamp
+//! block of `crates/vcad-eval/tests/channel_cut_across_counterbored_block.rs`
+//! until #1230 fixed that cut at its root — a repro that stops being wrong
+//! takes this test's subject with it, so keep one the kernel still misses.
 //! One test per file: it sets that process-wide env knob.
 
 use std::rc::Rc;
@@ -19,73 +23,18 @@ use vcad_render::{render_svg_str, with_root_cache};
 const SEGMENTS: u32 = 32;
 
 const PREAMBLE: &str = r#"
-[defparam block_w 44.0 :unit "mm" :min 20 :max 60]
-[defparam bore_axle 10.0 :unit "mm" :min 8 :max 12]
-[defparam bore_shaft 16.0 :unit "mm" :min 14 :max 18]
-[defparam depth_axle 44.0 :unit "mm" :min 15 :max 60]
-[defparam depth_shaft 45.0 :unit "mm" :min 20 :max 60]
-[defparam deck_offset 22.0 :unit "mm" :min 16 :max 40]
-[defparam top_pad 20.0 :unit "mm" :min 13 :max 25]
-[defparam bot_pad 22.0 :unit "mm" :min 16 :max 25]
-[defparam cable_gap 10.0 :unit "mm" :min 0 :max 20]
-[defparam cable_w 12.0 :unit "mm" :min 6 :max 15]
-[defparam pin_from_tip 12.0 :unit "mm" :min 6 :max 40]
-[defparam shaft_pin_d 6.6 :unit "mm" :min 3 :max 8]
-[defparam shaft_pin_a 5.0 :unit "mm" :min 4 :max 40]
-[defparam shaft_pin_b 35.0 :unit "mm" :min 6 :max 44]
-[defparam slit 2.0 :unit "mm" :min 1 :max 3]
-
-[let half [/ block_w 2]]
-[let r10 [/ bore_axle 2]]
-[let r16 [/ bore_shaft 2]]
-[let total [+ cable_gap depth_shaft]]
-[let height [+ bot_pad [+ deck_offset top_pad]]]
-
-[let body [translate [- 0 half] [- 0 bot_pad] 0 [cube block_w height total]]]
-[let bore-a [translate 0 deck_offset -1 [cylinder r10 [+ total 2]]]]
-[let bore-s [translate 0 0 -1 [cylinder r16 [+ total 2]]]]
-[let cut-a [translate [- 0 [/ slit 2]] deck_offset -1 [cube slit [+ top_pad 1] [+ total 2]]]]
-[let cut-s [translate [- 0 [/ slit 2]] [- [- 0 bot_pad] 1] -1
-             [cube slit [+ bot_pad 1] [+ total 2]]]]
-
-[let xdrill [fn [r l] [rotate 0 90 0 [cylinder r l]]]]
-; M5 pinch bolt: clearance + counterbore on +X, tap drill on -X
-[let pinch [fn [y z]
-  [union [translate 0 y z [xdrill 2.75 [+ half 1]]]
-  [union [translate [- [- 0 half] 1] y z [xdrill 2.1 [+ half 1]]]
-         [translate [- half 5.5] y z [xdrill 4.5 6.5]]]]]]
-[let ya [+ deck_offset [+ r10 6.0]]]
-[let ys [- 0 [+ r16 6.5]]]
-[let bolts
-  [union [pinch ya 6.0]
-  [union [pinch ya [/ depth_axle 2]]
-  [union [pinch ya [- depth_axle 6.0]]
-  [union [pinch ys [+ cable_gap 7.0]]
-  [union [pinch ys [+ cable_gap [/ depth_shaft 2]]]
-         [pinch ys [- total 7.0]]]]]]]]
-[let pin [translate [- [- 0 half] 1] deck_offset [- depth_axle pin_from_tip]
-           [xdrill 2.0 [+ block_w 2]]]]
-[let spin [fn [d]
-  [translate [- [- 0 half] 1] 0 [+ cable_gap d] [xdrill [/ shaft_pin_d 2] [+ block_w 2]]]]]
-[let shaft-pin [union [spin shaft_pin_a] [spin shaft_pin_b]]]
-[let channel [translate [- [- 0 half] 1] [- 0 [/ cable_w 2]] -1
-               [cube [+ block_w 2] cable_w [+ cable_gap 1]]]]
+[let plate [cube 10.244704893888555 15.010687758720172 0.7724966600936821]]
+[let ring [translate 17.18246355971179 0 0 [torus 9.933044670234917 2.1270674425325966]]]
 "#;
 
-/// The block as a scene root.
+/// The plate as a scene root.
 const AS_ROOT: &str = r#"
-[let cutters
-  [union channel [union bore-a [union bore-s [union cut-a [union cut-s
-    [union bolts [union pin shaft-pin]]]]]]]]
-[root [difference cutters body] "aluminum"]
+[root [difference ring plate] "aluminum"]
 "#;
 
-/// The same block as an assembly part definition with one instance.
+/// The same plate as an assembly part definition with one instance.
 const AS_INSTANCE: &str = r#"
-[let cutters
-  [union channel [union bore-a [union bore-s [union cut-a [union cut-s
-    [union bolts [union pin shaft-pin]]]]]]]]
-[let blk [difference cutters body]]
+[let blk [difference ring plate]]
 [assembly
   #[[part "block" blk "aluminum"]]
   #[[instance "b1" "block" 0 0 0]]
@@ -117,7 +66,6 @@ fn assert_warned(name: &str, run: &str, r: &EvalReport) {
 
 #[test]
 fn known_wrong_geometry_is_reported_and_never_cached() {
-    // Every evaluation here redoes a heavy boolean, so each is spent once.
     std::env::set_var("VCAD_NO_MISSED_CUT_SWAP", "1");
     for (name, tail) in [("root", AS_ROOT), ("instance", AS_INSTANCE)] {
         let raw = doc_json(tail);
