@@ -348,20 +348,26 @@ fn evaluate_inner(
                 if let (Some(Some(solid)), Some(mesh)) =
                     (cache.get(&eval_root).cloned(), i.mesh(eval_root, h))
                 {
+                    // The cached mesh's face ids name the finished solid's
+                    // faces, not the node's. Clash detection gets the node's.
+                    let split = solid;
+                    let solid = i
+                        .root_solid(eval_root, h)
+                        .unwrap_or_else(|| finish_root(split.clone()).0);
                     let key = placement
                         .is_none()
                         .then(|| cache_key.as_ref().map(|k| k.0.clone()))
                         .flatten();
-                    let solid = match &placement {
-                        Some(t) => solid.apply_transform(t),
-                        None => solid,
+                    let place = |s: Solid| match &placement {
+                        Some(t) => s.apply_transform(t),
+                        None => s,
                     };
                     parts.push(EvaluatedPart {
                         mesh: place_mesh(mesh, placement.as_ref()),
                         material: entry.material.clone(),
-                        solid: Some(solid.clone()),
+                        solid: Some(place(solid)),
                     });
-                    solids.push(Some(solid));
+                    solids.push(Some(place(split)));
                     landed(&parts, &mut root_keys, key);
                     continue;
                 }
@@ -433,6 +439,7 @@ fn evaluate_inner(
                         Ok(MeshedOk {
                             mesh,
                             solid: None,
+                            split: None,
                             mesh_ms: m.mesh_ms,
                         })
                     }
@@ -441,13 +448,16 @@ fn evaluate_inner(
                 other => other,
             };
             match eval_outcome {
-                Ok(MeshedOk { mesh, solid, .. }) => {
+                Ok(MeshedOk {
+                    mesh, solid, split, ..
+                }) => {
                     // A stand-in preview mesh never goes in under the full key.
                     if !from_preview {
                         store(&cache_key, &mesh);
                     }
-                    if let (Some(_), Some(i), Some(h)) = (&solid, inc.as_deref_mut(), root_hash) {
+                    if let (Some(s), Some(i), Some(h)) = (&solid, inc.as_deref_mut(), root_hash) {
                         i.put_mesh(eval_root, h, &mesh);
+                        i.put_root_solid(eval_root, h, s);
                     }
                     // A peeled root's key names the unplaced shape, which a mesh
                     // bundle cannot stand in for: report none.
@@ -455,16 +465,23 @@ fn evaluate_inner(
                         .then(|| cache_key.as_ref().map(|k| k.0.clone()))
                         .flatten();
                     let mesh = place_mesh(mesh, placement.as_ref());
-                    let solid = match (&placement, solid) {
+                    let place = |s: Option<Solid>| match (&placement, s) {
                         (Some(t), Some(s)) => Some(s.apply_transform(t)),
                         (_, s) => s,
+                    };
+                    let solid = place(solid);
+                    // Clash detection intersects roots: it gets the split
+                    // solid wherever merging changed anything.
+                    let for_clash = match split {
+                        Some(s) => place(Some(s)),
+                        None => solid.clone(),
                     };
                     parts.push(EvaluatedPart {
                         mesh,
                         material: entry.material.clone(),
-                        solid: solid.clone(),
+                        solid,
                     });
-                    solids.push(solid);
+                    solids.push(for_clash);
                     landed(&parts, &mut root_keys, key);
                 }
                 Err(error) => {
@@ -560,6 +577,7 @@ fn evaluate_inner(
                             mesh: m,
                             solid,
                             mesh_ms,
+                            ..
                         }) => {
                             tessellate_ms += mesh_ms;
                             if let Some(nt) = node_timings.get(&part_def.root.to_string()) {
@@ -766,7 +784,7 @@ pub fn evaluate_root_solids(doc: &Document) -> Result<Vec<RootSolid>, EvalError>
         if entry.visible == Some(false) {
             continue;
         }
-        let solid = evaluate_node(entry.root, &doc.nodes, &mut cache)?;
+        let solid = evaluate_node(entry.root, &doc.nodes, &mut cache)?.map(|s| finish_root(s).0);
         let name = doc.nodes.get(&entry.root).and_then(|n| n.name.clone());
         out.push(RootSolid {
             node_id: entry.root,
@@ -796,11 +814,41 @@ pub fn evaluate_node(
     Ok(result)
 }
 
+/// The solid that leaves evaluation for a root: the node's solid with the
+/// coplanar fragments its booleans left merged back into single faces
+/// ([`Solid::merge_coplanar_faces`]).
+///
+/// At the root's exit and nowhere earlier. The node cache keeps the split
+/// solid, so every boolean — including one in another root that uses this
+/// node as an operand — consumes faces in the shapes the splitters produce.
+/// Both earlier placements were measured and broke something: merging after
+/// every kernel boolean left the open-fusor chamber with 8 non-manifold
+/// edges, and merging each boolean node's result made the shell-ring
+/// document's later mesh-fallback union non-manifold (3146 edges). What is
+/// merged here is only ever meshed, picked and exported.
+/// `VCAD_NO_FACE_MERGE=1` turns it off.
+///
+/// Returns the finished solid and, when merging changed it, the split solid
+/// it came from — which is what anything that runs a further boolean on a
+/// root (clash detection) must use.
+fn finish_root(solid: Solid) -> (Solid, Option<Solid>) {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *OFF.get_or_init(|| std::env::var_os("VCAD_NO_FACE_MERGE").is_some()) {
+        return (solid, None);
+    }
+    match solid.try_merge_coplanar_faces() {
+        Some(merged) => (merged, Some(solid)),
+        None => (solid, None),
+    }
+}
+
 /// A root (or part definition) evaluated and tessellated.
 #[derive(Clone)]
 struct MeshedOk {
     mesh: EvaluatedMesh,
     solid: Option<Solid>,
+    /// The solid before [`finish_root`] merged it, when that changed it.
+    split: Option<Solid>,
     /// Tessellation wall time, when a clock is set.
     mesh_ms: f64,
 }
@@ -824,7 +872,9 @@ fn evaluate_and_mesh(
     let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<MeshedOk, EvalError> {
         match evaluate_node_timed(root, nodes, cache, clock, timings)? {
             Some(s) => {
+                // The merge is timed with the tessellation it gates.
                 let t_mesh = clock.map(|c| c.now_ms());
+                let (s, split) = finish_root(s);
                 let chord = DISPLAY_CHORD_TOL.with(|t| t.get());
                 let tri = if DISPLAY_PREVIEW.with(|p| p.get()) {
                     s.to_preview_mesh(segments, chord)
@@ -840,12 +890,14 @@ fn evaluate_and_mesh(
                 Ok(MeshedOk {
                     mesh: tri_to_evaluated_render(tri),
                     solid: Some(s),
+                    split,
                     mesh_ms,
                 })
             }
             None => Ok(MeshedOk {
                 mesh: EvaluatedMesh::empty(),
                 solid: None,
+                split: None,
                 mesh_ms: 0.0,
             }),
         }

@@ -316,6 +316,11 @@ fn check(
     if std::env::var_os("CENSUS_FACES").is_some() {
         dump_faces(result.as_brep().expect("brep"));
     }
+    // Every stage, merged: the coplanar fragments the boolean left go back
+    // into single faces without costing the mesh anything.
+    if let (Some(b), Fidelity::Analytic) = (result.as_brep(), fidelity) {
+        fails.extend(check_merged(label, b));
+    }
     let mesh = result.to_mesh(SEGMENTS);
     let vol = signed_volume(&mesh);
     let (nonmanifold, folded, boundary) = edge_census(&mesh);
@@ -348,6 +353,78 @@ fn check(
         ));
     }
     fails
+}
+
+/// Merge the coplanar faces of `b` and check the merged solid: sound
+/// topology, a tessellation as clean as the split one with the same
+/// volume, and nothing left to merge. Returns the failures.
+fn check_merged(label: &str, b: &BRepSolid) -> Vec<String> {
+    let mut fails = Vec::new();
+    let before = b.topology.faces.len();
+    let mut probe = b.clone();
+    let wanted = vcad_kernel_booleans::merge_coplanar_faces(&mut probe);
+    let Some((merged, _)) = vcad_kernel_booleans::merged_if_no_worse(b, SEGMENTS) else {
+        if wanted.changed() {
+            fails.push(format!(
+                "{label}: merging {} faces made the tessellation worse and was dropped",
+                wanted.absorbed.len()
+            ));
+        }
+        return fails;
+    };
+    let dangling = dangling_keys(&merged);
+    if !dangling.is_empty() {
+        fails.push(format!(
+            "{label}: merged solid has {} dangling keys, e.g. {:?}",
+            dangling.len(),
+            &dangling[..dangling.len().min(4)]
+        ));
+    }
+    let (split_mesh, mesh) = (
+        vcad_kernel_tessellate::tessellate_brep(b, SEGMENTS),
+        vcad_kernel_tessellate::tessellate_brep(&merged, SEGMENTS),
+    );
+    let census = edge_census(&mesh);
+    let (v0, v1) = (signed_volume(&split_mesh), signed_volume(&mesh));
+    eprintln!(
+        "{label}: merged faces {before} -> {}, tris {} -> {}",
+        merged.topology.faces.len(),
+        split_mesh.indices.len() / 3,
+        mesh.indices.len() / 3
+    );
+    if census != (0, 0, 0) {
+        fails.push(format!("{label}: merged mesh census {census:?}"));
+    }
+    if (v0 - v1).abs() > 1e-6 * v0.abs() {
+        fails.push(format!("{label}: merged volume {v1} vs split {v0}"));
+    }
+    let mut again = merged.clone();
+    let rest = vcad_kernel_booleans::merge_coplanar_faces(&mut again);
+    if rest.changed() || rest.refused_groups != 0 {
+        fails.push(format!(
+            "{label}: {} faces still mergeable, {} groups refused",
+            rest.absorbed.len(),
+            rest.refused_groups
+        ));
+    }
+    fails
+}
+
+/// Planar face count of the merged form of `b`.
+fn merged_faces(b: &BRepSolid) -> (usize, usize) {
+    let merged = vcad_kernel_booleans::merged_if_no_worse(b, SEGMENTS)
+        .map(|(m, _)| m)
+        .unwrap_or_else(|| b.clone());
+    let planar = merged
+        .topology
+        .faces
+        .values()
+        .filter(|f| {
+            merged.geometry.surfaces[f.surface_index].surface_type()
+                == vcad_kernel_geom::SurfaceKind::Plane
+        })
+        .count();
+    (merged.topology.faces.len(), planar)
 }
 
 fn op(label: &str, a: &BRepSolid, b: &BRepSolid, op: BooleanOp) -> (BooleanResult, BooleanReport) {
@@ -558,6 +635,18 @@ fn sectioned_can_with_cavity() {
             max_tris: 8000,
         },
     ));
+    // Merged, the planes are what a drawing shows: two outer caps, two
+    // cavity caps and one C-shaped section face per cutting plane.
+    let (total, planar) = merged_faces(&brep(&cut));
+    eprintln!(
+        "sectioned can: {} faces split, {total} merged ({planar} planar)",
+        brep(&cut).topology.faces.len()
+    );
+    if planar != 6 {
+        fails.push(format!(
+            "sectioned can: {planar} planar faces after merging, expected 6"
+        ));
+    }
     assert!(fails.is_empty(), "{fails:#?}");
 }
 
@@ -599,6 +688,18 @@ fn sectioned_can_with_cavity_batched() {
             max_tris: 8000,
         },
     ));
+    // Merged, the planes are what a drawing shows: two outer caps, two
+    // cavity caps and one C-shaped section face per cutting plane.
+    let (total, planar) = merged_faces(&brep(&cut));
+    eprintln!(
+        "sectioned can: {} faces split, {total} merged ({planar} planar)",
+        brep(&cut).topology.faces.len()
+    );
+    if planar != 6 {
+        fails.push(format!(
+            "sectioned can: {planar} planar faces after merging, expected 6"
+        ));
+    }
     assert!(fails.is_empty(), "{fails:#?}");
 }
 
@@ -750,5 +851,69 @@ fn coaxial_ports_sectioned() {
             max_tris: 14000,
         },
     ));
+    assert!(fails.is_empty(), "{fails:#?}");
+}
+
+/// A merged solid is valid boolean input: the sectioned can with its caps
+/// and section faces merged (faces with collinear boundary vertices, the
+/// lid a three-quarter disc again) is drilled through the lid and slotted
+/// across a section face, and comes out the same solid as the split form
+/// put through the same cuts.
+#[test]
+fn merged_chamber_survives_further_booleans() {
+    let (hollow, _) = op(
+        "cavity",
+        &zcyl(79.5, -79.5, 79.5),
+        &zcyl(76.0, -76.0, 76.0),
+        BooleanOp::Difference,
+    );
+    let (cut, _) = op(
+        "section",
+        &brep(&hollow),
+        &quadrant(),
+        BooleanOp::Difference,
+    );
+    let split = brep(&cut);
+    let (merged, report) =
+        vcad_kernel_booleans::merged_if_no_worse(&split, SEGMENTS).expect("the caps merge");
+    assert!(report.changed());
+    assert!(merged.topology.faces.len() < split.topology.faces.len());
+
+    // Through the lid, well inside the merged cap.
+    let drill = transformed(
+        make_cylinder(5.0, 40.0, SEGMENTS),
+        &Transform::translation(-30.0, 30.0, 60.0),
+    );
+    // Across the section face on the plane y = 0 (x > 0), through the wall.
+    let slot = transformed(
+        make_cube(20.0, 30.0, 10.0),
+        &Transform::translation(70.0, -15.0, -5.0),
+    );
+    let v_split = signed_volume(&vcad_kernel_tessellate::tessellate_brep(&split, SEGMENTS));
+    let mut fails = Vec::new();
+    for (name, tool) in [("drill", &drill), ("slot", &slot)] {
+        let (a, fa) = op(name, &split, tool, BooleanOp::Difference);
+        let (b, fb) = op(name, &merged, tool, BooleanOp::Difference);
+        let (ma, mb) = (a.to_mesh(SEGMENTS), b.to_mesh(SEGMENTS));
+        let (va, vb) = (signed_volume(&ma), signed_volume(&mb));
+        let census = edge_census(&mb);
+        eprintln!(
+            "{name}: split {va:.2} ({:?}, {} faces) merged {vb:.2} ({:?}, {} faces) census {census:?}",
+            fa.fidelity,
+            brep(&a).topology.faces.len(),
+            fb.fidelity,
+            brep(&b).topology.faces.len()
+        );
+        if fb.fidelity != Fidelity::Analytic {
+            fails.push(format!("{name}: merged input degraded: {:?}", fb.reason));
+        }
+        if census != (0, 0, 0) {
+            fails.push(format!("{name}: census {census:?}"));
+        }
+        if (va - vb).abs() > 1e-6 * va.abs() || va >= v_split - 1.0 {
+            fails.push(format!("{name}: volume {vb} vs split-form {va}"));
+        }
+        fails.extend(check_merged(name, &brep(&b)));
+    }
     assert!(fails.is_empty(), "{fails:#?}");
 }

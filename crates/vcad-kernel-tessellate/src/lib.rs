@@ -2595,6 +2595,86 @@ fn align_winding_to_normals(mesh: &mut TriangleMesh) {
 
 /// Core tessellation logic for a planar polygon without holes.
 fn tessellate_planar_face_core(outer_verts: &[Point3], reversed: bool) -> TriangleMesh {
+    let mesh = tessellate_planar_face_fan_or_clip(outer_verts, reversed);
+    // A boundary with collinear vertices (a straight side that a neighbour
+    // splits and this face does not — every merged coplanar face has them)
+    // defeats both paths above: a fan from a vertex on that side, or the
+    // last triangle of an ear clip, spans three collinear points. The
+    // zero-area triangle is not harmless: its long edge doubles the two
+    // short ones, which shows up as an over-used or folded edge once the
+    // solid is welded. Earcut with the dropped boundary points re-inserted
+    // triangulates the same ring with no such triangle; it is consulted
+    // only when the first answer is defective.
+    if planar_triangulation_is_sound(outer_verts, &mesh) {
+        return mesh;
+    }
+    let normal = newell_normal(outer_verts);
+    let Some(e1) = outer_verts
+        .windows(2)
+        .map(|w| w[1] - w[0])
+        .find(|e| e.norm() > 1e-12)
+    else {
+        return mesh;
+    };
+    if normal.norm() < 1e-12 {
+        return mesh;
+    }
+    let u_axis = e1.normalize();
+    let v_axis = normal.cross(e1).normalize();
+    let origin = outer_verts[0];
+    let uv: Vec<(f64, f64)> = outer_verts
+        .iter()
+        .map(|p| {
+            let d = *p - origin;
+            (d.dot(u_axis), d.dot(v_axis))
+        })
+        .collect();
+    match earcut_polygon_with_holes(&uv, &[], outer_verts, &[], reversed) {
+        Some(alt) if planar_triangulation_is_sound(outer_verts, &alt) => alt,
+        _ => mesh,
+    }
+}
+
+/// Whether `mesh` triangulates the ring `verts` with no zero-area triangle
+/// and no lost or doubled area.
+fn planar_triangulation_is_sound(verts: &[Point3], mesh: &TriangleMesh) -> bool {
+    let polygon_area = 0.5 * newell_normal(verts).norm();
+    // A triangulation of a simple ring that adds no vertices has exactly
+    // n − 2 triangles; fewer means boundary vertices were dropped (an ear
+    // clip that stalled on a collinear run), and the neighbours across
+    // that side then have nothing to weld to.
+    if polygon_area <= 0.0 || mesh.indices.len() / 3 != verts.len().saturating_sub(2) {
+        return false;
+    }
+    // Measured in f64 from the ring itself where the indices allow it; the
+    // mesh's own f32 positions otherwise.
+    let p = |i: u32| {
+        let b = i as usize * 3;
+        Point3::new(
+            mesh.vertices[b] as f64,
+            mesh.vertices[b + 1] as f64,
+            mesh.vertices[b + 2] as f64,
+        )
+    };
+    let scale = polygon_area.sqrt();
+    let mut total = 0.0;
+    for t in mesh.indices.chunks(3) {
+        let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+        let area = 0.5 * (b - a).cross(c - a).norm();
+        // Height over the longest side: a sliver thinner than 1e-7 of the
+        // face's size is three collinear points.
+        let longest = (b - a).norm().max((c - b).norm()).max((a - c).norm());
+        if longest <= 0.0 || 2.0 * area / longest < 1e-7 * scale {
+            return false;
+        }
+        total += area;
+    }
+    (total - polygon_area).abs() <= polygon_area * 1e-5
+}
+
+/// Fan triangulation where one vertex sees the whole ring, ear clipping
+/// otherwise.
+fn tessellate_planar_face_fan_or_clip(outer_verts: &[Point3], reversed: bool) -> TriangleMesh {
     // Find the best fan center vertex index.
     // For faces with curved boundaries (like quarter disks), we need to pick a vertex
     // that's at the junction of straight edges, not on the curved portion.

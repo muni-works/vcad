@@ -863,12 +863,13 @@ impl Solid {
                         LossKind::BooleanFallback(reason),
                     ));
                 }
-                Ok(Solid {
+                let out = Solid {
                     names,
                     provenance,
                     repr: SolidRepr::BRep(brep),
                     segments,
-                })
+                };
+                Ok(out)
             }
             // For mesh-only solids, tessellate BRep first then combine meshes
             _ => {
@@ -1519,6 +1520,12 @@ impl Solid {
     /// [`Solid::shell_open`] with the open faces given as references
     /// ([`Solid::resolve_face`]), each resolved against this solid. Two
     /// references to the same face are one opening.
+    ///
+    /// A reference opens the whole flat face it lands on, not just the
+    /// fragment: where a boolean left a cap in pieces, the document's root
+    /// shows it merged ([`Solid::merge_coplanar_faces`]) while the solid a
+    /// later operation resolves against still has the pieces, so the
+    /// resolved fragment stands for every piece of its region.
     pub fn shell_open_refs(
         &self,
         thickness: f64,
@@ -1527,8 +1534,10 @@ impl Solid {
         let mut ids = Vec::with_capacity(open_faces.len());
         for r in open_faces {
             let f = self.resolve_face(r.name.as_deref(), r.point, r.normal)?;
-            if !ids.contains(&f) {
-                ids.push(f);
+            for f in self.coplanar_region(f) {
+                if !ids.contains(&f) {
+                    ids.push(f);
+                }
             }
         }
         self.shell_open(thickness, &ids)
@@ -2699,6 +2708,133 @@ impl Solid {
             groups.push(*first.entry(key).or_insert(ordinal as u32));
         }
         Some(groups)
+    }
+
+    /// Merge edge-adjacent faces lying on one plane into single faces.
+    ///
+    /// Booleans leave a planar surface in pieces — a cap split along the
+    /// line where another tool's plane would run on through it, a section
+    /// face cut where a wall crossed it. This returns the same solid with
+    /// one face per connected region of each plane, so hover, selection,
+    /// face picking and STEP export see the faces a drawing would show.
+    /// Curved surfaces are left as the boolean produced them.
+    ///
+    /// Fail-closed: the solid is returned unchanged when it is not an
+    /// analytic B-rep, when nothing merges, or when the merged B-rep would
+    /// tessellate any worse (more open, over-used or folded edges, or a
+    /// different volume) than the split one. See
+    /// [`vcad_kernel_booleans::merge`].
+    ///
+    /// # Face names
+    ///
+    /// A merged face that reunites *every* fragment of a named face gets
+    /// the unsplit name back (`n1:top.0` + `n1:top.1` → `n1:top`). When
+    /// other fragments of the same face remain elsewhere it keeps the
+    /// lowest fragment name, so [`NameMap::lineage`] of the parent still
+    /// finds all of them. A merge across differently-named or unnamed
+    /// faces is anonymous.
+    ///
+    /// [`NameMap::lineage`]: vcad_kernel_naming::NameMap::lineage
+    pub fn merge_coplanar_faces(&self) -> Solid {
+        self.try_merge_coplanar_faces()
+            .unwrap_or_else(|| self.clone())
+    }
+
+    /// [`Solid::merge_coplanar_faces`], or `None` when it would return the
+    /// solid unchanged.
+    pub fn try_merge_coplanar_faces(&self) -> Option<Solid> {
+        let SolidRepr::BRep(brep) = &self.repr else {
+            return None;
+        };
+        if self.fidelity() != SolidFidelity::Analytic {
+            return None;
+        }
+        let segments = resolve_segments(self.segments);
+        let (merged, report) = vcad_kernel_booleans::merged_if_no_worse(brep, segments)?;
+        let names = self.names.as_ref().map(|names| {
+            use std::collections::BTreeMap;
+            use vcad_kernel_naming::FaceName;
+            let mut out = names.clone();
+            let mut groups: BTreeMap<_, Vec<_>> = BTreeMap::new();
+            for (absorbed, survivor) in &report.absorbed {
+                groups.entry(*survivor).or_default().push(*absorbed);
+            }
+            for (survivor, absorbed) in groups {
+                let mut member_names: Vec<Option<FaceName>> = vec![out.faces.remove(&survivor)];
+                for f in &absorbed {
+                    member_names.push(out.faces.remove(f));
+                }
+                let Some(named) = member_names.into_iter().collect::<Option<Vec<FaceName>>>()
+                else {
+                    continue;
+                };
+                let first = &named[0];
+                if named
+                    .iter()
+                    .any(|n| n.scope != first.scope || n.tag != first.tag)
+                {
+                    continue;
+                }
+                let mut common = first.path.len();
+                for n in &named[1..] {
+                    common = common.min(
+                        first
+                            .path
+                            .iter()
+                            .zip(&n.path)
+                            .take_while(|(a, b)| a == b)
+                            .count(),
+                    );
+                }
+                let parent = FaceName {
+                    scope: first.scope.clone(),
+                    tag: first.tag.clone(),
+                    path: first.path[..common].to_vec(),
+                };
+                let fragments_elsewhere = out.faces.values().any(|n| {
+                    n.scope == parent.scope
+                        && n.tag == parent.tag
+                        && n.path.starts_with(&parent.path)
+                });
+                let name = if fragments_elsewhere {
+                    named.into_iter().min().expect("non-empty")
+                } else {
+                    parent
+                };
+                out.faces.insert(survivor, name);
+            }
+            out
+        });
+        Some(Solid {
+            repr: SolidRepr::BRep(Box::new(merged)),
+            segments: self.segments,
+            names,
+            provenance: self.provenance.clone(),
+        })
+    }
+
+    /// `face` together with every face that [`Solid::merge_coplanar_faces`]
+    /// would merge it with: the whole flat region it is a fragment of.
+    fn coplanar_region(&self, face: vcad_kernel_topo::FaceId) -> Vec<vcad_kernel_topo::FaceId> {
+        let SolidRepr::BRep(brep) = &self.repr else {
+            return vec![face];
+        };
+        let mut probe = brep.as_ref().clone();
+        let report = vcad_kernel_booleans::merge_coplanar_faces(&mut probe);
+        let lead = report
+            .absorbed
+            .iter()
+            .find(|(f, _)| *f == face)
+            .map_or(face, |(_, s)| *s);
+        let mut region = vec![lead];
+        region.extend(
+            report
+                .absorbed
+                .iter()
+                .filter(|(_, s)| *s == lead)
+                .map(|(f, _)| *f),
+        );
+        region
     }
 
     /// Check if this solid can be ray traced.
