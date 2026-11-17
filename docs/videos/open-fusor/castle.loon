@@ -1,0 +1,24 @@
+; HDPE castle, dressing for the shielding shots. append after fusor.loon:
+;   cat fusor.loon castle.loon > shielded.loon
+;
+; wall thickness is the 15 cm the room dose map prices
+; (crates/vcad-kernel-neutronics/examples/fusor_room.json, `castle`). the
+; cavity is NOT the 150 mm half-cube of that model: it is grown to clear
+; the real plumbing, so the transport model is the conservative one (same
+; wall, source closer to it). five panels; the -y side is left open for the
+; camera and is closed by a sixth identical panel on the real machine.
+[let wall 150.0]
+[let cx0 -180.0] [let cx1 340.0]     ; cavity x: blank side .. leak valve side
+[let cy0 -180.0] [let cy1 180.0]
+[let cz0 -220.0] [let cz1 330.0]     ; cavity z: pump line .. feedthrough tip
+
+[material "hdpe" 0.96 0.96 0.94 0.0 0.55]
+
+[let panel [fn [x0 y0 z0 x1 y1 z1]
+  [translate x0 y0 z0 [cube [- x1 x0] [- y1 y0] [- z1 z0]]]]]
+
+[root-named [panel [- cx0 wall] [- cy0 wall] [- cz0 wall]  [+ cx1 wall] [+ cy1 wall] cz0] "hdpe" "castle-floor"]
+[root-named [panel [- cx0 wall] cy1 cz0  [+ cx1 wall] [+ cy1 wall] cz1] "hdpe" "castle-back"]
+[root-named [panel [- cx0 wall] [- cy0 wall] cz0  cx0 cy1 cz1] "hdpe" "castle-left"]
+[root-named [panel cx1 [- cy0 wall] cz0  [+ cx1 wall] cy1 cz1] "hdpe" "castle-right"]
+[root-named [panel [- cx0 wall] [- cy0 wall] cz1  [+ cx1 wall] [+ cy1 wall] [+ cz1 wall]] "hdpe" "castle-lid"]
