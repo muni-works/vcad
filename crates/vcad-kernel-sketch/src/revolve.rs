@@ -482,7 +482,7 @@ where
     // u = 0 at the seam, which lies in the profile plane.
     let off_axis = if a.1 { pb } else { pa };
     let d = off_axis - apex;
-    let ref_dir = d - d.dot(&cone_axis) * cone_axis;
+    let ref_dir = d - d.dot(cone_axis) * cone_axis;
     let cone = ConeSurface {
         apex,
         axis: Dir3::new_normalize(cone_axis),
@@ -495,9 +495,9 @@ where
         0.5 * (pa.y + pb.y),
         0.5 * (pa.z + pb.z),
     );
-    let v = (mid - apex).dot(&cone_axis) / half_angle.cos();
+    let v = (mid - apex).dot(cone_axis) / half_angle.cos();
     let n_surf = cone.normal(vcad_kernel_math::Point2::new(0.0, v));
-    let orientation = if n_surf.as_ref().dot(&outward_dir) >= 0.0 {
+    let orientation = if n_surf.as_ref().dot(outward_dir) >= 0.0 {
         Orientation::Forward
     } else {
         Orientation::Reversed
