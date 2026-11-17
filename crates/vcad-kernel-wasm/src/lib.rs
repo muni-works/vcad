@@ -588,7 +588,11 @@ struct WasmPlacement {
     scale: WasmVec3,
     /// `"xyz"`: `rotate` is raw `CsgOp::Rotate` angles (Rx·Ry·Rz). Absent:
     /// the `Transform3D` order (Rz·Ry·Rx).
-    #[serde(default, rename = "rotateOrder", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "rotateOrder",
+        skip_serializing_if = "Option::is_none"
+    )]
     rotate_order: Option<String>,
 }
 
