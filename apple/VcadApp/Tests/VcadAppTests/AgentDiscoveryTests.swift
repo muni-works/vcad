@@ -60,6 +60,31 @@ final class AgentDiscoveryTests: XCTestCase {
         XCTAssertEqual(AgentDiscovery.prune(home: home, isAlive: { $0 == 3 }), [2])
     }
 
+    func testBundleIdRoundTripsAsSnakeCase() throws {
+        var r = rec(7, "2026-11-16T10:00:00.000Z")
+        r.bundleId = "io.vcad.dev.app-sim-screens-fbe447"
+        let json = try JSONSerialization.jsonObject(with: JSONEncoder().encode(r)) as? [String: Any]
+        XCTAssertEqual(json?["bundle_id"] as? String, "io.vcad.dev.app-sim-screens-fbe447")
+        XCTAssertEqual(try JSONDecoder().decode(AgentInstanceRecord.self, from: JSONEncoder().encode(r)), r)
+        // Records from older builds carry no bundle id and still decode.
+        let old = #"{"pid":1,"port":2,"url":"u","instance_id":"i","started":"s"}"#
+        XCTAssertNil(try JSONDecoder().decode(AgentInstanceRecord.self, from: Data(old.utf8)).bundleId)
+    }
+
+    func testThrowawayRunsDoNotAdvertise() {
+        let adv = { (env: [String: String]) in AgentDiscovery.advertises(env: env, underTest: false) }
+        XCTAssertTrue(adv([:]))
+        XCTAssertTrue(adv(["VCAD_AGENT_PORT": "47400"]))
+        XCTAssertFalse(adv(["VCAD_AGENT_DISCOVERY": "0"]))
+        XCTAssertFalse(adv(["VCAD_PERF_EXIT": "1"]))
+        XCTAssertFalse(adv(["VCAD_BAKE_MESH_BUNDLE": "1"]))
+        XCTAssertFalse(adv(["VCAD_SNAPSHOT_DIR": "/tmp/shots"]))
+        XCTAssertTrue(adv(["VCAD_SNAPSHOT_DIR": ""]))
+        // This very process is a test host: it must never advertise.
+        XCTAssertTrue(AgentDiscovery.isUnderTest)
+        XCTAssertFalse(AgentDiscovery.advertises(env: [:]))
+    }
+
     func testIsAliveOnSelfAndBogusPid() {
         XCTAssertTrue(AgentDiscovery.isAlive(Int(ProcessInfo.processInfo.processIdentifier)))
         XCTAssertFalse(AgentDiscovery.isAlive(0))

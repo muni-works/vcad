@@ -11422,6 +11422,31 @@ pub fn signed_radial_gap(doc_json: &str, query_json: &str) -> Result<JsValue, Js
     serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
 }
 
+#[derive(serde::Deserialize)]
+struct WasmRefineClearanceQuery {
+    pairs: Vec<vcad_eval::sim_extract::tolerance::ClearancePairQuery>,
+}
+
+/// Refine tessellated part-pair clearances with the closed form for
+/// parallel cylinders (shaft in bore, pins side by side), so chord error
+/// can't turn a 0.02 mm running fit into an "interference". `query_json`
+/// is `{pairs: [{a, b, distance, intersecting, point_a, point_b}]}` (the
+/// `meshClearance` result per pair, part ids as clearance specs name them);
+/// returns one entry per pair — `null` when a part isn't a BRep root (keep
+/// the mesh number), else `{distance, intersecting, point_a, point_b,
+/// basis, mesh_distance, chord_band_mm?}`.
+#[wasm_bindgen(js_name = refineClearance)]
+pub fn refine_clearance(doc_json: &str, query_json: &str) -> Result<JsValue, JsError> {
+    let doc: vcad_ir::Document = serde_json::from_str(doc_json)
+        .map_err(|e| JsError::new(&format!("Failed to parse document: {e}")))?;
+    let q: WasmRefineClearanceQuery = serde_json::from_str(query_json)
+        .map_err(|e| JsError::new(&format!("bad refine-clearance query: {e}")))?;
+    let out = vcad_eval::sim_extract::tolerance::refine_pair_clearances(&doc, &q.pairs)
+        .map_err(|e| JsError::new(&e.to_string()))?;
+    let ser = serde_wasm_bindgen::Serializer::json_compatible();
+    serde::Serialize::serialize(&out, &ser).map_err(|e| JsError::new(&e.to_string()))
+}
+
 // =============================================================================
 // GLB / STL export (vcad-kernel-export)
 // =============================================================================

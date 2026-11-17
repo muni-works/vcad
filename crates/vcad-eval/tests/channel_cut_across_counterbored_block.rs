@@ -12,6 +12,13 @@
 //! perfectly closed fallback was accepted. `inspect_cad` said
 //! `failures: []`.
 //!
+//! That was the safety net. The cause was upstream: the cutter union was
+//! open because `split_planar_face_by_multi_arc` (a circle crossing a planar
+//! face 4+ times — here the r8 bore through the channel's top and bottom
+//! faces) sampled its arcs on the sphere convention's raw grid while the
+//! bore wall rides the canonical sag-adaptive grid. The last block below
+//! pins that the analytic result is now right without the net.
+//!
 //! The true volume, 124 317 mm³, comes from grid-integrating the exact
 //! implicit CSG (no kernel involved; 0.04 × 0.04 × 0.05 mm cells). The bug
 //! is 2.7 % high, so a 0.5 % band separates right from wrong with room for
@@ -148,20 +155,24 @@ fn channel_across_counterbored_block_is_cut_or_reported() {
         );
     }
 
-    // Loud path: with the missed-cut replacement disabled the condemned
-    // analytic result is kept — and must be reported, not passed off as a
-    // clean evaluation.
+    // The root cause is fixed, not just caught: the cutter union used to come
+    // out open (152 unpaired edges — the box faces of the channel sampled the
+    // r8 bore's rim on the sphere grid while the bore wall used the canonical
+    // one), which is what made `body − union` miss the channel. With the
+    // missed-cut replacement disabled the ANALYTIC difference must now be the
+    // right solid on its own, with nothing to report.
     std::env::set_var("VCAD_NO_MISSED_CUT_SWAP", "1");
     let (vol, failures, warnings) = evaluate(AUTHORED);
     std::env::remove_var("VCAD_NO_MISSED_CUT_SWAP");
+    let err = (vol - TRUE_VOLUME).abs() / TRUE_VOLUME;
     assert!(failures.is_empty(), "{failures:?}");
     assert!(
-        (vol - TRUE_VOLUME) / TRUE_VOLUME > 0.01,
-        "knob off-path no longer reproduces the miss ({vol:.1} mm³); \
-         this half of the test needs a new trigger"
+        warnings.is_empty(),
+        "analytic path still needs the missed-cut net: {warnings:?}"
     );
     assert!(
-        warnings.iter().any(|w| w.contains("cut was missed")),
-        "a known-wrong solid evaluated with no warning: {warnings:?}"
+        err < 0.001,
+        "analytic difference {vol:.1} mm³ vs true {TRUE_VOLUME} mm³ ({:.3}% off)",
+        err * 100.0
     );
 }

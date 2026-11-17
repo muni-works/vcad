@@ -67,6 +67,10 @@ pub use vcad_kernel_topopt;
 
 pub mod faces;
 
+/// Analytic (closed-form) correction of mesh clearance for cylinder pairs.
+pub mod analytic_clearance;
+pub use analytic_clearance::{refine_cylinder_clearance, ClearanceBasis, RefinedClearance};
+
 /// Quickhull convex hull of a point cloud (mesh-backed `Hull` op).
 pub mod hull;
 pub use faces::{inspect_faces, FaceInfo, FaceQueryError, FaceReport};
@@ -2192,12 +2196,39 @@ impl Solid {
     /// when the solids intersect (see
     /// [`vcad_kernel_tessellate::clearance`]). Tessellation-based: both
     /// solids are meshed at their own `segments` setting, so curved-surface
-    /// results carry the usual chord error (raise `segments` for tight
-    /// fits). Returns `None` when either solid is empty.
+    /// results carry chord error — except that when the closest pair is two
+    /// parallel cylinders (shaft in bore, pins side by side) of BRep solids,
+    /// the closed-form gap replaces the polygon number (see
+    /// [`analytic_clearance`]); a 0.02 mm running fit no longer reads as an
+    /// interference. Returns `None` when either solid is empty.
     pub fn clearance(&self, other: &Solid) -> Option<ClearanceResult> {
+        self.clearance_refined(other).map(|r| r.result)
+    }
+
+    /// [`Solid::clearance`] plus how the number was obtained (mesh or
+    /// analytic) and the raw mesh distance.
+    pub fn clearance_refined(&self, other: &Solid) -> Option<RefinedClearance> {
         let mesh_a = self.to_mesh(self.segments);
         let mesh_b = other.to_mesh(other.segments);
-        mesh_clearance(&mesh_a, &mesh_b)
+        let mesh = mesh_clearance(&mesh_a, &mesh_b)?;
+        Some(self.refine_clearance(other, &mesh))
+    }
+
+    /// Apply the analytic cylinder correction to a mesh clearance already
+    /// measured between `self` and `other` (e.g. on meshes tessellated
+    /// once and reused across many pairs). A no-op for non-BRep solids.
+    pub fn refine_clearance(&self, other: &Solid, mesh: &ClearanceResult) -> RefinedClearance {
+        match (self.as_brep(), other.as_brep()) {
+            (Some(a), Some(b)) => {
+                refine_cylinder_clearance(a, self.segments, b, other.segments, mesh)
+            }
+            _ => RefinedClearance {
+                result: *mesh,
+                basis: ClearanceBasis::Mesh,
+                mesh_distance: mesh.distance,
+                chord_band_mm: None,
+            },
+        }
     }
 
     /// The tessellation density this solid meshes at by default (what

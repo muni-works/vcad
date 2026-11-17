@@ -27,7 +27,7 @@ pub mod probe;
 pub mod query;
 mod render_bake;
 
-pub use clearance::{mesh_clearance, ClearanceResult};
+pub use clearance::{mesh_clearance, mesh_surface_distance, ClearanceResult, MeshInsideTester};
 pub use creased_normals::{
     apply_creased_normals, apply_default_creased_normals, DEFAULT_CREASE_ANGLE_RAD,
 };
@@ -8425,6 +8425,9 @@ fn tessellate_revolved_trimmed(
     let blend_neighbour = std::iter::once(face.outer_loop)
         .chain(face.inner_loops.iter().copied())
         .flat_map(|l| topo.loop_half_edges(l))
+        // `get`, not indexing: a boolean can leave a twin pointing at a
+        // half-edge or loop it has since removed, and a lookup that only
+        // asks "is my neighbour a blend" must not panic on that.
         .filter_map(|he| topo.half_edges[he].twin)
         .filter_map(|tw| topo.half_edges.get(tw)?.loop_id)
         .filter_map(|l| topo.loops.get(l)?.face)

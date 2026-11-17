@@ -7,6 +7,12 @@
 //! `VCAD_APP_PID` (an error if that pid is gone — never a silent fallback) →
 //! the instance whose document matches `VCAD_APP_DOCUMENT` → the newest, with a
 //! warning naming the others.
+//!
+//! Dev builds (`bundle_id` `io.vcad.dev.*`, what `bundle.sh` stamps on every
+//! non-release bundle) are only picked when `VCAD_APP_URL`/`VCAD_APP_PID` names
+//! them or nothing else is running: a screenshot harness's throwaway bundle,
+//! launched later and killed a minute after, must not win "newest" and strand
+//! a real session.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
@@ -38,7 +44,14 @@ pub struct InstanceRecord {
     /// Open document's path.
     #[serde(default)]
     pub document_path: Option<String>,
+    /// CFBundleIdentifier (`io.vcad.m0` release, `io.vcad.dev.<checkout>`
+    /// dev). Absent in records from builds before it was stamped.
+    #[serde(default)]
+    pub bundle_id: Option<String>,
 }
+
+/// Bundle-id prefix of `bundle.sh` dev builds.
+pub const DEV_BUNDLE_PREFIX: &str = "io.vcad.dev.";
 
 impl InstanceRecord {
     /// The MCP endpoint.
@@ -55,7 +68,17 @@ impl InstanceRecord {
             .clone()
             .or_else(|| self.document_path.clone())
             .unwrap_or_else(|| "no document".into());
-        format!("pid {} ({doc})", self.pid)
+        match self.bundle_id.as_deref().filter(|_| self.is_dev()) {
+            Some(b) => format!("pid {} ({doc}, dev build {b})", self.pid),
+            None => format!("pid {} ({doc})", self.pid),
+        }
+    }
+
+    /// A `bundle.sh` dev build (`io.vcad.dev.*`).
+    pub fn is_dev(&self) -> bool {
+        self.bundle_id
+            .as_deref()
+            .is_some_and(|b| b.starts_with(DEV_BUNDLE_PREFIX))
     }
 }
 
@@ -196,39 +219,56 @@ pub fn select(
             )),
         };
     }
-    let Some(newest) = instances.first() else {
+    if instances.is_empty() {
         return Err("no running vcad.app found (~/.vcad/instances is empty)".into());
+    }
+    // Dev builds only by name (above) or when nothing else is running.
+    let (real, dev): (Vec<&InstanceRecord>, Vec<&InstanceRecord>) =
+        instances.iter().partition(|r| !r.is_dev());
+    let only_dev = real.is_empty();
+    let pool = if only_dev { &dev } else { &real };
+    let list = |rs: &[&InstanceRecord]| {
+        rs.iter()
+            .map(|r| r.describe())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let pick = |r: &InstanceRecord, warning: Option<String>| Selection {
+        url: r.url(),
+        instance: Some(r.clone()),
+        warning,
     };
     if let Some(wanted) = env("VCAD_APP_DOCUMENT").filter(|d| !d.is_empty()) {
-        if let Some(r) = instances.iter().find(|r| {
+        if let Some(r) = pool.iter().find(|r| {
             r.document_path
                 .as_deref()
                 .is_some_and(|p| same_path(p, &wanted))
         }) {
-            return Ok(Selection {
-                url: r.url(),
-                instance: Some(r.clone()),
-                warning: None,
-            });
+            return Ok(pick(r, None));
         }
     }
-    let warning = (instances.len() > 1).then(|| {
-        format!(
+    let newest = pool[0];
+    let mut notes = Vec::new();
+    if pool.len() > 1 {
+        notes.push(format!(
             "{} vcad.app instances are running; using the newest, {}. Others: {}. Set VCAD_APP_PID to choose.",
-            instances.len(),
+            pool.len(),
             newest.describe(),
-            instances[1..]
-                .iter()
-                .map(InstanceRecord::describe)
-                .collect::<Vec<_>>()
-                .join(", ")
-        )
-    });
-    Ok(Selection {
-        url: newest.url(),
-        instance: Some(newest.clone()),
-        warning,
-    })
+            list(&pool[1..])
+        ));
+    }
+    if only_dev {
+        notes.push(format!(
+            "Only dev builds ({DEV_BUNDLE_PREFIX}*) are running; using {}. Set VCAD_APP_PID to pin one.",
+            newest.describe()
+        ));
+    } else if !dev.is_empty() {
+        notes.push(format!(
+            "Skipped dev build(s) {}; set VCAD_APP_PID to use one.",
+            list(&dev)
+        ));
+    }
+    Ok(pick(newest, (!notes.is_empty()).then(|| notes.join(" "))))
 }
 
 /// Select from the real environment and `~/.vcad/instances`.
@@ -361,7 +401,13 @@ mod tests {
             started: Some(started.into()),
             document_name: doc.map(|d| d.rsplit('/').next().unwrap().to_string()),
             document_path: doc.map(str::to_string),
+            bundle_id: None,
         }
+    }
+
+    fn dev(mut r: InstanceRecord, bundle: &str) -> InstanceRecord {
+        r.bundle_id = Some(bundle.into());
+        r
     }
 
     #[test]
@@ -390,6 +436,52 @@ mod tests {
         assert_eq!(s.url, "http://127.0.0.1:1/mcp");
         assert!(select(&[], none).is_err());
         assert!(select(&[a], none).unwrap().warning.is_none());
+    }
+
+    #[test]
+    fn dev_builds_need_naming() {
+        let real = dev(
+            rec(1, "2026-11-16T09:00:00Z", Some("/tmp/a.vcad")),
+            "io.vcad.m0",
+        );
+        let old = rec(2, "2026-11-16T08:00:00Z", None); // pre-bundle_id build: not dev
+        let shots = dev(
+            rec(3, "2026-11-16T10:00:00Z", Some("/tmp/a.vcad")),
+            "io.vcad.dev.app-sim-screens-fbe447",
+        );
+        let none = |_: &str| None;
+        // The newer dev build loses to the real app, even on a document match.
+        let s = select(&[shots.clone(), real.clone()], none).unwrap();
+        assert_eq!(s.instance, Some(real.clone()));
+        let w = s.warning.unwrap();
+        assert!(w.contains("Skipped dev build(s) pid 3"), "{w}");
+        assert!(w.contains("io.vcad.dev.app-sim-screens-fbe447"), "{w}");
+        let doc = |k: &str| (k == "VCAD_APP_DOCUMENT").then(|| "/tmp/a.vcad".to_string());
+        assert_eq!(
+            select(&[shots.clone(), real.clone()], doc)
+                .unwrap()
+                .instance,
+            Some(real.clone())
+        );
+        // A record without a bundle id still beats a dev build.
+        let s = select(&[shots.clone(), old.clone()], none).unwrap();
+        assert_eq!(s.instance, Some(old));
+        // Named explicitly, a dev build is used.
+        let s = select(&[shots.clone(), real.clone()], |k| {
+            (k == "VCAD_APP_PID").then(|| "3".into())
+        })
+        .unwrap();
+        assert_eq!(s.instance, Some(shots.clone()));
+        assert!(s.warning.is_none());
+        let s = select(&[shots.clone(), real], |k| {
+            (k == "VCAD_APP_URL").then(|| "http://127.0.0.1:47003/mcp".into())
+        })
+        .unwrap();
+        assert_eq!(s.instance, Some(shots.clone()));
+        // Nothing else running: the dev build, with a warning.
+        let s = select(std::slice::from_ref(&shots), none).unwrap();
+        assert_eq!(s.instance, Some(shots));
+        assert!(s.warning.unwrap().contains("Only dev builds"));
     }
 
     #[test]

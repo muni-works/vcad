@@ -608,6 +608,51 @@ mod tests {
         }
     }
 
+    /// A Ø`2·r_shaft` shaft (root 3) through a 30 × 30 × 20 block with a
+    /// Ø16 through bore (root 7), both on Z, with a classic (non-fit)
+    /// clearance assertion of `min_mm`.
+    fn shaft_bore_doc(r_shaft: f64, min_mm: f64) -> vcad_ir::Document {
+        serde_json::from_value(json!({
+            "version": "0.1",
+            "nodes": {
+                "1": {"id": 1, "name": null, "op": {"type": "Cylinder", "radius": r_shaft, "height": 30, "segments": 0}},
+                "2": {"id": 2, "name": null, "op": {"type": "Translate", "child": 1, "offset": {"x": 0, "y": 0, "z": -5}}},
+                "3": {"id": 3, "name": "shaft", "op": {"type": "Translate", "child": 2, "offset": {"x": 0, "y": 0, "z": 0}}},
+                "4": {"id": 4, "name": null, "op": {"type": "Cube", "size": {"x": 30, "y": 30, "z": 20}}},
+                "5": {"id": 5, "name": null, "op": {"type": "Translate", "child": 4, "offset": {"x": -15, "y": -15, "z": 0}}},
+                "6": {"id": 6, "name": null, "op": {"type": "Cylinder", "radius": 8.0, "height": 40, "segments": 0}},
+                "8": {"id": 8, "name": null, "op": {"type": "Translate", "child": 6, "offset": {"x": 0, "y": 0, "z": -10}}},
+                "7": {"id": 7, "name": "hub", "op": {"type": "Difference", "left": 5, "right": 8}}
+            },
+            "materials": {},
+            "part_materials": {},
+            "roots": [{"root": 3, "material": "default"}, {"root": 7, "material": "default"}],
+            "clearance_specs": [{"label": "running-fit", "group_a": ["shaft"], "group_b": ["hub"], "min_mm": min_mm}]
+        }))
+        .unwrap()
+    }
+
+    /// Snowthrower field report: a shaft 0.02 mm under the bore radius must
+    /// read as the exact +0.02 mm running fit — never as an interference,
+    /// and not as the chord-shortened mesh distance (which fails a 0.02 mm
+    /// assertion it actually meets).
+    #[test]
+    fn coaxial_running_fit_reads_the_exact_radial_gap() {
+        let r = verify(&shaft_bore_doc(7.98, 0.02)).unwrap();
+        assert_eq!(r.status, Some(ReceiptStatus::Holds), "{r:#?}");
+        let c = &r.checks[0];
+        assert!((c.measured_mm.unwrap() - 0.02).abs() < 1e-9, "{c:?}");
+        // Negative control: 0.02 mm oversize interferes, with the exact depth.
+        let r = verify(&shaft_bore_doc(8.02, 0.0)).unwrap();
+        assert_eq!(r.status, Some(ReceiptStatus::Violated), "{r:#?}");
+        let c = &r.checks[0];
+        assert!((c.measured_mm.unwrap() + 0.02).abs() < 1e-9, "{c:?}");
+        assert!(
+            c.reason.as_ref().unwrap().contains("interpenetrate"),
+            "{c:?}"
+        );
+    }
+
     #[test]
     fn press_fit_out_of_band_is_violated_both_ways() {
         // Too tight: 0.2 mm interference < −0.15.
