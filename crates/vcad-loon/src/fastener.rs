@@ -582,15 +582,18 @@ pub fn tap_drill_dia(size: &str) -> f64 {
     dims::metric_major_dia(size) - coarse_pitch(size)
 }
 
-/// Rotation (Euler XYZ degrees, in `CsgOp::Rotate`'s convention) that takes
-/// local `+Z` onto `axis`.
+/// Rotation (Euler XYZ degrees) that takes local `+Z` onto `axis`.
 ///
-/// `CsgOp::Rotate` builds `R = Rx(a)·Ry(b)·Rz(c)` (Z acts on the part first,
-/// X last). `Rz` leaves `+Z` alone, so `R·ẑ = Rx(a)·Ry(b)·ẑ =
-/// (sin b, −sin a·cos b, cos a·cos b)`: `b = asin(x)`, `a = atan2(−y, z)`,
-/// `c = 0`. For axis-aligned targets this is the same single-axis turn the
-/// old Rodrigues decomposition gave; for oblique axes that one assumed
-/// `Rz·Ry·Rx` and pointed the fastener the wrong way.
+/// The decomposition below reads as `R = Rz·Ry·Rx`, the opposite of the
+/// `Rx·Ry·Rz` that `CsgOp::Rotate` builds — and it is still right for the
+/// axis. For the minimal (Rodrigues) rotation the third row of `m` is
+/// `(−x, −y, z)`, so `a = atan2(−y, z)` and `b = asin(x)`: exactly the
+/// `Rx(a)·Ry(b)·ẑ = (x, y, z)` solution of the kernel's order (`Rz` fixes ẑ).
+/// Only the twist `c` about the axis differs from `m`, which clocks the
+/// head but never moves it. `crates/vcad-eval/tests/rotate_convention.rs`
+/// checks this through the evaluator. A helper that needs a full frame,
+/// not just an axis, must decompose as `Rx·Ry·Rz` (see
+/// `vcad_parts::vacuum::mat_to_euler_xyz_deg`).
 ///
 /// This is the piece that used to be two hand-written rotates per bolt.
 pub fn axis_to_euler_xyz(axis: Vec3) -> Vec3 {
@@ -599,15 +602,44 @@ pub fn axis_to_euler_xyz(axis: Vec3) -> Vec3 {
         return Vec3::new(0.0, 0.0, 0.0);
     }
     let (x, y, z) = (axis.x / n, axis.y / n, axis.z / n);
-    let b = x.clamp(-1.0, 1.0).asin();
-    // At b = ±90° (axis = ±X) y and z are both zero: a is free, take 0.
-    let a = if y.abs() < 1e-12 && z.abs() < 1e-12 {
-        0.0
+
+    // Rodrigues rotation taking (0,0,1) → (x,y,z): axis v = ẑ × d, angle from
+    // c = ẑ · d.
+    let (vx, vy, vz) = (-y, x, 0.0);
+    let s = (vx * vx + vy * vy + vz * vz).sqrt();
+    let c = z;
+    let m = if s < 1e-12 {
+        if c > 0.0 {
+            // Already aligned.
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        } else {
+            // Antiparallel: 180° about X.
+            [[1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, -1.0]]
+        }
     } else {
-        // `0.0 - y`, not `-y`: keeps −Z at a = +180° rather than −180°.
-        (0.0 - y).atan2(z)
+        let (kx, ky, kz) = (vx / s, vy / s, vz / s);
+        let t = 1.0 - c;
+        [
+            [t * kx * kx + c, t * kx * ky - s * kz, t * kx * kz + s * ky],
+            [t * kx * ky + s * kz, t * ky * ky + c, t * ky * kz - s * kx],
+            [t * kx * kz - s * ky, t * ky * kz + s * kx, t * kz * kz + c],
+        ]
     };
-    Vec3::new(a.to_degrees(), b.to_degrees(), 0.0)
+
+    // Decompose R = Rz(c)·Ry(b)·Rx(a) — the order CsgOp::Rotate applies.
+    let sy = -m[2][0];
+    let (ax, ay, az) = if sy.abs() > 1.0 - 1e-9 {
+        // Gimbal lock: pitch is ±90°, fold roll into yaw.
+        (0.0_f64, sy.clamp(-1.0, 1.0).asin(), -m[0][1].atan2(m[1][1]))
+    } else {
+        (
+            m[2][1].atan2(m[2][2]),
+            sy.clamp(-1.0, 1.0).asin(),
+            m[1][0].atan2(m[0][0]),
+        )
+    };
+
+    Vec3::new(ax.to_degrees(), ay.to_degrees(), az.to_degrees())
 }
 
 #[cfg(test)]

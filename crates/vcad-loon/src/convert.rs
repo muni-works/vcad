@@ -1009,17 +1009,16 @@ fn kicad_symbol_pins(lib_id: &str) -> Result<Vec<ecad::SchematicPin>, String> {
         .collect())
 }
 
-/// `R·p` for `R = Rx·Ry·Rz` (degrees) — the matrix `CsgOp::Rotate` builds,
-/// so Z acts on the point first and X last.
+/// Apply an Euler XYZ rotation (degrees, X then Y then Z) to a point.
 fn rotate_xyz(angles: Vec3, p: Vec3) -> Vec3 {
     let (a, b, c) = (
         angles.x.to_radians(),
         angles.y.to_radians(),
         angles.z.to_radians(),
     );
-    let (x, y) = (p.x * c.cos() - p.y * c.sin(), p.x * c.sin() + p.y * c.cos());
-    let (x, z) = (x * b.cos() + p.z * b.sin(), -x * b.sin() + p.z * b.cos());
-    let (y, z) = (y * a.cos() - z * a.sin(), y * a.sin() + z * a.cos());
+    let (y, z) = (p.y * a.cos() - p.z * a.sin(), p.y * a.sin() + p.z * a.cos());
+    let (x, z) = (p.x * b.cos() + z * b.sin(), -p.x * b.sin() + z * b.cos());
+    let (x, y) = (x * c.cos() - y * c.sin(), x * c.sin() + y * c.cos());
     Vec3::new(x, y, z)
 }
 
@@ -3232,15 +3231,14 @@ fn port_names(ports: &[vcad_parts::PortInfo]) -> String {
         .join(", ")
 }
 
-/// R = Rx·Ry·Rz for XYZ Euler angles in degrees — the matrix `CsgOp::Rotate`
-/// builds (Z acts on the part first, X last).
+/// R = Rz·Ry·Rx for XYZ Euler angles in degrees (the `CsgOp::Rotate` order).
 fn euler_xyz_matrix(e: Vec3) -> [[f64; 3]; 3] {
     let (a, b, c) = (e.x.to_radians(), e.y.to_radians(), e.z.to_radians());
     let (sa, ca, sb, cb, sc, cc) = (a.sin(), a.cos(), b.sin(), b.cos(), c.sin(), c.cos());
     [
-        [cb * cc, -cb * sc, sb],
-        [ca * sc + sa * sb * cc, ca * cc - sa * sb * sc, -sa * cb],
-        [sa * sc - ca * sb * cc, sa * cc + ca * sb * sc, ca * cb],
+        [cc * cb, cc * sb * sa - sc * ca, cc * sb * ca + sc * sa],
+        [sc * cb, sc * sb * sa + cc * ca, sc * sb * ca - cc * sa],
+        [-sb, cb * sa, cb * ca],
     ]
 }
 

@@ -97,6 +97,7 @@ fn clearance_hole_lies_on_an_oblique_axis() {
 /// normal to the axis and every bolt points along it, so the whole ring
 /// projects onto the axis exactly like the same ring about +Z projects onto Z.
 /// A ring plane and bolt axis that disagree (one rotated by each convention)
+/// would
 /// smear the projection by the 30 mm ring radius.
 #[test]
 fn bolt_circle_about_an_oblique_axis_matches_the_z_ring() {
