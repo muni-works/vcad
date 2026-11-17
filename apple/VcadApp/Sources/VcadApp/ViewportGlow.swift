@@ -30,12 +30,12 @@ enum ViewportGlow {
     /// Pixels brighter than this (per channel, after RealityKit's tone map)
     /// feed the halo. Emissive surfaces saturate past it; lit plastic and
     /// metal highlights mostly do not.
-    static let threshold: CGFloat = 0.82
+    nonisolated static let threshold: CGFloat = 0.82
     /// Halo gain on the thresholded excess.
-    static let gain: CGFloat = 5.0
+    nonisolated static let gain: CGFloat = 5.0
     /// The two blur scales, in drawable pixels (retina): a tight glow and a
     /// wide halo.
-    static let sigmas: [Double] = [6, 24]
+    nonisolated static let sigmas: [Double] = [6, 24]
 
     /// Apply a resolved material's emission to a RealityKit material, and
     /// remember it under `entity` so hover/selection lifts can restore it.
