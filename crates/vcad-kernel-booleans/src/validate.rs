@@ -456,7 +456,7 @@ pub(crate) fn volume_disagrees_grossly(
     // Coarse pass: a 12³ cell-centred grid. Cheap, and decisive for the
     // wholesale failures this check exists for (a missing pocket, an
     // emptied result).
-    let (predicted, cell) = sampled_volume(&idx_a, &idx_b, op, min, span, PROBES_PER_AXIS, false);
+    let (predicted, cell) = sampled_volume(&idx_a, &idx_b, op, min, span, PROBES_PER_AXIS);
     // Absolute slack of a few cells: the estimator cannot resolve a
     // prediction finer than its own cell, so tiny results must not trip on
     // quantisation alone.
@@ -485,19 +485,7 @@ pub(crate) fn volume_disagrees_grossly(
     // volumes are exact, so only the overlap needs estimating — and that
     // lives in the intersection of the two boxes, where the same probe
     // budget resolves it far more finely.
-    if overlap_prediction_agrees(got, mesh_a, mesh_b, &idx_a, &idx_b, op) {
-        return false;
-    }
-    // Third opinion, against aliasing rather than resolution. A regular grid aliases against thin
-    // axis-aligned walls: a DN40 tee (1.5 mm tube walls) minus its bores
-    // read 105.5 cm³ predicted against a correct 128.1 cm³ B-rep — 18% off,
-    // so a right analytic result went to the mesh fallback and came back as
-    // 108k triangles of soup, 10× slower. A finer, jittered grid has no
-    // such bias. It runs only when the coarse pass has already condemned,
-    // so it can only acquit, never convict.
-    let (fine, fine_cell) =
-        sampled_volume(&idx_a, &idx_b, op, min, span, CONFIRM_PROBES_PER_AXIS, true);
-    disagrees(fine, fine_cell)
+    !overlap_prediction_agrees(got, mesh_a, mesh_b, &idx_a, &idx_b, op)
 }
 
 /// Does `got` agree with the volume predicted from the operands' exact mesh
@@ -566,12 +554,8 @@ fn overlap_prediction_agrees(
     (got - predicted).abs() <= slack
 }
 
-/// Probes per axis for the confirming pass of [`volume_disagrees_grossly`].
-const CONFIRM_PROBES_PER_AXIS: usize = 32;
-
 /// Volume the operation's set semantics predict from `n³` point probes of
-/// the operands over the box `min + [0, span]`: cell-centred, or jittered
-/// within each cell (deterministically) when `jitter` is set. Returns the
+/// the operands over the box `min + [0, span]`, cell-centred. Returns the
 /// prediction and the cell volume.
 fn sampled_volume(
     idx_a: &MeshRayIndex,
@@ -580,38 +564,18 @@ fn sampled_volume(
     min: [f64; 3],
     span: [f64; 3],
     n: usize,
-    jitter: bool,
 ) -> (f64, f64) {
     let expect = |in_a: bool, in_b: bool| match op {
         BooleanOp::Union => in_a || in_b,
         BooleanOp::Difference => in_a && !in_b,
         BooleanOp::Intersection => in_a && in_b,
     };
-    // Low-discrepancy offsets in [0, 1): the fractional parts of multiples
-    // of the plastic-number reciprocals (R3 sequence), indexed by cell.
-    let r3 = |k: usize| -> [f64; 3] {
-        const A: [f64; 3] = [
-            0.819_172_513_396_164_4,
-            0.671_043_606_703_789_2,
-            0.549_700_477_901_970_9,
-        ];
-        let k = k as f64 + 1.0;
-        [
-            (0.5 + A[0] * k).fract(),
-            (0.5 + A[1] * k).fract(),
-            (0.5 + A[2] * k).fract(),
-        ]
-    };
     let mut inside = 0usize;
-    let mut k = 0usize;
     for i in 0..n {
         for j in 0..n {
             for l in 0..n {
-                let o = if jitter { r3(k) } else { [0.5; 3] };
-                k += 1;
-                let at = |axis: usize, t: usize| {
-                    min[axis] + span[axis] * (t as f64 + o[axis]) / n as f64
-                };
+                let at =
+                    |axis: usize, t: usize| min[axis] + span[axis] * (t as f64 + 0.5) / n as f64;
                 let p = Point3::new(at(0, i), at(1, j), at(2, l));
                 if expect(idx_a.contains(&p), idx_b.contains(&p)) {
                     inside += 1;
@@ -694,7 +658,8 @@ mod tests {
     /// cell-centred grid over a 0.8 mm wall on r = 20 has no probe inside
     /// the wall at all and predicts an empty result (the same aliasing read
     /// a correct DN40 tee 18% light and sent it to the mesh fallback); the
-    /// confirming jittered pass acquits it.
+    /// overlap oracle, judging only the overlap from exact operand volumes,
+    /// acquits it.
     #[test]
     fn thin_walled_tube_is_not_condemned_by_grid_aliasing() {
         let a = make_cylinder(20.0, 100.0, SEGMENTS);
@@ -721,7 +686,6 @@ mod tests {
             min,
             span,
             PROBES_PER_AXIS,
-            false,
         );
         assert!(
             coarse < 0.5 * truth,
