@@ -4873,13 +4873,18 @@ fn tessellate_ruled_two_chain(
         unwrapped.push(prev + du);
     }
     const RUN_EPS: f64 = 1e-9;
+    // Steps this small carry no direction: a vertex a neighbouring face
+    // T-inserted sits up to chord sag off this cylinder, a few µrad off the
+    // column it shares (mirrors `SPIKE_U` in vcad-kernel-booleans' band
+    // parser, which must accept the same loops).
+    const SPIKE_U: f64 = 1e-5;
     // Run boundaries: indices where the direction of travel flips.
     let mut dirs: Vec<i8> = Vec::with_capacity(l - 1);
     for i in 0..l - 1 {
         let du = unwrapped[i + 1] - unwrapped[i];
-        dirs.push(if du > RUN_EPS {
+        dirs.push(if du > SPIKE_U {
             1
-        } else if du < -RUN_EPS {
+        } else if du < -SPIKE_U {
             -1
         } else {
             0
@@ -4910,7 +4915,7 @@ fn tessellate_ruled_two_chain(
     // second chain; walk the boundary back over them so both chains keep
     // their full angular range.
     let mut split_at = flips[0] + 1; // first vertex of the second run
-    while split_at > 1 && (unwrapped[split_at - 1] - unwrapped[split_at - 2]).abs() <= RUN_EPS {
+    while split_at > 1 && (unwrapped[split_at - 1] - unwrapped[split_at - 2]).abs() <= SPIKE_U {
         split_at -= 1;
     }
     let chain1: Vec<(f64, f64)> = (0..split_at).map(|i| (unwrapped[i], uvs[i].1)).collect();
@@ -5125,8 +5130,14 @@ fn tessellate_ruled_two_chain(
     }
 
     // Orient the strip so triangle normals agree with the (possibly
-    // reversed) outward radial direction: check one non-degenerate
-    // triangle and flip the whole strip if needed.
+    // reversed) outward radial direction, by an area-weighted vote over
+    // EVERY triangle. Judging by the first non-degenerate triangle alone
+    // flipped whole faces: a strip whose rail ends in a slanted connector
+    // and a vertical step (the pinch at a crossing cylinder's saddle
+    // u-extreme) opens with a folded sliver whose normal points inward, and
+    // the strip below a tee's saddle rendered inside-out — every edge open,
+    // the union a third of its volume light.
+    let mut vote = 0.0f64;
     for t in mesh.indices.chunks(3) {
         let p = |i: u32| {
             let b = i as usize * 3;
@@ -5137,25 +5148,20 @@ fn tessellate_ruled_two_chain(
             )
         };
         let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
-        let n = (b - a).cross(c - a);
-        if n.norm() < 1e-12 {
-            continue;
-        }
         let centroid = Point3::new(
             (a.x + b.x + c.x) / 3.0,
             (a.y + b.y + c.y) / 3.0,
             (a.z + b.z + c.z) / 3.0,
         );
-        let mut outward = radial_normal(&centroid);
-        if reversed {
-            outward = -outward;
+        vote += (b - a).cross(c - a).dot(radial_normal(&centroid));
+    }
+    if reversed {
+        vote = -vote;
+    }
+    if vote < 0.0 {
+        for tri in mesh.indices.chunks_mut(3) {
+            tri.swap(1, 2);
         }
-        if n.dot(outward) < 0.0 {
-            for tri in mesh.indices.chunks_mut(3) {
-                tri.swap(1, 2);
-            }
-        }
-        break;
     }
 
     Some(mesh)

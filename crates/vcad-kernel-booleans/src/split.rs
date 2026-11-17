@@ -6702,7 +6702,9 @@ pub fn split_cylindrical_face(
             // the band machinery.
             match crate::cyl_band::split_cylindrical_face_by_sampled(brep, face_id, points)
                 .or_else(|| crate::cyl_band::split_cylindrical_face_by_patch(brep, face_id, points))
-            {
+                .or_else(|| {
+                    crate::cyl_band::split_cylindrical_face_by_open_loop(brep, face_id, points)
+                }) {
                 Some(result) => result,
                 None => {
                     // The curve is not a closed single-valued profile (e.g.
