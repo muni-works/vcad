@@ -132,6 +132,26 @@ pub fn mesh_surface_distance(a: &TriangleMesh, b: &TriangleMesh) -> Option<Clear
     })
 }
 
+/// Inside/outside tests for many points against one closed mesh, sharing a
+/// single BVH build (the same hardened parity vote [`mesh_clearance`] uses).
+pub struct MeshInsideTester {
+    bvh: Option<TriBvh>,
+}
+
+impl MeshInsideTester {
+    /// Build the tester. An empty mesh contains nothing.
+    pub fn new(mesh: &TriangleMesh) -> Self {
+        Self {
+            bvh: TriBvh::build(mesh),
+        }
+    }
+
+    /// Is `p` strictly inside the closed mesh?
+    pub fn contains(&self, p: [f64; 3]) -> bool {
+        self.bvh.as_ref().is_some_and(|b| point_in_mesh(p, b))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Triangle BVH
 // ---------------------------------------------------------------------------

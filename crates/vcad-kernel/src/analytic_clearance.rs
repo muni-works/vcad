@@ -2,10 +2,9 @@
 //!
 //! [`vcad_kernel_tessellate::mesh_clearance`] measures polygons, not
 //! surfaces: a cylinder of radius `r` meshed at `n` segments has chords up
-//! to `r·(1 − cos(π/n))` inside its true surface. A 7.98 mm-radius shaft in
-//! an 8.00 mm bore (true radial gap +0.02 mm) therefore meshes as an
-//! interference of ≈ −0.018 mm — the bore's chords cut into the shaft — and a
-//! gap smaller than the chord sag reads as a collision.
+//! to `r·(1 − cos(π/n))` inside its true surface, so a running fit tighter
+//! than the chord sag can mesh as an interference, and a fit sitting exactly
+//! on its required clearance fails by the chord error.
 //!
 //! For two BRep solids this module recognises when the mesh's witness pair
 //! sits on two *parallel* cylinders (shaft in bore — coaxial or offset — or
@@ -16,14 +15,22 @@
 //! - two shafts, axes `e` apart: `e − r₁ − r₂`
 //!
 //! Fail-closed rules — the analytic number is used only when it provably
-//! explains the mesh result:
-//! 1. both witness points lie within the chord-sag band of their cylinder
-//!    (radially, and axially inside the faces' common span);
-//! 2. the mesh distance is within the combined sag band of the closed form
+//! explains the mesh result. Each cylinder's *band* is the measured radial
+//! deviation of the kernel's own tessellation of that surface (× 1.5), so a
+//! sag-adaptive boolean bore gets a tight band and a 32-gon primitive an
+//! honest one; a caller mesh coarser than the kernel's simply never matches.
+//! 1. both witness points lie within their cylinder's band (radially, and
+//!    axially inside the face's span);
+//! 2. the mesh distance is within the two bands of the closed form
 //!    (otherwise something else produced the mesh number);
-//! 3. with those cylinder faces left out, the remaining surfaces are no
-//!    closer than the closed form — so a shoulder, key or flange that
-//!    really is nearer (or crossing) still wins.
+//! 3. nothing else is nearer:
+//!    a. with those cylinder surfaces left out, the remaining surfaces are
+//!       neither crossing nor closer than the closed form (a collar sunk into
+//!       the block's face, a key, a flange);
+//!    b. where one cylinder runs past the other's end, its surface just past
+//!       that end is outside the other solid (a shaft driven through a blind
+//!       bore's floor, a shoulder inside the bore) — the cylinder faces
+//!       themselves can penetrate, and 3a cannot see that.
 //!
 //! A negative closed form stays an interference (`intersecting`), with the
 //! exact radial depth.
@@ -31,7 +38,7 @@
 use vcad_kernel_geom::CylinderSurface;
 use vcad_kernel_primitives::BRepSolid;
 use vcad_kernel_tessellate::{
-    mesh_surface_distance, tessellate_brep, ClearanceResult, TriangleMesh,
+    mesh_surface_distance, tessellate_brep, ClearanceResult, MeshInsideTester, TriangleMesh,
 };
 use vcad_kernel_topo::Orientation;
 
@@ -41,10 +48,14 @@ type V3 = [f64; 3];
 const PARALLEL_RAD: f64 = 1e-7;
 /// Cylinders are "the same surface" within this, mm.
 const SAME_SURFACE_MM: f64 = 1e-6;
-/// Safety factor on the theoretical chord sag.
-const SAG_SLACK: f64 = 1.5;
+/// Safety factor on the measured tessellation deviation.
+const BAND_SLACK: f64 = 1.5;
 /// Absolute floor on every band, mm (f32 mesh coordinates).
 const BAND_FLOOR_MM: f64 = 1e-4;
+/// Closed forms within this of zero are contact, not interference.
+const CONTACT_EPS_MM: f64 = 1e-9;
+/// Probe angles around a cylinder for rule 3b.
+const PROBE_ANGLES: usize = 16;
 
 /// How a clearance number was obtained.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,11 +85,12 @@ pub struct RefinedClearance {
     pub basis: ClearanceBasis,
     /// The mesh distance before correction, mm.
     pub mesh_distance: f64,
-    /// Combined chord-sag band of the cylinder pair, mm (analytic only):
+    /// Combined tessellation band of the cylinder pair, mm (analytic only):
     /// how far the mesh number could stray from the true surfaces.
     pub chord_band_mm: Option<f64>,
 }
 
+/// One cylindrical face.
 #[derive(Debug, Clone, Copy)]
 struct Cyl {
     /// Ordinal of the face in the solid's outer shell (= mesh `face_ids`).
@@ -129,8 +141,101 @@ fn cylinders(brep: &BRepSolid) -> Vec<Cyl> {
     out
 }
 
-fn sag(radius: f64, segments: u32) -> f64 {
-    radius * (1.0 - (std::f64::consts::PI / f64::from(segments.max(3))).cos())
+/// A cylinder *surface*: every face of a solid lying on one cylinder (a
+/// bore is often split into halves), with the union of their axial spans.
+#[derive(Debug, Clone)]
+struct CylSurface {
+    c: Cyl,
+    ordinals: Vec<u32>,
+    /// Axial span in `c`'s frame.
+    span: (f64, f64),
+    /// Measured tessellation band, mm.
+    band: f64,
+}
+
+fn same_surface(a: &Cyl, b: &Cyl) -> bool {
+    a.inward == b.inward
+        && line_angle(a.axis, b.axis) <= PARALLEL_RAD
+        && (a.radius - b.radius).abs() <= SAME_SURFACE_MM
+        && radial_axial(a, b.origin).0 <= SAME_SURFACE_MM
+}
+
+fn surface_of(cyls: &[Cyl], seed: &Cyl, mesh: &TriangleMesh) -> CylSurface {
+    let members: Vec<&Cyl> = cyls.iter().filter(|c| same_surface(c, seed)).collect();
+    let mut span = (f64::INFINITY, f64::NEG_INFINITY);
+    for m in &members {
+        let shift = dot(sub(m.origin, seed.origin), seed.axis);
+        let s = dot(m.axis, seed.axis).signum();
+        for z in [m.z.0 * s + shift, m.z.1 * s + shift] {
+            span.0 = span.0.min(z);
+            span.1 = span.1.max(z);
+        }
+    }
+    let ordinals: Vec<u32> = members.iter().map(|m| m.ordinal).collect();
+    CylSurface {
+        c: *seed,
+        band: BAND_SLACK * tessellation_deviation(mesh, &ordinals, seed, span) + BAND_FLOOR_MM,
+        ordinals,
+        span,
+    }
+}
+
+/// Largest radial deviation from `c` of the mesh's triangles on `ordinals`,
+/// sampled at vertices, edge midpoints and centroids (where chords sag) —
+/// plus the rim chords of *neighbouring* faces: an end face's or a
+/// channel's edge along the cylinder can be tessellated more coarsely than
+/// the cylinder face itself, and a witness lands on it just as often.
+fn tessellation_deviation(mesh: &TriangleMesh, ordinals: &[u32], c: &Cyl, span: (f64, f64)) -> f64 {
+    if mesh.face_ids.len() * 3 != mesh.indices.len() {
+        return f64::INFINITY; // untagged mesh: no way to measure, never match
+    }
+    let v = |i: u32| {
+        let k = 3 * i as usize;
+        [
+            f64::from(mesh.vertices[k]),
+            f64::from(mesh.vertices[k + 1]),
+            f64::from(mesh.vertices[k + 2]),
+        ]
+    };
+    // A vertex "on" the cylinder: exact up to f32 storage.
+    let rim_tol = 1e-4 + 1e-6 * c.radius;
+    // Sag of a chord over 22.5° of arc.
+    let max_rim_sag = c.radius * (1.0 - (std::f64::consts::PI / 16.0).cos());
+    let on_cyl = |p: V3| {
+        let (r, t) = radial_axial(c, p);
+        (r - c.radius).abs() <= rim_tol && t >= span.0 - rim_tol && t <= span.1 + rim_tol
+    };
+    let mut dev: f64 = 0.0;
+    for (t, tri) in mesh.indices.chunks_exact(3).enumerate() {
+        let (p, q, r) = (v(tri[0]), v(tri[1]), v(tri[2]));
+        if !ordinals.contains(&mesh.face_ids[t]) {
+            for (a, b) in [(p, q), (q, r), (r, p)] {
+                if on_cyl(a) && on_cyl(b) {
+                    let d = (radial_axial(c, scale(add(a, b), 0.5)).0 - c.radius).abs();
+                    // A rim chord spans a small arc; an edge across a flat
+                    // (both ends on the cylinder, midpoint deep inside) is
+                    // not a chord of this surface.
+                    if d <= max_rim_sag {
+                        dev = dev.max(d);
+                    }
+                }
+            }
+            continue;
+        }
+        let samples = [
+            p,
+            q,
+            r,
+            scale(add(p, q), 0.5),
+            scale(add(q, r), 0.5),
+            scale(add(r, p), 0.5),
+            scale(add(add(p, q), r), 1.0 / 3.0),
+        ];
+        for s in samples {
+            dev = dev.max((radial_axial(c, s).0 - c.radius).abs());
+        }
+    }
+    dev
 }
 
 /// Radial distance of `p` from the cylinder's axis, and its axial coordinate.
@@ -154,109 +259,80 @@ fn project(c: &Cyl, p: V3) -> V3 {
 
 /// Closed-form signed gap between two parallel cylinders, or `None` for a
 /// configuration without one (two bores, shaft axis outside the bore).
+/// Rounded to the nanometre: `8.0 − 7.98` is `0.019999999999999574` in f64,
+/// which would fail a `min_mm: 0.02` assertion the fit meets exactly.
 fn closed_form(x: &Cyl, y: &Cyl) -> Option<f64> {
     let e = radial_axial(y, x.origin).0;
-    match (x.inward, y.inward) {
-        (false, false) => Some(e - x.radius - y.radius),
-        (false, true) if e < y.radius => Some(y.radius - x.radius - e),
-        (true, false) if e < x.radius => Some(x.radius - y.radius - e),
-        _ => None,
-    }
+    let g = match (x.inward, y.inward) {
+        (false, false) => e - x.radius - y.radius,
+        (false, true) if e < y.radius => y.radius - x.radius - e,
+        (true, false) if e < x.radius => x.radius - y.radius - e,
+        _ => return None,
+    };
+    Some((g * 1e9).round() / 1e9)
 }
 
-struct Match {
-    gap: f64,
-    band: f64,
-    x: Cyl,
-    y: Cyl,
+/// Is the witness `p` on the surface (within its band, inside its span)?
+fn on_surface(s: &CylSurface, p: V3, band: f64) -> bool {
+    let (r, t) = radial_axial(&s.c, p);
+    (r - s.c.radius).abs() <= band && t >= s.span.0 - band && t <= s.span.1 + band
 }
 
-/// Find the parallel-cylinder pair that explains `mesh`'s witness points.
-fn explaining_pair(
-    ca: &[Cyl],
-    cb: &[Cyl],
-    seg_a: u32,
-    seg_b: u32,
-    mesh: &ClearanceResult,
-) -> Option<Match> {
-    let mut best: Option<Match> = None;
-    for x in ca {
-        let sx = SAG_SLACK * sag(x.radius, seg_a) + BAND_FLOOR_MM;
-        let (rx, tx) = radial_axial(x, mesh.point_a);
-        if (rx - x.radius).abs() > sx || tx < x.z.0 - sx || tx > x.z.1 + sx {
-            continue;
-        }
-        for y in cb {
-            if line_angle(x.axis, y.axis) > PARALLEL_RAD {
-                continue;
-            }
-            let sy = SAG_SLACK * sag(y.radius, seg_b) + BAND_FLOOR_MM;
-            let (ry, ty) = radial_axial(y, mesh.point_b);
-            if (ry - y.radius).abs() > sy || ty < y.z.0 - sy || ty > y.z.1 + sy {
-                continue;
-            }
-            // Common axial span (y's frame) must be real, not an edge touch.
-            let shift = dot(sub(x.origin, y.origin), y.axis);
-            let (x0, x1) = {
-                let s = dot(x.axis, y.axis).signum();
-                let (a, b) = (x.z.0 * s + shift, x.z.1 * s + shift);
-                (a.min(b), a.max(b))
-            };
-            if x1.min(y.z.1) - x0.max(y.z.0) <= SAME_SURFACE_MM {
-                continue;
-            }
-            let Some(gap) = closed_form(x, y) else {
-                continue;
-            };
-            let band = sx + sy;
-            if (gap - mesh.distance).abs() > band {
-                continue;
-            }
-            if best.as_ref().is_none_or(|m| gap < m.gap) {
-                best = Some(Match {
-                    gap,
-                    band,
-                    x: *x,
-                    y: *y,
-                });
-            }
-        }
-    }
-    best
+/// `s`'s span expressed in `frame`'s axial coordinate.
+fn span_in(s: &CylSurface, frame: &Cyl) -> (f64, f64) {
+    let shift = dot(sub(s.c.origin, frame.origin), frame.axis);
+    let k = dot(s.c.axis, frame.axis).signum();
+    let (a, b) = (s.span.0 * k + shift, s.span.1 * k + shift);
+    (a.min(b), a.max(b))
 }
 
-fn same_surface(a: &Cyl, b: &Cyl) -> bool {
-    a.inward == b.inward
-        && line_angle(a.axis, b.axis) <= PARALLEL_RAD
-        && (a.radius - b.radius).abs() <= SAME_SURFACE_MM
-        && radial_axial(a, b.origin).0 <= SAME_SURFACE_MM
-}
-
-/// `brep`'s mesh at `segments` with every face on `cyl`'s surface removed.
-fn mesh_without(brep: &BRepSolid, segments: u32, cyls: &[Cyl], cyl: &Cyl) -> TriangleMesh {
-    let drop: Vec<u32> = cyls
-        .iter()
-        .filter(|c| same_surface(c, cyl))
-        .map(|c| c.ordinal)
-        .collect();
-    let full = tessellate_brep(brep, segments);
+/// `brep`'s mesh with every triangle on `drop` removed.
+fn mesh_without(full: &TriangleMesh, drop: &[u32]) -> TriangleMesh {
     let mut out = TriangleMesh::new();
     out.vertices = full.vertices.clone();
-    let tagged = full.face_ids.len() * 3 == full.indices.len();
     for (t, tri) in full.indices.chunks_exact(3).enumerate() {
-        if tagged && drop.contains(&full.face_ids[t]) {
-            continue;
+        if !drop.contains(&full.face_ids[t]) {
+            out.indices.extend_from_slice(tri);
         }
-        out.indices.extend_from_slice(tri);
     }
     out
 }
 
+/// Rule 3b: where `s` runs past `other`'s end, is `s`'s surface just past
+/// that end inside the solid `inside`?
+fn runs_into(s: &CylSurface, other: &CylSurface, inside: &MeshInsideTester) -> bool {
+    let (o0, o1) = span_in(other, &s.c);
+    let reach = (s.band + other.band).max(1e-3);
+    // Two radial frame vectors perpendicular to the axis.
+    let a = s.c.axis;
+    let helper = if a[0].abs() < 0.9 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let u = {
+        let w = cross(a, helper);
+        scale(w, 1.0 / norm(w))
+    };
+    let v = cross(a, u);
+    let probe_at = |t: f64| {
+        (0..PROBE_ANGLES).any(|k| {
+            let th = std::f64::consts::TAU * k as f64 / PROBE_ANGLES as f64;
+            let radial = add(scale(u, th.cos()), scale(v, th.sin()));
+            let p = add(add(s.c.origin, scale(a, t)), scale(radial, s.c.radius));
+            inside.contains(p)
+        })
+    };
+    let past_hi = s.span.1 - o1;
+    let past_lo = o0 - s.span.0;
+    (past_hi > SAME_SURFACE_MM && probe_at(o1 + reach.min(past_hi * 0.5)))
+        || (past_lo > SAME_SURFACE_MM && probe_at(o0 - reach.min(past_lo * 0.5)))
+}
+
 /// Correct a mesh clearance between two BRep solids with the parallel
 /// cylinder closed form, when (and only when) that pair provably produced
-/// the mesh number. See the module docs for the rules. `segments_*` are the
-/// densities the meshes were (at most as coarse as) tessellated at; they
-/// set the chord-sag bands.
+/// the mesh number — see the module docs for the rules. `segments_*` are the
+/// densities the solids tessellate at (what the mesh was measured on).
 pub fn refine_cylinder_clearance(
     a: &BRepSolid,
     segments_a: u32,
@@ -271,37 +347,85 @@ pub fn refine_cylinder_clearance(
         chord_band_mm: None,
     };
     let (ca, cb) = (cylinders(a), cylinders(b));
-    if ca.is_empty() || cb.is_empty() {
+    // Cheap prefilter before tessellating anything: some parallel pair whose
+    // closed form is within reach of the mesh number.
+    let plausible = ca.iter().any(|x| {
+        cb.iter().any(|y| {
+            line_angle(x.axis, y.axis) <= PARALLEL_RAD
+                && closed_form(x, y).is_some_and(|g| {
+                    (g - mesh.distance).abs() <= 0.25 * x.radius.min(y.radius).max(1.0)
+                })
+        })
+    });
+    if !plausible {
         return unrefined;
     }
-    let Some(m) = explaining_pair(&ca, &cb, segments_a, segments_b, mesh) else {
+    let (ta, tb) = (
+        tessellate_brep(a, segments_a),
+        tessellate_brep(b, segments_b),
+    );
+
+    // Rules 1 + 2 with measured bands; the smallest explaining gap wins.
+    let mut best: Option<(f64, CylSurface, CylSurface)> = None;
+    for x in &ca {
+        for y in &cb {
+            if line_angle(x.axis, y.axis) > PARALLEL_RAD {
+                continue;
+            }
+            let Some(gap) = closed_form(x, y) else {
+                continue;
+            };
+            if best.as_ref().is_some_and(|(g, _, _)| *g <= gap) {
+                continue;
+            }
+            let (sx, sy) = (surface_of(&ca, x, &ta), surface_of(&cb, y, &tb));
+            if !on_surface(&sx, mesh.point_a, sx.band) || !on_surface(&sy, mesh.point_b, sy.band) {
+                continue;
+            }
+            let (y0, y1) = span_in(&sy, &sx.c);
+            if sx.span.1.min(y1) - sx.span.0.max(y0) <= SAME_SURFACE_MM {
+                continue; // no real common span
+            }
+            if (gap - mesh.distance).abs() > sx.band + sy.band {
+                continue;
+            }
+            best = Some((gap, sx, sy));
+        }
+    }
+    let Some((gap, sx, sy)) = best else {
         return unrefined;
     };
-    // Rule 3: the rest of the geometry must not be nearer than the pair.
-    let rest_a = mesh_without(a, segments_a, &ca, &m.x);
-    let rest_b = mesh_without(b, segments_b, &cb, &m.y);
-    if let Some(r) = mesh_surface_distance(&rest_a, &rest_b) {
-        // A remaining witness on the same two cylinders' rims is the same
-        // feature seen through its neighbours' chords, not a rival.
-        let on_pair = {
-            let (rx, _) = radial_axial(&m.x, r.point_a);
-            let (ry, _) = radial_axial(&m.y, r.point_b);
-            (rx - m.x.radius).abs() <= m.band && (ry - m.y.radius).abs() <= m.band
-        };
-        if !on_pair && (r.intersecting || r.distance < m.gap) {
+    let band = sx.band + sy.band;
+
+    // Rule 3a: the rest of the geometry is not nearer (or crossing).
+    if let Some(r) = mesh_surface_distance(
+        &mesh_without(&ta, &sx.ordinals),
+        &mesh_without(&tb, &sy.ordinals),
+    ) {
+        // A remaining witness on both cylinders' rims is the same feature
+        // seen through its neighbours' chords, not a rival.
+        let on_pair = on_surface(&sx, r.point_a, band) && on_surface(&sy, r.point_b, band);
+        if !on_pair && (r.intersecting || r.distance < gap) {
             return unrefined;
         }
     }
+    // Rule 3b: neither cylinder runs past the other's end into material.
+    if runs_into(&sx, &sy, &MeshInsideTester::new(&tb))
+        || runs_into(&sy, &sx, &MeshInsideTester::new(&ta))
+    {
+        return unrefined;
+    }
+
     RefinedClearance {
         result: ClearanceResult {
-            distance: m.gap,
-            intersecting: m.gap < 0.0,
-            point_a: project(&m.x, mesh.point_a),
-            point_b: project(&m.y, mesh.point_b),
+            distance: gap,
+            intersecting: gap < -CONTACT_EPS_MM,
+            point_a: project(&sx.c, mesh.point_a),
+            point_b: project(&sy.c, mesh.point_b),
         },
         basis: ClearanceBasis::AnalyticCylinders,
         mesh_distance: mesh.distance,
-        chord_band_mm: Some(m.band),
+        chord_band_mm: Some(band),
     }
 }
 
@@ -333,6 +457,7 @@ fn line_angle(a: V3, b: V3) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use super::ClearanceBasis;
     use crate::Solid;
 
     /// `r_shaft` shaft (height 30, z −5..25) through a 20 mm block with an
@@ -345,16 +470,46 @@ mod tests {
         (shaft, block)
     }
 
+    /// A mesh witness on the shaft/bore pair mid-span (what the real mesh
+    /// reports for the 7.98-in-8.00 fit: shaft vertex at r 7.98, bore chord
+    /// at ≈ r 7.999), for driving rule 3 directly.
+    fn pair_witness() -> vcad_kernel_tessellate::ClearanceResult {
+        vcad_kernel_tessellate::ClearanceResult {
+            distance: 0.019,
+            intersecting: false,
+            point_a: [-7.98, 0.0, 10.0],
+            point_b: [-7.999, 0.0, 10.0],
+        }
+    }
+
     #[test]
     fn coaxial_shaft_in_bore_reports_the_true_radial_gap() {
         let (shaft, block) = shaft_in_bore(7.98, 8.0);
         let r = shaft.clearance_refined(&block).expect("measurable");
-        assert_eq!(r.basis, super::ClearanceBasis::AnalyticCylinders, "{r:?}");
+        assert_eq!(r.basis, ClearanceBasis::AnalyticCylinders, "{r:?}");
         assert!(!r.result.intersecting, "{r:?}");
         assert!((r.result.distance - 0.02).abs() < 1e-9, "{r:?}");
-        // And the plain API agrees.
+        // The mesh number was chord-shortened, and the band is tight (the
+        // boolean bore is sag-adaptive; the 32-gon shaft dominates).
+        assert!(r.mesh_distance < 0.02, "{r:?}");
+        assert!(r.chord_band_mm.unwrap() < 0.1, "{r:?}");
+        // The plain API agrees, in either argument order.
         let c = shaft.clearance(&block).unwrap();
         assert!(!c.intersecting && (c.distance - 0.02).abs() < 1e-9, "{c:?}");
+        let c = block.clearance(&shaft).unwrap();
+        assert!(!c.intersecting && (c.distance - 0.02).abs() < 1e-9, "{c:?}");
+    }
+
+    #[test]
+    fn d_shaft_in_round_bore_reads_the_radial_gap() {
+        // The snowthrower adapter's motor shaft: r 7.98 with a flat 6 mm
+        // off-axis (flat-to-round 14), itself a boolean, in an r 8 bore.
+        let (round, block) = shaft_in_bore(7.98, 8.0);
+        let flat_cut = Solid::cube(3.0, 20.0, 40.0).translate(-9.0, -10.0, -10.0);
+        let shaft = round.difference(&flat_cut);
+        let c = shaft.clearance(&block).unwrap();
+        assert!(!c.intersecting, "{c:?}");
+        assert!((c.distance - 0.02).abs() < 1e-9, "{c:?}");
     }
 
     #[test]
@@ -365,54 +520,76 @@ mod tests {
         assert!((c.distance + 0.02).abs() < 1e-9, "{c:?}");
     }
 
-    /// A mesh result whose witness sits on the shaft/bore pair (what a
-    /// coarse bore tessellation produces): shaft point at r 7.98, bore point
-    /// at the chord's inscribed radius, reading a −0.018 "interference".
-    fn chord_noise_witness() -> vcad_kernel_tessellate::ClearanceResult {
-        vcad_kernel_tessellate::ClearanceResult {
-            distance: -0.018,
-            intersecting: true,
-            point_a: [-7.98, 0.0, 10.0],
-            point_b: [-7.962, 0.0, 10.0],
+    #[test]
+    fn line_to_line_fit_is_contact_not_interference() {
+        let (shaft, block) = shaft_in_bore(8.0, 8.0);
+        let r = shaft.clearance_refined(&block).unwrap();
+        if r.basis == ClearanceBasis::AnalyticCylinders {
+            assert!(!r.result.intersecting, "{r:?}");
+            assert!(r.result.distance.abs() < 1e-9, "{r:?}");
         }
     }
 
     #[test]
-    fn chord_noise_on_the_pair_is_replaced_by_the_closed_form() {
+    fn pair_witness_is_replaced_by_the_closed_form() {
         let (shaft, block) = shaft_in_bore(7.98, 8.0);
-        let r = shaft.refine_clearance(&block, &chord_noise_witness());
-        assert_eq!(r.basis, super::ClearanceBasis::AnalyticCylinders, "{r:?}");
-        assert!(!r.result.intersecting, "{r:?}");
+        let r = shaft.refine_clearance(&block, &pair_witness());
+        assert_eq!(r.basis, ClearanceBasis::AnalyticCylinders, "{r:?}");
         assert!((r.result.distance - 0.02).abs() < 1e-9, "{r:?}");
-        assert!((r.mesh_distance + 0.018).abs() < 1e-12, "{r:?}");
     }
 
     #[test]
-    fn a_real_shoulder_interference_is_not_hidden() {
-        // Same witness on the shaft/bore pair, but the shaft now carries a
-        // 10 mm-radius collar sunk 0.005 mm into the block's top face — a
-        // genuine interference shallower than the chord noise. Rule 3 (the
-        // rest of the geometry must not be nearer) keeps the mesh verdict.
+    fn a_collar_sunk_into_the_face_is_not_hidden() {
+        // Rule 3a/3b: a 10 mm-radius collar sunk 0.005 mm into the block's
+        // top face — a real interference shallower than the shaft's chords.
         let (shaft, block) = shaft_in_bore(7.98, 8.0);
         let collar = Solid::cylinder(10.0, 3.0, 32).translate(0.0, 0.0, 19.995);
         let shaft = shaft.union(&collar);
-        let r = shaft.refine_clearance(&block, &chord_noise_witness());
-        assert_eq!(r.basis, super::ClearanceBasis::Mesh, "{r:?}");
-        assert!(r.result.intersecting, "{r:?}");
-        // End to end as well: the collar is what the real measurement sees.
+        let r = shaft.refine_clearance(&block, &pair_witness());
+        assert_eq!(r.basis, ClearanceBasis::Mesh, "{r:?}");
         let c = shaft.clearance(&block).unwrap();
         assert!(c.intersecting && c.distance < 0.0, "{c:?}");
     }
 
     #[test]
+    fn a_shaft_driven_through_a_blind_bore_floor_is_not_hidden() {
+        // Rule 3b: the bore stops at z 5 (blind from the top) and the shaft
+        // reaches z 4.95 — the shaft's own cylinder face crosses the floor,
+        // which leaving the cylinder faces out (3a) cannot see.
+        let block = Solid::cube(20.0, 20.0, 20.0)
+            .translate(-10.0, -10.0, 0.0)
+            .difference(&Solid::cylinder(8.0, 20.0, 32).translate(0.0, 0.0, 5.0));
+        let shaft = Solid::cylinder(7.98, 20.0, 32).translate(0.0, 0.0, 4.95);
+        let r = shaft.refine_clearance(&block, &pair_witness());
+        assert_eq!(r.basis, ClearanceBasis::Mesh, "{r:?}");
+        let c = shaft.clearance(&block).unwrap();
+        assert!(c.intersecting, "{c:?}");
+        // Control: stopped 0.05 short of the floor, it is the plain fit.
+        let shaft = Solid::cylinder(7.98, 20.0, 32).translate(0.0, 0.0, 5.05);
+        let r = shaft.refine_clearance(&block, &pair_witness());
+        assert_eq!(r.basis, ClearanceBasis::AnalyticCylinders, "{r:?}");
+    }
+
+    #[test]
+    fn a_shoulder_inside_the_bore_is_not_hidden() {
+        // Rule 3b, the other way round: the shaft steps up to r 9 at z 15,
+        // inside the r 8 bore — the bore's surface past the shaft face's end
+        // is inside the shaft.
+        let (_, block) = shaft_in_bore(7.98, 8.0);
+        let shaft = Solid::cylinder(7.98, 20.0, 32)
+            .translate(0.0, 0.0, -5.0)
+            .union(&Solid::cylinder(9.0, 10.0, 32).translate(0.0, 0.0, 15.0));
+        let r = shaft.refine_clearance(&block, &pair_witness());
+        assert_eq!(r.basis, ClearanceBasis::Mesh, "{r:?}");
+    }
+
+    #[test]
     fn a_witness_off_the_cylinders_is_left_alone() {
-        // Mesh says the parts are 0.019 apart at a point that is not on the
-        // shaft surface: nothing to explain, no correction.
         let (shaft, block) = shaft_in_bore(7.98, 8.0);
-        let mut m = chord_noise_witness();
+        let mut m = pair_witness();
         m.point_a = [-7.5, 0.0, 10.0];
         let r = shaft.refine_clearance(&block, &m);
-        assert_eq!(r.basis, super::ClearanceBasis::Mesh, "{r:?}");
+        assert_eq!(r.basis, ClearanceBasis::Mesh, "{r:?}");
     }
 
     #[test]

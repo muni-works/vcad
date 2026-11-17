@@ -362,6 +362,22 @@ pub fn refine_pair_clearances(
     doc: &Document,
     pairs: &[ClearancePairQuery],
 ) -> Result<Vec<Option<RefinedPairClearance>>, SimExtractError> {
+    // Evaluate only the roots the pairs name: a check on two parts of a big
+    // assembly should not pay for re-evaluating the whole document.
+    let wanted: std::collections::BTreeSet<&str> = pairs
+        .iter()
+        .flat_map(|q| [q.a.as_str(), q.b.as_str()])
+        .collect();
+    let mut pruned = doc.clone();
+    pruned.roots = (0..doc.roots.len())
+        .filter(|&i| {
+            super::root_names(doc, i)
+                .iter()
+                .any(|n| wanted.contains(n.as_str()))
+        })
+        .map(|i| doc.roots[i].clone())
+        .collect();
+    let doc = &pruned;
     let scene = evaluate_document(doc, &eval_opts())?;
     Ok(pairs
         .iter()
