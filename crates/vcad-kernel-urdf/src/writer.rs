@@ -335,12 +335,14 @@ impl<'a> UrdfWriter<'a> {
             }
             CsgOp::Rotate { child, angles } => {
                 let (geometry, existing_origin) = self.node_to_geometry(*child)?;
-                let rpy = format!(
-                    "{} {} {}",
+                // `CsgOp::Rotate` is Rx·Ry·Rz (Z first); URDF rpy is
+                // Rz·Ry·Rx (roll first). Convert through the matrix.
+                let rpy = crate::euler::rotate_to_rpy([
                     angles.x.to_radians(),
                     angles.y.to_radians(),
-                    angles.z.to_radians()
-                );
+                    angles.z.to_radians(),
+                ]);
+                let rpy = format!("{} {} {}", rpy[0], rpy[1], rpy[2]);
                 let origin = Some(Origin {
                     xyz: existing_origin.as_ref().and_then(|o| o.xyz.clone()),
                     rpy: Some(rpy),
@@ -594,6 +596,48 @@ mod tests {
             doc.joints.as_ref().map(|j| j.len()),
             doc2.joints.as_ref().map(|j| j.len())
         );
+    }
+
+    /// The visual's orientation survives read → write → read for an oblique
+    /// rpy (≥ 2 nonzero angles, where URDF's Rz·Ry·Rx and `CsgOp::Rotate`'s
+    /// Rx·Ry·Rz disagree), and the written rpy is the original one.
+    #[test]
+    fn oblique_rpy_survives_roundtrip() {
+        let urdf = r#"<robot name="r"><link name="base"><visual>
+              <origin xyz="0.01 0 0" rpy="0.4 -0.7 1.1"/>
+              <geometry><mesh filename="part.stl"/></geometry>
+            </visual></link></robot>"#;
+        let rotate_angles = |doc: &Document| {
+            let mut found: Vec<vcad_ir::Vec3> = doc
+                .nodes
+                .values()
+                .filter_map(|n| match &n.op {
+                    CsgOp::Rotate { angles, .. } => Some(*angles),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(found.len(), 1, "one visual Rotate");
+            found.pop().unwrap()
+        };
+        let doc = read_urdf_from_str(urdf).unwrap();
+        let a = rotate_angles(&doc);
+        let written = write_urdf_to_string(&doc).unwrap();
+        let rpy_attr = written
+            .split("rpy=\"")
+            .nth(1)
+            .and_then(|r| r.split('"').next())
+            .expect("written visual carries an rpy");
+        let rpy: Vec<f64> = rpy_attr
+            .split_whitespace()
+            .map(|v| v.parse().unwrap())
+            .collect();
+        for (got, want) in rpy.iter().zip([0.4, -0.7, 1.1]) {
+            assert!((got - want).abs() < 1e-9, "written rpy {rpy:?}");
+        }
+        let b = rotate_angles(&read_urdf_from_str(&written).unwrap());
+        for (x, y) in [(a.x, b.x), (a.y, b.y), (a.z, b.z)] {
+            assert!((x - y).abs() < 1e-7, "{a:?} → {b:?}");
+        }
     }
 
     #[test]

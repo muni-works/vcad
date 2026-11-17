@@ -1,12 +1,17 @@
 //! Rigid placement of baked render meshes.
 //!
-//! Applies the standard translate/rotate/scale placement the IR's
-//! `Translate`/`Rotate`/`Scale` wrapper chain describes to flat `f32`
-//! position/normal buffers. Rotation order is **Rz·Ry·Rx** (X applied
-//! first), matching the document evaluator's transform chain and the app's
-//! three.js "ZYX" euler order. Scale is applied before rotation; normals get
-//! the rotation only (no scale, no renormalization) — bit-for-bit the
-//! contract of the web engine's `transformMesh`, which this replaces.
+//! Applies a translate/rotate/scale placement to flat `f32` position/normal
+//! buffers. Rotation order is **Rz·Ry·Rx** (X applied first): the instance
+//! `Transform3D` convention (`vcad_eval::kinematics`, the app's three.js
+//! "ZYX" euler order). Scale is applied before rotation; normals get the
+//! rotation only (no scale, no renormalization) — bit-for-bit the contract
+//! of the web engine's `transformMesh`, which this replaces.
+//!
+//! This is **not** the order of a `CsgOp::Rotate` node, which is Rx·Ry·Rz
+//! (Z first — `Solid::rotate`, and the evaluator for imported meshes too).
+//! Callers placing a mesh read off a `Translate`/`Rotate`/`Scale` wrapper
+//! chain must convert the Rotate angles first (the engine's
+//! `findWrappedRoot` does, via `rotateOpToPlacementEuler`).
 
 /// Apply `scale → rotate (Rz·Ry·Rx, degrees) → translate` to `positions`,
 /// and the rotation alone to `normals` when present. Buffers are flat

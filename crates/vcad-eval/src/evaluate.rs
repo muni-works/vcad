@@ -2682,28 +2682,29 @@ pub(crate) fn mesh_import_scale_warning(
 }
 
 /// Apply transform to imported mesh positions and normals.
+///
+/// The rotation is the same `R = Rx·Ry·Rz` (Z acts first) a BRep solid under
+/// that `Rotate` gets ([`rotation_transform`]): a `CsgOp::Rotate` means one
+/// thing whatever sits under it. This is NOT the instance `Transform3D`
+/// convention (Rz·Ry·Rx, `kinematics::euler_to_matrix`).
 fn transform_imported_mesh(data: &ImportedMeshData) -> EvaluatedMesh {
     let n_verts = data.positions.len() / 3;
     let mut positions = vec![0.0f32; data.positions.len()];
 
-    // Precompute rotation matrix
-    let rx = data.rotate_deg[0].to_radians();
-    let ry = data.rotate_deg[1].to_radians();
-    let rz = data.rotate_deg[2].to_radians();
-
-    let (cx, sx) = (rx.cos(), rx.sin());
-    let (cy, sy) = (ry.cos(), ry.sin());
-    let (cz, sz) = (rz.cos(), rz.sin());
-
-    let m00 = cy * cz;
-    let m01 = sx * sy * cz - cx * sz;
-    let m02 = cx * sy * cz + sx * sz;
-    let m10 = cy * sz;
-    let m11 = sx * sy * sz + cx * cz;
-    let m12 = cx * sy * sz - sx * cz;
-    let m20 = -sy;
-    let m21 = sx * cy;
-    let m22 = cx * cy;
+    let r = rotation_transform(&vcad_ir::Vec3::new(
+        data.rotate_deg[0],
+        data.rotate_deg[1],
+        data.rotate_deg[2],
+    ));
+    let col = |v: Vec3| r.apply_vec(&v);
+    let (c0, c1, c2) = (
+        col(Vec3::new(1.0, 0.0, 0.0)),
+        col(Vec3::new(0.0, 1.0, 0.0)),
+        col(Vec3::new(0.0, 0.0, 1.0)),
+    );
+    let (m00, m01, m02) = (c0.x, c1.x, c2.x);
+    let (m10, m11, m12) = (c0.y, c1.y, c2.y);
+    let (m20, m21, m22) = (c0.z, c1.z, c2.z);
 
     for i in 0..n_verts {
         let x = data.positions[i * 3] * data.scale[0];

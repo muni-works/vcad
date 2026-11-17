@@ -114,10 +114,7 @@ fn oblique_rpy_box_and_mesh_visuals_coincide() {
         r#"<box size="{} {} {}"/>"#,
         SIZE_M[0], SIZE_M[1], SIZE_M[2]
     )));
-    let mesh = link_mesh(&urdf(&format!(
-        r#"<mesh filename="{}"/>"#,
-        stl.display()
-    )));
+    let mesh = link_mesh(&urdf(&format!(r#"<mesh filename="{}"/>"#, stl.display())));
     let _ = std::fs::remove_dir_all(&dir);
 
     // Expected: the URDF placement of the centred box, in millimetres.

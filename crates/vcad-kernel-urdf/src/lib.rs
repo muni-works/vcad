@@ -25,6 +25,7 @@
 //! ```
 
 mod error;
+mod euler;
 mod reader;
 mod types;
 mod writer;

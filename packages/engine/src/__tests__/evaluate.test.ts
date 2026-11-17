@@ -2,8 +2,12 @@ import { describe, expect, it, beforeAll } from "vitest";
 import type { Document, Node } from "@vcad/ir";
 import { createDocument } from "@vcad/ir";
 import { Engine, type EvaluatedScene } from "../index.js";
-import { findWrappedRoot, isIdentityTransform } from "../transform-walk.js";
-import { findEmbroideryPattern } from "../evaluate.js";
+import {
+  findWrappedRoot,
+  isIdentityTransform,
+  rotateOpToPlacementEuler,
+} from "../transform-walk.js";
+import { findEmbroideryPattern, transformMesh } from "../evaluate.js";
 
 let engine: Engine;
 
@@ -1119,6 +1123,43 @@ describe("transform-walk (findWrappedRoot)", () => {
     expect(hit!.transform.translate).toEqual({ x: 5, y: 6, z: 7 });
     expect(hit!.transform.rotate).toEqual({ x: 0, y: 0, z: 90 });
     expect(hit!.transform.scale).toEqual({ x: 2, y: 2, z: 2 });
+  });
+
+  it("places a multi-axis Rotate the way the kernel rotates a BRep (Rx·Ry·Rz)", () => {
+    // CsgOp::Rotate is R = Rx·Ry·Rz (Z acts first) — Solid.rotate's order.
+    // The walker hands transformMesh (Rz·Ry·Rx, the Transform3D order) the
+    // equivalent angles, so a wrapped ImportedMesh lands where a BRep would.
+    const d = Math.PI / 180;
+    const rx = (a: number, [x, y, z]: number[]) => [x, Math.cos(a) * y - Math.sin(a) * z, Math.sin(a) * y + Math.cos(a) * z];
+    const ry = (a: number, [x, y, z]: number[]) => [Math.cos(a) * x + Math.sin(a) * z, y, -Math.sin(a) * x + Math.cos(a) * z];
+    const rz = (a: number, [x, y, z]: number[]) => [Math.cos(a) * x - Math.sin(a) * y, Math.sin(a) * x + Math.cos(a) * y, z];
+    for (const angles of [
+      { x: 30, y: 45, z: 60 },
+      { x: -120, y: 10, z: 200 },
+      { x: 25, y: 90, z: -40 }, // gimbal lock
+      { x: 0, y: -90, z: 70 },
+    ]) {
+      const nodes = nodeMap([
+        cube(1),
+        { id: 2, name: null, op: { type: "Rotate", child: 1, angles } },
+      ] as unknown as Node[]);
+      const hit = findWrappedRoot(2, nodes, matchCube)!;
+      const pts = [1, 2, 3, -4, 0.5, 2, 0, -3, 1];
+      const placed = transformMesh(
+        { positions: new Float32Array(pts), indices: new Uint32Array([0, 1, 2]) },
+        hit.transform,
+      ).positions;
+      for (let i = 0; i < pts.length; i += 3) {
+        const want = rx(angles.x * d, ry(angles.y * d, rz(angles.z * d, pts.slice(i, i + 3))));
+        for (let k = 0; k < 3; k++) expect(placed[i + k]).toBeCloseTo(want[k], 4);
+      }
+    }
+  });
+
+  it("passes single-axis Rotate angles through bit-exact", () => {
+    for (const a of [{ x: 37, y: 0, z: 0 }, { x: 0, y: -12.5, z: 0 }, { x: 0, y: 0, z: 90 }]) {
+      expect(rotateOpToPlacementEuler(a)).toEqual(a);
+    }
   });
 
   it("returns null at a non-matching, non-transform op (and on a missing node)", () => {

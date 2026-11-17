@@ -433,6 +433,8 @@ export function embroideryPatternToMeshWithKernel(
  * binding when the loaded kernel has it, otherwise fall back to the TS
  * {@link transformMesh}. Same convention either way: scale → rotate
  * (Rz·Ry·Rx, degrees) → translate on positions, rotation only on normals.
+ * A placement read off a `Rotate` wrapper must come through
+ * `findWrappedRoot`, which converts the Rx·Ry·Rz `CsgOp::Rotate` angles.
  */
 export function transformMeshWithKernel(
   mesh: TriangleMesh,

@@ -604,7 +604,8 @@ struct WasmTransformedMesh {
 }
 
 /// Apply a placement (`scale → rotate → translate`, rotation Rz·Ry·Rx in
-/// degrees — the engine `transformMesh` convention) to flat mesh buffers.
+/// degrees — the engine `transformMesh` / `Transform3D` convention, NOT a
+/// `CsgOp::Rotate`'s Rx·Ry·Rz) to flat mesh buffers.
 ///
 /// `transform_json` is `{ translate: {x,y,z}, rotate: {x,y,z}, scale: {x,y,z} }`.
 /// Positions get the full placement; normals (optional) get the rotation
