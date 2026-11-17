@@ -48,6 +48,8 @@ pub struct PhotorealRequest {
     pub fill: Option<f64>,
     /// Render-time material overrides (`--look`).
     pub look: Option<std::sync::Arc<vcad_render::look::ResolvedLook>>,
+    /// Bloom and tone curve (`--bloom`, `--tonemap`).
+    pub glow: vcad_render::glow::Glow,
 }
 
 /// Parse `WxH` (e.g. `1600x1000`).
@@ -114,6 +116,7 @@ fn options(req: &PhotorealRequest) -> (RasterOptions, PhotorealOptions) {
         denoise: req.cpu,
         adaptive: true,
         exact: false,
+        glow: req.glow,
     };
     (ro, pr)
 }
@@ -122,10 +125,11 @@ fn options(req: &PhotorealRequest) -> (RasterOptions, PhotorealOptions) {
 pub fn render_bytes(raw_vcad: &str, req: &PhotorealRequest, jpeg: bool) -> Result<Vec<u8>> {
     let (ro, pr) = options(req);
     // The GPU camera is a pinhole and shades flat materials only; depth of
-    // field and textures are CPU-integrator features, so they route there
-    // rather than being refused.
+    // field, textures and glowing media are CPU-integrator features, so they
+    // route there rather than being refused.
     let textured = req.look.as_ref().is_some_and(|l| l.has_textures());
-    if !req.cpu && (req.aperture > 0.0 || textured) {
+    let media = vcad_render::photoreal::document_has_media(raw_vcad);
+    if !req.cpu && (req.aperture > 0.0 || textured || media) {
         let cpu = PhotorealRequest {
             cpu: true,
             ..req.clone()
@@ -248,6 +252,7 @@ mod tests {
             cyclorama: false,
             look: None,
             fill: None,
+            glow: Default::default(),
         }
     }
 

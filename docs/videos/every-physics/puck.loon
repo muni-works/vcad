@@ -6,16 +6,21 @@
 ; enclosure + a round driver motor is the device whose real geometry the
 ; solvers model natively, not an approximation of it.
 ;
-;   driver  : 3" full-range, firing DOWN through the bottom wall
-;             (piston radius `driver_r`, cutout `driver_cut_r`)
-;   port    : internal tube hanging from the top wall (`port_r` x `port_len`)
-;   board   : `board_w` x `board_l` FR4 on the floor shelf, class-D amp
-;             dissipating `amp_loss_w`, 2.4 GHz monopole of `ant_len`
+;   enclosure    : PLA can, port tube hanging from the top wall
+;   driver_frame : the driver's basket ring, PRESS-FIT into the bottom-wall
+;                  cutout (`driver_frame_r` into `driver_cut_r`, both ±0.1)
+;   motor        : yoke / Y30 ferrite ring / top plate / voice coil, sitting
+;                  behind the cone inside the box (vcad-kernel-em extracts it)
+;   air          : the enclosed air: cavity minus port-tube wall minus motor
+;   board / die  : 50 x 50 FR4 on a shelf, class-D amp die dissipating
+;                  `amp_loss_w` (thermal study deposits it on `die`)
 ;
-; Non-geometric numbers (amp loss, antenna length) are parameters too, so
-; the ONE document carries every value every solver needs. Today only the
-; geometric ones are read off the evaluated solid; the rest are read off
-; `doc.parameters` by the PoC driver (docs/videos/every-physics/poc).
+; The PCB's copper (feed pad, GND pour, the `ant_len` printed monopole) is a
+; PcbBoard node, which loon can't author; the PoC driver injects it from the
+; same parameters. Everything else every solver needs is in this file.
+;
+; v2 (after the every-physics gap PRs): every root is named so extractors
+; select parts by name; motor, driver frame and die are real parts.
 ;
 ; Z-up. The enclosure sits on z = 0.
 
@@ -23,14 +28,18 @@
 [defparam body_h 120.0 :unit "mm" :min 80 :max 200]
 [defparam wall 3.0 :unit "mm" :min 2 :max 6]
 [defparam driver_r 32.0 :unit "mm" :min 20 :max 45]
-[defparam driver_cut_r 35.0 :unit "mm" :min 22 :max 48]
+[defparam driver_cut_r 35.0 :tol 0.1 :unit "mm" :min 22 :max 48]
+[defparam driver_frame_r 35.075 :tol 0.1 :unit "mm" :min 22 :max 48]
 [defparam port_r 12.0 :unit "mm" :min 6 :max 20]
 [defparam port_len 60.0 :unit "mm" :min 20 :max 100]
 [defparam port_wall 2.0 :unit "mm" :min 1.2 :max 4]
+[defparam motor_z 18.0 :unit "mm" :min 8 :max 40]
 [defparam board_w 50.0 :unit "mm" :min 30 :max 70]
 [defparam board_l 50.0 :unit "mm" :min 30 :max 70]
 [defparam amp_loss_w 0.8 :unit "W" :min 0.1 :max 5]
 [defparam ant_len 30.0 :unit "mm" :min 20 :max 40]
+[defparam vc_turns 60.0]
+[defparam vc_current 0.0 :unit "A"]
 
 [let ri [- body_r wall]]
 [let hi [- body_h [* 2.0 wall]]]
@@ -46,14 +55,38 @@
 [let s1 [difference cavity outer]]
 [let s2 [difference driver-hole s1]]
 [let s3 [union port-tube s2]]
-[let enclosure [difference port-bore s3]]
+[root-named [difference port-bore s3] "pla" "enclosure"]
 
-[root enclosure "pla"]
+; Driver basket ring: a plug in the cutout under a 2 mm flange. Nominal
+; radial interference = driver_frame_r - driver_cut_r = 0.075 mm.
+[root-named [union [cylinder driver_frame_r wall]
+                   [translate 0.0 0.0 -2.0 [cylinder 40.0 2.0]]]
+            "pla" "driver_frame"]
 
-; The enclosed air (box compliance): cavity minus the port tube's solid wall.
-; The port's own air column is NOT in here — the lumped model wants V_box.
-[root [difference port-tube cavity] "air"]
+; Motor (the vcad-kernel-em speaker motor, lifted to motor_z). Pole sits
+; 1 mm up so the yoke union has no coplanar bottom faces.
+[root-named [translate 0.0 0.0 motor_z
+              [union [cylinder 30.0 4.0] [translate 0.0 0.0 1.0 [cylinder 9.75 15.0]]]]
+            "steel-1010" "yoke"]
+[root-named [translate 0.0 0.0 [+ motor_z 4.0]
+              [difference [translate 0.0 0.0 -1.0 [cylinder 12.0 10.0]] [cylinder 30.0 8.0]]]
+            "ferrite-y30" "magnet"]
+[root-named [translate 0.0 0.0 [+ motor_z 12.0]
+              [difference [translate 0.0 0.0 -1.0 [cylinder 10.25 6.0]] [cylinder 30.0 4.0]]]
+            "steel-1010" "top_plate"]
+[root-named [translate 0.0 0.0 [+ motor_z 10.0]
+              [difference [translate 0.0 0.0 -1.0 [cylinder 9.85 10.0]] [cylinder 10.15 8.0]]]
+            "copper" "voice_coil"]
 
-; The board, on a shelf 20 mm above the floor, offset off-axis so it clears
-; the driver magnet.
-[root [translate [- 0.0 [/ board_w 2.0]] [- 0.0 [/ board_l 2.0]] [+ wall 40.0] [cube board_w board_l 1.6]] "fr4"]
+; The enclosed air (box compliance): cavity minus the port tube's solid wall
+; minus the motor's envelope. The port's own air column is NOT in here.
+[let motor-env [translate 0.0 0.0 motor_z [cylinder 30.0 18.0]]]
+[root-named [difference motor-env [difference port-tube cavity]] "air" "air"]
+
+; The board, on a shelf 40 mm above the floor (above the motor), centred.
+[root-named [translate [- 0.0 [/ board_w 2.0]] [- 0.0 [/ board_l 2.0]] [+ wall 40.0]
+              [cube board_w board_l 1.6]]
+            "fr4" "board"]
+
+; The amp die: 5 x 5 x 1 mm silicon on the board's top face, centred.
+[root-named [translate -2.5 -2.5 [+ wall 41.6] [cube 5.0 5.0 1.0]] "silicon" "die"]

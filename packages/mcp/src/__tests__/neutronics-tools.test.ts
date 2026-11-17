@@ -105,3 +105,91 @@ describe.skipIf(!wasmHasNeutronics)("neutron shielding tool", () => {
     expect(dt.isError).toBe(true);
   });
 });
+
+const wasmHasScene =
+  typeof (
+    probeEngine as unknown as {
+      kernel?: { neutronicsSimulateScene?: unknown };
+    }
+  ).kernel?.neutronicsSimulateScene === "function";
+
+const SCENE = {
+  cells: [
+    {
+      name: "castle",
+      material: "hdpe",
+      shape: { type: "box_centered", center_mm: [0, 0, 0], half_mm: ["half", "half", "half"] },
+    },
+    {
+      name: "room",
+      material: "air",
+      shape: { type: "box_centered", center_mm: [0, 0, 0], half_mm: [1000, 1000, 1000] },
+    },
+    {
+      name: "walls",
+      material: "concrete",
+      shape: { type: "box_centered", center_mm: [0, 0, 0], half_mm: [1200, 1200, 1200] },
+    },
+  ],
+  source: { position_mm: [0, 0, 0], rate_n_per_s: 5.0e6, energy_ev: 2.45e6 },
+  detectors: [
+    {
+      label: "probe",
+      position_mm: [500, 0, 0],
+      instruments: [{ type: "bubble", sensitivity_bubbles_per_usv: 3 }],
+    },
+  ],
+  mesh: { min_mm: [-1000, -1000, -100], max_mm: [1000, 1000, 100], shape: [8, 8, 1] },
+  run: { histories_per_batch: 1000, batches: 4, seed: 11 },
+};
+
+describe.skipIf(!wasmHasScene)("neutron scene (3D room) tool", () => {
+  let client: Client;
+
+  beforeAll(async () => {
+    documents.clear();
+    const engine = await Engine.init();
+    const server = await createServer(engine, { user: null });
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    client = new Client({ name: "neutronics-scene", version: "0.0.0" }, { capabilities: {} });
+    await Promise.all([client.connect(clientT), server.connect(serverT)]);
+  });
+
+  it("scene runs return a dose map, instrument readings and provisional claims", async () => {
+    const res = (await client.callTool({
+      name: "simulate_neutron_shield",
+      arguments: { scene: SCENE, parameters: { half: 150 } },
+    })) as ToolText;
+    const out = JSON.parse(res.content[0].text);
+    const det = out.report.detectors[0];
+    expect(det.label).toBe("probe");
+    expect(det.dose_usv_per_h.mean).toBeGreaterThan(0);
+    expect(det.instruments[0].name).toBe("bubble");
+    expect(det.instruments[0].per_hour).toBeGreaterThan(0);
+    expect(out.report.mesh.dose_usv_per_h.length).toBe(64);
+    expect(out.report.balance_max_dev).toBeLessThan(1e-9);
+    const names = out.claim_set.claims.map((c: { name: string }) => c.name);
+    expect(names).toContain("count_rate:probe:bubble");
+    expect(names).toContain("dose_map_max");
+    for (const c of out.receipt_claims) expect(c.basis).toBe("predicted");
+  });
+
+  it("spec and scene together, or a bubble without calibration, fail closed", async () => {
+    const both = (await client.callTool({
+      name: "simulate_neutron_shield",
+      arguments: { scene: SCENE, spec: SPEC, parameters: { half: 150, shield_t: 100 } },
+    })) as { isError?: boolean };
+    expect(both.isError).toBe(true);
+    const uncal = (await client.callTool({
+      name: "simulate_neutron_shield",
+      arguments: {
+        scene: {
+          ...SCENE,
+          detectors: [{ label: "p", position_mm: [500, 0, 0], instruments: [{ type: "bubble" }] }],
+        },
+        parameters: { half: 150 },
+      },
+    })) as { isError?: boolean };
+    expect(uncal.isError).toBe(true);
+  });
+});

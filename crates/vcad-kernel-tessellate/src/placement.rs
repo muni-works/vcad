@@ -1,12 +1,28 @@
 //! Rigid placement of baked render meshes.
 //!
-//! Applies the standard translate/rotate/scale placement the IR's
-//! `Translate`/`Rotate`/`Scale` wrapper chain describes to flat `f32`
-//! position/normal buffers. Rotation order is **Rz·Ry·Rx** (X applied
-//! first), matching the document evaluator's transform chain and the app's
-//! three.js "ZYX" euler order. Scale is applied before rotation; normals get
-//! the rotation only (no scale, no renormalization) — bit-for-bit the
-//! contract of the web engine's `transformMesh`, which this replaces.
+//! Applies a translate/rotate/scale placement to flat `f32` position/normal
+//! buffers. Rotation order is **Rz·Ry·Rx** (X applied first): the instance
+//! `Transform3D` convention (`vcad_eval::kinematics`, the app's three.js
+//! "ZYX" euler order). Scale is applied before rotation; normals get the
+//! rotation only (no scale, no renormalization) — bit-for-bit the contract
+//! of the web engine's `transformMesh`, which this replaces.
+//!
+//! A `CsgOp::Rotate` node is the other order, Rx·Ry·Rz (Z first —
+//! `Solid::rotate`, and the evaluator for imported meshes too). Callers
+//! placing a mesh read off a `Translate`/`Rotate`/`Scale` wrapper chain pass
+//! [`RotationOrder::Xyz`] to [`apply_placement_ordered`] (the engine's
+//! `findWrappedRoot` tags such placements `rotateOrder: "xyz"`).
+
+/// How a placement's three Euler angles compose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RotationOrder {
+    /// R = Rz·Ry·Rx (X acts first): the instance `Transform3D` order.
+    #[default]
+    Zyx,
+    /// R = Rx·Ry·Rz (Z acts first): the `CsgOp::Rotate` / `Solid::rotate`
+    /// order.
+    Xyz,
+}
 
 /// Apply `scale → rotate (Rz·Ry·Rx, degrees) → translate` to `positions`,
 /// and the rotation alone to `normals` when present. Buffers are flat
@@ -19,6 +35,25 @@ pub fn apply_placement(
     rotate_deg: [f64; 3],
     scale: [f64; 3],
 ) {
+    apply_placement_ordered(
+        positions,
+        normals,
+        translate,
+        rotate_deg,
+        scale,
+        RotationOrder::Zyx,
+    );
+}
+
+/// [`apply_placement`] with an explicit Euler composition `order`.
+pub fn apply_placement_ordered(
+    positions: &mut [f32],
+    normals: Option<&mut [f32]>,
+    translate: [f64; 3],
+    rotate_deg: [f64; 3],
+    scale: [f64; 3],
+    order: RotationOrder,
+) {
     let rx = rotate_deg[0].to_radians();
     let ry = rotate_deg[1].to_radians();
     let rz = rotate_deg[2].to_radians();
@@ -27,15 +62,18 @@ pub fn apply_placement(
     let (sy, cy) = ry.sin_cos();
     let (sz, cz) = rz.sin_cos();
 
-    let m00 = cy * cz;
-    let m01 = sx * sy * cz - cx * sz;
-    let m02 = cx * sy * cz + sx * sz;
-    let m10 = cy * sz;
-    let m11 = sx * sy * sz + cx * cz;
-    let m12 = cx * sy * sz - sx * cz;
-    let m20 = -sy;
-    let m21 = sx * cy;
-    let m22 = cx * cy;
+    let [[m00, m01, m02], [m10, m11, m12], [m20, m21, m22]] = match order {
+        RotationOrder::Zyx => [
+            [cy * cz, sx * sy * cz - cx * sz, cx * sy * cz + sx * sz],
+            [cy * sz, sx * sy * sz + cx * cz, cx * sy * sz - sx * cz],
+            [-sy, sx * cy, cx * cy],
+        ],
+        RotationOrder::Xyz => [
+            [cy * cz, -cy * sz, sy],
+            [cx * sz + sx * sy * cz, cx * cz - sx * sy * sz, -sx * cy],
+            [sx * sz - cx * sy * cz, sx * cz + cx * sy * sz, cx * cy],
+        ],
+    };
 
     for p in positions.as_chunks_mut::<3>().0 {
         let x = p[0] as f64 * scale[0];
@@ -93,6 +131,14 @@ mod tests {
         // ŷ under the same rotation: Rx sends ŷ→ẑ, Rz keeps ẑ.
         let mut p = vec![0.0, 1.0, 0.0];
         apply_placement(&mut p, None, Z3, [90.0, 0.0, 90.0], I3);
+        close(&p, &[0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn xyz_order_is_rx_ry_rz() {
+        // Z acts first: x̂ → (Rz 90°) ŷ → (Rx 90°) ẑ.
+        let mut p = vec![1.0, 0.0, 0.0];
+        apply_placement_ordered(&mut p, None, Z3, [90.0, 0.0, 90.0], I3, RotationOrder::Xyz);
         close(&p, &[0.0, 0.0, 1.0]);
     }
 

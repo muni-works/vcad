@@ -107,6 +107,51 @@ pub fn mesh_clearance(a: &TriangleMesh, b: &TriangleMesh) -> Option<ClearanceRes
     })
 }
 
+/// Unsigned surface-to-surface distance between two triangle soups.
+///
+/// The first pass of [`mesh_clearance`] alone: no inside/outside parity, so
+/// it is valid for open meshes (e.g. a solid's mesh with some faces left
+/// out). `intersecting` here means only "some triangle pair crosses", with
+/// `distance` 0 at the crossing point. Returns `None` when either mesh has
+/// no triangles.
+pub fn mesh_surface_distance(a: &TriangleMesh, b: &TriangleMesh) -> Option<ClearanceResult> {
+    let bvh_a = TriBvh::build(a)?;
+    let bvh_b = TriBvh::build(b)?;
+    let mut best = Best {
+        dist_sq: f64::INFINITY,
+        point_a: [0.0; 3],
+        point_b: [0.0; 3],
+        crossing: false,
+    };
+    closest_pair(&bvh_a, 0, &bvh_b, 0, &mut best);
+    Some(ClearanceResult {
+        distance: best.dist_sq.sqrt(),
+        intersecting: best.crossing,
+        point_a: best.point_a,
+        point_b: best.point_b,
+    })
+}
+
+/// Inside/outside tests for many points against one closed mesh, sharing a
+/// single BVH build (the same hardened parity vote [`mesh_clearance`] uses).
+pub struct MeshInsideTester {
+    bvh: Option<TriBvh>,
+}
+
+impl MeshInsideTester {
+    /// Build the tester. An empty mesh contains nothing.
+    pub fn new(mesh: &TriangleMesh) -> Self {
+        Self {
+            bvh: TriBvh::build(mesh),
+        }
+    }
+
+    /// Is `p` strictly inside the closed mesh?
+    pub fn contains(&self, p: [f64; 3]) -> bool {
+        self.bvh.as_ref().is_some_and(|b| point_in_mesh(p, b))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Triangle BVH
 // ---------------------------------------------------------------------------

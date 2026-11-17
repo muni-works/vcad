@@ -11,8 +11,12 @@
 //      instance whose open document is that file.
 //   4. the most recently launched live instance, with a warning naming the others.
 //
+// Dev builds (bundle_id io.vcad.dev.*) are skipped in 3–4 unless nothing else
+// is running, so a harness's throwaway bundle can't win "newest". Files naming
+// a dead pid are deleted on read (crashed apps never clean up).
+//
 // Mirrored in packages/mcp/src/app-discovery.ts (keep the two in step).
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -32,34 +36,46 @@ export function isAlive(pid) {
 
 const urlOf = (r) => r.url ?? `http://127.0.0.1:${r.port}/mcp`;
 
-/** Live instance records, newest first. Falls back to app.json when no per-instance files exist. */
+export const DEV_BUNDLE_PREFIX = "io.vcad.dev.";
+
+export const isDevBuild = (r) => typeof r.bundle_id === "string" && r.bundle_id.startsWith(DEV_BUNDLE_PREFIX);
+
+/**
+ * Live instance records, newest first. Falls back to app.json when no
+ * per-instance files exist. Records naming a dead pid (and a dead app.json)
+ * are deleted; unreadable files are left alone.
+ */
 export function listInstances({ home = homedir(), alive = isAlive } = {}) {
   const dir = join(vcadHome(home), "instances");
+  const live = (p) => {
+    let r;
+    try {
+      r = JSON.parse(readFileSync(p, "utf8"));
+    } catch {
+      return null;
+    }
+    if (typeof r?.pid !== "number" || typeof r?.port !== "number") return null;
+    if (alive(r.pid)) return r;
+    try {
+      unlinkSync(p);
+    } catch {}
+    return null;
+  };
   let records = [];
   try {
     records = readdirSync(dir)
       .filter((f) => f.endsWith(".json"))
-      .map((f) => {
-        try {
-          return JSON.parse(readFileSync(join(dir, f), "utf8"));
-        } catch {
-          return null;
-        }
-      })
+      .map((f) => live(join(dir, f)))
       .filter(Boolean);
   } catch {}
-  if (records.length === 0) {
-    try {
-      records = [JSON.parse(readFileSync(join(vcadHome(home), "app.json"), "utf8"))];
-    } catch {}
-  }
-  return records
-    .filter((r) => alive(r.pid))
-    .sort((a, b) => String(b.started ?? "").localeCompare(String(a.started ?? "")));
+  const legacy = live(join(vcadHome(home), "app.json"));
+  if (records.length === 0 && legacy) records = [legacy];
+  return records.sort((a, b) => String(b.started ?? "").localeCompare(String(a.started ?? "")));
 }
 
 export function describe(r) {
-  return `pid ${r.pid} (${r.document_name ?? r.document_path ?? "no document"})`;
+  const doc = r.document_name ?? r.document_path ?? "no document";
+  return isDevBuild(r) ? `pid ${r.pid} (${doc}, dev build ${r.bundle_id})` : `pid ${r.pid} (${doc})`;
 }
 
 /**
@@ -82,18 +98,26 @@ export function selectInstance({ env = process.env, instances, documentPath } = 
     return { url: urlOf(instance), instance };
   }
   if (instances.length === 0) return { error: "no running vcad.app found (~/.vcad/instances is empty)" };
+  const real = instances.filter((r) => !isDevBuild(r));
+  const dev = instances.filter(isDevBuild);
+  const onlyDev = real.length === 0;
+  const pool = onlyDev ? dev : real;
   const wanted = documentPath ?? env.VCAD_APP_DOCUMENT;
   if (wanted) {
     const abs = resolve(wanted);
-    const instance = instances.find((r) => r.document_path && resolve(r.document_path) === abs);
+    const instance = pool.find((r) => r.document_path && resolve(r.document_path) === abs);
     if (instance) return { url: urlOf(instance), instance };
   }
-  const [instance, ...others] = instances;
-  const warning = others.length
-    ? `${instances.length} vcad.app instances are running; using the newest, ${describe(instance)}. ` +
-      `Others: ${others.map(describe).join(", ")}. Set VCAD_APP_PID to choose.`
-    : undefined;
-  return { url: urlOf(instance), instance, ...(warning ? { warning } : {}) };
+  const [instance, ...others] = pool;
+  const notes = [];
+  if (others.length)
+    notes.push(
+      `${pool.length} vcad.app instances are running; using the newest, ${describe(instance)}. ` +
+        `Others: ${others.map(describe).join(", ")}. Set VCAD_APP_PID to choose.`,
+    );
+  if (onlyDev) notes.push(`Only dev builds (${DEV_BUNDLE_PREFIX}*) are running; using ${describe(instance)}. Set VCAD_APP_PID to pin one.`);
+  else if (dev.length) notes.push(`Skipped dev build(s) ${dev.map(describe).join(", ")}; set VCAD_APP_PID to use one.`);
+  return { url: urlOf(instance), instance, ...(notes.length ? { warning: notes.join(" ") } : {}) };
 }
 
 /**
