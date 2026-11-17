@@ -26,6 +26,7 @@ fn sel() -> CavityExtraction {
         enclosure: "enclosure".into(),
         // The puck's air root is unnamed; select it by its material.
         air: "air".into(),
+        obstacles: vec![],
         driver_radius: Some(ParamValue::Named("driver_r".into())),
         temp_c: None,
         tolerance: Default::default(),
