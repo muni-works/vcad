@@ -125,6 +125,58 @@ def shot(name, title=None, sub=None, lt_from=0.0, lt_to=1e9, pick=None, hud=None
         emit(fade(img, min(1.0, kk / max(1, min(fade_in, fade_out)))))
 
 
+def despeck(im, min_px=60):
+    """drop tiny isolated blobs: hidden instances and framing anchors are 0.01 mm
+    cubes, and the outliner still draws each as a dot."""
+    import numpy as np
+    from scipy import ndimage
+    a = np.array(im)
+    lab, n = ndimage.label(a[..., 3] > 0, structure=np.ones((3, 3)))
+    size = ndimage.sum(np.ones_like(lab), lab, range(n + 1))
+    a[size[lab] < min_px] = 0
+    return Image.fromarray(a)
+
+
+def stills(prefix, hold, last_hold, title=None, sub=None, lt_from=0.0, xf=6):
+    """a shot built from still states (stills/<prefix>_NN.png): each held `hold` s,
+    crossfading over `xf` frames into the next, the last held `last_hold` s.
+    the animator can't hide or show parts, so build-up and cut-down are stills."""
+    d0 = os.path.join(shots, 'stills')
+    files = sorted(f for f in os.listdir(d0) if f.startswith(prefix + '_') and f.endswith('.png'))
+    ims = [Image.open(os.path.join(d0, f)).convert('RGBA') for f in files]
+    if ims[0].size != (W, H):  # oversized: crop around the fullest state (first or last)
+        a, c = ims[0].getchannel('A').getbbox(), ims[-1].getchannel('A').getbbox()
+        b = (min(a[0], c[0]), min(a[1], c[1]), max(a[2], c[2]), max(a[3], c[3]))
+        cx, cy = (b[0] + b[2]) // 2, (b[1] + b[3]) // 2
+        x0 = min(max(0, cx - W // 2), ims[0].size[0] - W)
+        y0 = min(max(0, cy - H // 2), ims[0].size[1] - H)
+        ims = [im.crop((x0, y0, x0 + W, y0 + H)) for im in ims]
+    ims = [despeck(im) for im in ims]
+    seq = []  # (image, image_to_blend_toward, alpha)
+    for k, im in enumerate(ims):
+        n_hold = int((last_hold if k == len(ims) - 1 else hold) * FPS)
+        for j in range(n_hold):
+            if k < len(ims) - 1 and j >= n_hold - xf:
+                seq.append((im, ims[k + 1], (j - (n_hold - xf) + 1) / (xf + 1)))
+            else:
+                seq.append((im, None, 0))
+    for k, (a, b, al) in enumerate(seq):
+        img = frame_bg()
+        layer = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+        layer.paste(a, (0, 0), a)
+        if b is not None:
+            lb = Image.new('RGBA', (W, H), (0, 0, 0, 0))
+            lb.paste(b, (0, 0), b)
+            layer = Image.blend(layer, lb, al)
+        img.paste(layer, (0, 0), layer)
+        d = ImageDraw.Draw(img)
+        chrome(d)
+        if title and k / FPS >= lt_from:
+            lower_third(d, title, sub)
+        kk = min(k, len(seq) - 1 - k)
+        emit(fade(img, min(1.0, kk / 8)))
+
+
 # gym trace for the fall HUD: video frame i of shot_fall -> sim time
 rows = [(float(r['t_s']), float(r['tilt_deg']), float(r['base_z_mm'])) for r in csv.DictReader(open(trace_path))]
 HOLD, SLOW = 1.0, 4.0
@@ -153,9 +205,9 @@ def fall_hud(d, i):
 
 
 # ---- the cut ------------------------------------------------------------------
-card(['this document is empty.'], 4.5, caret=True)
-shot('assemble', 'rose mini', '142 parts · 22 joints · one loon file', lt_from=6.0, lt_to=18.5)
-shot('cut', 'rml-12', '12 joints. the legs come first.', lt_from=3.6, lt_to=7.0)
+card(['this document is empty.'], 5.5, caret=True)
+stills('assemble', 0.6, 4.5, 'rose mini', '142 parts · 22 joints · one loon file', lt_from=12.6)
+stills('cut', 0.9, 3.4, 'rml-12', '12 joints. the legs come first.', lt_from=2.8)
 card(['then we dropped it', 'into the simulator.'], 2.6, size=76)
 F = len([f for f in os.listdir(os.path.join(shots, 'frames_fall')) if f.endswith('.png')])
 # real time: 1 s hold, then every 4th frame through the fall
@@ -163,10 +215,10 @@ shot('fall', 'vcad gym · 1 kHz physics · no policy', 'joint PD holding the zer
      pick=lambda N: list(range(0, 30)) + list(range(30, N, 4)), hud=fall_hud, tag='1×', fade_out=1)
 shot('fall', 'vcad gym · 1 kHz physics · no policy', 'joint PD holding the zero pose',
      pick=lambda N: range(24, N), hud=fall_hud, tag='¼×', fade_in=1)
-card(["it can't walk yet."], 2.2, label="what vcad can't do — today", accent='yet')
-card(["it can't talk to a motor yet."], 2.2, label="what vcad can't do — today", accent='yet')
-card(["the file isn't the robot yet."], 2.2, label="what vcad can't do — today", accent='yet')
-card(['~20 weeks.'], 2.6, label='one person · one file · critical path to a first walk', size=120)
+card(["it can't walk yet."], 2.8, label="what vcad can't do — today", accent='yet')
+card(["it can't talk to a motor yet."], 2.8, label="what vcad can't do — today", accent='yet')
+card(["the file isn't the robot yet."], 2.8, label="what vcad can't do — today", accent='yet')
+card(['~20 weeks.'], 3.2, label='one person · one file · critical path to a first walk', size=120)
 card(['[ live action: the front door ]'], 2.4, label='placeholder', size=56)
-card(['build a robot from nothing'], 4.2, label='ep 1 · the blank document', size=96)
+card(['build a robot from nothing'], 5.0, label='ep 1 · the blank document', size=96)
 print(f'{n} frames, {n / FPS:.1f} s')
