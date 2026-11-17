@@ -160,11 +160,16 @@ pub fn convex_hull(points: &[P]) -> Option<TriangleMesh> {
                 [(v[0], v[1]), (v[1], v[2]), (v[2], v[0])]
             })
             .collect();
-        let horizon: Vec<(usize, usize)> = edges
+        // Sorted: the horizon's order is the order new faces are created
+        // in, which decides both the output's triangle order and which face
+        // claims a point lying over several — walking the hash set made one
+        // hull come out differently on every run.
+        let mut horizon: Vec<(usize, usize)> = edges
             .iter()
             .copied()
             .filter(|&(a, b)| !edges.contains(&(b, a)))
             .collect();
+        horizon.sort_unstable();
 
         let mut orphans = Vec::new();
         for &i in &visible {

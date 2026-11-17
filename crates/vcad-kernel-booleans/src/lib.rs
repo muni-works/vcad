@@ -20,6 +20,7 @@ pub mod classify;
 mod cyl_band;
 pub mod cyl_cyl;
 mod freeze;
+pub mod merge;
 pub mod mesh;
 mod no_crossing;
 mod pipeline;
@@ -39,6 +40,7 @@ pub use api::{
     boolean_op, boolean_op_reported, repair_export_mesh, BooleanError, BooleanOp, BooleanReport,
     BooleanResult, DegradeReason, Fidelity,
 };
+pub use merge::{merge_coplanar_faces, merged_if_no_worse, MergeReport};
 pub use mesh::csg::{manifold_csg, mesh_union_all};
 pub use mesh::is_triangle_soup;
 pub use mesh::point_in_mesh;

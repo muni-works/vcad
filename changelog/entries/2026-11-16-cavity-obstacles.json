@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-cavity-obstacles",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "feat",
+  "title": "Cavity acoustics: solids inside the box as obstacles",
+  "summary": "simulate_cavity takes an obstacles list: coaxial solids the air is carved around (a driver motor) become rigid obstacles, so V_box is the real air volume.",
+  "features": ["acoustics", "simulation", "speaker"],
+  "mcpTools": ["simulate_cavity"]
+}

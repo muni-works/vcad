@@ -4969,6 +4969,16 @@ emissiveMapU?: [number, number, number],
  */
 emissiveMapV?: [number, number, number], 
 /**
+ * Volumetric emission: the part is a glowing **medium** (a plasma, a
+ * discharge, a flame), not a surface. The photoreal path tracer renders
+ * its solid as an emissive participating medium — no surface, no
+ * shading, radiance accumulated along every ray that crosses it — and
+ * ignores `color`/`metallic`/`roughness` for it. Drafting and raster
+ * views still draw the solid; the native viewport draws it as an
+ * emissive, see-through body.
+ */
+volumeEmission?: VolumeEmission, 
+/**
  * Physical properties the solvers read (elastic, thermal, dielectric,
  * magnetic, electrical). Every field is optional: a property the
  * document leaves out falls back to the [`materials`] library entry for
@@ -7175,6 +7185,40 @@ offset?: number,
  * Vignette darkness (0.0-1.0).
  */
 darkness?: number, };
+
+/**
+ * Emission from a volume rather than a surface — see
+ * [`MaterialDef::volume_emission`].
+ *
+ * The medium follows the emission–absorption radiative-transfer model: a
+ * ray crossing `L` millimetres of uniform medium picks up
+ * `(ε/κ)·(1 − e^{−κL})`, which is `ε·L` when `absorption` is zero, where
+ * `ε = color · intensity` is radiance per millimetre.
+ */
+export type VolumeEmission = { 
+/**
+ * Emission colour, linear RGB `[r, g, b]` in 0.0..1.0 (default white).
+ */
+color?: [number, number, number], 
+/**
+ * Emitted radiance per millimetre of path, multiplying `color`, in the
+ * renderer's radiance units (the studio key light is ~15). A 5 mm
+ * filament at intensity 2 reads about as bright as a lit screen.
+ */
+intensity: number, 
+/**
+ * Absorption coefficient κ, per millimetre (default 0: emission only).
+ * A medium thicker than `1/κ` saturates toward `color·intensity/κ` and
+ * starts to hide what is behind it.
+ */
+absorption?: number, 
+/**
+ * Soft-edge depth in millimetres: density ramps (smoothstep) from zero
+ * at the solid's boundary to full this far inside. Default 0, a
+ * hard-edged uniform medium. Set it to about the part's half-thickness
+ * for a core that glows hottest in the middle.
+ */
+falloff?: number, };
 
 /**
  * A copper pour zone.

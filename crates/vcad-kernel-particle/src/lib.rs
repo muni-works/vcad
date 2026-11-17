@@ -32,6 +32,10 @@
 //!    drives it over a [`spec::DeviceSpec`]'s named parameters (the
 //!    `optimize_electrodes` MCP tool; see `docs/particle-optics-m0.md`).
 //!
+//! Beyond the axisymmetric pipeline, [`field3d`] superposes coils and
+//! permanent magnets (loops, solenoids, disc/ring and block magnets) at
+//! arbitrary 3D poses, with a mm/degree JSON seam in [`field3d_spec`].
+//!
 //! **Scope and honesty.** The core is vacuum-field single-particle optics
 //! — the regime where electrode geometry dominates and where every classic
 //! electrode-design tool (SIMION lineage) operates. Later milestones add,
@@ -56,8 +60,11 @@ pub mod device;
 pub mod electrode_opt;
 pub mod elliptic;
 pub mod field;
+pub mod field3d;
+pub mod field3d_spec;
 pub mod fom;
 pub mod optimize;
+pub mod plasmoid;
 pub mod poisson;
 pub mod pops;
 pub mod power;

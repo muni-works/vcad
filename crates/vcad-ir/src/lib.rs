@@ -1899,6 +1899,21 @@ pub struct MaterialDef {
     )]
     #[cfg_attr(feature = "ts-rs", ts(rename = "emissiveMapV", optional))]
     pub emissive_map_v: Option<[f64; 3]>,
+    /// Volumetric emission: the part is a glowing **medium** (a plasma, a
+    /// discharge, a flame), not a surface. The photoreal path tracer renders
+    /// its solid as an emissive participating medium — no surface, no
+    /// shading, radiance accumulated along every ray that crosses it — and
+    /// ignores `color`/`metallic`/`roughness` for it. Drafting and raster
+    /// views still draw the solid; the native viewport draws it as an
+    /// emissive, see-through body.
+    #[serde(
+        rename = "volumeEmission",
+        alias = "volume_emission",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[cfg_attr(feature = "ts-rs", ts(rename = "volumeEmission", optional))]
+    pub volume_emission: Option<VolumeEmission>,
     /// Physical properties the solvers read (elastic, thermal, dielectric,
     /// magnetic, electrical). Every field is optional: a property the
     /// document leaves out falls back to the [`materials`] library entry for
@@ -2088,6 +2103,52 @@ impl MaterialDef {
         let c = self.emissive.unwrap_or([1.0, 1.0, 1.0]);
         let s = self.emissive_strength.unwrap_or(1.0);
         Some([c[0] * s, c[1] * s, c[2] * s])
+    }
+}
+
+/// Emission from a volume rather than a surface — see
+/// [`MaterialDef::volume_emission`].
+///
+/// The medium follows the emission–absorption radiative-transfer model: a
+/// ray crossing `L` millimetres of uniform medium picks up
+/// `(ε/κ)·(1 − e^{−κL})`, which is `ε·L` when `absorption` is zero, where
+/// `ε = color · intensity` is radiance per millimetre.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct VolumeEmission {
+    /// Emission colour, linear RGB `[r, g, b]` in 0.0..1.0 (default white).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub color: Option<[f64; 3]>,
+    /// Emitted radiance per millimetre of path, multiplying `color`, in the
+    /// renderer's radiance units (the studio key light is ~15). A 5 mm
+    /// filament at intensity 2 reads about as bright as a lit screen.
+    pub intensity: f64,
+    /// Absorption coefficient κ, per millimetre (default 0: emission only).
+    /// A medium thicker than `1/κ` saturates toward `color·intensity/κ` and
+    /// starts to hide what is behind it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub absorption: Option<f64>,
+    /// Soft-edge depth in millimetres: density ramps (smoothstep) from zero
+    /// at the solid's boundary to full this far inside. Default 0, a
+    /// hard-edged uniform medium. Set it to about the part's half-thickness
+    /// for a core that glows hottest in the middle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub falloff: Option<f64>,
+}
+
+impl VolumeEmission {
+    /// Emission coefficient `color · intensity`, radiance per millimetre.
+    pub fn radiance(&self) -> [f64; 3] {
+        let c = self.color.unwrap_or([1.0, 1.0, 1.0]);
+        [
+            c[0] * self.intensity,
+            c[1] * self.intensity,
+            c[2] * self.intensity,
+        ]
     }
 }
 
@@ -3450,6 +3511,35 @@ mod tests {
         );
         assert_eq!(snake.emissive_radiance(), Some([3.0; 3]));
         assert_eq!(MaterialDef::default().emissive_radiance(), None);
+    }
+
+    /// A glowing medium round-trips under `volumeEmission`, the snake_case
+    /// spelling loads, and only `intensity` is required.
+    #[test]
+    fn volume_emission_wire_format() {
+        let m = MaterialDef {
+            name: "plasma".into(),
+            volume_emission: Some(VolumeEmission {
+                color: Some([1.0, 0.42, 0.14]),
+                intensity: 3.0,
+                absorption: Some(0.01),
+                falloff: Some(1.5),
+            }),
+            ..Default::default()
+        };
+        let json = serde_json::to_value(&m).unwrap();
+        let v = json.get("volumeEmission").expect("camelCase key");
+        assert_eq!(v["intensity"], 3.0);
+        assert_eq!(serde_json::from_value::<MaterialDef>(json).unwrap(), m);
+        let snake: MaterialDef = serde_json::from_str(
+            r#"{"name":"p","color":[0,0,0],"metallic":0,"roughness":1,"volume_emission":{"intensity":2}}"#,
+        )
+        .unwrap();
+        let ve = snake.volume_emission.unwrap();
+        assert_eq!(ve.radiance(), [2.0; 3], "colour defaults to white");
+        assert_eq!((ve.absorption, ve.falloff), (None, None));
+        let plain = serde_json::to_value(MaterialDef::default()).unwrap();
+        assert!(plain.get("volumeEmission").is_none(), "absent stays absent");
     }
 
     #[test]

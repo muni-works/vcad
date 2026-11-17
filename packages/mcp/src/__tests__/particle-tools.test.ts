@@ -245,3 +245,72 @@ describe.skipIf(!wasmHasParticle)("charged-particle optics tools", () => {
     expect(res.content[0].text).toContain("cathode_v");
   });
 });
+
+const wasmHasMagneticField =
+  typeof (
+    probeEngine as unknown as {
+      kernel?: { magneticField?: unknown };
+    }
+  ).kernel?.magneticField === "function";
+
+describe.skipIf(!wasmHasMagneticField)("magnetic_field tool", () => {
+  let client: Client;
+
+  beforeAll(async () => {
+    documents.clear();
+    const engine = await Engine.init();
+    const server = await createServer(engine, { user: null });
+    const [clientT, serverT] = InMemoryTransport.createLinkedPair();
+    client = new Client(
+      { name: "magnetic-field", version: "0.0.0" },
+      { capabilities: {} },
+    );
+    await Promise.all([client.connect(clientT), server.connect(serverT)]);
+  });
+
+  it("disc magnet on-axis matches the closed form; grid + gradient", async () => {
+    const res = (await client.callTool({
+      name: "magnetic_field",
+      arguments: {
+        sources: [
+          {
+            type: "cylinder_magnet",
+            radius_mm: 5,
+            length_mm: 5,
+            remanence_t: 1.43,
+            pose: { position_mm: [0, 0, 0], axis: [0, 0, 1] },
+          },
+        ],
+        points_mm: [[0, 0, 10]],
+        grid: { u_range_mm: [-10, 10], v_range_mm: [-10, 10], nu: 3, nv: 3, origin_mm: [0, 0, 8] },
+        gradient: true,
+      },
+    })) as ToolText;
+    const out = JSON.parse(res.content[0].text);
+    const z = 10e-3;
+    const exact =
+      0.5 *
+      1.43 *
+      ((z + 2.5e-3) / Math.hypot(5e-3, z + 2.5e-3) -
+        (z - 2.5e-3) / Math.hypot(5e-3, z - 2.5e-3));
+    expect(Math.abs(out.b_t[0][2] - exact) / exact).toBeLessThan(1e-10);
+    expect(out.points_mm.length).toBe(10);
+    expect(out.grid).toEqual({ nu: 3, nv: 3, offset: 1 });
+    expect(out.grad_b_mag_t_per_m.length).toBe(10);
+    // |B| falls off above the pole: d|B|/dz < 0 on the axis.
+    expect(out.grad_b_mag_t_per_m[0][2]).toBeLessThan(0);
+    expect(out.sources[0].method).toBe("exact");
+  });
+
+  it("fails closed on a point on a filament", async () => {
+    const res = (await client.callTool({
+      name: "magnetic_field",
+      arguments: {
+        sources: [{ type: "loop", radius_mm: 10, current_a: 1 }],
+        points_mm: [[10, 0, 0]],
+      },
+    })) as { isError?: boolean; content: Array<{ text: string }> };
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("not finite");
+  });
+});

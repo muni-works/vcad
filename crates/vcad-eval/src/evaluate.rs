@@ -152,6 +152,7 @@ fn evaluate_inner(
     // into WASM; Rust-side callers — vcad.app, the CLI, vcad-render — rely on
     // this pass). A no-op when the document has no PartInstance nodes.
     let mut failures: Vec<RootFailure> = Vec::new();
+    let mut warnings: Vec<RootFailure> = Vec::new();
     let expanded_owned;
     let doc: &Document = match vcad_parts::expand_part_instances(doc) {
         Some((d, errors)) => {
@@ -421,20 +422,26 @@ fn evaluate_inner(
                 if let (Some(Some(solid)), Some(mesh)) =
                     (cache.get(&eval_root).cloned(), i.mesh(eval_root, h))
                 {
+                    // The cached mesh's face ids name the finished solid's
+                    // faces, not the node's. Clash detection gets the node's.
+                    let split = solid;
+                    let solid = i
+                        .root_solid(eval_root, h)
+                        .unwrap_or_else(|| finish_root(split.clone()).0);
                     let key = placement
                         .is_none()
                         .then(|| cache_key.as_ref().map(|k| k.0.clone()))
                         .flatten();
-                    let solid = match &placement {
-                        Some(t) => solid.apply_transform(t),
-                        None => solid,
+                    let place = |s: Solid| match &placement {
+                        Some(t) => s.apply_transform(t),
+                        None => s,
                     };
                     parts.push(EvaluatedPart {
                         mesh: place_mesh(mesh, placement.as_ref()),
                         material: entry.material.clone(),
-                        solid: Some(solid.clone()),
+                        solid: Some(place(solid)),
                     });
-                    solids.push(Some(solid));
+                    solids.push(Some(place(split)));
                     landed(&parts, &mut root_keys, key);
                     continue;
                 }
@@ -506,6 +513,7 @@ fn evaluate_inner(
                         Ok(MeshedOk {
                             mesh,
                             solid: None,
+                            split: None,
                             mesh_ms: m.mesh_ms,
                         })
                     }
@@ -514,30 +522,57 @@ fn evaluate_inner(
                 other => other,
             };
             match eval_outcome {
-                Ok(MeshedOk { mesh, solid, .. }) => {
+                Ok(MeshedOk {
+                    mesh, solid, split, ..
+                }) => {
+                    // A root the kernel knows is the wrong solid is reported,
+                    // and never cached: a cache hit carries no solid, so the
+                    // warning would vanish on the next evaluation.
+                    let wrong: Vec<String> = solid
+                        .as_ref()
+                        .map(|s| s.wrong_geometry_events().map(|e| e.to_string()).collect())
+                        .unwrap_or_default();
                     // A stand-in preview mesh never goes in under the full key.
-                    if !from_preview {
+                    if !from_preview && wrong.is_empty() {
                         store(&cache_key, &mesh);
                     }
-                    if let (Some(_), Some(i), Some(h)) = (&solid, inc.as_deref_mut(), root_hash) {
+                    if !wrong.is_empty() {
+                        warnings.push(RootFailure {
+                            scope: format!("root[{idx}]"),
+                            node_id: entry.root,
+                            error: format!("geometry is known to be wrong: {}", wrong.join("; ")),
+                        });
+                    }
+                    if let (Some(s), Some(i), Some(h)) = (&solid, inc.as_deref_mut(), root_hash) {
                         i.put_mesh(eval_root, h, &mesh);
+                        i.put_root_solid(eval_root, h, s);
                     }
                     // A peeled root's key names the unplaced shape, which a mesh
                     // bundle cannot stand in for: report none.
-                    let key = (!mesh.indices.is_empty() && placement.is_none() && !from_preview)
-                        .then(|| cache_key.as_ref().map(|k| k.0.clone()))
-                        .flatten();
+                    let key = (!mesh.indices.is_empty()
+                        && placement.is_none()
+                        && !from_preview
+                        && wrong.is_empty())
+                    .then(|| cache_key.as_ref().map(|k| k.0.clone()))
+                    .flatten();
                     let mesh = place_mesh(mesh, placement.as_ref());
-                    let solid = match (&placement, solid) {
+                    let place = |s: Option<Solid>| match (&placement, s) {
                         (Some(t), Some(s)) => Some(s.apply_transform(t)),
                         (_, s) => s,
+                    };
+                    let solid = place(solid);
+                    // Clash detection intersects roots: it gets the split
+                    // solid wherever merging changed anything.
+                    let for_clash = match split {
+                        Some(s) => place(Some(s)),
+                        None => solid.clone(),
                     };
                     parts.push(EvaluatedPart {
                         mesh,
                         material: entry.material.clone(),
-                        solid: solid.clone(),
+                        solid,
                     });
-                    solids.push(solid);
+                    solids.push(for_clash);
                     landed(&parts, &mut root_keys, key);
                 }
                 Err(error) => {
@@ -633,12 +668,30 @@ fn evaluate_inner(
                             mesh: m,
                             solid,
                             mesh_ms,
+                            ..
                         }) => {
                             tessellate_ms += mesh_ms;
                             if let Some(nt) = node_timings.get(&part_def.root.to_string()) {
                                 root_ms.push((format!("partDef {id}"), nt.eval_ms + mesh_ms));
                             }
-                            store(&cache_key, &m);
+                            // Same rule as roots: a known-wrong definition is
+                            // reported and never cached (a hit has no solid).
+                            let wrong: Vec<String> = solid
+                                .as_ref()
+                                .map(|s| s.wrong_geometry_events().map(|e| e.to_string()).collect())
+                                .unwrap_or_default();
+                            if wrong.is_empty() {
+                                store(&cache_key, &m);
+                            } else {
+                                warnings.push(RootFailure {
+                                    scope: format!("partDef[{id:?}]"),
+                                    node_id: part_def.root,
+                                    error: format!(
+                                        "geometry is known to be wrong: {}",
+                                        wrong.join("; ")
+                                    ),
+                                });
+                            }
                             if let (Some(i), Some(h)) = (inc.as_deref_mut(), def_hash) {
                                 if matches!(cache.get(&part_def.root), Some(Some(_))) {
                                     i.put_mesh(part_def.root, h, &m);
@@ -794,6 +847,7 @@ fn evaluate_inner(
             instances,
             clashes,
             failures,
+            warnings,
             timing,
             root_keys,
         })
@@ -839,7 +893,7 @@ pub fn evaluate_root_solids(doc: &Document) -> Result<Vec<RootSolid>, EvalError>
         if entry.visible == Some(false) {
             continue;
         }
-        let solid = evaluate_node(entry.root, &doc.nodes, &mut cache)?;
+        let solid = evaluate_node(entry.root, &doc.nodes, &mut cache)?.map(|s| finish_root(s).0);
         let name = doc.nodes.get(&entry.root).and_then(|n| n.name.clone());
         out.push(RootSolid {
             node_id: entry.root,
@@ -869,11 +923,41 @@ pub fn evaluate_node(
     Ok(result)
 }
 
+/// The solid that leaves evaluation for a root: the node's solid with the
+/// coplanar fragments its booleans left merged back into single faces
+/// ([`Solid::merge_coplanar_faces`]).
+///
+/// At the root's exit and nowhere earlier. The node cache keeps the split
+/// solid, so every boolean — including one in another root that uses this
+/// node as an operand — consumes faces in the shapes the splitters produce.
+/// Both earlier placements were measured and broke something: merging after
+/// every kernel boolean left the open-fusor chamber with 8 non-manifold
+/// edges, and merging each boolean node's result made the shell-ring
+/// document's later mesh-fallback union non-manifold (3146 edges). What is
+/// merged here is only ever meshed, picked and exported.
+/// `VCAD_NO_FACE_MERGE=1` turns it off.
+///
+/// Returns the finished solid and, when merging changed it, the split solid
+/// it came from — which is what anything that runs a further boolean on a
+/// root (clash detection) must use.
+fn finish_root(solid: Solid) -> (Solid, Option<Solid>) {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *OFF.get_or_init(|| std::env::var_os("VCAD_NO_FACE_MERGE").is_some()) {
+        return (solid, None);
+    }
+    match solid.try_merge_coplanar_faces() {
+        Some(merged) => (merged, Some(solid)),
+        None => (solid, None),
+    }
+}
+
 /// A root (or part definition) evaluated and tessellated.
 #[derive(Clone)]
 struct MeshedOk {
     mesh: EvaluatedMesh,
     solid: Option<Solid>,
+    /// The solid before [`finish_root`] merged it, when that changed it.
+    split: Option<Solid>,
     /// Tessellation wall time, when a clock is set.
     mesh_ms: f64,
 }
@@ -897,7 +981,9 @@ fn evaluate_and_mesh(
     let outcome = catch_unwind(AssertUnwindSafe(|| -> Result<MeshedOk, EvalError> {
         match evaluate_node_timed(root, nodes, cache, clock, timings)? {
             Some(s) => {
+                // The merge is timed with the tessellation it gates.
                 let t_mesh = clock.map(|c| c.now_ms());
+                let (s, split) = finish_root(s);
                 let chord = DISPLAY_CHORD_TOL.with(|t| t.get());
                 let tri = if DISPLAY_PREVIEW.with(|p| p.get()) {
                     s.to_preview_mesh(segments, chord)
@@ -913,12 +999,14 @@ fn evaluate_and_mesh(
                 Ok(MeshedOk {
                     mesh: tri_to_evaluated_render(tri),
                     solid: Some(s),
+                    split,
                     mesh_ms,
                 })
             }
             None => Ok(MeshedOk {
                 mesh: EvaluatedMesh::empty(),
                 solid: None,
+                split: None,
                 mesh_ms: 0.0,
             }),
         }
@@ -2682,28 +2770,29 @@ pub(crate) fn mesh_import_scale_warning(
 }
 
 /// Apply transform to imported mesh positions and normals.
+///
+/// The rotation is the same `R = Rx·Ry·Rz` (Z acts first) a BRep solid under
+/// that `Rotate` gets ([`rotation_transform`]): a `CsgOp::Rotate` means one
+/// thing whatever sits under it. This is NOT the instance `Transform3D`
+/// convention (Rz·Ry·Rx, `kinematics::euler_to_matrix`).
 fn transform_imported_mesh(data: &ImportedMeshData) -> EvaluatedMesh {
     let n_verts = data.positions.len() / 3;
     let mut positions = vec![0.0f32; data.positions.len()];
 
-    // Precompute rotation matrix
-    let rx = data.rotate_deg[0].to_radians();
-    let ry = data.rotate_deg[1].to_radians();
-    let rz = data.rotate_deg[2].to_radians();
-
-    let (cx, sx) = (rx.cos(), rx.sin());
-    let (cy, sy) = (ry.cos(), ry.sin());
-    let (cz, sz) = (rz.cos(), rz.sin());
-
-    let m00 = cy * cz;
-    let m01 = sx * sy * cz - cx * sz;
-    let m02 = cx * sy * cz + sx * sz;
-    let m10 = cy * sz;
-    let m11 = sx * sy * sz + cx * cz;
-    let m12 = cx * sy * sz - sx * cz;
-    let m20 = -sy;
-    let m21 = sx * cy;
-    let m22 = cx * cy;
+    let r = rotation_transform(&vcad_ir::Vec3::new(
+        data.rotate_deg[0],
+        data.rotate_deg[1],
+        data.rotate_deg[2],
+    ));
+    let col = |v: Vec3| r.apply_vec(&v);
+    let (c0, c1, c2) = (
+        col(Vec3::new(1.0, 0.0, 0.0)),
+        col(Vec3::new(0.0, 1.0, 0.0)),
+        col(Vec3::new(0.0, 0.0, 1.0)),
+    );
+    let (m00, m01, m02) = (c0.x, c1.x, c2.x);
+    let (m10, m11, m12) = (c0.y, c1.y, c2.y);
+    let (m20, m21, m22) = (c0.z, c1.z, c2.z);
 
     for i in 0..n_verts {
         let x = data.positions[i * 3] * data.scale[0];
@@ -4940,5 +5029,101 @@ mod tests {
             scene.failures[0].error
         );
         assert!(t.elapsed().as_secs() < 5);
+    }
+
+    /// `CsgOp::Rotate` means one thing whatever sits under it. A BRep cube
+    /// and an `ImportedMesh` of the same box, under the same oblique
+    /// three-axis Rotate, must land on the same vertices: R = Rx·Ry·Rz
+    /// (`rotation_transform`). The mesh path used to apply Rz·Ry·Rx.
+    #[test]
+    fn rotate_means_the_same_over_brep_and_imported_mesh() {
+        let (sx, sy, sz) = (10.0, 20.0, 30.0);
+        let angles = vcad_ir::Vec3::new(30.0, 45.0, 60.0);
+        let corners: Vec<[f64; 3]> = (0..8)
+            .map(|i| {
+                [
+                    if i & 1 != 0 { sx } else { 0.0 },
+                    if i & 2 != 0 { sy } else { 0.0 },
+                    if i & 4 != 0 { sz } else { 0.0 },
+                ]
+            })
+            .collect();
+        // Twelve outward triangles over the eight corners (bit0=x, bit1=y, bit2=z).
+        let indices: Vec<u32> = vec![
+            0, 2, 1, 1, 2, 3, 4, 5, 6, 5, 7, 6, 0, 1, 4, 1, 5, 4, 2, 6, 3, 3, 6, 7, 0, 4, 2, 2, 4,
+            6, 1, 3, 5, 3, 7, 5,
+        ];
+        let mut nodes = HashMap::new();
+        let node = |id: NodeId, op: CsgOp| vcad_ir::Node { id, name: None, op };
+        nodes.insert(
+            1,
+            node(
+                1,
+                CsgOp::Cube {
+                    size: vcad_ir::Vec3::new(sx, sy, sz),
+                },
+            ),
+        );
+        nodes.insert(2, node(2, CsgOp::Rotate { child: 1, angles }));
+        nodes.insert(
+            3,
+            node(
+                3,
+                CsgOp::ImportedMesh {
+                    positions: corners.iter().flatten().copied().collect(),
+                    indices,
+                    normals: None,
+                    source: None,
+                },
+            ),
+        );
+        nodes.insert(4, node(4, CsgOp::Rotate { child: 3, angles }));
+        let entry = |root| vcad_ir::SceneEntry {
+            root,
+            material: "m".into(),
+            visible: None,
+        };
+        let doc = Document {
+            roots: vec![entry(2), entry(4)],
+            nodes,
+            ..Default::default()
+        };
+        let opts = EvalOptions {
+            skip_clash_detection: true,
+            ..Default::default()
+        };
+        let scene = evaluate_document(&doc, &opts).unwrap();
+        assert_eq!(scene.parts.len(), 2);
+
+        let bbox = |m: &EvaluatedMesh| {
+            let mut lo = [f64::INFINITY; 3];
+            let mut hi = [f64::NEG_INFINITY; 3];
+            for p in m.positions.chunks_exact(3) {
+                for k in 0..3 {
+                    lo[k] = lo[k].min(p[k] as f64);
+                    hi[k] = hi[k].max(p[k] as f64);
+                }
+            }
+            (lo, hi)
+        };
+        let t = rotation_transform(&angles);
+        let mut want_lo = [f64::INFINITY; 3];
+        let mut want_hi = [f64::NEG_INFINITY; 3];
+        for c in &corners {
+            let q = t.apply_point(&vcad_kernel_math::Point3::new(c[0], c[1], c[2]));
+            for (k, v) in [q.x, q.y, q.z].into_iter().enumerate() {
+                want_lo[k] = want_lo[k].min(v);
+                want_hi[k] = want_hi[k].max(v);
+            }
+        }
+        for (label, part) in [("brep", &scene.parts[0]), ("mesh", &scene.parts[1])] {
+            let (lo, hi) = bbox(&part.mesh);
+            for k in 0..3 {
+                assert!(
+                    (lo[k] - want_lo[k]).abs() < 1e-3 && (hi[k] - want_hi[k]).abs() < 1e-3,
+                    "{label} bbox {lo:?}..{hi:?} != Rx·Ry·Rz {want_lo:?}..{want_hi:?}"
+                );
+            }
+        }
     }
 }

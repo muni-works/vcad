@@ -172,9 +172,15 @@ mod tests {
             let json = doc(x);
             let warm =
                 vcad_scene_from_json_session(session, json.as_ptr(), json.len(), ptr::null(), 0);
-            let cold = crate::vcad_scene_from_json(json.as_ptr(), json.len());
+            // Cold = a fresh session: the same viewport evaluation (display
+            // chord tolerance, which thins boolean rims) with nothing cached.
+            // `vcad_scene_from_json` is the full-grid mesh, a different thing.
+            let fresh = vcad_eval_session_new();
+            let cold =
+                vcad_scene_from_json_session(fresh, json.as_ptr(), json.len(), ptr::null(), 0);
             assert!(!warm.is_null() && !cold.is_null());
             assert_eq!(scene_json(warm), scene_json(cold));
+            vcad_eval_session_free(fresh);
         }
         let (mut reused, mut evaluated, mut meshes) = (0, 0, 0);
         vcad_eval_session_stats(session, &mut reused, &mut evaluated, &mut meshes);

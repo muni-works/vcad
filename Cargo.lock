@@ -5815,6 +5815,7 @@ dependencies = [
  "vcad-kernel-gpu",
  "vcad-kernel-math 0.11.0",
  "vcad-kernel-naming 0.11.0",
+ "vcad-kernel-particle 0.11.0",
  "vcad-kernel-physics",
  "vcad-kernel-raytrace 0.11.0",
  "vcad-kernel-tessellate 0.11.0",

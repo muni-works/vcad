@@ -432,7 +432,9 @@ export function embroideryPatternToMeshWithKernel(
  * Kernel-preferred mesh placement: use the WASM `transformMeshBuffers`
  * binding when the loaded kernel has it, otherwise fall back to the TS
  * {@link transformMesh}. Same convention either way: scale → rotate
- * (Rz·Ry·Rx, degrees) → translate on positions, rotation only on normals.
+ * (degrees; Rz·Ry·Rx, or Rx·Ry·Rz when `rotateOrder` is "xyz") → translate
+ * on positions, rotation only on normals. `findWrappedRoot` tags a placement
+ * read off a `Rotate` wrapper "xyz" so it matches `Solid.rotate`.
  */
 export function transformMeshWithKernel(
   mesh: TriangleMesh,
@@ -480,14 +482,16 @@ export function transformMesh(
   const cy = Math.cos(ry), sy = Math.sin(ry);
   const cz = Math.cos(rz), sz = Math.sin(rz);
 
+  // Default Rz·Ry·Rx (Transform3D); "xyz" = Rx·Ry·Rz (raw CsgOp::Rotate).
+  const xyz = transform.rotateOrder === "xyz";
   const m00 = cy * cz;
-  const m01 = sx * sy * cz - cx * sz;
-  const m02 = cx * sy * cz + sx * sz;
-  const m10 = cy * sz;
-  const m11 = sx * sy * sz + cx * cz;
-  const m12 = cx * sy * sz - sx * cz;
-  const m20 = -sy;
-  const m21 = sx * cy;
+  const m01 = xyz ? -cy * sz : sx * sy * cz - cx * sz;
+  const m02 = xyz ? sy : cx * sy * cz + sx * sz;
+  const m10 = xyz ? cx * sz + sx * sy * cz : cy * sz;
+  const m11 = xyz ? cx * cz - sx * sy * sz : sx * sy * sz + cx * cz;
+  const m12 = xyz ? -sx * cy : cx * sy * sz - sx * cz;
+  const m20 = xyz ? sx * sz - cx * sy * cz : -sy;
+  const m21 = xyz ? sx * cz + cx * sy * sz : sx * cy;
   const m22 = cx * cy;
 
   for (let i = 0; i < mesh.positions.length; i += 3) {
@@ -597,9 +601,11 @@ export function evaluateDocumentTS(
     }
 
     try {
-      const solid = evaluateNode(entry.root, doc.nodes, Solid, cache, 0);
+      const split = evaluateNode(entry.root, doc.nodes, Solid, cache, 0);
+      const solid = finishRoot(split);
       const mesh = solidToMesh(solid);
-      solids.push(solid);
+      // Clash detection intersects roots: it keeps the unmerged solid.
+      solids.push(split);
       return {
         mesh,
         material: entry.material,
@@ -627,7 +633,7 @@ export function evaluateDocumentTS(
     evaluatedPartDefs = [];
     for (const [id, partDef] of Object.entries(doc.partDefs)) {
       try {
-        const solid = evaluateNode(partDef.root, doc.nodes, Solid, cache, 0);
+        const solid = finishRoot(evaluateNode(partDef.root, doc.nodes, Solid, cache, 0));
         const mesh = solidToMesh(solid);
         partDefMeshes.set(id, mesh);
         evaluatedPartDefs.push({ id, mesh, solid });
@@ -692,6 +698,19 @@ export function evaluateDocumentTS(
     clashes,
     failures: failures.length > 0 ? failures : undefined,
   };
+}
+
+/**
+ * The solid that leaves evaluation for a root: the coplanar fragments its
+ * booleans left are merged back into single faces, mirroring `finish_root`
+ * in the Rust evaluator. Only at the exit — the node cache (and anything
+ * that runs a further boolean, like clash detection) keeps the split solid.
+ * A kernel bundle built before the binding existed returns the solid as is.
+ */
+function finishRoot(solid: Solid): Solid {
+  const merge = (solid as unknown as { mergeCoplanarFaces?: () => Solid })
+    .mergeCoplanarFaces;
+  return typeof merge === "function" ? merge.call(solid) : solid;
 }
 
 function evaluateNode(

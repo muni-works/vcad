@@ -1760,7 +1760,7 @@ pub fn split_planar_face_by_circle(
     if !circle_fully_inside_polygon(&loop_verts, circle) {
         // Check if circle partially intersects (crosses exactly 2 edges)
         if circle_partially_inside_polygon(&loop_verts, circle) {
-            return split_planar_face_by_arc(brep, face_id, circle, segments);
+            return split_planar_face_by_arc(brep, face_id, circle, segments, canonical);
         }
         // The circle doesn't cross this face, but it may be TANGENT to one
         // of its edges from outside (the neighbor of a cell the circle is
@@ -2820,6 +2820,7 @@ pub fn split_planar_face_by_arc(
     face_id: FaceId,
     circle: &vcad_kernel_geom::Circle3d,
     segments: u32,
+    canonical: bool,
 ) -> SplitResult {
     let face = &brep.topology.faces[face_id];
     let surface_index = face.surface_index;
@@ -2919,6 +2920,7 @@ pub fn split_planar_face_by_arc(
             face_id,
             circle,
             segments,
+            canonical,
             &loop_verts,
             &poly_2d,
             center_2d,
@@ -2980,7 +2982,9 @@ pub fn split_planar_face_by_arc(
     let arc2_mid_y = center_2d.1 + circle.radius * arc2_mid_angle.sin();
     let arc2_inside = point_in_polygon_2d(arc2_mid_x, arc2_mid_y, &poly_2d);
     if arc1_inside && arc2_inside {
-        return split_planar_face_tangent_inside(brep, face_id, circle, segments, int1, int2);
+        return split_planar_face_tangent_inside(
+            brep, face_id, circle, segments, canonical, int1, int2,
+        );
     }
     if !arc1_inside && !arc2_inside {
         // Neither arc's midpoint lies inside the polygon: the circle runs
@@ -3300,6 +3304,7 @@ fn split_planar_face_by_multi_arc(
     face_id: FaceId,
     circle: &vcad_kernel_geom::Circle3d,
     segments: u32,
+    canonical: bool,
     loop_verts: &[Point3],
     poly_2d: &[(f64, f64)],
     center_2d: (f64, f64),
@@ -3383,6 +3388,7 @@ fn split_planar_face_by_multi_arc(
             face_id,
             circle,
             segments,
+            canonical,
             loop_verts,
             poly_2d,
             center_2d,
@@ -3441,17 +3447,18 @@ fn split_planar_face_by_multi_arc(
     let plane_normal = u_axis.cross(v_axis);
 
     // Arc points from one crossing to another, travelling CCW (in the 2D
-    // face frame) when `ccw`; sampled on the circle's own raw-`segments`
-    // grid so the curved partner face emits identical vertices.
+    // face frame) when `ccw`; sampled on the curved partner's grid for this
+    // circle (see `planar_split_arc_points`) so the seam conforms.
     let circ_normal = circle.x_dir.into_inner().cross(circle.y_dir.into_inner());
     let aligned = plane_normal.dot(circ_normal) > 0.0;
     let arc_between = |from: usize, to: usize, ccw: bool| -> Vec<Point3> {
-        circle_frame_arc_points(
+        planar_split_arc_points(
             circle,
             intersections[from].point,
             intersections[to].point,
             ccw == aligned,
             segments,
+            canonical,
         )
     };
     // Neighbor crossing around the circle in the given travel direction
@@ -3656,6 +3663,7 @@ fn split_planar_face_inscribed_circle(
     face_id: FaceId,
     circle: &vcad_kernel_geom::Circle3d,
     segments: u32,
+    canonical: bool,
     loop_verts: &[Point3],
     poly_2d: &[(f64, f64)],
     center_2d: (f64, f64),
@@ -3713,12 +3721,13 @@ fn split_planar_face_inscribed_circle(
     let circ_normal = circle.x_dir.into_inner().cross(circle.y_dir.into_inner());
     let aligned = plane_normal.dot(circ_normal) > 0.0;
     let arc_between = |from: usize, to: usize, ccw: bool| -> Vec<Point3> {
-        circle_frame_arc_points(
+        planar_split_arc_points(
             circle,
             intersections[from].point,
             intersections[to].point,
             ccw == aligned,
             segments,
+            canonical,
         )
     };
 
@@ -3814,6 +3823,7 @@ fn split_planar_face_tangent_inside(
     face_id: FaceId,
     circle: &vcad_kernel_geom::Circle3d,
     segments: u32,
+    canonical: bool,
     int1: &CirclePolygonIntersection,
     int2: &CirclePolygonIntersection,
 ) -> SplitResult {
@@ -3846,7 +3856,7 @@ fn split_planar_face_tangent_inside(
         if !brep.topology.faces.contains_key(sub_id) {
             continue;
         }
-        let sub_result = split_planar_face_by_arc(brep, sub_id, circle, segments);
+        let sub_result = split_planar_face_by_arc(brep, sub_id, circle, segments, canonical);
         // If the recursive split made progress (>= 2 sub-faces), use those;
         // otherwise the sub-face was left intact (e.g. its arc midpoint missed
         // the polygon by a tolerance margin) — keep the unsplit sub-face.
@@ -4014,8 +4024,54 @@ pub fn split_spherical_face_by_circle_checked(
     segments: u32,
 ) -> (SplitResult, bool) {
     let mut sound = true;
-    let result = split_spherical_face_by_circle_inner(brep, face_id, circle, segments, &mut sound);
+    let result =
+        split_spherical_face_by_circle_inner(brep, face_id, circle, segments, &mut sound, None);
     (result, sound)
+}
+
+/// [`split_spherical_face_by_circle_checked`] with the circle realized on
+/// the given closed polyline instead of the circle-frame `segments` grid —
+/// for a circle the sphere shares with a face that samples it differently
+/// (a coaxial cylinder wall's frozen columns).
+///
+/// Only a whole circle can carry the ring: on an untrimmed sphere, or
+/// wholly inside a trimmed patch. A circle that crosses a patch's boundary
+/// is clipped on the usual grid.
+pub fn split_spherical_face_by_ring_checked(
+    brep: &mut BRepSolid,
+    face_id: FaceId,
+    circle: &vcad_kernel_geom::Circle3d,
+    ring: &[Point3],
+    segments: u32,
+) -> (SplitResult, bool) {
+    let mut sound = true;
+    let ring = (ring.len() >= 3).then_some(ring);
+    let result =
+        split_spherical_face_by_circle_inner(brep, face_id, circle, segments, &mut sound, ring);
+    (result, sound)
+}
+
+/// The vertices a full circle is realized on: the caller's `ring`, or the
+/// circle-frame `segments` grid.
+fn sphere_circle_ring(
+    circle: &vcad_kernel_geom::Circle3d,
+    segments: u32,
+    ring: Option<&[Point3]>,
+) -> Vec<Point3> {
+    if let Some(ring) = ring {
+        return ring.to_vec();
+    }
+    // NOTE: sphere ring pairing relies on the circle's own frame — do NOT
+    // switch this to the canonical grid (see fillet-defects notes).
+    (0..segments)
+        .map(|i| {
+            let theta = 2.0 * std::f64::consts::PI * (i as f64) / (segments as f64);
+            let (sin_t, cos_t) = theta.sin_cos();
+            circle.center
+                + circle.radius
+                    * (cos_t * circle.x_dir.into_inner() + sin_t * circle.y_dir.into_inner())
+        })
+        .collect()
 }
 
 fn split_spherical_face_by_circle_inner(
@@ -4024,6 +4080,7 @@ fn split_spherical_face_by_circle_inner(
     circle: &vcad_kernel_geom::Circle3d,
     segments: u32,
     sound: &mut bool,
+    ring: Option<&[Point3]>,
 ) -> SplitResult {
     let face = &brep.topology.faces[face_id];
     let surface_index = face.surface_index;
@@ -4072,7 +4129,7 @@ fn split_spherical_face_by_circle_inner(
         || !brep.topology.faces[face_id].inner_loops.is_empty()
     {
         if let Some(result) =
-            clip_spherical_face_by_circle(brep, face_id, circle, segments, tolerance)
+            clip_spherical_face_by_circle(brep, face_id, circle, segments, tolerance, ring, sound)
         {
             return result;
         }
@@ -4085,18 +4142,8 @@ fn split_spherical_face_by_circle_inner(
     }
 
     // Generate the N shared circle vertices.
-    let n = segments as usize;
-    // NOTE: sphere ring pairing relies on the circle's own frame — do NOT
-    // switch this to the canonical grid (see fillet-defects notes).
-    let circle_verts: Vec<Point3> = (0..segments)
-        .map(|i| {
-            let theta = 2.0 * std::f64::consts::PI * (i as f64) / (segments as f64);
-            let (sin_t, cos_t) = theta.sin_cos();
-            circle.center
-                + circle.radius
-                    * (cos_t * circle.x_dir.into_inner() + sin_t * circle.y_dir.into_inner())
-        })
-        .collect();
+    let circle_verts = sphere_circle_ring(circle, segments, ring);
+    let n = circle_verts.len();
     let circle_vert_ids: Vec<_> = circle_verts
         .iter()
         .map(|p| find_or_create_vertex(brep, p, tolerance))
@@ -4168,6 +4215,8 @@ fn clip_spherical_face_by_circle(
     circle: &vcad_kernel_geom::Circle3d,
     segments: u32,
     tolerance: f64,
+    ring: Option<&[Point3]>,
+    sound: &mut bool,
 ) -> Option<SplitResult> {
     use vcad_kernel_math::Vec3;
 
@@ -4264,12 +4313,19 @@ fn clip_spherical_face_by_circle(
             segments,
             tolerance,
             outer_sign > 0.0,
+            ring,
         ));
     }
     if has_holes {
         // Clipping across the outer boundary rebuilds the patch's loops
         // without its holes; not supported yet.
         return None;
+    }
+    if ring.is_some() {
+        // The connector below rides the raw circle-frame grid, not the
+        // caller's ring, so it cannot sew to the face the ring came from.
+        // Say so: the arrangement is then held to the validity oracle.
+        *sound = false;
     }
 
     // Crossing point on the great arc between two straddling vertices:
@@ -4585,18 +4641,13 @@ fn punch_spherical_hole(
     segments: u32,
     tolerance: f64,
     disk_on_negative: bool,
+    ring: Option<&[Point3]>,
 ) -> SplitResult {
-    let n = segments as usize;
-    let ids: Vec<_> = (0..segments)
-        .map(|i| {
-            let theta = 2.0 * std::f64::consts::PI * (i as f64) / (segments as f64);
-            let (sin_t, cos_t) = theta.sin_cos();
-            let p = circle.center
-                + circle.radius
-                    * (cos_t * circle.x_dir.into_inner() + sin_t * circle.y_dir.into_inner());
-            find_or_create_vertex(brep, &p, tolerance)
-        })
+    let ids: Vec<_> = sphere_circle_ring(circle, segments, ring)
+        .iter()
+        .map(|p| find_or_create_vertex(brep, p, tolerance))
         .collect();
+    let n = ids.len();
     // A forward walk bounds the cap on the +normal side; the reverse walk
     // (v0, vN-1, …, v1) bounds the other one.
     let he_fwd: Vec<_> = (0..n)
@@ -4882,7 +4933,9 @@ pub fn split_conical_face(
             }
             SplitResult { sub_faces: out }
         }
-        IntersectionCurve::TwoSampled(_, _) => SplitResult {
+        IntersectionCurve::TwoSampled(_, _)
+        | IntersectionCurve::TwoCircles(_, _)
+        | IntersectionCurve::Ring(_, _) => SplitResult {
             sub_faces: vec![face_id],
         },
     }
@@ -5878,6 +5931,41 @@ pub fn arc_segments(radius: f64, segments: u32) -> u32 {
     n.max(segments).clamp(3, 512)
 }
 
+/// Arc samples for a planar face split along (part of) `circle`, on the
+/// grid the face's curved partner uses for the same circle.
+///
+/// The partner decides: a circle that lies on a cylinder or cone wall of the
+/// other operand (`canonical`, see `circle_on_cylinder_wall`) borders a
+/// frozen band whose rims ride the sag-adaptive canonical grid
+/// (`canonical_arc_points`); a sphere-sourced circle rides the raw
+/// circle-frame grid (`circle_frame_arc_points`). Sampling the planar side on
+/// the other grid leaves every arc edge unpaired — a box face crossed by a
+/// cylinder through two opposite edges (four crossings) took the sphere grid
+/// and zippered a plain box ∪ cylinder open along both rims.
+///
+/// `ccw` is travel counterclockwise about `x_dir × y_dir`, as for
+/// `circle_frame_arc_points`.
+fn planar_split_arc_points(
+    circle: &vcad_kernel_geom::Circle3d,
+    start: Point3,
+    end: Point3,
+    ccw: bool,
+    segments: u32,
+    canonical: bool,
+) -> Vec<Point3> {
+    if !canonical {
+        return circle_frame_arc_points(circle, start, end, ccw, segments);
+    }
+    // Same degenerate-span contract as `circle_frame_arc_points`:
+    // `canonical_arc_points` reads a zero span as a full revolution.
+    if (end - start).norm() < 1e-12 {
+        return vec![start, end];
+    }
+    let n = circle.x_dir.into_inner().cross(circle.y_dir.into_inner());
+    let normal = if ccw { n } else { -n };
+    canonical_arc_points(circle.center, circle.radius, normal, start, end, segments)
+}
+
 /// Discretization of a circular arc on the circle's own raw-`segments`
 /// grid: θ_k = 2πk/segments in the circle's (x_dir, y_dir) frame.
 ///
@@ -6626,7 +6714,9 @@ pub fn split_cylindrical_face(
                 segments,
             )
         }
-        IntersectionCurve::TwoSampled(_, _) => {
+        IntersectionCurve::TwoSampled(_, _)
+        | IntersectionCurve::TwoCircles(_, _)
+        | IntersectionCurve::Ring(_, _) => {
             // The SSI stage expands a TwoSampled pair into two `Sampled`
             // loops before splitting (see `brep_boolean`), so this arm is
             // unreachable from the pipeline. Defensive no-op for any other

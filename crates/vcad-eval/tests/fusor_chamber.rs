@@ -230,3 +230,195 @@ fn fusor_chamber_and_flanges_are_clean_analytic() {
     }
     assert!(fails.is_empty(), "{fails:#?}");
 }
+
+/// The viewport's mesh: the same document under the native app's display
+/// chord tolerance. Boolean rims sit on the kernel's 1 µm grid (512 points
+/// a turn at this size); the display path thins them to the tolerance it
+/// was asked for, consistently on both faces of every rim, so the chamber
+/// stays closed at well under half the triangles.
+#[test]
+fn fusor_chamber_display_mesh_is_thinned_and_closed() {
+    let doc = vcad_loon::eval_vcad(SOURCE, None).expect("loon");
+    let options = || EvalOptions {
+        skip_clash_detection: true,
+        ..Default::default()
+    };
+    let full = evaluate_document(&doc, &options()).expect("evaluate");
+    let display = {
+        let _chord = vcad_eval::evaluate::DisplayChordGuard::enable(0.02);
+        evaluate_document(&doc, &options()).expect("evaluate")
+    };
+    let mut fails = Vec::new();
+    for ((name, f), d) in ["chamber", "lid-flange", "pump-flange"]
+        .into_iter()
+        .zip(&full.parts)
+        .zip(&display.parts)
+    {
+        let (ft, dt) = (f.mesh.indices.len() / 3, d.mesh.indices.len() / 3);
+        let (_, _, _, full_vol, _) = census(&f.mesh.positions, &f.mesh.indices);
+        let (nonmanifold, folded, boundary, vol, _) = census(&d.mesh.positions, &d.mesh.indices);
+        let opposed = opposed_normals(
+            &d.mesh.positions,
+            d.mesh.normals.as_deref(),
+            &d.mesh.indices,
+        );
+        eprintln!(
+            "{name}: {ft} → {dt} triangles, volume {full_vol:.1} → {vol:.1}, nonmanifold \
+             {nonmanifold} folded {folded} boundary {boundary} opposed {opposed}"
+        );
+        if dt * 2 > ft {
+            fails.push(format!(
+                "{name}: display mesh has {dt} triangles (full {ft})"
+            ));
+        }
+        if (nonmanifold, folded, boundary, opposed) != (0, 0, 0, 0) {
+            fails.push(format!(
+                "{name}: {nonmanifold} non-manifold, {folded} folded, {boundary} boundary edges, \
+                 {opposed} opposed normals"
+            ));
+        }
+        if (vol - full_vol).abs() > 2e-3 * full_vol {
+            fails.push(format!("{name}: volume {vol:.1} vs {full_vol:.1}"));
+        }
+        let ids = d.mesh.face_ids.as_ref().map(Vec::len);
+        if ids != Some(dt) {
+            fails.push(format!("{name}: face ids {ids:?} for {dt} triangles"));
+        }
+    }
+    assert!(fails.is_empty(), "{fails:#?}");
+}
+
+/// The document path merges the coplanar fragments each boolean node
+/// leaves: every root's caps, section faces and lid are single faces, so
+/// nothing is left to merge, the face ids on the mesh name live faces, and
+/// the B-rep exports to STEP and reads back as the same solid.
+#[test]
+fn fusor_chamber_planes_are_single_faces() {
+    use vcad_kernel::vcad_kernel_booleans::merge_coplanar_faces;
+    use vcad_kernel::vcad_kernel_geom::SurfaceKind;
+
+    let doc = vcad_loon::eval_vcad(SOURCE, None).expect("loon");
+    let options = EvalOptions {
+        skip_clash_detection: true,
+        ..Default::default()
+    };
+    let scene = evaluate_document(&doc, &options).expect("evaluate");
+    // Planar faces a drawing shows. Flanges: two annular caps and two
+    // section rectangles.
+    let expect = [
+        ("chamber", CHAMBER_PLANES),
+        ("lid-flange", 4),
+        ("pump-flange", 4),
+    ];
+    let mut fails = Vec::new();
+    for (part, (name, planes)) in scene.parts.iter().zip(expect) {
+        let solid = part.solid.as_ref().expect("solid");
+        let brep = solid.brep().expect("b-rep");
+        let topo = &brep.topology;
+        let shell = &topo.shells[topo.solids[brep.solid_id].outer_shell];
+        let planar = shell
+            .faces
+            .iter()
+            .filter(|f| {
+                brep.geometry.surfaces[topo.faces[**f].surface_index].surface_type()
+                    == SurfaceKind::Plane
+            })
+            .count();
+        eprintln!("{name}: {} faces, {planar} planar", shell.faces.len());
+        if planar != planes {
+            fails.push(format!("{name}: {planar} planar faces, expected {planes}"));
+        }
+        let mut again = brep.clone();
+        let rest = merge_coplanar_faces(&mut again);
+        if rest.changed() || rest.refused_groups != 0 {
+            fails.push(format!(
+                "{name}: {} faces still mergeable, {} groups refused",
+                rest.absorbed.len(),
+                rest.refused_groups
+            ));
+        }
+        // Mesh face ids are shell ordinals.
+        let ids = part.mesh.face_ids.as_ref().expect("face ids");
+        let used: std::collections::HashSet<u32> = ids.iter().copied().collect();
+        if used.len() != shell.faces.len() || used.iter().any(|&i| i as usize >= shell.faces.len())
+        {
+            fails.push(format!(
+                "{name}: mesh names {} faces, shell has {}",
+                used.len(),
+                shell.faces.len()
+            ));
+        }
+        // STEP round trip.
+        match solid
+            .to_step_buffer()
+            .map_err(|e| e.to_string())
+            .and_then(|b| vcad_kernel::Solid::from_step_buffer(&b).map_err(|e| e.to_string()))
+        {
+            Ok(back) => {
+                let (v0, v1) = (solid.volume(), back.volume());
+                let faces = back.brep().map(|b| b.topology.faces.len());
+                // Imported rims mesh on the plain segment grid, so the
+                // volume moves by the inscribed-polygon deficit.
+                if (v0 - v1).abs() > 5e-3 * v0 || faces != Some(shell.faces.len()) {
+                    fails.push(format!(
+                        "{name}: STEP round trip volume {v0:.1} -> {v1:.1}, faces {} -> {faces:?}",
+                        shell.faces.len()
+                    ));
+                }
+            }
+            Err(e) => fails.push(format!("{name}: STEP round trip failed: {e}")),
+        }
+    }
+    assert!(fails.is_empty(), "{fails:#?}");
+}
+
+/// Planar faces of the merged chamber: lid and floor, outside and inside
+/// (4); the end rings of the viewport, gauge and pump nozzles (3); one
+/// wall profile per section plane (2).
+const CHAMBER_PLANES: usize = 9;
+
+/// The app's path: the same document evaluated twice through one
+/// incremental cache. The second pass reuses each root's mesh; the solid
+/// handed out with it must be the merged one that mesh was made from, or
+/// the mesh's face ids (shell ordinals) would name the wrong faces.
+#[test]
+fn incremental_reuse_keeps_face_ids_on_the_merged_solid() {
+    use vcad_eval::evaluate::evaluate_document_incremental;
+    use vcad_eval::incremental::IncrementalCache;
+
+    let doc = vcad_loon::eval_vcad(SOURCE, None).expect("loon");
+    let options = EvalOptions {
+        skip_clash_detection: true,
+        ..Default::default()
+    };
+    let mut cache = IncrementalCache::new();
+    let first = evaluate_document_incremental(&doc, &options, &mut cache).expect("evaluate");
+    let second = evaluate_document_incremental(&doc, &options, &mut cache).expect("evaluate");
+    assert!(cache.stats().reused_meshes >= 3, "{:?}", cache.stats());
+    for (a, b) in first.parts.iter().zip(&second.parts) {
+        let faces = |p: &vcad_eval::EvaluatedPart| {
+            p.solid
+                .as_ref()
+                .and_then(|s| s.brep())
+                .map(|b| b.topology.faces.len())
+                .expect("b-rep")
+        };
+        assert_eq!(faces(a), faces(b), "reused solid is not the merged one");
+        let ids = b.mesh.face_ids.as_ref().expect("face ids");
+        assert_eq!(a.mesh.face_ids.as_ref(), Some(ids));
+        let used: std::collections::HashSet<u32> = ids.iter().copied().collect();
+        assert_eq!(used.len(), faces(b));
+    }
+}
+
+/// Clash detection intersects roots with each other. It is handed the
+/// split solids, never the merged ones: with it on, the document evaluates
+/// to the same parts and finds the same (no) clashes.
+#[test]
+fn clash_detection_runs_on_the_split_solids() {
+    let doc = vcad_loon::eval_vcad(SOURCE, None).expect("loon");
+    let scene = evaluate_document(&doc, &EvalOptions::default()).expect("evaluate");
+    assert!(scene.failures.is_empty(), "{:?}", scene.failures);
+    assert_eq!(scene.parts.len(), 3);
+    assert!(scene.clashes.is_empty(), "{} clashes", scene.clashes.len());
+}
