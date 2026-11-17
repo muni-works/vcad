@@ -2417,7 +2417,6 @@ pub(crate) fn split_cylindrical_face_by_patch(
     let ib = (0..n)
         .max_by(|&i, &j| pts[i].0.total_cmp(&pts[j].0))
         .unwrap();
-    let (ua, ub) = (pts[ia].0, pts[ib].0);
     let margin = 1e-6;
     // A loop wholly outside this face (the far loop of a through-cylinder,
     // or one landing on a sibling face) is a legitimate no-op.
@@ -2443,6 +2442,21 @@ pub(crate) fn split_cylindrical_face_by_patch(
     let lo_at = |u: f64| chain_interp(&lo_unrolled, u);
     let hi_at = |u: f64| chain_interp(&hi_unrolled, u);
     let inside = |&(u, v): &(f64, f64)| u > u_start && u < u_top && v > lo_at(u) && v < hi_at(u);
+    // The shift above puts the loop's u-minimum at or after the band's
+    // start, which is right for a loop the band contains but pushes a loop
+    // that straddles the band's start a full turn past it. Try the turn
+    // below too before calling the loop a miss: declaring a straddling loop
+    // "outside" returned a silent no-op, and the open-loop splitter (which
+    // handles exactly that loop) never ran.
+    let pts: Vec<(f64, f64)> = if !band.full_wrap
+        && !pts.iter().any(inside)
+        && pts.iter().any(|&(u, v)| inside(&(u - 2.0 * PI, v)))
+    {
+        pts.iter().map(|&(u, v)| (u - 2.0 * PI, v)).collect()
+    } else {
+        pts
+    };
+    let (ua, ub) = (pts[ia].0, pts[ib].0);
     if !pts.iter().any(inside) {
         return Some(SplitResult {
             sub_faces: vec![face_id],
@@ -2580,4 +2594,215 @@ pub(crate) fn split_cylindrical_face_by_patch(
     Some(SplitResult {
         sub_faces: new_faces,
     })
+}
+
+/// Split a cylindrical band face by a closed, NON-winding loop that crosses
+/// the band's own chains: a perpendicular cylinder entering this wall where
+/// an earlier crossing has already cut it into strips (three mutually
+/// crossing tubes — a six-way cross, a spherical chamber built from tubes).
+/// The loop's u-extremes then sit in material another face owns, or in a
+/// hole, so it is contained in no single face and
+/// [`split_cylindrical_face_by_patch`] declines it.
+///
+/// The loop's u-extremes cut it into a lower branch `L(u)` and an upper
+/// branch `U(u)` over `[u_a, u_b]`, each single-valued. The face is split by
+/// `L` and then by `U`, each extended to a full-turn profile that sits
+/// outside the band (above `hi` or below `lo`, whichever side the branch
+/// ends on) beyond `[u_a, u_b]`. Every piece is again a band, and the
+/// pieces partition the face: below `L`, between the branches (the loop's
+/// interior), above `U`.
+///
+/// Declines (`None`) when a branch end lies strictly inside the band — a
+/// contained or half-contained loop, which is the patch splitter's case — or
+/// when the two ends would need the extension on opposite sides (the
+/// extension would then cut a vertical seam through the band).
+pub(crate) fn split_cylindrical_face_by_open_loop(
+    brep: &mut BRepSolid,
+    face_id: FaceId,
+    points: &[Point3],
+) -> Option<SplitResult> {
+    let (cyl, band) = parse_band(brep, face_id)?;
+    if points.len() < 8 {
+        return None;
+    }
+    let tol_r = 1e-6 * cyl.radius.max(1.0);
+    let mut uv: Vec<(f64, f64)> = Vec::with_capacity(points.len());
+    for p in points {
+        let d = *p - cyl.center;
+        let radial = d - d.dot(cyl.axis.as_ref()) * *cyl.axis.as_ref();
+        if (radial.norm() - cyl.radius).abs() > tol_r {
+            return None;
+        }
+        uv.push(uv_of(p, &cyl));
+    }
+    if uv.len() > 1 {
+        let (f, l) = (uv[0], uv[uv.len() - 1]);
+        if (f.0 - l.0).abs() < U_EPS && (f.1 - l.1).abs() < 1e-12 {
+            uv.pop();
+        }
+    }
+    // Unwrap along the loop; a non-winding loop returns to its start.
+    let mut pts: Vec<(f64, f64)> = vec![uv[0]];
+    for w in uv.windows(2) {
+        let mut du = (w[1].0 - w[0].0).rem_euclid(2.0 * PI);
+        if du > PI {
+            du -= 2.0 * PI;
+        }
+        let u = pts[pts.len() - 1].0 + du;
+        pts.push((u, w[1].1));
+    }
+    {
+        let mut du = (uv[0].0 - uv[uv.len() - 1].0).rem_euclid(2.0 * PI);
+        if du > PI {
+            du -= 2.0 * PI;
+        }
+        if (pts[pts.len() - 1].0 + du - pts[0].0).abs() > 1e-6 {
+            return None;
+        }
+    }
+    let n = pts.len();
+    let ia = (0..n).min_by(|&i, &j| pts[i].0.total_cmp(&pts[j].0))?;
+    let ib = (0..n).max_by(|&i, &j| pts[i].0.total_cmp(&pts[j].0))?;
+    let (ua, ub) = (pts[ia].0, pts[ib].0);
+    if ub - ua < 1e-6 || ub - ua >= PI {
+        return None;
+    }
+    let walk = |step: isize| -> Chain {
+        let mut out = Vec::new();
+        let mut i = ia as isize;
+        loop {
+            out.push(pts[i as usize]);
+            if i as usize == ib {
+                break;
+            }
+            i = (i + step).rem_euclid(n as isize);
+        }
+        out
+    };
+    let (h1, h2) = (walk(1), walk(-1));
+    // Strictly ascending branches (a repeated u would make the profile
+    // multi-valued); exact repeats at the extremes are dropped.
+    let strict = |c: Chain| -> Option<Chain> {
+        let mut out: Chain = Vec::with_capacity(c.len());
+        for p in c {
+            match out.last() {
+                Some(q) if p.0 <= q.0 + U_EPS => {
+                    if p.0 < q.0 - U_EPS {
+                        return None;
+                    }
+                }
+                _ => out.push(p),
+            }
+        }
+        (out.len() >= 2).then_some(out)
+    };
+    let (Some(h1), Some(h2)) = (strict(h1), strict(h2)) else {
+        band_dbg!("open-loop {face_id:?}: branch not monotone");
+        return None;
+    };
+    let mean = |c: &Chain| c.iter().map(|p| p.1).sum::<f64>() / c.len() as f64;
+    let (lower, upper) = if mean(&h1) <= mean(&h2) {
+        (h1, h2)
+    } else {
+        (h2, h1)
+    };
+
+    // Which side of the band each extreme lies on. Both branches share the
+    // extremes, so one decision serves both.
+    const SIDE_TOL: f64 = 1e-7;
+    let (u_start, u_end) = (band.u_start(), band.u_end());
+    let side_at = |u: f64, v: f64| -> Option<Option<bool>> {
+        // Some(None): outside the band's u-interval (either side will do);
+        // Some(Some(true)): at or above hi; Some(Some(false)): at or below lo.
+        let x = u_start + (u - u_start).rem_euclid(2.0 * PI);
+        let x = if band.full_wrap || x <= u_end + U_EPS {
+            x
+        } else if (x - 2.0 * PI - u_start).abs() <= U_EPS {
+            u_start
+        } else {
+            return Some(None);
+        };
+        if v >= band.hi_at(x) - SIDE_TOL {
+            Some(Some(true))
+        } else if v <= band.lo_at(x) + SIDE_TOL {
+            Some(Some(false))
+        } else {
+            None
+        }
+    };
+    let (Some(sa), Some(sb)) = (side_at(ua, pts[ia].1), side_at(ub, pts[ib].1)) else {
+        band_dbg!(
+            "open-loop {face_id:?}: extreme inside band: a ({ua:.5},{:.4}) b ({ub:.5},{:.4}) band u [{u_start:.5},{u_end:.5}] wrap {}",
+            pts[ia].1, pts[ib].1, band.full_wrap
+        );
+        return None;
+    };
+    let above = match (sa, sb) {
+        (Some(a), Some(b)) if a != b => {
+            band_dbg!("open-loop {face_id:?}: extremes on opposite sides");
+            return None;
+        }
+        (Some(a), _) | (None, Some(a)) => a,
+        (None, None) => true,
+    };
+    let v_min = band.lo.iter().map(|p| p.1).fold(f64::MAX, f64::min);
+    let v_max = band.hi.iter().map(|p| p.1).fold(f64::MIN, f64::max);
+    let pad = (v_max - v_min) + 1.0;
+    let v_out = if above { v_max + pad } else { v_min - pad };
+    // A tiny ramp to the outside value: the extreme already lies outside the
+    // band on that side, so no crossing is localized on it.
+    let ramp = 1e-7;
+    let profile = |branch: &Chain| -> CylProfile {
+        let mut us: Vec<f64> = branch.iter().map(|p| p.0).collect();
+        let mut vs: Vec<f64> = branch.iter().map(|p| p.1).collect();
+        us.push(ub + ramp);
+        vs.push(v_out);
+        us.push(ua + 2.0 * PI - ramp);
+        vs.push(v_out);
+        CylProfile { us, vs }
+    };
+    let (fl, fu) = (profile(&lower), profile(&upper));
+
+    let mut pieces: Vec<CylBand> = Vec::new();
+    let mut changed = false;
+    let first: Vec<CylBand> = match split_band_by_profile(&band, &fl) {
+        Some((below, above)) => {
+            changed = true;
+            below.into_iter().chain(above).collect()
+        }
+        None => vec![band.clone()],
+    };
+    for b in first {
+        match split_band_by_profile(&b, &fu) {
+            Some((below, above)) => {
+                changed = true;
+                pieces.extend(below);
+                pieces.extend(above);
+            }
+            None => pieces.push(b),
+        }
+    }
+    if !changed {
+        // The loop misses this face's interior.
+        return Some(SplitResult {
+            sub_faces: vec![face_id],
+        });
+    }
+    // The pieces must partition the face; anything else is a region bug
+    // about to become phantom (or missing) geometry. `band_area` reads a
+    // vertical-step column (the saddle extremes these strips carry) from
+    // one side only, so the parent and the pieces legitimately disagree by
+    // ~1e-5; a region bug is a whole sliver of the face.
+    let parent_area = band_area(&band);
+    let sum: f64 = pieces.iter().map(band_area).sum();
+    if (sum - parent_area).abs() > 1e-3 * parent_area.max(1e-9) {
+        band_dbg!("open-loop split {face_id:?}: area {sum} vs parent {parent_area}");
+        return None;
+    }
+    let sub_faces = realize_bands(brep, face_id, &cyl, &pieces);
+    if sub_faces.len() < 2 {
+        return None;
+    }
+    band_dbg!("open-loop split {face_id:?} → {} faces", sub_faces.len());
+    Some(SplitResult { sub_faces })
 }
