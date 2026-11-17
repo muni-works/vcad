@@ -1,6 +1,7 @@
 import SwiftUI
 
-// The Analysis panel (right rail, ⌥⌘A): DFM, Stress (FEA) and Clearance tabs
+// The Analysis panel (right rail, ⌥⌘A): DFM, Stress (FEA), Clearance and
+// Fields (particle optics / neutron dose / bench receipt, FieldsPanel.swift) tabs
 // over the open document. State lives in AnalysisStore; the viewport tint
 // and clash meshes come from AnalysisOverlay.swift; stress results draw
 // through the shared field overlay (FieldOverlay.swift).
@@ -24,12 +25,17 @@ struct AnalysisPanel: View {
                     case .dfm: DfmSection(model: model, store: store)
                     case .fea: FeaSection(model: model, store: store)
                     case .clearance: ClearanceSection(model: model, store: store)
+                    case .fields: FieldsTabView(model: model)
                     }
                 }
             }
-            .frame(maxHeight: 520).fixedSize(horizontal: false, vertical: true)
+            // Fields carries charts and a section image: the wide layout, sized
+            // to read on a 1080p capture.
+            .frame(maxHeight: store.tab == .fields ? 940 : 520).fixedSize(horizontal: false, vertical: true)
         }
-        .padding(Theme.Space.m).frame(width: Theme.Width.toolInspector).panelSurface()
+        .padding(Theme.Space.m)
+        .frame(width: store.tab == .fields ? Theme.Width.analysisWide : Theme.Width.toolInspector)
+        .panelSurface()
         .accessibilityIdentifier("analysis-panel")
     }
 }
@@ -341,6 +347,11 @@ struct AnalysisCommands: Commands {
                     let s = AnalysisStore.shared
                     s.shown = true; s.tab = tab; s.overlayRevision += 1
                 }
+            }
+            Divider()
+            // Drag the magnet, watch the plasmoid follow (PlasmoidSim.swift).
+            Button(PlasmoidStore.shared.active ? "Stop Live Plasmoid" : "Live Plasmoid") {
+                PlasmoidStore.shared.toggle()
             }
         }
     }

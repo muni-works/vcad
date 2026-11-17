@@ -275,9 +275,21 @@ enum Commands {
         /// Frame and focus `--photoreal` on this part (name or id)
         #[arg(long, requires = "photoreal")]
         focus_part: Option<String>,
-        /// Light rig for `--photoreal`: studio or warm-studio
+        /// Light rig for `--photoreal`: studio, warm-studio or dark (no rig,
+        /// faint ambient — emissive parts and glowing media light the shot)
         #[arg(long, default_value = "studio", requires = "photoreal")]
         lighting: vcad_render::photoreal::Lighting,
+        /// HDR bloom for `--photoreal`: an energy-conserving glare PSF moving
+        /// STRENGTH (0..1, default 0.04) of each pixel's energy into a halo
+        #[arg(long, requires = "photoreal", value_name = "STRENGTH",
+              num_args = 0..=1, default_missing_value = "0.04")]
+        bloom: Option<f32>,
+        /// Widest bloom sigma as a fraction of image height (default 0.035)
+        #[arg(long, requires = "photoreal")]
+        bloom_radius: Option<f32>,
+        /// Tone curve for `--photoreal`: aces (default) or exp (1 - e^-x)
+        #[arg(long, requires = "photoreal")]
+        tonemap: Option<String>,
         /// Seamless cyclorama backdrop (floor curving into a back wall)
         #[arg(long, requires = "photoreal")]
         cyclorama: bool,
@@ -925,6 +937,9 @@ fn run_command(cli: Cli) -> Result<()> {
             focus_dist,
             focus_part,
             lighting,
+            bloom,
+            bloom_radius,
+            tonemap,
             cyclorama,
             look,
             fill,
@@ -969,6 +984,12 @@ fn run_command(cli: Cli) -> Result<()> {
                         .transpose()
                         .map_err(|e| anyhow::anyhow!(e))?
                         .map(std::sync::Arc::new),
+                    glow: vcad_render::glow::Glow::from_args(
+                        bloom,
+                        bloom_radius,
+                        tonemap.as_deref(),
+                    )
+                    .map_err(|e| anyhow::anyhow!(e))?,
                 };
                 let doc = load_posed_document(&input, &pose)?;
                 return photoreal::render_document(&doc, &output, &req);

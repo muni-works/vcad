@@ -23,6 +23,7 @@ no-builtin-font = ["vcad-kernel/no-builtin-font"]
 [dependencies]
 vcad-kernel-cam = { workspace = true }
 vcad-kernel-acoustics = { workspace = true }
+vcad-kernel-particle = { workspace = true }
 vcad-sound = { workspace = true }
 vcad-runtime = { workspace = true }
 vcad-slicer = { workspace = true }
@@ -49,6 +50,7 @@ vcad-ir = { workspace = true }
 vcad-receipt-verify = { workspace = true }
 vcad-loon = { workspace = true }
 vcad-mcp = { workspace = true }
+vcad-solver-tools = { workspace = true }
 vcad-ecad-pcb = { workspace = true }
 vcad-ecad-symbols = { workspace = true }
 vcad-ecad-schematic = { workspace = true }

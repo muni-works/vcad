@@ -796,6 +796,18 @@ char *vcad_fea_materials(void);
  * {pairs:[{a,b,distance_mm,intersecting,overlap_volume_mm3,status,clash?}], ...} */
 char *vcad_clearance(const char *doc_json, const char *request_json);
 
+/* Physics solver tools (crates/vcad-ffi/src/solver.rs, vcad-solver-tools):
+ * name = "simulate_charged_particles" | "optimize_electrodes" |
+ * "simulate_neutron_shield" | "compare_measurements"; args_json = the MCP
+ * tool's arguments. Returns the FULL result JSON (section data, every
+ * optimizer evaluation). The hook gets (ctx, fraction 0..1, stage message)
+ * and returns false to cancel -> NULL, vcad_last_error "cancelled". */
+typedef bool (*vcad_solver_progress_fn)(void *ctx, double fraction, const char *message);
+char *vcad_solver_run(const char *name, const char *args_json,
+                      vcad_solver_progress_fn progress, void *ctx);
+/* {tools:[{name, description, inputSchema}]} */
+char *vcad_solver_tools(void);
+
 /* --- Live receipts (receipts.rs) ---
  * Re-verify every persisted clearance assertion (doc.clearance_specs) ->
  * {status:"Holds"|"Stale"|"Violated"|null, checks:[{label,claim_id,status,
@@ -921,6 +933,41 @@ void vcad_mcp_app_resource_updated(const VcadMcpApp *app, const char *uri);
 void vcad_mcp_app_document_changed(const VcadMcpApp *app, const char *id);
 /* host_tools.json, owned (vcad_string_free). */
 char *vcad_mcp_host_tools(void);
+
+/* --- Live magnet-steered plasmoid (plasmoid.rs) ---
+ * The reduced racing-plasmoid model (vcad_kernel_particle::plasmoid) stepped
+ * live: the app hands in the dragged magnet's pose every frame and draws the
+ * returned foot. Units: mm, Z-up, DISH frame (dish centre at the origin, its
+ * rim plane at z = 0). The pin strength is calibrated once at 1 Torr;
+ * vcad_plasmoid_set_pressure changes only the collision frequency (β). */
+typedef struct VcadPlasmoid VcadPlasmoid;
+typedef struct VcadPlasmoidState {
+  double t_s;      /* simulated seconds since create/reset */
+  double x_mm;     /* foot, dish frame */
+  double y_mm;
+  double beta;     /* electron Hall parameter at the foot (0: no magnet) */
+  uint8_t locked;  /* 1: foot locked under a magnet */
+  int32_t locked_magnet; /* index of that magnet, -1 when not locked */
+} VcadPlasmoidState;
+/* N52 10x5 mm disc magnet, argon. NULL + vcad_last_error on bad input. */
+VcadPlasmoid *vcad_plasmoid_create(double dish_radius_mm, double pressure_torr);
+void vcad_plasmoid_free(VcadPlasmoid *sim);
+void vcad_plasmoid_reset(VcadPlasmoid *sim);
+void vcad_plasmoid_set_pressure(VcadPlasmoid *sim, double pressure_torr);
+double vcad_plasmoid_orbit_radius_mm(const VcadPlasmoid *sim);
+/* One frame of frame_dt_s in `substeps` RK4 steps (clamped 1..10000).
+ * magnet: 6 doubles {cx, cy, cz (mm, dish frame), ax, ay, az (north-pole
+ * direction)} or NULL for no magnet; it moves linearly from the previous
+ * call's pose to this one across the frame. */
+VcadPlasmoidState vcad_plasmoid_advance(VcadPlasmoid *sim, const double *magnet,
+                                        double frame_dt_s, uint32_t substeps);
+/* Same with `count` magnets superposed (a FieldScene): `magnets` is
+ * 6 x count doubles laid out as above; count 0 = no magnet. Each moves
+ * linearly from its previous pose while the count is unchanged.
+ * locked_magnet indexes `magnets`. */
+VcadPlasmoidState vcad_plasmoid_advance_multi(VcadPlasmoid *sim, const double *magnets,
+                                              size_t count, double frame_dt_s,
+                                              uint32_t substeps);
 
 #ifdef __cplusplus
 }

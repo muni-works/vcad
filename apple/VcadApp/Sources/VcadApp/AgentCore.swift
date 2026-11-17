@@ -352,6 +352,13 @@ final class AgentCore {
                 let resp = await ProofAgentTools.elicit(req, &given, model: m)
                 return ["action": resp.action.rawValue]
             }
+            if name == "__show_solver_result" {
+                // A solver tool the agent ran natively in the core: put the full
+                // result (section, sweep, evaluations) in Analysis → Fields.
+                FieldsStore.shared.ingest(tool: a["tool"] as? String ?? "", result: a["result"] ?? [String: Any](),
+                                          agent: Self.agentPrefix)
+                return AgentTools.text("shown")
+            }
             if ProofAgentTools.toolNames.contains(name) {
                 return try await ProofAgentTools.call(name, a, inputResponses: inputs, model: m)
             }

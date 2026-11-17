@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-missed-cut-difference",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "fix",
+  "title": "Cuts the kernel proves it missed are now redone or reported",
+  "summary": "A difference whose result still held the cut's material (e.g. a channel across a counterbored block) shipped silently. It now takes the correct mesh result, or inspect_cad reports a warning.",
+  "features": ["booleans", "kernel", "inspect"],
+  "mcpTools": ["inspect_cad"]
+}

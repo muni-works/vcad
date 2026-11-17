@@ -5767,6 +5767,7 @@ dependencies = [
  "vcad-kernel-antenna 0.11.0",
  "vcad-kernel-booleans 0.11.0",
  "vcad-kernel-diff",
+ "vcad-kernel-em 0.11.0",
  "vcad-kernel-fillet 0.11.0",
  "vcad-kernel-geom 0.11.0",
  "vcad-kernel-math 0.11.0",
@@ -5778,8 +5779,10 @@ dependencies = [
  "vcad-kernel-tessellate 0.11.0",
  "vcad-kernel-text 0.11.0",
  "vcad-kernel-thermal 0.11.0",
+ "vcad-kernel-tolerance 0.11.0",
  "vcad-kernel-topo 0.11.0",
  "vcad-loon",
+ "vcad-parts",
  "web-time",
 ]
 
@@ -5812,6 +5815,7 @@ dependencies = [
  "vcad-kernel-gpu",
  "vcad-kernel-math 0.11.0",
  "vcad-kernel-naming 0.11.0",
+ "vcad-kernel-particle 0.11.0",
  "vcad-kernel-physics",
  "vcad-kernel-raytrace 0.11.0",
  "vcad-kernel-tessellate 0.11.0",
@@ -5826,6 +5830,7 @@ dependencies = [
  "vcad-slicer",
  "vcad-slicer-bambu",
  "vcad-slicer-gcode",
+ "vcad-solver-tools",
  "vcad-sound",
 ]
 
@@ -7095,6 +7100,7 @@ dependencies = [
  "vcad-loon",
  "vcad-receipt-verify",
  "vcad-render",
+ "vcad-solver-tools",
  "vcad-sound",
  "vcad-tool-derive 0.11.0",
  "zip",
@@ -7281,6 +7287,17 @@ dependencies = [
  "vcad-kernel-math 0.11.0",
  "vcad-kernel-tessellate 0.11.0",
  "vcad-slicer",
+]
+
+[[package]]
+name = "vcad-solver-tools"
+version = "0.11.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "vcad-kernel-neutronics 0.11.0",
+ "vcad-kernel-particle 0.11.0",
+ "vcad-receipt 0.11.0",
 ]
 
 [[package]]

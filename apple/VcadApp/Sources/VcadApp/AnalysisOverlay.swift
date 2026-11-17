@@ -178,6 +178,8 @@ func syncAnalysisOverlay(_ store: AnalysisStore, model: EditorModel, in parent: 
                 root.addChild(ModelEntity(mesh: mesh, materials: [tint(.systemRed, 0.6)]))
             }
         }
+    case .fields:
+        break   // the section quad is syncFieldsSection's (FieldsSection.swift)
     }
     parent.addChild(root)
 }

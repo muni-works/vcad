@@ -414,6 +414,7 @@ pub extern "C" fn vcad_render_photoreal_png(
 fn options(
     p: &VcadPhotorealParams,
     cpu: bool,
+    glow: vcad_render::glow::Glow,
 ) -> Result<
     (
         vcad_render::RasterOptions,
@@ -454,6 +455,7 @@ fn options(
         denoise: cpu,
         adaptive: true,
         exact: false,
+        glow,
         // Options added to the renderer later take its defaults, so a new
         // field cannot break this crate the way focus_dist and lighting did.
         ..Default::default()
@@ -466,8 +468,21 @@ fn render_png(
     p: &VcadPhotorealParams,
     report: &mut dyn FnMut(u32, u32) -> bool,
 ) -> Result<Vec<u8>, String> {
-    if p.force_cpu == 0 {
-        let (ro, pr) = options(p, false)?;
+    // A document that emits light gets the camera's glare along with it, so
+    // a plasma or a lit screen reads as bright rather than merely pale. The
+    // bloom is energy-conserving (vcad_render::glow), so exposure is
+    // unchanged; a document that emits nothing renders exactly as before.
+    let glow = if document_emits(raw) {
+        vcad_render::glow::Glow {
+            bloom: Some(Default::default()),
+            ..Default::default()
+        }
+    } else {
+        Default::default()
+    };
+    // Glowing media are traced by the CPU integrator only.
+    if p.force_cpu == 0 && !vcad_render::photoreal::document_has_media(raw) {
+        let (ro, pr) = options(p, false, glow)?;
         match vcad_render::photoreal_gpu::render_photoreal_gpu_png_str_progress(
             raw, &ro, &pr, report,
         ) {
@@ -482,10 +497,20 @@ fn render_png(
     if !report(0, p.samples) {
         return Err("cancelled".into());
     }
-    let (ro, pr) = options(p, true)?;
+    let (ro, pr) = options(p, true, glow)?;
     let png = vcad_render::photoreal::render_photoreal_png_str(raw, &ro, &pr)?;
     report(p.samples, p.samples);
     Ok(png)
+}
+
+/// Whether any material in the document emits — at a surface or through a
+/// volume.
+fn document_emits(raw: &str) -> bool {
+    serde_json::from_str::<vcad_ir::Document>(raw).is_ok_and(|d| {
+        d.materials
+            .values()
+            .any(|m| m.volume_emission.is_some() || m.emissive_radiance().is_some())
+    })
 }
 
 #[cfg(test)]

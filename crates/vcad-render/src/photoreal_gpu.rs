@@ -353,6 +353,15 @@ fn rasterize(
     if solids.is_empty() {
         return Err("no solids produced".to_string());
     }
+    if photoreal::has_media(&solids) {
+        // The GPU tier has no splat field; drawing the medium's solid as an
+        // opaque surface, or dropping it, would both be silent lies.
+        return Err("--gpu does not support glowing media (a material with \
+                    volumeEmission): only the CPU integrator traces them. \
+                    Drop --gpu (or pass --cpu)."
+            .to_string());
+    }
+    photoreal::check_glow(pr, png, false)?;
     // `mesh_segments()` is Some here: --exact is refused above.
     let mut objects = photoreal::build_objects(&solids, pr.mesh_segments())?;
     photoreal::apply_look(&mut objects, &solids, pr);
@@ -455,7 +464,12 @@ fn rasterize(
     }
 
     let film = out.to_film();
-    let rgba = film.to_srgb8(pr.exposure, png && !pr.backdrop.is_opaque());
+    let rgba = crate::glow::encode_film(
+        &film,
+        pr.exposure,
+        png && !pr.backdrop.is_opaque(),
+        &pr.glow,
+    );
 
     let n = canvas.len();
     let mut rgb = vec![0u8; n * 3];

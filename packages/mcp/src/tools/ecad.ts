@@ -116,6 +116,11 @@ import {
 } from "./session.js";
 import { buildKernelEventPayload } from "./kernel-event.js";
 import { emClaim } from "./em-claims.js";
+import {
+  checkWindingContinuity,
+  type WindingCheckResult,
+  type WindingCheckSpec,
+} from "./winding-check.js";
 import { lookupOrderable, searchOrderable } from "./part-stock.js";
 import type { NextAction } from "./next-actions.js";
 import { computeEnclosureFitForBoard, enclosureFitOptsFromArgs } from "./enclosure.js";
@@ -11654,7 +11659,10 @@ export async function addMotorWinding(args: Record<string, unknown>) {
   const MARGIN = 0.05;
 
   // Pads by net — feed targets (pre-existing pads only; this tool adds none).
-  const padsByNet = new Map<string, Array<{ pos: Vec2; onReturnLayer: boolean; size: number }>>();
+  const padsByNet = new Map<
+    string,
+    Array<{ pos: Vec2; onReturnLayer: boolean; onCopperLayer: boolean; size: number }>
+  >();
   for (const fp of pcb.footprints) {
     for (const pad of fp.pads) {
       if (!pad.net) continue;
@@ -11662,6 +11670,7 @@ export async function addMotorWinding(args: Record<string, unknown>) {
       arr.push({
         pos: padWorld(fp, pad),
         onReturnLayer: pad.layers.includes(returnLayer),
+        onCopperLayer: pad.layers.includes(copperLayer),
         size: padApproxRadius(pad),
       });
       padsByNet.set(pad.net, arr);
@@ -11984,10 +11993,11 @@ export async function addMotorWinding(args: Record<string, unknown>) {
   // f. Phase/neutral feeds to same-net pads, when any exist. Escape scheme:
   //    jog off the first coil's center-via ray (opposite side from the series
   //    escapes), radial out on the return layer past the outer terminals, a
-  //    staggered escape arc to the pad's angle, then a drop onto the pad (via
-  //    if the pad doesn't reach the return layer). Every candidate is checked
-  //    against all existing copper before it is committed; ring assignments
-  //    and arc directions are searched, and anything unroutable is reported.
+  //    staggered escape arc (on either layer) to the pad's angle, then a drop
+  //    onto the pad (via if the pad doesn't reach the arc's layer). Every
+  //    candidate is checked against all existing copper before it is
+  //    committed; ring, arc layer and direction are searched by backtracking,
+  //    and anything unroutable is reported — and fails the call.
   const phaseFeeds: Record<string, Vec2> = {};
   const feedsRouted: string[] = [];
   const feedsUnrouted: string[] = [];
@@ -12047,7 +12057,17 @@ export async function addMotorWinding(args: Record<string, unknown>) {
         traces: Array<{ a: Vec2; b: Vec2; layer: PcbLayer }>;
         vias: Vec2[];
       };
-      const buildFeed = (spec: FeedSpec, ringIdx: number, dirSign: 1 | -1): Candidate | null => {
+      // An escape arc may ride either layer. The radial out from the coil is
+      // always on the return layer (the spiral layer is full of coil there);
+      // past the outer terminals both layers are free, and a feed whose arc
+      // must pass another phase's radial can only do it on the spiral layer —
+      // a layer-change via at the top of its radial.
+      const buildFeed = (
+        spec: FeedSpec,
+        ringIdx: number,
+        dirSign: 1 | -1,
+        arcLayer: PcbLayer,
+      ): Candidate | null => {
         const rEsc = rEscBase + ringIdx * ringSpacing;
         if (rEsc + halfW > rEscMax) return null;
         const pads = padsByNet.get(spec.net)!;
@@ -12057,6 +12077,7 @@ export async function addMotorWinding(args: Record<string, unknown>) {
             ? p
             : best,
         );
+        const onArcLayer = arcLayer === returnLayer ? target.onReturnLayer : target.onCopperLayer;
         const aEsc = spec.useJog ? spec.angle - jog : spec.angle;
         const traces: Candidate["traces"] = [];
         const cvias: Vec2[] = [];
@@ -12068,6 +12089,7 @@ export async function addMotorWinding(args: Record<string, unknown>) {
         }
         const escTop = windPolar(center, rEsc, aEsc);
         traces.push({ a: prev, b: escTop, layer: returnLayer });
+        if (arcLayer !== returnLayer) cvias.push(escTop);
         let aPad = windAngle(center, target.pos);
         if (dirSign > 0) {
           while (aPad <= aEsc + 1e-9) aPad += TAU;
@@ -12088,13 +12110,13 @@ export async function addMotorWinding(args: Record<string, unknown>) {
         if (Math.abs(arcEnd - aEsc) > 1e-6 && dirSign * (arcEnd - aEsc) > 0) {
           const arc = windArcPoints(center, rEsc, aEsc, arcEnd);
           for (let i = 0; i + 1 < arc.length; i++) {
-            traces.push({ a: arc[i]!, b: arc[i + 1]!, layer: returnLayer });
+            traces.push({ a: arc[i]!, b: arc[i + 1]!, layer: arcLayer });
           }
-          traces.push({ a: arc[arc.length - 1]!, b: target.pos, layer: returnLayer });
+          traces.push({ a: arc[arc.length - 1]!, b: target.pos, layer: arcLayer });
         } else {
-          traces.push({ a: escTop, b: target.pos, layer: returnLayer });
+          traces.push({ a: escTop, b: target.pos, layer: arcLayer });
         }
-        if (!target.onReturnLayer) cvias.push(target.pos);
+        if (!onArcLayer) cvias.push(target.pos);
         return { traces, vias: cvias };
       };
 
@@ -12114,7 +12136,7 @@ export async function addMotorWinding(args: Record<string, unknown>) {
           }
           for (const fp of pcb.footprints) {
             for (const pad of fp.pads) {
-              if (pad.net === net) continue;
+              if (pad.net === net || !pad.layers.includes(t.layer)) continue;
               const pw = padWorld(fp, pad);
               if (pointSegDist(pw, t.a, t.b) < padApproxRadius(pad) + halfW + clearance) return false;
             }
@@ -12132,8 +12154,37 @@ export async function addMotorWinding(args: Record<string, unknown>) {
               return false;
             }
           }
+          for (const fp of pcb.footprints) {
+            for (const pad of fp.pads) {
+              if (pad.net === net) continue;
+              const pw = padWorld(fp, pad);
+              if (Math.hypot(pw.x - v.x, pw.y - v.y) < padApproxRadius(pad) + viaR + clearance) {
+                return false;
+              }
+            }
+          }
         }
         return true;
+      };
+
+      // Two staged feeds (different nets) must clear each other on every
+      // layer: trace↔trace on a shared layer, and any via against the other's
+      // traces and vias (a via spans both layers).
+      const candsConflict = (a: Candidate, b: Candidate): boolean => {
+        for (const ta of a.traces) {
+          for (const tb of b.traces) {
+            if (ta.layer === tb.layer && windSegSegDist(ta.a, ta.b, tb.a, tb.b) < traceWidth + clearance) {
+              return true;
+            }
+          }
+        }
+        const viaVsCand = (v: Vec2, c: Candidate): boolean =>
+          c.traces.some((t) => pointSegDist(v, t.a, t.b) < viaR + halfW + clearance) ||
+          c.vias.some((w) => {
+            const d = Math.hypot(w.x - v.x, w.y - v.y);
+            return d < viaDia + clearance || d < viaDrill + rules.holeToHole;
+          });
+        return a.vias.some((v) => viaVsCand(v, b)) || b.vias.some((v) => viaVsCand(v, a));
       };
 
       const commit = (cand: Candidate, net: string) => {
@@ -12143,63 +12194,51 @@ export async function addMotorWinding(args: Record<string, unknown>) {
         for (const v of cand.vias) pushVia(v, net);
       };
 
-      // Search ring assignments (≤4 feeds → ≤24 permutations), directions
-      // greedily per feed; first fully-clear assignment wins.
-      const perms = (idx: number[]): number[][] =>
-        idx.length <= 1
-          ? [idx]
-          : idx.flatMap((v, i) => perms([...idx.slice(0, i), ...idx.slice(i + 1)]).map((r) => [v, ...r]));
-      let done = false;
-      for (const perm of perms(specs.map((_, i) => i))) {
-        const staged: Array<{ cand: Candidate; net: string }> = [];
-        let ok = true;
-        for (let s = 0; s < specs.length && ok; s++) {
-          const spec = specs[s]!;
-          let placed = false;
-          for (const dirSign of [1, -1] as const) {
-            const cand = buildFeed(spec, perm[s]!, dirSign);
-            if (!cand) continue;
-            // check against pcb + already-staged candidates
-            const stagedHit = staged.some((st) =>
-              st.net !== spec.net &&
-              st.cand.traces.some((a) =>
-                cand.traces.some(
-                  (b) => a.layer === b.layer && windSegSegDist(a.a, a.b, b.a, b.b) < traceWidth + clearance,
-                ),
-              ),
-            );
-            if (!stagedHit && feedClear(cand, spec.net)) {
-              staged.push({ cand, net: spec.net });
-              placed = true;
-              break;
-            }
-          }
-          if (!placed) ok = false;
-        }
-        if (ok) {
-          for (const st of staged) commit(st.cand, st.net);
-          feedsRouted.push(...staged.map((st) => st.net));
-          done = true;
-          break;
-        }
-      }
-      if (!done) {
-        // Fall back to routing whatever fits, first-fit; report the rest.
-        for (const spec of specs) {
-          let placed = false;
-          for (let ringIdx = 0; ringIdx < specs.length && !placed; ringIdx++) {
+      // Every (ring, arc layer, direction) option per feed, each checked once
+      // against the existing copper. Return layer first so a board that routes
+      // single-layer keeps doing so.
+      let nRingsAvail = 0;
+      while (rEscBase + nRingsAvail * ringSpacing + halfW <= rEscMax) nRingsAvail++;
+      const arcLayers: PcbLayer[] = copperLayer === returnLayer ? [returnLayer] : [returnLayer, copperLayer];
+      const options = specs.map((spec) => {
+        const out: Array<{ ring: number; cand: Candidate }> = [];
+        for (let ring = 0; ring < nRingsAvail; ring++) {
+          for (const layer of arcLayers) {
             for (const dirSign of [1, -1] as const) {
-              const cand = buildFeed(spec, ringIdx, dirSign);
-              if (cand && feedClear(cand, spec.net)) {
-                commit(cand, spec.net);
-                placed = true;
-                break;
-              }
+              const cand = buildFeed(spec, ring, dirSign, layer);
+              if (cand && feedClear(cand, spec.net)) out.push({ ring, cand });
             }
           }
-          (placed ? feedsRouted : feedsUnrouted).push(spec.net);
         }
-      }
+        return out;
+      });
+
+      // Backtracking search over the options: distinct rings, no pairwise
+      // conflicts, maximizing the number of feeds routed (all, when any full
+      // assignment exists). A feed may be skipped only to route the others.
+      let best: Array<{ s: number; cand: Candidate }> = [];
+      const chosen: Array<{ s: number; ring: number; cand: Candidate }> = [];
+      const search = (s: number): boolean => {
+        if (s === specs.length) {
+          if (chosen.length > best.length) best = chosen.map((c) => ({ s: c.s, cand: c.cand }));
+          return best.length === specs.length;
+        }
+        if (chosen.length + (specs.length - s) <= best.length) return false;
+        for (const opt of options[s]!) {
+          if (chosen.some((c) => c.ring === opt.ring)) continue;
+          if (chosen.some((c) => specs[c.s]!.net !== specs[s]!.net && candsConflict(c.cand, opt.cand))) {
+            continue;
+          }
+          chosen.push({ s, ring: opt.ring, cand: opt.cand });
+          if (search(s + 1)) return true;
+          chosen.pop();
+        }
+        return search(s + 1); // skip this feed
+      };
+      search(0);
+      const routedIdx = new Set(best.map((b) => b.s));
+      for (const b of best) commit(b.cand, specs[b.s]!.net);
+      specs.forEach((spec, i) => (routedIdx.has(i) ? feedsRouted : feedsUnrouted).push(spec.net));
     }
   }
 
@@ -12279,6 +12318,36 @@ export async function addMotorWinding(args: Record<string, unknown>) {
     }
   }
   errors.push(...auditIssues);
+  if (feedsUnrouted.length) {
+    errors.push(
+      `feeds not routed for ${feedsUnrouted.join(", ")}: no planar escape to their pads. ` +
+        "Do NOT stitch the pad to the series ring — that bypasses the phase's first coil. " +
+        "Move the connector or free board area, then re-run.",
+    );
+  }
+
+  // h. Current check: solve the copper as a resistor network and require every
+  //    coil to carry its phase current with the planned sign. Runs when the
+  //    board has a pad on every phase and the neutral (otherwise nothing can
+  //    be fed). DRC can't see an open coil — a dead spiral is legal copper.
+  let windingCheck: WindingCheckResult | undefined;
+  if (
+    connection === "wye" &&
+    neutral &&
+    neutralFeedWanted &&
+    coilsPlaced === plan.coils.length &&
+    phaseList.every((n) => (padsByNet.get(n)?.length ?? 0) > 0)
+  ) {
+    windingCheck = checkWindingContinuity(pcb, windingSpecFromPlan(plan, {
+      center,
+      pitchRadius,
+      outerRadius: outerR,
+      turns: turnsPerCoil,
+      copperLayer,
+      neutralNet: neutral,
+    }));
+    errors.push(...windingCheck.failures.map((f) => `winding check: ${f}`));
+  }
 
   return {
     content: [
@@ -12297,6 +12366,7 @@ export async function addMotorWinding(args: Record<string, unknown>) {
           phase_feeds: phaseFeeds,
           ...(feedsRouted.length ? { feeds_routed: feedsRouted } : {}),
           ...(feedsUnrouted.length ? { feeds_unrouted: feedsUnrouted } : {}),
+          ...(windingCheck ? { winding_check: windingCheckSummary(windingCheck) } : {}),
           interconnect_note:
             "Interconnect is planar by construction: per-phase staggered-radius arcs " +
             "on the spiral layer in the coil-free bore, radial drops on the return " +
@@ -12311,6 +12381,129 @@ export async function addMotorWinding(args: Record<string, unknown>) {
       },
     ],
     ...(errors.length && coilsPlaced === 0 ? { isError: true as const } : {}),
+  };
+}
+
+/** Coil centres + polarities of a winding plan, in board coordinates —
+ *  the same centres add_motor_winding places its spirals at. */
+function windingSpecFromPlan(
+  plan: WindingPlan,
+  g: {
+    center: Vec2;
+    pitchRadius: number;
+    outerRadius: number;
+    turns: number;
+    copperLayer: string;
+    neutralNet: string;
+  },
+): WindingCheckSpec {
+  return {
+    coils: plan.coils.map((c) => {
+      const p = windPolar(g.center, g.pitchRadius, (c.angleDeg * Math.PI) / 180);
+      return { center: { x: round3(p.x), y: round3(p.y) }, net: c.net, polarity: c.polarity };
+    }),
+    outerRadius: g.outerRadius,
+    turns: g.turns,
+    copperLayer: g.copperLayer,
+    neutralNet: g.neutralNet,
+  };
+}
+
+/** Compact JSON view of a winding check for tool results. */
+function windingCheckSummary(r: WindingCheckResult) {
+  return {
+    pass: r.pass,
+    sense: r.sense,
+    coils: r.coils.map((c) => ({
+      net: c.net,
+      center: c.center,
+      polarity: c.polarity,
+      ampere_turns_per_amp: c.ampereTurns,
+      ok: c.ok,
+      ...(c.problem ? { problem: c.problem } : {}),
+    })),
+    phases: r.phases.map((p) => ({
+      net: p.net,
+      resistance_ohm: p.resistanceOhm,
+      dead_copper_mm: p.deadCopperMm,
+      ...(p.problem ? { problem: p.problem } : {}),
+    })),
+    ...(r.failures.length ? { failures: r.failures } : {}),
+  };
+}
+
+/** JSON Schema for check_winding. */
+export const checkWindingSchema = {
+  type: "object" as const,
+  properties: {
+    ...docInputProperties,
+    slots: { type: "number" as const, description: "Slot/tooth count (as passed to add_motor_winding)" },
+    poles: { type: "number" as const, description: "Pole count 2p" },
+    phases: { type: "number" as const, description: "Phase count (default 3)" },
+    center: {
+      type: "object" as const,
+      description: "Winding center {x, y} in mm",
+      properties: { x: { type: "number" as const }, y: { type: "number" as const } },
+      required: ["x", "y"],
+    },
+    pitch_radius: { type: "number" as const, description: "Radius of the coil centres (mm)" },
+    outer_radius: { type: "number" as const, description: "Coil spiral outer radius (mm)" },
+    turns_per_coil: { type: "number" as const, description: "Turns per coil (default 1)" },
+    copper_layer: { type: "string" as const, description: "Spiral layer (default FCu)" },
+    phase_nets: {
+      type: "array" as const,
+      items: { type: "string" as const },
+      description: "Phase net names (default PHA/PHB/PHC)",
+    },
+    neutral_net: { type: "string" as const, description: "Wye neutral net (default WIND_N)" },
+  },
+  required: ["slots", "poles", "center", "pitch_radius", "outer_radius"],
+};
+
+/**
+ * check_winding — does every coil carry current? Solves the board's copper as
+ * a resistor network (1 A into each phase pad, neutral at 0 V) and reads each
+ * coil's signed ampere-turns. Fails closed. DRC cannot see an open coil.
+ */
+export function checkWinding(args: Record<string, unknown>) {
+  const ctx = resolveDocInput(args);
+  const pcb = getDocPcb(ctx.doc);
+  if (!pcb) return ecadError("Document has no PCB");
+  const center = args.center as Vec2;
+  if (!center || typeof center.x !== "number" || typeof center.y !== "number") {
+    return ecadError("center must be {x, y} in mm");
+  }
+  const planRes = windingLayout({
+    slots: args.slots,
+    poles: args.poles,
+    phases: args.phases,
+    turns_per_coil: args.turns_per_coil ?? 1,
+    connection: "wye",
+    layer: "double",
+    phase_nets: args.phase_nets,
+    neutral_net: args.neutral_net,
+  });
+  if ("isError" in planRes && planRes.isError) {
+    return ecadError(planRes.content[0]!.text.replace(/^Error:\s*/, ""));
+  }
+  const plan = JSON.parse(planRes.content[0]!.text) as WindingPlan;
+  if (!plan.feasible) return ecadError(plan.reason ?? "infeasible winding");
+  const copperRes = validateCopperLayer((args.copper_layer as string) || "FCu");
+  if ("error" in copperRes) return ecadError(`copper_layer: ${copperRes.error}`);
+  const r = checkWindingContinuity(
+    pcb,
+    windingSpecFromPlan(plan, {
+      center,
+      pitchRadius: args.pitch_radius as number,
+      outerRadius: args.outer_radius as number,
+      turns: (args.turns_per_coil as number) ?? 1,
+      copperLayer: copperRes.layer,
+      neutralNet: plan.neutralNet ?? "WIND_N",
+    }),
+  );
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(windingCheckSummary(r)) }],
+    ...(r.pass ? {} : { isError: true as const }),
   };
 }
 
@@ -15955,6 +16148,15 @@ export const toolDefs: ToolDef[] = [
     inputSchema: addMotorWindingSchema,
     handler: (a) => addMotorWinding(a) as ToolResult | Promise<ToolResult>,
     behavior: behavior({ writesDoc: true, geometry: true }),
+  },
+  {
+    name: "check_winding",
+    pack: "ecad",
+    description:
+      "Verify a PCB motor winding carries current: solves the board copper as a resistor network (1 A into each phase pad, the neutral net at 0 V) and reports every coil's signed ampere-turns, each phase's pad-to-neutral resistance, and copper that carries no current. FAILS (isError) on an open coil, a partly shorted coil, a coil circulating against its plan polarity, or a dead-end stub — none of which DRC can see. Pass the same slots/poles/center/pitch_radius/outer_radius/turns_per_coil you gave add_motor_winding. Read-only.",
+    inputSchema: checkWindingSchema,
+    handler: (a) => checkWinding(a) as ToolResult,
+    behavior: behavior({}),
   },
   {
     name: "calc_motor",

@@ -111,6 +111,11 @@ final class ReleaseWindowController {
     private var mouseMonitors: [Any] = []
     /// Set by ReleasedARView so the pass-through hit test can raycast the scene.
     weak var arView: ARView?
+    /// Each self-lit body's own emission, by entity name, recorded at build
+    /// time so a hover or selection lift can hand it back instead of zeroing
+    /// it (see `paint`). Empty when nothing in the document emits — which is
+    /// also what keeps the bloom pass off.
+    var baseEmission: [String: ViewportGlow.Emission] = [:]
     /// The kernel-space frame entity (scale + Z-up + centering applied), set by
     /// ReleasedARView on rebuild — sketch taps convert world rays through it,
     /// and the live sketch ink parents under it.
@@ -681,7 +686,12 @@ final class ReleaseWindowController {
             m.emissiveColor = .init(color: SelectionStyle.hover)
             m.emissiveIntensity = SelectionStyle.partHoverIntensity
         case .none:
-            m.emissiveIntensity = 0
+            if let own = baseEmission[name] {
+                m.emissiveColor = .init(color: own.color)
+                m.emissiveIntensity = own.intensity
+            } else {
+                m.emissiveIntensity = 0
+            }
         }
         e.model?.materials = [m]
     }
@@ -1262,6 +1272,13 @@ struct ReleasedOverlayView: View {
             FieldHud(store: FieldOverlayStore.shared)
                 .padding(Theme.Space.l)
                 .modifier(ChromeRegion(key: "fieldHud"))
+        }
+        .overlay(alignment: .top) {
+            // Live magnet-steered plasmoid (PlasmoidSim.swift).
+            PlasmoidHud(store: PlasmoidStore.shared)
+                .padding(Theme.Space.l)
+                .padding(.top, 52)  // clear the floating title bar
+                .modifier(ChromeRegion(key: "plasmoidHud"))
         }
         .overlay(alignment: .bottomTrailing) {
             // Orientation triad: which way X, Y and Z point right now. Bottom
@@ -1949,6 +1966,8 @@ struct ReleasedARView: NSViewRepresentable {
     /// Compressed-field overlay revision (FieldOverlay.swift) — an input so a
     /// load or slice change runs `updateNSView`.
     let fieldRevision: Int
+    /// Live plasmoid frame counter (PlasmoidSim.swift) — re-poses its overlay.
+    let plasmoidTick: Int
     let cncStock: Double
     let poseTick: Int
     /// The model's own "the geometry changed" flag, the same one the studio
@@ -2086,6 +2105,8 @@ struct ReleasedARView: NSViewRepresentable {
         if let parent = ReleaseWindowController.shared.centeringEntity {
             syncCNCOverlay(model.cnc, in: parent, model: model)
             syncFieldOverlay(FieldOverlayStore.shared, in: parent)
+            syncPlasmoidOverlay(PlasmoidStore.shared, in: parent)
+            syncFieldsSection(FieldsStore.shared, in: parent)
             if model.workspace == .manufacture && model.cnc.autoFit && !model.cnc.followSpindle && context.coordinator.framedCNCRevision != cncRevision {
                 context.coordinator.framedCNCRevision = cncRevision
                 Task { @MainActor in
@@ -2242,6 +2263,7 @@ struct ReleasedARView: NSViewRepresentable {
         anchor.children.filter { ["geomRoot", "grid", "contactShadow"].contains($0.name) }
             .forEach { $0.removeFromParent() }
         let sceneScale = 0.6 / max(scene.size, 0.0001)
+        ReleaseWindowController.shared.baseEmission.removeAll()
 
         let centering = Entity()
         centering.name = "centering"
@@ -2289,6 +2311,7 @@ struct ReleasedARView: NSViewRepresentable {
                 m.roughness = .init(floatLiteral: inst.material.roughness)
                 m.metallic = .init(floatLiteral: inst.material.metallic)
                 SceneAssets.studioSoften(&m)
+                ViewportGlow.dress(&m, inst.material, entity: "inst\(i)")
             }
             let e = ModelEntity(mesh: inst.mesh, materials: [m])
             // A free root (see `freeRoots`) stays where it is: it isn't an
@@ -2335,6 +2358,7 @@ struct ReleasedARView: NSViewRepresentable {
                 m.roughness = .init(floatLiteral: r.roughness)
                 m.metallic = .init(floatLiteral: r.metallic)
                 SceneAssets.studioSoften(&m)
+                ViewportGlow.dress(&m, r, entity: "part\(i)")
             } else {
                 m.baseColor = .init(tint: item.color)
                 m.roughness = 0.34
@@ -2370,6 +2394,11 @@ struct ReleasedARView: NSViewRepresentable {
         zUp.addChild(centering)
         zUp.orientation = simd_quatf(angle: -.pi / 2, axis: [1, 0, 0])
 
+        // Bloom only while something on screen emits: no emitter, no
+        // post-process callback, no per-frame cost.
+        if let ar = ReleaseWindowController.shared.arView {
+            ViewportGlow.install(on: ar, enabled: !ReleaseWindowController.shared.baseEmission.isEmpty)
+        }
         ReleaseWindowController.shared.repaintHover()
 
         let geomRoot = Entity()
@@ -2820,6 +2849,7 @@ struct ReleasedScene: View {
                        cncOrigin: model.cnc.origin,
                        cncOverlay: model.cnc.overlay,
                        fieldRevision: FieldOverlayStore.shared.revision,
+                       plasmoidTick: PlasmoidStore.shared.tick,
                        cncStock: model.cnc.stockThickness,
                        poseTick: model.poseTick,
                        geometryDirty: model.geometryDirty,

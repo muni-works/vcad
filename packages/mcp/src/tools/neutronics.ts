@@ -2,8 +2,11 @@
  * Neutronics tools — the `vcad-kernel-neutronics` crate over MCP.
  *
  * `simulate_neutron_shield` runs analog Monte Carlo neutron transport
- * through a spherical shield stack and returns dose rates at detector
- * shells WITH batch-statistics error bars, plus the
+ * through a spherical shield stack (`spec`) or a room-scale 3D scene of
+ * boxes/spheres/cylinders (`scene`: chamber, HDPE castle, concrete room)
+ * and returns dose rates — and, for scenes, a voxel dose map and expected
+ * instrument readings (moderated ³He counts/min, bubbles/h) — WITH
+ * batch-statistics error bars, plus the
  * `vcad.neutronics-claims/1` set and unified-receipt claims. Fail-closed
  * throughout: truncated histories or unscored tallies refuse to price
  * claims (the fix is more histories). Predictions carry
@@ -93,6 +96,132 @@ const shieldSpecSchema = {
   },
 };
 
+const p3 = {
+  type: "array" as const,
+  minItems: 3,
+  maxItems: 3,
+  items: paramValue,
+  description: "[x, y, z] in mm (Z-up); entries may be named parameters.",
+};
+
+const shapeSchema = {
+  type: "object" as const,
+  required: ["type"],
+  description:
+    "Convex primitive (mm). type=box {min_mm,max_mm} | box_centered " +
+    "{center_mm,half_mm} | sphere {center_mm,radius_mm} | cylinder " +
+    "{base_mm, axis:'x'|'y'|'z', radius_mm, height_mm}.",
+  properties: {
+    type: {
+      type: "string" as const,
+      enum: ["box", "box_centered", "sphere", "cylinder"],
+    },
+    min_mm: p3,
+    max_mm: p3,
+    center_mm: p3,
+    half_mm: p3,
+    base_mm: p3,
+    axis: { type: "string" as const, enum: ["x", "y", "z"] },
+    radius_mm: paramValue,
+    height_mm: paramValue,
+  },
+};
+
+const instrumentSchema = {
+  type: "object" as const,
+  required: ["type"],
+  description:
+    "Instrument folded at the detector. moderated_counter {gas:{gas:'he3', " +
+    "pressure_atm} | {gas:'bf3', pressure_atm, b10_fraction}, tube_diameter_mm, " +
+    "active_length_mm, moderator_thickness_mm (HDPE), counting_efficiency?=1, " +
+    "response_histories_per_batch?=10000, response_batches?=10} — response R(E) " +
+    "computed by MC through the counter geometry, reported as counts/min. " +
+    "bubble {sensitivity_bubbles_per_usv (REQUIRED: each unit's own " +
+    "calibration), threshold_ev?=1e5} → bubbles/h. cr39 " +
+    "{tracks_per_cm2_per_msv (REQUIRED), threshold_ev?=2e5} → tracks/cm2/h. " +
+    "rem_meter {counts_per_usv} (ideal H*(10) follower). Optional `name` labels " +
+    "the claim.",
+  properties: {
+    type: {
+      type: "string" as const,
+      enum: ["moderated_counter", "bubble", "cr39", "rem_meter"],
+    },
+    name: { type: "string" as const },
+  },
+  additionalProperties: true,
+};
+
+const sceneSpecSchema = {
+  type: "object" as const,
+  required: ["cells", "source"],
+  description:
+    "Room-scale 3D scene. Cells are in PRIORITY order: a point belongs to " +
+    "the first cell containing it, so list holes before what they are cut " +
+    "from (chamber vacuum sphere, then steel sphere; castle cavity, then " +
+    "castle; room air, then concrete). The LAST cell is the world and must " +
+    "enclose every other cell (fail-closed); leaving it is leakage. Units mm.",
+  properties: {
+    cells: {
+      type: "array" as const,
+      minItems: 1,
+      items: {
+        type: "object" as const,
+        required: ["name", "material", "shape"],
+        properties: {
+          name: { type: "string" as const },
+          material: {
+            type: "string" as const,
+            description:
+              "hdpe, paraffin, borated-hdpe-5, water, lead, concrete, air, " +
+              "steel, void.",
+          },
+          shape: shapeSchema,
+        },
+      },
+    },
+    source: {
+      type: "object" as const,
+      required: ["position_mm", "rate_n_per_s", "energy_ev"],
+      description: "Isotropic point source (D-D 2.45e6 eV; max 3e6 eV).",
+      properties: {
+        position_mm: p3,
+        rate_n_per_s: paramValue,
+        energy_ev: paramValue,
+      },
+    },
+    detectors: {
+      type: "array" as const,
+      items: {
+        type: "object" as const,
+        required: ["label", "position_mm"],
+        properties: {
+          label: { type: "string" as const },
+          position_mm: p3,
+          radius_mm: {
+            ...paramValue,
+            description: "Virtual tally-sphere radius. Default 50 mm.",
+          },
+          instruments: { type: "array" as const, items: instrumentSchema },
+        },
+      },
+    },
+    mesh: {
+      type: "object" as const,
+      required: ["min_mm", "max_mm", "shape"],
+      description:
+        "Voxel H*(10) dose map: bounds in mm (literal numbers), shape " +
+        "[nx, ny, nz]; a 1-voxel-thick slab at source height is the cheap " +
+        "floor-plan map. Each voxel carries its own RSE (null = nothing scored).",
+      properties: {
+        min_mm: { type: "array" as const, items: { type: "number" as const } },
+        max_mm: { type: "array" as const, items: { type: "number" as const } },
+        shape: { type: "array" as const, items: { type: "number" as const } },
+      },
+    },
+    run: shieldSpecSchema.properties.run,
+  },
+};
+
 const shieldExtractSchema = {
   type: "object" as const,
   required: ["shells", "source", "detectors"],
@@ -119,7 +248,7 @@ const shieldExtractSchema = {
             type: "string" as const,
             description:
               "Library material (hdpe, paraffin, borated-hdpe-5, water, lead, " +
-              "concrete, air, void). Omitted = the part's document material.",
+              "concrete, air, steel, void). Omitted = the part's document material.",
           },
         },
       },
@@ -170,14 +299,20 @@ export const toolDefs: ToolDef[] = [
     pack: null,
     description:
       "Monte Carlo neutron shielding run (analog transport, 5-group multigroup library " +
-      "with exact elastic kinematics): spherical layer stack around a point source (D-D " +
-      "band), H*(10) dose rate at each detector shell WITH 1-sigma batch error bars " +
-      "(rse), attenuation factor vs bare source, thermal flux, and absorbed/leakage " +
-      "balance — as data plus `vcad.neutronics-claims/1` and unified-receipt claims. " +
+      "with exact elastic kinematics). Pass EITHER `spec` (1D spherical layer stack " +
+      "around a point source: H*(10) at detector shells, attenuation factor, thermal " +
+      "flux) OR `scene` (room-scale 3D: priority-ordered box/sphere/cylinder cells — " +
+      "chamber wall, HDPE castle, concrete floor/walls/door — with room return, an " +
+      "optional voxel dose map, and detectors that report expected instrument readings: " +
+      "moderated He-3/BF3 counts/min, bubble-dosimeter bubbles/h, CR-39 tracks/cm2/h) " +
+      "OR `document_id` + `extract` (spherical shells measured from a session document). " +
+      "Every number carries 1-sigma batch error bars (rse) — " +
+      "as data plus `vcad.neutronics-claims/1` and unified-receipt claims. " +
       "Fail-closed: truncated histories or a tally that scored nothing refuses claims " +
       "(raise histories). Predictions carry basis \"predicted\" and roll up Provisional " +
       "until surveyed. Design-estimate physics: 5-group library (not ENDF continuous-" +
-      "energy), spherical geometry only, no gamma dose, no activation, source energy " +
+      "energy), convex-primitive geometry only, no gamma dose (per-cell capture rates are " +
+      "the capture-gamma source term), no activation, source energy " +
       "capped at 3 MeV (no D-T). Deterministic per seed. Cost ~histories (cap 5M); " +
       "error bars shrink as 1/sqrt(N). The 400k default runs in seconds.",
     inputSchema: {
@@ -187,7 +322,7 @@ export const toolDefs: ToolDef[] = [
           ...shieldSpecSchema,
           description:
             shieldSpecSchema.description +
-            " Pass this OR `document_id` + `extract`.",
+            " Pass this, `scene`, OR `document_id` + `extract`.",
         },
         document_id: {
           type: "string" as const,
@@ -197,6 +332,7 @@ export const toolDefs: ToolDef[] = [
             "solids. Requires `extract`.",
         },
         extract: shieldExtractSchema,
+        scene: sceneSpecSchema,
         parameters: {
           type: "object" as const,
           additionalProperties: { type: "number" as const },
@@ -209,18 +345,26 @@ export const toolDefs: ToolDef[] = [
     handler: (args, ctx) => {
       const a = args as Json;
       const params = (a.parameters ?? {}) as Record<string, number>;
-      if (a.document_id === undefined) {
-        if (a.spec === undefined) {
-          throw new Error(
-            "simulate_neutron_shield: pass `spec`, or `document_id` + `extract`",
-          );
-        }
+      const given = ["spec", "scene", "document_id"].filter((k) => a[k] !== undefined);
+      if (given.length === 0) {
+        throw new Error(
+          "simulate_neutron_shield: pass `spec` (1D spherical), `scene` (3D room), or `document_id` + `extract`",
+        );
+      }
+      if (given.length > 1) {
+        throw new Error(
+          `simulate_neutron_shield: pass exactly one of \`spec\`, \`scene\`, \`document_id\` — not both (${given.join(" + ")})`,
+        );
+      }
+      if (a.scene !== undefined) {
         return textResult(
-          ctx.engine.neutronicsSimulate(JSON.stringify(a.spec), JSON.stringify(params)),
+          ctx.engine.neutronicsSimulateScene(JSON.stringify(a.scene), JSON.stringify(params)),
         );
       }
       if (a.spec !== undefined) {
-        throw new Error("simulate_neutron_shield: pass `spec` OR `document_id`, not both");
+        return textResult(
+          ctx.engine.neutronicsSimulate(JSON.stringify(a.spec), JSON.stringify(params)),
+        );
       }
       if (a.extract === undefined) {
         throw new Error(

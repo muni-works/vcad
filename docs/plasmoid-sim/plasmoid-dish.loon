@@ -1,0 +1,61 @@
+; Racing-plasmoid dish — device geometry for docs/plasmoid-sim.md.
+;
+; Frame matches the sim (crates/vcad-kernel-particle/src/plasmoid.rs):
+; Z-up, millimeters, the dish's inner surface at z = 0, glow sheet at
+; z = +2. Dimensions are read off one frame of the source clip and are a
+; hypothesis (ruler: the hand), not measured.
+;
+; The magnet is drawn at its HOLD pose (r = 55 mm, 120°, 10 mm air gap).
+; vcad.app's live demo (Analysis ▸ Live Plasmoid, apple/VcadApp/.../
+; PlasmoidSim.swift) binds to the roots named `dish`, `spike` and `magnet`;
+; plasmoid-dish.vcad is this file through loon2vcad (regenerate both together).
+; The sim doesn't read a document timeline yet: the magnet's path lives in the KEYS table
+; (examples/plasmoid_magnet.rs), not here.
+
+[let dish-r 85]
+[let dish-depth 14]
+
+; Dish electrode: a shallow conical bowl with a 2 mm wall and its open top at
+; z = 0, revolved from its (r, z) cross-section about Z.
+[let dish
+  [revolve 0 0 0  0 0 1  360
+    [sketch 0 0 0  1 0 0  0 0 1
+      #[[polygon #[30 [- 0 dish-depth 2]  52 [- 0 dish-depth 2]  [+ dish-r 2] 0
+                   dish-r 0  50 [- 0 dish-depth]  30 [- 0 dish-depth]]]]]]]
+
+; Central glass spike the filaments root on.
+[let spike [pipe [cone 7 0.6 24] [translate 0 0 [- 0 dish-depth]]]]
+
+; Stacked HV driver: resonator coil former + two capacitor/driver pucks.
+[let coil   [pipe [cylinder 46 34] [translate 0 0 -52]]]
+[let puck-1 [pipe [cylinder 56 16] [translate 0 0 -70]]]
+[let puck-2 [pipe [cylinder 62 18] [translate 0 0 -90]]]
+
+; Pickup / antenna ring above the dish, carried on the posts.
+[let ring [pipe [torus 112 2.5] [translate 0 0 95]]]
+
+; Dielectric posts carrying the ring.
+[let post [fn [ang]
+  [pipe [cylinder 2 110]
+        [translate [* 112 [cos [* ang 0.0174533]]] [* 112 [sin [* ang 0.0174533]]] -15]]]]
+
+; N52 10 x 5 mm disc, north pole down, 10 mm above the dish, on a holder.
+; Disc and holder are ONE root named `magnet` so dragging it in vcad.app
+; moves the wand as a whole; the live plasmoid demo (PlasmoidSim.swift)
+; reads the disc as the bottom 5 mm of that part's bounding box.
+[let mx [* 55 [cos [* 120 0.0174533]]]]
+[let my [* 55 [sin [* 120 0.0174533]]]]
+; Built at the origin and placed by ONE outer translate, so the app's move
+; gizmo edits that translate in place.
+[let disc [cylinder 5 5]]
+[let holder [pipe [cylinder 2 60] [translate 0 0 5]]]
+[let magnet [pipe [union disc holder] [translate mx my 10]]]
+
+[root dish "copper"]
+[root spike "glass"]
+[root coil "plastic"]
+[root puck-1 "aluminum"]
+[root puck-2 "aluminum"]
+[root ring "copper"]
+[root [union [post 60] [post 120] [post 200] [post 340]] "plastic"]
+[root magnet "steel"]
