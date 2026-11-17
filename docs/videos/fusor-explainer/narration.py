@@ -4,7 +4,7 @@ number are in script.md.
 """
 LINES = [
     # the payoff first, then the question
-    ("open1", "Inside this steel ball, atoms are fusing. The same reaction that lights a star."),
+    ("open1", "Inside this steel ball, atoms are fusing. The same kind of reaction that lights a star."),
     ("open2", "No magnets. No lasers. Just a wire cage, and thirty thousand volts."),
     ("ask", "So how does a cage of wire fuse atoms?"),
     # the problem
@@ -20,10 +20,10 @@ LINES = [
     ("speed", "In ninety billionths of a second, it is moving at seventeen hundred kilometers a second."),
     ("miss", "But the cage is seventy percent empty space. So most ions miss the wire, "
              "cross the middle, and climb the far side."),
-    ("back", "Then they fall back in. About seven trips, before a wire finally catches them."),
+    ("back", "Then they fall back in. With nothing in the way, about seven trips, before a wire finally catches them."),
     ("core", "Every trip crosses the center. So that is where the fast ions crowd together."),
     # what happens there
-    ("hit", "Almost always, a fast ion just grabs an electron from the gas. "
+    ("hit", "But the gas is in the way. Almost always, a fast ion just grabs an electron from it. "
             "Now it is neutral, the voltage can't hold it, and it flies off."),
     ("fuse", "But once in a long while, two nuclei meet head on, and fuse: into helium, "
              "and a neutron leaving at twenty thousand kilometers a second."),

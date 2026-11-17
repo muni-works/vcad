@@ -295,7 +295,7 @@ def scene_well(t, cues, assets):
         draw_hill(img, c, pot, g)
         # one ion from the simulation, rolling on the hill (its path projected onto the slice)
         a = D["ions"][D["hero"]]
-        tau = max(0.0, t - cues["bottom"]) * 60.0 % 560.0
+        tau = max(0.0, t - cues["hill"] - 0.8) * 60.0 % 560.0
         lay = glow_layer()
         dl = style.draw(lay)
         for j, back in enumerate(np.linspace(0, 26, 12)):
@@ -305,7 +305,7 @@ def scene_well(t, cues, assets):
             sx, sy, _ = proj([[x, z, h + 2.5]], c)
             rr = 9 - 0.6 * j
             dl.ellipse([sx[0] - rr, sy[0] - rr, sx[0] + rr, sy[0] + rr], fill=dim(HOT, (1 - j / 12) ** 2))
-        if t >= cues["bottom"] - 0.2:
+        if t >= cues["hill"] + 0.8:
             img = add_glow(img, lay, 8.0)
     d = style.draw(img)
     kc = ease(seg(t, cues["minus"], cues["minus"] + 0.3))
@@ -416,12 +416,12 @@ def scene_ions(t, cues, assets):
                    fill=mix(BGC, LABEL, kh), anchor="ls")
     kp = ease(seg(t, cues["seven"], cues["seven"] + 0.3)) * (1 - ease(seg(t, cues["core"], cues["core"] + 0.6)))
     if kp > 0:
-        d.text((W / 2, 930), "7.1 passes on average", font=F(24, True), fill=mix(BGC, SEL, kp), anchor="mm")
+        d.text((W / 2, 930), "7.1 passes on average, with no gas", font=F(24, True), fill=mix(BGC, SEL, kp), anchor="mm")
         d.text((W / 2, 964), "70% open · 6 great circles of 2 mm wire", font=F(18), fill=mix(BGC, LABEL, kp), anchor="mm")
     kd = ease(seg(t, cues["crowd"], cues["crowd"] + 0.3))
     if kd > 0:
-        d.text((W / 2, 150), "70× denser", font=F(44, True), fill=mix(BGC, SEL, kd), anchor="mm", stroke_width=5, stroke_fill=(0, 0, 0))
-        d.text((W / 2, 196), "inner 5 mm, against the space near the wall", font=F(18), fill=mix(BGC, TEXT, kd), anchor="mm", stroke_width=4, stroke_fill=(0, 0, 0))
+        d.text((W / 2, 150), "≈ 60× denser", font=F(44, True), fill=mix(BGC, SEL, kd), anchor="mm", stroke_width=5, stroke_fill=(0, 0, 0))
+        d.text((W / 2, 196), "inner 5 mm against the outer chamber · first pass, no gas", font=F(18), fill=mix(BGC, TEXT, kd), anchor="mm", stroke_width=4, stroke_fill=(0, 0, 0))
     return img, "ion flights · simulated in vcad"
 
 
@@ -671,6 +671,9 @@ def scene_still(t, cues, assets, name="hero", push=0.06, dimmed=0.0):
     img = im2.crop((x, y, x + w, y + h))
     if dimmed:
         img = Image.blend(img, style.new("RGB", BGC), dimmed)
+    # a dark strip under the tag, so "render · glow added" reads on the light backdrop
+    band = img.crop((0, 0, w, int(84 * style.S)))
+    img.paste(Image.blend(band, Image.new("RGB", band.size, (0, 0, 0)), 0.72), (0, 0))
     return img, "render · path-traced in vcad · glow added"
 
 
