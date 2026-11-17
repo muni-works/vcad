@@ -22,7 +22,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::axisym::{AxisymMagSolution, PicardReport};
+use crate::axisym::{Annulus, AxisymMagSolution, PicardReport};
 use crate::electro::ElectroSolution;
 use crate::planar::PlanarMagSolution;
 
@@ -169,6 +169,62 @@ pub fn axisym_force_claims(
              surroundings; cross_route_residual compares an independent \
              Maxwell-stress surface when provided",
         )],
+    }
+}
+
+/// Permanent-magnet gap claims of an axisymmetric solve (a loudspeaker /
+/// voice-coil-actuator motor): mean `|B_r|` over the `gap` region — the
+/// reading a Hall probe averages across its active area — and the force
+/// factor `Bl` of coil `k`. The cross-route residual compares `Bl` by
+/// the ψ-difference functional against the sampled field over the coil.
+pub fn axisym_gap_flux_claims(
+    solution: &AxisymMagSolution,
+    coil: Option<usize>,
+    gap: Option<&Annulus>,
+    sor_tol: f64,
+    picard: Option<&PicardReport>,
+) -> ClaimSet {
+    let mut claims = Vec::new();
+    if let Some(g) = gap {
+        let (br, _) = solution.mean_field_in(g, 16);
+        claims.push(claim(
+            "gap_flux_t",
+            br,
+            "T",
+            &format!(
+                "mean |B_r| over r ∈ [{}, {}] mm, z ∈ [{}, {}] mm; axisymmetric (no \
+                 vents, spider or frame), magnets linear recoil, steel as specified; bind \
+                 to a Hall probe centred in the gap with the cone removed",
+                g.r_inner_mm, g.r_outer_mm, g.z_min_mm, g.z_max_mm
+            ),
+        ));
+    }
+    let mut cross = None;
+    if let Some(k) = coil {
+        let bl = solution.force_factor(k);
+        let bl2 = solution.force_factor_sampled(k, 32);
+        cross = Some((bl - bl2).abs() / bl.abs().max(1e-30));
+        claims.push(claim(
+            "bl_n_per_a",
+            bl.abs(),
+            "N/A",
+            "force factor magnitude of the coil at its rest position (J×B per ampere in the \
+             solved field; the signed value, which follows magnet polarity and winding sense, \
+             is in the solve's qois); static, so no voice-coil inductance modulation or eddy \
+             effects; bind to REW Thiele–Small Bl (added-mass method)",
+        ));
+    }
+    ClaimSet {
+        schema: CLAIM_SCHEMA.to_string(),
+        provenance: SolverProvenance {
+            formulation: "axisym-magnetostatics".to_string(),
+            grid: [solution.system.grid.nx, solution.system.grid.ny],
+            sor_tol,
+            sor_sweeps: solution.sweeps,
+            cross_route_residual: cross,
+            nonlinear_iterations: picard.map(|p| p.iterations),
+        },
+        claims,
     }
 }
 

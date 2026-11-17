@@ -410,6 +410,62 @@ pub fn design_claims(set: &ClaimSet) -> Vec<vcad_receipt::ReceiptClaim> {
         .collect()
 }
 
+/// Translate a bench [`ComparisonReport`] into unified-receipt claims —
+/// the twin of `vcad_kernel_particle::receipt::comparison_claims`.
+///
+/// Only measured rows translate (unmeasured claims stay in the predicted
+/// set): Holds → Pass, Violated → Fail, both with
+/// [`vcad_receipt::ClaimBasis::Measured`], the prediction in `predicted`
+/// and the survey reading in `measured`.
+pub fn comparison_claims(
+    report: &ComparisonReport,
+    set: &ClaimSet,
+    measurements: &[Measurement],
+) -> Vec<vcad_receipt::ReceiptClaim> {
+    let oracle = oracle();
+    report
+        .entries
+        .iter()
+        .filter_map(|e| {
+            let measured = e.measured?;
+            let m = measurements.iter().find(|m| m.name == e.name)?;
+            let unit = set
+                .claims
+                .iter()
+                .find(|c| c.name == e.name)
+                .map(|c| c.unit.clone())
+                .unwrap_or_else(|| "1".to_string());
+            let base = match e.verdict {
+                Verdict::Holds => vcad_receipt::ReceiptClaim::pass(
+                    format!("neutronics.{}", e.name),
+                    RECEIPT_DOMAIN,
+                    format!(
+                        "survey measurement of {} within band {}",
+                        e.name, m.band_factor
+                    ),
+                    oracle.clone(),
+                ),
+                Verdict::Violated => vcad_receipt::ReceiptClaim::fail(
+                    format!("neutronics.{}", e.name),
+                    RECEIPT_DOMAIN,
+                    format!(
+                        "survey measurement of {} outside band {}",
+                        e.name, m.band_factor
+                    ),
+                    oracle.clone(),
+                ),
+                Verdict::Unmeasured => return None,
+            };
+            Some(
+                base.with_basis(vcad_receipt::ClaimBasis::Measured)
+                    .with_predicted(quantity(e.predicted, &unit))
+                    .with_measured(quantity(measured, &unit))
+                    .with_details(format!("instrument: {}", m.instrument)),
+            )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -449,5 +505,53 @@ mod tests {
             vcad_receipt::ReceiptVerdict::Provisional,
             "predicted neutronics claims must never read as verified"
         );
+    }
+
+    #[test]
+    fn comparison_claims_translate_holds_and_violated() {
+        let spec: ShieldSpec = serde_json::from_str(
+            r#"{
+              "layers": [
+                {"material": "air",  "thickness_mm": 100},
+                {"material": "hdpe", "thickness_mm": 100},
+                {"material": "air",  "thickness_mm": 400}
+              ],
+              "source": {"rate_n_per_s": 1.0e6, "energy_ev": 2.45e6},
+              "detectors": [{"label": "operator", "radius_mm": 400}],
+              "run": {"histories_per_batch": 500, "batches": 4, "seed": 7}
+            }"#,
+        )
+        .unwrap();
+        let set = predicted_claims(&spec, &BTreeMap::new()).unwrap();
+        let dose = set
+            .claims
+            .iter()
+            .find(|c| c.name == "dose_rate:operator")
+            .unwrap()
+            .value;
+        let ms = vec![Measurement {
+            name: "dose_rate:operator".into(),
+            value: dose * 1.1,
+            uncertainty: 0.0,
+            instrument: "test meter".into(),
+            band_factor: 1.5,
+        }];
+        let report = compare(&set, &ms).unwrap();
+        assert!(report.all_hold);
+        let claims = comparison_claims(&report, &set, &ms);
+        assert_eq!(claims.len(), 1, "only measured rows translate");
+        assert_eq!(claims[0].basis, Some(vcad_receipt::ClaimBasis::Measured));
+        let receipt = vcad_receipt::DesignReceipt::with_claims(claims);
+        assert_eq!(receipt.verdict(), vcad_receipt::ReceiptVerdict::Pass);
+
+        let bad = vec![Measurement {
+            value: dose * 10.0,
+            ..ms[0].clone()
+        }];
+        let report = compare(&set, &bad).unwrap();
+        assert!(!report.all_hold);
+        let receipt =
+            vcad_receipt::DesignReceipt::with_claims(comparison_claims(&report, &set, &bad));
+        assert_eq!(receipt.verdict(), vcad_receipt::ReceiptVerdict::Fail);
     }
 }

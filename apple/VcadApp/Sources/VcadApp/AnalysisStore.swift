@@ -11,7 +11,7 @@ import SwiftUI
 // than drawn over geometry it no longer describes.
 
 enum AnalysisTab: String, CaseIterable, Identifiable {
-    case dfm = "DFM", fea = "Stress", clearance = "Clearance"
+    case dfm = "DFM", fea = "Stress", clearance = "Clearance", fields = "Fields"
     var id: String { rawValue }
 }
 

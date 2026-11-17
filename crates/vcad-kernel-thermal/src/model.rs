@@ -193,7 +193,80 @@ pub enum Boundary {
         /// Ambient temperature, °C.
         ambient_c: f64,
     },
+    /// Gray-diffuse surface radiation, optionally in parallel with a
+    /// convection film:
+    ///
+    /// ```text
+    /// q″ = ε_eff·σ·(T_s⁴ − T_∞⁴) + h·(T_s − T_∞)        (T in kelvin)
+    /// ```
+    ///
+    /// The half-cell conduction resistance d/(2k) sits in series with the
+    /// surface, exactly as for [`Boundary::Convection`]; the surface
+    /// temperature T_s is solved per face. The problem is **nonlinear**
+    /// whenever any radiation face exists, and the solver switches to a
+    /// Newton iteration (see [`crate::solve`]).
+    ///
+    /// Radiation needs absolute temperature: model temperatures are °C and
+    /// are converted with T_K = T_C + 273.15 (the conduction-only solver
+    /// is affine-invariant, the radiating one is not).
+    ///
+    /// Staircase caveat: a voxelized curved surface has more face area
+    /// than the true surface (×4/π for a cylinder wall, ×1.5 for a sphere,
+    /// at *every* resolution — the staircase area never converges). Over-
+    /// counted area over-counts cooling and **under-reads temperature**,
+    /// the unsafe direction. `area_scale` multiplies every radiating face
+    /// of this slot; set it to (true area)/(voxel area) — the solution
+    /// reports the voxel area per slot so the ratio is computable.
+    Radiation {
+        /// Hemispherical total emissivity of the surface, in (0, 1].
+        emissivity: f64,
+        /// Ambient / surrounding-wall temperature, °C (> −273.15).
+        ambient_c: f64,
+        /// Optional parallel convection film, W/(m²·K) (≥ 0; 0 in vacuum).
+        #[serde(default)]
+        h_w_m2k: f64,
+        /// Multiplier on every radiating face area of this slot (> 0).
+        #[serde(default = "unit_scale")]
+        area_scale: f64,
+        /// Two-surface gray enclosure (view factor surface→wall = 1).
+        /// `None` radiates to large surroundings (the black-room limit,
+        /// ε_eff = ε).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enclosure: Option<Enclosure>,
+    },
 }
+
+fn unit_scale() -> f64 {
+    1.0
+}
+
+/// A gray-diffuse enclosure surrounding a radiating slot: a convex
+/// surface of (scaled) area A_s fully enclosed by a wall of area A_w,
+/// emissivity ε_w (view factor surface→wall = 1). The classic two-surface
+/// exchange gives
+///
+/// ```text
+/// ε_eff = 1 / ( 1/ε + (A_s/A_w)·(1/ε_w − 1) )
+/// ```
+///
+/// which reduces to ε when A_s ≪ A_w or the wall is black. A fusor grid
+/// inside a steel chamber is the motivating case: wall temperature is the
+/// slot's `ambient_c`. A_s is the slot's total radiating area as solved
+/// (after `area_scale`), so the wall must be strictly larger
+/// (fail-closed).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Enclosure {
+    /// Wall emissivity, in (0, 1].
+    pub emissivity: f64,
+    /// Wall area, m² (> enclosed surface area).
+    pub area_m2: f64,
+}
+
+/// Stefan–Boltzmann constant, W/(m²·K⁴) (CODATA 2018, exact in SI).
+pub const STEFAN_BOLTZMANN: f64 = 5.670_374_419e-8;
+
+/// Offset from °C to K.
+pub const KELVIN_OFFSET_C: f64 = 273.15;
 
 /// Externally-voxelized material assignment — the seam through which the
 /// vcad side feeds *tessellated part geometry* into the solver without
@@ -306,6 +379,11 @@ pub enum ModelError {
     },
     /// A convection boundary has h ≤ 0.
     NonPositiveFilmCoefficient,
+    /// A radiation boundary is out of its physical range (emissivity
+    /// outside (0, 1], negative h, non-positive area scale, ambient at or
+    /// below absolute zero, or an enclosure no larger than what it
+    /// encloses). The string says which.
+    InvalidRadiation(String),
     /// No voxel got a material — the grid is entirely void.
     NoSolidVoxels,
     /// A power source covers no free solid voxel; its power would vanish.
@@ -357,6 +435,7 @@ impl std::fmt::Display for ModelError {
             ModelError::NonPositiveFilmCoefficient => {
                 write!(f, "convection boundary requires h > 0")
             }
+            ModelError::InvalidRadiation(why) => write!(f, "invalid radiation boundary: {why}"),
             ModelError::NoSolidVoxels => {
                 write!(f, "no voxel is covered by any material region")
             }

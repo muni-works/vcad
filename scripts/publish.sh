@@ -32,8 +32,8 @@ EXTRA=()
 CRATES=(
   stepperoni
   vcad-tool-derive
-  vcad-ir
   vcad-receipt
+  vcad-ir
   vcad-kernel-acoustics
   vcad-kernel-antenna
   vcad-kernel-math
@@ -60,6 +60,7 @@ CRATES=(
   vcad-kernel-flow
   vcad-kernel-naming
   vcad-kernel-neutronics
+  vcad-kernel-photon-dose
   vcad-kernel-particle
   vcad-gdsii
   vcad-kernel-photonics
@@ -81,9 +82,10 @@ CRATES=(
   vcad-ecad-sim
   vcad-ecad-pcb
   vcad-kernel-diff
+  # vcad-parts before vcad-eval: eval expands `std:` PartInstance nodes.
+  vcad-parts
   vcad-eval
   vcad-kernel-optics
-  vcad-parts
   vcad-render
 )
 

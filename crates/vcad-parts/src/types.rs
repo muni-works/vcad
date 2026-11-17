@@ -7,12 +7,52 @@ use vcad_ir::Document;
 /// Function signature that every built-in part's `build` function implements.
 pub type BuildFn = fn(&Params) -> Result<Document, String>;
 
+/// Optional per-part description: mate ports plus machine-readable metadata
+/// (ratings, envelopes, provenance) for clearance/DFM/BOM consumers.
+pub type InfoFn = fn(&Params) -> Result<PartInfo, String>;
+
+/// A named mating interface on a part, in the part's local coordinates.
+///
+/// `origin` sits on the seal mid-plane, `axis` points out of the part toward
+/// whatever mates there, and `up` is the clocking reference (CF bolt holes
+/// straddle it). Two ports mate when their origins coincide, their axes are
+/// anti-parallel and their `up` vectors are parallel.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PortInfo {
+    /// Port name, unique within the part (e.g. `"+x"`, `"a"`, `"seal"`).
+    pub name: String,
+    /// Port origin (mm).
+    pub origin: [f64; 3],
+    /// Outward unit normal.
+    pub axis: [f64; 3],
+    /// Clocking reference, unit and perpendicular to `axis`.
+    pub up: [f64; 3],
+    /// Interface family (`"CF"`, `"KF"`).
+    pub family: String,
+    /// Interface size (`"DN40"`, `"KF25"`).
+    pub size: String,
+    /// Bolt holes on this port are tapped (a joint here needs no nuts).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub tapped: bool,
+}
+
+/// Description returned by a part's [`InfoFn`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PartInfo {
+    /// Mate ports in part-local coordinates.
+    pub ports: Vec<PortInfo>,
+    /// Free-form metadata (JSON object).
+    pub metadata: serde_json::Value,
+}
+
 /// A single registered part: its metadata plus the build closure.
 pub struct PartEntry {
     /// Static metadata (name, category, params, xrefs, …).
     pub meta: PartMetadata,
     /// Compiled builder function.
     pub build: BuildFn,
+    /// Optional ports + metadata describer.
+    pub info: Option<InfoFn>,
 }
 
 impl PartEntry {
@@ -31,6 +71,7 @@ impl PartEntry {
                 .ok()
                 .map(|s| s.to_string()),
             search_tokens: self.search_tokens(),
+            has_ports: self.info.is_some(),
         }
     }
 
@@ -281,6 +322,8 @@ pub struct ManifestEntry {
     pub thumb_svg: Option<String>,
     /// Union of search tokens (name, category, synonyms, xref numbers).
     pub search_tokens: Vec<String>,
+    /// Whether `part_info` returns mate ports / metadata for this part.
+    pub has_ports: bool,
 }
 
 /// JSON-serializable parameter declaration.

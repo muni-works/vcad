@@ -790,6 +790,7 @@ impl VariantSet {
                         min: None,
                         max: None,
                         description: e.param.description.clone(),
+                        tolerance: None,
                     },
                 )
             })

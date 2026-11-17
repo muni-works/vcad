@@ -210,10 +210,11 @@ final class ReleaseWindowController {
         mouseMonitors.append(NSEvent.addLocalMonitorForEvents(
             matching: [.otherMouseDown, .otherMouseDragged, .otherMouseUp]) { [weak self] e in
             guard let self, e.window === self.window, e.buttonNumber == 2 else { return e }
-            let type = e.type, clicks = e.clickCount, shift = e.modifierFlags.contains(.shift)
+            let type = e.type, clicks = e.clickCount
+            let shift = e.modifierFlags.contains(.shift), control = e.modifierFlags.contains(.control)
             let dx = Float(e.deltaX), dy = Float(e.deltaY)
             let consumed = MainActor.assumeIsolated {
-                self.middleMouse(type: type, clicks: clicks, shift: shift, dx: dx, dy: dy)
+                self.middleMouse(type: type, clicks: clicks, shift: shift, control: control, dx: dx, dy: dy)
             }
             return consumed ? nil : e
         } as Any)
@@ -294,6 +295,12 @@ final class ReleaseWindowController {
     /// Ask about unsaved changes. Returns true when closing may proceed.
     func confirmClose() -> Bool {
         guard let model, model.documentDirty, model.usesDocumentTree else { return true }
+        // Untitled work isn't asked about: it's kept as an autosave and shows
+        // up in Recents marked unsaved, reopenable or discardable from there.
+        if model.documentURL == nil {
+            model.flushAutosaveNow()
+            return true
+        }
         let alert = NSAlert()
         alert.messageText = "Do you want to save the changes made to “\(model.documentName)”?"
         alert.informativeText = "Your changes will be lost if you don’t save them."
@@ -490,7 +497,7 @@ final class ReleaseWindowController {
     private var middleDragging = false
 
     /// Middle-button camera input. Returns whether the event was consumed.
-    private func middleMouse(type: NSEvent.EventType, clicks: Int, shift: Bool,
+    private func middleMouse(type: NSEvent.EventType, clicks: Int, shift: Bool, control: Bool,
                              dx: Float, dy: Float) -> Bool {
         guard let m = model else { return false }
         let scheme = NavigationScheme.current
@@ -507,7 +514,7 @@ final class ReleaseWindowController {
             return true
         case .otherMouseDragged:
             guard middleDragging else { return false }
-            switch scheme.action(for: .drag(.middle, shift: shift, command: false)) {
+            switch scheme.action(for: .drag(.middle, shift: shift, command: false, control: control)) {
             case .orbit: m.orbitDrag(dx: dx, dy: dy)
             case .pan: m.panBy(dx: dx, dy: dy)
             default: break
@@ -1206,6 +1213,11 @@ struct ReleasedOverlayView: View {
                     .padding(.top, chromeTop + Theme.Space.s)
                     .modifier(ChromeRegion(key: "proof"))
             }
+        }
+        .overlay {
+            // An opened document's first solve: which part, n of N, elapsed
+            // (OpeningOverlay.swift). Never takes clicks.
+            OpeningOverlay(model: model, chipClearance: studio ? Theme.Space.l : Glass.dockClearance)
         }
         .overlay(alignment: .bottom) {
             // A loon program that failed to compile: where, and a jump there.
@@ -2074,6 +2086,7 @@ struct ReleasedARView: NSViewRepresentable {
         if let parent = ReleaseWindowController.shared.centeringEntity {
             syncCNCOverlay(model.cnc, in: parent, model: model)
             syncFieldOverlay(FieldOverlayStore.shared, in: parent)
+            syncFieldsSection(FieldsStore.shared, in: parent)
             if model.workspace == .manufacture && model.cnc.autoFit && !model.cnc.followSpindle && context.coordinator.framedCNCRevision != cncRevision {
                 context.coordinator.framedCNCRevision = cncRevision
                 Task { @MainActor in
@@ -2186,6 +2199,11 @@ struct ReleasedARView: NSViewRepresentable {
             return
         }
         coordinator.builtSourceID = model.source.id
+        // Time to first pixel, whichever path drew it (a streamed part or a
+        // whole runtime frame).
+        if LaunchPerf.enabled, !model.source.isSandbox, !scene.meshes.isEmpty || !scene.instances.isEmpty {
+            LaunchPerf.once("first pixels", " (\(scene.meshes.count) parts)")
+        }
         if !scene.solving {
             let bounds = ReleaseWindowController.shared.arView?.bounds.size ?? .zero
             let aspect = bounds.height > 0 ? Float(bounds.width / bounds.height) : 1.6
@@ -2630,6 +2648,15 @@ struct ObjectInspectorWindow: View {
     }
 
     @ViewBuilder private var measurementRows: some View {
+        if let p = model.openingParts {
+            // First solve still running: nothing measured yet.
+            KeyValueRow("Solve", p.total > 1 ? "\(p.done) of \(p.total) parts" : "Evaluating…")
+        } else {
+            settledMeasurementRows
+        }
+    }
+
+    @ViewBuilder private var settledMeasurementRows: some View {
         KeyValueRow("Triangles", model.triangleCount.formatted())
         KeyValueRow("Bounds", String(format: "%.1f × %.1f × %.1f mm",
                                      abs(model.sizeMM.x), abs(model.sizeMM.y), abs(model.sizeMM.z)))

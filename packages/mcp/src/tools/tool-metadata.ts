@@ -102,6 +102,7 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
   // ── Stdlib parts library (local) ───────────────────────────────────────
   search_parts: { title: "Search Stdlib Parts", annotations: RO },
   place_part: { title: "Place Part", annotations: RW },
+  describe_part: { title: "Describe Part", annotations: RO },
 
   // ── Registry-tier kernel tools ─────────────────────────────────────────
   create: { title: "Create Feature Node", annotations: RW },
@@ -171,6 +172,7 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
   },
   parameter_gradient: { title: "Parameter Gradient", annotations: RO },
   sensitivity: { title: "Sensitivity", annotations: RO },
+  optimize_parameters: { title: "Optimize Parameters", annotations: RO },
 
   // ── Design constraints (document-level geometric solver) ───────────────
   add_constraint: { title: "Add Constraint", annotations: RW },
@@ -291,8 +293,13 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
   simulate_flow: { title: "Simulate Flow", annotations: RO },
   analyze_structure: { title: "Analyze Structure", annotations: RO },
   beam_check: { title: "Check Beam / Section", annotations: RO },
+  shell_buckling_check: { title: "Check Shell Buckling", annotations: RO },
   simulate_neutron_shield: {
     title: "Simulate Neutron Shield",
+    annotations: RO,
+  },
+  simulate_cavity: {
+    title: "Simulate Ported Box (Cavity Acoustics)",
     annotations: RO,
   },
   simulate_lattice_gauge: {
@@ -348,6 +355,7 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
     outputSchema: objectOut({
       unified: { type: "object" },
       receipt: { type: "object" },
+      scorecard: { type: "object" },
       document_id: { type: "string" },
     }),
   },
@@ -359,6 +367,8 @@ export const TOOL_METADATA: Record<string, ToolMetadata> = {
       document_id: { type: "string" },
     }),
   },
+  attach_claims: { title: "Attach Solver Claims", annotations: RW },
+  import_measurement: { title: "Import Measurement", annotations: RW },
   route_diff_pair: { title: "Route Differential Pair", annotations: RW },
   length_match_traces: { title: "Length Match Traces", annotations: RW },
   critique_route: { title: "Critique Route", annotations: RO },

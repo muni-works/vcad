@@ -415,7 +415,7 @@ mod tests {
         // system than the solver solved.
         let dev = two_coil_iron_device();
         let nu = dev.initial_nu_cells(31, 41);
-        let (sys, _) = dev.build_system(31, 41, &nu).unwrap();
+        let (sys, _, _) = dev.build_system(31, 41, &nu).unwrap();
         let w = sys.face_weights.as_ref().unwrap();
         for (f, pair) in w.x.iter().enumerate() {
             let rebuilt: f64 = pair

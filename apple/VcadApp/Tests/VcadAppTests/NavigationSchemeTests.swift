@@ -52,11 +52,60 @@ final class NavigationSchemeTests: XCTestCase {
     func testEverySchemeSharesTheNonCameraInputs() {
         for s in S.allCases {
             XCTAssertEqual(s.action(for: .drag(.left, shift: false, command: false, onHandle: true)), .dragHandle, "\(s)")
-            // Right-click is the context menu, never the camera.
-            XCTAssertEqual(s.action(for: .drag(.right, shift: false, command: false)), .none, "\(s)")
+            // Right-click is the context menu / marking menu — except Onshape,
+            // which orbits with it (testOnshapeBindings).
+            if s != .onshape {
+                XCTAssertEqual(s.action(for: .drag(.right, shift: false, command: false)), .none, "\(s)")
+                XCTAssertEqual(s.action(for: .drag(.right, shift: false, command: false, control: true)), .none, "\(s)")
+            }
             XCTAssertEqual(s.action(for: .doubleClick(.right)), .none, "\(s)")
             XCTAssertEqual(s.action(for: .doubleClick(.left)), .framePart, "\(s)")
         }
+    }
+
+    func testSolidWorksBindings() {
+        let w = S.solidworks
+        XCTAssertEqual(w.action(for: .drag(.middle, shift: false, command: false)), .orbit)
+        XCTAssertEqual(w.action(for: .drag(.middle, shift: false, command: false, control: true)), .pan)
+        XCTAssertEqual(w.action(for: .scroll(precise: false, shift: false)), .zoomAtCursor)
+        XCTAssertEqual(w.action(for: .doubleClick(.middle)), .fitAll)
+        XCTAssertEqual(w.action(for: .drag(.left, shift: false, command: false)), .marquee)
+    }
+
+    func testOnshapeBindings() {
+        let o = S.onshape
+        XCTAssertEqual(o.action(for: .drag(.right, shift: false, command: false)), .orbit)
+        XCTAssertEqual(o.action(for: .drag(.right, shift: false, command: false, control: true)), .pan)
+        XCTAssertEqual(o.action(for: .drag(.middle, shift: false, command: false)), .pan)
+        XCTAssertEqual(o.action(for: .scroll(precise: false, shift: false)), .zoomAtCursor)
+        XCTAssertEqual(o.action(for: .doubleClick(.middle)), .fitAll)
+        XCTAssertEqual(o.action(for: .doubleClick(.right)), .none, "a right-click is still the context menu")
+        XCTAssertEqual(o.action(for: .drag(.left, shift: false, command: false)), .marquee)
+    }
+
+    func testBlenderBindings() {
+        let b = S.blender
+        XCTAssertEqual(b.action(for: .drag(.middle, shift: false, command: false)), .orbit)
+        XCTAssertEqual(b.action(for: .drag(.middle, shift: true, command: false)), .pan)
+        XCTAssertEqual(b.action(for: .scroll(precise: false, shift: false)), .zoom)
+        XCTAssertEqual(b.action(for: .drag(.left, shift: false, command: false)), .marquee)
+    }
+
+    /// Picking a mouse preset must never change how the trackpad feels.
+    func testMousePresetsKeepFusionTrackpad() {
+        for s in [S.solidworks, .onshape, .blender] {
+            for shift in [false, true] {
+                XCTAssertEqual(s.action(for: .scroll(precise: true, shift: shift)),
+                               S.fusion360.action(for: .scroll(precise: true, shift: shift)), "\(s)")
+            }
+            XCTAssertEqual(s.action(for: .pinch), .zoom, "\(s)")
+        }
+    }
+
+    func testPresetsPersistUnderStableKeys() {
+        // Raw values are stored in UserDefaults; renaming one silently resets users.
+        XCTAssertEqual(S.allCases.map(\.rawValue), ["fusion360", "solidworks", "onshape", "blender", "classic"])
+        for s in S.allCases { XCTAssertFalse(s.summary.isEmpty, "\(s)") }
     }
 
     func testSketchModeNeverRubberBandsParts() {

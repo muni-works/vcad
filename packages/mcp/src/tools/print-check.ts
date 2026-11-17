@@ -33,6 +33,7 @@ import {
 import { getSession } from "./session-core.js";
 import { computeInspection } from "./inspect.js";
 import { behavior, type ToolDef } from "./tool-def.js";
+import { claimMeasurementSchemaProps, recordMeasurementForClaims } from "./claims-ledger.js";
 
 const MEASURABLE_KINDS: readonly MeasurableKind[] = ["dimension", "diameter", "mass"];
 const MEASURABLE_AXES: readonly MeasurableAxis[] = ["X", "Y", "Z", "XY"];
@@ -141,8 +142,10 @@ export const recordMeasurementSchema = {
       description:
         "A full PrintPrediction (as returned by predict_print) to measure against. Overrides the cached prediction — use this to replay a prediction.json after the session's warm instance recycled.",
     },
+    ...claimMeasurementSchemaProps,
   },
-  required: ["measurements"],
+  // `measurements` (print mode) or `claim_id` / `claim_measurements` (claim
+  // mode) — the handler enforces which.
 };
 
 type ToolResult = { content: Array<{ type: "text"; text: string }> };
@@ -396,9 +399,20 @@ export const toolDefs: ToolDef[] = [
     name: "record_measurement",
     pack: "print",
     description:
-      "Record as-built measurements (caliper dimensions, scale mass) of a printed part against its predict_print snapshot and emit the receipt-vs-reality delta report: per-feature deltas with tolerances, per-axis scale factors (X/Y/Z shrinkage), hole undersize and thin-wall flow offsets, and concrete printer-profile suggestions. Accepts the prediction inline (from a saved prediction.json) when the session's warm instance is gone. Partial measurements are fine.",
+      "Record as-built measurements (caliper dimensions, scale mass) of a printed part against its predict_print snapshot and emit the receipt-vs-reality delta report: per-feature deltas with tolerances, per-axis scale factors (X/Y/Z shrinkage), hole undersize and thin-wall flow offsets, and concrete printer-profile suggestions. Accepts the prediction inline (from a saved prediction.json) when the session's warm instance is gone. Partial measurements are fine. " +
+      "Claim mode (pass `claim_id` or `claim_measurements` instead of `measurements`): bind a bench reading — value, unit, uncertainty, instrument, band, raw-file hash — to a frozen solver prediction on the document's claims ledger (see attach_claims); compared fail-closed with the domain's own band rule, returning the Holds / Violated / Unmeasured / Stale scorecard. A claim_id not on the ledger is an error.",
     inputSchema: recordMeasurementSchema,
-    handler: (a) => recordMeasurement(a),
-    behavior: behavior({}),
+    handler: (a) => {
+      const args = (a ?? {}) as Record<string, unknown>;
+      // Claim mode: bind a bench reading to a frozen solver prediction on the
+      // document's claims ledger (attach_claims), compared with the domain's band.
+      if (typeof args.claim_id === "string" || Array.isArray(args.claim_measurements)) {
+        return recordMeasurementForClaims(args);
+      }
+      return recordMeasurement(a);
+    },
+    // Claim mode writes Document.claims_ledger (print mode leaves the doc
+    // unchanged; an unchanged snapshot is discarded).
+    behavior: behavior({ writesDoc: true }),
   },
 ];
