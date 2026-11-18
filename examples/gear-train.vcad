@@ -1,0 +1,215 @@
+{
+  "version": "0.1",
+  "nodes": {
+    "1": {
+      "id": 1,
+      "name": "Plate",
+      "op": {
+        "type": "Cube",
+        "size": {
+          "x": 140.0,
+          "y": 60.0,
+          "z": 4.0
+        }
+      }
+    },
+    "2": {
+      "id": 2,
+      "name": "Plate",
+      "op": {
+        "type": "Translate",
+        "child": 1,
+        "offset": {
+          "x": -25.0,
+          "y": -30.0,
+          "z": -6.0
+        }
+      }
+    },
+    "10": {
+      "id": 10,
+      "name": "Input gear",
+      "op": {
+        "type": "SpurGear",
+        "module": 2.0,
+        "teeth": 16,
+        "pressure_angle_deg": 20.0,
+        "face_width": 6.0,
+        "bore_diameter": 0.0,
+        "backlash": 0.1
+      }
+    },
+    "11": {
+      "id": 11,
+      "name": "Idler",
+      "op": {
+        "type": "SpurGear",
+        "module": 2.0,
+        "teeth": 28,
+        "pressure_angle_deg": 20.0,
+        "face_width": 6.0,
+        "bore_diameter": 0.0,
+        "backlash": 0.1
+      }
+    },
+    "12": {
+      "id": 12,
+      "name": "Output gear",
+      "op": {
+        "type": "SpurGear",
+        "module": 2.0,
+        "teeth": 12,
+        "pressure_angle_deg": 20.0,
+        "face_width": 6.0,
+        "bore_diameter": 0.0,
+        "backlash": 0.1
+      }
+    }
+  },
+  "materials": {},
+  "part_materials": {},
+  "partDefs": {
+    "plate": {
+      "id": "plate",
+      "name": "Plate",
+      "root": 2,
+      "defaultMaterial": "plastic"
+    },
+    "input": {
+      "id": "input",
+      "name": "Input gear",
+      "root": 10,
+      "defaultMaterial": "steel"
+    },
+    "idler": {
+      "id": "idler",
+      "name": "Idler",
+      "root": 11,
+      "defaultMaterial": "aluminum"
+    },
+    "output": {
+      "id": "output",
+      "name": "Output gear",
+      "root": 12,
+      "defaultMaterial": "brass"
+    }
+  },
+  "instances": [
+    {
+      "id": "plate_inst",
+      "name": "Plate",
+      "partDefId": "plate"
+    },
+    {
+      "id": "input_inst",
+      "name": "Input gear",
+      "partDefId": "input"
+    },
+    {
+      "id": "idler_inst",
+      "name": "Idler",
+      "partDefId": "idler"
+    },
+    {
+      "id": "output_inst",
+      "name": "Output gear",
+      "partDefId": "output"
+    }
+  ],
+  "joints": [
+    {
+      "id": "input_axle",
+      "name": "Input gear axle",
+      "kind": {
+        "type": "Revolute",
+        "axis": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 1.0
+        }
+      },
+      "state": 0.0,
+      "parentInstanceId": "plate_inst",
+      "childInstanceId": "input_inst",
+      "parentAnchor": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "childAnchor": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      }
+    },
+    {
+      "id": "idler_axle",
+      "name": "Idler axle",
+      "kind": {
+        "type": "Revolute",
+        "axis": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 1.0
+        }
+      },
+      "state": 0.0,
+      "parentInstanceId": "plate_inst",
+      "childInstanceId": "idler_inst",
+      "parentAnchor": {
+        "x": 44.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "childAnchor": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      }
+    },
+    {
+      "id": "output_axle",
+      "name": "Output gear axle",
+      "kind": {
+        "type": "Revolute",
+        "axis": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 1.0
+        }
+      },
+      "state": 0.0,
+      "parentInstanceId": "plate_inst",
+      "childInstanceId": "output_inst",
+      "parentAnchor": {
+        "x": 84.0,
+        "y": 0.0,
+        "z": 0.0
+      },
+      "childAnchor": {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 0.0
+      }
+    }
+  ],
+  "roots": [
+    {
+      "root": 2,
+      "material": "plastic"
+    },
+    {
+      "root": 10,
+      "material": "steel"
+    },
+    {
+      "root": 11,
+      "material": "aluminum"
+    },
+    {
+      "root": 12,
+      "material": "brass"
+    }
+  ],
+  "groundInstanceId": "plate_inst"
+}

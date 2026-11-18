@@ -532,6 +532,8 @@ fn convert_assembly(ctx: &mut ConvertCtx, fields: &[Value]) -> Result<(), String
                         velocity_limit: None,
                     },
                     state: 0.0,
+                    coupling: None,
+                    passive: false,
                 }
             }
             // [PrismaticJoint name ax ay az lo hi parent px py pz child cx cy cz]
@@ -559,6 +561,8 @@ fn convert_assembly(ctx: &mut ConvertCtx, fields: &[Value]) -> Result<(), String
                         velocity_limit: None,
                     },
                     state: 0.0,
+                    coupling: None,
+                    passive: false,
                 }
             }
             // [FixedJoint name parent px py pz child cx cy cz]
@@ -578,6 +582,8 @@ fn convert_assembly(ctx: &mut ConvertCtx, fields: &[Value]) -> Result<(), String
                     child_anchor,
                     kind: JointKind::Fixed,
                     state: 0.0,
+                    coupling: None,
+                    passive: false,
                 }
             }
             // [BallJoint name parent px py pz child cx cy cz]
@@ -597,6 +603,8 @@ fn convert_assembly(ctx: &mut ConvertCtx, fields: &[Value]) -> Result<(), String
                     child_anchor,
                     kind: JointKind::Ball,
                     state: 0.0,
+                    coupling: None,
+                    passive: false,
                 }
             }
             _ => return Err(format!("unknown JointDef variant: {tag}")),

@@ -242,6 +242,9 @@ const uint8_t *vcad_scene_instance_material(const VcadScene *scene, size_t index
 uint8_t vcad_scene_instance_transform(const VcadScene *scene, size_t index, double *out);
 size_t vcad_scene_solve_fk(const VcadScene *scene, const uint8_t *joints_json,
                            size_t json_len, double *out, size_t out_cap);
+/* Last solved passive (loop-closure) joint states as {"jointId": value};
+ * free with vcad_string_free. "{}" before any solve, NULL on a null scene. */
+char *vcad_scene_passive_states(const VcadScene *scene);
 
 /* Feature edges (boundary + creases sharper than angle_deg) for the
  * wireframe/edge overlay. 6 floats per segment: ax ay az bx by bz. */

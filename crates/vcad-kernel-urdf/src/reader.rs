@@ -1296,6 +1296,8 @@ impl<'a> UrdfReader<'a> {
             child_anchor,
             kind,
             state: 0.0,
+            coupling: None,
+            passive: false,
         })
     }
 }

@@ -252,6 +252,7 @@ pub extern "C" fn vcad_doc_runtime_scene(engine: *const VcadEngine) -> *mut Vcad
         Ok(Ok((inner, doc))) => Box::into_raw(Box::new(VcadScene {
             inner,
             doc: Some(doc),
+            passive_cache: Default::default(),
         })),
         Ok(Err(e)) | Err(e) => {
             err::set_error(e);
@@ -364,6 +365,7 @@ pub extern "C" fn vcad_frame_take_scene(frame: *mut VcadFrame) -> *mut VcadScene
         Some(inner) => Box::into_raw(Box::new(VcadScene {
             inner,
             doc: Some(f.frame.document.clone()),
+            passive_cache: Default::default(),
         })),
         None => ptr::null_mut(),
     }

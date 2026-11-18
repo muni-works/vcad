@@ -2231,6 +2231,8 @@ mod tests {
                 velocity_limit: None,
             },
             state: 0.0,
+            coupling: None,
+            passive: false,
         }]);
         doc.ground_instance_id = Some("anchor_inst".to_string());
         doc
@@ -2362,6 +2364,8 @@ mod tests {
                 velocity_limit: None,
             },
             state: 0.0,
+            coupling: None,
+            passive: false,
         }]);
 
         doc.ground_instance_id = Some("base_inst".to_string());
@@ -2647,6 +2651,8 @@ mod tests {
                 velocity_limit: None,
             },
             state: 0.0,
+            coupling: None,
+            passive: false,
         }]);
         doc.ground_instance_id = Some("base_inst".into());
 
@@ -2761,6 +2767,8 @@ mod tests {
                 velocity_limit: None,
             },
             state: 0.0,
+            coupling: None,
+            passive: false,
         };
         doc.joints = Some(vec![
             joint("j1", "i-base", "i-1", 0.0),

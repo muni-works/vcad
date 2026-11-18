@@ -141,6 +141,56 @@ fn compose_transforms(outer: &Transform3D, inner: &Transform3D) -> Transform3D {
     }
 }
 
+/// Apply joint couplings: every coupled joint's state becomes
+/// `ratio · driver + offset`, resolving chains (gear trains) in dependency
+/// order. A joint whose driver is missing or that sits on a coupling cycle
+/// keeps its authored state — fail closed to the document, never to zero.
+pub fn resolve_coupled_states(joints: &[Joint]) -> Vec<Joint> {
+    let mut out = joints.to_vec();
+    if !joints.iter().any(|j| j.coupling.is_some()) {
+        return out;
+    }
+    let index: HashMap<&str, usize> = joints
+        .iter()
+        .enumerate()
+        .map(|(i, j)| (j.id.as_str(), i))
+        .collect();
+    // 0 = unresolved, 1 = on the stack, 2 = done.
+    let mut mark = vec![0u8; joints.len()];
+    fn visit(
+        i: usize,
+        joints: &[Joint],
+        index: &HashMap<&str, usize>,
+        mark: &mut [u8],
+        out: &mut [Joint],
+    ) -> bool {
+        match mark[i] {
+            2 => return true,
+            1 => return false, // cycle
+            _ => {}
+        }
+        let Some(c) = &joints[i].coupling else {
+            mark[i] = 2;
+            return true;
+        };
+        let Some(&d) = index.get(c.driver.as_str()) else {
+            mark[i] = 2;
+            return true;
+        };
+        mark[i] = 1;
+        let ok = d != i && visit(d, joints, index, mark, out);
+        if ok {
+            out[i].state = c.ratio * out[d].state + c.offset;
+        }
+        mark[i] = 2;
+        ok
+    }
+    for i in 0..joints.len() {
+        visit(i, joints, &index, &mut mark, &mut out);
+    }
+    out
+}
+
 /// Compute the transform induced by a joint at its current state.
 fn compute_joint_transform(joint: &Joint) -> Transform3D {
     match &joint.kind {
@@ -226,14 +276,169 @@ fn compute_joint_transform(joint: &Joint) -> Transform3D {
 /// whenever an author sets the instance transform to the joint-anchor
 /// location, which is the natural way to author an assembly.
 pub fn solve_forward_kinematics(doc: &Document) -> HashMap<String, Transform3D> {
-    let mut results = HashMap::new();
-
     let instances = match &doc.instances {
         Some(i) if !i.is_empty() => i,
-        _ => return results,
+        _ => return HashMap::new(),
     };
+    let mut joints = resolve_coupled_states(doc.joints.as_deref().unwrap_or(&[]));
+    close_loops(instances, &mut joints);
+    forward_tree(instances, &joints)
+}
 
-    let joints = doc.joints.as_deref().unwrap_or(&[]);
+/// Solve every passive joint so each loop-closure joint's two anchors meet.
+///
+/// Returns the final closure residual (mm, RMS over closures; 0 when there is
+/// nothing to close). Damped Gauss-Newton on the passive tree joints' states,
+/// warm-started from their current values, with a finite-difference Jacobian:
+/// a loop is a handful of scalars and each residual is one cheap tree walk.
+/// An unreachable pose (a linkage stretched past its limit) leaves the best
+/// least-squares pose and reports the residual rather than snapping anywhere.
+pub fn close_loops(instances: &[vcad_ir::Instance], joints: &mut [Joint]) -> f64 {
+    let mut seen: HashSet<&str> = HashSet::new();
+    let mut closures: Vec<usize> = Vec::new();
+    for (i, j) in joints.iter().enumerate() {
+        if !seen.insert(j.child_instance_id.as_str()) {
+            closures.push(i);
+        }
+    }
+    if closures.is_empty() {
+        return 0.0;
+    }
+    // Unknowns: passive tree joints (closure joints are constraints, coupled
+    // joints are derived from their drivers).
+    let unknowns: Vec<usize> = joints
+        .iter()
+        .enumerate()
+        .filter(|(i, j)| j.passive && j.coupling.is_none() && !closures.contains(i))
+        .map(|(i, _)| i)
+        .collect();
+
+    let residual = |joints: &[Joint]| -> Vec<f64> {
+        let world = forward_tree(instances, joints);
+        let mut r = Vec::with_capacity(closures.len() * 3);
+        for &c in &closures {
+            let j = &joints[c];
+            let pw = j
+                .parent_instance_id
+                .as_ref()
+                .and_then(|p| world.get(p))
+                .cloned()
+                .unwrap_or_else(identity);
+            let cw = world
+                .get(&j.child_instance_id)
+                .cloned()
+                .unwrap_or_else(identity);
+            let a = transform_point(&pw, &j.parent_anchor);
+            let b = transform_point(&cw, &j.child_anchor);
+            r.extend([a.x - b.x, a.y - b.y, a.z - b.z]);
+        }
+        r
+    };
+    let norm = |r: &[f64]| (r.iter().map(|v| v * v).sum::<f64>() / (r.len().max(1) as f64)).sqrt();
+
+    let mut r = residual(joints);
+    if unknowns.is_empty() {
+        return norm(&r);
+    }
+    let n = unknowns.len();
+    let mut lambda = 1e-3;
+    for _ in 0..60 {
+        let e = norm(&r);
+        if e < 1e-7 {
+            break;
+        }
+        // Finite-difference Jacobian (states in degrees / mm).
+        let h = 1e-4;
+        let mut jac = vec![vec![0.0; n]; r.len()];
+        for (col, &ui) in unknowns.iter().enumerate() {
+            joints[ui].state += h;
+            let rp = residual(joints);
+            joints[ui].state -= h;
+            for row in 0..r.len() {
+                jac[row][col] = (rp[row] - r[row]) / h;
+            }
+        }
+        // (JᵀJ + λ·diag) Δ = −Jᵀr, accept only improving steps (LM).
+        let mut jtj = vec![vec![0.0; n]; n];
+        let mut jtr = vec![0.0; n];
+        for row in 0..r.len() {
+            for a in 0..n {
+                jtr[a] += jac[row][a] * r[row];
+                for b in 0..n {
+                    jtj[a][b] += jac[row][a] * jac[row][b];
+                }
+            }
+        }
+        let mut improved = false;
+        for _ in 0..8 {
+            let mut m = jtj.clone();
+            for (a, row) in m.iter_mut().enumerate() {
+                row[a] += lambda * (1.0 + jtj[a][a]);
+            }
+            let Some(delta) = solve_dense(m, jtr.iter().map(|v| -v).collect()) else {
+                lambda *= 10.0;
+                continue;
+            };
+            let saved: Vec<f64> = unknowns.iter().map(|&u| joints[u].state).collect();
+            for (k, &u) in unknowns.iter().enumerate() {
+                joints[u].state += delta[k];
+            }
+            let rn = residual(joints);
+            if norm(&rn) < e {
+                r = rn;
+                lambda = (lambda * 0.3).max(1e-9);
+                improved = true;
+                break;
+            }
+            for (k, &u) in unknowns.iter().enumerate() {
+                joints[u].state = saved[k];
+            }
+            lambda *= 10.0;
+        }
+        if !improved {
+            break;
+        }
+    }
+    norm(&r)
+}
+
+/// Gaussian elimination with partial pivoting; `None` when singular.
+fn solve_dense(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
+    let n = b.len();
+    for col in 0..n {
+        let piv = (col..n).max_by(|&i, &j| a[i][col].abs().total_cmp(&a[j][col].abs()))?;
+        if a[piv][col].abs() < 1e-14 {
+            return None;
+        }
+        a.swap(col, piv);
+        b.swap(col, piv);
+        let pivot_row = a[col].clone();
+        for row in col + 1..n {
+            let f = a[row][col] / pivot_row[col];
+            for (v, p) in a[row].iter_mut().zip(&pivot_row).skip(col) {
+                *v -= f * p;
+            }
+            b[row] -= f * b[col];
+        }
+    }
+    let mut x = vec![0.0; n];
+    for row in (0..n).rev() {
+        let s: f64 = (row + 1..n).map(|k| a[row][k] * x[k]).sum();
+        x[row] = (b[row] - s) / a[row][row];
+    }
+    Some(x)
+}
+
+/// Apply a transform (scale, then rotation, then translation) to a point.
+fn transform_point(t: &Transform3D, p: &Vec3) -> Vec3 {
+    let r = euler_to_matrix(&t.rotation);
+    let scaled = Vec3::new(p.x * t.scale.x, p.y * t.scale.y, p.z * t.scale.z);
+    vec3_add(&t.translation, &mat_vec3(&r, &scaled))
+}
+
+/// Walk the joint tree (first joint per child) from the ground and roots.
+fn forward_tree(instances: &[vcad_ir::Instance], joints: &[Joint]) -> HashMap<String, Transform3D> {
+    let mut results = HashMap::new();
 
     // Build child → (joint, parent_id) map
     let mut joint_tree: HashMap<&str, (&Joint, Option<&str>)> = HashMap::new();
@@ -242,6 +447,11 @@ pub fn solve_forward_kinematics(doc: &Document) -> HashMap<String, Transform3D> 
 
     for joint in joints {
         let parent_id = joint.parent_instance_id.as_deref();
+        // The first joint on a child places it; any later one is a loop
+        // closure, solved by `close_loops` rather than walked.
+        if joint_tree.contains_key(joint.child_instance_id.as_str()) {
+            continue;
+        }
         joint_tree.insert(&joint.child_instance_id, (joint, parent_id));
         children_by_parent
             .entry(parent_id)
@@ -315,6 +525,191 @@ pub fn solve_forward_kinematics(doc: &Document) -> HashMap<String, Transform3D> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Jansen's linkage, solved independently by circle intersection.
+    fn jansen_f(theta: f64) -> (f64, f64) {
+        let (a, b, c, d, e, f, g, j, k, l, m) = (
+            38.0, 41.5, 39.3, 40.1, 55.8, 39.4, 36.7, 50.0, 61.9, 7.8, 15.0,
+        );
+        let cc = |p: (f64, f64), r1: f64, q: (f64, f64), r2: f64, s: f64| {
+            let (dx, dy) = (q.0 - p.0, q.1 - p.1);
+            let dd = (dx * dx + dy * dy).sqrt();
+            let aa = (r1 * r1 - r2 * r2 + dd * dd) / (2.0 * dd);
+            let hh = (r1 * r1 - aa * aa).max(0.0).sqrt();
+            let (mx, my) = (p.0 + aa * dx / dd, p.1 + aa * dy / dd);
+            (mx + s * hh * dy / dd, my - s * hh * dx / dd)
+        };
+        let bb = (-a, -l);
+        let aa = (m * theta.cos(), m * theta.sin());
+        let cpt = cc(aa, j, bb, b, 1.0);
+        let dpt = cc(aa, k, bb, c, -1.0);
+        let ept = cc(bb, d, cpt, e, -1.0);
+        cc(ept, f, dpt, g, 1.0)
+    }
+
+    #[test]
+    fn strandbeest_loops_close_and_match_circle_intersection() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/strandbeest.vcad"
+        );
+        let mut doc: Document =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        let instances = doc.instances.clone().unwrap();
+        for step in 0..=24 {
+            let deg = step as f64 * 15.0;
+            {
+                let joints = doc.joints.as_mut().unwrap();
+                joints
+                    .iter_mut()
+                    .find(|j| j.id == "crank_axle")
+                    .unwrap()
+                    .state = deg;
+                // Warm start from the previous pose, like a drag does.
+                let res = close_loops(&instances, joints);
+                assert!(res < 1e-5, "loops open by {res} mm at crank {deg}°");
+            }
+            let world = solve_forward_kinematics(&doc);
+            // The frame stands the linkage up (Rx 90°: local y -> world z)
+            // and lifts it; undo that to compare in the drawing plane.
+            let lift = instances
+                .iter()
+                .find(|i| i.id == "frame_i")
+                .and_then(|i| i.transform)
+                .map_or(0.0, |t| t.translation.z);
+            let foot = &world["dfg_0_i"].translation;
+            let (fx, fy) = jansen_f(deg.to_radians());
+            assert!(
+                (foot.x - fx).abs() < 0.05
+                    && (foot.z - lift - fy).abs() < 0.05
+                    && foot.y.abs() < 0.05,
+                "crank {deg}°: F at ({:.3},{:.3}), circle intersection says ({fx:.3},{fy:.3})",
+                foot.x,
+                foot.z - lift
+            );
+        }
+    }
+
+    #[test]
+    fn a_four_bar_closes_from_its_crank_alone() {
+        // Ground 0..60 on x, crank 20 at origin, coupler 55, rocker 40 at (60,0).
+        let rev = |id: &str,
+                   parent: Option<&str>,
+                   child: &str,
+                   pa: (f64, f64),
+                   ca: (f64, f64),
+                   state: f64,
+                   passive: bool| Joint {
+            id: id.into(),
+            name: None,
+            parent_instance_id: parent.map(Into::into),
+            child_instance_id: child.into(),
+            parent_anchor: Vec3::new(pa.0, pa.1, 0.0),
+            child_anchor: Vec3::new(ca.0, ca.1, 0.0),
+            kind: JointKind::Revolute {
+                axis: Vec3::new(0.0, 0.0, 1.0),
+                limits: None,
+                effort_limit: None,
+                velocity_limit: None,
+            },
+            state,
+            coupling: None,
+            passive,
+        };
+        let inst = |id: &str| vcad_ir::Instance {
+            id: id.into(),
+            part_def_id: "p".into(),
+            name: None,
+            tags: vec![],
+            transform: None,
+            material: None,
+            explode: None,
+        };
+        let instances = vec![inst("crank"), inst("coupler"), inst("rocker")];
+        let mut joints = vec![
+            rev("crank", None, "crank", (0.0, 0.0), (0.0, 0.0), 40.0, false),
+            rev(
+                "coupler",
+                Some("crank"),
+                "coupler",
+                (20.0, 0.0),
+                (0.0, 0.0),
+                -30.0,
+                true,
+            ),
+            rev(
+                "rocker",
+                None,
+                "rocker",
+                (60.0, 0.0),
+                (0.0, 0.0),
+                80.0,
+                true,
+            ),
+            rev(
+                "close",
+                Some("coupler"),
+                "rocker",
+                (55.0, 0.0),
+                (40.0, 0.0),
+                0.0,
+                true,
+            ),
+        ];
+        let res = close_loops(&instances, &mut joints);
+        assert!(res < 1e-6, "four-bar residual {res}");
+        assert_eq!(joints[0].state, 40.0, "the driver is never moved");
+    }
+
+    fn coupled_joint(id: &str, driver: Option<(&str, f64, f64)>, state: f64) -> Joint {
+        Joint {
+            id: id.into(),
+            name: None,
+            parent_instance_id: None,
+            child_instance_id: format!("{id}_inst"),
+            parent_anchor: Vec3::new(0.0, 0.0, 0.0),
+            child_anchor: Vec3::new(0.0, 0.0, 0.0),
+            kind: JointKind::Revolute {
+                axis: Vec3::new(0.0, 0.0, 1.0),
+                limits: None,
+                effort_limit: None,
+                velocity_limit: None,
+            },
+            state,
+            coupling: driver.map(|(d, ratio, offset)| vcad_ir::JointCoupling {
+                driver: d.into(),
+                ratio,
+                offset,
+            }),
+            passive: false,
+        }
+    }
+
+    #[test]
+    fn gear_train_couplings_resolve_in_dependency_order() {
+        // Declared out of order: c depends on b depends on a.
+        let joints = vec![
+            coupled_joint("c", Some(("b", -28.0 / 12.0, 0.0)), 999.0),
+            coupled_joint("b", Some(("a", -16.0 / 28.0, 3.0)), 999.0),
+            coupled_joint("a", None, 56.0),
+        ];
+        let r = resolve_coupled_states(&joints);
+        let b = -16.0 / 28.0 * 56.0 + 3.0;
+        assert!((r[1].state - b).abs() < 1e-12);
+        assert!((r[0].state - (-28.0 / 12.0 * b)).abs() < 1e-12);
+        assert_eq!(r[2].state, 56.0);
+    }
+
+    #[test]
+    fn coupling_cycles_and_missing_drivers_keep_authored_state() {
+        let joints = vec![
+            coupled_joint("x", Some(("y", 2.0, 0.0)), 10.0),
+            coupled_joint("y", Some(("x", 2.0, 0.0)), 20.0),
+            coupled_joint("z", Some(("nope", 2.0, 0.0)), 30.0),
+        ];
+        let r = resolve_coupled_states(&joints);
+        assert_eq!((r[0].state, r[1].state, r[2].state), (10.0, 20.0, 30.0));
+    }
 
     /// A revolute joint whose parent anchor matches the child instance's own
     /// transform — the natural authoring pattern. The joint must fully place

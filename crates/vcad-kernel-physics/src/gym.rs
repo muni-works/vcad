@@ -1198,6 +1198,8 @@ mod tests {
                     velocity_limit: None,
                 },
                 state: 0.0,
+                coupling: None,
+                passive: false,
             },
             Joint {
                 id: "joint2".to_string(),
@@ -1213,6 +1215,8 @@ mod tests {
                     velocity_limit: None,
                 },
                 state: 0.0,
+                coupling: None,
+                passive: false,
             },
         ]);
 
@@ -1285,6 +1289,8 @@ mod tests {
                 velocity_limit: None,
             },
             state,
+            coupling: None,
+            passive: false,
         };
 
         // Leaf-most joint first: doc order is the opposite of the order the
@@ -1405,6 +1411,8 @@ mod tests {
                     velocity_limit: None,
                 },
                 state: 0.0,
+                coupling: None,
+                passive: false,
             },
             Joint {
                 id: "f-tip".to_string(),
@@ -1415,6 +1423,8 @@ mod tests {
                 child_anchor: Vec3::new(0.0, 0.0, 0.0),
                 kind: JointKind::Fixed,
                 state: 0.0,
+                coupling: None,
+                passive: false,
             },
         ]);
 
@@ -1547,6 +1557,8 @@ mod tests {
             child_anchor: Vec3::new(0.0, 0.0, -20.0),
             kind,
             state: 0.0,
+            coupling: None,
+            passive: false,
         };
         doc.joints = Some(vec![
             joint("shoulder", "base", "link_a", revolute()),
@@ -1822,6 +1834,8 @@ mod tests {
             },
             // Start horizontal so it has to swing down into the floor.
             state: 90.0,
+            coupling: None,
+            passive: false,
         }]);
         doc.ground_instance_id = Some("post_inst".to_string());
         doc

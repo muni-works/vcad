@@ -124,6 +124,7 @@ pub extern "C" fn vcad_scene_from_json_session(
                 Box::into_raw(Box::new(VcadScene {
                     inner: scene,
                     doc: Some(doc),
+                    passive_cache: Default::default(),
                 }))
             }
             Err(e) => {

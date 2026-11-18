@@ -488,6 +488,17 @@ final class EditorModel {
     var parameterDirty = false
     let streaming = StreamingMesh()
     let chime = Chime()
+    #if os(macOS)
+    /// Live direct joint drag / flick (JointDrag.swift). Not observed: the
+    /// pose goes through the playback channel, the label through manipLabel.
+    @ObservationIgnored var jointDrag: JointDragSession?
+    @ObservationIgnored var jointFlickTimer: Timer?
+    @ObservationIgnored var jointTickLast: TimeInterval = 0
+    /// Gear auto-mesh (GearMesh.swift): one pass queued per scene, and the
+    /// pairs already offered (an undone mesh is not re-applied).
+    @ObservationIgnored var gearInferencePending = false
+    @ObservationIgnored var gearMeshesOffered: Set<String> = []
+    #endif
     var lastDrag: CGSize = .zero
     var pinchBaseline: Float = 1.5
     var draggingHandle = false
@@ -722,6 +733,14 @@ final class EditorModel {
 
     // MARK: path-traced viewport (PathTracer.swift)
     /// The live irys path-traced view is on.
+    /// Realtime photoreal viewport (dynamic shadows, strong IBL, clearcoat).
+    var realtimePhotoreal = false {
+        didSet {
+            #if os(macOS)
+            if realtimePhotoreal != oldValue { ReleaseWindowController.shared.applyRealtimePhotoreal() }
+            #endif
+        }
+    }
     var pathTraceEnabled = false
     /// Why it isn't running, or what it's doing (nil when converging normally).
     var pathTraceStatus: String?
@@ -3469,6 +3488,11 @@ final class EditorModel {
             // only, so its geometry resolves with no vendored meshes.
             ("Floating arm", "examples/floating-arm.vcad"),
             ("Sensor mast", "examples/sensor-mast.vcad"),
+            // Machines you can play with: drag, flick, hold space.
+            ("Strandbeest", "examples/strandbeest.vcad"),
+            ("Antikythera", "examples/antikythera.vcad"),
+            ("Watt governor", "examples/watt-governor.vcad"),
+            ("Gear train", "examples/gear-train.vcad"),
         ]
         var roots: [URL] = []
         if let env = ProcessInfo.processInfo.environment["VCAD_EXAMPLES"], !env.isEmpty {
@@ -4679,6 +4703,13 @@ final class EditorModel {
         // A reload keeps the pose you were looking at.
         // So does a pose an agent sent while this scene was still solving.
         if timeline == nil, !jointPose.isEmpty || explode > 0 || agentBaseDelta != nil { applyStudioPose() }
+        #if os(macOS)
+        scheduleGearInference()
+        MechanismPresentation.shared.skeletonShown = false   // entities are being rebuilt
+        installMechanismKeys()
+        walkOnFirstOpen()
+        startGovernorIfPresent()
+        #endif
         return RenderScene(meshes: [], center: center, size: size,
                            triangleCount: tris, partCount: instances.count,
                            instances: instances)

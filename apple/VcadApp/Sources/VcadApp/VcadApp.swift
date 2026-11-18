@@ -67,6 +67,22 @@ struct VcadApp: App {
             MainActor.assumeIsolated { poseSmoke(path: path) }
             exit(0)
         }
+        if let path = ProcessInfo.processInfo.environment["VCAD_GOV_SMOKE"] {
+            MainActor.assumeIsolated { govSmoke(path: path) }
+            exit(0)
+        }
+        if let path = ProcessInfo.processInfo.environment["VCAD_ANTI_SMOKE"] {
+            MainActor.assumeIsolated { antiSmoke(path: path) }
+            exit(0)
+        }
+        if let path = ProcessInfo.processInfo.environment["VCAD_BEEST_SMOKE"] {
+            MainActor.assumeIsolated { beestSmoke(path: path) }
+            exit(0)
+        }
+        if let path = ProcessInfo.processInfo.environment["VCAD_GEARDRAG_SMOKE"] {
+            MainActor.assumeIsolated { gearDragSmoke(path: path) }
+            exit(0)
+        }
         if let path = ProcessInfo.processInfo.environment["VCAD_PLAYBACK_SMOKE"] {
             MainActor.assumeIsolated { playbackSmoke(path: path) }
             exit(0)
@@ -87,6 +103,7 @@ struct VcadApp: App {
                 .task { PlasmoidStore.shared.attach(model); await PlasmoidDemo.runIfRequested(model) }
                 .task { await FieldsSnapshots.runIfRequested(model) }
                 .task { await AssemblyOpenDemo.runIfRequested(model) }
+                .task { await JointDragDemo.runIfRequested(model) }
                 .task { await RuntimeScrubBench.runIfRequested(model) }
         }
         .windowStyle(.automatic)
@@ -456,4 +473,261 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
+}
+
+/// Headless hero path: `VCAD_GEARDRAG_SMOKE=examples/gear-train.vcad`. Opens
+/// the train, auto-meshes it, drags the input gear 30° with synthetic kernel
+/// rays, checks every gear turned by its ratio, and runs the clearance
+/// receipt across a tooth pitch. `[GEARDRAG]` lines; PASS/FAIL at the end.
+@MainActor private func gearDragSmoke(path: String) {
+    func emit(_ s: String) { FileHandle.standardError.write(Data(("[GEARDRAG] " + s + "\n").utf8)) }
+    let m = EditorModel()
+    m.openDocument(URL(fileURLWithPath: path))
+    _ = m.buildScene()
+    if let e = m.loadError { emit("loadError: \(e)"); return }
+    emit("instances \(m.assemblyInstanceCount)")
+    func angle(_ i: Int) -> Double {
+        let x = m.instanceTransforms[i].columns.0
+        return Double(atan2(x.y, x.x)) * 180 / .pi
+    }
+    let gears = (0..<m.instanceTransforms.count).compactMap { i in m.gearSpec(instance: i).map { (i, $0.teeth) } }
+    emit("gears " + gears.map { "z\($0.1)" }.joined(separator: " "))
+    let props = m.inferGearMeshes()
+    emit("inferred " + props.map { "\($0.driverTeeth)→\($0.drivenTeeth) ratio \(String(format: "%.4f", $0.ratio)) offset \(String(format: "%.2f", $0.offset))" }.joined(separator: ", "))
+    guard !props.isEmpty, m.applyGearMeshes(props) else { emit("FAIL no meshes applied"); return }
+    _ = m.buildScene()
+    let coupled = m.asmJoints.filter { $0["coupling"] != nil }.count
+    emit("couplings after edit \(coupled); re-infer finds \(m.inferGearMeshes().count) (want 0)")
+    guard let gi = gears.first(where: { $0.1 == 16 })?.0 else { emit("FAIL no input gear"); return }
+    let before = gears.map { angle($0.0) }
+    let c = m.instanceTransforms[gi].columns.3
+    let ctr = SIMD3<Float>(c.x, c.y, c.z + 3)
+    func ray(_ deg: Float) -> (o: SIMD3<Float>, d: SIMD3<Float>) {
+        let a = deg * .pi / 180
+        return (ctr + SIMD3(12 * cos(a), 12 * sin(a), 300), SIMD3(0, 0, -1))
+    }
+    guard m.beginJointDrag(instance: gi, at: ctr + SIMD3(12, 0, 0), ray: ray(0)) else { emit("FAIL begin"); return }
+    for k in 1...30 { m.jointDragTo(ray: ray(Float(k))) }
+    let after = gears.map { angle($0.0) }
+    var ok = true
+    for (n, g) in gears.enumerated() {
+        var d = after[n] - before[n]
+        d = (d + 540).truncatingRemainder(dividingBy: 360) - 180
+        let want = 30.0 * 16.0 / Double(g.1) * (n % 2 == 0 ? 1 : -1)
+        let good = abs(d - want) < 0.5
+        ok = ok && good
+        emit("z\(g.1) turned \(String(format: "%.2f", d))° (want \(String(format: "%.2f", want))) \(good ? "ok" : "BAD")")
+    }
+    if let (docs, names, label) = m.meshReceiptInputs(from: m.jointDrag?.driverJointId ?? "") {
+        let r = EditorModel.evaluateMeshReceipt(docs: docs, gearNames: names)
+        emit("receipt \(label): checked \(r.checked) pairs, clashes \(r.clashes), min gap \(String(format: "%.3f", r.minGap)) mm, failed \(r.failed)")
+        ok = ok && r.ok
+    } else { emit("receipt inputs unavailable"); ok = false }
+    // Negative control: the same train half a tooth out of phase must clash,
+    // or the receipt above proves nothing about the phase math.
+    if let saved = m.documentJSON, var joints = saved["joints"] as? [[String: Any]] {
+        for k in joints.indices {
+            guard var c = joints[k]["coupling"] as? [String: Any],
+                  let off = (c["offset"] as? NSNumber)?.doubleValue else { continue }
+            c["offset"] = off + 180.0 / 28.0
+            joints[k]["coupling"] = c
+        }
+        var shifted = saved
+        shifted["joints"] = joints
+        m.documentJSON = shifted
+        if let (docs, names, _) = m.meshReceiptInputs(from: m.jointDrag?.driverJointId ?? "") {
+            let r = EditorModel.evaluateMeshReceipt(docs: docs, gearNames: names)
+            emit("control (half-tooth off): clashes \(r.clashes) — \(r.clashes > 0 ? "caught" : "MISSED")")
+            ok = ok && r.clashes > 0
+        }
+        m.documentJSON = saved
+    }
+    m.endJointDrag()
+    _ = m.buildScene()
+    // Panel path: driving the IDLER slider back-drives the input; the readout
+    // is the derived value, not the authored state FK ignores.
+    if let idler = m.asmJoints.first(where: { (($0["name"] as? String) ?? "").hasPrefix("Idler") })?["id"] as? String,
+       let input = m.asmJoints.first(where: { (($0["name"] as? String) ?? "").hasPrefix("Input") })?["id"] as? String {
+        let in0 = m.currentJointValues()[input] ?? .nan
+        let id0 = m.currentJointValues()[idler] ?? .nan
+        m.dragJoint(idler, to: id0 - 28.0)
+        let in1 = m.currentJointValues()[input] ?? .nan, id1 = m.currentJointValues()[idler] ?? .nan
+        let good = abs((in1 - in0) - 49.0) < 0.01 && abs((id1 - id0) + 28.0) < 0.01
+        emit("panel idler −28°: idler \(String(format: "%.2f", id1 - id0))°, input \(String(format: "%+.2f", in1 - in0))° (want +49) \(good ? "ok" : "BAD")")
+        ok = ok && good
+        m.commitJointDrag(idler)
+        _ = m.buildScene()
+    }
+    let committed = m.asmJoints.first { ($0["coupling"] == nil) && (($0["name"] as? String) ?? "").hasPrefix("Input") }
+    emit("committed input state \(((committed?["state"]) as? NSNumber)?.doubleValue ?? .nan)")
+    emit(ok ? "PASS" : "FAIL")
+}
+
+/// Headless Strandbeest: `VCAD_BEEST_SMOKE=examples/strandbeest.vcad`. Sweeps
+/// the crank (loops must close and the foot pivot must track Jansen's
+/// circle-intersection geometry), then grabs a FOOT — a passive link — and
+/// checks the drag drives the crank. `[BEEST]` lines; PASS/FAIL at the end.
+@MainActor private func beestSmoke(path: String) {
+    func emit(_ s: String) { FileHandle.standardError.write(Data(("[BEEST] " + s + "\n").utf8)) }
+    let t0 = Date()
+    let m = EditorModel()
+    m.openDocument(URL(fileURLWithPath: path))
+    _ = m.buildScene()
+    if let e = m.loadError { emit("loadError: \(e)"); return }
+    emit(String(format: "instances %d · build %.1fs", m.assemblyInstanceCount, Date().timeIntervalSince(t0)))
+    let docIds = m.asmInstances.compactMap { $0["id"] as? String }
+    emit("order matches doc: \(docIds == m.assemblyInstanceIDs) doc=\(docIds.prefix(4)) ffi=\(m.assemblyInstanceIDs.prefix(4))")
+    // Ids are re-minted on load; find things by name.
+    func instIndex(named n: String) -> Int? {
+        m.asmInstances.first { ($0["name"] as? String) == n }.flatMap { $0["id"] as? String }
+            .flatMap { m.assemblyInstanceIDs.firstIndex(of: $0) }
+    }
+    let crankId = m.asmJoints.first { ($0["name"] as? String) == "Crank" }?["id"] as? String ?? "crank_axle"
+    guard let foot = instIndex(named: "Foot 1") else { emit("FAIL no foot"); return }
+    func jansenF(_ th: Double) -> (Double, Double) {
+        func cc(_ p: (Double, Double), _ r1: Double, _ q: (Double, Double), _ r2: Double, _ s: Double) -> (Double, Double) {
+            let dx = q.0 - p.0, dy = q.1 - p.1, D = (dx * dx + dy * dy).squareRoot()
+            let A = (r1 * r1 - r2 * r2 + D * D) / (2 * D), H = max(0, r1 * r1 - A * A).squareRoot()
+            let mx = p.0 + A * dx / D, my = p.1 + A * dy / D
+            return (mx + s * H * dy / D, my - s * H * dx / D)
+        }
+        let B = (-38.0, -7.8), A = (15 * cos(th), 15 * sin(th))
+        let C = cc(A, 50, B, 41.5, 1), D = cc(A, 61.9, B, 39.3, -1), E = cc(B, 40.1, C, 55.8, -1)
+        return cc(E, 39.4, D, 36.7, 1)
+    }
+    // Upright: the frame tips the drawing plane onto world XZ and lifts it.
+    let lift = Float((((m.asmInstances.first { ($0["name"] as? String) == "Frame" }?["transform"] as? [String: Any])?["translation"] as? [String: Any])?["z"] as? NSNumber)?.doubleValue ?? 0)
+    func plane(_ c: SIMD4<Float>) -> (Double, Double) { (Double(c.x), Double(c.z - lift)) }
+    var ok = true, worst = 0.0
+    let t1 = Date()
+    for k in 0...24 {
+        let deg = Double(k) * 15
+        var v = m.currentJointValues(); v[crankId] = deg
+        guard let w = m.applyAssemblyPose(v) else { emit("FAIL fk"); return }
+        let f = plane(w[foot].columns.3), (fx, fy) = jansenF(deg * .pi / 180)
+        worst = max(worst, hypot(f.0 - fx, f.1 - fy))
+    }
+    emit(String(format: "crank sweep 0→360°: worst foot error %.4f mm · %.1f ms/pose", worst, Date().timeIntervalSince(t1) * 1000 / 25))
+    ok = ok && worst < 0.05
+    // Grab the foot pivot and pull it along the stride.
+    var v0 = m.currentJointValues(); v0[crankId] = 0
+    _ = m.applyAssemblyPose(v0)
+    let f0 = m.instanceTransforms[foot].columns.3
+    let p0 = SIMD3<Float>(f0.x, f0.y, f0.z)
+    // Look at the upright linkage from the front (-Y).
+    func ray(_ p: SIMD3<Float>) -> (o: SIMD3<Float>, d: SIMD3<Float>) { (p - SIMD3(0, 300, 0), SIMD3(0, 1, 0)) }
+    guard m.beginJointDrag(instance: foot, at: p0, ray: ray(p0)) else { emit("FAIL begin on foot"); return }
+    emit("grabbed foot → drives \(m.jointDrag?.driverJointId ?? "-")")
+    let target = jansenF(60 * .pi / 180)
+    for k in 1...20 {
+        let u = Float(k) / 20
+        let p = SIMD3<Float>(f0.x + (Float(target.0) - f0.x) * u, f0.y, f0.z + (Float(target.1) + lift - f0.z) * u)
+        m.jointDragTo(ray: ray(p))
+    }
+    let crank = m.jointDrag?.value ?? .nan
+    let f1 = plane(m.instanceTransforms[foot].columns.3)
+    let miss = hypot(f1.0 - target.0, f1.1 - target.1)
+    emit(String(format: "foot pulled to crank-60° spot: crank now %.1f° (want ≈60), foot miss %.2f mm", crank, miss))
+    ok = ok && abs(crank - 60) < 3 && miss < 1
+    // Branch stability: sweep the crank fast (big jumps, like drag probes)
+    // and check the foot never leaves Jansen's branch.
+    var jump = 0.0
+    for k in 0...36 {
+        let deg = Double((k * 97) % 360)
+        var v = m.currentJointValues(); v[crankId] = deg
+        guard let w = m.applyAssemblyPose(v) else { continue }
+        let f = plane(w[foot].columns.3), (fx, fy) = jansenF(deg * .pi / 180)
+        jump = max(jump, hypot(f.0 - fx, f.1 - fy))
+    }
+    emit(String(format: "jumpy crank (97° hops): worst foot error %.4f mm %@", jump, jump < 0.05 ? "ok" : "BAD — wrong branch"))
+    ok = ok && jump < 0.05
+    m.endJointDrag()
+    let t2 = Date()
+    let idsBefore = m.asmJoints.compactMap { $0["id"] as? String }
+    m.commitJointDrag(crankId)
+    emit(String(format: "commit: %.0f ms, ids stable %@", Date().timeIntervalSince(t2) * 1000,
+                idsBefore == m.asmJoints.compactMap { $0["id"] as? String } ? "yes" : "NO (rebuilt)"))
+    emit(ok ? "PASS" : "FAIL")
+}
+
+/// Headless Antikythera: `VCAD_ANTI_SMOKE=examples/antikythera.vcad`. One turn
+/// of the year crank must lap the moon pointer 254/19 times, forward; then the
+/// clearance receipt runs over the whole train. `[ANTI]` lines.
+@MainActor private func antiSmoke(path: String) {
+    func emit(_ s: String) { FileHandle.standardError.write(Data(("[ANTI] " + s + "\n").utf8)) }
+    let t0 = Date()
+    let m = EditorModel()
+    m.openDocument(URL(fileURLWithPath: path))
+    _ = m.buildScene()
+    if let e = m.loadError { emit("loadError: \(e)"); return }
+    emit(String(format: "instances %d · build %.1fs · couplings %d", m.assemblyInstanceCount, Date().timeIntervalSince(t0),
+                m.asmJoints.filter { $0["coupling"] != nil }.count))
+    func jid(_ n: String) -> String? { m.asmJoints.first { ($0["name"] as? String) == n }?["id"] as? String }
+    guard let year = jid("Year (crank)"), let moon = jid("Moon") else { emit("FAIL joints"); return }
+    let base = m.currentJointValues()
+    var ok = true
+    for deg in [30.0, 360.0] {
+        var v = base; v[year] = deg
+        m.dragJoint(year, to: deg)
+        let mv = m.currentJointValues()[moon]! - base[moon]!
+        let want = deg * 254 / 19
+        emit(String(format: "year +%.0f° → moon +%.2f° (want +%.2f) %@", deg, mv, want, abs(mv - want) < 0.01 ? "ok" : "BAD"))
+        ok = ok && abs(mv - want) < 0.01
+    }
+    let ids0 = m.asmJoints.compactMap { $0["id"] as? String }
+    let tc = Date()
+    m.commitJointDrag(year)
+    emit(String(format: "release commit: %.0f ms, ids stable %@, moon still +%.2f°", Date().timeIntervalSince(tc) * 1000,
+                ids0 == m.asmJoints.compactMap { $0["id"] as? String } ? "yes" : "NO",
+                (m.currentJointValues()[jid("Moon") ?? ""] ?? .nan) - base[moon]!))
+    _ = m.buildScene()
+    if let (docs, names, label, pairs) = m.meshReceiptInputsWithPairs(from: jid("Year (crank)") ?? "") {
+        let t0 = Date()
+        let rp = EditorModel.evaluateMeshReceipt(docs: docs, gearNames: names, pairs: pairs)
+        emit(String(format: "receipt (cross-arbor pairs only): %.1fs, %d checked, clashes %d", Date().timeIntervalSince(t0), rp.checked, rp.clashes))
+        let t1 = Date()
+        if let rep = try? AnalysisFFI.clearance(doc: docs[0], includeMesh: false) {
+            for p in rep.pairs where p.intersecting {
+                guard let ga = names[p.a_name], let gb = names[p.b_name], ga != gb else { continue }
+                emit(String(format: "  clash %@ × %@ overlap %.3f mm³", p.a_name, p.b_name, p.overlap_volume_mm3))
+            }
+        }
+        let r = EditorModel.evaluateMeshReceipt(docs: docs, gearNames: names)
+        emit(String(format: "receipt (all pairs, old way): %.1fs", Date().timeIntervalSince(t1)))
+        emit("receipt \(label): \(names.count) arbors, checked \(r.checked) pairs, clashes \(r.clashes), min gap \(String(format: "%.3f", r.minGap)) mm")
+        ok = ok && r.ok
+    } else { emit("receipt unavailable"); ok = false }
+    emit(ok ? "PASS" : "FAIL")
+}
+
+/// Headless Watt governor: `VCAD_GOV_SMOKE=examples/watt-governor.vcad`. The
+/// loops must close at rest and fully lifted, the balls must swing OUT (not
+/// fold in) symmetrically, and spinning the spindle must not move the sleeve.
+@MainActor private func govSmoke(path: String) {
+    func emit(_ s: String) { FileHandle.standardError.write(Data(("[GOV] " + s + "\n").utf8)) }
+    let m = EditorModel()
+    m.openDocument(URL(fileURLWithPath: path))
+    _ = m.buildScene()
+    if let e = m.loadError { emit("loadError: \(e)"); return }
+    func jid(_ n: String) -> String? { m.asmJoints.first { ($0["name"] as? String) == n }?["id"] as? String }
+    func idx(_ n: String) -> Int? { m.asmInstances.first { ($0["name"] as? String) == n }.flatMap { $0["id"] as? String }.flatMap { m.assemblyInstanceIDs.firstIndex(of: $0) } }
+    guard let sleeve = jid("Sleeve"), let spindle = jid("Spindle"), let bl = idx("Ball L"), let br = idx("Ball R") else { emit("FAIL ids"); return }
+    func ballX(_ w: [float4x4], _ i: Int) -> SIMD3<Float> { let p = w[i] * SIMD4<Float>(0, 0, -70, 1); return SIMD3(p.x, p.y, p.z) }
+    var ok = true
+    for lift in [3.0, 30.0, 60.0, 74.0] {
+        var v = m.currentJointValues(); v[sleeve] = lift
+        guard let w = m.applyAssemblyPose(v) else { emit("FAIL fk"); return }
+        let l = ballX(w, bl), r = ballX(w, br)
+        let phi = acos(1 - lift / 80) * 180 / .pi
+        let good = l.x < -5 && r.x > 5 && abs(l.x + r.x) < 0.1 && abs(l.z - r.z) < 0.1
+        emit(String(format: "sleeve %.0f mm (φ %.1f°): balls x %.1f / %.1f, z %.1f %@", lift, phi, l.x, r.x, l.z, good ? "ok" : "BAD"))
+        ok = ok && good
+    }
+    var v = m.currentJointValues(); v[sleeve] = 30; v[spindle] = 90
+    if let w = m.applyAssemblyPose(v) {
+        let l = ballX(w, bl)
+        emit(String(format: "spindle 90°: ball L at (%.1f, %.1f, %.1f) — swung round to ±y", l.x, l.y, l.z))
+        ok = ok && abs(l.x) < 1 && abs(l.y) > 5
+    }
+    emit(ok ? "PASS" : "FAIL")
 }

@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-18-watt-governor-and-realtime-photoreal",
+  "version": "0.11.0",
+  "date": "2026-11-18",
+  "category": "feat",
+  "title": "Playable machine samples and realtime photoreal",
+  "summary": "Strandbeest, Antikythera, Watt governor and gear train samples: touch ripple, hold-space skeleton, spin-driven flyballs. New realtime Photoreal viewport with live shadows.",
+  "features": ["assembly", "kinematics", "macos", "rendering"],
+  "mcpTools": []
+}

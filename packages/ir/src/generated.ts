@@ -4402,7 +4402,35 @@ kind: JointKind,
 /**
  * Current joint state (angle in degrees or position in mm).
  */
-state: number, };
+state: number, 
+/**
+ * Kinematic coupling (gear mesh, belt, rack): when set, this joint's
+ * state is derived from another joint's and the authored `state` is
+ * ignored by forward kinematics.
+ */
+coupling?: JointCoupling, };
+
+/**
+ * A linear coupling between two joints: `state = ratio · driver + offset`.
+ *
+ * An external spur mesh of `z1` (driver) into `z2` is `ratio = -z1 / z2`
+ * with `offset` the tooth-phase angle from [`gear::mesh_rotation_deg`], so
+ * the teeth interleave at every pose. Chains (a train) resolve in order;
+ * a cycle or a missing driver leaves the joint at its authored state.
+ */
+export type JointCoupling = { 
+/**
+ * Id of the joint whose state drives this one.
+ */
+driver: string, 
+/**
+ * d(state) / d(driver state).
+ */
+ratio: number, 
+/**
+ * Constant added after scaling (degrees or mm).
+ */
+offset: number, };
 
 /**
  * Joint kind variants for assembly joints.

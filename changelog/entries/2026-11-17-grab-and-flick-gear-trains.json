@@ -1,0 +1,16 @@
+{
+  "id": "2026-11-17-grab-and-flick-gear-trains",
+  "version": "0.11.0",
+  "date": "2026-11-17",
+  "category": "feat",
+  "title": "Grab, drag and flick mechanisms; gears mesh themselves",
+  "summary": "Mac app: drag any jointed part to drive its joint, flick it to coast with per-tooth haptics. Spur gears auto-mesh as kernel joint couplings, with a clearance-backed receipt.",
+  "features": [
+    "assembly",
+    "kinematics",
+    "gears",
+    "macos",
+    "haptics"
+  ],
+  "mcpTools": []
+}

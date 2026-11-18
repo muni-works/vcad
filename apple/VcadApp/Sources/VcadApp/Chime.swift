@@ -34,6 +34,26 @@ final class Chime {
         player.scheduleBuffer(buffer(for: kind), at: nil, options: [], completionHandler: nil)
     }
 
+    /// A gear tooth passing: a tiny dry click whose pitch rises with speed
+    /// (deg/s), quiet enough to sit under a fast spin as a whir.
+    func tick(speed: Double) {
+        guard Prefs.playsSounds else { return }
+        if !started {
+            do { try engine.start(); player.play(); started = true } catch { return }
+        }
+        let sr = 44_100.0, frames = AVAudioFrameCount(sr * 0.022)
+        guard let buf = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return }
+        buf.frameLength = frames
+        let out = buf.floatChannelData![0]
+        let f0 = 1_400 + min(speed, 2_000) * 0.6
+        for i in 0..<Int(frames) {
+            let t = Double(i) / sr
+            let s = sin(2 * .pi * f0 * t) + 0.5 * sin(2 * .pi * f0 * 2.7 * t)
+            out[i] = Float(s * exp(-t * 260) * 0.07)
+        }
+        player.scheduleBuffer(buf, at: nil, options: [], completionHandler: nil)
+    }
+
     private func buffer(for kind: Kind) -> AVAudioPCMBuffer {
         let sr = 44_100.0
         let duration = kind == .failed ? 0.10 : 0.17

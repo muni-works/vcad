@@ -1,0 +1,15 @@
+{
+  "id": "2026-11-18-closed-loop-linkages-and-machine-exhibits",
+  "version": "0.11.0",
+  "date": "2026-11-18",
+  "category": "feat",
+  "title": "Closed-loop linkages: Strandbeest and Antikythera",
+  "summary": "Passive joints close kinematic loops in FK, so four-bars and Jansen legs move from one crank. Grab any link to drive it. New Strandbeest and Antikythera examples.",
+  "features": [
+    "assembly",
+    "kinematics",
+    "linkages",
+    "macos"
+  ],
+  "mcpTools": []
+}

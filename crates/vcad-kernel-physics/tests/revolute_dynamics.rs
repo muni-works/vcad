@@ -134,6 +134,8 @@ fn doc_with(n_pendula: usize, axis: V, first_state: f64) -> Document {
                 velocity_limit: None,
             },
             state: if i == 0 { first_state } else { 0.0 },
+            coupling: None,
+            passive: false,
         });
     }
     doc.instances = Some(instances);

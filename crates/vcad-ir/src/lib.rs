@@ -189,6 +189,39 @@ pub struct Joint {
     pub kind: JointKind,
     /// Current joint state (angle in degrees or position in mm).
     pub state: f64,
+    /// Kinematic coupling (gear mesh, belt, rack): when set, this joint's
+    /// state is derived from another joint's and the authored `state` is
+    /// ignored by forward kinematics.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub coupling: Option<JointCoupling>,
+    /// Passive joint: its state is solved by forward kinematics so every
+    /// kinematic loop closes (a four-bar's coupler and rocker pins, every
+    /// joint of a Jansen leg but the crank). The authored `state` is only the
+    /// starting guess. A loop is closed by a second joint on an instance that
+    /// already has a parent joint.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    pub passive: bool,
+}
+
+/// A linear coupling between two joints: `state = ratio · driver + offset`.
+///
+/// An external spur mesh of `z1` (driver) into `z2` is `ratio = -z1 / z2`
+/// with `offset` the tooth-phase angle from [`gear::mesh_rotation_deg`], so
+/// the teeth interleave at every pose. Chains (a train) resolve in order;
+/// a cycle or a missing driver leaves the joint at its authored state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "ts-rs", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-rs", ts(export, export_to = "bindings/"))]
+pub struct JointCoupling {
+    /// Id of the joint whose state drives this one.
+    pub driver: String,
+    /// d(state) / d(driver state).
+    pub ratio: f64,
+    /// Constant added after scaling (degrees or mm).
+    #[serde(default)]
+    pub offset: f64,
 }
 
 /// An instance of a part definition in an assembly.
@@ -3878,6 +3911,8 @@ mod tests {
                 velocity_limit: None,
             },
             state: 0.0,
+            coupling: None,
+            passive: false,
         }]);
 
         // Set ground instance

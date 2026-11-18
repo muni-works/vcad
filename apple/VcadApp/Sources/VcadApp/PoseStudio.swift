@@ -437,6 +437,13 @@ struct PoseStudioWindow: View {
             .frame(maxHeight: 300)
             Divider()
             HStack(spacing: Theme.Space.s) {
+                Text("Photoreal").font(.callout)
+                Spacer(minLength: 0)
+                Toggle("Photoreal", isOn: Binding(get: { model.realtimePhotoreal }, set: { model.realtimePhotoreal = $0 }))
+                    .labelsHidden().toggleStyle(.switch).controlSize(.mini)
+                    .help("Realtime photoreal: shadows and polished materials, still interactive")
+            }
+            HStack(spacing: Theme.Space.s) {
                 Text("Path traced").font(.callout)
                 if model.pathTraceEnabled {
                     Text("\(model.pathTraceSamples) spp").font(.caption.monospacedDigit()).foregroundStyle(.secondary)

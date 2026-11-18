@@ -122,6 +122,8 @@ fn add_revolute(doc: &mut Document, id: &str, parent: &str, child: &str, anchor_
             velocity_limit: None,
         },
         state: 0.0,
+        coupling: None,
+        passive: false,
     });
 }
 
@@ -178,6 +180,8 @@ fn ball_joint_pendulum_is_bounded_and_restoring() {
         child_anchor: V::new(0.0, 0.0, 0.0),
         kind: JointKind::Ball,
         state: 0.0,
+        coupling: None,
+        passive: false,
     });
     let mut world = PhysicsWorld::from_document(&doc).unwrap();
 
@@ -293,6 +297,8 @@ fn double_pendulum_does_not_gain_energy() {
             velocity_limit: None,
         },
         state: 0.0,
+        coupling: None,
+        passive: false,
     });
     doc.joints.as_mut().unwrap()[0].state = 90.0;
 

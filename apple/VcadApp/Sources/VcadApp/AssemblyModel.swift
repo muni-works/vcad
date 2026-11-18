@@ -221,6 +221,13 @@ extension EditorModel {
             if let posed = jointPose[key] { v[id] = posed }
         }
         v.merge(assembly.dragValues) { $1 }
+        // Coupled joints (gear meshes) read their derived value, not the
+        // authored state FK ignores.
+        for j in asmJoints {
+            guard let id = j["id"] as? String, j["coupling"] != nil else { continue }
+            let a = couplingAffine(of: id)
+            if a.root != id, let rv = v[a.root] { v[id] = a.r * rv + a.o }
+        }
         return v
     }
 
@@ -238,6 +245,9 @@ extension EditorModel {
 
     /// Live FK while dragging a joint: one kernel solve, no document change.
     func dragJoint(_ id: String, to value: Double) {
+        // A coupled joint (a driven gear) moves by back-driving its root.
+        let a = couplingAffine(of: id)
+        if a.root != id, a.r != 0 { dragJoint(a.root, to: (value - a.o) / a.r); return }
         var v = value
         if let l = jointSpec(id: id)?.limits { v = min(max(v, l.lowerBound), l.upperBound) }
         assembly.dragValues[id] = v
@@ -247,8 +257,33 @@ extension EditorModel {
 
     /// Commit a drag as the joint's authored state (one undo step).
     func commitJointDrag(_ id: String) {
+        let root = couplingAffine(of: id).root
+        if root != id { commitJointDrag(root); return }
         guard let v = assembly.dragValues.removeValue(forKey: id) else { return }
-        assemblyEdit("Move Joint", rebuild: true) { AsmEdit.setJointState(&$0, id: id, v) }
+        // The pose on screen IS the committed pose, so don't re-evaluate the
+        // geometry (a gear train re-tessellated on every release). Loop-closure
+        // joints get their solved states written too, so a later re-eval lands
+        // on the same assembly branch instead of whichever the solver finds
+        // from the old authored guess.
+        var passive: [String: Double] = [:]
+        if let scene = residentAssemblyScene, let raw = vcad_scene_passive_states(scene) {
+            defer { vcad_string_free(raw) }
+            let data = Data(bytes: raw, count: strlen(raw))
+            passive = ((try? JSONSerialization.jsonObject(with: data)) as? [String: Double]) ?? [:]
+        }
+        let ids = asmJoints.compactMap { $0["id"] as? String }
+        let pose = instanceTransforms
+        assemblyEdit("Move Joint", rebuild: false) { json in
+            AsmEdit.setJointState(&json, id: id, v)
+            for (pid, pv) in passive where ids.contains(pid) { AsmEdit.setJointState(&json, id: pid, pv) }
+        }
+        // A no-rebuild edit can still re-mint ids under us; if it did, the
+        // resident scene no longer matches the document, so rebuild after all.
+        if asmJoints.compactMap({ $0["id"] as? String }) != ids {
+            _ = assemblyEdit("Move Joint", rebuild: true) { _ in }
+        } else {
+            instanceTransforms = pose
+        }
     }
 
     /// Solve FK for `values` and publish the transforms (the playback channel).
@@ -265,6 +300,9 @@ extension EditorModel {
         instanceTransforms = world
         playbackDirty = true
         poseTick &+= 1
+        #if os(macOS)
+        updateSkeleton()
+        #endif
         return world
     }
 

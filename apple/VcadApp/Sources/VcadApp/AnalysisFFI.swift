@@ -87,8 +87,10 @@ enum AnalysisFFI {
 
     // MARK: Clearance
 
-    static func clearance(doc: Data, includeMesh: Bool = true) throws -> ClearanceReport {
-        let out = try call(vcad_clearance, doc: doc, request: try encode(["include_mesh": includeMesh]))
+    static func clearance(doc: Data, includeMesh: Bool = true, pairs: [[Int]]? = nil) throws -> ClearanceReport {
+        var req: [String: Any] = ["include_mesh": includeMesh]
+        if let pairs { req["pairs"] = pairs }
+        let out = try call(vcad_clearance, doc: doc, request: try encode(req))
         return try JSONDecoder().decode(ClearanceReport.self, from: out)
     }
 }

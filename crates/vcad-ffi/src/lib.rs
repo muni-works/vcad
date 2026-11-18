@@ -324,6 +324,11 @@ pub extern "C" fn vcad_solid_bbox(solid: *const VcadSolid) -> VcadAabb {
 pub struct VcadScene {
     inner: EvaluatedScene,
     doc: Option<Document>,
+    /// Last solved passive-joint states (loop closures), so each
+    /// `vcad_scene_solve_fk` warm-starts from the previous pose. Without it a
+    /// drag re-solves from the authored pose every frame and a linkage can
+    /// flip to its other assembly branch mid-gesture.
+    passive_cache: std::sync::Mutex<std::collections::HashMap<String, f64>>,
 }
 
 impl VcadScene {
@@ -375,6 +380,7 @@ pub extern "C" fn vcad_scene_from_json(json: *const u8, json_len: usize) -> *mut
             Ok(scene) => Box::into_raw(Box::new(VcadScene {
                 inner: scene,
                 doc: Some(doc),
+                passive_cache: Default::default(),
             })),
             Err(e) => {
                 err::set_error(format!("evaluate: {e}"));
@@ -426,6 +432,7 @@ pub extern "C" fn vcad_scene_from_json_in(
             Ok(scene) => Box::into_raw(Box::new(VcadScene {
                 inner: scene,
                 doc: Some(doc),
+                passive_cache: Default::default(),
             })),
             Err(e) => {
                 err::set_error(format!("evaluate: {e}"));
@@ -462,6 +469,7 @@ pub extern "C" fn vcad_scene_from_loon(loon: *const u8, loon_len: usize) -> *mut
             Ok(scene) => Box::into_raw(Box::new(VcadScene {
                 inner: scene,
                 doc: Some(doc),
+                passive_cache: Default::default(),
             })),
             Err(_) => ptr::null_mut(),
         }
@@ -1026,6 +1034,15 @@ pub extern "C" fn vcad_scene_solve_fk(
                 }
             }
         }
+        // Loop closures: warm-start passive joints from the last solve, close
+        // the loops here, and remember the result for the next frame. (The
+        // caller's value map carries only authored states for passive joints.)
+        if let (Some(joints), Some(insts)) = (posed.joints.as_mut(), doc.instances.as_ref()) {
+            if joints.iter().any(|j| j.passive) {
+                let mut cache = s.passive_cache.lock().unwrap_or_else(|e| e.into_inner());
+                close_loops_continued(insts, joints, &mut cache);
+            }
+        }
         let world = solve_forward_kinematics(&posed);
 
         let slice = unsafe { std::slice::from_raw_parts_mut(out, instances.len() * 16) };
@@ -1468,6 +1485,7 @@ pub extern "C" fn vcad_doc_set_param(
             Ok(scene) => Box::into_raw(Box::new(VcadScene {
                 inner: scene,
                 doc: None,
+                passive_cache: Default::default(),
             })),
             Err(_) => ptr::null_mut(),
         }
@@ -1507,6 +1525,7 @@ pub extern "C" fn vcad_doc_set_param_cheap(
             Ok(scene) => Box::into_raw(Box::new(VcadScene {
                 inner: scene,
                 doc: None,
+                passive_cache: Default::default(),
             })),
             Err(_) => ptr::null_mut(),
         }
@@ -2600,6 +2619,96 @@ pub extern "C" fn vcad_solid_raycast(
     .unwrap_or(miss)
 }
 
+/// Cache key prefix for the last solved value of a driven (non-passive) joint.
+const DRIVER_KEY: &str = "\u{0}drv:";
+
+/// Close every kinematic loop by **continuation** from the last solved pose:
+/// the driven joints march from their previous values to the requested ones
+/// in steps of at most 3° (or 3 mm), each step warm-starting the passive
+/// joints from the one before. A single big jump (a drag search probe, a
+/// flick frame, a slider snap) would otherwise let the solver land on the
+/// mechanism's other assembly branch, which reads as the linkage flashing
+/// between two shapes near a toggle point. A step that fails to close (a
+/// singular or unreachable pose) keeps the previous passive states.
+fn close_loops_continued(
+    insts: &[vcad_ir::Instance],
+    joints: &mut [vcad_ir::Joint],
+    cache: &mut std::collections::HashMap<String, f64>,
+) {
+    let target: Vec<f64> = joints.iter().map(|j| j.state).collect();
+    let start: Vec<f64> = joints
+        .iter()
+        .map(|j| {
+            if j.passive {
+                cache.get(&j.id).copied().unwrap_or(j.state)
+            } else {
+                cache
+                    .get(&format!("{DRIVER_KEY}{}", j.id))
+                    .copied()
+                    .unwrap_or(j.state)
+            }
+        })
+        .collect();
+    let span = joints
+        .iter()
+        .enumerate()
+        .filter(|(_, j)| !j.passive)
+        .map(|(k, _)| (target[k] - start[k]).abs())
+        .fold(0.0, f64::max);
+    let steps = ((span / 3.0).ceil() as usize).clamp(1, 120);
+    let mut cur: Vec<vcad_ir::Joint> = joints.to_vec();
+    for (k, j) in cur.iter_mut().enumerate() {
+        j.state = start[k];
+    }
+    for step in 1..=steps {
+        let u = step as f64 / steps as f64;
+        for (k, j) in cur.iter_mut().enumerate() {
+            if !j.passive {
+                j.state = start[k] + (target[k] - start[k]) * u;
+            }
+        }
+        let mut resolved = vcad_eval::kinematics::resolve_coupled_states(&cur);
+        let res = vcad_eval::kinematics::close_loops(insts, &mut resolved);
+        if res < 1e-3 {
+            for (c, r) in cur.iter_mut().zip(resolved.iter()) {
+                if c.passive {
+                    c.state = r.state;
+                }
+            }
+        }
+    }
+    for (j, c) in joints.iter_mut().zip(cur.iter()) {
+        if j.passive {
+            j.state = c.state;
+            cache.insert(j.id.clone(), c.state);
+        } else {
+            cache.insert(format!("{DRIVER_KEY}{}", j.id), j.state);
+        }
+    }
+}
+
+/// The scene's last solved passive (loop-closure) joint states, as a JSON
+/// object `{"jointId": value}` — so a host can write them back into the
+/// document when it commits a drag, keeping a later re-evaluation on the same
+/// assembly branch. Returns an owned C string (free with `vcad_string_free`),
+/// `"{}"` when nothing has been solved, or null on a null scene.
+#[no_mangle]
+pub extern "C" fn vcad_scene_passive_states(scene: *const VcadScene) -> *mut std::os::raw::c_char {
+    if scene.is_null() {
+        return std::ptr::null_mut();
+    }
+    let s: &VcadScene = unsafe { &*scene };
+    let cache = s.passive_cache.lock().unwrap_or_else(|e| e.into_inner());
+    let out: std::collections::HashMap<&String, &f64> = cache
+        .iter()
+        .filter(|(k, _)| !k.starts_with(DRIVER_KEY))
+        .collect();
+    let json = serde_json::to_string(&out).unwrap_or_else(|_| "{}".into());
+    std::ffi::CString::new(json)
+        .map(|c| c.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -3554,6 +3663,7 @@ fn eval_begin(
                 Ok(Ok(scene)) => Ok(VcadScene {
                     inner: scene,
                     doc: Some(doc),
+                    passive_cache: Default::default(),
                 }),
                 Ok(Err(e)) => Err(format!("evaluate: {e}")),
                 Err(_) => Err("evaluate: kernel panic".to_string()),

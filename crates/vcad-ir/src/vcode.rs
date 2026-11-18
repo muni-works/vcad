@@ -1112,6 +1112,8 @@ fn parse_joint(
                 ),
                 kind: JointKind::Fixed,
                 state: 0.0,
+                coupling: None,
+                passive: false,
             });
         }
         "JREV" => {
@@ -1152,6 +1154,8 @@ fn parse_joint(
                     velocity_limit: None,
                 },
                 state: 0.0,
+                coupling: None,
+                passive: false,
             });
         }
         "JSLD" => {
@@ -1192,6 +1196,8 @@ fn parse_joint(
                     velocity_limit: None,
                 },
                 state: 0.0,
+                coupling: None,
+                passive: false,
             });
         }
         "JCYL" => {
@@ -1224,6 +1230,8 @@ fn parse_joint(
                     ),
                 },
                 state: 0.0,
+                coupling: None,
+                passive: false,
             });
         }
         "JBAL" => {
@@ -1250,6 +1258,8 @@ fn parse_joint(
                 ),
                 kind: JointKind::Ball,
                 state: 0.0,
+                coupling: None,
+                passive: false,
             });
         }
         "JFRE" => {
@@ -1276,6 +1286,8 @@ fn parse_joint(
                 ),
                 kind: JointKind::Free,
                 state: 0.0,
+                coupling: None,
+                passive: false,
             });
         }
         _ => unreachable!(
@@ -3879,6 +3891,8 @@ CAM cam2 0 100 0 0 0 0"#;
                 velocity_limit: None,
             },
             state: 0.0,
+            coupling: None,
+            passive: false,
         }]);
 
         // Ground

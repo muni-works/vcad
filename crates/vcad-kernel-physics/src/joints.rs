@@ -350,6 +350,8 @@ mod tests {
                 velocity_limit: None,
             },
             state: 0.0,
+            coupling: None,
+            passive: false,
         };
 
         let phyz_joint = vcad_joint_to_phyz(&joint, (&Mat3::identity(), &Vec3::zero())).unwrap();

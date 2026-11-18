@@ -814,6 +814,8 @@ mod tests {
                     velocity_limit: None,
                 },
                 state: 0.0,
+                coupling: None,
+                passive: false,
             },
             Joint {
                 id: "j2".into(),
@@ -829,6 +831,8 @@ mod tests {
                     velocity_limit: None,
                 },
                 state: 0.0,
+                coupling: None,
+                passive: false,
             },
         ]);
 

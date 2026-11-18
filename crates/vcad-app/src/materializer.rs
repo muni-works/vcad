@@ -1950,6 +1950,18 @@ fn materialize_joint(doc: &mut Document, fid: FeatureId, feature: &FeatureState)
         _ => JointKind::Fixed,
     };
 
+    let coupling = match (
+        get_str(feature, "coupling_driver"),
+        get_f64(feature, "coupling_ratio"),
+    ) {
+        (Some(driver), Some(ratio)) => Some(vcad_ir::JointCoupling {
+            driver,
+            ratio,
+            offset: get_f64(feature, "coupling_offset").unwrap_or(0.0),
+        }),
+        _ => None,
+    };
+
     let joints = doc.joints.get_or_insert_with(Vec::new);
     joints.push(Joint {
         id,
@@ -1960,6 +1972,8 @@ fn materialize_joint(doc: &mut Document, fid: FeatureId, feature: &FeatureState)
         child_anchor: Vec3::new(child_anchor[0], child_anchor[1], child_anchor[2]),
         kind,
         state,
+        coupling,
+        passive: get_bool(feature, "passive").unwrap_or(false),
     });
 }
 

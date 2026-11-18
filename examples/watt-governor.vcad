@@ -1,0 +1,700 @@
+{
+ "version": "0.1",
+ "nodes": {
+  "1": {
+   "id": 1,
+   "op": {
+    "type": "Cylinder",
+    "radius": 55,
+    "height": 10,
+    "segments": 48
+   }
+  },
+  "2": {
+   "id": 2,
+   "op": {
+    "type": "Translate",
+    "child": 1,
+    "offset": {
+     "x": 0.0,
+     "y": 0.0,
+     "z": 0.0
+    }
+   }
+  },
+  "3": {
+   "id": 3,
+   "op": {
+    "type": "Cylinder",
+    "radius": 9,
+    "height": 40,
+    "segments": 48
+   }
+  },
+  "4": {
+   "id": 4,
+   "op": {
+    "type": "Translate",
+    "child": 3,
+    "offset": {
+     "x": 0.0,
+     "y": 0.0,
+     "z": 10
+    }
+   }
+  },
+  "5": {
+   "id": 5,
+   "op": {
+    "type": "Cylinder",
+    "radius": 4,
+    "height": 180.0,
+    "segments": 32
+   }
+  },
+  "6": {
+   "id": 6,
+   "op": {
+    "type": "Translate",
+    "child": 5,
+    "offset": {
+     "x": 0.0,
+     "y": 0.0,
+     "z": 10
+    }
+   }
+  },
+  "7": {
+   "id": 7,
+   "op": {
+    "type": "Cylinder",
+    "radius": 12,
+    "height": 14,
+    "segments": 48
+   }
+  },
+  "8": {
+   "id": 8,
+   "op": {
+    "type": "Translate",
+    "child": 7,
+    "offset": {
+     "x": 0.0,
+     "y": 0.0,
+     "z": 156.0
+    }
+   }
+  },
+  "9": {
+   "id": 9,
+   "op": {
+    "type": "Cylinder",
+    "radius": 10,
+    "height": 12,
+    "segments": 48
+   }
+  },
+  "10": {
+   "id": 10,
+   "op": {
+    "type": "Translate",
+    "child": 9,
+    "offset": {
+     "x": 0.0,
+     "y": 0.0,
+     "z": -6
+    }
+   }
+  },
+  "11": {
+   "id": 11,
+   "op": {
+    "type": "Cylinder",
+    "radius": 2.2,
+    "height": 70.0,
+    "segments": 24
+   }
+  },
+  "12": {
+   "id": 12,
+   "op": {
+    "type": "Translate",
+    "child": 11,
+    "offset": {
+     "x": 0.0,
+     "y": 0.0,
+     "z": -70.0
+    }
+   }
+  },
+  "13": {
+   "id": 13,
+   "op": {
+    "type": "Sphere",
+    "radius": 14.0,
+    "segments": 48
+   }
+  },
+  "14": {
+   "id": 14,
+   "op": {
+    "type": "Translate",
+    "child": 13,
+    "offset": {
+     "x": 0.0,
+     "y": 0.0,
+     "z": -70.0
+    }
+   }
+  },
+  "15": {
+   "id": 15,
+   "op": {
+    "type": "Cylinder",
+    "radius": 1.8,
+    "height": 40.0,
+    "segments": 24
+   }
+  },
+  "16": {
+   "id": 16,
+   "op": {
+    "type": "Translate",
+    "child": 15,
+    "offset": {
+     "x": 0.0,
+     "y": 0.0,
+     "z": 0
+    }
+   }
+  },
+  "17": {
+   "id": 17,
+   "op": {
+    "type": "Cylinder",
+    "radius": 2.2,
+    "height": 70.0,
+    "segments": 24
+   }
+  },
+  "18": {
+   "id": 18,
+   "op": {
+    "type": "Translate",
+    "child": 17,
+    "offset": {
+     "x": 0.0,
+     "y": 0.0,
+     "z": -70.0
+    }
+   }
+  },
+  "19": {
+   "id": 19,
+   "op": {
+    "type": "Sphere",
+    "radius": 14.0,
+    "segments": 48
+   }
+  },
+  "20": {
+   "id": 20,
+   "op": {
+    "type": "Translate",
+    "child": 19,
+    "offset": {
+     "x": 0.0,
+     "y": 0.0,
+     "z": -70.0
+    }
+   }
+  },
+  "21": {
+   "id": 21,
+   "op": {
+    "type": "Cylinder",
+    "radius": 1.8,
+    "height": 40.0,
+    "segments": 24
+   }
+  },
+  "22": {
+   "id": 22,
+   "op": {
+    "type": "Translate",
+    "child": 21,
+    "offset": {
+     "x": 0.0,
+     "y": 0.0,
+     "z": 0
+    }
+   }
+  }
+ },
+ "materials": {},
+ "part_materials": {},
+ "partDefs": {
+  "base": {
+   "id": "base",
+   "name": "Base",
+   "root": 2,
+   "defaultMaterial": "walnut"
+  },
+  "column": {
+   "id": "column",
+   "name": "Column",
+   "root": 4,
+   "defaultMaterial": "steel"
+  },
+  "spindle": {
+   "id": "spindle",
+   "name": "Spindle",
+   "root": 6,
+   "defaultMaterial": "steel"
+  },
+  "head": {
+   "id": "head",
+   "name": "Head",
+   "root": 8,
+   "defaultMaterial": "brass"
+  },
+  "sleeve": {
+   "id": "sleeve",
+   "name": "Sleeve",
+   "root": 10,
+   "defaultMaterial": "brass"
+  },
+  "armL": {
+   "id": "armL",
+   "name": "Arm L",
+   "root": 12,
+   "defaultMaterial": "steel"
+  },
+  "ballL": {
+   "id": "ballL",
+   "name": "Ball L",
+   "root": 14,
+   "defaultMaterial": "brass"
+  },
+  "linkL": {
+   "id": "linkL",
+   "name": "Link L",
+   "root": 16,
+   "defaultMaterial": "steel"
+  },
+  "armR": {
+   "id": "armR",
+   "name": "Arm R",
+   "root": 18,
+   "defaultMaterial": "steel"
+  },
+  "ballR": {
+   "id": "ballR",
+   "name": "Ball R",
+   "root": 20,
+   "defaultMaterial": "brass"
+  },
+  "linkR": {
+   "id": "linkR",
+   "name": "Link R",
+   "root": 22,
+   "defaultMaterial": "steel"
+  }
+ },
+ "instances": [
+  {
+   "id": "base_i",
+   "name": "Base",
+   "partDefId": "base"
+  },
+  {
+   "id": "column_i",
+   "name": "Column",
+   "partDefId": "column"
+  },
+  {
+   "id": "spindle_i",
+   "name": "Spindle",
+   "partDefId": "spindle"
+  },
+  {
+   "id": "head_i",
+   "name": "Head",
+   "partDefId": "head"
+  },
+  {
+   "id": "sleeve_i",
+   "name": "Sleeve",
+   "partDefId": "sleeve"
+  },
+  {
+   "id": "armL_i",
+   "name": "Arm L",
+   "partDefId": "armL"
+  },
+  {
+   "id": "ballL_i",
+   "name": "Ball L",
+   "partDefId": "ballL"
+  },
+  {
+   "id": "linkL_i",
+   "name": "Link L",
+   "partDefId": "linkL"
+  },
+  {
+   "id": "armR_i",
+   "name": "Arm R",
+   "partDefId": "armR"
+  },
+  {
+   "id": "ballR_i",
+   "name": "Ball R",
+   "partDefId": "ballR"
+  },
+  {
+   "id": "linkR_i",
+   "name": "Link R",
+   "partDefId": "linkR"
+  }
+ ],
+ "joints": [
+  {
+   "id": "weld_column",
+   "name": "weld column",
+   "kind": {
+    "type": "Fixed"
+   },
+   "state": 0.0,
+   "parentInstanceId": "base_i",
+   "childInstanceId": "column_i",
+   "parentAnchor": {
+    "x": 0,
+    "y": 0,
+    "z": 0
+   },
+   "childAnchor": {
+    "x": 0,
+    "y": 0,
+    "z": 0
+   }
+  },
+  {
+   "id": "spindle",
+   "name": "Spindle",
+   "kind": {
+    "type": "Revolute",
+    "axis": {
+     "x": 0,
+     "y": 0,
+     "z": 1
+    }
+   },
+   "state": 0.0,
+   "parentInstanceId": "base_i",
+   "childInstanceId": "spindle_i",
+   "parentAnchor": {
+    "x": 0,
+    "y": 0,
+    "z": 0
+   },
+   "childAnchor": {
+    "x": 0,
+    "y": 0,
+    "z": 0
+   }
+  },
+  {
+   "id": "weld_head",
+   "name": "weld head",
+   "kind": {
+    "type": "Fixed"
+   },
+   "state": 0.0,
+   "parentInstanceId": "spindle_i",
+   "childInstanceId": "head_i",
+   "parentAnchor": {
+    "x": 0,
+    "y": 0,
+    "z": 0
+   },
+   "childAnchor": {
+    "x": 0,
+    "y": 0,
+    "z": 0
+   }
+  },
+  {
+   "id": "sleeve",
+   "name": "Sleeve",
+   "kind": {
+    "type": "Slider",
+    "axis": {
+     "x": 0,
+     "y": 0,
+     "z": 1
+    },
+    "limits": [
+     3.0,
+     74.0
+    ]
+   },
+   "state": 3.0,
+   "parentInstanceId": "spindle_i",
+   "childInstanceId": "sleeve_i",
+   "parentAnchor": {
+    "x": 0,
+    "y": 0,
+    "z": 80.0
+   },
+   "childAnchor": {
+    "x": 0,
+    "y": 0,
+    "z": 0
+   }
+  },
+  {
+   "id": "armL",
+   "name": "arm L",
+   "kind": {
+    "type": "Revolute",
+    "axis": {
+     "x": 0.0,
+     "y": 1.0,
+     "z": 0.0
+    }
+   },
+   "state": 15.740548525168737,
+   "parentInstanceId": "spindle_i",
+   "childInstanceId": "armL_i",
+   "parentAnchor": {
+    "x": -6.0,
+    "y": 0,
+    "z": 160.0
+   },
+   "childAnchor": {
+    "x": 0,
+    "y": 0,
+    "z": 0
+   },
+   "passive": true
+  },
+  {
+   "id": "weld_ballL",
+   "name": "weld ball L",
+   "kind": {
+    "type": "Fixed"
+   },
+   "state": 0.0,
+   "parentInstanceId": "armL_i",
+   "childInstanceId": "ballL_i",
+   "parentAnchor": {
+    "x": 0,
+    "y": 0,
+    "z": 0
+   },
+   "childAnchor": {
+    "x": 0,
+    "y": 0,
+    "z": 0
+   }
+  },
+  {
+   "id": "linkL",
+   "name": "link L",
+   "kind": {
+    "type": "Revolute",
+    "axis": {
+     "x": 0.0,
+     "y": 1.0,
+     "z": 0.0
+    }
+   },
+   "state": -15.740548525168737,
+   "parentInstanceId": "sleeve_i",
+   "childInstanceId": "linkL_i",
+   "parentAnchor": {
+    "x": -6.0,
+    "y": 0,
+    "z": 0
+   },
+   "childAnchor": {
+    "x": 0,
+    "y": 0,
+    "z": 0
+   },
+   "passive": true
+  },
+  {
+   "id": "closeL",
+   "name": "close L",
+   "kind": {
+    "type": "Revolute",
+    "axis": {
+     "x": 0.0,
+     "y": 1.0,
+     "z": 0.0
+    }
+   },
+   "state": 0.0,
+   "parentInstanceId": "armL_i",
+   "childInstanceId": "linkL_i",
+   "parentAnchor": {
+    "x": 0,
+    "y": 0,
+    "z": -40.0
+   },
+   "childAnchor": {
+    "x": 0,
+    "y": 0,
+    "z": 40.0
+   },
+   "passive": true
+  },
+  {
+   "id": "armR",
+   "name": "arm R",
+   "kind": {
+    "type": "Revolute",
+    "axis": {
+     "x": 0.0,
+     "y": 1.0,
+     "z": 0.0
+    }
+   },
+   "state": -15.740548525168737,
+   "parentInstanceId": "spindle_i",
+   "childInstanceId": "armR_i",
+   "parentAnchor": {
+    "x": 6.0,
+    "y": 0,
+    "z": 160.0
+   },
+   "childAnchor": {
+    "x": 0,
+    "y": 0,
+    "z": 0
+   },
+   "passive": true
+  },
+  {
+   "id": "weld_ballR",
+   "name": "weld ball R",
+   "kind": {
+    "type": "Fixed"
+   },
+   "state": 0.0,
+   "parentInstanceId": "armR_i",
+   "childInstanceId": "ballR_i",
+   "parentAnchor": {
+    "x": 0,
+    "y": 0,
+    "z": 0
+   },
+   "childAnchor": {
+    "x": 0,
+    "y": 0,
+    "z": 0
+   }
+  },
+  {
+   "id": "linkR",
+   "name": "link R",
+   "kind": {
+    "type": "Revolute",
+    "axis": {
+     "x": 0.0,
+     "y": 1.0,
+     "z": 0.0
+    }
+   },
+   "state": 15.740548525168737,
+   "parentInstanceId": "sleeve_i",
+   "childInstanceId": "linkR_i",
+   "parentAnchor": {
+    "x": 6.0,
+    "y": 0,
+    "z": 0
+   },
+   "childAnchor": {
+    "x": 0,
+    "y": 0,
+    "z": 0
+   },
+   "passive": true
+  },
+  {
+   "id": "closeR",
+   "name": "close R",
+   "kind": {
+    "type": "Revolute",
+    "axis": {
+     "x": 0.0,
+     "y": 1.0,
+     "z": 0.0
+    }
+   },
+   "state": 0.0,
+   "parentInstanceId": "armR_i",
+   "childInstanceId": "linkR_i",
+   "parentAnchor": {
+    "x": 0,
+    "y": 0,
+    "z": -40.0
+   },
+   "childAnchor": {
+    "x": 0,
+    "y": 0,
+    "z": 40.0
+   },
+   "passive": true
+  }
+ ],
+ "roots": [
+  {
+   "root": 2,
+   "material": "walnut"
+  },
+  {
+   "root": 4,
+   "material": "steel"
+  },
+  {
+   "root": 6,
+   "material": "steel"
+  },
+  {
+   "root": 8,
+   "material": "brass"
+  },
+  {
+   "root": 10,
+   "material": "brass"
+  },
+  {
+   "root": 12,
+   "material": "steel"
+  },
+  {
+   "root": 14,
+   "material": "brass"
+  },
+  {
+   "root": 16,
+   "material": "steel"
+  },
+  {
+   "root": 18,
+   "material": "steel"
+  },
+  {
+   "root": 20,
+   "material": "brass"
+  },
+  {
+   "root": 22,
+   "material": "steel"
+  }
+ ],
+ "groundInstanceId": "base_i"
+}

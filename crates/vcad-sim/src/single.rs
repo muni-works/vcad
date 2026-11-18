@@ -200,6 +200,8 @@ mod tests {
                 velocity_limit: None,
             },
             state: 0.0,
+            coupling: None,
+            passive: false,
         }]);
 
         doc.ground_instance_id = Some("base_inst".into());

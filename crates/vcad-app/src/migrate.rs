@@ -1019,6 +1019,41 @@ fn rekey(crdt: &CrdtDocument, remap: &HashMap<FeatureId, FeatureId>) -> CrdtDocu
     out
 }
 
+/// Joints reordered so every coupling driver precedes the joints it drives
+/// (stable otherwise). Cycles and dangling drivers keep their place; the
+/// coupling is then dropped at migration rather than pointing at nothing.
+fn coupling_order(joints: &[vcad_ir::Joint]) -> Vec<&vcad_ir::Joint> {
+    let by_id: HashMap<&str, &vcad_ir::Joint> = joints.iter().map(|j| (j.id.as_str(), j)).collect();
+    let mut out: Vec<&vcad_ir::Joint> = Vec::with_capacity(joints.len());
+    let mut placed: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    fn place<'a>(
+        j: &'a vcad_ir::Joint,
+        by_id: &HashMap<&str, &'a vcad_ir::Joint>,
+        placed: &mut std::collections::HashSet<&'a str>,
+        stack: &mut Vec<&'a str>,
+        out: &mut Vec<&'a vcad_ir::Joint>,
+    ) {
+        if placed.contains(j.id.as_str()) || stack.contains(&j.id.as_str()) {
+            return;
+        }
+        stack.push(&j.id);
+        if let Some(d) = j
+            .coupling
+            .as_ref()
+            .and_then(|c| by_id.get(c.driver.as_str()))
+        {
+            place(d, by_id, placed, stack, out);
+        }
+        stack.pop();
+        placed.insert(&j.id);
+        out.push(j);
+    }
+    for j in joints {
+        place(j, &by_id, &mut placed, &mut Vec::new(), &mut out);
+    }
+    out
+}
+
 /// Format a `FeatureId` as the stable `"replica:seq"` string used throughout
 /// the higher-level API (see `document_api::StableIdMap`).
 fn fid_to_stable(fid: FeatureId) -> String {
@@ -1144,6 +1179,10 @@ fn migrate_assembly(crdt: &mut CrdtDocument, ctx: &mut MigrationCtx, doc: &Docum
     }
 
     if let Some(joints) = &doc.joints {
+        // Couplings reference their driver joint as a FeatureRef, so a driver
+        // must exist before anything it drives: emit drivers first.
+        let joints = coupling_order(joints);
+        let mut joint_stable: HashMap<&str, String> = HashMap::new();
         for joint in joints {
             let Some(child_stable) = instance_stable.get(&joint.child_instance_id) else {
                 continue;
@@ -1227,7 +1266,23 @@ fn migrate_assembly(crdt: &mut CrdtDocument, ctx: &mut MigrationCtx, doc: &Docum
                 params.insert("velocity_limit".to_string(), Value::F64(v));
             }
 
-            create(crdt, ctx, "joint", params);
+            if let Some(c) = &joint.coupling {
+                if let Some(driver) = joint_stable.get(c.driver.as_str()) {
+                    params.insert(
+                        "coupling_driver".to_string(),
+                        Value::FeatureRef(driver.clone()),
+                    );
+                    params.insert("coupling_ratio".to_string(), Value::F64(c.ratio));
+                    params.insert("coupling_offset".to_string(), Value::F64(c.offset));
+                }
+            }
+
+            if joint.passive {
+                params.insert("passive".to_string(), Value::Bool(true));
+            }
+
+            let jfid = create(crdt, ctx, "joint", params);
+            joint_stable.insert(joint.id.as_str(), fid_to_stable(jfid));
         }
     }
 }
@@ -1819,6 +1874,91 @@ mod tests {
         match &result.document.nodes[&id].op {
             CsgOp::Cube { size } => assert_eq!(size.z, 3.0),
             other => panic!("expected the third part's cube, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gear_couplings_survive_repeated_round_trips_with_remapped_drivers() {
+        let rev = |id: &str, child: &str, coupling: serde_json::Value| {
+            let mut j = serde_json::json!({
+                "id": id, "parentInstanceId": null, "childInstanceId": child,
+                "parentAnchor": {"x": 0.0, "y": 0.0, "z": 0.0},
+                "childAnchor": {"x": 0.0, "y": 0.0, "z": 0.0},
+                "kind": {"type": "Revolute", "axis": {"x": 0.0, "y": 0.0, "z": 1.0}},
+                "state": 0.0
+            });
+            if !coupling.is_null() {
+                j["coupling"] = coupling;
+            }
+            j
+        };
+        let mut doc: Document = serde_json::from_value(serde_json::json!({
+            "version": "0.1", "materials": {}, "part_materials": {},
+            "nodes": {"1": {"id": 1, "name": "g", "op": {"type": "Cube", "size": {"x": 1.0, "y": 1.0, "z": 1.0}}}},
+            "roots": [],
+            "partDefs": {"g": {"id": "g", "root": 1}},
+            "instances": [
+                {"id": "ia", "partDefId": "g"}, {"id": "ib", "partDefId": "g"}, {"id": "ic", "partDefId": "g"}
+            ],
+            // Declared driven-first: migration must still emit drivers first.
+            "joints": [
+                rev("jc", "ic", serde_json::json!({"driver": "jb", "ratio": -2.0, "offset": 1.0})),
+                rev("jb", "ib", serde_json::json!({"driver": "ja", "ratio": -0.5})),
+                rev("ja", "ia", serde_json::Value::Null),
+            ],
+        }))
+        .expect("gear fixture");
+        doc.joints.as_mut().unwrap()[2].state = 40.0;
+        for _ in 0..3 {
+            doc = crate::materializer::materialize(&migrate_v1(&doc)).document;
+            let joints = doc.joints.as_ref().expect("joints");
+            assert_eq!(joints.len(), 3);
+            // Instance ids are re-minted too; find joints by their driver graph.
+            let root = joints
+                .iter()
+                .find(|j| j.coupling.is_none())
+                .expect("root driver");
+            let mid = joints
+                .iter()
+                .find(|j| j.coupling.as_ref().map(|c| &c.driver) == Some(&root.id))
+                .expect("middle gear coupled to the remapped root id");
+            let tip = joints
+                .iter()
+                .find(|j| j.coupling.as_ref().map(|c| &c.driver) == Some(&mid.id))
+                .expect("last gear coupled to the remapped middle id");
+            assert_eq!(mid.coupling.as_ref().unwrap().ratio, -0.5);
+            assert_eq!(tip.coupling.as_ref().unwrap().offset, 1.0);
+            let solved = vcad_eval::kinematics::resolve_coupled_states(joints);
+            let st = |id: &str| solved.iter().find(|j| j.id == id).unwrap().state;
+            assert_eq!(st(&root.id), 40.0);
+            assert_eq!(st(&mid.id), -20.0);
+            assert_eq!(st(&tip.id), 41.0);
+        }
+    }
+
+    #[test]
+    fn strandbeest_passive_joints_and_closures_survive_round_trips() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../examples/strandbeest.vcad"
+        );
+        let mut doc: Document =
+            serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+        for _ in 0..2 {
+            doc = crate::materializer::materialize(&migrate_v1(&doc)).document;
+            let joints = doc.joints.as_ref().unwrap();
+            assert_eq!(
+                joints
+                    .iter()
+                    .filter(|j| !matches!(j.kind, vcad_ir::JointKind::Fixed))
+                    .count(),
+                28
+            );
+            assert_eq!(joints.iter().filter(|j| j.passive).count(), 27);
+            let instances = doc.instances.clone().unwrap();
+            let mut js = joints.clone();
+            let res = vcad_eval::kinematics::close_loops(&instances, &mut js);
+            assert!(res < 1e-5, "loops open by {res} mm after a round trip");
         }
     }
 

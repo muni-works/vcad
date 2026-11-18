@@ -128,7 +128,7 @@ final class ReleaseWindowController {
     var chromeRects: [String: CGRect] = [:]
     /// The document being edited, for the hover pass (which runs off an AppKit
     /// event monitor, outside any SwiftUI view).
-    private weak var model: EditorModel?
+    weak var model: EditorModel?
     /// Part under the pointer, and the gizmo handle under it. Mirrored into the
     /// model (`hoveredPartIndex`) so panels can read it; kept here too because
     /// the hover pass must know what to un-highlight.
@@ -746,7 +746,7 @@ final class ReleaseWindowController {
     }
 
     /// "inst3" → 3; else nil. Assemblies draw instances, not root parts.
-    private static func instanceIndex(_ e: Entity) -> Int? {
+    static func instanceIndex(_ e: Entity) -> Int? {
         guard e.name.hasPrefix("inst"), let i = Int(e.name.dropFirst(4)) else { return nil }
         return i
     }
@@ -843,6 +843,8 @@ struct ReleasedOverlayView: View {
     /// the navigation scheme (orbit, pan, marquee, gizmo handle, or nothing).
     @State private var leftDragMode: NavigationScheme.Action?
     @State private var sketchPointDrag = false
+    /// A left-drag that grabbed a jointed instance and is driving its joint.
+    @State private var jointPartDrag = false
     /// Where the last click landed and how far into that point's stack of parts
     /// it selected — clicking the same spot again walks to the part behind.
     @State private var cycleAnchor: CGPoint?
@@ -1777,6 +1779,28 @@ struct ReleasedOverlayView: View {
                     leftDragMode = NavigationScheme.Action.none
                     return
                 }
+                // Jointed assembly instance: the drag drives its joint — the
+                // mechanism moves, not the camera — in every navigation
+                // scheme. ⇧ / ⌘ / ⌥ keep pan, marquee and part-move.
+                if jointPartDrag {
+                    if let ray = kernelRay(at: value.location) { model.jointDragTo(ray: ray) }
+                    return
+                }
+                if leftDragMode == nil, !model.draggingHandle, !model.sketching,
+                   NSEvent.modifierFlags.intersection([.shift, .command, .option]).isEmpty,
+                   let hit = ReleaseWindowController.shared.hits(atViewPoint: value.startLocation).first,
+                   model.gizmoHandle(for: hit.entity.name) == nil,
+                   let ii = ReleaseWindowController.instanceIndex(hit.entity),
+                   let centering = ReleaseWindowController.shared.centeringEntity,
+                   let ray = kernelRay(at: value.startLocation),
+                   model.beginJointDrag(instance: ii, at: centering.convert(position: hit.position, from: nil),
+                                        ray: ray) {
+                    jointPartDrag = true
+                    leftDragMode = NavigationScheme.Action.none
+                    NSCursor.closedHand.set()
+                    if let r = kernelRay(at: value.location) { model.jointDragTo(ray: r) }
+                    return
+                }
                 if leftDragMode == nil && !model.draggingHandle {
                     let handle = ReleaseWindowController.shared.hits(atViewPoint: value.startLocation)
                         .first(where: { model.gizmoHandle(for: $0.entity.name) != nil })?.entity.name
@@ -1825,6 +1849,13 @@ struct ReleasedOverlayView: View {
                 model.lastDrag = value.translation
             }
             .onEnded { _ in
+                if jointPartDrag {
+                    jointPartDrag = false; leftDragMode = nil
+                    model.lastDrag = .zero
+                    model.endJointDrag()
+                    NSCursor.arrow.set()
+                    return
+                }
                 if sketchPointDrag {
                     sketchPointDrag = false; leftDragMode = nil
                     model.endSketchDrag(); refreshSketchInk()
@@ -2039,6 +2070,7 @@ struct ReleasedARView: NSViewRepresentable {
     /// white, while faces at different angles still separate.
     private func addLightRig(to anchor: AnchorEntity) {
         let key = DirectionalLight()
+        key.name = "keyLight"
         key.light.intensity = 1300
         key.look(at: .zero, from: [0.7, 1.1, 0.85], relativeTo: nil)
         anchor.addChild(key)
@@ -2433,6 +2465,7 @@ struct ReleasedARView: NSViewRepresentable {
                 anchor.addChild(shadow)
             }
         }
+        if model.realtimePhotoreal { ReleaseWindowController.shared.applyRealtimePhotoreal() }
     }
 
     /// The triangle soup (kernel mm) that casts the contact shadow: the
