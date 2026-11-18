@@ -299,9 +299,12 @@ pub(crate) fn edge_interior_samples(
 /// K1 wrist flange ∪ D union: a sparse wall rail against a dense imprinted
 /// hole, 202 open edges) with identical points.
 ///
-/// An edge spanning under [`MIN_GRID_SPAN`] grid steps is left alone: it is
-/// already sampled at grid density (a frozen rim, an SSI polyline), and
-/// threading the odd grid point into it would only add slivers.
+/// An edge spanning under [`MIN_GRID_SPAN`] steps is left alone, where the
+/// step is the coarser of the grid step and the requested tessellation
+/// step: the edge is already sampled at grid density (a frozen rim, an SSI
+/// polyline) or at least as finely as the caller asked for (a STEP import's
+/// 64-per-turn arcs at a 16-segment request), and threading more points
+/// into it would only add triangles, not close anything.
 fn sample_arc(circle: Circle, a: Point3, b: Point3, params: &TessellationParams) -> Vec<Point3> {
     let u = a - circle.center;
     let vb = b - circle.center;
@@ -321,7 +324,14 @@ fn sample_arc(circle: Circle, a: Point3, b: Point3, params: &TessellationParams)
     }
     let segments = params.circle_segments_for_radius(circle.radius);
     let n = crate::canonical_arc::arc_segments(circle.radius, segments);
-    if theta < MIN_GRID_SPAN * 2.0 * PI / n as f64 {
+    // Fill only an edge coarser than BOTH the canonical grid and the
+    // requested density. A STEP import already carries arcs at 64 per turn;
+    // filling those onto the sag-1e-3 grid at a coarse request tripled the
+    // mesh (an imported annulus: 578 → 1830 tris) without closing anything.
+    // `segments` is the request at this radius (tolerance-driven params
+    // raise it there), so chord/angular tolerances still decide.
+    let step = (2.0 * PI / n as f64).max(2.0 * PI / segments.max(3) as f64);
+    if theta < MIN_GRID_SPAN * step {
         return Vec::new();
     }
     let mut pts = crate::canonical_arc::canonical_arc_points(
@@ -448,6 +458,22 @@ mod tests {
         let b = Point3::new(r * t.cos(), r * t.sin(), 0.0);
         let p = TessellationParams::from_segments(64);
         assert!(sample_arc(circle_z(r), a, b, &p).is_empty());
+    }
+
+    /// A STEP import samples arcs at 64 per turn. At a coarser request those
+    /// edges are already fine enough: filling them onto the canonical grid
+    /// tripled an imported annulus (578 → 1830 tris) and closed nothing.
+    /// A finer request still fills them.
+    #[test]
+    fn edge_finer_than_the_request_gets_nothing() {
+        let r = 20.0;
+        let t = 2.0 * PI / 64.0;
+        let a = Point3::new(r, 0.0, 0.0);
+        let b = Point3::new(r * t.cos(), r * t.sin(), 0.0);
+        let coarse = TessellationParams::from_segments(16);
+        assert!(sample_arc(circle_z(r), a, b, &coarse).is_empty());
+        let fine = TessellationParams::from_segments(256);
+        assert!(!sample_arc(circle_z(r), a, b, &fine).is_empty());
     }
 
     #[test]
