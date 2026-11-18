@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-18-wavy-band-split-cost",
+  "version": "0.11.0",
+  "date": "2026-11-18",
+  "category": "perf",
+  "title": "Cuts across frozen cylinder walls ~6x faster",
+  "summary": "Splitting a cylinder wall with dense rims no longer scans every vertex of the solid per rim point, and face-containment probes stop re-deduplicating the loop quadratically. A helical slot through a tube: 160 s to 28 s, same geometry.",
+  "features": ["booleans", "performance"],
+  "mcpTools": []
+}

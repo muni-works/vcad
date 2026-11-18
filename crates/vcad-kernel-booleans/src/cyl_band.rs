@@ -1270,6 +1270,7 @@ pub(crate) fn realize_bands(
         (mn, mx)
     };
     let mut new_faces = Vec::with_capacity(bands.len());
+    let mut vertices: Option<crate::split::VertexLookup> = None;
     for band in bands {
         // A band's chains must co-span its u-interval; a wedge paired with
         // a (clamped) full ring is a malformed region that would realize
@@ -1321,10 +1322,16 @@ pub(crate) fn realize_bands(
         // Zero-length half-edges are collapsed by repair after all splits.
         loop_pts.dedup_by(|a, b| (*a - *b).norm() < 1e-12);
         // A real face needs at least 3 distinct positions.
+        // Only "at least 3" matters, so stop counting there: a band's loop
+        // is two dense rims (hundreds of points each) and the full count was
+        // quadratic in it.
         let mut distinct = 0usize;
         for (i, p) in loop_pts.iter().enumerate() {
             if loop_pts[..i].iter().all(|q| (*p - *q).norm() > 1e-9) {
                 distinct += 1;
+                if distinct >= 3 {
+                    break;
+                }
             }
         }
         if distinct < 3 {
@@ -1332,8 +1339,17 @@ pub(crate) fn realize_bands(
         }
 
         let mut hes = Vec::with_capacity(loop_pts.len());
+        let vertices = vertices.get_or_insert_with(|| {
+            // Every band's loop is drawn from these chain points.
+            let all: Vec<Point3> = bands
+                .iter()
+                .flat_map(|b| b.lo.iter().chain(b.hi.iter()))
+                .map(|&(u, v)| point_at(cyl, u, v))
+                .collect();
+            crate::split::VertexLookup::near(brep, 1e-9, &all)
+        });
         for p in &loop_pts {
-            let vid = crate::split::find_or_create_vertex(brep, p, 1e-9);
+            let vid = vertices.find_or_create(brep, p);
             hes.push(brep.topology.add_half_edge(vid));
         }
         let loop_id = brep.topology.add_loop(&hes);
@@ -2581,6 +2597,7 @@ pub(crate) fn split_cylindrical_face_by_patch(
     let orientation = brep.topology.faces[face_id].orientation;
     let shell = brep.topology.faces[face_id].shell;
     let mut new_faces = Vec::with_capacity(polys.len());
+    let mut vertices: Option<crate::split::VertexLookup> = None;
     for poly in &polys {
         let mut loop_pts: Vec<Point3> = poly.iter().map(|&(u, v)| point_at(&cyl, u, v)).collect();
         loop_pts.dedup_by(|a, b| (*a - *b).norm() < 1e-12);
@@ -2590,10 +2607,19 @@ pub(crate) fn split_cylindrical_face_by_patch(
         if loop_pts.len() < 3 {
             continue;
         }
+        let vertices = vertices.get_or_insert_with(|| {
+            // Every poly's loop is drawn from these points.
+            let all: Vec<Point3> = polys
+                .iter()
+                .flatten()
+                .map(|&(u, v)| point_at(&cyl, u, v))
+                .collect();
+            crate::split::VertexLookup::near(brep, 1e-9, &all)
+        });
         let hes: Vec<_> = loop_pts
             .iter()
             .map(|p| {
-                let vid = crate::split::find_or_create_vertex(brep, p, 1e-9);
+                let vid = vertices.find_or_create(brep, p);
                 brep.topology.add_half_edge(vid)
             })
             .collect();

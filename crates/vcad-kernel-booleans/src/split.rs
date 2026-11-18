@@ -1023,6 +1023,115 @@ pub(crate) fn find_or_create_vertex(
     brep.topology.add_vertex(snapped)
 }
 
+/// [`find_or_create_vertex`] for a run of lookups against one solid,
+/// without its linear scan per call.
+///
+/// Answers exactly what the scan would: the matching vertex with the lowest
+/// slot index (a `SlotMap` iterates in slot order), under the same
+/// `norm() < tolerance` test on the same snapped point. Matches are found
+/// through a grid of `2 * tolerance` cells: two points closer than
+/// `tolerance` land at most one cell apart per axis even after the division
+/// rounds, so the 27-cell neighbourhood holds every candidate. Vertices this
+/// lookup creates are added to the grid under their real slot (which may be
+/// a reused low one).
+///
+/// Valid only while nothing else adds, removes or moves the solid's
+/// vertices, and only for the query points it was built around. The band realizers build one per call: a band's loop is two
+/// dense frozen rims, and scanning every vertex of the solid for every rim
+/// point made a helical slot through a tube spend ~70% of 160 s here.
+pub(crate) struct VertexLookup {
+    tolerance: f64,
+    grid: crate::trim::CellMap<Vec<vcad_kernel_topo::VertexId>>,
+}
+
+impl VertexLookup {
+    /// Index the solid's vertices that could match a query among `points`.
+    ///
+    /// A vertex can only match a query point it lies within `tolerance` of,
+    /// after the query is zero-snapped (which moves a coordinate by under
+    /// 1e-6), so vertices outside the points' box grown by that margin are
+    /// never an answer and are left out. Every later query must be one of
+    /// `points` (or within that margin of them).
+    pub(crate) fn near(brep: &BRepSolid, tolerance: f64, points: &[Point3]) -> Self {
+        let mut lookup = Self {
+            tolerance,
+            grid: crate::trim::CellMap::default(),
+        };
+        let Some(first) = points.first() else {
+            return lookup;
+        };
+        let (mut lo, mut hi) = (*first, *first);
+        for p in points {
+            lo = Point3::new(lo.x.min(p.x), lo.y.min(p.y), lo.z.min(p.z));
+            hi = Point3::new(hi.x.max(p.x), hi.y.max(p.y), hi.z.max(p.z));
+        }
+        let m = 1e-5 + 2.0 * tolerance;
+        let inside = |p: &Point3| {
+            (lo.x - m..=hi.x + m).contains(&p.x)
+                && (lo.y - m..=hi.y + m).contains(&p.y)
+                && (lo.z - m..=hi.z + m).contains(&p.z)
+        };
+        for (vid, v) in &brep.topology.vertices {
+            // NaN never matches (`norm() < tolerance` is false), and fails
+            // `inside` too.
+            if inside(&v.point) {
+                let key = lookup.cell(&v.point);
+                lookup.grid.entry(key).or_default().push(vid);
+            }
+        }
+        lookup
+    }
+
+    fn cell(&self, p: &Point3) -> (i64, i64, i64) {
+        let c = |x: f64| (x / (2.0 * self.tolerance)).floor() as i64;
+        (c(p.x), c(p.y), c(p.z))
+    }
+
+    pub(crate) fn find_or_create(
+        &mut self,
+        brep: &mut BRepSolid,
+        point: &Point3,
+    ) -> vcad_kernel_topo::VertexId {
+        use slotmap::Key;
+        let snapped = snap_point(*point);
+        let (cx, cy, cz) = self.cell(&snapped);
+        let mut best: Option<(u32, vcad_kernel_topo::VertexId)> = None;
+        for dx in -1i64..=1 {
+            for dy in -1i64..=1 {
+                for dz in -1i64..=1 {
+                    let key = (
+                        cx.saturating_add(dx),
+                        cy.saturating_add(dy),
+                        cz.saturating_add(dz),
+                    );
+                    let Some(ids) = self.grid.get(&key) else {
+                        continue;
+                    };
+                    for &vid in ids {
+                        let Some(v) = brep.topology.vertices.get(vid) else {
+                            continue;
+                        };
+                        if (v.point - snapped).norm() < self.tolerance {
+                            // Low 32 bits of the FFI form are the slot index.
+                            let slot = vid.data().as_ffi() as u32;
+                            if best.is_none_or(|(s, _)| slot < s) {
+                                best = Some((slot, vid));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some((_, vid)) = best {
+            return vid;
+        }
+        let vid = brep.topology.add_vertex(snapped);
+        let key = self.cell(&snapped);
+        self.grid.entry(key).or_default().push(vid);
+        vid
+    }
+}
+
 /// Remove consecutive duplicate points from a loop.
 /// Also removes duplicates between the last and first point (to handle closed loops).
 fn remove_consecutive_duplicates(points: &[Point3], tolerance: f64) -> Vec<Point3> {
@@ -7175,6 +7284,78 @@ pub fn split_circular_disk_face(
 mod tests {
     use super::*;
     use vcad_kernel_primitives::make_cube;
+
+    /// Tiny deterministic generator for the exactness tests below.
+    fn lcg(state: &mut u64) -> f64 {
+        *state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        (*state >> 11) as f64 / (1u64 << 53) as f64
+    }
+
+    /// `VertexLookup` answers every query exactly as `find_or_create_vertex`
+    /// would: same vertex, same new slots — including when a query lies
+    /// within tolerance of several vertices (lowest slot wins) and when
+    /// freed slots get reused by the vertices it creates.
+    #[test]
+    fn vertex_lookup_matches_the_linear_scan() {
+        let tol = 1e-9;
+        let mut seed = 0x5eed_u64;
+        let mut base = make_cube(10.0, 10.0, 10.0);
+        // Clusters at the tolerance scale (some near zero, where the query is
+        // snapped), so queries regularly fall within tol of 0, 1 or several
+        // vertices.
+        let centers = [
+            Point3::new(3.0, 4.0, 5.0),
+            Point3::new(35.7, -0.0, 8.0),
+            Point3::new(4e-7, 2.0, -3e-7),
+            Point3::new(-1234.5, 0.25, 77.0),
+        ];
+        let jitter = |seed: &mut u64| (lcg(seed) - 0.5) * 4.0 * tol;
+        let mut added = Vec::new();
+        for _ in 0..300 {
+            let c = centers[(lcg(&mut seed) * centers.len() as f64) as usize % centers.len()];
+            let p = Point3::new(
+                c.x + jitter(&mut seed),
+                c.y + jitter(&mut seed),
+                c.z + jitter(&mut seed),
+            );
+            added.push(base.topology.add_vertex(p));
+        }
+        // Free a third of them so new vertices reuse low slots.
+        for (i, vid) in added.iter().enumerate() {
+            if i % 3 == 0 {
+                base.topology.vertices.remove(*vid);
+            }
+        }
+        let queries: Vec<Point3> = (0..400)
+            .map(|_| {
+                let c = centers[(lcg(&mut seed) * centers.len() as f64) as usize % centers.len()];
+                Point3::new(
+                    c.x + jitter(&mut seed),
+                    c.y + jitter(&mut seed),
+                    c.z + jitter(&mut seed),
+                )
+            })
+            .collect();
+        let mut scan = base.clone();
+        let mut indexed = base.clone();
+        let mut lookup = VertexLookup::near(&indexed, tol, &queries);
+        let mut hits = 0;
+        for q in &queries {
+            let before = scan.topology.vertices.len();
+            let a = find_or_create_vertex(&mut scan, q, tol);
+            let b = lookup.find_or_create(&mut indexed, q);
+            assert_eq!(a, b, "query {q:?}");
+            hits += usize::from(scan.topology.vertices.len() == before);
+        }
+        assert_eq!(
+            scan.topology.vertices.len(),
+            indexed.topology.vertices.len()
+        );
+        // The fixture exercises both paths.
+        assert!(hits > 50 && hits < queries.len(), "hits {hits}");
+    }
 
     /// A sphere patch bounded by the z = −e circle with a hole at z = +e —
     /// what a slab leaves of a sphere. Returns (brep, patch face).

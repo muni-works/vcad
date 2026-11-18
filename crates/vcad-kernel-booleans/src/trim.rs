@@ -146,6 +146,89 @@ pub fn point_in_face(brep: &BRepSolid, face_id: FaceId, point_3d: &Point3) -> bo
     r
 }
 
+/// Hasher for integer grid-cell keys: the Fx multiply-rotate mix. The
+/// default SipHash dominated the profile of the cell grids below (they are
+/// built and probed inside `point_in_face` and the band realizers); the key
+/// is three small integers, nothing adversarial. Changes speed, never
+/// answers.
+#[derive(Default)]
+pub(crate) struct CellHasher(u64);
+
+impl std::hash::Hasher for CellHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(b as u64);
+        }
+    }
+    fn write_u64(&mut self, x: u64) {
+        self.0 = (self.0.rotate_left(5) ^ x).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+    fn write_i64(&mut self, x: i64) {
+        self.write_u64(x as u64);
+    }
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+/// Map keyed by integer grid cells, hashed with [`CellHasher`].
+pub(crate) type CellMap<V> =
+    std::collections::HashMap<(i64, i64, i64), V, std::hash::BuildHasherDefault<CellHasher>>;
+
+/// `points` with near-duplicates dropped: a point is kept unless an
+/// already-kept point lies strictly within `tol` of it, scanning in order.
+///
+/// Exactly the first-seen linear scan (same survivors, same order), but
+/// bucketed on a grid so it is not quadratic. A frozen full-wrap wall's
+/// loop carries two dense canonical rims (814 vertices on an r 35 tube), and
+/// `point_in_face` runs this dedup on every call — the quadratic scan made
+/// each probe of such a face cost ~2 ms (helix_sweep's slot through a tube
+/// probes it hundreds of thousands of times).
+fn dedup_positions(points: &[Point3], tol: f64) -> Vec<Point3> {
+    let mut kept: Vec<Point3> = Vec::new();
+    if points.len() <= 32 {
+        for v in points {
+            if !kept.iter().any(|u| (*u - *v).norm() < tol) {
+                kept.push(*v);
+            }
+        }
+        return kept;
+    }
+    // Two points closer than `tol` differ by less than `tol` on every axis;
+    // on `2 * tol` cells that stays under one cell even after the division
+    // rounds, so the 27-cell neighbourhood holds every candidate the linear
+    // scan could have matched. (Non-finite coordinates land in some cell
+    // and never compare `< tol`, as before.)
+    let cell = |x: f64| (x / (2.0 * tol)).floor() as i64;
+    let mut grid: CellMap<Vec<usize>> = CellMap::default();
+    for v in points {
+        let (cx, cy, cz) = (cell(v.x), cell(v.y), cell(v.z));
+        let mut dup = false;
+        'search: for dx in -1i64..=1 {
+            for dy in -1i64..=1 {
+                for dz in -1i64..=1 {
+                    let key = (
+                        cx.saturating_add(dx),
+                        cy.saturating_add(dy),
+                        cz.saturating_add(dz),
+                    );
+                    if let Some(ids) = grid.get(&key) {
+                        if ids.iter().any(|&i| (kept[i] - *v).norm() < tol) {
+                            dup = true;
+                            break 'search;
+                        }
+                    }
+                }
+            }
+        }
+        if !dup {
+            grid.entry((cx, cy, cz)).or_default().push(kept.len());
+            kept.push(*v);
+        }
+    }
+    kept
+}
+
 fn point_in_face_inner(brep: &BRepSolid, face_id: FaceId, point_3d: &Point3) -> bool {
     let topo = &brep.topology;
     let face = &topo.faces[face_id];
@@ -243,16 +326,10 @@ fn point_in_face_inner(brep: &BRepSolid, face_id: FaceId, point_3d: &Point3) -> 
     // the UV-polygon test below, which reads the degenerate cycle as a
     // sliver along the seam and answered "outside" everywhere else on the
     // sphere. Check the point against the sphere itself (and its holes).
-    let distinct_positions = {
-        let mut seen: Vec<Point3> = Vec::new();
-        for v in &outer_verts_3d {
-            if !seen.iter().any(|u| (*u - *v).norm() < 1e-9) {
-                seen.push(*v);
-            }
-        }
-        seen.len()
-    };
-    if surface.surface_type() == vcad_kernel_geom::SurfaceKind::Sphere && distinct_positions <= 2 {
+    // Only a sphere asks this, so only a sphere pays for it.
+    if surface.surface_type() == vcad_kernel_geom::SurfaceKind::Sphere
+        && dedup_positions(&outer_verts_3d, 1e-9).len() <= 2
+    {
         if let Some(sph) = surface
             .as_any()
             .downcast_ref::<vcad_kernel_geom::SphereSurface>()
@@ -307,13 +384,7 @@ fn point_in_face_inner(brep: &BRepSolid, face_id: FaceId, point_3d: &Point3) -> 
     // which don't form a proper polygon. Instead, check V range and U wrap.
     if surface.surface_type() == vcad_kernel_geom::SurfaceKind::Cylinder {
         // Get unique vertices by position
-        let mut unique_verts: Vec<Point3> = Vec::new();
-        for v in &outer_verts_3d {
-            let is_dup = unique_verts.iter().any(|u| (*u - *v).norm() < 1e-6);
-            if !is_dup {
-                unique_verts.push(*v);
-            }
-        }
+        let unique_verts = dedup_positions(&outer_verts_3d, 1e-6);
 
         // A frozen full-wrap wall (crate::freeze rewrote the analytic seam
         // loop into two dense canonical rings) also spans the full U range:
@@ -481,13 +552,7 @@ fn point_in_face_inner(brep: &BRepSolid, face_id: FaceId, point_3d: &Point3) -> 
 
     // Special handling for conical surfaces (similar to cylinder but with v-dependent radius)
     if surface.surface_type() == vcad_kernel_geom::SurfaceKind::Cone {
-        let mut unique_verts: Vec<Point3> = Vec::new();
-        for v in &outer_verts_3d {
-            let is_dup = unique_verts.iter().any(|u| (*u - *v).norm() < 1e-6);
-            if !is_dup {
-                unique_verts.push(*v);
-            }
-        }
+        let unique_verts = dedup_positions(&outer_verts_3d, 1e-6);
 
         // A frozen full band (dense canonical rims from freeze_circle_loops)
         // spans the whole turn just like the analytic ≤2-vertex seam loop:
@@ -1410,6 +1475,54 @@ fn find_seam_cut_for_values(values: &[f64]) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `dedup_positions` keeps exactly the points the first-seen linear scan
+    /// keeps, in the same order, on both sides of its small-input cutoff and
+    /// at both tolerances `point_in_face` uses.
+    #[test]
+    fn dedup_positions_matches_the_linear_scan() {
+        let linear = |pts: &[Point3], tol: f64| {
+            let mut kept: Vec<Point3> = Vec::new();
+            for v in pts {
+                if !kept.iter().any(|u| (*u - *v).norm() < tol) {
+                    kept.push(*v);
+                }
+            }
+            kept
+        };
+        let mut state = 0xdedu64;
+        let mut next = || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 11) as f64 / (1u64 << 53) as f64
+        };
+        for &tol in &[1e-6, 1e-9] {
+            for &n in &[20usize, 33, 900] {
+                for &scale in &[1.0, 35.7, 4096.0] {
+                    let pts: Vec<Point3> = (0..n)
+                        .map(|_| {
+                            // A few dozen sites, jittered at the tolerance
+                            // scale: near-duplicates on both sides of `tol`.
+                            let site = (next() * 40.0).floor();
+                            let j = |r: f64| (r - 0.5) * 3.0 * tol;
+                            Point3::new(
+                                scale * (site * 0.37).cos() + j(next()),
+                                scale * (site * 0.37).sin() + j(next()),
+                                site * 0.01 + j(next()),
+                            )
+                        })
+                        .collect();
+                    let got = dedup_positions(&pts, tol);
+                    let want = linear(&pts, tol);
+                    assert_eq!(got.len(), want.len(), "tol {tol} n {n} scale {scale}");
+                    for (g, w) in got.iter().zip(&want) {
+                        assert_eq!((g.x, g.y, g.z), (w.x, w.y, w.z));
+                    }
+                }
+            }
+        }
+    }
 
     /// Every point of an untrimmed sphere is on its one face — not only the
     /// points near the seam.
