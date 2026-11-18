@@ -4408,7 +4408,15 @@ state: number,
  * state is derived from another joint's and the authored `state` is
  * ignored by forward kinematics.
  */
-coupling?: JointCoupling, };
+coupling?: JointCoupling, 
+/**
+ * Passive joint: its state is solved by forward kinematics so every
+ * kinematic loop closes (a four-bar's coupler and rocker pins, every
+ * joint of a Jansen leg but the crank). The authored `state` is only the
+ * starting guess. A loop is closed by a second joint on an instance that
+ * already has a parent joint.
+ */
+passive?: boolean, };
 
 /**
  * A linear coupling between two joints: `state = ratio · driver + offset`.

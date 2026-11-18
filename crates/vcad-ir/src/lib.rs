@@ -201,7 +201,7 @@ pub struct Joint {
     /// starting guess. A loop is closed by a second joint on an instance that
     /// already has a parent joint.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    #[cfg_attr(feature = "ts-rs", ts(optional))]
+    #[cfg_attr(feature = "ts-rs", ts(as = "Option<bool>", optional))]
     pub passive: bool,
 }
 
