@@ -18,12 +18,16 @@ ffmpeg -framerate 30 -i out/f_%05d.png -c:v libx264 -pix_fmt yuv420p -crf 18 -mo
 ```
 
 renderer limits this works around:
-- `vcad-render --animate` poses joints only. Visibility, Explode and camera
-  entries in a timeline are accepted and silently ignored, so the build-up and
-  cut-down are stills crossfaded in `comp.py`; the fall is a joint rig (slider x,
-  slider z, pitch) keyed from the gym trace.
-- `--animate` also refuses a timeline without a joint track (`hold.json` holds one).
-- a still render of the 142-part assembly without `--animate` ran 6 h without
-  finishing; a one-frame `--animate` run takes ~3 min (162 s of it evaluation).
+- the binary used here had `vcad-render --animate` posing joints only:
+  Visibility, Explode and camera entries were accepted and silently ignored, so
+  the build-up and cut-down are stills crossfaded in `comp.py`; the fall is a
+  joint rig (slider x, slider z, pitch) keyed from the gym trace. It also refused
+  a timeline without a joint track (`hold.json` holds one). muni-works/vcad#1248
+  makes `--animate` play those tracks; once it lands, the stills can become
+  real timelines.
+- a still render of the 142-part assembly without `--animate` hung (6 h, never
+  finished) on that binary: a hang already fixed on main by muni-works/vcad#1212
+  (found by bisect in #1248). A one-frame `--animate` run took ~3 min (162 s of
+  it evaluation).
 - the fit covers the whole timeline's bounds, so moving shots render at 1.3× and
   `comp.py` crops around the drawn pixels.
