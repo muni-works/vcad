@@ -88,7 +88,7 @@ Measured on mew (M1 artifact, release build), compared with the Python spike ora
 
 | board | ERC | result |
 |---|---|---|
-| correct | clean | BIOS banner at cycle 2.46 M (2.9 s wall); runs at about 842 k cycles/s (the oracle ran at about 130–230 k) |
+| correct | clean | BIOS 2.46 M cycles (3 s) → OpenSBI 33.2 M (40 s) → kernel 40.2 M (48 s) → `Run /init` 454 M (578 s) → **`buildroot login:` 743 M cycles, 945 s wall** (oracle: 7,553 s); about 786 k cycles/s, every console byte crossing L4/M1 |
 | TX/RX swapped | `CONTENTION on FTDI_TXD`, `UNDRIVEN FTDI_RXD` | **0 console bytes** in 40 M cycles (47.5 s wall) |
 
 Follow-ups: loon-hdl as the home for pin models and SoC glue, and an SDRAM pin-level model (M2).
