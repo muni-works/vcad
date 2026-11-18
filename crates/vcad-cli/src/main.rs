@@ -8,6 +8,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::path::{Path, PathBuf};
 
 mod app;
+#[cfg(feature = "board-sim")]
+mod board_sim;
 mod chat_session;
 mod fabprep;
 mod input;
@@ -430,6 +432,43 @@ enum Commands {
     Params {
         #[command(subcommand)]
         command: ParamsCommands,
+    },
+
+    /// Boot a board's pinned gateware in Verilator, pin by pin
+    ///
+    /// The FPGA runs the artifact's Verilog; every board net between its
+    /// balls and the other parts (FT231X console bridge) is resolved like
+    /// copper each cycle. Prints the net-drive ERC first, then streams the
+    /// console. A miswired board gives ERC errors and a dead console.
+    #[cfg(feature = "board-sim")]
+    BoardSim {
+        /// Board schematic (SchematicSheet JSON)
+        board: PathBuf,
+        /// Gateware artifact sha256 (default: the M1 ULX3S Linux artifact)
+        #[arg(long)]
+        artifact: Option<String>,
+        /// Import this gateware tarball (verified against --artifact if given)
+        #[arg(long)]
+        tarball: Option<PathBuf>,
+        /// Reference designator of the FPGA (default: the component whose
+        /// value is the gateware's FPGA part)
+        #[arg(long)]
+        fpga_ref: Option<String>,
+        /// Stop after this many sys-clock cycles
+        #[arg(long, default_value = "4000000000")]
+        max_cycles: u64,
+        /// Stop at this console milestone: bios, opensbi, kernel, init, login
+        #[arg(long)]
+        until: Option<String>,
+        /// Declare a net termination, NET=up|down (repeatable)
+        #[arg(long = "pull")]
+        pulls: Vec<String>,
+        /// Print the ERC and exit (exit 1 on findings)
+        #[arg(long)]
+        erc_only: bool,
+        /// Don't echo the console to stdout
+        #[arg(long)]
+        quiet: bool,
     },
 
     /// Take a routed .pcb.json to a complete fab package plus a DRC-delta receipt
@@ -1055,6 +1094,33 @@ fn run_command(cli: Cli) -> Result<()> {
         }
         Some(Commands::Params { command }) => {
             run_params(command)?;
+        }
+        #[cfg(feature = "board-sim")]
+        Some(Commands::BoardSim {
+            board,
+            artifact,
+            tarball,
+            fpga_ref,
+            max_cycles,
+            until,
+            pulls,
+            erc_only,
+            quiet,
+        }) => {
+            let ok = board_sim::run_board_sim(board_sim::BoardSimArgs {
+                board,
+                artifact,
+                tarball,
+                fpga_ref,
+                max_cycles,
+                until,
+                pulls,
+                erc_only,
+                quiet,
+            })?;
+            if !ok {
+                std::process::exit(1);
+            }
         }
         Some(Commands::FabPrep {
             input,

@@ -64,3 +64,31 @@ cd linux-on-litex-vexriscv && python3 gen.py OUT && python3 pack.py
 
 The output is a new tarball with a new sha. Pin it in
 `gateware::ULX3S_UART_LINUX`. No Python runs in the vcad tree or in CI.
+
+## Board simulation (`vcad board-sim`, feature `board-sim`)
+
+`vcad_ecad_sim::board_sim` has four parts:
+
+- **`ChipBackend`**: the chip side, a trait with `set_input(pin)`, `output(pin)` and `cycle()`. `pin` indexes `manifest.pins`.
+  - `verilated::VerilatedFpga` (feature `hdl`) is one backend. It verilates the artifact at run time into `<store>/<sha>/model-<key>/libvcad_hdl.so` with a generated C-ABI shim (`vh_new`/`vh_set`/`vh_get`/`vh_cycle`), then dlopens it. Neither cargo nor CI needs Verilator; the host needs `verilator` and a C++ compiler at run time.
+  - A faster ISA-level or QEMU/Renode-style VM can implement the same trait by mapping its peripherals onto the pins.
+- **`Board`** resolves every net each cycle with the same rules as the static ERC (`vcad_ecad_schematic::drive`):
+  - one driver: receivers see it;
+  - none: receivers see the pull (up by default);
+  - contention: receivers see the pull.
+- **`PinModel`**: parts bound to schematic pins by name. `uart::Ft231x` is the FT231XS bridge: a bit-serial 8N1 RX into a console sink, plus TX for host keystrokes.
+- **`Milestones`** watches the console for BIOS → OpenSBI → kernel → `/init` → `buildroot login:`.
+
+```bash
+vcad board-sim crates/vcad-ecad-schematic/src/fixtures/ulx3s_uart.json --until login
+vcad board-sim crates/vcad-ecad-schematic/src/fixtures/ulx3s_uart_miswire.json --max-cycles 40000000
+```
+
+Measured on mew (M1 artifact, release build), compared with the Python spike oracle:
+
+| board | ERC | result |
+|---|---|---|
+| correct | clean | BIOS banner at cycle 2.46 M (2.9 s wall); runs at about 842 k cycles/s (the oracle ran at about 130–230 k) |
+| TX/RX swapped | `CONTENTION on FTDI_TXD`, `UNDRIVEN FTDI_RXD` | **0 console bytes** in 40 M cycles (47.5 s wall) |
+
+Follow-ups: loon-hdl as the home for pin models and SoC glue, and an SDRAM pin-level model (M2).

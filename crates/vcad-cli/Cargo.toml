@@ -37,6 +37,8 @@ vcad-kernel-export = { workspace = true }
 vcad-ecad-fabprep = { workspace = true }
 vcad-ecad-symbols = { workspace = true }
 vcad-ecad-pcb = { workspace = true }
+vcad-ecad-schematic = { workspace = true, optional = true }
+vcad-ecad-sim = { workspace = true, optional = true }
 # fab-prep runs for minutes on a dense board and narrates its rounds through
 # `log`; without a subscriber the terminal shows nothing until it finishes.
 env_logger = "0.11"
@@ -94,6 +96,9 @@ default = ["printer"]
 print-server = ["dep:axum", "dep:tower-http", "vcad-slicer-bambu/network"]
 # `vcad printer`: LAN control of a Bambu printer (MQTT/FTPS/camera).
 printer = ["vcad-slicer-bambu/network"]
+# `vcad board-sim`: pin-level board boot against Verilated gateware. Needs
+# verilator + a C++ compiler on the host at run time.
+board-sim = ["dep:vcad-ecad-schematic", "dep:vcad-ecad-sim", "vcad-ecad-sim/hdl"]
 
 
 [dev-dependencies]
