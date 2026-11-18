@@ -14,7 +14,10 @@ use vcad_kernel_math::{Point2, Point3, Vec3};
 use vcad_kernel_primitives::BRepSolid;
 use vcad_kernel_topo::{FaceId, Orientation, Topology};
 
+pub mod canonical_arc;
 pub mod clearance;
+mod edge_samples;
+pub(crate) use edge_samples::loop_points;
 mod creased_normals;
 pub mod display;
 pub mod frozen;
@@ -2496,7 +2499,9 @@ fn tessellate_face(
     let reversed = face.orientation == Orientation::Reversed;
 
     match surface.surface_type() {
-        SurfaceKind::Plane => tessellate_planar_face_with_geom(topo, geom, face_id, reversed),
+        SurfaceKind::Plane => {
+            tessellate_planar_face_with_geom(topo, geom, face_id, params, reversed)
+        }
         SurfaceKind::Cylinder => tessellate_cylindrical_face(topo, geom, face_id, params, reversed),
         SurfaceKind::Sphere => tessellate_spherical_face(topo, geom, face_id, params, reversed),
         SurfaceKind::Cone => tessellate_conical_face(topo, geom, face_id, params, reversed),
@@ -2514,23 +2519,23 @@ fn tessellate_planar_face_with_geom(
     topo: &Topology,
     geom: &GeometryStore,
     face_id: FaceId,
+    params: &TessellationParams,
     reversed: bool,
 ) -> TriangleMesh {
     let face = &topo.faces[face_id];
     let surface = &geom.surfaces[face.surface_index];
     let surface_normal = surface.normal(Point2::new(0.0, 0.0));
 
-    let outer_verts: Vec<_> = topo
-        .loop_half_edges(face.outer_loop)
-        .map(|he| topo.vertices[topo.half_edges[he].origin].point)
-        .collect();
+    // Boundary from the shared edge samples: a rim this cap shares with a
+    // curved wall carries the wall's arc points, not just the chord.
+    let outer_verts: Vec<_> = loop_points(topo, geom, face.outer_loop, params);
 
     if outer_verts.len() < 3 {
         return TriangleMesh::new();
     }
 
     let mut mesh = if !face.inner_loops.is_empty() {
-        tessellate_planar_face_with_holes(topo, face_id, reversed)
+        tessellate_planar_face_with_holes(topo, geom, face_id, params, reversed)
     } else {
         tessellate_planar_face_core(&outer_verts, reversed)
     };
@@ -3003,16 +3008,15 @@ fn newell_normal(verts: &[Point3]) -> Vec3 {
 /// Steiner points around each hole to prevent long thin triangles.
 fn tessellate_planar_face_with_holes(
     topo: &Topology,
+    geom: &GeometryStore,
     face_id: FaceId,
+    params: &TessellationParams,
     reversed: bool,
 ) -> TriangleMesh {
     let face = &topo.faces[face_id];
 
     // Get outer loop vertices
-    let mut outer_verts: Vec<Point3> = topo
-        .loop_half_edges(face.outer_loop)
-        .map(|he| topo.vertices[topo.half_edges[he].origin].point)
-        .collect();
+    let mut outer_verts: Vec<Point3> = loop_points(topo, geom, face.outer_loop, params);
 
     if outer_verts.len() < 3 {
         return TriangleMesh::new();
@@ -3021,10 +3025,7 @@ fn tessellate_planar_face_with_holes(
     // Get all inner loop vertices
     let mut inner_loops: Vec<Vec<Point3>> = Vec::new();
     for &inner_loop in &face.inner_loops {
-        let inner_verts: Vec<Point3> = topo
-            .loop_half_edges(inner_loop)
-            .map(|he| topo.vertices[topo.half_edges[he].origin].point)
-            .collect();
+        let inner_verts: Vec<Point3> = loop_points(topo, geom, inner_loop, params);
         if inner_verts.len() >= 3 {
             inner_loops.push(inner_verts);
         }
@@ -4057,20 +4058,34 @@ fn triangulate_circular_cap_with_holes(
                     break;
                 }
             }
-            // Also skip if too close to any hole boundary (to avoid near-degenerate tris)
+            // Also skip if too close to any hole boundary (to avoid
+            // near-degenerate tris). Distance to the hole's EDGES, not just
+            // its vertices: a ring can land exactly on a hole's circle (a
+            // revolved annulus with its hole at half the cap radius), and a
+            // ring point on the arc between two coarse hole vertices sits
+            // outside the hole polygon yet on the rim the wall shares — the
+            // cap then splits a rim edge the wall does not, opening a crack.
             if !in_hole {
-                for hole in inner_2d {
-                    for &(hx, hy) in hole {
-                        let dist = ((pt_2d.0 - hx).powi(2) + (pt_2d.1 - hy).powi(2)).sqrt();
-                        if dist < radius * 0.02 {
-                            in_hole = true;
-                            break;
-                        }
-                    }
-                    if in_hole {
-                        break;
-                    }
-                }
+                let seg_dist = |(ax, ay): (f64, f64), (bx, by): (f64, f64)| {
+                    let (dx, dy) = (bx - ax, by - ay);
+                    let l2 = dx * dx + dy * dy;
+                    let t = if l2 > 0.0 {
+                        (((pt_2d.0 - ax) * dx + (pt_2d.1 - ay) * dy) / l2).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    ((pt_2d.0 - ax - t * dx).powi(2) + (pt_2d.1 - ay - t * dy).powi(2)).sqrt()
+                };
+                // Clearance scales with the edge: a coarse hole's chord
+                // sags well inside its circle, so a fixed margin still
+                // admits ring points on the arc beyond it.
+                in_hole = inner_2d.iter().any(|hole| {
+                    (0..hole.len()).any(|k| {
+                        let (a, b) = (hole[k], hole[(k + 1) % hole.len()]);
+                        let half = 0.5 * ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+                        seg_dist(a, b) < (radius * 0.02).max(half)
+                    })
+                });
             }
 
             if !in_hole {
@@ -4288,10 +4303,7 @@ fn tessellate_cylindrical_face(
 
     // Determine the v (height) parameter range by projecting seam vertices
     // onto the cylinder axis. This works correctly after any transform.
-    let mut verts: Vec<_> = topo
-        .loop_half_edges(face.outer_loop)
-        .map(|he| topo.vertices[topo.half_edges[he].origin].point)
-        .collect();
+    let mut verts: Vec<_> = loop_points(topo, geom, face.outer_loop, params);
 
     // A full-circle wall (a bore, or any cylinder a boolean left whole)
     // keeps the analytic 2-vertex seam loop, which carries no ring — so
@@ -4323,7 +4335,13 @@ fn tessellate_cylindrical_face(
         .downcast_ref::<vcad_kernel_geom::CylinderSurface>()
     {
         let target_segments = params.circle_segments_for_radius(cyl.radius.abs().max(1e-6));
-        if let Some(mesh) = tessellate_ruled_two_chain(cyl, &verts, reversed, target_segments) {
+        if let Some(mesh) = tessellate_ruled_two_chain(
+            cyl,
+            &verts,
+            reversed,
+            target_segments,
+            params.height_segments,
+        ) {
             return mesh;
         }
         // Narrow boolean leftovers (corner slivers a fraction of a degree
@@ -4345,10 +4363,7 @@ fn tessellate_cylindrical_face(
     // edge. The outer loop alone sits at a single height, which would give
     // a zero-height band; the other end ring lives in the hole loop.
     for &inner in &face.inner_loops {
-        verts.extend(
-            topo.loop_half_edges(inner)
-                .map(|he| topo.vertices[topo.half_edges[he].origin].point),
-        );
+        verts.extend(loop_points(topo, geom, inner, params));
     }
     let verts = verts;
 
@@ -4821,6 +4836,47 @@ fn tessellate_small_arc_fan(
     Some(mesh)
 }
 
+/// Orient a cylinder strip so triangle normals agree with the (possibly
+/// reversed) outward radial direction, by an area-weighted vote over EVERY
+/// triangle. Judging by the first non-degenerate triangle alone flipped
+/// whole faces: a strip whose rail ends in a slanted connector and a
+/// vertical step (the pinch at a crossing cylinder's saddle u-extreme)
+/// opens with a folded sliver whose normal points inward, and the strip
+/// below a tee's saddle rendered inside-out — every edge open, the union a
+/// third of its volume light.
+fn orient_strip_outward(
+    mesh: &mut TriangleMesh,
+    radial_normal: &dyn Fn(&Point3) -> Vec3,
+    reversed: bool,
+) {
+    let mut vote = 0.0f64;
+    for t in mesh.indices.chunks(3) {
+        let p = |i: u32| {
+            let b = i as usize * 3;
+            Point3::new(
+                mesh.vertices[b] as f64,
+                mesh.vertices[b + 1] as f64,
+                mesh.vertices[b + 2] as f64,
+            )
+        };
+        let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+        let centroid = Point3::new(
+            (a.x + b.x + c.x) / 3.0,
+            (a.y + b.y + c.y) / 3.0,
+            (a.z + b.z + c.z) / 3.0,
+        );
+        vote += (b - a).cross(c - a).dot(radial_normal(&centroid));
+    }
+    if reversed {
+        vote = -vote;
+    }
+    if vote < 0.0 {
+        for tri in mesh.indices.chunks_mut(3) {
+            tri.swap(1, 2);
+        }
+    }
+}
+
 /// Ruled tessellation of a cylinder face bounded by two sample chains (a
 /// fillet blend or boolean band whose ends may be slanted/wavy cut curves).
 ///
@@ -4842,6 +4898,7 @@ fn tessellate_ruled_two_chain(
     verts: &[Point3],
     reversed: bool,
     target_segments: u32,
+    height_rows: u32,
 ) -> Option<TriangleMesh> {
     let l = verts.len();
     if l < 4 {
@@ -5086,6 +5143,53 @@ fn tessellate_ruled_two_chain(
         mesh.normals.extend_from_slice(&[nx, ny, nz]);
         idx
     };
+    // Paired constant-height rails — a plain rectangle in (u, v) whose rims
+    // carry shared arc samples (a fillet blend between two corner spheres)
+    // — get the requested height subdivision, as the grid path would have
+    // given them. Columns at equal u on a cylinder are rulings, so the row
+    // points interpolate exactly onto the surface; the rails stay verbatim.
+    let flat = |c: &[(f64, f64)]| c.iter().all(|p| (p.1 - c[0].1).abs() < 1e-9);
+    let rows = height_rows.max(1) as usize;
+    if rows > 1
+        && pts_a.len() == pts_b.len()
+        && chain_a.len() == chain_b.len()
+        && flat(&chain_a)
+        && flat(&chain_b)
+        && chain_a
+            .iter()
+            .zip(chain_b.iter())
+            .all(|(a, b)| (a.0 - b.0).abs() <= 1e-7)
+    {
+        let grid_rows: Vec<Vec<u32>> = (0..=rows)
+            .map(|k| {
+                let t = k as f64 / rows as f64;
+                pts_a
+                    .iter()
+                    .zip(pts_b.iter())
+                    .map(|(a, b)| {
+                        let p = if k == 0 {
+                            *a
+                        } else if k == rows {
+                            *b
+                        } else {
+                            *a + (*b - *a) * t
+                        };
+                        push_vert(&p)
+                    })
+                    .collect()
+            })
+            .collect();
+        for k in 0..rows {
+            let (lo, hi) = (&grid_rows[k], &grid_rows[k + 1]);
+            for c in 0..lo.len() - 1 {
+                mesh.indices.extend_from_slice(&[lo[c], lo[c + 1], hi[c]]);
+                mesh.indices
+                    .extend_from_slice(&[lo[c + 1], hi[c + 1], hi[c]]);
+            }
+        }
+        orient_strip_outward(&mut mesh, &radial_normal, reversed);
+        return Some(mesh);
+    }
     let ia: Vec<u32> = pts_a.iter().map(&mut push_vert).collect();
     let ib: Vec<u32> = pts_b.iter().map(&mut push_vert).collect();
     // The zipper is only a triangulation while every triangle it emits
@@ -5129,40 +5233,7 @@ fn tessellate_ruled_two_chain(
         return None;
     }
 
-    // Orient the strip so triangle normals agree with the (possibly
-    // reversed) outward radial direction, by an area-weighted vote over
-    // EVERY triangle. Judging by the first non-degenerate triangle alone
-    // flipped whole faces: a strip whose rail ends in a slanted connector
-    // and a vertical step (the pinch at a crossing cylinder's saddle
-    // u-extreme) opens with a folded sliver whose normal points inward, and
-    // the strip below a tee's saddle rendered inside-out — every edge open,
-    // the union a third of its volume light.
-    let mut vote = 0.0f64;
-    for t in mesh.indices.chunks(3) {
-        let p = |i: u32| {
-            let b = i as usize * 3;
-            Point3::new(
-                mesh.vertices[b] as f64,
-                mesh.vertices[b + 1] as f64,
-                mesh.vertices[b + 2] as f64,
-            )
-        };
-        let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
-        let centroid = Point3::new(
-            (a.x + b.x + c.x) / 3.0,
-            (a.y + b.y + c.y) / 3.0,
-            (a.z + b.z + c.z) / 3.0,
-        );
-        vote += (b - a).cross(c - a).dot(radial_normal(&centroid));
-    }
-    if reversed {
-        vote = -vote;
-    }
-    if vote < 0.0 {
-        for tri in mesh.indices.chunks_mut(3) {
-            tri.swap(1, 2);
-        }
-    }
+    orient_strip_outward(&mut mesh, &radial_normal, reversed);
 
     Some(mesh)
 }
@@ -5262,10 +5333,7 @@ fn tessellate_spherical_face(
     let surface = &geom.surfaces[face.surface_index];
 
     // Count edges in the face loop to detect split caps
-    let loop_verts: Vec<Point3> = topo
-        .loop_half_edges(face.outer_loop)
-        .map(|he| topo.vertices[topo.half_edges[he].origin].point)
-        .collect();
+    let loop_verts: Vec<Point3> = loop_points(topo, geom, face.outer_loop, params);
 
     // A patch with holes (a sphere a box trims on several sides: each
     // disjoint cut circle punches one) has no single pole to ring from.
@@ -5276,11 +5344,7 @@ fn tessellate_spherical_face(
         {
             let mut loops = vec![loop_verts.clone()];
             for &l in &face.inner_loops {
-                loops.push(
-                    topo.loop_half_edges(l)
-                        .map(|he| topo.vertices[topo.half_edges[he].origin].point)
-                        .collect(),
-                );
+                loops.push(loop_points(topo, geom, l, params));
             }
             if let Some(mesh) = tessellate_spherical_region(sph, &loops, params, reversed) {
                 return mesh;
@@ -6665,10 +6729,7 @@ fn tessellate_conical_face(
     let n_height = params.height_segments as usize;
 
     // Get seam vertices to determine the cone extent
-    let verts: Vec<_> = topo
-        .loop_half_edges(face.outer_loop)
-        .map(|he| topo.vertices[topo.half_edges[he].origin].point)
-        .collect();
+    let verts: Vec<_> = loop_points(topo, geom, face.outer_loop, params);
 
     // Extract cone geometry for axis-aware parameterization
     let (axis, apex, ref_dir, half_angle) = if let Some(cone) = surface
@@ -6717,8 +6778,7 @@ fn tessellate_conical_face(
     let inner_verts: Vec<_> = face
         .inner_loops
         .iter()
-        .flat_map(|&l| topo.loop_half_edges(l))
-        .map(|he| topo.vertices[topo.half_edges[he].origin].point)
+        .flat_map(|&l| loop_points(topo, geom, l, params))
         .collect();
     let mut v_min = f64::MAX;
     let mut v_max = f64::MIN;
@@ -8311,13 +8371,15 @@ fn tessellate_trimmed_region(
 
 /// A face's boundary loops as point lists (outer first, then holes with at
 /// least three points), coincident neighbours merged.
-fn face_loop_points(topo: &Topology, face_id: FaceId) -> Vec<Vec<Point3>> {
+fn face_loop_points(
+    topo: &Topology,
+    geom: &GeometryStore,
+    face_id: FaceId,
+    params: &TessellationParams,
+) -> Vec<Vec<Point3>> {
     let face = &topo.faces[face_id];
-    let loop_points = |l| {
-        let mut pts: Vec<Point3> = topo
-            .loop_half_edges(l)
-            .map(|he| topo.vertices[topo.half_edges[he].origin].point)
-            .collect();
+    let pts_of = |l| {
+        let mut pts: Vec<Point3> = loop_points(topo, geom, l, params);
         // Coincident neighbours (a collapsed pole edge) are one polygon vertex.
         pts.dedup_by(|a, b| (*a - *b).norm() < 1e-12);
         while pts.len() > 1 && (pts[0] - pts[pts.len() - 1]).norm() < 1e-12 {
@@ -8325,11 +8387,11 @@ fn face_loop_points(topo: &Topology, face_id: FaceId) -> Vec<Vec<Point3>> {
         }
         pts
     };
-    std::iter::once(loop_points(face.outer_loop))
+    std::iter::once(pts_of(face.outer_loop))
         .chain(
             face.inner_loops
                 .iter()
-                .map(|&l| loop_points(l))
+                .map(|&l| pts_of(l))
                 .filter(|l| l.len() >= 3),
         )
         .collect()
@@ -8365,7 +8427,7 @@ fn tessellate_revolved_trimmed(
             }
             (c.apex, *c.axis.as_ref(), 1.0 / cos, true)
         };
-    let loops = face_loop_points(topo, face_id);
+    let loops = face_loop_points(topo, geom, face_id, params);
     let all: Vec<Point3> = loops.iter().flatten().copied().collect();
     if loops.first().is_none_or(|l| l.len() < 3) {
         return None;
@@ -8498,7 +8560,7 @@ fn tessellate_bspline_face(
     let face = &topo.faces[face_id];
     let surface = &geom.surfaces[face.surface_index];
 
-    let loops = face_loop_points(topo, face_id);
+    let loops = face_loop_points(topo, geom, face_id, params);
     if let Some(mesh) =
         tessellate_trimmed_region(surface.as_ref(), surface.domain(), &loops, params, reversed)
     {
@@ -8712,6 +8774,28 @@ fn tessellate_degenerate_cap(
         // vertex, as a revolved annulus carries — is a full circle about the
         // cap centre; sample it like the outer rim so it welds with the
         // wall that shares the rim at any tessellation density.
+        // A twinless polygon hole whose vertices all sit on one circle about
+        // the cap centre is that circle too: a full revolve builds its
+        // annular caps this way (a fixed 32-gon hole the boolean splitters
+        // expect), while the inner wall's rim is a full circle sampled at
+        // the requested density. Resample it like the degenerate hole so
+        // cap and wall meet at every count, not just at 32.
+        let twinless = brep
+            .topology
+            .loop_half_edges(inner_loop)
+            .all(|he| brep.topology.half_edges[he].twin.is_none());
+        let on_one_circle = iv.len() >= 3 && {
+            let r0 = (iv[0] - center).norm();
+            iv.iter().all(|p| {
+                ((*p - center).norm() - r0).abs() < 1e-6
+                    && (*p - center).dot(normal.as_ref()).abs() < 1e-6
+            })
+        };
+        let iv = if twinless && on_one_circle {
+            vec![iv[0]]
+        } else {
+            iv
+        };
         let iv = match iv.as_slice() {
             [p] => {
                 let ri = (*p - center).norm();
@@ -8812,6 +8896,7 @@ pub fn tessellate(brep: &BRepSolid, segments: u32) -> TriangleMesh {
                     &brep.topology,
                     &brep.geometry,
                     face_id,
+                    &params,
                     reversed,
                 );
                 mesh.merge(&face_mesh);
@@ -8976,6 +9061,7 @@ pub fn tessellate_brep_with(brep: &BRepSolid, params: TessellationParams) -> Tri
                         &brep.topology,
                         &brep.geometry,
                         face_id,
+                        &params,
                         reversed,
                     );
                     mesh.merge(&face_mesh);

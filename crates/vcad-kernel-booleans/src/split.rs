@@ -5949,16 +5949,7 @@ pub fn split_cylindrical_face_by_circle(
 /// measuring (STEP reconstructs 6 circles where it should find 8);
 /// unproven, but it is the first place to look.
 pub fn arc_segments(radius: f64, segments: u32) -> u32 {
-    // Must match ssi::ellipse_samples' sag: SSI polylines and canonical
-    // rings share vertices only when both discretize at the same density.
-    const SAG: f64 = 1e-3;
-    let n = if radius > SAG {
-        let arg = (1.0 - SAG / radius).clamp(-1.0, 1.0);
-        (std::f64::consts::PI / arg.acos()).ceil() as u32
-    } else {
-        3
-    };
-    n.max(segments).clamp(3, 512)
+    vcad_kernel_tessellate::canonical_arc::arc_segments(radius, segments)
 }
 
 /// Arc samples for a planar face split along (part of) `circle`, on the
@@ -6099,36 +6090,11 @@ pub(crate) fn canonical_circle_points(
     normal: vcad_kernel_math::Vec3,
     segments: u32,
 ) -> Vec<Point3> {
-    // Reuse the arc sampler with start == end: it returns
-    // [start, interior grid..., start]; drop the duplicated closing point.
-    let x_axis = {
-        // Same canonical-frame derivation as canonical_arc_points.
-        let mut n_hat = normal.normalize();
-        for c in [n_hat.x, n_hat.y, n_hat.z] {
-            if c.abs() > 1e-9 {
-                if c < 0.0 {
-                    n_hat = -n_hat;
-                }
-                break;
-            }
-        }
-        let cand = [
-            vcad_kernel_math::Vec3::new(1.0, 0.0, 0.0),
-            vcad_kernel_math::Vec3::new(0.0, 1.0, 0.0),
-            vcad_kernel_math::Vec3::new(0.0, 0.0, 1.0),
-        ];
-        let e = cand
-            .into_iter()
-            .min_by(|a, b| a.dot(n_hat).abs().partial_cmp(&b.dot(n_hat).abs()).unwrap())
-            .unwrap();
-        (e - n_hat * e.dot(n_hat)).normalize()
-    };
-    let seam = center + radius * x_axis;
-    let mut ring = canonical_arc_points(center, radius, normal, seam, seam, segments);
-    ring.pop();
-    ring
+    vcad_kernel_tessellate::canonical_arc::canonical_circle_points(center, radius, normal, segments)
 }
 
+/// Canonical arc samples `[start, interior…, end]`, CCW about `normal`;
+/// see [`vcad_kernel_tessellate::canonical_arc::canonical_arc_points`].
 pub(crate) fn canonical_arc_points(
     center: Point3,
     radius: f64,
@@ -6137,96 +6103,9 @@ pub(crate) fn canonical_arc_points(
     end: Point3,
     segments: u32,
 ) -> Vec<Point3> {
-    use std::f64::consts::PI;
-    let mut n_hat = normal.normalize();
-    // Sign-canonicalize the axis so the grid is invariant under normal flip.
-    let mut flipped = false;
-    for c in [n_hat.x, n_hat.y, n_hat.z] {
-        if c.abs() > 1e-9 {
-            if c < 0.0 {
-                n_hat = -n_hat;
-                flipped = true;
-            }
-            break;
-        }
-    }
-    // Canonical in-plane frame: global axis least parallel to n̂.
-    let cand = [
-        vcad_kernel_math::Vec3::new(1.0, 0.0, 0.0),
-        vcad_kernel_math::Vec3::new(0.0, 1.0, 0.0),
-        vcad_kernel_math::Vec3::new(0.0, 0.0, 1.0),
-    ];
-    let e = cand
-        .into_iter()
-        .min_by(|a, b| a.dot(n_hat).abs().partial_cmp(&b.dot(n_hat).abs()).unwrap())
-        .unwrap();
-    let x_axis = (e - n_hat * e.dot(n_hat)).normalize();
-    let y_axis = n_hat.cross(x_axis);
-
-    let angle_of = |p: Point3| -> f64 {
-        let d = p - center;
-        let a = d.dot(y_axis).atan2(d.dot(x_axis));
-        if a < 0.0 {
-            a + 2.0 * PI
-        } else {
-            a
-        }
-    };
-    let a_start = angle_of(start);
-    let a_end = angle_of(end);
-    // CCW about the ORIGINAL normal; in the canonical frame that is CCW
-    // unless the axis was flipped.
-    let ccw = !flipped;
-    let span = if ccw {
-        (a_end - a_start).rem_euclid(2.0 * PI)
-    } else {
-        (a_start - a_end).rem_euclid(2.0 * PI)
-    };
-    let span = if span < 1e-12 { 2.0 * PI } else { span };
-
-    let n = arc_segments(radius, segments);
-    let step = 2.0 * PI / n as f64;
-    let mut pts = vec![start];
-    // Interior grid angles strictly inside the traversal (ε away from the
-    // endpoints so a grid point coincident with an endpoint isn't doubled).
-    let eps = 1e-9;
-    // Walk grid indices in traversal order: find the first grid angle
-    // strictly after a_start (in travel direction), then step until a_end.
-    let first_idx = if ccw {
-        (a_start / step).floor() + 1.0
-    } else {
-        (a_start / step).ceil() - 1.0
-    };
-    // `traveled` must accumulate monotonically — computing it per-index with
-    // rem_euclid(2π) wraps back below `span` after one full revolution, so a
-    // full-circle arc whose seam is off the grid re-emits the first grid
-    // points as duplicates (and only the safety cap stopped it).
-    let mut idx = first_idx;
-    let mut traveled = {
-        let ang = idx * step;
-        if ccw {
-            (ang - a_start).rem_euclid(2.0 * PI)
-        } else {
-            (a_start - ang).rem_euclid(2.0 * PI)
-        }
-    };
-    while traveled < span - eps {
-        if traveled > eps {
-            let a = (idx * step).rem_euclid(2.0 * PI);
-            let (sin_a, cos_a) = a.sin_cos();
-            pts.push(snap_point(
-                center + radius * (cos_a * x_axis + sin_a * y_axis),
-            ));
-        }
-        if ccw {
-            idx += 1.0;
-        } else {
-            idx -= 1.0;
-        }
-        traveled += step;
-    }
-    pts.push(end);
-    pts
+    vcad_kernel_tessellate::canonical_arc::canonical_arc_points(
+        center, radius, normal, start, end, segments,
+    )
 }
 
 fn compute_cylinder_u(point: &Point3, cyl: &vcad_kernel_geom::CylinderSurface) -> f64 {

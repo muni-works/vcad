@@ -1369,7 +1369,11 @@ mod tests {
         let view = project_mesh(&combine(&meshes), ViewDirection::Front);
         let (vis, hid) = (view.num_visible(), view.num_hidden());
         eprintln!("plate front view: {vis} visible, {hid} hidden");
-        assert!(vis + hid < 200, "{vis} visible + {hid} hidden");
+        // 400, not the bare outline count: curved feature edges (the hole's
+        // rims, the fillet arcs) are drawn on the canonical arc grid, ~140
+        // samples per circle at r = 4, and an edge-on circle projects as that
+        // many collinear pieces. Every-mesh-edge drawing is ~10,000.
+        assert!(vis + hid < 400, "{vis} visible + {hid} hidden");
         assert!(hid >= 2, "the hole shows as hidden lines");
 
         // No triangle diagonals: away from the rounded corners (|x|,|z|

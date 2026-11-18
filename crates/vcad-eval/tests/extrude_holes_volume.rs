@@ -158,8 +158,12 @@ fn holed_flange_matches_closed_form() {
         vols.push(vol);
     }
     // A constant error in the outer loop cancels here; this isolates what
-    // each hole actually removes.
-    let per_hole = (vols[0] - vols[2]) / 20.0;
+    // each hole actually removes. Difference against ONE hole, not none:
+    // the hole-free disc goes through a different builder, whose rim is
+    // drawn at the tessellation count, while every holed flange's rim is a
+    // sampled arc chain drawn on the canonical arc grid — so only the holed
+    // flanges share an outer discretization.
+    let per_hole = (vols[1] - vols[2]) / 19.0;
     let err = (per_hole - hole) / hole;
     assert!(
         err.abs() < TOL,

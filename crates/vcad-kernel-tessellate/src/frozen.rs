@@ -936,6 +936,17 @@ pub fn capture_plan(
     brep: &BRepSolid,
     params: &TessellationParams,
 ) -> Result<FrozenPlan, FrozenError> {
+    // Arc edges are sampled on a uniform per-edge subdivision here, not the
+    // canonical grid: the canonical grid's count and angles depend on the
+    // radius, so a plan re-captured at θ ± h (every FD oracle does this)
+    // would change discretization between the two sides of the stencil.
+    crate::edge_samples::with_uniform_arc_grid(|| capture_plan_inner(brep, params))
+}
+
+fn capture_plan_inner(
+    brep: &BRepSolid,
+    params: &TessellationParams,
+) -> Result<FrozenPlan, FrozenError> {
     let topo = &brep.topology;
     let ci = canonical_index(brep);
     let signature = signature_with_index(brep, &ci);

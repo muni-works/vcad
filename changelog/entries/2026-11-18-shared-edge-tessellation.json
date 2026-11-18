@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-18-shared-edge-tessellation",
+  "version": "0.11.0",
+  "date": "2026-11-18",
+  "category": "fix",
+  "title": "Arc extrudes and revolves tessellate watertight",
+  "summary": "Adjacent faces now share every edge's samples (arcs on the canonical grid booleans use), so arc-sketch extrudes and full revolves no longer crack open at 64+ segments.",
+  "features": ["tessellation", "export", "extrude", "revolve"]
+}
