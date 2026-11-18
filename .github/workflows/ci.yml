@@ -129,6 +129,45 @@ jobs:
         if: ${{ !cancelled() && (success() || steps.rust-tests.outcome == 'failure') }}
         run: cargo test --workspace --doc --no-fail-fast
       - run: cargo build --workspace --examples
+      - name: Upload Rust timing and test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: rust-reports-${{ matrix.toolchain }}
+          path: |
+            target/cargo-timings/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Docs + Rust→TS/Swift codegen drift checks. These used to run at the end
+  # of the `rust` job, after the nextest archive was built — ~12 min that the
+  # test shards sat waiting on, since a job can't depend on a single step.
+  # Nothing here feeds the shards, so run it alongside the build instead.
+  rust-codegen:
+    name: Rust docs + codegen
+    needs: rust-changes
+    if: needs.rust-changes.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/.ghcup /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+      - uses: actions/checkout@v6
+      - name: Clone sibling repos
+        run: |
+          git clone --depth 1 https://github.com/ecto/tang.git ../tang
+          git clone --depth 1 https://github.com/ecto/phyz.git ../phyz
+          git clone --depth 1 https://github.com/ecto/loon.git ../loon
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: rust-codegen
+          cache-workspace-crates: true
+          cache-on-failure: true
       - run: cargo doc --workspace --no-deps
       # packages/ir/src/generated.ts is generated from the Rust `vcad-ir` types
       # via ts-rs (`npm run ir:gen`). Fail if the committed file has drifted —
@@ -139,26 +178,14 @@ jobs:
       # `npm run ir:check` only needs cargo + node (no node_modules), so it
       # runs here on stable rather than in the TS job (which has no Rust).
       - uses: actions/setup-node@v6
-        if: matrix.toolchain == 'stable'
         with:
           node-version: 22
       - name: IR types in sync (Rust → TS codegen)
-        if: matrix.toolchain == 'stable'
         run: npm run ir:check
       # Same idea for the Mac app: apple/VcadApp/Sources/VcadApp/Generated/
       # is generated from the same ts-rs bindings (`npm run swift:gen`).
       - name: Swift engine types in sync (Rust → Swift codegen)
-        if: matrix.toolchain == 'stable'
         run: npm run swift:check
-      - name: Upload Rust timing and test reports
-        if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: rust-reports-${{ matrix.toolchain }}
-          path: |
-            target/cargo-timings/
-          if-no-files-found: ignore
-          retention-days: 7
 
   # Runs the archived tests in parallel shards. No compilation here.
   rust-test:
@@ -210,7 +237,7 @@ jobs:
   # passed, or when the PR changed nothing Rust.
   rust-gate:
     name: Rust (stable)
-    needs: [rust-changes, rust, rust-test]
+    needs: [rust-changes, rust, rust-test, rust-codegen]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
@@ -218,8 +245,9 @@ jobs:
           if [ "${{ needs.rust-changes.outputs.run }}" != "true" ]; then
             echo "No Rust changes — skipped."; exit 0
           fi
-          [ "${{ needs.rust.result }}" = "success" ] && [ "${{ needs.rust-test.result }}" = "success" ] || {
-            echo "rust=${{ needs.rust.result }} rust-test=${{ needs.rust-test.result }}"; exit 1; }
+          [ "${{ needs.rust.result }}" = "success" ] && [ "${{ needs.rust-test.result }}" = "success" ] \
+            && [ "${{ needs.rust-codegen.result }}" = "success" ] || {
+            echo "rust=${{ needs.rust.result }} rust-test=${{ needs.rust-test.result }} rust-codegen=${{ needs.rust-codegen.result }}"; exit 1; }
 
   # Real-KiCad verification of the .kicad_sch/.kicad_pcb exporters: the
   # ignored tests in vcad-ecad-symbols run kicad-cli (ERC gate + netlist
