@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-16-mesh-fallback-cost",
+  "version": "0.11.0",
+  "date": "2026-11-16",
+  "category": "perf",
+  "title": "Mesh-boolean fallback 5-8x faster, half the triangles",
+  "summary": "The mesh fallback splits only fragments a facet actually crosses, stitches seams with a grid, and repairs once. A DN40 tee evaluates 2.6x faster; a 4-way cross 2.5x, with half the triangles.",
+  "features": ["booleans", "mesh-fallback", "performance"],
+  "mcpTools": []
+}

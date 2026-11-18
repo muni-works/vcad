@@ -31,8 +31,14 @@ permissions:
 
 concurrency:
   group: wasm-refresh-main
-  # Only the newest kernel state matters — a superseded rebuild is waste.
-  cancel-in-progress: true
+  # Never cancel a run in flight: a refresh takes ~1h+ and main gets kernel
+  # pushes more often than that, so cancel-in-progress meant no run ever
+  # reached its fast-forward (0 successes in 40 runs by 2026-11-18) and the
+  # checked-in WASM, which mcp-publish ships to npm, went 11 days stale.
+  # With this off, a new push waits behind the running refresh; GitHub keeps
+  # only the newest pending run, so intermediate states are still skipped.
+  # The fast-forward below still fails if main moved during CI.
+  cancel-in-progress: false
 
 jobs:
   refresh:

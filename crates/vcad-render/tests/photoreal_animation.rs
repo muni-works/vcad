@@ -216,3 +216,103 @@ fn the_cli_writes_a_frame_directory() {
         assert!(out.join(name).is_file(), "missing {name}");
     }
 }
+
+/// Decode every frame of a report.
+fn decode_frames(report: &vcad_render::animate::AnimateReport) -> Vec<image::RgbaImage> {
+    report
+        .frames
+        .iter()
+        .map(|p| image::open(p).expect("decode frame").to_rgba8())
+        .collect()
+}
+
+/// The path tracer honours visibility tracks and a turntable camera with no
+/// joint track at all: the arm drops out, the view turns, and every frame
+/// keeps one size.
+#[test]
+fn visibility_and_turntable_without_a_joint_track() {
+    let dir = TempDir::new("vis-turn");
+    let (opts, pr) = tiny_options();
+    let spec = r#"{
+      "durationS": 1.0, "fps": 2.0,
+      "tracks": [ { "visibility": "arm",
+                    "keys": [ { "t": 0, "value": 1 }, { "t": 1, "value": 0 } ] } ],
+      "camera": [ { "startS": 0, "endS": 2,
+                    "kind": { "type": "Turntable", "degrees": 90, "elevationDeg": 25 } } ]
+    }"#;
+    let an = AnimateOptions {
+        out_dir: dir.0.clone(),
+        timeline: Some(vcad_render::animate::parse_timeline_spec(spec).expect("spec")),
+        frames: None,
+        fps: None,
+    };
+    let report = render_photoreal_animation(JOINTED_ASSEMBLY, &opts, &pr, &an, &mut |_, _, _| {})
+        .expect("animate");
+    let frames = decode_frames(&report);
+    assert_eq!(frames.len(), 3);
+    assert!(
+        frames
+            .windows(2)
+            .all(|w| w[0].dimensions() == w[1].dimensions()),
+        "frames differ in size"
+    );
+    assert_ne!(
+        frames[0].as_raw(),
+        frames[1].as_raw(),
+        "the camera did not turn"
+    );
+    let covered = |img: &image::RgbaImage| img.pixels().filter(|p| p.0[3] > 8).count();
+    assert!(covered(&frames[0]) > 40, "frame 0 is nearly empty");
+}
+
+/// Every part hidden is a legitimate frame (a build-up starting from
+/// nothing), not an abort halfway through the sequence.
+#[test]
+fn a_frame_with_everything_hidden_still_renders() {
+    let dir = TempDir::new("all-hidden");
+    let (opts, pr) = tiny_options();
+    let spec = r#"{
+      "durationS": 1.0, "fps": 2.0,
+      "tracks": [
+        { "visibility": "arm",  "keys": [ { "t": 0, "value": 1 }, { "t": 1, "value": 0 } ] },
+        { "visibility": "post", "keys": [ { "t": 0, "value": 1 }, { "t": 1, "value": 0 } ] } ]
+    }"#;
+    let an = AnimateOptions {
+        out_dir: dir.0.clone(),
+        timeline: Some(vcad_render::animate::parse_timeline_spec(spec).expect("spec")),
+        frames: None,
+        fps: None,
+    };
+    let report = render_photoreal_animation(JOINTED_ASSEMBLY, &opts, &pr, &an, &mut |_, _, _| {})
+        .expect("animate");
+    let frames = decode_frames(&report);
+    assert_eq!(frames[0].dimensions(), frames[2].dimensions());
+    assert_ne!(
+        frames[0].as_raw(),
+        frames[2].as_raw(),
+        "hiding everything changed nothing"
+    );
+}
+
+/// Parameter tracks would need the geometry re-evaluated per frame; the
+/// photoreal tier refuses them like the others instead of ignoring them.
+#[test]
+fn a_parameter_track_is_refused() {
+    let dir = TempDir::new("param");
+    let (opts, pr) = tiny_options();
+    let spec = r#"{
+      "durationS": 1.0, "fps": 2.0,
+      "tracks": [
+        { "joint": "swing", "keys": [ { "t": 0, "value": 0 }, { "t": 1, "value": 90 } ] },
+        { "parameter": "width", "keys": [ { "t": 0, "value": 1 }, { "t": 1, "value": 2 } ] } ]
+    }"#;
+    let an = AnimateOptions {
+        out_dir: dir.0.clone(),
+        timeline: Some(vcad_render::animate::parse_timeline_spec(spec).expect("spec")),
+        frames: None,
+        fps: None,
+    };
+    let err = render_photoreal_animation(JOINTED_ASSEMBLY, &opts, &pr, &an, &mut |_, _, _| {})
+        .expect_err("should refuse");
+    assert!(err.contains("parameter track"), "unhelpful error: {err}");
+}

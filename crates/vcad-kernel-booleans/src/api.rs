@@ -1094,9 +1094,17 @@ fn mesh_fallback_untimed(
         // input the parity and patch analyses these passes rest on are
         // unreliable, and letting them "repair" a soup chain measurably
         // added volume (a chained pocket-and-slot part read 4% high).
+        //
+        // One strip, then ONE repair. `remove_interior_membranes` would run
+        // a full repair of its own whenever the strip removed anything, and
+        // the explicit repair below then ran a second full one over its
+        // output — the repair already strips on every round. Measured on a
+        // DN40 tee's tube − bores fallback the second repair changed
+        // nothing (49 708 triangles, 63 boundary edges either way) and cost
+        // 2 s of the fallback's 5.
         let unrefined = out.clone();
         let unrefined_boundary = out.boundary_edges().len();
-        crate::mesh::remove_interior_membranes(&mut out);
+        crate::mesh::strip_membranes_once(&mut out);
         vcad_kernel_tessellate::repair_watertightness(&mut out);
         // Second projection pulls anything the repair moved back onto its
         // carrier. Vertices the repair did not move are already

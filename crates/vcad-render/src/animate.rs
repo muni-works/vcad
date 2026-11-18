@@ -28,6 +28,20 @@
 //! the subject's projected extent changed — frames that no muxer will accept
 //! and, even at a fixed size, a machine that swims about in the canvas.
 //!
+//! # What a timeline can drive
+//!
+//! Joint tracks pose the assembly through forward kinematics. Visibility
+//! tracks switch instances on and off per frame — a hidden part is simply
+//! not drawn, nothing is re-evaluated. The Explode track pushes each
+//! instance along its authored `explode` offset (the directions the still
+//! `--explode` uses), scaled by the track value. The `camera` shots
+//! (Turntable / Orbit / Focus / Static) move the camera; a moving camera
+//! keeps one canvas and one scale for the whole shot (see
+//! [`moving_framings`]). Parameter tracks would need the geometry
+//! re-evaluated every frame, which this path exists to avoid, so they are
+//! refused — as is anything else the renderer cannot honour — rather than
+//! silently rendering frames that do not move.
+//!
 //! The pose source is the document's own [`Timeline`] when it has one, or a
 //! keyframe file passed to `--animate`. Both are sampled by
 //! [`Timeline::sample_sequence`], the same code the MCP `animate` tool and
@@ -40,8 +54,8 @@ use std::time::{Duration, Instant};
 use vcad_ir::animation::{AnimTarget, Timeline};
 
 use crate::photoreal::{
-    build_objects, check_glow, check_raster_opts, dress_scene, frame_view, has_media,
-    object_corners, object_corners_with, trace_frame, PhotorealOptions,
+    build_objects, check_glow, check_raster_opts, dress_scene, frame_view, frame_view_windowed,
+    has_media, object_corners, object_corners_with, trace_frame, PhotorealOptions,
 };
 use crate::raster::encode_png;
 use crate::RasterOptions;
@@ -152,8 +166,11 @@ pub fn parse_timeline_spec(json: &str) -> Result<Timeline, String> {
     if !(timeline.duration_s.is_finite() && timeline.duration_s > 0.0) {
         return Err("--animate: durationS must be positive".to_string());
     }
-    if timeline.tracks.is_empty() {
-        return Err("--animate: timeline has no tracks — nothing would move".to_string());
+    if timeline.tracks.is_empty() && timeline.camera.is_empty() {
+        return Err(
+            "--animate: timeline has no tracks and no camera shots — nothing would move"
+                .to_string(),
+        );
     }
     Ok(timeline)
 }
@@ -189,6 +206,16 @@ fn resolve_joint<'a>(
     ))
 }
 
+/// One frame's camera, compiled from the timeline's `camera` shots.
+#[derive(Debug, Clone)]
+struct FrameCamera {
+    /// Orientation for this frame.
+    view: crate::View,
+    /// A `Focus` shot: which scene entries (statics first, then parts, the
+    /// same order as everything else here) to frame, and the dolly factor.
+    focus: Option<(Vec<bool>, f64)>,
+}
+
 /// A document evaluated once and posed for every frame — everything the
 /// three back ends share, and the reason none of them re-evaluates geometry.
 struct AnimationPlan {
@@ -196,17 +223,202 @@ struct AnimationPlan {
     statics: Vec<crate::SceneSolid>,
     /// Assembly instances in their *local* frame, in pose-vector order.
     parts: Vec<crate::SceneSolid>,
-    /// `poses[frame][part]` — the object→world transform for `parts[part]`.
-    poses: Vec<Vec<vcad_kernel::vcad_kernel_math::Transform>>,
+    /// `poses[frame][part]` — the object→world transform for `parts[part]`,
+    /// joint tracks and the explode offset already applied.
+    poses: Vec<Vec<KTransform>>,
+    /// `visible[frame][part]` — from the timeline's visibility tracks.
+    /// Statics have no instance id to key a track on, so they always draw.
+    visible: Vec<Vec<bool>>,
+    /// Per-frame cameras when the timeline has `camera` shots; `None` keeps
+    /// the one `--view` camera for the whole sequence.
+    cameras: Option<Vec<FrameCamera>>,
     /// Effective frame rate (the timeline's, or the `--fps` override).
     fps: f64,
     /// What the single evaluation cost.
     eval: Duration,
 }
 
+/// Map an authored track reference to an instance id: id first, then the
+/// instance's authored name. Fails closed with what is available.
+fn resolve_instance(doc: &vcad_ir::Document, reference: &str) -> Result<String, String> {
+    let instances = doc.instances.as_deref().unwrap_or(&[]);
+    if let Some(i) = instances.iter().find(|i| i.id == reference) {
+        return Ok(i.id.clone());
+    }
+    if let Some(i) = instances
+        .iter()
+        .find(|i| i.name.as_deref() == Some(reference))
+    {
+        return Ok(i.id.clone());
+    }
+    let mut known: Vec<String> = instances
+        .iter()
+        .map(|i| match &i.name {
+            Some(n) => format!("{} ({n})", i.id),
+            None => i.id.clone(),
+        })
+        .collect();
+    known.sort();
+    Err(format!(
+        "--animate: visibility track names no instance '{reference}'. Available: {}",
+        if known.is_empty() {
+            "none".to_string()
+        } else {
+            known.join(", ")
+        }
+    ))
+}
+
+/// The orbit view looking back along `dir` (scene → camera).
+fn view_from_direction(dir: &vcad_ir::Vec3) -> Result<crate::View, String> {
+    let len = (dir.x * dir.x + dir.y * dir.y + dir.z * dir.z).sqrt();
+    if !(len.is_finite() && len > 1e-12) {
+        return Err(
+            "--animate: a Static camera shot's `direction` must be a non-zero vector".to_string(),
+        );
+    }
+    Ok(crate::View::Orbit {
+        azimuth: dir.y.atan2(dir.x).to_degrees(),
+        elevation: (dir.z / len).clamp(-1.0, 1.0).asin().to_degrees(),
+    })
+}
+
+/// Compile the timeline's camera shots into one camera per sampled frame.
+///
+/// Turntable and Orbit take the sampler's azimuth/elevation (the same
+/// numbers the MCP preview and the app scrub to) as a [`crate::View::Orbit`].
+/// Focus keeps the previous orientation and frames its target, dollied.
+/// Static uses its `direction` when given and otherwise `base` (the `--view`
+/// flag, isometric by default) — the sampler would report azimuth 0 /
+/// elevation 30 for both, which is neither the authored direction nor the
+/// isometric the IR documents. Time before the first shot uses `base` too;
+/// gaps hold the previous camera, as the sampler does.
+fn compile_cameras(
+    timeline: &Timeline,
+    sequence: &[vcad_ir::animation::SequenceFrame],
+    base: crate::View,
+    labels: &[&[String]],
+) -> Result<Option<Vec<FrameCamera>>, String> {
+    use vcad_ir::animation::CameraShotKind;
+    if timeline.camera.is_empty() {
+        return Ok(None);
+    }
+    // Validate every shot up front, so a bad shot fails before frame 0 —
+    // including one the truncated (`--frames`) sequence never reaches.
+    let mut focus_masks: Vec<Option<Vec<bool>>> = Vec::with_capacity(timeline.camera.len());
+    for shot in &timeline.camera {
+        if !(shot.start_s.is_finite() && shot.end_s.is_finite() && shot.end_s > shot.start_s) {
+            return Err(format!(
+                "--animate: camera shot [{}, {}) is empty or not finite",
+                shot.start_s, shot.end_s
+            ));
+        }
+        match &shot.kind {
+            CameraShotKind::Focus { target, dolly } => {
+                if !(dolly.is_finite() && *dolly > 0.0) {
+                    return Err(format!(
+                        "--animate: Focus dolly must be positive, got {dolly}"
+                    ));
+                }
+                let want = target.trim().to_ascii_lowercase();
+                let mask: Vec<bool> = labels
+                    .iter()
+                    .map(|ls| ls.iter().any(|l| l.to_ascii_lowercase() == want))
+                    .collect();
+                if !mask.iter().any(|&m| m) {
+                    let mut available: Vec<&str> = labels
+                        .iter()
+                        .flat_map(|ls| ls.iter().map(String::as_str))
+                        .collect();
+                    available.sort_unstable();
+                    available.dedup();
+                    return Err(format!(
+                        "--animate: Focus shot target '{target}' matches no part. Available: {}",
+                        available.join(", ")
+                    ));
+                }
+                focus_masks.push(Some(mask));
+            }
+            CameraShotKind::Static { direction: Some(d) } => {
+                view_from_direction(d)?;
+                focus_masks.push(None);
+            }
+            CameraShotKind::Turntable {
+                degrees,
+                elevation_deg,
+            } => {
+                if !(degrees.is_finite() && elevation_deg.is_finite()) {
+                    return Err("--animate: Turntable angles must be finite".to_string());
+                }
+                focus_masks.push(None);
+            }
+            CameraShotKind::Orbit { from, to } => {
+                if !from.iter().chain(to).all(|v| v.is_finite()) {
+                    return Err("--animate: Orbit angles must be finite".to_string());
+                }
+                focus_masks.push(None);
+            }
+            CameraShotKind::Static { direction: None } => focus_masks.push(None),
+        }
+    }
+
+    let mut prev = FrameCamera {
+        view: base,
+        focus: None,
+    };
+    let mut out = Vec::with_capacity(sequence.len());
+    for frame in sequence {
+        let t = frame.t;
+        // Same selection rule as `Timeline::sample_sequence`: the last shot
+        // whose [start, end) contains t wins.
+        let active = timeline
+            .camera
+            .iter()
+            .enumerate()
+            .rfind(|(_, s)| t >= s.start_s && t < s.end_s);
+        let cam = match active {
+            None => prev.clone(),
+            Some((k, shot)) => match &shot.kind {
+                CameraShotKind::Turntable { .. } | CameraShotKind::Orbit { .. } => FrameCamera {
+                    view: crate::View::Orbit {
+                        azimuth: frame.camera.azimuth_deg,
+                        elevation: frame.camera.elevation_deg,
+                    },
+                    focus: None,
+                },
+                CameraShotKind::Focus { .. } => FrameCamera {
+                    view: prev.view,
+                    focus: focus_masks[k].clone().map(|m| (m, frame.camera.dolly)),
+                },
+                CameraShotKind::Static { direction } => FrameCamera {
+                    view: match direction {
+                        Some(d) => view_from_direction(d)?,
+                        None => base,
+                    },
+                    focus: None,
+                },
+            },
+        };
+        prev = cam.clone();
+        out.push(cam);
+    }
+    Ok(Some(out))
+}
+
 /// Resolve the timeline, evaluate the document **once**, and bake one pose
 /// vector per frame. The style-agnostic half of every animation render.
-fn plan_animation(raw_vcad: &str, an: &AnimateOptions) -> Result<AnimationPlan, String> {
+///
+/// Honoured: joint tracks (FK), visibility tracks (per-instance on/off, no
+/// re-evaluation), the Explode track (each instance's authored `explode`
+/// offset — the same directions the still `--explode` reads — scaled by the
+/// track value and added after FK), and the camera shots. Parameter tracks
+/// would need the geometry re-evaluated per frame, which this path exists to
+/// avoid, so they are refused rather than ignored.
+fn plan_animation(
+    raw_vcad: &str,
+    an: &AnimateOptions,
+    base_view: crate::View,
+) -> Result<AnimationPlan, String> {
     // ── evaluate, exactly once ───────────────────────────────────────────
     let t_eval = Instant::now();
     let mut ev = crate::evaluate_vcad_document(raw_vcad)?;
@@ -235,19 +447,41 @@ fn plan_animation(raw_vcad: &str, an: &AnimateOptions) -> Result<AnimationPlan, 
         ..timeline
     };
 
-    // Fail closed on a track that names a joint the document doesn't have,
-    // and record the id→state mapping the sampler's keys resolve to.
+    // ── resolve every track against the document, failing closed ─────────
+    // Joint tracks: reference → joint id. Visibility: reference → instance id.
     let mut track_joint_ids: Vec<(String, String)> = Vec::new();
+    let mut track_instance_ids: Vec<(String, String)> = Vec::new();
+    let mut has_explode = false;
     for track in &timeline.tracks {
-        if let AnimTarget::Joint { joint_id } = &track.target {
-            let j = resolve_joint(&ev.doc, joint_id)?;
-            track_joint_ids.push((joint_id.clone(), j.id.clone()));
+        match &track.target {
+            AnimTarget::Joint { joint_id } => {
+                let j = resolve_joint(&ev.doc, joint_id)?;
+                track_joint_ids.push((joint_id.clone(), j.id.clone()));
+            }
+            AnimTarget::Visibility { instance_id } => {
+                let id = resolve_instance(&ev.doc, instance_id)?;
+                track_instance_ids.push((instance_id.clone(), id));
+            }
+            AnimTarget::Explode => has_explode = true,
+            AnimTarget::Parameter { name } => {
+                return Err(format!(
+                    "--animate: parameter track '{name}' is not supported: a \
+                     parameter changes the geometry, which this path evaluates \
+                     exactly once. Render parameter sweeps one still per value."
+                ))
+            }
         }
     }
-    if track_joint_ids.is_empty() {
-        return Err("--animate: no joint tracks. Parameter tracks would need \
-                    per-frame re-evaluation, which this path deliberately does not do"
-            .to_string());
+    if track_joint_ids.is_empty()
+        && track_instance_ids.is_empty()
+        && !has_explode
+        && timeline.camera.is_empty()
+    {
+        return Err(
+            "--animate: the timeline has no joint, visibility, explode or \
+                    camera entries — nothing would change between frames"
+                .to_string(),
+        );
     }
 
     let part_solids: Vec<crate::SceneSolid> = std::mem::take(&mut ev.parts)
@@ -255,6 +489,41 @@ fn plan_animation(raw_vcad: &str, an: &AnimateOptions) -> Result<AnimationPlan, 
         .map(crate::part_as_local_scene_solid)
         .collect();
     let instance_ids: Vec<String> = part_solids.iter().map(|s| s.id.clone()).collect();
+
+    // Explode offsets: authored per instance (`Instance::explode`), the same
+    // data the still `--explode` and the kernel's `PosedAssembly::exploded`
+    // read. Inventing directions here would make a render disagree with
+    // every other exploded view of the document.
+    let explode_offsets: Vec<[f64; 3]> = {
+        let by_id: std::collections::HashMap<&str, [f64; 3]> = ev
+            .doc
+            .instances
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|i| i.explode.map(|e| (i.id.as_str(), [e.x, e.y, e.z])))
+            .collect();
+        instance_ids
+            .iter()
+            .map(|id| by_id.get(id.as_str()).copied().unwrap_or([0.0; 3]))
+            .collect()
+    };
+    if has_explode {
+        let moves = timeline
+            .tracks
+            .iter()
+            .filter(|t| matches!(t.target, AnimTarget::Explode))
+            .flat_map(|t| &t.keys)
+            .any(|k| k.value != 0.0);
+        let any_offset = explode_offsets.iter().flatten().any(|v| *v != 0.0);
+        if moves && !any_offset {
+            return Err("--animate: the timeline has an Explode track, but no \
+                        instance declares an `explode` offset (mm, per instance) \
+                        — every part would stay put. Add `explode` to the \
+                        instances that should come apart."
+                .to_string());
+        }
+    }
 
     // ── sample the timeline, and pose every frame up front ───────────────
     let mut sequence = timeline.sample_sequence();
@@ -265,6 +534,14 @@ fn plan_animation(raw_vcad: &str, an: &AnimateOptions) -> Result<AnimationPlan, 
         sequence.truncate(n);
     }
 
+    let labels: Vec<&[String]> = ev
+        .statics
+        .iter()
+        .chain(part_solids.iter())
+        .map(|s| s.labels.as_slice())
+        .collect();
+    let cameras = compile_cameras(&timeline, &sequence, base_view, &labels)?;
+
     let fallbacks: std::collections::HashMap<&str, Option<vcad_ir::Transform3D>> = ev
         .doc
         .instances
@@ -274,8 +551,9 @@ fn plan_animation(raw_vcad: &str, an: &AnimateOptions) -> Result<AnimationPlan, 
         .map(|i| (i.id.as_str(), i.transform))
         .collect();
 
-    let mut poses: Vec<Vec<vcad_kernel::vcad_kernel_math::Transform>> =
-        Vec::with_capacity(sequence.len());
+    let mut poses: Vec<Vec<KTransform>> = Vec::with_capacity(sequence.len());
+    let mut visible: Vec<Vec<bool>> = Vec::with_capacity(sequence.len());
+    let mut base_pose: Option<Vec<KTransform>> = None;
     for frame in &sequence {
         // Drive the document's joints, then let the shared FK solver do the
         // rest — chained fixed joints carry their groups along for free.
@@ -289,19 +567,52 @@ fn plan_animation(raw_vcad: &str, an: &AnimateOptions) -> Result<AnimationPlan, 
                 }
             }
         }
-        let world = crate::assembly_world_transforms(&ev.doc)?;
+        // Nothing drives FK after frame 0: its placement holds for the
+        // whole sequence, so solve it once.
+        if base_pose.is_none() || !track_joint_ids.is_empty() {
+            let world = crate::assembly_world_transforms(&ev.doc)?;
+            base_pose = Some(
+                instance_ids
+                    .iter()
+                    .map(|id| {
+                        match world
+                            .get(id)
+                            .copied()
+                            .or_else(|| fallbacks.get(id.as_str()).copied().flatten())
+                        {
+                            Some(t) => crate::transform3d_to_kernel(&t),
+                            None => KTransform::identity(),
+                        }
+                    })
+                    .collect(),
+            );
+        }
+        let base = base_pose.as_ref().expect("solved above");
+        // The explode offset goes on last, in world space — after FK, like
+        // the still path's `--explode`.
+        let factor = frame.explode;
         poses.push(
+            base.iter()
+                .zip(&explode_offsets)
+                .map(|(t, off)| {
+                    if factor == 0.0 || off.iter().all(|v| *v == 0.0) {
+                        t.clone()
+                    } else {
+                        KTransform::translation(off[0] * factor, off[1] * factor, off[2] * factor)
+                            .then(t)
+                    }
+                })
+                .collect(),
+        );
+        visible.push(
             instance_ids
                 .iter()
                 .map(|id| {
-                    let t = world
-                        .get(id)
-                        .copied()
-                        .or_else(|| fallbacks.get(id.as_str()).copied().flatten());
-                    match t {
-                        Some(t) => crate::transform3d_to_kernel(&t),
-                        None => vcad_kernel::vcad_kernel_math::Transform::identity(),
-                    }
+                    track_instance_ids
+                        .iter()
+                        .filter(|(_, iid)| iid == id)
+                        .filter_map(|(reference, _)| frame.visibility.get(reference))
+                        .all(|v| *v)
                 })
                 .collect(),
         );
@@ -311,9 +622,192 @@ fn plan_animation(raw_vcad: &str, an: &AnimateOptions) -> Result<AnimationPlan, 
         statics: std::mem::take(&mut ev.statics),
         parts: part_solids,
         poses,
+        visible,
+        cameras,
         fps: timeline.fps,
         eval,
     })
+}
+
+/// Axis-aligned world bounds, accumulated point by point.
+#[derive(Debug, Clone, Copy)]
+struct Aabb {
+    lo: [f64; 3],
+    hi: [f64; 3],
+}
+
+impl Aabb {
+    fn empty() -> Self {
+        Aabb {
+            lo: [f64::INFINITY; 3],
+            hi: [f64::NEG_INFINITY; 3],
+        }
+    }
+
+    fn add(&mut self, p: [f64; 3]) {
+        for ((lo, hi), v) in self.lo.iter_mut().zip(&mut self.hi).zip(p) {
+            *lo = lo.min(v);
+            *hi = hi.max(v);
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        !(0..3).all(|i| self.lo[i].is_finite() && self.hi[i].is_finite())
+    }
+
+    fn corners(&self) -> [[f64; 3]; 8] {
+        std::array::from_fn(|k| {
+            [
+                if k & 1 == 0 { self.lo[0] } else { self.hi[0] },
+                if k & 2 == 0 { self.lo[1] } else { self.hi[1] },
+                if k & 4 == 0 { self.lo[2] } else { self.hi[2] },
+            ]
+        })
+    }
+}
+
+/// One frame of a moving-camera shot: the options to render it with (its
+/// view, and a canvas pinned for the whole sequence) and its screen window.
+#[cfg(feature = "raster")]
+struct MovingFrame {
+    opts: RasterOptions,
+    framing: crate::FixedFraming,
+}
+
+/// Screen window and depth range of `pts` seen from `view`.
+#[cfg(feature = "raster")]
+fn project_bounds(view: crate::View, pts: &[[f64; 3]]) -> ([f64; 2], [f64; 2], (f64, f64)) {
+    let right = crate::normalize(view.right());
+    let down = crate::normalize(view.down());
+    let cam = view.cam();
+    let mut min = [f64::INFINITY; 2];
+    let mut max = [f64::NEG_INFINITY; 2];
+    let mut depth = (f64::INFINITY, f64::NEG_INFINITY);
+    for p in pts {
+        let s = [crate::dot(*p, right), crate::dot(*p, down)];
+        for i in 0..2 {
+            min[i] = min[i].min(s[i]);
+            max[i] = max[i].max(s[i]);
+        }
+        let d = crate::dot(*p, cam);
+        depth = (depth.0.min(d), depth.1.max(d));
+    }
+    (min, max, depth)
+}
+
+/// Frame a timeline whose camera moves.
+///
+/// One canvas and one scale for the whole shot, or the frames would differ
+/// in size (no muxer accepts that) and the subject would breathe in and out
+/// as the camera turned. The world bounds of everything visible in any
+/// frame are projected into every frame's view; the largest screen extent
+/// over the shot sets the canvas and the scale, and each frame centres that
+/// window on the bounds as *it* sees them. A Focus frame instead fits its
+/// target's posed bounds into the same canvas, shrunk by the dolly.
+///
+/// The canvas comes back pinned in each frame's options (`height_px` set),
+/// so `--auto-aspect` is resolved once, here, rather than per view.
+#[cfg(feature = "raster")]
+fn moving_framings(
+    opts: &RasterOptions,
+    cams: &[FrameCamera],
+    poses: &[Vec<KTransform>],
+    visible: &[Vec<bool>],
+    static_corners: &[Vec<[f64; 3]>],
+    part_corners: &dyn Fn(usize, &KTransform) -> Vec<[f64; 3]>,
+) -> Result<Vec<MovingFrame>, String> {
+    let mut union = Aabb::empty();
+    for c in static_corners.iter().flatten() {
+        union.add(*c);
+    }
+    for (pose, vis) in poses.iter().zip(visible) {
+        for (k, t) in pose.iter().enumerate() {
+            if vis[k] {
+                for c in part_corners(k, t) {
+                    union.add(c);
+                }
+            }
+        }
+    }
+    if union.is_empty() {
+        return Err("--animate: nothing is visible in any frame".to_string());
+    }
+    let uc = union.corners();
+    let per: Vec<_> = cams.iter().map(|c| project_bounds(c.view, &uc)).collect();
+    let (mut ex, mut ey) = (0.0f64, 0.0f64);
+    for (mn, mx, _) in &per {
+        ex = ex.max(mx[0] - mn[0]);
+        ey = ey.max(mx[1] - mn[1]);
+    }
+    if !(ex.max(ey).is_finite() && ex.max(ey) > 1e-9) {
+        return Err("degenerate projection (no extent) across the sequence".to_string());
+    }
+    // A flat subject seen edge-on has zero extent on one axis; keep the
+    // window non-degenerate so the canvas and scale stay finite.
+    let floor = 1e-6 * ex.max(ey);
+    let (ex, ey) = (ex.max(floor), ey.max(floor));
+    let canvas = crate::raster::canvas_for(opts, ex, ey);
+    let mut pinned = opts.clone();
+    pinned.size_px = canvas.w as u32;
+    pinned.height_px = Some(canvas.h as u32);
+    let diag = (0..3)
+        .map(|i| (union.hi[i] - union.lo[i]).powi(2))
+        .sum::<f64>()
+        .sqrt();
+    let n_static = static_corners.len();
+
+    cams.iter()
+        .enumerate()
+        .map(|(f, cam)| {
+            let (mn, mx, depth) = per[f];
+            let (centre, half) = match &cam.focus {
+                None => (
+                    [(mn[0] + mx[0]) / 2.0, (mn[1] + mx[1]) / 2.0],
+                    [ex / 2.0, ey / 2.0],
+                ),
+                Some((mask, dolly)) => {
+                    // The target's bounds in this frame's pose, hidden or not —
+                    // a Focus on a part that is switched off still aims there.
+                    let mut tb = Aabb::empty();
+                    for (i, _) in mask.iter().enumerate().filter(|(_, m)| **m) {
+                        if i < n_static {
+                            static_corners[i].iter().for_each(|c| tb.add(*c));
+                        } else {
+                            let k = i - n_static;
+                            part_corners(k, &poses[f][k])
+                                .into_iter()
+                                .for_each(|c| tb.add(c));
+                        }
+                    }
+                    if tb.is_empty() {
+                        return Err(format!(
+                            "--animate: frame {f}: the Focus target has no geometry to frame"
+                        ));
+                    }
+                    let (tmn, tmx, _) = project_bounds(cam.view, &tb.corners());
+                    let fit = ((tmx[0] - tmn[0]) / ex)
+                        .max((tmx[1] - tmn[1]) / ey)
+                        .max(1e-6)
+                        * dolly;
+                    (
+                        [(tmn[0] + tmx[0]) / 2.0, (tmn[1] + tmx[1]) / 2.0],
+                        [ex * fit / 2.0, ey * fit / 2.0],
+                    )
+                }
+            };
+            let mut o = pinned.clone();
+            o.view = cam.view;
+            Ok(MovingFrame {
+                opts: o,
+                framing: crate::FixedFraming {
+                    screen_min: [centre[0] - half[0], centre[1] - half[1]],
+                    screen_max: [centre[0] + half[0], centre[1] + half[1]],
+                    diag,
+                    depth,
+                },
+            })
+        })
+        .collect()
 }
 
 /// Render a jointed assembly over a timeline, evaluating geometry once.
@@ -330,11 +824,13 @@ pub fn render_photoreal_animation(
 ) -> Result<AnimateReport, String> {
     check_raster_opts(opts)?;
     let evals_before = crate::document_eval_count();
-    let plan = plan_animation(raw_vcad, an)?;
+    let plan = plan_animation(raw_vcad, an, opts.view)?;
     let AnimationPlan {
         statics,
         parts: part_solids,
         poses,
+        visible,
+        cameras,
         fps,
         eval,
     } = plan;
@@ -369,19 +865,40 @@ pub fn render_photoreal_animation(
 
     // ── frame the camera on the union of every pose ──────────────────────
     // A per-frame fit would make the machine swim about in the canvas; the
-    // union keeps the camera locked and nothing ever leaves the frame.
-    let mut corners: Vec<[f64; 3]> = objects[..static_count]
-        .iter()
-        .flat_map(object_corners)
-        .collect();
-    for pose in &poses {
-        for (obj, t) in objects[static_count..].iter().zip(pose) {
+    // union keeps the camera locked and nothing ever leaves the frame. Only
+    // visible poses count: a part hidden all along must not shrink the shot.
+    let static_corners: Vec<Vec<[f64; 3]>> =
+        objects[..static_count].iter().map(object_corners).collect();
+    let mut corners: Vec<[f64; 3]> = static_corners.iter().flatten().copied().collect();
+    for (pose, vis) in poses.iter().zip(&visible) {
+        for ((obj, t), on) in objects[static_count..].iter().zip(pose).zip(vis) {
             // Bounds under this pose, WITHOUT writing the pose onto the
             // object — the trace loop owns those transforms.
-            corners.extend(object_corners_with(obj, t));
+            if *on {
+                corners.extend(object_corners_with(obj, t));
+            }
         }
     }
-    let framing = frame_view(&corners, opts, pr)?;
+    // One framing per frame: the same one throughout for a fixed camera,
+    // or one per view when the timeline moves the camera.
+    let framings: Vec<crate::photoreal::Framing> = match &cameras {
+        None => vec![frame_view(&corners, opts, pr)?],
+        Some(cams) => {
+            let part_corners =
+                |k: usize, t: &KTransform| object_corners_with(&objects[static_count + k], t);
+            moving_framings(opts, cams, &poses, &visible, &static_corners, &part_corners)?
+                .into_iter()
+                .map(|m| {
+                    frame_view_windowed(
+                        &corners,
+                        &m.opts,
+                        pr,
+                        Some((m.framing.screen_min, m.framing.screen_max)),
+                    )
+                })
+                .collect::<Result<_, _>>()?
+        }
+    };
     let setup = t_setup.elapsed();
 
     std::fs::create_dir_all(&an.out_dir)
@@ -407,18 +924,20 @@ pub fn render_photoreal_animation(
         .collect();
     // Back into the kernel's `Transform`, so the static placements and the
     // per-frame poses are one type the loop below can choose between.
-    let static_transforms: Vec<vcad_kernel::vcad_kernel_math::Transform> = objects[..static_count]
+    let static_transforms: Vec<KTransform> = objects[..static_count]
         .iter()
-        .map(|o| vcad_kernel::vcad_kernel_math::Transform {
+        .map(|o| KTransform {
             matrix: o.transform.matrix,
         })
         .collect();
 
-    for (i, pose) in poses.iter().enumerate() {
+    for (i, (pose, vis)) in poses.iter().zip(&visible).enumerate() {
         let t_frame = Instant::now();
+        let framing = &framings[i.min(framings.len() - 1)];
         let frame_objects: Vec<vcad_kernel_raytrace::pathtrace::Object> = blueprint
             .iter()
             .enumerate()
+            .filter(|(k, _)| *k < static_count || vis[*k - static_count])
             .map(|(k, (bvh, material))| {
                 let transform = if k < static_count {
                     &static_transforms[k]
@@ -432,8 +951,8 @@ pub fn render_photoreal_animation(
                 )
             })
             .collect();
-        let scene = dress_scene(frame_objects, &framing, pr)?;
-        let png = encode_png(trace_frame(&scene, &framing, pr, true), opts)?;
+        let scene = dress_scene(frame_objects, framing, pr)?;
+        let png = encode_png(trace_frame(&scene, framing, pr, true), opts)?;
         let path = an.out_dir.join(format!("frame_{i:04}.png"));
         std::fs::write(&path, png).map_err(|e| format!("write {}: {e}", path.display()))?;
         let elapsed = t_frame.elapsed();
@@ -548,9 +1067,10 @@ fn solid_bbox_corners(solid: &Solid) -> [[f64; 3]; 8] {
 /// Geometry is evaluated once and tessellated once; a frame costs only a
 /// vertex transform per part plus the projection/rasterization, which is why
 /// this tier runs in tens of milliseconds a frame where the path tracer
-/// takes seconds. The camera is pinned across the sequence (see
-/// [`crate::FixedFraming`]), so every PNG has identical dimensions and the
-/// machine stays put while its joints move.
+/// takes seconds. The canvas is pinned across the sequence (see
+/// [`crate::FixedFraming`]), so every PNG has identical dimensions; with no
+/// camera shots the camera itself is pinned too and the machine stays put
+/// while its joints move.
 #[cfg(feature = "raster")]
 pub fn render_drafting_animation(
     raw_vcad: &str,
@@ -573,9 +1093,11 @@ pub fn render_drafting_animation(
         statics,
         parts,
         poses,
+        visible,
+        cameras,
         fps,
         eval,
-    } = plan_animation(raw_vcad, an)?;
+    } = plan_animation(raw_vcad, an, opts.view)?;
 
     let t_setup = Instant::now();
     // Tessellate at exactly the segment count the raster path would have
@@ -594,18 +1116,40 @@ pub fn render_drafting_animation(
         .map(|s| s.name.clone())
         .collect();
 
-    // ── frame the camera on the union of every pose ──────────────────────
-    let mut fb = crate::FramingBuilder::new(opts.view);
-    let identity = KTransform::identity();
-    for s in &static_solids {
-        accumulate_verts(&mut fb, s, &identity);
-    }
-    for pose in &poses {
-        for (s, t) in part_solids.iter().zip(pose) {
-            accumulate_verts(&mut fb, s, t);
+    // ── frame the camera on the union of every visible pose ──────────────
+    let frames: Vec<(RasterOptions, crate::FixedFraming)> = match &cameras {
+        None => {
+            let mut fb = crate::FramingBuilder::new(opts.view);
+            let identity = KTransform::identity();
+            for s in &static_solids {
+                accumulate_verts(&mut fb, s, &identity);
+            }
+            for (pose, vis) in poses.iter().zip(&visible) {
+                for ((s, t), on) in part_solids.iter().zip(pose).zip(vis) {
+                    if *on {
+                        accumulate_verts(&mut fb, s, t);
+                    }
+                }
+            }
+            vec![(opts.clone(), fb.finish()?)]
         }
-    }
-    let framing = fb.finish()?;
+        Some(cams) => {
+            let static_corners: Vec<Vec<[f64; 3]>> = static_solids
+                .iter()
+                .map(|s| {
+                    mesh_box(s)
+                        .map(|b| b.corners().to_vec())
+                        .unwrap_or_default()
+                })
+                .collect();
+            let local: Vec<Option<Aabb>> = part_solids.iter().map(mesh_box).collect();
+            let part_corners = |k: usize, t: &KTransform| posed_corners(local[k], t);
+            moving_framings(opts, cams, &poses, &visible, &static_corners, &part_corners)?
+                .into_iter()
+                .map(|m| (m.opts, m.framing))
+                .collect()
+        }
+    };
     let setup = t_setup.elapsed();
 
     std::fs::create_dir_all(&an.out_dir)
@@ -621,17 +1165,33 @@ pub fn render_drafting_animation(
         articulated: part_solids.len(),
     };
     let total = poses.len();
-    for (i, pose) in poses.iter().enumerate() {
+    let n_static = static_solids.len();
+    for (i, (pose, vis)) in poses.iter().zip(&visible).enumerate() {
         let t_frame = Instant::now();
+        let (frame_opts, framing) = &frames[i.min(frames.len() - 1)];
+        // Hidden parts are skipped outright — their tint and name columns
+        // with them, so the three stay index-aligned.
         let mut frame_solids: Vec<Solid> = static_solids.clone();
-        frame_solids.extend(
-            part_solids
-                .iter()
-                .zip(pose)
-                .map(|(s, t)| s.apply_transform(t)),
-        );
-        let png =
-            crate::raster::render_png_solids_framed(&frame_solids, &tints, &names, opts, &framing)?;
+        let mut frame_tints: Vec<Option<[f64; 3]>> = tints[..n_static].to_vec();
+        let mut frame_names: Vec<Option<String>> = names[..n_static].to_vec();
+        for (k, (s, t)) in part_solids.iter().zip(pose).enumerate() {
+            if vis[k] {
+                frame_solids.push(s.apply_transform(t));
+                frame_tints.push(tints[n_static + k]);
+                frame_names.push(names[n_static + k].clone());
+            }
+        }
+        let png = if frame_solids.is_empty() {
+            crate::raster::blank_png(frame_opts, framing)?
+        } else {
+            crate::raster::render_png_solids_framed(
+                &frame_solids,
+                &frame_tints,
+                &frame_names,
+                frame_opts,
+                framing,
+            )?
+        };
         let path = an.out_dir.join(format!("frame_{i:04}.png"));
         std::fs::write(&path, png).map_err(|e| format!("write {}: {e}", path.display()))?;
         let elapsed = t_frame.elapsed();
@@ -643,6 +1203,33 @@ pub fn render_drafting_animation(
     let evals = crate::document_eval_count() - evals_before;
     debug_assert_eq!(evals, 1, "geometry was evaluated {evals} times, not once");
     Ok(report)
+}
+
+/// Bounds of a mesh-backed solid in its own frame, or `None` if empty.
+#[cfg(feature = "raster")]
+fn mesh_box(solid: &Solid) -> Option<Aabb> {
+    let mesh = solid.to_mesh(0); // mesh-backed: a clone, not a tessellation
+    let mut b = Aabb::empty();
+    for c in mesh.vertices.as_chunks::<3>().0 {
+        b.add([c[0] as f64, c[1] as f64, c[2] as f64]);
+    }
+    (!b.is_empty()).then_some(b)
+}
+
+/// The eight corners of `local` under pose `t` (none for an empty part).
+fn posed_corners(local: Option<Aabb>, t: &KTransform) -> Vec<[f64; 3]> {
+    let Some(b) = local else {
+        return Vec::new();
+    };
+    b.corners()
+        .iter()
+        .map(|c| {
+            let p = t.apply_point(&vcad_kernel::vcad_kernel_math::Point3::new(
+                c[0], c[1], c[2],
+            ));
+            [p.x, p.y, p.z]
+        })
+        .collect()
 }
 
 /// Render a jointed assembly over a timeline with direct BRep ray tracing —
@@ -676,34 +1263,56 @@ pub fn render_raytrace_animation(
         statics,
         parts,
         poses,
+        visible,
+        cameras,
         fps,
         eval,
-    } = plan_animation(raw_vcad, an)?;
+    } = plan_animation(raw_vcad, an, opts.view)?;
 
     let t_setup = Instant::now();
     // Framing from posed bounding boxes: the ray-traced still frames on BVH
     // root AABBs, so matching it here keeps the two paths reading alike.
     // Each part's *local* bbox corners are computed once (a tessellation
     // each, not one per frame) and then merely transformed per pose.
-    let mut fb = crate::FramingBuilder::new(opts.view);
-    for s in &statics {
-        for c in solid_bbox_corners(&s.solid) {
-            fb.add(c);
-        }
-    }
+    let static_corners: Vec<Vec<[f64; 3]>> = statics
+        .iter()
+        .map(|s| solid_bbox_corners(&s.solid).to_vec())
+        .collect();
     let local_corners: Vec<[[f64; 3]; 8]> =
         parts.iter().map(|s| solid_bbox_corners(&s.solid)).collect();
-    for pose in &poses {
-        for (corners, t) in local_corners.iter().zip(pose) {
-            for c in corners {
+    let part_corners = |k: usize, t: &KTransform| -> Vec<[f64; 3]> {
+        local_corners[k]
+            .iter()
+            .map(|c| {
                 let p = t.apply_point(&vcad_kernel::vcad_kernel_math::Point3::new(
                     c[0], c[1], c[2],
                 ));
-                fb.add([p.x, p.y, p.z]);
+                [p.x, p.y, p.z]
+            })
+            .collect()
+    };
+    let frames: Vec<(RasterOptions, crate::FixedFraming)> = match &cameras {
+        None => {
+            let mut fb = crate::FramingBuilder::new(opts.view);
+            for c in static_corners.iter().flatten() {
+                fb.add(*c);
             }
+            for (pose, vis) in poses.iter().zip(&visible) {
+                for (k, t) in pose.iter().enumerate() {
+                    if vis[k] {
+                        part_corners(k, t).into_iter().for_each(|c| fb.add(c));
+                    }
+                }
+            }
+            vec![(opts.clone(), fb.finish()?)]
         }
-    }
-    let framing = fb.finish()?;
+        Some(cams) => {
+            moving_framings(opts, cams, &poses, &visible, &static_corners, &part_corners)?
+                .into_iter()
+                .map(|m| (m.opts, m.framing))
+                .collect()
+        }
+    };
     let setup = t_setup.elapsed();
 
     std::fs::create_dir_all(&an.out_dir)
@@ -719,18 +1328,30 @@ pub fn render_raytrace_animation(
         articulated: parts.len(),
     };
     let total = poses.len();
-    for (i, pose) in poses.iter().enumerate() {
+    for (i, (pose, vis)) in poses.iter().zip(&visible).enumerate() {
         let t_frame = Instant::now();
+        let (frame_opts, framing) = &frames[i.min(frames.len() - 1)];
         let mut scene: Vec<crate::SceneSolid> = statics.clone();
-        scene.extend(parts.iter().zip(pose).map(|(s, t)| crate::SceneSolid {
-            solid: s.solid.apply_transform(t),
-            tint: s.tint,
-            material: s.material.clone(),
-            name: s.name.clone(),
-            labels: s.labels.clone(),
-            id: s.id.clone(),
-        }));
-        let png = crate::render_raytrace_png_solids_framed(&scene, opts, &framing)?;
+        scene.extend(
+            parts
+                .iter()
+                .zip(pose)
+                .zip(vis)
+                .filter(|(_, on)| **on)
+                .map(|((s, t), _)| crate::SceneSolid {
+                    solid: s.solid.apply_transform(t),
+                    tint: s.tint,
+                    material: s.material.clone(),
+                    name: s.name.clone(),
+                    labels: s.labels.clone(),
+                    id: s.id.clone(),
+                }),
+        );
+        let png = if scene.is_empty() {
+            crate::raster::blank_png(frame_opts, framing)?
+        } else {
+            crate::render_raytrace_png_solids_framed(&scene, frame_opts, framing)?
+        };
         let path = an.out_dir.join(format!("frame_{i:04}.png"));
         std::fs::write(&path, png).map_err(|e| format!("write {}: {e}", path.display()))?;
         let elapsed = t_frame.elapsed();
@@ -1068,5 +1689,545 @@ mod tests {
         assert_eq!(seq[0].joints["joint_0"], 0.0);
         assert_eq!(seq[1].joints["joint_0"], 50.0);
         assert_eq!(seq[2].joints["joint_0"], 100.0);
+    }
+
+    // ── non-joint tracks and the camera ──────────────────────────────────
+
+    fn key(t: f64, value: f64) -> AnimKey {
+        AnimKey {
+            t,
+            value,
+            ease: Default::default(),
+        }
+    }
+
+    fn track(target: AnimTarget, keys: Vec<AnimKey>) -> AnimTrack {
+        AnimTrack { target, keys }
+    }
+
+    /// 1 s at 2 fps with the given tracks and shots: frames at t = 0, 0.5, 1.
+    fn timeline(tracks: Vec<AnimTrack>, camera: Vec<vcad_ir::animation::CameraShot>) -> Timeline {
+        Timeline {
+            duration_s: 1.0,
+            fps: 2.0,
+            tracks,
+            camera,
+        }
+    }
+
+    fn shot(
+        start_s: f64,
+        end_s: f64,
+        kind: vcad_ir::animation::CameraShotKind,
+    ) -> vcad_ir::animation::CameraShot {
+        vcad_ir::animation::CameraShot {
+            start_s,
+            end_s,
+            kind,
+        }
+    }
+
+    /// The jointed doc, with an authored explode offset on the arm.
+    fn exploding_doc() -> String {
+        jointed_doc("Revolute", [0.0, 0.0, 1.0]).replace(
+            r#"{ "id": "arm", "partDefId": "arm" }"#,
+            r#"{ "id": "arm", "partDefId": "arm", "explode": { "x": 0, "y": 0, "z": 50 } }"#,
+        )
+    }
+
+    fn options(tl: Timeline, tag: &str) -> AnimateOptions {
+        AnimateOptions {
+            out_dir: scratch_dir(tag),
+            timeline: Some(tl),
+            frames: None,
+            fps: None,
+        }
+    }
+
+    fn small() -> RasterOptions {
+        RasterOptions {
+            size_px: 96,
+            aa: Some(1),
+            ..Default::default()
+        }
+    }
+
+    /// Opaque (drawn) pixels in a written frame.
+    fn coverage(path: &PathBuf) -> usize {
+        image::open(path)
+            .expect("decode frame")
+            .to_rgba8()
+            .pixels()
+            .filter(|p| p.0[3] > 0)
+            .count()
+    }
+
+    fn vis_track(id: &str, keys: Vec<AnimKey>) -> AnimTrack {
+        track(
+            AnimTarget::Visibility {
+                instance_id: id.to_string(),
+            },
+            keys,
+        )
+    }
+
+    /// A visibility-only timeline is enough to animate (no joint track
+    /// needed), and the hidden part is actually gone from its frames.
+    #[test]
+    fn visibility_track_hides_the_part() {
+        let tl = timeline(
+            vec![vis_track("arm", vec![key(0.0, 1.0), key(1.0, 0.0)])],
+            vec![],
+        );
+        let an = options(tl, "vis");
+        let plan = plan_animation(
+            &jointed_doc("Revolute", [0.0, 0.0, 1.0]),
+            &an,
+            crate::View::Isometric,
+        )
+        .expect("plan");
+        let arm = plan.parts.iter().position(|p| p.id == "arm").unwrap();
+        let base = plan.parts.iter().position(|p| p.id == "base").unwrap();
+        // Linear 1 → 0: visible while > 0.5.
+        assert_eq!(
+            plan.visible.iter().map(|v| v[arm]).collect::<Vec<_>>(),
+            [true, false, false]
+        );
+        assert!(plan.visible.iter().all(|v| v[base]), "base is never hidden");
+
+        let report = render_drafting_animation(
+            &jointed_doc("Revolute", [0.0, 0.0, 1.0]),
+            &small(),
+            &an,
+            &mut |_, _, _| {},
+        )
+        .expect("render");
+        let sizes: Vec<_> = report.frames.iter().map(png_size).collect();
+        assert!(
+            sizes.windows(2).all(|w| w[0] == w[1]),
+            "sizes differ: {sizes:?}"
+        );
+        let (with_arm, without) = (coverage(&report.frames[0]), coverage(&report.frames[2]));
+        assert!(
+            without < with_arm,
+            "hiding the arm must remove pixels ({with_arm} → {without})"
+        );
+        let _ = std::fs::remove_dir_all(&an.out_dir);
+    }
+
+    /// A frame with every part hidden is a blank frame of the shared size,
+    /// not a "no solids produced" abort mid-sequence.
+    #[test]
+    fn all_hidden_frame_is_blank_and_same_size() {
+        let off = vec![key(0.0, 1.0), key(1.0, 0.0)];
+        let tl = timeline(
+            vec![vis_track("arm", off.clone()), vis_track("base", off)],
+            vec![],
+        );
+        let an = options(tl, "allhidden");
+        let report = render_drafting_animation(
+            &jointed_doc("Revolute", [0.0, 0.0, 1.0]),
+            &small(),
+            &an,
+            &mut |_, _, _| {},
+        )
+        .expect("render");
+        assert_eq!(png_size(&report.frames[0]), png_size(&report.frames[2]));
+        assert!(coverage(&report.frames[0]) > 0);
+        assert_eq!(coverage(&report.frames[2]), 0, "nothing should be drawn");
+        let _ = std::fs::remove_dir_all(&an.out_dir);
+    }
+
+    #[test]
+    fn visibility_track_on_unknown_instance_fails_with_the_list() {
+        let tl = timeline(vec![vis_track("nope", vec![key(0.0, 1.0)])], vec![]);
+        let err = plan_animation(
+            &jointed_doc("Revolute", [0.0, 0.0, 1.0]),
+            &options(tl, "visnope"),
+            crate::View::Isometric,
+        )
+        .err()
+        .expect("should refuse");
+        assert!(
+            err.contains("nope") && err.contains("arm") && err.contains("base"),
+            "{err}"
+        );
+    }
+
+    /// The explode track moves each instance along its authored offset,
+    /// scaled by the track value, on top of FK.
+    #[test]
+    fn explode_track_offsets_the_pose() {
+        let tl = timeline(
+            vec![track(
+                AnimTarget::Explode,
+                vec![key(0.0, 0.0), key(1.0, 1.0)],
+            )],
+            vec![],
+        );
+        let an = options(tl, "explode");
+        let plan = plan_animation(&exploding_doc(), &an, crate::View::Isometric).expect("plan");
+        let arm = plan.parts.iter().position(|p| p.id == "arm").unwrap();
+        let base = plan.parts.iter().position(|p| p.id == "base").unwrap();
+        let z = |f: usize, k: usize| {
+            plan.poses[f][k]
+                .apply_point(&vcad_kernel::vcad_kernel_math::Point3::new(0.0, 0.0, 0.0))
+                .z
+        };
+        assert!(
+            (z(1, arm) - z(0, arm) - 25.0).abs() < 1e-9,
+            "half exploded: +25 mm"
+        );
+        assert!(
+            (z(2, arm) - z(0, arm) - 50.0).abs() < 1e-9,
+            "fully exploded: +50 mm"
+        );
+        assert!(
+            (z(2, base) - z(0, base)).abs() < 1e-12,
+            "no offset, no motion"
+        );
+
+        let report = render_drafting_animation(&exploding_doc(), &small(), &an, &mut |_, _, _| {})
+            .expect("render");
+        let bytes: Vec<Vec<u8>> = report
+            .frames
+            .iter()
+            .map(|p| std::fs::read(p).unwrap())
+            .collect();
+        assert_ne!(bytes[0], bytes[2], "exploded frames must differ");
+        let _ = std::fs::remove_dir_all(&an.out_dir);
+    }
+
+    /// Explode composes with joints: the offset lands after FK, in world space.
+    #[test]
+    fn explode_composes_with_a_joint_track() {
+        let tl = timeline(
+            vec![
+                track(AnimTarget::Explode, vec![key(0.0, 1.0)]),
+                track(
+                    AnimTarget::Joint {
+                        joint_id: "swing".into(),
+                    },
+                    vec![key(0.0, 0.0), key(1.0, 90.0)],
+                ),
+            ],
+            vec![],
+        );
+        let plan = plan_animation(
+            &exploding_doc(),
+            &options(tl, "explj"),
+            crate::View::Isometric,
+        )
+        .expect("plan");
+        let arm = plan.parts.iter().position(|p| p.id == "arm").unwrap();
+        let p = plan.poses[2][arm]
+            .apply_point(&vcad_kernel::vcad_kernel_math::Point3::new(10.0, 0.0, 0.0));
+        // Rotated 90° about Z (x → y), then lifted 50 mm.
+        assert!(
+            p.x.abs() < 1e-6 && (p.y - 10.0).abs() < 1e-6 && (p.z - 50.0).abs() < 1e-6,
+            "{p:?}"
+        );
+    }
+
+    /// An explode track over a document that declares no offsets would
+    /// render a still life; refuse it and name the missing field.
+    #[test]
+    fn explode_without_offsets_fails_closed() {
+        let tl = timeline(
+            vec![track(
+                AnimTarget::Explode,
+                vec![key(0.0, 0.0), key(1.0, 1.0)],
+            )],
+            vec![],
+        );
+        let err = plan_animation(
+            &jointed_doc("Revolute", [0.0, 0.0, 1.0]),
+            &options(tl, "explnone"),
+            crate::View::Isometric,
+        )
+        .err()
+        .expect("should refuse");
+        assert!(err.contains("explode"), "{err}");
+    }
+
+    #[test]
+    fn parameter_track_fails_closed() {
+        let tl = timeline(
+            vec![
+                track(
+                    AnimTarget::Parameter { name: "w".into() },
+                    vec![key(0.0, 1.0)],
+                ),
+                track(
+                    AnimTarget::Joint {
+                        joint_id: "swing".into(),
+                    },
+                    vec![key(0.0, 0.0), key(1.0, 90.0)],
+                ),
+            ],
+            vec![],
+        );
+        let err = plan_animation(
+            &jointed_doc("Revolute", [0.0, 0.0, 1.0]),
+            &options(tl, "param"),
+            crate::View::Isometric,
+        )
+        .err()
+        .expect("should refuse even next to a joint track");
+        assert!(err.contains("parameter track 'w'"), "{err}");
+    }
+
+    #[test]
+    fn empty_timeline_fails_closed() {
+        let err = plan_animation(
+            &jointed_doc("Revolute", [0.0, 0.0, 1.0]),
+            &options(timeline(vec![], vec![]), "empty"),
+            crate::View::Isometric,
+        )
+        .err()
+        .expect("should refuse");
+        assert!(err.contains("nothing would change"), "{err}");
+        assert!(parse_timeline_spec(r#"{"durationS":1,"tracks":[]}"#).is_err());
+        parse_timeline_spec(
+            r#"{"durationS":1,"camera":[{"startS":0,"endS":1,"kind":{"type":"Turntable","degrees":360}}]}"#,
+        )
+        .expect("a camera-only keyframe file is a valid animation");
+    }
+
+    /// A turntable sweeps the azimuth, every frame keeps one size (even
+    /// with `--auto-aspect`, whose aspect would otherwise follow each view),
+    /// and the frames differ although nothing in the scene moves.
+    #[test]
+    fn turntable_camera_turns_and_keeps_one_size() {
+        use vcad_ir::animation::CameraShotKind;
+        let tl = timeline(
+            vec![],
+            vec![shot(
+                0.0,
+                2.0,
+                CameraShotKind::Turntable {
+                    degrees: 180.0,
+                    elevation_deg: 20.0,
+                },
+            )],
+        );
+        let an = options(tl, "turn");
+        let plan = plan_animation(
+            &jointed_doc("Revolute", [0.0, 0.0, 1.0]),
+            &an,
+            crate::View::Isometric,
+        )
+        .expect("plan");
+        let views: Vec<crate::View> = plan
+            .cameras
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|c| c.view)
+            .collect();
+        assert_eq!(
+            views,
+            [0.0, 45.0, 90.0].map(|az| crate::View::Orbit {
+                azimuth: az,
+                elevation: 20.0
+            })
+        );
+
+        let opts = RasterOptions {
+            auto_aspect: true,
+            ..small()
+        };
+        let report = render_drafting_animation(
+            &jointed_doc("Revolute", [0.0, 0.0, 1.0]),
+            &opts,
+            &an,
+            &mut |_, _, _| {},
+        )
+        .expect("render");
+        let sizes: Vec<_> = report.frames.iter().map(png_size).collect();
+        assert!(
+            sizes.windows(2).all(|w| w[0] == w[1]),
+            "sizes differ: {sizes:?}"
+        );
+        let bytes: Vec<Vec<u8>> = report
+            .frames
+            .iter()
+            .map(|p| std::fs::read(p).unwrap())
+            .collect();
+        assert_ne!(bytes[0], bytes[1]);
+        assert_ne!(bytes[1], bytes[2]);
+        let _ = std::fs::remove_dir_all(&an.out_dir);
+    }
+
+    /// Orbit interpolates; Static honours its direction (which the sampler
+    /// drops) and falls back to `--view`; time before any shot is `--view`.
+    #[test]
+    fn orbit_static_and_gaps_compile_to_views() {
+        use vcad_ir::animation::CameraShotKind;
+        let tl = Timeline {
+            duration_s: 2.0,
+            fps: 2.0,
+            tracks: vec![],
+            camera: vec![
+                shot(
+                    0.5,
+                    1.5,
+                    CameraShotKind::Orbit {
+                        from: [10.0, 0.0],
+                        to: [30.0, 40.0],
+                    },
+                ),
+                shot(
+                    1.5,
+                    2.5,
+                    CameraShotKind::Static {
+                        direction: Some(vcad_ir::Vec3::new(0.0, 0.0, 2.0)),
+                    },
+                ),
+            ],
+        };
+        let plan = plan_animation(
+            &jointed_doc("Revolute", [0.0, 0.0, 1.0]),
+            &options(tl, "orbit"),
+            crate::View::Front,
+        )
+        .expect("plan");
+        let views: Vec<crate::View> = plan.cameras.unwrap().iter().map(|c| c.view).collect();
+        assert_eq!(
+            views[0],
+            crate::View::Front,
+            "before the first shot: --view"
+        );
+        assert_eq!(
+            views[1],
+            crate::View::Orbit {
+                azimuth: 10.0,
+                elevation: 0.0
+            }
+        );
+        assert_eq!(
+            views[2],
+            crate::View::Orbit {
+                azimuth: 20.0,
+                elevation: 20.0
+            }
+        );
+        match views[3] {
+            crate::View::Orbit { elevation, .. } => assert!((elevation - 90.0).abs() < 1e-9),
+            v => panic!("Static direction +Z should look straight down, got {v:?}"),
+        }
+    }
+
+    #[test]
+    fn static_zero_direction_fails_closed() {
+        use vcad_ir::animation::CameraShotKind;
+        let tl = timeline(
+            vec![],
+            vec![shot(
+                0.0,
+                1.0,
+                CameraShotKind::Static {
+                    direction: Some(vcad_ir::Vec3::new(0.0, 0.0, 0.0)),
+                },
+            )],
+        );
+        let err = plan_animation(
+            &jointed_doc("Revolute", [0.0, 0.0, 1.0]),
+            &options(tl, "zero"),
+            crate::View::Isometric,
+        )
+        .err()
+        .expect("should refuse");
+        assert!(err.contains("direction"), "{err}");
+    }
+
+    /// A Focus shot frames its target (here the small arm, dollied in) on
+    /// the same canvas; an unknown target fails with the list of parts.
+    #[test]
+    fn focus_shot_zooms_onto_its_target() {
+        use vcad_ir::animation::CameraShotKind;
+        let focus = |target: &str| {
+            timeline(
+                vec![],
+                vec![shot(
+                    0.25,
+                    0.75,
+                    CameraShotKind::Focus {
+                        target: target.to_string(),
+                        dolly: 0.25,
+                    },
+                )],
+            )
+        };
+        let err = plan_animation(
+            &jointed_doc("Revolute", [0.0, 0.0, 1.0]),
+            &options(focus("nope"), "focusnope"),
+            crate::View::Isometric,
+        )
+        .err()
+        .expect("should refuse");
+        assert!(err.contains("nope") && err.contains("arm"), "{err}");
+
+        let an = options(focus("arm"), "focus");
+        let report = render_drafting_animation(
+            &jointed_doc("Revolute", [0.0, 0.0, 1.0]),
+            &small(),
+            &an,
+            &mut |_, _, _| {},
+        )
+        .expect("render");
+        let sizes: Vec<_> = report.frames.iter().map(png_size).collect();
+        assert!(
+            sizes.windows(2).all(|w| w[0] == w[1]),
+            "sizes differ: {sizes:?}"
+        );
+        // Frame 0 precedes the shot (whole scene); frame 1 is halfway into
+        // it (dolly 0.625 on the arm). Same view, closer camera: the drawn
+        // area grows.
+        let (wide, close) = (coverage(&report.frames[0]), coverage(&report.frames[1]));
+        assert!(close > wide, "focus should zoom in ({wide} → {close} px)");
+        let _ = std::fs::remove_dir_all(&an.out_dir);
+    }
+
+    /// The ray-traced tier honours the same plan: visibility and camera.
+    #[cfg(feature = "raytrace")]
+    #[test]
+    fn raytrace_tier_honours_visibility_and_camera() {
+        use vcad_ir::animation::CameraShotKind;
+        let tl = timeline(
+            vec![vis_track("arm", vec![key(0.0, 1.0), key(1.0, 0.0)])],
+            vec![shot(
+                0.0,
+                2.0,
+                CameraShotKind::Turntable {
+                    degrees: 90.0,
+                    elevation_deg: 30.0,
+                },
+            )],
+        );
+        let an = options(tl, "rt");
+        let opts = RasterOptions {
+            size_px: 48,
+            ..Default::default()
+        };
+        let report = render_raytrace_animation(
+            &jointed_doc("Revolute", [0.0, 0.0, 1.0]),
+            &opts,
+            &an,
+            &mut |_, _, _| {},
+        )
+        .expect("render");
+        let sizes: Vec<_> = report.frames.iter().map(png_size).collect();
+        assert!(
+            sizes.windows(2).all(|w| w[0] == w[1]),
+            "sizes differ: {sizes:?}"
+        );
+        let bytes: Vec<Vec<u8>> = report
+            .frames
+            .iter()
+            .map(|p| std::fs::read(p).unwrap())
+            .collect();
+        assert_ne!(bytes[0], bytes[2]);
+        let _ = std::fs::remove_dir_all(&an.out_dir);
     }
 }

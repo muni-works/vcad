@@ -4,7 +4,7 @@ pub mod conform;
 pub mod csg;
 
 pub use vcad_kernel_tessellate::mesh_ray::{
-    point_in_mesh, remove_interior_membranes, MeshRayIndex,
+    point_in_mesh, remove_interior_membranes, strip_membranes_once, MeshRayIndex,
 };
 
 use std::collections::HashMap;

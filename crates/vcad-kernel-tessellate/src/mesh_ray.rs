@@ -394,9 +394,12 @@ pub fn remove_interior_membranes(mesh: &mut TriangleMesh) {
 const PARALLEL_PROBE_MIN_TRIS: usize = 4096;
 
 /// One membrane-stripping pass; returns whether anything was removed.
-/// Exposed at crate level so [`crate::repair_watertightness`] can use it
-/// without recursing back into itself.
-pub(crate) fn strip_membranes_once(mesh: &mut TriangleMesh) -> bool {
+///
+/// Unlike [`remove_interior_membranes`] this does not run the
+/// watertightness repair afterwards — for callers that run
+/// [`crate::repair_watertightness`] themselves next (which strips again
+/// on every round), so the repair is not paid for twice.
+pub fn strip_membranes_once(mesh: &mut TriangleMesh) -> bool {
     let ntri = mesh.indices.len() / 3;
     if ntri == 0 {
         return false;
