@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-17-animate-visibility-explode-camera",
+  "version": "0.11.0",
+  "date": "2026-11-17",
+  "category": "feat",
+  "title": "vcad-render --animate plays visibility, explode and camera",
+  "summary": "Timeline visibility tracks, the Explode track (authored per-instance offsets) and camera shots (turntable/orbit/focus/static) now render; parameter tracks are refused instead of silently ignored.",
+  "features": ["render", "animation", "cli"]
+}

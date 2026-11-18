@@ -1,0 +1,9 @@
+{
+  "id": "2026-11-17-crossing-tubes-analytic",
+  "version": "0.11.0",
+  "date": "2026-11-17",
+  "category": "perf",
+  "title": "Tees and crosses of tubes stay true B-reps, in seconds",
+  "summary": "Booleans of crossing tubes (tees, 6-way crosses, flanges cut through saddle strips, three mutually crossing tubes) no longer fall back to triangle soup: a DN40 tee evaluates in ~2 s, a cross in ~4 s.",
+  "features": ["booleans", "kernel", "vacuum"]
+}

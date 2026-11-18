@@ -65,6 +65,7 @@ pub mod field3d_spec;
 pub mod fom;
 pub mod optimize;
 pub mod plasmoid;
+pub mod plasmoid_fluid;
 pub mod poisson;
 pub mod pops;
 pub mod power;

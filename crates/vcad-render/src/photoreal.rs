@@ -456,6 +456,19 @@ pub(crate) fn frame_view(
     opts: &RasterOptions,
     pr: &PhotorealOptions,
 ) -> Result<Framing, String> {
+    frame_view_windowed(points, opts, pr, None)
+}
+
+/// [`frame_view`], with the screen window (min, max in the view's
+/// right/down basis, mm) optionally pinned instead of fitted to `points` —
+/// the moving-camera animation path's entry point. The studio rig, floor and
+/// aperture still follow `points`, so they hold still across the shot.
+pub(crate) fn frame_view_windowed(
+    points: &[[f64; 3]],
+    opts: &RasterOptions,
+    pr: &PhotorealOptions,
+    window: Option<([f64; 2], [f64; 2])>,
+) -> Result<Framing, String> {
     let cam_dir = normalize(opts.view.cam());
     let right = normalize(opts.view.right());
     let down = normalize(opts.view.down());
@@ -477,6 +490,10 @@ pub(crate) fn frame_view(
         }
     }
 
+    if let Some((wmin, wmax)) = window {
+        min = wmin;
+        max = wmax;
+    }
     let ex = max[0] - min[0];
     let ey = max[1] - min[1];
     let extent = ex.max(ey);

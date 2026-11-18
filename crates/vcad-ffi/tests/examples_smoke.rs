@@ -27,13 +27,11 @@ use vcad_ir::Document;
 /// Examples (repo-relative) whose evaluation takes tens of minutes in the
 /// current boolean kernel. Keep this list short and say why.
 ///
-/// - `fusor-chamber.loon`: built from `std:vacuum.*` parts whose own
-///   evaluation is already gated as heavy in
-///   `crates/vcad-eval/tests/vacuum_parts.rs` (`HEAVY`: the DN100 spherical
-///   cube alone is ~6.5 min on mew, each CF reducer ~30 s). On CI it took
-///   1067–2428 s, alone pushing the Rust test shard into its 45-minute
-///   timeout.
-const HEAVY: &[&str] = &["examples/vacuum/fusor-chamber.loon"];
+/// Empty today. `examples/vacuum/fusor-chamber.loon` was here while it took
+/// 1067–2428 s on CI: its DN100 spherical cube's port bores were mis-rotated
+/// into each other, and a tee fell back to the mesh boolean. Both are fixed
+/// and all nine roots stay analytic (~7 s in release).
+const HEAVY: &[&str] = &[];
 
 /// Wall-clock budget for one non-heavy example (load + engine open +
 /// evaluate). Every non-heavy example takes ~0.1–12 s; the budget is

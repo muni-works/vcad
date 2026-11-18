@@ -4272,6 +4272,34 @@ mod raster {
         )
     }
 
+    /// An animation frame with nothing in it: the canvas a pinned
+    /// `framing` would produce, filled with the theme's paper and fully
+    /// transparent — what a frame of drawn geometry looks like everywhere
+    /// it draws none. Used when visibility tracks hide every part.
+    pub(crate) fn blank_png(
+        opts: &RasterOptions,
+        framing: &FixedFraming,
+    ) -> Result<Vec<u8>, String> {
+        let canvas = canvas_for(
+            opts,
+            framing.screen_max[0] - framing.screen_min[0],
+            framing.screen_max[1] - framing.screen_min[1],
+        );
+        let pal = opts.theme.palette();
+        let frame = Frame {
+            rgb: pal
+                .paper_rgb
+                .iter()
+                .copied()
+                .cycle()
+                .take(canvas.w * canvas.h * 3)
+                .collect(),
+            mask: vec![0; canvas.w * canvas.h],
+            canvas,
+        };
+        encode_png(frame, opts)
+    }
+
     /// Render pre-evaluated solids to RGBA PNG bytes with a transparent
     /// background, monochrome (no material tints). See [`render_png_str`].
     pub fn render_png_solids(solids: &[Solid], opts: &RasterOptions) -> Result<Vec<u8>, String> {

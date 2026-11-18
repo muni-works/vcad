@@ -69,6 +69,12 @@ jobs:
         run: |
           ./build-ffi.sh
           ./build-tc-ffi.sh "$GITHUB_WORKSPACE/tang"
+          # Both libs carry a Rust panic runtime and the app link keeps one.
+          # An abort runtime in either makes a kernel panic kill the app
+          # (1.0.3-beta.5). Each build script checks its own lib; this is the
+          # pair, stated once where a release reads it. bundle.sh and
+          # release.sh then check the linked binary itself.
+          ./scripts/check-unwind.sh --lib Libs/libvcad_ffi.a --lib Libs/libtang_compress_ffi.a
 
       # Shared ecto org signing secrets (same cert + API key as ecto/tang;
       # see docs/mac-release.md).

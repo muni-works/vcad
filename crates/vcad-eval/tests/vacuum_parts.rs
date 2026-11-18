@@ -68,7 +68,6 @@ fn eval_part(path: &str, p: Value) -> (f64, [f64; 3], [f64; 3]) {
 const HEAVY: &[&str] = &[
     "vacuum.cf.reducer",
     "vacuum.cross",
-    "vacuum.chamber.spherical-cube",
     "vacuum.chamber.spherical-octagon",
 ];
 
@@ -139,6 +138,131 @@ fn knife_edge_adds_material_inside_the_recess() {
         "knife edge removed material: {edged} vs {plain}"
     );
     assert!(hi[2] < 1e-3, "nothing may stand proud of the sealing face");
+}
+
+/// (boundary, non-manifold, folded) edges of a mesh welded at 0.1 µm.
+/// Folded = the two triangles on an edge wind it the same way, or lie back
+/// to back.
+fn edge_census(pos: &[f32], idx: &[u32]) -> (usize, usize, usize) {
+    let p = |i: u32| {
+        let k = 3 * i as usize;
+        [pos[k] as f64, pos[k + 1] as f64, pos[k + 2] as f64]
+    };
+    let key = |i: u32| p(i).map(|c| (c * 1e4).round() as i64);
+    let normal = |t: usize| {
+        let (a, b, c) = (p(idx[3 * t]), p(idx[3 * t + 1]), p(idx[3 * t + 2]));
+        let (u, w) = (
+            [b[0] - a[0], b[1] - a[1], b[2] - a[2]],
+            [c[0] - a[0], c[1] - a[1], c[2] - a[2]],
+        );
+        let n = [
+            u[1] * w[2] - u[2] * w[1],
+            u[2] * w[0] - u[0] * w[2],
+            u[0] * w[1] - u[1] * w[0],
+        ];
+        let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-300);
+        n.map(|c| c / l)
+    };
+    type Key = [i64; 3];
+    let mut edges: HashMap<(Key, Key), Vec<(usize, bool)>> = HashMap::new();
+    for (t, tri) in idx.chunks(3).enumerate() {
+        let k = [key(tri[0]), key(tri[1]), key(tri[2])];
+        for i in 0..3 {
+            let (a, b) = (k[i], k[(i + 1) % 3]);
+            if a != b {
+                edges
+                    .entry((a.min(b), a.max(b)))
+                    .or_default()
+                    .push((t, a < b));
+            }
+        }
+    }
+    let (mut boundary, mut non_manifold, mut folded) = (0, 0, 0);
+    for uses in edges.values() {
+        match uses[..] {
+            [_] => boundary += 1,
+            [(t0, d0), (t1, d1)] => {
+                let (n0, n1) = (normal(t0), normal(t1));
+                let dot: f64 = (0..3).map(|i| n0[i] * n1[i]).sum();
+                folded += usize::from(d0 == d1 || dot < -0.9);
+            }
+            _ => non_manifold += 1,
+        }
+    }
+    (boundary, non_manifold, folded)
+}
+
+/// The spherical cube at `detail = "envelope"`: one closed analytic solid at
+/// its closed-form volume.
+///
+/// It used to come back `Analytic` and wrong: the body was seven overlapping
+/// shells (each flange disc concatenated onto the box-trimmed sphere, not
+/// fused), the bores then left two membranes per port (4,848 folded edges on
+/// DN63) and the volume read +4.6%.
+#[test]
+fn spherical_cube_is_one_clean_solid_at_closed_form_volume() {
+    use vcad_parts::vacuum::chambers::chamber_geom;
+    let pi = std::f64::consts::PI;
+    for size in ["DN63", "DN100"] {
+        let d = cf(size).unwrap();
+        let g = chamber_geom(d);
+        let doc = build_part(
+            "vacuum.chamber.spherical-cube",
+            &params(json!({"size": size})),
+        )
+        .unwrap();
+        let scene = evaluate_document(
+            &doc,
+            &EvalOptions {
+                skip_clash_detection: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(scene.failures.is_empty(), "{size}: {:?}", scene.failures);
+        let part = &scene.parts[0];
+        let solid = part.solid.as_ref().expect("solid");
+        assert_eq!(
+            solid.fidelity().as_str(),
+            "analytic",
+            "{size}: {:?}",
+            solid
+                .degradations()
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+        );
+        let m = &part.mesh;
+        assert_eq!(
+            edge_census(&m.positions, &m.indices),
+            (0, 0, 0),
+            "{size}: boundary / non-manifold / folded edges"
+        );
+
+        // Sphere cap beyond a plane at distance `at`, and sphere slab
+        // between two planes.
+        let cap = |r: f64, at: f64| pi * (r - at).powi(2) * (2.0 * r + at) / 3.0;
+        let slab = |r: f64, a: f64, b: f64| pi * (r * r * (b - a) - (b.powi(3) - a.powi(3)) / 3.0);
+        let (r_fl, r_b, e) = (d.od / 2.0, d.bore() / 2.0, g.h + 1.0);
+        // Body: outer sphere less six caps, plus each flange disc less the
+        // 1 mm slab it shares with the sphere.
+        let body = 4.0 / 3.0 * pi * g.r_out.powi(3) - 6.0 * cap(g.r_out, e)
+            + 6.0 * (pi * r_fl * r_fl * d.thickness - slab(g.r_out, g.h, e));
+        // Removed: the cavity sphere plus each bore from 0.6·r_i to the
+        // face, less what bore and cavity share.
+        let (z0, zc) = (0.6 * g.r_i, (g.r_i * g.r_i - r_b * r_b).sqrt());
+        let shared = pi * r_b * r_b * (zc - z0) + cap(g.r_i, zc);
+        let removed =
+            4.0 / 3.0 * pi * g.r_i.powi(3) + 6.0 * (pi * r_b * r_b * (g.c2f - z0) - shared);
+        let exact = body - removed;
+        let vol = mesh_volume(&m.positions, &m.indices);
+        // Measured +0.035% (DN63) and +0.059% (DN100); the un-fused body
+        // alone is +2.9%.
+        assert!(
+            (vol - exact).abs() / exact < 0.003,
+            "{size}: volume {vol:.0} vs closed form {exact:.0}"
+        );
+    }
 }
 
 #[test]

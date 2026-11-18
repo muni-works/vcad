@@ -586,6 +586,17 @@ fn boolean_op_reported_untimed(
         (result, report)
     };
 
+    // Test hook for the loud path downstream of the missed-cut probe
+    // (`LossKind::BooleanMissedCut` → eval/render warnings, never cached).
+    // Real missed cuts are kernel bugs that get fixed, so a geometric
+    // fixture for them goes stale (the #1220 adapter did once #1230 landed);
+    // this condemns every difference's analytic result unconditionally.
+    if op == BooleanOp::Difference && std::env::var_os("VCAD_FORCE_MISSED_CUT").is_some() {
+        let (result, mut report) = keep(result);
+        report.missed_cut = true;
+        return Ok((result, report));
+    }
+
     if broken {
         let Some((mesh_a, mesh_b)) = &operands else {
             // Nothing to re-cut with — the condemned B-rep is all there is.
