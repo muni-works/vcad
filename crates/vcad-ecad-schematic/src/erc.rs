@@ -236,7 +236,10 @@ fn check_pin_type_conflicts(sheet: &SchematicSheet, violations: &mut Vec<ErcViol
 /// Names of netlist nets that carry a power flag. When several names merged
 /// into one net the netlist keeps only one of them, so a flag on any explicit
 /// name of a merged net flags the whole net.
-fn flagged_net_names<'a>(sheet: &SchematicSheet, netlist: &'a crate::Netlist) -> HashSet<&'a str> {
+pub(crate) fn flagged_net_names<'a>(
+    sheet: &SchematicSheet,
+    netlist: &'a crate::Netlist,
+) -> HashSet<&'a str> {
     let flags: HashSet<&str> = sheet.power_flags.iter().map(|f| f.net.as_str()).collect();
     let mut flagged_pins: HashSet<String> = HashSet::new();
     if let Some(explicit) = &sheet.nets {
