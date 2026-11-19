@@ -15,6 +15,11 @@ vcad-ir = { workspace = true }
 vcad-ecad-schematic = { workspace = true }
 vcad-receipt = { workspace = true }
 thiserror = { workspace = true }
+serde_json = { workspace = true }
+# sha256 addressing for pinned gateware artifacts.
+sha2 = "0.10"
+# `hdl`: dlopen the Verilator-built gateware model (board_sim::verilated).
+libloading = { version = "0.8", optional = true }
 serde = { workspace = true }
 # Scalar trait — lets the closed-form leaves be generic so ExprId can flow
 # through them for symbolic autodiff (the differentiable-design foothold).
@@ -27,6 +32,11 @@ vcad-kernel-tolerance = { workspace = true }
 # saturating iron reuses the same arctangent law (and its Newton inversion)
 # that the axisymmetric FV solver uses, rather than growing a second one.
 vcad-kernel-em = { workspace = true }
+
+[features]
+# Pin-level board simulation against Verilated gateware. Off by default: it
+# needs verilator + a C++ compiler on the host at run time (not at build).
+hdl = ["dep:libloading"]
 
 [dev-dependencies]
 # Used only to prove differentiability: trace a leaf, diff it, and check the

@@ -1,0 +1,118 @@
+{
+ "_comment": "MISWIRED copy of board_ulx3s_subset.json: FPGA L4/M1 swapped between the FTDI_RXD and FTDI_TXD nets (classic UART TX/RX swap). Positions added (unique, so no coordinate coincidence) for SchematicSheet.",
+ "title": "linux-board-spike ULX3S subset",
+ "components": [
+  {
+   "ref": "U1",
+   "value": "LFE5U-85F-6BG381C",
+   "footprintId": "CABGA-381",
+   "pins": [
+    {
+     "number": "L4",
+     "name": "PL38A",
+     "pin_type": "Bidirectional",
+     "position": {
+      "x": 0.0,
+      "y": 0.0
+     }
+    },
+    {
+     "number": "M1",
+     "name": "PL41A",
+     "pin_type": "Bidirectional",
+     "position": {
+      "x": 0.0,
+      "y": 10.0
+     }
+    },
+    {
+     "number": "M3",
+     "name": "PL41B",
+     "pin_type": "Bidirectional",
+     "position": {
+      "x": 0.0,
+      "y": 20.0
+     }
+    },
+    {
+     "number": "N1",
+     "name": "PL44A",
+     "pin_type": "Bidirectional",
+     "position": {
+      "x": 0.0,
+      "y": 30.0
+     }
+    }
+   ],
+   "position": {
+    "x": 0.0,
+    "y": 0.0
+   }
+  },
+  {
+   "ref": "U2",
+   "value": "FT231XS",
+   "footprintId": "SSOP-20",
+   "pins": [
+    {
+     "number": "1",
+     "name": "TXD",
+     "pin_type": "Output",
+     "position": {
+      "x": 0.0,
+      "y": 0.0
+     }
+    },
+    {
+     "number": "2",
+     "name": "DTR",
+     "pin_type": "Output",
+     "position": {
+      "x": 0.0,
+      "y": 10.0
+     }
+    },
+    {
+     "number": "3",
+     "name": "RTS",
+     "pin_type": "Output",
+     "position": {
+      "x": 0.0,
+      "y": 20.0
+     }
+    },
+    {
+     "number": "5",
+     "name": "RXD",
+     "pin_type": "Input",
+     "position": {
+      "x": 0.0,
+      "y": 30.0
+     }
+    }
+   ],
+   "position": {
+    "x": 100.0,
+    "y": 0.0
+   }
+  }
+ ],
+ "nets": {
+  "FTDI_RXD": [
+   "U1.M1",
+   "U2.5"
+  ],
+  "FTDI_TXD": [
+   "U1.L4",
+   "U2.1"
+  ],
+  "FTDI_RTS": [
+   "U1.M3",
+   "U2.3"
+  ],
+  "FTDI_DTR": [
+   "U1.N1",
+   "U2.2"
+  ]
+ }
+}
