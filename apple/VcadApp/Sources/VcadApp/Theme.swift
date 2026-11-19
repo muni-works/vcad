@@ -173,11 +173,22 @@ struct KeyValueRow: View {
     let value: String
     init(_ key: String, _ value: String) { self.key = key; self.value = value }
     var body: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text(key).foregroundStyle(.secondary)
-            Spacer(minLength: Theme.Space.s)
-            Text(value).monospacedDigit().multilineTextAlignment(.trailing)
-                .textSelection(.enabled)
+        // Side by side when the value fits on one line; otherwise the value
+        // goes under its key. In the 170 pt inspector "508.4 × 262.0 ×
+        // 415.3 mm" used to wrap mid-number, ragged against the key.
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(key).foregroundStyle(.secondary)
+                Spacer(minLength: Theme.Space.s)
+                Text(value).monospacedDigit().lineLimit(1).fixedSize()
+                    .textSelection(.enabled)
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(key).foregroundStyle(.secondary)
+                Text(value).monospacedDigit().lineLimit(1).minimumScaleFactor(0.75)
+                    .textSelection(.enabled)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .font(.callout)
         .accessibilityElement(children: .combine)

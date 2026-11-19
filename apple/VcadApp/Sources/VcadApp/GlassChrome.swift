@@ -1743,6 +1743,7 @@ struct ShortcutSheet: View {
                         GridRow { globalColumn; navigationColumn }
                     }
                 }
+                .scrollIndicators(.visible)
                 .frame(maxHeight: 420)
             }
         }

@@ -259,6 +259,7 @@ struct AgentSettingsForm: View {
         } footer: {
             Text("Any OpenAI-compatible endpoint works, including a local tang-llm server. The key is stored in your Keychain. Leave Model empty to use the one the endpoint lists. Environment overrides: FROG_BASE_URL, FROG_API_KEY, FROG_MODEL, FROG_SUPPORTS_IMAGES.")
                 .font(.caption).foregroundStyle(.secondary)
+                .multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }

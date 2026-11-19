@@ -163,6 +163,7 @@ struct AgentConnectionsForm: View {
         } footer: {
             Text("vcad registers itself as an MCP server (`vcad mcp` when installed, else npx -y @vcad/mcp) in each agent's config. Disconnect removes only what vcad added; a vcad entry you wrote yourself is never touched. Each file is backed up once to <file>.vcad-backup.")
                 .font(.caption).foregroundStyle(.secondary)
+                .multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
         }
         .onAppear(perform: refresh)
     }

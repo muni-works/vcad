@@ -63,6 +63,33 @@ enum UIAuditDemo {
             }
         }
 
+        /// Every workspace (Fab's CNC studio included), the ··· palette on
+        /// every tab, history, the shortcut sheet, the command palette, and a
+        /// selection with Measurements open.
+        func surfaces(_ p: String) async {
+            for space in DockSpace.allCases {
+                ui.enter(space, model: m)
+                await snap("\(p)-\(space.rawValue)")
+            }
+            m.workspace = .manufacture; await snap("\(p)-cnc-studio")
+            ui.enter(.design, model: m)
+            for space in DockSpace.allCases {
+                ui.space = space
+                ui.paletteOpen = true
+                await snap("\(p)-palette-\(space.rawValue)")
+                ui.paletteOpen = false
+                await wait(0.3)
+            }
+            ui.space = .design
+            ui.historyOpen = true; await snap("\(p)-history"); ui.historyOpen = false; await wait(0.5)
+            ui.shortcutsShown = true; await snap("\(p)-shortcuts"); ui.shortcutsShown = false; await wait(0.5)
+            m.showsCommandPalette = true; await snap("\(p)-command-palette"); m.showsCommandPalette = false
+            let shown = m.measurementsShown
+            m.selectParts([0]); m.measurementsShown = true
+            await snap("\(p)-selected-measurements")
+            m.measurementsShown = shown; m.selectParts([])
+        }
+
         // Released to the desktop first: chrome floats over whatever is behind.
         ctl.setWindowed(false)
         for (scheme, appearance) in [("dark", NSAppearance.Name.darkAqua), ("light", .aqua)] {
@@ -71,8 +98,8 @@ enum UIAuditDemo {
             await snap("released-\(scheme)")
             m.distance = d * 0.32
             await snap("released-\(scheme)-close")
-            ui.paletteOpen = true; await snap("released-\(scheme)-palette"); ui.paletteOpen = false
             m.distance = d
+            await surfaces("released-\(scheme)")
         }
 
         let small = NSSize(width: 820, height: 620), large = NSSize(width: 1600, height: 1000)
@@ -84,24 +111,7 @@ enum UIAuditDemo {
                     var f = w.frame; f.size = size
                     w.setFrame(f, display: true)
                 }
-                let p = "\(scheme)-\(sizeName)"
-                for space in DockSpace.allCases {
-                    ui.enter(space, model: m)
-                    await snap("\(p)-\(space.rawValue)")
-                }
-                ui.enter(.design, model: m)
-                for space in DockSpace.allCases {
-                    ui.space = space
-                    ui.paletteOpen = true
-                    await snap("\(p)-palette-\(space.rawValue)")
-                    ui.paletteOpen = false
-                    await wait(0.3)
-                }
-                ui.space = .design
-                ui.historyOpen = true; await snap("\(p)-history"); ui.historyOpen = false
-                ui.shortcutsShown = true; await snap("\(p)-shortcuts"); ui.shortcutsShown = false
-                m.showsCommandPalette = true; await snap("\(p)-command-palette"); m.showsCommandPalette = false
-                m.selectParts([0]); await snap("\(p)-selected"); m.selectParts([])
+                await surfaces("\(scheme)-\(sizeName)")
             }
         }
         // Settings and the welcome window, in both appearances.
@@ -124,12 +134,34 @@ enum UIAuditDemo {
             }
             log += String(format: "%@-settings fitting=%.0fx%.0f\n", scheme, fit.width, fit.height)
             win.contentView = nil
+            for (tab, view) in [("agents", AnyView(Form { AgentConnectionsForm() }.formStyle(.grouped))),
+                                ("agent", AnyView(Form { AgentSettingsForm() }.formStyle(.grouped))),
+                                ("renderer", AnyView(Form { RendererSettingsForm() }.formStyle(.grouped)))] {
+                offscreen(view.frame(width: 480), appearance: appearance,
+                          to: url.appendingPathComponent("\(scheme)-settings-\(tab).png"))
+            }
             WelcomeWindowController.shared.show(model: m)
             await snap("\(scheme)-welcome")
         }
         NSApp.appearance = nil
         try? log.write(to: url.appendingPathComponent("windows.txt"), atomically: true, encoding: .utf8)
         FileHandle.standardError.write(Data("[VCAD_UI_AUDIT] done → \(dir)\n".utf8))
+    }
+
+    /// A view laid out in an offscreen window and drawn by AppKit.
+    private static func offscreen(_ view: some View, appearance: NSAppearance.Name, to file: URL) {
+        let host = NSHostingView(rootView: view)
+        host.frame = NSRect(x: 0, y: 0, width: 600, height: 900)
+        host.frame = NSRect(origin: .zero, size: host.fittingSize)
+        let win = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+        win.appearance = NSAppearance(named: appearance)
+        win.contentView = host
+        host.layoutSubtreeIfNeeded(); host.display()
+        if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+            host.cacheDisplay(in: host.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: file)
+        }
+        win.contentView = nil
     }
 
     /// The window as the window server composites it (glass included) when

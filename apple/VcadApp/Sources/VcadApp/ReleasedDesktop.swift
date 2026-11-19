@@ -882,9 +882,10 @@ struct ReleasedOverlayView: View {
             if !fullBleed { Color.clear.frame(height: Glass.toolbarHeight + (model.isWindowed ? 0 : 20)) }
             // One viewport for the window's whole life. Drawing and
             // Electronics cover it rather than replace it: tearing the ARView
-            // down and building a second one left the new view rendering from
-            // the scene origin, inside the model, black with a giant gizmo,
-            // every time you came back from Drawing.
+            // down and building a second one on the way back left the new view
+            // drawing the scene wrong — near-black, the model gone but for a
+            // sliver, the gizmo filling the window (as if the camera sat
+            // inside the model) — while the model's camera state was intact.
             ZStack {
                 viewport.frame(maxWidth: .infinity, maxHeight: .infinity)
                     .opacity(showsViewport ? 1 : 0)
