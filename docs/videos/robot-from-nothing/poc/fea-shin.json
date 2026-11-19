@@ -1,0 +1,8 @@
+{
+  "part_index": 0,
+  "elastic": {"youngs_modulus_mpa": 70300.0, "poisson": 0.33, "yield_strength_mpa": 193.0},
+  "resolution": 48,
+  "levels": 2,
+  "supports": [{"region": {"min": [-47.0, 32.0, 16.0], "max": [47.0, 37.2, 47.0]}}],
+  "loads": [{"region": {"min": [-47.0, 32.0, -278.4], "max": [47.0, 37.2, -262.0]}, "force": [80.0, 0.0, 265.0]}]
+}

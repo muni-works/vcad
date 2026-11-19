@@ -1,0 +1,11 @@
+floating_base=true action_dim=22 obs_dim=318 joints=142
+vcad-physics: unstable PD gains — joint 'joint_124': kp=150.0000 with reflected inertia 4.817e-4 gives omega*dt = 0.56 (unstable above ~0.3); raise substeps to >= 40x or lower kp below 43.3515
+vcad-physics: unstable PD gains — joint 'joint_127': kp=150.0000 with reflected inertia 7.053e-4 gives omega*dt = 0.46 (unstable above ~0.3); raise substeps to >= 40x or lower kp below 63.4758
+vcad-physics: unstable PD gains — joint 'joint_134': kp=150.0000 with reflected inertia 4.816e-4 gives omega*dt = 0.56 (unstable above ~0.3); raise substeps to >= 40x or lower kp below 43.3467
+vcad-physics: unstable PD gains — joint 'joint_137': kp=150.0000 with reflected inertia 6.963e-4 gives omega*dt = 0.46 (unstable above ~0.3); raise substeps to >= 40x or lower kp below 62.6678
+gain warning: GainWarning { joint_id: "joint_134", kp: 150.0, reflected_inertia: 0.0004816301646669681, omega_dt: 0.5580701717915293, max_stable_kp: 43.34671070231047, min_substeps: 40 }
+gain warning: GainWarning { joint_id: "joint_124", kp: 150.0, reflected_inertia: 0.00048168335634565064, omega_dt: 0.558039357452166, max_stable_kp: 43.35149795293714, min_substeps: 40 }
+gain warning: GainWarning { joint_id: "joint_137", kp: 150.0, reflected_inertia: 0.000696309016815861, omega_dt: 0.46413534327612527, max_stable_kp: 62.66780556030526, min_substeps: 40 }
+gain warning: GainWarning { joint_id: "joint_127", kp: 150.0, reflected_inertia: 0.0007052868966941195, omega_dt: 0.46117179953555565, max_stable_kp: 63.47581467259178, min_substeps: 40 }
+reset base_pose=Some([0.0, 0.0, 0.5892000000000001, 1.0, 0.0, 0.0, 0.0])
+EXIT 0
