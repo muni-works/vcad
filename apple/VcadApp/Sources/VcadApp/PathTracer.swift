@@ -473,6 +473,7 @@ extension EditorModel {
     #endif
 }
 
+#if os(macOS)
 // MARK: - the view
 
 /// The IOSurface, shown by a CALayer over the viewport, driven by a display
@@ -561,6 +562,7 @@ final class PathTraceNSView: NSView {
         }
     }
 }
+#endif  // os(macOS) — the path-traced NSView viewport
 
 extension EditorModel {
     /// A requested still waits for this many samples before it's saved.

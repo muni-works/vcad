@@ -1,5 +1,9 @@
 import SwiftUI
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
 import RealityKit
 
 // Native CNC shell. Its viewport remains the existing ReleasedScene; these
@@ -74,7 +78,9 @@ struct WorkspaceHeader: View {
                         Button("Save As…") { saveAsPanel(model) }
                         Button("Revert to Saved") { model.revertDocument() }.disabled(!model.documentDirty)
                         Divider()
-                        Button("Show in Finder") { model.showInFinder() }
+                        #if os(macOS)
+                    Button("Show in Finder") { model.showInFinder() }
+                    #endif
                     } else if model.usesDocumentTree {
                         Button("Save…") { saveAsPanel(model) }
                     } else {

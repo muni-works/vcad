@@ -1,5 +1,9 @@
 import SwiftUI
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
 
 /// The drawer above the machine bar: the controller terminal, the job's
 /// G-code, or saved macros — one at a time, opened from the bar.

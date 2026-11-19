@@ -8,7 +8,11 @@
 // full scene is on screen and reports mean / p5 frame rate from RealityKit's
 // own scene-update events; VCAD_PERF_EXIT=1 quits after the report, so
 // scripts/launch-perf.sh can time a cold launch end to end.
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
 import Combine
 import Foundation
 import RealityKit

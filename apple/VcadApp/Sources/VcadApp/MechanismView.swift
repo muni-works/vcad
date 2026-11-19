@@ -1,5 +1,9 @@
-#if os(macOS)
+#if os(macOS) || os(iOS)
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
 import RealityKit
 import simd
 
@@ -223,6 +227,7 @@ extension EditorModel {
     func installMechanismKeys() {
         let pres = MechanismPresentation.shared
         guard pres.spaceMonitor == nil else { return }
+        #if os(macOS)   // no space bar on a phone: the skeleton is a Mac gesture
         pres.spaceMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .keyUp]) { [weak self] event in
             guard event.keyCode == 49, event.modifierFlags.intersection([.command, .option, .control]).isEmpty else { return event }
             if NSApp.keyWindow?.firstResponder is NSText { return event }
@@ -234,6 +239,7 @@ extension EditorModel {
             }
             return handled ? nil : event
         }
+        #endif
     }
 
     // MARK: first open
@@ -271,7 +277,7 @@ extension EditorModel {
 }
 #endif
 
-#if os(macOS)
+#if os(macOS) || os(iOS)
 // MARK: - Watt governor behavior
 //
 // A centrifugal governor's arms have no kinematic reason to rise: speed

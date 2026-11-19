@@ -1,7 +1,11 @@
 import SwiftUI
 import RealityKit
 #if os(macOS)
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
 #endif
 
 // The Liquid Glass shell (vcad 1.0): a slim toolbar, floating glass sidebar
@@ -197,7 +201,7 @@ private struct GlassSurface<S: InsettableShape>: ViewModifier {
             content
                 .background(Color(nsColor: .windowBackgroundColor), in: shape)
                 .overlay(shape.strokeBorder(.separator, lineWidth: 1))
-        } else if #available(macOS 26.0, *) {
+        } else if #available(macOS 26.0, iOS 26.0, *) {
             content.glassEffect(tint.map { .regular.tint($0) } ?? .regular, in: shape)
         } else {
             content
@@ -481,6 +485,7 @@ struct GlassToolbar: View {
     /// Export, Export Drawing and Render items plus the print workspace.
     private var exportMenu: some View {
         Menu {
+            #if os(macOS)
             Button("STL…") { exportDocumentPanel(model, format: .stl) }.disabled(!model.canExport)
             Button("STEP…") { exportDocumentPanel(model, format: .step) }.disabled(!model.canExportDocument)
             Button("GLB…") { exportDocumentPanel(model, format: .glb) }.disabled(!model.canExportDocument)
@@ -491,10 +496,13 @@ struct GlassToolbar: View {
             Button("Drawing as DXF…") { DrawingStore.shared.model = model; DrawingStore.shared.export(.dxf) }
                 .disabled(!model.canExportDocument)
             Divider()
+            #endif
             Button("3D Print…") { withAnimation(Motion.panel) { model.workspace = .manufacture } }
                 .disabled(!model.canExport)
+            #if os(macOS)
             Button("Render Photoreal…") { PhotorealRenderController.shared.show(for: model) }
                 .disabled(!model.canExportDocument)
+            #endif
         } label: {
             Image(systemName: "square.and.arrow.up").font(.system(size: 15, weight: .regular))
                 .frame(width: 30, height: 26).contentShape(Rectangle())
@@ -509,7 +517,9 @@ struct GlassToolbar: View {
 
     /// The local agent: lit while one is working in this document, and the
     /// way in to connecting Claude, Codex or Cursor.
+    @ViewBuilder
     private var agentsButton: some View {
+        #if os(macOS)
         // Ticks only when the "working" glow can expire on its own; a
         // free-running clock would keep the idle window compositing.
         TimelineView(.explicit([model.agentLinkActiveAt.map { $0.addingTimeInterval(4) }]
@@ -520,6 +530,7 @@ struct GlassToolbar: View {
                        working ? "Agent working — connect agents…" : "Connect agents…",
                        active: working) { AgentInstallPrompt.run() }
         }
+        #endif
     }
 
     private func iconButton(_ symbol: String, _ help: String, active: Bool, _ action: @escaping () -> Void) -> some View {
@@ -634,6 +645,9 @@ enum DockTools {
     /// Drawing: exclusive modes only. On/off display toggles live in the
     /// inspector and the View menu, so the dock never shows three "active".
     private static func drawing(_ m: EditorModel) -> [Tool] {
+        #if !os(macOS)
+        return []      // the drawing workspace is Mac-only (DrawingWorkspace.swift)
+        #else
         let s = DrawingStore.shared
         return keyed([
             Tool(id: "dwg.select", label: "Select", symbol: "cursorarrow", isActive: s.tool == .select) { s.tool = .select },
@@ -646,6 +660,7 @@ enum DockTools {
             Tool(id: "dwg.frame", label: "Feature Control Frame", symbol: "square.grid.3x1.below.line.grid.1x2",
                  isActive: { if case .gdt(let k) = s.tool { return k != .datum }; return false }()) { s.tool = .gdt(.position) },
         ], ["dwg.select": "v", "dwg.dimension": "m", "dwg.centerline": "l", "dwg.section": "t", "dwg.detail": "d", "dwg.datum": "a", "dwg.frame": "g"])
+        #endif
     }
 
     /// Electronics: the editing modes plus the two board-wide verbs. An empty
@@ -718,12 +733,14 @@ enum DockTools {
                 Tool(id: "ec.gerber", label: "Export Gerbers", symbol: "square.and.arrow.up", isActive: false) { t.exportGerbers(ec, m) },
                 Tool(id: "ec.import2", label: "Import Board", symbol: "square.and.arrow.down", isActive: false) { t.importBoard(ec, m) },
             ]
+        #if os(macOS)
         case .drawing:
             let s = DrawingStore.shared
             return [
                 Tool(id: "dwg.dxf", label: "Export DXF", symbol: "square.and.arrow.up", isActive: false) { s.export(.dxf) },
                 Tool(id: "dwg.pdf", label: "Export PDF", symbol: "doc.richtext", isActive: false) { s.export(.pdf) },
             ]
+        #endif
         default:
             return []
         }
@@ -1461,6 +1478,7 @@ extension GlassUI {
             RenderGate.wake(for: 2)  // a paused view never delivers a snapshot
             ar.snapshot(saveToHDR: false) { img in
                 guard let img else { return }
+                #if os(macOS)
                 let thumb = NSImage(size: NSSize(width: 96, height: 60))
                 thumb.lockFocus()
                 let src = img.size, aspect = 96.0 / 60.0
@@ -1469,6 +1487,11 @@ extension GlassUI {
                          from: NSRect(x: (src.width - w) / 2, y: (src.height - h) / 2, width: w, height: h),
                          operation: .copy, fraction: 1)
                 thumb.unlockFocus()
+                #else
+                let thumb = UIGraphicsImageRenderer(size: CGSize(width: 96, height: 60)).image { _ in
+                    img.draw(in: CGRect(x: 0, y: 0, width: 96, height: 60))
+                }
+                #endif
                 Task { @MainActor in GlassUI.shared.thumbnails[frame] = thumb }
             }
         }

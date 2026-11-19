@@ -1,6 +1,10 @@
 import Foundation
 import simd
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
 
 // Direct joint drag: grab any assembly instance moved by a revolute or slider
 // joint and pull it. The mechanism moves, not the camera.

@@ -1,5 +1,9 @@
 import SwiftUI
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
 
 /// Command-bar menus for the kernel-backed electronics tools.
 struct ElectronicsToolMenus: View {

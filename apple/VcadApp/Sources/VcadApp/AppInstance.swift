@@ -39,6 +39,9 @@ enum AppInstance {
     /// `createsNewApplicationInstance` is the whole trick: without it the
     /// launch is a no-op that just activates the running copy.
     static func open(document url: URL? = nil) {
+        #if !os(macOS)
+        return      // one app instance on iOS; documents open in place
+        #else
         let config = NSWorkspace.OpenConfiguration()
         config.createsNewApplicationInstance = true
         config.activates = true
@@ -55,6 +58,7 @@ enum AppInstance {
             FileHandle.standardError.write(
                 Data("[vcad] could not open a new instance: \(error.localizedDescription)\n".utf8))
         }
+        #endif
     }
 
     /// The flag this app passes to itself. Not a user-facing CLI.
