@@ -17,6 +17,7 @@ struct DocumentVolume: View {
     /// azimuth/elevation drive a camera that doesn't exist in a volume.
     @State private var spin: Float = 0
     @State private var importing = false
+    @Bindable private var flow = VisionDocumentFlow.shared
 
     var body: some View {
         RealityView { content in
@@ -50,51 +51,50 @@ struct DocumentVolume: View {
                 .targetedToAnyEntity()
                 .onEnded { value in tapSelect(value.entity, additive: true) }
         )
+        // The Mac's chrome, view for view (shared code): the left rail
+        // (model navigator + task panels), the right rail (inspector), the
+        // toolbar with its command/palette/toast hosts, and the dock.
         .ornament(attachmentAnchor: .scene(.leading), contentAlignment: .trailing) {
-            VStack(alignment: .leading, spacing: 10) {
-                OpenDocumentButton(importing: $importing)
-                FeatureTreeView(model: model)
-                    .frame(width: 230)
-            }
-            .padding(12)
-            .glassBackgroundEffect()
+            ReleasedLeftRail(model: model)
+                .macPanelControls()
+                .padding(.trailing, Theme.Space.l)
         }
         .ornament(attachmentAnchor: .scene(.trailing), contentAlignment: .leading) {
-            Group {
-                if model.source.isGripper {
-                    ReceiptLedger(model: model)
-                } else {
-                    InspectorView(model: model)
-                }
-            }
-            .frame(width: 300)
-            .padding(12)
-            .glassBackgroundEffect()
+            ReleasedRightRail(model: model)
+                .macPanelControls()
+                .padding(.leading, Theme.Space.l)
         }
         .ornament(attachmentAnchor: .scene(.top), contentAlignment: .bottom) {
-            ToolPaletteView(model: model)
-                .padding(10)
-                .glassBackgroundEffect()
+            VStack(spacing: Theme.Space.s) {
+                GlassToolbar(model: model)
+                    .frame(width: 880)
+                    .glassBackgroundEffect(in: .capsule)
+                ToastHost()
+                PartFailureHost(model: model)
+                CommandPanelHost(model: model)
+                FloatingPanelHost()
+                PaletteHost(model: model)
+            }
+            .padding(.bottom, Theme.Space.l)
         }
         .ornament(attachmentAnchor: .scene(.bottom), contentAlignment: .top) {
-            VStack(spacing: 10) {
-                if model.sketching {
-                    SketchHintBar(model: model)
-                    SketchPaletteView(model: model)
-                } else {
-                    if model.timeline != nil {
-                        PlaybackBar(model: model)
-                    }
-                    if model.source.isSandbox && intent.draft.isEmpty && !intent.isThinking {
-                        ExampleChips(intent: intent)
-                    }
-                    ComposerBar(engine: intent, model: model)
-                }
+            DockHost(model: model)
+                .frame(width: 1120)
+                .padding(.top, Theme.Space.l)
+        }
+        .onAppear {
+            ReleaseWindowController.shared.model = model
+            model.isWindowed = true
+        }
+        .modifier(ReleaseTransitions(handles: false))
+        .onChange(of: flow.importing) { _, v in if v { importing = true; flow.importing = false } }
+        .fileExporter(isPresented: Binding(get: { flow.export != nil }, set: { if !$0 { flow.export = nil } }),
+                      document: flow.export?.document, contentType: flow.export?.type ?? .data,
+                      defaultFilename: flow.export?.name) { result in
+            if case let .success(url) = result, flow.export?.adopt == true {
+                model.openDocument(url)
             }
-            .padding(12)
-            .glassBackgroundEffect()
-            .animation(Motion.smooth, value: intent.draft.isEmpty)
-            .animation(Motion.smooth, value: model.timeline == nil)
+            flow.export = nil
         }
         .fileImporter(isPresented: $importing,
                       allowedContentTypes: [UTType(filenameExtension: "vcad") ?? .json]) { result in
@@ -175,7 +175,6 @@ struct DocumentVolume: View {
     private func refreshSketchInk() {
         guard let centering = model.centeringEntity else { return }
         centering.findEntity(named: "sketchRoot")?.removeFromParent()
-        if model.sketching { centering.addChild(buildSketchRoot(model: model)) }
         model.sketchDirty = false
     }
 
@@ -250,8 +249,8 @@ struct DocumentVolume: View {
             }
         }
 
-        if model.sketching { centering.addChild(buildSketchRoot(model: model)) }
-        if model.showsGizmo { centering.addChild(buildGizmo(model: model)) }
+        // Sketch ink and the transform gizmo use the Mac's screen-space line
+        // shaders (CustomMaterial), which visionOS lacks: not drawn here.
 
         let zUp = Entity()
         zUp.orientation = simd_quatf(angle: -.pi / 2, axis: [1, 0, 0])
@@ -285,21 +284,4 @@ struct DocumentVolume: View {
 /// Tags the entity tree with the model state it was built from.
 struct GeometryKey: Component {
     var key: String
-}
-
-/// visionOS document open — the port of the mac app's NSOpenPanel path.
-struct OpenDocumentButton: View {
-    @Binding var importing: Bool
-
-    var body: some View {
-        Button {
-            importing = true
-        } label: {
-            Label("Open…", systemImage: "folder")
-                .font(.system(size: 13))
-                .frame(maxWidth: .infinity)
-        }
-        .buttonStyle(.bordered)
-        .frame(width: 230)
-    }
 }

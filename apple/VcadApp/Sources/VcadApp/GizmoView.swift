@@ -27,6 +27,11 @@ enum GizmoStyle {
     static let dimAlpha: CGFloat = 0.32
     static let handleInk = NSColor(srgbRed: 1.0, green: 0.62, blue: 0.12, alpha: 1)   // brand orange
 
+    #if os(visionOS)
+    // No ARView and no CustomMaterial: the gizmo draws its ribbon fallback.
+    static var viewportHeightPx: Float { 1800 }
+    static func line(_ color: NSColor, alpha: CGFloat, widthPx: Float) -> (any RealityKit.Material)? { nil }
+    #else
     static var viewportHeightPx: Float {
         let v = ReleaseWindowController.shared.arView
         return Float((v?.bounds.height ?? 900) * (v?.window?.backingScaleFactor ?? 2))
@@ -40,8 +45,10 @@ enum GizmoStyle {
         m.blending = .transparent(opacity: .init(floatLiteral: Float(alpha)))
         return m
     }
+    #endif
 }
 
+#if !os(visionOS)
 extension SceneAssets {
     static func gizmoLineMaterial(viewportHeightPx: Float, widthPx: Float) -> CustomMaterial? {
         guard let url = Bundle.main.url(forResource: "vcad", withExtension: "metallib"),
@@ -56,6 +63,7 @@ extension SceneAssets {
         return m
     }
 }
+#endif
 
 /// Polyline (pairs of points) drawn as constant-width screen lines, with a
 /// thin-cylinder fallback when the shader library isn't bundled.
@@ -272,7 +280,9 @@ private func drawOnTop(_ root: Entity) -> Entity {
         if let m = e as? ModelEntity, var model = m.model {
             model.materials = model.materials.map { mat -> any RealityKit.Material in
                 if var u = mat as? UnlitMaterial { u.readsDepth = false; return u }
+                #if !os(visionOS)
                 if var c = mat as? CustomMaterial { c.readsDepth = false; return c }
+                #endif
                 return mat
             }
             m.model = model

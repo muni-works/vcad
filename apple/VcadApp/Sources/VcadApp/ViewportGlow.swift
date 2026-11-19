@@ -64,6 +64,9 @@ enum ViewportGlow {
         ReleaseWindowController.shared.baseEmission[entity] = Emission(color: color, intensity: intensity)
     }
 
+    // visionOS has no ARView and no post-process hook: emissive bodies glow
+    // through `dress` alone there, without the bloom halo.
+    #if !os(visionOS)
     /// Turn the bloom pass on or off for `ar`. Idempotent.
     static func install(on ar: ARView, enabled: Bool) {
         if !enabled {
@@ -159,4 +162,5 @@ enum ViewportGlow {
         enc.copy(from: context.sourceColorTexture, to: context.targetColorTexture)
         enc.endEncoding()
     }
+    #endif
 }

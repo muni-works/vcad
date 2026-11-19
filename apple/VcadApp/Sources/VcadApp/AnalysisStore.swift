@@ -249,8 +249,12 @@ final class AnalysisStore {
 
     /// Push the solved field into the shared field overlay (surface + slice).
     func showField() {
+        // The field overlay decodes through tang-compress (CTangCompress),
+        // which has no visionOS build: there the FEA result shows as numbers.
+        #if !os(visionOS)
         guard let res = feaResult, let f = res.field else { return }
         FieldOverlayStore.shared.showSolved(res, field: f, kind: feaField)
+        #endif
     }
 
     // MARK: Clearance
@@ -270,11 +274,14 @@ final class AnalysisStore {
     func clearAll() {
         dfmReport = nil; feaResult = nil; clearance = nil
         dfmKey = nil; feaKey = nil; clearanceKey = nil
+        #if !os(visionOS)
         FieldOverlayStore.shared.clear()
+        #endif
         overlayRevision += 1
     }
 }
 
+#if !os(visionOS)
 // MARK: - FEA → field overlay
 
 extension FieldOverlayStore {
@@ -328,3 +335,4 @@ extension FieldOverlayStore {
         revision += 1
     }
 }
+#endif

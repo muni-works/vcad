@@ -25,7 +25,15 @@ enum Theme {
         static let l: CGFloat = 16
     }
     enum Width {
-        #if os(iOS)
+        #if os(visionOS)
+        // visionOS type runs ~1.3× the Mac's (body 17 pt vs 13) and its
+        // controls carry 44 pt hit targets, so the same panels at Mac widths
+        // truncated names and clipped units. Same layout, wider rails.
+        static let navigator: CGFloat = 250
+        static let inspector: CGFloat = 270
+        static let toolInspector: CGFloat = 380
+        static let analysisWide: CGFloat = 600
+        #elseif os(iOS)
         // iPhone: every rail panel stacks above the dock at the phone's width
         // (402 pt on a 17 Pro, minus the 16 pt gutters).
         static let navigator: CGFloat = 368
@@ -45,7 +53,11 @@ enum Theme {
         static let analysisWide: CGFloat = 470
         #endif
         /// Manufacture's compact job outline.
+        #if os(visionOS)
+        static let cncOutline: CGFloat = 260
+        #else
         static let cncOutline: CGFloat = 192
+        #endif
     }
     enum Height {
         static let header: CGFloat = 52
@@ -70,7 +82,9 @@ extension View {
         background(on ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor).opacity(0.94)) : AnyShapeStyle(.clear),
                    in: shape)
         #else
-        background(on ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(.clear), in: shape)
+        // Mac only: the iPhone's material cards made `.secondary` labels
+        // vanish over RealityKit, and visionOS has its own system glass.
+        self
         #endif
     }
 }
@@ -96,6 +110,9 @@ private struct PanelSurface<S: InsettableShape>: ViewModifier {
         } else {
             fallback(content)
         }
+        #elseif os(visionOS)
+        // The visionOS system glass, so the Mac's panels read as native windows.
+        content.glassBackgroundEffect(in: shape)
         #else
         // iPhone: the Mac's glass. A material card over the RealityKit view
         // drew every `.secondary` label (row keys, eyebrows) invisible.

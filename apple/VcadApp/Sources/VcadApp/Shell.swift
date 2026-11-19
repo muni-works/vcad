@@ -975,7 +975,9 @@ struct ScrubField: View {
             if !label.isEmpty {
                 Text(label).font(.callout).foregroundStyle(.secondary).lineLimit(1)
                     .contentShape(Rectangle())
+                    #if os(macOS)
                     .onHover { ($0 ? NSCursor.resizeLeftRight : NSCursor.arrow).set() }
+                    #endif
                     .gesture(scrub)
                     .help("Drag to scrub (⌥ fine · ⇧ coarse)")
                 Spacer(minLength: 2)

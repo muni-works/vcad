@@ -40,6 +40,14 @@ enum SceneAssets {
         return try? device.makeLibrary(URL: url)
     }()
 
+    #if os(visionOS)
+    // visionOS has no CustomMaterial (no geometry modifiers): the screen-space
+    // line shaders can't run there, so these answer nil and every caller
+    // takes its existing ribbon fallback.
+    static func edgeLineMaterial(viewportHeightPx: Float, widthPx: Float = 1.5) -> (any Material)? { nil }
+    static func highlightLineMaterial(viewportHeightPx: Float, widthPx: Float,
+                                      color: NSColor) -> (any Material)? { nil }
+    #else
     /// Screen-space, antialiased ink lines (constant pixel width, never
     /// z-fighting the surface). nil when the shader library is missing —
     /// callers fall back to `edgeMaterial` ribbons.
@@ -69,6 +77,7 @@ enum SceneAssets {
         m.baseColor = .init(tint: color)
         return m
     }
+    #endif
 
     /// Equirect of bold horizontal bands: the classic zebra-analysis light box.
     /// Reflected off a chromed surface, stripe kinks expose G1/G2 breaks.

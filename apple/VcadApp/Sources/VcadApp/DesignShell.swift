@@ -28,7 +28,7 @@ struct DesignModelNavigator: View {
                     } else {
                         FeatureTreeView(model: model, embedded: true)
                     }
-                }.frame(maxHeight: 360).fixedSize(horizontal: false, vertical: true)
+                }.frame(maxHeight: ChromeMetrics.navigatorList).fixedSize(horizontal: false, vertical: true)
                     .onChange(of: model.selectedFeatureID) { _, id in
                         if let id { withAnimation(Motion.snappy) { proxy.scrollTo(id, anchor: .center) } }
                     }

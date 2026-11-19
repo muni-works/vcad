@@ -693,7 +693,9 @@ struct DimensionLabelOverlay: View {
                         }
                         editing = false
                     }
+                    #if os(macOS)
                     .onExitCommand { editing = false; model.fadeManipLabel() }
+                    #endif
             } else {
                 Text(l.text)
                     .font(.system(size: 12, weight: .medium, design: .monospaced))
@@ -717,6 +719,8 @@ struct DimensionLabelOverlay: View {
     }
 }
 
+// Snapshot demos drive the Mac ARView.
+#if os(macOS)
 // MARK: - Scripted demo / screenshots (VCAD_SNAPSHOT_DIR)
 
 /// `VCAD_SNAPSHOT_DIR=/path open vcad.app --args --vcad-open cube.vcad`
@@ -821,3 +825,4 @@ enum AssemblyOpenDemo {
         FileHandle.standardError.write(Data("[ASSEMBLY_SNAPSHOT] done → \(dir)\n".utf8))
     }
 }
+#endif

@@ -479,6 +479,9 @@ enum AgentTools {
     }
 
     static func snapshotPNG() async -> Data? {
+        #if os(visionOS)
+        return nil   // no ARView to snapshot; the room renders through RealityView
+        #else
         guard let ar = ReleaseWindowController.shared.arView else { return nil }
         let cg: CGImage? = await withCheckedContinuation { cont in
             RenderGate.wake(for: 2)  // a paused view never delivers a snapshot
@@ -495,6 +498,7 @@ enum AgentTools {
         return downscaledPNG(NSImage(cgImage: cg, size: .zero), maxSide: 1400)
         #else
         return downscaledPNG(UIImage(cgImage: cg), maxSide: 1400)
+        #endif
         #endif
     }
 
@@ -548,6 +552,9 @@ struct AgentAnnotationOverlay: View {
 
     /// Screen point of an instance's visual centre, in overlay coordinates.
     static func anchor(_ instance: Int) -> CGPoint? {
+        #if os(visionOS)
+        return nil   // no 2D overlay over the room; pins are a Mac/iPhone thing
+        #else
         let rw = ReleaseWindowController.shared
         guard let ar = rw.arView,
               let e = rw.centeringEntity?.findEntity(named: "inst\(instance)") else { return nil }
@@ -555,6 +562,7 @@ struct AgentAnnotationOverlay: View {
         guard let p = ar.project(c) else { return nil }
         // ARView on macOS projects in AppKit view coordinates (origin bottom-left).
         return CGPoint(x: p.x, y: ar.isFlipped ? p.y : ar.bounds.height - p.y)
+        #endif
     }
 }
 

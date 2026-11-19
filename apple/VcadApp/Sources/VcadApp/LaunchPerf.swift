@@ -54,7 +54,8 @@ enum LaunchPerf {
         }
     }
 
-    // MARK: orbit benchmark
+    // MARK: orbit benchmark (ARView — not on visionOS)
+    #if !os(visionOS)
 
     private static var orbitSub: (any Combine.Cancellable)?
     private static var frameTimes: [Double] = []
@@ -95,4 +96,5 @@ enum LaunchPerf {
                      label, frames.count, mean, 1 / p95, (sorted.last ?? 0) * 1000))
         if exitWhenDone { NSApp.terminate(nil) }
     }
+    #endif
 }

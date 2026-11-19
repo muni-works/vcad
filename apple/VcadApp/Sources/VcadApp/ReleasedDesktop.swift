@@ -13,7 +13,16 @@ import SwiftUI
 // Around the floating parts we open Borland C++ Builder-style tool windows —
 // a Component Palette and an Object Inspector — as separate floating panels,
 // the way the classic multi-window IDEs scattered themselves over the desktop.
+//
+// This file is shared with the visionOS app (apple/VcadVision symlinks it).
+// The AppKit plumbing (windows, event monitors, cursors, the ARView) sits
+// behind `#if os(macOS)`; what's left is the platform-neutral half of the
+// released scene: how a body is dressed (material, glow, selection lift),
+// hover/selection repaint, entity naming, in-place geometry refresh, and the
+// Object Inspector (body dressing lives in ReleasedLook.swift). On Vision Pro "the desktop" is the room: VcadVision's
+// ReleasedSpace builds the same bodies at real scale in an ImmersiveSpace.
 
+#if os(macOS)
 /// Borderless windows refuse key status by default, which starves SwiftUI
 /// gestures inside them — opt back in.
 final class KeyableWindow: NSWindow, NSWindowDelegate {
@@ -101,16 +110,19 @@ final class KeyableWindow: NSWindow, NSWindowDelegate {
         }
     }
 }
+#endif
 
 @MainActor
 final class ReleaseWindowController {
     static let shared = ReleaseWindowController()
+    #if os(macOS)
     private(set) var window: NSWindow?
     private var mainWindow: NSWindow?
     private var savedWindowFrame: NSRect?
     private var mouseMonitors: [Any] = []
     /// Set by ReleasedARView so the pass-through hit test can raycast the scene.
     weak var arView: ARView?
+    #endif
     /// Each self-lit body's own emission, by entity name, recorded at build
     /// time so a hover or selection lift can hand it back instead of zeroing
     /// it (see `paint`). Empty when nothing in the document emits — which is
@@ -136,9 +148,23 @@ final class ReleaseWindowController {
     private(set) var hoveredInstance: Int?
     private var paintedInstances: Set<Int> = []
     private var paintedPart: Int?
+    #if os(macOS)
     private var hoveredHandle: String?
     private var pointerOverScene = false
+    #endif
 
+    /// The document, for the window's responder-chain actions.
+    var editorModel: EditorModel? { model }
+
+    /// Frame whatever is selected: a part, an instance, or everything.
+    func frameSelection() {
+        guard let model else { return }
+        if let ii = model.selectedInstanceIndex { frame(entityNamed: "inst\(ii)") }
+        else if let pi = model.selectedPartIndex { frame(entityNamed: "part\(pi)") }
+        else { model.resetCamera(animated: true) }
+    }
+
+    #if os(macOS)
     func show(model: EditorModel, intent: IntentEngine) {
         AgentBridge.shared.start(model: model)
         guard window == nil else { return }
@@ -287,8 +313,6 @@ final class ReleaseWindowController {
 
     /// The editor window, for sheets.
     var hostWindow: NSWindow? { window }
-    /// The document, for the window's responder-chain actions.
-    var editorModel: EditorModel? { model }
 
     /// ⌘W / the close button: offer to save first, then close (which quits
     /// this instance — one document, one process).
@@ -323,14 +347,6 @@ final class ReleaseWindowController {
         default:
             return false
         }
-    }
-
-    /// Frame whatever is selected: a part, an instance, or everything.
-    func frameSelection() {
-        guard let model else { return }
-        if let ii = model.selectedInstanceIndex { frame(entityNamed: "inst\(ii)") }
-        else if let pi = model.selectedPartIndex { frame(entityNamed: "part\(pi)") }
-        else { model.resetCamera(animated: true) }
     }
 
     /// Where a part sits on screen, in overlay view coords (top-left origin).
@@ -593,6 +609,7 @@ final class ReleaseWindowController {
         }
         NSCursor.arrow.set()
     }
+    #endif
 
     /// Repaint every part's highlight state. Cheap: it walks the built entities
     /// and assigns materials — no tessellation, no colliders, no new entities.
@@ -775,6 +792,7 @@ final class ReleaseWindowController {
         model.panOffset = parent.convert(position: model.cnc.origin.floats + position.floats, to: nil)
     }
 
+    #if os(macOS)
     func hide() {
         DockIcon.shared.stop()
         mouseMonitors.forEach { NSEvent.removeMonitor($0) }
@@ -788,7 +806,7 @@ final class ReleaseWindowController {
         mainWindow?.makeKeyAndOrderFront(nil)
         mainWindow = nil
     }
-
+    #endif
 }
 
 extension ReleaseWindowController {
@@ -829,6 +847,7 @@ struct ChromeRegion: ViewModifier {
     }
 }
 
+#if os(macOS)
 /// Full-screen overlay content: transparent ARView + orbit/zoom gestures +
 /// the return pill. Reading the model's orbit state here keeps the ARView's
 /// camera live (flick momentum included — endOrbit's coast mutates azimuth,
@@ -1144,40 +1163,7 @@ struct ReleasedOverlayView: View {
             // Floating panels, hosted in the overlay itself (separate
             // NSPanels break SwiftUI hit testing after auto-resize).
             if !studio {
-            VStack(alignment: .leading, spacing: Theme.Space.m) {
-                if model.sketching {
-                    SketchConstraintPanel(model: model)
-                        .modifier(ChromeRegion(key: "sketchConstraints"))
-                }
-                if model.measuring {
-                    MeasurePanel(model: model).modifier(ChromeRegion(key: "measure"))
-                }
-                if model.section != nil {
-                    SectionPanel(model: model).modifier(ChromeRegion(key: "section"))
-                }
-                if model.showsTree {
-                    if FabStore.shared.shown {
-                        FabJobsNavigator(model: model).modifier(ChromeRegion(key: "tree"))
-                    } else {
-                        DesignModelNavigator(model: model)
-                            .modifier(ChromeRegion(key: "tree"))
-                    }
-                }
-                if model.assembly.showsPanel {
-                    AssemblyPanel(model: model).modifier(ChromeRegion(key: "assembly"))
-                }
-                // Dynamics, as its own panel: one panel per concern.
-                // Posing first: on a jointed assembly it's the main job, and
-                // the column runs out of height before the dojo panel matters.
-                if model.hasPoseStudio {
-                    PoseStudioWindow(model: model)
-                        .modifier(ChromeRegion(key: "pose"))
-                }
-                if model.showsSimulation && !model.hasPoseStudio {
-                    SimulationWindow(model: model)
-                        .modifier(ChromeRegion(key: "sim"))
-                }
-            }
+            ReleasedLeftRail(model: model)
             .padding(.leading, Glass.inset).padding(.bottom, Glass.inset)
             .padding(.top, chromeTop)
             .animation(Motion.panel, value: model.showsTree)
@@ -1197,36 +1183,7 @@ struct ReleasedOverlayView: View {
         .overlay(alignment: .topTrailing) {
             if !studio {
             // The right rail: the inspector, docked to the screen edge.
-            VStack(alignment: .trailing, spacing: Theme.Space.m) {
-                if SoundStore.shared.shown && !model.source.isGripper {
-                    // Mallet: what the struck part rings at, and its pitch lock.
-                    RingsAtCard(model: model).modifier(ChromeRegion(key: "inspector"))
-                        .onDisappear {
-                            if let c = ReleaseWindowController.shared.centeringEntity { syncSoundOverlay(SoundStore.shared, in: c) }
-                        }
-                } else if AnalysisStore.shared.shown && !model.source.isGripper && model.showsInspector {
-                    // DFM / stress / clearance (AnalysisPanel.swift). Its host was
-                    // dropped in #1055, so the dock's DFM and Stress buttons lit
-                    // up and showed nothing; it takes the rail while active.
-                    AnalysisPanel(model: model).modifier(ChromeRegion(key: "analysis"))
-                } else if TuneStore.shared.shown && !model.source.isGripper {
-                    // Tune: strike the bars, the mic closes their receipts.
-                    TunePanel(model: model).modifier(ChromeRegion(key: "inspector"))
-                } else if FabStore.shared.shown && !model.source.isGripper {
-                    // Fab: the inspector IS the active process's settings.
-                    if model.showsInspector {
-                        FabricatePanel(model: model).modifier(ChromeRegion(key: "inspector"))
-                    }
-                } else if model.showsInspector {
-                    if model.source.isGripper {
-                        ReceiptLedgerWindow(model: model)
-                            .modifier(ChromeRegion(key: "inspector"))
-                    } else {
-                        ObjectInspectorWindow(model: model)
-                            .modifier(ChromeRegion(key: "inspector"))
-                    }
-                }
-            }
+            ReleasedRightRail(model: model)
             .padding(.trailing, Glass.inset).padding(.bottom, Glass.inset)
             .padding(.top, chromeTop)
             .animation(Motion.panel, value: model.showsInspector)
@@ -2355,16 +2312,7 @@ struct ReleasedARView: NSViewRepresentable {
         // not. Instances are the studio's primary path; they are the whole
         // content of a robot document.
         for (i, inst) in scene.instances.enumerated() {
-            var m = PhysicallyBasedMaterial()
-            if model.zebraMode {
-                m = SceneAssets.zebraChrome
-            } else {
-                m.baseColor = .init(tint: inst.material.color)
-                m.roughness = .init(floatLiteral: inst.material.roughness)
-                m.metallic = .init(floatLiteral: inst.material.metallic)
-                SceneAssets.studioSoften(&m)
-                ViewportGlow.dress(&m, inst.material, entity: "inst\(i)")
-            }
+            let m = ReleasedLook.dressInstance(model: model, inst.material, index: i)
             let e = ModelEntity(mesh: inst.mesh, materials: [m])
             // A free root (see `freeRoots`) stays where it is: it isn't an
             // instance, so nothing that poses or picks instances may reach it.
@@ -2401,28 +2349,7 @@ struct ReleasedARView: NSViewRepresentable {
             return made
         }
         for (i, item) in scene.meshes.enumerated() {
-            var m = PhysicallyBasedMaterial()
-            if model.zebraMode {
-                m = SceneAssets.zebraChrome
-            } else if model.usesDocumentTree {
-                let r = model.resolvedMaterial(forPart: i)
-                m.baseColor = .init(tint: r.color)
-                m.roughness = .init(floatLiteral: r.roughness)
-                m.metallic = .init(floatLiteral: r.metallic)
-                SceneAssets.studioSoften(&m)
-                ViewportGlow.dress(&m, r, entity: "part\(i)")
-            } else {
-                m.baseColor = .init(tint: item.color)
-                m.roughness = 0.34
-                m.metallic = 0.55
-                SceneAssets.studioSoften(&m)
-            }
-            if model.usesDocumentTree, !model.zebraMode, model.highlightedParts.contains(i) {
-                // Brand orange = action: a subtle emissive lift marks selection
-                // without repainting the material (mirrors the studio rule).
-                m.emissiveColor = .init(color: SelectionStyle.selected)
-                m.emissiveIntensity = SelectionStyle.partSelectedIntensity
-            }
+            let m = ReleasedLook.dressPart(model: model, index: i, fallback: item.color)
             let e = ModelEntity(mesh: item.mesh, materials: [m])
             e.name = "part\(i)"
             e.isEnabled = model.isPartVisible(i)
@@ -2562,6 +2489,95 @@ struct ReleasedARView: NSViewRepresentable {
     }
 }
 
+#endif
+
+// MARK: - Rails (shared with visionOS)
+
+/// The left rail: model navigator, plus whatever the current task opens
+/// (sketch constraints, measure, section, assembly, posing, simulation). The
+/// Mac overlay floats it at the window's leading edge; the visionOS volume
+/// hangs the same view on its leading ornament.
+struct ReleasedLeftRail: View {
+    @Bindable var model: EditorModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.m) {
+            if model.sketching {
+                SketchConstraintPanel(model: model)
+                    .modifier(ChromeRegion(key: "sketchConstraints"))
+            }
+            if model.measuring {
+                MeasurePanel(model: model).modifier(ChromeRegion(key: "measure"))
+            }
+            if model.section != nil {
+                SectionPanel(model: model).modifier(ChromeRegion(key: "section"))
+            }
+            if model.showsTree {
+                if FabStore.shared.shown {
+                    FabJobsNavigator(model: model).modifier(ChromeRegion(key: "tree"))
+                } else {
+                    DesignModelNavigator(model: model)
+                        .modifier(ChromeRegion(key: "tree"))
+                }
+            }
+            if model.assembly.showsPanel {
+                AssemblyPanel(model: model).modifier(ChromeRegion(key: "assembly"))
+            }
+            // Dynamics, as its own panel: one panel per concern.
+            // Posing first: on a jointed assembly it's the main job, and
+            // the column runs out of height before the dojo panel matters.
+            if model.hasPoseStudio {
+                PoseStudioWindow(model: model)
+                    .modifier(ChromeRegion(key: "pose"))
+            }
+            if model.showsSimulation && !model.hasPoseStudio {
+                SimulationWindow(model: model)
+                    .modifier(ChromeRegion(key: "sim"))
+            }
+        }
+    }
+}
+
+/// The right rail: the inspector, or the panel that takes its place (mallet,
+/// analysis, tune, fabricate, the gripper's receipt ledger). Mac: docked to
+/// the window's trailing edge; visionOS: the volume's trailing ornament.
+struct ReleasedRightRail: View {
+    @Bindable var model: EditorModel
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: Theme.Space.m) {
+            if SoundStore.shared.shown && !model.source.isGripper {
+                // Mallet: what the struck part rings at, and its pitch lock.
+                RingsAtCard(model: model).modifier(ChromeRegion(key: "inspector"))
+                    .onDisappear {
+                        if let c = ReleaseWindowController.shared.centeringEntity { syncSoundOverlay(SoundStore.shared, in: c) }
+                    }
+            } else if AnalysisStore.shared.shown && !model.source.isGripper && model.showsInspector {
+                // DFM / stress / clearance (AnalysisPanel.swift). Its host was
+                // dropped in #1055, so the dock's DFM and Stress buttons lit
+                // up and showed nothing; it takes the rail while active.
+                AnalysisPanel(model: model).modifier(ChromeRegion(key: "analysis"))
+            } else if TuneStore.shared.shown && !model.source.isGripper {
+                // Tune: strike the bars, the mic closes their receipts.
+                TunePanel(model: model).modifier(ChromeRegion(key: "inspector"))
+            } else if FabStore.shared.shown && !model.source.isGripper {
+                // Fab: the inspector IS the active process's settings.
+                if model.showsInspector {
+                    FabricatePanel(model: model).modifier(ChromeRegion(key: "inspector"))
+                }
+            } else if model.showsInspector {
+                if model.source.isGripper {
+                    ReceiptLedgerWindow(model: model)
+                        .modifier(ChromeRegion(key: "inspector"))
+                } else {
+                    ObjectInspectorWindow(model: model)
+                        .modifier(ChromeRegion(key: "inspector"))
+                }
+            }
+        }
+    }
+}
+
 // MARK: - Floating panels: ObjectInspectorWindow, SimulationWindow and
 // ReceiptLedgerWindow live in ReleasedPanels.swift (shared with iPhone).
 
@@ -2629,6 +2645,7 @@ struct VisibilityState: Equatable {
     let isolated: Int?
 }
 
+#if os(macOS)
 /// Wraps the released ARView so that only *this* view observes `poseTick`.
 ///
 /// Reading a 50 Hz counter directly in `ReleasedOverlayView.body` re-evaluates
@@ -2822,4 +2839,7 @@ final class DockIcon {
             .intersection(CGRect(x: 0, y: 0, width: cg.width, height: cg.height))
     }
 }
+
+
+#endif
 

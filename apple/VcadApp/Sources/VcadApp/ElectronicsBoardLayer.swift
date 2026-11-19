@@ -3,31 +3,6 @@ import SwiftUI
 // The board as a PCB tool draws it: real pad shapes and footprint art, per-
 // layer copper, zones, a live ratsnest, net highlighting and DRC markers.
 
-enum BoardLayers {
-    static let copper = ["FCu", "In1Cu", "In2Cu", "BCu"]
-    static func name(_ l: String) -> String {
-        switch l {
-        case "FCu": "Front"
-        case "BCu": "Back"
-        case "In1Cu": "Inner 1"
-        case "In2Cu": "Inner 2"
-        default: l
-        }
-    }
-    static func color(_ l: String) -> Color {
-        switch l {
-        case "FCu": Color(red: 0.86, green: 0.24, blue: 0.22)
-        case "BCu": Color(red: 0.27, green: 0.52, blue: 0.95)
-        case "In1Cu": Color(red: 0.90, green: 0.70, blue: 0.20)
-        case "In2Cu": Color(red: 0.32, green: 0.72, blue: 0.42)
-        default: .gray
-        }
-    }
-}
-
-/// One airwire: the shortest gap between two unconnected islands of a net.
-struct Airwire { let a: CGPoint, b: CGPoint, net: String }
-
 @MainActor struct BoardPainter {
     let context: GraphicsContext
     let ec: ElectronicsWorkspace

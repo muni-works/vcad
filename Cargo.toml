@@ -433,6 +433,14 @@ opt-level = 3
 # vendored copy adds the missing libc++ link arms. Identical source otherwise.
 # In-repo, so it works on a bare clone.
 clipper-sys = { path = "third_party/clipper-sys" }
+# atomic-wait 1.1.0 (via faer → spindle) has no platform module for
+# visionOS/tvOS, so the visionOS FFI build fails; the vendored copy adds them
+# to the libc++ (macos.rs) arm. Identical source otherwise.
+atomic-wait = { path = "third_party/atomic-wait" }
+# objc 0.2.7 (via metal → wgpu-hal) routes every non-macOS/iOS Apple target to
+# the GNUstep runtime (objc_msg_lookup), so the visionOS app fails to link;
+# the vendored copy adds tvOS/visionOS to the Apple arm. Identical otherwise.
+objc = { path = "third_party/objc" }
 # kosm-render ahead of its last crates.io release (0.2.0): textured materials
 # (procedural wood, fabric, triplanar images; ecto/kosm#32). Pinned by rev so a
 # fresh clone builds; drop this when kosm-render 0.2.x/0.3 is published.

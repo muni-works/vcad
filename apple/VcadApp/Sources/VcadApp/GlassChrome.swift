@@ -17,9 +17,39 @@ import UIKit
 
 // MARK: - Layout constants
 
+/// Sizes that differ by platform. The Mac's are pointer-sized; visionOS
+/// looks-and-pinches, so its targets meet the 44 pt minimum and its glyphs
+/// match the system's larger type.
+enum ChromeMetrics {
+    #if os(visionOS)
+    static let toolbarIcon: CGFloat = 19
+    static let toolbarHit = CGSize(width: 44, height: 44)
+    static let pillTitle: CGFloat = 15
+    static let pillLine: CGFloat = 12
+    static let pillHeight: CGFloat = 40
+    static let navigatorList: CGFloat = 520
+    static let dockIcon: CGFloat = 19
+    static let groupCell = CGSize(width: 92, height: 64)
+    #else
+    static let toolbarIcon: CGFloat = 15
+    static let toolbarHit = CGSize(width: 30, height: 26)
+    static let pillTitle: CGFloat = 12
+    static let pillLine: CGFloat = 10
+    static let pillHeight: CGFloat = 32
+    static let navigatorList: CGFloat = 360
+    static let dockIcon: CGFloat = 16
+    /// Tall enough for a two-line label ("Circular / Pattern").
+    static let groupCell = CGSize(width: 72, height: 56)
+    #endif
+}
+
 enum Glass {
     /// Sidebar and inspector width.
+    #if os(visionOS)
+    static let panelWidth: CGFloat = Theme.Width.navigator
+    #else
     static let panelWidth: CGFloat = 170
+    #endif
     /// Even inset from the window edges.
     static let inset: CGFloat = 10
     /// The window's corner radius (macOS 26 document windows).
@@ -211,14 +241,21 @@ private struct GlassSurface<S: InsettableShape>: ViewModifier {
             content
                 .background(Color(nsColor: .windowBackgroundColor), in: shape)
                 .overlay(shape.strokeBorder(.separator, lineWidth: 1))
-        } else if #available(macOS 26.0, iOS 26.0, *) {
-            content.desktopBacking(overDesktop, in: shape)
-                .glassEffect(tint.map { .regular.tint($0) } ?? .regular, in: shape)
         } else {
-            content
-                .background(.regularMaterial, in: shape)
-                .overlay(shape.strokeBorder(.separator, lineWidth: 1))
-                .shadow(color: .black.opacity(scheme == .dark ? 0.32 : 0.14), radius: 14, y: 5)
+            #if os(visionOS)
+            // visionOS's own glass: the system material every window uses.
+            content.glassBackgroundEffect(in: shape)
+            #else
+            if #available(macOS 26.0, iOS 26.0, *) {
+                content.desktopBacking(overDesktop, in: shape)
+                    .glassEffect(tint.map { .regular.tint($0) } ?? .regular, in: shape)
+            } else {
+                content
+                    .background(.regularMaterial, in: shape)
+                    .overlay(shape.strokeBorder(.separator, lineWidth: 1))
+                    .shadow(color: .black.opacity(scheme == .dark ? 0.32 : 0.14), radius: 14, y: 5)
+            }
+            #endif
         }
     }
 }
@@ -312,7 +349,7 @@ struct GlassToolbar: View {
                 withAnimation(Motion.panel) { model.showsInspector.toggle() }
             }
         }
-        .padding(.leading, model.isWindowed ? 84 : Glass.inset + 6)
+        .padding(.leading, model.isWindowed ? Self.trafficLightsInset : Glass.inset + 6)
         .padding(.trailing, Glass.inset + 6)
         .frame(height: Glass.toolbarRow)
         // On the window's center, whatever sits either side of it.
@@ -327,6 +364,13 @@ struct GlassToolbar: View {
             }.frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
         }
     }
+
+    /// Room for the window's traffic lights; visionOS windows have none.
+    #if os(visionOS)
+    private static let trafficLightsInset: CGFloat = Glass.inset + 6
+    #else
+    private static let trafficLightsInset: CGFloat = 84
+    #endif
 
     /// Shrinks with the window, and is the same size in either state.
     private var fieldWidth: CGFloat { min(340, max(200, toolbarWidth * 0.3)) }
@@ -374,10 +418,10 @@ struct GlassToolbar: View {
                     TimelineView(.explicit(statusTicks(after: .now))) { context in
                         let line = statusLine(at: context.date)
                         VStack(spacing: 0) {
-                            Text(pillTitle).font(.system(size: 12, weight: .medium))
+                            Text(pillTitle).font(.system(size: ChromeMetrics.pillTitle, weight: .medium))
                                 .lineLimit(1).truncationMode(.middle)
                             if let line {
-                                Text(line.text).font(.system(size: 10))
+                                Text(line.text).font(.system(size: ChromeMetrics.pillLine))
                                     .foregroundStyle(line.tint.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.secondary))
                                     .lineLimit(1).truncationMode(.middle)
                                     // Steady digits: monospaced, no rolling transition.
@@ -396,7 +440,7 @@ struct GlassToolbar: View {
                 .accessibilityHint(shownTask != nil || loadOutcome != nil ? "Show details" : "Opens the command palette")
         }
         .padding(.horizontal, 14)
-        .frame(width: fieldWidth, height: 32)
+        .frame(width: fieldWidth, height: ChromeMetrics.pillHeight)
         .overlay(alignment: .trailing) {
             trailingButton.padding(.trailing, 8)
         }
@@ -527,8 +571,9 @@ struct GlassToolbar: View {
                 .disabled(!model.canExportDocument)
             #endif
         } label: {
-            Image(systemName: "square.and.arrow.up").font(.system(size: 15, weight: .regular))
-                .frame(width: 30, height: 26).contentShape(Rectangle())
+            Image(systemName: "square.and.arrow.up").font(.system(size: ChromeMetrics.toolbarIcon, weight: .regular))
+                .frame(width: ChromeMetrics.toolbarHit.width, height: ChromeMetrics.toolbarHit.height)
+                .contentShape(Rectangle())
                 .foregroundStyle(.secondary)
         }
         .menuStyle(.borderlessButton)
@@ -558,8 +603,9 @@ struct GlassToolbar: View {
 
     private func iconButton(_ symbol: String, _ help: String, active: Bool, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 15, weight: .regular))
-                .frame(width: 30, height: 26).contentShape(Rectangle())
+            Image(systemName: symbol).font(.system(size: ChromeMetrics.toolbarIcon, weight: .regular))
+                .frame(width: ChromeMetrics.toolbarHit.width, height: ChromeMetrics.toolbarHit.height)
+                .contentShape(Rectangle())
                 .foregroundStyle(active ? .primary : .secondary)
         }
         .buttonStyle(.borderless)
@@ -871,6 +917,10 @@ struct GlassDock: View {
     #if os(iOS)
     private static let slot = CGSize(width: 33, height: 40)
     private static let dividerPad: CGFloat = 1
+    #elseif os(visionOS)
+    // Look-and-pinch: the 44 pt minimum target.
+    private static let slot = CGSize(width: 46, height: 44)
+    private static let dividerPad: CGFloat = 4
     #else
     private static let slot = CGSize(width: 38, height: 32)
     private static let dividerPad: CGFloat = 4
@@ -958,7 +1008,7 @@ struct GlassDock: View {
 
     @ViewBuilder private func toolButton(_ tool: Tool) -> some View {
         Button { if tool.enabled { tool.action() } } label: {
-            Image(systemName: tool.symbol).font(.system(size: 16, weight: .medium))
+            Image(systemName: tool.symbol).font(.system(size: ChromeMetrics.dockIcon, weight: .medium))
                 .frame(width: Self.slot.width, height: Self.slot.height)
                 .background {
                     if tool.isActive {
@@ -982,7 +1032,7 @@ struct GlassDock: View {
         let active = tools.first(where: \.isActive)
         Button { openGroup = openGroup == name ? nil : name } label: {
             ZStack(alignment: .bottomTrailing) {
-                Image(systemName: active?.symbol ?? tools[0].symbol).font(.system(size: 16, weight: .medium))
+                Image(systemName: active?.symbol ?? tools[0].symbol).font(.system(size: ChromeMetrics.dockIcon, weight: .medium))
                     .frame(width: Self.slot.width, height: Self.slot.height)
                 Image(systemName: "chevron.down").font(.system(size: 7, weight: .bold))
                     .foregroundStyle(.secondary).offset(x: -3, y: -3)
@@ -1003,7 +1053,7 @@ struct GlassDock: View {
 
     private func dockButton(_ symbol: String, _ label: String, active: Bool, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 15, weight: .medium))
+            Image(systemName: symbol).font(.system(size: ChromeMetrics.dockIcon - 1, weight: .medium))
                 .frame(width: Self.slot.width - 4, height: Self.slot.height)
                 .background(active ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear), in: Capsule(style: .continuous))
                 .contentShape(Capsule())
@@ -1019,7 +1069,8 @@ struct ToolGroupGrid: View {
     let pick: (Tool) -> Void
 
     var body: some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.fixed(72), spacing: 4), count: min(4, max(tools.count, 1))),
+        LazyVGrid(columns: Array(repeating: GridItem(.fixed(ChromeMetrics.groupCell.width), spacing: 4),
+                                 count: min(4, max(tools.count, 1))),
                   spacing: 4) {
             ForEach(tools) { t in
                 Button { pick(t) } label: {
@@ -1029,7 +1080,8 @@ struct ToolGroupGrid: View {
                         // cut "Circular Pattern" and friends to "…".
                         Text(t.label).font(.caption).lineLimit(2)
                             .multilineTextAlignment(.center).minimumScaleFactor(0.9)
-                    }.frame(width: 72, height: 56).contentShape(Rectangle())
+                    }.frame(width: ChromeMetrics.groupCell.width, height: ChromeMetrics.groupCell.height)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain).disabled(!t.enabled).opacity(t.enabled ? 1 : 0.35)
                 .help(GlassDock.tooltip(t)).accessibilityLabel(t.label)
