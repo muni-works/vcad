@@ -84,8 +84,9 @@ struct ReleaseButton: View {
     }
 }
 
-/// The Component Palette: tools, the model tree, and the room controls
-/// (real-scale reset, return to window).
+/// The Component Palette: the tools, and the room controls (real-scale
+/// reset, return to window). Kept compact — the system's utility-panel spot
+/// caps its height; selection lives in the inspector beside it.
 struct ComponentPaletteWindow: View {
     @Bindable var model: EditorModel
     @Bindable var room = ReleasedRoom.shared
@@ -97,9 +98,7 @@ struct ComponentPaletteWindow: View {
                     PanelHeader(title: "Component Palette")
                     Spacer()
                 }
-                ToolPaletteView(model: model)
-                FeatureTreeView(model: model)
-                    .frame(minHeight: 220, maxHeight: 360)
+                ComponentGrid(model: model)
                 Divider()
                 HStack(spacing: Theme.Space.s) {
                     Text(scaleLabel)
@@ -117,7 +116,7 @@ struct ComponentPaletteWindow: View {
                 }
             }
             .padding(Theme.Space.l)
-            .frame(width: 420)
+            .frame(width: 440)
             .task {
                 guard let secs = room.scriptedReturn else { return }
                 room.scriptedReturn = nil
@@ -130,6 +129,39 @@ struct ComponentPaletteWindow: View {
 
     private var scaleLabel: String {
         abs(room.scale - 1) < 0.005 ? "Real scale (1:1)" : String(format: "Scale %.2f×", room.scale)
+    }
+}
+
+/// The palette proper, Borland-style: a tab strip over a grid of tool icons
+/// (the same `availableTabs` / `tools(for:)` the volume's toolbar draws, which
+/// is one long row — too wide for a window).
+struct ComponentGrid: View {
+    @Bindable var model: EditorModel
+    private let columns = [GridItem(.adaptive(minimum: 52, maximum: 60), spacing: 8)]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.s) {
+            Picker("Tools", selection: $model.toolTab) {
+                ForEach(model.availableTabs) { tab in
+                    Label(tab.label, systemImage: tab.symbol).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
+                ForEach(model.tools(for: model.toolTab)) { tool in
+                    Button { if tool.enabled { tool.action() } } label: {
+                        Image(systemName: tool.symbol)
+                            .font(.title3)
+                            .frame(width: 52, height: 44)
+                    }
+                    .buttonStyle(.bordered)
+                    .buttonBorderShape(.roundedRectangle(radius: 10))
+                    .opacity(tool.enabled ? 1 : 0.32)
+                    .disabled(!tool.enabled)
+                    .help(tool.enabled ? tool.label : "\(tool.label) — \(tool.hint)")
+                }
+            }
+        }
     }
 }
 

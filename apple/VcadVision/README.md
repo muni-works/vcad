@@ -42,11 +42,15 @@ part, `VCAD_RELEASE_MOVE=<part>:<x>,<y>,<z>` carries it that many mm, and
 | Parameter scrub → in-place mesh swap | ported (shared `refreshGeometry`) |
 | Parts float over the desktop | ported as a mixed ImmersiveSpace at real scale, with grounding shadows |
 | Hover highlight | system gaze highlight (`HoverEffectComponent`); apps can't read gaze |
-| Pick a body / add to selection | look and tap / long-press |
-| Move a body | pinch and drag carries it through the room; two-hand pinch scales the release; Reset Layout restores 1:1. Moves are presentation only, not written to the document |
-| Component Palette, Object Inspector | ported as floating windows (`ObjectInspectorWindow` is the Mac's view) |
+| Pick a body / add to selection | look and tap / long-press (not yet exercised in the simulator) |
+| Move a body | pinch and drag carries it through the room; two-hand pinch scales the release; Reset Layout restores 1:1. Moves are presentation only, not written to the document. The gestures have not been exercised in the simulator yet; screenshots used the `VCAD_RELEASE_MOVE` hook |
+| Component Palette, Object Inspector | ported as floating windows. The palette is a tab strip plus a tool-icon grid (from the same `tools(for:)` model data); the inspector is the Mac's own `ObjectInspectorWindow` |
 | Return to window | ported (Return to Window in the palette) |
 | Glow / HDR bloom | emissive surfaces ported; the bloom halo (an ARView post-process) is stubbed, and emitters cast a point light instead |
 | Feature edges | ribbons (no `CustomMaterial` screen-space line shader on visionOS) |
 | Transform gizmo, sketch ink, face/edge picking, direct-manipulation handles | stubbed |
 | Agent bridge, path tracer, loon hot reload (FSEvents), autosave/Recents, CNC/electronics/FEA field views | stubbed (`VisionStubs.swift`) |
+
+Known limits:
+- Closing the palette with the system close button leaves you in the room without a Return button (exit with the Digital Crown).
+- On return, the volume reopens wherever visionOS places it.

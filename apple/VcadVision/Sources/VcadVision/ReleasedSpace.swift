@@ -249,7 +249,6 @@ struct ReleasedSpace: View {
         for (name, offset) in room.offsets {
             if let e = centering.findEntity(named: name) { e.position += offset }
         }
-        addGlowLights(centering)
 
         let zUp = Entity()
         zUp.orientation = simd_quatf(angle: -.pi / 2, axis: [1, 0, 0])
@@ -259,6 +258,7 @@ struct ReleasedSpace: View {
         scaled.scale = SIMD3(repeating: room.scale * Self.mm)
         scaled.addChild(zUp)
         root.addChild(scaled)
+        addGlowLights(centering, in: root)
         ctl.repaintAll()
     }
 
@@ -273,7 +273,9 @@ struct ReleasedSpace: View {
     /// visionOS doesn't have). Here a self-lit body instead puts real light
     /// into the scene: a point light in its emission colour at its centre, so
     /// a glowing medium lights the parts around it.
-    private func addGlowLights(_ centering: Entity) {
+    private func addGlowLights(_ centering: Entity, in root: Entity) {
+        // Parented to the unscaled root (metres), not under the 0.001 kernel
+        // scale, so the attenuation radius means what it says.
         let ctl = ReleaseWindowController.shared
         for (name, emission) in ctl.baseEmission {
             guard let e = centering.findEntity(named: name) else { continue }
@@ -284,9 +286,8 @@ struct ReleasedSpace: View {
                                         attenuationRadius: 0.6)
             p.attenuationFalloffExponent = 2
             light.components.set(p)
-            let b = e.visualBounds(relativeTo: centering)
-            light.position = b.center
-            centering.addChild(light)
+            light.position = e.visualBounds(relativeTo: root).center
+            root.addChild(light)
         }
     }
 }
