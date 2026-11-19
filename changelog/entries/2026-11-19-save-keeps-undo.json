@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-19-save-keeps-undo",
+  "version": "0.11.0",
+  "date": "2026-11-19",
+  "category": "fix",
+  "title": "Saving no longer wipes the undo history",
+  "summary": "The document file watcher mistook the app's own atomic save for an external change and reverted the document, clearing undo. Our own writes are now recognized by their bytes.",
+  "features": ["native-app", "undo"],
+  "mcpTools": []
+}

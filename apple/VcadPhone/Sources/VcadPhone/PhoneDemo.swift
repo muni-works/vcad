@@ -78,9 +78,11 @@ enum PhoneDemo {
         await step("edited again size.z -> \(before + 10)")
         let undoBefore = model.undoStack.count
         model.saveDocument()
-        try? await Task.sleep(for: .seconds(1))
-        // Known issue: the runtime's history comes back empty after a save.
-        NSLog("[phone-demo] undo depth before save %d, 1 s after %d", undoBefore, model.undoStack.count)
+        // The file watcher fires ~0.6 s after our own save; undo must survive it.
+        try? await Task.sleep(for: .seconds(1.5))
+        let undoAfter = model.undoStack.count
+        NSLog("[phone-demo] undo depth before save %d, 1.5 s after %d (%@)", undoBefore, undoAfter,
+              undoAfter == undoBefore ? "PASS" : "FAIL")
         guard let url = model.documentURL, let data = try? Data(contentsOf: url),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let nodes = json["nodes"] as? [String: Any],
@@ -90,6 +92,9 @@ enum PhoneDemo {
         }
         GlassUI.shared.flash("Saved \(model.documentName)", symbol: "checkmark.circle")
         await step("saved \(url.lastPathComponent): on-disk size.z=\(z) dirty=\(model.documentDirty) (\(z == before + 10 ? "PASS" : "FAIL"))")
+        model.undo()
+        let z2 = (model.opDict(nodeId: wall.nodeId)?["size"] as? [String: Any])?["z"] as? Double ?? -1
+        await step("undo after save -> size.z \(z2) (\(z2 == before ? "PASS" : "FAIL"))")
         NSLog("[phone-demo] done")
     }
 

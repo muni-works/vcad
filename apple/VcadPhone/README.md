@@ -17,7 +17,7 @@ VCAD_OPEN=/abs/path/part.vcad ./bundle.sh   # …and open a document on launch
 undo → edit → save through the same code paths the gestures and buttons call
 (`EditorModel` orbit, the viewport's ARView hit test, the inspector's
 `editVec`, `undo()`, `saveDocument()`), logs `[phone-demo]` per step and
-reads the saved file back. It does **not** synthesize touches.
+reads the saved file back, then checks undo survives the save. It does **not** synthesize touches.
 
 | | | | |
 |---|---|---|---|
@@ -91,9 +91,6 @@ never started:
 
 ## Known issues (found in the simulator run)
 
-- **Undo history empties after Save.** The runtime's history comes back
-  empty about a second after `saveDocument()` (depth 1 → 0). Not yet compared
-  against the Mac.
 - **Selection highlight isn't visible** in the tap-select frame: the pick
   resolves and selects the part, but the orange emissive lift doesn't show.
 - **No ink edges** on runtime-evaluated documents (ribbon edges only show
