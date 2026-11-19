@@ -38,6 +38,7 @@ extension EditorModel {
     /// autosave (there is nothing unsaved left to recover).
     func didSaveDocument(_ data: Data, at url: URL) {
         saveError = nil
+        lastWrittenBytes = data
         autosaver?.discard()
         guard Self.autosaveEnabled else { return }
         try? VersionHistory(documentURL: url).record(data)

@@ -1,5 +1,8 @@
-#if os(macOS)
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
 import CVcadFFI
 import Foundation
 import simd
@@ -165,6 +168,9 @@ extension EditorModel {
 }
 
 @MainActor private func presentExportError(_ message: String) {
+    #if !os(macOS)
+    GlassUI.shared.flash("Export failed: \(message)", symbol: "exclamationmark.triangle")
+    #else
     let alert = NSAlert()
     alert.alertStyle = .warning
     alert.messageText = "Export failed"
@@ -174,8 +180,10 @@ extension EditorModel {
     } else {
         alert.runModal()
     }
+    #endif
 }
 
+#if os(macOS)
 @MainActor func exportDocumentPanel(_ model: EditorModel, format: DocumentExportFormat) {
     let panel = NSSavePanel()
     panel.allowedContentTypes = [format.contentType]

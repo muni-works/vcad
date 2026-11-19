@@ -1,6 +1,10 @@
 import Foundation
 import RealityKit
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
 import CVcadFFI
 import simd
 

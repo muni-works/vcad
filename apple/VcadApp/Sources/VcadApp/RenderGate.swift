@@ -1,4 +1,8 @@
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
 import RealityKit
 
 /// Render on demand: an idle viewport draws no frames.
@@ -42,6 +46,7 @@ enum RenderGate {
         installed = true
         // Input anywhere in the app may move the camera, hover a part or
         // drive a gizmo; waking on all of it is cheap and never misses one.
+        #if os(macOS)   // iOS: the phone viewport wakes the gate from its gestures
         let mask: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDown, .leftMouseUp, .leftMouseDragged,
                                            .rightMouseDown, .rightMouseUp, .rightMouseDragged,
                                            .otherMouseDown, .otherMouseUp, .otherMouseDragged,
@@ -50,6 +55,7 @@ enum RenderGate {
             MainActor.assumeIsolated { wake() }
             return e
         }
+        #endif
         if ProcessInfo.processInfo.environment["VCAD_FRAME_COUNT"] == "1" {
             frameCounter = ar.scene.subscribe(to: SceneEvents.Update.self) { _ in frames += 1 }
             let t = Timer(timeInterval: 5, repeats: true) { _ in
@@ -101,8 +107,15 @@ enum RenderGate {
 
 /// The viewport's ARView: a resize must repaint at the new size.
 final class GatedARView: ARView {
+    #if os(macOS)
     override func layout() {
         super.layout()
         RenderGate.wake()
     }
+    #else
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        RenderGate.wake()
+    }
+    #endif
 }

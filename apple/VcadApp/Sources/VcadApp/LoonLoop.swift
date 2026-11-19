@@ -91,8 +91,9 @@ enum LoonCompiler {
 /// mesh) files. Unlike a vnode watch on the one file, it sees a module edited
 /// in place and survives editors that save by replace-and-rename.
 final class LoonWatcher {
-    private var stream: FSEventStreamRef?
     private let onChange: () -> Void
+    #if os(macOS)
+    private var stream: FSEventStreamRef?
 
     init?(directories: [String], onChange: @escaping () -> Void) {
         self.onChange = onChange
@@ -126,6 +127,11 @@ final class LoonWatcher {
         FSEventStreamRelease(s)
         stream = nil
     }
+    #else
+    /// No FSEvents on iOS: live loon reload is a desktop workflow.
+    init?(directories: [String], onChange: @escaping () -> Void) { return nil }
+    func cancel() {}
+    #endif
 
     deinit { cancel() }
 }

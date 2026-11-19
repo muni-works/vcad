@@ -1,7 +1,13 @@
 import SwiftUI
 import RealityKit
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
+#if canImport(CTangCompress)
 import CTangCompress
+#endif
 
 // Compressed scalar fields (tang-compress TCG1/TCG3 streams) in the native
 // app — the twin of the web app's `?field=` / `?fields=` overlay
@@ -79,6 +85,10 @@ enum FieldDecodeError: Error, CustomStringConvertible {
 
 /// Decode a TCG1/TCG3 stream with the Rust CPU reference decoder.
 func tcDecode(_ bytes: Data) throws -> (data: [Float], dims: (Int, Int, Int), hash: String) {
+    #if !canImport(CTangCompress)
+    // iOS builds don't link libtang_compress_ffi: compressed fields don't load.
+    throw FieldDecodeError.decode("compressed fields need the tang-compress decoder (not built for this platform)")
+    #else
     var field = TcField()
     var err: UnsafeMutablePointer<CChar>?
     let rc = bytes.withUnsafeBytes { raw in
@@ -92,6 +102,7 @@ func tcDecode(_ bytes: Data) throws -> (data: [Float], dims: (Int, Int, Int), ha
     defer { tc_field_free(&field) }
     let data = Array(UnsafeBufferPointer(start: field.data, count: field.len))
     return (data, (field.dims.0, field.dims.1, field.dims.2), String(format: "%016llx", field.fnv1a))
+    #endif
 }
 
 private func ms(_ a: DispatchTime, _ b: DispatchTime) -> Double { Double(b.uptimeNanoseconds - a.uptimeNanoseconds) / 1e6 }

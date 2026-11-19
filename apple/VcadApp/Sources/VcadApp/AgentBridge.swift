@@ -360,6 +360,9 @@ enum AgentTools {
             return ["content": [["type": "image", "data": png.base64EncodedString(), "mimeType": "image/png"],
                                 ["type": "text", "text": "Viewport \(m.documentName); labels: \(m.agentAnnotations.map { "\($0.id): \($0.text)" })"]]]
         case "photoreal":
+            #if !os(macOS)
+            throw Failure(message: "photoreal renders are Mac-only (no path tracer on iOS)")
+            #else
             let spp = (a["spp"] as? NSNumber)?.intValue ?? 64
             let (path, err): (String?, String?) = await withCheckedContinuation { cont in
                 m.photorealSnapshot(spp: spp) { p, e in cont.resume(returning: (p, e)) }
@@ -370,6 +373,7 @@ enum AgentTools {
                 content.insert(["type": "image", "data": png.base64EncodedString(), "mimeType": "image/png"], at: 0)
             }
             return ["content": content]
+            #endif
         case "agent_turn":
             return AgentTurn.shared.call(a)
         case _ where AgentViewer.toolNames.contains(name):
@@ -444,6 +448,9 @@ enum AgentTools {
     /// is needed for a process's own windows); falls back to compositing the
     /// viewport snapshot under a cached render of the SwiftUI chrome.
     static func windowPNG() async -> Data? {
+        #if !os(macOS)
+        return await snapshotPNG()      // iOS: the viewport is the window
+        #else
         guard let w = ReleaseWindowController.shared.hostWindow else { return nil }
         typealias Capture = @convention(c) (CGRect, UInt32, UInt32, UInt32) -> Unmanaged<CGImage>?
         if let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage") {
@@ -468,6 +475,7 @@ enum AgentTools {
         }
         out.unlockFocus()
         return downscaledPNG(out, maxSide: 1600)
+        #endif
     }
 
     static func snapshotPNG() async -> Data? {
@@ -475,15 +483,27 @@ enum AgentTools {
         let cg: CGImage? = await withCheckedContinuation { cont in
             RenderGate.wake(for: 2)  // a paused view never delivers a snapshot
             ar.snapshot(saveToHDR: false) { image in
+                #if os(macOS)
                 cont.resume(returning: image?.cgImage(forProposedRect: nil, context: nil, hints: nil))
+                #else
+                cont.resume(returning: image?.cgImage)
+                #endif
             }
         }
         guard let cg else { return nil }
+        #if os(macOS)
         return downscaledPNG(NSImage(cgImage: cg, size: .zero), maxSide: 1400)
+        #else
+        return downscaledPNG(UIImage(cgImage: cg), maxSide: 1400)
+        #endif
     }
 
     static func downscaledPNG(_ img: NSImage, maxSide: CGFloat) -> Data? {
+        #if os(macOS)
         guard let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        #else
+        guard let cg = img.cgImage else { return nil }
+        #endif
         let w = CGFloat(cg.width), h = CGFloat(cg.height)
         let s = min(1, maxSide / max(w, h))
         let W = Int(w * s), H = Int(h * s)
@@ -493,7 +513,7 @@ enum AgentTools {
         // Released mode renders on a clear background; give the agent a solid one.
         ctx.setFillColor(CGColor(gray: 0.13, alpha: 1))
         ctx.fill(CGRect(x: 0, y: 0, width: W, height: H))
-        ctx.interpolationQuality = .high
+        ctx.interpolationQuality = CGInterpolationQuality.high
         ctx.draw(cg, in: CGRect(x: 0, y: 0, width: W, height: H))
         guard let out = ctx.makeImage() else { return nil }
         return NSBitmapImageRep(cgImage: out).representation(using: .png, properties: [:])

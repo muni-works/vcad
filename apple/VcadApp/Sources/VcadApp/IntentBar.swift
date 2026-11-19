@@ -203,7 +203,11 @@ struct CommandBar: View {
 
     var body: some View {
         HStack(spacing: 8) { stateContent }
+            #if os(iOS)
+            .frame(maxWidth: .infinity, minHeight: 22, maxHeight: 22)   // phone: full width
+            #else
             .frame(width: 380, height: 22)
+            #endif
             .padding(.horizontal, 11)
             .padding(.vertical, 5)
             .pillSurface()

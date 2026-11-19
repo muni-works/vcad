@@ -1,5 +1,9 @@
 import SwiftUI
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
 import simd
 
 // vcad's navigation layer, the surfaces: the Compass (orientation widget),
@@ -285,9 +289,13 @@ extension EditorModel {
 
     /// The pointer, in the overlay's top-left coordinate space.
     static var pointerInOverlay: CGPoint {
+        #if !os(macOS)
+        return .zero            // no pointer on a touch screen
+        #else
         guard let w = ReleaseWindowController.shared.window, let c = w.contentView else { return .zero }
         let p = c.convert(w.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
         return CGPoint(x: p.x, y: c.isFlipped ? p.y : c.bounds.height - p.y)
+        #endif
     }
 }
 
@@ -514,6 +522,7 @@ struct HaloView: View {
     }
 }
 
+#if os(macOS)  // right-button halo: a mouse-only gesture
 /// Routes right-drags in the viewport to the Halo and its keys while open.
 /// A right-click that never moves is replayed, so the ordinary context menu
 /// still opens on release.
@@ -621,3 +630,4 @@ final class HaloInput {
         }
     }
 }
+#endif

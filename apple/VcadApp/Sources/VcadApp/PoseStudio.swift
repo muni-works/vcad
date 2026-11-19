@@ -281,6 +281,9 @@ extension EditorModel {
         watchDocumentFile()
         guard FileManager.default.fileExists(atPath: path) else { return }   // mid-replace
         guard !documentDirty || isLoonDocument else { return }   // never clobber edits
+        // Our own save: the file holds what we wrote, so there is nothing to
+        // reload — and reverting would throw away the undo history.
+        if let mine = lastWrittenBytes, (try? Data(contentsOf: URL(fileURLWithPath: path))) == mine { return }
         revertDocument()
         lastReload = Date()
     }
@@ -464,8 +467,11 @@ struct PoseStudioWindow: View {
                 Button {
                     // In-process irys when it's available: save the converged
                     // frame on screen. Otherwise the linked photoreal renderer.
-                    if case .success = IrysLib.shared { model.requestPathTracedStill() }
-                    else { model.photorealSnapshot() }
+                    if case .success = IrysLib.shared { model.requestPathTracedStill() } else {
+                        #if os(macOS)
+                        model.photorealSnapshot()
+                        #endif
+                    }
                 } label: {
                     Label("Photoreal still", systemImage: "camera.aperture")
                 }

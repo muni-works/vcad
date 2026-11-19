@@ -1,4 +1,8 @@
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
 import RealityKit
 
 /// What the ground grid is built from (captured at scene build time).
@@ -26,7 +30,11 @@ func syncSketchGrid(_ model: EditorModel, in centering: Entity, force: Bool = fa
         sketchGridBuiltKey = ""
         return
     }
+    #if os(macOS)
     let dark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    #else
+    let dark = UITraitCollection.current.userInterfaceStyle == .dark
+    #endif
     let f = sketch.frame
     let extent = max(model.displayedSceneSize, 40)
     let key = "\(f.origin)|\(f.xDir)|\(f.yDir)|\(sketch.gridStep)|\(extent)|\(dark)"

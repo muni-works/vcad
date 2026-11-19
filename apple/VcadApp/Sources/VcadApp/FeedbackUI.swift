@@ -1,4 +1,8 @@
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
 import MetricKit
 
 // The app side of docs/privacy.md: the "Report a Bug" action and the calm
@@ -102,6 +106,9 @@ final class CrashDiagnostics: NSObject, MXMetricManagerSubscriber, @unchecked Se
         let summaries = payloads.flatMap { DiagnosticSummary.parse(payloadJSON: $0) }
         guard let first = summaries.first else { Self.clear(files); return }
 
+        #if !os(macOS)
+        _ = first; return       // iOS: crash reports go through the system's own channel
+        #else
         let a = NSAlert()
         a.messageText = first.kind == .crash ? "vcad quit unexpectedly last time." : "vcad stopped responding last time."
         a.informativeText = "Report it? This opens a pre-filled GitHub issue in your browser — you review it and decide whether to submit. Nothing is sent automatically."
@@ -123,6 +130,7 @@ final class CrashDiagnostics: NSObject, MXMetricManagerSubscriber, @unchecked Se
             // Not Now keeps them for next launch; Don't ask again drops them.
             if UserDefaults.standard.bool(forKey: Self.dontAskKey) { Self.clear(files) }
         }
+        #endif
     }
 
     #if DEBUG

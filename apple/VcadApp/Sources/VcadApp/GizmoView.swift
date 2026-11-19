@@ -2,6 +2,8 @@ import RealityKit
 import simd
 #if canImport(AppKit)
 import AppKit
+#else
+import UIKit
 #endif
 
 // The transform gizmo and direct-manipulation handles.
