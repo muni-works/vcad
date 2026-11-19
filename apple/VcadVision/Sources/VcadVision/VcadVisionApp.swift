@@ -8,7 +8,7 @@ import CVcadFFI
 // engine, the SwiftUI panels, and the platform-neutral half of release-to-
 // desktop (ReleasedDesktop.swift). This target supplies what macOS can't
 // share — the volumetric viewport (DocumentVolume), the released room
-// (ReleasedSpace + ReleasedPanels) and the spatial window layout.
+// (ReleasedSpace + ReleasedRoomWindows) and the spatial window layout.
 //
 // Two modes, the same as the Mac:
 //  - windowed: one volumetric window; the part floats in it, and the Mac's
@@ -39,7 +39,7 @@ struct VcadVisionApp: App {
         .defaultSize(width: 0.7, height: 0.55, depth: 0.55, in: .meters)
 
         // Released chrome: the Mac's toolbar + dock at hand height, its left
-        // and right rails either side (shared views, ReleasedPanels.swift).
+        // and right rails either side (shared views, ReleasedRoomWindows.swift).
         WindowGroup(id: ReleaseScene.palette) {
             ReleasedToolbarWindow(model: model)
         }

@@ -33,7 +33,13 @@ enum Theme {
         static let inspector: CGFloat = 270
         static let toolInspector: CGFloat = 380
         static let analysisWide: CGFloat = 600
-        static let cncOutline: CGFloat = 260
+        #elseif os(iOS)
+        // iPhone: every rail panel stacks above the dock at the phone's width
+        // (402 pt on a 17 Pro, minus the 16 pt gutters).
+        static let navigator: CGFloat = 368
+        static let inspector: CGFloat = 368
+        static let toolInspector: CGFloat = 368
+        static let analysisWide: CGFloat = 368
         #else
         /// The left rail: model navigator, CNC job outline, circuit navigator.
         static let navigator: CGFloat = 170
@@ -45,7 +51,11 @@ enum Theme {
         static let toolInspector: CGFloat = 280
         /// Analysis → Fields: section image + charts, legible at 1080p.
         static let analysisWide: CGFloat = 470
+        #endif
         /// Manufacture's compact job outline.
+        #if os(visionOS)
+        static let cncOutline: CGFloat = 260
+        #else
         static let cncOutline: CGFloat = 192
         #endif
     }
@@ -80,7 +90,13 @@ private struct PanelSurface<S: InsettableShape>: ViewModifier {
         // The visionOS system glass, so the Mac's panels read as native windows.
         content.glassBackgroundEffect(in: shape)
         #else
-        fallback(content)
+        // iPhone: the Mac's glass. A material card over the RealityKit view
+        // drew every `.secondary` label (row keys, eyebrows) invisible.
+        if !reduceTransparency, #available(iOS 26.0, *) {
+            content.glassEffect(.regular, in: shape)
+        } else {
+            fallback(content)
+        }
         #endif
     }
 

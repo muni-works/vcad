@@ -21,6 +21,9 @@ struct VcadPhoneApp: App {
             PhoneRootView(model: model, intent: intent)
                 .task {
                     ReleaseWindowController.shared.show(model: model, intent: intent)
+                    // A phone opens on the part, not on panels: the navigator
+                    // and inspector come up on demand (⋯, or a selection).
+                    model.showsTree = false
                     PhoneDocuments.installSamplesIfNeeded()
                     // Simulator/dev hook (simctl launch with SIMCTL_CHILD_VCAD_OPEN).
                     let env = ProcessInfo.processInfo.environment

@@ -11,37 +11,53 @@ TARGETS=sim ./build-ffi.sh           # simulator slice only (faster)
 VCAD_OPEN=/abs/path/part.vcad ./bundle.sh   # …and open a document on launch
 ```
 
+## Layout: the Mac app, squished
+
+The phone runs the Mac's own chrome, not a phone redesign:
+
+- **Bottom: the Mac dock** (`GlassDock`) — workspace picker, Sketch,
+  Primitives, Modify, Combine, Measure, Mallet, History, All Tools. Groups
+  open as popovers; while sketching it becomes the Mac's sketch bar.
+- **Above the dock: the Mac's floating panels** (Object Inspector, model
+  navigator, measure, section, analysis, fabricate, joints, pose/simulation,
+  sketch constraints) as cards at phone width. One card shows at a time:
+  the newest in front, the rest as chips above it. **Selecting something
+  opens the inspector**; its × or a tap on empty space closes it.
+- **Top: document, undo/redo, Find (the Mac command palette), and ⋯**, the
+  Mac's menu bar folded into one menu: Save / Save As / Revert / Export
+  (vcad, STL, STEP, GLB) / View in AR · Simulate / Materials / Parameters /
+  Measure / Section / Analysis / Describe a Part · Model Navigator /
+  Inspector / Select filter / Camera views. Beneath it hang the Mac's
+  command panel (Fillet, Shell, …), floating panel, palette and toasts.
+- **Viewport touch = the Mac's mouse** (`PhonePick`, a port of the Mac
+  overlay's click handler): tap picks a face/edge (Fusion-style, with the
+  press-pull arrow and the "1 face · 900 mm²" readout), double tap selects
+  the whole body and frames it, long press opens the right-click menu.
+  Taps also place armed primitives, finish a Combine, strike with the
+  mallet and draw in a sketch. One finger orbits, two pan, pinch zooms.
+
+Shared-code changes for this are iOS-only (`#if os(iOS)`): phone-width
+`Theme.Width`, a compact dock slot, `DockSpace.hosted` (no Drawing /
+Electronics workspace on iOS), popovers kept as popovers, glass panel
+surfaces. The Mac's inspector / simulation panels and the section and
+topology-highlight helpers moved verbatim from `ReleasedDesktop.swift`
+(Mac-only) to `ReleasedPanels.swift` (shared).
+
 ## The loop, in the simulator
 
-`VCAD_PHONE_DEMO=1` walks open → orbit → tap-select → edit a parameter →
-undo → edit → save through the same code paths the gestures and buttons call
-(`EditorModel` orbit, the viewport's ARView hit test, the inspector's
-`editVec`, `undo()`, `saveDocument()`), logs `[phone-demo]` per step and
-reads the saved file back. It does **not** synthesize touches.
+`VCAD_PHONE_DEMO=1` walks open → orbit → tap (face) → double tap (body,
+inspector opens) → edit a parameter → undo → edit → save through the same
+code paths the gestures and buttons call (`EditorModel` orbit,
+`PhonePick.tap` / `doubleTap`, the inspector's `editVec`, `undo()`,
+`saveDocument()`), logs `[phone-demo]` per step, reads the saved file back
+and checks undo survives the save. Screens 09–12 are real touches in the
+simulator.
 
 | | | | |
 |---|---|---|---|
-| ![](docs/screens/01-opened.png) opened | ![](docs/screens/02-orbit.png) orbit | ![](docs/screens/03-tap-select.png) tap-select | ![](docs/screens/04-inspect.png) Inspect |
-| ![](docs/screens/05-edit-height.png) height 26→46 | ![](docs/screens/06-undo.png) undo → 26 | ![](docs/screens/07-edit-again.png) height → 36 | ![](docs/screens/08-saved.png) saved (on disk: 36, PASS) |
-
-## How it's built
-
-`Sources/VcadPhone/App` is a symlink to `../VcadApp/Sources/VcadApp` — the
-**whole** Mac source tree compiles for iOS, minus a short exclude list in
-`Package.swift`. The Mac stays the single source of truth; the phone adds:
-
-| File | What it is |
-| --- | --- |
-| `PlatformShims.swift` | AppKit spellings over UIKit (`NSColor`, `NSImage`, `NSRect`, `NSCursor` no-ops, `NSEvent.modifierFlags`, `NSWorkspace`, `NSPasteboard`, `NSBitmapImageRep`, modal panels that report Cancel, a `Process` that can't launch, …) so shared files stay word-for-word |
-| `PhoneViewportController.swift` | the phone's `ReleaseWindowController` — same API the shared code calls on the Mac's viewport controller (ARView, centering entity, in-place mesh swap, selection repaint, framing, picking/projection) |
-| `PhoneViewport.swift` | non-AR RealityKit `ARView` + touch gestures, built from the shared scene builders |
-| `PhoneRootView.swift` | phone layout: viewport, top bar (document, undo/redo, save), intent bar, Features / Inspect / Materials / Simulate sheets, long-press context actions |
-| `PhoneDocuments.swift`, `PhoneDocumentFlow.swift` | Files-app open/save, Export a Copy, AR Quick Look; phone versions of the Mac's `openPanel` / `saveAsPanel` / `exportUSDZPanel` |
-
-Shared files guard only genuinely Mac-only behaviour with `#if os(macOS)`
-(mouse/keyboard monitors, NSWindow plumbing, AppKit drawing). Where the
-existing visionOS-era guards excluded things the phone can use (joint drag,
-playable machines, Save As), they became `#if os(macOS) || os(iOS)`.
+| ![](docs/screens/01-opened.png) opened | ![](docs/screens/02-orbit.png) orbit | ![](docs/screens/03-tap-face.png) tap picks a face | ![](docs/screens/04-double-tap-body.png) double tap: body + inspector |
+| ![](docs/screens/05-inspect.png) inspector: wall | ![](docs/screens/06-edit-height.png) height 26→46 | ![](docs/screens/07-undo.png) undo → 26 | ![](docs/screens/08-saved.png) saved (on disk: 36, PASS) |
+| ![](docs/screens/09-fillet-panel.png) dock ▸ Modify ▸ Fillet | ![](docs/screens/10-menu.png) ⋯ = the menu bar | ![](docs/screens/11-navigator.png) navigator + chips | ![](docs/screens/12-sketch.png) sketch: bar + taps |
 
 ## Ported
 
@@ -54,12 +70,16 @@ playable machines, Save As), they became `#if os(macOS) || os(iOS)`.
 - **Viewport** — parts, pattern instancing, assembly instances + live poses,
   PBR materials, feature edges, selection highlight, gizmo, sketch ink.
   One-finger orbit (with flick coast), two-finger pan, pinch zoom, tap
-  select, double-tap frame, long-press context menu (edit, frame, isolate,
-  hide, add to selection, delete).
-- **Editing** — feature tree, add primitives, feature parameter editors,
-  document parameters, rename/delete, undo/redo (the document runtime's
-  history), materials (swatch grid), intent bar (natural-language edits).
-- **Simulation** — `SimInspector` (physics episodes), playback bar.
+  face/edge pick, double-tap body select + frame, long-press context menu.
+- **Editing** — the Mac dock's Design and Assembly tools (sketch,
+  primitives, fillet/chamfer/shell/hole/pattern, combine, measure, mallet,
+  history), the command palette, Parameters, Section, the Object Inspector's
+  parameter editors, the model navigator, undo/redo, materials, intent bar
+  (⋯ ▸ Describe a Part).
+- **Analysis / Fab** — DFM, stress, clearance, fields; the Fab workspace
+  (sheet metal, print, CAM panels).
+- **Simulation** — ⋯ ▸ Simulate: pose studio on jointed assemblies,
+  `SimulationWindow` otherwise; playback bar.
 - **AR** — View in AR: the part as USDZ (`UsdzExport.swift`) in AR Quick Look.
 
 ## Compiled but not exposed on iPhone
@@ -69,8 +89,9 @@ never started:
 
 - Local agent / MCP server (`AgentBridge` etc.) — never started; agent
   install/connect probes fail closed (no `Process` on iOS).
-- CNC / machine control, Manufacture workspace, electronics workspace,
-  drawing exports.
+- CNC / machine control, Manufacture workspace. The Drawing and
+  Electronics workspaces are hidden on iOS (`DockSpace.hosted`) — their
+  views are Mac-only.
 - Path tracer engine (`PathTracer.swift`; its NSView viewport is Mac-only).
 
 ## Left out / stubbed
@@ -91,17 +112,18 @@ never started:
 
 ## Known issues (found in the simulator run)
 
-- **Undo history empties after Save.** The runtime's history comes back
-  empty about a second after `saveDocument()` (depth 1 → 0). Not yet compared
-  against the Mac.
-- **Selection highlight isn't visible** in the tap-select frame: the pick
-  resolves and selects the part, but the orange emissive lift doesn't show.
+- **Body selection highlight** (the orange emissive lift) doesn't show;
+  face/edge picks do highlight, and the gizmo marks a selected body.
+- **No gizmo drag**: one-finger drags orbit; the transform gizmo's handles
+  aren't grabbable yet (the Mac drives them from its mouse overlay).
+- **No Compass** (views live in ⋯ ▸ Camera) and keyboard hints in a few
+  panels (e.g. Fillet's "pick edges with ⌃E") still read like the Mac.
 - **No ink edges** on runtime-evaluated documents (ribbon edges only show
   for documents that carry `scene.edges`; the Metal toolchain for the
   screen-space edge shader wasn't available to bundle `vcad.metallib`).
-- **Gesture recognizers not touch-tested.** Simulator-panel access wasn't
-  granted during this run, so orbit/pan/pinch/tap/long-press were exercised
-  through their model calls, not real touches.
+- **Touch-tested in the simulator** (tap, double tap, dock, menus, cards,
+  sketch); pinch and two-finger pan only through their model calls — the
+  simulator tool has no multi-touch.
 
 ## Open decisions (not made here)
 

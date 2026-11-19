@@ -7,7 +7,7 @@ import RealityKit
 // stays on) at REAL scale — a 40 mm bracket is 40 mm in front of you — and
 // each body can be looked at, pinched and carried anywhere in the room. The
 // Component Palette and the Object Inspector float as their own windows
-// beside them (ReleasedPanels.swift), and "Return to Window" puts everything
+// beside them (ReleasedRoomWindows.swift), and "Return to Window" puts everything
 // back in the volume.
 //
 // Bodies are dressed by the same code as the Mac's released ARView

@@ -97,9 +97,17 @@ enum PhoneDocuments {
 
 /// The current document as a FileDocument, for "Save a Copy…" (fileExporter).
 struct VcadExportDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [PhoneDocuments.vcadType] }
+    /// .vcad (Export a Copy) and the kernel formats (Export ▸ STL/STEP/GLB).
+    static var readableContentTypes: [UTType] {
+        [PhoneDocuments.vcadType] + DocumentExportFormat.allCases.map(\.contentType)
+    }
     var data: Data
+    var contentType: UTType = PhoneDocuments.vcadType
+    var filename = ""
     init(data: Data) { self.data = data }
+    init(data: Data, contentType: UTType, filename: String) {
+        self.data = data; self.contentType = contentType; self.filename = filename
+    }
     init(configuration: ReadConfiguration) throws { data = configuration.file.regularFileContents ?? Data() }
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper { FileWrapper(regularFileWithContents: data) }
 }

@@ -11,8 +11,8 @@ import UIKit
 /// - one finger drag: orbit (flick to coast — the model's inertial orbit)
 /// - two finger drag: pan
 /// - pinch: zoom
-/// - tap: select a part / instance (empty space deselects)
-/// - double tap: frame the selection (or everything)
+/// - tap: the Mac's click (PhonePick: face/edge pick, sketch, place, combine…)
+/// - double tap: the Mac's double-click — select the whole body and frame it
 /// - long press: select + context actions (`onLongPress`)
 struct PhoneViewport: View {
     static let fovDegrees: Float = 60
@@ -127,19 +127,13 @@ private struct PhoneARView: UIViewRepresentable {
         @objc func tap(_ g: UITapGestureRecognizer) {
             guard let model, let ar = g.view as? ARView else { return }
             model.stopSpin()
-            let hit = pickTarget(ar, at: g.location(in: ar))
-            switch hit {
-            case .part(let pi):
-                if let fid = model.featureNodes.first(where: { $0.partIndex == pi })?.id { model.selectFeature(fid) }
-            case .instance(let ii):
-                model.selectInstance(ii)
-            case .none:
-                if model.hasSelection { model.deselectAll() }
-            }
+            // The Mac's click semantics: sketch, place, strike, pick, combine, select.
+            PhonePick.tap(at: g.location(in: ar), model: model)
         }
 
         @objc func doubleTap(_ g: UITapGestureRecognizer) {
-            ReleaseWindowController.shared.frameSelection()
+            guard let model, let ar = g.view as? ARView else { return }
+            PhonePick.doubleTap(at: g.location(in: ar), model: model)
         }
 
         @objc func longPress(_ g: UILongPressGestureRecognizer) {
@@ -259,11 +253,7 @@ private struct PhoneARView: UIViewRepresentable {
             }
             model.playbackDirty = false
         }
-        if sketchDirty, let centering = ReleaseWindowController.shared.centeringEntity {
-            centering.findEntity(named: "sketchRoot")?.removeFromParent()
-            if model.sketching { centering.addChild(buildSketchRoot(model: model)) }
-            model.sketchDirty = false
-        }
+        if sketchDirty { PhonePick.refreshSketchInk(model: model) }
         syncCamera(c)
     }
 
@@ -420,7 +410,14 @@ private struct PhoneARView: UIViewRepresentable {
         }
 
         if model.sketching { centering.addChild(buildSketchRoot(model: model)) }
-        if model.showsGizmo { centering.addChild(buildGizmo(model: model)) }
+        syncSketchGrid(model, in: centering, force: true)
+        // Face/edge picks and the section cut survive a rebuild, as on the Mac.
+        if let topo = topologyOverlayEntity(model: model) { centering.addChild(topo) }
+        if model.showsGizmo {
+            let gizmo = buildGizmo(model: model)
+            gizmo.scale = SIMD3<Float>(repeating: gizmoScreenScale(model: model))
+            centering.addChild(gizmo)
+        }
 
         let zUp = Entity()
         zUp.orientation = simd_quatf(angle: -.pi / 2, axis: [1, 0, 0])
@@ -430,6 +427,7 @@ private struct PhoneARView: UIViewRepresentable {
         geom.scale = SIMD3<Float>(repeating: 0.6 / max(scene.size, 0.0001))
         geom.addChild(zUp)
         anchor.addChild(geom)
+        applySectionView(model: model)
 
         if !scene.solving, !model.cameraUserMoved, c.builtKey != "" {
             // First full scene of a document: frame it for the phone's aspect.

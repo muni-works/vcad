@@ -10,9 +10,14 @@ import SwiftUI
 final class PhoneDocumentFlow {
     static let shared = PhoneDocumentFlow()
     var importing = false
-    /// The open bottom sheet (shared so the demo script can drive it).
-    var panel: PhonePanel?
     var quickLookURL: URL?
+    /// Phone-only cards above the dock, opened from the ⋯ menu (the Mac's
+    /// equivalents are its menu bar and floating windows).
+    var materialsShown = false
+    var simulationShown = false
+    /// The Object Inspector card: opens when something is selected, closes
+    /// on deselect or with its ×.
+    var inspectorShown = false
 }
 
 @MainActor func openPanel(_ model: EditorModel) { PhoneDocumentFlow.shared.importing = true }

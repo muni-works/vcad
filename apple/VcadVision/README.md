@@ -8,7 +8,7 @@ pieces:
 - `DocumentVolume.swift`: the windowed mode. One volumetric window wearing the Mac's own
   chrome on ornaments: `GlassToolbar` on top, `ReleasedLeftRail` (model navigator) and
   `ReleasedRightRail` (inspector) either side, `DockHost` along the bottom.
-- `ReleasedSpace.swift` + `ReleasedPanels.swift`: **release to room**, the Vision Pro version
+- `ReleasedSpace.swift` + `ReleasedRoomWindows.swift`: **release to room**, the Vision Pro version
   of the Mac's release to desktop. The document's bodies leave the volume for a mixed
   `ImmersiveSpace` at real scale (1 mm = 1 mm), and the same Mac chrome floats beside them
   as windows. The toolbar's own Release / Open in Window button drives both directions

@@ -1340,6 +1340,11 @@ final class EditorModel {
     @ObservationIgnored var savedHash: String?
     /// Same, for detached (non-engine) documents.
     @ObservationIgnored private var savedSnapshot: Data?
+    /// The exact bytes this app last wrote to the document file. The file
+    /// watcher (PoseStudio.swift) sees our own atomic save (temp + rename) as
+    /// an external change; matching bytes tell the two apart, so saving no
+    /// longer reverts the document and wipes undo.
+    @ObservationIgnored var lastWrittenBytes: Data?
     /// The source the intent bar replaced, so a generation can be undone as a
     /// whole even though the generated program has no document JSON.
     @ObservationIgnored private var generationUndo: (source: GeometrySource, json: [String: Any]?,
