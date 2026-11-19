@@ -1,5 +1,9 @@
 import SwiftUI
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
 import CVcadFFI
 
 // Multi-tool CAM job (Fabricate ▸ CAM Job): web ToolLibrary / OperationList /

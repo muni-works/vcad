@@ -1,0 +1,4 @@
+module CVcadFFI {
+    header "vcad_ffi.h"
+    export *
+}

@@ -464,8 +464,11 @@ struct PoseStudioWindow: View {
                 Button {
                     // In-process irys when it's available: save the converged
                     // frame on screen. Otherwise the linked photoreal renderer.
-                    if case .success = IrysLib.shared { model.requestPathTracedStill() }
-                    else { model.photorealSnapshot() }
+                    if case .success = IrysLib.shared { model.requestPathTracedStill() } else {
+                        #if os(macOS)
+                        model.photorealSnapshot()
+                        #endif
+                    }
                 } label: {
                     Label("Photoreal still", systemImage: "camera.aperture")
                 }

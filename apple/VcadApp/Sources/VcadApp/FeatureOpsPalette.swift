@@ -36,10 +36,12 @@ extension EditorModel {
                 if self?.promoteSandboxToDocument() == true { self?.activeFeatureOp = op }
             })
         }
+        #if os(macOS)
         out.append(.init(id: "import.photos", title: "Import from Photos (Experimental)…", symbol: "camera.viewfinder", group: "Import") { [weak self] in
             guard let self else { return }
             PhotoImportController.shared.show(for: self)
         })
+        #endif
         out.append(.init(id: "sketch", title: "New Sketch", symbol: "scribble.variable", group: "Sketch", shortcut: "⌃S", enabled: doc) { [weak self] in
             if self?.promoteSandboxToDocument(blank: true) == true { self?.enterSketch() }
         })

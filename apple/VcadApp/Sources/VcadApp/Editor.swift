@@ -488,7 +488,7 @@ final class EditorModel {
     var parameterDirty = false
     let streaming = StreamingMesh()
     let chime = Chime()
-    #if os(macOS)
+    #if os(macOS) || os(iOS)
     /// Live direct joint drag / flick (JointDrag.swift). Not observed: the
     /// pose goes through the playback channel, the label through manipLabel.
     @ObservationIgnored var jointDrag: JointDragSession?
@@ -2509,14 +2509,14 @@ final class EditorModel {
 
     func saveDocument() {
         if source.isSandbox, documentJSON != nil {
-            #if os(macOS)
+            #if os(macOS) || os(iOS)
             saveAsPanel(self)
             #endif
             return
         }
         if isLoonDocument {
             // Never overwrite generated loon source with compiled JSON.
-            #if os(macOS)
+            #if os(macOS) || os(iOS)
             saveAsPanel(self)
             #endif
             return

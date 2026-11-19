@@ -1,5 +1,9 @@
 import SwiftUI
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
 import UniformTypeIdentifiers
 
 struct NativeElectronicsView: View {
@@ -592,7 +596,9 @@ struct ElectronicsCanvas: View {
                 }
             })
             .onAppear { canvasSize = geo.size; installMonitor() }
+            #if os(macOS)
             .onDisappear { if let monitor { NSEvent.removeMonitor(monitor) }; monitor = nil }
+            #endif
             .onChange(of: geo.size) { _, new in canvasSize = new }
             .onChange(of: ec.view) { _, view in
                 // Cross-probe: whatever is selected stays in view on the other side.
@@ -807,6 +813,7 @@ struct ElectronicsCanvas: View {
     /// Wheel/pinch zoom about the cursor, two-finger pan, and the editing keys.
     private func installMonitor() {
         guard monitor == nil else { return }
+        #if os(macOS)   // wheel/keyboard editing; touch gestures drive the phone canvas
         monitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .magnify, .keyDown]) { event in
             guard ec.view != .spatial, model.workspace == .electronics else { return event }
             if event.type == .keyDown {
@@ -859,6 +866,7 @@ struct ElectronicsCanvas: View {
             ec.pan = CGSize(width: at.x - (o.x + world.x * s), height: at.y - (o.y + world.y * s))
             return nil
         }
+        #endif
     }
 }
 

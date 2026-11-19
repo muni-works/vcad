@@ -1,7 +1,11 @@
 import Foundation
 import CoreGraphics
 import simd
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
 
 // Pure helpers behind viewport selection: pixel-based pick tolerance, the
 // window/crossing marquee rule, the selection readout, the shared selection

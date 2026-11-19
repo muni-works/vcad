@@ -22,6 +22,7 @@ CANON = REPO / "crates/vcad-ffi/include/vcad_ffi.h"
 MIRRORS = [
     REPO / "apple/VcadApp/Sources/CVcadFFI/vcad_ffi.h",
     REPO / "apple/VcadVision/Sources/CVcadFFI/vcad_ffi.h",
+    REPO / "apple/VcadPhone/FFIHeaders/vcad_ffi.h",
 ]
 
 # This banner must not contain a literal star-slash. An earlier version wrote

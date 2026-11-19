@@ -1,4 +1,5 @@
 import SwiftUI
+#if os(macOS)  // SceneKit NSView preview; the iPhone shows the 2D board
 import SceneKit
 
 /// Geometric preview only; no manufacturing or collision claims.
@@ -62,3 +63,13 @@ struct ElectronicsBoardPreview: NSViewRepresentable {
         view.scene = scene; view.pointOfView = camera
     }
 }
+#else
+/// iPhone: the SceneKit preview is Mac-only; say so instead of a blank pane.
+struct ElectronicsBoardPreview: View {
+    var board: ECObject
+    var body: some View {
+        ContentUnavailableView("3D board preview", systemImage: "cpu",
+                               description: Text("Open this board on the Mac for the spatial view."))
+    }
+}
+#endif

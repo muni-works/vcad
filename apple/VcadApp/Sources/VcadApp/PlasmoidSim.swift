@@ -1,6 +1,10 @@
 import SwiftUI
 import RealityKit
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
 import CVcadFFI
 
 // Live racing-plasmoid demo (docs/plasmoid-sim.md, gap #2): open

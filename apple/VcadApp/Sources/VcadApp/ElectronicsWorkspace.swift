@@ -1,5 +1,9 @@
 import SwiftUI
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
 import UniformTypeIdentifiers
 
 typealias ECObject = [String: Any]

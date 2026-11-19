@@ -1,6 +1,10 @@
 import SwiftUI
 import RealityKit
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
 
 // The particle-optics section: potential heatmap, equipotentials, wire cross
 // sections and deuteron tracks, drawn once with CoreGraphics and shown two

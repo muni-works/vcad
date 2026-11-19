@@ -1,5 +1,9 @@
 import SwiftUI
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
 import RealityKit
 
 // Sketch-mode chrome: the sketch bar (the dock while sketching: plane · tools

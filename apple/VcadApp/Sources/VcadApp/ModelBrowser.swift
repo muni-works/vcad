@@ -1,6 +1,10 @@
 import SwiftUI
 #if os(macOS)
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
 #endif
 
 // The Model browser (Fusion's model, Apple's manners): the document's NOUNS.

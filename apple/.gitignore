@@ -10,3 +10,8 @@ VcadApp/Libs/
 VcadVision/.build/
 VcadVision/dist/
 VcadVision/Libs/
+# iPhone target — xcodebuild output, hand-assembled .app, iOS xcframework.
+VcadPhone/.build/
+VcadPhone/dist/
+VcadPhone/Libs/
+VcadPhone/shots/
