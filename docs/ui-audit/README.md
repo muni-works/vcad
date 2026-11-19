@@ -15,7 +15,7 @@ In each state it walks:
 - the history strip, the shortcut sheet and the command palette
 - a selection with Measurements expanded
 
-It also runs Settings and Welcome. For each state it writes one PNG per visible window
+It also covers Settings, Welcome, every dock ▾ group popover and the workspace picker (offscreen), and dumps the whole menu bar with collision and empty-submenu checks to `menus.txt`. For each state it writes one PNG per visible window
 (popovers are separate windows) and appends the camera state to `windows.txt`.
 
 Captures come from the window server's own-window image, so glass is included. When the screen
@@ -55,8 +55,14 @@ below.
 | Welcome window | **Fixed**: "Version 1.0" was hard-coded (1.1 shipped). The "New in 1.0" strip copy is a release-notes call → deferred |
 | Settings ▸ General, Agents, Agent, Renderer | **Fixed**: wrapped footers were ragged-right (General, Agents, Agent). Renderer OK. |
 | Settings ▸ Feedback / Labs | OK by construction (same form style); the tab itself wasn't rendered |
-| Dock group menus (▾), workspace picker, title details, connection popover | **Deferred**: `@State`-driven and need real input; computer-use access was declined |
-| Material picker, context menus, app menus | **Deferred**: system menus, same reason |
+| Dock ▾ group popovers (Primitives; compact-dock Modify, Combine) | **Fixed**: 72 pt cells cut labels to one line ("Circular Pattern" → "…"). Now `ToolGroupGrid`, two lines, column count fits the group. Rendered offscreen in both appearances (`dock-groups-after.jpg`). Only Design has groups. |
+| Workspace picker popover | OK (rendered offscreen, both appearances) |
+| Title-bar popovers: CNC connection, task details | CNC connection OK (offscreen, both appearances). Task details: its button exists only while a task runs, so it was checked by code only. Its rows are the same `ProgressCenter` rows the status pill uses. |
+| App menus: every menu and submenu (`menus.txt`, dumped from `NSApp.mainMenu`) | **Fixed**: two shortcut collisions. ⌥⌘0 was on View ▸ Hide All Panels *and* Camera ▸ Frame Selection, so Frame Selection is now ⇧⌘0. ⌥⌘P was on View ▸ Path-Traced View *and* Tools ▸ Parameters…, so Path-Traced is now ⌃⌘P. The View menu opened with a bare separator. Remaining flag: an empty Services submenu, which macOS fills lazily, not a defect. |
+| Context menu: viewport part (`partContextMenu`) | OK: instance/part header, Frame, Isolate, Hide/Show, Material ▸ grouped presets, dock tools, Deselect All, Frame All |
+| Context menu: Model navigator rows (ModelBrowser + feature tree) | **Fixed**: "Show All" read differently from the Edit menu and the viewport menu ("Show All Parts") |
+| Context menu: history rows | OK: Unsuppress / Roll Forward only where they apply |
+| Inspector material picker | OK: a `Menu` with the same grouped presets as the viewport's Material submenu |
 | Analysis / sim panels | **Deferred**: need a run; `VCAD_FIELDS_SNAPSHOT_DIR` already covers the Analysis panel |
 | visionOS floating palettes (#1269) | Out of scope: owned by that PR |
 
@@ -73,4 +79,5 @@ Real window-server pixels unless marked *layout-only*.
 - `palette-labels-{before,after}.jpg`, `palette-design-main.jpg`
 - `welcome.jpg` (*layout-only*, shows the bundle version; the dev build is 0.1)
 - `measurements-after.jpg` (*layout-only*)
+- `dock-groups-after.jpg` (*layout-only*, offscreen), `menus.txt`
 - `tee-spikes-kernel.jpg`

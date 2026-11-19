@@ -205,7 +205,7 @@ extension EditorModel {
             self?.turnView(clockwise: true)
         })
         out.append(.init(id: "frameSel", title: "Frame Selection", symbol: "viewfinder.rectangular", group: "Camera",
-                         shortcut: "⌥⌘0", enabled: hasSelection) {
+                         shortcut: "⇧⌘0", enabled: hasSelection) {
             ReleaseWindowController.shared.frameSelection()
         })
         out.append(.init(id: "halo", title: "Quick Actions (Halo)", symbol: "circle.dashed", group: "Tools", shortcut: "⌥⌘.") { [weak self] in

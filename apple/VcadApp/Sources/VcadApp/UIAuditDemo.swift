@@ -41,7 +41,37 @@ enum UIAuditDemo {
             }
             win.contentView = nil
         }
+        // Offscreen: every dock ▾ group popover (normal and compact dock) and
+        // the workspace picker, in both appearances.
+        for (scheme, appearance) in [("dark", NSAppearance.Name.darkAqua), ("light", .aqua)] {
+            for space in DockSpace.allCases {
+                var seen = Set<String>()
+                for compact in [false, true] {
+                    for case let .group(name, tools) in DockItem.items(DockTools.tools(space, model: m), compact: compact)
+                    where seen.insert(name).inserted {
+                        let slug = name.lowercased().replacingOccurrences(of: " ", with: "-")
+                        offscreen(ToolGroupGrid(tools: tools) { _ in }.background(Color(nsColor: .windowBackgroundColor)),
+                                  appearance: appearance,
+                                  to: url.appendingPathComponent("\(scheme)-group-\(space.rawValue)-\(slug).png"))
+                        log += "group \(space.rawValue)/\(name)\(compact ? " (compact)" : ""): "
+                            + tools.map(\.label).joined(separator: ", ") + "\n"
+                    }
+                }
+            }
+            offscreen(WorkspacePicker(current: .design) { _ in }.background(Color(nsColor: .windowBackgroundColor)),
+                      appearance: appearance, to: url.appendingPathComponent("\(scheme)-workspace-picker.png"))
+            // The title bar's two popovers: task details and the CNC connection.
+            offscreen(ProgressDetails(model: m) {}.background(Color(nsColor: .windowBackgroundColor)),
+                      appearance: appearance, to: url.appendingPathComponent("\(scheme)-progress-details.png"))
+            offscreen(CNCConnectionView(cnc: m.cnc).padding(18).frame(width: 320)
+                        .background(Color(nsColor: .windowBackgroundColor)),
+                      appearance: appearance, to: url.appendingPathComponent("\(scheme)-cnc-connection.png"))
+        }
+        // The menu bar, every menu and submenu, as text with its checks.
+        try? menuReport().write(to: url.appendingPathComponent("menus.txt"), atomically: true, encoding: .utf8)
+
         if ProcessInfo.processInfo.environment["VCAD_UI_AUDIT_QUICK"] == "1" {
+            try? log.write(to: url.appendingPathComponent("windows.txt"), atomically: true, encoding: .utf8)
             FileHandle.standardError.write(Data("[VCAD_UI_AUDIT] done → \(dir)\n".utf8))
             return
         }
@@ -146,6 +176,51 @@ enum UIAuditDemo {
         NSApp.appearance = nil
         try? log.write(to: url.appendingPathComponent("windows.txt"), atomically: true, encoding: .utf8)
         FileHandle.standardError.write(Data("[VCAD_UI_AUDIT] done → \(dir)\n".utf8))
+    }
+
+    /// Every menu-bar item as an indented tree, then the problems: the same
+    /// shortcut on two items, empty submenus, untitled items, and "..." where
+    /// the rest of the bar uses "…".
+    private static func menuReport() -> String {
+        guard let bar = NSApp.mainMenu else { return "no main menu\n" }
+        var out = "", shortcuts: [String: [String]] = [:], problems: [String] = []
+        func chord(_ i: NSMenuItem) -> String? {
+            guard !i.keyEquivalent.isEmpty else { return nil }
+            let f = i.keyEquivalentModifierMask
+            var s = ""
+            if f.contains(.control) { s += "⌃" }
+            if f.contains(.option) { s += "⌥" }
+            if f.contains(.shift) || i.keyEquivalent != i.keyEquivalent.lowercased() { s += "⇧" }
+            if f.contains(.command) { s += "⌘" }
+            return s + i.keyEquivalent.uppercased()
+        }
+        func walk(_ menu: NSMenu, _ path: String, _ depth: Int) {
+            menu.update()
+            for i in menu.items {
+                if i.isSeparatorItem { out += String(repeating: "  ", count: depth) + "──\n"; continue }
+                if i.isHidden { continue }
+                let here = path.isEmpty ? i.title : "\(path) ▸ \(i.title)"
+                let key = chord(i)
+                out += String(repeating: "  ", count: depth) + i.title
+                    + (key.map { "   [\($0)]" } ?? "") + (i.isEnabled ? "" : "   (disabled)") + "\n"
+                if i.title.trimmingCharacters(in: .whitespaces).isEmpty && i.view == nil {
+                    problems.append("untitled item in \(path)")
+                }
+                if i.title.hasSuffix("...") { problems.append("\"...\" not \"…\": \(here)") }
+                if let key { shortcuts[key, default: []].append(here) }
+                if let sub = i.submenu {
+                    if sub.items.filter({ !$0.isHidden }).isEmpty, depth > 0 {
+                        problems.append("empty submenu: \(here)")
+                    }
+                    walk(sub, here, depth + 1)
+                }
+            }
+        }
+        walk(bar, "", 0)
+        for (k, items) in shortcuts.sorted(by: { $0.key < $1.key }) where items.count > 1 {
+            problems.append("shortcut \(k) on \(items.count) items: " + items.joined(separator: " | "))
+        }
+        return out + "\n== problems (\(problems.count)) ==\n" + problems.joined(separator: "\n") + "\n"
     }
 
     /// A view laid out in an offscreen window and drawn by AppKit.

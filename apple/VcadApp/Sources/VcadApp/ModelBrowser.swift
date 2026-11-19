@@ -366,7 +366,7 @@ struct BrowserRow: View {
                 Label(visible ? "Hide" : "Show", systemImage: visible ? "eye.slash" : "eye")
             }
             if model.hasHiddenParts {
-                Button { model.showAllParts() } label: { Label("Show All", systemImage: "eye") }
+                Button { model.showAllParts() } label: { Label("Show All Parts", systemImage: "eye") }
             }
             Divider()
         }

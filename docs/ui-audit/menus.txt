@@ -1,0 +1,204 @@
+vcad
+  About vcad
+  Check for Updates…   (disabled)
+  ──
+  Settings…   [⌘,]
+  ──
+  Services
+  ──
+  Hide vcad   [⌘H]
+  Hide Others   [⌥⌘H]
+  Show All
+  ──
+  Quit vcad   [⌘Q]
+File
+  New Document   [⌘N]
+  ──
+  Open…   [⌘O]
+  Open Sample…
+  Open Recent
+    fusor
+    02-take-it-apart
+    ──
+    Clear Menu
+  Import from Photos (Experimental)…
+  Open Example
+    Pulley
+    Counterbore
+    Ribbed plate
+    Robot arm
+    Booster K1
+    Floating arm
+    Sensor mast
+    Strandbeest
+    Antikythera
+    Watt governor
+    Gear train
+  ──
+  Close   [⌘W]
+  ──
+  Save   [⌘S]   (disabled)
+  Save As…   [⇧⌘S]   (disabled)
+  Revert to Saved   (disabled)
+  Save Version…   [⌥⌘S]   (disabled)
+  Browse Versions…   (disabled)
+  Show in Finder   (disabled)
+  ──
+  Export
+    STL…   [⌘E]
+    STEP…   (disabled)
+    GLB…   (disabled)
+    USDZ…   [⇧⌘E]
+  Export Drawing
+    DXF…   (disabled)
+    PDF…   [⌥⇧⌘P]   (disabled)
+  Render Photoreal…   [⌥⇧⌘R]   (disabled)
+  ──
+  Open Compressed Field…
+Edit
+  Undo   [⌘Z]   (disabled)
+  Redo   [⇧⌘Z]   (disabled)
+  ──
+  Cut   [⌘X]   (disabled)
+  Copy   [⌘C]   (disabled)
+  Paste   [⌘V]   (disabled)
+  Delete
+  Select All   [⌘A]
+  Deselect All   [⇧⌘A]
+  ──
+  Rename   (disabled)
+  ──
+  Hide   [⇧⌘H]   (disabled)
+  Isolate   [⇧⌘I]   (disabled)
+  Show All Parts   [⌥⇧⌘H]   (disabled)
+  ──
+  Show Agent   [⇧⌘K]
+  ──
+  AutoFill
+    Contact…   (disabled)
+    Passwords…   (disabled)
+    Credit Card…   (disabled)
+  Start Dictation   [🎤]   (disabled)
+  Emoji & Symbols   [⌘ ]
+View
+  Design   [⌃⌘1]
+  Assembly   [⌃⌘2]
+  Drawing   [⌃⌘3]
+  Electronics   [⌃⌘4]
+  Fab   [⌃⌘5]
+  ──
+  Model Navigator   [⌥⌘1]
+  Inspector   [⌥⌘2]
+  Hide All Panels   [⌥⌘0]
+  ──
+  Show Grid   [⌥⌘G]
+  Show Sketch Grid
+  ──
+  Zebra Analysis   [⌥⌘Z]
+  Ray-Traced Preview   [⌥⌘R]   (disabled)
+  Path-Traced View   [⌃⌘P]   (disabled)
+  ──
+  Open in Window   [⇧⌘D]
+Tools
+  Find Command…   [⇧⌘P]
+  Parameters…   [⌥⌘P]   (disabled)
+  ──
+  Measure   [⌃M]   (disabled)
+  Section View   [⌥⌘X]
+  ──
+  New Sketch   [⌃S]
+  Add Shape
+    Cube
+    Cylinder
+    Sphere
+    Cone
+    Torus
+    Wedge
+    Prism
+  Feature
+    Fillet…
+    Chamfer…
+    Shell…
+    Hole…
+    Linear Pattern…
+    Circular Pattern…
+    Mirror…
+    Scale…
+    Move…
+    Rotate…
+    Rotational Sweep…
+    Edge Blend…
+    Text…
+    Convex Hull…
+    Hull from Points…
+    Spur Gear…
+  Combine
+    Union   (disabled)
+    Subtract   (disabled)
+    Intersect   (disabled)
+Select
+  Body   [⌃B]
+  Face   [⌃F]
+  Edge   [⌃E]
+  Face or Edge   [⌃A]
+  ──
+  Clear Face/Edge Selection   (disabled)
+Camera
+  Isometric   [⌘1]
+  Front   [⌘2]
+  Right   [⌘3]
+  Top   [⌘4]
+  ──
+  Turn View Left
+  Turn View Right
+  ──
+  Views
+    No saved views   (disabled)
+  Save View…   [⌥⌘V]
+  ──
+  Quick Actions   [⌥⌘.]
+  ──
+  Frame All   [⌘0]
+  Frame Selection   [⇧⌘0]
+Analyze
+  Analysis Panel   [⌥⌘A]
+  ──
+  Manufacturability (DFM)
+  Stress (FEA)
+  Clearance & Interference
+  Fields (Ions, Optimizer, Dose)
+  ──
+  Live Plasmoid
+Assemble
+  Assembly Panel   [⇧⌘J]
+  Keyframe Timeline   [⌥⌘K]   (disabled)
+  ──
+  Key Pose at Playhead   (disabled)
+  Check Mates   (disabled)
+Fabricate
+  Fabricate Panel   [⌥⌘F]
+  ──
+  Tune Instrument (Microphone)   [⌥⌘T]
+  ──
+  Sheet Metal: Flat Pattern
+  3D Print: Slice & Export
+  CAM Job: Tools & Verify
+Window
+  Minimize   [⌘M]   (disabled)
+  Zoom   (disabled)
+  ──
+  Bring All to Front
+  ──
+Help
+  Keyboard Shortcuts   [⌘/]
+  ──
+  Welcome to vcad
+  Connect Agents…
+  ──
+  vcad Help
+  ──
+  Report a Bug…
+  Privacy
+
+== problems (1) ==
+empty submenu: vcad ▸ Services

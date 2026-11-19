@@ -290,7 +290,8 @@ struct DocumentCommands: Commands {
                 .keyboardShortcut("k", modifiers: [.command, .shift])
         }
         CommandGroup(after: .sidebar) {
-            Divider()
+            // No leading Divider: the sidebar group above is empty here, so
+            // one opened the View menu with a bare separator.
             ForEach(DockSpace.allCases) { ds in
                 Toggle(ds.label, isOn: Binding(
                     get: { GlassUI.shared.space == ds },
@@ -321,7 +322,8 @@ struct DocumentCommands: Commands {
             Toggle("Path-Traced View", isOn: Binding(
                 get: { model.pathTraceEnabled },
                 set: { model.setPathTrace($0) }))
-                .keyboardShortcut("p", modifiers: [.command, .option])
+                // ⌃⌘P: ⌥⌘P is Tools ▸ Parameters…, and the two collided.
+                .keyboardShortcut("p", modifiers: [.command, .control])
                 .disabled(!model.usesDocumentTree && model.assemblyInstanceCount == 0)
             Divider()
             Button(model.isWindowed ? "Release to Desktop" : "Open in Window") {
@@ -398,8 +400,9 @@ struct DocumentCommands: Commands {
             .keyboardShortcut(".", modifiers: [.command, .option])
             Divider()
             Button("Frame All") { model.resetCamera(animated: true) }.keyboardShortcut("0")
+            // ⇧⌘0 beside Frame All's ⌘0: ⌥⌘0 is View ▸ Hide All Panels.
             Button("Frame Selection") { ReleaseWindowController.shared.frameSelection() }
-                .keyboardShortcut("0", modifiers: [.command, .option]).disabled(!model.hasSelection)
+                .keyboardShortcut("0", modifiers: [.command, .shift]).disabled(!model.hasSelection)
         }
         CommandGroup(replacing: .help) {
             Button("Keyboard Shortcuts") { GlassUI.shared.shortcutsShown.toggle() }
@@ -718,7 +721,7 @@ struct FeatureRowView: View {
                       systemImage: model.isPartVisible(pi) ? "eye.slash" : "eye")
             }
             if model.hasHiddenParts {
-                Button { model.showAllParts() } label: { Label("Show All", systemImage: "eye") }
+                Button { model.showAllParts() } label: { Label("Show All Parts", systemImage: "eye") }
             }
             Divider()
         }

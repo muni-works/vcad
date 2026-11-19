@@ -943,18 +943,7 @@ struct GlassDock: View {
         .accessibilityLabel(name)
         .popover(isPresented: Binding(get: { openGroup == name }, set: { if !$0 { openGroup = nil } }),
                  arrowEdge: .top) {
-            LazyVGrid(columns: Array(repeating: GridItem(.fixed(72), spacing: 4), count: 4), spacing: 4) {
-                ForEach(tools) { t in
-                    Button { openGroup = nil; if t.enabled { t.action() } } label: {
-                        VStack(spacing: 3) {
-                            Image(systemName: t.symbol).font(.system(size: 17))
-                            Text(t.label).font(.caption).lineLimit(1)
-                        }.frame(width: 72, height: 52).contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain).disabled(!t.enabled).opacity(t.enabled ? 1 : 0.35)
-                    .help(Self.tooltip(t)).accessibilityLabel(t.label)
-                }
-            }.padding(Theme.Space.s)
+            ToolGroupGrid(tools: tools) { t in openGroup = nil; if t.enabled { t.action() } }
         }
     }
 
@@ -967,6 +956,31 @@ struct GlassDock: View {
         }
         .help(label).accessibilityLabel(label)
         .accessibilityAddTraits(active ? .isSelected : [])
+    }
+}
+
+/// A dock group's popover: its tools, four to a row.
+struct ToolGroupGrid: View {
+    let tools: [Tool]
+    let pick: (Tool) -> Void
+
+    var body: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.fixed(72), spacing: 4), count: min(4, max(tools.count, 1))),
+                  spacing: 4) {
+            ForEach(tools) { t in
+                Button { pick(t) } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: t.symbol).font(.system(size: 17))
+                        // Two lines, as in the ··· palette: at 72 pt one line
+                        // cut "Circular Pattern" and friends to "…".
+                        Text(t.label).font(.caption).lineLimit(2)
+                            .multilineTextAlignment(.center).minimumScaleFactor(0.9)
+                    }.frame(width: 72, height: 56).contentShape(Rectangle())
+                }
+                .buttonStyle(.plain).disabled(!t.enabled).opacity(t.enabled ? 1 : 0.35)
+                .help(GlassDock.tooltip(t)).accessibilityLabel(t.label)
+            }
+        }.padding(Theme.Space.s)
     }
 }
 
