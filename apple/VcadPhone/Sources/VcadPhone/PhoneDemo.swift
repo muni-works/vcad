@@ -48,18 +48,20 @@ enum PhoneDemo {
         guard let p = c.viewPoint(forPart: 0, from: model.cameraPosition, lookAt: model.panOffset) else {
             return fail("part 0 not on screen")
         }
-        let hit = c.hits(atViewPoint: p).first { $0.entity.name.hasPrefix("part") }
-        guard hit != nil, let fid = model.featureNodes.first(where: { $0.partIndex == 0 })?.id else {
-            return fail("tap at \(p) hit nothing")
-        }
-        model.selectFeature(fid)
-        await step("selected \(model.selectedFeatureNode?.name ?? "?") by tap at (\(Int(p.x)), \(Int(p.y)))")
+        // A tap picks the face under the finger (the Mac's Fusion-style click)…
+        PhonePick.tap(at: p, model: model)      // exactly what the tap recognizer calls
+        guard model.picking.selection.count == 1 else { return fail("tap at \(p) picked nothing") }
+        await step("tap picked \(model.topologySelectionReadout() ?? "?") at (\(Int(p.x)), \(Int(p.y)))")
+        // …and a double tap reaches the whole body (the Mac's double-click).
+        PhonePick.doubleTap(at: p, model: model)
+        guard model.hasSelection else { return fail("double tap at \(p) selected nothing") }
+        try? await Task.sleep(for: .milliseconds(300))
+        await step("double tap selected \(model.selectedFeatureNode?.name ?? "?"); inspector \(PhoneDocumentFlow.shared.inspectorShown ? "open" : "CLOSED")")
 
-        // Edit a parameter in the Inspect sheet: the wall's height.
+        // Edit a parameter in the inspector card: the wall's height.
         guard let wall = find(model.featureNodes, where: { $0.opType == "Cube" && ($0.name.contains("wall")) })
                 ?? find(model.featureNodes, where: { $0.opType == "Cube" }) else { return fail("no cube feature") }
         model.selectFeature(wall.id)
-        PhoneDocumentFlow.shared.panel = .inspect
         await step("inspect \(wall.name)")
         let before = (model.opDict(nodeId: wall.nodeId)?["size"] as? [String: Any])?["z"] as? Double ?? 0
         model.editVec(nodeId: wall.nodeId, key: "size", axis: "z", value: before + 20, snapshot: true,
@@ -74,7 +76,7 @@ enum PhoneDemo {
         // Edit again, then Save (the ⋯ menu's Save) and read the file back.
         model.editVec(nodeId: wall.nodeId, key: "size", axis: "z", value: before + 10, snapshot: true,
                       name: "Change Size")
-        PhoneDocumentFlow.shared.panel = nil
+        PhoneDocumentFlow.shared.inspectorShown = false
         await step("edited again size.z -> \(before + 10)")
         let undoBefore = model.undoStack.count
         model.saveDocument()
