@@ -191,6 +191,7 @@ private struct GlassSurface<S: InsettableShape>: ViewModifier {
     var tint: Color? = nil
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.chromeOverDesktop) private var overDesktop
 
     func body(content: Content) -> some View {
         if reduceTransparency {
@@ -198,7 +199,8 @@ private struct GlassSurface<S: InsettableShape>: ViewModifier {
                 .background(Color(nsColor: .windowBackgroundColor), in: shape)
                 .overlay(shape.strokeBorder(.separator, lineWidth: 1))
         } else if #available(macOS 26.0, *) {
-            content.glassEffect(tint.map { .regular.tint($0) } ?? .regular, in: shape)
+            content.desktopBacking(overDesktop, in: shape)
+                .glassEffect(tint.map { .regular.tint($0) } ?? .regular, in: shape)
         } else {
             content
                 .background(.regularMaterial, in: shape)

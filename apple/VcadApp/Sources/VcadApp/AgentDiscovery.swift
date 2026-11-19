@@ -55,6 +55,7 @@ enum AgentDiscovery {
     static let throwawayRunKeys = [
         "VCAD_PERF_EXIT", "VCAD_BAKE_MESH_BUNDLE", "VCAD_SNAPSHOT_DIR",
         "VCAD_ASSEMBLY_SNAPSHOT_DIR", "VCAD_FIELDS_SNAPSHOT_DIR", "VCAD_FIELDS_SNAPSHOT_EXIT",
+        "VCAD_UI_AUDIT_DIR",
     ]
 
     /// An XCTest host (tests that show the desktop start the bridge too).

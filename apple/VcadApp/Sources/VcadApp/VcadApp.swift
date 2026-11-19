@@ -103,6 +103,7 @@ struct VcadApp: App {
                 .task { PlasmoidStore.shared.attach(model); await PlasmoidDemo.runIfRequested(model) }
                 .task { await FieldsSnapshots.runIfRequested(model) }
                 .task { await AssemblyOpenDemo.runIfRequested(model) }
+                .task { await UIAuditDemo.runIfRequested(model) }
                 .task { await JointDragDemo.runIfRequested(model) }
                 .task { await RuntimeScrubBench.runIfRequested(model) }
         }

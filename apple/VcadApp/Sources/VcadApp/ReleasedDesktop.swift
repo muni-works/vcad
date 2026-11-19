@@ -880,46 +880,31 @@ struct ReleasedOverlayView: View {
         ZStack(alignment: .top) {
         VStack(spacing: 0) {
             if !fullBleed { Color.clear.frame(height: Glass.toolbarHeight + (model.isWindowed ? 0 : 20)) }
-            switch model.workspace {
-            case .electronics:
-                NativeElectronicsView(model: model)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .modifier(ChromeRegion(key: "electronicsWorkspace"))
-            case .design:
+            // One viewport for the window's whole life. Drawing and
+            // Electronics cover it rather than replace it: tearing the ARView
+            // down and building a second one left the new view rendering from
+            // the scene origin, inside the model, black with a giant gizmo,
+            // every time you came back from Drawing.
+            ZStack {
                 viewport.frame(maxWidth: .infinity, maxHeight: .infinity)
-            case .drawing:
-                DrawingWorkspaceView(model: model)
-                    .modifier(ChromeRegion(key: "drawingWorkspace"))
-            case .manufacture:
-                viewport.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .opacity(showsViewport ? 1 : 0)
+                    .allowsHitTesting(showsViewport)
                     .overlay {
-                        GeometryReader { geo in
-                            VStack(spacing: Theme.Space.m) {
-                                HStack(alignment: .top, spacing: Theme.Space.m) {
-                                    if model.cnc.leftPanelShown {
-                                        CNCStudioOutline(cnc: model.cnc)
-                                            .panelSurface()
-                                            .modifier(ChromeRegion(key: "cncOutline"))
-                                    }
-                                    Spacer(minLength: 0)
-                                    if model.cnc.rightPanelShown {
-                                        CNCStudioInspector(model: model)
-                                            .panelSurface()
-                                            .modifier(ChromeRegion(key: "cncInspector"))
-                                    }
-                                }.frame(maxHeight: .infinity, alignment: .top)
-                                VStack(spacing: 0) {
-                                    if model.cnc.bottomPanelShown {
-                                        CNCStudioDrawer(model: model)
-                                            .frame(height: min(240, geo.size.height * 0.3))
-                                        Divider()
-                                    }
-                                    CNCStudioTransport(cnc: model.cnc)
-                                }.panelSurface()
-                                    .modifier(ChromeRegion(key: "cncBottom"))
-                            }.padding(Theme.Space.m)
+                        if model.workspace == .manufacture {
+                            cncPanels
                         }
                     }
+                switch model.workspace {
+                case .electronics:
+                    NativeElectronicsView(model: model)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .modifier(ChromeRegion(key: "electronicsWorkspace"))
+                case .drawing:
+                    DrawingWorkspaceView(model: model)
+                        .modifier(ChromeRegion(key: "drawingWorkspace"))
+                case .design, .manufacture:
+                    EmptyView()
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -978,6 +963,7 @@ struct ReleasedOverlayView: View {
             }
         }
         .animation(Motion.smooth, value: GlassUI.shared.historyOpen)
+        .environment(\.chromeOverDesktop, !model.isWindowed)
         .ignoresSafeArea(.container, edges: .top)
         .onAppear { ReleaseWindowController.shared.updateDocumentWindow() }
         .onChange(of: model.source) { _, _ in ReleaseWindowController.shared.updateDocumentWindow() }
@@ -1003,6 +989,39 @@ struct ReleasedOverlayView: View {
             GlassToolbar(model: model).frame(maxWidth: 920).glassCapsule()
                 .modifier(ChromeRegion(key: "workspaceHeader"))
                 .padding(.horizontal, Glass.inset).padding(.top, Glass.inset)
+        }
+    }
+
+    /// The 3D viewport is visible (and takes input) in Design and Fab only.
+    private var showsViewport: Bool { model.workspace == .design || model.workspace == .manufacture }
+
+    /// The Manufacture studio's panels over the viewport.
+    private var cncPanels: some View {
+        GeometryReader { geo in
+            VStack(spacing: Theme.Space.m) {
+                HStack(alignment: .top, spacing: Theme.Space.m) {
+                    if model.cnc.leftPanelShown {
+                        CNCStudioOutline(cnc: model.cnc)
+                            .panelSurface()
+                            .modifier(ChromeRegion(key: "cncOutline"))
+                    }
+                    Spacer(minLength: 0)
+                    if model.cnc.rightPanelShown {
+                        CNCStudioInspector(model: model)
+                            .panelSurface()
+                            .modifier(ChromeRegion(key: "cncInspector"))
+                    }
+                }.frame(maxHeight: .infinity, alignment: .top)
+                VStack(spacing: 0) {
+                    if model.cnc.bottomPanelShown {
+                        CNCStudioDrawer(model: model)
+                            .frame(height: min(240, geo.size.height * 0.3))
+                        Divider()
+                    }
+                    CNCStudioTransport(cnc: model.cnc)
+                }.panelSurface()
+                    .modifier(ChromeRegion(key: "cncBottom"))
+            }.padding(Theme.Space.m)
         }
     }
 

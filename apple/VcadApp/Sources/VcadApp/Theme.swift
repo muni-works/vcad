@@ -45,6 +45,27 @@ enum Theme {
 
 // MARK: - Surfaces
 
+extension EnvironmentValues {
+    /// True while the chrome floats straight over the desktop (released mode)
+    /// rather than over the window's own viewport. Glass there refracts other
+    /// apps' windows, the wallpaper and the model itself into an illegible
+    /// smear, so surfaces add a solid backing under their content.
+    @Entry var chromeOverDesktop = false
+}
+
+extension View {
+    /// The solid backing under glass content while chrome floats over the
+    /// desktop: the glass keeps its edge and depth, the panel stays readable.
+    func desktopBacking<S: InsettableShape>(_ on: Bool, in shape: S) -> some View {
+        #if os(macOS)
+        background(on ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor).opacity(0.82)) : AnyShapeStyle(.clear),
+                   in: shape)
+        #else
+        background(on ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(.clear), in: shape)
+        #endif
+    }
+}
+
 /// The floating panel surface: Liquid Glass where the OS has it, a regular
 /// material with a hairline and a soft shadow everywhere else. The shadow
 /// weight follows the appearance so a panel over a light desktop does not
@@ -54,6 +75,7 @@ private struct PanelSurface<S: InsettableShape>: ViewModifier {
     @Environment(\.colorScheme) private var scheme
 
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+    @Environment(\.chromeOverDesktop) private var overDesktop
 
     func body(content: Content) -> some View {
         #if os(macOS)
@@ -61,7 +83,7 @@ private struct PanelSurface<S: InsettableShape>: ViewModifier {
             content.background(Color(nsColor: .windowBackgroundColor), in: shape)
                 .overlay(shape.strokeBorder(.separator, lineWidth: 1))
         } else if #available(macOS 26.0, *) {
-            content.glassEffect(.regular, in: shape)
+            content.desktopBacking(overDesktop, in: shape).glassEffect(.regular, in: shape)
         } else {
             fallback(content)
         }
