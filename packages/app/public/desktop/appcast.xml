@@ -1,10 +1,10 @@
-<?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
-  <channel>
-    <title>vcad</title>
-    <link>https://vcad.io/desktop/</link>
-    <description>vcad for Mac updates</description>
-    <language>en</language>
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>vcad</title>
+        <link>https://vcad.io/desktop/</link>
+        <description>vcad for Mac updates</description>
+        <language>en</language>
     <item>
       <title>vcad 1.1.1</title>
       <pubDate>Thu, 19 Nov 2026 22:53:02 +0000</pubDate>
@@ -14,5 +14,34 @@
       <sparkle:releaseNotesLink>https://github.com/muni-works/vcad/releases/tag/desktop-v1.1.1</sparkle:releaseNotesLink>
       <enclosure url="https://github.com/muni-works/vcad/releases/download/desktop-v1.1.1/vcad-1.1.1.dmg" type="application/octet-stream" sparkle:edSignature="qhYzlByNENyJSBmhgNCIBanTdHrJUJlTMRzCpZyphIJdIjV02ruETPeNsCqsLYJnqEMQaI3Y15nlfOet6XQrDw==" length="36809370"/>
     </item>
-  </channel>
+        <item>
+            <title>1.1.0</title>
+            <pubDate>Thu, 19 Nov 2026 07:11:29 +0000</pubDate>
+            <link>https://vcad.io/desktop/</link>
+            <sparkle:version>10012</sparkle:version>
+            <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/muni-works/vcad/releases/download/desktop-v1.1.0/vcad-1.1.0.dmg" length="39706523" type="application/octet-stream" sparkle:edSignature="yYdwt7opssSFokNgmtZMftepLGepk4LLePrRABK+A1nkX3Q1w7B+Y91HBaAocWwCfn/2L0lT2edSS1uQzjZGCQ=="/>
+        </item>
+        <item>
+            <title>1.0.3-beta.5</title>
+            <pubDate>Mon, 16 Nov 2026 14:19:05 +0000</pubDate>
+            <link>https://vcad.io/desktop/</link>
+            <sparkle:version>10010</sparkle:version>
+            <sparkle:shortVersionString>1.0.3-beta.5</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/muni-works/vcad/releases/download/desktop-v1.0.3-beta.5/vcad-1.0.3-beta.5.dmg" length="36225891" type="application/octet-stream" sparkle:edSignature="nAPJwE61Ep+KgFuammKR71AiYaCXFpQMUuhZmBPOJO2thlUG6G0Q/HDGTt+ZXev+TzFVTP+B4UdtrAlWC9PmAA=="/>
+        </item>
+        <item>
+            <title>vcad 1.0.2</title>
+            <pubDate>Thu, 12 Nov 2026 19:53:16 +0000</pubDate>
+            <sparkle:version>3250</sparkle:version>
+            <sparkle:shortVersionString>1.0.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:releaseNotesLink>https://github.com/muni-works/vcad/releases/tag/desktop-v1.0.2-beta.3</sparkle:releaseNotesLink>
+            <enclosure url="https://github.com/muni-works/vcad/releases/download/desktop-v1.0.2-beta.3/vcad-1.0.2.dmg" type="application/octet-stream" sparkle:edSignature="h/v/YhOEVOyr9yVzn/PVfOfSGCK9OF06xgcgMGRNDNaH30JUmq9/pQqqJdZJ5cUU7/kawP5LlODBkl18GTpMCg==" length="35426321"/>
+        </item>
+    </channel>
 </rss>
