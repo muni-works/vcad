@@ -6,6 +6,16 @@
         <description>vcad for Mac updates</description>
         <language>en</language>
         <item>
+            <title>1.1.0</title>
+            <pubDate>Thu, 19 Nov 2026 07:11:29 +0000</pubDate>
+            <link>https://vcad.io/desktop/</link>
+            <sparkle:version>10012</sparkle:version>
+            <sparkle:shortVersionString>1.1.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/muni-works/vcad/releases/download/desktop-v1.1.0/vcad-1.1.0.dmg" length="39706523" type="application/octet-stream" sparkle:edSignature="yYdwt7opssSFokNgmtZMftepLGepk4LLePrRABK+A1nkX3Q1w7B+Y91HBaAocWwCfn/2L0lT2edSS1uQzjZGCQ=="/>
+        </item>
+        <item>
             <title>1.0.3-beta.5</title>
             <pubDate>Mon, 16 Nov 2026 14:19:05 +0000</pubDate>
             <link>https://vcad.io/desktop/</link>
