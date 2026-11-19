@@ -142,6 +142,7 @@ struct ReleasedNavigatorWindow: View {
 
     var body: some View {
         ReleasedLeftRail(model: model)
+            .macPanelControls()
             .padding(Theme.Space.s)
             .modifier(ReturnsWhenOrphaned(id: ReleaseScene.navigator))
     }
@@ -154,6 +155,7 @@ struct ReleasedInspectorWindow: View {
 
     var body: some View {
         ReleasedRightRail(model: model)
+            .macPanelControls()
             .padding(Theme.Space.s)
             .modifier(ReturnsWhenOrphaned(id: ReleaseScene.inspector))
     }

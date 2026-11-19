@@ -17,9 +17,36 @@ import UIKit
 
 // MARK: - Layout constants
 
+/// Sizes that differ by platform. The Mac's are pointer-sized; visionOS
+/// looks-and-pinches, so its targets meet the 44 pt minimum and its glyphs
+/// match the system's larger type.
+enum ChromeMetrics {
+    #if os(visionOS)
+    static let toolbarIcon: CGFloat = 19
+    static let toolbarHit = CGSize(width: 44, height: 44)
+    static let pillTitle: CGFloat = 15
+    static let pillLine: CGFloat = 12
+    static let pillHeight: CGFloat = 40
+    static let navigatorList: CGFloat = 520
+    static let dockIcon: CGFloat = 19
+    static let dockHit = CGSize(width: 46, height: 44)
+    static let groupCell = CGSize(width: 92, height: 64)
+    #else
+    static let toolbarIcon: CGFloat = 15
+    static let toolbarHit = CGSize(width: 30, height: 26)
+    static let pillTitle: CGFloat = 12
+    static let pillLine: CGFloat = 10
+    static let pillHeight: CGFloat = 32
+    static let navigatorList: CGFloat = 360
+    static let dockIcon: CGFloat = 16
+    static let dockHit = CGSize(width: 38, height: 32)
+    static let groupCell = CGSize(width: 72, height: 52)
+    #endif
+}
+
 enum Glass {
     /// Sidebar and inspector width.
-    static let panelWidth: CGFloat = 170
+    static let panelWidth: CGFloat = Theme.Width.navigator
     /// Even inset from the window edges.
     static let inset: CGFloat = 10
     /// The window's corner radius (macOS 26 document windows).
@@ -296,7 +323,7 @@ struct GlassToolbar: View {
                 withAnimation(Motion.panel) { model.showsInspector.toggle() }
             }
         }
-        .padding(.leading, model.isWindowed ? 84 : Glass.inset + 6)
+        .padding(.leading, model.isWindowed ? Self.trafficLightsInset : Glass.inset + 6)
         .padding(.trailing, Glass.inset + 6)
         .frame(height: Glass.toolbarRow)
         // On the window's center, whatever sits either side of it.
@@ -311,6 +338,13 @@ struct GlassToolbar: View {
             }.frame(width: 0, height: 0).opacity(0).accessibilityHidden(true)
         }
     }
+
+    /// Room for the window's traffic lights; visionOS windows have none.
+    #if os(visionOS)
+    private static let trafficLightsInset: CGFloat = Glass.inset + 6
+    #else
+    private static let trafficLightsInset: CGFloat = 84
+    #endif
 
     /// Shrinks with the window, and is the same size in either state.
     private var fieldWidth: CGFloat { min(340, max(200, toolbarWidth * 0.3)) }
@@ -358,10 +392,10 @@ struct GlassToolbar: View {
                     TimelineView(.explicit(statusTicks(after: .now))) { context in
                         let line = statusLine(at: context.date)
                         VStack(spacing: 0) {
-                            Text(pillTitle).font(.system(size: 12, weight: .medium))
+                            Text(pillTitle).font(.system(size: ChromeMetrics.pillTitle, weight: .medium))
                                 .lineLimit(1).truncationMode(.middle)
                             if let line {
-                                Text(line.text).font(.system(size: 10))
+                                Text(line.text).font(.system(size: ChromeMetrics.pillLine))
                                     .foregroundStyle(line.tint.map { AnyShapeStyle($0) } ?? AnyShapeStyle(.secondary))
                                     .lineLimit(1).truncationMode(.middle)
                                     // Steady digits: monospaced, no rolling transition.
@@ -380,7 +414,7 @@ struct GlassToolbar: View {
                 .accessibilityHint(shownTask != nil || loadOutcome != nil ? "Show details" : "Opens the command palette")
         }
         .padding(.horizontal, 14)
-        .frame(width: fieldWidth, height: 32)
+        .frame(width: fieldWidth, height: ChromeMetrics.pillHeight)
         .overlay(alignment: .trailing) {
             trailingButton.padding(.trailing, 8)
         }
@@ -511,8 +545,9 @@ struct GlassToolbar: View {
                 .disabled(!model.canExportDocument)
             #endif
         } label: {
-            Image(systemName: "square.and.arrow.up").font(.system(size: 15, weight: .regular))
-                .frame(width: 30, height: 26).contentShape(Rectangle())
+            Image(systemName: "square.and.arrow.up").font(.system(size: ChromeMetrics.toolbarIcon, weight: .regular))
+                .frame(width: ChromeMetrics.toolbarHit.width, height: ChromeMetrics.toolbarHit.height)
+                .contentShape(Rectangle())
                 .foregroundStyle(.secondary)
         }
         .menuStyle(.borderlessButton)
@@ -542,8 +577,9 @@ struct GlassToolbar: View {
 
     private func iconButton(_ symbol: String, _ help: String, active: Bool, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 15, weight: .regular))
-                .frame(width: 30, height: 26).contentShape(Rectangle())
+            Image(systemName: symbol).font(.system(size: ChromeMetrics.toolbarIcon, weight: .regular))
+                .frame(width: ChromeMetrics.toolbarHit.width, height: ChromeMetrics.toolbarHit.height)
+                .contentShape(Rectangle())
                 .foregroundStyle(active ? .primary : .secondary)
         }
         .buttonStyle(.borderless)
@@ -911,7 +947,7 @@ struct GlassDock: View {
                 Text(ui.space.label).font(.callout.weight(.semibold))
                 Image(systemName: "chevron.up").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
             }
-            .padding(.horizontal, 10).frame(height: 32).contentShape(Capsule())
+            .padding(.horizontal, 10).frame(height: ChromeMetrics.dockHit.height).contentShape(Capsule())
         }
         .fixedSize()
         .help("Workspace (⌃⌘1–5)")
@@ -927,8 +963,8 @@ struct GlassDock: View {
 
     @ViewBuilder private func toolButton(_ tool: Tool) -> some View {
         Button { if tool.enabled { tool.action() } } label: {
-            Image(systemName: tool.symbol).font(.system(size: 16, weight: .medium))
-                .frame(width: 38, height: 32)
+            Image(systemName: tool.symbol).font(.system(size: ChromeMetrics.dockIcon, weight: .medium))
+                .frame(width: ChromeMetrics.dockHit.width, height: ChromeMetrics.dockHit.height)
                 .background {
                     if tool.isActive {
                         // Gray, not blue: blue/orange belong to the 3D selection.
@@ -951,8 +987,8 @@ struct GlassDock: View {
         let active = tools.first(where: \.isActive)
         Button { openGroup = openGroup == name ? nil : name } label: {
             ZStack(alignment: .bottomTrailing) {
-                Image(systemName: active?.symbol ?? tools[0].symbol).font(.system(size: 16, weight: .medium))
-                    .frame(width: 38, height: 32)
+                Image(systemName: active?.symbol ?? tools[0].symbol).font(.system(size: ChromeMetrics.dockIcon, weight: .medium))
+                    .frame(width: ChromeMetrics.dockHit.width, height: ChromeMetrics.dockHit.height)
                 Image(systemName: "chevron.down").font(.system(size: 7, weight: .bold))
                     .foregroundStyle(.secondary).offset(x: -3, y: -3)
             }
@@ -965,13 +1001,13 @@ struct GlassDock: View {
         .accessibilityLabel(name)
         .popover(isPresented: Binding(get: { openGroup == name }, set: { if !$0 { openGroup = nil } }),
                  arrowEdge: .top) {
-            LazyVGrid(columns: Array(repeating: GridItem(.fixed(72), spacing: 4), count: 4), spacing: 4) {
+            LazyVGrid(columns: Array(repeating: GridItem(.fixed(ChromeMetrics.groupCell.width), spacing: 4), count: 4), spacing: 4) {
                 ForEach(tools) { t in
                     Button { openGroup = nil; if t.enabled { t.action() } } label: {
                         VStack(spacing: 3) {
                             Image(systemName: t.symbol).font(.system(size: 17))
                             Text(t.label).font(.caption).lineLimit(1)
-                        }.frame(width: 72, height: 52).contentShape(Rectangle())
+                        }.frame(width: ChromeMetrics.groupCell.width, height: ChromeMetrics.groupCell.height).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain).disabled(!t.enabled).opacity(t.enabled ? 1 : 0.35)
                     .help(Self.tooltip(t)).accessibilityLabel(t.label)
@@ -982,8 +1018,8 @@ struct GlassDock: View {
 
     private func dockButton(_ symbol: String, _ label: String, active: Bool, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 15, weight: .medium))
-                .frame(width: 34, height: 32)
+            Image(systemName: symbol).font(.system(size: ChromeMetrics.dockIcon - 1, weight: .medium))
+                .frame(width: ChromeMetrics.dockHit.width - 4, height: ChromeMetrics.dockHit.height)
                 .background(active ? AnyShapeStyle(.quaternary) : AnyShapeStyle(.clear), in: Capsule(style: .continuous))
                 .contentShape(Capsule())
         }

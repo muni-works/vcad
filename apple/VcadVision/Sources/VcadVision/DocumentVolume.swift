@@ -56,16 +56,18 @@ struct DocumentVolume: View {
         // toolbar with its command/palette/toast hosts, and the dock.
         .ornament(attachmentAnchor: .scene(.leading), contentAlignment: .trailing) {
             ReleasedLeftRail(model: model)
+                .macPanelControls()
                 .padding(.trailing, Theme.Space.l)
         }
         .ornament(attachmentAnchor: .scene(.trailing), contentAlignment: .leading) {
             ReleasedRightRail(model: model)
+                .macPanelControls()
                 .padding(.leading, Theme.Space.l)
         }
         .ornament(attachmentAnchor: .scene(.top), contentAlignment: .bottom) {
             VStack(spacing: Theme.Space.s) {
                 GlassToolbar(model: model)
-                    .frame(width: 980)
+                    .frame(width: 880)
                     .glassBackgroundEffect(in: .capsule)
                 ToastHost()
                 PartFailureHost(model: model)

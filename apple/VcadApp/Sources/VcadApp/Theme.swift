@@ -25,6 +25,16 @@ enum Theme {
         static let l: CGFloat = 16
     }
     enum Width {
+        #if os(visionOS)
+        // visionOS type runs ~1.3× the Mac's (body 17 pt vs 13) and its
+        // controls carry 44 pt hit targets, so the same panels at Mac widths
+        // truncated names and clipped units. Same layout, wider rails.
+        static let navigator: CGFloat = 250
+        static let inspector: CGFloat = 270
+        static let toolInspector: CGFloat = 380
+        static let analysisWide: CGFloat = 600
+        static let cncOutline: CGFloat = 260
+        #else
         /// The left rail: model navigator, CNC job outline, circuit navigator.
         static let navigator: CGFloat = 170
         /// The right rail: object inspector, machine panel, circuit inspector.
@@ -37,6 +47,7 @@ enum Theme {
         static let analysisWide: CGFloat = 470
         /// Manufacture's compact job outline.
         static let cncOutline: CGFloat = 192
+        #endif
     }
     enum Height {
         static let header: CGFloat = 52
