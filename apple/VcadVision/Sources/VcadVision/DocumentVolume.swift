@@ -53,8 +53,9 @@ struct DocumentVolume: View {
         .ornament(attachmentAnchor: .scene(.leading), contentAlignment: .trailing) {
             VStack(alignment: .leading, spacing: 10) {
                 OpenDocumentButton(importing: $importing)
+                ReleaseButton()
                 FeatureTreeView(model: model)
-                    .frame(width: 230)
+                    .frame(width: 230, height: 300)
             }
             .padding(12)
             .glassBackgroundEffect()
@@ -79,8 +80,9 @@ struct DocumentVolume: View {
         .ornament(attachmentAnchor: .scene(.bottom), contentAlignment: .top) {
             VStack(spacing: 10) {
                 if model.sketching {
-                    SketchHintBar(model: model)
-                    SketchPaletteView(model: model)
+                    // Sketching needs the Mac's sketch views (stubbed here).
+                    Text("Sketch on the Mac — the volume shows the result.")
+                        .font(.callout).foregroundStyle(.secondary)
                 } else {
                     if model.timeline != nil {
                         PlaybackBar(model: model)
@@ -175,7 +177,6 @@ struct DocumentVolume: View {
     private func refreshSketchInk() {
         guard let centering = model.centeringEntity else { return }
         centering.findEntity(named: "sketchRoot")?.removeFromParent()
-        if model.sketching { centering.addChild(buildSketchRoot(model: model)) }
         model.sketchDirty = false
     }
 
@@ -250,8 +251,8 @@ struct DocumentVolume: View {
             }
         }
 
-        if model.sketching { centering.addChild(buildSketchRoot(model: model)) }
-        if model.showsGizmo { centering.addChild(buildGizmo(model: model)) }
+        // Sketch ink and the transform gizmo use the Mac's screen-space line
+        // shaders (CustomMaterial), which visionOS lacks: not drawn here.
 
         let zUp = Entity()
         zUp.orientation = simd_quatf(angle: -.pi / 2, axis: [1, 0, 0])

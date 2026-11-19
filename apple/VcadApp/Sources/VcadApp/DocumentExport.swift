@@ -37,13 +37,6 @@ struct KernelError: Error, Equatable, CustomStringConvertible {
     var isCancelled: Bool { message == "cancelled" }
 }
 
-/// This thread's `vcad_last_error`, or `fallback`.
-func vcadLastError(_ fallback: String) -> String {
-    var count = 0
-    guard let p = vcad_last_error(&count), count > 0 else { return fallback }
-    return String(decoding: UnsafeBufferPointer(start: p, count: count), as: UTF8.self)
-}
-
 enum KernelExport {
     /// Write `json` to `url` as `format`. Blocking; returns parts written.
     nonisolated static func export(json: Data, baseDir: String?, to url: URL,

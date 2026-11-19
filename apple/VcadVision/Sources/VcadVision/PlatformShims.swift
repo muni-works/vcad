@@ -32,3 +32,31 @@ extension UIColor {
         return (r, g, b, a)
     }
 }
+
+extension Color {
+    /// AppKit spelling of `Color(uiColor:)`.
+    init(nsColor: UIColor) { self.init(uiColor: nsColor) }
+}
+
+/// The one NSWorkspace property the shared code reads.
+@MainActor
+enum NSWorkspace {
+    struct Workspace {
+        var accessibilityDisplayShouldReduceMotion: Bool { UIAccessibility.isReduceMotionEnabled }
+        @discardableResult func open(_ url: URL) -> Bool { false }
+    }
+    static let shared = Workspace()
+}
+
+/// Hardware modifier state, which visionOS doesn't have: no key is ever held,
+/// so shared "⌥ = fine / ⌘ = snap" reads take their default path.
+enum NSEvent {
+    struct ModifierFlags: OptionSet {
+        let rawValue: UInt
+        static let shift = ModifierFlags(rawValue: 1 << 17)
+        static let control = ModifierFlags(rawValue: 1 << 18)
+        static let option = ModifierFlags(rawValue: 1 << 19)
+        static let command = ModifierFlags(rawValue: 1 << 20)
+    }
+    static var modifierFlags: ModifierFlags { [] }
+}

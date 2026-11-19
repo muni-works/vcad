@@ -674,11 +674,13 @@ struct FeatureRowView: View {
         }
         // ⌘-click a part row → toggle it in the multi-selection (for booleans).
         // The modifier comes from the gesture, not NSEvent's hardware state.
+        #if os(macOS)  // no modifier keys on visionOS: long-press toggles in the volume
         .gesture(TapGesture().modifiers(.command).onEnded {
             guard model.renamingFeatureID != node.id else { return }
             if let pi = node.partIndex { model.toggleMultiSelect(part: pi, featureID: node.id) }
             else { model.selectFeature(node.id) }
         })
+        #endif
         .gesture(TapGesture().onEnded {
             guard model.renamingFeatureID != node.id else { return }
             model.selectFeature(node.id)
@@ -970,7 +972,9 @@ struct ScrubField: View {
             if !label.isEmpty {
                 Text(label).font(.callout).foregroundStyle(.secondary).lineLimit(1)
                     .contentShape(Rectangle())
+                    #if os(macOS)
                     .onHover { ($0 ? NSCursor.resizeLeftRight : NSCursor.arrow).set() }
+                    #endif
                     .gesture(scrub)
                     .help("Drag to scrub (⌥ fine · ⇧ coarse)")
                 Spacer(minLength: 2)

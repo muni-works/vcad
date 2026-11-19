@@ -274,6 +274,7 @@ final class CNCWorkspace {
     /// loop as an outside contour with holding tabs, each hole large enough
     /// for the cutter as an inside contour. Stock is sized to the outline.
     func importOutlineFile() {
+        #if os(macOS)  // AppKit file panel; no-op elsewhere
         guard !machine.active, !generating else { return }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "dxf") ?? .plainText, .plainText]
@@ -284,6 +285,7 @@ final class CNCWorkspace {
             guard size <= 8_000_000 else { throw CNCError.message("Choose a DXF smaller than 8 MB.") }
             try importOutline(CNCOutline.parseDXF(String(contentsOf: url, encoding: .utf8), name: url.lastPathComponent))
         } catch { self.error = error.localizedDescription }
+        #endif
     }
 
     /// Replace the operations with the outline's contour cuts.
@@ -372,6 +374,7 @@ final class CNCWorkspace {
     }
     func pausePreview() { previewPlaying = false; previewTask?.cancel(); previewTask = nil }
     func export(job: Bool = false) {
+        #if os(macOS)  // AppKit file panel; no-op elsewhere
         guard let code = job ? jobCode : (current ? program?.gcode : nil) else { return }
         let panel = NSSavePanel()
         panel.nameFieldStringValue = usesImportedProgram ? importedName : job ? "anolex-job.nc" : "anolex-\(setup.operation).nc"
@@ -379,8 +382,10 @@ final class CNCWorkspace {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do { try code.write(to: url, atomically: true, encoding: .utf8) }
         catch { self.error = error.localizedDescription }
+        #endif
     }
     func importFile() {
+        #if os(macOS)  // AppKit file panel; no-op elsewhere
         guard !machine.active, !generating else { return }
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "nc") ?? .plainText, UTType(filenameExtension: "gcode") ?? .plainText, .plainText]
@@ -390,6 +395,7 @@ final class CNCWorkspace {
             guard size <= 8_000_000 else { throw CNCError.message("Choose a G-code file smaller than 8 MB.") }
             try importProgram(String(contentsOf: url, encoding: .utf8), name: url.lastPathComponent)
         } catch { self.error = error.localizedDescription }
+        #endif
     }
     func importProgram(_ code: String, name: String) throws {
         guard !machine.active, !generating else { return }

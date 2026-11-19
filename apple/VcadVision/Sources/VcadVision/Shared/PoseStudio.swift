@@ -1,0 +1,1 @@
+../../../../VcadApp/Sources/VcadApp/PoseStudio.swift

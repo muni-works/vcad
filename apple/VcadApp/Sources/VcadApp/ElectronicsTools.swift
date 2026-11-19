@@ -1,5 +1,9 @@
 import SwiftUI
+#if canImport(AppKit)
 import AppKit
+#else
+import UIKit
+#endif
 import UniformTypeIdentifiers
 
 /// A JSON object handed across the detached-task boundary. The FFI results are
@@ -71,11 +75,13 @@ final class ElectronicsTools {
     // MARK: board
 
     func importBoard(_ ec: ElectronicsWorkspace, _ model: EditorModel) {
+        #if os(macOS)  // AppKit file panel; no-op elsewhere
         let panel = NSOpenPanel()
         panel.allowedContentTypes = ["kicad_pcb", "brd"].compactMap { UTType(filenameExtension: $0) }
         panel.message = "Choose a KiCad (.kicad_pcb) or Eagle (.brd) board"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         importBoard(url, ec, model)
+        #endif
     }
 
     /// Import a KiCad/Eagle board file into this document's board.
@@ -122,6 +128,7 @@ final class ElectronicsTools {
     }
 
     func exportGerbers(_ ec: ElectronicsWorkspace, _ model: EditorModel) {
+        #if os(macOS)  // AppKit file panel; no-op elsewhere
         guard let b = boardBox(ec, model) else { return }
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
@@ -133,6 +140,7 @@ final class ElectronicsTools {
             status = "Exported \(n) fabrication files to \(url.lastPathComponent)"
             NSWorkspace.shared.activateFileViewerSelecting([url])
         }
+        #endif
     }
 
     // MARK: length tuning

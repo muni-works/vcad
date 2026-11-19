@@ -13,7 +13,16 @@ import SwiftUI
 // Around the floating parts we open Borland C++ Builder-style tool windows —
 // a Component Palette and an Object Inspector — as separate floating panels,
 // the way the classic multi-window IDEs scattered themselves over the desktop.
+//
+// This file is shared with the visionOS app (apple/VcadVision symlinks it).
+// The AppKit plumbing (windows, event monitors, cursors, the ARView) sits
+// behind `#if os(macOS)`; what's left is the platform-neutral half of the
+// released scene: how a body is dressed (material, glow, selection lift),
+// hover/selection repaint, entity naming, in-place geometry refresh, and the
+// Object Inspector. On Vision Pro "the desktop" is the room: VcadVision's
+// ReleasedSpace builds the same bodies at real scale in an ImmersiveSpace.
 
+#if os(macOS)
 /// Borderless windows refuse key status by default, which starves SwiftUI
 /// gestures inside them — opt back in.
 final class KeyableWindow: NSWindow, NSWindowDelegate {
@@ -101,16 +110,19 @@ final class KeyableWindow: NSWindow, NSWindowDelegate {
         }
     }
 }
+#endif
 
 @MainActor
 final class ReleaseWindowController {
     static let shared = ReleaseWindowController()
+    #if os(macOS)
     private(set) var window: NSWindow?
     private var mainWindow: NSWindow?
     private var savedWindowFrame: NSRect?
     private var mouseMonitors: [Any] = []
     /// Set by ReleasedARView so the pass-through hit test can raycast the scene.
     weak var arView: ARView?
+    #endif
     /// Each self-lit body's own emission, by entity name, recorded at build
     /// time so a hover or selection lift can hand it back instead of zeroing
     /// it (see `paint`). Empty when nothing in the document emits — which is
@@ -136,9 +148,23 @@ final class ReleaseWindowController {
     private(set) var hoveredInstance: Int?
     private var paintedInstances: Set<Int> = []
     private var paintedPart: Int?
+    #if os(macOS)
     private var hoveredHandle: String?
     private var pointerOverScene = false
+    #endif
 
+    /// The document, for the window's responder-chain actions.
+    var editorModel: EditorModel? { model }
+
+    /// Frame whatever is selected: a part, an instance, or everything.
+    func frameSelection() {
+        guard let model else { return }
+        if let ii = model.selectedInstanceIndex { frame(entityNamed: "inst\(ii)") }
+        else if let pi = model.selectedPartIndex { frame(entityNamed: "part\(pi)") }
+        else { model.resetCamera(animated: true) }
+    }
+
+    #if os(macOS)
     func show(model: EditorModel, intent: IntentEngine) {
         AgentBridge.shared.start(model: model)
         guard window == nil else { return }
@@ -287,8 +313,6 @@ final class ReleaseWindowController {
 
     /// The editor window, for sheets.
     var hostWindow: NSWindow? { window }
-    /// The document, for the window's responder-chain actions.
-    var editorModel: EditorModel? { model }
 
     /// ⌘W / the close button: offer to save first, then close (which quits
     /// this instance — one document, one process).
@@ -323,14 +347,6 @@ final class ReleaseWindowController {
         default:
             return false
         }
-    }
-
-    /// Frame whatever is selected: a part, an instance, or everything.
-    func frameSelection() {
-        guard let model else { return }
-        if let ii = model.selectedInstanceIndex { frame(entityNamed: "inst\(ii)") }
-        else if let pi = model.selectedPartIndex { frame(entityNamed: "part\(pi)") }
-        else { model.resetCamera(animated: true) }
     }
 
     /// Where a part sits on screen, in overlay view coords (top-left origin).
@@ -593,6 +609,7 @@ final class ReleaseWindowController {
         }
         NSCursor.arrow.set()
     }
+    #endif
 
     /// Repaint every part's highlight state. Cheap: it walks the built entities
     /// and assigns materials — no tessellation, no colliders, no new entities.
@@ -775,6 +792,7 @@ final class ReleaseWindowController {
         model.panOffset = parent.convert(position: model.cnc.origin.floats + position.floats, to: nil)
     }
 
+    #if os(macOS)
     func hide() {
         DockIcon.shared.stop()
         mouseMonitors.forEach { NSEvent.removeMonitor($0) }
@@ -788,7 +806,52 @@ final class ReleaseWindowController {
         mainWindow?.makeKeyAndOrderFront(nil)
         mainWindow = nil
     }
+    #endif
 
+    // MARK: dressing — shared by the Mac ARView and the visionOS room
+
+    /// A document part's material as the released scene draws it: the
+    /// resolved PBR material softened for the studio IBL, its own emission
+    /// (recorded in `baseEmission` so hover/selection lifts restore it), and
+    /// the brand-orange selection lift. Zebra mode swaps in the analysis
+    /// chrome; the sandbox (no document tree) falls back to `fallback`.
+    func dressPart(model: EditorModel, index i: Int, fallback: NSColor) -> PhysicallyBasedMaterial {
+        var m = PhysicallyBasedMaterial()
+        if model.zebraMode {
+            m = SceneAssets.zebraChrome
+        } else if model.usesDocumentTree {
+            let r = model.resolvedMaterial(forPart: i)
+            m.baseColor = .init(tint: r.color)
+            m.roughness = .init(floatLiteral: r.roughness)
+            m.metallic = .init(floatLiteral: r.metallic)
+            SceneAssets.studioSoften(&m)
+            ViewportGlow.dress(&m, r, entity: "part\(i)")
+        } else {
+            m.baseColor = .init(tint: fallback)
+            m.roughness = 0.34
+            m.metallic = 0.55
+            SceneAssets.studioSoften(&m)
+        }
+        if model.usesDocumentTree, !model.zebraMode, model.highlightedParts.contains(i) {
+            // Brand orange = action: a subtle emissive lift marks selection
+            // without repainting the material (mirrors the studio rule).
+            m.emissiveColor = .init(color: SelectionStyle.selected)
+            m.emissiveIntensity = SelectionStyle.partSelectedIntensity
+        }
+        return m
+    }
+
+    /// An assembly instance's material — `dressPart`'s twin for instances.
+    func dressInstance(model: EditorModel, _ material: ResolvedMaterial, index i: Int) -> PhysicallyBasedMaterial {
+        if model.zebraMode { return SceneAssets.zebraChrome }
+        var m = PhysicallyBasedMaterial()
+        m.baseColor = .init(tint: material.color)
+        m.roughness = .init(floatLiteral: material.roughness)
+        m.metallic = .init(floatLiteral: material.metallic)
+        SceneAssets.studioSoften(&m)
+        ViewportGlow.dress(&m, material, entity: "inst\(i)")
+        return m
+    }
 }
 
 extension ReleaseWindowController {
@@ -829,6 +892,7 @@ struct ChromeRegion: ViewModifier {
     }
 }
 
+#if os(macOS)
 /// Full-screen overlay content: transparent ARView + orbit/zoom gestures +
 /// the return pill. Reading the model's orbit state here keeps the ARView's
 /// camera live (flick momentum included — endOrbit's coast mutates azimuth,
@@ -2335,16 +2399,7 @@ struct ReleasedARView: NSViewRepresentable {
         // not. Instances are the studio's primary path; they are the whole
         // content of a robot document.
         for (i, inst) in scene.instances.enumerated() {
-            var m = PhysicallyBasedMaterial()
-            if model.zebraMode {
-                m = SceneAssets.zebraChrome
-            } else {
-                m.baseColor = .init(tint: inst.material.color)
-                m.roughness = .init(floatLiteral: inst.material.roughness)
-                m.metallic = .init(floatLiteral: inst.material.metallic)
-                SceneAssets.studioSoften(&m)
-                ViewportGlow.dress(&m, inst.material, entity: "inst\(i)")
-            }
+            let m = ReleaseWindowController.shared.dressInstance(model: model, inst.material, index: i)
             let e = ModelEntity(mesh: inst.mesh, materials: [m])
             // A free root (see `freeRoots`) stays where it is: it isn't an
             // instance, so nothing that poses or picks instances may reach it.
@@ -2381,28 +2436,7 @@ struct ReleasedARView: NSViewRepresentable {
             return made
         }
         for (i, item) in scene.meshes.enumerated() {
-            var m = PhysicallyBasedMaterial()
-            if model.zebraMode {
-                m = SceneAssets.zebraChrome
-            } else if model.usesDocumentTree {
-                let r = model.resolvedMaterial(forPart: i)
-                m.baseColor = .init(tint: r.color)
-                m.roughness = .init(floatLiteral: r.roughness)
-                m.metallic = .init(floatLiteral: r.metallic)
-                SceneAssets.studioSoften(&m)
-                ViewportGlow.dress(&m, r, entity: "part\(i)")
-            } else {
-                m.baseColor = .init(tint: item.color)
-                m.roughness = 0.34
-                m.metallic = 0.55
-                SceneAssets.studioSoften(&m)
-            }
-            if model.usesDocumentTree, !model.zebraMode, model.highlightedParts.contains(i) {
-                // Brand orange = action: a subtle emissive lift marks selection
-                // without repainting the material (mirrors the studio rule).
-                m.emissiveColor = .init(color: SelectionStyle.selected)
-                m.emissiveIntensity = SelectionStyle.partSelectedIntensity
-            }
+            let m = ReleaseWindowController.shared.dressPart(model: model, index: i, fallback: item.color)
             let e = ModelEntity(mesh: item.mesh, materials: [m])
             e.name = "part\(i)"
             e.isEnabled = model.isPartVisible(i)
@@ -2541,6 +2575,8 @@ struct ReleasedARView: NSViewRepresentable {
         anchor.addChild(grid)
     }
 }
+
+#endif
 
 // MARK: - Floating panels
 
@@ -2858,6 +2894,7 @@ struct VisibilityState: Equatable {
     let isolated: Int?
 }
 
+#if os(macOS)
 /// Wraps the released ARView so that only *this* view observes `poseTick`.
 ///
 /// Reading a 50 Hz counter directly in `ReleasedOverlayView.body` re-evaluates
@@ -3053,6 +3090,8 @@ final class DockIcon {
 }
 
 
+#endif
+
 /// Swap every part's mesh for a copy clipped by the section plane (or put the
 /// originals back), and draw the cut outline. Display-only.
 @MainActor
@@ -3130,9 +3169,13 @@ func topologyOverlayEntity(model: EditorModel) -> Entity? {
         }
     }
 
+    #if os(macOS)
     let view = ReleaseWindowController.shared.arView
     let hPx = Float((view?.bounds.height ?? 900) * (view?.window?.backingScaleFactor ?? 2))
     let scale = Float(view?.window?.backingScaleFactor ?? 2)
+    #else
+    let (hPx, scale): (Float, Float) = (1800, 2)
+    #endif
     func lines(_ segs: [SIMD3<Float>], _ color: NSColor, px: Float, ribbon: Float, _ name: String) {
         if let mat = SceneAssets.highlightLineMaterial(viewportHeightPx: hPx, widthPx: px * scale, color: color),
            let r = EdgeOverlay.screenLineResource(segments: segs, name: name) {

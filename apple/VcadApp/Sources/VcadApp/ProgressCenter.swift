@@ -330,7 +330,12 @@ struct ProgressDetails: View {
             HStack {
                 if load.details != nil {
                     Button(showsDetails ? "Hide Details" : "Show Details") { showsDetails.toggle() }
-                        .buttonStyle(.link).font(.callout)
+                        #if os(macOS)
+                        .buttonStyle(.link)
+                        #else
+                        .buttonStyle(.borderless)
+                        #endif
+                        .font(.callout)
                 }
                 Spacer()
                 if load.isFailed {

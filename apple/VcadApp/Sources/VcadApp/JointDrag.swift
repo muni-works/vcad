@@ -86,39 +86,6 @@ extension EditorModel {
     /// FFI/render index of instance `id`.
     func renderIndex(ofInstance id: String) -> Int? { assemblyInstanceIDs.firstIndex(of: id) }
 
-    /// Gear coupling on a joint: driven = ratio · driver + offset.
-    func jointCoupling(_ id: String) -> (driver: String, ratio: Double, offset: Double)? {
-        guard let j = asmJoints.first(where: { ($0["id"] as? String) == id }),
-              let c = j["coupling"] as? [String: Any],
-              let driver = c["driver"] as? String,
-              let ratio = (c["ratio"] as? NSNumber)?.doubleValue, ratio != 0 else { return nil }
-        return (driver, ratio, (c["offset"] as? NSNumber)?.doubleValue ?? 0)
-    }
-
-    /// Walk couplings to the root driver; returns it and d(joint)/d(root).
-    func rootDriver(of id: String) -> (id: String, ratio: Double) {
-        var cur = id, r = 1.0
-        var seen = Set<String>()
-        while seen.insert(cur).inserted, let c = jointCoupling(cur) {
-            r *= c.ratio
-            cur = c.driver
-        }
-        return (cur, r)
-    }
-
-    /// A joint's value as an affine function of its root driver:
-    /// `value = r · root + o`, composed along the coupling chain.
-    func couplingAffine(of id: String) -> (root: String, r: Double, o: Double) {
-        var cur = id, r = 1.0, o = 0.0
-        var seen = Set<String>()
-        while seen.insert(cur).inserted, let c = jointCoupling(cur) {
-            o += r * c.offset
-            r *= c.ratio
-            cur = c.driver
-        }
-        return (cur, r, o)
-    }
-
     /// Tooth count of the SpurGear an instance's part is built from, if any.
     func gearTeeth(instance index: Int) -> Int? { gearSpec(instance: index)?.teeth }
 

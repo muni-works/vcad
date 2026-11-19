@@ -5,6 +5,16 @@
 # VcadApp/bundle.sh trick, pointed at xrsimulator). Run build-ffi.sh first.
 #
 #   ./bundle.sh          build + install + launch on the booted simulator
+#
+# Launch-time env (VCAD_OPEN, VCAD_RELEASE, VCAD_RELEASE_SELECT, VCAD_RELEASE_RETURN,
+# VCAD_RELEASE_MOVE) is forwarded into the simulator app: simctl only passes
+# variables prefixed SIMCTL_CHILD_, so they're re-exported under that prefix.
+#
+# Needs a visionOS simulator named "Apple Vision Pro" built from the 4K device
+# type (the older Apple-Vision-Pro type is incompatible with visionOS 26):
+#   xcrun simctl create "Apple Vision Pro" \
+#     com.apple.CoreSimulator.SimDeviceType.Apple-Vision-Pro-4K \
+#     com.apple.CoreSimulator.SimRuntime.xrOS-26-5
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 
@@ -49,5 +59,9 @@ PLIST
 codesign --force --sign - "$app" >/dev/null
 echo "built: $app"
 
+xcrun simctl uninstall booted io.vcad.vision 2>/dev/null || true   # fresh scene state
 xcrun simctl install booted "$app"
-xcrun simctl launch booted io.vcad.vision
+for v in VCAD_OPEN VCAD_RELEASE VCAD_RELEASE_SELECT VCAD_RELEASE_MOVE VCAD_RELEASE_RETURN; do
+  if [ -n "${!v:-}" ]; then export "SIMCTL_CHILD_$v=${!v}"; fi
+done
+xcrun simctl launch --terminate-running-process booted io.vcad.vision

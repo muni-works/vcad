@@ -1,0 +1,10 @@
+{
+  "id": "2026-11-19-vision-pro-release-to-room",
+  "version": "0.11.0",
+  "date": "2026-11-19",
+  "category": "feat",
+  "title": "Vision Pro: release your parts into the room",
+  "summary": "The visionOS app builds again and gains release-to-room: parts leave the volume at real scale, can be pinched and carried, with the Component Palette and Object Inspector floating beside them.",
+  "features": ["visionos", "release-to-desktop"],
+  "mcpTools": []
+}
