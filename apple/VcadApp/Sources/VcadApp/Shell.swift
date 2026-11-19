@@ -674,7 +674,7 @@ struct FeatureRowView: View {
         }
         // ⌘-click a part row → toggle it in the multi-selection (for booleans).
         // The modifier comes from the gesture, not NSEvent's hardware state.
-        #if os(macOS)  // no modifier keys on visionOS: long-press toggles in the volume
+        #if os(macOS)
         .gesture(TapGesture().modifiers(.command).onEnded {
             guard model.renamingFeatureID != node.id else { return }
             if let pi = node.partIndex { model.toggleMultiSelect(part: pi, featureID: node.id) }
