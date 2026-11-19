@@ -52,10 +52,12 @@ struct DocumentVolume: View {
         )
         .ornament(attachmentAnchor: .scene(.leading), contentAlignment: .trailing) {
             VStack(alignment: .leading, spacing: 10) {
-                OpenDocumentButton(importing: $importing)
-                ReleaseButton()
                 FeatureTreeView(model: model)
                     .frame(width: 230, height: 300)
+                // Below the tree: the top of this ornament sits behind the
+                // tool palette ornament.
+                ReleaseButton()
+                OpenDocumentButton(importing: $importing)
             }
             .padding(12)
             .glassBackgroundEffect()
