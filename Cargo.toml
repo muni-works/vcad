@@ -344,7 +344,7 @@ vcad-ecad-diff = { path = "crates/vcad-ecad-diff", version = "0.11.0" }
 vcad-diff = { path = "crates/vcad-diff", version = "0.1" }
 vcad-i18n = { path = "crates/vcad-i18n", version = "0.11.0" }
 vcad-render = { path = "crates/vcad-render", version = "0.11.0", default-features = false }
-nom = "7"
+nom = "8"
 rstar = "0.12"
 stepperoni = { path = "crates/stepperoni", version = "0.1" }
 termview = { package = "vcad-termview", path = "crates/termview", version = "0.11.0" }
