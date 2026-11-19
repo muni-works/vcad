@@ -1,4 +1,4 @@
-#if os(macOS) || os(iOS)
+#if os(macOS) || os(iOS) || os(visionOS)
 #if canImport(AppKit)
 import AppKit
 #else
@@ -277,7 +277,7 @@ extension EditorModel {
 }
 #endif
 
-#if os(macOS) || os(iOS)
+#if os(macOS) || os(iOS) || os(visionOS)
 // MARK: - Watt governor behavior
 //
 // A centrifugal governor's arms have no kinematic reason to rise: speed

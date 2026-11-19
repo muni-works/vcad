@@ -1143,40 +1143,7 @@ struct ReleasedOverlayView: View {
             // Floating panels, hosted in the overlay itself (separate
             // NSPanels break SwiftUI hit testing after auto-resize).
             if !studio {
-            VStack(alignment: .leading, spacing: Theme.Space.m) {
-                if model.sketching {
-                    SketchConstraintPanel(model: model)
-                        .modifier(ChromeRegion(key: "sketchConstraints"))
-                }
-                if model.measuring {
-                    MeasurePanel(model: model).modifier(ChromeRegion(key: "measure"))
-                }
-                if model.section != nil {
-                    SectionPanel(model: model).modifier(ChromeRegion(key: "section"))
-                }
-                if model.showsTree {
-                    if FabStore.shared.shown {
-                        FabJobsNavigator(model: model).modifier(ChromeRegion(key: "tree"))
-                    } else {
-                        DesignModelNavigator(model: model)
-                            .modifier(ChromeRegion(key: "tree"))
-                    }
-                }
-                if model.assembly.showsPanel {
-                    AssemblyPanel(model: model).modifier(ChromeRegion(key: "assembly"))
-                }
-                // Dynamics, as its own panel: one panel per concern.
-                // Posing first: on a jointed assembly it's the main job, and
-                // the column runs out of height before the dojo panel matters.
-                if model.hasPoseStudio {
-                    PoseStudioWindow(model: model)
-                        .modifier(ChromeRegion(key: "pose"))
-                }
-                if model.showsSimulation && !model.hasPoseStudio {
-                    SimulationWindow(model: model)
-                        .modifier(ChromeRegion(key: "sim"))
-                }
-            }
+            ReleasedLeftRail(model: model)
             .padding(.leading, Glass.inset).padding(.bottom, Glass.inset)
             .padding(.top, chromeTop)
             .animation(Motion.panel, value: model.showsTree)
@@ -1196,36 +1163,7 @@ struct ReleasedOverlayView: View {
         .overlay(alignment: .topTrailing) {
             if !studio {
             // The right rail: the inspector, docked to the screen edge.
-            VStack(alignment: .trailing, spacing: Theme.Space.m) {
-                if SoundStore.shared.shown && !model.source.isGripper {
-                    // Mallet: what the struck part rings at, and its pitch lock.
-                    RingsAtCard(model: model).modifier(ChromeRegion(key: "inspector"))
-                        .onDisappear {
-                            if let c = ReleaseWindowController.shared.centeringEntity { syncSoundOverlay(SoundStore.shared, in: c) }
-                        }
-                } else if AnalysisStore.shared.shown && !model.source.isGripper && model.showsInspector {
-                    // DFM / stress / clearance (AnalysisPanel.swift). Its host was
-                    // dropped in #1055, so the dock's DFM and Stress buttons lit
-                    // up and showed nothing; it takes the rail while active.
-                    AnalysisPanel(model: model).modifier(ChromeRegion(key: "analysis"))
-                } else if TuneStore.shared.shown && !model.source.isGripper {
-                    // Tune: strike the bars, the mic closes their receipts.
-                    TunePanel(model: model).modifier(ChromeRegion(key: "inspector"))
-                } else if FabStore.shared.shown && !model.source.isGripper {
-                    // Fab: the inspector IS the active process's settings.
-                    if model.showsInspector {
-                        FabricatePanel(model: model).modifier(ChromeRegion(key: "inspector"))
-                    }
-                } else if model.showsInspector {
-                    if model.source.isGripper {
-                        ReceiptLedgerWindow(model: model)
-                            .modifier(ChromeRegion(key: "inspector"))
-                    } else {
-                        ObjectInspectorWindow(model: model)
-                            .modifier(ChromeRegion(key: "inspector"))
-                    }
-                }
-            }
+            ReleasedRightRail(model: model)
             .padding(.trailing, Glass.inset).padding(.bottom, Glass.inset)
             .padding(.top, chromeTop)
             .animation(Motion.panel, value: model.showsInspector)
@@ -2532,6 +2470,93 @@ struct ReleasedARView: NSViewRepresentable {
 }
 
 #endif
+
+// MARK: - Rails (shared with visionOS)
+
+/// The left rail: model navigator, plus whatever the current task opens
+/// (sketch constraints, measure, section, assembly, posing, simulation). The
+/// Mac overlay floats it at the window's leading edge; the visionOS volume
+/// hangs the same view on its leading ornament.
+struct ReleasedLeftRail: View {
+    @Bindable var model: EditorModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.Space.m) {
+            if model.sketching {
+                SketchConstraintPanel(model: model)
+                    .modifier(ChromeRegion(key: "sketchConstraints"))
+            }
+            if model.measuring {
+                MeasurePanel(model: model).modifier(ChromeRegion(key: "measure"))
+            }
+            if model.section != nil {
+                SectionPanel(model: model).modifier(ChromeRegion(key: "section"))
+            }
+            if model.showsTree {
+                if FabStore.shared.shown {
+                    FabJobsNavigator(model: model).modifier(ChromeRegion(key: "tree"))
+                } else {
+                    DesignModelNavigator(model: model)
+                        .modifier(ChromeRegion(key: "tree"))
+                }
+            }
+            if model.assembly.showsPanel {
+                AssemblyPanel(model: model).modifier(ChromeRegion(key: "assembly"))
+            }
+            // Dynamics, as its own panel: one panel per concern.
+            // Posing first: on a jointed assembly it's the main job, and
+            // the column runs out of height before the dojo panel matters.
+            if model.hasPoseStudio {
+                PoseStudioWindow(model: model)
+                    .modifier(ChromeRegion(key: "pose"))
+            }
+            if model.showsSimulation && !model.hasPoseStudio {
+                SimulationWindow(model: model)
+                    .modifier(ChromeRegion(key: "sim"))
+            }
+        }
+    }
+}
+
+/// The right rail: the inspector, or the panel that takes its place (mallet,
+/// analysis, tune, fabricate, the gripper's receipt ledger). Mac: docked to
+/// the window's trailing edge; visionOS: the volume's trailing ornament.
+struct ReleasedRightRail: View {
+    @Bindable var model: EditorModel
+
+    var body: some View {
+        VStack(alignment: .trailing, spacing: Theme.Space.m) {
+            if SoundStore.shared.shown && !model.source.isGripper {
+                // Mallet: what the struck part rings at, and its pitch lock.
+                RingsAtCard(model: model).modifier(ChromeRegion(key: "inspector"))
+                    .onDisappear {
+                        if let c = ReleaseWindowController.shared.centeringEntity { syncSoundOverlay(SoundStore.shared, in: c) }
+                    }
+            } else if AnalysisStore.shared.shown && !model.source.isGripper && model.showsInspector {
+                // DFM / stress / clearance (AnalysisPanel.swift). Its host was
+                // dropped in #1055, so the dock's DFM and Stress buttons lit
+                // up and showed nothing; it takes the rail while active.
+                AnalysisPanel(model: model).modifier(ChromeRegion(key: "analysis"))
+            } else if TuneStore.shared.shown && !model.source.isGripper {
+                // Tune: strike the bars, the mic closes their receipts.
+                TunePanel(model: model).modifier(ChromeRegion(key: "inspector"))
+            } else if FabStore.shared.shown && !model.source.isGripper {
+                // Fab: the inspector IS the active process's settings.
+                if model.showsInspector {
+                    FabricatePanel(model: model).modifier(ChromeRegion(key: "inspector"))
+                }
+            } else if model.showsInspector {
+                if model.source.isGripper {
+                    ReceiptLedgerWindow(model: model)
+                        .modifier(ChromeRegion(key: "inspector"))
+                } else {
+                    ObjectInspectorWindow(model: model)
+                        .modifier(ChromeRegion(key: "inspector"))
+                }
+            }
+        }
+    }
+}
 
 // MARK: - Floating panels
 

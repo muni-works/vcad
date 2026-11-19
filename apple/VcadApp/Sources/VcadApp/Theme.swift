@@ -65,6 +65,9 @@ private struct PanelSurface<S: InsettableShape>: ViewModifier {
         } else {
             fallback(content)
         }
+        #elseif os(visionOS)
+        // The visionOS system glass, so the Mac's panels read as native windows.
+        content.glassBackgroundEffect(in: shape)
         #else
         fallback(content)
         #endif

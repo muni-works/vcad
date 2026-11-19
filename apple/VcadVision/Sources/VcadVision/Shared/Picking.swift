@@ -1,1 +1,0 @@
-../../../../VcadApp/Sources/VcadApp/Picking.swift

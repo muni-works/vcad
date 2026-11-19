@@ -11,12 +11,12 @@ import CVcadFFI
 // (ReleasedSpace + ReleasedPanels) and the spatial window layout.
 //
 // Two modes, the same as the Mac:
-//  - windowed: one volumetric window; the part floats in it, panels ride
-//    ornaments around it;
-//  - released: "Release into Room" lifts the bodies out into a mixed
-//    ImmersiveSpace at real scale, with the Component Palette and the Object
-//    Inspector as floating windows beside them. "Return to Window" puts the
-//    volume back.
+//  - windowed: one volumetric window; the part floats in it, and the Mac's
+//    own chrome rides ornaments around it — GlassToolbar on top, the left and
+//    right rails either side, the dock along the bottom;
+//  - released: the toolbar's Release button lifts the bodies out into a mixed
+//    ImmersiveSpace at real scale, and the same chrome floats beside them as
+//    windows. The toolbar's Open in Window button puts the volume back.
 
 @main
 struct VcadVisionApp: App {
@@ -38,23 +38,32 @@ struct VcadVisionApp: App {
         .windowStyle(.volumetric)
         .defaultSize(width: 0.7, height: 0.55, depth: 0.55, in: .meters)
 
+        // Released chrome: the Mac's toolbar + dock at hand height, its left
+        // and right rails either side (shared views, ReleasedPanels.swift).
         WindowGroup(id: ReleaseScene.palette) {
-            ComponentPaletteWindow(model: model)
+            ReleasedToolbarWindow(model: model)
         }
         .windowResizability(.contentSize)
-        // A tool palette belongs at hand height, in reach: the system's
-        // utility-panel spot, below and in front of the released parts.
         .defaultWindowPlacement { _, _ in WindowPlacement(.utilityPanel) }
 
-        WindowGroup(id: ReleaseScene.inspector) {
-            ObjectInspectorPanel(model: model)
+        WindowGroup(id: ReleaseScene.navigator) {
+            ReleasedNavigatorWindow(model: model)
         }
         .windowResizability(.contentSize)
         .defaultWindowPlacement { _, context in
-            // Beside the palette, the way the Mac floats the inspector next
-            // to its tool windows (ReleaseActions opens the palette first).
-            if let palette = context.windows.first(where: { $0.id == ReleaseScene.palette }) {
-                return WindowPlacement(.trailing(palette))
+            if let bar = context.windows.first(where: { $0.id == ReleaseScene.palette }) {
+                return WindowPlacement(.leading(bar))
+            }
+            return WindowPlacement(.utilityPanel)
+        }
+
+        WindowGroup(id: ReleaseScene.inspector) {
+            ReleasedInspectorWindow(model: model)
+        }
+        .windowResizability(.contentSize)
+        .defaultWindowPlacement { _, context in
+            if let bar = context.windows.first(where: { $0.id == ReleaseScene.palette }) {
+                return WindowPlacement(.trailing(bar))
             }
             return WindowPlacement(.utilityPanel)
         }

@@ -40,6 +40,7 @@ enum RenderGate {
     static let enabled = ProcessInfo.processInfo.environment["VCAD_RENDER_GATE"] != "0"
     private static var engine: __Engine? { __ServiceLocator.__sharedEngine }
 
+    #if !os(visionOS)   // visionOS: RealityView renders continuously; never installed
     /// Start gating `ar`. Idempotent.
     static func install(on ar: ARView) {
         guard !installed else { return }
@@ -68,6 +69,7 @@ enum RenderGate {
         }
         wake()
     }
+    #endif
     nonisolated(unsafe) private static var frameCounter: Any?
 
     private static func log(_ s: String) {
@@ -105,6 +107,7 @@ enum RenderGate {
     }
 }
 
+#if !os(visionOS)
 /// The viewport's ARView: a resize must repaint at the new size.
 final class GatedARView: ARView {
     #if os(macOS)
@@ -119,3 +122,4 @@ final class GatedARView: ARView {
     }
     #endif
 }
+#endif

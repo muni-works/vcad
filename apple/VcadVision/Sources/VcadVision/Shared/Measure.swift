@@ -1,1 +1,0 @@
-../../../../VcadApp/Sources/VcadApp/Measure.swift

@@ -12,18 +12,34 @@ let ffiLibDir = URL(fileURLWithPath: #filePath)
     .appendingPathComponent("Libs")
     .path
 
+/// Mac-only files left out (the iPhone port's list, VcadPhone/Package.swift,
+/// minus ReleasedDesktop.swift: visionOS shares its scene half — the AppKit
+/// half is behind `#if os(macOS)` — and the room viewport is ReleasedSpace).
+let macOnly = [
+    "VcadApp.swift",          // the Mac @main (window, menus, dock)
+    "Updater.swift",          // Sparkle auto-update
+    "WindowDragRegion.swift", // NSView titlebar drag
+    "WelcomeWindow.swift",    // NSWindow welcome
+    "FieldsSnapshots.swift",  // headless NSWindow snapshot harness
+    "AnalysisSmoke.swift", "NavSmoke.swift", "RuntimeBench.swift",  // Mac dev harnesses
+].map { "App/\($0)" }
+
 let package = Package(
     name: "VcadVision",
     platforms: [.visionOS(.v2)],
     targets: [
         .systemLibrary(name: "CVcadFFI", path: "Sources/CVcadFFI"),
+        // irys's C types (header only; the path tracer it serves is Mac-only).
+        .systemLibrary(name: "CIrys", path: "Sources/CIrys"),
         .executableTarget(
             name: "VcadVision",
-            dependencies: ["CVcadFFI"],
+            dependencies: ["CVcadFFI", "CIrys"],
             path: "Sources/VcadVision",
+            exclude: macOnly,
             linkerSettings: [
                 .unsafeFlags(["-L", ffiLibDir]),
                 .linkedLibrary("c++"),
+                .linkedLibrary("lzma"),
             ]
         ),
     ]

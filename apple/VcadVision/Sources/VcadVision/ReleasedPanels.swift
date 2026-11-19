@@ -1,9 +1,11 @@
 import SwiftUI
 
-// The released tool windows. On the Mac, release-to-desktop scatters a
-// Component Palette and an Object Inspector over the desktop as their own
-// floating windows; here they are their own visionOS windows, floating beside
-// the parts in the room. Both drive the same EditorModel as the volume.
+// The released tool windows. On the Mac, release-to-desktop floats the
+// editor's own chrome over the desktop around the parts: the toolbar and the
+// dock, the left rail (model navigator) and the right rail (inspector). Here
+// the very same views (GlassToolbar, DockHost, ReleasedLeftRail,
+// ReleasedRightRail — shared Mac code) are visionOS windows floating beside
+// the parts in the room. All drive the same EditorModel as the volume.
 
 /// Release / return, shared by the volume's button, the palette's button and
 /// the launch hook. The Mac hides the main window while released and brings it
@@ -18,18 +20,22 @@ struct ReleaseActions {
     func release() async {
         ReleasedRoom.shared.reset()
         guard case .opened = await openImmersiveSpace(id: ReleaseScene.space) else { return }
+        ReleaseWindowController.shared.editorModel?.isWindowed = false
         openWindow(id: ReleaseScene.palette)
-        // The inspector places itself beside the palette, so the palette has
-        // to exist first.
+        // The rails place themselves either side of the toolbar window, so it
+        // has to exist first.
         try? await Task.sleep(nanoseconds: 400_000_000)
+        openWindow(id: ReleaseScene.navigator)
         openWindow(id: ReleaseScene.inspector)
         dismissWindow(id: ReleaseScene.volume)
     }
 
     func returnToWindow() async {
+        ReleaseWindowController.shared.editorModel?.isWindowed = true
         openWindow(id: ReleaseScene.volume)
         await dismissImmersiveSpace()
         dismissWindow(id: ReleaseScene.inspector)
+        dismissWindow(id: ReleaseScene.navigator)
         dismissWindow(id: ReleaseScene.palette)
     }
 }
@@ -67,63 +73,61 @@ private struct ReturnsWhenOrphaned: ViewModifier {
     }
 }
 
-/// The volume's "Release" button: lift the parts out into the room.
-struct ReleaseButton: View {
-    var body: some View {
+/// Runs the toolbar's Release to Desktop / Open in Window request
+/// (`ReleaseWindowController.setWindowed`, shared GlassToolbar button) from
+/// whichever scene carries it: the volume releases, the toolbar window returns.
+struct ReleaseTransitions: ViewModifier {
+    /// The request this scene acts on: false = release (volume), true =
+    /// return (the released toolbar window).
+    let handles: Bool
+    @Bindable private var room = ReleasedRoom.shared
+
+    func body(content: Content) -> some View {
         ReleaseActionsReader { actions in
-            Button {
-                Task { await actions.release() }
-            } label: {
-                Label("Release into Room", systemImage: "arrow.up.forward.app")
-                    .font(.system(size: 13))
-                    .frame(maxWidth: .infinity)
+            content.onChange(of: room.requestedWindowed) { _, want in
+                guard want == handles else { return }
+                room.requestedWindowed = nil
+                Task { handles ? await actions.returnToWindow() : await actions.release() }
             }
-            .buttonStyle(.borderedProminent)
-            .frame(width: 230)
         }
     }
 }
 
-/// The Component Palette: the tools, and the room controls (real-scale
-/// reset, return to window). Kept compact — the system's utility-panel spot
-/// caps its height; selection lives in the inspector beside it.
-struct ComponentPaletteWindow: View {
+/// The released toolbar window: the Mac's GlassToolbar over its command,
+/// palette and toast hosts, the dock at the bottom, and the room's own row
+/// (scale, reset). The toolbar's Open in Window button is the return path.
+struct ReleasedToolbarWindow: View {
     @Bindable var model: EditorModel
     @Bindable var room = ReleasedRoom.shared
 
     var body: some View {
         ReleaseActionsReader { actions in
-            VStack(alignment: .leading, spacing: Theme.Space.m) {
-                HStack {
-                    PanelHeader(title: "Component Palette")
-                    Spacer()
-                }
-                ComponentGrid(model: model)
-                Divider()
+            VStack(spacing: Theme.Space.s) {
+                GlassToolbar(model: model)
+                ToastHost()
+                PartFailureHost(model: model)
+                CommandPanelHost(model: model)
+                FloatingPanelHost()
+                PaletteHost(model: model)
+                DockHost(model: model)
                 HStack(spacing: Theme.Space.s) {
-                    Text(scaleLabel)
-                        .font(.callout.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    Text(scaleLabel).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
                     Spacer()
                     Button("Reset Layout") { room.reset() }
                         .help("Put every part back and return to 1:1")
-                    Button {
-                        Task { await actions.returnToWindow() }
-                    } label: {
-                        Label("Return to Window", systemImage: "arrow.down.backward.square")
-                    }
-                    .buttonStyle(.borderedProminent)
                 }
+                .padding(.horizontal, Theme.Space.l)
             }
-            .padding(Theme.Space.l)
-            .frame(width: 440)
+            .padding(.vertical, Theme.Space.m)
+            .frame(width: 1120)
             .task {
                 guard let secs = room.scriptedReturn else { return }
                 room.scriptedReturn = nil
                 try? await Task.sleep(nanoseconds: UInt64(secs * 1e9))
-                await actions.returnToWindow()
+                ReleaseWindowController.shared.setWindowed(true)   // the toolbar button's path
             }
         }
+        .modifier(ReleaseTransitions(handles: true))
         .modifier(ReturnsWhenOrphaned(id: ReleaseScene.palette))
     }
 
@@ -132,55 +136,26 @@ struct ComponentPaletteWindow: View {
     }
 }
 
-/// The palette proper, Borland-style: a tab strip over a grid of tool icons
-/// (the same `availableTabs` / `tools(for:)` the volume's toolbar draws, which
-/// is one long row — too wide for a window).
-struct ComponentGrid: View {
+/// The released left rail window — the Mac's own `ReleasedLeftRail`.
+struct ReleasedNavigatorWindow: View {
     @Bindable var model: EditorModel
-    private let columns = [GridItem(.adaptive(minimum: 52, maximum: 60), spacing: 8)]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.Space.s) {
-            Picker("Tools", selection: $model.toolTab) {
-                ForEach(model.availableTabs) { tab in
-                    Label(tab.label, systemImage: tab.symbol).tag(tab)
-                }
-            }
-            .pickerStyle(.segmented)
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-                ForEach(model.tools(for: model.toolTab)) { tool in
-                    Button { if tool.enabled { tool.action() } } label: {
-                        Image(systemName: tool.symbol)
-                            .font(.title3)
-                            .frame(width: 52, height: 44)
-                    }
-                    .buttonStyle(.bordered)
-                    .buttonBorderShape(.roundedRectangle(radius: 10))
-                    .opacity(tool.enabled ? 1 : 0.32)
-                    .disabled(!tool.enabled)
-                    .help(tool.enabled ? tool.label : "\(tool.label) — \(tool.hint)")
-                }
-            }
-        }
+        ReleasedLeftRail(model: model)
+            .padding(Theme.Space.s)
+            .modifier(ReturnsWhenOrphaned(id: ReleaseScene.navigator))
     }
 }
 
-/// The Object Inspector — the Mac's own released inspector view
-/// (`ObjectInspectorWindow`, shared from ReleasedDesktop.swift), or the
-/// receipt ledger for the gripper demo, as on the Mac.
-struct ObjectInspectorPanel: View {
+/// The released right rail window — the Mac's own `ReleasedRightRail`
+/// (Object Inspector, or whichever panel takes its place).
+struct ReleasedInspectorWindow: View {
     @Bindable var model: EditorModel
 
     var body: some View {
-        Group {
-            if model.source.isGripper {
-                ReceiptLedgerWindow(model: model)
-            } else {
-                ObjectInspectorWindow(model: model)
-            }
-        }
-        .padding(Theme.Space.s)
-        .modifier(ReturnsWhenOrphaned(id: ReleaseScene.inspector))
+        ReleasedRightRail(model: model)
+            .padding(Theme.Space.s)
+            .modifier(ReturnsWhenOrphaned(id: ReleaseScene.inspector))
     }
 }
 
@@ -203,10 +178,11 @@ struct ReleaseLaunchHook: ViewModifier {
                 Self.fired = true
                 // The return runs from the palette (this volume closes on
                 // release, taking its scene actions with it) — the same path
-                // as the palette's own Return button.
+                // as the toolbar's Open in Window button.
                 ReleasedRoom.shared.scriptedReturn = env["VCAD_RELEASE_RETURN"].flatMap(Double.init)
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
-                await actions.release()
+                ReleaseWindowController.shared.setWindowed(false)  // the toolbar button's path
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 if let s = env["VCAD_RELEASE_SELECT"], let pi = Int(s),
                    let fid = model.featureNodes.first(where: { $0.partIndex == pi })?.id {

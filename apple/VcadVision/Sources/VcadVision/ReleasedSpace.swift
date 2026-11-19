@@ -23,6 +23,7 @@ enum ReleaseScene {
     static let volume = "part"
     static let palette = "palette"
     static let inspector = "inspector"
+    static let navigator = "navigator"
 }
 
 /// Where the released bodies sit and how they've been rearranged. Lives
@@ -44,6 +45,8 @@ final class ReleasedRoom {
     /// Dev hook (`VCAD_RELEASE_RETURN`): return to the window this many
     /// seconds after the palette opens.
     var scriptedReturn: Double?
+    /// A pending release (false) or return (true), from the toolbar button.
+    var requestedWindowed: Bool?
 
     func reset() {
         offsets = [:]

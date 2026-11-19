@@ -201,13 +201,20 @@ private struct GlassSurface<S: InsettableShape>: ViewModifier {
             content
                 .background(Color(nsColor: .windowBackgroundColor), in: shape)
                 .overlay(shape.strokeBorder(.separator, lineWidth: 1))
-        } else if #available(macOS 26.0, iOS 26.0, *) {
-            content.glassEffect(tint.map { .regular.tint($0) } ?? .regular, in: shape)
         } else {
-            content
-                .background(.regularMaterial, in: shape)
-                .overlay(shape.strokeBorder(.separator, lineWidth: 1))
-                .shadow(color: .black.opacity(scheme == .dark ? 0.32 : 0.14), radius: 14, y: 5)
+            #if os(visionOS)
+            // visionOS's own glass: the system material every window uses.
+            content.glassBackgroundEffect(in: shape)
+            #else
+            if #available(macOS 26.0, iOS 26.0, *) {
+                content.glassEffect(tint.map { .regular.tint($0) } ?? .regular, in: shape)
+            } else {
+                content
+                    .background(.regularMaterial, in: shape)
+                    .overlay(shape.strokeBorder(.separator, lineWidth: 1))
+                    .shadow(color: .black.opacity(scheme == .dark ? 0.32 : 0.14), radius: 14, y: 5)
+            }
+            #endif
         }
     }
 }
