@@ -27,6 +27,7 @@
 pub mod airgap;
 pub mod circuit;
 pub mod em;
+pub mod gateware;
 pub mod impedance;
 pub mod induction;
 pub mod magnetics;
