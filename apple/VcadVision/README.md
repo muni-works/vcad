@@ -37,7 +37,7 @@ part, `VCAD_RELEASE_MOVE=<part>:<x>,<y>,<z>` carries it that many mm, and
 
 | | Vision Pro |
 |---|---|
-| Bodies dressed like the Mac (studio-softened PBR, own emission, selection lift, entity naming) | ported (shared `dressPart` / `dressInstance`) |
+| Bodies dressed like the Mac (studio-softened PBR, own emission, selection lift, entity naming) | ported (shared `ReleasedLook.dressPart` / `dressInstance`) |
 | Selection repaint without rebuilds | ported (shared `repaintAll`) |
 | Parameter scrub → in-place mesh swap | ported (shared `refreshGeometry`) |
 | Parts float over the desktop | ported as a mixed ImmersiveSpace at real scale, with grounding shadows |

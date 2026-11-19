@@ -11,7 +11,7 @@ import RealityKit
 // back in the volume.
 //
 // Bodies are dressed by the same code as the Mac's released ARView
-// (`ReleaseWindowController.dressPart` / `dressInstance` in the shared
+// (`ReleasedLook.dressPart` / `dressInstance`, shared with
 // ReleasedDesktop.swift): the studio-softened PBR material, the document's own
 // emission, the brand-orange selection lift, and the same entity naming
 // ("part3", "inst7"), so the shared repaint (`repaintAll`) lights the
@@ -210,7 +210,7 @@ struct ReleasedSpace: View {
 
         for (i, inst) in scene.instances.enumerated() {
             let e = ModelEntity(mesh: inst.mesh,
-                                materials: [ctl.dressInstance(model: model, inst.material, index: i)])
+                                materials: [ReleasedLook.dressInstance(model: model, inst.material, index: i)])
             let isFreeRoot = inst.index >= model.assemblyInstanceCount
             e.name = isFreeRoot ? "free\(i)" : "inst\(i)"
             e.transform = Transform(matrix: !isFreeRoot && i < model.instanceTransforms.count
@@ -219,7 +219,7 @@ struct ReleasedSpace: View {
             centering.addChild(e)
         }
         for (i, item) in scene.meshes.enumerated() {
-            let m = ctl.dressPart(model: model, index: i, fallback: item.color)
+            let m = ReleasedLook.dressPart(model: model, index: i, fallback: item.color)
             let e = ModelEntity()
             e.name = "part\(i)"
             if let pat = i < scene.instancing.count ? scene.instancing[i] : nil {

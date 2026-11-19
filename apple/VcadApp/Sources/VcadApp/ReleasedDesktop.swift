@@ -19,7 +19,7 @@ import SwiftUI
 // behind `#if os(macOS)`; what's left is the platform-neutral half of the
 // released scene: how a body is dressed (material, glow, selection lift),
 // hover/selection repaint, entity naming, in-place geometry refresh, and the
-// Object Inspector. On Vision Pro "the desktop" is the room: VcadVision's
+// Object Inspector (body dressing lives in ReleasedLook.swift). On Vision Pro "the desktop" is the room: VcadVision's
 // ReleasedSpace builds the same bodies at real scale in an ImmersiveSpace.
 
 #if os(macOS)
@@ -807,51 +807,6 @@ final class ReleaseWindowController {
         mainWindow = nil
     }
     #endif
-
-    // MARK: dressing — shared by the Mac ARView and the visionOS room
-
-    /// A document part's material as the released scene draws it: the
-    /// resolved PBR material softened for the studio IBL, its own emission
-    /// (recorded in `baseEmission` so hover/selection lifts restore it), and
-    /// the brand-orange selection lift. Zebra mode swaps in the analysis
-    /// chrome; the sandbox (no document tree) falls back to `fallback`.
-    func dressPart(model: EditorModel, index i: Int, fallback: NSColor) -> PhysicallyBasedMaterial {
-        var m = PhysicallyBasedMaterial()
-        if model.zebraMode {
-            m = SceneAssets.zebraChrome
-        } else if model.usesDocumentTree {
-            let r = model.resolvedMaterial(forPart: i)
-            m.baseColor = .init(tint: r.color)
-            m.roughness = .init(floatLiteral: r.roughness)
-            m.metallic = .init(floatLiteral: r.metallic)
-            SceneAssets.studioSoften(&m)
-            ViewportGlow.dress(&m, r, entity: "part\(i)")
-        } else {
-            m.baseColor = .init(tint: fallback)
-            m.roughness = 0.34
-            m.metallic = 0.55
-            SceneAssets.studioSoften(&m)
-        }
-        if model.usesDocumentTree, !model.zebraMode, model.highlightedParts.contains(i) {
-            // Brand orange = action: a subtle emissive lift marks selection
-            // without repainting the material (mirrors the studio rule).
-            m.emissiveColor = .init(color: SelectionStyle.selected)
-            m.emissiveIntensity = SelectionStyle.partSelectedIntensity
-        }
-        return m
-    }
-
-    /// An assembly instance's material — `dressPart`'s twin for instances.
-    func dressInstance(model: EditorModel, _ material: ResolvedMaterial, index i: Int) -> PhysicallyBasedMaterial {
-        if model.zebraMode { return SceneAssets.zebraChrome }
-        var m = PhysicallyBasedMaterial()
-        m.baseColor = .init(tint: material.color)
-        m.roughness = .init(floatLiteral: material.roughness)
-        m.metallic = .init(floatLiteral: material.metallic)
-        SceneAssets.studioSoften(&m)
-        ViewportGlow.dress(&m, material, entity: "inst\(i)")
-        return m
-    }
 }
 
 extension ReleaseWindowController {
@@ -2399,7 +2354,7 @@ struct ReleasedARView: NSViewRepresentable {
         // not. Instances are the studio's primary path; they are the whole
         // content of a robot document.
         for (i, inst) in scene.instances.enumerated() {
-            let m = ReleaseWindowController.shared.dressInstance(model: model, inst.material, index: i)
+            let m = ReleasedLook.dressInstance(model: model, inst.material, index: i)
             let e = ModelEntity(mesh: inst.mesh, materials: [m])
             // A free root (see `freeRoots`) stays where it is: it isn't an
             // instance, so nothing that poses or picks instances may reach it.
@@ -2436,7 +2391,7 @@ struct ReleasedARView: NSViewRepresentable {
             return made
         }
         for (i, item) in scene.meshes.enumerated() {
-            let m = ReleaseWindowController.shared.dressPart(model: model, index: i, fallback: item.color)
+            let m = ReleasedLook.dressPart(model: model, index: i, fallback: item.color)
             let e = ModelEntity(mesh: item.mesh, materials: [m])
             e.name = "part\(i)"
             e.isEnabled = model.isPartVisible(i)
