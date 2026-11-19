@@ -1,3 +1,4 @@
+#![allow(warnings)] // vendored third-party source (see workspace [patch]); not ours to lint
 /*!
 Objective-C Runtime bindings and wrapper for Rust.
 

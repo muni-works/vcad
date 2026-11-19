@@ -79,9 +79,12 @@ struct ReleasedSpace: View {
             } else if model.docParamDirty {
                 // Parameter scrub from the inspector: swap meshes in place
                 // (shared with the Mac), so the parts don't pop.
-                // No collision regen per tick (`collisions: false`): a scrub
-                // must not rebuild; the commit's triangle count re-keys it.
-                ReleaseWindowController.shared.refreshGeometry(model: model, collisions: false)
+                // Colliders follow the new meshes (an inspector translate
+                // doesn't change the triangle count, so nothing re-keys), but
+                // the Mac's "rebuild on commit" flag is not for us: the room
+                // is real scale, there's no fit to re-normalise.
+                ReleaseWindowController.shared.refreshGeometry(model: model)
+                model.geometryDirty = false
             } else {
                 ReleaseWindowController.shared.repaintAll()
             }

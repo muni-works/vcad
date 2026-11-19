@@ -1,3 +1,4 @@
+#![allow(warnings)] // vendored third-party source (see workspace [patch]); not ours to lint
 #![no_std]
 #![doc = include_str!("../README.md")]
 
