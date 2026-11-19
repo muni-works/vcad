@@ -58,7 +58,7 @@ extension View {
     /// desktop: the glass keeps its edge and depth, the panel stays readable.
     func desktopBacking<S: InsettableShape>(_ on: Bool, in shape: S) -> some View {
         #if os(macOS)
-        background(on ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor).opacity(0.82)) : AnyShapeStyle(.clear),
+        background(on ? AnyShapeStyle(Color(nsColor: .windowBackgroundColor).opacity(0.94)) : AnyShapeStyle(.clear),
                    in: shape)
         #else
         background(on ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(.clear), in: shape)

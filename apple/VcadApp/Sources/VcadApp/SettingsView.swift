@@ -25,6 +25,8 @@ struct SettingsView: View {
                 } footer: {
                     Text("Released documents float over your desktop with their own Dock tile. Switch any time with View ▸ Open in Window (⇧⌘D).")
                         .font(.caption).foregroundStyle(.secondary)
+                        // Grouped-form footers default to trailing; a wrapped line read ragged-right.
+                        .multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
                 }
                 Section("Viewport") {
                     Toggle("Show reference grid and contact shadow in windows", isOn: $showsGrid)
@@ -41,6 +43,8 @@ struct SettingsView: View {
                     Text((NavigationScheme(rawValue: navigation) ?? .default).summary
                         .map { "\($0.gesture): \($0.action)" }.joined(separator: " · "))
                         .font(.caption).foregroundStyle(.secondary)
+                        // Grouped-form footers default to trailing; a wrapped line read ragged-right.
+                        .multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             .formStyle(.grouped)
@@ -69,6 +73,8 @@ struct SettingsView: View {
                 } footer: {
                     Text("Adds the Electronics and Manufacture (CNC Studio) workspaces and physics simulation. They are still in development.")
                         .font(.caption).foregroundStyle(.secondary)
+                        // Grouped-form footers default to trailing; a wrapped line read ragged-right.
+                        .multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
             .formStyle(.grouped)

@@ -25,6 +25,27 @@ enum UIAuditDemo {
         let ui = GlassUI.shared
         var log = ""
 
+        // Offscreen: the shortcut sheet laid out in a large and a small window.
+        for (name, width) in [("large", CGFloat(1600)), ("small", CGFloat(820))] {
+            let host = NSHostingView(rootView: ShortcutSheet(model: m).frame(width: width))
+            host.frame = NSRect(x: 0, y: 0, width: width, height: 900)
+            host.frame.size.height = host.fittingSize.height
+            let win = NSWindow(contentRect: host.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+            win.appearance = NSAppearance(named: .darkAqua)
+            win.contentView = host
+            host.layoutSubtreeIfNeeded(); host.display()
+            if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                host.cacheDisplay(in: host.bounds, to: rep)
+                try? rep.representation(using: .png, properties: [:])?
+                    .write(to: url.appendingPathComponent("offscreen-shortcuts-\(name).png"))
+            }
+            win.contentView = nil
+        }
+        if ProcessInfo.processInfo.environment["VCAD_UI_AUDIT_QUICK"] == "1" {
+            FileHandle.standardError.write(Data("[VCAD_UI_AUDIT] done → \(dir)\n".utf8))
+            return
+        }
+
         func snap(_ name: String) async {
             RenderGate.wake(for: 2)
             await wait(0.9)
@@ -48,7 +69,7 @@ enum UIAuditDemo {
             NSApp.appearance = NSAppearance(named: appearance)
             let d = m.distance
             await snap("released-\(scheme)")
-            m.distance = d * 0.45
+            m.distance = d * 0.32
             await snap("released-\(scheme)-close")
             ui.paletteOpen = true; await snap("released-\(scheme)-palette"); ui.paletteOpen = false
             m.distance = d
@@ -56,16 +77,6 @@ enum UIAuditDemo {
 
         let small = NSSize(width: 820, height: 620), large = NSSize(width: 1600, height: 1000)
         ctl.setWindowed(true)
-        if ProcessInfo.processInfo.environment["VCAD_UI_AUDIT_BISECT"] == "1" {
-            await snap("bisect-0-design")
-            ui.enter(.drawing, model: m); await wait(3); ui.enter(.design, model: m)
-            await snap("bisect-1-after-drawing")
-            ui.enter(.electronics, model: m); await wait(3); ui.enter(.design, model: m)
-            await snap("bisect-2-after-electronics")
-            try? log.write(to: url.appendingPathComponent("windows.txt"), atomically: true, encoding: .utf8)
-            FileHandle.standardError.write(Data("[VCAD_UI_AUDIT] done → \(dir)\n".utf8))
-            return
-        }
         for (scheme, appearance) in [("dark", NSAppearance.Name.darkAqua), ("light", .aqua)] {
             NSApp.appearance = NSAppearance(named: appearance)
             for (sizeName, size) in [("large", large), ("small", small)] {
@@ -89,9 +100,32 @@ enum UIAuditDemo {
                 ui.space = .design
                 ui.historyOpen = true; await snap("\(p)-history"); ui.historyOpen = false
                 ui.shortcutsShown = true; await snap("\(p)-shortcuts"); ui.shortcutsShown = false
-                ui.searchOpen = true; await snap("\(p)-search"); ui.searchOpen = false
+                m.showsCommandPalette = true; await snap("\(p)-command-palette"); m.showsCommandPalette = false
                 m.selectParts([0]); await snap("\(p)-selected"); m.selectParts([])
             }
+        }
+        // Settings and the welcome window, in both appearances.
+        for (scheme, appearance) in [("dark", NSAppearance.Name.darkAqua), ("light", .aqua)] {
+            NSApp.appearance = NSAppearance(named: appearance)
+            // Settings in an offscreen window (a background app's
+            // showSettingsWindow: opens nothing).
+            let host = NSHostingView(rootView: SettingsView())
+            host.frame = NSRect(x: 0, y: 0, width: 600, height: 800)
+            let fit = host.fittingSize
+            host.frame = NSRect(origin: .zero, size: fit)
+            let win = NSWindow(contentRect: host.frame, styleMask: [.titled], backing: .buffered, defer: false)
+            win.appearance = NSAppearance(named: appearance)
+            win.contentView = host
+            host.layoutSubtreeIfNeeded(); host.display()
+            if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+                host.cacheDisplay(in: host.bounds, to: rep)
+                try? rep.representation(using: .png, properties: [:])?
+                    .write(to: url.appendingPathComponent("\(scheme)-settings.png"))
+            }
+            log += String(format: "%@-settings fitting=%.0fx%.0f\n", scheme, fit.width, fit.height)
+            win.contentView = nil
+            WelcomeWindowController.shared.show(model: m)
+            await snap("\(scheme)-welcome")
         }
         NSApp.appearance = nil
         try? log.write(to: url.appendingPathComponent("windows.txt"), atomically: true, encoding: .utf8)

@@ -353,8 +353,15 @@ struct CompassView: View {
             }
             for f in faces where f.facing > 0.3 {
                 let c = f.corners.reduce(SIMD2<Float>(0, 0), +) / 4
-                let label = Text(f.target.label.uppercased())
-                    .font(.system(size: 8.5, weight: .semibold))
+                // Fit the label inside its foreshortened face: a side face
+                // seen at a glancing angle is narrow, and a fixed 8.5 pt
+                // "RIGHT" ran over the cube's edge.
+                let xs = f.corners.map { CGFloat($0.x) }
+                let faceWidth = (xs.max() ?? 0) - (xs.min() ?? 0)
+                let name = f.target.label.uppercased()
+                let fontSize = max(6, min(8.5, faceWidth * 0.8 / (CGFloat(name.count) * 0.66)))
+                let label = Text(name)
+                    .font(.system(size: fontSize, weight: .semibold))
                     .foregroundStyle(Color.primary.opacity(0.35 + 0.6 * Double(f.facing)))
                 ctx.draw(label, at: CGPoint(x: CGFloat(c.x) + half, y: CGFloat(c.y) + half))
             }

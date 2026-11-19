@@ -988,8 +988,11 @@ struct ToolPalette: View {
                     } label: {
                         VStack(spacing: 4) {
                             Image(systemName: t.symbol).font(.system(size: 17))
-                            Text(t.label).font(.caption).lineLimit(1)
-                        }.frame(width: 84, height: 56).contentShape(Rectangle())
+                            // Two lines: "Check Interference", "Feature Control
+                            // Frame" and "Import KiCad Board" were cut to "…".
+                            Text(t.label).font(.caption).lineLimit(2)
+                                .multilineTextAlignment(.center).minimumScaleFactor(0.9)
+                        }.frame(width: 84, height: 60).contentShape(Rectangle())
                     }
                     .buttonStyle(.plain).disabled(!t.enabled).opacity(t.enabled ? 1 : 0.35)
                     .help(t.hint.isEmpty ? t.label : "\(t.label) — \(t.hint)")
@@ -1650,6 +1653,8 @@ struct PaletteHost: View {
     var body: some View {
         if model.showsCommandPalette {
             CommandPaletteSheet(model: model)
+                // A list read over the model: solid under the glass.
+                .desktopBacking(true, in: RoundedRectangle(cornerRadius: Glass.panelRadius, style: .continuous))
                 .glassPanel()
                 .transition(.scale(scale: 0.97).combined(with: .opacity))
                 .modifier(ChromeRegion(key: "palette"))
@@ -1726,35 +1731,62 @@ struct ShortcutSheet: View {
                 Button { ui.shortcutsShown = false } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }
                     .buttonStyle(.borderless).help("Close").accessibilityLabel("Close shortcuts")
             }
-            HStack(alignment: .top, spacing: 28) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Eyebrow(ui.space.label)
-                    ForEach(tools) { t in row(String(t.shortcut!).uppercased(), t.label, symbol: t.symbol) }
+            // Four columns when the window has room, two by two when it does
+            // not: a fixed 900 pt card clipped on both sides of a small window.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 28) {
+                    toolColumn(tools); sketchColumn; globalColumn; navigationColumn
                 }
-                VStack(alignment: .leading, spacing: 6) {
-                    Eyebrow("Sketch")
-                    ForEach(Self.sketch, id: \.key) { row($0.key, $0.tool.label, symbol: $0.tool.symbol) }
+                ScrollView(.vertical) {
+                    Grid(alignment: .topLeading, horizontalSpacing: 28, verticalSpacing: Theme.Space.l) {
+                        GridRow { toolColumn(tools); sketchColumn }
+                        GridRow { globalColumn; navigationColumn }
+                    }
                 }
-                VStack(alignment: .leading, spacing: 6) {
-                    Eyebrow("Everywhere")
-                    ForEach(Self.global, id: \.0) { row($0.0, $0.1) }
-                }
-                VStack(alignment: .leading, spacing: 6) {
-                    // The camera bindings follow Settings ▸ Navigation.
-                    Eyebrow("Navigation · \(NavigationScheme.current.label)")
-                    ForEach(NavigationScheme.current.summary, id: \.gesture) { row($0.gesture, $0.action) }
-                }
+                .frame(maxHeight: 420)
             }
         }
         .padding(18)
-        .frame(width: 900)
+        .frame(maxWidth: 960)
+        .fixedSize(horizontal: false, vertical: true)
+        // A dense reading surface over the model: solid under the glass, or
+        // the part shows through as a blur behind the middle columns.
+        .desktopBacking(true, in: RoundedRectangle(cornerRadius: Glass.panelRadius, style: .continuous))
         .glassPanel()
         .modifier(ChromeRegion(key: "shortcuts"))
+        .padding(.horizontal, Theme.Space.l)
+    }
+
+    private func toolColumn(_ tools: [Tool]) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Eyebrow(ui.space.label)
+            ForEach(tools) { t in row(String(t.shortcut!).uppercased(), t.label, symbol: t.symbol) }
+        }
+    }
+    private var sketchColumn: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Eyebrow("Sketch")
+            ForEach(Self.sketch, id: \.key) { row($0.key, $0.tool.label, symbol: $0.tool.symbol) }
+        }
+    }
+    private var globalColumn: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Eyebrow("Everywhere")
+            ForEach(Self.global, id: \.0) { row($0.0, $0.1) }
+        }
+    }
+    private var navigationColumn: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            // The camera bindings follow Settings ▸ Navigation.
+            Eyebrow("Navigation · \(NavigationScheme.current.label)")
+            ForEach(NavigationScheme.current.summary, id: \.gesture) { row($0.gesture, $0.action) }
+        }
     }
 
     private func row(_ key: String, _ label: String, symbol: String? = nil) -> some View {
         HStack(spacing: 8) {
-            Text(key).font(.callout.monospaced()).padding(.horizontal, 6).padding(.vertical, 1)
+            Text(key).font(.callout.monospaced()).lineLimit(1).fixedSize()
+                .padding(.horizontal, 6).padding(.vertical, 1)
                 .background(.quaternary, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                 .frame(minWidth: 64, alignment: .leading)
             if let symbol { Image(systemName: symbol).frame(width: 16).foregroundStyle(.secondary) }

@@ -612,7 +612,10 @@ private struct WelcomeRail: View {
                         .padding(.bottom, Theme.Space.s)
                 }
                 Text("vcad").font(.title.weight(.bold))
-                Text("Version 1.0").font(.callout).foregroundStyle(.secondary)
+                // The running bundle's version, not a literal: 1.1 shipped still
+                // reading "Version 1.0".
+                Text("Version \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "1.0")")
+                    .font(.callout).foregroundStyle(.secondary)
             }
             .padding(.leading, 8)
             .padding(.bottom, 22)
