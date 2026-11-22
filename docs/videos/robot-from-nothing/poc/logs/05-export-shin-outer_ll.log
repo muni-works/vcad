@@ -1,0 +1,3 @@
+cache: 1 hit, 0 miss, 0 stored (~/.cache/vcad/geom/vcad-eval_0.11.0_x86_64_7d3db62818ab01cd)
+note[floating_floor]: support-free print orientation(s): +Z up, -Z up, +Y up, -Y up. Other orientations have floating floors (+X up: 9 mm2, -X up: 9 mm2).
+Exported STL to out/shin-outer_ll.stl
