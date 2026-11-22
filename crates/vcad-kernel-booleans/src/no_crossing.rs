@@ -33,13 +33,24 @@ use crate::sew;
 /// Geometric tolerance for contact detection, matched to the sew tolerance.
 const TOL: f64 = 1e-6;
 
-/// How the two non-crossing operands relate spatially.
-#[derive(Debug, Clone, Copy)]
+/// How the two non-crossing operands relate spatially, per connected
+/// face component (lump or cavity shell).
+///
+/// A single containment bit per operand is wrong for multi-lump solids:
+/// with A = two disjoint cubes and B enclosing just one of them, the one
+/// sample point of A decided *all* of A, so `intersection` returned both
+/// cubes or nothing depending on vertex order. Because the boundaries do
+/// not cross, one sample still decides a whole connected component.
+#[derive(Debug, Clone)]
 pub(crate) struct Containment {
-    /// Every point of A lies inside B.
-    pub a_in_b: bool,
-    /// Every point of B lies inside A.
-    pub b_in_a: bool,
+    /// Faces of A lying inside B.
+    pub a_inside: Vec<FaceId>,
+    /// Faces of A lying outside B.
+    pub a_outside: Vec<FaceId>,
+    /// Faces of B lying inside A.
+    pub b_inside: Vec<FaceId>,
+    /// Faces of B lying outside A.
+    pub b_outside: Vec<FaceId>,
 }
 
 /// Detect whether any candidate face pair has coincident surfaces whose
@@ -286,32 +297,125 @@ fn segments_touch(a1: (f64, f64), a2: (f64, f64), b1: (f64, f64), b2: (f64, f64)
 }
 
 /// Resolve mutual containment of two solids whose boundaries provably do
-/// not cross or touch. Returns `None` when a robust answer couldn't be
-/// established (caller falls back to the general pipeline).
+/// not cross or touch, component by component. Returns `None` when a robust
+/// answer couldn't be established (caller falls back to the general
+/// pipeline).
 pub(crate) fn resolve_containment(
     a: &BRepSolid,
     b: &BRepSolid,
     segments: u32,
 ) -> Option<Containment> {
-    let a_in_b = solid_sample_in_solid(a, b, segments)?;
-    let b_in_a = solid_sample_in_solid(b, a, segments)?;
-    Some(Containment { a_in_b, b_in_a })
+    let (a_inside, a_outside) = split_by_containment(a, b, segments)?;
+    let (b_inside, b_outside) = split_by_containment(b, a, segments)?;
+    Some(Containment {
+        a_inside,
+        a_outside,
+        b_inside,
+        b_outside,
+    })
 }
 
-/// Is (a sample point of) `inner` inside `outer`? Because the boundaries do
-/// not cross, one sample decides the whole solid. Tries several boundary
-/// vertices of `inner`, skipping ones that produce degenerate ray casts.
-fn solid_sample_in_solid(inner: &BRepSolid, outer: &BRepSolid, segments: u32) -> Option<bool> {
+/// Partition `inner`'s faces into (inside `outer`, outside `outer`), one
+/// point query per connected face component.
+fn split_by_containment(
+    inner: &BRepSolid,
+    outer: &BRepSolid,
+    segments: u32,
+) -> Option<(Vec<FaceId>, Vec<FaceId>)> {
+    let mut mesh = None;
+    let mut inside = Vec::new();
+    let mut outside = Vec::new();
+    for comp in face_components(inner) {
+        if component_sample_in_solid(inner, &comp, outer, segments, &mut mesh)? {
+            inside.extend(comp);
+        } else {
+            outside.extend(comp);
+        }
+    }
+    Some((inside, outside))
+}
+
+/// Group faces into connected components: faces sharing a vertex (by id or,
+/// for unwelded copies, by position) belong together. Over-splitting is
+/// harmless — every face of a non-crossing boundary classifies the same as
+/// its shell — it only costs extra point queries.
+fn face_components(solid: &BRepSolid) -> Vec<Vec<FaceId>> {
+    use std::collections::HashMap;
+    let topo = &solid.topology;
+    let faces: Vec<FaceId> = topo.faces.keys().collect();
+    let mut parent: Vec<usize> = (0..faces.len()).collect();
+    fn find(p: &mut [usize], mut i: usize) -> usize {
+        while p[i] != i {
+            p[i] = p[p[i]];
+            i = p[i];
+        }
+        i
+    }
+    let key = |q: &Point3| {
+        let s = 1.0 / TOL;
+        (
+            (q.x * s).round() as i64,
+            (q.y * s).round() as i64,
+            (q.z * s).round() as i64,
+        )
+    };
+    let mut owner: HashMap<(i64, i64, i64), usize> = HashMap::new();
+    for (fi, &fid) in faces.iter().enumerate() {
+        let face = &topo.faces[fid];
+        let loops = std::iter::once(face.outer_loop).chain(face.inner_loops.iter().copied());
+        for loop_id in loops {
+            for he in topo.loop_half_edges(loop_id) {
+                let k = key(&topo.vertices[topo.half_edges[he].origin].point);
+                match owner.get(&k) {
+                    Some(&other) => {
+                        let (ra, rb) = (find(&mut parent, fi), find(&mut parent, other));
+                        if ra != rb {
+                            parent[ra] = rb;
+                        }
+                    }
+                    None => {
+                        owner.insert(k, fi);
+                    }
+                }
+            }
+        }
+    }
+    let mut groups: HashMap<usize, Vec<FaceId>> = HashMap::new();
+    for (fi, &fid) in faces.iter().enumerate() {
+        let r = find(&mut parent, fi);
+        groups.entry(r).or_default().push(fid);
+    }
+    let mut out: Vec<Vec<FaceId>> = groups.into_values().collect();
+    out.sort_by_key(|g| g[0]);
+    out
+}
+
+/// Is (a sample point of) the face component `comp` of `inner` inside
+/// `outer`? Tries several boundary vertices, skipping ones that produce
+/// degenerate ray casts.
+fn component_sample_in_solid(
+    inner: &BRepSolid,
+    comp: &[FaceId],
+    outer: &BRepSolid,
+    segments: u32,
+    mesh: &mut Option<vcad_kernel_tessellate::TriangleMesh>,
+) -> Option<bool> {
     const MAX_ATTEMPTS: usize = 8;
-    for (_, v) in inner.topology.vertices.iter().take(MAX_ATTEMPTS) {
-        match point_in_brep(&v.point, outer) {
+    let topo = &inner.topology;
+    let samples = comp
+        .iter()
+        .flat_map(|&f| topo.loop_half_edges(topo.faces[f].outer_loop))
+        .map(|he| topo.vertices[topo.half_edges[he].origin].point)
+        .take(MAX_ATTEMPTS);
+    for p in samples {
+        match point_in_brep(&p, outer) {
             RayParity::Inside => return Some(true),
             RayParity::Outside => return Some(false),
             RayParity::Degenerate => continue,
             RayParity::NeedsMesh => {
                 // Curved faces along the ray — fall back to the mesh test.
-                let mesh = tessellate_brep(outer, segments);
-                return Some(point_in_mesh(&v.point, &mesh));
+                let m = mesh.get_or_insert_with(|| tessellate_brep(outer, segments));
+                return Some(point_in_mesh(&p, m));
             }
         }
     }
@@ -474,49 +578,32 @@ fn xy_containment(p: (f64, f64), poly: &[(f64, f64)]) -> XyContainment {
 }
 
 /// Build the boolean result for two non-crossing, non-touching solids from
-/// their containment relation.
+/// their per-component containment: keep exactly the faces the general
+/// classifier would keep (union: outside the other; intersection: inside
+/// the other; difference: A outside B plus B inside A, reversed).
 pub(crate) fn no_crossing_result(
     a: BRepSolid,
     b: BRepSolid,
     op: BooleanOp,
     rel: Containment,
 ) -> BooleanResult {
-    let all_faces = |s: &BRepSolid| -> Vec<FaceId> { s.topology.faces.keys().collect() };
-    match op {
-        BooleanOp::Union => {
-            if rel.a_in_b {
-                BooleanResult::BRep(Box::new(b))
-            } else if rel.b_in_a {
-                BooleanResult::BRep(Box::new(a))
-            } else {
-                // Disjoint (or B nested in a cavity of A): keep both shells.
-                let fa = all_faces(&a);
-                let fb = all_faces(&b);
-                BooleanResult::BRep(Box::new(sew::sew_faces(&a, &fa, &b, &fb, false, TOL)))
-            }
-        }
-        BooleanOp::Difference => {
-            if rel.a_in_b {
-                BooleanResult::BRep(Box::new(empty_brep()))
-            } else if rel.b_in_a {
-                // B carves a cavity inside A: keep A plus B's faces reversed.
-                let fa = all_faces(&a);
-                let fb = all_faces(&b);
-                BooleanResult::BRep(Box::new(sew::sew_faces(&a, &fa, &b, &fb, true, TOL)))
-            } else {
-                BooleanResult::BRep(Box::new(a))
-            }
-        }
-        BooleanOp::Intersection => {
-            if rel.a_in_b {
-                BooleanResult::BRep(Box::new(a))
-            } else if rel.b_in_a {
-                BooleanResult::BRep(Box::new(b))
-            } else {
-                BooleanResult::BRep(Box::new(empty_brep()))
-            }
-        }
+    let (fa, fb, reverse_b) = match op {
+        BooleanOp::Union => (rel.a_outside, rel.b_outside, false),
+        BooleanOp::Intersection => (rel.a_inside, rel.b_inside, false),
+        BooleanOp::Difference => (rel.a_outside, rel.b_inside, true),
+    };
+    let whole = |s: &BRepSolid, f: &[FaceId]| f.len() == s.topology.faces.len();
+    if fa.is_empty() && fb.is_empty() {
+        return BooleanResult::BRep(Box::new(empty_brep()));
     }
+    // Untouched single operand: return it as-is (no re-sew).
+    if fb.is_empty() && whole(&a, &fa) {
+        return BooleanResult::BRep(Box::new(a));
+    }
+    if fa.is_empty() && !reverse_b && whole(&b, &fb) {
+        return BooleanResult::BRep(Box::new(b));
+    }
+    BooleanResult::BRep(Box::new(sew::sew_faces(&a, &fa, &b, &fb, reverse_b, TOL)))
 }
 
 #[cfg(test)]
@@ -606,6 +693,51 @@ mod tests {
             .into_brep()
             .unwrap();
         assert_eq!(result.topology.faces.len(), 0);
+    }
+
+    /// Moth drone regression: a multi-lump operand with only ONE lump
+    /// inside the other solid. One sample point used to decide every lump,
+    /// so intersection kept both cubes (16) or neither (0) depending on
+    /// vertex order. Each lump must classify on its own.
+    #[test]
+    fn multi_lump_intersection_classifies_each_lump() {
+        let near = make_cube(2.0, 2.0, 2.0);
+        let far = translated(make_cube(2.0, 2.0, 2.0), Vec3::new(10.0, 0.0, 0.0));
+        let big = translated(make_cube(4.0, 4.0, 4.0), Vec3::new(-1.0, -1.0, -1.0));
+        for (x, y) in [(&near, &far), (&far, &near)] {
+            let lumps = boolean_op(x, y, BooleanOp::Union, 16).into_brep().unwrap();
+            assert!((volume(&lumps) - 16.0).abs() < 1e-6);
+            for (p, q) in [(&lumps, &big), (&big, &lumps)] {
+                let r = boolean_op(p, q, BooleanOp::Intersection, 16)
+                    .into_brep()
+                    .unwrap();
+                assert!(
+                    (volume(&r) - 8.0).abs() < 1e-6,
+                    "intersection vol {}",
+                    volume(&r)
+                );
+            }
+            let u = boolean_op(&lumps, &big, BooleanOp::Union, 16)
+                .into_brep()
+                .unwrap();
+            assert!((volume(&u) - 72.0).abs() < 1e-6, "union vol {}", volume(&u));
+            let d = boolean_op(&lumps, &big, BooleanOp::Difference, 16)
+                .into_brep()
+                .unwrap();
+            assert!(
+                (volume(&d) - 8.0).abs() < 1e-6,
+                "lumps - big vol {}",
+                volume(&d)
+            );
+            let d2 = boolean_op(&big, &lumps, BooleanOp::Difference, 16)
+                .into_brep()
+                .unwrap();
+            assert!(
+                (volume(&d2) - 56.0).abs() < 1e-6,
+                "big - lumps vol {}",
+                volume(&d2)
+            );
+        }
     }
 
     #[test]
