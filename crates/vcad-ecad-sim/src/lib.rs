@@ -25,8 +25,10 @@
 //! - [`thermal`] — Component junction temperature and via thermal resistance
 
 pub mod airgap;
+pub mod board_sim;
 pub mod circuit;
 pub mod em;
+pub mod gateware;
 pub mod impedance;
 pub mod induction;
 pub mod magnetics;

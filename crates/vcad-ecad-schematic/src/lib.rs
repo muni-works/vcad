@@ -9,6 +9,7 @@ use std::collections::{HashMap, HashSet};
 use vcad_ir::ecad::*;
 use vcad_ir::Vec2;
 
+pub mod drive;
 pub mod erc;
 pub mod geometry;
 pub mod hierarchy;

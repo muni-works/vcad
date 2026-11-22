@@ -5468,6 +5468,8 @@ dependencies = [
  "vcad-diff",
  "vcad-ecad-fabprep",
  "vcad-ecad-pcb",
+ "vcad-ecad-schematic",
+ "vcad-ecad-sim",
  "vcad-ecad-symbols",
  "vcad-eval",
  "vcad-i18n",
@@ -5673,7 +5675,10 @@ dependencies = [
 name = "vcad-ecad-sim"
 version = "0.11.0"
 dependencies = [
+ "libloading",
  "serde",
+ "serde_json",
+ "sha2",
  "tang",
  "tang-expr 0.2.0",
  "thiserror 2.0.18",
