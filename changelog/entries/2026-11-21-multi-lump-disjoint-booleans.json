@@ -1,6 +1,6 @@
 {
   "id": "2026-11-21-multi-lump-disjoint-booleans",
-  "version": "1.1.1",
+  "version": "0.11.0",
   "date": "2026-11-21",
   "category": "fix",
   "title": "Booleans on multi-lump solids classify each lump",
