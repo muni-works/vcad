@@ -652,6 +652,10 @@ export class Solid {
      */
     isEmpty(): boolean;
     /**
+     * True when the solid's faces point inward (negative signed volume).
+     */
+    isInsideOut(): boolean;
+    /**
      * Create a linear pattern of the solid along a direction.
      *
      * # Arguments
@@ -667,6 +671,18 @@ export class Solid {
      * Takes an array of sketch profiles (minimum 2).
      */
     static loft(profiles_json: string, closed?: boolean | null): Solid;
+    /**
+     * This solid with the coplanar fragments its booleans left merged
+     * back into single faces (`vcad_kernel::Solid::merge_coplanar_faces`):
+     * one face per flat region, for display, picking and export.
+     *
+     * For a finished part only. Keep the unmerged solid for anything that
+     * runs a further boolean on it — the splitters are tuned on the faces
+     * a boolean produces, and `evaluateDocument` merges at the same point
+     * (a root's exit) for the same reason. Returns an unchanged copy when
+     * nothing merges or the merged solid would tessellate any worse.
+     */
+    mergeCoplanarFaces(): Solid;
     /**
      * Mirror the solid across a plane through `(origin_x, origin_y, origin_z)`
      * with the given plane normal. Triangle / face winding is automatically
@@ -733,13 +749,31 @@ export class Solid {
      */
     sectionView(plane_json: string, hatch_json?: string | null, segments?: number | null): any;
     /**
+     * Shell with faces removed: hollow inward by `thickness` and leave
+     * the referenced faces as the opening (an open-top box).
+     * `open_faces_json` is a JSON array of IR `FaceRef`s
+     * (`{name}` and/or `{point:{x,y,z}, normal:{x,y,z}}`). An empty array
+     * is the closed shell.
+     */
+    shellOpen(thickness: number, open_faces_json: string): Solid;
+    /**
      * Shell (hollow) the solid by offsetting all faces inward.
      */
     shell(thickness: number): Solid;
     /**
+     * Signed volume: positive for an outward-facing solid, negative when it
+     * is inside out.
+     */
+    signedVolume(): number;
+    /**
      * Create a sphere centered at origin with given radius.
      */
     static sphere(radius: number, segments?: number | null): Solid;
+    /**
+     * Create an involute spur gear (the `SpurGear` IR node): ISO full-depth
+     * teeth, base at z = 0, tooth 0 centred on +X, optional centred bore.
+     */
+    static spurGear(module: number, teeth: number, pressure_angle_deg: number, face_width: number, bore_diameter: number, backlash: number): Solid;
     /**
      * Compute the surface area of the solid.
      */
@@ -1614,17 +1648,7 @@ export function checkDesignConstraints(doc_json: string): string;
 export function checkPrintability(solid: Solid, printer_profile: string): any;
 
 /**
- * Re-run manufacturability against a *caller-supplied* shop profile.
- *
- * Separate from [`evaluate_sheet_metal_chain`] on purpose: the spec treats
- * manufacturability as a **typed query against the model**, not a
- * by-product of mesh evaluation. The app's DFM inspector and the
- * `sheet_metal.check` MCP tool both call this so a shop's real
- * capabilities — not the generic defaults — drive the result.
- *
- * `shop_json` is field-tolerant (see [`ShopProfile`]); pass `""` for the
- * generic shop. On any error the `error` field is set and `violations` is
- * empty.
+ * Manufacturability check against a shop profile.
  */
 export function checkSheetMetal(chain_json: string, shop_json: string): string;
 
@@ -1697,8 +1721,10 @@ export function computeCreasedNormalsGpu(positions: Float32Array, indices: Uint3
  * inconsistently wound meshes), and triangle count.
  *
  * Positions are `[x, y, z, ...]` (flat f32), indices are `[i0, i1, i2, ...]`.
- * Returns `{ volume, area, bbox: { min: {x,y,z}, max: {x,y,z} },
- * centerOfMass: {x,y,z}, triangles }` in the same units as positions (mm).
+ * Returns `{ volume, signedVolume, insideOut, area, bbox: { min: {x,y,z},
+ * max: {x,y,z} }, centerOfMass: {x,y,z}, triangles }` in the same units as
+ * positions (mm). `volume` is the magnitude; `signedVolume` is negative (and
+ * `insideOut` true) for a mesh wound inside out.
  */
 export function computeMeshProperties(positions: Float32Array, indices: Uint32Array): any;
 
@@ -1711,10 +1737,7 @@ export function computeMeshProperties(positions: Float32Array, indices: Uint32Ar
 export function computeMeshVolume(positions: Float32Array, indices: Uint32Array): number;
 
 /**
- * Estimate the manufacturing cost of a sheet-metal chain.
- *
- * `rates_json` is field-tolerant (omit keys to use the generic shop
- * rates); pass `""` for full defaults. `quantity` is clamped to `>= 1`.
+ * Cost estimate for a chain.
  */
 export function costSheetMetal(chain_json: string, rates_json: string, quantity: number): string;
 
@@ -2490,12 +2513,7 @@ export function evalVcadSourceWithModules(source: string, modules_json: string):
 export function evaluateDocument(doc_json: string, skip_clash_detection: boolean): any;
 
 /**
- * Evaluate a chain of sheet-metal ops and return `(mesh, flat-pattern,
- * model-summary)` as a JSON string. Caller is responsible for parsing.
- *
- * On error, returns a JSON object with a non-null `error` field; the other
- * fields are zeroed. Never panics — every fallible kernel call is mapped
- * to an error string.
+ * Evaluate a sheet-metal op chain → mesh, flat pattern, summary, DXF.
  */
 export function evaluateSheetMetalChain(chain_json: string): string;
 
@@ -2587,6 +2605,63 @@ export function exprEvaluate(src: string, env: any): number;
 export function exprParse(src: string): any;
 
 /**
+ * Extract a thin-wire `AntennaSpec` from a document's `PcbBoard` node
+ * (antenna-net trace centerlines → wires of radius width/4, feed at a pad,
+ * infinite ground at the pour edge — see `vcad_eval::antenna_extract`).
+ *
+ * `doc_json` is a `vcad_ir::Document`; `selection_json` an
+ * `AntennaExtraction` (feed pad, optional net / board node, `f_max_hz`).
+ * Returns `{spec, parameters, feed, frame, ground, substrate, notes, …}` —
+ * feed `spec` and `parameters` straight to `antennaAnalyze`. Fail-closed.
+ */
+export function extractAntennaSpec(doc_json: string, selection_json: string): any;
+
+/**
+ * Extract an axisymmetric magnetostatic `AxisymSpec` from a document's
+ * revolved magnetic parts (steel, axial magnets, coils).
+ *
+ * `selection_json` is a `vcad_eval::sim_extract::em::AxisymMagExtraction`.
+ * Returns `{spec, parameters, axis, parts, grid}` — feed `spec` (with
+ * `problem: "axisym_magnetostatics"`) and `parameters` to `emSimulate`,
+ * on the advised `grid.nx × grid.ny`. Fail-closed: a non-axisymmetric
+ * part errors with its name.
+ */
+export function extractAxisymMagSpec(doc_json: string, selection_json: string): any;
+
+/**
+ * Extract an axisymmetric `DeviceSpec` from a document's evaluated solids.
+ *
+ * `doc_json` is a `vcad_ir::Document`; `selection_json` a
+ * `vcad_eval::sim_extract::DeviceExtraction` (chamber part, electrode
+ * parts + the document parameters naming their potentials/ampere-turns).
+ * Returns `{spec, parameters, cavity, ring_parts}` — feed `spec` and
+ * `parameters` straight to `particleSimulate`. Fail-closed: any shape the
+ * spec can't represent errors with the offending part's name.
+ */
+export function extractDeviceSpec(doc_json: string, selection_json: string): any;
+
+/**
+ * Extract a spherical `ShieldSpec` from a document's evaluated solids.
+ *
+ * `selection_json` is a `vcad_eval::sim_extract::ShieldExtraction` (shell
+ * parts, fill material, source, detectors). Returns
+ * `{spec, parameters, center, layer_parts}` — feed `spec` and
+ * `parameters` straight to `neutronicsSimulate`.
+ */
+export function extractShieldSpec(doc_json: string, selection_json: string): any;
+
+/**
+ * Extract a linear tolerance `StackupSpec` from a document's clearance
+ * assertion and toleranced parameters.
+ *
+ * `selection_json` is a `vcad_eval::sim_extract::tolerance::StackupExtraction`.
+ * Returns `{spec, parameters, gap_mm, fit_parts, contributors,
+ * independent, fixed_geometry_mm}` — feed `spec` and `parameters` to
+ * `toleranceAnalyze`.
+ */
+export function extractStackupSpec(doc_json: string, selection_json: string): any;
+
+/**
  * Static structural FEA of a closed evaluated mesh with fail-closed
  * mesh-convergence gating: the interior is filled with linear tets at
  * two (or more) lattice refinements and solved (linear elasticity, PCG);
@@ -2615,14 +2690,19 @@ export function feaAnalyzeMesh(spec_json: string, options_json: string, position
 export function feaCheckBeam(case_json: string): any;
 
 /**
- * Recover a flat pattern from a solid that was **not** authored through the
- * sheet-metal ops — an extruded sketch, a boolean result, an imported STEP.
+ * Closed-form external-pressure buckling screen for a thin cylinder,
+ * sphere or dished head (vacuum chambers, viewport covers): classical
+ * bifurcation pressure, the cited imperfection knockdown (NASA/SP-8007
+ * REV 2 for cylinders, ASME VIII-1 UG-28(d)/UG-33 for spheres and heads),
+ * membrane-yield cap, allowable and margin — with the same fail-closed
+ * applicability gating and predicted-basis claims as the beam route.
  *
- * This is the mechanical counterpart of `boardFromSolid`: it recognises the
- * constant-thickness walls and the cylindrical bends between them, rebuilds
- * the panel/bend graph, and runs it through the same unfold → silhouette →
- * DXF pipeline authored parts use. It fails closed — a solid that is not
- * constant-thickness sheet returns an `error` rather than a wrong outline.
+ * `case_json` is a `vcad_kernel_fea::shell::ShellCase`.
+ */
+export function feaCheckShell(case_json: string): any;
+
+/**
+ * Recover a flat pattern from an arbitrary constant-thickness solid mesh.
  */
 export function flattenSolidToSheetMetal(request_json: string): string;
 
@@ -2661,27 +2741,17 @@ export function getCompiledModule(): any;
 export function getPartsManifest(): string;
 
 /**
- * Return the built-in bend-table rows as JSON.
- *
- * Exposes the curated `(material, t, R) → K` lookup so a shop / agent can
- * audit what K-factor an upcoming bend will use without having to model
- * the part first.
+ * Built-in bend-table rows.
  */
 export function getSheetMetalBendTable(): string;
 
 /**
- * Return the built-in sheet-metal materials registry as JSON.
- *
- * Lets the UI populate a material picker and the MCP tools advertise
- * what alloys are available — without each consumer hard-coding the list.
+ * Built-in sheet-metal materials registry.
  */
 export function getSheetMetalMaterials(): string;
 
 /**
- * Return a built-in shop bending catalog (per-material fixed radius,
- * K-factor, die width, relief depth, flange minimums, max bend length) as
- * JSON. Pass `"sendcutsend"`; unknown ids return `{"error": ...}` listing
- * the available catalogs.
+ * Built-in shop bending catalog by id.
  */
 export function getSheetMetalShopCatalog(shop_id: string): string;
 
@@ -2722,6 +2792,22 @@ export function get_kernel_version(): string;
  * Returns JSON array of ToolSchemaEntry objects.
  */
 export function get_tool_schemas(): string;
+
+/**
+ * Reduce a raw instrument file to measurements for the claims ledger
+ * (`import_measurement`), fail-closed:
+ *
+ * - `"touchstone_s1p"`: NanoVNA one-port sweep → antenna measurements named
+ *   after the claims (`vcad_kernel_antenna::nanovna`). `context_json` is
+ *   `{claim_set: <vcad.antenna-claims/1>, tolerances?: {s11_db, freq_rel,
+ *   z_ohm, bandwidth_rel}}` (unset tolerances keep the NanoVNA defaults).
+ * - `"rew_impedance"`: REW impedance export → port tuning f_b
+ *   (`vcad_kernel_acoustics::rew`). `context_json`: `{extra_uncertainty_hz?}`.
+ * - `"thermocouple_csv"`: thermocouple log → one temperature
+ *   (`vcad_kernel_thermal::thermocouple`). `context_json` is a
+ *   `ThermocoupleOptions`.
+ */
+export function importMeasurementFile(format: string, text: string, context_json: string): any;
 
 /**
  * Import solids from STEP file bytes.
@@ -2885,6 +2971,18 @@ export function isSlicerAvailable(): boolean;
 export function latticeGaugeSimulate(spec_json: string): any;
 
 /**
+ * Magnetic field of posed 3D sources (current loops, solenoids, disc/ring
+ * and block magnets) at query points or on a plane grid.
+ *
+ * `scene_json` is a `vcad_kernel_particle::field3d_spec::SceneSpec`
+ * (mm / degrees / A / T), `query_json` a `QuerySpec` (points and/or grid,
+ * optional ∇|B|). Fail-closed: invalid geometry, an oversized grid, or a
+ * query point on a source singularity is an error. Returns a `FieldReport`
+ * (B vectors in tesla, |B|, per-source method + dipole moment).
+ */
+export function magneticField(scene_json: string, query_json: string): any;
+
+/**
  * Mesh-to-mesh clearance over raw evaluated-mesh buffers (see
  * `WasmClearance`). Operates on already-placed geometry, so callers can
  * measure between any two evaluated parts (or merged part groups) without
@@ -2893,22 +2991,12 @@ export function latticeGaugeSimulate(spec_json: string): any;
 export function mesh_clearance(positions_a: Float32Array, indices_a: Uint32Array, positions_b: Float32Array, indices_b: Uint32Array): any;
 
 /**
- * Rectangular nesting of multiple parts on stock sheets.
- *
- * `parts_json` is a JSON array of `PartFootprint` objects (each with
- * `name`, `width_mm`, `height_mm`, `quantity`); `params_json` is a
- * `NestingParams` object (pass `""` for the generic 4'×8' default).
+ * Rectangular nesting of part footprints on stock sheets.
  */
 export function nestSheetMetalParts(parts_json: string, params_json: string): string;
 
 /**
- * Produce one layered DXF per stock sheet for a set of nested parts.
- *
- * `placements_json` is an array of `NestedPlacementDto`; each chain
- * is independently evaluated into a flat pattern, then translated /
- * rotated according to its placement before being written to the
- * sheet's DXF. Layers are the same `CUT` / `BEND_UP` / `BEND_DOWN`
- * triple a shop's post-processor already knows.
+ * One layered DXF per nested stock sheet.
  */
 export function nestedSheetMetalDxf(placements_json: string): string;
 
@@ -2923,6 +3011,19 @@ export function nestedSheetMetalDxf(placements_json: string): string;
  * block), `params_json` a `{name: value}` map binding them.
  */
 export function neutronicsSimulate(spec_json: string, params_json: string): any;
+
+/**
+ * Room-scale (3D CSG) Monte Carlo neutron run: priority-ordered
+ * box/sphere/cylinder cells (chamber, HDPE castle, concrete room), a
+ * point source, virtual detectors with instrument responses (moderated
+ * ³He/BF₃ counter computed by MC, bubble dosimeter, CR-39, ideal rem
+ * meter) and an optional voxel H*(10) dose map — every number with its
+ * batch-statistics RSE, plus predicted claims (fail-closed).
+ *
+ * `spec_json` is a `vcad_kernel_neutronics::scene_spec::SceneSpec`,
+ * `params_json` a `{name: value}` map binding named parameters.
+ */
+export function neutronicsSimulateScene(spec_json: string, params_json: string): any;
 
 /**
  * Parse a note name (`"C6"`, `"F#4"`, `"Bb3"`) to Hz. Errors on garbage.
@@ -3004,6 +3105,19 @@ export function op_sweep_helix(profile_json: string, radius: number, pitch: numb
  * This is a standalone wrapper for lazy loading via wasmosis.
  */
 export function op_sweep_line(profile_json: string, start: Float64Array, end: Float64Array, twist_angle?: number | null, scale_start?: number | null, scale_end?: number | null, orientation?: number | null): Solid;
+
+/**
+ * Optimize named document parameters: minimize a weighted sum of QoIs
+ * subject to parameter-expression and QoI constraints
+ * ([`vcad_eval::optimize::optimize_document`]). Returns the
+ * [`vcad_eval::optimize::OptimizeDocResult`] — the optimum, the KKT report,
+ * and the full trajectory with every gradient component's provenance.
+ *
+ * Only the built-in seam QoIs (volume, mass, centroid) are available here:
+ * solver plug-ins (modal frequency, …) register through the native Rust API
+ * (`vcad_eval::optimize::QoiRegistry`), not in the browser kernel.
+ */
+export function optimizeDocument(doc_json: string, request_json: string): any;
 
 /**
  * Parse an Altium ASCII-exported `.PcbDoc` into a `Pcb`.
@@ -3093,13 +3207,29 @@ export function parseVCode(vcode: string): string;
 export function parseVcadFile(content: string): any;
 
 /**
+ * Describe a built-in part: its mate ports (part-local frame) and metadata
+ * (ratings, envelopes, provenance, BOM lines), as JSON
+ * `{ "ports": [...], "metadata": {...} }`. Parts without a describer return
+ * no ports and empty metadata.
+ */
+export function partInfo(path: string, params_json: string): string;
+
+/**
  * Optimize named device parameters against predicted D-D yield per ion.
  *
  * `optimize_json`: `{ variables: [{name, lo, hi, start?}], nr?, nz?,
- * particles?, max_passes?, max_iters?, multi_start? }`. Multi-start FD
- * ascent (the yield landscape is multimodal — see
- * `docs/particle-optics-m0.md`); candidate configurations that fail to
- * resolve or converge score 0 instead of aborting the search.
+ * particles?, max_passes?, max_iters?, multi_start?, gradient?,
+ * adjoint_particles?, adjoint_crossings? }` — an
+ * `electrode_opt::ElectrodeOptProblem`. Multi-start ascent (the yield
+ * landscape is multimodal — see `docs/particle-optics-m0.md`).
+ * `gradient: "fd"` (default) uses central differences throughout;
+ * `"hybrid"` routes potentials + ampere-turns through the discrete
+ * adjoint and geometry through FD, falling back to FD on an iteration
+ * whose adjoint direction fails to climb. Candidate configurations that
+ * fail to resolve or converge score 0 instead of aborting the search.
+ * Output keeps `best_params / best_sigma_v_m3 / evals / history /
+ * starts[{params, value}]` and adds per-iteration records with the
+ * gradient source of every variable.
  */
 export function particleOptimize(spec_json: string, params_json: string, optimize_json: string): any;
 
@@ -3114,6 +3244,16 @@ export function particleOptimize(spec_json: string, params_json: string, optimiz
  * unified-receipt claims (basis `predicted` — Provisional by contract).
  */
 export function particleSimulate(spec_json: string, params_json: string, options_json: string): any;
+
+/**
+ * 3D charged-particle optics: resolve a `vcad_kernel_particle::spec3d::
+ * DeviceSpec3d` (named parameters, fail-closed), solve it with the
+ * thin-wire BEM (refusing geometries that fail the surface-residual
+ * gates), trace a full-sphere Fibonacci deuteron ensemble, and return
+ * figures of merit. No receipt claims are issued for 3D yet (see
+ * `WasmParticleSim3d::note`).
+ */
+export function particleSimulate3d(spec_json: string, params_json: string, options_json: string): any;
 
 /**
  * Forward 2D TM FDTD run of a rect-composed photonic device: slab-mode
@@ -3173,6 +3313,18 @@ export function readEmbroideryPes(data: Uint8Array): string;
  * returns recommended SliceSettings + explanations.
  */
 export function recommendPrintSettings(analysis_json: string, printer_profile: string): any;
+
+/**
+ * Refine tessellated part-pair clearances with the closed form for
+ * parallel cylinders (shaft in bore, pins side by side), so chord error
+ * can't turn a 0.02 mm running fit into an "interference". `query_json`
+ * is `{pairs: [{a, b, distance, intersecting, point_a, point_b}]}` (the
+ * `meshClearance` result per pair, part ids as clearance specs name them);
+ * returns one entry per pair — `null` when a part isn't a BRep root (keep
+ * the mesh number), else `{distance, intersecting, point_a, point_b,
+ * basis, mesh_distance, chord_band_mm?}`.
+ */
+export function refineClearance(doc_json: string, query_json: string): any;
 
 /**
  * Register STEP file bytes under `path` so `step_import` nodes resolve.
@@ -3389,25 +3541,36 @@ export function sample_timeline_track(track_json: string, t: number): number;
 export function sectionMesh(mesh_js: any, plane_json: string, hatch_json?: string | null): any;
 
 /**
- * Export the **folded** sheet-metal solid as a STEP AP214 file.
- *
- * Builds the model from the same chain JSON that
- * [`evaluate_sheet_metal_chain`] accepts, constructs the folded B-rep via
- * `vcad_kernel::folded_sheet_solid` (panel slabs + true cylindrical bend
- * sectors, unioned into one body), and serialises it to STEP. The
- * cylindrical bend faces let downstream fab pipelines (e.g. SendCutSend)
- * auto-detect bend radii, angles, and directions.
- *
- * Returns JSON: `{"step": "<full ASCII STEP file>", "error": null}` on
- * success or `{"step": "", "error": "..."}` on failure. Never panics.
+ * Folded solid as a STEP file with true cylindrical bend faces.
  */
 export function sheetMetalFoldedStep(chain_json: string): string;
 
 /**
- * Return a feasible bend sequence for the chain. Outermost-first
- * heuristic; pure query, no mesh evaluation.
+ * Feasible bend sequence for a chain.
  */
 export function sheetMetalSequence(chain_json: string): string;
+
+/**
+ * Signed analytic radial gap between two part groups' coaxial shaft/bore
+ * pair — the fit-mode measurement of a `ClearanceSpec` (press /
+ * transition fits). `query_json` is `{label, group_a, group_b,
+ * fit_window_mm}`; returns `{gap_mm, parts}` (negative = interference).
+ * Errors (no candidate pair, ambiguous pairs, no analytic BRep) are
+ * fail-closed: the caller must treat them as unverifiable.
+ */
+export function signedRadialGap(doc_json: string, query_json: string): any;
+
+/**
+ * Extract a ported box from a document and analyze it.
+ *
+ * `doc_json` is a `vcad_ir::Document`; `selection_json` a
+ * `vcad_eval::cavity_extract::CavityExtraction`; `options_json` a
+ * `vcad_kernel_acoustics::ported::AnalysisOptions` (`{}` for defaults);
+ * `params_json` overrides for the document's parameter values when
+ * resolving named spec fields. Fail-closed: unrepresentable geometry errors
+ * naming the part and face.
+ */
+export function simulateCavity(doc_json: string, selection_json: string, options_json: string, params_json: string): string;
 
 /**
  * Steady laminar flow solve (D3Q19 BGK lattice Boltzmann): pressure drop,
@@ -3576,6 +3739,19 @@ export function textBounds(text: string, height: number, font?: string | null, l
 export function thermalSolve(spec_json: string, params_json: string, options_json: string): any;
 
 /**
+ * Steady thermal solve of a document's own parts.
+ *
+ * `doc_json` is a `vcad_ir::Document`. The study is `study_json` (a
+ * `vcad_ir::ThermalStudy`) when non-empty, else the document's thermal
+ * analysis study `study_id` (or its only one). The selected parts are
+ * voxelized (`vcad_eval::thermal_extract`), the spec resolved against the
+ * document's parameters overlaid with `params_json`, and solved. Returns
+ * the `thermalSolve` summary plus `extracted` (grid, per-part voxel
+ * audit, sources/sinks as solved) — not the per-voxel index field.
+ */
+export function thermalSolveDocument(doc_json: string, study_json: string, study_id: string, params_json: string, options_json: string): any;
+
+/**
  * Transient heat-conduction solve: backward-Euler time stepping over a
  * piecewise-constant drive schedule (RTP ramp/soak/cool, ambient steps,
  * duty cycles). Returns the T_max and per-source time series plus the
@@ -3635,10 +3811,12 @@ export function topologyOptimizeBox(spec_json: string, min_x: number, min_y: num
 export function topologyOptimizeMesh(spec_json: string, positions: Float32Array, indices: Uint32Array): any;
 
 /**
- * Apply a placement (`scale → rotate → translate`, rotation Rz·Ry·Rx in
- * degrees — the engine `transformMesh` convention) to flat mesh buffers.
+ * Apply a placement (`scale → rotate → translate`, rotation in degrees) to
+ * flat mesh buffers — the engine `transformMesh` contract.
  *
- * `transform_json` is `{ translate: {x,y,z}, rotate: {x,y,z}, scale: {x,y,z} }`.
+ * `transform_json` is `{ translate: {x,y,z}, rotate: {x,y,z}, scale: {x,y,z},
+ * rotateOrder? }`. Rotation is Rz·Ry·Rx (`Transform3D`) by default;
+ * `rotateOrder: "xyz"` means raw `CsgOp::Rotate` angles, Rx·Ry·Rz.
  * Positions get the full placement; normals (optional) get the rotation
  * only. Returns `{ positions, normals? }`.
  */
@@ -3846,8 +4024,14 @@ export interface InitOutput {
     readonly exprEvalAst: (a: any, b: any) => [number, number, number];
     readonly exprEvaluate: (a: number, b: number, c: any) => [number, number, number];
     readonly exprParse: (a: number, b: number) => [number, number, number];
+    readonly extractAntennaSpec: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly extractAxisymMagSpec: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly extractDeviceSpec: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly extractShieldSpec: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly extractStackupSpec: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly feaAnalyzeMesh: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
     readonly feaCheckBeam: (a: number, b: number) => [number, number, number];
+    readonly feaCheckShell: (a: number, b: number) => [number, number, number];
     readonly flattenSolidToSheetMetal: (a: number, b: number) => [number, number];
     readonly generate3mf: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
     readonly generate3mfWithGcode: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number, number];
@@ -3862,6 +4046,7 @@ export interface InitOutput {
     readonly get_default_dfm_pack: (a: number, b: number) => [number, number, number, number];
     readonly get_kernel_version: () => [number, number];
     readonly get_tool_schemas: () => [number, number];
+    readonly importMeasurementFile: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
     readonly importStepBuffer: (a: number, b: number) => [number, number, number];
     readonly importStepBufferWithReport: (a: number, b: number) => [number, number, number];
     readonly importStepMeshDocument: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
@@ -3882,6 +4067,7 @@ export interface InitOutput {
     readonly isPhysicsAvailable: () => number;
     readonly isSlicerAvailable: () => number;
     readonly latticeGaugeSimulate: (a: number, b: number) => [number, number, number];
+    readonly magneticField: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly mdsim_moleculeJson: (a: number) => [number, number, number, number];
     readonly mdsim_new: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly mdsim_observe: (a: number) => [number, number, number, number];
@@ -3891,6 +4077,7 @@ export interface InitOutput {
     readonly nestSheetMetalParts: (a: number, b: number, c: number, d: number) => [number, number];
     readonly nestedSheetMetalDxf: (a: number, b: number) => [number, number];
     readonly neutronicsSimulate: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly neutronicsSimulateScene: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly noteToHz: (a: number, b: number) => [number, number, number];
     readonly offsetSectionMesh: (a: any, b: number, c: number, d: number, e: number) => any;
     readonly op_chamfer: (a: number, b: number) => [number, number, number];
@@ -3902,6 +4089,7 @@ export interface InitOutput {
     readonly op_shell: (a: number, b: number) => [number, number, number];
     readonly op_sweep_helix: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => [number, number, number];
     readonly op_sweep_line: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number) => [number, number, number];
+    readonly optimizeDocument: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly parseAltiumAsciiPcb: (a: number, b: number) => [number, number, number];
     readonly parseAltiumPcbDoc: (a: number, b: number) => [number, number, number];
     readonly parseAltiumPcbLib: (a: number, b: number) => [number, number, number];
@@ -3909,8 +4097,10 @@ export interface InitOutput {
     readonly parseKicadPcb: (a: number, b: number) => [number, number, number];
     readonly parseVCode: (a: number, b: number) => [number, number, number, number];
     readonly parseVcadFile: (a: number, b: number) => [number, number, number];
+    readonly partInfo: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly particleOptimize: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
     readonly particleSimulate: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+    readonly particleSimulate3d: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
     readonly photonicsSimulate: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly physicssim_actionDim: (a: number) => number;
     readonly physicssim_actuatedJointIds: (a: number) => [number, number];
@@ -3955,6 +4145,7 @@ export interface InitOutput {
     readonly readEmbroideryDst: (a: number, b: number) => [number, number, number, number];
     readonly readEmbroideryPes: (a: number, b: number) => [number, number, number, number];
     readonly recommendPrintSettings: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly refineClearance: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly registerStepSource: (a: number, b: number, c: number, d: number) => [number, number, number];
     readonly renderBakeMesh: (a: number, b: number) => [number, number, number, number];
     readonly renderBomTable: (a: number, b: number) => any;
@@ -3975,6 +4166,8 @@ export interface InitOutput {
     readonly sectionMesh: (a: any, b: number, c: number, d: number, e: number) => any;
     readonly sheetMetalFoldedStep: (a: number, b: number) => [number, number];
     readonly sheetMetalSequence: (a: number, b: number) => [number, number];
+    readonly signedRadialGap: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly simulateCavity: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number, number];
     readonly simulateFlow: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
     readonly simulateStrikeKernel: (a: number, b: number) => [number, number, number, number];
     readonly sketchCircleSegments: (a: number, b: number, c: number, d: number) => [number, number, number, number];
@@ -4019,8 +4212,10 @@ export interface InitOutput {
     readonly solid_hullWith: (a: number, b: number) => [number, number, number];
     readonly solid_intersection: (a: number, b: number) => [number, number, number];
     readonly solid_isEmpty: (a: number) => number;
+    readonly solid_isInsideOut: (a: number) => number;
     readonly solid_linearPattern: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
     readonly solid_loft: (a: number, b: number, c: number) => [number, number, number];
+    readonly solid_mergeCoplanarFaces: (a: number) => number;
     readonly solid_mirror: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
     readonly solid_numTriangles: (a: number) => number;
     readonly solid_prism: (a: number, b: number, c: number) => number;
@@ -4031,7 +4226,10 @@ export interface InitOutput {
     readonly solid_scale: (a: number, b: number, c: number, d: number) => number;
     readonly solid_sectionView: (a: number, b: number, c: number, d: number, e: number, f: number) => any;
     readonly solid_shell: (a: number, b: number) => [number, number, number];
+    readonly solid_shellOpen: (a: number, b: number, c: number, d: number) => [number, number, number];
+    readonly solid_signedVolume: (a: number) => number;
     readonly solid_sphere: (a: number, b: number) => number;
+    readonly solid_spurGear: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
     readonly solid_surfaceArea: (a: number) => number;
     readonly solid_sweepHelix: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => [number, number, number];
     readonly solid_sweepLine: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number) => [number, number, number];
@@ -4050,6 +4248,7 @@ export interface InitOutput {
     readonly stepSourceRegistered: (a: number, b: number) => number;
     readonly textBounds: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => [number, number, number];
     readonly thermalSolve: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+    readonly thermalSolveDocument: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => [number, number, number];
     readonly thermalSolveTransient: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => [number, number, number];
     readonly toVCode: (a: number, b: number) => [number, number, number, number];
     readonly toleranceAnalyze: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
@@ -4142,12 +4341,12 @@ export interface InitOutput {
     readonly wasmsketchsession_undo: (a: number) => number;
     readonly writeEmbroideryDst: (a: number, b: number) => [number, number, number, number];
     readonly writeEmbroideryPes: (a: number, b: number) => [number, number, number, number];
-    readonly wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___js_sys_fd485cc146ff22c1___Function_fn_wasm_bindgen_847cf9dc19a95d2a___JsValue_____wasm_bindgen_847cf9dc19a95d2a___sys__Undefined___js_sys_fd485cc146ff22c1___Function_fn_wasm_bindgen_847cf9dc19a95d2a___JsValue_____wasm_bindgen_847cf9dc19a95d2a___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
-    readonly wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___JsValue__core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___sys__JsNullable_wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true_: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___sys__JsNullable_wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true__460: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wasm_bindgen_847cf9dc19a95d2a___sys__JsNullable_wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_f0fd674eaa06beef___result__Result_____wasm_bindgen_847cf9dc19a95d2a___JsError___true__461: (a: number, b: number, c: any) => [number, number];
-    readonly wasm_bindgen_847cf9dc19a95d2a___convert__closures_____invoke___wgpu_a24c7b14400eaeda___backend__webgpu__webgpu_sys__gen_GpuDeviceLostInfo__GpuDeviceLostInfo______true_: (a: number, b: number, c: any) => void;
+    readonly wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___js_sys_642bfe987b1cf332___Function_fn_wasm_bindgen_8e3ced698336b946___JsValue_____wasm_bindgen_8e3ced698336b946___sys__Undefined___js_sys_642bfe987b1cf332___Function_fn_wasm_bindgen_8e3ced698336b946___JsValue_____wasm_bindgen_8e3ced698336b946___sys__Undefined_______true_: (a: number, b: number, c: any, d: any) => void;
+    readonly wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wasm_bindgen_8e3ced698336b946___JsValue__core_d941ad8722425d2e___result__Result_____wasm_bindgen_8e3ced698336b946___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wasm_bindgen_8e3ced698336b946___sys__JsNullable_wgpu_b966c5ae24b4fafb___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_d941ad8722425d2e___result__Result_____wasm_bindgen_8e3ced698336b946___JsError___true_: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wasm_bindgen_8e3ced698336b946___sys__JsNullable_wgpu_b966c5ae24b4fafb___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_d941ad8722425d2e___result__Result_____wasm_bindgen_8e3ced698336b946___JsError___true__481: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wasm_bindgen_8e3ced698336b946___sys__JsNullable_wgpu_b966c5ae24b4fafb___backend__webgpu__webgpu_sys__gen_GpuError__GpuError___core_d941ad8722425d2e___result__Result_____wasm_bindgen_8e3ced698336b946___JsError___true__482: (a: number, b: number, c: any) => [number, number];
+    readonly wasm_bindgen_8e3ced698336b946___convert__closures_____invoke___wgpu_b966c5ae24b4fafb___backend__webgpu__webgpu_sys__gen_GpuDeviceLostInfo__GpuDeviceLostInfo______true_: (a: number, b: number, c: any) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
