@@ -21,7 +21,7 @@
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.0",
     "@ai-sdk/gateway": "^3.0.0",
-    "@ai-sdk/openai": "^3.0.24",
+    "@ai-sdk/openai": "^4.0.118",
     "@vcad/engine": "*",
     "@vcad/ir": "*",
     "ai": "^7.0.165",
