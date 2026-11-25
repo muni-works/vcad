@@ -257,6 +257,7 @@ toml = "0.8"
 gltf = { version = "1.4" }
 base64 = { version = "0.22" }
 opencascade = { version = "0.2" }
+geo = { version = "0.33" }
 # Intra-workspace deps. Versions are kept lockstep with workspace.package.version
 # by scripts/sync-version.mjs — don't hand-edit them, edit a changelog entry and
 # run `npm run version:sync`.
@@ -429,10 +430,6 @@ opt-level = 3
 # checkout, which a fresh clone would not have. Per-developer path overrides live
 # in an untracked `.cargo/config.toml` — copy `.cargo/config.toml.example`.
 [patch.crates-io]
-# clipper-sys 0.7.2's build.rs panics on tier-3 Apple targets (visionOS); the
-# vendored copy adds the missing libc++ link arms. Identical source otherwise.
-# In-repo, so it works on a bare clone.
-clipper-sys = { path = "third_party/clipper-sys" }
 # atomic-wait 1.1.0 (via faer → spindle) has no platform module for
 # visionOS/tvOS, so the visionOS FFI build fails; the vendored copy adds them
 # to the libc++ (macos.rs) arm. Identical source otherwise.

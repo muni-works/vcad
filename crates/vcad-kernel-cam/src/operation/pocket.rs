@@ -2,10 +2,14 @@
 
 use crate::operation::Contour;
 use crate::{CamError, CamSettings, Tool, Toolpath, ToolpathSegment};
+
+#[cfg(not(target_arch = "wasm32"))]
+use geo::algorithm::buffer::{BufferStyle, LineJoin};
 #[cfg(not(target_arch = "wasm32"))]
 use geo::algorithm::centroid::Centroid;
 #[cfg(not(target_arch = "wasm32"))]
-use geo_clipper::Clipper;
+use geo::Buffer;
+
 use serde::{Deserialize, Serialize};
 
 /// 2D pocket clearing operation.
@@ -166,7 +170,7 @@ impl Pocket2D {
         Ok(toolpath)
     }
 
-    /// Generate concentric offset rings for the pocket (native version with geo-clipper).
+    /// Generate concentric offset rings for the pocket (native version with geo::algorithm::buffer).
     #[cfg(not(target_arch = "wasm32"))]
     fn generate_offset_rings(
         &self,
@@ -177,19 +181,13 @@ impl Pocket2D {
         let mut rings = Vec::new();
         let mut current_offset = initial_offset;
 
-        // Scale factor for geo-clipper (uses integer math)
-        let scale = 1000.0;
-
         loop {
             // Offset inward (negative value)
             let offset_distance = -current_offset; // geo-clipper applies scale internally.
 
-            let result = polygon.offset(
-                offset_distance,
-                geo_clipper::JoinType::Round(10.0),
-                geo_clipper::EndType::ClosedPolygon,
-                scale,
-            );
+            let style = BufferStyle::new(offset_distance).line_join(LineJoin::Round(10.0));
+
+            let result = polygon.buffer_with_style(style);
 
             if result.0.is_empty() {
                 break;

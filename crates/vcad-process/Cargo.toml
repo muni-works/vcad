@@ -11,7 +11,7 @@ publish = false
 [dependencies]
 # Pure-Rust 2D polygon booleans (same version vcad-kernel-cam pins);
 # geo-clipper is deliberately avoided — it does not build for WASM.
-geo = "0.28"
+geo = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 vcad-gdsii = { workspace = true }

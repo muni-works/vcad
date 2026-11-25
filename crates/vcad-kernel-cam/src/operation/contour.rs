@@ -2,8 +2,12 @@
 
 use crate::operation::{Contour, ContourSegment, Point2D};
 use crate::{CamError, CamSettings, Tool, Toolpath, ToolpathSegment};
+
 #[cfg(not(target_arch = "wasm32"))]
-use geo_clipper::Clipper;
+use geo::algorithm::buffer::{BufferStyle, LineJoin};
+#[cfg(not(target_arch = "wasm32"))]
+use geo::Buffer;
+
 use serde::{Deserialize, Serialize};
 
 /// A holding tab to prevent part from moving during cutout.
@@ -185,7 +189,7 @@ impl Contour2D {
         Ok(toolpath)
     }
 
-    /// Offset the contour by the given amount (native version with geo-clipper).
+    /// Offset the contour by the given amount (native version with geo::algorithm::buffer).
     #[cfg(not(target_arch = "wasm32"))]
     fn offset_contour(&self, offset: f64) -> Result<Vec<Point2D>, CamError> {
         if offset.abs() < 0.001 {
@@ -193,16 +197,12 @@ impl Contour2D {
             return Ok(self.contour_to_points(&self.contour));
         }
 
-        // Use geo-clipper for offset
+        // Use buffer for offset
         let polygon = self.contour.to_geo_polygon();
-        let scale = 1000.0;
 
-        let result = polygon.offset(
-            offset, // geo-clipper applies the coordinate scale internally.
-            geo_clipper::JoinType::Round(10.0),
-            geo_clipper::EndType::ClosedPolygon,
-            scale,
-        );
+        let style = BufferStyle::new(offset).line_join(LineJoin::Round(10.0));
+
+        let result = polygon.buffer_with_style(style);
 
         if result.0.is_empty() {
             return Err(CamError::EmptyContour);
